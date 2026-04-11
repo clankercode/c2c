@@ -116,8 +116,15 @@ List only opted-in live sessions.
 
 ```bash
 ./c2c-list
+./c2c-list --all
 ./c2c-list --json
 ```
+
+### Notes
+
+- Default output remains registered-only.
+- `--all` shows every live Claude session visible to session discovery.
+- Registered live sessions still include their alias; unregistered ones show an empty alias field in JSON and a blank alias column in human output.
 
 ## `c2c-send`
 

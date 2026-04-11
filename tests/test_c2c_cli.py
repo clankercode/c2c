@@ -20,7 +20,7 @@ import c2c_verify
 import c2c_whoami
 import claude_list_sessions
 import claude_send_msg
-from c2c_list import list_registered_sessions
+from c2c_list import list_registered_sessions, list_sessions
 from c2c_register import register_session
 from c2c_registry import load_registry, save_registry
 
@@ -130,6 +130,67 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(result_code(listed), 0)
         payload = json.loads(listed.stdout)
         self.assertEqual([item["name"] for item in payload["sessions"]], ["agent-one"])
+
+    def test_list_all_shows_live_sessions_even_when_unregistered(self):
+        listed = self.invoke_cli("c2c-list", "--all", "--json", env=self.env)
+
+        self.assertEqual(result_code(listed), 0)
+        payload = json.loads(listed.stdout)
+        self.assertEqual(
+            payload["sessions"],
+            [
+                {
+                    "alias": "",
+                    "name": "agent-one",
+                    "session_id": AGENT_ONE_SESSION_ID,
+                },
+                {
+                    "alias": "",
+                    "name": "agent-two",
+                    "session_id": AGENT_TWO_SESSION_ID,
+                },
+            ],
+        )
+
+    def test_list_all_includes_alias_when_live_session_is_registered(self):
+        registered = self.invoke_cli(
+            "c2c-register", "agent-one", "--json", env=self.env
+        )
+
+        self.assertEqual(result_code(registered), 0)
+        alias = json.loads(registered.stdout)["alias"]
+
+        listed = self.invoke_cli("c2c-list", "--all", "--json", env=self.env)
+
+        self.assertEqual(result_code(listed), 0)
+        payload = json.loads(listed.stdout)
+        self.assertEqual(
+            payload["sessions"],
+            [
+                {
+                    "alias": alias,
+                    "name": "agent-one",
+                    "session_id": AGENT_ONE_SESSION_ID,
+                },
+                {
+                    "alias": "",
+                    "name": "agent-two",
+                    "session_id": AGENT_TWO_SESSION_ID,
+                },
+            ],
+        )
+
+    def test_list_all_human_output_shows_live_sessions(self):
+        listed = self.invoke_cli("c2c-list", "--all", env=self.env)
+
+        self.assertEqual(result_code(listed), 0)
+        self.assertEqual(
+            listed.stdout.splitlines(),
+            [
+                f"\tagent-one\t{AGENT_ONE_SESSION_ID}",
+                f"\tagent-two\t{AGENT_TWO_SESSION_ID}",
+            ],
+        )
 
     def test_list_prunes_dead_registrations(self):
         registered = self.invoke_cli("c2c-register", "agent-one", env=self.env)
@@ -784,6 +845,43 @@ class C2CListUnitTests(unittest.TestCase):
             ],
         )
         self.assertEqual(update.call_count, 1)
+
+    def test_list_sessions_includes_alias_for_registered_live_sessions(self):
+        sessions = [
+            {"name": "agent-one", "session_id": AGENT_ONE_SESSION_ID},
+            {"name": "agent-two", "session_id": AGENT_TWO_SESSION_ID},
+        ]
+        registry = {
+            "registrations": [
+                {"session_id": AGENT_ONE_SESSION_ID, "alias": "storm-herald"}
+            ]
+        }
+
+        def mutate_registry(mutator):
+            mutator(registry)
+            return registry
+
+        with (
+            mock.patch("c2c_list.load_sessions", return_value=sessions),
+            mock.patch("c2c_list.update_registry", side_effect=mutate_registry),
+        ):
+            rows = list_sessions(include_all=True)
+
+        self.assertEqual(
+            rows,
+            [
+                {
+                    "alias": "storm-herald",
+                    "name": "agent-one",
+                    "session_id": AGENT_ONE_SESSION_ID,
+                },
+                {
+                    "alias": "",
+                    "name": "agent-two",
+                    "session_id": AGENT_TWO_SESSION_ID,
+                },
+            ],
+        )
 
 
 class C2CSendUnitTests(unittest.TestCase):
