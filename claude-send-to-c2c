@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# claude-send-to-c2c: Send a message to a C2C session
+# This script should be run FROM WITHIN a claude session that has SendMessage tool
+# Usage: claude-send-to-c2c <target-session-name> "<message>"
+
+TARGET="$1"
+MESSAGE="$2"
+
+case "$TARGET" in
+  "C2C msg test")
+    # These sessions were told to help send/receive messages
+    # The mechanism is unclear - let's try the SendMessage tool approach
+    echo "Sending to C2C msg test..."
+    ;;
+  "C2C-test-agent2")
+    echo "Sending to C2C-test-agent2..."
+    ;;
+  *)
+    echo "Unknown target: $TARGET"
+    exit 1
+    ;;
+esac
+
+echo "Message: $MESSAGE"
+echo ""
+echo "If you're in a claude session with SendMessage tool, use:"
+echo 'SendMessage(to="C2C-test-agent2", message="'"$MESSAGE"'", summary="C2C message")'

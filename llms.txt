@@ -1,0 +1,39 @@
+# c2c-msg
+
+> c2c-msg is a small local toolkit and research project for Claude-to-Claude messaging on a shared Linux machine. It focuses on discovering live Claude sessions, injecting messages into already-running sessions using PTY-master writes, and reading recent transcript history. It explicitly avoids relying on Claude Teams as the transport.
+
+This repository documents validated findings, current commands, limitations, and next steps for turning these experiments into a more robust local agent-to-agent messaging system.
+
+## Docs
+
+- [README](./README.md): Project overview and entry point
+- [Docs index](./docs/index.md): Documentation hub
+- [Overview](./docs/overview.md): Goal, validated results, and project scope
+- [Architecture](./docs/architecture.md): Session discovery, PTY injection, and transcript reading
+- [Commands](./docs/commands.md): `claude-list-sessions`, `claude-send-msg`, and `claude-read-history`
+- [PTY Injection](./docs/pty-injection.md): Validated PTY-master delivery model
+- [Verification](./docs/verification.md): How injection is verified using transcript JSONL
+- [Research Summary](./docs/research.md): What was ruled out and what was useful
+- [Known Issues](./docs/known-issues.md): Current instability and environment-specific constraints
+- [Next Steps](./docs/next-steps.md): Follow-on implementation work
+
+## Research Notes
+
+- [PTY findings](./findings-pty.md): Detailed PTY validation on this machine
+- [IPC findings](./findings-ipc.md): Research on built-in Claude IPC options and limitations
+- [Review findings](./findings-review.md): Review of dead ends and useful directions
+- [meta-agent research](./meta-agent-research.md): Relevant findings from `meta-agent`
+- [early research notes](./research-notes.md): Initial exploration log
+
+## Optional
+
+- [Solution writeup](./SOLUTION.md): Earlier Teams-based relay writeup retained for historical context
+- [Notes](./NOTES.md): Short progress notes from the experiment
+- [relay.py](./relay.py): Earlier relay attempt
+- [c2c_relay.py](./c2c_relay.py): Earlier file/PTY relay attempt
+- [c2c_auto_relay.py](./c2c_auto_relay.py): Earlier auto-relay attempt
+- [connect_ipc.py](./connect_ipc.py): IPC probing attempt
+- [connect_abstract.py](./connect_abstract.py): Abstract socket probing attempt
+- [investigate_socket.py](./investigate_socket.py): Shared socket investigation
+- [send_to_session.py](./send_to_session.py): Earlier non-working session write attempt
+- [claude-send-to-c2c](./claude-send-to-c2c): Reminder wrapper from an earlier phase
