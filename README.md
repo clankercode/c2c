@@ -41,15 +41,34 @@ Not validated as a finished product:
 - `./claude-list-sessions`
 - `./claude-send-msg`
 - `./claude-read-history`
+- `./c2c-register <session>`
+- `./c2c-list`
+- `./c2c-send <alias> <message...>`
+- `./c2c-verify`
+- `./c2c-install`
+- `./c2c-whoami [session]`
 
 ## Layout
 
 - `claude_list_sessions.py`: discover running sessions and PTY metadata
 - `claude_send_msg.py`: PTY-based message injection
 - `claude_read_history.py`: transcript reader
+- `c2c_registry.py`: opted-in alias registry stored as YAML
+- `c2c_register.py`: opt-in registration and alias assignment
+- `c2c_list.py`: listing for opted-in live sessions
+- `c2c_send.py`: alias-based message sending
+- `c2c_verify.py`: transcript-backed progress verification
+- `c2c_install.py`: install `c2c-*` commands into `~/.local/bin`
+- `c2c_whoami.py`: self-service identity and tutorial command
 - `claude-list-sessions`: shell wrapper
 - `claude-send-msg`: shell wrapper
 - `claude-read-history`: shell wrapper
+- `c2c-register`: shell wrapper
+- `c2c-list`: shell wrapper
+- `c2c-send`: shell wrapper
+- `c2c-verify`: shell wrapper
+- `c2c-install`: shell wrapper
+- `c2c-whoami`: shell wrapper
 - `docs/`: static-site-oriented docs
 
 ## Scope

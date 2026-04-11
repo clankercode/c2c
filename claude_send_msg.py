@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -16,7 +17,7 @@ ALLOWED_NAMES = {"C2C msg test", "C2C-test-agent2"}
 
 def load_sessions():
     result = subprocess.run(
-        [sys.executable, str(LISTER), "--json"],
+        [sys.executable, str(LISTER), "--json", "--with-terminal-owner"],
         check=True,
         capture_output=True,
         text=True,
@@ -35,6 +36,24 @@ def find_session(identifier: str, sessions: list[dict]):
     return None
 
 
+def session_has_terminal_owner(session: dict) -> bool:
+    return bool(str(session.get("terminal_pid", "")).strip())
+
+
+def ensure_sendable_session(session: dict) -> dict:
+    if session_has_terminal_owner(session):
+        return session
+
+    identifier = session.get("session_id") or str(session.get("pid", ""))
+    if not identifier:
+        return session
+
+    resolved = find_session(identifier, load_sessions())
+    if resolved is None:
+        return session
+    return resolved
+
+
 def inject(session: dict, message: str):
     tty = session.get("tty", "")
     if not tty.startswith("/dev/pts/"):
@@ -49,6 +68,34 @@ def inject(session: dict, message: str):
         capture_output=True,
         text=True,
     )
+
+
+def render_payload(message: str, tag: str = "c2c") -> str:
+    if message.lstrip().startswith("<"):
+        return message
+    return f"<{tag}-message>\n{message}\n</{tag}-message>"
+
+
+def build_send_result(session: dict) -> dict:
+    return {
+        "ok": True,
+        "to": session.get("name"),
+        "session_id": session.get("session_id"),
+        "pid": session.get("pid"),
+        "sent_at": time.time(),
+    }
+
+
+def use_send_message_fixture() -> bool:
+    return os.environ.get("C2C_SEND_MESSAGE_FIXTURE") == "1"
+
+
+def send_message_to_session(session: dict, message: str, tag: str = "c2c") -> dict:
+    session = ensure_sendable_session(session)
+    if use_send_message_fixture():
+        return build_send_result(session)
+    inject(session, render_payload(message, tag=tag))
+    return build_send_result(session)
 
 
 def main():
@@ -81,24 +128,7 @@ def main():
         sys.exit(2)
 
     message = " ".join(args.message)
-
-    if message.lstrip().startswith("<"):
-        payload = message
-    else:
-        payload = f"<{args.tag}-message>\n{message}\n</{args.tag}-message>"
-    inject(session, payload)
-    print(
-        json.dumps(
-            {
-                "ok": True,
-                "to": session.get("name"),
-                "session_id": session.get("session_id"),
-                "pid": session.get("pid"),
-                "sent_at": time.time(),
-            },
-            indent=2,
-        )
-    )
+    print(json.dumps(send_message_to_session(session, message, tag=args.tag), indent=2))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,22 @@
+[
+  {
+    "name": "shared-agent",
+    "pid": 11111,
+    "session_id": "6e45bbe8-998c-4140-b77e-c6f117e6ca4b",
+    "cwd": "/tmp/chat-a",
+    "tty": "/dev/pts/11",
+    "terminal_pid": 22221,
+    "terminal_master_fd": 40,
+    "transcript": "tests/fixtures/transcript-agent-one.jsonl"
+  },
+  {
+    "name": "shared-agent",
+    "pid": 11112,
+    "session_id": "fa68bd5b-0529-4292-bc27-d617f6840ce7",
+    "cwd": "/tmp/chat-b",
+    "tty": "/dev/pts/12",
+    "terminal_pid": 22222,
+    "terminal_master_fd": 41,
+    "transcript": "tests/fixtures/transcript-agent-two.jsonl"
+  }
+]

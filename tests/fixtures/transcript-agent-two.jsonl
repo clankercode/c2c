@@ -1,0 +1,2 @@
+{"type":"user","message":{"content":"<c2c-message>hello from ember-crown</c2c-message>"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"reply two"}]}}

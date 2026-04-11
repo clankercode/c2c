@@ -1,0 +1,10 @@
+storm
+ember
+silver
+banner
+herald
+crown
+lantern
+signal
+harbor
+aurora
