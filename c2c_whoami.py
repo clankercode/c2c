@@ -13,6 +13,8 @@ TUTORIAL_LINES = [
     "What is C2C?",
     "C2C lets opted-in Claude sessions message each other by alias.",
     "Use c2c-send <alias> <message...>",
+    "If Bash approval allows it, reply with c2c-send <alias> <message...>.",
+    "If Bash is not available or not approved, reply as a normal assistant message instead.",
 ]
 
 

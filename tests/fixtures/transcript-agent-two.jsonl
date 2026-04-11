@@ -1,2 +1,2 @@
-{"type":"user","message":{"content":"<c2c-message>hello from ember-crown</c2c-message>"}}
+{"type":"user","message":{"content":"<c2c event=\"message\" from=\"agent-two\" alias=\"ember-crown\">hello from ember-crown</c2c>"}}
 {"type":"assistant","message":{"content":[{"type":"text","text":"reply two"}]}}

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import subprocess
 import sys
 
 import claude_send_msg
+from c2c_registry import load_registration_for_session_id
 from c2c_registry import (
     find_registration_by_alias,
     prune_registrations,
@@ -33,7 +35,42 @@ def resolve_alias(alias: str) -> tuple[dict, dict]:
 
 
 def delegate_send(session: dict, message: str) -> dict:
-    return claude_send_msg.send_message_to_session(session, message)
+    sender = resolve_sender_metadata()
+    return claude_send_msg.send_message_to_session(
+        session,
+        message,
+        event="message",
+        sender_name=sender["name"],
+        sender_alias=sender["alias"],
+    )
+
+
+def resolve_sender_metadata() -> dict:
+    session_id = os.environ.get("C2C_SESSION_ID", "").strip()
+    if session_id:
+        registration = load_registration_for_session_id(session_id)
+        if registration is not None:
+            sessions = load_sessions()
+            session = find_session(session_id, sessions)
+            if session is not None:
+                return {
+                    "name": session.get("name") or registration["alias"],
+                    "alias": registration["alias"],
+                }
+
+    session_pid = os.environ.get("C2C_SESSION_PID", "").strip()
+    if session_pid:
+        sessions = load_sessions()
+        session = find_session(session_pid, sessions)
+        if session is not None:
+            registration = load_registration_for_session_id(session["session_id"])
+            if registration is not None:
+                return {
+                    "name": session.get("name") or registration["alias"],
+                    "alias": registration["alias"],
+                }
+
+    return {"name": "c2c-send", "alias": ""}
 
 
 def send_to_alias(alias: str, message: str, dry_run: bool) -> dict:

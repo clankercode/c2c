@@ -282,6 +282,11 @@ class C2CCLITests(unittest.TestCase):
         self.assertIn("Registered: yes", result.stdout)
         self.assertIn("What is C2C?", result.stdout)
         self.assertIn("c2c-send <alias> <message...>", result.stdout)
+        self.assertIn("If Bash approval allows it, reply with c2c-send", result.stdout)
+        self.assertIn(
+            "If Bash is not available or not approved, reply as a normal assistant message instead.",
+            result.stdout,
+        )
 
     def test_register_rejects_ambiguous_session_name(self):
         ambiguous_env = dict(self.env)
@@ -534,11 +539,14 @@ class C2CRegisterNotificationTests(unittest.TestCase):
             "Your alias is storm-herald.\n"
             "Run c2c-whoami for your current details and tutorial.\n"
             "Run c2c-list to see other opted-in sessions.\n"
-            "Use c2c-send <alias> <message...> to talk to a peer.",
-            tag="onboarding",
+            "If Bash approval allows it, reply with c2c-send <alias> <message...>.\n"
+            "If Bash is not available or not approved, reply as a normal assistant message instead.",
+            event="onboarding",
+            sender_name="c2c-register",
+            sender_alias="storm-herald",
         )
 
-    def test_register_sends_onboarding_with_non_c2c_tag(self):
+    def test_register_sends_onboarding_with_onboarding_event_metadata(self):
         session = {
             "name": "agent-one",
             "pid": 11111,
@@ -556,8 +564,11 @@ class C2CRegisterNotificationTests(unittest.TestCase):
             "Your alias is storm-herald.\n"
             "Run c2c-whoami for your current details and tutorial.\n"
             "Run c2c-list to see other opted-in sessions.\n"
-            "Use c2c-send <alias> <message...> to talk to a peer.",
-            tag="onboarding",
+            "If Bash approval allows it, reply with c2c-send <alias> <message...>.\n"
+            "If Bash is not available or not approved, reply as a normal assistant message instead.",
+            event="onboarding",
+            sender_name="c2c-register",
+            sender_alias="storm-herald",
         )
 
     def test_register_does_not_resend_onboarding_for_existing_registration(self):
@@ -801,7 +812,73 @@ class C2CSendUnitTests(unittest.TestCase):
             result = c2c_send.send_to_alias("ember-crown", "hello peer", dry_run=False)
 
         self.assertEqual(result, delegated_result)
-        delegate.assert_called_once_with(session, "hello peer")
+        delegate.assert_called_once_with(
+            session,
+            "hello peer",
+            event="message",
+            sender_name="c2c-send",
+            sender_alias="",
+        )
+
+    def test_send_to_alias_passes_sender_metadata_when_current_session_registered(self):
+        session = {
+            "name": "agent-two",
+            "pid": 11112,
+            "session_id": AGENT_TWO_SESSION_ID,
+        }
+        registration = {"session_id": AGENT_TWO_SESSION_ID, "alias": "ember-crown"}
+
+        with (
+            mock.patch("c2c_send.resolve_alias", return_value=(session, registration)),
+            mock.patch(
+                "c2c_send.resolve_sender_metadata",
+                return_value={"name": "agent-one", "alias": "storm-herald"},
+            ),
+            mock.patch(
+                "c2c_send.claude_send_msg.send_message_to_session",
+                return_value={"ok": True},
+            ) as delegate,
+        ):
+            c2c_send.send_to_alias("ember-crown", "hello peer", dry_run=False)
+
+        delegate.assert_called_once_with(
+            session,
+            "hello peer",
+            event="message",
+            sender_name="agent-one",
+            sender_alias="storm-herald",
+        )
+
+    def test_send_to_alias_uses_minimal_sender_fallback_when_current_session_unknown(
+        self,
+    ):
+        session = {
+            "name": "agent-two",
+            "pid": 11112,
+            "session_id": AGENT_TWO_SESSION_ID,
+        }
+        registration = {"session_id": AGENT_TWO_SESSION_ID, "alias": "ember-crown"}
+
+        with (
+            mock.patch("c2c_send.resolve_alias", return_value=(session, registration)),
+            mock.patch(
+                "c2c_send.resolve_sender_metadata",
+                return_value={"name": "c2c-send", "alias": ""},
+            ),
+            mock.patch(
+                "c2c_send.claude_send_msg.send_message_to_session",
+                return_value={"ok": True},
+            ) as delegate,
+        ):
+            c2c_send.send_to_alias("ember-crown", "hello peer", dry_run=False)
+
+        delegate.assert_called_once_with(
+            session,
+            "hello peer",
+            event="message",
+            sender_name="c2c-send",
+            sender_alias="",
+        )
 
     def test_main_reports_send_surface_failures_cleanly(self):
         session = {
@@ -967,6 +1044,28 @@ class ClaudeListSessionsUnitTests(unittest.TestCase):
 
 
 class ClaudeSendMsgUnitTests(unittest.TestCase):
+    def test_render_payload_wraps_plain_message_in_single_c2c_root_with_metadata(self):
+        self.assertEqual(
+            claude_send_msg.render_payload(
+                "hello peer",
+                event="message",
+                sender_name="agent-one",
+                sender_alias="storm-herald",
+            ),
+            '<c2c event="message" from="agent-one" alias="storm-herald">\nhello peer\n</c2c>',
+        )
+
+    def test_render_payload_omits_alias_when_sender_alias_missing(self):
+        self.assertEqual(
+            claude_send_msg.render_payload(
+                "hello peer",
+                event="message",
+                sender_name="c2c-send",
+                sender_alias="",
+            ),
+            '<c2c event="message" from="c2c-send">\nhello peer\n</c2c>',
+        )
+
     def test_send_message_to_session_reloads_full_terminal_metadata_when_needed(self):
         partial_session = {
             "name": "agent-two",
@@ -994,7 +1093,8 @@ class ClaudeSendMsgUnitTests(unittest.TestCase):
 
         load_sessions.assert_called_once_with()
         inject.assert_called_once_with(
-            full_session, "<c2c-message>\nhello peer\n</c2c-message>"
+            full_session,
+            '<c2c event="message" from="c2c-send">\nhello peer\n</c2c>',
         )
         self.assertEqual(
             result,
@@ -1221,10 +1321,10 @@ class C2CVerifyUnitTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             transcript_path = Path(handle.name)
             handle.write(
-                '{"type":"user","message":{"content":"<c2c-message>one</c2c-message>"}}\n'
+                '{"type":"user","message":{"content":"<c2c event=\\"message\\" from=\\"storm-herald\\" alias=\\"storm-herald\\">one</c2c>"}}\n'
             )
             handle.write(
-                '{"type":"user","message":{"content":"<c2c-message>two</c2c-message>"}}\n'
+                '{"type":"user","message":{"content":"<c2c event=\\"message\\" from=\\"storm-herald\\" alias=\\"storm-herald\\">two</c2c>"}}\n'
             )
             handle.write(
                 '{"type":"assistant","message":{"content":[{"type":"text","text":"reply one"}]}}\n'
@@ -1284,7 +1384,7 @@ class C2CWhoamiUnitTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             transcript_path = Path(handle.name)
             handle.write(
-                '{"type":"user","message":{"content":"<c2c-message>one</c2c-message>"}}\n'
+                '{"type":"user","message":{"content":"<c2c event=\\"message\\" from=\\"storm-herald\\" alias=\\"storm-herald\\">one</c2c>"}}\n'
             )
             handle.write(
                 '{"type":"user","message":{"content":"follow-up outside c2c"}}\n'
@@ -1305,7 +1405,7 @@ class C2CWhoamiUnitTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             transcript_path = Path(handle.name)
             handle.write(
-                '{"type":"user","message":{"content":"<c2c-message>one</c2c-message>"}}\n'
+                '{"type":"user","message":{"content":"<c2c event=\\"message\\" from=\\"storm-herald\\" alias=\\"storm-herald\\">one</c2c>"}}\n'
             )
             handle.write(
                 '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"lookup","input":{}}]}}\n'
@@ -1315,6 +1415,30 @@ class C2CWhoamiUnitTests(unittest.TestCase):
             )
             handle.write(
                 '{"type":"assistant","message":{"content":[{"type":"text","text":"reply after tool"}]}}\n'
+            )
+
+        try:
+            self.assertEqual(
+                c2c_verify.summarize_transcript(str(transcript_path)),
+                {"sent": 1, "received": 1},
+            )
+        finally:
+            transcript_path.unlink(missing_ok=True)
+
+    def test_summarize_transcript_ignores_onboarding_events(self):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+            transcript_path = Path(handle.name)
+            handle.write(
+                '{"type":"user","message":{"content":"<c2c event=\\"onboarding\\" from=\\"c2c-register\\" alias=\\"storm-herald\\">welcome</c2c>"}}\n'
+            )
+            handle.write(
+                '{"type":"assistant","message":{"content":[{"type":"text","text":"thanks"}]}}\n'
+            )
+            handle.write(
+                '{"type":"user","message":{"content":"<c2c event=\\"message\\" from=\\"storm-herald\\" alias=\\"storm-herald\\">hello</c2c>"}}\n'
+            )
+            handle.write(
+                '{"type":"assistant","message":{"content":[{"type":"text","text":"reply"}]}}\n'
             )
 
         try:

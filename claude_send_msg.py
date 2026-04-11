@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from xml.sax.saxutils import quoteattr
 
 
 HOME = Path.home()
@@ -70,10 +71,22 @@ def inject(session: dict, message: str):
     )
 
 
-def render_payload(message: str, tag: str = "c2c") -> str:
+def render_payload(
+    message: str,
+    event: str = "message",
+    sender_name: str = "c2c-send",
+    sender_alias: str = "",
+) -> str:
     if message.lstrip().startswith("<"):
         return message
-    return f"<{tag}-message>\n{message}\n</{tag}-message>"
+
+    attributes = [
+        f"event={quoteattr(event)}",
+        f"from={quoteattr(sender_name)}",
+    ]
+    if sender_alias:
+        attributes.append(f"alias={quoteattr(sender_alias)}")
+    return f"<c2c {' '.join(attributes)}>\n{message}\n</c2c>"
 
 
 def build_send_result(session: dict) -> dict:
@@ -90,11 +103,25 @@ def use_send_message_fixture() -> bool:
     return os.environ.get("C2C_SEND_MESSAGE_FIXTURE") == "1"
 
 
-def send_message_to_session(session: dict, message: str, tag: str = "c2c") -> dict:
+def send_message_to_session(
+    session: dict,
+    message: str,
+    event: str = "message",
+    sender_name: str = "c2c-send",
+    sender_alias: str = "",
+) -> dict:
     session = ensure_sendable_session(session)
     if use_send_message_fixture():
         return build_send_result(session)
-    inject(session, render_payload(message, tag=tag))
+    inject(
+        session,
+        render_payload(
+            message,
+            event=event,
+            sender_name=sender_name,
+            sender_alias=sender_alias,
+        ),
+    )
     return build_send_result(session)
 
 
@@ -104,14 +131,15 @@ def main():
         epilog=(
             "Examples:\n"
             "  claude-send-msg 'C2C-test-agent2' 'Hello there'\n"
-            "  claude-send-msg 'C2C msg test' '<c2c-message>What topic should we discuss?</c2c-message>'"
+            '  claude-send-msg \'C2C msg test\' \'<c2c event="message" from="agent-one" alias="storm-herald">What topic should we discuss?</c2c>\''
         ),
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument("to")
     parser.add_argument("message", nargs="+")
     parser.add_argument("--allow-non-c2c", action="store_true")
-    parser.add_argument("--tag", default="c2c")
+    parser.add_argument("--tag", dest="event", default="message")
+    parser.add_argument("--event", default=None)
     args = parser.parse_args()
 
     sessions = load_sessions()
@@ -128,7 +156,8 @@ def main():
         sys.exit(2)
 
     message = " ".join(args.message)
-    print(json.dumps(send_message_to_session(session, message, tag=args.tag), indent=2))
+    event = args.event or args.tag
+    print(json.dumps(send_message_to_session(session, message, event=event), indent=2))
 
 
 if __name__ == "__main__":

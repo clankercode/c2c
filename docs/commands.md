@@ -28,7 +28,7 @@ Send a PTY-injected message to a running Claude session.
 
 ```bash
 ./claude-send-msg 'C2C-test-agent2' 'Hello there'
-./claude-send-msg 'C2C msg test' '<c2c-message>What topic should we discuss?</c2c-message>'
+./claude-send-msg 'C2C msg test' '<c2c event="message" from="agent-one" alias="storm-herald">What topic should we discuss?</c2c>'
 ```
 
 ### Default Safeguard
@@ -72,7 +72,8 @@ Register a live Claude session for alias-based C2C messaging.
 - Accepts session ID, PID, or unique session name.
 - Returns the existing alias if the live session is already registered.
 - Refuses ambiguous session names and asks for session ID or PID instead.
-- On first registration, sends onboarding to the registered session and points it at `c2c-whoami`, `c2c-list`, and `c2c-send`.
+- On first registration, sends onboarding in a `<c2c event="onboarding" ...>` envelope.
+- Onboarding explains the Bash fallback: use `c2c-send` when Bash approval allows it, otherwise reply as a normal assistant message.
 
 ## `c2c-install`
 
@@ -133,6 +134,8 @@ Resolve a registered alias and send a message to that live session.
 
 - Dry-run mode is useful for CLI-first tests.
 - Non-dry-run delegates through the existing Claude send surface.
+- Outgoing messages are wrapped as `<c2c event="message" from="<name>" alias="<alias>">...</c2c>`.
+- If the sender cannot be resolved from the current registered session, `from="c2c-send"` is used and `alias` is omitted.
 
 ## `c2c-verify`
 
@@ -148,4 +151,5 @@ Count transcript-backed C2C progress across the currently visible participants.
 ### Notes
 
 - Reports `sent` and `received` per participant.
+- Counts only `<c2c event="message" ...>` user turns, not onboarding events.
 - Sets `goal_met` only when each participant has sent at least 20 and received at least 20.

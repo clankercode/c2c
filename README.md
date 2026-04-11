@@ -48,6 +48,11 @@ Not validated as a finished product:
 - `./c2c-install`
 - `./c2c-whoami [session]`
 
+Wire format note:
+
+- C2C traffic now uses a single root envelope: `<c2c event="message" from="<name>" alias="<alias>">...</c2c>`
+- Onboarding uses the same root with `event="onboarding"`
+
 ## Layout
 
 - `claude_list_sessions.py`: discover running sessions and PTY metadata

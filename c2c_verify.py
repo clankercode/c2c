@@ -10,8 +10,8 @@ from claude_list_sessions import load_sessions
 
 
 GOAL_COUNT = 20
-OPEN_TAG = "<c2c-message>"
-close_tag = "</c2c-message>"
+C2C_MESSAGE_MARKER = '<c2c event="message"'
+C2C_CLOSE_TAG = "</c2c>"
 
 
 def resolve_transcript_path(transcript: str) -> Path:
@@ -38,7 +38,11 @@ def is_c2c_user_message(entry: dict) -> bool:
     if entry.get("type") != "user":
         return False
     content = entry.get("message", {}).get("content", "")
-    return isinstance(content, str) and OPEN_TAG in content and close_tag in content
+    return (
+        isinstance(content, str)
+        and C2C_MESSAGE_MARKER in content
+        and C2C_CLOSE_TAG in content
+    )
 
 
 def has_assistant_text(entry: dict) -> bool:
