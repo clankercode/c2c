@@ -1,0 +1,4 @@
+(executable
+ (name c2c_mcp_server)
+ (modules c2c_mcp_server)
+ (libraries c2c_mcp cmdliner yojson logs lwt.unix))

@@ -32,3 +32,4 @@ ENV/
 *~
 .worktrees/
 .goal-loops/
+_build/

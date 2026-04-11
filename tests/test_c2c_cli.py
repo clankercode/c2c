@@ -15,6 +15,7 @@ if str(REPO) not in sys.path:
 
 import c2c_register
 import c2c_registry
+import c2c_mcp
 import c2c_send
 import c2c_cli
 import c2c_verify
@@ -73,6 +74,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_verify.py",
         "c2c_whoami.py",
         "c2c_cli.py",
+        "c2c_mcp.py",
         "c2c_registry.py",
         "claude_send_msg.py",
         "claude_list_sessions.py",
@@ -297,6 +299,137 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(result_code(canonical), 0)
         self.assertEqual(json.loads(canonical.stdout), json.loads(wrapper.stdout))
 
+    def test_c2c_mcp_subcommand_dispatches_to_mcp_wrapper(self):
+        with mock.patch("c2c_cli.c2c_mcp.main", return_value=0) as mcp_main:
+            result = c2c_cli.main(["mcp", "--help"])
+
+        self.assertEqual(result, 0)
+        mcp_main.assert_called_once_with(["--help"])
+
+    def test_c2c_mcp_stdio_initialize_smoke(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        env = dict(self.env)
+        env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {},
+            }
+        )
+        framed = f"Content-Length: {len(body)}\r\n\r\n{body}"
+        process = subprocess.Popen(
+            [str(REPO / "c2c"), "mcp"],
+            cwd=REPO,
+            env={**os.environ, **env},
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert process.stdin is not None
+            assert process.stdout is not None
+            process.stdin.write(framed)
+            process.stdin.flush()
+
+            header = process.stdout.readline()
+            self.assertTrue(header.startswith("Content-Length:"), header)
+            process.stdout.readline()
+            body_length = int(header.split(":", 1)[1].strip())
+            payload = process.stdout.read(body_length)
+        finally:
+            if process.stdin is not None:
+                process.stdin.close()
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+            process.terminate()
+            process.wait(timeout=CLI_TIMEOUT_SECONDS)
+
+        self.assertIn('"protocolVersion":"2024-11-05"', payload)
+
+    def test_c2c_mcp_emits_channel_notification_for_session_inbox(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        env = dict(self.env)
+        env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
+        env["C2C_MCP_SESSION_ID"] = AGENT_TWO_SESSION_ID
+
+        broker_root.mkdir(parents=True, exist_ok=True)
+        (broker_root / "registry.json").write_text(
+            json.dumps(
+                [
+                    {"session_id": AGENT_ONE_SESSION_ID, "alias": "storm-ember"},
+                    {"session_id": AGENT_TWO_SESSION_ID, "alias": "storm-storm"},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (broker_root / f"{AGENT_TWO_SESSION_ID}.inbox.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "from_alias": "storm-ember",
+                        "to_alias": "storm-storm",
+                        "content": "debate opener",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {},
+            }
+        )
+        framed = f"Content-Length: {len(body)}\r\n\r\n{body}"
+        process = subprocess.Popen(
+            [str(REPO / "c2c"), "mcp"],
+            cwd=REPO,
+            env={**os.environ, **env},
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert process.stdin is not None
+            assert process.stdout is not None
+            process.stdin.write(framed)
+            process.stdin.flush()
+
+            init_header = process.stdout.readline()
+            self.assertTrue(init_header.startswith("Content-Length:"), init_header)
+            process.stdout.readline()
+            init_body_length = int(init_header.split(":", 1)[1].strip())
+            init_payload = process.stdout.read(init_body_length)
+
+            notif_header = process.stdout.readline()
+            self.assertTrue(notif_header.startswith("Content-Length:"), notif_header)
+            process.stdout.readline()
+            notif_body_length = int(notif_header.split(":", 1)[1].strip())
+            notif_payload = process.stdout.read(notif_body_length)
+        finally:
+            if process.stdin is not None:
+                process.stdin.close()
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+            process.terminate()
+            process.wait(timeout=CLI_TIMEOUT_SECONDS)
+
+        self.assertIn('"protocolVersion":"2024-11-05"', init_payload)
+        self.assertIn('"method":"notifications/claude/channel"', notif_payload)
+        self.assertIn('"content":"debate opener"', notif_payload)
+        self.assertIn('"from_alias":"storm-ember"', notif_payload)
+
     def test_install_reports_path_guidance_when_bin_not_on_path(self):
         install_dir = Path(self.temp_dir.name) / "bin"
         env = dict(self.env)
@@ -364,11 +497,23 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(payload["name"], "agent-one")
 
     def test_whoami_without_selector_fails_when_not_uniquely_resolvable(self):
-        result = self.invoke_cli("c2c-whoami", env=self.env)
+        stderr = io.StringIO()
 
-        self.assertEqual(result_code(result), 1)
-        self.assertIn("could not resolve current session uniquely", result.stderr)
-        self.assertIn("session ID or PID", result.stderr)
+        with (
+            mock.patch.dict(os.environ, self.env, clear=False),
+            mock.patch(
+                "c2c_whoami.current_session_identifier",
+                side_effect=ValueError(
+                    "could not resolve current session uniquely; use a session ID or PID"
+                ),
+            ),
+            mock.patch("sys.stderr", stderr),
+        ):
+            result = c2c_whoami.main([])
+
+        self.assertEqual(result, 1)
+        self.assertIn("could not resolve current session uniquely", stderr.getvalue())
+        self.assertIn("session ID or PID", stderr.getvalue())
 
     def test_whoami_human_output_includes_tutorial(self):
         self.invoke_cli("c2c-register", "agent-one", env=self.env)
@@ -840,6 +985,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c_verify.py",
                 "c2c_whoami.py",
                 "c2c_cli.py",
+                "c2c_mcp.py",
                 "c2c_registry.py",
                 "claude_send_msg.py",
                 "claude_list_sessions.py",
@@ -1276,6 +1422,22 @@ class ClaudeSendMsgUnitTests(unittest.TestCase):
             '<c2c event="message" from="c2c-send">\nhello peer\n</c2c>',
         )
 
+    def test_inject_delegates_to_external_pty_helper_with_terminal_metadata(self):
+        session = {
+            "tty": "/dev/pts/9",
+            "terminal_pid": 33333,
+        }
+
+        with mock.patch("claude_send_msg.subprocess.run") as run:
+            claude_send_msg.inject(session, "hello peer")
+
+        run.assert_called_once_with(
+            [str(claude_send_msg.PTY_INJECT), "33333", "9", "hello peer"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
     def test_send_message_to_session_reloads_full_terminal_metadata_when_needed(self):
         partial_session = {
             "name": "agent-two",
@@ -1347,6 +1509,78 @@ class ClaudeSendMsgUnitTests(unittest.TestCase):
                 sessions=[full_session],
             )
 
+        inject.assert_called_once_with(
+            full_session,
+            '<c2c event="message" from="c2c-send">\nhello peer\n</c2c>',
+        )
+        self.assertEqual(result["session_id"], AGENT_TWO_SESSION_ID)
+
+    def test_send_message_to_session_reloads_when_provided_sessions_lack_terminal_owner(
+        self,
+    ):
+        partial_session = {
+            "name": "agent-two",
+            "pid": 11112,
+            "session_id": AGENT_TWO_SESSION_ID,
+            "tty": "/dev/pts/9",
+        }
+        full_session = {
+            **partial_session,
+            "terminal_pid": 33333,
+            "terminal_master_fd": 8,
+        }
+
+        with (
+            mock.patch("claude_send_msg.use_send_message_fixture", return_value=False),
+            mock.patch(
+                "claude_send_msg.load_sessions", return_value=[full_session]
+            ) as load_sessions,
+            mock.patch("claude_send_msg.inject") as inject,
+            mock.patch("claude_send_msg.time.time", return_value=123.0),
+        ):
+            result = claude_send_msg.send_message_to_session(
+                partial_session,
+                "hello peer",
+                sessions=[partial_session],
+            )
+
+        load_sessions.assert_called_once_with()
+        inject.assert_called_once_with(
+            full_session,
+            '<c2c event="message" from="c2c-send">\nhello peer\n</c2c>',
+        )
+        self.assertEqual(result["session_id"], AGENT_TWO_SESSION_ID)
+
+    def test_send_message_to_session_reloads_when_provided_sessions_lack_terminal_owner(
+        self,
+    ):
+        partial_session = {
+            "name": "agent-two",
+            "pid": 11112,
+            "session_id": AGENT_TWO_SESSION_ID,
+            "tty": "/dev/pts/9",
+        }
+        full_session = {
+            **partial_session,
+            "terminal_pid": 33333,
+            "terminal_master_fd": 8,
+        }
+
+        with (
+            mock.patch("claude_send_msg.use_send_message_fixture", return_value=False),
+            mock.patch(
+                "claude_send_msg.load_sessions", return_value=[full_session]
+            ) as load_sessions,
+            mock.patch("claude_send_msg.inject") as inject,
+            mock.patch("claude_send_msg.time.time", return_value=123.0),
+        ):
+            result = claude_send_msg.send_message_to_session(
+                partial_session,
+                "hello peer",
+                sessions=[partial_session],
+            )
+
+        load_sessions.assert_called_once_with()
         inject.assert_called_once_with(
             full_session,
             '<c2c event="message" from="c2c-send">\nhello peer\n</c2c>',

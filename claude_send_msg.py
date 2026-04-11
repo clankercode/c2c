@@ -52,6 +52,14 @@ def ensure_sendable_session(session: dict, sessions: list[dict] | None = None) -
     if sessions is None:
         sessions = load_sessions()
     resolved = find_session(identifier, sessions)
+    if resolved is not None and session_has_terminal_owner(resolved):
+        return resolved
+
+    if sessions is not None:
+        resolved = find_session(identifier, load_sessions())
+        if resolved is not None:
+            return resolved
+
     if resolved is None:
         return session
     return resolved

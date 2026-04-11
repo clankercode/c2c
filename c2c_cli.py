@@ -4,6 +4,7 @@ import sys
 
 import c2c_install
 import c2c_list
+import c2c_mcp
 import c2c_register
 import c2c_send
 import c2c_verify
@@ -35,7 +36,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(
-            "usage: c2c <install|list|register|send|verify|whoami> [...args]",
+            "usage: c2c <install|list|mcp|register|send|verify|whoami> [...args]",
             file=sys.stderr,
         )
         return 2
@@ -46,6 +47,8 @@ def main(argv: list[str] | None = None) -> int:
         return c2c_install.main(remainder)
     if subcommand == "list":
         return c2c_list.main(remainder)
+    if subcommand == "mcp":
+        return c2c_mcp.main(remainder)
     if subcommand == "register":
         return c2c_register.main(remainder)
     if subcommand == "send":
