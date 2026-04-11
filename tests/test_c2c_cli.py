@@ -16,6 +16,7 @@ if str(REPO) not in sys.path:
 import c2c_register
 import c2c_registry
 import c2c_send
+import c2c_cli
 import c2c_verify
 import c2c_whoami
 import claude_list_sessions
@@ -58,10 +59,20 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
     else:
         shutil.copy2(source_git_path, target_git_path)
     for relative_path in [
+        "c2c",
         "c2c-register",
         "c2c-list",
+        "c2c-send",
+        "c2c-install",
+        "c2c-verify",
+        "c2c-whoami",
         "c2c_register.py",
         "c2c_list.py",
+        "c2c_send.py",
+        "c2c_install.py",
+        "c2c_verify.py",
+        "c2c_whoami.py",
+        "c2c_cli.py",
         "c2c_registry.py",
         "claude_send_msg.py",
         "claude_list_sessions.py",
@@ -247,6 +258,7 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(
             sorted(payload["installed_commands"]),
             [
+                "c2c",
                 "c2c-install",
                 "c2c-list",
                 "c2c-register",
@@ -255,8 +267,35 @@ class C2CCLITests(unittest.TestCase):
                 "c2c-whoami",
             ],
         )
+        self.assertTrue((install_dir / "c2c").exists())
         self.assertTrue((install_dir / "c2c-register").exists())
         self.assertTrue((install_dir / "c2c-whoami").exists())
+
+    def test_c2c_list_subcommand_matches_wrapper_json_output(self):
+        wrapper = self.invoke_cli("c2c-list", "--all", "--json", env=self.env)
+        canonical = self.invoke_cli("c2c", "list", "--all", "--json", env=self.env)
+
+        self.assertEqual(result_code(wrapper), 0)
+        self.assertEqual(result_code(canonical), 0)
+        self.assertEqual(json.loads(canonical.stdout), json.loads(wrapper.stdout))
+
+    def test_c2c_send_subcommand_matches_wrapper_dry_run_output(self):
+        registered = self.invoke_cli(
+            "c2c-register", "agent-two", "--json", env=self.env
+        )
+        self.assertEqual(result_code(registered), 0)
+        alias = json.loads(registered.stdout)["alias"]
+
+        wrapper = self.invoke_cli(
+            "c2c-send", alias, "hello", "peer", "--dry-run", "--json", env=self.env
+        )
+        canonical = self.invoke_cli(
+            "c2c", "send", alias, "hello", "peer", "--dry-run", "--json", env=self.env
+        )
+
+        self.assertEqual(result_code(wrapper), 0)
+        self.assertEqual(result_code(canonical), 0)
+        self.assertEqual(json.loads(canonical.stdout), json.loads(wrapper.stdout))
 
     def test_install_reports_path_guidance_when_bin_not_on_path(self):
         install_dir = Path(self.temp_dir.name) / "bin"
@@ -787,10 +826,20 @@ class C2CTestHelpersTests(unittest.TestCase):
             )
 
             for relative_path in [
+                "c2c",
                 "c2c-register",
                 "c2c-list",
+                "c2c-send",
+                "c2c-install",
+                "c2c-verify",
+                "c2c-whoami",
                 "c2c_register.py",
                 "c2c_list.py",
+                "c2c_send.py",
+                "c2c_install.py",
+                "c2c_verify.py",
+                "c2c_whoami.py",
+                "c2c_cli.py",
                 "c2c_registry.py",
                 "claude_send_msg.py",
                 "claude_list_sessions.py",
@@ -916,6 +965,7 @@ class C2CSendUnitTests(unittest.TestCase):
             event="message",
             sender_name="c2c-send",
             sender_alias="",
+            sessions=mock.ANY,
         )
 
     def test_send_to_alias_passes_sender_metadata_when_current_session_registered(self):
@@ -945,6 +995,7 @@ class C2CSendUnitTests(unittest.TestCase):
             event="message",
             sender_name="agent-one",
             sender_alias="storm-herald",
+            sessions=mock.ANY,
         )
 
     def test_send_to_alias_uses_minimal_sender_fallback_when_current_session_unknown(
@@ -976,6 +1027,67 @@ class C2CSendUnitTests(unittest.TestCase):
             event="message",
             sender_name="c2c-send",
             sender_alias="",
+            sessions=mock.ANY,
+        )
+
+    def test_send_to_alias_reuses_loaded_sessions_for_sender_metadata_and_sendability(
+        self,
+    ):
+        session = {
+            "name": "agent-two",
+            "pid": 11112,
+            "session_id": AGENT_TWO_SESSION_ID,
+            "tty": "/dev/pts/9",
+        }
+        registration = {"session_id": AGENT_TWO_SESSION_ID, "alias": "ember-crown"}
+        sessions = [
+            {
+                "name": "agent-one",
+                "pid": 11111,
+                "session_id": AGENT_ONE_SESSION_ID,
+                "tty": "/dev/pts/8",
+                "terminal_pid": 22222,
+                "terminal_master_fd": 7,
+            },
+            {
+                **session,
+                "terminal_pid": 33333,
+                "terminal_master_fd": 8,
+            },
+        ]
+
+        with (
+            mock.patch("c2c_send.resolve_alias", return_value=(session, registration)),
+            mock.patch.dict(
+                os.environ,
+                {"C2C_SESSION_ID": AGENT_ONE_SESSION_ID},
+                clear=False,
+            ),
+            mock.patch(
+                "c2c_send.load_registration_for_session_id",
+                return_value={
+                    "session_id": AGENT_ONE_SESSION_ID,
+                    "alias": "storm-herald",
+                },
+            ),
+            mock.patch(
+                "c2c_send.load_sessions", return_value=sessions
+            ) as load_sessions,
+            mock.patch(
+                "c2c_send.claude_send_msg.send_message_to_session",
+                return_value={"ok": True},
+            ) as delegate,
+        ):
+            c2c_send.send_to_alias("ember-crown", "hello peer", dry_run=False)
+
+        load_sessions.assert_called_once_with()
+        delegate.assert_called_once_with(
+            session,
+            "hello peer",
+            event="message",
+            sender_name="agent-one",
+            sender_alias="",
+            sessions=sessions,
         )
 
     def test_main_reports_send_surface_failures_cleanly(self):
@@ -1204,6 +1316,67 @@ class ClaudeSendMsgUnitTests(unittest.TestCase):
                 "sent_at": 123.0,
             },
         )
+
+    def test_send_message_to_session_skips_session_reload_when_sessions_already_provided(
+        self,
+    ):
+        partial_session = {
+            "name": "agent-two",
+            "pid": 11112,
+            "session_id": AGENT_TWO_SESSION_ID,
+            "tty": "/dev/pts/9",
+        }
+        full_session = {
+            **partial_session,
+            "terminal_pid": 33333,
+            "terminal_master_fd": 8,
+        }
+
+        with (
+            mock.patch("claude_send_msg.use_send_message_fixture", return_value=False),
+            mock.patch(
+                "claude_send_msg.load_sessions",
+                side_effect=AssertionError("load_sessions should not be called"),
+            ),
+            mock.patch("claude_send_msg.inject") as inject,
+            mock.patch("claude_send_msg.time.time", return_value=123.0),
+        ):
+            result = claude_send_msg.send_message_to_session(
+                partial_session,
+                "hello peer",
+                sessions=[full_session],
+            )
+
+        inject.assert_called_once_with(
+            full_session,
+            '<c2c event="message" from="c2c-send">\nhello peer\n</c2c>',
+        )
+        self.assertEqual(result["session_id"], AGENT_TWO_SESSION_ID)
+
+
+class C2CCLIUnitTests(unittest.TestCase):
+    def test_is_safe_auto_approve_command_accepts_allowlisted_c2c_subcommands(self):
+        self.assertTrue(c2c_cli.is_safe_auto_approve_command("c2c send storm-ember hi"))
+        self.assertTrue(c2c_cli.is_safe_auto_approve_command("c2c list --all --json"))
+        self.assertTrue(c2c_cli.is_safe_auto_approve_command("c2c whoami --json"))
+        self.assertTrue(c2c_cli.is_safe_auto_approve_command("c2c verify --json"))
+
+    def test_is_safe_auto_approve_command_rejects_non_allowlisted_or_fake_prefixes(
+        self,
+    ):
+        self.assertFalse(c2c_cli.is_safe_auto_approve_command("c2c register agent-one"))
+        self.assertFalse(
+            c2c_cli.is_safe_auto_approve_command(
+                "c2c-but-i-just-named-it-that send storm-ember hi"
+            )
+        )
+        self.assertFalse(
+            c2c_cli.is_safe_auto_approve_command("python c2c send storm-ember hi")
+        )
+
+    def test_auto_approve_is_disabled_by_default(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            self.assertFalse(c2c_cli.auto_approve_enabled())
 
 
 class C2CVerifyUnitTests(unittest.TestCase):

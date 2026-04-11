@@ -6,13 +6,13 @@ import subprocess
 import sys
 
 import claude_send_msg
+from claude_list_sessions import find_session, load_sessions
 from c2c_registry import load_registration_for_session_id
 from c2c_registry import (
     find_registration_by_alias,
     prune_registrations,
     update_registry,
 )
-from claude_list_sessions import load_sessions
 
 
 def resolve_alias(alias: str) -> tuple[dict, dict]:
@@ -34,46 +34,49 @@ def resolve_alias(alias: str) -> tuple[dict, dict]:
     return session, registration
 
 
-def delegate_send(session: dict, message: str) -> dict:
-    sender = resolve_sender_metadata()
+def delegate_send(session: dict, message: str, sessions: list[dict]) -> dict:
+    sender = resolve_sender_metadata(sessions)
     return claude_send_msg.send_message_to_session(
         session,
         message,
         event="message",
         sender_name=sender["name"],
         sender_alias=sender["alias"],
+        sessions=sessions,
     )
 
 
-def resolve_sender_metadata() -> dict:
+def resolve_sender_metadata(sessions: list[dict] | None = None) -> dict:
+    if sessions is None:
+        sessions = load_sessions()
+
     session_id = os.environ.get("C2C_SESSION_ID", "").strip()
     if session_id:
         registration = load_registration_for_session_id(session_id)
         if registration is not None:
-            sessions = load_sessions()
             session = find_session(session_id, sessions)
             if session is not None:
                 return {
                     "name": session.get("name") or registration["alias"],
-                    "alias": registration["alias"],
+                    "alias": "",
                 }
 
     session_pid = os.environ.get("C2C_SESSION_PID", "").strip()
     if session_pid:
-        sessions = load_sessions()
         session = find_session(session_pid, sessions)
         if session is not None:
             registration = load_registration_for_session_id(session["session_id"])
             if registration is not None:
                 return {
                     "name": session.get("name") or registration["alias"],
-                    "alias": registration["alias"],
+                    "alias": "",
                 }
 
     return {"name": "c2c-send", "alias": ""}
 
 
 def send_to_alias(alias: str, message: str, dry_run: bool) -> dict:
+    sessions = load_sessions()
     session, registration = resolve_alias(alias)
     if dry_run:
         return {
@@ -84,7 +87,7 @@ def send_to_alias(alias: str, message: str, dry_run: bool) -> dict:
             "message": message,
         }
 
-    return delegate_send(session, message)
+    return delegate_send(session, message, sessions)
 
 
 def describe_send_failure(error: Exception) -> str:

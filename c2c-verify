@@ -1,3 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec python3 "$(dirname "$0")/c2c_verify.py" "$@"
+SCRIPT_DIR="$(dirname "$0")"
+exec "$SCRIPT_DIR/c2c" verify "$@"

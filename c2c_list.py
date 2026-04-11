@@ -64,11 +64,11 @@ def list_sessions(include_all: bool = False) -> list[dict]:
     return rows
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="List opted-in c2c sessions.")
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--json", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     rows = list_sessions(include_all=args.all)
     payload = {"sessions": rows}

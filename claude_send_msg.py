@@ -41,7 +41,7 @@ def session_has_terminal_owner(session: dict) -> bool:
     return bool(str(session.get("terminal_pid", "")).strip())
 
 
-def ensure_sendable_session(session: dict) -> dict:
+def ensure_sendable_session(session: dict, sessions: list[dict] | None = None) -> dict:
     if session_has_terminal_owner(session):
         return session
 
@@ -49,7 +49,9 @@ def ensure_sendable_session(session: dict) -> dict:
     if not identifier:
         return session
 
-    resolved = find_session(identifier, load_sessions())
+    if sessions is None:
+        sessions = load_sessions()
+    resolved = find_session(identifier, sessions)
     if resolved is None:
         return session
     return resolved
@@ -109,8 +111,9 @@ def send_message_to_session(
     event: str = "message",
     sender_name: str = "c2c-send",
     sender_alias: str = "",
+    sessions: list[dict] | None = None,
 ) -> dict:
-    session = ensure_sendable_session(session)
+    session = ensure_sendable_session(session, sessions=sessions)
     if use_send_message_fixture():
         return build_send_result(session)
     inject(
