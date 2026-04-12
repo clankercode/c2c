@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "c2c": {
+      "type": "stdio",
+      "command": "python3",
+      "args": [
+        "/home/xertrov/src/c2c-msg/c2c_mcp.py"
+      ],
+      "env": {
+        "C2C_MCP_BROKER_ROOT": "/home/xertrov/src/c2c-msg/.git/c2c/mcp"
+      }
+    }
+  }
+}
