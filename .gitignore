@@ -32,5 +32,6 @@ ENV/
 *~
 .worktrees/
 .goal-loops/
+_build/
 data/c2c_registry.yaml
 data/c2c_registry.yaml.lock

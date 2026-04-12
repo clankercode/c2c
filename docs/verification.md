@@ -20,6 +20,8 @@ Then verify:
 1. a new `user` message containing the marker appears
 2. a new assistant reply containing the marker appears
 
+For C2C verification, count only user turns wrapped as `<c2c event="message" ...>...</c2c>`. Ignore onboarding envelopes such as `event="onboarding"`.
+
 ## Confirmed Example
 
 This exact marker was successfully injected into `C2C-test-agent2` and produced a normal assistant response.

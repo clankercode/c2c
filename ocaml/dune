@@ -1,0 +1,4 @@
+(library
+ (name c2c_mcp)
+ (modules c2c_mcp)
+ (libraries yojson logs lwt.unix))

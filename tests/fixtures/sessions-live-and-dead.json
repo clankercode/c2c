@@ -1,0 +1,12 @@
+[
+  {
+    "name": "agent-two",
+    "pid": 11112,
+    "session_id": "fa68bd5b-0529-4292-bc27-d617f6840ce7",
+    "cwd": "/tmp/chat-b",
+    "tty": "/dev/pts/12",
+    "terminal_pid": 22222,
+    "terminal_master_fd": 41,
+    "transcript": "tests/fixtures/transcript-agent-two.jsonl"
+  }
+]

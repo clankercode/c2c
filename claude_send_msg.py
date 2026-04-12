@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
+from xml.sax.saxutils import quoteattr
 
 
 HOME = Path.home()
@@ -16,7 +18,7 @@ ALLOWED_NAMES = {"C2C msg test", "C2C-test-agent2"}
 
 def load_sessions():
     result = subprocess.run(
-        [sys.executable, str(LISTER), "--json"],
+        [sys.executable, str(LISTER), "--json", "--with-terminal-owner"],
         check=True,
         capture_output=True,
         text=True,
@@ -35,6 +37,34 @@ def find_session(identifier: str, sessions: list[dict]):
     return None
 
 
+def session_has_terminal_owner(session: dict) -> bool:
+    return bool(str(session.get("terminal_pid", "")).strip())
+
+
+def ensure_sendable_session(session: dict, sessions: list[dict] | None = None) -> dict:
+    if session_has_terminal_owner(session):
+        return session
+
+    identifier = session.get("session_id") or str(session.get("pid", ""))
+    if not identifier:
+        return session
+
+    if sessions is None:
+        sessions = load_sessions()
+    resolved = find_session(identifier, sessions)
+    if resolved is not None and session_has_terminal_owner(resolved):
+        return resolved
+
+    if sessions is not None:
+        resolved = find_session(identifier, load_sessions())
+        if resolved is not None:
+            return resolved
+
+    if resolved is None:
+        return session
+    return resolved
+
+
 def inject(session: dict, message: str):
     tty = session.get("tty", "")
     if not tty.startswith("/dev/pts/"):
@@ -51,20 +81,76 @@ def inject(session: dict, message: str):
     )
 
 
+def render_payload(
+    message: str,
+    event: str = "message",
+    sender_name: str = "c2c-send",
+    sender_alias: str = "",
+) -> str:
+    if message.lstrip().startswith("<"):
+        return message
+
+    attributes = [
+        f"event={quoteattr(event)}",
+        f"from={quoteattr(sender_name)}",
+    ]
+    if sender_alias:
+        attributes.append(f"alias={quoteattr(sender_alias)}")
+    return f"<c2c {' '.join(attributes)}>\n{message}\n</c2c>"
+
+
+def build_send_result(session: dict) -> dict:
+    return {
+        "ok": True,
+        "to": session.get("name"),
+        "session_id": session.get("session_id"),
+        "pid": session.get("pid"),
+        "sent_at": time.time(),
+    }
+
+
+def use_send_message_fixture() -> bool:
+    return os.environ.get("C2C_SEND_MESSAGE_FIXTURE") == "1"
+
+
+def send_message_to_session(
+    session: dict,
+    message: str,
+    event: str = "message",
+    sender_name: str = "c2c-send",
+    sender_alias: str = "",
+    sessions: list[dict] | None = None,
+) -> dict:
+    session = ensure_sendable_session(session, sessions=sessions)
+    if use_send_message_fixture():
+        return build_send_result(session)
+    inject(
+        session,
+        render_payload(
+            message,
+            event=event,
+            sender_name=sender_name,
+            sender_alias=sender_alias,
+        ),
+    )
+    return build_send_result(session)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Send a PTY-injected message to a running Claude session.",
         epilog=(
             "Examples:\n"
             "  claude-send-msg 'C2C-test-agent2' 'Hello there'\n"
-            "  claude-send-msg 'C2C msg test' '<c2c-message>What topic should we discuss?</c2c-message>'"
+            '  claude-send-msg \'C2C msg test\' \'<c2c event="message" from="agent-one" alias="storm-herald">What topic should we discuss?</c2c>\''
         ),
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument("to")
     parser.add_argument("message", nargs="+")
     parser.add_argument("--allow-non-c2c", action="store_true")
-    parser.add_argument("--tag", default="c2c")
+    parser.add_argument("--tag", dest="event", default="message")
+    parser.add_argument("--event", default=None)
     args = parser.parse_args()
 
     sessions = load_sessions()
@@ -81,24 +167,8 @@ def main():
         sys.exit(2)
 
     message = " ".join(args.message)
-
-    if message.lstrip().startswith("<"):
-        payload = message
-    else:
-        payload = f"<{args.tag}-message>\n{message}\n</{args.tag}-message>"
-    inject(session, payload)
-    print(
-        json.dumps(
-            {
-                "ok": True,
-                "to": session.get("name"),
-                "session_id": session.get("session_id"),
-                "pid": session.get("pid"),
-                "sent_at": time.time(),
-            },
-            indent=2,
-        )
-    )
+    event = args.event or args.tag
+    print(json.dumps(send_message_to_session(session, message, event=event), indent=2))
 
 
 if __name__ == "__main__":

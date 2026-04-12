@@ -23,6 +23,11 @@ Most obvious approaches did not work:
 
 The PTY-master path is the first result that genuinely reaches a running top-level Claude session as a normal prompt.
 
+Current C2C envelopes use a single root tag with metadata:
+
+- messages: `<c2c event="message" from="<name>" alias="<alias>">...</c2c>`
+- onboarding: `<c2c event="onboarding" from="<name>" alias="<alias>">...</c2c>`
+
 ## Current Command Set
 
 - `claude-list-sessions`
