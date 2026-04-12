@@ -30,3 +30,7 @@ ENV/
 *.swp
 *.swo
 *~
+.worktrees/
+.goal-loops/
+data/c2c_registry.yaml
+data/c2c_registry.yaml.lock
