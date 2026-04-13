@@ -212,9 +212,43 @@ let test_tools_call_register_uses_current_session_id_when_omitted () =
           (match response with None -> fail "expected tools/call response" | Some _ -> ());
           let regs = C2c_mcp.Broker.list_registrations (C2c_mcp.Broker.create ~root:dir) in
           check int "one registration" 1 (List.length regs);
+           let reg = List.hd regs in
+           check string "registered session" "session-live" reg.session_id;
+           check string "registered alias" "storm-live" reg.alias))
+
+let test_tools_call_register_prefers_explicit_client_pid_env () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-live";
+      Unix.putenv "C2C_MCP_CLIENT_PID" "4242";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_CLIENT_PID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 41)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "register")
+                    ; ("arguments", `Assoc [ ("alias", `String "storm-live") ])
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          (match response with None -> fail "expected tools/call response" | Some _ -> ());
+          let regs =
+            C2c_mcp.Broker.list_registrations (C2c_mcp.Broker.create ~root:dir)
+          in
+          check int "one registration" 1 (List.length regs);
           let reg = List.hd regs in
-          check string "registered session" "session-live" reg.session_id;
-          check string "registered alias" "storm-live" reg.alias))
+          check bool "registered pid uses explicit client pid" true (reg.pid = Some 4242);
+          check bool "explicit pid start_time absent when proc missing" true
+            (reg.pid_start_time = None)))
 
 let test_tools_call_whoami_uses_current_session_id_when_omitted () =
   with_temp_dir (fun dir ->
@@ -481,6 +515,93 @@ let write_file path contents =
   output_string oc contents;
   close_out oc
 
+let test_register_evicts_prior_reg_with_same_alias () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* First register: legacy (pid=None). Simulates a pre-hardening
+         session that left a ghost row behind. *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"old-session" ~alias:"storm-recv"
+        ~pid:None ~pid_start_time:None;
+      (* Second register: same alias, fresh session_id with pid. *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"new-session" ~alias:"storm-recv"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      check int "only one reg for the alias" 1
+        (List.length
+           (List.filter
+              (fun r -> r.C2c_mcp.alias = "storm-recv")
+              regs));
+      check bool "new session survived"
+        true
+        (List.exists
+           (fun r -> r.C2c_mcp.session_id = "new-session")
+           regs);
+      check bool "old session evicted"
+        false
+        (List.exists
+           (fun r -> r.C2c_mcp.session_id = "old-session")
+           regs);
+      (* Enqueue must now reach the new session. *)
+      C2c_mcp.Broker.enqueue_message broker
+        ~from_alias:"sender" ~to_alias:"storm-recv" ~content:"hello";
+      let msgs =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"new-session"
+      in
+      check int "delivered to new session" 1 (List.length msgs);
+      let old_inbox_path =
+        Filename.concat dir "old-session.inbox.json"
+      in
+      check bool "old session inbox untouched"
+        false
+        (Sys.file_exists old_inbox_path))
+
+let test_concurrent_enqueue_does_not_lose_messages () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"recipient" ~alias:"storm-recv"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+      let n = 12 in
+      let per_child = 20 in
+      let children =
+        List.init n (fun i ->
+            match Unix.fork () with
+            | 0 ->
+                let broker = C2c_mcp.Broker.create ~root:dir in
+                for j = 0 to per_child - 1 do
+                  C2c_mcp.Broker.enqueue_message broker
+                    ~from_alias:(Printf.sprintf "sender-%d" i)
+                    ~to_alias:"storm-recv"
+                    ~content:(Printf.sprintf "msg-%d-%d" i j)
+                done;
+                exit 0
+            | child -> child)
+      in
+      let rec waitpid_eintr child =
+        try ignore (Unix.waitpid [] child)
+        with Unix.Unix_error (Unix.EINTR, _, _) -> waitpid_eintr child
+      in
+      List.iter waitpid_eintr children;
+      let messages =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"recipient"
+      in
+      check int "all concurrent enqueues preserved" (n * per_child)
+        (List.length messages);
+      for i = 0 to n - 1 do
+        let seen =
+          List.filter
+            (fun m ->
+              m.C2c_mcp.from_alias = Printf.sprintf "sender-%d" i)
+            messages
+        in
+        check int
+          (Printf.sprintf "sender-%d delivered all %d messages" i per_child)
+          per_child
+          (List.length seen)
+      done)
+
 let test_sweep_drops_dead_reg_and_its_inbox () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -564,9 +685,11 @@ let () =
              test_tools_list_marks_register_and_whoami_session_id_as_optional
          ; test_case "tools/call send routes through broker" `Quick test_tools_call_send_routes_message_through_broker
          ; test_case "tools/call register uses current session id when omitted" `Quick
-             test_tools_call_register_uses_current_session_id_when_omitted
+              test_tools_call_register_uses_current_session_id_when_omitted
+         ; test_case "tools/call register prefers explicit client pid env" `Quick
+             test_tools_call_register_prefers_explicit_client_pid_env
          ; test_case "tools/call whoami uses current session id when omitted" `Quick
-             test_tools_call_whoami_uses_current_session_id_when_omitted
+              test_tools_call_whoami_uses_current_session_id_when_omitted
          ; test_case "tools/call poll_inbox drains messages as tool result" `Quick
              test_tools_call_poll_inbox_drains_messages_as_tool_result
          ; test_case "tools/call poll_inbox empty inbox returns empty json array" `Quick
@@ -579,6 +702,10 @@ let () =
          ; test_case "registration persists pid" `Quick test_registration_persists_pid
          ; test_case "concurrent register does not lose entries" `Quick
              test_concurrent_register_does_not_lose_entries
+         ; test_case "register evicts prior reg with same alias" `Quick
+             test_register_evicts_prior_reg_with_same_alias
+         ; test_case "concurrent enqueue does not lose messages" `Quick
+             test_concurrent_enqueue_does_not_lose_messages
          ; test_case "sweep drops dead reg and its inbox" `Quick
              test_sweep_drops_dead_reg_and_its_inbox
          ; test_case "sweep deletes orphan inbox file" `Quick

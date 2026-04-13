@@ -140,7 +140,17 @@ module Broker = struct
   let register t ~session_id ~alias ~pid ~pid_start_time =
     with_registry_lock t (fun () ->
         let regs = load_registrations t in
-        let regs = List.filter (fun reg -> reg.session_id <> session_id) regs in
+        (* Dedupe by BOTH session_id and alias. Evicting prior regs for the
+           same alias matters when a session is re-launched: without this, a
+           legacy pid-less row lingers at the head of the registry forever
+           (because registration_is_alive treats pid=None as alive for
+           backwards compatibility), and enqueue_message's first-live-match
+           rule routes every new message to the dead twin's inbox. *)
+        let regs =
+          List.filter
+            (fun reg -> reg.session_id <> session_id && reg.alias <> alias)
+            regs
+        in
         save_registrations t
           ({ session_id; alias; pid; pid_start_time } :: regs))
 
@@ -215,22 +225,44 @@ module Broker = struct
       (inbox_path t ~session_id)
       (`List (List.map message_to_json messages))
 
+  let inbox_lock_path t ~session_id =
+    Filename.concat t.root (session_id ^ ".inbox.lock")
+
+  (* POSIX fcntl-based exclusive lock via Unix.lockf on a sidecar file, so
+     concurrent enqueue/drain/sweep don't clobber each other's read-modify-
+     write window. Compatible with Python fcntl.lockf on the same sidecar,
+     which matters for c2c_send.py's broker-only fallback path. *)
+  let with_inbox_lock t ~session_id f =
+    ensure_root t;
+    let fd =
+      Unix.openfile (inbox_lock_path t ~session_id) [ O_RDWR; O_CREAT ] 0o644
+    in
+    Fun.protect
+      ~finally:(fun () ->
+        (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+        (try Unix.close fd with _ -> ()))
+      (fun () ->
+        Unix.lockf fd Unix.F_LOCK 0;
+        f ())
+
   let enqueue_message t ~from_alias ~to_alias ~content =
     match resolve_live_session_id_by_alias t to_alias with
     | Unknown_alias -> invalid_arg ("unknown alias: " ^ to_alias)
     | All_recipients_dead ->
         invalid_arg ("recipient is not alive: " ^ to_alias)
     | Resolved session_id ->
-        let current = load_inbox t ~session_id in
-        let next = current @ [ { from_alias; to_alias; content } ] in
-        save_inbox t ~session_id next
+        with_inbox_lock t ~session_id (fun () ->
+            let current = load_inbox t ~session_id in
+            let next = current @ [ { from_alias; to_alias; content } ] in
+            save_inbox t ~session_id next)
 
   let read_inbox t ~session_id = load_inbox t ~session_id
 
   let drain_inbox t ~session_id =
-    let messages = read_inbox t ~session_id in
-    save_inbox t ~session_id [];
-    messages
+    with_inbox_lock t ~session_id (fun () ->
+        let messages = load_inbox t ~session_id in
+        save_inbox t ~session_id [];
+        messages)
 
   type sweep_result =
     { dropped_regs : registration list
@@ -279,7 +311,17 @@ module Broker = struct
           List.filter
             (fun sid ->
               if List.mem sid alive_sids then false
-              else try_unlink (inbox_path t ~session_id:sid))
+              else
+                (* Hold the inbox lock across delete so a concurrent
+                   enqueue can't race the unlink. We intentionally leave
+                   the .inbox.lock sidecar in place: unlinking the lock
+                   file while another process holds a lockf on a separate
+                   fd for the same path would open a window for a new
+                   opener to get a LOCK immediately against a different
+                   inode. Sidecar files are empty, so keeping them is
+                   cheap. *)
+                with_inbox_lock t ~session_id:sid (fun () ->
+                    try_unlink (inbox_path t ~session_id:sid)))
             all_inbox_sids
         in
         { dropped_regs = dead; deleted_inboxes = deleted })
@@ -328,6 +370,13 @@ let current_session_id () =
   | Some value when String.trim value <> "" -> Some value
   | _ -> None
 
+let current_client_pid () =
+  match Sys.getenv_opt "C2C_MCP_CLIENT_PID" with
+  | Some value ->
+      let trimmed = String.trim value in
+      if trimmed = "" then None else (try Some (int_of_string trimmed) with _ -> None)
+  | None -> None
+
 let resolve_session_id arguments =
   match optional_string_member "session_id" arguments with
   | Some session_id -> session_id
@@ -341,7 +390,11 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
   | "register" ->
       let session_id = resolve_session_id arguments in
       let alias = string_member "alias" arguments in
-      let pid = Some (Unix.getppid ()) in
+      let pid =
+        match current_client_pid () with
+        | Some pid -> Some pid
+        | None -> Some (Unix.getppid ())
+      in
       let pid_start_time = Broker.capture_pid_start_time pid in
       Broker.register broker ~session_id ~alias ~pid ~pid_start_time;
       Lwt.return (tool_result ~content:("registered " ^ alias) ~is_error:false)

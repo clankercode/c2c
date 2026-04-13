@@ -28,7 +28,7 @@ def default_broker_root() -> Path:
     return Path(default_registry_path()).parent / "mcp"
 
 
-def load_broker_registrations(path: Path) -> list[dict[str, str]]:
+def load_broker_registrations(path: Path) -> list[dict[str, object]]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
@@ -42,7 +42,10 @@ def load_broker_registrations(path: Path) -> list[dict[str, str]]:
         session_id = str(item.get("session_id", "")).strip()
         alias = str(item.get("alias", "")).strip()
         if session_id and alias:
-            registrations.append({"session_id": session_id, "alias": alias})
+            registration = dict(item)
+            registration["session_id"] = session_id
+            registration["alias"] = alias
+            registrations.append(registration)
     return registrations
 
 
@@ -60,7 +63,9 @@ def sync_broker_registry(broker_root: Path) -> None:
                 "registrations", []
             )
         ]
-        known_session_ids = {registration["session_id"] for registration in registrations}
+        known_session_ids = {
+            registration["session_id"] for registration in registrations
+        }
         known_aliases = {registration["alias"] for registration in registrations}
         for registration in load_broker_registrations(destination):
             if registration["session_id"] in known_session_ids:
@@ -104,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     sync_broker_registry(broker_root)
     env = os.environ.copy()
     env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
+    env["C2C_MCP_CLIENT_PID"] = str(os.getpid())
     if not env.get("C2C_MCP_SESSION_ID"):
         try:
             env["C2C_MCP_SESSION_ID"] = default_session_id()

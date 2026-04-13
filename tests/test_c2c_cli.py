@@ -5,7 +5,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
+from threading import BrokenBarrierError
 from pathlib import Path
 from unittest import mock
 
@@ -16,6 +19,7 @@ if str(REPO) not in sys.path:
 import c2c_register
 import c2c_registry
 import c2c_mcp
+import c2c_poker
 import c2c_send
 import c2c_cli
 import c2c_verify
@@ -428,6 +432,28 @@ class C2CCLITests(unittest.TestCase):
         env = run_mock.call_args.kwargs["env"]
         self.assertEqual(env["C2C_MCP_BROKER_ROOT"], str(REPO / ".git" / "c2c" / "mcp"))
         self.assertNotIn("C2C_MCP_SESSION_ID", env)
+
+    def test_c2c_mcp_main_exports_current_client_pid_for_server_register(self):
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch(
+                "c2c_mcp.default_broker_root",
+                return_value=REPO / ".git" / "c2c" / "mcp",
+            ),
+            mock.patch("c2c_mcp.sync_broker_registry"),
+            mock.patch("c2c_mcp.default_session_id", return_value=AGENT_ONE_SESSION_ID),
+            mock.patch("c2c_mcp.os.getpid", return_value=424242),
+            mock.patch("c2c_mcp.subprocess.run") as run_mock,
+        ):
+            run_mock.return_value.returncode = 0
+
+            result = c2c_mcp.main([])
+
+        self.assertEqual(result, 0)
+        run_mock.assert_called_once()
+        env = run_mock.call_args.kwargs["env"]
+        self.assertEqual(env["C2C_MCP_SESSION_ID"], AGENT_ONE_SESSION_ID)
+        self.assertEqual(env["C2C_MCP_CLIENT_PID"], "424242")
 
     def test_c2c_mcp_stdio_initialize_smoke(self):
         broker_root = Path(self.temp_dir.name) / "mcp-broker"
@@ -934,6 +960,43 @@ class C2CCLITests(unittest.TestCase):
             ],
         )
 
+    def test_sync_broker_registry_preserves_broker_only_liveness_metadata(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        broker_root.mkdir(parents=True, exist_ok=True)
+        (broker_root / "registry.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "session_id": "codex-local",
+                        "alias": "codex",
+                        "pid": 123,
+                        "pid_start_time": 456,
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        save_registry({"registrations": []}, self.registry_path)
+
+        with mock.patch.dict(
+            os.environ,
+            {"C2C_REGISTRY_PATH": str(self.registry_path)},
+            clear=False,
+        ):
+            c2c_mcp.sync_broker_registry(broker_root)
+
+        self.assertEqual(
+            json.loads((broker_root / "registry.json").read_text(encoding="utf-8")),
+            [
+                {
+                    "session_id": "codex-local",
+                    "alias": "codex",
+                    "pid": 123,
+                    "pid_start_time": 456,
+                }
+            ],
+        )
+
     def test_install_reports_path_guidance_when_bin_not_on_path(self):
         install_dir = Path(self.temp_dir.name) / "bin"
         env = dict(self.env)
@@ -1000,6 +1063,16 @@ class C2CCLITests(unittest.TestCase):
             ],
         )
 
+    def test_c2c_poker_default_message_orients_idle_agent_to_continue(self):
+        message = c2c_poker.DEFAULT_MESSAGE
+
+        self.assertIn("Poll your C2C inbox", message)
+        self.assertIn("tmp_status.txt", message)
+        self.assertIn("tmp_collab_lock.md", message)
+        self.assertIn("Empty inbox is not a stop signal", message)
+        self.assertIn("highest-leverage unblocked", message)
+        self.assertNotIn("ignore", message.lower())
+
     def test_run_codex_inst_allows_explicit_c2c_id_for_multiple_codex_sessions(self):
         config_dir = Path(self.temp_dir.name) / "run-codex-inst.d"
         config_dir.mkdir()
@@ -1049,7 +1122,7 @@ class C2CCLITests(unittest.TestCase):
 
         self.assertEqual(result_code(result), 0, result.stderr)
         payload = json.loads(result.stdout)
-        self.assertEqual(payload["inner"][0], sys.executable)
+        self.assertTrue(Path(payload["inner"][0]).name.startswith("python"))
         self.assertEqual(
             payload["inner"][1:], [str(REPO / "run-codex-inst"), "codex-a", "--search"]
         )
@@ -1947,6 +2020,138 @@ class C2CSendUnitTests(unittest.TestCase):
                     }
                 ],
             )
+
+    def test_send_to_alias_broker_only_peer_uses_registered_sender_alias(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            broker_root = Path(temp_dir) / "mcp-broker"
+            broker_root.mkdir(parents=True, exist_ok=True)
+            (broker_root / "registry.json").write_text(
+                json.dumps([{"session_id": "codex-local", "alias": "codex"}]),
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch(
+                    "c2c_send.load_sessions",
+                    return_value=[
+                        {"name": "agent-one", "session_id": AGENT_ONE_SESSION_ID}
+                    ],
+                ),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "C2C_SESSION_ID": AGENT_ONE_SESSION_ID,
+                        "C2C_REGISTRY_PATH": str(Path(temp_dir) / "registry.yaml"),
+                        "C2C_MCP_BROKER_ROOT": str(broker_root),
+                    },
+                    clear=False,
+                ),
+                mock.patch(
+                    "c2c_send.load_registration_for_session_id",
+                    return_value={
+                        "session_id": AGENT_ONE_SESSION_ID,
+                        "alias": "storm-herald",
+                    },
+                ),
+                mock.patch(
+                    "c2c_send.find_session",
+                    return_value={
+                        "name": "agent-one",
+                        "session_id": AGENT_ONE_SESSION_ID,
+                    },
+                ),
+            ):
+                c2c_send.send_to_alias("codex", "hello peer", dry_run=False)
+
+            self.assertEqual(
+                json.loads(
+                    (broker_root / "codex-local.inbox.json").read_text(encoding="utf-8")
+                ),
+                [
+                    {
+                        "from_alias": "storm-herald",
+                        "to_alias": "codex",
+                        "content": "hello peer",
+                    }
+                ],
+            )
+
+    def test_send_to_alias_broker_only_peer_concurrent_appends_preserve_all_messages(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            broker_root = Path(temp_dir) / "mcp-broker"
+            broker_root.mkdir(parents=True, exist_ok=True)
+            (broker_root / "registry.json").write_text(
+                json.dumps([{"session_id": "codex-local", "alias": "codex"}]),
+                encoding="utf-8",
+            )
+            inbox_path = broker_root / "codex-local.inbox.json"
+            inbox_path.write_text("[]", encoding="utf-8")
+            original_read_text = Path.read_text
+            worker_count = 8
+            start_barrier = threading.Barrier(worker_count)
+            read_barrier = threading.Barrier(worker_count)
+            errors = []
+
+            def delayed_read_text(path_self, *args, **kwargs):
+                if path_self == inbox_path:
+                    contents = original_read_text(path_self, *args, **kwargs)
+                    try:
+                        read_barrier.wait(timeout=0.5)
+                    except BrokenBarrierError:
+                        pass
+                    return contents
+                return original_read_text(path_self, *args, **kwargs)
+
+            def worker(index: int) -> None:
+                try:
+                    start_barrier.wait(timeout=2)
+                    c2c_send.send_to_alias(
+                        "codex", f"hello peer {index}", dry_run=False
+                    )
+                except Exception as error:  # pragma: no cover - failure surfaced below
+                    errors.append(error)
+
+            with (
+                mock.patch("pathlib.Path.read_text", delayed_read_text),
+                mock.patch("c2c_send.load_sessions", return_value=[]),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "C2C_REGISTRY_PATH": str(Path(temp_dir) / "registry.yaml"),
+                        "C2C_MCP_BROKER_ROOT": str(broker_root),
+                    },
+                    clear=False,
+                ),
+            ):
+                threads = [
+                    threading.Thread(target=worker, args=(index,))
+                    for index in range(worker_count)
+                ]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=5)
+
+            self.assertEqual(errors, [])
+            items = json.loads(inbox_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(items), worker_count)
+            self.assertEqual(
+                {item["content"] for item in items},
+                {f"hello peer {index}" for index in range(worker_count)},
+            )
+
+    def test_broker_inbox_write_lock_uses_posix_lockf_for_ocaml_compatibility(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            inbox_path = Path(temp_dir) / "codex-local.inbox.json"
+
+            with mock.patch("c2c_send.fcntl.lockf") as lockf:
+                with c2c_send.broker_inbox_write_lock(inbox_path):
+                    pass
+
+            self.assertEqual(lockf.call_args_list[0].args[1], c2c_send.fcntl.LOCK_EX)
+            self.assertEqual(lockf.call_args_list[1].args[1], c2c_send.fcntl.LOCK_UN)
 
     def test_main_reports_send_surface_failures_cleanly(self):
         session = {

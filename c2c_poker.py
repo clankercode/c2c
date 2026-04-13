@@ -47,7 +47,13 @@ from claude_list_sessions import (  # noqa: E402
 )
 
 DEFAULT_INTERVAL = 600
-DEFAULT_MESSAGE = "(c2c heartbeat — continue with your current tasks)"
+DEFAULT_MESSAGE = (
+    "Session heartbeat. Poll your C2C inbox now and handle any messages. "
+    "If you need orientation, read tmp_status.txt and tmp_collab_lock.md. "
+    "Empty inbox is not a stop signal: pick the highest-leverage unblocked "
+    "task, respect active locks, coordinate before overlapping edits, and "
+    "continue current work."
+)
 
 
 def list_claude_sessions() -> list[dict]:

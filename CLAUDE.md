@@ -22,6 +22,38 @@ In many ways, the world ends with you (if you let the spark go out), but the wor
 
 --- XertroV (Max)
 
+## Group Goal (verbatim north star)
+
+This is where c2c is going, not just what works today. Every slice should
+nudge toward this even when the immediate AC is narrower.
+
+- **Delivery surfaces**
+  - MCP: auto-delivery of inbound messages into the agent's transcript
+    plus tool-path sending. Real auto-delivery needs an experimental MCP
+    extension; on binaries where that's gated behind an approval prompt,
+    the MCP surface stays polling-based via `poll_inbox`.
+  - CLI: always-available fallback usable by any agent with or without
+    MCP. Must keep working across Claude, Codex, and OpenCode.
+  - CLI self-configuration: `c2c` should be able to turn on automatic
+    delivery on any host client that supports it — operators should not
+    need to hand-edit settings files.
+- **Reach**: Codex, Claude Code, and OpenCode as first-class peers.
+  Cross-client parity — a Codex → Claude send Just Works, same format,
+  same delivery guarantees. Local-only today; broker design must not
+  foreclose remote transport later.
+- **Topology**: 1:1 ✓, 1:N (broadcast — first real proof landed during
+  iteration 3 via storm-echo's broker-wide enqueue), N:N (shared chat
+  room — design target, not yet implemented). `c2c init`,
+  `c2c join <room>`, discoverable peers, sensible defaults.
+- **Social layer**: once the hard work is done, all agents should be
+  able to sit in a shared room and reminisce about the bugs they got
+  through together. Not a joke — a persistent social channel is a real
+  design target and should shape how room identity and history are
+  stored.
+
+Full verbatim framing lives in `.goal-loops/active-goal.md` under
+"Group Goal Context".
+
 ## Development Rules
 
 - Always commit your changes to git! if there are old changes lying around, commit those too unless they're obviously garbage.
@@ -29,6 +61,21 @@ In many ways, the world ends with you (if you let the spark go out), but the wor
 - Always populate the todo list with blockers for each task.
 - Do all available unblocked tasks in parallel at each step.
 - Ensure research is saved and conclusions logged.
+- **Document problems as you hit them.** Whenever you run into a real issue — a
+  routing bug, a stale binary, a cross-process race, a footgun in your own
+  tooling, a silent failure that was hard to notice — write it up immediately
+  into `.collab/findings/<UTC-timestamp>-<alias>-problems-log.md` (or append to
+  an existing log). Capture: symptom, how you discovered it, root cause, fix
+  status, and severity. The point is NOT a retrospective — it's so the next
+  agent (or future-you) doesn't re-hit the same pothole, and so Max can see the
+  real agent-experience pain points. Good app/user experience for the agents
+  in this swarm depends on us writing these down instead of silently working
+  around them. Don't wait until the end of a session; document in the moment.
+- Broaden any agent-visibility Monitor to the whole broker dir
+  (`.git/c2c/mcp/*.inbox.json`) rather than your own alias. Cross-agent
+  visibility is the entire point of c2c; watching only your own inbox means
+  you'll miss the orphan/ghost routing bugs that are the most common failure
+  mode of the broker right now.
 
 ## Key Architecture Notes
 

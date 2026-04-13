@@ -25,6 +25,7 @@ module Broker : sig
   val enqueue_message : t -> from_alias:string -> to_alias:string -> content:string -> unit
   val read_inbox : t -> session_id:string -> message list
   val drain_inbox : t -> session_id:string -> message list
+  val with_inbox_lock : t -> session_id:string -> (unit -> 'a) -> 'a
 
   type sweep_result =
     { dropped_regs : registration list

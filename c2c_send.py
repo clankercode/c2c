@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import subprocess
 import sys
+import tempfile
+import threading
 from pathlib import Path
 
 import claude_send_msg
@@ -15,6 +19,10 @@ from c2c_registry import (
     prune_registrations,
     update_registry,
 )
+
+
+BROKER_INBOX_THREAD_LOCKS: dict[str, threading.Lock] = {}
+BROKER_INBOX_THREAD_LOCKS_GUARD = threading.Lock()
 
 
 def resolve_alias(alias: str) -> tuple[dict, dict]:
@@ -49,21 +57,22 @@ def enqueue_broker_message(session_id: str, to_alias: str, message: str) -> dict
     broker_root = Path(os.environ.get("C2C_MCP_BROKER_ROOT") or default_broker_root())
     broker_root.mkdir(parents=True, exist_ok=True)
     inbox_path = broker_root / f"{session_id}.inbox.json"
-    try:
-        items = json.loads(inbox_path.read_text(encoding="utf-8"))
-        if not isinstance(items, list):
+    sender = resolve_sender_metadata()
+    with broker_inbox_write_lock(inbox_path):
+        try:
+            items = json.loads(inbox_path.read_text(encoding="utf-8"))
+            if not isinstance(items, list):
+                items = []
+        except Exception:
             items = []
-    except Exception:
-        items = []
-    sender = resolve_sender_metadata([])
-    items.append(
-        {
-            "from_alias": sender["name"],
-            "to_alias": to_alias,
-            "content": message,
-        }
-    )
-    inbox_path.write_text(json.dumps(items), encoding="utf-8")
+        items.append(
+            {
+                "from_alias": resolve_sender_broker_alias() or sender["name"],
+                "to_alias": to_alias,
+                "content": message,
+            }
+        )
+        write_broker_inbox(inbox_path, items)
     return {
         "ok": True,
         "to": f"broker:{session_id}",
@@ -111,6 +120,67 @@ def resolve_sender_metadata(sessions: list[dict] | None = None) -> dict:
                 }
 
     return {"name": "c2c-send", "alias": ""}
+
+
+def resolve_sender_broker_alias(sessions: list[dict] | None = None) -> str:
+    if sessions is None:
+        sessions = load_sessions()
+
+    session_id = os.environ.get("C2C_SESSION_ID", "").strip()
+    if session_id:
+        registration = load_registration_for_session_id(session_id)
+        if registration is not None and find_session(session_id, sessions) is not None:
+            return str(registration.get("alias", "")).strip()
+
+    session_pid = os.environ.get("C2C_SESSION_PID", "").strip()
+    if session_pid:
+        session = find_session(session_pid, sessions)
+        if session is not None:
+            registration = load_registration_for_session_id(session["session_id"])
+            if registration is not None:
+                return str(registration.get("alias", "")).strip()
+
+    return ""
+
+
+@contextlib.contextmanager
+def broker_inbox_write_lock(inbox_path: Path):
+    thread_lock = broker_inbox_thread_lock(inbox_path)
+    lock_path = inbox_path.with_suffix(f"{inbox_path.suffix}.lock")
+    with thread_lock:
+        with open(lock_path, "w", encoding="utf-8") as handle:
+            fcntl.lockf(handle, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.lockf(handle, fcntl.LOCK_UN)
+
+
+def broker_inbox_thread_lock(inbox_path: Path) -> threading.Lock:
+    key = str(inbox_path)
+    with BROKER_INBOX_THREAD_LOCKS_GUARD:
+        lock = BROKER_INBOX_THREAD_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            BROKER_INBOX_THREAD_LOCKS[key] = lock
+        return lock
+
+
+def write_broker_inbox(inbox_path: Path, items: list[dict]) -> None:
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=inbox_path.parent,
+        prefix=f".{inbox_path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        handle.write(json.dumps(items))
+        handle.flush()
+        os.fsync(handle.fileno())
+        temp_path = Path(handle.name)
+
+    os.replace(temp_path, inbox_path)
 
 
 def send_to_alias(alias: str, message: str, dry_run: bool) -> dict:
