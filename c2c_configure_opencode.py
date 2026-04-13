@@ -225,8 +225,14 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  plugin:     skipped — {note}")
         if global_plugin_result.get("installed"):
             print(f"  global plugin: {global_plugin_result['note']}")
+            print("    Plugin will load in ALL OpenCode sessions (managed + unmanaged).")
         elif global_plugin_result.get("note"):
             print(f"  global plugin: skipped — {global_plugin_result['note']}")
+        elif not args.install_global_plugin:
+            print()
+            print("Tip: install the plugin globally for ALL OpenCode sessions:")
+            print("  c2c setup opencode --install-global-plugin")
+            print("  (This copies to ~/.config/opencode/plugins/c2c.ts — no npm install needed)")
         print()
         print(
             "Now run 'cd "

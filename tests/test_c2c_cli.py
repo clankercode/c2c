@@ -4150,6 +4150,17 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
                     "node_modules symlink should point to .opencode/node_modules",
                 )
 
+    def test_opencode_plugin_uses_supported_process_runner_for_drain(self):
+        plugin_src = REPO / ".opencode" / "plugins" / "c2c.ts"
+        if not plugin_src.exists():
+            self.skipTest("plugin source not present")
+
+        plugin_text = plugin_src.read_text(encoding="utf-8")
+
+        self.assertNotIn("ctx.$.quiet", plugin_text)
+        self.assertIn('from "child_process"', plugin_text)
+        self.assertIn("spawn(", plugin_text)
+
     def test_run_opencode_inst_outer_dry_run_reports_inner_launch_command(self):
         env = {"RUN_OPENCODE_INST_OUTER_DRY_RUN": "1"}
         result = run_cli("run-opencode-inst-outer", "c2c-opencode-local", env=env)
@@ -4247,6 +4258,157 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("c2c", result.stdout)
         self.assertIn("c2c_mcp.py", result.stdout)
+
+
+class RunOpenCodeInstPluginTests(unittest.TestCase):
+    def _make_config(self, config_dir: Path, name: str, cwd: Path, config_path: Path) -> Path:
+        config = {
+            "command": sys.executable,
+            "cwd": str(cwd),
+            "config_path": str(config_path),
+            "c2c_session_id": f"{name}-local",
+            "c2c_alias": name,
+            "prompt": "poll inbox",
+            "flags": ["-c", "import sys; sys.exit(0)"],
+        }
+        config_file = config_dir / f"{name}.json"
+        config_file.write_text(json.dumps(config), encoding="utf-8")
+        return config_file
+
+    def test_copies_plugin_when_config_outside_repo_opencode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp) / "repo"
+            cwd.mkdir()
+            opencode_dir = cwd / ".opencode"
+            opencode_dir.mkdir()
+            plugin_src = opencode_dir / "plugins" / "c2c.ts"
+            plugin_src.parent.mkdir(parents=True, exist_ok=True)
+            plugin_src.write_text("// plugin", encoding="utf-8")
+            pkg_src = opencode_dir / "package.json"
+            pkg_src.write_text(json.dumps({"dependencies": {"@opencode-ai/plugin": "^1.0.0"}}), encoding="utf-8")
+            nm_src = opencode_dir / "node_modules"
+            nm_src.mkdir()
+
+            config_dir = Path(tmp) / "run-opencode-inst.d"
+            config_dir.mkdir()
+            config_path = config_dir / "test.opencode.json"
+            config_path.write_text("{}", encoding="utf-8")
+            self._make_config(config_dir, "test", cwd, config_path)
+
+            result = subprocess.run(
+                [str(REPO / "run-opencode-inst"), "test"],
+                env={**os.environ, "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir), "RUN_OPENCODE_INST_DRY_RUN": "1"},
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            plugin_dest = config_dir / "plugins" / "c2c.ts"
+            self.assertTrue(plugin_dest.exists(), f"plugin should be copied to {plugin_dest}")
+            self.assertEqual(plugin_dest.read_text(encoding="utf-8"), "// plugin")
+            pkg_dest = config_dir / "package.json"
+            self.assertTrue(pkg_dest.exists())
+            pkg = json.loads(pkg_dest.read_text(encoding="utf-8"))
+            self.assertEqual(pkg["dependencies"]["@opencode-ai/plugin"], "^1.0.0")
+            nm_dest = config_dir / "node_modules"
+            self.assertTrue(nm_dest.is_symlink() or nm_dest.exists())
+
+    def test_skips_plugin_copy_when_config_inside_repo_opencode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp) / "repo"
+            cwd.mkdir()
+            opencode_dir = cwd / ".opencode"
+            opencode_dir.mkdir()
+            plugin_src = opencode_dir / "plugins" / "c2c.ts"
+            plugin_src.parent.mkdir(parents=True, exist_ok=True)
+            plugin_src.write_text("// plugin", encoding="utf-8")
+            pkg_src = opencode_dir / "package.json"
+            pkg_src.write_text(json.dumps({"dependencies": {"@opencode-ai/plugin": "^1.0.0"}}), encoding="utf-8")
+            nm_src = opencode_dir / "node_modules"
+            nm_src.mkdir()
+
+            config_dir = Path(tmp) / "run-opencode-inst.d"
+            config_dir.mkdir()
+            config_path = opencode_dir / "opencode.json"
+            config_path.write_text("{}", encoding="utf-8")
+            self._make_config(config_dir, "test", cwd, config_path)
+
+            result = subprocess.run(
+                [str(REPO / "run-opencode-inst"), "test"],
+                env={**os.environ, "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir), "RUN_OPENCODE_INST_DRY_RUN": "1"},
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            plugin_dest = config_dir / "plugins" / "c2c.ts"
+            self.assertFalse(plugin_dest.exists(), "plugin should NOT be copied when config is inside repo .opencode")
+            pkg_dest = config_dir / "package.json"
+            self.assertFalse(pkg_dest.exists() or pkg_dest.is_symlink(), "package.json should NOT be copied")
+            nm_dest = config_dir / "node_modules"
+            self.assertFalse(nm_dest.exists() or nm_dest.is_symlink(), "node_modules should NOT be symlinked")
+
+    def test_merges_package_json_when_already_exists_in_config_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp) / "repo"
+            cwd.mkdir()
+            opencode_dir = cwd / ".opencode"
+            opencode_dir.mkdir()
+            plugin_src = opencode_dir / "plugins" / "c2c.ts"
+            plugin_src.parent.mkdir(parents=True, exist_ok=True)
+            plugin_src.write_text("// plugin", encoding="utf-8")
+            pkg_src = opencode_dir / "package.json"
+            pkg_src.write_text(json.dumps({"dependencies": {"@opencode-ai/plugin": "^1.0.0", "new-dep": "^2.0.0"}}), encoding="utf-8")
+
+            config_dir = Path(tmp) / "run-opencode-inst.d"
+            config_dir.mkdir()
+            existing_pkg = config_dir / "package.json"
+            existing_pkg.write_text(json.dumps({"dependencies": {"existing-dep": "^0.1.0"}}), encoding="utf-8")
+            config_path = config_dir / "test.opencode.json"
+            config_path.write_text("{}", encoding="utf-8")
+            self._make_config(config_dir, "test", cwd, config_path)
+
+            result = subprocess.run(
+                [str(REPO / "run-opencode-inst"), "test"],
+                env={**os.environ, "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir), "RUN_OPENCODE_INST_DRY_RUN": "1"},
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            pkg = json.loads(existing_pkg.read_text(encoding="utf-8"))
+            self.assertEqual(pkg["dependencies"]["existing-dep"], "^0.1.0")
+            self.assertEqual(pkg["dependencies"]["@opencode-ai/plugin"], "^1.0.0")
+            self.assertEqual(pkg["dependencies"]["new-dep"], "^2.0.0")
+
+    def test_no_op_when_plugin_source_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp) / "repo"
+            cwd.mkdir()
+            opencode_dir = cwd / ".opencode"
+            opencode_dir.mkdir()
+            # no plugins/c2c.ts
+
+            config_dir = Path(tmp) / "run-opencode-inst.d"
+            config_dir.mkdir()
+            config_path = config_dir / "test.opencode.json"
+            config_path.write_text("{}", encoding="utf-8")
+            self._make_config(config_dir, "test", cwd, config_path)
+
+            result = subprocess.run(
+                [str(REPO / "run-opencode-inst"), "test"],
+                env={**os.environ, "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir), "RUN_OPENCODE_INST_DRY_RUN": "1"},
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            plugin_dest = config_dir / "plugins" / "c2c.ts"
+            self.assertFalse(plugin_dest.exists())
 
 
 class C2CConfigureOpencodeTests(unittest.TestCase):

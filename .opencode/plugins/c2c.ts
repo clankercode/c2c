@@ -24,6 +24,7 @@
 
 import type { Plugin } from "@opencode-ai/plugin";
 import type { Event, EventSessionIdle, EventSessionCreated } from "@opencode-ai/sdk";
+import { spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -82,15 +83,60 @@ const C2CDelivery: Plugin = async (ctx) => {
     }
   }
 
+  async function runC2c(args: string[]): Promise<string> {
+    const repoCli = path.join(process.cwd(), "c2c");
+    const command = process.env.C2C_CLI_COMMAND || (fs.existsSync(repoCli) ? repoCli : "c2c");
+    const timeoutMs = parseInt(process.env.C2C_PLUGIN_CLI_TIMEOUT_MS || "5000", 10);
+
+    return new Promise((resolve, reject) => {
+      let stdout = "";
+      let stderr = "";
+      let timedOut = false;
+      let settled = false;
+      const proc = spawn(command, args, {
+        cwd: process.cwd(),
+        env: process.env,
+        shell: false,
+      });
+      const timer = setTimeout(() => {
+        timedOut = true;
+        proc.kill("SIGTERM");
+      }, timeoutMs);
+
+      proc.stdout?.on("data", (chunk) => {
+        stdout += chunk.toString();
+      });
+      proc.stderr?.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+      proc.on("error", (err) => {
+        clearTimeout(timer);
+        if (settled) return;
+        settled = true;
+        reject(err);
+      });
+      proc.on("close", (code) => {
+        clearTimeout(timer);
+        if (settled) return;
+        settled = true;
+        if (code === 0) {
+          resolve(stdout);
+          return;
+        }
+        const detail = stderr.trim() || `exit code ${code}`;
+        reject(new Error(timedOut ? `c2c poll timed out after ${timeoutMs}ms` : detail));
+      });
+    });
+  }
+
   /** Drain inbox using the c2c CLI and return parsed messages. */
   async function drainInbox(): Promise<Array<{ from_alias: string; to_alias: string; content: string }>> {
     if (!sessionId) return [];
     try {
-      const args: string[] = ["c2c", "poll-inbox", "--json", "--file-fallback"];
+      const args: string[] = ["poll-inbox", "--json", "--file-fallback"];
       if (sessionId) args.push("--session-id", sessionId);
       if (brokerRoot) args.push("--broker-root", brokerRoot);
-      const result = await ctx.$.quiet`${args}`;
-      const stdout = result.stdout.toString().trim();
+      const stdout = (await runC2c(args)).trim();
       if (!stdout) return [];
       const parsed = JSON.parse(stdout);
       return Array.isArray(parsed) ? parsed : [];

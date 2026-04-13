@@ -9,6 +9,10 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| `.opencode/plugins/c2c.ts` | codex | Fix OpenCode plugin drain runner; `ctx.$.quiet` is unsupported in Bun 1.3.9 | 2026-04-13T14:23:08Z |
+| `tests/test_c2c_cli.py` | codex | Add regression coverage for OpenCode plugin command runner | 2026-04-13T14:23:08Z |
+| `.collab/findings/2026-04-13T14-23-08Z-codex-opencode-plugin-quiet-runner.md` | codex | Document OpenCode plugin drain runner root cause | 2026-04-13T14:23:08Z |
+| `tmp_collab_lock.md` | codex | Update/release codex lock rows for OpenCode plugin drain fix | 2026-04-13T14:23:08Z |
 
 ## History (addendum)
 
