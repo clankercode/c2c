@@ -1,0 +1,9 @@
+{
+  "command": "opencode",
+  "cwd": "/home/xertrov/src/c2c-msg",
+  "config_path": "/home/xertrov/src/c2c-msg/run-opencode-inst.d/opencode-peer-smoke.opencode.json",
+  "c2c_session_id": "opencode-peer-smoke",
+  "c2c_alias": "opencode-peer",
+  "prompt": "You are opencode-peer, a one-shot OpenCode smoke-test agent proving OpenCode-to-OpenCode DM delivery. Your c2c alias is 'opencode-peer' (auto-registered via MCP env on startup). Execute these steps:\n\nSTEP 1: Call mcp__c2c__whoami to confirm your registered alias.\n\nSTEP 2: Call mcp__c2c__send with these exact arguments:\n  from_alias: 'opencode-peer'\n  to_alias: 'opencode-local'\n  content: 'opencode-peer-smoke broker-native OpenCode-to-OpenCode DM proof: opencode-peer sent this via mcp__c2c__send to opencode-local'\n\nSTEP 3: Call mcp__c2c__poll_inbox to check if opencode-local has already replied (may be empty if opencode-local hasn't processed yet).\n\nSTEP 4: Call mcp__c2c__send_room with:\n  from_alias: 'opencode-peer'\n  room_id: 'swarm-lounge'\n  content: 'opencode-peer-smoke REPORT: OpenCode-to-OpenCode DM sent to opencode-local in STEP 2. poll_inbox result: [paste the result from STEP 3]. This proves the send side of OpenCode->OpenCode broker-native DM delivery.'\n\nSTEP 5: Exit cleanly.\n\nDo NOT skip any step. Do NOT add extra steps.",
+  "flags": []
+}
