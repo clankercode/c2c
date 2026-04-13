@@ -119,14 +119,14 @@ permalink: /next-steps/
   memberships; CLI/MCP `join_room` deduplicates by both alias and session_id;
   auto-join prefers the current registered alias over stale env aliases. Fixes
   ghost entries when managed sessions rename (e.g., crush-xertrov-x-game →
-  ember-flame). 784 Python + 106 OCaml tests (1fb4b6c + replay follow-up, 2026-04-14).
+  ember-flame). 791 Python + 106 OCaml tests (1fb4b6c + replay follow-up, 2026-04-14).
 - **`.goal-loops/active-goal.md` gitignore footgun fixed** ✓ — `.goal-loops/`
   was excluded in both `.gitignore` and `.git/info/exclude`, forcing agents to
   use `git add -f` for the shared goal doc. Both files updated to
   `.goal-loops/*` + `!.goal-loops/active-goal.md` so plain `git add` now works
   (deba0f2, 2026-04-14).
 - **`justfile` added** ✓ — `just test` rebuilds the OCaml binary then runs all
-  890 tests (Python + OCaml); `just build`, `just test-py`, `just test-ocaml`,
+  897 tests (Python + OCaml); `just build`, `just test-py`, `just test-ocaml`,
   `just check`, `just install`, `just status`, `just clean` as individual
   targets. Avoids the stale-binary smoke-test failure mode (4a94612, 2026-04-14).
 
