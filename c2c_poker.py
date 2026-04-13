@@ -67,21 +67,27 @@ def list_claude_sessions() -> list[dict]:
     return json.loads(result.stdout)
 
 
-def resolve_claude_session(identifier: str) -> tuple[int, str, str | None]:
+def find_claude_session(identifier: str) -> dict:
     for session in list_claude_sessions():
         if identifier in {
             session.get("session_id", ""),
             session.get("name", ""),
             str(session.get("pid", "")),
         }:
-            terminal_pid = session.get("terminal_pid") or ""
-            pts_num = extract_pts(session.get("tty", ""))
-            if not terminal_pid or not pts_num:
-                raise RuntimeError(
-                    f"claude session {identifier!r} has no terminal owner"
-                )
-            return int(terminal_pid), pts_num, session.get("transcript")
+            return session
     raise RuntimeError(f"claude session not found: {identifier!r}")
+
+
+def session_target(session: dict, identifier: str) -> tuple[int, str, str | None]:
+    terminal_pid = session.get("terminal_pid") or ""
+    pts_num = extract_pts(session.get("tty", ""))
+    if not terminal_pid or not pts_num:
+        raise RuntimeError(f"claude session {identifier!r} has no terminal owner")
+    return int(terminal_pid), pts_num, session.get("transcript")
+
+
+def resolve_claude_session(identifier: str) -> tuple[int, str, str | None]:
+    return session_target(find_claude_session(identifier), identifier)
 
 
 def resolve_pid(pid: int) -> tuple[int, str, str | None]:
@@ -215,7 +221,9 @@ def main() -> int:
     transcript: str | None = None
     watched_pid: int | None = None
     if args.claude_session:
-        terminal_pid, pts_num, transcript = resolve_claude_session(args.claude_session)
+        session = find_claude_session(args.claude_session)
+        terminal_pid, pts_num, transcript = session_target(session, args.claude_session)
+        watched_pid = int(session["pid"]) if session.get("pid") is not None else None
     elif args.pid is not None:
         watched_pid = args.pid
         terminal_pid, pts_num, transcript = resolve_pid(args.pid)

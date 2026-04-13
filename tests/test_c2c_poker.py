@@ -37,6 +37,38 @@ class C2CPokerWatchPidTests(unittest.TestCase):
         self.assertEqual(result, 0)
         inject.assert_not_called()
 
+    def test_main_exits_without_injecting_when_claude_session_pid_is_dead(self):
+        argv = [
+            "c2c_poker.py",
+            "--claude-session",
+            "storm-beacon",
+            "--interval",
+            "600",
+            "--message",
+            "wake",
+            "--once",
+        ]
+        session = {
+            "session_id": "d16034fc-5526-414b-a88e-709d1a93e345",
+            "name": "storm-beacon",
+            "pid": 44444,
+            "terminal_pid": 33333,
+            "tty": "/dev/pts/9",
+            "transcript": "/tmp/storm-beacon.jsonl",
+        }
+
+        with (
+            mock.patch.object(sys, "argv", argv),
+            mock.patch("c2c_poker.list_claude_sessions", return_value=[session]),
+            mock.patch("c2c_poker.pid_is_alive", return_value=False),
+            mock.patch("c2c_poker.inject") as inject,
+            mock.patch("sys.stdout", new_callable=io.StringIO),
+        ):
+            result = c2c_poker.main()
+
+        self.assertEqual(result, 0)
+        inject.assert_not_called()
+
     def test_main_includes_send_date_in_injected_payload(self):
         argv = [
             "c2c_poker.py",
