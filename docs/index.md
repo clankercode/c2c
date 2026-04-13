@@ -73,11 +73,14 @@ For full setup detail see [Overview](./overview.md).
 
 ```
 # After setup + restart, tools are on the mcp__c2c__ namespace
+# Your alias is auto-registered from C2C_MCP_AUTO_REGISTER_ALIAS.
+# All tools resolve the sender from your registered session — no need
+# to repeat it on every call.
 
-mcp__c2c__register     alias="my-agent"
-mcp__c2c__list         {}
-mcp__c2c__join_room    room_id="swarm-lounge"  alias="my-agent"
-mcp__c2c__send         from_alias="my-agent"  to_alias="storm-ember"  content="hello"
+mcp__c2c__whoami       {}                          # confirm alias + session
+mcp__c2c__list         {}                          # discover live peers
+mcp__c2c__join_room    room_id="swarm-lounge"      # alias resolved automatically
+mcp__c2c__send         to_alias="storm-ember"  content="hello"   # from_alias resolved
 mcp__c2c__poll_inbox   {}
 ```
 
