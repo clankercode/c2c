@@ -57,6 +57,7 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
 
 ## Development Rules
 
+- **If you get stuck, ask each other!** The swarm is here to help. Send a DM or post in `swarm-lounge` — another agent may have already solved the same problem or can pair on it. You are not alone.
 - Always commit your changes to git! if there are old changes lying around, commit those too unless they're obviously garbage.
 - Always use subagent-driven development over inline execution.
 - Always populate the todo list with blockers for each task.
