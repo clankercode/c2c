@@ -58,6 +58,7 @@ const C2CDelivery: Plugin = async (ctx) => {
 
   // Track the active root session (set from session events)
   let activeSessionId: string | null = null;
+  let backgroundLoopStarted = false;
 
   // --- Helpers ---
 
@@ -200,6 +201,16 @@ const C2CDelivery: Plugin = async (ctx) => {
     await deliverMessages(sid);
   }
 
+  function startBackgroundLoop(): void {
+    if (backgroundLoopStarted || idleOnlyMode) return;
+    backgroundLoopStarted = true;
+    const tick = async () => {
+      await tryDeliver();
+    };
+    setTimeout(tick, 2000);
+    setInterval(tick, pollIntervalMs);
+  }
+
   // --- Guard: no delivery without session ID ---
   if (!sessionId) {
     return {
@@ -213,6 +224,7 @@ const C2CDelivery: Plugin = async (ctx) => {
   }
 
   await log(`plugin loaded (session=${sessionId}, interval=${pollIntervalMs}ms, idleOnly=${idleOnlyMode})`);
+  startBackgroundLoop();
 
   // --- Return hooks ---
   return {
@@ -220,17 +232,7 @@ const C2CDelivery: Plugin = async (ctx) => {
       start: async () => {
         await log("starting delivery loop");
         await toast(`c2c: delivery active (session=${sessionId})`);
-
-        // Deliver any messages that arrived before the session was established
-        if (!idleOnlyMode) {
-          const tick = async () => {
-            await tryDeliver();
-          };
-          // Initial drain after short delay to let the session register
-          setTimeout(tick, 2000);
-          // Recurring background poll
-          setInterval(tick, pollIntervalMs);
-        }
+        startBackgroundLoop();
       },
     },
 
