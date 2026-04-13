@@ -143,6 +143,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_opencode_wake_daemon.py",
         "c2c_crush_wake_daemon.py",
         "c2c_cli.py",
+        "c2c_history.py",
         "c2c_mcp.py",
         "c2c_registry.py",
         "claude_send_msg.py",
@@ -294,7 +295,11 @@ class C2CCLITests(unittest.TestCase):
         copy_cli_checkout(REPO, register_checkout)
         copy_cli_checkout(REPO, list_checkout)
 
+        # Use a shared temp registry so both checkouts see the same registrations.
+        shared_registry = Path(self.temp_dir.name) / "shared-registry.yaml"
+
         env = {
+            "C2C_REGISTRY_PATH": str(shared_registry),
             "C2C_ALIAS_WORDS_PATH": str(self.words_path),
             "C2C_SEND_MESSAGE_FIXTURE": "1",
             "C2C_SESSIONS_FIXTURE": str(REPO / "tests/fixtures/sessions-live.json"),
@@ -2876,6 +2881,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c_opencode_wake_daemon.py",
                 "c2c_crush_wake_daemon.py",
                 "c2c_cli.py",
+                "c2c_history.py",
                 "c2c_mcp.py",
                 "c2c_registry.py",
                 "claude_send_msg.py",
