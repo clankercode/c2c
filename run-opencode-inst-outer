@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -97,9 +98,17 @@ def main(argv: list[str]) -> int:
             exit_code = proc.wait()
         except KeyboardInterrupt:
             now = time.monotonic()
+            if proc is not None and proc.poll() is None:
+                try:
+                    os.killpg(proc.pid, signal.SIGINT)
+                except ProcessLookupError:
+                    pass
             if now - last_sigint < DOUBLE_SIGINT_WINDOW_SECONDS:
                 if proc is not None and proc.poll() is None:
-                    proc.terminate()
+                    try:
+                        os.killpg(proc.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
                 print("[run-opencode-inst-outer] double SIGINT - exiting.", flush=True)
                 return 130
             last_sigint = now

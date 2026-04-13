@@ -4090,7 +4090,8 @@ class C2CConfigureOpencodeTests(unittest.TestCase):
 class RestartOpenCodeSelfTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.env = {}
+        # Skip the 1.5s grace-period sleep so tests stay inside CLI_TIMEOUT_SECONDS.
+        self.env = {"RUN_OPENCODE_RESTART_SURVIVOR_KILL_DELAY": "0"}
 
     def tearDown(self):
         self.temp_dir.cleanup()

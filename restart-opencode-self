@@ -90,6 +90,22 @@ def kill_survivors(root_pid: int, sig: signal.Signals) -> list[int]:
     return killed
 
 
+def kill_pid_list(pids: list[int], sig: signal.Signals) -> list[int]:
+    """Kill the provided pid list, ignoring already-dead processes."""
+    killed: list[int] = []
+    for pid in pids:
+        if pid <= 1 or pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, sig.value)
+            killed.append(pid)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            pass
+    return killed
+
+
 def dry_run_enabled() -> bool:
     # Accept both the canonical name and the shorter variant to avoid footguns
     # where agents set the wrong env var name and accidentally signal the process.
@@ -229,6 +245,7 @@ def main(argv: list[str]) -> int:
     sig = parse_signal(args.signal)
     dry_run = dry_run_enabled()
     process_group = proc_group_id(pid)
+    descendant_snapshot = sorted(set(collect_descendants(pid)))
 
     if dry_run:
         print(
@@ -298,8 +315,13 @@ def main(argv: list[str]) -> int:
     # After the initial signal, wait briefly then kill any surviving descendants
     # that created their own process groups (OpenCode workers can do this).
     # This prevents orphaned workers from sharing the session with the relaunched instance.
-    time.sleep(1.5)
-    survivors = kill_survivors(pid, signal.SIGKILL)
+    survivor_kill_delay = float(os.environ.get("RUN_OPENCODE_RESTART_SURVIVOR_KILL_DELAY", "1.5"))
+    if survivor_kill_delay > 0:
+        time.sleep(survivor_kill_delay)
+    remaining_descendants = collect_descendants(pid)
+    survivors = kill_pid_list(
+        sorted(set(descendant_snapshot + remaining_descendants)), signal.SIGKILL
+    )
     if survivors:
         print(
             f"[restart-opencode-self] sent SIGKILL to {len(survivors)} surviving descendant(s): {survivors}",
