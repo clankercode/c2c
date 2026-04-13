@@ -10,11 +10,12 @@ permalink: /next-steps/
 
 - **Kimi standalone PTY wake daemon** — `c2c_kimi_wake_daemon.py` written for manual/interactive Kimi TUI sessions (distinct from the managed-harness `c2c_deliver_inbox.py` path). Not yet live-tested. *Note: managed Kimi harness auto-delivery is already proven end-to-end.*
 - **Crush PTY wake daemon & DM proof** — `c2c_crush_wake_daemon.py` written, Crush MCP config ready, but no live session available to test (blocked: `ANTHROPIC_API_KEY` not set in Claude Code shell).
-- **Cross-machine broker Phase 4** — Phases 1–3 complete. Next slice: rooms+broadcast (`send_all`, `join_room`, `send_room`, history backfill, room membership leases via relay), then `c2c setup relay` operator flow + docs.
+- **Cross-machine broker Phase 5** — Phases 1–4 complete. Next slice: `c2c relay setup` (persist relay URL+token), `c2c relay status` (health+peer-count), `c2c relay list` (remote peer list), and relay docs on the website.
 - **Site visual redesign** — dark theme live ✓, h1 double-heading bug fixed (c478ddb), screenshots taken. Waiting for Max sign-off on north-star criterion.
 
 ## Recently Completed
 
+- **Cross-machine broker Phase 4** ✓ — rooms+broadcast: `InMemoryRelay.{join_room,leave_room,send_room,room_history,list_rooms,send_all}`; relay server endpoints `/join_room /leave_room /send_room /room_history /list_rooms /send_all`; 28 room/broadcast tests (e83e474+4e088ec, 2026-04-13). `c2c relay serve` + `c2c relay connect` wired into main CLI (0040c8d, 2026-04-13). 544 tests total.
 - **Cross-machine broker Phase 3** ✓ — `c2c_relay_connector.py`: `RelayConnector.sync()` registers/heartbeats local aliases, forwards `remote-outbox.jsonl`, pulls relay inboxes into local `<session_id>.inbox.json`. Full two-machine roundtrip proven in-process: A queues → connector forwards → relay → B connector pulls → local inbox. Retry: failed sends stay in outbox. 16 tests, 489 total (c019628, 2026-04-13).
 - **Cross-machine broker Phase 2** ✓ — `c2c_relay_server.py`: ThreadingHTTPServer wrapping InMemoryRelay; Bearer-token auth; endpoints: register/heartbeat/list/send/poll_inbox/peek_inbox/dead_letter/health; `make_server()` + `start_server_thread()` helpers; CLI `--listen host:port --token`. 24 HTTP parity tests, 437 total (9f716d9, 2026-04-13).
 - **Cross-machine broker Phase 1** ✓ — `c2c_relay_contract.py`: `derive_node_id()` (hostname+git-remote-hash), heartbeat-lease `RegistrationLease`, `InMemoryRelay` (register/heartbeat/list/send/poll/peek/dead-letter). 33 contract tests; same suite can be reused by Phase-2 TCP relay for parity verification. Managed-restart semantics: same-node alias replacement allowed, cross-node conflict raises `ALIAS_CONFLICT` (6292bce, 2026-04-13).
