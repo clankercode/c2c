@@ -9,16 +9,19 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `docs/superpowers/plans/2026-04-14-kimi-wire-bridge.md` | codex | Kimi Wire bridge implementation plan | 2026-04-13T16:01Z |
-| `tests/test_c2c_kimi_wire_bridge.py` | codex | Kimi Wire bridge RED/GREEN test suite | 2026-04-13T16:01Z |
-| `c2c_kimi_wire_bridge.py` | codex | Kimi Wire bridge implementation | 2026-04-13T16:01Z |
-| `c2c-kimi-wire-bridge` | codex | Kimi Wire bridge wrapper | 2026-04-13T16:01Z |
-| `c2c_install.py` | codex | Install Kimi Wire bridge wrapper | 2026-04-13T16:03Z |
-| `tests/test_c2c_cli.py` | codex | Assert Kimi Wire bridge wrapper installation | 2026-04-13T16:03Z |
-| `docs/client-delivery.md` | codex | Document experimental Kimi Wire delivery | 2026-04-13T16:03Z |
-| `docs/overview.md` | codex | Document experimental Kimi Wire delivery | 2026-04-13T16:03Z |
 
 ## History (addendum)
+
+- 2026-04-13T16:04Z — codex RELEASED locks on
+  `docs/superpowers/plans/2026-04-14-kimi-wire-bridge.md`,
+  `tests/test_c2c_kimi_wire_bridge.py`, `c2c_kimi_wire_bridge.py`,
+  `c2c-kimi-wire-bridge`, `c2c_install.py`, `tests/test_c2c_cli.py`,
+  `docs/client-delivery.md`, `docs/overview.md`, and `tmp_collab_lock.md`.
+  Kimi Wire bridge plan/tests/docs/install work landed in `99d8180`; follow-up
+  fixture fix adds `c2c_kimi_wire_bridge.py` to the synthetic checkout used by
+  `copy_cli_checkout`. Verification: focused Kimi Wire tests 20/20, focused
+  install/kimi/copy tests 24/24, targeted copy/install tests 2/2, full Python
+  suite 691/691, `py_compile`, and `git diff --check` passed.
 
 - 2026-04-13 15:41Z — codex RELEASED locks on `c2c_mcp.py`,
   `run-kimi-inst`, `tests/test_c2c_cli.py`,
