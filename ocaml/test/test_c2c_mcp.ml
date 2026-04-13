@@ -347,6 +347,7 @@ let test_initialize_reports_server_version_and_features () =
             ; "history_tool"
             ; "join_room_history_backfill"
             ; "my_rooms_tool"
+            ; "peek_inbox_tool"
             ]
           in
           List.iter
@@ -1817,6 +1818,95 @@ let test_tools_call_join_room_backfills_recent_history () =
               check string "first entry preserves order" "msg one"
                 (List.hd history |> member "content" |> to_string)))
 
+let test_tools_call_peek_inbox_does_not_drain () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-peeker";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-peeker"
+            ~alias:"peeker" ~pid:None ~pid_start_time:None;
+          C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
+            ~to_alias:"peeker" ~content:"first";
+          C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
+            ~to_alias:"peeker" ~content:"second";
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 400)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "peek_inbox")
+                    ; ("arguments", `Assoc []) ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          (match response with
+           | None -> fail "expected peek_inbox response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               let parsed = Yojson.Safe.from_string text in
+               let messages = parsed |> to_list in
+               check int "peek returns both messages" 2
+                 (List.length messages);
+               check string "first content preserved" "first"
+                 (List.hd messages |> member "content" |> to_string));
+          (* After peek, a real poll_inbox still finds both messages. *)
+          let still = C2c_mcp.Broker.read_inbox broker ~session_id:"session-peeker" in
+          check int "inbox still has both messages after peek" 2
+            (List.length still)))
+
+let test_tools_call_peek_inbox_ignores_session_id_argument () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-self";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-self"
+            ~alias:"self" ~pid:None ~pid_start_time:None;
+          C2c_mcp.Broker.register broker ~session_id:"session-victim"
+            ~alias:"victim" ~pid:None ~pid_start_time:None;
+          C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
+            ~to_alias:"victim" ~content:"secret for victim only";
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 401)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "peek_inbox")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("session_id", `String "session-victim") ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected peek_inbox response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              let parsed = Yojson.Safe.from_string text in
+              let messages = parsed |> to_list in
+              check int "peek returns caller's empty inbox, not victim's" 0
+                (List.length messages)))
+
 let test_my_rooms_returns_only_sessions_memberships () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -2215,6 +2305,10 @@ let () =
              test_tools_call_join_room_backfills_recent_history
          ; test_case "tools/call join_room history_limit=0 opts out" `Quick
              test_tools_call_join_room_respects_history_limit_zero
+         ; test_case "tools/call peek_inbox does not drain" `Quick
+             test_tools_call_peek_inbox_does_not_drain
+         ; test_case "tools/call peek_inbox ignores session_id arg" `Quick
+             test_tools_call_peek_inbox_ignores_session_id_argument
          ; test_case "my_rooms returns only caller's memberships" `Quick
              test_my_rooms_returns_only_sessions_memberships
          ; test_case "tools/call my_rooms uses env session_id, ignores args" `Quick

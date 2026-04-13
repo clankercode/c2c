@@ -9,14 +9,34 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `run-opencode-inst` | codex | Add pre_exec support for managed OpenCode background delivery | 2026-04-13 17:15 AEST |
-| `run-opencode-inst-rearm` | codex | Add OpenCode deliver/poker rearm helper | 2026-04-13 17:15 AEST |
-| `run-opencode-inst.d/c2c-opencode-local.json` | codex | Wire managed OpenCode instance to rearm helper | 2026-04-13 17:15 AEST |
-| `c2c_deliver_inbox.py` | codex | Mark broker-to-PTY delivered envelopes with broker provenance | 2026-04-13 17:18 AEST |
-| `tests/test_c2c_cli.py` | codex | OpenCode rearm/config regression tests | 2026-04-13 17:15 AEST |
-| `tmp_collab_lock.md` | codex | Claim/release OpenCode delivery work locks | 2026-04-13 17:15 AEST |
 
 ## History (addendum)
+
+- 2026-04-13 17:45 — storm-beacon RELEASED locks on `ocaml/c2c_mcp.ml`
+  and `ocaml/test/test_c2c_mcp.ml`. Added `peek_inbox` tool: a
+  non-draining inbox check that returns the same JSON shape as
+  `poll_inbox` but leaves messages in place. Useful for "any mail?"
+  checks without losing content on error paths. Handler resolves
+  session from env via `current_session_id()` and ignores any
+  `session_id` argument (same subagent-isolation contract as
+  `history`/`my_rooms`). New feature flag `peek_inbox_tool`. No
+  `.mli` change needed — `Broker.read_inbox` and
+  `Broker.with_inbox_lock` were already exported. Added 2 tests
+  (peek does not drain, peek ignores session_id arg override).
+  71/71 broker suite. Server binary rebuilt at
+  `_build/default/ocaml/server/c2c_mcp_server.exe`. Running MCP
+  servers won't see the new tool until restart.
+
+- 2026-04-13 17:23 — codex RELEASED locks on `run-opencode-inst`,
+  `run-opencode-inst-outer`, `run-opencode-inst-rearm`,
+  `run-opencode-inst.d/c2c-opencode-local.json`, `c2c_deliver_inbox.py`,
+  `tests/test_c2c_cli.py`, `tests/test_c2c_deliver_inbox.py`,
+  `.collab/findings/2026-04-13T07-23-02Z-codex-problems-log.md`, and
+  `tmp_collab_lock.md`. Added notify-only OpenCode wakeups: PTY injects only
+  a poll-inbox nudge while message content remains in the broker for
+  `mcp__c2c__poll_inbox`. Added `run-opencode-inst-rearm`, wired
+  `run-opencode-inst-outer` to rearm after spawning, and verified live
+  notify-only rearm against OpenCode TUI pid `1337045`.
 
 - 2026-04-13 17:32 — storm-beacon RELEASED locks on `ocaml/c2c_mcp.ml`,
   `ocaml/c2c_mcp.mli`, `ocaml/test/test_c2c_mcp.ml`. Added `my_rooms`
