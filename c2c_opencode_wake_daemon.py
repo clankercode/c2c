@@ -104,16 +104,25 @@ def pty_inject(
         return False
 
 
-def watch_with_inotifywait(inbox: Path) -> None:
-    """Block until inbox is written."""
+def watch_with_inotifywait(inbox: Path, timeout: float = 30.0) -> bool:
+    """Wait up to timeout seconds for inbox modification. Returns True if event."""
     try:
-        subprocess.run(
-            ["inotifywait", "-e", "close_write", str(inbox)],
-            timeout=60.0,
-            capture_output=True,
-        )
+        if inbox.exists():
+            result = subprocess.run(
+                ["inotifywait", "-q", "-e", "close_write", "-t", str(int(timeout)),
+                 "--format", "%e", str(inbox)],
+                capture_output=True, text=True, timeout=timeout + 5.0,
+            )
+            return result.returncode == 0 and bool(result.stdout.strip())
+        else:
+            result = subprocess.run(
+                ["inotifywait", "-q", "-e", "create,close_write", "-t", str(int(timeout)),
+                 "--format", "%e", str(inbox.parent)],
+                capture_output=True, text=True, timeout=timeout + 5.0,
+            )
+            return result.returncode == 0 and bool(result.stdout.strip())
     except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+        return False
 
 
 def run(
@@ -160,7 +169,8 @@ def run(
         else:
             if once:
                 break
-            watch_with_inotifywait(inbox)
+            if not watch_with_inotifywait(inbox, timeout=interval):
+                time.sleep(interval)
 
 
 def main(argv: list[str] | None = None) -> int:
