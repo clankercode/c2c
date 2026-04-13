@@ -12,6 +12,15 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 11:14 — codex RELEASED locks on
+  `.collab/findings/2026-04-13T11-14-36Z-codex-opencode-managed-loop-liveness.md`
+  and `tmp_collab_lock.md`. Documented the current OpenCode liveness split:
+  broker-native DM to `opencode-local` failed as not alive while the durable TUI
+  was alive on `pts/22`; the managed `opencode run --fork` loop was alive but
+  no-TTY, so support loops skipped and PTY injection could only target the TUI.
+  Sent the report pointer to the TUI via delayed PTY fallback after native MCP
+  send was rejected.
+
 - 2026-04-13 20:49 — codex RELEASED locks on `.collab/dm-matrix.md`,
   `.collab/findings/2026-04-13T10-41-14Z-codex-kimi-live-mcp-smoke.md`, and
   `tmp_collab_lock.md`. Recorded full Codex <-> Kimi Code direct DM proof:
