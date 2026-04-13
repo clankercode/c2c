@@ -238,6 +238,28 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
             start_daemon.assert_called_once()
             resolve.assert_not_called()
 
+    def test_main_reports_target_resolution_errors(self):
+        with (
+            mock.patch(
+                "c2c_deliver_inbox.c2c_inject.resolve_target",
+                side_effect=RuntimeError("pid 12345 has no /dev/pts/* on fds 0/1/2"),
+            ),
+            mock.patch("sys.stderr", new_callable=io.StringIO) as stderr,
+        ):
+            result = c2c_deliver_inbox.main(
+                [
+                    "--client",
+                    "opencode",
+                    "--pid",
+                    "12345",
+                    "--session-id",
+                    "opencode-local",
+                ]
+            )
+
+        self.assertEqual(result, 1)
+        self.assertIn("has no /dev/pts", stderr.getvalue())
+
     def test_notify_only_loop_renotifies_when_inbox_changes_inside_debounce(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             broker_root = Path(temp_dir) / "mcp-broker"

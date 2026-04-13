@@ -21,6 +21,17 @@ on disk).
   `/tmp` quota/headroom was exhausted. Live mitigation removed stale `/tmp`
   build/probe directories and restored OCaml MCP build/startup.
 
+- 2026-04-13 11:41 — codex RELEASED locks on `c2c_deliver_inbox.py`,
+  `tests/test_c2c_deliver_inbox.py`,
+  `.collab/findings/2026-04-13T11-30-00Z-kimi-xertrov-x-game-kimi-managed-harness-no-pty-wake.md`,
+  `.collab/findings/2026-04-13T11-41-37Z-codex-opencode-stale-registry-pid.md`,
+  and `tmp_collab_lock.md`. Wrapped delivery target resolution in the existing
+  error handler, committed Kimi's managed-harness no-PTY finding, and documented
+  stale OpenCode broker registration. Direct MCP send to `opencode-local`
+  rejected as dead because the broker row still pointed at pid `2741886` while
+  the managed loop was alive at pid `2734575`; delivered restart-harness
+  suggestions to the live TUI via delayed PTY fallback.
+
 - 2026-04-13 11:37 — codex RELEASED locks on `run-kimi-inst`,
   `tests/test_c2c_cli.py`, and `tmp_collab_lock.md`. Completed the Kimi
   prompt-mode launcher slice after catching a dry-run unpack/prompt-mode
