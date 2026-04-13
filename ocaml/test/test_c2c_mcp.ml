@@ -8,6 +8,17 @@ let with_temp_dir f =
     ~finally:(fun () -> Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir)) |> ignore)
     (fun () -> f dir)
 
+let string_contains haystack needle =
+  let haystack_len = String.length haystack in
+  let needle_len = String.length needle in
+  let rec loop i =
+    if needle_len = 0 then true
+    else if i + needle_len > haystack_len then false
+    else if String.sub haystack i needle_len = needle then true
+    else loop (i + 1)
+  in
+  loop 0
+
 let test_register_and_list () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -352,6 +363,7 @@ let test_initialize_reports_server_version_and_features () =
             ; "peek_inbox_tool"
             ; "rpc_audit_log"
             ; "tail_log_tool"
+            ; "register_alias_hijack_guard"
             ]
           in
           List.iter
@@ -695,7 +707,7 @@ let test_tools_call_register_rejects_alias_hijack () =
   with_temp_dir (fun dir ->
       let live_pid = Unix.getpid () in
       let broker = C2c_mcp.Broker.create ~root:dir in
-      (* session-owner registers as "storm-beacon" with a live PID *)
+      (* session-owner registers "storm-beacon" with a live PID *)
       C2c_mcp.Broker.register broker ~session_id:"session-owner"
         ~alias:"storm-beacon" ~pid:(Some live_pid) ~pid_start_time:None;
       (* session-thief tries to claim the same alias *)
@@ -732,16 +744,13 @@ let test_tools_call_register_rejects_alias_hijack () =
                  json |> member "result" |> member "content" |> index 0
                  |> member "text" |> to_string
                in
-               check bool "error names the alias" true
-                 (let re = Str.regexp "storm-beacon" in
-                  (try ignore (Str.search_forward re text 0); true
-                   with Not_found -> false));
-               check bool "error names the holder session" true
-                 (let re = Str.regexp "session-owner" in
-                  (try ignore (Str.search_forward re text 0); true
-                   with Not_found -> false)));
+               check bool "error mentions contested alias" true
+                 (string_contains text "storm-beacon");
+               check bool "error mentions holder session" true
+                 (string_contains text "session-owner"));
           (* Original owner must still be registered *)
           let regs = C2c_mcp.Broker.list_registrations broker in
+          let open C2c_mcp in
           let owner =
             List.find_opt (fun r -> r.session_id = "session-owner") regs
           in
