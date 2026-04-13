@@ -103,7 +103,9 @@ module Broker : sig
   val list_rooms : t -> room_info list
   val my_rooms : t -> session_id:string -> room_info list
   val read_room_members : t -> room_id:string -> room_member list
-  val evict_dead_from_rooms : t -> dead_session_ids:string list -> (string * string) list
+  val evict_dead_from_rooms :
+    t -> dead_session_ids:string list -> dead_aliases:string list
+    -> (string * string) list
   val prune_rooms : t -> (string * string) list
 end
 

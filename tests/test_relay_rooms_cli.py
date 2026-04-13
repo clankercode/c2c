@@ -190,8 +190,8 @@ class TestRelayRoomsSend(unittest.TestCase):
 
         # iris should have a message
         msgs = relay.poll_inbox("n2", "s2")
-        self.assertEqual(len(msgs), 1)
-        self.assertEqual(msgs[0]["content"], "hello world")
+        user_msgs = [m for m in msgs if m["content"] == "hello world"]
+        self.assertEqual(len(user_msgs), 1)
 
     def test_send_json(self):
         relay = self.server.relay
@@ -222,7 +222,8 @@ class TestRelayRoomsHistory(unittest.TestCase):
 
         rc, out = self.runner.run(["history", "hist-room"])
         self.assertEqual(rc, 0)
-        self.assertIn("no history", out.lower())
+        self.assertIn("leo joined room hist-room", out)
+        self.assertIn("c2c-system", out)
 
     def test_history_after_send(self):
         relay = self.server.relay
@@ -247,8 +248,7 @@ class TestRelayRoomsHistory(unittest.TestCase):
         self.assertEqual(rc, 0)
         data = json.loads(out)
         self.assertTrue(data["ok"])
-        self.assertEqual(len(data["history"]), 1)
-        self.assertEqual(data["history"][0]["content"], "solo msg")
+        self.assertEqual(data["history"][-1]["content"], "solo msg")
 
     def test_history_limit(self):
         relay = self.server.relay

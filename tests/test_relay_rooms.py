@@ -52,6 +52,40 @@ class InMemoryRoomTests(unittest.TestCase):
         g = next(r for r in rooms if r["room_id"] == "general")
         self.assertEqual(g["members"].count("alice"), 1)
 
+    def test_join_room_broadcasts_system_notice_to_all_members(self):
+        self.relay.join_room("alice", "general")
+        self.relay.poll_inbox("n", "s-alice")
+
+        self.relay.join_room("bob", "general")
+
+        alice_msgs = self.relay.poll_inbox("n", "s-alice")
+        bob_msgs = self.relay.poll_inbox("n", "s-bob")
+        for msgs in (alice_msgs, bob_msgs):
+            notice = [m for m in msgs if m["content"] == "bob joined room general"]
+            self.assertEqual(len(notice), 1)
+            self.assertEqual(notice[0]["from_alias"], "c2c-system")
+            self.assertEqual(notice[0]["to_alias"].split("@", 1)[1], "general")
+
+    def test_join_room_records_system_notice_in_history(self):
+        self.relay.join_room("alice", "lobby")
+
+        history = self.relay.room_history("lobby")
+
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["from_alias"], "c2c-system")
+        self.assertEqual(history[0]["content"], "alice joined room lobby")
+
+    def test_join_room_idempotent_does_not_repeat_system_notice(self):
+        self.relay.join_room("alice", "quiet")
+        self.relay.join_room("alice", "quiet")
+
+        history = self.relay.room_history("quiet")
+
+        self.assertEqual(
+            [m["content"] for m in history],
+            ["alice joined room quiet"],
+        )
+
     def test_join_room_unknown_alias_raises(self):
         from c2c_relay_contract import RelayError, RELAY_ERR_UNKNOWN_ALIAS
         with self.assertRaises(RelayError) as ctx:
@@ -106,7 +140,6 @@ class InMemoryRoomTests(unittest.TestCase):
         self.relay.send_room("alice", "hist-room", "msg1")
         self.relay.send_room("bob", "hist-room", "msg2")
         history = self.relay.room_history("hist-room")
-        self.assertEqual(len(history), 2)
         contents = [h["content"] for h in history]
         self.assertIn("msg1", contents)
         self.assertIn("msg2", contents)
@@ -114,6 +147,7 @@ class InMemoryRoomTests(unittest.TestCase):
     def test_room_history_limit(self):
         self.relay.join_room("alice", "limit-room")
         self.relay.join_room("bob", "limit-room")
+        self.relay.room_history("limit-room")
         for i in range(10):
             self.relay.send_room("alice", "limit-room", f"msg{i}")
         history = self.relay.room_history("limit-room", limit=3)

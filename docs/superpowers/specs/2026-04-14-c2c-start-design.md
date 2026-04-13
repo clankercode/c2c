@@ -15,7 +15,7 @@ Replace all 10 harness scripts with a single `c2c start <client> [-n NAME]` comm
 ## CLI Interface
 
 ```
-c2c start <client> [-n NAME] [--] [EXTRA_ARGS...]
+c2c start <client> [-n NAME] [--detach] [--] [EXTRA_ARGS...]
 c2c stop <NAME>
 c2c instances [--json]
 c2c restart <NAME>
@@ -27,6 +27,7 @@ c2c restart <NAME>
 |-----|----------|-------------|
 | `client` | yes | One of: `claude`, `codex`, `opencode`, `kimi`, `crush` |
 | `-n NAME` | no | Instance name. Sets both `session_id` and `alias` to NAME. Default: `<client>-<hostname>` |
+| `--detach` | no | Fork into background immediately (double-fork + setsid). Default: foreground |
 | `EXTRA_ARGS` | no | Passed through to the client binary after `--` |
 
 ### Examples
@@ -44,13 +45,13 @@ c2c instances --json                        # Machine-readable output
 
 ## Foreground vs Background
 
-By default, `c2c start` runs in the foreground — it prints instance status and blocks until `Ctrl+C` or `c2c stop`. The outer loop, deliver daemon, and poker run as background subprocesses.
+By default, `c2c start` runs in the foreground — it prints instance status and blocks until `Ctrl+C` or `c2c stop`. The outer loop, deliver daemon, and poker run as subprocesses managed by the foreground process.
 
-With `--detach` flag, `c2c start` forks into the background immediately and prints the instance name + PID. This is equivalent to `nohup c2c start ... &` but cleaner.
+With `--detach` flag, `c2c start` double-forks and setsid to become a daemon, writes its PID to `~/.local/share/c2c/instances/<name>/outer.pid`, and exits immediately. The detached process continues running the outer loop.
 
 ```bash
 c2c start claude -n story-tree            # foreground (default)
-c2c start claude -n story-tree --detach   # background
+c2c start claude -n story-tree --detach   # background daemon
 ```
 
 ## Error Handling
@@ -64,7 +65,7 @@ c2c start claude -n story-tree --detach   # background
 When `c2c start` runs:
 
 1. **Validate**: check client type exists, check name not already running (by pidfile)
-2. **Auto-configure**: if no MCP config exists for this client type, run `c2c setup <client>` automatically (without `C2C_MCP_AUTO_REGISTER_ALIAS` in global config)
+2. **Auto-configure**: if no MCP config exists for this client type, call `c2c_configure_<client>.main()` internally with `--alias <name>` but without writing `C2C_MCP_AUTO_REGISTER_ALIAS` to the global config. The configure scripts are modified to skip writing this key.
 3. **Env setup**: set environment for the client subprocess:
    - `C2C_MCP_SESSION_ID=<name>`
    - `C2C_MCP_AUTO_REGISTER_ALIAS=<name>`
@@ -79,9 +80,13 @@ When `c2c start` runs:
    - Start deliver daemon (`c2c_deliver_inbox.py --notify-only --loop`)
    - Start poker if client needs it (`c2c_poker.py --interval 600`)
    - Call `c2c_refresh_peer.py <name> --pid <child_pid> --session-id <name>`
+   - Clean up `/tmp/*.fea*.so` files (fonttools residue that fills /tmp)
+   - **Kimi-specific**: call rearm after spawn, capture session_id from `~/.kimi/kimi.json`, sanitize stale `C2C_MCP_CLIENT_PID` from `~/.kimi/mcp.json`
+   - **OpenCode-specific**: write plugin sidecar, sync plugin to global location
    - Wait for child exit
-   - On crash: exponential backoff (2s → 60s max), restart
-   - On clean exit (0): stop loop
+   - On fast exit (< MIN_RUN_SECONDS): exponential backoff restart (2s → 60s max)
+   - On slow exit (>= MIN_RUN_SECONDS): reset backoff, restart after RESTART_PAUSE_SECONDS
+   - On SIGINT (double Ctrl-C in quick succession): stop loop
 7. **Cleanup** on `c2c stop`: SIGTERM outer loop → outer loop SIGTERMs child + deliver daemon + poker
 
 ## State Directory
@@ -96,6 +101,15 @@ When `c2c start` runs:
 ├── deliver.log        # deliver daemon log
 └── poker.log          # poker log
 ```
+
+### Instance enumeration
+
+`c2c instances` scans `~/.local/share/c2c/instances/*/`. For each directory:
+1. Read `config.json` for name, client type, session_id, alias, created_at
+2. Read `outer.pid` — check if PID is alive via `/proc/<pid>`
+3. If alive: compute uptime from `created_at` or `/proc/<pid>/stat` start_time
+4. Check `deliver.pid` and `poker.pid` for liveness
+5. Display: name, client, PID, uptime, deliver status, poker status
 
 ### config.json schema
 

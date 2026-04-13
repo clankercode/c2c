@@ -1073,9 +1073,19 @@ module Broker = struct
      the sweep tool so dead sessions don't linger as room members after
      their registration is dropped.  Sessions with a live outer loop
      re-join automatically via C2C_MCP_AUTO_JOIN_ROOMS on restart.
-     Returns a list of (room_id, alias) pairs that were evicted. *)
-  let evict_dead_from_rooms t ~dead_session_ids =
-    if dead_session_ids = [] then []
+     Returns a list of (room_id, alias) pairs that were evicted.
+
+     Uses BOTH session_id and alias matching to handle the case where
+     a room member was added with one session_id but the registration
+     later re-registered with a different session_id (common with
+     managed outer loops that reuse the same alias). *)
+  let evict_dead_from_rooms t ~dead_session_ids ~dead_aliases =
+    let dead_keys = dead_session_ids in
+    let should_evict m =
+      List.mem m.rm_session_id dead_keys
+      || List.mem m.rm_alias dead_aliases
+    in
+    if dead_session_ids = [] && dead_aliases = [] then []
     else begin
       let rd = rooms_dir t in
       if not (Sys.file_exists rd) then []
@@ -1092,9 +1102,7 @@ module Broker = struct
           with_room_members_lock t ~room_id (fun () ->
             let members = load_room_members t ~room_id in
             let kept, removed =
-              List.partition
-                (fun m -> not (List.mem m.rm_session_id dead_session_ids))
-                members
+              List.partition (fun m -> not (should_evict m)) members
             in
             if removed <> [] then begin
               save_room_members t ~room_id kept;
@@ -1117,15 +1125,16 @@ module Broker = struct
          Unknown→Alive for backward-compat with sweep/enqueue, but in prune_rooms
          we want to clear out pidless zombie room members too — they cannot be
          verified alive and their inboxes accumulate dead fan-out messages. *)
-      let dead_sids =
+      let dead_regs =
         regs
         |> List.filter (fun r ->
                match registration_liveness_state r with
                | Alive -> false
                | Dead | Unknown -> true)
-        |> List.map (fun r -> r.session_id)
       in
-      evict_dead_from_rooms t ~dead_session_ids:dead_sids)
+      let dead_sids = List.map (fun r -> r.session_id) dead_regs in
+      let dead_aliases = List.map (fun r -> r.alias) dead_regs in
+      evict_dead_from_rooms t ~dead_session_ids:dead_sids ~dead_aliases)
 
   (* Public alias for tests and external callers. *)
   let read_room_members = load_room_members
@@ -2034,8 +2043,12 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       let dead_sids =
         List.map (fun r -> r.session_id) dropped_regs
       in
+      let dead_aliases =
+        List.map (fun r -> r.alias) dropped_regs
+      in
       let evicted_room_members =
         Broker.evict_dead_from_rooms broker ~dead_session_ids:dead_sids
+          ~dead_aliases
       in
       let content =
         `Assoc

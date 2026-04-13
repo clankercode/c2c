@@ -14,6 +14,7 @@ on disk).
 | `tests/test_relay_rooms.py` | codex | Relay room join system broadcasts parity tests | 2026-04-13T21:58Z |
 | `tests/test_relay_sqlite.py` | codex | SQLite relay room join system broadcasts parity tests | 2026-04-13T21:58Z |
 | `tests/test_relay_rooms_cli.py` | codex | Update relay room history CLI expectations | 2026-04-13T21:58Z |
+| `ocaml/c2c_mcp.ml` | codex | Repair missed evict_dead_from_rooms caller after alias pruning change | 2026-04-13T22:02Z |
 | `tmp_status.txt` | codex | Sync test/status after relay parity fix | 2026-04-13T21:58Z |
 | `tmp_collab_lock.md` | codex | Lock bookkeeping | 2026-04-13T21:58Z |
 

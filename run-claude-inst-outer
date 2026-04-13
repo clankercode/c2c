@@ -129,10 +129,13 @@ def main(argv: list[str]) -> int:
     while True:
         iteration += 1
         # Clean up stale fonttools /tmp/.fea*.so files that can exhaust disk quota.
-        import c2c_mcp as _c2c_mcp
-        n = _c2c_mcp.cleanup_stale_tmp_fea_so()
-        if n:
-            print(f"[run-claude-inst-outer] cleaned {n} stale /tmp/.fea*.so file(s)", flush=True)
+        try:
+            import c2c_mcp as _c2c_mcp
+            _n = _c2c_mcp.cleanup_stale_tmp_fea_so()
+            if _n:
+                print(f"[run-claude-inst-outer] cleaned {_n} stale /tmp/.fea*.so file(s)", flush=True)
+        except Exception:
+            pass
         print(f"[run-claude-inst-outer] iter {iteration}: launching {name}", flush=True)
         started = time.monotonic()
         proc = None

@@ -2150,9 +2150,11 @@ let test_sweep_evicts_dead_members_from_rooms () =
       let { C2c_mcp.Broker.dropped_regs; _ } = C2c_mcp.Broker.sweep broker in
       check int "one dropped registration" 1 (List.length dropped_regs);
       let dead_sids = List.map (fun r -> r.C2c_mcp.session_id) dropped_regs in
+      let dead_aliases = List.map (fun r -> r.C2c_mcp.alias) dropped_regs in
       (* Evict dead members from rooms *)
       let evicted =
         C2c_mcp.Broker.evict_dead_from_rooms broker ~dead_session_ids:dead_sids
+          ~dead_aliases
       in
       check int "one member evicted" 1 (List.length evicted);
       let (evicted_room, evicted_alias) = List.hd evicted in

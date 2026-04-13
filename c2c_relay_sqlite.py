@@ -18,7 +18,9 @@ from c2c_relay_contract import (
     RELAY_ERR_ALIAS_CONFLICT,
     RELAY_ERR_RECIPIENT_DEAD,
     RELAY_ERR_UNKNOWN_ALIAS,
+    ROOM_SYSTEM_ALIAS,
     RelayError,
+    room_join_content,
 )
 
 
@@ -340,6 +342,12 @@ class SQLiteRelay:
                     """,
                     (room_id, alias),
                 )
+                self._broadcast_room_join_locked(
+                    room_id=room_id,
+                    alias=alias,
+                    message_id=str(uuid.uuid4()),
+                    ts=time.time(),
+                )
             cur = self._conn().execute(
                 "SELECT COUNT(*) FROM room_members WHERE room_id = ?", (room_id,)
             )
@@ -351,6 +359,68 @@ class SQLiteRelay:
                 "member_count": member_count,
                 "already_member": already_member,
             }
+
+    def _broadcast_room_join_locked(
+        self,
+        *,
+        room_id: str,
+        alias: str,
+        message_id: str,
+        ts: float,
+    ) -> None:
+        content = room_join_content(alias, room_id)
+        conn = self._conn()
+        cur = conn.execute(
+            "SELECT alias FROM room_members WHERE room_id = ?", (room_id,)
+        )
+        members = [r["alias"] for r in cur.fetchall()]
+        for member_alias in members:
+            cur = conn.execute(
+                "SELECT node_id, session_id, last_seen, ttl FROM leases WHERE alias = ?",
+                (member_alias,),
+            )
+            lease = cur.fetchone()
+            to_alias = f"{member_alias}@{room_id}"
+            if lease is None or (lease["last_seen"] + lease["ttl"]) < ts:
+                conn.execute(
+                    """
+                    INSERT INTO dead_letter (message_id, from_alias, to_alias,
+                                             content, ts, reason)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        message_id,
+                        ROOM_SYSTEM_ALIAS,
+                        to_alias,
+                        content,
+                        ts,
+                        "recipient_dead",
+                    ),
+                )
+                continue
+            conn.execute(
+                """
+                INSERT INTO inboxes (node_id, session_id, message_id,
+                                     from_alias, to_alias, content, ts)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    lease["node_id"],
+                    lease["session_id"],
+                    message_id,
+                    ROOM_SYSTEM_ALIAS,
+                    to_alias,
+                    content,
+                    ts,
+                ),
+            )
+        conn.execute(
+            """
+            INSERT INTO room_history (room_id, message_id, from_alias, content, ts)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (room_id, message_id, ROOM_SYSTEM_ALIAS, content, ts),
+        )
 
     def leave_room(self, alias: str, room_id: str) -> dict:
         with self._lock:

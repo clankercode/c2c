@@ -154,10 +154,13 @@ def main(argv: list[str]) -> int:
     try:
         while True:
             iteration += 1
-            import c2c_mcp as _c2c_mcp
-            _n = _c2c_mcp.cleanup_stale_tmp_fea_so()
-            if _n:
-                print(f"[run-opencode-inst-outer] cleaned {_n} stale /tmp/.fea*.so file(s)", flush=True)
+            try:
+                import c2c_mcp as _c2c_mcp
+                _n = _c2c_mcp.cleanup_stale_tmp_fea_so()
+                if _n:
+                    print(f"[run-opencode-inst-outer] cleaned {_n} stale /tmp/.fea*.so file(s)", flush=True)
+            except Exception:
+                pass
             print(f"[run-opencode-inst-outer] iter {iteration}: launching {name}", flush=True)
             started = time.monotonic()
             proc = None

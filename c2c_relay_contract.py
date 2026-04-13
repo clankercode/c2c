@@ -90,6 +90,11 @@ RELAY_ERR_UNKNOWN_ALIAS = "unknown_alias"
 RELAY_ERR_ALIAS_CONFLICT = "alias_conflict"
 RELAY_ERR_SESSION_DEAD = "session_dead"
 RELAY_ERR_RECIPIENT_DEAD = "recipient_dead"
+ROOM_SYSTEM_ALIAS = "c2c-system"
+
+
+def room_join_content(alias: str, room_id: str) -> str:
+    return f"{alias} joined room {room_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +328,8 @@ class InMemoryRelay:
 
     def join_room(self, alias: str, room_id: str) -> dict:
         """Add alias to a room. Creates room on first join. No-op if already a member."""
+        import uuid as _uuid
+
         with self._lock:
             if alias not in self._leases:
                 raise RelayError(RELAY_ERR_UNKNOWN_ALIAS,
@@ -333,8 +340,47 @@ class InMemoryRelay:
                 members.append(alias)
             if room_id not in self._room_history:
                 self._room_history[room_id] = []
+            if not already_member:
+                self._broadcast_room_join_locked(
+                    alias=alias,
+                    room_id=room_id,
+                    message_id=str(_uuid.uuid4()),
+                    ts=time.time(),
+                )
             return {"ok": True, "room_id": room_id, "alias": alias,
                     "member_count": len(members), "already_member": already_member}
+
+    def _broadcast_room_join_locked(
+        self,
+        *,
+        alias: str,
+        room_id: str,
+        message_id: str,
+        ts: float,
+    ) -> None:
+        content = room_join_content(alias, room_id)
+        self._room_history.setdefault(room_id, []).append({
+            "message_id": message_id,
+            "from_alias": ROOM_SYSTEM_ALIAS,
+            "room_id": room_id,
+            "content": content,
+            "ts": ts,
+        })
+        for member_alias in list(self._rooms.get(room_id, [])):
+            lease = self._leases.get(member_alias)
+            msg = {
+                "message_id": message_id,
+                "from_alias": ROOM_SYSTEM_ALIAS,
+                "to_alias": f"{member_alias}@{room_id}",
+                "content": content,
+                "ts": ts,
+                "room_id": room_id,
+            }
+            if lease is None or not lease.is_alive(ts):
+                self._dead_letter.append({**msg, "reason": "recipient_dead"})
+                continue
+            key = (lease.node_id, lease.session_id)
+            self._inboxes.setdefault(key, []).append(msg)
 
     def leave_room(self, alias: str, room_id: str) -> dict:
         """Remove alias from a room. No-op if not a member."""

@@ -188,13 +188,54 @@ class SQLiteRelayContractTests(unittest.TestCase):
         msgs = self.relay.poll_inbox("node-b", "sess-2")
         self.assertEqual(msgs[0]["to_alias"], "kimi@swarm-lounge")
 
+    def test_join_room_broadcasts_system_notice_to_all_members(self):
+        self.relay.register("node-a", "sess-1", alias="codex")
+        self.relay.register("node-b", "sess-2", alias="kimi")
+        self.relay.join_room("codex", "swarm-lounge")
+        self.relay.poll_inbox("node-a", "sess-1")
+
+        self.relay.join_room("kimi", "swarm-lounge")
+
+        codex_msgs = self.relay.poll_inbox("node-a", "sess-1")
+        kimi_msgs = self.relay.poll_inbox("node-b", "sess-2")
+        for msgs in (codex_msgs, kimi_msgs):
+            notice = [
+                m for m in msgs
+                if m["content"] == "kimi joined room swarm-lounge"
+            ]
+            self.assertEqual(len(notice), 1)
+            self.assertEqual(notice[0]["from_alias"], "c2c-system")
+            self.assertEqual(notice[0]["to_alias"].split("@", 1)[1], "swarm-lounge")
+
+    def test_join_room_records_system_notice_in_history(self):
+        self.relay.register("node-a", "sess-1", alias="codex")
+
+        self.relay.join_room("codex", "swarm-lounge")
+
+        hist = self.relay.room_history("swarm-lounge")
+        self.assertEqual(len(hist), 1)
+        self.assertEqual(hist[0]["from_alias"], "c2c-system")
+        self.assertEqual(hist[0]["content"], "codex joined room swarm-lounge")
+
+    def test_join_room_idempotent_does_not_repeat_system_notice(self):
+        self.relay.register("node-a", "sess-1", alias="codex")
+        self.relay.join_room("codex", "swarm-lounge")
+        self.relay.join_room("codex", "swarm-lounge")
+
+        hist = self.relay.room_history("swarm-lounge")
+
+        self.assertEqual(
+            [m["content"] for m in hist],
+            ["codex joined room swarm-lounge"],
+        )
+
     def test_room_history_preserved(self):
         self.relay.register("node-a", "sess-1", alias="codex")
         self.relay.join_room("codex", "swarm-lounge")
         self.relay.send_room("codex", "swarm-lounge", "msg1")
         self.relay.send_room("codex", "swarm-lounge", "msg2")
         hist = self.relay.room_history("swarm-lounge")
-        self.assertEqual([m["content"] for m in hist], ["msg1", "msg2"])
+        self.assertEqual([m["content"] for m in hist[-2:]], ["msg1", "msg2"])
 
     def test_list_rooms(self):
         self.relay.register("node-a", "sess-1", alias="codex")
