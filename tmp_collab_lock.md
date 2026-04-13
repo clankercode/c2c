@@ -9,10 +9,126 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `c2c_deliver_inbox.py` | codex | add loop mode for automatic broker-to-PTY live delivery | 2026-04-13 14:29 |
-| `tests/test_c2c_deliver_inbox.py` | codex | regress deliver-inbox loop mode without touching shared test file | 2026-04-13 14:29 |
 
 ## History (addendum)
+
+- 2026-04-13 15:18 — storm-echo RELEASED implicit locks on
+  `.opencode/opencode.json` (new), `run-opencode-inst` (new),
+  `run-opencode-inst.d/c2c-opencode-local.json` (new),
+  `run-opencode-inst-outer` (new), `tests/test_c2c_cli.py`.
+  **Shipped Tasks 1-4 of the OpenCode local-onboarding plan.**
+  - 361377a: repo-local `.opencode/opencode.json` exposes c2c MCP
+    with stable `opencode-local` session id, polling-only delivery
+    (`C2C_MCP_AUTO_DRAIN_CHANNEL=0`).
+  - b13c531: `run-opencode-inst` inner launcher mirroring
+    run-codex-inst shape; sets RUN_OPENCODE_INST_* + C2C_MCP_* env,
+    execs `opencode run <prompt>` from repo cwd so the local
+    `.opencode/opencode.json` is auto-discovered. Dry-run mode prints
+    resolved JSON.
+  - 316e8be: `run-opencode-inst-outer` restart loop with fast-exit
+    backoff and double-SIGINT escape.
+  - 35501bf: `test_opencode_repo_local_config_lists_c2c_server`
+    integration test — shells out to `opencode mcp list` from repo
+    cwd, asserts c2c entry appears with c2c_mcp.py path. Manually
+    verified: c2c entry present when cwd=repo, absent from /tmp,
+    confirming opencode IS auto-discovering the repo-local config.
+  - Bonus c08a50f earlier this turn: `c2c init` bootstrap command
+    + dedupe-removal of an identical copy/paste test method that
+    pyright was flagging.
+  Verification: focused OpenCodeLocalConfigTests 4/4 (one of which
+  is `@skipUnless(shutil.which('opencode'))` and ran live), full
+  Python unittest 137/137 OK after codex's poker fix landed. Tasks
+  5-6 of the plan (live opencode round-trip proof + final
+  verification) are deferred — they need opencode running
+  interactively from a separate terminal as a real peer, which can't
+  be driven from inside this Claude Code session. The next concrete
+  step toward proving cross-client parity is for an operator (or
+  another agent) to run `./run-opencode-inst-outer c2c-opencode-local`
+  in a free terminal.
+
+- 2026-04-13 15:14 — codex RELEASED locks on `c2c_poker.py`
+  + `tests/test_c2c_poker.py`. Fixed stale-target poker behavior:
+  `--pid` mode now continues to watch the original client pid after
+  resolving terminal coordinates and exits cleanly if that pid goes
+  away, instead of indefinitely injecting into the old terminal. Poker
+  payloads now include a fresh `Sent at: ...` timestamp/date on each
+  injection. Verification: focused poker tests 2/2, full Python
+  unittest discovery 137/137, py_compile OK.
+
+- 2026-04-13 15:08 — storm-beacon RELEASED locks on
+  `ocaml/c2c_mcp.ml` + `ocaml/test/test_c2c_mcp.ml`.
+  **Registry lock now wraps enqueue_message and send_all (closes
+  concurrent register-vs-send race).** Pre-existing race I spotted
+  while writing the migration finding: `enqueue_message` resolved the
+  alias via `resolve_live_session_id_by_alias` without holding the
+  registry lock, so a sender that read a stale registry could write
+  to an inbox file whose owning reg had just been evicted by a
+  concurrent re-register. The new file would then have no live
+  registry row pointing at it, and the message was lost (sweep would
+  later dump it to dead-letter at best). Fix: `enqueue_message` and
+  `send_all` now both `with_registry_lock` around the full
+  resolve+inbox-lock+write path. Lock order is consistently
+  registry → inbox throughout the broker (matches sweep, register,
+  and the new register-migration block). Register migration moved
+  INSIDE the registry lock for the same reason — eviction and
+  inbox-migration are now atomic w.r.t. concurrent enqueues. New
+  test `register serializes with concurrent enqueue` forks a sender
+  that pushes 60 messages to alias `target` while the parent re-
+  registers `target` 8 times; asserts all 60 messages land on the
+  final winner's inbox and every intermediate inbox file is gone.
+  **42/42 green, stable across 5 runs.** Uncommitted — pending Max
+  approval.
+
+- 2026-04-13 15:05 — storm-echo RELEASED locks on `c2c_init.py` (new),
+  `c2c-init` (new), `c2c_cli.py`, `c2c_install.py`, `tests/test_c2c_cli.py`.
+  Added `c2c init` bootstrap command: idempotent welcome-mat that
+  ensures the broker root exists, prints peer count + aliases, and
+  echoes next-step CLI hints. Wired through CLI dispatch (added `init`
+  to SAFE_AUTO_APPROVE_SUBCOMMANDS), `c2c_install` shim list, and full
+  test coverage (dispatch mock + subprocess functional test against a
+  temp broker root). Also dedupe-removed an identical copy/paste of
+  `test_send_message_to_session_reloads_when_provided_sessions_lack_terminal_owner`
+  in test_c2c_cli.py that pyright was flagging. Committed as c08a50f.
+  Verification: `python -m unittest discover tests` 131/131 green.
+
+- 2026-04-13 14:57 — codex RELEASED locks on `c2c_deliver_inbox.py`
+  + `tests/test_c2c_deliver_inbox.py`. Added managed daemon mode for
+  the live delivery loop: `c2c deliver-inbox --daemon --loop --pidfile ...`
+  starts a detached process, waits for the child pidfile, reuses a live
+  pidfile instead of launching duplicates, and returns daemon/log metadata
+  as JSON or text. Verification: daemon/loop tests 5/5, full Python
+  unittest 128/128, py_compile OK, live daemon probe reused running Codex
+  delivery loop pid 1559218 with no duplicate process left behind.
+
+- 2026-04-13 14:48 — storm-beacon RELEASED locks on
+  `ocaml/c2c_mcp.ml` + `ocaml/test/test_c2c_mcp.ml`. **register now
+  migrates undrained inbox on alias re-register.** Bug: when a session
+  re-registers under the same alias with a fresh session_id (e.g. a
+  re-launched agent), the alias-dedupe logic evicts the prior reg row,
+  but messages already queued on the old session's inbox file get
+  stranded. Sweep eventually preserves them to dead-letter, but the
+  re-launched session — same logical agent — never sees them. Fix:
+  in `Broker.register`, partition regs into evicted + kept; for each
+  evicted reg whose session_id differs from the new one, drain its
+  inbox under the old inbox lock, unlink, then append those messages
+  to the new session's inbox under the new inbox lock. Lock order:
+  registry → release → old_inbox → release → new_inbox → release.
+  No nested inbox locks. New test
+  `register migrates undrained inbox on alias re-register` registers
+  alias storm-recv with old session, queues two messages, re-registers
+  under new session, drains new inbox, asserts both messages present
+  in order and old inbox file is removed. **41/41 green** (was 40/40).
+  Uncommitted — pending Max approval.
+
+- 2026-04-13 14:38 — codex RELEASED locks on `c2c_deliver_inbox.py`
+  + `tests/test_c2c_deliver_inbox.py`. Added loop mode for the live
+  broker-to-PTY delivery bridge: `c2c deliver-inbox --loop` keeps polling
+  and injecting for Claude/Codex/OpenCode/generic terminals, `--interval`
+  controls cadence, `--max-iterations` makes probes/tests bounded, and
+  `--pidfile` writes an operator-visible process marker before delivery
+  starts. Verification: focused deliver-inbox loop tests + CLI dispatch
+  tests 4/4, full Python unittest 123/123, py_compile OK, and live Codex
+  dry-run loop resolved terminal pid 3725367 pts 5.
 
 - 2026-04-13 14:32 — storm-echo RELEASED lock on `c2c_list.py` +
   `tests/test_c2c_cli.py`. **Added `c2c list --broker` flag** that reads
