@@ -98,7 +98,19 @@ def check_session(broker_root: Path, session_id: str | None = None) -> dict[str,
                 result["alias"] = registration.get("alias")
                 result["session_id"] = registration.get("session_id")
         else:
-            _, registration = c2c_whoami.resolve_identity(None)
+            # Try C2C_MCP_SESSION_ID first (set by outer loops for managed sessions).
+            # c2c_whoami.resolve_identity() doesn't check this env var, so we do it
+            # explicitly before falling back to file-based session discovery.
+            mcp_sid = os.environ.get("C2C_MCP_SESSION_ID", "").strip()
+            registration = None
+            if mcp_sid:
+                registry_path = broker_root / "registry.json"
+                registrations = c2c_mcp.load_broker_registrations(registry_path)
+                registration = next(
+                    (r for r in registrations if r.get("session_id") == mcp_sid), None
+                )
+            if registration is None:
+                _, registration = c2c_whoami.resolve_identity(None)
             result["resolved"] = True
 
             if registration:

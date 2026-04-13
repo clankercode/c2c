@@ -7797,6 +7797,100 @@ class HealthCheckSessionInboxPendingTests(unittest.TestCase):
         self.assertEqual(result["inbox_pending"], 0)
 
 
+class HealthCheckSessionMcpSessionIdTests(unittest.TestCase):
+    """Tests for C2C_MCP_SESSION_ID fallback in c2c_health.check_session()."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.broker_root = Path(self.tmpdir)
+        self.registry_path = self.broker_root / "registry.json"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_registry(self, session_id: str, alias: str) -> None:
+        import os
+
+        self.registry_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "session_id": session_id,
+                        "alias": alias,
+                        "pid": os.getpid(),
+                        "pid_start_time": 1,
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    def test_mcp_session_id_resolves_when_no_explicit_session_id(self):
+        """C2C_MCP_SESSION_ID env var is used as fallback for session resolution."""
+        import c2c_health
+
+        self._write_registry("mcp-sid-abc123", "storm-beacon")
+
+        with mock.patch.dict(
+            os.environ, {"C2C_MCP_SESSION_ID": "mcp-sid-abc123"}, clear=False
+        ):
+            # Remove env vars that would interfere with whoami resolution
+            env = {
+                k: v
+                for k, v in os.environ.items()
+                if k not in ("C2C_SESSION_ID", "C2C_SESSION_PID")
+            }
+            env["C2C_MCP_SESSION_ID"] = "mcp-sid-abc123"
+            with mock.patch.dict(os.environ, env, clear=True):
+                result = c2c_health.check_session(self.broker_root)
+
+        self.assertTrue(result["resolved"])
+        self.assertTrue(result["registered"])
+        self.assertEqual(result["alias"], "storm-beacon")
+        self.assertEqual(result["session_id"], "mcp-sid-abc123")
+
+    def test_mcp_session_id_not_in_registry_gives_unregistered(self):
+        """C2C_MCP_SESSION_ID set but not registered yields resolved=True, registered=False."""
+        import c2c_health
+
+        # Registry is empty
+        self.registry_path.write_text("[]", encoding="utf-8")
+
+        with mock.patch.dict(
+            os.environ, {"C2C_MCP_SESSION_ID": "unknown-sid-xyz"}, clear=False
+        ):
+            env = {
+                k: v
+                for k, v in os.environ.items()
+                if k not in ("C2C_SESSION_ID", "C2C_SESSION_PID")
+            }
+            env["C2C_MCP_SESSION_ID"] = "unknown-sid-xyz"
+            with mock.patch("c2c_whoami.resolve_identity", return_value=(None, None)):
+                with mock.patch.dict(os.environ, env, clear=True):
+                    result = c2c_health.check_session(self.broker_root)
+
+        self.assertTrue(result["resolved"])
+        self.assertFalse(result["registered"])
+
+    def test_explicit_session_id_arg_takes_priority_over_mcp_env(self):
+        """Explicit session_id arg bypasses C2C_MCP_SESSION_ID env var."""
+        import c2c_health
+
+        self._write_registry("explicit-sid-999", "operator-alias")
+
+        with mock.patch.dict(
+            os.environ, {"C2C_MCP_SESSION_ID": "mcp-sid-should-be-ignored"}, clear=False
+        ):
+            result = c2c_health.check_session(
+                self.broker_root, session_id="explicit-sid-999"
+            )
+
+        self.assertTrue(result["registered"])
+        self.assertEqual(result["alias"], "operator-alias")
+        self.assertEqual(result["session_id"], "explicit-sid-999")
+        self.assertTrue(result["operator_check"])
+
+
 class HealthCheckWireDaemonTests(unittest.TestCase):
     """Tests for c2c_health.check_wire_daemon()."""
 
