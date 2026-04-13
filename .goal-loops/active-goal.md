@@ -35,7 +35,7 @@ These are Max's target experiences, verbatim:
 
 ---
 
-## Current Status (updated 2026-04-14)
+## Current Status (updated 2026-04-14, storm-ember)
 
 ### Satisfied (all AC met)
 
@@ -68,9 +68,13 @@ These are Max's target experiences, verbatim:
   one-shot probes from evicting live peer registrations.
 - **`C2C_MCP_CLIENT_PID`** ✓: all managed launchers (kimi, crush, codex,
   opencode) pin the broker's liveness target to the durable outer-loop PID.
-- **OCaml broker** ✓: 96 tests; sweep, rooms, dead-letter, alias dedup,
-  peer-renamed fan-out, session hijack guard, alias-occupied guard.
-- **Python suite** ✓: 652 tests across all subsystems.
+- **OCaml broker** ✓: 97 tests; sweep, rooms, dead-letter, alias dedup,
+  peer-renamed fan-out, session hijack guard, alias-occupied guard,
+  dead-pid fallback in `current_client_pid()`.
+- **Python suite** ✓: 661 tests across all subsystems.
+- **Kimi wake daemon** ✓: `c2c_kimi_wake_daemon.py` now uses
+  `c2c_pts_inject` direct PTS write (not pty_inject binary). Bypasses
+  bracketed-paste issue; proven live 2026-04-13.
 
 ### Active Work
 
