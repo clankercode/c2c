@@ -350,5 +350,34 @@ def main(argv: list[str] | None = None) -> int:
     ).returncode
 
 
+def cleanup_stale_tmp_fea_so(
+    tmp_dir: str = "/tmp",
+    min_age_seconds: float = 300.0,
+) -> int:
+    """Remove stale fonttools .fea*.so temporary files from /tmp.
+
+    These files accumulate from repeated Python/font processing runs and can
+    exhaust per-user disk quota, breaking all shell commands.  Safe to call
+    at any time — only removes files older than *min_age_seconds* (default 5m).
+
+    Returns the number of files deleted.
+    """
+    import glob as _glob
+    import pathlib as _pathlib
+    import time as _time
+
+    now = _time.time()
+    deleted = 0
+    for path_str in _glob.glob(f"{tmp_dir}/.fea*.so"):
+        try:
+            p = _pathlib.Path(path_str)
+            if now - p.stat().st_mtime >= min_age_seconds:
+                p.unlink()
+                deleted += 1
+        except OSError:
+            pass
+    return deleted
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
