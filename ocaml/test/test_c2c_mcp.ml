@@ -591,6 +591,65 @@ let test_tools_call_register_no_alias_falls_back_to_env () =
           check string "alias from env" "kimi-xertrov-x" reg.alias;
           check string "session from env" "session-noarg" reg.session_id))
 
+let test_tools_call_register_alias_rename_notifies_rooms () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-renamed"
+        ~alias:"old-alias" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-peer"
+        ~alias:"peer-alias" ~pid:None ~pid_start_time:None;
+      ignore
+        (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
+           ~alias:"old-alias" ~session_id:"session-renamed");
+      ignore
+        (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
+           ~alias:"peer-alias" ~session_id:"session-peer");
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-renamed";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 199)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "register")
+                    ; ("arguments", `Assoc [ ("alias", `String "new-alias") ])
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          (match response with None -> fail "expected register response" | Some _ -> ());
+          let history =
+            C2c_mcp.Broker.read_room_history broker ~room_id:"swarm-lounge"
+              ~limit:10
+          in
+          check int "one rename history event" 1 (List.length history);
+          let event = List.hd history in
+          check string "rename event sender" "c2c-system" event.rm_from_alias;
+          let parsed = Yojson.Safe.from_string event.rm_content in
+          let open Yojson.Safe.Util in
+          check string "event type" "peer_renamed"
+            (parsed |> member "type" |> to_string);
+          check string "old alias" "old-alias"
+            (parsed |> member "old_alias" |> to_string);
+          check string "new alias" "new-alias"
+            (parsed |> member "new_alias" |> to_string);
+          let peer_inbox =
+            C2c_mcp.Broker.read_inbox broker ~session_id:"session-peer"
+          in
+          check int "peer received room fanout" 1 (List.length peer_inbox);
+          let msg = List.hd peer_inbox in
+          check string "fanout sender" "c2c-system" msg.from_alias;
+          check string "fanout to tagged peer" "peer-alias@swarm-lounge"
+            msg.to_alias;
+          check string "fanout content matches history" event.rm_content
+            msg.content))
+
 let test_server_startup_auto_registers_alias_from_env () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-auto";
@@ -2732,6 +2791,61 @@ let test_tools_call_leave_room_accepts_from_alias_as_alias () =
                check int "zero members after leave" 0
                  (List.length members))))
 
+let test_register_rename_fans_out_peer_renamed_notification () =
+  (* When a session re-registers with a different alias while it's a room
+     member, the broker should append a peer_renamed notification to the
+     room history of every room the session was in. *)
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-rename";
+      Unix.putenv "C2C_MCP_CLIENT_PID" "";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_CLIENT_PID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          ignore broker;
+          let make_request id name args =
+            Lwt_main.run
+              (C2c_mcp.handle_request ~broker_root:dir
+                 (`Assoc
+                   [ ("jsonrpc", `String "2.0")
+                   ; ("id", `Int id)
+                   ; ("method", `String "tools/call")
+                   ; ("params",
+                      `Assoc [ ("name", `String name); ("arguments", `Assoc args) ])
+                   ]))
+          in
+          (* Register original alias. *)
+          ignore (make_request 1 "register" [ ("alias", `String "old-alias") ]);
+          (* Join a room as old-alias. *)
+          ignore
+            (make_request 2 "join_room"
+               [ ("from_alias", `String "old-alias")
+               ; ("room_id", `String "rename-test-room")
+               ]);
+          (* Re-register with a new alias — should append peer_renamed to room. *)
+          ignore (make_request 3 "register" [ ("alias", `String "new-alias") ]);
+          (* Verify peer_renamed appears in room history. *)
+          let history =
+            C2c_mcp.Broker.read_room_history
+              (C2c_mcp.Broker.create ~root:dir)
+              ~room_id:"rename-test-room" ~limit:20
+          in
+          let found =
+            List.exists
+              (fun m ->
+                let open Yojson.Safe in
+                try
+                  let j = from_string m.C2c_mcp.rm_content in
+                  Util.(member "type" j |> to_string) = "peer_renamed"
+                  && Util.(member "old_alias" j |> to_string) = "old-alias"
+                  && Util.(member "new_alias" j |> to_string) = "new-alias"
+                with _ -> false)
+              history
+          in
+          check bool "peer_renamed in room history" true found))
+
 let () =
   run "c2c_mcp"
     [ ( "broker",
@@ -2772,6 +2886,8 @@ let () =
              test_tools_call_register_prefers_explicit_client_pid_env
          ; test_case "tools/call register no alias falls back to env" `Quick
              test_tools_call_register_no_alias_falls_back_to_env
+         ; test_case "tools/call register alias rename notifies rooms" `Quick
+             test_tools_call_register_alias_rename_notifies_rooms
          ; test_case "server startup auto-registers alias from env" `Quick
              test_server_startup_auto_registers_alias_from_env
          ; test_case "auto_register_startup skips when alive session has different alias" `Quick
@@ -2900,4 +3016,6 @@ let () =
              test_large_inbox_drains_all_messages
          ; test_case "room_history limit=1 returns only last message" `Quick
              test_room_history_limit_one_returns_last
+         ; test_case "register rename fans out peer_renamed notification" `Quick
+             test_register_rename_fans_out_peer_renamed_notification
          ] ) ]

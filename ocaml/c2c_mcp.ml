@@ -1209,8 +1209,44 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
         | Some pid -> Some pid
         | None -> Some (Unix.getppid ())
       in
+      (* Detect alias rename before registering so we can notify rooms. *)
+      let old_alias_opt =
+        let existing =
+          List.find_opt
+            (fun reg -> reg.session_id = session_id && reg.alias <> alias)
+            (Broker.list_registrations broker)
+        in
+        match existing with
+        | Some reg -> Some reg.alias
+        | None -> None
+      in
+      (* Capture rooms BEFORE re-registering (membership still uses old alias). *)
+      let rooms_to_notify =
+        match old_alias_opt with
+        | None -> []
+        | Some _ ->
+            List.map (fun ri -> ri.Broker.ri_room_id)
+              (Broker.my_rooms broker ~session_id)
+      in
       let pid_start_time = Broker.capture_pid_start_time pid in
       Broker.register broker ~session_id ~alias ~pid ~pid_start_time;
+      (* Fan out peer-renamed notification to rooms the session was in. *)
+      (match old_alias_opt with
+       | None -> ()
+       | Some old_alias ->
+           let content =
+             Printf.sprintf
+               {|{"type":"peer_renamed","old_alias":"%s","new_alias":"%s"}|}
+               old_alias alias
+           in
+           List.iter
+             (fun room_id ->
+               (try
+                  ignore
+                    (Broker.send_room broker ~from_alias:"c2c-system"
+                       ~room_id ~content)
+                with _ -> ()))
+             rooms_to_notify);
       Lwt.return (tool_result ~content:("registered " ^ alias) ~is_error:false)
   | "list" ->
       let registrations = Broker.list_registrations broker in
