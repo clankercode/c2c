@@ -50,6 +50,19 @@ module Broker : sig
   val sweep : t -> sweep_result
   val dead_letter_path : t -> string
 
+  (** {2 Inbox archive} *)
+
+  type archive_entry =
+    { ae_drained_at : float
+    ; ae_from_alias : string
+    ; ae_to_alias : string
+    ; ae_content : string
+    }
+
+  val archive_path : t -> session_id:string -> string
+  val append_archive : t -> session_id:string -> messages:message list -> unit
+  val read_archive : t -> session_id:string -> limit:int -> archive_entry list
+
   (** {2 N:N rooms (phase 2)} *)
 
   type liveness_state = Alive | Dead | Unknown

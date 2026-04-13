@@ -8,7 +8,7 @@ type message = { from_alias : string; to_alias : string; content : string }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 
-let server_version = "0.6.1"
+let server_version = "0.6.2"
 
 let server_features =
   [ "liveness"
@@ -28,6 +28,8 @@ let server_features =
   ; "rooms"
   ; "startup_auto_register"
   ; "send_room_alias_fallback"
+  ; "inbox_archive_on_drain"
+  ; "history_tool"
   ]
 
 let server_info =
@@ -410,17 +412,163 @@ module Broker = struct
 
   let read_inbox t ~session_id = load_inbox t ~session_id
 
+  (* ---------- inbox archive (drain is append-only, not destructive) ----------
+     Every message drained via poll_inbox is appended to
+     <root>/archive/<session_id>.jsonl BEFORE the live inbox is cleared.
+     This means drained messages become part of a per-session, append-only
+     history that tools like `history` can read back. If the archive append
+     fails (disk full, permission, etc.) we do NOT clear the inbox, so the
+     "drained messages are never deleted" invariant holds atomically under
+     the per-inbox lock. *)
+
+  let archive_dir t = Filename.concat t.root "archive"
+
+  let archive_path t ~session_id =
+    Filename.concat (archive_dir t) (session_id ^ ".jsonl")
+
+  let archive_lock_path t ~session_id =
+    Filename.concat (archive_dir t) (session_id ^ ".lock")
+
+  let ensure_archive_dir t =
+    ensure_root t;
+    let d = archive_dir t in
+    if not (Sys.file_exists d) then Unix.mkdir d 0o700
+
+  (* POSIX fcntl lock on a per-session sidecar file. Scoped per session so
+     a drain by one session never blocks drains by another. Same pattern
+     as the inbox lock. *)
+  let with_archive_lock t ~session_id f =
+    ensure_archive_dir t;
+    let fd =
+      Unix.openfile (archive_lock_path t ~session_id)
+        [ O_RDWR; O_CREAT ] 0o644
+    in
+    Fun.protect
+      ~finally:(fun () ->
+        (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+        (try Unix.close fd with _ -> ()))
+      (fun () ->
+        Unix.lockf fd Unix.F_LOCK 0;
+        f ())
+
+  let append_archive t ~session_id ~messages =
+    match messages with
+    | [] -> ()
+    | _ ->
+        with_archive_lock t ~session_id (fun () ->
+            (* Mode 0o600: archive records carry DM content, must not be
+               world-readable. *)
+            let oc =
+              open_out_gen
+                [ Open_wronly; Open_append; Open_creat ]
+                0o600 (archive_path t ~session_id)
+            in
+            Fun.protect
+              ~finally:(fun () -> try close_out oc with _ -> ())
+              (fun () ->
+                let ts = Unix.gettimeofday () in
+                List.iter
+                  (fun ({ from_alias; to_alias; content } : message) ->
+                    let record =
+                      `Assoc
+                        [ ("drained_at", `Float ts)
+                        ; ("session_id", `String session_id)
+                        ; ("from_alias", `String from_alias)
+                        ; ("to_alias", `String to_alias)
+                        ; ("content", `String content)
+                        ]
+                    in
+                    output_string oc (Yojson.Safe.to_string record);
+                    output_char oc '\n')
+                  messages))
+
+  type archive_entry =
+    { ae_drained_at : float
+    ; ae_from_alias : string
+    ; ae_to_alias : string
+    ; ae_content : string
+    }
+
+  let archive_entry_of_json json =
+    let open Yojson.Safe.Util in
+    { ae_drained_at =
+        (match json |> member "drained_at" with
+         | `Float f -> f
+         | `Int i -> float_of_int i
+         | _ -> 0.0)
+    ; ae_from_alias =
+        (try json |> member "from_alias" |> to_string with _ -> "")
+    ; ae_to_alias =
+        (try json |> member "to_alias" |> to_string with _ -> "")
+    ; ae_content =
+        (try json |> member "content" |> to_string with _ -> "")
+    }
+
+  (* Return up to [limit] most-recent archive entries for [session_id],
+     newest first. Reads the per-session jsonl file under the archive
+     lock so concurrent appends can't interleave. Missing file => []. *)
+  let read_archive t ~session_id ~limit =
+    if limit <= 0 then []
+    else
+      with_archive_lock t ~session_id (fun () ->
+          let path = archive_path t ~session_id in
+          if not (Sys.file_exists path) then []
+          else
+            let ic = open_in path in
+            Fun.protect
+              ~finally:(fun () -> try close_in ic with _ -> ())
+              (fun () ->
+                let rec loop acc =
+                  match input_line ic with
+                  | exception End_of_file -> List.rev acc
+                  | line ->
+                      let line = String.trim line in
+                      if line = "" then loop acc
+                      else
+                        let entry =
+                          try
+                            Some (archive_entry_of_json
+                                    (Yojson.Safe.from_string line))
+                          with _ -> None
+                        in
+                        (match entry with
+                         | Some e -> loop (e :: acc)
+                         | None -> loop acc)
+                in
+                let all = loop [] in
+                (* [all] is now oldest-first. Take the last [limit] and
+                   reverse to get newest-first. *)
+                let total = List.length all in
+                let drop = max 0 (total - limit) in
+                let rec drop_n n = function
+                  | [] -> []
+                  | _ :: rest when n > 0 -> drop_n (n - 1) rest
+                  | xs -> xs
+                in
+                List.rev (drop_n drop all)))
+
   (* Skip the file write when the inbox is already empty. This keeps
      close_write events out of inotify streams — every tool call that
      auto-drains would otherwise fire a noisy event on an idle inbox,
      swamping agent-visibility monitors with meaningless drain churn.
-     Semantic is unchanged: callers still get [] for an empty inbox. *)
+     Semantic is unchanged: callers still get [] for an empty inbox.
+
+     Drained messages are appended to the per-session archive file
+     BEFORE the live inbox is cleared. If the archive append raises
+     (disk full, permission, IO error), we let the exception propagate
+     WITHOUT clearing the inbox — the drain fails atomically under the
+     inbox lock, so the caller will see the error and the messages
+     remain in the live inbox for retry. This upholds the "drained
+     messages are never deleted, only archived" invariant even in the
+     failure case. *)
   let drain_inbox t ~session_id =
     with_inbox_lock t ~session_id (fun () ->
         let messages = load_inbox t ~session_id in
         (match messages with
          | [] -> ()
-         | _ -> save_inbox t ~session_id []);
+         | _ ->
+             append_archive t ~session_id ~messages;
+             save_inbox t ~session_id []);
         messages)
 
   type sweep_result =
@@ -832,6 +980,7 @@ let tool_definitions =
   ; tool_definition ~name:"send_room" ~description:"Send a message to a persistent N:N room. Appends to room history and fans out to every member's inbox except the sender, with to_alias tagged as '<alias>@<room_id>'. Returns JSON {delivered_to, skipped, ts}." ~required:[ "from_alias"; "room_id"; "content" ]
   ; tool_definition ~name:"list_rooms" ~description:"List all persistent rooms with member counts and member aliases. Returns a JSON array of {room_id, member_count, members}." ~required:[]
   ; tool_definition ~name:"room_history" ~description:"Return the last `limit` (default 50) messages from a room's append-only history. Read-only." ~required:[ "room_id" ]
+  ; tool_definition ~name:"history" ~description:"Return your own archived inbox messages, newest first. Every message drained via poll_inbox is archived to a per-session append-only log before the live inbox is cleared, so this tool gives you a durable record of everything you've ever received. Caller's session_id is always resolved from the MCP env (C2C_MCP_SESSION_ID); passing a session_id argument is ignored for isolation — you can only read your own history. Optional `limit` (default 50). Returns a JSON array of {drained_at, from_alias, to_alias, content} objects." ~required:[]
   ]
 
 let string_member name json =
@@ -1025,6 +1174,45 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
         |> Yojson.Safe.to_string
       in
       Lwt.return (tool_result ~content ~is_error:false)
+  | "history" ->
+      (* Deliberately bypass resolve_session_id — it would honor a
+         session_id argument override, which would let the caller read
+         any session's history. For `history`, the caller can only see
+         their own archived messages, keyed by the MCP env session id.
+         (Subagent-level isolation — preventing a forked child from
+         inheriting the parent's env — is goal B, tracked separately in
+         the archive-and-subagent-goals findings doc.) *)
+      (match current_session_id () with
+       | None ->
+           Lwt.return
+             (tool_result
+                ~content:"history: no session_id in env (set C2C_MCP_SESSION_ID)"
+                ~is_error:true)
+       | Some session_id ->
+           let limit =
+             match Broker.int_opt_member "limit" arguments with
+             | Some n -> n
+             | None -> 50
+           in
+           let entries = Broker.read_archive broker ~session_id ~limit in
+           let content =
+             `List
+               (List.map
+                  (fun ({ Broker.ae_drained_at
+                        ; ae_from_alias
+                        ; ae_to_alias
+                        ; ae_content
+                        } : Broker.archive_entry) ->
+                    `Assoc
+                      [ ("drained_at", `Float ae_drained_at)
+                      ; ("from_alias", `String ae_from_alias)
+                      ; ("to_alias", `String ae_to_alias)
+                      ; ("content", `String ae_content)
+                      ])
+                  entries)
+             |> Yojson.Safe.to_string
+           in
+           Lwt.return (tool_result ~content ~is_error:false))
   | "sweep" ->
       let { Broker.dropped_regs; deleted_inboxes; preserved_messages } =
         Broker.sweep broker

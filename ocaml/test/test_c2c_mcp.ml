@@ -90,6 +90,184 @@ let test_blank_inbox_file_is_treated_as_empty () =
       let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-z" in
       check int "blank inbox treated as empty" 0 (List.length inbox))
 
+(* ---------- inbox archive (v0.6.2) ---------- *)
+
+let test_drain_inbox_archives_messages_before_clearing () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-alice"
+        ~alias:"alice" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-bob"
+        ~alias:"bob" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"alice"
+        ~to_alias:"bob" ~content:"first ping";
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"alice"
+        ~to_alias:"bob" ~content:"second ping";
+      let drained =
+        C2c_mcp.Broker.drain_inbox broker ~session_id:"session-bob"
+      in
+      check int "drained both" 2 (List.length drained);
+      (* Archive file exists and is non-empty. *)
+      let archive_file = C2c_mcp.Broker.archive_path broker ~session_id:"session-bob" in
+      check bool "archive file exists after drain" true (Sys.file_exists archive_file);
+      (* Read back: newest-first, both messages present, content matches. *)
+      let entries =
+        C2c_mcp.Broker.read_archive broker ~session_id:"session-bob" ~limit:100
+      in
+      check int "archive has both entries" 2 (List.length entries);
+      (match entries with
+       | [ newest; oldest ] ->
+           check string "newest content" "second ping" newest.C2c_mcp.Broker.ae_content;
+           check string "oldest content" "first ping" oldest.C2c_mcp.Broker.ae_content;
+           check string "newest from_alias" "alice" newest.C2c_mcp.Broker.ae_from_alias;
+           check string "newest to_alias" "bob" newest.C2c_mcp.Broker.ae_to_alias;
+           check bool "drained_at is positive" true (newest.C2c_mcp.Broker.ae_drained_at > 0.0)
+       | _ -> fail "expected exactly 2 archive entries"))
+
+let test_drain_inbox_empty_does_not_create_archive () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let _drained =
+        C2c_mcp.Broker.drain_inbox broker ~session_id:"session-silent"
+      in
+      let archive_file =
+        C2c_mcp.Broker.archive_path broker ~session_id:"session-silent"
+      in
+      check bool "empty drain does not create archive file" false
+        (Sys.file_exists archive_file))
+
+let test_read_archive_missing_session_returns_empty () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let entries =
+        C2c_mcp.Broker.read_archive broker ~session_id:"never-existed" ~limit:10
+      in
+      check int "no archive => empty list" 0 (List.length entries))
+
+let test_read_archive_respects_limit () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-sender"
+        ~alias:"sender" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-recv"
+        ~alias:"recv" ~pid:None ~pid_start_time:None;
+      for i = 1 to 5 do
+        C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
+          ~to_alias:"recv" ~content:(Printf.sprintf "msg-%d" i)
+      done;
+      let _ = C2c_mcp.Broker.drain_inbox broker ~session_id:"session-recv" in
+      (* Ask for the last 2 — should be msg-5 and msg-4 (newest first). *)
+      let entries =
+        C2c_mcp.Broker.read_archive broker ~session_id:"session-recv" ~limit:2
+      in
+      check int "limit=2 returns 2" 2 (List.length entries);
+      (match entries with
+       | [ newest; second ] ->
+           check string "newest is msg-5" "msg-5" newest.C2c_mcp.Broker.ae_content;
+           check string "second-newest is msg-4" "msg-4" second.C2c_mcp.Broker.ae_content
+       | _ -> fail "expected exactly 2 entries"))
+
+let test_tools_call_history_returns_archived_messages () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-histcaller";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-sender"
+            ~alias:"sender" ~pid:None ~pid_start_time:None;
+          C2c_mcp.Broker.register broker ~session_id:"session-histcaller"
+            ~alias:"histcaller" ~pid:None ~pid_start_time:None;
+          C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
+            ~to_alias:"histcaller" ~content:"archived-one";
+          C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
+            ~to_alias:"histcaller" ~content:"archived-two";
+          let _ =
+            C2c_mcp.Broker.drain_inbox broker ~session_id:"session-histcaller"
+          in
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 100)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "history")
+                    ; ("arguments", `Assoc []) ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected tools/call history response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              let arr = Yojson.Safe.from_string text |> to_list in
+              check int "history returns 2 entries" 2 (List.length arr);
+              let newest = List.nth arr 0 in
+              check string "newest content via tool" "archived-two"
+                (newest |> member "content" |> to_string)))
+
+let test_tools_call_history_ignores_session_id_argument () =
+  (* Subagent-style probe: caller tries to pass session_id="victim" to
+     read another session's archive. The history tool must ignore the
+     argument and only read the env session_id's archive. *)
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-attacker";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-sender"
+            ~alias:"sender" ~pid:None ~pid_start_time:None;
+          C2c_mcp.Broker.register broker ~session_id:"session-victim"
+            ~alias:"victim" ~pid:None ~pid_start_time:None;
+          C2c_mcp.Broker.register broker ~session_id:"session-attacker"
+            ~alias:"attacker" ~pid:None ~pid_start_time:None;
+          (* Seed victim's archive. *)
+          C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
+            ~to_alias:"victim" ~content:"secret-to-victim";
+          let _ =
+            C2c_mcp.Broker.drain_inbox broker ~session_id:"session-victim"
+          in
+          (* Attacker calls history with session_id="session-victim". *)
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 101)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "history")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("session_id", `String "session-victim")
+                          ] ) ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected tools/call history response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              let arr = Yojson.Safe.from_string text |> to_list in
+              (* Attacker's own archive is empty, so should return []. *)
+              check int "attacker sees only their own archive (empty)"
+                0 (List.length arr);
+              check bool "tool is not an error" false
+                (json |> member "result" |> member "isError" |> to_bool)))
+
 let test_channel_notification_matches_claude_channel_shape () =
   let json =
     C2c_mcp.channel_notification
@@ -165,6 +343,8 @@ let test_initialize_reports_server_version_and_features () =
             ; "registry_locked_enqueue"
             ; "startup_auto_register"
             ; "send_room_alias_fallback"
+            ; "inbox_archive_on_drain"
+            ; "history_tool"
             ]
           in
           List.iter
@@ -1712,6 +1892,18 @@ let () =
         ; test_case "empty drain does not rewrite existing empty inbox file" `Quick
             test_drain_inbox_empty_does_not_rewrite_existing_empty_file
         ; test_case "blank inbox file treated as empty" `Quick test_blank_inbox_file_is_treated_as_empty
+        ; test_case "drain archives messages before clearing" `Quick
+            test_drain_inbox_archives_messages_before_clearing
+        ; test_case "empty drain does not create archive" `Quick
+            test_drain_inbox_empty_does_not_create_archive
+        ; test_case "read_archive missing session returns empty" `Quick
+            test_read_archive_missing_session_returns_empty
+        ; test_case "read_archive respects limit" `Quick
+            test_read_archive_respects_limit
+        ; test_case "tools/call history returns archived messages" `Quick
+            test_tools_call_history_returns_archived_messages
+        ; test_case "tools/call history ignores session_id arg (subagent probe)" `Quick
+            test_tools_call_history_ignores_session_id_argument
         ; test_case "channel notification shape" `Quick test_channel_notification_matches_claude_channel_shape
         ; test_case "initialize returns capabilities" `Quick test_initialize_returns_mcp_capabilities
          ; test_case "initialize reports server version and features" `Quick
