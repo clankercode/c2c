@@ -126,6 +126,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_prune.py",
         "c2c_send.py",
         "c2c_send_all.py",
+        "c2c_smoke_test.py",
         "c2c_setup.py",
         "c2c_install.py",
         "c2c_deliver_inbox.py",
@@ -145,6 +146,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_crush_wake_daemon.py",
         "c2c_cli.py",
         "c2c_history.py",
+        "c2c_smoke_test.py",
         "c2c_mcp.py",
         "c2c_registry.py",
         "claude_send_msg.py",
@@ -461,9 +463,7 @@ class C2CCLITests(unittest.TestCase):
     def test_c2c_top_level_help_prints_usage(self):
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with mock.patch("sys.stdout", new=stdout), mock.patch(
-            "sys.stderr", new=stderr
-        ):
+        with mock.patch("sys.stdout", new=stdout), mock.patch("sys.stderr", new=stderr):
             result = c2c_cli.main(["--help"])
 
         self.assertEqual(result, 0)
@@ -2909,6 +2909,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c_prune.py",
                 "c2c_send.py",
                 "c2c_send_all.py",
+                "c2c_smoke_test.py",
                 "c2c_setup.py",
                 "c2c_install.py",
                 "c2c_deliver_inbox.py",
@@ -2927,6 +2928,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c_crush_wake_daemon.py",
                 "c2c_cli.py",
                 "c2c_history.py",
+                "c2c_smoke_test.py",
                 "c2c_mcp.py",
                 "c2c_registry.py",
                 "claude_send_msg.py",
