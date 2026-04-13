@@ -18,11 +18,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
 C2C_MCP_PATH = REPO_ROOT / "c2c_mcp.py"
 BROKER_ROOT = REPO_ROOT / ".git" / "c2c" / "mcp"
+PLUGIN_SRC = REPO_ROOT / ".opencode" / "plugins" / "c2c.ts"
+PLUGIN_PACKAGE_JSON = {"dependencies": {"@opencode-ai/plugin": "1.4.3"}}
 
 
 def derive_session_id(target_dir: Path) -> str:
@@ -49,9 +52,45 @@ def build_config(session_id: str, alias: str) -> dict:
     }
 
 
+def install_plugin(config_dir: Path, *, force: bool) -> tuple[bool, str]:
+    """Install the c2c OpenCode plugin into <config_dir>/plugins/c2c.ts.
+
+    Returns (installed: bool, note: str).
+    """
+    if not PLUGIN_SRC.exists():
+        return False, "plugin source not found (expected .opencode/plugins/c2c.ts in c2c repo)"
+
+    plugins_dir = config_dir / "plugins"
+    plugins_dir.mkdir(parents=True, exist_ok=True)
+
+    dest = plugins_dir / "c2c.ts"
+    if dest.exists() and not force:
+        return False, f"plugin already exists at {dest} (use --force to overwrite)"
+
+    shutil.copy2(str(PLUGIN_SRC), str(dest))
+
+    # Write/merge package.json for the plugin dependency
+    pkg_path = config_dir / "package.json"
+    if pkg_path.exists():
+        try:
+            existing = json.loads(pkg_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            existing = {}
+        deps = existing.setdefault("dependencies", {})
+        for k, v in PLUGIN_PACKAGE_JSON["dependencies"].items():
+            if k not in deps:
+                deps[k] = v
+        pkg_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+    else:
+        pkg_path.write_text(json.dumps(PLUGIN_PACKAGE_JSON, indent=2) + "\n", encoding="utf-8")
+
+    return True, str(dest)
+
+
 def write_config(
-    target_dir: Path, *, force: bool, alias: str | None = None
-) -> tuple[Path, str, str]:
+    target_dir: Path, *, force: bool, alias: str | None = None,
+    install_plugin_flag: bool = True,
+) -> tuple[Path, str, str, dict]:
     target_dir = target_dir.resolve()
     if not target_dir.exists():
         raise SystemExit(f"target dir does not exist: {target_dir}")
@@ -69,7 +108,11 @@ def write_config(
         json.dumps(build_config(session_id, resolved_alias), indent=2) + "\n",
         encoding="utf-8",
     )
-    return config_path, session_id, resolved_alias
+    plugin_result: dict = {}
+    if install_plugin_flag:
+        ok, note = install_plugin(config_dir, force=force)
+        plugin_result = {"installed": ok, "note": note}
+    return config_path, session_id, resolved_alias, plugin_result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -98,8 +141,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="emit JSON result")
     args = parser.parse_args(argv)
 
-    config_path, session_id, resolved_alias = write_config(
-        args.target_dir, force=args.force, alias=args.alias
+    config_path, session_id, resolved_alias, plugin_result = write_config(
+        args.target_dir, force=args.force, alias=args.alias,
     )
     payload = {
         "config_path": str(config_path),
@@ -107,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         "session_id": session_id,
         "alias": resolved_alias,
         "broker_root": str(BROKER_ROOT),
+        "plugin": plugin_result,
     }
     if args.json:
         print(json.dumps(payload, indent=2))
@@ -115,6 +159,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  session id: {session_id}")
         print(f"  alias:      {resolved_alias}")
         print(f"  broker root: {BROKER_ROOT}")
+        if plugin_result.get("installed"):
+            print(f"  plugin:     {plugin_result['note']}")
+            print()
+            print("Install plugin dependency (run once in the target .opencode dir):")
+            opencode_dir = str(args.target_dir.resolve() / ".opencode")
+            print(f"  cd {opencode_dir} && npm install")
+            print()
+            print("Set these env vars before launching opencode (or export in shell profile):")
+            print(f"  export C2C_MCP_SESSION_ID={session_id}")
+            print(f"  export C2C_MCP_BROKER_ROOT={BROKER_ROOT}")
+        else:
+            note = plugin_result.get("note", "")
+            if note:
+                print(f"  plugin:     skipped — {note}")
+        print()
         print(
             "Now run 'cd "
             + str(args.target_dir.resolve())
