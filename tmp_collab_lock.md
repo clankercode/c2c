@@ -12,6 +12,10 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 20:11 — codex RELEASED locks on `docs/known-issues.md` and
+  `tmp_collab_lock.md`. Removed stale Codex→Codex unproven wording; known
+  issue now tracks only OpenCode→OpenCode as the remaining same-client DM proof.
+
 - 2026-04-13 20:08 — codex RELEASED locks on `llms.txt` and
   `tmp_collab_lock.md`. Refreshed the agent-facing quick reference for
   five-client support, managed restart wording, room subcommands, Codex→Codex

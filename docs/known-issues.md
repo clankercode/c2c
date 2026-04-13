@@ -16,11 +16,13 @@ Codex does not have a PostToolUse hook. Instead, a `c2c_deliver_inbox.py --notif
 
 ---
 
-## Codex → Codex and OpenCode → OpenCode Not Multi-Session Proven
+## OpenCode → OpenCode Not Multi-Session Proven
 
-Single-instance DMs work for both clients. A live round-trip between two simultaneous sessions of the same type has not been tested.
+OpenCode single-instance delivery works, and cross-client OpenCode DMs are proven. A live round-trip between two simultaneous OpenCode sessions has not been tested.
 
-**Status:** Expected to work (same broker, both poll inbox / use wake daemon). Needs a multi-instance test to mark proven.
+**Status:** Expected to work if both OpenCode sessions have wake daemons running and distinct broker registrations. Needs a clean two-instance test to mark proven.
+
+Codex → Codex is proven as of 2026-04-13 with a temporary second `codex exec` peer (`codex-peer`) sending a broker-native DM to the managed `codex` session.
 
 ---
 
