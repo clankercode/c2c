@@ -290,7 +290,8 @@ c2c <subcommand> [args]
 | `room-history <room-id>` | Read a room's message log |
 | `list-rooms` | List all rooms |
 | `my-rooms` | List rooms you're in |
-| `sweep` | Remove dead registrations from the broker |
+| `sweep` | Remove dead registrations from the broker (one-shot) |
+| `broker-gc` | Run broker garbage collection daemon (continuous auto-sweep on TTL; `--once` for one-shot, `--interval N` for sweep period) |
 | `tail-log [--limit N]` | Read last N broker RPC audit log entries |
 | `verify` | Count c2c message exchange progress across visible participants |
 | `mcp` | Launch the OCaml MCP server (used internally) |

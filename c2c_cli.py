@@ -2,7 +2,9 @@
 import os
 import sys
 
+import c2c_broker_gc
 import c2c_configure_claude_code
+import c2c_health
 import c2c_configure_codex
 import c2c_configure_opencode
 import c2c_deliver_inbox
@@ -32,6 +34,7 @@ SAFE_AUTO_APPROVE_SUBCOMMANDS = {
     "whoami",
     "verify",
     "init",
+    "health",
 }
 
 
@@ -57,13 +60,17 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(
-            "usage: c2c <configure-claude-code|configure-codex|configure-opencode|deliver-inbox|init|inject|install|list|mcp|poker-sweep|poll-inbox|prune|register|restart-me|room|send|send-all|setup|verify|watch|whoami> [...args]",
+            "usage: c2c <broker-gc|configure-claude-code|configure-codex|configure-opencode|deliver-inbox|health|init|inject|install|list|mcp|poker-sweep|poll-inbox|prune|register|restart-me|room|send|send-all|setup|verify|watch|whoami> [...args]",
             file=sys.stderr,
         )
         return 2
 
     subcommand, remainder = argv[0], argv[1:]
 
+    if subcommand == "broker-gc":
+        return c2c_broker_gc.main(remainder)
+    if subcommand == "health":
+        return c2c_health.main(remainder)
     if subcommand == "configure-claude-code":
         return c2c_configure_claude_code.main(remainder)
     if subcommand == "configure-codex":

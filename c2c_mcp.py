@@ -139,6 +139,34 @@ def read_pid_start_time(pid: int) -> int | None:
         return None
 
 
+def proc_cmdline(pid: int) -> str:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    return raw.replace(b"\0", b" ").decode("utf-8", errors="replace").strip()
+
+
+def is_opencode_run_pid(pid: object) -> bool:
+    if not isinstance(pid, int):
+        return False
+    parts = proc_cmdline(pid).split()
+    has_opencode = any(Path(part).name in {"opencode", ".opencode"} for part in parts)
+    return has_opencode and "run" in parts
+
+
+def broker_registration_is_alive(registration: dict[str, object]) -> bool:
+    pid = registration.get("pid")
+    if not isinstance(pid, int):
+        return False
+    if not os.path.exists(f"/proc/{pid}"):
+        return False
+    stored_start_time = registration.get("pid_start_time")
+    if not isinstance(stored_start_time, int):
+        return True
+    return read_pid_start_time(pid) == stored_start_time
+
+
 def _session_pid_from_proc(session_id: str) -> int | None:
     """Scan /proc for a live process whose session matches session_id."""
     try:
@@ -175,6 +203,17 @@ def maybe_auto_register_startup(env: dict[str, str]) -> None:
 
     with registry_write_lock(registry_path):
         registrations = load_broker_registrations(registry_path)
+        for existing in registrations:
+            if (
+                existing.get("session_id") == session_id
+                and existing.get("alias") == alias
+                and broker_registration_is_alive(existing)
+                and not (
+                    is_opencode_run_pid(existing.get("pid"))
+                    and not is_opencode_run_pid(pid)
+                )
+            ):
+                return
         registrations = [
             existing
             for existing in registrations

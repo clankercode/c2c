@@ -113,6 +113,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_watch.py",
         "c2c_whoami.py",
         "c2c_broker_gc.py",
+        "c2c_health.py",
         "c2c_cli.py",
         "c2c_mcp.py",
         "c2c_registry.py",
@@ -2284,6 +2285,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c-watch",
                 "c2c-whoami",
                 "c2c_broker_gc.py",
+                "c2c_health.py",
                 "c2c_register.py",
                 "c2c_restart_me.py",
                 "c2c_room.py",
@@ -2561,7 +2563,9 @@ class C2CSendUnitTests(unittest.TestCase):
                 return_value=delegated_result,
             ) as delegate,
             mock.patch.dict(
-                os.environ, {"C2C_SESSION_ID": "", "C2C_SESSION_PID": ""}, clear=False
+                os.environ,
+                {"C2C_SESSION_ID": "", "C2C_SESSION_PID": "", "C2C_MCP_SESSION_ID": ""},
+                clear=False,
             ),
         ):
             result = c2c_send.send_to_alias("ember-crown", "hello peer", dry_run=False)
@@ -2719,7 +2723,7 @@ class C2CSendUnitTests(unittest.TestCase):
             mock.patch("c2c_send.resolve_alias", return_value=(session, registration)),
             mock.patch.dict(
                 os.environ,
-                {"C2C_SESSION_ID": AGENT_ONE_SESSION_ID},
+                {"C2C_SESSION_ID": AGENT_ONE_SESSION_ID, "C2C_MCP_SESSION_ID": ""},
                 clear=False,
             ),
             mock.patch(

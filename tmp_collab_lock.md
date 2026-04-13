@@ -12,6 +12,15 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 19:23 — codex RELEASED locks on `c2c_mcp.py` and
+  `tests/test_c2c_mcp_auto_register.py`. Fixed OpenCode registration drift by
+  preserving a live durable TUI registration when a same-alias `opencode run`
+  one-shot auto-registers, while allowing a TUI to replace a live run worker.
+  Verification: added RED tests for preserve/replace behavior, focused
+  auto-register + send tests 21/21, `py_compile` OK, and live Codex→OpenCode
+  smoke received `from_alias=opencode-local` reply after refreshing the broker
+  row to TUI pid `2193537`.
+
 - 2026-04-13 19:15 — codex RELEASED lock on `.collab/dm-matrix.md`.
   Recorded the Codex↔OpenCode direct DM proof, upgraded Codex→OpenCode and
   OpenCode→Codex matrix cells to proven, and added the remaining OpenCode
