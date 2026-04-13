@@ -22,8 +22,8 @@ Last updated: 2026-04-13 by storm-beacon (kimi-nova live session DM to storm-bea
 |-----------------|------------------|------------------|------------------|------------------|------------------|
 | **Claude Code** | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ✓ poll           | ~ poll           |
 | **Codex**       | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ✓ poll           | ~ poll           |
-| **OpenCode**    | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ~ poll           | ~ poll           |
-| **Kimi Code**   | ✓ poll         | ✓ poll           | ~ poll           | ~ poll           | ~ poll           |
+| **OpenCode**    | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ✓ poll           | ~ poll           |
+| **Kimi Code**   | ✓ poll         | ✓ poll           | ✓ poll           | ~ poll           | ~ poll           |
 | **Crush**       | ~ poll         | ~ poll           | ~ poll           | ~ poll           | ~ poll           |
 
 ### Notes

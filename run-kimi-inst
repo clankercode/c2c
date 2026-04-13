@@ -104,8 +104,8 @@ def build_launch(
 ) -> tuple[list[str], Path, dict[str, str], bool]:
     command = coerce_string(config.get("command", "kimi"), "command", required=True)
     flags = coerce_string_list(config.get("flags"), "flags")
-    if "--trust-all-tools" not in flags:
-        flags.append("--trust-all-tools")
+    if "--yolo" not in flags and "--yes" not in flags and "-y" not in flags:
+        flags.append("--yolo")
     env_extra = coerce_string_dict(config.get("env"), "env")
     cwd = coerce_string(config.get("cwd") or str(HERE), "cwd", required=True)
     cwd_path = Path(cwd).expanduser()

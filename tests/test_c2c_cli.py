@@ -5639,8 +5639,10 @@ class RunKimiInstTests(unittest.TestCase):
         self.assertEqual(result_code(result), 0, result.stderr)
         payload = json.loads(result.stdout)
         self.assertEqual(
-            payload["launch"][:5], ["kimi", "--trust-all-tools", "--print", "--prompt", "poll inbox"]
+            payload["launch"][:5],
+            ["kimi", "--yolo", "--print", "--prompt", "poll inbox"],
         )
+        self.assertNotIn("--trust-all-tools", payload["launch"])
         self.assertEqual(payload["prompt_mode"], "non-interactive")
 
     def test_run_kimi_inst_help_exits_without_config_lookup(self):
