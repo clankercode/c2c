@@ -4108,6 +4108,48 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
             payload["env"]["C2C_MCP_AUTO_REGISTER_ALIAS"], "opencode-special"
         )
 
+    def test_run_opencode_inst_copies_plugin_to_config_dir(self):
+        """_ensure_opencode_plugin copies plugin + package.json when config is outside .opencode/."""
+        plugin_src = REPO / ".opencode" / "plugins" / "c2c.ts"
+        if not plugin_src.exists():
+            self.skipTest("plugin source not present")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir) / "run-opencode-inst.d"
+            config_dir.mkdir()
+            opencode_json = config_dir / "test-inst.opencode.json"
+            opencode_json.write_text(json.dumps({"mcp": {}}), encoding="utf-8")
+            managed_config = {
+                "command": "opencode",
+                "cwd": str(REPO),
+                "config_path": str(opencode_json),
+                "c2c_session_id": "test-inst",
+                "c2c_alias": "test-inst",
+                "prompt": "test",
+            }
+            (config_dir / "test-inst.json").write_text(
+                json.dumps(managed_config), encoding="utf-8"
+            )
+            env = {
+                "RUN_OPENCODE_INST_DRY_RUN": "1",
+                "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir),
+            }
+            result = run_cli("run-opencode-inst", "test-inst", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            # Plugin should have been synced to the config dir's plugins/
+            plugin_dest = config_dir / "plugins" / "c2c.ts"
+            pkg_dest = config_dir / "package.json"
+            self.assertTrue(plugin_dest.exists(), "plugin should be copied to config dir")
+            self.assertTrue(pkg_dest.exists(), "package.json should be copied to config dir")
+            # node_modules symlink should be created so Bun can resolve @opencode-ai/plugin
+            nm_src = REPO / ".opencode" / "node_modules"
+            nm_dest = config_dir / "node_modules"
+            if nm_src.exists():
+                self.assertTrue(nm_dest.is_symlink(), "node_modules should be a symlink")
+                self.assertEqual(
+                    os.readlink(str(nm_dest)), str(nm_src),
+                    "node_modules symlink should point to .opencode/node_modules",
+                )
+
     def test_run_opencode_inst_outer_dry_run_reports_inner_launch_command(self):
         env = {"RUN_OPENCODE_INST_OUTER_DRY_RUN": "1"}
         result = run_cli("run-opencode-inst-outer", "c2c-opencode-local", env=env)
