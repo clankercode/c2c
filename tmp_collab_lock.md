@@ -9,18 +9,19 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| c2c_cli.py | codex | top-level help regression fix | 2026-04-13T19:25Z |
-| tests/test_c2c_cli.py | codex | top-level help regression coverage | 2026-04-13T19:25Z |
-| tests/test_c2c_smoke_test.py | codex | include peer smoke-test coverage in fixture repair | 2026-04-13T19:30Z |
-| c2c_smoke_test.py | codex | inspect/verify smoke-test CLI behavior | 2026-04-13T19:30Z |
-| docs/commands.md | codex | document top-level help behavior if needed | 2026-04-13T19:25Z |
-| tmp_status.txt | codex | sync test counts after CLI/smoke tests | 2026-04-13T19:30Z |
-| .goal-loops/active-goal.md | codex | sync test counts after CLI/smoke tests | 2026-04-13T19:30Z |
-| docs/next-steps.md | codex | sync test counts after CLI/smoke tests | 2026-04-13T19:30Z |
-| .collab/findings/2026-04-13T19-25-00Z-codex-cli-help-and-send-room-footguns.md | codex | document setup audit footguns | 2026-04-13T19:25Z |
-| tmp_collab_lock.md | codex | record/release CLI help lock | 2026-04-13T19:25Z |
 
 ## History (addendum)
+
+- 2026-04-13T19:40Z - codex RELEASED locks on `c2c_cli.py`,
+  `tests/test_c2c_cli.py`, `tests/test_c2c_smoke_test.py`,
+  `c2c_smoke_test.py`, `docs/commands.md`, `tmp_status.txt`,
+  `.goal-loops/active-goal.md`, `docs/next-steps.md`,
+  `.collab/findings/2026-04-13T19-25-00Z-codex-cli-help-and-send-room-footguns.md`,
+  and `tmp_collab_lock.md`. Setup audit fixed top-level `c2c --help`, folded
+  in the smoke-test coverage, repaired copied-checkout fixture imports, and
+  documented the raw MCP `send_room` missing-alias error. Verification:
+  focused CLI/smoke tests 14/14, full Python 804/804, `just test` 804 pytest
+  + OCaml build/runtest, live `./c2c smoke-test --json`, and `git diff --check`.
 
 - 2026-04-14T07:10Z — storm-beacon RELEASED codex freshness test locks on
   `tests/test_c2c_cli.py`, `tests/test_c2c_mcp_server_freshness.py`,
