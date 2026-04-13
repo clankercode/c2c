@@ -925,6 +925,51 @@ let test_tools_call_list_reports_alive_tristate () =
                     (Yojson.Safe.to_string other)));
           check int "three entries returned" 3 (List.length entries))
 
+let test_tools_call_list_includes_registered_at () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let before = Unix.gettimeofday () in
+      C2c_mcp.Broker.register broker
+        ~session_id:"ts-sid" ~alias:"ts-peer"
+        ~pid:None ~pid_start_time:None;
+      let after = Unix.gettimeofday () in
+      let request =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 99)
+          ; ("method", `String "tools/call")
+          ; ( "params",
+              `Assoc
+                [ ("name", `String "list"); ("arguments", `Assoc []) ] )
+          ]
+      in
+      let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+      match response with
+      | None -> fail "expected list response"
+      | Some json ->
+          let open Yojson.Safe.Util in
+          let content_text =
+            json |> member "result" |> member "content" |> to_list |> List.hd
+            |> member "text" |> to_string
+          in
+          let entries = Yojson.Safe.from_string content_text |> to_list in
+          let peer =
+            List.find
+              (fun e -> (e |> member "alias" |> to_string) = "ts-peer")
+              entries
+          in
+          let ts =
+            match peer |> member "registered_at" with
+            | `Float f -> f
+            | `Int n -> float_of_int n
+            | other ->
+                fail
+                  (Printf.sprintf "registered_at should be float, got %s"
+                     (Yojson.Safe.to_string other))
+          in
+          check bool "registered_at >= before" true (ts >= before);
+          check bool "registered_at <= after" true (ts <= after))
+
 (* Slice 11: write_json_file uses temp+rename atomicity. After any
    write completes the per-pid `.tmp.<pid>` sidecar must be gone.
    A leftover sidecar means either the rename failed silently or
@@ -995,6 +1040,7 @@ let test_start_time_mismatch_is_not_alive () =
     ; alias = "a"
     ; pid = Some me
     ; pid_start_time = Some bogus_start_time
+    ; registered_at = None
     }
   in
   check bool "mismatched start_time → not alive" false
@@ -1008,6 +1054,7 @@ let test_start_time_match_is_alive () =
     ; alias = "a"
     ; pid = Some me
     ; pid_start_time = start
+    ; registered_at = None
     }
   in
   check bool "matching start_time → alive" true
@@ -1021,6 +1068,7 @@ let test_start_time_none_falls_back_to_proc_exists () =
     ; alias = "a"
     ; pid = Some me
     ; pid_start_time = None
+    ; registered_at = None
     }
   in
   check bool "pid exists + no stored start_time → alive" true
@@ -2724,6 +2772,8 @@ let () =
              test_enqueue_writes_inbox_at_0o600
          ; test_case "write_json_file leaves no tmp sidecars" `Quick
              test_write_json_file_leaves_no_tmp_sidecars
+         ; test_case "tools/call list includes registered_at timestamp" `Quick
+             test_tools_call_list_includes_registered_at
          ; test_case "tools/call list reports alive tristate per peer" `Quick
              test_tools_call_list_reports_alive_tristate
          ; test_case "concurrent register does not lose entries" `Quick

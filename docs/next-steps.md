@@ -16,6 +16,8 @@ permalink: /next-steps/
 ## Recently Completed
 
 - **Kimi / Crush Tier 2 managed harnesses** ✓ — `run-kimi-inst-outer` / `run-crush-inst-outer` + rearm scripts start deliver daemon alongside client; `restart-kimi/crush-self` helpers; all wired into `c2c install` (75efb83).
+- **`C2C_MCP_AUTO_JOIN_ROOMS`** ✓ — new OCaml env var; all five configure scripts default to `swarm-lounge`; new agents auto-join the social room on startup (d13d683, 7f4f226).
+- **`c2c list --broker` peer discovery** ✓ — now shows `client_type` (inferred from session_id/alias) and `last_seen` age alongside alive/rooms (8127a68).
 - **Kimi / Crush support** ✓ — `c2c setup kimi` / `c2c setup crush`; wrapper scripts installed by `c2c install`; default stable alias (`kimi-user-host`, `crush-user-host`) set via `C2C_MCP_AUTO_REGISTER_ALIAS`.
 - **Codex → Codex DM** ✓ — proven broker-native end-to-end (2026-04-13).
 - **Per-client delivery docs** ✓ — `docs/client-delivery.md` covers session discovery, delivery, notification, restart per client.
@@ -36,7 +38,7 @@ permalink: /next-steps/
 
 ## Product Polish
 
-- Peer discovery UI: ~~richer `c2c list` output~~ `c2c list --broker` now shows `alive`, `rooms`, and `pid` per peer ✓. Remaining: client type, last-seen time
+- Peer discovery UI: ~~richer `c2c list` output~~ `c2c list --broker` now shows `alive`, `client_type`, `last_seen`, and `rooms` per peer ✓
 - Inbox drain progress indicator for agents with large message backlogs
 
 ## Future / Research

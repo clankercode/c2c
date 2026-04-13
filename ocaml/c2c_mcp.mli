@@ -3,6 +3,7 @@ type registration =
   ; alias : string
   ; pid : int option
   ; pid_start_time : int option
+  ; registered_at : float option
   }
 type message = { from_alias : string; to_alias : string; content : string }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }

@@ -3,6 +3,7 @@ type registration =
   ; alias : string
   ; pid : int option
   ; pid_start_time : int option
+  ; registered_at : float option
   }
 type message = { from_alias : string; to_alias : string; content : string }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
@@ -13,6 +14,7 @@ let server_version = "0.6.3"
 let server_features =
   [ "liveness"
   ; "pid_start_time"
+  ; "registered_at"
   ; "registry_lock"
   ; "inbox_lock"
   ; "alias_dedupe"
@@ -129,7 +131,7 @@ module Broker = struct
       cleanup_tmp ();
       raise e
 
-  let registration_to_json { session_id; alias; pid; pid_start_time } =
+  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at } =
     let base =
       [ ("session_id", `String session_id); ("alias", `String alias) ]
     in
@@ -138,10 +140,15 @@ module Broker = struct
       | Some n -> base @ [ ("pid", `Int n) ]
       | None -> base
     in
-    let fields =
+    let with_pst =
       match pid_start_time with
       | Some n -> with_pid @ [ ("pid_start_time", `Int n) ]
       | None -> with_pid
+    in
+    let fields =
+      match registered_at with
+      | Some ts -> with_pst @ [ ("registered_at", `Float ts) ]
+      | None -> with_pst
     in
     `Assoc fields
 
@@ -154,12 +161,23 @@ module Broker = struct
       | _ -> None
     with _ -> None
 
+  let float_opt_member name json =
+    let open Yojson.Safe.Util in
+    try
+      match json |> member name with
+      | `Null -> None
+      | `Float f -> Some f
+      | `Int n -> Some (float_of_int n)
+      | _ -> None
+    with _ -> None
+
   let registration_of_json json =
     let open Yojson.Safe.Util in
     { session_id = json |> member "session_id" |> to_string
     ; alias = json |> member "alias" |> to_string
     ; pid = int_opt_member "pid" json
     ; pid_start_time = int_opt_member "pid_start_time" json
+    ; registered_at = float_opt_member "registered_at" json
     }
 
   let message_to_json { from_alias; to_alias; content } =
@@ -332,7 +350,8 @@ module Broker = struct
             regs
         in
         save_registrations t
-          ({ session_id; alias; pid; pid_start_time } :: kept);
+          ({ session_id; alias; pid; pid_start_time
+           ; registered_at = Some (Unix.gettimeofday ()) } :: kept);
         (* Migrate undrained inbox messages from any evicted reg whose
            session_id differs from the new one. Done WHILE holding the
            registry lock so a concurrent enqueue cannot resolve the alias
@@ -1183,7 +1202,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
         `List
           (List.map
              (fun reg ->
-               let { session_id; alias; pid; pid_start_time = _ } = reg in
+               let { session_id; alias; pid; pid_start_time = _; registered_at } = reg in
                let base =
                  [ ("session_id", `String session_id); ("alias", `String alias) ]
                in
@@ -1201,7 +1220,13 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                  | Broker.Dead -> `Bool false
                  | Broker.Unknown -> `Null
                in
-               `Assoc (with_pid @ [ ("alive", alive_field) ]))
+               let with_alive = with_pid @ [ ("alive", alive_field) ] in
+               let fields =
+                 match registered_at with
+                 | Some ts -> with_alive @ [ ("registered_at", `Float ts) ]
+                 | None -> with_alive
+               in
+               `Assoc fields)
              registrations)
         |> Yojson.Safe.to_string
       in

@@ -5609,6 +5609,109 @@ class HealthCheckHookTests(unittest.TestCase):
         self.assertFalse(result["ok"])
 
 
+class RefreshPeerTests(unittest.TestCase):
+    """Tests for c2c_refresh_peer.refresh_peer()."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.broker_root = Path(self.tmpdir)
+        self.registry_path = self.broker_root / "registry.json"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_registry(self, registrations):
+        self.registry_path.write_text(json.dumps(registrations), encoding="utf-8")
+
+    def _read_registry(self):
+        return json.loads(self.registry_path.read_text(encoding="utf-8"))
+
+    def test_refresh_peer_unknown_alias_raises(self):
+        """refresh_peer exits with error for unknown alias."""
+        import c2c_refresh_peer
+        self._write_registry([
+            {"session_id": "s1", "alias": "other-agent", "pid": 99999}
+        ])
+        with self.assertRaises(SystemExit):
+            c2c_refresh_peer.refresh_peer(
+                "missing-alias", None, self.broker_root
+            )
+
+    def test_refresh_peer_alive_registration_returns_no_change(self):
+        """When current registration is already alive, no-arg refresh says so."""
+        import c2c_refresh_peer
+        live_pid = os.getpid()
+        self._write_registry([
+            {"session_id": "s1", "alias": "me", "pid": live_pid}
+        ])
+        result = c2c_refresh_peer.refresh_peer("me", None, self.broker_root)
+        self.assertEqual(result["status"], "already_alive")
+        self.assertEqual(result["pid"], live_pid)
+
+    def test_refresh_peer_dead_pid_no_arg_raises(self):
+        """When registration has dead PID and no new PID given, raises."""
+        import c2c_refresh_peer
+        self._write_registry([
+            {"session_id": "s1", "alias": "stale-agent", "pid": 11111}
+        ])
+        with self.assertRaises(SystemExit):
+            c2c_refresh_peer.refresh_peer("stale-agent", None, self.broker_root)
+
+    def test_refresh_peer_updates_pid(self):
+        """refresh_peer with explicit live PID updates the registry row."""
+        import c2c_refresh_peer
+        old_pid = 11111  # dead
+        new_pid = os.getpid()  # definitely alive
+        self._write_registry([
+            {"session_id": "s1", "alias": "opencode-local", "pid": old_pid}
+        ])
+        result = c2c_refresh_peer.refresh_peer(
+            "opencode-local", new_pid, self.broker_root
+        )
+        self.assertEqual(result["status"], "updated")
+        self.assertEqual(result["old_pid"], old_pid)
+        self.assertEqual(result["new_pid"], new_pid)
+
+        regs = self._read_registry()
+        self.assertEqual(len(regs), 1)
+        self.assertEqual(regs[0]["pid"], new_pid)
+
+    def test_refresh_peer_refuses_dead_new_pid(self):
+        """refresh_peer refuses to update to a PID that is not in /proc."""
+        import c2c_refresh_peer
+        self._write_registry([
+            {"session_id": "s1", "alias": "opencode-local", "pid": 11111}
+        ])
+        with self.assertRaises(SystemExit):
+            c2c_refresh_peer.refresh_peer(
+                "opencode-local", 11111, self.broker_root
+            )
+
+    def test_refresh_peer_dry_run_does_not_write(self):
+        """--dry-run reports intended change but does not modify registry."""
+        import c2c_refresh_peer
+        new_pid = os.getpid()
+        original = [{"session_id": "s1", "alias": "opencode-local", "pid": 99999}]
+        self._write_registry(original)
+        result = c2c_refresh_peer.refresh_peer(
+            "opencode-local", new_pid, self.broker_root, dry_run=True
+        )
+        self.assertEqual(result["status"], "dry_run")
+        # Registry must be unchanged
+        regs = self._read_registry()
+        self.assertEqual(regs[0]["pid"], 99999)
+
+    def test_cli_refresh_peer_subcommand_wired(self):
+        """c2c refresh-peer is reachable via the main CLI dispatcher."""
+        result = subprocess.run(
+            [sys.executable, str(REPO / "c2c_cli.py"), "refresh-peer", "--help"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("alias", result.stdout)
+
+
 def result_code(result):
     return result.returncode
 
