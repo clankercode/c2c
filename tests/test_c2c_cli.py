@@ -1373,10 +1373,11 @@ class C2CCLITests(unittest.TestCase):
             ],
         )
 
-    def test_register_updates_broker_registry_json_alongside_yaml(self):
+    def test_register_updates_broker_registry_json(self):
         broker_root = Path(self.temp_dir.name) / "mcp-broker"
         env = dict(self.env)
         env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
+        del env["C2C_REGISTRY_PATH"]
 
         result = self.invoke_cli("c2c-register", "agent-one", "--json", env=env)
 
@@ -2656,12 +2657,15 @@ class RegistryJsonFallbackTests(unittest.TestCase):
 
     def test_returns_empty_when_neither_exists(self):
         """Returns empty registry when neither YAML nor JSON exists."""
-        yaml_path = self.td / "registry.yaml"
         json_path = self.td / "registry.json"
-
-        with mock.patch.object(self.c2c_registry, "default_broker_registry_path", return_value=json_path):
-            with mock.patch.object(self.c2c_registry, "registry_path_from_env", return_value=yaml_path):
-                result = self.c2c_registry.load_registry()
+        yaml_path = self.td / "registry.yaml"
+        # Neither file exists — should return empty.
+        with mock.patch.object(
+            self.c2c_registry, "default_broker_registry_path", return_value=json_path
+        ), mock.patch.object(
+            self.c2c_registry, "default_registry_path", return_value=yaml_path
+        ):
+            result = self.c2c_registry.load_registry()
 
         self.assertEqual(result, {"registrations": []})
 
@@ -10125,6 +10129,46 @@ class C2CStartUnitTests(unittest.TestCase):
         self.assertIn("swarm-lounge", env.get("C2C_MCP_AUTO_JOIN_ROOMS", ""))
         self.assertEqual(env["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
         self.assertIn("C2C_MCP_BROKER_ROOT", env)
+
+    def test_kimi_launch_args_write_instance_mcp_config(self):
+        broker_root = Path(self.temp_dir.name) / "broker"
+
+        args = self.c2c_start.prepare_launch_args(
+            "kimi-proof", "kimi", ["--print"], broker_root
+        )
+
+        mcp_config = self.instances_dir / "kimi-proof" / "kimi-mcp.json"
+        self.assertEqual(args[:2], ["--mcp-config-file", str(mcp_config)])
+        self.assertEqual(args[2:], ["--print"])
+        config = json.loads(mcp_config.read_text(encoding="utf-8"))
+        env = config["mcpServers"]["c2c"]["env"]
+        self.assertEqual(env["C2C_MCP_BROKER_ROOT"], str(broker_root))
+        self.assertEqual(env["C2C_MCP_SESSION_ID"], "kimi-proof")
+        self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "kimi-proof")
+        self.assertEqual(env["C2C_MCP_AUTO_JOIN_ROOMS"], "swarm-lounge")
+        self.assertEqual(env["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
+
+    def test_kimi_launch_args_respect_explicit_mcp_config(self):
+        broker_root = Path(self.temp_dir.name) / "broker"
+
+        args = self.c2c_start.prepare_launch_args(
+            "kimi-proof",
+            "kimi",
+            ["--mcp-config-file", "/tmp/custom.json", "--print"],
+            broker_root,
+        )
+
+        self.assertEqual(args, ["--mcp-config-file", "/tmp/custom.json", "--print"])
+        self.assertFalse((self.instances_dir / "kimi-proof" / "kimi-mcp.json").exists())
+
+    def test_non_kimi_launch_args_unchanged(self):
+        broker_root = Path(self.temp_dir.name) / "broker"
+
+        args = self.c2c_start.prepare_launch_args(
+            "codex-proof", "codex", ["--approval-policy", "never"], broker_root
+        )
+
+        self.assertEqual(args, ["--approval-policy", "never"])
 
     def test_instances_cli_empty_json(self):
         buf = io.StringIO()

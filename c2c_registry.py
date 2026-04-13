@@ -101,6 +101,9 @@ def default_registry_path() -> Path:
 
 def default_broker_registry_path() -> Path:
     """Path to the OCaml broker's JSON registry (the live source of truth)."""
+    env_root = os.environ.get("C2C_MCP_BROKER_ROOT", "").strip()
+    if env_root:
+        return Path(env_root) / "registry.json"
     return repo_common_dir() / "c2c" / "mcp" / "registry.json"
 
 
@@ -124,21 +127,9 @@ def _load_broker_json_as_registry(json_path: Path) -> dict:
         return {"registrations": []}
 
 
-def load_registry(path: Path | None = None) -> dict:
-    registry_path = path or registry_path_from_env()
-
-    # If the YAML path doesn't exist (or an explicit env override wasn't given),
-    # fall back to the OCaml broker's JSON registry which is the live source of truth.
-    if not registry_path.exists():
-        # Only fall back when no explicit override was given; if C2C_REGISTRY_PATH
-        # is set the caller explicitly chose a path and we respect it.
-        if path is None and "C2C_REGISTRY_PATH" not in os.environ:
-            json_path = default_broker_registry_path()
-            if json_path.exists():
-                return _load_broker_json_as_registry(json_path)
-        return {"registrations": []}
-
-    lines = registry_path.read_text(encoding="utf-8").splitlines()
+def _load_yaml_registry(yaml_path: Path) -> dict:
+    """Parse the legacy hand-rolled YAML registry format."""
+    lines = yaml_path.read_text(encoding="utf-8").splitlines()
     registrations = []
     current = None
     in_registrations = False
@@ -173,14 +164,59 @@ def load_registry(path: Path | None = None) -> dict:
     return {"registrations": registrations}
 
 
+def load_registry(path: Path | None = None) -> dict:
+    # Explicit path override always wins (tests, fixtures).
+    if path is not None:
+        if path.exists():
+            if path.suffix == ".json":
+                return _load_broker_json_as_registry(path)
+            return _load_yaml_registry(path)
+        return {"registrations": []}
+
+    # C2C_REGISTRY_PATH env override — respect it but detect format.
+    if "C2C_REGISTRY_PATH" in os.environ:
+        env_path = Path(os.environ["C2C_REGISTRY_PATH"])
+        if env_path.exists():
+            if env_path.suffix == ".json":
+                return _load_broker_json_as_registry(env_path)
+            return _load_yaml_registry(env_path)
+        return {"registrations": []}
+
+    # Default: prefer the OCaml broker JSON registry (source of truth).
+    json_path = default_broker_registry_path()
+    if json_path.exists():
+        return _load_broker_json_as_registry(json_path)
+
+    # Fallback to legacy YAML if JSON doesn't exist yet.
+    yaml_path = default_registry_path()
+    if yaml_path.exists():
+        return _load_yaml_registry(yaml_path)
+
+    return {"registrations": []}
+
+
 def load_registry_unlocked(path: Path | None = None) -> dict:
     return load_registry(path)
 
 
+def _registry_content(registry: dict, path: Path) -> str:
+    """Render registry content in the format matching the path extension."""
+    if path.suffix == ".yaml":
+        return render_registry_yaml(registry)
+    return _render_registry_json(registry)
+
+
+def _default_save_path() -> Path:
+    """Default save path: respect C2C_REGISTRY_PATH if set, otherwise broker JSON."""
+    if "C2C_REGISTRY_PATH" in os.environ:
+        return Path(os.environ["C2C_REGISTRY_PATH"])
+    return default_broker_registry_path()
+
+
 def save_registry(registry: dict, path: Path | None = None) -> None:
-    registry_path = path or registry_path_from_env()
+    registry_path = path or _default_save_path()
     registry_path.parent.mkdir(parents=True, exist_ok=True)
-    content = render_registry_yaml(registry)
+    content = _registry_content(registry, registry_path)
 
     with registry_write_lock(registry_path):
         with tempfile.NamedTemporaryFile(
@@ -200,9 +236,9 @@ def save_registry(registry: dict, path: Path | None = None) -> None:
 
 
 def save_registry_unlocked(registry: dict, path: Path | None = None) -> None:
-    registry_path = path or registry_path_from_env()
+    registry_path = path or _default_save_path()
     registry_path.parent.mkdir(parents=True, exist_ok=True)
-    content = render_registry_yaml(registry)
+    content = _registry_content(registry, registry_path)
 
     with tempfile.NamedTemporaryFile(
         "w",
@@ -220,8 +256,13 @@ def save_registry_unlocked(registry: dict, path: Path | None = None) -> None:
     os.replace(temp_path, registry_path)
 
 
+def _render_registry_json(registry: dict) -> str:
+    """Render registry as JSON (matches OCaml broker format)."""
+    return json.dumps(registry.get("registrations", []), indent=2) + "\n"
+
+
 def update_registry(mutator, path: Path | None = None):
-    registry_path = path or registry_path_from_env()
+    registry_path = path or _default_save_path()
     registry_path.parent.mkdir(parents=True, exist_ok=True)
     with registry_write_lock(registry_path):
         registry = load_registry_unlocked(registry_path)
