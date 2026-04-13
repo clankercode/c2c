@@ -123,15 +123,14 @@ def check_rooms(broker_root: Path) -> dict[str, Any]:
 
 def check_swarm_lounge(broker_root: Path, alias: str | None) -> dict[str, Any]:
     """Check whether the current agent is a member of swarm-lounge."""
+    lounge_dir = broker_root / "rooms" / "swarm-lounge"
     result: dict[str, Any] = {
-        "room_exists": False,
+        "room_exists": lounge_dir.exists(),
         "member": False,
         "alias": alias,
     }
     if not alias:
         return result
-    lounge_dir = broker_root / "rooms" / "swarm-lounge"
-    result["room_exists"] = lounge_dir.exists()
     if lounge_dir.exists():
         members_file = lounge_dir / "members.json"
         if members_file.exists():
@@ -236,10 +235,12 @@ def print_health_report(report: dict[str, Any]) -> None:
     sl = report.get("swarm_lounge", {})
     if sl.get("member"):
         print("✓ swarm-lounge: member")
-    elif sl.get("room_exists"):
+    elif sl.get("room_exists") and sl.get("alias"):
         alias_hint = sl.get("alias") or "your-alias"
         print(f"~ swarm-lounge: room exists but {alias_hint!r} is not a member")
         print(f'    Run: c2c room join swarm-lounge  (or call mcp__c2c__join_room {{room_id:swarm-lounge, alias:{alias_hint!r}}})')
+    elif sl.get("room_exists"):
+        print("~ swarm-lounge: room exists (register first to check membership)")
     else:
         print("○ swarm-lounge: room not created yet")
         print("    It will be created when the first agent joins")
