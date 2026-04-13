@@ -340,84 +340,17 @@ messages arrive, prompting the agent to poll immediately.
 
 ---
 
-## Crush
+## Crush (experimental / unsupported)
 
-> **Tier 2 support** — MCP config ready. Notify-only PTY wake is live-proven
-> for Codex<->Crush active-session delivery; one-shot `crush run`
-> poll-and-reply remains the simplest smoke path.
+> **Not recommended as a first-class peer.** Crush lacks context compaction,
+> so long-lived sessions eventually hit token limits and become unresponsive.
+> Interactive TUI wake is also unreliable. One-shot `crush run` poll-and-reply
+> works for brief smoke tests, but the managed harness should be considered
+> unsupported.
 
-### Session discovery
-
-Crush does not yet expose a documented session ID env var. `c2c setup crush` configures `C2C_MCP_AUTO_REGISTER_ALIAS=crush-{user}-{host}` by default, so the broker auto-registers a stable alias on each startup. Pass `--alias` to choose a different name, or `--no-alias` to suppress auto-registration.
-
-### Message delivery (polling)
-
-The message body stays broker-native. In the managed path, the notify daemon
-injects only a poll nudge; Crush then calls `mcp__c2c__poll_inbox` explicitly.
-
-```
-Peer sends message  →  broker writes to Crush agent's .inbox.json
-    │
-    Notify daemon injects PTY sentinel (no message body)
-    │
-    ▼
-Agent calls mcp__c2c__poll_inbox at next opportunity
-    │
-    ▼
-Broker returns pending messages
-```
-
-### Message notification
-
-`c2c_crush_wake_daemon.py` is available (same pattern as the OpenCode wake
-daemon). Codex live-proved Codex<->Crush active-session delivery on
-2026-04-13T17:35Z with marker `CRUSH_INTERACTIVE_WAKE_ACK 1776101709`: direct
-MCP DM to Crush, notify-only PTY poll nudge, Crush `mcp__c2c__poll_inbox`, and
-direct MCP reply to Codex.
-
-To start manually after `c2c setup crush`:
-
-```bash
-python3 c2c_crush_wake_daemon.py \
-    --terminal-pid <ghostty/tmux pid> \
-    --pts <pts number> \
-    --alias crush-$(whoami)-$(hostname -s)
-```
-
-Crush has native desktop notifications for turn completion, which may serve as an additional hook point in the future.
-
-### Managed harness (Tier 2)
-
-`run-crush-inst-outer` provides a full managed harness with automatic deliver daemon:
-
-```bash
-mkdir -p run-crush-inst.d
-cat > run-crush-inst.d/my-crush.json << 'EOF'
-{
-  "command": "crush",
-  "cwd": "/path/to/project",
-  "c2c_alias": "crush-myname-myhostname",
-  "c2c_session_id": "crush-myname-myhostname"
-}
-EOF
-
-./run-crush-inst-outer my-crush
-```
-
-### Self-restart
-
-Standalone (Tier 1): Exit and reopen Crush.
-
-Managed harness (Tier 2): `restart-crush-self` signals the Crush process;
-`run-crush-inst-outer` relaunches automatically.
-
-`c2c setup crush` writes `~/.config/crush/crush.json` (respects `$XDG_CONFIG_HOME`). After editing, restart Crush.
-
-### What the user sees
-
-The `mcp__c2c__poll_inbox` tool result appears inline in the Crush conversation.
-With the managed harness, a `<c2c event="notify">` PTY sentinel fires when
-messages arrive.
+`c2c setup crush` still writes `~/.config/crush/crush.json` if you want to
+experiment. The `mcp__c2c_*` tools work inside `crush run`, but do not rely on
+Crush for persistent swarm membership.
 
 ---
 
@@ -429,23 +362,20 @@ messages arrive.
 | Codex       | PID at register time    | Notify daemon + PTY      | PTY sentinel string   | `c2c restart-me` (managed) |
 | OpenCode    | `$OPENCODE_SESSION_ID`  | Native TS plugin + promptAsync ✓ | Plugin background poll | `c2c restart-me` (managed) |
 | Kimi        | `kimi-user-host` (auto) | Wire bridge preferred; notify daemon fallback | Wire prompt / PTY sentinel | `restart-kimi-self` (managed†) |
-| Crush       | `crush-user-host` (auto)| Notify daemon (Tier 2†) | PTY sentinel          | `restart-crush-self` (managed†) |
 
 ---
 
 ## Cross-client DM matrix
 
-| From ↓ / To → | Claude Code | Codex | OpenCode | Kimi | Crush |
-|---------------|:-----------:|:-----:|:--------:|:----:|:-----:|
-| Claude Code   | ✓           | ✓     | ✓        | ✓    | ~     |
-| Codex         | ✓           | ✓     | ✓        | ✓    | ✓     |
-| OpenCode      | ✓           | ✓     | ✓        | ✓    | ~     |
-| Kimi          | ✓           | ✓     | ✓        | ✓    | ~     |
-| Crush         | ~           | ✓     | ~        | ~    | ~     |
+| From ↓ / To → | Claude Code | Codex | OpenCode | Kimi |
+|---------------|:-----------:|:-----:|:--------:|:----:|
+| Claude Code   | ✓           | ✓     | ✓        | ✓    |
+| Codex         | ✓           | ✓     | ✓        | ✓    |
+| OpenCode      | ✓           | ✓     | ✓        | ✓    |
+| Kimi          | ✓           | ✓     | ✓        | ✓    |
 
 **✓** = proven end-to-end for live active-session DMs
-**~** = MCP tool capability proven (one-shot `crush run`), but live idle/active session DM delivery for that pair still needs per-pair proof
 
-*(All Claude↔Codex↔OpenCode↔Kimi pairs proven 2026-04-13/14. OpenCode native plugin promptAsync proven 2026-04-14. Kimi Wire bridge proven 2026-04-14. Crush one-shot `crush run` poll-and-reply proven 2026-04-14. Codex<->Crush active-session notify-only wake proven 2026-04-13 with current live alias `ember-flame`.)*
+*(All Claude↔Codex↔OpenCode↔Kimi pairs proven 2026-04-13/14. OpenCode native plugin promptAsync proven 2026-04-14. Kimi Wire bridge proven 2026-04-14.)*
 
 See `.collab/dm-matrix.md` for the live tracking record.

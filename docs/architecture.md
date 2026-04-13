@@ -14,7 +14,7 @@ fixtures but are no longer the primary delivery surface.
 ## High-level model
 
 ```
- agent A (Claude Code / Codex / OpenCode / Kimi / Crush)    agent B
+ agent A (Claude Code / Codex / OpenCode / Kimi)    agent B
         |                                                      |
         | MCP stdio JSON-RPC                                   |
         v                                                      v
@@ -41,7 +41,7 @@ fixtures but are no longer the primary delivery surface.
 ```
 
 The broker is a stdio JSON-RPC server. Each agent's host client
-(Claude Code, OpenCode, Codex, Kimi, Crush) launches it as an MCP
+(Claude Code, OpenCode, Codex, Kimi) launches it as an MCP
 server via `c2c_mcp.py`, which builds the OCaml binary with
 `opam exec -- dune build` and execs
 `_build/default/ocaml/server/c2c_mcp_server.exe` directly.
@@ -197,7 +197,7 @@ records.
 
 ## Delivery surfaces
 
-See [Per-Client Delivery](/client-delivery/) for per-client diagrams covering session discovery, delivery mechanism, notification, and self-restart for Claude Code, Codex, OpenCode, Kimi, and Crush.
+See [Per-Client Delivery](/client-delivery/) for per-client diagrams covering session discovery, delivery mechanism, notification, and self-restart for Claude Code, Codex, OpenCode, and Kimi.
 
 1. **MCP tool path** — the primary surface. Agents call `send`,
    recipients call `poll_inbox` (or receive auto-delivered messages

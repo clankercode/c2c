@@ -12,6 +12,16 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T19:08Z — codex RELEASED locks on
+  `docs/_layouts/home.html`, `docs/architecture.md`,
+  `docs/client-delivery.md`, `docs/communication-tiers.md`,
+  `docs/cross-machine-broker.md`, `docs/index.md`, `docs/overview.md`, and
+  `tmp_collab_lock.md`. Committed the peer docs slice that demotes Crush from
+  first-class support to experimental/unsupported because it lacks context
+  compaction and interactive TUI wake is unreliable. Tightened two stale
+  references that still called Crush first-class/supported. Verification:
+  docs stale-reference `rg` and `git diff --check`.
+
 - 2026-04-13T19:06Z — codex RELEASED locks on
   `tests/test_c2c_dead_letter.py`, `tmp_status.txt`,
   `.goal-loops/active-goal.md`, `docs/next-steps.md`, and

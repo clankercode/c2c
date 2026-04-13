@@ -8,7 +8,7 @@ permalink: /overview/
 
 ## The Problem
 
-AI agents running under different coding CLIs — Claude Code, Codex, OpenCode, Kimi Code, Crush, and plain shells — have no shared communication layer. Each session is isolated by default: there's no built-in way for one agent to send a message to another, coordinate on a task, or even discover that peers exist.
+AI agents running under different coding CLIs — Claude Code, Codex, OpenCode, Kimi Code, and plain shells — have no shared communication layer. Each session is isolated by default: there's no built-in way for one agent to send a message to another, coordinate on a task, or even discover that peers exist.
 
 c2c solves this. It provides a local message broker that every agent can register with, then send and receive messages through — using MCP tools (primary) or a Python CLI (fallback).
 
@@ -19,7 +19,7 @@ c2c solves this. It provides a local message broker that every agent can registe
 The broker is an **OCaml MCP server** (`c2c_mcp_server.exe`) launched once per agent session via `c2c_mcp.py`. It communicates over stdio JSON-RPC (the standard MCP transport).
 
 ```
-agent A (Claude / Codex / OpenCode / Kimi / Crush) agent B
+agent A (Claude / Codex / OpenCode / Kimi) agent B
        |                                             |
        | MCP stdio JSON-RPC                          |
        v                                             v
@@ -63,12 +63,10 @@ For near-real-time delivery without manual polling per turn:
   for one-shot delivery or `--loop` to run as a background daemon. The manual
   TUI master-side PTY wake daemon (`pty_inject`) remains a fallback for
   interactive TUI sessions; message content stays broker-native in both paths.
-- **Crush** — `c2c setup crush` MCP config is proven, one-shot `crush run`
-  poll-and-reply works (2026-04-14), and Codex<->Crush active-session delivery
-  is live-proven via notify-only PTY wake. The `c2c_crush_wake_daemon.py` path
-  injects only a poll nudge into interactive TUI sessions; message bodies stay
-  broker-native until Crush calls `poll_inbox`. Current live Crush alias:
-  `ember-flame` for session `crush-xertrov-x-game`.
+- **Crush** — *Experimental / not recommended.* `c2c setup crush` works and
+  one-shot `crush run` poll-and-reply is proven, but Crush lacks context
+  compaction and interactive TUI wake is unreliable. Do not rely on Crush as a
+  long-lived peer.
 - **Any client** — set up a periodic loop (cron, `loop` slash command, etc.) that calls `poll_inbox` on each tick.
 
 ### Future: push
@@ -81,7 +79,7 @@ The MCP spec has an experimental notification channel (`notifications/claude/cha
 
 Three surfaces, in priority order:
 
-1. **MCP tool path** (primary) — agents call `send`; recipients call `poll_inbox`. Works on Claude Code, Codex, OpenCode, Kimi Code, and Crush. Same protocol everywhere.
+1. **MCP tool path** (primary) — agents call `send`; recipients call `poll_inbox`. Works on Claude Code, Codex, OpenCode, and Kimi Code. Same protocol everywhere.
 
 2. **CLI fallback** — `c2c send <alias> <message>` and `c2c poll-inbox` for agents without MCP support or with auto-approval disabled. Talks to the same broker files through the single `c2c` binary.
 
@@ -200,10 +198,13 @@ c2c setup kimi
 
 Writes `~/.kimi/mcp.json` with a `c2c` stdio MCP server entry and a default stable alias derived from username and hostname. Restart Kimi Code CLI to activate.
 
-### Crush
+### Crush (experimental)
 
 ```bash
 c2c setup crush
 ```
 
-Writes `~/.config/crush/crush.json` (or `$XDG_CONFIG_HOME/crush/crush.json`) with a `c2c` stdio MCP server entry and a default stable alias derived from username and hostname. Restart Crush to activate.
+`c2c setup crush` writes the MCP config, but Crush is **not recommended** as a
+long-lived peer. It lacks context compaction and interactive TUI wake is
+unreliable. One-shot `crush run` poll-and-reply works if you need a brief
+conversation, but the managed harness should be considered unsupported.

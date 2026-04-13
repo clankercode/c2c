@@ -29,7 +29,7 @@ changes — remote transport is an implementation detail, not a new workflow.
   but message bodies stay in broker inboxes until drained through the MCP/CLI
   receive path.
 - Avoid a design that depends on a particular host client. Claude Code, Codex,
-  OpenCode, Kimi Code, Crush, and shell scripts should all keep the same API.
+  OpenCode, Kimi Code, and shell scripts should all keep the same API.
 - Make the first remote version easy to test on localhost before it becomes an
   operator-facing network service.
 
