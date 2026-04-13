@@ -1280,6 +1280,9 @@ let auto_register_startup ~broker_root =
          CLAUDE_SESSION_ID from a running Claude Code session but has a
          different C2C_MCP_AUTO_REGISTER_ALIAS configured. *)
       let existing = Broker.list_registrations broker in
+      (* Guard 1: if an alive registration already exists for this session_id
+         with a DIFFERENT alias, skip — prevents session hijack when a child
+         process inherits CLAUDE_SESSION_ID but has a different alias. *)
       let hijack_guard =
         List.exists
           (fun reg ->
@@ -1288,7 +1291,20 @@ let auto_register_startup ~broker_root =
             && Broker.registration_is_alive reg)
           existing
       in
-      if not hijack_guard then begin
+      (* Guard 2: if an alive registration already exists for this ALIAS
+         with a DIFFERENT session_id, skip — prevents a one-shot or probe
+         process from evicting an active peer that owns this alias. A new
+         session is allowed to claim the alias once the existing holder dies
+         (its PID check will return false, making this guard inactive). *)
+      let alias_occupied_guard =
+        List.exists
+          (fun reg ->
+            reg.alias = alias
+            && reg.session_id <> session_id
+            && Broker.registration_is_alive reg)
+          existing
+      in
+      if not hijack_guard && not alias_occupied_guard then begin
         let pid =
           match current_client_pid () with
           | Some pid -> Some pid
