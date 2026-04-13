@@ -9,6 +9,17 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| c2c_cli.py | codex | Review/commit relay GC and rooms CLI slice | 2026-04-13T13:49:00Z |
+| c2c_relay_config.py | codex | Add tested relay URL/token env fallback for relay CLI slice | 2026-04-13T13:53:00Z |
+| c2c_relay_connector.py | codex | Review/commit relay GC and rooms CLI slice | 2026-04-13T13:49:00Z |
+| c2c_relay_contract.py | codex | Review/commit relay GC and rooms CLI slice | 2026-04-13T13:49:00Z |
+| c2c_relay_server.py | codex | Review/commit relay GC and rooms CLI slice | 2026-04-13T13:49:00Z |
+| c2c_relay_gc.py | codex | Review/commit relay GC CLI helper | 2026-04-13T13:49:00Z |
+| c2c_relay_rooms.py | codex | Review/commit relay rooms CLI helper | 2026-04-13T13:49:00Z |
+| tests/test_relay_config_status.py | codex | Cover relay URL/token env fallback | 2026-04-13T13:53:00Z |
+| tests/test_relay_gc.py | codex | Review/commit relay GC tests | 2026-04-13T13:49:00Z |
+| tests/test_relay_rooms_cli.py | codex | Review/commit relay rooms CLI tests | 2026-04-13T13:49:00Z |
+| tmp_collab_lock.md | codex | Record/release relay CLI review lock | 2026-04-13T13:49:00Z |
 
 ## History (addendum)
 

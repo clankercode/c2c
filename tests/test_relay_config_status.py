@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import time
@@ -65,6 +66,66 @@ class RelayConfigTests(unittest.TestCase):
         params = resolve_relay_params(config_path=self.config_path)
         self.assertEqual(params["url"], "http://from-config")
         self.assertEqual(params["token"], "cfg-token")
+
+    def test_resolve_relay_params_falls_back_to_env(self):
+        old_url = os.environ.get("C2C_RELAY_URL")
+        old_token = os.environ.get("C2C_RELAY_TOKEN")
+        old_node = os.environ.get("C2C_RELAY_NODE_ID")
+        try:
+            os.environ["C2C_RELAY_URL"] = "http://from-env"
+            os.environ["C2C_RELAY_TOKEN"] = "env-token"
+            os.environ["C2C_RELAY_NODE_ID"] = "env-node"
+            params = resolve_relay_params(config_path=self.config_path)
+        finally:
+            for key, old in (
+                ("C2C_RELAY_URL", old_url),
+                ("C2C_RELAY_TOKEN", old_token),
+                ("C2C_RELAY_NODE_ID", old_node),
+            ):
+                if old is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = old
+        self.assertEqual(params["url"], "http://from-env")
+        self.assertEqual(params["token"], "env-token")
+        self.assertEqual(params["node_id"], "env-node")
+
+    def test_resolve_relay_params_env_overrides_config(self):
+        save_config({"url": "http://from-config", "token": "cfg-token"}, self.config_path)
+        old_url = os.environ.get("C2C_RELAY_URL")
+        old_token = os.environ.get("C2C_RELAY_TOKEN")
+        try:
+            os.environ["C2C_RELAY_URL"] = "http://from-env"
+            os.environ["C2C_RELAY_TOKEN"] = "env-token"
+            params = resolve_relay_params(config_path=self.config_path)
+        finally:
+            for key, old in (("C2C_RELAY_URL", old_url), ("C2C_RELAY_TOKEN", old_token)):
+                if old is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = old
+        self.assertEqual(params["url"], "http://from-env")
+        self.assertEqual(params["token"], "env-token")
+
+    def test_resolve_relay_params_cli_overrides_env(self):
+        old_url = os.environ.get("C2C_RELAY_URL")
+        old_token = os.environ.get("C2C_RELAY_TOKEN")
+        try:
+            os.environ["C2C_RELAY_URL"] = "http://from-env"
+            os.environ["C2C_RELAY_TOKEN"] = "env-token"
+            params = resolve_relay_params(
+                url="http://from-cli",
+                token="cli-token",
+                config_path=self.config_path,
+            )
+        finally:
+            for key, old in (("C2C_RELAY_URL", old_url), ("C2C_RELAY_TOKEN", old_token)):
+                if old is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = old
+        self.assertEqual(params["url"], "http://from-cli")
+        self.assertEqual(params["token"], "cli-token")
 
     def test_resolve_relay_params_empty_when_no_config(self):
         params = resolve_relay_params(config_path=self.config_path)

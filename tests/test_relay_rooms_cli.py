@@ -151,6 +151,7 @@ class TestRelayRoomsLeave(unittest.TestCase):
 
         rc, out = self.runner.run(["leave", "exitroom", "--alias", "frank"])
         self.assertEqual(rc, 0)
+        self.assertIn("left room", out.lower())
         self.assertIn("exitroom", out)
 
         # Verify membership cleared
@@ -159,12 +160,13 @@ class TestRelayRoomsLeave(unittest.TestCase):
         if exitroom:
             self.assertNotIn("frank", exitroom.get("members", []))
 
-    def test_leave_idempotent(self):
-        # leave is idempotent — ok even if not a member
+    def test_leave_not_member_says_so(self):
+        # leave when not a member: rc=0, but output says "not a member"
         relay = self.server.relay
         relay.register("n1", "s1", "grace")
         rc, out = self.runner.run(["leave", "emptyroom", "--alias", "grace"])
         self.assertEqual(rc, 0)
+        self.assertIn("not a member", out.lower())
 
 
 class TestRelayRoomsSend(unittest.TestCase):
