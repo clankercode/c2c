@@ -929,6 +929,47 @@ module Broker = struct
         save_room_members t ~room_id updated;
         updated)
 
+  (* Evict dead sessions from all room member lists.  Called as part of
+     the sweep tool so dead sessions don't linger as room members after
+     their registration is dropped.  Sessions with a live outer loop
+     re-join automatically via C2C_MCP_AUTO_JOIN_ROOMS on restart.
+     Returns a list of (room_id, alias) pairs that were evicted. *)
+  let evict_dead_from_rooms t ~dead_session_ids =
+    if dead_session_ids = [] then []
+    else begin
+      let rd = rooms_dir t in
+      if not (Sys.file_exists rd) then []
+      else begin
+        let room_names =
+          try
+            Array.to_list (Sys.readdir rd)
+            |> List.filter (fun name ->
+                   Sys.is_directory (Filename.concat rd name))
+          with _ -> []
+        in
+        let evicted = ref [] in
+        List.iter (fun room_id ->
+          with_room_members_lock t ~room_id (fun () ->
+            let members = load_room_members t ~room_id in
+            let kept, removed =
+              List.partition
+                (fun m -> not (List.mem m.rm_session_id dead_session_ids))
+                members
+            in
+            if removed <> [] then begin
+              save_room_members t ~room_id kept;
+              List.iter
+                (fun m -> evicted := (room_id, m.rm_alias) :: !evicted)
+                removed
+            end))
+          room_names;
+        !evicted
+      end
+    end
+
+  (* Public alias for tests and external callers. *)
+  let read_room_members = load_room_members
+
   let append_room_history t ~room_id ~from_alias ~content =
     if not (valid_room_id room_id) then
       invalid_arg ("invalid room_id: " ^ room_id);
@@ -1145,7 +1186,7 @@ let tool_definitions =
   ; tool_definition ~name:"whoami" ~description:"Resolve the current C2C session registration." ~required:[]
   ; tool_definition ~name:"poll_inbox" ~description:"Drain queued C2C messages for the current session. Returns a JSON array of {from_alias,to_alias,content} objects; call this at the start of each turn and after each send to reliably receive messages regardless of whether the client surfaces notifications/claude/channel." ~required:[]
   ; tool_definition ~name:"peek_inbox" ~description:"Non-draining inbox check for the current session. Returns the same JSON array as `poll_inbox` but leaves the messages in the inbox so a subsequent `poll_inbox` still sees them. Useful for 'any mail?' checks without losing messages on error paths. Caller's session_id is always resolved from the MCP env (C2C_MCP_SESSION_ID); passing a session_id argument is ignored for isolation." ~required:[]
-  ; tool_definition ~name:"sweep" ~description:"Remove dead registrations (whose parent process has exited) and delete orphan inbox files that belong to no current registration. Any non-empty orphan inbox content is appended to dead-letter.jsonl inside the broker directory before the inbox file is deleted, so cleanup is non-destructive to operator signal. Returns JSON {dropped_regs:[{session_id,alias}], deleted_inboxes:[session_id], preserved_messages: int}." ~required:[]
+  ; tool_definition ~name:"sweep" ~description:"Remove dead registrations (whose parent process has exited) and delete orphan inbox files that belong to no current registration. Any non-empty orphan inbox content is appended to dead-letter.jsonl inside the broker directory before the inbox file is deleted, so cleanup is non-destructive to operator signal. Dead sessions are also evicted from all room member lists. Returns JSON {dropped_regs:[{session_id,alias}], deleted_inboxes:[session_id], preserved_messages: int, evicted_room_members:[{room_id,alias}]}." ~required:[]
   ; tool_definition ~name:"send_all" ~description:"Fan out a message to every currently-registered peer except the sender (and any alias in the optional `exclude_aliases` array). Non-live recipients are skipped with reason \"not_alive\" rather than raising, so partial failure does not abort the broadcast. Per-recipient enqueue takes the same per-inbox lock used by `send`. Returns JSON {sent_to:[alias], skipped:[{alias, reason}]}." ~required:[ "from_alias"; "content" ]
   ; tool_definition ~name:"join_room" ~description:"Join a persistent N:N room. Creates the room if it does not exist. Idempotent per (alias, session_id). Room IDs must be alphanumeric + hyphens + underscores. Returns JSON {room_id, members, history} where `history` is the most recent messages from the room's append-only log so a newly-joined member can catch up on context without a separate `room_history` call. Optional `history_limit` (default 20, max 200) controls how many history entries to include; pass 0 to skip history backfill. Accepts `from_alias` as a synonym for `alias` to match the send-side schema; either works." ~required:[ "room_id"; "alias" ]
   ; tool_definition ~name:"leave_room" ~description:"Leave a persistent N:N room. Returns the member list after leave. Accepts `from_alias` as a synonym for `alias` to match the send-side schema; either works." ~required:[ "room_id"; "alias" ]
@@ -1588,6 +1629,12 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       let { Broker.dropped_regs; deleted_inboxes; preserved_messages } =
         Broker.sweep broker
       in
+      let dead_sids =
+        List.map (fun r -> r.session_id) dropped_regs
+      in
+      let evicted_room_members =
+        Broker.evict_dead_from_rooms broker ~dead_session_ids:dead_sids
+      in
       let content =
         `Assoc
           [ ( "dropped_regs",
@@ -1602,6 +1649,15 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
           ; ( "deleted_inboxes",
               `List (List.map (fun sid -> `String sid) deleted_inboxes) )
           ; ("preserved_messages", `Int preserved_messages)
+          ; ( "evicted_room_members",
+              `List
+                (List.map
+                   (fun (room_id, alias) ->
+                     `Assoc
+                       [ ("room_id", `String room_id)
+                       ; ("alias", `String alias)
+                       ])
+                   evicted_room_members) )
           ]
         |> Yojson.Safe.to_string
       in

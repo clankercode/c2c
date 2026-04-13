@@ -1824,6 +1824,52 @@ let test_sweep_empty_orphan_writes_no_dead_letter () =
       check bool "no dead-letter noise for empty orphan" false
         (Sys.file_exists dead_letter))
 
+let test_sweep_evicts_dead_members_from_rooms () =
+  (* When sweep drops a dead registration, evict_dead_from_rooms should
+     also remove that session from any rooms it was in, so room member
+     lists don't accumulate stale entries forever. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Register two sessions: one live (current proc), one dead (bogus pid
+         that certainly isn't alive — pid:None is treated as alive for
+         backward-compat, so we use a large impossible pid instead). *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-alive" ~alias:"storm-alive"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-ghost" ~alias:"storm-ghost"
+        ~pid:(Some 999999999) ~pid_start_time:None;
+      (* Both join swarm-lounge *)
+      ignore
+        (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
+           ~alias:"storm-alive" ~session_id:"session-alive");
+      ignore
+        (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
+           ~alias:"storm-ghost" ~session_id:"session-ghost");
+      let members_before =
+        C2c_mcp.Broker.read_room_members broker ~room_id:"swarm-lounge"
+      in
+      check int "two members before sweep" 2 (List.length members_before);
+      (* Sweep: session-ghost has no pid → dead registration *)
+      let { C2c_mcp.Broker.dropped_regs; _ } = C2c_mcp.Broker.sweep broker in
+      check int "one dropped registration" 1 (List.length dropped_regs);
+      let dead_sids = List.map (fun r -> r.C2c_mcp.session_id) dropped_regs in
+      (* Evict dead members from rooms *)
+      let evicted =
+        C2c_mcp.Broker.evict_dead_from_rooms broker ~dead_session_ids:dead_sids
+      in
+      check int "one member evicted" 1 (List.length evicted);
+      let (evicted_room, evicted_alias) = List.hd evicted in
+      check string "evicted from correct room" "swarm-lounge" evicted_room;
+      check string "evicted the ghost alias" "storm-ghost" evicted_alias;
+      (* Room now has only the live member *)
+      let members_after =
+        C2c_mcp.Broker.read_room_members broker ~room_id:"swarm-lounge"
+      in
+      check int "one member after eviction" 1 (List.length members_after);
+      check string "remaining member is alive" "storm-alive"
+        (List.hd members_after).C2c_mcp.rm_alias)
+
 let test_register_redelivers_dead_letter_on_same_session_id () =
   (* Scenario: a managed session (e.g. kimi-local) is swept while the outer
      loop is between iterations — PID dead, no live process. Messages queued to
@@ -3152,6 +3198,8 @@ let () =
              test_sweep_preserves_nonempty_orphan_to_dead_letter
          ; test_case "sweep empty orphan writes no dead-letter" `Quick
              test_sweep_empty_orphan_writes_no_dead_letter
+         ; test_case "sweep evicts dead members from rooms" `Quick
+             test_sweep_evicts_dead_members_from_rooms
          ; test_case "register redelivers dead-letter on same session_id" `Quick
              test_register_redelivers_dead_letter_on_same_session_id
          ; test_case "register redelivers dead-letter by alias (new session_id)" `Quick
