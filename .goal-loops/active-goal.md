@@ -72,9 +72,12 @@ These are Max's target experiences, verbatim:
   peer-renamed fan-out, session hijack guard, alias-occupied guard,
   dead-pid fallback in `current_client_pid()`.
 - **Python suite** ✓: 661 tests across all subsystems.
-- **Kimi wake daemon** ✓: `c2c_kimi_wake_daemon.py` now uses
-  `c2c_pts_inject` direct PTS write (not pty_inject binary). Bypasses
-  bracketed-paste issue; proven live 2026-04-13.
+- **Kimi wake daemon** ✓: basic PTY wake proven 2026-04-13 (pty_inject path).
+  `c2c_pts_inject` direct PTS write added 2026-04-14 to fix idle-at-prompt case
+  where prompt_toolkit silently drops bracketed-paste sequences; integrated into
+  `c2c_deliver_inbox.py --client kimi` and `run-kimi-inst-rearm`. Direct-write
+  idle delivery not yet live-proven (see finding
+  2026-04-13T15-30-00Z-kimi-nova-kimi-idle-pts-inject-fix.md).
 
 ### Active Work
 
