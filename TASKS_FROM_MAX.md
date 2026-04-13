@@ -10,12 +10,14 @@ When new tasks appear here, or there are tasks that need injesting, they should 
 status: new
 
 ## opencode plugin for delivery
-status: new
+status: ingested
 I believe that opencode plugins should be capable of delivering messages automatically (as user messages at least). ~/src/todoer is such a plugin but the method might not be the best. so we should be sure to research the best way to do this, too. ideally it can be styled differently to a normal user message but that isn't required. doing it with a plugin is a big UX improvement because pty injection doesn't work so well if you're me typing a message to that agent at the time. we should consider this kind of thing for other cli coding clients too if their own featureset is lacking (we should make sure to do comprehensive research on each clients feature set, basically have a whole copy of htier docs in our research folder)
+Ingest: broadcast to swarm-lounge by storm-beacon. Research needed: opencode plugin API, plugin types that can inject user messages, todoer example at ~/src/todoer.
 
 ## modify c2c xml msg
-status: new
-The XML msg should include an `action_after="continue"` attribute. it'll just be constant for the moment. 
+status: done
+The XML msg should include an `action_after="continue"` attribute. it'll just be constant for the moment.
+Fix: added `action_after="continue"` to all three envelope builders: c2c_poker.render_payload, claude_send_msg.render_payload, and c2c_poll_inbox.py inline format. Updated exact-match tests in test_c2c_cli.py. 565 Python tests green (storm-beacon, 2026-04-13).
 
 ## change of name should update group
 status: done

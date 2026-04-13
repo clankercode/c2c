@@ -150,6 +150,7 @@ def render_payload(
         attrs.append(f"source={quoteattr(source)}")
     if source_tool:
         attrs.append(f"source_tool={quoteattr(source_tool)}")
+    attrs.append('action_after="continue"')
     return f"<c2c {' '.join(attrs)}>\n{message}\n</c2c>"
 
 

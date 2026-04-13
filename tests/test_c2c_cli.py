@@ -3643,7 +3643,7 @@ class ClaudeSendMsgUnitTests(unittest.TestCase):
                 sender_name="agent-one",
                 sender_alias="storm-herald",
             ),
-            '<c2c event="message" from="agent-one" alias="storm-herald" source="pty" source_tool="claude_send_msg">\nhello peer\n</c2c>',
+            '<c2c event="message" from="agent-one" alias="storm-herald" source="pty" source_tool="claude_send_msg" action_after="continue">\nhello peer\n</c2c>',
         )
 
     def test_render_payload_omits_alias_when_sender_alias_missing(self):
@@ -3654,7 +3654,7 @@ class ClaudeSendMsgUnitTests(unittest.TestCase):
                 sender_name="c2c-send",
                 sender_alias="",
             ),
-            '<c2c event="message" from="c2c-send" source="pty" source_tool="claude_send_msg">\nhello peer\n</c2c>',
+            '<c2c event="message" from="c2c-send" source="pty" source_tool="claude_send_msg" action_after="continue">\nhello peer\n</c2c>',
         )
 
     def test_inject_delegates_to_external_pty_helper_with_terminal_metadata(self):
@@ -3701,7 +3701,7 @@ class ClaudeSendMsgUnitTests(unittest.TestCase):
         load_sessions.assert_called_once_with()
         inject.assert_called_once_with(
             full_session,
-            '<c2c event="message" from="c2c-send" source="pty" source_tool="claude_send_msg">\nhello peer\n</c2c>',
+            '<c2c event="message" from="c2c-send" source="pty" source_tool="claude_send_msg" action_after="continue">\nhello peer\n</c2c>',
         )
         self.assertEqual(
             result,
@@ -3746,7 +3746,7 @@ class ClaudeSendMsgUnitTests(unittest.TestCase):
 
         inject.assert_called_once_with(
             full_session,
-            '<c2c event="message" from="c2c-send" source="pty" source_tool="claude_send_msg">\nhello peer\n</c2c>',
+            '<c2c event="message" from="c2c-send" source="pty" source_tool="claude_send_msg" action_after="continue">\nhello peer\n</c2c>',
         )
         self.assertEqual(result["session_id"], AGENT_TWO_SESSION_ID)
 
@@ -3782,7 +3782,7 @@ class ClaudeSendMsgUnitTests(unittest.TestCase):
         load_sessions.assert_called_once_with()
         inject.assert_called_once_with(
             full_session,
-            '<c2c event="message" from="c2c-send" source="pty" source_tool="claude_send_msg">\nhello peer\n</c2c>',
+            '<c2c event="message" from="c2c-send" source="pty" source_tool="claude_send_msg" action_after="continue">\nhello peer\n</c2c>',
         )
         self.assertEqual(result["session_id"], AGENT_TWO_SESSION_ID)
 

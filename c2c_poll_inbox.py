@@ -216,7 +216,8 @@ def print_result(
     for item in messages:
         print(
             f"<c2c event=\"message\" from=\"{item.get('from_alias', '')}\" "
-            f"alias=\"{item.get('to_alias', '')}\">{item.get('content', '')}</c2c>"
+            f"alias=\"{item.get('to_alias', '')}\" action_after=\"continue\">"
+            f"{item.get('content', '')}</c2c>"
         )
 
 
