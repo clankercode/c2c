@@ -6,6 +6,7 @@ import contextlib
 import fcntl
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -110,52 +111,59 @@ def call_mcp_tool(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        start_new_session=True,
     )
+    requests = [
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {"name": "c2c-poll-inbox", "version": "0"},
+            },
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        },
+    ]
+    request_body = "".join(json.dumps(request) + "\n" for request in requests)
     try:
-        assert proc.stdin is not None and proc.stdout is not None
-        requests = [
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-11-25",
-                    "capabilities": {},
-                    "clientInfo": {"name": "c2c-poll-inbox", "version": "0"},
-                },
-            },
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {"name": name, "arguments": arguments},
-            },
-        ]
-        replies = []
-        for request in requests:
-            proc.stdin.write(json.dumps(request) + "\n")
-            proc.stdin.flush()
-            line = proc.stdout.readline()
-            if not line:
-                raise RuntimeError("MCP server exited before replying")
-            replies.append(json.loads(line))
-        payload = replies[-1]
-        if payload.get("result", {}).get("isError"):
-            raise RuntimeError(json.dumps(payload))
-        text = payload["result"]["content"][0]["text"]
-        parsed = json.loads(text) if name == "poll_inbox" else []
-        if not isinstance(parsed, list):
-            raise RuntimeError(f"unexpected poll_inbox payload: {text}")
-        return "mcp", [item for item in parsed if isinstance(item, dict)]
-    finally:
-        if proc.stdin is not None:
-            proc.stdin.close()
-        try:
-            proc.terminate()
-            proc.wait(timeout=timeout)
-        except Exception:
-            proc.kill()
-            proc.wait(timeout=timeout)
+        stdout, stderr = proc.communicate(request_body, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        terminate_process_group(proc, timeout=timeout)
+        raise TimeoutError(f"MCP server did not reply within {timeout:g}s") from exc
+    replies = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+    if len(replies) < len(requests):
+        stderr_hint = stderr.strip()
+        if stderr_hint:
+            raise RuntimeError(f"MCP server exited before replying: {stderr_hint}")
+        raise RuntimeError("MCP server exited before replying")
+    payload = replies[-1]
+    if payload.get("result", {}).get("isError"):
+        raise RuntimeError(json.dumps(payload))
+    text = payload["result"]["content"][0]["text"]
+    parsed = json.loads(text) if name == "poll_inbox" else []
+    if not isinstance(parsed, list):
+        raise RuntimeError(f"unexpected poll_inbox payload: {text}")
+    return "mcp", [item for item in parsed if isinstance(item, dict)]
+
+
+def terminate_process_group(proc: subprocess.Popen, *, timeout: float) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGTERM)
+    try:
+        proc.wait(timeout=timeout)
+        return
+    except Exception:
+        pass
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGKILL)
+    proc.wait(timeout=timeout)
 
 
 def poll_inbox(

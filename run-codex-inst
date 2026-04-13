@@ -89,8 +89,8 @@ def toml_string_override(key: str, value: str) -> str:
     return f"{key}={json.dumps(value)}"
 
 
-def c2c_config_overrides(c2c_session_id: str) -> list[str]:
-    return [
+def c2c_config_overrides(c2c_session_id: str, c2c_alias: str = "") -> list[str]:
+    overrides = [
         "-c",
         toml_string_override(
             "mcp_servers.c2c.env.C2C_MCP_SESSION_ID", c2c_session_id
@@ -98,6 +98,16 @@ def c2c_config_overrides(c2c_session_id: str) -> list[str]:
         "-c",
         toml_string_override("mcp_servers.c2c.env.C2C_MCP_AUTO_DRAIN_CHANNEL", "0"),
     ]
+    if c2c_alias:
+        overrides.extend(
+            [
+                "-c",
+                toml_string_override(
+                    "mcp_servers.c2c.env.C2C_MCP_AUTO_REGISTER_ALIAS", c2c_alias
+                ),
+            ]
+        )
+    return overrides
 
 
 def build_launch(name: str, config: dict, extra: list[str]) -> tuple[list[str], Path, dict[str, str]]:
@@ -117,11 +127,15 @@ def build_launch(name: str, config: dict, extra: list[str]) -> tuple[list[str], 
         "c2c_session_id",
         required=True,
     )
+    c2c_alias = coerce_string(
+        config.get("c2c_alias") or env_extra.get("RUN_CODEX_INST_ALIAS_HINT"),
+        "c2c_alias",
+    )
     launch = [
         command,
         *flags,
         *extra,
-        *c2c_config_overrides(c2c_session_id),
+        *c2c_config_overrides(c2c_session_id, c2c_alias),
     ]
     if mode == "resume":
         launch.extend(["resume", resume_target, prompt])
@@ -134,6 +148,8 @@ def build_launch(name: str, config: dict, extra: list[str]) -> tuple[list[str], 
     env.update(env_extra)
     env["RUN_CODEX_INST_NAME"] = name
     env["RUN_CODEX_INST_C2C_SESSION_ID"] = c2c_session_id
+    if c2c_alias and "RUN_CODEX_INST_ALIAS_HINT" not in env:
+        env["RUN_CODEX_INST_ALIAS_HINT"] = c2c_alias
     return launch, cwd_path, env
 
 
@@ -175,6 +191,11 @@ def main(argv: list[str]) -> int:
                         "RUN_CODEX_INST_C2C_SESSION_ID": env[
                             "RUN_CODEX_INST_C2C_SESSION_ID"
                         ],
+                        **(
+                            {"RUN_CODEX_INST_ALIAS_HINT": env["RUN_CODEX_INST_ALIAS_HINT"]}
+                            if "RUN_CODEX_INST_ALIAS_HINT" in env
+                            else {}
+                        ),
                     },
                 },
                 indent=2,

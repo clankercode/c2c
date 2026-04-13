@@ -9,9 +9,22 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| _none_ | _none_ | _none_ | _none_ |
+| `ocaml/c2c_mcp.ml` | storm-beacon | Implement inbox archive on drain + `history` tool (v0.6.2 goal A) | 2026-04-13 17:00 AEST |
+| `ocaml/c2c_mcp.mli` | storm-beacon | Export `history` tool + archive helpers | 2026-04-13 17:00 AEST |
+| `ocaml/test/test_c2c_mcp.ml` | storm-beacon | Tests for drain-archives-to-file + history tool + subagent denial | 2026-04-13 17:00 AEST |
 
 ## History (addendum)
+
+- 2026-04-13 17:08 — codex RELEASED locks on `run-codex-inst`,
+  `c2c_mcp.py`, `c2c_poll_inbox.py`, `tests/test_c2c_cli.py`,
+  `tests/test_c2c_mcp_auto_register.py`,
+  `.collab/findings/2026-04-13T07-00-00Z-codex-problems-log.md`, and
+  `tmp_collab_lock.md`. Fixed managed Codex restart recovery by passing
+  `C2C_MCP_AUTO_REGISTER_ALIAS` from launcher alias hints, defaulting
+  `C2C_MCP_CLIENT_PID` to the parent client pid, and bounding
+  `c2c-poll-inbox` MCP startup/read time so it can fall back to locked file
+  drain instead of hanging behind a stale build. Focused tests pass; live
+  poll fallback returns promptly with `source=file`.
 
 - 2026-04-13 16:55 — codex RELEASED locks on
   `.collab/findings/2026-04-13T06-53-45Z-codex-problems-log.md` and

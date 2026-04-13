@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -568,7 +569,7 @@ class C2CCLITests(unittest.TestCase):
         self.assertIn("c2c_mcp: WARNING session discovery failed", warning)
         self.assertIn("tool calls will need an explicit session_id", warning)
 
-    def test_c2c_mcp_main_exports_current_client_pid_for_server_register(self):
+    def test_c2c_mcp_main_exports_parent_client_pid_for_server_register(self):
         with (
             mock.patch.dict(os.environ, {"C2C_MCP_SESSION_ID": ""}, clear=False),
             mock.patch(
@@ -577,7 +578,7 @@ class C2CCLITests(unittest.TestCase):
             ),
             mock.patch("c2c_mcp.sync_broker_registry"),
             mock.patch("c2c_mcp.default_session_id", return_value=AGENT_ONE_SESSION_ID),
-            mock.patch("c2c_mcp.os.getpid", return_value=424242),
+            mock.patch("c2c_mcp.os.getppid", return_value=424242),
             mock.patch("c2c_mcp.subprocess.run") as run_mock,
         ):
             run_mock.return_value.returncode = 0
@@ -1422,6 +1423,49 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(messages[0]["content"], "mcp failed but file worked")
         self.assertEqual(json.loads(inbox_path.read_text(encoding="utf-8")), [])
 
+    def test_c2c_poll_inbox_times_out_mcp_startup_and_falls_back_to_file(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        broker_root.mkdir()
+        inbox_path = broker_root / "codex-local.inbox.json"
+        inbox_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "from_alias": "storm-beacon",
+                        "to_alias": "codex",
+                        "content": "stuck mcp build but file worked",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        class StuckProcess:
+            pid = 12345
+
+            def communicate(self, _input, timeout=None):
+                raise subprocess.TimeoutExpired(["c2c_mcp.py"], timeout)
+
+            def wait(self, timeout=None):
+                return 0
+
+        with (
+            mock.patch("c2c_poll_inbox.subprocess.Popen", return_value=StuckProcess()),
+            mock.patch("c2c_poll_inbox.os.killpg") as killpg,
+        ):
+            source, messages = c2c_poll_inbox.poll_inbox(
+                broker_root=broker_root,
+                session_id="codex-local",
+                timeout=0.1,
+                force_file=False,
+                allow_file_fallback=True,
+            )
+
+        self.assertEqual(source, "file")
+        self.assertEqual(messages[0]["content"], "stuck mcp build but file worked")
+        killpg.assert_called_once_with(12345, signal.SIGTERM)
+        self.assertEqual(json.loads(inbox_path.read_text(encoding="utf-8")), [])
+
     def test_run_codex_inst_allows_explicit_c2c_id_for_multiple_codex_sessions(self):
         config_dir = Path(self.temp_dir.name) / "run-codex-inst.d"
         config_dir.mkdir()
@@ -1462,6 +1506,36 @@ class C2CCLITests(unittest.TestCase):
                 "Poll c2c once.",
             ],
         )
+
+    def test_run_codex_inst_passes_alias_hint_to_mcp_auto_register(self):
+        config_dir = Path(self.temp_dir.name) / "run-codex-inst.d"
+        config_dir.mkdir()
+        (config_dir / "codex-main.json").write_text(
+            json.dumps(
+                {
+                    "mode": "resume",
+                    "resume": "test-codex-for-restart",
+                    "c2c_session_id": "codex-local",
+                    "c2c_alias": "codex",
+                    "cwd": str(REPO),
+                    "prompt": "Poll c2c once.",
+                }
+            ),
+            encoding="utf-8",
+        )
+        env = dict(self.env)
+        env["RUN_CODEX_INST_CONFIG_DIR"] = str(config_dir)
+        env["RUN_CODEX_INST_DRY_RUN"] = "1"
+
+        result = run_cli("run-codex-inst", "codex-main", env=env)
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertIn(
+            'mcp_servers.c2c.env.C2C_MCP_AUTO_REGISTER_ALIAS="codex"',
+            payload["launch"],
+        )
+        self.assertEqual(payload["env"]["RUN_CODEX_INST_ALIAS_HINT"], "codex")
 
     def test_run_codex_inst_outer_dry_run_reports_inner_launch_command(self):
         env = dict(self.env)

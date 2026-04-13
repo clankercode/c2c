@@ -225,7 +225,8 @@ def main(argv: list[str] | None = None) -> int:
     sync_broker_registry(broker_root)
     env = os.environ.copy()
     env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
-    env["C2C_MCP_CLIENT_PID"] = str(os.getpid())
+    if not env.get("C2C_MCP_CLIENT_PID"):
+        env["C2C_MCP_CLIENT_PID"] = str(os.getppid())
     if not env.get("C2C_MCP_SESSION_ID"):
         try:
             env["C2C_MCP_SESSION_ID"] = default_session_id()
