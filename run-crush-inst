@@ -14,10 +14,13 @@ Config keys:
   c2c_session_id  unique MCP session ID for broker registration
   c2c_alias       stable alias peers use to address this instance
                   (defaults to c2c_session_id if absent)
-  crush_session_id  explicit Crush session ID passed as "-s <id>"; when set,
-                    launcher removes "-C"/"--continue" from flags
-  flags           extra CLI flags (list of strings)
-  env             extra environment variables (dict string→string)
+  crush_session_id  explicit Crush session ID passed as "-s <id>" in TUI mode;
+                    when set, launcher removes "-C"/"--continue" from flags
+  crush_session_uuid  explicit Crush session UUID (used for `crush run`)
+  prompt            if set, launcher uses `crush run` with this prompt instead
+                    of launching the interactive TUI
+  flags             extra CLI flags (list of strings)
+  env               extra environment variables (dict string→string)
 
 Set RUN_CRUSH_INST_DRY_RUN=1 to print the resolved launch command and env
 keys as JSON instead of execing.
@@ -120,13 +123,25 @@ def build_launch(
         "c2c_alias",
     )
 
+    prompt = coerce_string(config.get("prompt"), "prompt")
     crush_session_id = coerce_string(config.get("crush_session_id"), "crush_session_id")
-    if crush_session_id:
-        # Prefer explicit session id over --continue
-        filtered_flags = [f for f in flags if f not in ("-C", "--continue")]
-        launch = [command, *filtered_flags, "-s", crush_session_id, *extra]
+    crush_session_uuid = coerce_string(config.get("crush_session_uuid"), "crush_session_uuid")
+
+    if prompt:
+        # Non-interactive mode: crush run [flags] -s <uuid> "prompt"
+        session_ref = crush_session_uuid or crush_session_id
+        if session_ref:
+            filtered_flags = [f for f in flags if f not in ("-C", "--continue")]
+            launch = [command, "run", *filtered_flags, "-s", session_ref, prompt, *extra]
+        else:
+            launch = [command, "run", *flags, prompt, *extra]
     else:
-        launch = [command, *flags, *extra]
+        # Interactive TUI mode
+        if crush_session_id:
+            filtered_flags = [f for f in flags if f not in ("-C", "--continue")]
+            launch = [command, *filtered_flags, "-s", crush_session_id, *extra]
+        else:
+            launch = [command, *flags, *extra]
 
     env = os.environ.copy()
     env.update(env_extra)
