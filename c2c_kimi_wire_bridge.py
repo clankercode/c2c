@@ -9,9 +9,11 @@ interface over stdin/stdout.  This bridge:
 3. Drains broker messages, persists them to a spool, then delivers via Wire `prompt`.
 4. Clears the spool after successful delivery.
 
-This is the preferred native Kimi delivery path because it avoids all PTY/direct-
-PTS terminal hacks.  The direct-PTS wake daemon (c2c_kimi_wake_daemon.py) remains
-as a fallback for manual TUI sessions.
+This is the preferred native Kimi delivery path because it avoids all PTY/PTS
+terminal hacks.  The PTY master-side wake daemon (c2c_kimi_wake_daemon.py)
+remains as a fallback for manual TUI sessions that need TUI-level wake.
+Note: writing to /dev/pts/<N> (slave side) is display-only and does NOT deliver
+keyboard input to the program; PTY wake must use the master fd via pty_inject.
 
 Usage:
     c2c-kimi-wire-bridge --session-id kimi-wire --dry-run --json
