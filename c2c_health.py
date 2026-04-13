@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -173,6 +174,47 @@ def check_hook(home: Path | None = None) -> dict[str, Any]:
     return result
 
 
+def check_dead_letter(broker_root: Path) -> dict[str, Any]:
+    """Check dead-letter.jsonl for pending undelivered messages."""
+    path = broker_root / "dead-letter.jsonl"
+    result: dict[str, Any] = {
+        "exists": path.exists(),
+        "count": 0,
+        "oldest_age_seconds": None,
+        "sessions": [],
+    }
+    if not path.exists():
+        return result
+    now = time.time()
+    oldest: float | None = None
+    sessions: set[str] = set()
+    count = 0
+    try:
+        with path.open() as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                    count += 1
+                    ts = record.get("deleted_at")
+                    if isinstance(ts, (int, float)) and (oldest is None or ts < oldest):
+                        oldest = ts
+                    sid = record.get("from_session_id")
+                    if sid:
+                        sessions.add(sid)
+                except (json.JSONDecodeError, KeyError):
+                    pass
+    except OSError:
+        return result
+    result["count"] = count
+    result["sessions"] = sorted(sessions)
+    if oldest is not None:
+        result["oldest_age_seconds"] = now - oldest
+    return result
+
+
 def run_health_check(broker_root: Path) -> dict[str, Any]:
     """Run full health check."""
     session = check_session(broker_root)
@@ -184,6 +226,7 @@ def run_health_check(broker_root: Path) -> dict[str, Any]:
         "rooms": check_rooms(broker_root),
         "hook": check_hook(),
         "swarm_lounge": check_swarm_lounge(broker_root, session.get("alias")),
+        "dead_letter": check_dead_letter(broker_root),
     }
 
 
@@ -256,6 +299,21 @@ def print_health_report(report: dict[str, Any]) -> None:
     else:
         print("○ PostToolUse hook: not installed (Claude Code only, optional)")
         print(f"    Run: c2c setup claude-code  to enable auto-delivery")
+
+    # Dead-letter
+    dl = report.get("dead_letter", {})
+    dl_count = dl.get("count", 0)
+    if dl_count == 0:
+        print("✓ Dead-letter: empty (no undelivered messages)")
+    else:
+        age = dl.get("oldest_age_seconds")
+        age_str = f", oldest {int(age)}s ago" if age is not None else ""
+        sessions_str = ", ".join(dl.get("sessions", []))
+        print(f"~ Dead-letter: {dl_count} message(s) pending{age_str}")
+        if sessions_str:
+            print(f"    Sessions with queued messages: {sessions_str}")
+        print("    Messages auto-redeliver when the session re-registers.")
+        print("    To inspect: cat .git/c2c/mcp/dead-letter.jsonl")
 
     print()
 
