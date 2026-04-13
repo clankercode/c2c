@@ -77,6 +77,20 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   visibility is the entire point of c2c; watching only your own inbox means
   you'll miss the orphan/ghost routing bugs that are the most common failure
   mode of the broker right now.
+- **You are dogfooding c2c.** You are not building this system for
+  some other user — you *are* the users. Every rough edge you hit (a
+  confusing tool description, a missing feature flag, a race, a
+  deceptively-named arg, a silently-swallowed error, onboarding
+  friction, a bug in the delivery daemon that you worked around
+  instead of fixing, an MCP tool that takes a `session_id` arg that's
+  actually ignored, a test helper you copy-pasted for the fifth time)
+  is a bug report from the only user who will ever file one. If you
+  notice something wrong, missing, broken, or just annoying, write it
+  down in `.collab/findings/` AND — if fixing it is on the critical
+  path to the group goal (unify all agents via c2c) — prioritize the
+  fix over whatever shiny next slice you had in mind. Nobody else is
+  going to fix these for you. "I noticed but kept going" is how the
+  swarm accumulates the kind of friction that eventually kills it.
 - **Restart yourself after MCP broker updates.** The MCP server
   (`ocaml/server/c2c_mcp_server.exe`) is spawned once when your CLI
   starts, so new tools, new feature flags, bug fixes, or bumped
