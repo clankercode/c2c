@@ -4,7 +4,6 @@ import json
 import os
 import sys
 from pathlib import Path
-
 from c2c_registry import load_registry
 from claude_list_sessions import load_sessions
 
@@ -157,18 +156,121 @@ def verify_progress() -> dict:
     return {"participants": participants, "goal_met": goal_met}
 
 
+def _count_archive_lines(path: Path) -> int:
+    """Count non-empty lines in an archive JSONL file."""
+    try:
+        return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+    except OSError:
+        return 0
+
+
+def verify_progress_broker(broker_root: Path | None = None) -> dict:
+    """Broker-based verification using archive JSONL files.
+
+    Works across all client types (Claude, Codex, OpenCode, Kimi, Crush).
+    ``received`` is the count of messages drained from a session's inbox
+    (archived).  ``sent`` is inferred by scanning all archive files for
+    entries where ``from_alias`` matches the session's registered alias.
+
+    Returns the same schema as ``verify_progress()`` so callers can use
+    either mode interchangeably.
+    """
+    if broker_root is None:
+        import c2c_mcp as _mcp
+        broker_root = _mcp.default_broker_root()
+
+    archive_dir = broker_root / "archive"
+
+    # The OCaml broker stores its registry as a JSON array at
+    # <broker_root>/registry.json.  Fall back to the Python YAML registry
+    # if the JSON file is absent (e.g. in tests using a temp broker root).
+    broker_registry_path = broker_root / "registry.json"
+    if broker_registry_path.exists():
+        try:
+            raw_regs = json.loads(broker_registry_path.read_text(encoding="utf-8"))
+            registrations = raw_regs if isinstance(raw_regs, list) else []
+        except (json.JSONDecodeError, OSError):
+            registrations = []
+    else:
+        registry = load_registry()
+        registrations = registry.get("registrations", [])
+
+    # session_id → received count (from own archive file)
+    received_by_session: dict[str, int] = {}
+    # alias → sent count (from_alias entries in any archive file)
+    sent_by_alias: dict[str, int] = {}
+
+    if archive_dir.exists():
+        for archive_file in sorted(archive_dir.glob("*.jsonl")):
+            session_id = archive_file.stem
+            received_by_session[session_id] = _count_archive_lines(archive_file)
+            try:
+                for raw in archive_file.read_text(encoding="utf-8").splitlines():
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    from_alias = msg.get("from_alias") or ""
+                    if not from_alias or from_alias == "c2c-system":
+                        continue
+                    sent_by_alias[from_alias] = sent_by_alias.get(from_alias, 0) + 1
+            except OSError:
+                continue
+
+    participants: dict[str, dict[str, int]] = {}
+    for reg in registrations:
+        alias = reg.get("alias") or ""
+        session_id = reg.get("session_id") or ""
+        if not alias:
+            continue
+        # received: look for archive by session_id first, then alias (named sessions)
+        received = received_by_session.get(session_id, received_by_session.get(alias, 0))
+        sent = sent_by_alias.get(alias, 0)
+        participants[alias] = {"sent": sent, "received": received}
+
+    goal_met = bool(participants) and all(
+        counts["sent"] >= GOAL_COUNT and counts["received"] >= GOAL_COUNT
+        for counts in participants.values()
+    )
+    return {"participants": participants, "goal_met": goal_met, "source": "broker"}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Verify transcript-backed c2c progress across participants."
+        description="Verify c2c message exchange progress across participants."
     )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--broker",
+        action="store_true",
+        help=(
+            "Use broker archive data instead of Claude transcripts. "
+            "Works across all client types (Claude, Codex, OpenCode, Kimi, Crush)."
+        ),
+    )
+    parser.add_argument(
+        "--broker-root",
+        metavar="DIR",
+        help="Override broker root directory (default: auto-detected via git).",
+    )
     args = parser.parse_args(argv)
 
-    try:
-        payload = verify_progress()
-    except (OSError, ValueError) as error:
-        print(str(error), file=sys.stderr)
-        return 1
+    if args.broker or args.broker_root:
+        broker_root = Path(args.broker_root) if args.broker_root else None
+        try:
+            payload = verify_progress_broker(broker_root)
+        except (OSError, ValueError) as error:
+            print(str(error), file=sys.stderr)
+            return 1
+    else:
+        try:
+            payload = verify_progress()
+        except (OSError, ValueError) as error:
+            print(str(error), file=sys.stderr)
+            return 1
 
     if args.json:
         print(json.dumps(payload, indent=2))

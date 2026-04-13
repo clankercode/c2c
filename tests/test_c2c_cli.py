@@ -6118,6 +6118,109 @@ class C2CWhoamiUnitTests(unittest.TestCase):
             transcript_path.unlink(missing_ok=True)
 
 
+class C2CVerifyBrokerTests(unittest.TestCase):
+    """Tests for verify_progress_broker() — broker-archive-based cross-client verify."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.broker_root = Path(self.temp_dir.name) / "broker"
+        self.archive_dir = self.broker_root / "archive"
+        self.archive_dir.mkdir(parents=True)
+        self.registry_path = self.broker_root / "registry.json"
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _write_registry(self, registrations: list[dict]) -> None:
+        self.registry_path.write_text(
+            json.dumps(registrations), encoding="utf-8"
+        )
+
+    def _write_archive(self, filename: str, messages: list[dict]) -> None:
+        path = self.archive_dir / filename
+        path.write_text(
+            "\n".join(json.dumps(m) for m in messages) + "\n",
+            encoding="utf-8",
+        )
+
+    def test_empty_broker_returns_empty_participants(self):
+        self._write_registry([])
+        result = c2c_verify.verify_progress_broker(self.broker_root)
+        self.assertEqual(result["participants"], {})
+        self.assertFalse(result["goal_met"])
+        self.assertEqual(result["source"], "broker")
+
+    def test_received_count_from_own_archive(self):
+        self._write_registry([{"alias": "agent-a", "session_id": "sess-a"}])
+        msgs = [{"from_alias": "agent-b", "to_alias": "agent-a", "content": "hi", "drained_at": 1.0}]
+        self._write_archive("sess-a.jsonl", msgs * 5)
+        result = c2c_verify.verify_progress_broker(self.broker_root)
+        self.assertEqual(result["participants"]["agent-a"]["received"], 5)
+
+    def test_archive_keyed_by_alias_fallback(self):
+        """Named sessions (e.g. codex-local) may have archive file named after alias."""
+        self._write_registry([{"alias": "codex", "session_id": "codex-local"}])
+        msgs = [{"from_alias": "agent-a", "to_alias": "codex", "content": "hi", "drained_at": 1.0}]
+        # Archive file is named after session_id (codex-local.jsonl)
+        self._write_archive("codex-local.jsonl", msgs * 3)
+        result = c2c_verify.verify_progress_broker(self.broker_root)
+        self.assertEqual(result["participants"]["codex"]["received"], 3)
+
+    def test_sent_count_from_cross_archive_scan(self):
+        self._write_registry([
+            {"alias": "agent-a", "session_id": "sess-a"},
+            {"alias": "agent-b", "session_id": "sess-b"},
+        ])
+        # agent-b archive: agent-a sent 4 messages to agent-b
+        msgs_b = [{"from_alias": "agent-a", "to_alias": "agent-b", "content": "hi", "drained_at": 1.0}] * 4
+        # agent-a archive: agent-b sent 2 messages to agent-a
+        msgs_a = [{"from_alias": "agent-b", "to_alias": "agent-a", "content": "hey", "drained_at": 2.0}] * 2
+        self._write_archive("sess-a.jsonl", msgs_a)
+        self._write_archive("sess-b.jsonl", msgs_b)
+        result = c2c_verify.verify_progress_broker(self.broker_root)
+        self.assertEqual(result["participants"]["agent-a"]["sent"], 4)
+        self.assertEqual(result["participants"]["agent-b"]["sent"], 2)
+
+    def test_c2c_system_messages_excluded_from_sent(self):
+        self._write_registry([{"alias": "agent-a", "session_id": "sess-a"}])
+        msgs = [{"from_alias": "c2c-system", "to_alias": "agent-a@swarm-lounge", "content": "{}", "drained_at": 1.0}] * 10
+        self._write_archive("sess-a.jsonl", msgs)
+        result = c2c_verify.verify_progress_broker(self.broker_root)
+        # c2c-system messages should not count toward any sent tally
+        self.assertEqual(result["participants"]["agent-a"]["sent"], 0)
+
+    def test_goal_met_when_both_thresholds_reached(self):
+        self._write_registry([{"alias": "agent-a", "session_id": "sess-a"}])
+        # 20 messages received, 20 messages "sent" (appearing as from_alias in other archives)
+        received = [{"from_alias": "agent-b", "to_alias": "agent-a", "content": "hi", "drained_at": 1.0}] * 20
+        self._write_archive("sess-a.jsonl", received)
+        # Simulate agent-a's sent messages appearing in agent-b's archive
+        sent_as_from = [{"from_alias": "agent-a", "to_alias": "agent-b", "content": "yo", "drained_at": 2.0}] * 20
+        self._write_archive("sess-b.jsonl", sent_as_from)
+        result = c2c_verify.verify_progress_broker(self.broker_root)
+        self.assertEqual(result["participants"]["agent-a"]["sent"], 20)
+        self.assertEqual(result["participants"]["agent-a"]["received"], 20)
+        self.assertTrue(result["goal_met"])
+
+    def test_goal_not_met_when_only_received_threshold_reached(self):
+        self._write_registry([{"alias": "agent-a", "session_id": "sess-a"}])
+        received = [{"from_alias": "agent-b", "to_alias": "agent-a", "content": "hi", "drained_at": 1.0}] * 20
+        self._write_archive("sess-a.jsonl", received)
+        result = c2c_verify.verify_progress_broker(self.broker_root)
+        self.assertEqual(result["participants"]["agent-a"]["received"], 20)
+        self.assertEqual(result["participants"]["agent-a"]["sent"], 0)
+        self.assertFalse(result["goal_met"])
+
+    def test_falls_back_to_yaml_registry_when_json_absent(self):
+        # No registry.json — falls back to load_registry() (Python YAML)
+        with mock.patch("c2c_verify.load_registry") as mock_load:
+            mock_load.return_value = {
+                "registrations": [{"alias": "agent-z", "session_id": "sess-z"}]
+            }
+            result = c2c_verify.verify_progress_broker(self.broker_root)
+        self.assertIn("agent-z", result["participants"])
+
+
 class C2CPruneUnitTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
