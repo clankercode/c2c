@@ -6,7 +6,7 @@
     "--dangerously-skip-permissions"
   ],
   "positional": [
-    "Session resumed by run-claude-inst-outer. You are storm-beacon / c2c-r2-b2. Orient and advance the active goal: (1) mcp__c2c__poll_inbox to drain messages; (2) mcp__c2c__whoami and re-register as storm-beacon if missing from the registry; (3) skim .collab/updates/ (newest first) and tmp_collab_lock.md for peer activity; (4) read .goal-loops/active-goal.md; (5) pick the highest-leverage next action that doesn't step on an active lock, and do it. Empty inbox is NOT a stop signal — initiate coordination or pick independent goal-backlog work. Use ./restart-self when you need to pick up config changes."
+    "Session resumed by run-claude-inst-outer. You are storm-beacon / c2c-r2-b2. Orient and advance the active goal: (1) mcp__c2c__poll_inbox to drain messages; (2) mcp__c2c__whoami and re-register as storm-beacon if missing from the registry; (3) skim .collab/updates/ (newest first) and tmp_collab_lock.md for peer activity; (4) read .goal-loops/active-goal.md; (5) arm the inotifywait broker monitor if not already running (see CLAUDE.md Recommended Monitor setup section — use TaskList first to skip if already armed); (6) pick the highest-leverage next action that doesn't step on an active lock, and do it. Empty inbox is NOT a stop signal — initiate coordination or pick independent goal-backlog work. Use ./restart-self when you need to pick up config changes."
   ],
   "cwd": "/home/xertrov/src/c2c-msg",
   "title": "c2c-r2-b2",

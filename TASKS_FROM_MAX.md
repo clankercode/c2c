@@ -10,14 +10,16 @@ When new tasks appear here, or there are tasks that need injesting, they should 
 status: new
 
 ## post tool hook speed
-status: new
+status: ingested
 the post tool hook call must be super fast, always. it can never hold an agent up
+Fix: switched fast-path from $(cat file) to $(<file) (no cat subshell); added `timeout 5` guard on the Python drain invocation so the hook can NEVER block indefinitely. Committed in hook update. Broadcast to swarm for any further perf audit needed.
 
 ## quality check: msg delivery to claude
-status: new
+status: done
 what happens if claude doesn't run tools? mail is not able to wake it up. or, rather, 
 if msgs are only delivered via tool call post hook or when manually called, that is not great because it can't wake the agent up. and c2c should be able to wake agents. 
 we need to research such a thing and implement it if possible. contact max via attn if we find it's not possible. 
+Fix: implemented c2c_claude_wake_daemon.py (commit 1747705). The daemon watches the session inbox with inotifywait and PTY-injects a wake prompt that causes Claude Code to call mcp__c2c__poll_inbox. Installed as c2c-claude-wake. Remaining gap: background managed sessions (no PTY) rely on poll_inbox being in the startup prompt (already present in run-claude-inst configs).
 
 ## add support for `kimi`
 status: done
