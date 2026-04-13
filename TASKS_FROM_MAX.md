@@ -18,9 +18,9 @@ the session was in. 89 OCaml + 274 Python tests green. kimi renamed to kimi-nova
 request — configs updated (run-kimi-inst.d/kimi-nova.json, ~/.kimi/mcp.json).
 
 ## post tool hook speed
-status: ingested
+status: done
 the post tool hook call must be super fast, always. it can never hold an agent up
-Fix: switched fast-path from $(cat file) to $(<file) (no cat subshell); added `timeout 5` guard on the Python drain invocation so the hook can NEVER block indefinitely. Committed in hook update. Broadcast to swarm for any further perf audit needed.
+Fix: switched fast-path from $(cat file) to $(<file) (no cat subshell); added `timeout 5` guard on the Python drain invocation so the hook can NEVER block indefinitely. bench-hook (committed) documents baseline: empty/absent/not-configured p99 < 3ms; Python drain ~100ms bounded by timeout. Broadcast to swarm complete.
 
 ## quality check: msg delivery to claude
 status: done

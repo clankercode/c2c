@@ -68,6 +68,9 @@ NEXT_STEPS = [
     "c2c send <alias> <msg>      # 1:1 message",
     "c2c send-all <msg>          # broadcast to every live peer (1:N)",
     "c2c poll-inbox              # drain your inbox if push delivery is polling-based",
+    "c2c room list               # list all N:N rooms",
+    "c2c room join <room-id>     # join a room (e.g. swarm-lounge)",
+    "c2c room send <room-id> <msg>  # send to a room",
 ]
 
 
