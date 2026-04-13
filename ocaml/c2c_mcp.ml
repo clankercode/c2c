@@ -9,7 +9,7 @@ type message = { from_alias : string; to_alias : string; content : string }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 
-let server_version = "0.6.3"
+let server_version = "0.6.4"
 
 let server_features =
   [ "liveness"
@@ -20,6 +20,7 @@ let server_features =
   ; "alias_dedupe"
   ; "sweep"
   ; "dead_letter"
+  ; "dead_letter_redelivery"
   ; "poll_inbox"
   ; "send_all"
   ; "inbox_migration_on_register"
@@ -722,6 +723,82 @@ module Broker = struct
         ; preserved_messages = !preserved
         })
 
+  (* Scan dead-letter.jsonl for records belonging to [session_id], remove
+     them from the file, and return the embedded messages for redelivery.
+     Called on re-registration so a session that was swept between outer-loop
+     iterations automatically recovers messages that were queued while it was
+     offline.  Returns [] when the dead-letter file doesn't exist or has no
+     matching records. *)
+  let drain_dead_letter_for_session t ~session_id =
+    let path = dead_letter_path t in
+    (* Fast path: no file → nothing to do *)
+    let exists = (try ignore (Unix.stat path); true with Unix.Unix_error _ -> false) in
+    if not exists then []
+    else
+      with_dead_letter_lock t (fun () ->
+        let all_lines =
+          try
+            let ic = open_in path in
+            Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+              let buf = ref [] in
+              (try while true do buf := input_line ic :: !buf done
+               with End_of_file -> ());
+              List.rev !buf)
+          with _ -> []
+        in
+        let to_redeliver = ref [] in
+        let to_keep = ref [] in
+        List.iter (fun line ->
+          let trimmed = String.trim line in
+          if trimmed = "" then ()
+          else
+            let keep =
+              try
+                let json = Yojson.Safe.from_string trimmed in
+                let sid_json = Yojson.Safe.Util.member "from_session_id" json in
+                (match sid_json with
+                 | `String sid when sid = session_id ->
+                     (try
+                        let msg = message_of_json (Yojson.Safe.Util.member "message" json) in
+                        to_redeliver := msg :: !to_redeliver;
+                        false
+                      with _ ->
+                        (* If a matching record is malformed, keep it in
+                           dead-letter instead of silently dropping content we
+                           failed to redeliver. *)
+                        true)
+                 | _ -> true)
+              with _ -> true
+            in
+            if keep then to_keep := line :: !to_keep
+        ) all_lines;
+        (* Rewrite the file with only the kept records *)
+        (try
+          let oc = open_out path in
+          Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+            List.iter (fun line ->
+              output_string oc line;
+              output_char oc '\n'
+            ) (List.rev !to_keep))
+        with _ -> ());
+        List.rev !to_redeliver)
+
+  (* Enqueue a list of messages directly into a session's inbox by session_id,
+     bypassing alias resolution.  Used for dead-letter redelivery where the
+     session may have re-registered with a different alias. *)
+  let enqueue_by_session_id t ~session_id ~messages =
+    match messages with
+    | [] -> ()
+    | _ ->
+        with_inbox_lock t ~session_id (fun () ->
+          let current = load_inbox t ~session_id in
+          save_inbox t ~session_id (current @ messages))
+
+  let redeliver_dead_letter_for_session t ~session_id =
+    let msgs = drain_dead_letter_for_session t ~session_id in
+    if msgs <> [] then enqueue_by_session_id t ~session_id ~messages:msgs;
+    List.length msgs
+
   (* ---------- N:N rooms (phase 2) ---------- *)
 
   let valid_room_id room_id =
@@ -1147,7 +1224,8 @@ let auto_register_startup ~broker_root =
           | None -> Some (Unix.getppid ())
         in
         let pid_start_time = Broker.capture_pid_start_time pid in
-        Broker.register broker ~session_id ~alias ~pid ~pid_start_time
+        Broker.register broker ~session_id ~alias ~pid ~pid_start_time;
+        ignore (Broker.redeliver_dead_letter_for_session broker ~session_id)
       end
   | _ -> ()
 
@@ -1247,7 +1325,20 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                        ~room_id ~content)
                 with _ -> ()))
              rooms_to_notify);
-      Lwt.return (tool_result ~content:("registered " ^ alias) ~is_error:false)
+      (* Auto-redeliver any dead-letter messages addressed to this session.
+         This recovers messages that were swept while the managed harness was
+         between outer-loop iterations. *)
+      let redelivered =
+        Broker.redeliver_dead_letter_for_session broker ~session_id
+      in
+      let response_content =
+        if redelivered > 0 then
+          Printf.sprintf "registered %s (redelivered %d dead-letter message%s)"
+            alias redelivered (if redelivered = 1 then "" else "s")
+        else
+          "registered " ^ alias
+      in
+      Lwt.return (tool_result ~content:response_content ~is_error:false)
   | "list" ->
       let registrations = Broker.list_registrations broker in
       let content =

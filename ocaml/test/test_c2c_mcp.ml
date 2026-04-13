@@ -337,6 +337,7 @@ let test_initialize_reports_server_version_and_features () =
             [ "liveness"
             ; "sweep"
             ; "dead_letter"
+            ; "dead_letter_redelivery"
             ; "poll_inbox"
             ; "send_all"
             ; "inbox_migration_on_register"
@@ -1200,6 +1201,57 @@ let write_file path contents =
   output_string oc contents;
   close_out oc
 
+let test_auto_register_startup_redelivers_dead_letter_messages () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let dead = dead_pid () in
+      C2c_mcp.Broker.register broker
+        ~session_id:"managed-session" ~alias:"opencode-local"
+        ~pid:(Some dead) ~pid_start_time:None;
+      write_file (Filename.concat dir "managed-session.inbox.json")
+        {|[{"from_alias":"storm-ember","to_alias":"opencode-local","content":"queued while down"},{"from_alias":"storm-beacon","to_alias":"opencode-local","content":"second queued while down"}]|};
+      let result = C2c_mcp.Broker.sweep broker in
+      check int "dead session inbox swept" 1 (List.length result.deleted_inboxes);
+      check int "two messages dead-lettered" 2 result.preserved_messages;
+      check bool "swept inbox removed" false
+        (Sys.file_exists (Filename.concat dir "managed-session.inbox.json"));
+      Unix.putenv "C2C_MCP_SESSION_ID" "managed-session";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "opencode-local";
+      Unix.putenv "C2C_MCP_CLIENT_PID" (string_of_int (Unix.getpid ()));
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+          Unix.putenv "C2C_MCP_CLIENT_PID" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          let inbox =
+            C2c_mcp.Broker.read_inbox broker ~session_id:"managed-session"
+          in
+          check int "dead-letter messages redelivered" 2 (List.length inbox);
+          let contents = List.map (fun msg -> msg.C2c_mcp.content) inbox in
+          check bool "first content restored" true
+            (List.mem "queued while down" contents);
+          check bool "second content restored" true
+            (List.mem "second queued while down" contents);
+          let dead_letter = C2c_mcp.Broker.dead_letter_path broker in
+          let remaining =
+            let ic = open_in dead_letter in
+            Fun.protect
+              ~finally:(fun () -> close_in ic)
+              (fun () ->
+                let lines = ref [] in
+                (try
+                   while true do
+                     let line = input_line ic |> String.trim in
+                     if line <> "" then lines := line :: !lines
+                   done
+                 with End_of_file -> ());
+                !lines)
+          in
+          check int "redelivered records removed from dead-letter" 0
+            (List.length remaining)))
+
 let test_register_evicts_prior_reg_with_same_alias () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -1771,6 +1823,85 @@ let test_sweep_empty_orphan_writes_no_dead_letter () =
       let dead_letter = C2c_mcp.Broker.dead_letter_path broker in
       check bool "no dead-letter noise for empty orphan" false
         (Sys.file_exists dead_letter))
+
+let test_register_redelivers_dead_letter_on_same_session_id () =
+  (* Scenario: a managed session (e.g. kimi-local) is swept while the outer
+     loop is between iterations — PID dead, no live process. Messages queued to
+     it go to dead-letter with from_session_id = the swept session_id.  When the
+     outer loop restarts and calls register with the SAME session_id (stable
+     alias-based ID via C2C_MCP_SESSION_ID=kimi-local), the broker should drain
+     those dead-letter records and re-queue them into the inbox. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Write dead-letter records for kimi-local's session_id, simulating what
+         sweep would produce after sweeping its inbox. *)
+      let dead_letter = C2c_mcp.Broker.dead_letter_path broker in
+      let dl_record content =
+        Printf.sprintf
+          {|{"from_session_id":"kimi-local","deleted_at":1712345678.0,"message":{"from_alias":"storm-beacon","to_alias":"kimi-local","content":"%s"}}|}
+          content
+      in
+      write_file dead_letter
+        (dl_record "msg-one" ^ "\n" ^ dl_record "msg-two" ^ "\n");
+      (* Pre-create an empty inbox (sweep leaves behind an empty file) *)
+      let inbox_path = Filename.concat dir "kimi-local.inbox.json" in
+      write_file inbox_path "[]";
+      (* Re-register with the same session_id — this is the managed restart *)
+      Unix.putenv "C2C_MCP_SESSION_ID" "kimi-local";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 500)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "register")
+                    ; ("arguments",
+                       `Assoc [ ("alias", `String "kimi-local") ])
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          (match response with
+           | None -> fail "expected register response"
+           | Some _ -> ());
+          (* Poll inbox — must contain the two recovered messages *)
+          let broker2 = C2c_mcp.Broker.create ~root:dir in
+          let drained =
+            C2c_mcp.Broker.drain_inbox broker2 ~session_id:"kimi-local"
+          in
+          check int "two messages recovered from dead-letter" 2
+            (List.length drained);
+          let contents =
+            List.map (fun m -> m.C2c_mcp.content) drained
+          in
+          check bool "msg-one recovered" true (List.mem "msg-one" contents);
+          check bool "msg-two recovered" true (List.mem "msg-two" contents);
+          (* Dead-letter file should be empty after redelivery *)
+          let dead_letter_lines =
+            try
+              let ic = open_in dead_letter in
+              Fun.protect
+                ~finally:(fun () -> close_in ic)
+                (fun () ->
+                  let buf = ref [] in
+                  (try
+                     while true do
+                       let l = String.trim (input_line ic) in
+                       if l <> "" then buf := l :: !buf
+                     done
+                   with End_of_file -> ());
+                  !buf)
+            with _ -> []
+          in
+          check int "dead-letter cleared after redelivery" 0
+            (List.length dead_letter_lines);
+          ignore inbox_path))
 
 (* ---------- N:N rooms (phase 2) tests ---------- *)
 
@@ -2890,6 +3021,8 @@ let () =
              test_tools_call_register_alias_rename_notifies_rooms
          ; test_case "server startup auto-registers alias from env" `Quick
              test_server_startup_auto_registers_alias_from_env
+         ; test_case "server startup auto-register redelivers dead-letter messages" `Quick
+             test_auto_register_startup_redelivers_dead_letter_messages
          ; test_case "auto_register_startup skips when alive session has different alias" `Quick
              test_auto_register_startup_skips_when_alive_session_has_different_alias
          ; test_case "auto_join_rooms_startup joins listed rooms" `Quick
@@ -2942,6 +3075,8 @@ let () =
              test_sweep_preserves_nonempty_orphan_to_dead_letter
          ; test_case "sweep empty orphan writes no dead-letter" `Quick
              test_sweep_empty_orphan_writes_no_dead_letter
+         ; test_case "register redelivers dead-letter on same session_id" `Quick
+             test_register_redelivers_dead_letter_on_same_session_id
          ; test_case "send_all fans out and skips sender" `Quick
              test_send_all_fans_out_and_skips_sender
          ; test_case "send_all honors exclude_aliases" `Quick
