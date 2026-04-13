@@ -60,16 +60,25 @@ def rearm_log(name: str) -> Path:
     return HERE / "run-kimi-inst.d" / f"{name}.outer.log"
 
 
-def _load_instance_alias(name: str) -> str | None:
-    """Return the c2c alias for a named kimi instance, or None if unresolvable."""
+def _load_instance_config(name: str) -> dict:
     cfg_path = HERE / "run-kimi-inst.d" / f"{name}.json"
     if not cfg_path.exists():
-        return None
+        return {}
     try:
-        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        return json.loads(cfg_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return None
+        return {}
+
+
+def _load_instance_alias(name: str) -> str | None:
+    """Return the c2c alias for a named kimi instance, or None if unresolvable."""
+    cfg = _load_instance_config(name)
     return cfg.get("c2c_alias") or cfg.get("c2c_session_id") or None
+
+
+def _load_instance_session_id(name: str) -> str | None:
+    cfg = _load_instance_config(name)
+    return cfg.get("c2c_session_id") or cfg.get("env", {}).get("C2C_MCP_SESSION_ID") or None
 
 
 def maybe_refresh_peer(name: str, pid: int) -> None:
@@ -80,6 +89,9 @@ def maybe_refresh_peer(name: str, pid: int) -> None:
     subprocess.Popen so the PID is guaranteed alive (execvpe preserves it).
     Silently skips if the registration doesn't exist yet (first launch) or
     if the alias is unresolvable.
+
+    Also passes --session-id to correct session_id drift (see finding
+    2026-04-14T03-30-00Z-storm-beacon-session-id-drift-refresh-peer-bug.md).
     """
     alias = _load_instance_alias(name)
     if not alias:
@@ -87,9 +99,13 @@ def maybe_refresh_peer(name: str, pid: int) -> None:
     refresh = HERE / "c2c_refresh_peer.py"
     if not refresh.exists():
         return
+    cmd = [sys.executable, str(refresh), alias, "--pid", str(pid)]
+    session_id = _load_instance_session_id(name)
+    if session_id:
+        cmd += ["--session-id", session_id]
     try:
         result = subprocess.run(
-            [sys.executable, str(refresh), alias, "--pid", str(pid)],
+            cmd,
             cwd=HERE,
             capture_output=True,
             text=True,
