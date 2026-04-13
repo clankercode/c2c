@@ -11,8 +11,8 @@ status: new
 
 ## add support for `kimi`
 status: done
-Added `c2c configure-kimi` command. Kimi Code CLI has native MCP support via `~/.kimi/mcp.json` (same `mcpServers` format as Claude/Codex). The command writes a `c2c` stdio server entry pointing at `c2c_mcp.py` with broker root and optional auto-registration env vars. Quality tier: full parity with existing configure scripts — Kimi uses standard MCP stdio transport and JSON config.
+Added `c2c configure-kimi` and `c2c setup kimi` commands. Kimi Code CLI has native MCP support via `~/.kimi/mcp.json` (same `mcpServers` format as Claude/Codex). The command writes a `c2c` stdio server entry pointing at `c2c_mcp.py` with broker root and optional auto-registration env vars. Wrapper script `c2c-configure-kimi` installed by `c2c install`. Quality tier: full parity with existing configure scripts — Kimi uses standard MCP stdio transport and JSON config.
 
 ## add support for `crush`
-status: done  
-Added `c2c configure-crush` command. Crush CLI has native MCP support via `~/.config/crush/crush.json` under a `mcp` key. The command writes a `c2c` stdio server entry with the same env configuration. Quality tier: full parity — Crush supports stdio/http/sse transports and uses Charmbracelet's standard JSON config.
+status: done
+Added `c2c configure-crush` and `c2c setup crush` commands. Crush CLI has native MCP support via `~/.config/crush/crush.json` under a `mcp` key. The command writes a `c2c` stdio server entry with the same env configuration. Wrapper script `c2c-configure-crush` installed by `c2c install`. Quality tier: full parity — Crush supports stdio/http/sse transports and uses Charmbracelet's standard JSON config.

@@ -9,6 +9,8 @@
 c2c setup claude-code   # Claude Code: writes ~/.claude.json + PostToolUse hook
 c2c setup codex         # Codex: writes ~/.codex/config.toml, all tools auto-approved
 c2c setup opencode      # OpenCode: writes .opencode/opencode.json for current dir
+c2c setup kimi          # Kimi Code: writes ~/.kimi/mcp.json
+c2c setup crush         # Crush: writes ~/.config/crush/crush.json
 
 # 2. Restart your client to pick up the MCP server
 # Claude Code (managed): c2c restart-me

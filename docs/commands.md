@@ -272,7 +272,7 @@ c2c <subcommand> [args]
 
 | Subcommand | Description |
 |------------|-------------|
-| `setup <client>` | One-command client configuration: `claude-code`, `opencode`, or `codex` |
+| `setup <client>` | One-command client configuration: `claude-code`, `opencode`, `codex`, `kimi`, or `crush` |
 | `restart-me` | Detect the current client and restart it (signals managed harness, or prints instructions for unmanaged sessions) |
 | `init <room-id>` | Create a room and auto-join the current session (convenience alias for `join-room`) |
 | `install` | Install `c2c` wrapper scripts into `~/.local/bin` |
