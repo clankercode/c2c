@@ -21,8 +21,8 @@ from claude_list_sessions import find_session, load_sessions
 ROOT = Path(__file__).resolve().parent
 SWITCH = "/home/xertrov/src/call-coding-clis/ocaml"
 SERVER_BUILD_TARGET = "./ocaml/server/c2c_mcp_server.exe"
-SESSION_DISCOVERY_TIMEOUT_SECONDS = 2.0
-SESSION_DISCOVERY_POLL_INTERVAL_SECONDS = 0.05
+SESSION_DISCOVERY_TIMEOUT_SECONDS = 10.0
+SESSION_DISCOVERY_POLL_INTERVAL_SECONDS = 0.1
 
 
 def default_broker_root() -> Path:
@@ -229,8 +229,19 @@ def main(argv: list[str] | None = None) -> int:
     if not env.get("C2C_MCP_SESSION_ID"):
         try:
             env["C2C_MCP_SESSION_ID"] = default_session_id()
-        except ValueError:
-            pass
+        except ValueError as discovery_error:
+            # Critical for poll_inbox / register / send_room to work without
+            # an explicit session_id argument. Surface it loudly on stderr so
+            # operators notice instead of seeing silent "missing session_id"
+            # errors on every tool call for the rest of the session.
+            print(
+                f"c2c_mcp: WARNING session discovery failed ({discovery_error}); "
+                "tool calls will need an explicit session_id argument until the "
+                "MCP server is restarted in a context where /proc scanning can "
+                f"find the parent session (timeout was {SESSION_DISCOVERY_TIMEOUT_SECONDS}s)",
+                file=sys.stderr,
+                flush=True,
+            )
     maybe_auto_register_startup(env)
     build_server(env)
     return subprocess.run(
