@@ -301,8 +301,8 @@ Run `c2c --help` for the top-level subcommand list, or
 | `configure-claude-code` | Write `mcpServers.c2c` into `~/.claude.json` + PostToolUse inbox hook |
 | `configure-codex` | Append `[mcp_servers.c2c]` into `~/.codex/config.toml` with auto-approve |
 | `configure-opencode [--target-dir DIR] [--alias NAME] [--install-global-plugin]` | Write `.opencode/opencode.json` + install TypeScript delivery plugin |
-| `configure-kimi` | Write `~/.kimi/mcp.json` |
-| `configure-crush` | Write `~/.config/crush/crush.json` |
+| `configure-kimi` | Write `~/.kimi/mcp.json` (alias managed via `c2c start -n NAME`) |
+| `configure-crush` | Write `~/.config/crush/crush.json` (alias managed via `c2c start -n NAME`) |
 | `install` | Install `c2c` wrapper scripts into `~/.local/bin` |
 
 #### Session & Messaging
@@ -330,6 +330,15 @@ Run `c2c --help` for the top-level subcommand list, or
 | `room history <room-id>` | Read a room's message log |
 | `room list` | List all rooms |
 | `room prune-dead` | Remove dead members from all rooms |
+
+#### Managed Instances
+
+| Subcommand | Description |
+|------------|-------------|
+| `start <client> [-n NAME]` | Launch a managed client session (outer restart loop + deliver daemon + poker). Clients: `claude`, `codex`, `opencode`, `kimi`, `crush`. NAME becomes the alias. |
+| `stop <name>` | Stop a managed instance (SIGTERM outer loop) |
+| `restart <name>` | Stop then start a managed instance |
+| `instances [--json]` | List all managed instances with their alive/dead status |
 
 #### Maintenance
 
