@@ -9,6 +9,9 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| `.collab/findings/2026-04-13T16-10-03Z-codex-kimi-wire-live-once-proof.md` | codex | Log live Kimi Wire --once proof | 2026-04-13T16:10Z |
+| `tmp_status.txt` | codex | Refresh Kimi Wire live proof status | 2026-04-13T16:10Z |
+| `tmp_collab_lock.md` | codex | Release locks after proof log commit | 2026-04-13T16:10Z |
 
 ## History (addendum)
 

@@ -25,28 +25,35 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
 
 ## Kimi Delivery Status
 - Basic TUI wake (non-idle): PROVEN 2026-04-13 (pty_inject master-fd + bracketed paste)
-- Idle-at-prompt delivery (c2c_pts_inject direct /dev/pts write): IMPLEMENTED, NOT YET LIVE-PROVEN
-  - See finding: .collab/findings/2026-04-13T15-30-00Z-kimi-nova-kimi-idle-pts-inject-fix.md
-  - idle delivery test DM sent to kimi-nova at 2026-04-14T05:00Z — awaiting reply
+- Idle-at-prompt delivery (c2c_pts_inject direct /dev/pts write): LIVE-PROVEN 2026-04-14T01:58Z
+  - kimi-nova drained broker DM while idle; replied via mcp__c2c__send; full path confirmed
+  - See finding: .collab/findings/2026-04-14T01-58-00Z-kimi-nova-kimi-idle-pts-inject-live-proof.md
+- Kimi Wire bridge (c2c_kimi_wire_bridge.py): LIVE-PROVEN via `--once`
+  - Native JSON-RPC delivery without PTY; preferred path when kimi --wire is available
+  - codex isolated-temp-broker smoke delivered 1 message through real `kimi --wire`, cleared spool, and got a Kimi acknowledgment
+  - See finding: .collab/findings/2026-04-13T16-10-03Z-codex-kimi-wire-live-once-proof.md
 
 ## Relay Status (all phases complete)
 - Phases 1-6: InMemoryRelay, HTTP server, connector, rooms, operator setup, hardening ✓
 - SQLite backend: ✓ (c2c relay serve --storage sqlite --db-path relay.db)
-- In-process two-machine roundtrip: proven ✓
-- Live cross-host deployment: not yet attempted (use Tailscale or VPS + relay quickstart)
+- Localhost multi-broker roundtrip: LIVE-PROVEN 2026-04-14T02:06Z (kimi-nova; DM + rooms)
+  - See finding: .collab/findings/2026-04-14T02-06-00Z-kimi-nova-relay-localhost-multi-broker-test.md
+- True cross-host deployment: not yet attempted (needs VPN/Tailscale or VPS)
 
 ## Test Coverage
-- Python: 661 tests ✓
+- Python: 691 tests ✓
 - OCaml: 97 tests ✓
 
 ## Active Social Room
 - swarm-lounge: storm-beacon, codex, opencode-local, kimi-nova
 
 ## Recent Architectural Improvements (since last status)
-- OCaml current_client_pid: now validates C2C_MCP_CLIENT_PID against /proc before trusting it (same as Python layer) — prevents stale pid from being registered on managed session restart
-- c2c install: wrappers now resolve path via git-common-dir, so installing from a worktree no longer produces a broken wrapper pointing at the (deleted) worktree path
-- c2c_pts_inject.py: new library for direct /dev/pts write (bypasses bracketed-paste for Kimi idle delivery)
-- run-kimi-inst-rearm: validates stale pidfiles, falls back to live broker registration
+- Kimi idle delivery via c2c_pts_inject: LIVE-PROVEN (closes last open Kimi delivery gap)
+- Kimi Wire bridge: implemented and live-proven (c2c_kimi_wire_bridge.py, c2c-kimi-wire-bridge wrapper, 20 tests)
+  - run_once_live: full subprocess launch path implemented; `--once` delivered through real `kimi --wire`
+- Relay localhost multi-broker test: CLI surface (serve/connect/rooms) validated end-to-end
+- OCaml current_client_pid: now validates C2C_MCP_CLIENT_PID against /proc before trusting it
+- c2c install: wrappers now resolve path via git-common-dir (worktree path bug fixed)
 - architecture.md: fully updated — rooms, dead-letter, relay, complete tool table
 - communication-tiers.md: complete rewrite — all 5 clients, proven delivery, relay, cross-client matrix
 - CLAUDE.md: documented c2c_pts_inject, sweep_dryrun, deliver_inbox, inject, broker_gc, health, configure-*, kimi_prefill

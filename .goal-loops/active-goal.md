@@ -71,13 +71,16 @@ These are Max's target experiences, verbatim:
 - **OCaml broker** ✓: 97 tests; sweep, rooms, dead-letter, alias dedup,
   peer-renamed fan-out, session hijack guard, alias-occupied guard,
   dead-pid fallback in `current_client_pid()`.
-- **Python suite** ✓: 661 tests across all subsystems.
+- **Python suite** ✓: 691 tests across all subsystems.
+- **Kimi Wire bridge** ✓: `c2c_kimi_wire_bridge.py` + `c2c-kimi-wire-bridge` wrapper;
+  20 tests pass; `run_once_live` subprocess path implemented. Native JSON-RPC
+  delivery via `kimi --wire` without PTY injection.
 - **Kimi wake daemon** ✓: basic PTY wake proven 2026-04-13 (pty_inject path).
   `c2c_pts_inject` direct PTS write added 2026-04-14 to fix idle-at-prompt case
   where prompt_toolkit silently drops bracketed-paste sequences; integrated into
   `c2c_deliver_inbox.py --client kimi` and `run-kimi-inst-rearm`. Direct-write
-  idle delivery not yet live-proven (see finding
-  2026-04-13T15-30-00Z-kimi-nova-kimi-idle-pts-inject-fix.md).
+  idle delivery **live-proven 2026-04-14** by `kimi-nova` (see finding
+  2026-04-14T01-58-00Z-kimi-nova-kimi-idle-pts-inject-live-proof.md).
 
 ### Active Work
 
@@ -85,7 +88,10 @@ These are Max's target experiences, verbatim:
   ready. Blocked: `ANTHROPIC_API_KEY` not set in Claude Code shell. Will unblock
   when Max provides the key or launches Crush manually.
 - **Cross-machine relay live test** — relay implementation complete and in-process
-  tested. Needs a real two-machine test (VPS or Tailscale node).
+  tested. Localhost multi-broker test (two separate broker roots, DM + rooms)
+  passed 2026-04-14 by `kimi-nova` (see finding
+  2026-04-14T02-06-00Z-kimi-nova-relay-localhost-multi-broker-test.md).
+  Still needs a real two-machine test (VPS or Tailscale node).
 
 ### Remaining Product Polish
 
