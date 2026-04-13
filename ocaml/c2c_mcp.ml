@@ -1,4 +1,9 @@
-type registration = { session_id : string; alias : string }
+type registration =
+  { session_id : string
+  ; alias : string
+  ; pid : int option
+  ; pid_start_time : int option
+  }
 type message = { from_alias : string; to_alias : string; content : string }
 
 let server_info = `Assoc [ ("name", `String "c2c"); ("version", `String "0.1.0") ]
@@ -58,13 +63,37 @@ module Broker = struct
   let write_json_file path json =
     Yojson.Safe.to_file path json
 
-  let registration_to_json { session_id; alias } =
-    `Assoc [ ("session_id", `String session_id); ("alias", `String alias) ]
+  let registration_to_json { session_id; alias; pid; pid_start_time } =
+    let base =
+      [ ("session_id", `String session_id); ("alias", `String alias) ]
+    in
+    let with_pid =
+      match pid with
+      | Some n -> base @ [ ("pid", `Int n) ]
+      | None -> base
+    in
+    let fields =
+      match pid_start_time with
+      | Some n -> with_pid @ [ ("pid_start_time", `Int n) ]
+      | None -> with_pid
+    in
+    `Assoc fields
+
+  let int_opt_member name json =
+    let open Yojson.Safe.Util in
+    try
+      match json |> member name with
+      | `Null -> None
+      | `Int n -> Some n
+      | _ -> None
+    with _ -> None
 
   let registration_of_json json =
     let open Yojson.Safe.Util in
     { session_id = json |> member "session_id" |> to_string
     ; alias = json |> member "alias" |> to_string
+    ; pid = int_opt_member "pid" json
+    ; pid_start_time = int_opt_member "pid_start_time" json
     }
 
   let message_to_json { from_alias; to_alias; content } =
@@ -93,17 +122,86 @@ module Broker = struct
 
   let create ~root = { root }
 
-  let register t ~session_id ~alias =
-    let regs = load_registrations t in
-    let regs = List.filter (fun reg -> reg.session_id <> session_id) regs in
-    save_registrations t ({ session_id; alias } :: regs)
+  let registry_lock_path t = Filename.concat t.root "registry.json.lock"
+
+  let with_registry_lock t f =
+    ensure_root t;
+    let fd =
+      Unix.openfile (registry_lock_path t) [ O_RDWR; O_CREAT ] 0o644
+    in
+    Fun.protect
+      ~finally:(fun () ->
+        (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+        (try Unix.close fd with _ -> ()))
+      (fun () ->
+        Unix.lockf fd Unix.F_LOCK 0;
+        f ())
+
+  let register t ~session_id ~alias ~pid ~pid_start_time =
+    with_registry_lock t (fun () ->
+        let regs = load_registrations t in
+        let regs = List.filter (fun reg -> reg.session_id <> session_id) regs in
+        save_registrations t
+          ({ session_id; alias; pid; pid_start_time } :: regs))
 
   let list_registrations t = load_registrations t
 
-  let resolve_session_id_by_alias t alias =
-    load_registrations t
-    |> List.find_opt (fun reg -> reg.alias = alias)
-    |> Option.map (fun reg -> reg.session_id)
+  (* /proc/<pid>/stat line layout: "<pid> (<comm>) <state> <ppid> ... <starttime> ..."
+     comm can contain spaces and parens, so we split on the LAST ')'. The fields
+     after comm are space-separated; starttime is field 22 in the 1-indexed man
+     page, which is index 19 in the 0-indexed tail array (tail[0] = state). *)
+  let read_pid_start_time pid =
+    let path = Printf.sprintf "/proc/%d/stat" pid in
+    try
+      let ic = open_in path in
+      Fun.protect
+        ~finally:(fun () -> try close_in ic with _ -> ())
+        (fun () ->
+          let line = input_line ic in
+          match String.rindex_opt line ')' with
+          | None -> None
+          | Some idx ->
+              let tail = String.sub line (idx + 2) (String.length line - idx - 2) in
+              let parts = String.split_on_char ' ' tail in
+              (match List.nth_opt parts 19 with
+               | Some token ->
+                   (try Some (int_of_string token) with _ -> None)
+               | None -> None))
+    with Sys_error _ | End_of_file -> None
+
+  let capture_pid_start_time pid =
+    match pid with
+    | None -> None
+    | Some n -> read_pid_start_time n
+
+  let registration_is_alive reg =
+    match reg.pid with
+    | None -> true
+    | Some pid ->
+        if not (Sys.file_exists ("/proc/" ^ string_of_int pid)) then false
+        else
+          (match reg.pid_start_time with
+           | None -> true
+           | Some stored ->
+               (match read_pid_start_time pid with
+                | Some current -> current = stored
+                | None -> false))
+
+  type resolve_result =
+    | Resolved of string
+    | Unknown_alias
+    | All_recipients_dead
+
+  let resolve_live_session_id_by_alias t alias =
+    let matches =
+      load_registrations t |> List.filter (fun reg -> reg.alias = alias)
+    in
+    match matches with
+    | [] -> Unknown_alias
+    | _ ->
+        (match List.find_opt registration_is_alive matches with
+         | Some reg -> Resolved reg.session_id
+         | None -> All_recipients_dead)
 
   let load_inbox t ~session_id =
     ensure_root t;
@@ -118,9 +216,11 @@ module Broker = struct
       (`List (List.map message_to_json messages))
 
   let enqueue_message t ~from_alias ~to_alias ~content =
-    match resolve_session_id_by_alias t to_alias with
-    | None -> invalid_arg ("unknown alias: " ^ to_alias)
-    | Some session_id ->
+    match resolve_live_session_id_by_alias t to_alias with
+    | Unknown_alias -> invalid_arg ("unknown alias: " ^ to_alias)
+    | All_recipients_dead ->
+        invalid_arg ("recipient is not alive: " ^ to_alias)
+    | Resolved session_id ->
         let current = load_inbox t ~session_id in
         let next = current @ [ { from_alias; to_alias; content } ] in
         save_inbox t ~session_id next
@@ -131,6 +231,58 @@ module Broker = struct
     let messages = read_inbox t ~session_id in
     save_inbox t ~session_id [];
     messages
+
+  type sweep_result =
+    { dropped_regs : registration list
+    ; deleted_inboxes : string list
+    }
+
+  let inbox_suffix = ".inbox.json"
+
+  let inbox_file_session_id name =
+    if Filename.check_suffix name inbox_suffix then
+      Some (Filename.chop_suffix name inbox_suffix)
+    else None
+
+  let list_inbox_session_ids t =
+    ensure_root t;
+    let entries =
+      try Sys.readdir t.root with Sys_error _ -> [||]
+    in
+    Array.fold_left
+      (fun acc name ->
+        match inbox_file_session_id name with
+        | Some sid -> sid :: acc
+        | None -> acc)
+      []
+      entries
+
+  let try_unlink path =
+    try Unix.unlink path; true
+    with Unix.Unix_error _ -> false
+
+  let sweep t =
+    with_registry_lock t (fun () ->
+        let regs = load_registrations t in
+        let alive, dead =
+          List.partition registration_is_alive regs
+        in
+        if dead <> [] then save_registrations t alive;
+        let alive_sids =
+          List.fold_left
+            (fun acc reg -> reg.session_id :: acc)
+            []
+            alive
+        in
+        let all_inbox_sids = list_inbox_session_ids t in
+        let deleted =
+          List.filter
+            (fun sid ->
+              if List.mem sid alive_sids then false
+              else try_unlink (inbox_path t ~session_id:sid))
+            all_inbox_sids
+        in
+        { dropped_regs = dead; deleted_inboxes = deleted })
 end
 
 let channel_notification ({ from_alias; to_alias; content } : message) =
@@ -154,6 +306,7 @@ let tool_definitions =
   ; tool_definition ~name:"send" ~description:"Send a C2C message to a registered peer alias." ~required:[ "from_alias"; "to_alias"; "content" ]
   ; tool_definition ~name:"whoami" ~description:"Resolve the current C2C session registration." ~required:[]
   ; tool_definition ~name:"poll_inbox" ~description:"Drain queued C2C messages for the current session. Returns a JSON array of {from_alias,to_alias,content} objects; call this at the start of each turn and after each send to reliably receive messages regardless of whether the client surfaces notifications/claude/channel." ~required:[]
+  ; tool_definition ~name:"sweep" ~description:"Remove dead registrations (whose parent process has exited) and delete orphan inbox files that belong to no current registration. Returns JSON {dropped_regs:[{session_id,alias}], deleted_inboxes:[session_id]}." ~required:[]
   ]
 
 let string_member name json =
@@ -188,15 +341,25 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
   | "register" ->
       let session_id = resolve_session_id arguments in
       let alias = string_member "alias" arguments in
-      Broker.register broker ~session_id ~alias;
+      let pid = Some (Unix.getppid ()) in
+      let pid_start_time = Broker.capture_pid_start_time pid in
+      Broker.register broker ~session_id ~alias ~pid ~pid_start_time;
       Lwt.return (tool_result ~content:("registered " ^ alias) ~is_error:false)
   | "list" ->
       let registrations = Broker.list_registrations broker in
       let content =
         `List
           (List.map
-             (fun { session_id; alias } ->
-               `Assoc [ ("session_id", `String session_id); ("alias", `String alias) ])
+             (fun { session_id; alias; pid; pid_start_time = _ } ->
+               let base =
+                 [ ("session_id", `String session_id); ("alias", `String alias) ]
+               in
+               let fields =
+                 match pid with
+                 | Some n -> base @ [ ("pid", `Int n) ]
+                 | None -> base
+               in
+               `Assoc fields)
              registrations)
         |> Yojson.Safe.to_string
       in
@@ -233,6 +396,25 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                  ; ("content", `String content)
                  ])
              messages)
+        |> Yojson.Safe.to_string
+      in
+      Lwt.return (tool_result ~content ~is_error:false)
+  | "sweep" ->
+      let { Broker.dropped_regs; deleted_inboxes } = Broker.sweep broker in
+      let content =
+        `Assoc
+          [ ( "dropped_regs",
+              `List
+                (List.map
+                   (fun { session_id; alias; _ } ->
+                     `Assoc
+                       [ ("session_id", `String session_id)
+                       ; ("alias", `String alias)
+                       ])
+                   dropped_regs) )
+          ; ( "deleted_inboxes",
+              `List (List.map (fun sid -> `String sid) deleted_inboxes) )
+          ]
         |> Yojson.Safe.to_string
       in
       Lwt.return (tool_result ~content ~is_error:false)
