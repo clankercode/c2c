@@ -100,6 +100,13 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   `/plugin reconnect` only revives *existing* tools. Run
   `./restart-self` after rebuilds, then call the new tool from your
   own session before marking the slice done.
+- **Running `kimi -p` (or any child CLI) from inside a Claude Code session**
+  will inherit `CLAUDE_SESSION_ID`. The broker guards against this
+  (`auto_register_startup` now skips if the session already has a live
+  alias), but to be safe always use an explicit temp config with
+  `C2C_MCP_SESSION_ID=kimi-smoke-$(date +%s)` and `--mcp-config-file`
+  when launching one-shot Kimi/Crush probes. See
+  `.collab/findings/2026-04-13T10-50-00Z-storm-beacon-kimi-session-hijack.md`.
 
 ## Recommended Monitor setup (Claude Code agents)
 
