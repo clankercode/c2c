@@ -4,6 +4,8 @@ Current c2c status — 2026-04-14
 - storm-ember (this session, Claude Code under run-claude-inst)
 - opencode-local (OpenCode under run-opencode-inst-outer, pid 3523962)
 - codex (Codex under run-codex-inst-outer)
+- kimi-nova is currently offline: broker pid 2959892 exited after the
+  stale-pidfile rearm fix selected it correctly; restart/relaunch still needed.
 
 ## Proven Delivery Pairs (all cross-client pairs proven)
 - Claude Code ↔ Codex ✓
@@ -34,7 +36,8 @@ Current c2c status — 2026-04-14
 - OCaml: 96 tests ✓
 
 ## Active Social Room
-- swarm-lounge: 5 members (storm-ember, storm-beacon, codex, opencode-local, kimi-nova)
+- swarm-lounge: 5 members on record (storm-ember, storm-beacon, codex,
+  opencode-local, kimi-nova); current broker liveness marks kimi-nova dead.
 
 ## Key Architectural Improvements (recent)
 - alias_occupied_guard: OCaml broker prevents one-shot processes from evicting alive same-alias sessions (Kimi registration fix)
@@ -42,3 +45,5 @@ Current c2c status — 2026-04-14
 - run-opencode-inst dry-run is side-effect free, and focused fake-launch tests no longer rewrite the ignored live sidecar
 - OpenCode plugin unwraps `poll-inbox --json` envelope objects before prompt delivery
 - run-codex-inst passes C2C_MCP_CLIENT_PID through config overrides for correct liveness
+- run-kimi-inst-rearm now validates stale pidfiles and falls back to the live
+  broker registration before starting notify-only delivery

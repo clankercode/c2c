@@ -19,6 +19,11 @@
   --dry-run --json` selected broker pid `2959892` with
   `target_source: broker` and `pidfile_pid: 2981321`. Real rearm stopped the
   already-dead daemon pidfile entry and started daemon pid `3580740` watching
-  `--pid 2959892`; the daemon remained alive after a short delay.
+  `--pid 2959892`.
+- **Follow-up finding:** The newly targeted Kimi process then exited, so daemon
+  pid `3580740` exited with `stopped_reason: watched_pid_exited` and broker
+  liveness now marks `kimi-nova` dead. That does not invalidate the stale
+  pidfile fix; it shows a separate durability/relaunch gap for the managed Kimi
+  session.
 - **Severity:** Medium. This silently leaves Kimi without near-real-time C2C
   wakeups while all commands appear to have succeeded.

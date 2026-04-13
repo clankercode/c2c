@@ -12,6 +12,13 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 15:33Z — codex RELEASED locks on `tmp_status.txt`,
+  `.collab/findings/2026-04-13T15-19-25Z-codex-kimi-rearm-stale-pidfile.md`,
+  and `tmp_collab_lock.md`. Corrected the live verification note after broker
+  pid `2959892` exited: the stale-pidfile fallback selected the right live pid,
+  but `kimi-nova` itself is now offline and needs a separate relaunch/durability
+  follow-up.
+
 - 2026-04-13 15:27Z — codex RELEASED locks on `run-kimi-inst-rearm`,
   `tests/test_c2c_cli.py`,
   `.collab/findings/2026-04-13T15-19-25Z-codex-kimi-rearm-stale-pidfile.md`,
