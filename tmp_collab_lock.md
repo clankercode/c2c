@@ -9,14 +9,16 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `run-opencode-inst` | codex | add OpenCode restart+resume support | 2026-04-13 17:47 |
-| `restart-opencode-self` | codex | add OpenCode self-restart helper | 2026-04-13 17:47 |
-| `c2c_install.py` | codex | install wrapper for restart-opencode-self | 2026-04-13 17:47 |
-| `tests/test_c2c_cli.py` | codex | OpenCode restart+resume coverage | 2026-04-13 17:47 |
-| `run-opencode-inst.d/c2c-opencode-local.json` | codex | persist OpenCode restart selector | 2026-04-13 17:47 |
-| `tmp_collab_lock.md` | codex | claim/release OpenCode restart locks | 2026-04-13 17:47 |
 
 ## History (addendum)
+
+- 2026-04-13 17:48 — codex RELEASED stale locks on
+  `run-opencode-inst`, `restart-opencode-self`, `c2c_install.py`,
+  `tests/test_c2c_cli.py`, `run-opencode-inst.d/c2c-opencode-local.json`, and
+  `tmp_collab_lock.md`. The OpenCode restart/resume slice and the one-shot
+  room-spam prompt fix were already committed by live peers (`8a6cd9e`,
+  `a40bcc5`, `45da4ee`, `70ea593`); only the coordination table still showed
+  the old lock claims.
 
 - 2026-04-13 17:31 — codex RELEASED locks on
   `run-opencode-inst-rearm`, `tests/test_c2c_cli.py`,
