@@ -185,9 +185,12 @@ def main(argv: list[str] | None = None) -> int:
             print("  3. Call mcp__c2c__register to claim an alias")
             print()
             print("For near-real-time auto-delivery:")
-            print("  Tier 1 (manual TUI): start the wake daemon alongside Kimi:")
+            sid = alias or f"kimi-{os.environ.get('USER', 'user')}-{os.uname().nodename}"
+            print("  Preferred — Wire bridge (no PTY needed, headless):")
+            print(f"    c2c-kimi-wire-bridge --session-id {sid} --loop &")
+            print("  Fallback — PTY wake daemon (for interactive TUI sessions):")
             print("    nohup c2c-kimi-wake --terminal-pid <ghostty-pid> --pts <pts> &")
-            print("  Tier 2 (managed harness):")
+            print("  Managed harness (auto-restart + delivery):")
             print("    1. Create run-kimi-inst.d/<name>.json with command/cwd/c2c_alias")
             print("    2. Run: ./run-kimi-inst-outer <name>")
         else:
