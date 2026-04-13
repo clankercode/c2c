@@ -687,6 +687,109 @@ let test_tools_call_register_no_alias_falls_back_to_env () =
           check string "alias from env" "kimi-xertrov-x" reg.alias;
           check string "session from env" "session-noarg" reg.session_id))
 
+(* register should reject an alias that is currently held by an alive
+   registration under a different session_id. The error message should
+   name the alias and the current holder so the caller knows how to
+   proceed. The existing holder's registration must be untouched. *)
+let test_tools_call_register_rejects_alias_hijack () =
+  with_temp_dir (fun dir ->
+      let live_pid = Unix.getpid () in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* session-owner registers as "storm-beacon" with a live PID *)
+      C2c_mcp.Broker.register broker ~session_id:"session-owner"
+        ~alias:"storm-beacon" ~pid:(Some live_pid) ~pid_start_time:None;
+      (* session-thief tries to claim the same alias *)
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-thief";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 77)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "register")
+                    ; ( "arguments",
+                        `Assoc [ ("alias", `String "storm-beacon") ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          (match response with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let is_error =
+                 json |> member "result" |> member "isError" |> to_bool_option
+                 |> Option.value ~default:false
+               in
+               check bool "register rejected with isError=true" true is_error;
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               check bool "error names the alias" true
+                 (let re = Str.regexp "storm-beacon" in
+                  (try ignore (Str.search_forward re text 0); true
+                   with Not_found -> false));
+               check bool "error names the holder session" true
+                 (let re = Str.regexp "session-owner" in
+                  (try ignore (Str.search_forward re text 0); true
+                   with Not_found -> false)));
+          (* Original owner must still be registered *)
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          let owner =
+            List.find_opt (fun r -> r.session_id = "session-owner") regs
+          in
+          check bool "owner registration preserved" true (owner <> None);
+          check string "owner alias unchanged" "storm-beacon"
+            (Option.get owner).alias;
+          let thief =
+            List.find_opt (fun r -> r.session_id = "session-thief") regs
+          in
+          check bool "thief not registered" true (thief = None)))
+
+(* register should allow re-registering the same alias under the same
+   session_id (PID refresh after a restart). *)
+let test_tools_call_register_allows_own_alias_refresh () =
+  with_temp_dir (fun dir ->
+      let live_pid = Unix.getpid () in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-self"
+        ~alias:"my-alias" ~pid:(Some live_pid) ~pid_start_time:None;
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-self";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 78)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "register")
+                    ; ("arguments", `Assoc [ ("alias", `String "my-alias") ])
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          (match response with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let is_error =
+                 json |> member "result" |> member "isError" |> to_bool_option
+                 |> Option.value ~default:false
+               in
+               check bool "own alias re-register not rejected" false is_error)))
+
 let test_tools_call_register_alias_rename_notifies_rooms () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -3308,6 +3411,10 @@ let () =
              test_tools_call_register_prefers_explicit_client_pid_env
          ; test_case "tools/call register no alias falls back to env" `Quick
              test_tools_call_register_no_alias_falls_back_to_env
+         ; test_case "tools/call register rejects alias hijack from alive session" `Quick
+             test_tools_call_register_rejects_alias_hijack
+         ; test_case "tools/call register allows own alias refresh" `Quick
+             test_tools_call_register_allows_own_alias_refresh
          ; test_case "tools/call register alias rename notifies rooms" `Quick
              test_tools_call_register_alias_rename_notifies_rooms
          ; test_case "server startup auto-registers alias from env" `Quick

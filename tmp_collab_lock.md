@@ -9,6 +9,12 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| `run-crush-inst-outer` | codex | Verify and commit existing --create slice | 2026-04-13T17:52Z |
+| `tests/test_c2c_cli.py` | codex | Add --create regression tests | 2026-04-13T17:52Z |
+| `ocaml/c2c_mcp.ml` | codex | Verify and commit existing register alias guard slice | 2026-04-13T17:52Z |
+| `ocaml/test/test_c2c_mcp.ml` | codex | Add explicit register alias guard tests | 2026-04-13T17:52Z |
+| `tmp_status.txt` | codex | Update test counts after adopted slices | 2026-04-13T17:52Z |
+| `.goal-loops/active-goal.md` | codex | Update test counts after adopted slices | 2026-04-13T17:52Z |
 
 ## History (addendum)
 

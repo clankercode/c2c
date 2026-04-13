@@ -40,6 +40,7 @@ let server_features =
   ; "rpc_audit_log"
   ; "tail_log_tool"
   ; "current_session_alias_binding"
+  ; "register_alias_hijack_guard"
   ]
 
 let server_info =
@@ -1416,38 +1417,65 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
               (Broker.my_rooms broker ~session_id)
       in
       let pid_start_time = Broker.capture_pid_start_time pid in
-      Broker.register broker ~session_id ~alias ~pid ~pid_start_time;
-      (* Fan out peer-renamed notification to rooms the session was in. *)
-      (match old_alias_opt with
-       | None -> ()
-       | Some old_alias ->
-           let content =
-             Printf.sprintf
-               {|{"type":"peer_renamed","old_alias":"%s","new_alias":"%s"}|}
-               old_alias alias
+      (* Guard: refuse to evict an alive registration that owns this alias under
+         a different session_id. An agent re-registering its own alias (same
+         session_id, e.g. after a PID change) is always allowed. This prevents
+         confused or malicious agents from hijacking another agent's alias. *)
+      let alias_hijack_conflict =
+        List.find_opt
+          (fun reg ->
+            reg.alias = alias
+            && reg.session_id <> session_id
+            && Broker.registration_is_alive reg)
+          (Broker.list_registrations broker)
+      in
+      (match alias_hijack_conflict with
+       | Some conflict ->
+           Lwt.return
+             (tool_result
+                ~content:
+                  (Printf.sprintf
+                     "register rejected: alias '%s' is currently held by \
+                      an alive session '%s'. Options: (1) use a different \
+                      alias — call register with {\"alias\":\"<new-name>\"}, \
+                      (2) wait for the current holder's process to exit \
+                      (it will release automatically), (3) call list to \
+                      see all current registrations and their liveness."
+                     alias conflict.session_id)
+                ~is_error:true)
+       | None ->
+           Broker.register broker ~session_id ~alias ~pid ~pid_start_time;
+           (* Fan out peer-renamed notification to rooms the session was in. *)
+           (match old_alias_opt with
+            | None -> ()
+            | Some old_alias ->
+                let content =
+                  Printf.sprintf
+                    {|{"type":"peer_renamed","old_alias":"%s","new_alias":"%s"}|}
+                    old_alias alias
+                in
+                List.iter
+                  (fun room_id ->
+                    (try
+                       ignore
+                         (Broker.send_room broker ~from_alias:"c2c-system"
+                            ~room_id ~content)
+                     with _ -> ()))
+                  rooms_to_notify);
+           (* Auto-redeliver any dead-letter messages addressed to this session.
+              This recovers messages that were swept while the managed harness was
+              between outer-loop iterations. *)
+           let redelivered =
+             Broker.redeliver_dead_letter_for_session broker ~session_id ~alias
            in
-           List.iter
-             (fun room_id ->
-               (try
-                  ignore
-                    (Broker.send_room broker ~from_alias:"c2c-system"
-                       ~room_id ~content)
-                with _ -> ()))
-             rooms_to_notify);
-      (* Auto-redeliver any dead-letter messages addressed to this session.
-         This recovers messages that were swept while the managed harness was
-         between outer-loop iterations. *)
-      let redelivered =
-        Broker.redeliver_dead_letter_for_session broker ~session_id ~alias
-      in
-      let response_content =
-        if redelivered > 0 then
-          Printf.sprintf "registered %s (redelivered %d dead-letter message%s)"
-            alias redelivered (if redelivered = 1 then "" else "s")
-        else
-          "registered " ^ alias
-      in
-      Lwt.return (tool_result ~content:response_content ~is_error:false)
+           let response_content =
+             if redelivered > 0 then
+               Printf.sprintf "registered %s (redelivered %d dead-letter message%s)"
+                 alias redelivered (if redelivered = 1 then "" else "s")
+             else
+               "registered " ^ alias
+           in
+           Lwt.return (tool_result ~content:response_content ~is_error:false))
   | "list" ->
       let registrations = Broker.list_registrations broker in
       let content =

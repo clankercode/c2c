@@ -7172,6 +7172,56 @@ class RunCrushInstTests(unittest.TestCase):
         self.assertIn("Usage: ./run-crush-inst-outer", result.stdout)
         self.assertNotIn("iter 1", result.stdout)
 
+    def test_run_crush_inst_outer_create_writes_default_config(self):
+        namespace = runpy.run_path(str(REPO / "run-crush-inst-outer"))
+        root = Path(self.temp_dir.name)
+        inner = root / "run-crush-inst"
+        rearm = root / "run-crush-inst-rearm"
+        inner.write_text("#!/bin/sh\n", encoding="utf-8")
+        rearm.write_text("#!/bin/sh\n", encoding="utf-8")
+        namespace["main"].__globals__["HERE"] = root
+        namespace["main"].__globals__["INNER"] = inner
+        namespace["main"].__globals__["REARM"] = rearm
+
+        stdout = io.StringIO()
+        with (
+            mock.patch.dict(
+                os.environ, {"RUN_CRUSH_INST_OUTER_DRY_RUN": "1"}, clear=False
+            ),
+            mock.patch("sys.stdout", new=stdout),
+        ):
+            rc = namespace["main"](["run-crush-inst-outer", "--create", "crush-new"])
+
+        self.assertEqual(rc, 0)
+        cfg_path = root / "run-crush-inst.d" / "crush-new.json"
+        self.assertTrue(cfg_path.exists())
+        payload = json.loads(cfg_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["command"], "crush")
+        self.assertEqual(payload["cwd"], str(root))
+        self.assertEqual(payload["c2c_session_id"], "crush-new")
+        self.assertEqual(payload["c2c_alias"], "crush-new")
+        self.assertIn("[run-crush-inst-outer] created config:", stdout.getvalue())
+
+    def test_run_crush_inst_outer_create_preserves_existing_config(self):
+        namespace = runpy.run_path(str(REPO / "run-crush-inst-outer"))
+        root = Path(self.temp_dir.name)
+        cfg_dir = root / "run-crush-inst.d"
+        cfg_dir.mkdir()
+        cfg_path = cfg_dir / "crush-existing.json"
+        cfg_path.write_text(
+            json.dumps({"command": "custom-crush", "c2c_alias": "stable"}),
+            encoding="utf-8",
+        )
+        namespace["_create_config"].__globals__["HERE"] = root
+
+        result = namespace["_create_config"]("crush-existing")
+
+        self.assertEqual(result, cfg_path)
+        self.assertEqual(
+            json.loads(cfg_path.read_text(encoding="utf-8")),
+            {"command": "custom-crush", "c2c_alias": "stable"},
+        )
+
     def test_run_crush_inst_outer_refreshes_peer_after_child_spawn(self):
         namespace = runpy.run_path(str(REPO / "run-crush-inst-outer"))
         root = Path(self.temp_dir.name)
