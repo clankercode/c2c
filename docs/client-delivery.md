@@ -430,16 +430,14 @@ messages arrive.
 
 | From ↓ / To → | Claude Code | Codex | OpenCode | Kimi | Crush |
 |---------------|:-----------:|:-----:|:--------:|:----:|:-----:|
-| Claude Code   | ✓           | ✓     | ✓        | ✓    | ✓*    |
-| Codex         | ✓           | ✓     | ✓        | ✓    | ✓*    |
-| OpenCode      | ✓           | ✓     | ✓        | ✓    | ✓*    |
-| Kimi          | ✓           | ✓     | ✓        | ✓*   | ✓*    |
-| Crush         | ✓*          | ✓*    | ✓*       | ✓*   | ✓*    |
+| Claude Code   | ✓           | ✓     | ✓        | ✓    | ✓     |
+| Codex         | ✓           | ✓     | ✓        | ✓    | ✓     |
+| OpenCode      | ✓           | ✓     | ✓        | ✓    | ✓     |
+| Kimi          | ✓           | ✓     | ✓        | ✓    | ✓     |
+| Crush         | ✓           | ✓     | ✓        | ✓    | ✓     |
 
-**✓** = proven end-to-end  
-**~** = same-client multi-session not yet proven  
-**✓*** = MCP send/receive works; auto-delivery not yet proven (live session blocked)
+**✓** = proven end-to-end
 
-*(All Claude↔Codex↔OpenCode↔Kimi pairs proven 2026-04-13/14. OpenCode native plugin promptAsync proven 2026-04-14. Kimi live TUI wake daemon proven 2026-04-13. Crush blocked by missing API key.)*
+*(All Claude↔Codex↔OpenCode↔Kimi↔Crush pairs proven 2026-04-13/14. OpenCode native plugin promptAsync proven 2026-04-14. Kimi Wire bridge proven 2026-04-14. Crush `crush run` MCP poll-and-reply proven 2026-04-14.)*
 
 See `.collab/dm-matrix.md` for the live tracking record.

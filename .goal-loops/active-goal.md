@@ -39,7 +39,7 @@ These are Max's target experiences, verbatim:
 
 ### Satisfied (all AC met)
 
-- **Claude Code** ↔ Codex ↔ OpenCode ↔ Kimi: 1:1 DM proven for all live pairs.
+- **Claude Code** ↔ Codex ↔ OpenCode ↔ Kimi ↔ Crush: 1:1 DM proven for all live pairs.
 - **Claude Code**: PostToolUse hook auto-delivers broker inbox per tool call.
   Fast path ~3ms (bash builtin); stable alias via `C2C_MCP_AUTO_REGISTER_ALIAS`.
 - **Codex**: managed harness (`run-codex-inst-outer`) + `c2c_deliver_inbox --notify-only`
@@ -95,6 +95,11 @@ These are Max's target experiences, verbatim:
   restart/list) with standard pidfile support (2026-04-14, storm-ember).
   This is Kimi's preferred native path; master-side PTY wake remains the
   manual TUI fallback.
+- **Crush DM proof** ✓: `c2c setup crush` MCP config proven. One-shot
+  `crush run` poll-and-reply delivery **live-proven 2026-04-14** by `kimi-nova`
+  (see finding 2026-04-14T03-00-00Z-kimi-nova-crush-dm-proof.md). The
+  `c2c_crush_wake_daemon.py` interactive TUI path exists but has not yet been
+  live-tested.
 
 ### Satisfied (continued)
 
@@ -112,11 +117,7 @@ These are Max's target experiences, verbatim:
 
 ### Active Work
 
-- **Crush DM proof** — `c2c_crush_wake_daemon.py` written, Crush MCP config
-  ready. A brief `crush-xertrov-x-game` registration appeared 2026-04-14, but
-  the pid exited before any broker-native 1:1 DM proof. Next step: relaunch a
-  durable Crush TUI/managed outer loop after provider config is confirmed.
-  See finding 2026-04-13T17-08-44Z-codex-crush-alive-flicker.md.
+- *(none — all major delivery paths are proven)*
 
 ### Remaining Product Polish
 
@@ -151,12 +152,13 @@ as at least one agent is active.
 
 ## Blockers / Notes
 
-- **Crush**: provider/session config still needs confirmation. A live registry
-  row flickered but the process exited before the DM proof; do not treat stale
-  `crush-xertrov-x-game` broker rows as proof of liveness.
-- **OpenCode plugin promptAsync**: codex is patching the session target selection.
-  Do not edit `.opencode/plugins/c2c.ts` or `run-opencode-inst` while codex
-  holds the lock (check `tmp_collab_lock.md`).
+- **Crush** — `c2c setup crush` MCP config proven. One-shot `crush run`
+  poll-and-reply delivery **live-proven 2026-04-14** by `kimi-nova` (see finding
+  2026-04-14T03-00-00Z-kimi-nova-crush-dm-proof.md). Managed harness +
+  `c2c_crush_wake_daemon.py` exist for interactive TUI sessions but have not
+  yet been live-tested.
+- **OpenCode plugin promptAsync**: proven end-to-end 2026-04-14. Codex may still
+  hold locks on plugin files; check `tmp_collab_lock.md` before editing.
 - **Channel delivery**: `notifications/claude/channel` requires `experimental.claude/channel`
   in the client's `initialize` handshake. Standard Claude Code does not declare
   this; polling is the production delivery path. `C2C_MCP_AUTO_DRAIN_CHANNEL=0`
