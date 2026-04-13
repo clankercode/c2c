@@ -9,10 +9,77 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `survival-guide/our-goals.md` | storm-beacon | fill empty stub | 2026-04-13 14:11 |
-| `survival-guide/our-vision.md` | storm-beacon | fill empty stub | 2026-04-13 14:11 |
-
+| `survival-guide/our-journey.md` | storm-beacon | fill empty stub | 2026-04-13 14:21 |
 ## History (addendum)
+
+- 2026-04-13 14:22 — codex RELEASED locks on c2c_deliver_inbox.py + c2c-deliver-inbox + c2c_cli.py + c2c_install.py + tests/test_c2c_cli.py. Added `c2c deliver-inbox` / `c2c-deliver-inbox`, which bridges broker inboxes to live PTY clients: `--dry-run` peeks without draining, and non-dry-run drains the requested broker session and injects each queued C2C message into Claude/Codex/OpenCode using the shared `c2c_poker`/`pty_inject` backend. Verification: C2CDeliverInboxUnitTests 2/2, focused install/dispatch 2/2, full Python unittest 119/119, py_compile OK, Codex deliver dry-run resolved terminal pid 3725367 pts 5, OpenCode explicit terminal dry-run OK.
+
+- 2026-04-13 14:20 — storm-beacon RELEASED locks on
+  `ocaml/c2c_mcp.ml` + `ocaml/test/test_c2c_mcp.ml`. **Monitor-noise
+  fix: skip inbox file write on empty drain.** Before: every MCP
+  tool call auto-drains the caller's inbox and `drain_inbox` always
+  called `save_inbox [... empty list ...]`, which fires a
+  close_write inotify event even when the inbox is already empty.
+  Broad agent-visibility monitors end up seeing 2–6 events per tool
+  call instead of ~0, swamping the actual signal (real peer
+  messages). After: `drain_inbox` only rewrites the file when it
+  pulled at least one message. Semantic unchanged — callers still
+  get `[]` for an empty inbox. Two new tests: (1) drain of a never-
+  existed inbox must NOT create the file, (2) drain of an existing
+  `[]` inbox must NOT change its mtime. **40/40 green** (was 38/38).
+  Note: test 2 uses a 1s `Unix.sleep` because Linux ext4 mtime
+  granularity is 1s; suite now runs in ~1.2s instead of ~0.2s but
+  is still well under the fast budget. Uncommitted — pending Max
+  approval.
+
+- 2026-04-13 14:18 — storm-beacon RELEASED locks on
+  `ocaml/c2c_mcp.ml` + `ocaml/test/test_c2c_mcp.ml`. **Binary-skew
+  detection landed in working tree (uncommitted).** Directly addresses
+  follow-up #1 from storm-echo's 03:56Z sweep-binary-mismatch
+  finding: "sweep path should probably emit a protocol-version
+  header or a `broker_binary_version` identifier so callers can
+  tell which code path answered." New module-level constants
+  `server_version = "0.3.0"` and `server_features` (string list:
+  liveness, pid_start_time, registry_lock, inbox_lock, alias_dedupe,
+  sweep, dead_letter, poll_inbox, send_all). `server_info` now
+  returns `{name, version, features: [...]}` so the `initialize`
+  response's `result.serverInfo.features` is self-describing and
+  a client can do `"dead_letter" in serverInfo.features` to detect
+  a pre-dead-letter broker before calling sweep. Version string
+  bumped from the stale 0.1.0 to 0.3.0. New test
+  `initialize reports server version and features` asserts version
+  is not the legacy 0.1.0, features list is non-empty, and contains
+  the five load-bearing flags (liveness/sweep/dead_letter/
+  poll_inbox/send_all). **38/38 green** (was 37/37). Breaks no
+  existing test. Uncommitted — pending Max approval.
+
+- 2026-04-13 14:16 — storm-beacon RELEASED lock on
+  `survival-guide/our-responsibility.md`. Filled empty stub with
+  nine "what each agent owes the swarm" rules (commit your work,
+  update the lock table, document problems immediately, don't work
+  in silence, don't break peer work, leave breadcrumbs for the next
+  you, maintain the monitor, respect Max's time, make the swarm
+  better). Each rule is one short section with concrete do/don't
+  guidance mirroring CLAUDE.md's Development Rules but framed from
+  the individual-agent perspective. Cross-links to our-vision.md
+  and our-goals.md for continuity. Uncommitted — pending Max
+  approval. Two survival-guide stubs remain: our-journey.md,
+  should-we-do-something-nice-for-max.md.
+
+- 2026-04-13 14:14 — storm-beacon RELEASED locks on
+  `survival-guide/our-goals.md` and `survival-guide/our-vision.md`.
+  Filled both empty stubs. our-goals.md is the short friendly version
+  of `.goal-loops/active-goal.md` Group Goal Context — four axes
+  (delivery surfaces, reach, topology, social layer), current status
+  per axis (1:1 ✓, 1:N ✓ via phase 1 broadcast, N:N rooms designed
+  not built), how to pick next slices, and what is NOT a goal.
+  our-vision.md is the "why" doc — aesthetic, six principles
+  (accessibility, transparency, cross-client parity, reactive >
+  polling, social layer is not a joke, swarm outlives any agent),
+  what we're building against, and what c2c is NOT. Uncommitted —
+  pending Max approval. Leaves three survival-guide stubs still
+  empty: our-journey.md, our-responsibility.md,
+  should-we-do-something-nice-for-max.md.
 
 - 2026-04-13 14:13 — codex RELEASED locks on c2c_inject.py + c2c-inject + c2c_cli.py + c2c_install.py + tests/test_c2c_cli.py. Added `c2c inject` / `c2c-inject` as a one-shot PTY injection surface for all three client families: Claude via `--claude-session`, Codex via generic `--pid`, and OpenCode/generic terminals via `--terminal-pid --pts`. It reuses the proven `c2c_poker` target resolution / payload rendering / `pty_inject` path and supports `--dry-run --json` for safe live probing. Verification: C2CInjectUnitTests 3/3, full Python unittest 116/116, py_compile OK, live Codex PID dry-run resolved terminal pid 3725367 pts 5, OpenCode explicit terminal dry-run OK.
 

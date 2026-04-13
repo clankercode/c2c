@@ -18,6 +18,7 @@ if str(REPO) not in sys.path:
 
 import c2c_register
 import c2c_registry
+import c2c_deliver_inbox
 import c2c_inject
 import c2c_mcp
 import c2c_poll_inbox
@@ -67,6 +68,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         shutil.copy2(source_git_path, target_git_path)
     for relative_path in [
         "c2c",
+        "c2c-deliver-inbox",
         "c2c-register",
         "c2c-list",
         "c2c-send",
@@ -78,6 +80,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_list.py",
         "c2c_send.py",
         "c2c_install.py",
+        "c2c_deliver_inbox.py",
         "c2c_inject.py",
         "c2c_poker.py",
         "c2c_poll_inbox.py",
@@ -271,6 +274,7 @@ class C2CCLITests(unittest.TestCase):
             sorted(payload["installed_commands"]),
             [
                 "c2c",
+                "c2c-deliver-inbox",
                 "c2c-inject",
                 "c2c-install",
                 "c2c-list",
@@ -282,6 +286,7 @@ class C2CCLITests(unittest.TestCase):
             ],
         )
         self.assertTrue((install_dir / "c2c").exists())
+        self.assertTrue((install_dir / "c2c-deliver-inbox").exists())
         self.assertTrue((install_dir / "c2c-inject").exists())
         self.assertTrue((install_dir / "c2c-poll-inbox").exists())
         self.assertTrue((install_dir / "c2c-register").exists())
@@ -326,6 +331,15 @@ class C2CCLITests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         inject_main.assert_called_once_with(["--pid", "123", "hello"])
+
+    def test_c2c_deliver_inbox_subcommand_dispatches_to_delivery_tool(self):
+        with mock.patch(
+            "c2c_cli.c2c_deliver_inbox.main", return_value=0
+        ) as deliver_main:
+            result = c2c_cli.main(["deliver-inbox", "--pid", "123", "--session-id", "s"])
+
+        self.assertEqual(result, 0)
+        deliver_main.assert_called_once_with(["--pid", "123", "--session-id", "s"])
 
     def test_c2c_poll_inbox_subcommand_dispatches_to_recovery_poller(self):
         with mock.patch("c2c_cli.c2c_poll_inbox.main", return_value=0) as poll_main:
@@ -1998,6 +2012,7 @@ class C2CTestHelpersTests(unittest.TestCase):
 
             for relative_path in [
                 "c2c",
+                "c2c-deliver-inbox",
                 "c2c-register",
                 "c2c-list",
                 "c2c-send",
@@ -2009,6 +2024,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c_list.py",
                 "c2c_send.py",
                 "c2c_install.py",
+                "c2c_deliver_inbox.py",
                 "c2c_inject.py",
                 "c2c_poker.py",
                 "c2c_poll_inbox.py",
@@ -2624,6 +2640,115 @@ class C2CInjectUnitTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["client"], "claude")
         self.assertIn("hello claude", payload["payload"])
+
+
+class C2CDeliverInboxUnitTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_deliver_inbox_dry_run_peeks_without_injecting(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        broker_root.mkdir()
+        inbox_path = broker_root / "codex-local.inbox.json"
+        inbox_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "from_alias": "storm-echo",
+                        "to_alias": "codex",
+                        "content": "queued hello",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        stdout = io.StringIO()
+
+        with (
+            mock.patch(
+                "c2c_deliver_inbox.c2c_inject.resolve_target",
+                return_value=(33333, "9", None),
+            ),
+            mock.patch("c2c_deliver_inbox.c2c_poker.inject") as inject,
+            mock.patch("sys.stdout", stdout),
+        ):
+            result = c2c_deliver_inbox.main(
+                [
+                    "--client",
+                    "codex",
+                    "--pid",
+                    "12345",
+                    "--session-id",
+                    "codex-local",
+                    "--broker-root",
+                    str(broker_root),
+                    "--dry-run",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        inject.assert_not_called()
+        self.assertEqual(json.loads(inbox_path.read_text(encoding="utf-8"))[0]["content"], "queued hello")
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["delivered"], 0)
+        self.assertEqual(payload["messages"][0]["content"], "queued hello")
+
+    def test_deliver_inbox_drains_and_injects_each_message(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        broker_root.mkdir()
+        inbox_path = broker_root / "opencode-local.inbox.json"
+        inbox_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "from_alias": "storm-beacon",
+                        "to_alias": "opencode",
+                        "content": "first",
+                    },
+                    {
+                        "from_alias": "storm-echo",
+                        "to_alias": "opencode",
+                        "content": "second",
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+        stdout = io.StringIO()
+
+        with (
+            mock.patch("c2c_deliver_inbox.c2c_poll_inbox.call_mcp_tool", side_effect=RuntimeError("mcp unavailable")),
+            mock.patch("c2c_deliver_inbox.c2c_poker.inject") as inject,
+            mock.patch("sys.stdout", stdout),
+        ):
+            result = c2c_deliver_inbox.main(
+                [
+                    "--client",
+                    "opencode",
+                    "--terminal-pid",
+                    "44444",
+                    "--pts",
+                    "12",
+                    "--session-id",
+                    "opencode-local",
+                    "--broker-root",
+                    str(broker_root),
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(inject.call_count, 2)
+        self.assertEqual(json.loads(inbox_path.read_text(encoding="utf-8")), [])
+        self.assertIn("first", inject.call_args_list[0].args[2])
+        self.assertIn("second", inject.call_args_list[1].args[2])
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["delivered"], 2)
+        self.assertEqual(payload["target"]["terminal_pid"], 44444)
 
 
 class ClaudeListSessionsUnitTests(unittest.TestCase):
