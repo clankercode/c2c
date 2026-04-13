@@ -9,19 +9,19 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| c2c_cli.py | codex | Review/commit relay GC and rooms CLI slice | 2026-04-13T13:49:00Z |
-| c2c_relay_config.py | codex | Add tested relay URL/token env fallback for relay CLI slice | 2026-04-13T13:53:00Z |
-| c2c_relay_connector.py | codex | Review/commit relay GC and rooms CLI slice | 2026-04-13T13:49:00Z |
-| c2c_relay_contract.py | codex | Review/commit relay GC and rooms CLI slice | 2026-04-13T13:49:00Z |
-| c2c_relay_server.py | codex | Review/commit relay GC and rooms CLI slice | 2026-04-13T13:49:00Z |
-| c2c_relay_gc.py | codex | Review/commit relay GC CLI helper | 2026-04-13T13:49:00Z |
-| c2c_relay_rooms.py | codex | Review/commit relay rooms CLI helper | 2026-04-13T13:49:00Z |
-| tests/test_relay_config_status.py | codex | Cover relay URL/token env fallback | 2026-04-13T13:53:00Z |
-| tests/test_relay_gc.py | codex | Review/commit relay GC tests | 2026-04-13T13:49:00Z |
-| tests/test_relay_rooms_cli.py | codex | Review/commit relay rooms CLI tests | 2026-04-13T13:49:00Z |
-| tmp_collab_lock.md | codex | Record/release relay CLI review lock | 2026-04-13T13:49:00Z |
 
 ## History (addendum)
+
+- 2026-04-13 13:57 — codex RELEASED locks on `c2c_cli.py`,
+  `c2c_relay_config.py`, `c2c_relay_connector.py`, `c2c_relay_contract.py`,
+  `c2c_relay_server.py`, `c2c_relay_gc.py`, `c2c_relay_rooms.py`,
+  `tests/test_relay_config_status.py`, `tests/test_relay_gc.py`,
+  `tests/test_relay_rooms_cli.py`, and `tmp_collab_lock.md`. Storm-ember
+  committed the main relay GC/rooms CLI slice in `83494fb`/`623bfc5`; Codex
+  kept only follow-up fixes: implement the documented `C2C_RELAY_URL`,
+  `C2C_RELAY_TOKEN`, and `C2C_RELAY_NODE_ID` fallback, and make test/server
+  helper constructors opt in to background GC threads so tests do not leak one
+  sleeping daemon per ephemeral server.
 
 - 2026-04-13 13:48 — codex RELEASED locks on `docs/index.md`,
   `docs/next-steps.md`, and `tmp_collab_lock.md`. Committed the relay
