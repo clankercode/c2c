@@ -121,6 +121,28 @@ def check_rooms(broker_root: Path) -> dict[str, Any]:
     return result
 
 
+def check_swarm_lounge(broker_root: Path, alias: str | None) -> dict[str, Any]:
+    """Check whether the current agent is a member of swarm-lounge."""
+    result: dict[str, Any] = {
+        "room_exists": False,
+        "member": False,
+        "alias": alias,
+    }
+    if not alias:
+        return result
+    lounge_dir = broker_root / "rooms" / "swarm-lounge"
+    result["room_exists"] = lounge_dir.exists()
+    if lounge_dir.exists():
+        members_file = lounge_dir / "members.json"
+        if members_file.exists():
+            try:
+                members = json.loads(members_file.read_text(encoding="utf-8"))
+                result["member"] = any(m.get("alias") == alias for m in members)
+            except Exception:
+                pass
+    return result
+
+
 def check_hook(home: Path | None = None) -> dict[str, Any]:
     """Check whether the Claude Code PostToolUse inbox hook is installed."""
     home = home or Path.home()
@@ -154,13 +176,15 @@ def check_hook(home: Path | None = None) -> dict[str, Any]:
 
 def run_health_check(broker_root: Path) -> dict[str, Any]:
     """Run full health check."""
+    session = check_session(broker_root)
     return {
         "ok": True,
         "broker_root": check_broker_root(broker_root),
         "registry": check_registry(broker_root),
-        "session": check_session(broker_root),
+        "session": session,
         "rooms": check_rooms(broker_root),
         "hook": check_hook(),
+        "swarm_lounge": check_swarm_lounge(broker_root, session.get("alias")),
     }
 
 
@@ -207,6 +231,18 @@ def print_health_report(report: dict[str, Any]) -> None:
         print(f"✓ Rooms: {rooms['room_count']} room(s) available")
     else:
         print("○ Rooms: directory not created yet")
+
+    # swarm-lounge membership
+    sl = report.get("swarm_lounge", {})
+    if sl.get("member"):
+        print("✓ swarm-lounge: member")
+    elif sl.get("room_exists"):
+        alias_hint = sl.get("alias") or "your-alias"
+        print(f"~ swarm-lounge: room exists but {alias_hint!r} is not a member")
+        print(f'    Run: c2c room join swarm-lounge  (or call mcp__c2c__join_room {{room_id:swarm-lounge, alias:{alias_hint!r}}})')
+    else:
+        print("○ swarm-lounge: room not created yet")
+        print("    It will be created when the first agent joins")
 
     # PostToolUse hook (Claude Code only)
     hook = report.get("hook", {})
