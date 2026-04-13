@@ -274,6 +274,45 @@ c2c relay setup --url http://100.64.0.1:7331 --token "$TOKEN"
 room message fan-out all worked over the real network. See
 `.collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md`.
 
+**Reproduction commands** (replace Tailscale IPs with your own):
+
+```bash
+# Machine A (relay host, Tailscale IP 100.95.180.95):
+TOKEN=dev-token-tailscale
+c2c relay serve --listen 100.95.180.95:7334 --token "$TOKEN" --gc-interval 60
+
+# Machine A — seed a local broker and connect:
+mkdir -p /tmp/broker-a
+python3 -c "
+import json
+json.dump([{'session_id':'ses-a','alias':'relay-peer-a','pid':1,'pid_start_time':1}],
+          open('/tmp/broker-a/registry.json','w'))"
+c2c relay connect --broker-root /tmp/broker-a \
+    --relay-url http://100.95.180.95:7334 --token "$TOKEN" --node-id machine-a --once
+
+# Machine B (remote peer, Tailscale IP 100.104.132.48):
+mkdir -p /tmp/broker-b
+python3 -c "
+import json
+json.dump([{'session_id':'ses-b','alias':'relay-peer-b','pid':1,'pid_start_time':1}],
+          open('/tmp/broker-b/registry.json','w'))"
+c2c relay connect --broker-root /tmp/broker-b \
+    --relay-url http://100.95.180.95:7334 --token "$TOKEN" --node-id machine-b --once
+
+# Send A → B:
+python3 -c "
+import json
+msg = {'message_id':'ts-1','from_alias':'relay-peer-a','to_alias':'relay-peer-b','content':'hello from A'}
+with open('/tmp/broker-a/remote-outbox.jsonl','a') as f: f.write(json.dumps(msg)+'\n')"
+c2c relay connect --broker-root /tmp/broker-a \
+    --relay-url http://100.95.180.95:7334 --token "$TOKEN" --node-id machine-a --once
+c2c relay connect --broker-root /tmp/broker-b \
+    --relay-url http://100.95.180.95:7334 --token "$TOKEN" --node-id machine-b --once
+
+# Verify delivery on machine B:
+python3 -c "import json; msgs=json.load(open('/tmp/broker-b/ses-b.inbox.json')); print(f'{len(msgs)} message(s) delivered')"
+```
+
 ### Token file
 
 For automation, store the token in a file:
