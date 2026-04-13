@@ -346,6 +346,7 @@ let test_initialize_reports_server_version_and_features () =
             ; "inbox_archive_on_drain"
             ; "history_tool"
             ; "join_room_history_backfill"
+            ; "my_rooms_tool"
             ]
           in
           List.iter
@@ -1816,6 +1817,91 @@ let test_tools_call_join_room_backfills_recent_history () =
               check string "first entry preserves order" "msg one"
                 (List.hd history |> member "content" |> to_string)))
 
+let test_my_rooms_returns_only_sessions_memberships () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-me"
+        ~alias:"me-alias" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-other"
+        ~alias:"other-alias" ~pid:None ~pid_start_time:None;
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"room-one"
+          ~alias:"me-alias" ~session_id:"session-me"
+      in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"room-two"
+          ~alias:"me-alias" ~session_id:"session-me"
+      in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"room-three"
+          ~alias:"other-alias" ~session_id:"session-other"
+      in
+      let mine = C2c_mcp.Broker.my_rooms broker ~session_id:"session-me" in
+      let ids =
+        List.map (fun (r : C2c_mcp.Broker.room_info) -> r.ri_room_id) mine
+        |> List.sort compare
+      in
+      check (list string) "only my rooms returned"
+        [ "room-one"; "room-two" ]
+        ids;
+      let theirs =
+        C2c_mcp.Broker.my_rooms broker ~session_id:"session-other"
+      in
+      check int "other session has only their room" 1 (List.length theirs))
+
+let test_tools_call_my_rooms_uses_env_session_id () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-env";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-env"
+            ~alias:"env-me" ~pid:None ~pid_start_time:None;
+          C2c_mcp.Broker.register broker ~session_id:"session-victim"
+            ~alias:"victim" ~pid:None ~pid_start_time:None;
+          let _ =
+            C2c_mcp.Broker.join_room broker ~room_id:"visible-to-env"
+              ~alias:"env-me" ~session_id:"session-env"
+          in
+          let _ =
+            C2c_mcp.Broker.join_room broker ~room_id:"visible-to-victim"
+              ~alias:"victim" ~session_id:"session-victim"
+          in
+          (* Call my_rooms with a bogus session_id argument — must be
+             ignored; caller only sees rooms for session-env. *)
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 300)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "my_rooms")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("session_id", `String "session-victim") ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected my_rooms response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              let parsed = Yojson.Safe.from_string text in
+              let rooms = parsed |> to_list in
+              check int "my_rooms returns exactly one room for env session" 1
+                (List.length rooms);
+              check string "room_id is env's own room" "visible-to-env"
+                (List.hd rooms |> member "room_id" |> to_string)))
+
 let test_tools_call_join_room_respects_history_limit_zero () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-optout";
@@ -2129,6 +2215,10 @@ let () =
              test_tools_call_join_room_backfills_recent_history
          ; test_case "tools/call join_room history_limit=0 opts out" `Quick
              test_tools_call_join_room_respects_history_limit_zero
+         ; test_case "my_rooms returns only caller's memberships" `Quick
+             test_my_rooms_returns_only_sessions_memberships
+         ; test_case "tools/call my_rooms uses env session_id, ignores args" `Quick
+             test_tools_call_my_rooms_uses_env_session_id
          ; test_case "tools/call send_room via MCP" `Quick
              test_tools_call_send_room_via_mcp
          ; test_case "tools/call send_room accepts `alias` as from_alias fallback" `Quick

@@ -89,6 +89,7 @@ module Broker : sig
     }
 
   val list_rooms : t -> room_info list
+  val my_rooms : t -> session_id:string -> room_info list
 end
 
 val channel_notification : message -> Yojson.Safe.t

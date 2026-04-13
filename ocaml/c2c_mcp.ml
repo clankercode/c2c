@@ -31,6 +31,7 @@ let server_features =
   ; "inbox_archive_on_drain"
   ; "history_tool"
   ; "join_room_history_backfill"
+  ; "my_rooms_tool"
   ]
 
 let server_info =
@@ -951,6 +952,40 @@ module Broker = struct
         entries
       |> List.rev
     end
+
+  (* Rooms where [session_id] is a member. Keyed on session_id (not alias)
+     so a rename stays tracking the same session. Returns the same
+     [room_info] shape as [list_rooms], plus the caller's own alias in
+     each room they're currently a member of (useful when the caller
+     has joined the same room under two aliases via different
+     sessions, or when the alias has changed). *)
+  let my_rooms t ~session_id =
+    let rd = rooms_dir t in
+    if not (Sys.file_exists rd) then []
+    else begin
+      let entries =
+        try Sys.readdir rd with Sys_error _ -> [||]
+      in
+      Array.fold_left
+        (fun acc name ->
+          let dir_path = Filename.concat rd name in
+          if Sys.is_directory dir_path then begin
+            let members =
+              try load_room_members t ~room_id:name
+              with _ -> []
+            in
+            if List.exists (fun m -> m.rm_session_id = session_id) members
+            then
+              { ri_room_id = name
+              ; ri_member_count = List.length members
+              ; ri_members = List.map (fun m -> m.rm_alias) members
+              } :: acc
+            else acc
+          end else acc)
+        []
+        entries
+      |> List.rev
+    end
 end
 
 let channel_notification ({ from_alias; to_alias; content } : message) =
@@ -980,6 +1015,7 @@ let tool_definitions =
   ; tool_definition ~name:"leave_room" ~description:"Leave a persistent N:N room. Returns the member list after leave." ~required:[ "room_id"; "alias" ]
   ; tool_definition ~name:"send_room" ~description:"Send a message to a persistent N:N room. Appends to room history and fans out to every member's inbox except the sender, with to_alias tagged as '<alias>@<room_id>'. Returns JSON {delivered_to, skipped, ts}." ~required:[ "from_alias"; "room_id"; "content" ]
   ; tool_definition ~name:"list_rooms" ~description:"List all persistent rooms with member counts and member aliases. Returns a JSON array of {room_id, member_count, members}." ~required:[]
+  ; tool_definition ~name:"my_rooms" ~description:"List rooms where your current session is a member. Caller's session_id is always resolved from the MCP env (C2C_MCP_SESSION_ID); passing a session_id argument is ignored for isolation — you can only see your own memberships. Same row shape as list_rooms: JSON array of {room_id, member_count, members}." ~required:[]
   ; tool_definition ~name:"room_history" ~description:"Return the last `limit` (default 50) messages from a room's append-only history. Read-only." ~required:[ "room_id" ]
   ; tool_definition ~name:"history" ~description:"Return your own archived inbox messages, newest first. Every message drained via poll_inbox is archived to a per-session append-only log before the live inbox is cleared, so this tool gives you a durable record of everything you've ever received. Caller's session_id is always resolved from the MCP env (C2C_MCP_SESSION_ID); passing a session_id argument is ignored for isolation — you can only read your own history. Optional `limit` (default 50). Returns a JSON array of {drained_at, from_alias, to_alias, content} objects." ~required:[]
   ]
@@ -1324,6 +1360,34 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
         |> Yojson.Safe.to_string
       in
       Lwt.return (tool_result ~content ~is_error:false)
+  | "my_rooms" ->
+      (* Always resolve session_id from env — same isolation contract
+         as `history`. A subagent that inherits a parent session_id
+         env would see the parent's rooms, which is acceptable today
+         (goal B — subagent access tokens — is the follow-up slice
+         that closes that gap). Argument-level override is ignored. *)
+      (match current_session_id () with
+       | None ->
+           Lwt.return
+             (tool_result
+                ~content:"my_rooms: no session_id in env (set C2C_MCP_SESSION_ID)"
+                ~is_error:true)
+       | Some session_id ->
+           let rooms = Broker.my_rooms broker ~session_id in
+           let content =
+             `List
+               (List.map
+                  (fun (r : Broker.room_info) ->
+                    `Assoc
+                      [ ("room_id", `String r.ri_room_id)
+                      ; ("member_count", `Int r.ri_member_count)
+                      ; ("members",
+                         `List (List.map (fun a -> `String a) r.ri_members))
+                      ])
+                  rooms)
+             |> Yojson.Safe.to_string
+           in
+           Lwt.return (tool_result ~content ~is_error:false))
   | "room_history" ->
       let room_id = string_member "room_id" arguments in
       let limit =

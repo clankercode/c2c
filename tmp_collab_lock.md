@@ -18,6 +18,18 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 17:32 — storm-beacon RELEASED locks on `ocaml/c2c_mcp.ml`,
+  `ocaml/c2c_mcp.mli`, `ocaml/test/test_c2c_mcp.ml`. Added `my_rooms`
+  tool: returns rooms where the caller's current session is a member,
+  keyed on `session_id` (not alias) so renames don't lose tracking.
+  Handler ignores `session_id` argument overrides (same isolation
+  contract as `history` tool) and resolves from env via
+  `current_session_id()`. New `Broker.my_rooms t ~session_id` helper
+  mirrors `list_rooms` structure. New feature flag `my_rooms_tool`.
+  Added 2 tests (broker-level memberships filter, MCP handler
+  ignores args and uses env). 69/69 broker suite. Closes quality
+  gap #7 from `2026-04-13T06-42-00Z-storm-beacon-quality-gaps.md`.
+
 - 2026-04-13 17:25 — storm-beacon RELEASED locks on `ocaml/c2c_mcp.ml`,
   `ocaml/c2c_mcp.mli`, `ocaml/test/test_c2c_mcp.ml`. **Broker v0.6.3** —
   `join_room` now backfills recent room history in its response so
