@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import runpy
 import signal
 import shutil
 import subprocess
@@ -153,6 +154,8 @@ class C2CCLITests(unittest.TestCase):
             "C2C_ALIAS_WORDS_PATH": str(self.words_path),
             "C2C_SEND_MESSAGE_FIXTURE": "1",
             "C2C_SESSIONS_FIXTURE": str(REPO / "tests/fixtures/sessions-live.json"),
+            "C2C_MCP_AUTO_REGISTER_ALIAS": "",
+            "C2C_MCP_AUTO_JOIN_ROOMS": "",
         }
 
     def tearDown(self):
@@ -5562,6 +5565,32 @@ class RunKimiInstTests(unittest.TestCase):
         self.assertEqual(result_code(result), 0, result.stderr)
         self.assertIn("Usage: ./run-kimi-inst-outer", result.stdout)
         self.assertNotIn("iter 1", result.stdout)
+
+    def test_run_kimi_inst_outer_logs_rearm_output(self):
+        namespace = runpy.run_path(str(REPO / "run-kimi-inst-outer"))
+        root = Path(self.temp_dir.name)
+        rearm = root / "run-kimi-inst-rearm"
+        rearm.write_text("#!/bin/sh\n", encoding="utf-8")
+        globals_for_outer = namespace["maybe_rearm"].__globals__
+        globals_for_outer["HERE"] = root
+        globals_for_outer["REARM"] = rearm
+
+        def fake_run(command, *, cwd, check, stdout, stderr):
+            stdout.write("rearm stdout\n")
+            stderr.write("rearm stderr\n")
+            return subprocess.CompletedProcess(command, 9)
+
+        with mock.patch.dict(os.environ, {"RUN_KIMI_INST_REARM": "1"}), mock.patch(
+            "subprocess.run", side_effect=fake_run
+        ), mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            namespace["maybe_rearm"]("kimi-a")
+
+        log_path = root / "run-kimi-inst.d" / "kimi-a.outer.log"
+        self.assertEqual(
+            log_path.read_text(encoding="utf-8"), "rearm stdout\nrearm stderr\n"
+        )
+        self.assertIn("rearm exited code=9", stderr.getvalue())
+        self.assertIn(str(log_path), stderr.getvalue())
 
     def test_run_kimi_inst_rearm_dry_run_shows_deliver_command(self):
         config_dir = Path(self.temp_dir.name) / "run-kimi-inst.d"

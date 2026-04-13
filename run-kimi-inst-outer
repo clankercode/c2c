@@ -55,13 +55,25 @@ def rearm_enabled() -> bool:
     }
 
 
+def rearm_log(name: str) -> Path:
+    return HERE / "run-kimi-inst.d" / f"{name}.outer.log"
+
+
 def maybe_rearm(name: str) -> None:
     if not rearm_enabled() or not REARM.exists():
         return
-    completed = subprocess.run(rearm_command(name), cwd=HERE, check=False)
+    log_path = rearm_log(name)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a") as log_fh:
+        completed = subprocess.run(
+            rearm_command(name), cwd=HERE, check=False,
+            stdout=log_fh, stderr=log_fh,
+        )
     if completed.returncode != 0:
         print(
-            f"[run-kimi-inst-outer] warning: rearm exited code={completed.returncode}",
+            f"[run-kimi-inst-outer] warning: rearm exited code={completed.returncode}"
+            f" (see {log_path})",
+            file=sys.stderr,
             flush=True,
         )
 

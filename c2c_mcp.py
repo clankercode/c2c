@@ -299,9 +299,21 @@ def main(argv: list[str] | None = None) -> int:
                 flush=True,
             )
     maybe_auto_register_startup(env)
-    build_server(env)
+    server_path = built_server_path()
+    try:
+        build_server(env)
+    except subprocess.CalledProcessError as exc:
+        if server_path.exists():
+            print(
+                f"c2c_mcp: WARNING build failed but existing binary found at {server_path}; "
+                "using it. Rebuild manually if source has changed.",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            raise
     return subprocess.run(
-        [str(built_server_path()), *args], cwd=ROOT, env=env
+        [str(server_path), *args], cwd=ROOT, env=env
     ).returncode
 
 
