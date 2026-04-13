@@ -6,25 +6,27 @@ from pathlib import Path
 
 from c2c_registry import (
     find_registration_by_session_id,
-    prune_registrations,
-    update_registry,
+    load_registry,
 )
 from claude_list_sessions import load_sessions
 
 
 def live_sessions_with_aliases() -> tuple[list[dict], dict]:
+    """Return (live sessions, registrations_by_id restricted to live sessions).
+
+    Read-only: the on-disk YAML registry is never mutated here. Stale entries
+    for offline sessions remain on disk so that a restarting agent can recover
+    its prior alias via c2c_register's session-id lookup — see
+    .collab/findings/2026-04-13T05-40-00Z-storm-ember-alias-churn-on-restart.md.
+    """
     sessions = load_sessions()
     sessions_by_id = {session.get("session_id"): session for session in sessions}
 
-    def mutate_registry(registry: dict) -> dict:
-        pruned_registry = prune_registrations(registry, set(sessions_by_id))
-        registry["registrations"] = pruned_registry["registrations"]
-        return registry
-
-    pruned_registry = update_registry(mutate_registry)
+    registry = load_registry()
     registrations_by_id = {
         registration["session_id"]: registration
-        for registration in pruned_registry.get("registrations", [])
+        for registration in registry.get("registrations", [])
+        if registration.get("session_id") in sessions_by_id
     }
     return sessions, registrations_by_id
 

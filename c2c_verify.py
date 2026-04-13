@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 
-from c2c_registry import prune_registrations, update_registry
+from c2c_registry import load_registry
 from claude_list_sessions import load_sessions
 
 
@@ -126,16 +126,12 @@ def verify_progress() -> dict:
         if session.get("session_id")
     }
 
-    def mutate_registry(registry: dict) -> dict:
-        pruned_registry = prune_registrations(registry, set(sessions_by_id))
-        registry["registrations"] = pruned_registry["registrations"]
-        return registry
-
-    pruned_registry = update_registry(mutate_registry)
+    registry = load_registry()
     sessions = sorted(
         [
             sessions_by_id[registration["session_id"]]
-            for registration in pruned_registry.get("registrations", [])
+            for registration in registry.get("registrations", [])
+            if registration.get("session_id") in sessions_by_id
         ],
         key=participant_name,
     )

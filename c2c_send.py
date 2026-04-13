@@ -16,8 +16,7 @@ from c2c_mcp import default_broker_root, load_broker_registrations
 from c2c_registry import load_registration_for_session_id
 from c2c_registry import (
     find_registration_by_alias,
-    prune_registrations,
-    update_registry,
+    load_registry,
 )
 
 
@@ -29,12 +28,8 @@ def resolve_alias(alias: str) -> tuple[dict, dict]:
     sessions = load_sessions()
     sessions_by_id = {session.get("session_id"): session for session in sessions}
 
-    def mutate_registry(registry: dict) -> dict | None:
-        pruned_registry = prune_registrations(registry, set(sessions_by_id))
-        registry["registrations"] = pruned_registry["registrations"]
-        return find_registration_by_alias(registry, alias)
-
-    registration = update_registry(mutate_registry)
+    registry = load_registry()
+    registration = find_registration_by_alias(registry, alias)
     if registration is None:
         raise ValueError(f"unknown alias: {alias}")
 

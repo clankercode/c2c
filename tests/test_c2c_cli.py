@@ -2127,30 +2127,32 @@ class C2CTestHelpersTests(unittest.TestCase):
 
 
 class C2CListUnitTests(unittest.TestCase):
-    def test_list_registered_sessions_uses_transactional_registry_update(self):
+    def test_list_registered_sessions_does_not_mutate_registry(self):
         session = {
             "name": "agent-two",
             "pid": 11112,
             "session_id": "fa68bd5b-0529-4292-bc27-d617f6840ce7",
         }
-        registry = {
+        seeded = {
             "registrations": [
                 {"session_id": AGENT_ONE_SESSION_ID, "alias": "storm-herald"},
                 {"session_id": session["session_id"], "alias": "ember-crown"},
             ]
         }
 
-        def mutate_registry(mutator):
-            mutator(registry)
-            return registry
+        with tempfile.TemporaryDirectory() as temp_dir:
+            registry_path = Path(temp_dir) / "registry.yaml"
+            save_registry(seeded, registry_path)
 
-        with (
-            mock.patch("c2c_list.load_sessions", return_value=[session]),
-            mock.patch(
-                "c2c_list.update_registry", side_effect=mutate_registry
-            ) as update,
-        ):
-            rows = list_registered_sessions()
+            with (
+                mock.patch.dict(
+                    os.environ, {"C2C_REGISTRY_PATH": str(registry_path)}, clear=False
+                ),
+                mock.patch("c2c_list.load_sessions", return_value=[session]),
+            ):
+                rows = list_registered_sessions()
+
+            reloaded = load_registry(registry_path)
 
         self.assertEqual(
             rows,
@@ -2162,7 +2164,7 @@ class C2CListUnitTests(unittest.TestCase):
                 }
             ],
         )
-        self.assertEqual(update.call_count, 1)
+        self.assertEqual(reloaded, seeded)
 
     def test_list_broker_flag_reads_broker_registry(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2206,21 +2208,23 @@ class C2CListUnitTests(unittest.TestCase):
             {"name": "agent-one", "session_id": AGENT_ONE_SESSION_ID},
             {"name": "agent-two", "session_id": AGENT_TWO_SESSION_ID},
         ]
-        registry = {
+        seeded = {
             "registrations": [
                 {"session_id": AGENT_ONE_SESSION_ID, "alias": "storm-herald"}
             ]
         }
 
-        def mutate_registry(mutator):
-            mutator(registry)
-            return registry
+        with tempfile.TemporaryDirectory() as temp_dir:
+            registry_path = Path(temp_dir) / "registry.yaml"
+            save_registry(seeded, registry_path)
 
-        with (
-            mock.patch("c2c_list.load_sessions", return_value=sessions),
-            mock.patch("c2c_list.update_registry", side_effect=mutate_registry),
-        ):
-            rows = list_sessions(include_all=True)
+            with (
+                mock.patch.dict(
+                    os.environ, {"C2C_REGISTRY_PATH": str(registry_path)}, clear=False
+                ),
+                mock.patch("c2c_list.load_sessions", return_value=sessions),
+            ):
+                rows = list_sessions(include_all=True)
 
         self.assertEqual(
             rows,
@@ -2237,6 +2241,103 @@ class C2CListUnitTests(unittest.TestCase):
                 },
             ],
         )
+
+
+class RegistryReadPathsDoNotMutateTests(unittest.TestCase):
+    """Regression for the alias-churn-on-restart bug.
+
+    Read commands (`c2c list`, `c2c send`, `c2c verify`) must not prune the
+    YAML registry based on /proc-detected live Claude sessions. Pruning on
+    read paths wiped entries for any agent whose process was briefly offline
+    (e.g. mid-restart-self), causing it to allocate a fresh alias on
+    re-register and silently breaking peer recognition across the swarm. See
+    .collab/findings/2026-04-13T05-40-00Z-storm-ember-alias-churn-on-restart.md.
+    """
+
+    def _seeded(self) -> dict:
+        return {
+            "registrations": [
+                {"session_id": AGENT_ONE_SESSION_ID, "alias": "storm-herald"},
+                {"session_id": AGENT_TWO_SESSION_ID, "alias": "ember-crown"},
+                {
+                    "session_id": "fa68bd5b-0529-4292-bc27-d617f6840ce7",
+                    "alias": "storm-lantern",
+                },
+            ]
+        }
+
+    def test_c2c_list_does_not_prune_offline_registrations(self):
+        seeded = self._seeded()
+        only_one_live = [
+            {"name": "agent-one", "session_id": AGENT_ONE_SESSION_ID},
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            registry_path = Path(temp_dir) / "registry.yaml"
+            save_registry(seeded, registry_path)
+
+            with (
+                mock.patch.dict(
+                    os.environ, {"C2C_REGISTRY_PATH": str(registry_path)}, clear=False
+                ),
+                mock.patch("c2c_list.load_sessions", return_value=only_one_live),
+            ):
+                list_registered_sessions()
+                list_sessions(include_all=True)
+
+            self.assertEqual(load_registry(registry_path), seeded)
+
+    def test_c2c_send_resolve_alias_does_not_prune_offline_registrations(self):
+        seeded = self._seeded()
+        target_session = {
+            "name": "agent-two",
+            "pid": 11112,
+            "session_id": AGENT_TWO_SESSION_ID,
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            registry_path = Path(temp_dir) / "registry.yaml"
+            save_registry(seeded, registry_path)
+
+            with (
+                mock.patch.dict(
+                    os.environ, {"C2C_REGISTRY_PATH": str(registry_path)}, clear=False
+                ),
+                mock.patch("c2c_send.load_sessions", return_value=[target_session]),
+            ):
+                session, registration = c2c_send.resolve_alias("ember-crown")
+
+            self.assertEqual(session, target_session)
+            self.assertEqual(registration["alias"], "ember-crown")
+            self.assertEqual(load_registry(registry_path), seeded)
+
+    def test_c2c_verify_progress_does_not_prune_offline_registrations(self):
+        seeded = self._seeded()
+        only_one_live = [
+            {
+                "name": "agent-one",
+                "session_id": AGENT_ONE_SESSION_ID,
+                "transcript": "a",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            registry_path = Path(temp_dir) / "registry.yaml"
+            save_registry(seeded, registry_path)
+
+            with (
+                mock.patch.dict(
+                    os.environ, {"C2C_REGISTRY_PATH": str(registry_path)}, clear=False
+                ),
+                mock.patch("c2c_verify.load_sessions", return_value=only_one_live),
+                mock.patch(
+                    "c2c_verify.summarize_transcript",
+                    return_value={"sent": 1, "received": 1},
+                ),
+            ):
+                c2c_verify.verify_progress()
+
+            self.assertEqual(load_registry(registry_path), seeded)
 
 
 class C2CSendUnitTests(unittest.TestCase):

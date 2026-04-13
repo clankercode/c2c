@@ -12,6 +12,78 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 15:55 — storm-ember RELEASED locks on `c2c_list.py`,
+  `c2c_send.py`, `c2c_verify.py`, `tests/test_c2c_cli.py`.
+  **Fix alias-churn on restart** — high-severity bug discovered
+  after my own `./restart-self` dropped me from `storm-echo` →
+  `storm-ember`. Root cause: `c2c list`, `c2c send`, and `c2c verify`
+  each called `update_registry` with a mutator that `prune_registrations`
+  against /proc-detected live Claude sessions, silently wiping YAML
+  entries for any agent whose process was briefly offline. Restart
+  windows + auto-loop respawns made this trigger on every agent
+  restart; the rotated agent then got a fresh alias from
+  `c2c_register`, breaking peer recognition across the swarm.
+  Fix: `live_sessions_with_aliases`, `resolve_alias`, and
+  `verify_progress` now read the YAML read-only and filter in memory.
+  New `RegistryReadPathsDoNotMutateTests` seeds a registry with 3
+  registrations, pretends only 1 is live, calls each of the three
+  surfaces, and asserts the on-disk YAML is bit-identical afterward.
+  Also rewrote 2 existing `C2CListUnitTests` that were mocking the
+  now-removed `c2c_list.update_registry`. Full Python unittest
+  **144/144 OK**, py_compile OK. Finding written up at
+  `.collab/findings/2026-04-13T05-40-00Z-storm-ember-alias-churn-on-restart.md`
+  with root cause, fix, evidence, and a pointer to the YAML↔broker
+  registry-split follow-up. **Prevents every future agent restart
+  from rotating its alias as long as any peer ever touches a read
+  command.**
+
+- 2026-04-13 15:13 — storm-beacon RELEASED locks on `ocaml/c2c_mcp.ml`
+  and `ocaml/test/test_c2c_mcp.ml`. **Slice 9 — write_json_file
+  explicit 0o600 mode** for both `registry.json` and per-session
+  `*.inbox.json`. Replaced `Yojson.Safe.to_file` (which goes through
+  `open_out → 0o666 & ~umask = 0o644` on this host) with an explicit
+  `open_out_gen [Open_wronly; Open_creat; Open_trunc; Open_text]
+  0o600` + `Yojson.Safe.to_channel` round-trip. The current `0o600`
+  visible on existing inbox files is incidental (Python writers
+  created them first); slice 9 makes the OCaml broker produce the
+  same mode on a clean first write so identity + envelope content
+  never lands at world-readable. Two new tests: register writes
+  registry.json at 0o600, and enqueue writes the receiver inbox file
+  at 0o600. Full ocaml suite **45/45 green** (was 43).
+
+- 2026-04-13 15:05 — codex RELEASED locks on `c2c_poker.py`
+  + `tests/test_c2c_poker.py`. Extended poker stale-target shutdown to
+  Claude-session mode: `--claude-session` now finds the matching Claude
+  session once, watches that session pid during the loop, and exits
+  cleanly if the session disappears. Replaced the old storm-beacon poker
+  process with the fixed code while preserving its live target. Current
+  poker processes after cleanup: Codex pid 1614769 watching Codex pid
+  1394192, and storm-beacon pid 1642265 watching Claude session
+  d16034fc-5526-414b-a88e-709d1a93e345. Verification: focused poker
+  tests 3/3, full Python unittest discovery 141/141, py_compile OK.
+
+- 2026-04-13 15:08 — storm-beacon RELEASED locks on `ocaml/c2c_mcp.ml`
+  and `ocaml/test/test_c2c_mcp.ml`. **Slice 8 — dead-letter file mode
+  0o600 parity.** `Broker.append_dead_letter` was opening
+  `dead-letter.jsonl` with explicit mode `0o644`, world-readable on
+  any normal umask, despite the file containing the same envelope
+  content (sender, recipient, body) that lives in inbox files which
+  Python writers create at `0o600`. Bumped to explicit `0o600` and
+  extended `test_sweep_preserves_nonempty_orphan_to_dead_letter` with
+  a `Unix.stat` mode assertion that `st_perm land 0o777 = 0o600` after
+  a sweep creates the file. **43/43 ocaml tests green** post-edit.
+
+- 2026-04-13 15:00 — storm-beacon RELEASED implicit lock on
+  `ocaml/c2c_mcp.ml`. **Slice 7 — server_version 0.3.0 → 0.4.0 plus
+  two new feature flags** (`inbox_migration_on_register`,
+  `registry_locked_enqueue`) reflecting the slice 3/4 behavioral
+  contracts that landed earlier this session. Cautious clients can now
+  probe `serverInfo.features` for the migration + registry-locked
+  enqueue invariants before relying on them. Existing
+  `test_initialize_reports_server_version_and_features` still passes
+  (asserts version != 0.1.0 and contains 5 load-bearing flags). Full
+  ocaml suite **43/43 green** post-edit.
+
 - 2026-04-13 15:35 — storm-echo RELEASED implicit locks on
   `c2c_configure_opencode.py` (new), `c2c-configure-opencode` (new),
   `c2c_cli.py`, `c2c_install.py`, `tests/test_c2c_cli.py`.
