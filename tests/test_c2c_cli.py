@@ -18,6 +18,7 @@ if str(REPO) not in sys.path:
 
 import c2c_register
 import c2c_registry
+import c2c_inject
 import c2c_mcp
 import c2c_poll_inbox
 import c2c_poker
@@ -70,12 +71,15 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c-list",
         "c2c-send",
         "c2c-install",
+        "c2c-inject",
         "c2c-verify",
         "c2c-whoami",
         "c2c_register.py",
         "c2c_list.py",
         "c2c_send.py",
         "c2c_install.py",
+        "c2c_inject.py",
+        "c2c_poker.py",
         "c2c_poll_inbox.py",
         "c2c_verify.py",
         "c2c_whoami.py",
@@ -267,6 +271,7 @@ class C2CCLITests(unittest.TestCase):
             sorted(payload["installed_commands"]),
             [
                 "c2c",
+                "c2c-inject",
                 "c2c-install",
                 "c2c-list",
                 "c2c-poll-inbox",
@@ -277,6 +282,7 @@ class C2CCLITests(unittest.TestCase):
             ],
         )
         self.assertTrue((install_dir / "c2c").exists())
+        self.assertTrue((install_dir / "c2c-inject").exists())
         self.assertTrue((install_dir / "c2c-poll-inbox").exists())
         self.assertTrue((install_dir / "c2c-register").exists())
         self.assertTrue((install_dir / "c2c-whoami").exists())
@@ -313,6 +319,13 @@ class C2CCLITests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         mcp_main.assert_called_once_with(["--help"])
+
+    def test_c2c_inject_subcommand_dispatches_to_cross_client_injector(self):
+        with mock.patch("c2c_cli.c2c_inject.main", return_value=0) as inject_main:
+            result = c2c_cli.main(["inject", "--pid", "123", "hello"])
+
+        self.assertEqual(result, 0)
+        inject_main.assert_called_once_with(["--pid", "123", "hello"])
 
     def test_c2c_poll_inbox_subcommand_dispatches_to_recovery_poller(self):
         with mock.patch("c2c_cli.c2c_poll_inbox.main", return_value=0) as poll_main:
@@ -1989,12 +2002,15 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c-list",
                 "c2c-send",
                 "c2c-install",
+                "c2c-inject",
                 "c2c-verify",
                 "c2c-whoami",
                 "c2c_register.py",
                 "c2c_list.py",
                 "c2c_send.py",
                 "c2c_install.py",
+                "c2c_inject.py",
+                "c2c_poker.py",
                 "c2c_poll_inbox.py",
                 "c2c_verify.py",
                 "c2c_whoami.py",
@@ -2513,6 +2529,101 @@ class C2CSendUnitTests(unittest.TestCase):
         self.assertEqual(
             stdout.getvalue().strip(), "Sent c2c message to agent-two (ember-crown)"
         )
+
+
+class C2CInjectUnitTests(unittest.TestCase):
+    def test_inject_pid_dry_run_resolves_generic_client_without_writing_pty(self):
+        stdout = io.StringIO()
+
+        with (
+            mock.patch(
+                "c2c_inject.c2c_poker.resolve_pid", return_value=(33333, "9", None)
+            ) as resolve_pid,
+            mock.patch("c2c_inject.c2c_poker.inject") as inject,
+            mock.patch("sys.stdout", stdout),
+        ):
+            result = c2c_inject.main(
+                [
+                    "--client",
+                    "codex",
+                    "--pid",
+                    "12345",
+                    "--dry-run",
+                    "--json",
+                    "hello",
+                    "codex",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        resolve_pid.assert_called_once_with(12345)
+        inject.assert_not_called()
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["client"], "codex")
+        self.assertEqual(payload["terminal_pid"], 33333)
+        self.assertEqual(payload["pts"], "9")
+        self.assertTrue(payload["dry_run"])
+        self.assertIn('<c2c event="message" from="c2c-inject"', payload["payload"])
+        self.assertIn("hello codex", payload["payload"])
+
+    def test_inject_terminal_target_writes_raw_message_for_opencode(self):
+        stdout = io.StringIO()
+
+        with (
+            mock.patch("c2c_inject.c2c_poker.inject") as inject,
+            mock.patch("sys.stdout", stdout),
+        ):
+            result = c2c_inject.main(
+                [
+                    "--client",
+                    "opencode",
+                    "--terminal-pid",
+                    "44444",
+                    "--pts",
+                    "12",
+                    "--raw",
+                    "--json",
+                    "raw prompt",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        inject.assert_called_once_with(44444, "12", "raw prompt")
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["client"], "opencode")
+        self.assertEqual(payload["payload"], "raw prompt")
+        self.assertFalse(payload["dry_run"])
+
+    def test_inject_claude_session_uses_claude_resolver(self):
+        stdout = io.StringIO()
+
+        with (
+            mock.patch(
+                "c2c_inject.c2c_poker.resolve_claude_session",
+                return_value=(22222, "11", "/tmp/transcript.jsonl"),
+            ) as resolve_claude_session,
+            mock.patch("c2c_inject.c2c_poker.inject") as inject,
+            mock.patch("sys.stdout", stdout),
+        ):
+            result = c2c_inject.main(
+                [
+                    "--client",
+                    "claude",
+                    "--claude-session",
+                    "agent-one",
+                    "--json",
+                    "hello",
+                    "claude",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        resolve_claude_session.assert_called_once_with("agent-one")
+        inject.assert_called_once()
+        self.assertEqual(inject.call_args.args[0:2], (22222, "11"))
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["client"], "claude")
+        self.assertIn("hello claude", payload["payload"])
 
 
 class ClaudeListSessionsUnitTests(unittest.TestCase):

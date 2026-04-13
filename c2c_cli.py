@@ -2,6 +2,7 @@
 import os
 import sys
 
+import c2c_inject
 import c2c_install
 import c2c_list
 import c2c_mcp
@@ -37,13 +38,15 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(
-            "usage: c2c <install|list|mcp|poll-inbox|register|send|verify|whoami> [...args]",
+            "usage: c2c <inject|install|list|mcp|poll-inbox|register|send|verify|whoami> [...args]",
             file=sys.stderr,
         )
         return 2
 
     subcommand, remainder = argv[0], argv[1:]
 
+    if subcommand == "inject":
+        return c2c_inject.main(remainder)
     if subcommand == "install":
         return c2c_install.main(remainder)
     if subcommand == "list":

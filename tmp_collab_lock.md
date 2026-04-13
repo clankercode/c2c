@@ -9,7 +9,59 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| `survival-guide/our-goals.md` | storm-beacon | fill empty stub | 2026-04-13 14:11 |
+| `survival-guide/our-vision.md` | storm-beacon | fill empty stub | 2026-04-13 14:11 |
+
 ## History (addendum)
+
+- 2026-04-13 14:13 — codex RELEASED locks on c2c_inject.py + c2c-inject + c2c_cli.py + c2c_install.py + tests/test_c2c_cli.py. Added `c2c inject` / `c2c-inject` as a one-shot PTY injection surface for all three client families: Claude via `--claude-session`, Codex via generic `--pid`, and OpenCode/generic terminals via `--terminal-pid --pts`. It reuses the proven `c2c_poker` target resolution / payload rendering / `pty_inject` path and supports `--dry-run --json` for safe live probing. Verification: C2CInjectUnitTests 3/3, full Python unittest 116/116, py_compile OK, live Codex PID dry-run resolved terminal pid 3725367 pts 5, OpenCode explicit terminal dry-run OK.
+
+- 2026-04-13 14:10 — storm-beacon RELEASED lock on `CLAUDE.md`.
+  Added a new "## Recommended Monitor setup (Claude Code agents)"
+  section (direct Max request: "is it documented in CLAUDE.md for
+  claude code agents? it should be"). Contains: exact `Monitor({...})`
+  invocation with inotifywait `close_write` on `.git/c2c/mcp` filtered
+  to `*.inbox.json`, rationale for each choice (broker dir not own
+  inbox, close_write vs modify, regex exclusion of lock/registry/
+  dead-letter, persistent flag, TaskList check-before-rearm),
+  `HH:MM:SS <filename>` event format example, and a 4-way event
+  classification guide (own inbox written, peer written, peer drained,
+  inbox deleted). Uncommitted, pending Max approval. Appended
+  after the existing one-line broaden-monitor bullet which stays as
+  the terse rule; new section is the HOW.
+
+- 2026-04-13 14:06 — storm-beacon RELEASED locks on
+  `ocaml/c2c_mcp.ml` + `ocaml/c2c_mcp.mli` +
+  `ocaml/test/test_c2c_mcp.ml`. **Phase 1 of storm-echo's broadcast
+  design is landed in working tree (uncommitted).**
+  `Broker.send_all ~from_alias ~content ~exclude_aliases` fans out
+  to every unique alias in the registry except the sender and any
+  in exclude_aliases; non-live recipients are collected into
+  `skipped` with reason `"not_alive"` rather than raising (partial
+  failure is the normal case for broadcast). Per-recipient enqueue
+  reuses `with_inbox_lock` so 1:1 `send` interlock still holds.
+  New MCP tool `send_all` (required fields: `from_alias`, `content`;
+  optional `exclude_aliases: string[]`) returns
+  `{sent_to:[alias], skipped:[{alias, reason}]}`. `send_all_result`
+  exposed via .mli. Three new tests: fan-out + sender skip, exclude
+  list honored, dead recipient skipped with reason. **36/36 green**
+  (was 33/33). Matches storm-echo's wire format in the 04:00Z design
+  doc verbatim. Still pending: Python CLI wrapper / `c2c send-all`
+  (storm-echo's scope, waiting on codex to release c2c_cli.py).
+
+- 2026-04-13 14:09 — codex RELEASED locks on c2c_cli.py + c2c_install.py + tests/test_c2c_cli.py. Promoted the Codex-safe recovery poller into the normal CLI surface: `c2c poll-inbox ...` dispatches to `c2c_poll_inbox`, and `c2c install` now installs `c2c-poll-inbox`. Verification: focused install/dispatch/recovery tests 5/5, py_compile OK, live `./c2c poll-inbox --session-id codex-local --json` OK, install JSON includes `c2c-poll-inbox`.
+
+- 2026-04-13 14:00 — storm-beacon RELEASED locks on
+  `survival-guide/asking-for-help.md` and
+  `survival-guide/introduce-yourself.md`. Filled both stubs.
+  asking-for-help.md documents the escalation ladder (self-check
+  → peer c2c → broadcast → attn Max → leave a note) and fallback
+  paths when the messaging system itself is broken.
+  introduce-yourself.md is the new-agent onboarding flow: register,
+  list peers, poll inbox, announce with template, read the room,
+  start /loop. Together with the three earlier survival-guide docs
+  these give a newly-spawned agent a complete first-10-minutes
+  playbook. Uncommitted, pending Max approval.
 
 - 2026-04-13 13:57 — storm-beacon RELEASED locks on
   `survival-guide/using-c2c-during-dev.md`,
