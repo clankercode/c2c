@@ -512,6 +512,85 @@ class RunLoopLiveTests(unittest.TestCase):
         self.assertGreater(result["errors"], 0)
         self.assertFalse(result["ok"])
 
+    def test_loop_backs_off_on_consecutive_errors(self):
+        """Exponential backoff: consecutive errors increase sleep time."""
+        with tempfile.TemporaryDirectory() as tmp:
+            broker_root = Path(tmp) / "broker"
+            broker_root.mkdir()
+            spool_path = Path(tmp) / "spool.json"
+            bridge.C2CSpool(spool_path).append([{"content": "failing"}])
+            sleep_calls = []
+
+            with mock.patch("subprocess.Popen", side_effect=OSError("no kimi")):
+                with mock.patch("c2c_kimi_wire_bridge.time.sleep",
+                                side_effect=lambda s: sleep_calls.append(s)):
+                    bridge.run_loop_live(
+                        session_id="kimi-wire-backoff",
+                        alias="kimi-wire-backoff",
+                        broker_root=broker_root,
+                        work_dir=Path(tmp),
+                        command="kimi",
+                        spool_path=spool_path,
+                        timeout=0.0,
+                        interval=1.0,
+                        max_iterations=3,
+                    )
+
+        # First error: sleep = 1.0 * 2^1 = 2.0
+        # Second error: sleep = 1.0 * 2^2 = 4.0
+        # (third iteration exits — no sleep after last)
+        self.assertEqual(len(sleep_calls), 2)
+        self.assertAlmostEqual(sleep_calls[0], 2.0)
+        self.assertAlmostEqual(sleep_calls[1], 4.0)
+
+    def test_loop_resets_backoff_after_success(self):
+        """Error streak resets to 0 after a successful delivery."""
+        init = '{"jsonrpc":"2.0","id":"1","result":{"protocol_version":"1.9"}}\n'
+        prompt_ok = '{"jsonrpc":"2.0","id":"2","result":{"status":"finished"}}\n'
+        # iter 1: error; iter 2: success; iter 3: empty (no subprocess)
+        call_count = [0]
+
+        def popen_factory(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise OSError("first call fails")
+            proc = mock.MagicMock()
+            buf = io.StringIO()
+            proc.stdin = mock.MagicMock()
+            proc.stdin.write.side_effect = buf.write
+            proc.stdin.flush.return_value = None
+            proc.stdout = io.StringIO(init + prompt_ok)
+            proc.wait.return_value = 0
+            return proc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            broker_root = Path(tmp) / "broker"
+            broker_root.mkdir()
+            spool_path = Path(tmp) / "spool.json"
+            bridge.C2CSpool(spool_path).append([{"content": "recover"}])
+            sleep_calls = []
+
+            with mock.patch("subprocess.Popen", side_effect=popen_factory):
+                with mock.patch("c2c_kimi_wire_bridge.time.sleep",
+                                side_effect=lambda s: sleep_calls.append(s)):
+                    result = bridge.run_loop_live(
+                        session_id="kimi-wire-recover",
+                        alias="kimi-wire-recover",
+                        broker_root=broker_root,
+                        work_dir=Path(tmp),
+                        command="kimi",
+                        spool_path=spool_path,
+                        timeout=0.0,
+                        interval=1.0,
+                        max_iterations=3,
+                    )
+
+        # After error: sleep = 1 * 2^1 = 2.0; after success: streak reset → sleep = 1.0
+        self.assertEqual(result["errors"], 1)
+        self.assertEqual(result["total_delivered"], 1)
+        self.assertEqual(sleep_calls[0], 2.0)   # backoff after error
+        self.assertAlmostEqual(sleep_calls[1], 1.0)  # normal after success
+
     def test_loop_cli_flag_runs_loop_mode(self):
         """--loop flag activates loop mode in the CLI."""
         with tempfile.TemporaryDirectory() as tmp:

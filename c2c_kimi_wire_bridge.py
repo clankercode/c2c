@@ -346,6 +346,9 @@ def _has_pending_messages(broker_root: Path, session_id: str, spool_path: Path) 
         return False
 
 
+_LOOP_MAX_BACKOFF = 300.0  # cap error-backoff at 5 minutes
+
+
 def run_loop_live(
     *,
     session_id: str,
@@ -365,11 +368,16 @@ def run_loop_live(
     pre-check via `file_fallback_peek` keeps it cheap when the inbox is empty —
     no Wire subprocess is started until there is something to deliver.
 
+    Consecutive delivery failures trigger exponential backoff (capped at 5 min)
+    to avoid hammering a broken system.  The streak resets on any successful
+    delivery or when the inbox is empty (idle is not an error).
+
     Returns after `max_iterations` cycles (or immediately if interrupted).
     """
     iterations = 0
     total_delivered = 0
     errors = 0
+    error_streak = 0
 
     while max_iterations is None or iterations < max_iterations:
         if _has_pending_messages(broker_root, session_id, spool_path):
@@ -384,13 +392,22 @@ def run_loop_live(
                     timeout=timeout,
                 )
                 total_delivered += result.get("delivered", 0)
+                error_streak = 0
             except Exception as exc:
                 errors += 1
-                print(f"[kimi-wire] delivery error: {exc}", file=sys.stderr, flush=True)
+                error_streak += 1
+                print(
+                    f"[kimi-wire] delivery error (streak={error_streak}): {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        else:
+            error_streak = 0  # idle → not an error; reset streak
 
         iterations += 1
         if max_iterations is None or iterations < max_iterations:
-            time.sleep(interval)
+            backoff = min(interval * (2 ** min(error_streak, 6)), _LOOP_MAX_BACKOFF)
+            time.sleep(backoff)
 
     return {"ok": errors == 0, "iterations": iterations,
             "total_delivered": total_delivered, "errors": errors}
@@ -404,7 +421,7 @@ def run_main(argv: list[str]) -> int:
     parser.add_argument("--alias", help="broker alias (default: session-id)")
     parser.add_argument(
         "--broker-root", type=Path,
-        default=Path(c2c_poll_inbox.default_broker_root()),
+        default=None,
         help="broker root directory",
     )
     parser.add_argument("--work-dir", type=Path, default=ROOT, help="Kimi work dir")
@@ -425,8 +442,12 @@ def run_main(argv: list[str]) -> int:
                         help="inbox poll timeout (seconds)")
     args = parser.parse_args(argv)
 
+    broker_root = args.broker_root
+    if broker_root is None:
+        broker_root = Path(c2c_poll_inbox.default_broker_root())
+
     alias = args.alias or args.session_id
-    spool_path = args.spool_path or default_spool_path(args.broker_root, args.session_id)
+    spool_path = args.spool_path or default_spool_path(broker_root, args.session_id)
     mcp_config_placeholder = Path("<generated-mcp-config>")
     launch = build_launch(args.command, args.work_dir, mcp_config_placeholder)
 
@@ -438,7 +459,7 @@ def run_main(argv: list[str]) -> int:
             "alias": alias,
             "launch": launch,
             "spool_path": str(spool_path),
-            "broker_root": str(args.broker_root),
+            "broker_root": str(broker_root),
         }
         if args.json:
             print(json.dumps(payload))
@@ -453,7 +474,7 @@ def run_main(argv: list[str]) -> int:
         result = run_once_live(
             session_id=args.session_id,
             alias=alias,
-            broker_root=args.broker_root,
+            broker_root=broker_root,
             work_dir=args.work_dir,
             command=args.command,
             spool_path=spool_path,
@@ -470,7 +491,7 @@ def run_main(argv: list[str]) -> int:
         result = run_loop_live(
             session_id=args.session_id,
             alias=alias,
-            broker_root=args.broker_root,
+            broker_root=broker_root,
             work_dir=args.work_dir,
             command=args.command,
             spool_path=spool_path,

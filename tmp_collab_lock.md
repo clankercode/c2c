@@ -12,6 +12,16 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T16:47Z — codex RELEASED locks on `docs/client-delivery.md`,
+  `docs/communication-tiers.md`, `tmp_status.txt`,
+  `.goal-loops/active-goal.md`, `AGENTS.md`, `CLAUDE.md`,
+  `docs/next-steps.md`, `c2c_kimi_wire_bridge.py`, and
+  `tmp_collab_lock.md`. Documented Kimi Wire persistent `--loop` mode in
+  client/agent docs and refreshed Kimi Wire status to 31 tests. Verified the
+  peer broker-root default fix with `python3 -m unittest
+  tests.test_c2c_kimi_wire_bridge -v` (31/31) and `c2c-kimi-wire-bridge
+  --help`.
+
 - 2026-04-13T16:34Z — codex RELEASED locks on `c2c_kimi_wire_bridge.py`
   and `tmp_collab_lock.md`. Committed the Kimi Wire bridge module docstring
   clarification: Wire avoids PTY/PTS hacks, master-side PTY wake remains the

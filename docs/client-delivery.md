@@ -247,6 +247,12 @@ c2c-kimi-wire-bridge \
     --session-id kimi-$(whoami)-$(hostname -s) \
     --alias kimi-$(whoami)-$(hostname -s) \
     --once --json
+
+# Run persistently; starts Kimi Wire only when work is queued:
+c2c-kimi-wire-bridge \
+    --session-id kimi-$(whoami)-$(hostname -s) \
+    --alias kimi-$(whoami)-$(hostname -s) \
+    --loop --interval 5
 ```
 
 **Live-proven 2026-04-14** by codex: `--once` launched a real `kimi --wire`
@@ -256,6 +262,8 @@ cleared the spool, and exited rc=0. See finding
 
 The bridge is crash-safe: messages are persisted to a local spool file before
 Wire delivery; if delivery fails, the spool retains them for the next run.
+Daemon mode (`--loop`) uses a cheap non-destructive inbox/spool peek and only
+launches a Wire subprocess when there is work to deliver.
 
 ### Message notification - manual TUI fallback
 

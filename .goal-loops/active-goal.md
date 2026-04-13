@@ -73,11 +73,12 @@ These are Max's target experiences, verbatim:
   dead-pid fallback in `current_client_pid()`.
 - **Python suite** ✓: 695 tests across all subsystems.
 - **Kimi Wire bridge** ✓: `c2c_kimi_wire_bridge.py` + `c2c-kimi-wire-bridge` wrapper;
-  24 tests pass; `run_once_live` subprocess path implemented and **live-proven
+  31 tests pass; `run_once_live` subprocess path implemented and **live-proven
   2026-04-14** by codex with a real `kimi --wire` subprocess (delivered 1 broker
   message, cleared spool, rc=0; see finding
   `2026-04-13T16-10-03Z-codex-kimi-wire-live-once-proof.md`). Native JSON-RPC
-  delivery via `kimi --wire` without PTY injection.
+  delivery via `kimi --wire` without PTY injection. `run_loop_live` daemon mode
+  polls cheaply and starts Wire only when inbox/spool work exists.
 - **Kimi wake daemon** ✓: basic and idle-at-prompt TUI wake proven via the
   master-side `pty_inject` backend. Kimi uses a longer default submit delay
   (1.5s) so prompt_toolkit accepts and submits the notify-only poll prompt.
@@ -88,8 +89,8 @@ These are Max's target experiences, verbatim:
   and **live-proven 2026-04-14** by `kimi-nova`. Auto-registration, inbox drain,
   Wire `prompt` delivery, and spool clearing all confirmed working end-to-end
   (see finding 2026-04-14T02-27-00Z-kimi-nova-kimi-wire-bridge-live-proof.md).
-  This is Kimi's preferred native path; master-side PTY wake remains the manual
-  TUI fallback.
+  Persistent `--loop` mode is implemented for daemon use. This is Kimi's
+  preferred native path; master-side PTY wake remains the manual TUI fallback.
 
 ### Active Work
 

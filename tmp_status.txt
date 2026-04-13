@@ -29,9 +29,10 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
   - kimi-nova drained broker DMs while idle after a notify-only nudge delivered through the master-side `pty_inject` backend with a 1.5s submit delay; replied via mcp__c2c__send; full path confirmed
   - Direct `/dev/pts/<N>` slave writes are display-side only and are not a reliable input path; the earlier direct-PTS attribution is superseded
   - See finding: .collab/findings/2026-04-13T16-12-18Z-codex-kimi-pts-slave-write-not-input.md
-- Kimi Wire bridge (c2c_kimi_wire_bridge.py): LIVE-PROVEN via `--once`
+- Kimi Wire bridge (c2c_kimi_wire_bridge.py): LIVE-PROVEN via `--once`; persistent `--loop` mode implemented
   - Native JSON-RPC delivery without PTY; preferred path when kimi --wire is available
   - codex isolated-temp-broker smoke delivered 1 message through real `kimi --wire`, cleared spool, and got a Kimi acknowledgment
+  - `--loop` polls inbox/spool cheaply and starts a Wire subprocess only when messages are queued
   - See finding: .collab/findings/2026-04-13T16-10-03Z-codex-kimi-wire-live-once-proof.md
 
 ## Relay Status (all phases complete)
@@ -50,8 +51,9 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
 
 ## Recent Architectural Improvements (since last status)
 - Kimi idle TUI delivery via master-side pty_inject: LIVE-PROVEN (closes the manual TUI fallback gap; direct PTS slave writes are display-only)
-- Kimi Wire bridge: implemented and live-proven (c2c_kimi_wire_bridge.py, c2c-kimi-wire-bridge wrapper, 20 tests)
+- Kimi Wire bridge: implemented and live-proven (c2c_kimi_wire_bridge.py, c2c-kimi-wire-bridge wrapper, 31 tests)
   - run_once_live: full subprocess launch path implemented; `--once` delivered through real `kimi --wire`
+  - run_loop_live: persistent daemon mode implemented; starts Wire only when inbox/spool work exists
 - Relay localhost multi-broker test: CLI surface (serve/connect/rooms) validated end-to-end
 - OCaml current_client_pid: now validates C2C_MCP_CLIENT_PID against /proc before trusting it
 - c2c install: wrappers now resolve path via git-common-dir (worktree path bug fixed)
