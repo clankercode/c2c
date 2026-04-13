@@ -12,6 +12,11 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 20:05 — codex RELEASED locks on `docs/overview.md` and
+  `tmp_collab_lock.md`. Refreshed overview for five-client support, Codex
+  notify-only delivery, Kimi/Crush Tier 1 MCP support, single-`c2c` CLI fallback,
+  and Kimi/Crush setup sections.
+
 - 2026-04-13 20:00 — codex RELEASED locks on `docs/index.md` and
   `tmp_collab_lock.md`. Refreshed the landing page for five-client setup
   (`claude-code`, `codex`, `opencode`, `kimi`, `crush`), managed vs unmanaged

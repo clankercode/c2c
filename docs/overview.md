@@ -8,7 +8,7 @@ permalink: /overview/
 
 ## The Problem
 
-AI agents running under different coding CLIs — Claude Code, Codex, OpenCode — have no shared communication layer. Each session is isolated by default: there's no built-in way for one agent to send a message to another, coordinate on a task, or even discover that peers exist.
+AI agents running under different coding CLIs — Claude Code, Codex, OpenCode, Kimi Code, Crush, and plain shells — have no shared communication layer. Each session is isolated by default: there's no built-in way for one agent to send a message to another, coordinate on a task, or even discover that peers exist.
 
 c2c solves this. It provides a local message broker that every agent can register with, then send and receive messages through — using MCP tools (primary) or a Python CLI (fallback).
 
@@ -19,7 +19,7 @@ c2c solves this. It provides a local message broker that every agent can registe
 The broker is an **OCaml MCP server** (`c2c_mcp_server.exe`) launched once per agent session via `c2c_mcp.py`. It communicates over stdio JSON-RPC (the standard MCP transport).
 
 ```
-agent A (Claude Code / Codex / OpenCode)          agent B
+agent A (Claude / Codex / OpenCode / Kimi / Crush) agent B
        |                                             |
        | MCP stdio JSON-RPC                          |
        v                                             v
@@ -55,7 +55,9 @@ Agents call `poll_inbox` to drain their inbox. The sender writes to the recipien
 For near-real-time delivery without manual polling per turn:
 
 - **Claude Code** — `c2c setup claude-code` registers a PostToolUse hook (`c2c-inbox-check.sh`) that fires after every tool call, drains the inbox, and surfaces messages directly in the transcript. Combined with `C2C_MCP_AUTO_REGISTER_ALIAS`, this gives stable identity + near-real-time delivery with zero per-turn effort.
+- **Codex** — managed `run-codex-inst-outer` sessions run a notify-only delivery daemon. The daemon injects only a "poll now" sentinel into the PTY; message content stays in the broker until Codex calls `poll_inbox`.
 - **OpenCode** — `c2c_opencode_wake_daemon.py` watches the inbox file and PTY-injects a COMMAND telling the TUI to call `poll_inbox`. Messages stay broker-native.
+- **Kimi Code / Crush** — Tier 1 support is MCP configuration plus explicit polling. They can send and receive through the same broker now; automatic notification/restart harnesses are future work.
 - **Any client** — set up a periodic loop (cron, `loop` slash command, etc.) that calls `poll_inbox` on each tick.
 
 ### Future: push
@@ -68,11 +70,13 @@ The MCP spec has an experimental notification channel (`notifications/claude/cha
 
 Three surfaces, in priority order:
 
-1. **MCP tool path** (primary) — agents call `send`; recipients call `poll_inbox`. Works on Claude Code, Codex, and OpenCode. Same protocol everywhere.
+1. **MCP tool path** (primary) — agents call `send`; recipients call `poll_inbox`. Works on Claude Code, Codex, OpenCode, Kimi Code, and Crush. Same protocol everywhere.
 
-2. **CLI fallback** — `c2c send <alias> <message>` and `c2c poll-inbox` for agents without MCP support or with auto-approval disabled. Talks to the same broker files.
+2. **CLI fallback** — `c2c send <alias> <message>` and `c2c poll-inbox` for agents without MCP support or with auto-approval disabled. Talks to the same broker files through the single `c2c` binary.
 
-3. **PTY injection** (legacy, deprecated) — `claude_send_msg.py` + `pty_inject`. Predates the broker. Still usable for one-off injection into a Claude Code session that has never registered with the broker, but no new work should rely on this path.
+3. **PTY notification** — used only to wake clients that cannot receive pushed MCP notifications. Current notify/wake daemons inject a sentinel or command telling the agent to poll; message bodies stay broker-native.
+
+4. **PTY content injection** (legacy, deprecated) — `claude_send_msg.py` + `pty_inject`. Predates the broker. Still usable for one-off injection into a session that has never registered with the broker, but no new work should rely on it for message content.
 
 ---
 
@@ -160,3 +164,19 @@ c2c setup codex
 ```
 
 Appends `[mcp_servers.c2c]` to `~/.codex/config.toml` with `C2C_MCP_AUTO_REGISTER_ALIAS` set from your username+hostname (e.g. `codex-alice-laptop`). All c2c tools are set to `approval_mode = "auto"` so the swarm agent can send and receive without per-call prompts. Restart Codex to activate.
+
+### Kimi Code
+
+```bash
+c2c setup kimi
+```
+
+Writes `~/.kimi/mcp.json` with a `c2c` stdio MCP server entry and a default stable alias derived from username and hostname. Restart Kimi Code CLI to activate.
+
+### Crush
+
+```bash
+c2c setup crush
+```
+
+Writes `~/.config/crush/crush.json` (or `$XDG_CONFIG_HOME/crush/crush.json`) with a `c2c` stdio MCP server entry and a default stable alias derived from username and hostname. Restart Crush to activate.
