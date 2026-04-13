@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -235,6 +236,53 @@ def check_dead_letter(broker_root: Path) -> dict[str, Any]:
     return result
 
 
+def check_outer_loops() -> dict[str, Any]:
+    """Check which managed-harness outer restart loops are running.
+
+    Outer loops run persistently and relaunch managed client sessions
+    (kimi, codex, opencode, crush, claude) between iterations.  When a
+    managed session's PID is dead but its outer loop is alive, the session
+    will re-register in seconds — calling sweep now would be a footgun.
+
+    Returns:
+    - running: list of {client, pid, cmdline} for each live outer loop
+    - safe_to_sweep: True only if no outer loops are running
+    """
+    result: dict[str, Any] = {"running": [], "safe_to_sweep": True}
+    import re as _re
+    _outer_pattern = _re.compile(r"run-(kimi|codex|opencode|crush|claude)-inst-outer")
+    try:
+        out = subprocess.run(
+            ["pgrep", "-a", "-f", r"run-(kimi|codex|opencode|crush|claude)-inst-outer"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        for line in out.stdout.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) < 2:
+                continue
+            pid_str, cmdline = parts
+            # Only count processes where the outer-loop script IS the Python
+            # script being run (first non-python token), not child processes
+            # that merely mention it in their resume prompt arguments.
+            tokens = cmdline.split()
+            script_token = ""
+            for tok in tokens:
+                if tok not in ("python3", "python", "python2"):
+                    script_token = tok
+                    break
+            m = _outer_pattern.search(script_token)
+            if not m:
+                continue
+            client = m.group(1)
+            result["running"].append({"client": client, "pid": int(pid_str), "cmdline": cmdline})
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    result["safe_to_sweep"] = len(result["running"]) == 0
+    return result
+
+
 def run_health_check(broker_root: Path, session_id: str | None = None) -> dict[str, Any]:
     """Run full health check."""
     session = check_session(broker_root, session_id=session_id)
@@ -247,6 +295,7 @@ def run_health_check(broker_root: Path, session_id: str | None = None) -> dict[s
         "hook": check_hook(),
         "swarm_lounge": check_swarm_lounge(broker_root, session.get("alias")),
         "dead_letter": check_dead_letter(broker_root),
+        "outer_loops": check_outer_loops(),
     }
 
 
@@ -340,6 +389,17 @@ def print_health_report(report: dict[str, Any]) -> None:
             print(f"    Sessions with queued messages: {sessions_str}")
         print("    Messages auto-redeliver when the session re-registers.")
         print("    To inspect: cat .git/c2c/mcp/dead-letter.jsonl")
+
+    # Outer loops
+    ol = report.get("outer_loops", {})
+    running = ol.get("running", [])
+    if running:
+        clients = ", ".join(sorted({r["client"] for r in running}))
+        print(f"~ Outer loops: {len(running)} running ({clients})")
+        print("    Do NOT call c2c sweep while outer loops are active — managed")
+        print("    sessions restart between iterations; sweep would drop them.")
+    else:
+        print("✓ Outer loops: none running (safe to sweep if needed)")
 
     print()
 
