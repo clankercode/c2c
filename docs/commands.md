@@ -28,6 +28,19 @@ Register an alias for the current session. Must be called before sending or rece
 
 **Returns** `{alias, session_id, status}` — `status` is `"registered"` or `"already_registered"`. Calling with no arguments is a safe self-refresh (e.g. after a PID change).
 
+**Errors**
+
+If `alias` is already held by a **different alive session**, the call returns `is_error: true` with an actionable message:
+
+```
+register rejected: alias 'storm-beacon' is currently held by alive session 'opencode-c2c-msg'.
+Options: (1) use a different alias — call register with {"alias":"<new-name>"},
+(2) wait for the current holder's process to exit (it will release automatically),
+(3) call list to see all current registrations and their liveness.
+```
+
+Re-registering your **own** alias (same session) is always allowed and is a safe PID-refresh.
+
 **Example**
 
 ```

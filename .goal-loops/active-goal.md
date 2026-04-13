@@ -74,7 +74,7 @@ These are Max's target experiences, verbatim:
 - **OCaml broker** ✓: 101 tests; sweep, rooms, dead-letter, alias dedup,
   peer-renamed fan-out, session hijack guard, alias-occupied guard,
   alias-hijack register guard, dead-pid fallback in `current_client_pid()`.
-- **Python suite** ✓: 750 tests across all subsystems.
+- **Python suite** ✓: 752 tests across all subsystems.
 - **Kimi Wire bridge** ✓: `c2c_kimi_wire_bridge.py` + `c2c-kimi-wire-bridge` wrapper;
   42 tests pass; `run_once_live` subprocess path implemented and **live-proven
   2026-04-14** by codex with a real `kimi --wire` subprocess (delivered 1 broker
@@ -133,7 +133,7 @@ These are Max's target experiences, verbatim:
 - **Inbox drain progress indicator** ✓ — `c2c poll-inbox` text mode now prints
   `[c2c-poll-inbox] N message(s) for <session> (<source>)` before message bodies;
   JSON output gains a top-level `count` field. 3 new tests; current Python
-  suite total is 737 (a01ce40, 2026-04-14).
+  suite total is 752 (a01ce40 plus follow-up slices, 2026-04-14).
 - Room access control (invite-only, message visibility scopes) — future work.
 - Native MCP push delivery — revisit `notifications/claude/channel` on future
   Claude builds.

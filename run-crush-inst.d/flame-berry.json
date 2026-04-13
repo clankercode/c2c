@@ -4,5 +4,6 @@
   "c2c_session_id": "flame-berry",
   "c2c_alias": "flame-berry",
   "title": "flame-berry",
-  "flags": []
+  "flags": ["-y"],
+  "crush_session_id": "b41dbca2c6242bff"
 }

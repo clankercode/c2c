@@ -41,6 +41,7 @@ let server_features =
   ; "tail_log_tool"
   ; "current_session_alias_binding"
   ; "register_alias_hijack_guard"
+  ; "send_alias_impersonation_guard"
   ]
 
 let server_info =
@@ -77,14 +78,29 @@ let tool_result ~content ~is_error =
     ; ("isError", `Bool is_error)
     ]
 
-let tool_definition ~name ~description ~required =
+(* Property schema helpers for tool inputSchema declarations *)
+let prop name description =
+  (name, `Assoc [("type", `String "string"); ("description", `String description)])
+
+let int_prop name description =
+  (name, `Assoc [("type", `String "integer"); ("description", `String description)])
+
+let arr_prop name description =
+  ( name,
+    `Assoc
+      [ ("type", `String "array")
+      ; ("items", `Assoc [ ("type", `String "string") ])
+      ; ("description", `String description)
+      ] )
+
+let tool_definition ~name ~description ~required ~properties =
   `Assoc
     [ ("name", `String name)
     ; ("description", `String description)
     ; ( "inputSchema",
         `Assoc
           [ ("type", `String "object")
-          ; ("properties", `Assoc [])
+          ; ("properties", `Assoc properties)
           ; ("required", `List (List.map (fun key -> `String key) required))
           ] )
     ]
@@ -1196,22 +1212,76 @@ let channel_notification ({ from_alias; to_alias; content } : message) =
     ]
 
 let tool_definitions =
-  [ tool_definition ~name:"register" ~description:"Register a C2C alias for the current session. `alias` is optional: if omitted the server falls back to the C2C_MCP_AUTO_REGISTER_ALIAS environment variable. Calling register with no arguments is a safe way to refresh your registration (e.g. after a process restart that changed your PID)." ~required:[]
-  ; tool_definition ~name:"list" ~description:"List registered C2C peers." ~required:[]
-  ; tool_definition ~name:"send" ~description:"Send a C2C message to a registered peer alias. The sender alias is resolved from the current MCP session when possible; `from_alias` remains a legacy fallback for non-session callers. Returns JSON {queued:true, ts:<epoch-seconds>, from_alias:<string>, to_alias:<string>} on success." ~required:[ "to_alias"; "content" ]
-  ; tool_definition ~name:"whoami" ~description:"Resolve the current C2C session registration." ~required:[]
-  ; tool_definition ~name:"poll_inbox" ~description:"Drain queued C2C messages for the current session. Returns a JSON array of {from_alias,to_alias,content} objects; call this at the start of each turn and after each send to reliably receive messages regardless of whether the client surfaces notifications/claude/channel." ~required:[]
-  ; tool_definition ~name:"peek_inbox" ~description:"Non-draining inbox check for the current session. Returns the same JSON array as `poll_inbox` but leaves the messages in the inbox so a subsequent `poll_inbox` still sees them. Useful for 'any mail?' checks without losing messages on error paths. Caller's session_id is always resolved from the MCP env (C2C_MCP_SESSION_ID); passing a session_id argument is ignored for isolation." ~required:[]
-  ; tool_definition ~name:"sweep" ~description:"Remove dead registrations (whose parent process has exited) and delete orphan inbox files that belong to no current registration. Any non-empty orphan inbox content is appended to dead-letter.jsonl inside the broker directory before the inbox file is deleted, so cleanup is non-destructive to operator signal. Dead sessions are also evicted from all room member lists. Returns JSON {dropped_regs:[{session_id,alias}], deleted_inboxes:[session_id], preserved_messages: int, evicted_room_members:[{room_id,alias}]}." ~required:[]
-  ; tool_definition ~name:"send_all" ~description:"Fan out a message to every currently-registered peer except the sender (and any alias in the optional `exclude_aliases` array). The sender alias is resolved from the current MCP session when possible; `from_alias` remains a legacy fallback. Non-live recipients are skipped with reason \"not_alive\" rather than raising, so partial failure does not abort the broadcast. Per-recipient enqueue takes the same per-inbox lock used by `send`. Returns JSON {sent_to:[alias], skipped:[{alias, reason}]}." ~required:[ "content" ]
-  ; tool_definition ~name:"join_room" ~description:"Join a persistent N:N room. Creates the room if it does not exist. Idempotent per (alias, session_id). Room IDs must be alphanumeric + hyphens + underscores. Returns JSON {room_id, members, history} where `history` is the most recent messages from the room's append-only log so a newly-joined member can catch up on context without a separate `room_history` call. Optional `history_limit` (default 20, max 200) controls how many history entries to include; pass 0 to skip history backfill. The member alias is resolved from the current MCP session when possible; `alias`/`from_alias` remain legacy fallbacks." ~required:[ "room_id" ]
-  ; tool_definition ~name:"leave_room" ~description:"Leave a persistent N:N room. Returns the member list after leave. The member alias is resolved from the current MCP session when possible; `alias`/`from_alias` remain legacy fallbacks." ~required:[ "room_id" ]
-  ; tool_definition ~name:"send_room" ~description:"Send a message to a persistent N:N room. Appends to room history and fans out to every member's inbox except the sender, with to_alias tagged as '<alias>@<room_id>'. The sender alias is resolved from the current MCP session when possible; `from_alias` remains a legacy fallback. Returns JSON {delivered_to, skipped, ts}." ~required:[ "room_id"; "content" ]
-  ; tool_definition ~name:"list_rooms" ~description:"List all persistent rooms with member counts and member aliases. Returns a JSON array of {room_id, member_count, members}." ~required:[]
-  ; tool_definition ~name:"my_rooms" ~description:"List rooms where your current session is a member. Caller's session_id is always resolved from the MCP env (C2C_MCP_SESSION_ID); passing a session_id argument is ignored for isolation — you can only see your own memberships. Same row shape as list_rooms: JSON array of {room_id, member_count, members}." ~required:[]
-  ; tool_definition ~name:"room_history" ~description:"Return the last `limit` (default 50) messages from a room's append-only history. Read-only." ~required:[ "room_id" ]
-  ; tool_definition ~name:"history" ~description:"Return your own archived inbox messages, newest first. Every message drained via poll_inbox is archived to a per-session append-only log before the live inbox is cleared, so this tool gives you a durable record of everything you've ever received. Caller's session_id is always resolved from the MCP env (C2C_MCP_SESSION_ID); passing a session_id argument is ignored for isolation — you can only read your own history. Optional `limit` (default 50). Returns a JSON array of {drained_at, from_alias, to_alias, content} objects." ~required:[]
-  ; tool_definition ~name:"tail_log" ~description:"Return the last N lines from the broker RPC audit log (broker.log). Each line is a JSON object {ts, tool, ok}. Useful for verifying that your sends and polls actually reached the broker, without needing to read the file directly. Content fields are not logged — only tool names and success/fail status. Optional `limit` (default 50, max 500). Returns a JSON array of log entries, oldest first." ~required:[]
+  [ tool_definition ~name:"register"
+      ~description:"Register a C2C alias for the current session. `alias` is optional: if omitted the server falls back to the C2C_MCP_AUTO_REGISTER_ALIAS environment variable. Calling register with no arguments is a safe way to refresh your registration (e.g. after a process restart that changed your PID)."
+      ~required:[]
+      ~properties:
+        [ prop "alias" "New alias to register for this session. Pass a different alias to rename without changing env vars."
+        ; prop "session_id" "Optional session id override; defaults to the current MCP session."
+        ]
+  ; tool_definition ~name:"list"
+      ~description:"List registered C2C peers."
+      ~required:[]
+      ~properties:[]
+  ; tool_definition ~name:"send"
+      ~description:"Send a C2C message to a registered peer alias. The sender alias is resolved from the current MCP session when possible; `from_alias` remains a legacy fallback for non-session callers. Returns JSON {queued:true, ts:<epoch-seconds>, from_alias:<string>, to_alias:<string>} on success."
+      ~required:["to_alias"; "content"]
+      ~properties:[ prop "to_alias" "Target peer alias."; prop "from_alias" "Legacy fallback sender alias (deprecated)."; prop "content" "Message body." ]
+  ; tool_definition ~name:"whoami"
+      ~description:"Resolve the current C2C session registration."
+      ~required:[]
+      ~properties:
+        [ prop "session_id" "Optional session id override; defaults to the current MCP session." ]
+  ; tool_definition ~name:"poll_inbox"
+      ~description:"Drain queued C2C messages for the current session. Returns a JSON array of {from_alias,to_alias,content} objects; call this at the start of each turn and after each send to reliably receive messages regardless of whether the client surfaces notifications/claude/channel."
+      ~required:[]
+      ~properties:
+        [ prop "session_id" "Optional session id override for compatible clients." ]
+  ; tool_definition ~name:"peek_inbox"
+      ~description:"Non-draining inbox check for the current session. Returns the same JSON array as `poll_inbox` but leaves the messages in the inbox so a subsequent `poll_inbox` still sees them. Useful for 'any mail?' checks without losing messages on error paths. Caller's session_id is always resolved from the MCP env (C2C_MCP_SESSION_ID); passing a session_id argument is ignored for isolation."
+      ~required:[]
+      ~properties:
+        [ prop "session_id" "Optional session id override for compatible clients." ]
+  ; tool_definition ~name:"sweep"
+      ~description:"Remove dead registrations (whose parent process has exited) and delete orphan inbox files that belong to no current registration. Any non-empty orphan inbox content is appended to dead-letter.jsonl inside the broker directory before the inbox file is deleted, so cleanup is non-destructive to operator signal. Dead sessions are also evicted from all room member lists. Returns JSON {dropped_regs:[{session_id,alias}], deleted_inboxes:[session_id], preserved_messages: int, evicted_room_members:[{room_id,alias}]}."
+      ~required:[]
+      ~properties:[]
+  ; tool_definition ~name:"send_all"
+      ~description:"Fan out a message to every currently-registered peer except the sender (and any alias in the optional `exclude_aliases` array). The sender alias is resolved from the current MCP session when possible; `from_alias` remains a legacy fallback. Non-live recipients are skipped with reason \"not_alive\" rather than raising, so partial failure does not abort the broadcast. Per-recipient enqueue takes the same per-inbox lock used by `send`. Returns JSON {sent_to:[alias], skipped:[{alias, reason}]}."
+      ~required:["content"]
+      ~properties:[ prop "content" "Message body to broadcast."; arr_prop "exclude_aliases" "Array of aliases to skip." ]
+  ; tool_definition ~name:"join_room"
+      ~description:"Join a persistent N:N room. Creates the room if it does not exist. Idempotent per (alias, session_id). Room IDs must be alphanumeric + hyphens + underscores. Returns JSON {room_id, members, history} where `history` is the most recent messages from the room's append-only log so a newly-joined member can catch up on context without a separate `room_history` call. Optional `history_limit` (default 20, max 200) controls how many history entries to include; pass 0 to skip history backfill. The member alias is resolved from the current MCP session when possible; `alias`/`from_alias` remain legacy fallbacks."
+      ~required:["room_id"]
+      ~properties:[ prop "room_id" "Unique room identifier (alphanumeric, hyphens, underscores)."; prop "alias" "Legacy fallback member alias (deprecated)."; int_prop "history_limit" "Max history entries on join (default 20, max 200, 0 to skip)." ]
+  ; tool_definition ~name:"leave_room"
+      ~description:"Leave a persistent N:N room. Returns the member list after leave. The member alias is resolved from the current MCP session when possible; `alias`/`from_alias` remain legacy fallbacks."
+      ~required:["room_id"]
+      ~properties:[ prop "room_id" "Room to leave."; prop "alias" "Legacy fallback member alias (deprecated)." ]
+  ; tool_definition ~name:"send_room"
+      ~description:"Send a message to a persistent N:N room. Appends to room history and fans out to every member's inbox except the sender, with to_alias tagged as '<alias>@<room_id>'. The sender alias is resolved from the current MCP session when possible; `from_alias` remains a legacy fallback. Returns JSON {delivered_to, skipped, ts}."
+      ~required:["room_id"; "content"]
+      ~properties:[ prop "room_id" "Target room."; prop "content" "Message body."; prop "alias" "Legacy fallback sender alias (deprecated)." ]
+  ; tool_definition ~name:"list_rooms"
+      ~description:"List all persistent rooms with member counts and member aliases. Returns a JSON array of {room_id, member_count, members}."
+      ~required:[]
+      ~properties:[]
+  ; tool_definition ~name:"my_rooms"
+      ~description:"List rooms where your current session is a member. Caller's session_id is always resolved from the MCP env (C2C_MCP_SESSION_ID); passing a session_id argument is ignored for isolation — you can only see your own memberships. Same row shape as list_rooms: JSON array of {room_id, member_count, members}."
+      ~required:[]
+      ~properties:[]
+  ; tool_definition ~name:"room_history"
+      ~description:"Return the last `limit` (default 50) messages from a room's append-only history. Read-only."
+      ~required:["room_id"]
+      ~properties:[ prop "room_id" "Room whose history to retrieve."; int_prop "limit" "Max messages to return (default 50)." ]
+  ; tool_definition ~name:"history"
+      ~description:"Return your own archived inbox messages, newest first. Every message drained via poll_inbox is archived to a per-session append-only log before the live inbox is cleared, so this tool gives you a durable record of everything you've ever received. Caller's session_id is always resolved from the MCP env (C2C_MCP_SESSION_ID); passing a session_id argument is ignored for isolation — you can only read your own history. Optional `limit` (default 50). Returns a JSON array of {drained_at, from_alias, to_alias, content} objects."
+      ~required:[]
+      ~properties:[ int_prop "limit" "Max messages to return (default 50)." ]
+  ; tool_definition ~name:"tail_log"
+      ~description:"Return the last N lines from the broker RPC audit log (broker.log). Each line is a JSON object {ts, tool, ok}. Useful for verifying that your sends and polls actually reached the broker, without needing to read the file directly. Content fields are not logged — only tool names and success/fail status. Optional `limit` (default 50, max 500). Returns a JSON array of log entries, oldest first."
+      ~required:[]
+      ~properties:[ int_prop "limit" "Max log entries (default 50, max 500)." ]
   ]
 
 let string_member name json =
@@ -1380,6 +1450,24 @@ let alias_for_current_session_or_argument broker arguments =
   | Some alias -> alias
   | None -> string_member_any [ "from_alias"; "alias" ] arguments
 
+(* Guard: reject send/send_all/send_room if from_alias is held by an alive
+   session with a different session_id. This prevents unregistered callers (or
+   callers whose session isn't bound to this alias) from impersonating live
+   peers.
+   - If the caller IS registered with this alias (same session_id) → None (ok).
+   - If no session_id context is available → None (allow legacy / system calls).
+   - Otherwise, returns Some conflict_reg if alive different-session holds alias. *)
+let send_alias_impersonation_check broker from_alias =
+  match current_session_id () with
+  | None -> None
+  | Some current_sid ->
+      List.find_opt
+        (fun reg ->
+          reg.alias = from_alias
+          && reg.session_id <> current_sid
+          && Broker.registration_is_alive reg)
+        (Broker.list_registrations broker)
+
 let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
   match tool_name with
   | "register" ->
@@ -1515,53 +1603,81 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       let from_alias = alias_for_current_session_or_argument broker arguments in
       let to_alias = string_member "to_alias" arguments in
       let content = string_member "content" arguments in
-      Broker.enqueue_message broker ~from_alias ~to_alias ~content;
-      let ts = Unix.gettimeofday () in
-      let receipt =
-        `Assoc
-          [ ("queued", `Bool true)
-          ; ("ts", `Float ts)
-          ; ("from_alias", `String from_alias)
-          ; ("to_alias", `String to_alias)
-          ]
-        |> Yojson.Safe.to_string
-      in
-      Lwt.return (tool_result ~content:receipt ~is_error:false)
+      (match send_alias_impersonation_check broker from_alias with
+       | Some conflict ->
+           Lwt.return
+             (tool_result
+                ~content:
+                  (Printf.sprintf
+                     "send rejected: from_alias '%s' is currently held by \
+                      alive session '%s' — you cannot send as another agent. \
+                      Options: (1) register your own alias first — call \
+                      register with {\"alias\":\"<new-name>\"}, \
+                      (2) call whoami to see your current identity."
+                     from_alias conflict.session_id)
+                ~is_error:true)
+       | None ->
+           Broker.enqueue_message broker ~from_alias ~to_alias ~content;
+           let ts = Unix.gettimeofday () in
+           let receipt =
+             `Assoc
+               [ ("queued", `Bool true)
+               ; ("ts", `Float ts)
+               ; ("from_alias", `String from_alias)
+               ; ("to_alias", `String to_alias)
+               ]
+             |> Yojson.Safe.to_string
+           in
+           Lwt.return (tool_result ~content:receipt ~is_error:false))
   | "send_all" ->
       let from_alias = alias_for_current_session_or_argument broker arguments in
       let content = string_member "content" arguments in
-      let exclude_aliases =
-        let open Yojson.Safe.Util in
-        try
-          match arguments |> member "exclude_aliases" with
-          | `List items ->
-              List.filter_map
-                (fun item ->
-                  match item with `String s -> Some s | _ -> None)
-                items
-          | _ -> []
-        with _ -> []
-      in
-      let { Broker.sent_to; skipped } =
-        Broker.send_all broker ~from_alias ~content ~exclude_aliases
-      in
-      let result_json =
-        `Assoc
-          [ ( "sent_to",
-              `List (List.map (fun alias -> `String alias) sent_to) )
-          ; ( "skipped",
-              `List
-                (List.map
-                   (fun (alias, reason) ->
-                     `Assoc
-                       [ ("alias", `String alias)
-                       ; ("reason", `String reason)
-                       ])
-                   skipped) )
-          ]
-        |> Yojson.Safe.to_string
-      in
-      Lwt.return (tool_result ~content:result_json ~is_error:false)
+      (match send_alias_impersonation_check broker from_alias with
+       | Some conflict ->
+           Lwt.return
+             (tool_result
+                ~content:
+                  (Printf.sprintf
+                     "send_all rejected: from_alias '%s' is currently held by \
+                      alive session '%s' — you cannot broadcast as another agent. \
+                      Options: (1) register your own alias first — call \
+                      register with {\"alias\":\"<new-name>\"}, \
+                      (2) call whoami to see your current identity."
+                     from_alias conflict.session_id)
+                ~is_error:true)
+       | None ->
+           let exclude_aliases =
+             let open Yojson.Safe.Util in
+             try
+               match arguments |> member "exclude_aliases" with
+               | `List items ->
+                   List.filter_map
+                     (fun item ->
+                       match item with `String s -> Some s | _ -> None)
+                     items
+               | _ -> []
+             with _ -> []
+           in
+           let { Broker.sent_to; skipped } =
+             Broker.send_all broker ~from_alias ~content ~exclude_aliases
+           in
+           let result_json =
+             `Assoc
+               [ ( "sent_to",
+                   `List (List.map (fun alias -> `String alias) sent_to) )
+               ; ( "skipped",
+                   `List
+                     (List.map
+                        (fun (alias, reason) ->
+                          `Assoc
+                            [ ("alias", `String alias)
+                            ; ("reason", `String reason)
+                            ])
+                        skipped) )
+               ]
+             |> Yojson.Safe.to_string
+           in
+           Lwt.return (tool_result ~content:result_json ~is_error:false))
   | "whoami" ->
       let session_id = resolve_session_id arguments in
       let alias =
@@ -1801,20 +1917,34 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       let from_alias = alias_for_current_session_or_argument broker arguments in
       let room_id = string_member "room_id" arguments in
       let content = string_member "content" arguments in
-      let { Broker.sr_delivered_to; sr_skipped; sr_ts } =
-        Broker.send_room broker ~from_alias ~room_id ~content
-      in
-      let result_json =
-        `Assoc
-          [ ("delivered_to",
-             `List (List.map (fun a -> `String a) sr_delivered_to))
-          ; ("skipped",
-             `List (List.map (fun a -> `String a) sr_skipped))
-          ; ("ts", `Float sr_ts)
-          ]
-        |> Yojson.Safe.to_string
-      in
-      Lwt.return (tool_result ~content:result_json ~is_error:false)
+      (match send_alias_impersonation_check broker from_alias with
+       | Some conflict ->
+           Lwt.return
+             (tool_result
+                ~content:
+                  (Printf.sprintf
+                     "send_room rejected: from_alias '%s' is currently held by \
+                      alive session '%s' — you cannot post to a room as another \
+                      agent. Options: (1) register your own alias first — call \
+                      register with {\"alias\":\"<new-name>\"}, \
+                      (2) call whoami to see your current identity."
+                     from_alias conflict.session_id)
+                ~is_error:true)
+       | None ->
+           let { Broker.sr_delivered_to; sr_skipped; sr_ts } =
+             Broker.send_room broker ~from_alias ~room_id ~content
+           in
+           let result_json =
+             `Assoc
+               [ ("delivered_to",
+                  `List (List.map (fun a -> `String a) sr_delivered_to))
+               ; ("skipped",
+                  `List (List.map (fun a -> `String a) sr_skipped))
+               ; ("ts", `Float sr_ts)
+               ]
+             |> Yojson.Safe.to_string
+           in
+           Lwt.return (tool_result ~content:result_json ~is_error:false))
   | "list_rooms" ->
       let rooms = Broker.list_rooms broker in
       let content =

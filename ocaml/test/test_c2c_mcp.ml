@@ -442,10 +442,22 @@ let test_tools_list_marks_register_and_whoami_session_id_as_optional () =
             item |> member "inputSchema" |> member "required" |> to_list
             |> List.map to_string
           in
+          let property_names item =
+            item |> member "inputSchema" |> member "properties" |> to_assoc
+            |> List.map fst
+          in
           check (list string) "register required args" []
             (required_names (find_tool "register"));
           check (list string) "whoami required args" []
-            (required_names (find_tool "whoami")))
+            (required_names (find_tool "whoami"));
+          check bool "register advertises optional session_id" true
+            (List.mem "session_id" (property_names (find_tool "register")));
+          check bool "whoami advertises optional session_id" true
+            (List.mem "session_id" (property_names (find_tool "whoami")));
+          check bool "send advertises to_alias" true
+            (List.mem "to_alias" (property_names (find_tool "send")));
+          check bool "send advertises content" true
+            (List.mem "content" (property_names (find_tool "send"))))
 
 let test_tools_call_send_routes_message_through_broker () =
   with_temp_dir (fun dir ->
@@ -3376,6 +3388,142 @@ let test_join_room_updates_session_id_on_alias_rejoin () =
       check string "alias preserved" "kimi-nova" m.C2c_mcp.rm_alias;
       check string "session_id updated to latest" "kimi-nova" m.C2c_mcp.rm_session_id)
 
+(* send should reject if from_alias is held by an alive different session. *)
+let test_tools_call_send_rejects_impersonation () =
+  with_temp_dir (fun dir ->
+      let live_pid = Unix.getpid () in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* "real-owner" holds "storm-beacon" with a live pid *)
+      C2c_mcp.Broker.register broker ~session_id:"real-owner"
+        ~alias:"storm-beacon" ~pid:(Some live_pid) ~pid_start_time:None;
+      (* "storm-beacon" also registers a target to send to *)
+      C2c_mcp.Broker.register broker ~session_id:"target-session"
+        ~alias:"tide-runner" ~pid:(Some live_pid) ~pid_start_time:None;
+      (* An unrelated session tries to send as "storm-beacon" *)
+      Unix.putenv "C2C_MCP_SESSION_ID" "impostor-session";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 201)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "send")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("from_alias", `String "storm-beacon")
+                          ; ("to_alias", `String "tide-runner")
+                          ; ("content", `String "impersonation attempt")
+                          ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected tools/call response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let is_error =
+                json |> member "result" |> member "isError" |> to_bool_option
+                |> Option.value ~default:false
+              in
+              check bool "send rejected with isError=true" true is_error;
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              check bool "error mentions stolen alias" true
+                (string_contains text "storm-beacon")))
+
+(* send_all should reject if from_alias is held by an alive different session. *)
+let test_tools_call_send_all_rejects_impersonation () =
+  with_temp_dir (fun dir ->
+      let live_pid = Unix.getpid () in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"real-owner"
+        ~alias:"storm-beacon" ~pid:(Some live_pid) ~pid_start_time:None;
+      Unix.putenv "C2C_MCP_SESSION_ID" "impostor-session";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 202)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "send_all")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("from_alias", `String "storm-beacon")
+                          ; ("content", `String "broadcast impersonation")
+                          ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected tools/call response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let is_error =
+                json |> member "result" |> member "isError" |> to_bool_option
+                |> Option.value ~default:false
+              in
+              check bool "send_all rejected with isError=true" true is_error))
+
+(* send_room should reject if from_alias is held by an alive different session. *)
+let test_tools_call_send_room_rejects_impersonation () =
+  with_temp_dir (fun dir ->
+      let live_pid = Unix.getpid () in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"real-owner"
+        ~alias:"storm-beacon" ~pid:(Some live_pid) ~pid_start_time:None;
+      ignore
+        (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
+           ~alias:"storm-beacon" ~session_id:"real-owner");
+      Unix.putenv "C2C_MCP_SESSION_ID" "impostor-session";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 203)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "send_room")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("from_alias", `String "storm-beacon")
+                          ; ("room_id", `String "swarm-lounge")
+                          ; ("content", `String "room impersonation")
+                          ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected tools/call response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let is_error =
+                json |> member "result" |> member "isError" |> to_bool_option
+                |> Option.value ~default:false
+              in
+              check bool "send_room rejected with isError=true" true is_error))
+
 let () =
   run "c2c_mcp"
     [ ( "broker",
@@ -3570,4 +3718,10 @@ let () =
              test_register_rename_fans_out_peer_renamed_notification
          ; test_case "join_room updates session_id when alias rejoins with new session" `Quick
              test_join_room_updates_session_id_on_alias_rejoin
+         ; test_case "tools/call send rejects impersonation of alive alias" `Quick
+             test_tools_call_send_rejects_impersonation
+         ; test_case "tools/call send_all rejects impersonation of alive alias" `Quick
+             test_tools_call_send_all_rejects_impersonation
+         ; test_case "tools/call send_room rejects impersonation of alive alias" `Quick
+             test_tools_call_send_room_rejects_impersonation
          ] ) ]

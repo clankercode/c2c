@@ -7144,6 +7144,52 @@ class RunCrushInstTests(unittest.TestCase):
         self.assertEqual(payload["env"]["RUN_CRUSH_INST_C2C_SESSION_ID"], "crush-test")
         self.assertEqual(payload["env"]["C2C_MCP_AUTO_REGISTER_ALIAS"], "crush-test")
 
+    def test_run_crush_inst_uses_explicit_crush_session_id(self):
+        config_dir = Path(self.temp_dir.name) / "run-crush-inst.d"
+        config_dir.mkdir()
+        config = {
+            "command": "crush",
+            "cwd": self.temp_dir.name,
+            "c2c_session_id": "crush-c2c",
+            "c2c_alias": "crush-c2c",
+            "crush_session_id": "crush-native-session",
+            "flags": ["--model", "sonnet", "--continue", "-C"],
+        }
+        (config_dir / "crush-a.json").write_text(json.dumps(config), encoding="utf-8")
+        env = dict(self.env)
+        env["RUN_CRUSH_INST_DRY_RUN"] = "1"
+        env["RUN_CRUSH_INST_CONFIG_DIR"] = str(config_dir)
+
+        result = run_cli("run-crush-inst", "crush-a", env=env)
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            payload["launch"],
+            ["crush", "--model", "sonnet", "-s", "crush-native-session"],
+        )
+        self.assertNotIn("--continue", payload["launch"])
+        self.assertNotIn("-C", payload["launch"])
+
+    def test_run_crush_inst_crush_session_id_must_be_string(self):
+        config_dir = Path(self.temp_dir.name) / "run-crush-inst.d"
+        config_dir.mkdir()
+        config = {
+            "command": "crush",
+            "cwd": self.temp_dir.name,
+            "c2c_session_id": "crush-c2c",
+            "crush_session_id": 123,
+        }
+        (config_dir / "crush-a.json").write_text(json.dumps(config), encoding="utf-8")
+        env = dict(self.env)
+        env["RUN_CRUSH_INST_DRY_RUN"] = "1"
+        env["RUN_CRUSH_INST_CONFIG_DIR"] = str(config_dir)
+
+        result = run_cli("run-crush-inst", "crush-a", env=env)
+
+        self.assertNotEqual(result_code(result), 0)
+        self.assertIn("crush_session_id must be a string", result.stderr)
+
     def test_run_crush_inst_help_exits_without_config_lookup(self):
         result = run_cli("run-crush-inst", "--help")
 
