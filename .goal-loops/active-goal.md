@@ -73,7 +73,7 @@ These are Max's target experiences, verbatim:
   dead-pid fallback in `current_client_pid()`.
 - **Python suite** ✓: 707 tests across all subsystems.
 - **Kimi Wire bridge** ✓: `c2c_kimi_wire_bridge.py` + `c2c-kimi-wire-bridge` wrapper;
-  31 tests pass; `run_once_live` subprocess path implemented and **live-proven
+  34 tests pass; `run_once_live` subprocess path implemented and **live-proven
   2026-04-14** by codex with a real `kimi --wire` subprocess (delivered 1 broker
   message, cleared spool, rc=0; see finding
   `2026-04-13T16-10-03Z-codex-kimi-wire-live-once-proof.md`). Native JSON-RPC
