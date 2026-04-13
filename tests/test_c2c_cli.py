@@ -68,6 +68,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         shutil.copy2(source_git_path, target_git_path)
     for relative_path in [
         "c2c",
+        "c2c-configure-opencode",
         "c2c-deliver-inbox",
         "c2c-init",
         "c2c-register",
@@ -79,6 +80,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c-verify",
         "c2c-whoami",
         "c2c_register.py",
+        "c2c_configure_opencode.py",
         "c2c_init.py",
         "c2c_list.py",
         "c2c_send.py",
@@ -278,6 +280,7 @@ class C2CCLITests(unittest.TestCase):
             sorted(payload["installed_commands"]),
             [
                 "c2c",
+                "c2c-configure-opencode",
                 "c2c-deliver-inbox",
                 "c2c-init",
                 "c2c-inject",
@@ -292,6 +295,7 @@ class C2CCLITests(unittest.TestCase):
             ],
         )
         self.assertTrue((install_dir / "c2c").exists())
+        self.assertTrue((install_dir / "c2c-configure-opencode").exists())
         self.assertTrue((install_dir / "c2c-deliver-inbox").exists())
         self.assertTrue((install_dir / "c2c-inject").exists())
         self.assertTrue((install_dir / "c2c-poll-inbox").exists())
@@ -2079,6 +2083,7 @@ class C2CTestHelpersTests(unittest.TestCase):
 
             for relative_path in [
                 "c2c",
+                "c2c-configure-opencode",
                 "c2c-deliver-inbox",
                 "c2c-init",
                 "c2c-register",
@@ -2090,6 +2095,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c-verify",
                 "c2c-whoami",
                 "c2c_register.py",
+                "c2c_configure_opencode.py",
                 "c2c_init.py",
                 "c2c_list.py",
                 "c2c_send.py",
@@ -3217,6 +3223,94 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("c2c", result.stdout)
         self.assertIn("c2c_mcp.py", result.stdout)
+
+
+class C2CConfigureOpencodeTests(unittest.TestCase):
+    def test_writes_opencode_config_pointing_at_c2c_mcp_in_target_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            result = subprocess.run(
+                [
+                    str(REPO / "c2c"),
+                    "configure-opencode",
+                    "--target-dir",
+                    str(target),
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            config_path = Path(payload["config_path"])
+            self.assertEqual(config_path, target / ".opencode" / "opencode.json")
+            self.assertTrue(config_path.exists())
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            c2c = config["mcp"]["c2c"]
+            self.assertEqual(c2c["type"], "local")
+            self.assertEqual(
+                c2c["command"], ["python3", str(REPO / "c2c_mcp.py")]
+            )
+            self.assertEqual(
+                c2c["environment"]["C2C_MCP_BROKER_ROOT"],
+                str(REPO / ".git" / "c2c" / "mcp"),
+            )
+            self.assertEqual(
+                c2c["environment"]["C2C_MCP_SESSION_ID"],
+                f"opencode-{target.name}",
+            )
+            self.assertEqual(
+                c2c["environment"]["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0"
+            )
+            self.assertTrue(c2c["enabled"])
+            self.assertEqual(payload["session_id"], f"opencode-{target.name}")
+
+    def test_refuses_to_overwrite_existing_config_without_force(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            (target / ".opencode").mkdir()
+            existing = target / ".opencode" / "opencode.json"
+            existing.write_text('{"keep": "me"}', encoding="utf-8")
+            result = subprocess.run(
+                [
+                    str(REPO / "c2c"),
+                    "configure-opencode",
+                    "--target-dir",
+                    str(target),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("exists", result.stderr.lower())
+            self.assertEqual(
+                json.loads(existing.read_text(encoding="utf-8")), {"keep": "me"}
+            )
+
+    def test_force_overwrites_existing_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            (target / ".opencode").mkdir()
+            existing = target / ".opencode" / "opencode.json"
+            existing.write_text('{"keep": "me"}', encoding="utf-8")
+            result = subprocess.run(
+                [
+                    str(REPO / "c2c"),
+                    "configure-opencode",
+                    "--target-dir",
+                    str(target),
+                    "--force",
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            config = json.loads(existing.read_text(encoding="utf-8"))
+            self.assertIn("c2c", config["mcp"])
 
 
 class C2CVerifyUnitTests(unittest.TestCase):

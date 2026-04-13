@@ -2,6 +2,7 @@
 import os
 import sys
 
+import c2c_configure_opencode
 import c2c_deliver_inbox
 import c2c_init
 import c2c_inject
@@ -48,13 +49,15 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(
-            "usage: c2c <deliver-inbox|init|inject|install|list|mcp|poll-inbox|register|send|send-all|verify|whoami> [...args]",
+            "usage: c2c <configure-opencode|deliver-inbox|init|inject|install|list|mcp|poll-inbox|register|send|send-all|verify|whoami> [...args]",
             file=sys.stderr,
         )
         return 2
 
     subcommand, remainder = argv[0], argv[1:]
 
+    if subcommand == "configure-opencode":
+        return c2c_configure_opencode.main(remainder)
     if subcommand == "deliver-inbox":
         return c2c_deliver_inbox.main(remainder)
     if subcommand == "init":
