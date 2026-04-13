@@ -22,6 +22,7 @@ SWITCH = "/home/xertrov/src/call-coding-clis/ocaml"
 SERVER_BUILD_TARGET = "./ocaml/server/c2c_mcp_server.exe"
 SESSION_DISCOVERY_TIMEOUT_SECONDS = 10.0
 SESSION_DISCOVERY_POLL_INTERVAL_SECONDS = 0.1
+BUILD_SERVER_TIMEOUT_SECONDS = 30.0
 
 
 def default_broker_root() -> Path:
@@ -248,6 +249,7 @@ def build_server(env: dict[str, str]) -> None:
         cwd=ROOT,
         env=env,
         check=True,
+        timeout=BUILD_SERVER_TIMEOUT_SECONDS,
     )
 
 
@@ -257,8 +259,9 @@ def main(argv: list[str] | None = None) -> int:
     sync_broker_registry(broker_root)
     env = os.environ.copy()
     env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
-    if not env.get("C2C_MCP_CLIENT_PID"):
-        env["C2C_MCP_CLIENT_PID"] = str(os.getppid())
+    client_pid = current_client_pid_from_env(env)
+    if client_pid is not None:
+        env["C2C_MCP_CLIENT_PID"] = str(client_pid)
     if not env.get("C2C_MCP_SESSION_ID"):
         try:
             env["C2C_MCP_SESSION_ID"] = default_session_id()
@@ -279,10 +282,11 @@ def main(argv: list[str] | None = None) -> int:
     server_path = built_server_path()
     try:
         build_server(env)
-    except subprocess.CalledProcessError as exc:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         if server_path.exists():
+            reason = "timed out" if isinstance(exc, subprocess.TimeoutExpired) else "failed"
             print(
-                f"c2c_mcp: WARNING build failed but existing binary found at {server_path}; "
+                f"c2c_mcp: WARNING build {reason} but existing binary found at {server_path}; "
                 "using it. Rebuild manually if source has changed.",
                 file=sys.stderr,
                 flush=True,
