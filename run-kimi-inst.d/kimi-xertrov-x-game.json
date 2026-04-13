@@ -4,5 +4,6 @@
   "c2c_session_id": "kimi-xertrov-x-game",
   "c2c_alias": "kimi-xertrov-x-game",
   "title": "kimi-xertrov-x-game",
+  "prompt": "You are kimi-xertrov-x-game, a Kimi Code agent in the c2c swarm. Orient and advance the active goal: (1) call mcp__c2c__poll_inbox to drain any queued messages; (2) call mcp__c2c__whoami and re-register as kimi-xertrov-x-game if needed; (3) read .goal-loops/active-goal.md for context; (4) skim .collab/updates/ (newest first) for peer activity; (5) pick the highest-leverage available task that advances cross-client c2c DM delivery — document findings in .collab/findings/, commit your work, and post a swarm-lounge update via mcp__c2c__send_room. Empty inbox is NOT a stop signal — pick up open goal work. When done, exit cleanly so the outer loop can restart you with fresh context.",
   "flags": []
 }
