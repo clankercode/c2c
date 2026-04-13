@@ -81,6 +81,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c-inject",
         "c2c-poker-sweep",
         "c2c-verify",
+        "c2c-watch",
         "c2c-whoami",
         "c2c_register.py",
         "c2c_configure_opencode.py",
@@ -96,6 +97,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_poker_sweep.py",
         "c2c_poll_inbox.py",
         "c2c_verify.py",
+        "c2c_watch.py",
         "c2c_whoami.py",
         "c2c_cli.py",
         "c2c_mcp.py",
@@ -298,6 +300,7 @@ class C2CCLITests(unittest.TestCase):
                 "c2c-send",
                 "c2c-send-all",
                 "c2c-verify",
+                "c2c-watch",
                 "c2c-whoami",
             ],
         )
@@ -309,6 +312,7 @@ class C2CCLITests(unittest.TestCase):
         self.assertTrue((install_dir / "c2c-poll-inbox").exists())
         self.assertTrue((install_dir / "c2c-prune").exists())
         self.assertTrue((install_dir / "c2c-register").exists())
+        self.assertTrue((install_dir / "c2c-watch").exists())
         self.assertTrue((install_dir / "c2c-whoami").exists())
 
     def test_c2c_list_subcommand_matches_wrapper_json_output(self):
@@ -553,7 +557,7 @@ class C2CCLITests(unittest.TestCase):
 
     def test_c2c_mcp_main_exports_current_client_pid_for_server_register(self):
         with (
-            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch.dict(os.environ, {"C2C_MCP_SESSION_ID": ""}, clear=False),
             mock.patch(
                 "c2c_mcp.default_broker_root",
                 return_value=REPO / ".git" / "c2c" / "mcp",
@@ -2104,6 +2108,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c-inject",
                 "c2c-poker-sweep",
                 "c2c-verify",
+                "c2c-watch",
                 "c2c-whoami",
                 "c2c_register.py",
                 "c2c_configure_opencode.py",
@@ -2119,6 +2124,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c_poker_sweep.py",
                 "c2c_poll_inbox.py",
                 "c2c_verify.py",
+                "c2c_watch.py",
                 "c2c_whoami.py",
                 "c2c_cli.py",
                 "c2c_mcp.py",

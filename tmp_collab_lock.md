@@ -9,6 +9,12 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| `c2c_watch.py` | codex | add command stdout-to-c2c monitor | 2026-04-13 15:46 |
+| `c2c-watch` | codex | wrapper for command stdout monitor | 2026-04-13 15:46 |
+| `c2c_cli.py` | codex | wire watch subcommand | 2026-04-13 15:46 |
+| `c2c_install.py` | codex | install watch wrapper | 2026-04-13 15:46 |
+| `tests/test_c2c_watch.py` | codex | focused tests for stdout line forwarding | 2026-04-13 15:46 |
+| `tests/test_c2c_cli.py` | codex | update wrapper copy/install expectations for watch | 2026-04-13 15:46 |
 
 ## History (addendum)
 
