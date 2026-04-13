@@ -9,6 +9,11 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| `tests/test_c2c_cli.py` | codex | Add focused dead-letter replay regression | 2026-04-13T18:51Z |
+| `docs/commands.md` | codex | Advertise dead-letter replay escape hatch | 2026-04-13T18:51Z |
+| `docs/next-steps.md` | codex | Sync dead-letter replay status | 2026-04-13T18:51Z |
+| `tmp_status.txt` | codex | Sync current status after replay docs/tests | 2026-04-13T18:51Z |
+| `tmp_collab_lock.md` | codex | Record/release codex locks | 2026-04-13T18:51Z |
 
 ## History (addendum)
 
