@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Outer restart loop for run-crush-inst.
 
-Usage: ./run-crush-inst-outer <instance-name> [extra crush args...]
+Usage: ./run-crush-inst-outer [--create] <instance-name> [extra crush args...]
 
 Mirrors run-codex-inst-outer: relaunches the inner script forever,
 backs off on fast exits, calls maybe_rearm after each launch to start
 the deliver_inbox notify daemon, and exits cleanly on a double SIGINT.
+
+Use --create to auto-generate a run-crush-inst.d/<name>.json config if it
+doesn't already exist.
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ INITIAL_BACKOFF_SECONDS = 2.0
 MAX_BACKOFF_SECONDS = 60.0
 DOUBLE_SIGINT_WINDOW_SECONDS = 2.0
 HELP_FLAGS = {"-h", "--help"}
+CREATE_FLAGS = {"--create", "-c"}
 
 HERE = Path(__file__).resolve().parent
 INNER = HERE / "run-crush-inst"
@@ -126,16 +130,42 @@ def maybe_rearm(name: str) -> None:
         )
 
 
+def _create_config(name: str) -> Path:
+    cfg_path = HERE / "run-crush-inst.d" / f"{name}.json"
+    if cfg_path.exists():
+        return cfg_path
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    template = {
+        "command": "crush",
+        "cwd": str(HERE),
+        "c2c_session_id": name,
+        "c2c_alias": name,
+        "title": name,
+        "flags": [],
+    }
+    cfg_path.write_text(json.dumps(template, indent=2) + "\n", encoding="utf-8")
+    print(f"[run-crush-inst-outer] created config: {cfg_path}", flush=True)
+    return cfg_path
+
+
 def main(argv: list[str]) -> int:
     if len(argv) == 2 and argv[1] in HELP_FLAGS:
         print(__doc__.strip())
         return 0
-    if len(argv) < 2:
-        print(f"usage: {argv[0]} <instance-name> [extra crush args...]", file=sys.stderr)
+
+    create = False
+    filtered = [a for a in argv[1:] if a not in CREATE_FLAGS]
+    create = len(filtered) != len(argv[1:])
+
+    if len(filtered) < 1:
+        print(f"usage: {argv[0]} [--create] <instance-name> [extra crush args...]", file=sys.stderr)
         return 2
 
-    name = argv[1]
-    extra = argv[2:]
+    name = filtered[0]
+    extra = filtered[1:]
+
+    if create:
+        _create_config(name)
 
     if not INNER.exists():
         print(f"inner script not found: {INNER}", file=sys.stderr)
