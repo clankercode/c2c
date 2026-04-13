@@ -44,3 +44,6 @@ run-opencode-inst.d/*.pid
 run-opencode-inst.d/*.log
 run-codex-inst.d
 .claude
+.playwright-mcp/
+*.png
+c2c-site-current.*
