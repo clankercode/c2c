@@ -45,6 +45,15 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     """Handle each request in a separate thread."""
     daemon_threads = True
 
+    def shutdown(self) -> None:
+        """Stop serve_forever and close the listening socket.
+
+        HTTPServer.shutdown() only stops the serve_forever loop. Tests and
+        short-lived helper processes expect the socket to be released too.
+        """
+        super().shutdown()
+        self.server_close()
+
 
 # ---------------------------------------------------------------------------
 # Request handler
@@ -109,6 +118,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._handle_list({})
         elif self.path == "/dead_letter":
             self._ok({"ok": True, "dead_letter": self.server.relay.dead_letter()})
+        elif self.path == "/list_rooms":
+            self._ok({"ok": True, "rooms": self.server.relay.list_rooms()})
         else:
             self._err(404, "not_found", f"unknown endpoint: {self.path}")
 
@@ -125,8 +136,13 @@ class RelayHandler(BaseHTTPRequestHandler):
             "/heartbeat": self._handle_heartbeat,
             "/list": self._handle_list,
             "/send": self._handle_send,
+            "/send_all": self._handle_send_all,
             "/poll_inbox": self._handle_poll_inbox,
             "/peek_inbox": self._handle_peek_inbox,
+            "/join_room": self._handle_join_room,
+            "/leave_room": self._handle_leave_room,
+            "/send_room": self._handle_send_room,
+            "/room_history": self._handle_room_history,
         }
         handler = routes.get(self.path)
         if handler is None:
@@ -200,6 +216,54 @@ class RelayHandler(BaseHTTPRequestHandler):
             return
         msgs = self.server.relay.peek_inbox(node_id, session_id)
         self._ok({"ok": True, "messages": msgs})
+
+    def _handle_send_all(self, body: dict) -> None:
+        from_alias = str(body.get("from_alias", "")).strip()
+        content = str(body.get("content", "")).strip()
+        if not from_alias or not content:
+            self._err(400, "bad_request", "from_alias and content are required")
+            return
+        result = self.server.relay.send_all(from_alias, content,
+                                            message_id=body.get("message_id") or None)
+        self._ok(result)
+
+    def _handle_join_room(self, body: dict) -> None:
+        alias = str(body.get("alias", "")).strip()
+        room_id = str(body.get("room_id", "")).strip()
+        if not alias or not room_id:
+            self._err(400, "bad_request", "alias and room_id are required")
+            return
+        result = self.server.relay.join_room(alias, room_id)
+        self._ok(result)
+
+    def _handle_leave_room(self, body: dict) -> None:
+        alias = str(body.get("alias", "")).strip()
+        room_id = str(body.get("room_id", "")).strip()
+        if not alias or not room_id:
+            self._err(400, "bad_request", "alias and room_id are required")
+            return
+        result = self.server.relay.leave_room(alias, room_id)
+        self._ok(result)
+
+    def _handle_send_room(self, body: dict) -> None:
+        from_alias = str(body.get("from_alias", "")).strip()
+        room_id = str(body.get("room_id", "")).strip()
+        content = str(body.get("content", "")).strip()
+        if not from_alias or not room_id or not content:
+            self._err(400, "bad_request", "from_alias, room_id, and content are required")
+            return
+        result = self.server.relay.send_room(from_alias, room_id, content,
+                                             message_id=body.get("message_id") or None)
+        self._ok(result)
+
+    def _handle_room_history(self, body: dict) -> None:
+        room_id = str(body.get("room_id", "")).strip()
+        if not room_id:
+            self._err(400, "bad_request", "room_id is required")
+            return
+        limit = int(body.get("limit", 50))
+        history = self.server.relay.room_history(room_id, limit=limit)
+        self._ok({"ok": True, "room_id": room_id, "history": history})
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +351,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        server.server_close()
     return 0
 
 

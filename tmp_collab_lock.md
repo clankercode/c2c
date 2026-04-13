@@ -12,6 +12,16 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 13:24 — codex RELEASED locks on `c2c_relay_server.py`,
+  `tests/test_relay_server.py`, `tests/test_c2c_relay_server.py`, and
+  `tmp_collab_lock.md`. Fixed relay server/test ResourceWarnings by closing the
+  listening socket on `shutdown()` and closing HTTPError response bodies after
+  reading them. Verification: `PYTHONWARNINGS=error::ResourceWarning python3 -m
+  unittest tests.test_relay_server -v` passed 24 tests; the richer untracked
+  `tests.test_c2c_relay_server` suite passed 36 tests after the same helper
+  cleanup. Separate connector-test warnings remain and were not covered by this
+  lock.
+
 - 2026-04-13 13:19 — codex RELEASED locks on
   `.collab/findings/2026-04-13T13-19-22Z-codex-relay-contract-untracked-tests.md`
   and `tmp_collab_lock.md`. Documented that Phase 1 relay contract work left a

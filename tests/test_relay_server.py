@@ -50,7 +50,10 @@ class RelayClient:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as exc:
-            return json.loads(exc.read())
+            try:
+                return json.loads(exc.read())
+            finally:
+                exc.close()
 
     def get(self, path: str) -> dict:
         return self._request("GET", path)
