@@ -110,6 +110,12 @@ permalink: /next-steps/
 - **`c2c history` all-client session env resolution** ✓ — history lookup now
   checks OpenCode, Kimi, and Crush outer-loop session env vars in addition to
   Claude/Codex, matching all five managed harnesses (3824610, 2026-04-14).
+- **Session-aware alias allocation** ✓ — `maybe_auto_register_startup` now has
+  `hijack_guard` (don't steal an alias that a live different session is using)
+  and `alias_occupied_guard` (don't override a live peer's alias). Alias
+  assignment uses the session_id as a seed so different sessions start at
+  different offsets in the ~17K pool, reducing first-slot collisions (ccfc995,
+  2026-04-14).
 - **Room rename alias drift fix** ✓ — register renames now propagate to room
   memberships; CLI/MCP `join_room` deduplicates by both alias and session_id;
   auto-join prefers the current registered alias over stale env aliases. Fixes

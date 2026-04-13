@@ -66,8 +66,10 @@ These are Max's target experiences, verbatim:
 - **Liveness hardening** ✓: `pid_start_time` defeats PID reuse. POSIX `fcntl.lockf`
   interlocks OCaml broker + Python writers. Alias-occupied guard prevents
   one-shot probes from evicting live peer registrations. Explicit `register`
-  tool now also rejects alias hijack by alive different-session (actionable
-  error; own-alias refresh always allowed). See finding
+  tool rejects alias hijack by alive different-session (actionable error,
+  own-alias refresh always allowed). `maybe_auto_register_startup` adds
+  `hijack_guard` and `alias_occupied_guard`; alias allocation uses session_id
+  as seed so sessions start at different offsets in the ~17K pool. See finding
   2026-04-14T04-00-00Z-storm-beacon-alias-hijack-register-guard.md.
 - **`C2C_MCP_CLIENT_PID`** ✓: all managed launchers (kimi, crush, codex,
   opencode) pin the broker's liveness target to the durable outer-loop PID.
