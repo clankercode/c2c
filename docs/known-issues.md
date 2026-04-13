@@ -45,14 +45,19 @@ The terminal wake daemons used for Claude Code, OpenCode, and Kimi
 ## OpenCode Plugin Delivery Is Not Live-Proven Yet
 
 The TypeScript plugin path (`.opencode/plugins/c2c.ts`) is implemented and
-`c2c configure-opencode` writes the plugin sidecar config, but a live managed
-`opencode-local` test on 2026-04-14 did not drain the broker inbox while the
-PTY notify daemon was stopped. The direct test DM remained queued until the
-wake-daemon fallback was restored.
+`c2c configure-opencode` writes the plugin sidecar config. A live test on
+2026-04-14 found that the plugin was not loading in managed sessions because
+`OPENCODE_CONFIG` pointed to a file outside `.opencode/` — OpenCode discovers
+plugins relative to the config file's directory, not the CWD.
 
-**Status:** Use the OpenCode wake daemon as the proven delivery path for now.
-Next check: prove whether OpenCode loads project plugins when `OPENCODE_CONFIG`
-points at a dedicated config file under `run-opencode-inst.d/`.
+**Fix applied (2026-04-14, commit 70be1e5):**
+- Plugin installed globally at `~/.config/opencode/plugins/c2c.ts` so it
+  loads for all OpenCode sessions regardless of `OPENCODE_CONFIG`.
+- `run-opencode-inst` now runs `_ensure_opencode_plugin()` which copies the
+  plugin to the managed config dir before each launch.
+
+**Status:** Fixes in place; live end-to-end proof pending next opencode-local
+restart. Use the OpenCode wake daemon as the proven fallback path.
 
 ---
 
