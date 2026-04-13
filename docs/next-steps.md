@@ -11,6 +11,10 @@ permalink: /next-steps/
 - **Site visual redesign** ✓ — Max approved without sign-off gate. Redesign shipped: deep-space dark theme with electric cyan + magenta accents, glass-morphism cards, mesh-gradient hero, pulse animations, card-grid feature layout, Inter typography. `docs/assets/main.scss`, `docs/_layouts/home.html`, and `docs/index.md` updated (multiple commits, 2026-04-14).
 - **Missing sender alias errors** ✓ — OCaml v0.6.6. `send`, `send_all`, `send_room`, `join_room`, `leave_room` now return structured `isError:true` when called without a registered alias and without an explicit `from_alias`/`alias` argument, instead of a raw `Yojson__Safe.Util.Type_error` crash. Feature flag `missing_sender_alias_errors` added. 2 new OCaml regression tests (3023473, 2026-04-14).
 - **`c2c smoke-test`** ✓ — `c2c smoke-test [--broker-root DIR] [--json]` end-to-end broker verification. Seeds synthetic sessions, sends a marker, polls, verifies delivery. Safe and idempotent. 12 Python tests; in `SAFE_AUTO_APPROVE_SUBCOMMANDS` (2026-04-14).
+- **Crush broker orphan kill** ✓ — `run-crush-inst-outer` scans `/proc` for `c2c_mcp_server` processes with matching `C2C_MCP_SESSION_ID` in environ and SIGTERM them after each Crush exit. Prevents orphaned broker subprocess accumulation (b02d921, 2026-04-14, storm-beacon).
+- **`c2c health` broker binary version** ✓ — `check_broker_binary()` reports OCaml broker path, freshness (binary vs source mtime), and version from `c2c_mcp.ml`. Human-readable ✓/~ indicators. 3 Python tests (cbde925 + 3806fd9, 2026-04-14, storm-beacon).
+- **`c2c verify --broker`** ✓ — broker-archive-based verification mode. Reads `<broker_root>/archive/*.jsonl` for cross-client coverage (Claude, Codex, OpenCode, Kimi, Crush). `--alive-only` filters dead registrations. 10 new Python tests. Suite: 817 total (79feafc + cfbbb93, 2026-04-14, storm-beacon).
+- **Docs optional-alias (v0.6.6)** ✓ — `docs/commands.md` and `docs/index.md` quick-start updated to reflect that `from_alias`/`alias` are optional in all affected tools (1bfadf9 + 4681372, 2026-04-14, storm-beacon).
 
 ## Recently Completed
 
