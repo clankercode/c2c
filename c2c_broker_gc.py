@@ -23,6 +23,7 @@ DEFAULT_TTL_SECONDS = 3600  # 1 hour
 DEFAULT_INTERVAL_SECONDS = 300  # 5 minutes
 MIN_INTERVAL_SECONDS = 60  # 1 minute minimum
 DEFAULT_DEAD_LETTER_TTL_SECONDS = 7 * 24 * 3600  # 7 days
+DEFAULT_ORPHAN_DEAD_LETTER_TTL_SECONDS = 3600  # 1 hour: purge if alias vanished for this long
 
 
 def load_broker_registrations(broker_root: Path) -> list[dict[str, Any]]:
@@ -184,12 +185,91 @@ def purge_old_dead_letter(
             "purged_count": purged, "dry_run": dry_run}
 
 
+def purge_orphan_dead_letter(
+    broker_root: Path,
+    ttl_seconds: float = DEFAULT_ORPHAN_DEAD_LETTER_TTL_SECONDS,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Remove dead-letter entries whose recipient alias is not in the registry.
+
+    A dead-letter entry becomes an orphan when its `to_alias` (stripping any
+    @room_id suffix) has not been registered for at least ttl_seconds.  This
+    covers transient aliases (random word-pairs assigned to Claude Code sessions
+    without C2C_MCP_AUTO_REGISTER_ALIAS) that will never re-register.
+
+    Entries for aliases that ARE still registered are left untouched so that
+    they can redeliver on the next re-register cycle.
+
+    Returns dict with:
+    - before_count: lines read
+    - after_count: lines kept
+    - purged_count: lines removed
+    - dry_run: whether this was a dry run
+    """
+    dl_path = broker_root / "dead-letter.jsonl"
+    if not dl_path.exists():
+        return {"ok": True, "before_count": 0, "after_count": 0, "purged_count": 0, "dry_run": dry_run}
+
+    # Build set of registered aliases
+    registered_aliases: set[str] = {
+        reg.get("alias", "") for reg in load_broker_registrations(broker_root)
+        if reg.get("alias")
+    }
+
+    cutoff = time.time() - ttl_seconds
+    kept: list[str] = []
+    purged = 0
+
+    with with_dead_letter_lock(broker_root):
+        try:
+            lines = dl_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return {"ok": False, "before_count": 0, "after_count": 0, "purged_count": 0, "dry_run": dry_run}
+
+        before_count = sum(1 for l in lines if l.strip())
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            drop = False
+            try:
+                record = json.loads(stripped)
+                deleted_at = record.get("deleted_at")
+                if isinstance(deleted_at, (int, float)) and deleted_at < cutoff:
+                    # Old enough to be an orphan candidate — check recipient alias
+                    to_alias = record.get("message", {}).get("to_alias", "")
+                    # Strip @room_id suffix for room fan-out messages
+                    base_alias = to_alias.split("@")[0] if to_alias else ""
+                    if base_alias and base_alias not in registered_aliases:
+                        drop = True
+                        purged += 1
+            except (json.JSONDecodeError, KeyError):
+                pass
+            if not drop:
+                kept.append(line)
+
+        after_count = len(kept)
+        if not dry_run and purged > 0:
+            try:
+                content = "\n".join(kept)
+                if content and not content.endswith("\n"):
+                    content += "\n"
+                dl_path.write_text(content, encoding="utf-8")
+            except OSError as exc:
+                return {"ok": False, "error": str(exc), "before_count": before_count,
+                        "after_count": before_count, "purged_count": 0, "dry_run": dry_run}
+
+    return {"ok": True, "before_count": before_count, "after_count": after_count,
+            "purged_count": purged, "dry_run": dry_run}
+
+
 def run_gc_loop(
     broker_root: Path,
     interval_seconds: float,
     dry_run: bool = False,
     once: bool = False,
     dead_letter_ttl: float = DEFAULT_DEAD_LETTER_TTL_SECONDS,
+    orphan_dead_letter_ttl: float = DEFAULT_ORPHAN_DEAD_LETTER_TTL_SECONDS,
 ) -> None:
     """Run the GC loop, sweeping dead registrations periodically."""
     print(f"[broker-gc] starting — broker_root={broker_root}", flush=True)
@@ -204,6 +284,7 @@ def run_gc_loop(
 
         result = sweep_dead_registrations(broker_root, dry_run=dry_run)
         dl_result = purge_old_dead_letter(broker_root, ttl_seconds=dead_letter_ttl, dry_run=dry_run)
+        orphan_result = purge_orphan_dead_letter(broker_root, ttl_seconds=orphan_dead_letter_ttl, dry_run=dry_run)
 
         removed_count = result["removed_count"]
         if removed_count > 0:
@@ -228,6 +309,15 @@ def run_gc_loop(
                 f"[broker-gc] purged {dl_purged} stale dead-letter entry/entries "
                 f"(>{DEFAULT_DEAD_LETTER_TTL_SECONDS // 86400}d old, "
                 f"{dl_result['before_count']} -> {dl_result['after_count']})",
+                flush=True,
+            )
+
+        orphan_purged = orphan_result.get("purged_count", 0)
+        if orphan_purged > 0:
+            print(
+                f"[broker-gc] purged {orphan_purged} orphan dead-letter entry/entries "
+                f"(alias unregistered >{orphan_dead_letter_ttl:.0f}s, "
+                f"{orphan_result['before_count']} -> {orphan_result['after_count']})",
                 flush=True,
             )
 
@@ -272,6 +362,13 @@ def main(argv: list[str] | None = None) -> int:
         help=f"dead-letter TTL in seconds (default: {DEFAULT_DEAD_LETTER_TTL_SECONDS}, i.e. 7 days)",
     )
     parser.add_argument(
+        "--orphan-dead-letter-ttl",
+        type=float,
+        default=DEFAULT_ORPHAN_DEAD_LETTER_TTL_SECONDS,
+        dest="orphan_dead_letter_ttl",
+        help=f"orphan dead-letter TTL: purge entries whose to_alias is unregistered for this many seconds (default: {DEFAULT_ORPHAN_DEAD_LETTER_TTL_SECONDS}s = 1h)",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="emit JSON output",
@@ -298,7 +395,12 @@ def main(argv: list[str] | None = None) -> int:
             ttl_seconds=args.dead_letter_ttl,
             dry_run=args.dry_run,
         )
-        combined = {**result, "dead_letter": dl_result}
+        orphan_result = purge_orphan_dead_letter(
+            broker_root,
+            ttl_seconds=args.orphan_dead_letter_ttl,
+            dry_run=args.dry_run,
+        )
+        combined = {**result, "dead_letter": dl_result, "orphan_dead_letter": orphan_result}
         if args.json:
             print(json.dumps(combined, indent=2))
         else:
@@ -316,7 +418,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"dead-letter: purged {dl_purged} stale entries (>{ttl_days}d old)")
             else:
                 print(f"dead-letter: {dl_result.get('before_count', 0)} entries, none expired")
-        ok = result["ok"] and dl_result.get("ok", True)
+            orphan_purged = orphan_result.get("purged_count", 0)
+            if orphan_purged > 0:
+                print(f"dead-letter: purged {orphan_purged} orphan entries (alias unregistered >{int(args.orphan_dead_letter_ttl)}s)")
+            else:
+                after = dl_result.get("after_count", dl_result.get("before_count", 0))
+                remaining = after - orphan_purged
+                if remaining > 0:
+                    print(f"dead-letter: {remaining} entries remaining (aliases still registered or within orphan TTL)")
+        ok = result["ok"] and dl_result.get("ok", True) and orphan_result.get("ok", True)
         return 0 if ok else 1
 
     # Run continuous GC loop
@@ -327,6 +437,7 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
             once=False,
             dead_letter_ttl=args.dead_letter_ttl,
+            orphan_dead_letter_ttl=args.orphan_dead_letter_ttl,
         )
     except KeyboardInterrupt:
         print("\n[broker-gc] interrupted, exiting", flush=True)
