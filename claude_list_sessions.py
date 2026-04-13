@@ -2,11 +2,16 @@
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 
 
 HOME = Path.home()
 PROFILE_DIRS = [HOME / ".claude-p", HOME / ".claude-w", HOME / ".claude"]
+TRANSCRIPT_PROFILE_DIRS = PROFILE_DIRS + [HOME / ".claude-shared"]
+UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
 
 
 def fixture_path_from_env() -> Path | None:
@@ -17,6 +22,12 @@ def fixture_path_from_env() -> Path | None:
 
 
 def iter_session_files():
+    """Legacy: yield per-session JSON state files under ~/.claude-*/sessions/.
+
+    Older Claude Code builds wrote one JSON file per session; newer builds
+    do not, and the directory is usually absent entirely. Kept as a
+    fallback because tests and any lingering older installs still use it.
+    """
     seen = set()
     for base in PROFILE_DIRS:
         sessions_dir = base / "sessions"
@@ -27,6 +38,90 @@ def iter_session_files():
                 continue
             seen.add(path)
             yield base.name, path
+
+
+def _process_comm(pid: int) -> str | None:
+    try:
+        return Path(f"/proc/{pid}/comm").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def _process_cmdline_tokens(pid: int) -> list[str]:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return []
+    return [chunk.decode("utf-8", "replace") for chunk in raw.split(b"\0") if chunk]
+
+
+def _parse_session_id_from_tokens(tokens: list[str]) -> str | None:
+    for i, token in enumerate(tokens):
+        if token == "--resume" and i + 1 < len(tokens):
+            candidate = tokens[i + 1]
+            if UUID_RE.match(candidate):
+                return candidate
+    return None
+
+
+def _session_id_from_transcript(cwd: str) -> str | None:
+    """Pick the most recently modified transcript under .claude-*/projects/<cwd-slug>/.
+
+    Used as a fallback when a live `claude` process has no ``--resume <uuid>``
+    in its command line (fresh sessions that received a generated id).
+    """
+    if not cwd:
+        return None
+    slug = cwd.replace("/", "-")
+    candidates: list[tuple[float, str]] = []
+    for base in TRANSCRIPT_PROFILE_DIRS:
+        projects_dir = base / "projects" / slug
+        if not projects_dir.is_dir():
+            continue
+        for jsonl in projects_dir.glob("*.jsonl"):
+            try:
+                mtime = jsonl.stat().st_mtime
+            except OSError:
+                continue
+            stem = jsonl.stem
+            if not UUID_RE.match(stem):
+                continue
+            candidates.append((mtime, stem))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
+def iter_live_claude_processes():
+    """Yield (pid, session_id, cwd) for each live Claude Code CLI process.
+
+    Scans /proc for processes whose comm is ``claude`` and resolves the
+    session id by (1) parsing ``--resume <uuid>`` from the command line,
+    or (2) matching against the newest transcript jsonl under the process
+    cwd's project slug. This does not depend on the legacy
+    ``~/.claude-*/sessions/*.json`` files, which newer Claude Code builds
+    no longer write.
+    """
+    proc_dir = Path("/proc")
+    try:
+        entries = list(proc_dir.iterdir())
+    except OSError:
+        entries = []
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if _process_comm(pid) != "claude":
+            continue
+        tokens = _process_cmdline_tokens(pid)
+        session_id = _parse_session_id_from_tokens(tokens)
+        cwd = readlink(f"/proc/{pid}/cwd") or ""
+        if session_id is None:
+            session_id = _session_id_from_transcript(cwd)
+        if session_id is None:
+            continue
+        yield pid, session_id, cwd
 
 
 def safe_json(path: Path):
@@ -45,6 +140,28 @@ def load_fixture_sessions(path: Path) -> list[dict]:
     return data
 
 
+def _build_row_from_proc(
+    pid: int, session_id: str, cwd: str, with_terminal_owner: bool
+) -> dict:
+    tty_path = readlink(f"/proc/{pid}/fd/0")
+    pts_num = extract_pts(tty_path)
+    terminal_pid = ""
+    master_fd = ""
+    if with_terminal_owner:
+        terminal_pid, master_fd = find_terminal_owner(pts_num, session_pid=pid)
+    return {
+        "profile": "proc",
+        "name": "",
+        "pid": pid,
+        "session_id": session_id,
+        "cwd": cwd,
+        "tty": tty_path or "",
+        "terminal_pid": terminal_pid or "",
+        "terminal_master_fd": master_fd or "",
+        "transcript": transcript_path(cwd, session_id) or "",
+    }
+
+
 def load_sessions(with_terminal_owner: bool = False) -> list[dict]:
     fixture_path = fixture_path_from_env()
     if fixture_path is not None:
@@ -52,6 +169,16 @@ def load_sessions(with_terminal_owner: bool = False) -> list[dict]:
 
     rows = []
     seen_session_ids = set()
+
+    # Primary: live `claude` processes discovered via /proc.
+    # Works on modern Claude Code builds where sessions/*.json no longer exists.
+    for pid, session_id, cwd in iter_live_claude_processes():
+        if session_id in seen_session_ids:
+            continue
+        seen_session_ids.add(session_id)
+        rows.append(_build_row_from_proc(pid, session_id, cwd, with_terminal_owner))
+
+    # Legacy: per-session JSON state files (older Claude Code builds).
     for profile_name, session_file in iter_session_files():
         data = safe_json(session_file)
         if not data:

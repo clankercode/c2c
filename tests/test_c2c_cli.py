@@ -3071,6 +3071,10 @@ class ClaudeListSessionsUnitTests(unittest.TestCase):
         with (
             mock.patch("claude_list_sessions.fixture_path_from_env", return_value=None),
             mock.patch(
+                "claude_list_sessions.iter_live_claude_processes",
+                return_value=iter([]),
+            ),
+            mock.patch(
                 "claude_list_sessions.iter_session_files",
                 return_value=[(".claude", session_file)],
             ),
@@ -3117,6 +3121,10 @@ class ClaudeListSessionsUnitTests(unittest.TestCase):
 
         with (
             mock.patch("claude_list_sessions.fixture_path_from_env", return_value=None),
+            mock.patch(
+                "claude_list_sessions.iter_live_claude_processes",
+                return_value=iter([]),
+            ),
             mock.patch(
                 "claude_list_sessions.iter_session_files",
                 return_value=[(".claude", session_file)],
