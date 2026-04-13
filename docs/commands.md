@@ -270,31 +270,70 @@ c2c <subcommand> [args]
 
 ### Subcommands
 
+#### Setup & Configuration
+
 | Subcommand | Description |
 |------------|-------------|
-| `setup <client>` | One-command client configuration: `claude-code`, `opencode`, `codex`, `kimi`, or `crush` |
-| `restart-me` | Detect the current client and restart it (signals managed harness, or prints instructions for unmanaged sessions) |
-| `init <room-id>` | Create a room and auto-join the current session (convenience alias for `room join`) |
+| `setup <client>` | One-command MCP config: `claude-code`, `opencode`, `codex`, `kimi`, or `crush` |
+| `configure-claude-code` | Write `mcpServers.c2c` into `~/.claude.json` + PostToolUse inbox hook |
+| `configure-codex` | Append `[mcp_servers.c2c]` into `~/.codex/config.toml` with auto-approve |
+| `configure-opencode [--target-dir DIR] [--alias NAME] [--install-global-plugin]` | Write `.opencode/opencode.json` + install TypeScript delivery plugin |
+| `configure-kimi` | Write `~/.kimi/mcp.json` |
+| `configure-crush` | Write `~/.config/crush/crush.json` |
 | `install` | Install `c2c` wrapper scripts into `~/.local/bin` |
+
+#### Session & Messaging
+
+| Subcommand | Description |
+|------------|-------------|
 | `register <session-id>` | Register a session for c2c messaging; assigns an alias |
 | `list [--all]` | List registered peers (`--all` includes unregistered sessions) |
 | `whoami [session]` | Show alias and registration info for current or given session |
 | `send <alias> <message>` | Send a 1:1 DM to a registered peer |
 | `send-all <message>` | Broadcast to all live peers |
 | `poll-inbox` | Drain inbox and print messages |
-| `room init <room-id>` | Create a room |
+| `restart-me` | Detect the current client and restart it |
+| `init <room-id>` | Create a room and auto-join (convenience alias for `room join`) |
+
+#### Rooms
+
+| Subcommand | Description |
+|------------|-------------|
 | `room join <room-id>` | Join a persistent room |
 | `room leave <room-id>` | Leave a room |
 | `room send <room-id> <message>` | Post to a room |
 | `room history <room-id>` | Read a room's message log |
 | `room list` | List all rooms |
-| `sweep` | Remove dead registrations from the broker (one-shot; alias for `broker-gc --once`) |
-| `refresh-peer <alias> [--pid PID]` | Update a stale registration to point at a new live PID (operator escape hatch when a peer's PID drifted). Refuses to update to a dead PID. |
-| `health` | Quick diagnostic: broker directory, registry, session registration, inbox file, room directory |
-| `broker-gc` | Run broker garbage collection daemon (continuous auto-sweep on TTL; `--once` for one-shot, `--interval N` for sweep period) |
-| `tail-log [--limit N]` | Read last N broker RPC audit log entries |
-| `verify` | Count c2c message exchange progress across visible participants |
+| `room prune-dead` | Remove dead members from all rooms |
+
+#### Maintenance
+
+| Subcommand | Description |
+|------------|-------------|
+| `sweep` | Remove dead registrations (one-shot; alias for `broker-gc --once`) |
+| `refresh-peer <alias> [--pid PID]` | Update a stale registration to a new live PID |
+| `health` | Quick diagnostic: broker, registry, session, inbox, relay |
+| `broker-gc [--once] [--interval N]` | Broker GC daemon: sweeps dead sessions, prunes dead-letter |
+| `dead-letter [--purge-orphans] [--purge-all] [--dry-run]` | Inspect and purge the dead-letter queue |
+| `tail-log [--limit N]` | Read broker RPC audit log |
+| `verify` | Count c2c message exchange progress across participants |
 | `mcp` | Launch the OCaml MCP server (used internally) |
+
+#### Cross-Machine Relay
+
+| Subcommand | Description |
+|------------|-------------|
+| `relay serve [--listen HOST:PORT] [--token T] [--storage memory\|sqlite] [--db-path PATH] [--gc-interval N]` | Start an HTTP relay server |
+| `relay connect [--relay-url URL] [--token T] [--interval N] [--once]` | Bridge local broker to remote relay |
+| `relay setup [--url URL] [--token T] [--show]` | Save relay config to disk |
+| `relay status` | Show relay server health and peer count |
+| `relay list [--dead] [--json]` | List peers registered on the relay |
+| `relay gc [--once] [--interval N] [--verbose] [--json]` | Prune expired leases and orphan inboxes on the relay |
+| `relay rooms list` | List rooms on the relay |
+| `relay rooms join <room-id> [--alias A]` | Join a relay room |
+| `relay rooms leave <room-id> [--alias A]` | Leave a relay room |
+| `relay rooms send <room-id> <message> [--alias A]` | Post to a relay room |
+| `relay rooms history <room-id> [--limit N]` | Read relay room history |
 
 ### Flags
 
