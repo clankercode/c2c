@@ -3550,18 +3550,15 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
             payload["env"]["RUN_OPENCODE_INST_CONFIG_PATH"],
             str(REPO / "run-opencode-inst.d" / "c2c-opencode-local.opencode.json"),
         )
+        # OPENCODE_CONFIG: path opencode reads to find its config
         self.assertEqual(
             payload["env"]["OPENCODE_CONFIG"],
             str(REPO / "run-opencode-inst.d" / "c2c-opencode-local.opencode.json"),
         )
-        # Verify the dedicated managed config has the right c2c session ID
-        managed_config = json.loads(
-            (REPO / "run-opencode-inst.d" / "c2c-opencode-local.opencode.json").read_text(
-                encoding="utf-8"
-            )
-        )
+        # OPENCODE_CONFIG_CONTENT: content of that file for debugging / dry-run inspection
+        env_config = json.loads(payload["env"]["OPENCODE_CONFIG_CONTENT"])
         self.assertEqual(
-            managed_config["mcp"]["c2c"]["environment"]["C2C_MCP_SESSION_ID"],
+            env_config["mcp"]["c2c"]["environment"]["C2C_MCP_SESSION_ID"],
             "opencode-local",
         )
         self.assertEqual(payload["cwd"], str(REPO))

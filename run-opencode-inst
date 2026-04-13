@@ -135,7 +135,10 @@ def build_launch(name: str, config: dict, extra: list[str]) -> tuple[list[str], 
     env["RUN_OPENCODE_INST_NAME"] = name
     env["RUN_OPENCODE_INST_C2C_SESSION_ID"] = c2c_session_id
     env["RUN_OPENCODE_INST_CONFIG_PATH"] = config_path_value
+    # OPENCODE_CONFIG: the path opencode reads to discover its config file.
+    # OPENCODE_CONFIG_CONTENT: the file content for debugging / dry-run inspection.
     env["OPENCODE_CONFIG"] = config_path_value
+    env["OPENCODE_CONFIG_CONTENT"] = Path(config_path_value).read_text(encoding="utf-8")
     restart_marker = restart_marker_path(name)
     env["RUN_OPENCODE_INST_RESTART_MARKER"] = str(restart_marker)
     env["C2C_MCP_SESSION_ID"] = c2c_session_id
@@ -169,6 +172,7 @@ def main(argv: list[str]) -> int:
                         "RUN_OPENCODE_INST_C2C_SESSION_ID": env["RUN_OPENCODE_INST_C2C_SESSION_ID"],
                         "RUN_OPENCODE_INST_CONFIG_PATH": env["RUN_OPENCODE_INST_CONFIG_PATH"],
                         "OPENCODE_CONFIG": env["OPENCODE_CONFIG"],
+                        "OPENCODE_CONFIG_CONTENT": env["OPENCODE_CONFIG_CONTENT"],
                         "RUN_OPENCODE_INST_RESTART_MARKER": env["RUN_OPENCODE_INST_RESTART_MARKER"],
                         "C2C_MCP_SESSION_ID": env["C2C_MCP_SESSION_ID"],
                         "C2C_MCP_AUTO_REGISTER_ALIAS": env["C2C_MCP_AUTO_REGISTER_ALIAS"],
