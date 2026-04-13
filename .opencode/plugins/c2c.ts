@@ -43,7 +43,10 @@ const C2CDelivery: Plugin = async (ctx) => {
 
   async function log(msg: string): Promise<void> {
     try {
-      await ctx.client.app.log({ level: "debug", message: `c2c: ${msg}` });
+      await ctx.client.app.log({
+        body: { service: "c2c", level: "debug", message: `c2c: ${msg}` },
+        url: "/log",
+      } as any);
     } catch {
       // logging failure is non-fatal
     }
@@ -51,7 +54,10 @@ const C2CDelivery: Plugin = async (ctx) => {
 
   async function toast(msg: string, variant: "info" | "warning" | "error" = "info"): Promise<void> {
     try {
-      await ctx.client.tui.showToast({ message: msg, variant });
+      await ctx.client.tui.showToast({
+        url: "/tui/show-toast",
+        body: { title: "c2c", message: msg, variant, duration: 3000 },
+      } as any);
     } catch {
       // toast failure is non-fatal
     }
