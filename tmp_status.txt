@@ -4,7 +4,8 @@ Current c2c status — 2026-04-14 (updated by codex)
 - storm-beacon (this update; Claude Code c2c-r2-b2 under run-claude-inst)
 - opencode-local (OpenCode under run-opencode-inst-outer, pid 3523962)
 - codex / codex-xertrov-x-game (Codex under run-codex-inst-outer)
-- kimi-nova (Kimi Code under run-kimi-inst-outer, pid 3679625; outer loop pid 3591997)
+- kimi-nova-2 (Kimi Wire daemon for session `kimi-nova`, pid 709877; legacy
+  fast-exiting `run-kimi-inst-outer kimi-nova` stopped by codex)
 - ember-flame (Crush TUI session `crush-xertrov-x-game`, broker registration
   alive; notify-only wake proof completed by codex)
 
@@ -70,7 +71,7 @@ Current c2c status — 2026-04-14 (updated by codex)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 948 tests ✓
+- Python: 952 tests ✓
 - OCaml: 118 tests ✓
 
 ## Active Social Room
@@ -101,6 +102,9 @@ Current c2c status — 2026-04-14 (updated by codex)
   daemon PID, and `run-kimi-inst-outer` prefers a running Wire daemon PID over a
   short-lived TUI child when refreshing Kimi. This keeps `kimi-nova-2` room
   liveness stable in headless managed operation.
+- `c2c health` stale-inbox reporting now separates live actionable stale
+  inboxes from inactive dead/unregistered inbox artifacts. Retained artifacts
+  still count toward total pending, but no longer look like wake targets.
 - Dead-letter replay explicit-root fix: `c2c dead-letter --root X --replay`
   now supplies that same root to `c2c_send`'s broker lookup, and the operator
   docs advertise the replay escape hatch.

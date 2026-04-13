@@ -8360,7 +8360,9 @@ class HealthCheckStaleInboxTests(unittest.TestCase):
         self.assertEqual(result["stale"][0]["count"], 5)
 
     def test_alias_resolved_from_registry(self):
-        self._write_registry([{"session_id": "sess-a", "alias": "nice-agent"}])
+        self._write_registry(
+            [{"session_id": "sess-a", "alias": "nice-agent", "pid": os.getpid()}]
+        )
         self._write_inbox("sess-a", [{"content": "m"}] * 10)
         result = self.c2c_health.check_stale_inboxes(self.broker_root, threshold=5)
         self.assertEqual(result["stale"][0]["alias"], "nice-agent")
@@ -8376,6 +8378,43 @@ class HealthCheckStaleInboxTests(unittest.TestCase):
         result = self.c2c_health.check_stale_inboxes(self.broker_root, threshold=5)
         self.assertEqual(result["total_pending"], 10)
         self.assertEqual(len(result["stale"]), 1)  # only sess-b >= threshold
+
+    def test_dead_registered_inbox_is_reported_separately_from_live_stale(self):
+        self._write_registry(
+            [
+                {"session_id": "live-sess", "alias": "live-agent", "pid": os.getpid()},
+                {"session_id": "dead-sess", "alias": "dead-agent", "pid": 99999999},
+            ]
+        )
+        self._write_inbox("live-sess", [{"content": "m"}] * 6)
+        self._write_inbox("dead-sess", [{"content": "m"}] * 7)
+
+        result = self.c2c_health.check_stale_inboxes(self.broker_root, threshold=5)
+
+        self.assertEqual([entry["alias"] for entry in result["stale"]], ["live-agent"])
+        self.assertEqual(
+            [entry["alias"] for entry in result["inactive_stale"]],
+            ["dead-agent"],
+        )
+        self.assertEqual(result["inactive_pending"], 7)
+
+    def test_unregistered_inbox_is_reported_as_inactive_artifact(self):
+        self._write_registry([])
+        self._write_inbox("proof-session", [{"content": "m"}] * 5)
+
+        result = self.c2c_health.check_stale_inboxes(self.broker_root, threshold=5)
+
+        self.assertEqual(result["stale"], [])
+        self.assertEqual(result["inactive_stale"][0]["session_id"], "proof-session")
+        self.assertEqual(result["inactive_stale"][0]["alive"], None)
+
+    def test_no_registry_preserves_unknown_inbox_as_actionable_stale(self):
+        self._write_inbox("legacy-session", [{"content": "m"}] * 5)
+
+        result = self.c2c_health.check_stale_inboxes(self.broker_root, threshold=5)
+
+        self.assertEqual(result["stale"][0]["session_id"], "legacy-session")
+        self.assertEqual(result["inactive_stale"], [])
 
 
 class HealthCheckDeliverDaemonTests(unittest.TestCase):
@@ -8509,6 +8548,29 @@ class HealthPrintDeliverDaemonTests(unittest.TestCase):
         report = self._make_report(hook_registered=True, daemon_running=True)
         output = self._capture_output(report)
         self.assertIn("Deliver daemon: running (pid 12345)", output)
+
+    def test_inactive_stale_inboxes_not_reported_as_nominal(self):
+        report = self._make_report(hook_registered=True, daemon_running=True)
+        report["stale_inboxes"] = {
+            "stale": [],
+            "inactive_stale": [
+                {
+                    "session_id": "proof-session",
+                    "alias": "proof-session",
+                    "count": 7,
+                    "alive": None,
+                }
+            ],
+            "total_pending": 7,
+            "inactive_pending": 7,
+            "threshold": 5,
+        }
+
+        output = self._capture_output(report)
+
+        self.assertIn("Inactive inbox artifacts: 1 session(s)", output)
+        self.assertIn("proof-session: 7 pending (inactive)", output)
+        self.assertNotIn("nominal", output)
 
 
 class WakePeerTests(unittest.TestCase):

@@ -9,9 +9,20 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| _none_ | - | - | - |
+| _none_ | | | |
 
 ## History (addendum)
+
+- 2026-04-13T23:59Z - codex RELEASED locks on `c2c_health.py`,
+  `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-13T23-55-00Z-codex-health-stale-inbox-noise.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Split health stale-inbox
+  reporting into live actionable `stale` and retained inactive
+  `inactive_stale` artifacts, preserving no-registry fallback behavior for
+  isolated brokers. Verification: focused health tests 14/14, `py_compile`,
+  `git diff --check`, full `just test` with 952 Python tests plus OCaml
+  build/runtest, live `./c2c health --json`, and live `./c2c status --json`
+  showing `swarm-lounge` 5/5 alive.
 
 - 2026-04-13T23:53Z - codex RELEASED locks on `c2c_wire_daemon.py`,
   `run-kimi-inst-outer`, `tests/test_c2c_cli.py`,

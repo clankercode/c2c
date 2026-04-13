@@ -327,17 +327,23 @@ def check_dead_letter(broker_root: Path) -> dict[str, Any]:
 def check_stale_inboxes(broker_root: Path, threshold: int = 5) -> dict[str, Any]:
     """Scan *.inbox.json files and report sessions with queued messages.
 
-    Returns a list of {session_id, alias, count} for any inbox with
-    >= threshold messages pending (i.e. delivered but not yet drained).
+    Returns live registered inboxes with >= threshold messages in ``stale`` and
+    dead/unregistered inbox artifacts in ``inactive_stale``. Both count toward
+    ``total_pending`` so operators still see retained broker data, but only live
+    sessions are treated as actionable wake targets.
     """
     mcp_dir = broker_root
     stale: list[dict] = []
+    inactive_stale: list[dict] = []
     total_pending = 0
+    inactive_pending = 0
 
     # Build alias lookup from registry for friendlier output
     alias_by_sid: dict[str, str] = {}
+    alive_by_sid: dict[str, bool | None] = {}
     registry_path = broker_root / "registry.json"
-    if registry_path.exists():
+    registry_exists = registry_path.exists()
+    if registry_exists:
         try:
             regs = json.loads(registry_path.read_text(encoding="utf-8"))
             for reg in regs if isinstance(regs, list) else []:
@@ -345,6 +351,7 @@ def check_stale_inboxes(broker_root: Path, threshold: int = 5) -> dict[str, Any]
                 alias = reg.get("alias") or ""
                 if sid and alias:
                     alias_by_sid[sid] = alias
+                    alive_by_sid[sid] = c2c_mcp.broker_registration_is_alive(reg)
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -362,13 +369,29 @@ def check_stale_inboxes(broker_root: Path, threshold: int = 5) -> dict[str, Any]
             count = 0
         total_pending += count
         if count >= threshold:
-            stale.append({
+            entry = {
                 "session_id": session_id,
                 "alias": alias_by_sid.get(session_id, session_id),
                 "count": count,
-            })
+                "alive": alive_by_sid.get(session_id),
+            }
+            # Isolated/legacy broker roots may have no registry file at all. In
+            # that case preserve the old behavior and surface thresholded
+            # inboxes as actionable stale work; once a registry exists, absent
+            # or dead rows are inactive artifacts rather than wake targets.
+            if entry["alive"] is True or (entry["alive"] is None and not registry_exists):
+                stale.append(entry)
+            else:
+                inactive_stale.append(entry)
+                inactive_pending += count
 
-    return {"stale": stale, "total_pending": total_pending, "threshold": threshold}
+    return {
+        "stale": stale,
+        "inactive_stale": inactive_stale,
+        "total_pending": total_pending,
+        "inactive_pending": inactive_pending,
+        "threshold": threshold,
+    }
 
 
 def check_outer_loops() -> dict[str, Any]:
@@ -727,12 +750,28 @@ def print_health_report(report: dict[str, Any]) -> None:
     # Stale inboxes
     si = report.get("stale_inboxes", {})
     stale = si.get("stale", [])
+    inactive_stale = si.get("inactive_stale", [])
     total_pending = si.get("total_pending", 0)
+    inactive_pending = si.get("inactive_pending", 0)
     threshold = si.get("threshold", 5)
     if stale:
         print(f"~ Stale inboxes: {len(stale)} session(s) with >={threshold} messages pending (total {total_pending})")
         for entry in stale:
             print(f"    {entry['alias']}: {entry['count']} pending (not draining inbox)")
+        if inactive_stale:
+            print(
+                f"~ Inactive inbox artifacts: {len(inactive_stale)} session(s) "
+                f"with >={threshold} messages pending (inactive total {inactive_pending})"
+            )
+            for entry in inactive_stale:
+                print(f"    {entry['alias']}: {entry['count']} pending (inactive)")
+    elif inactive_stale:
+        print(
+            f"~ Inactive inbox artifacts: {len(inactive_stale)} session(s) "
+            f"with >={threshold} messages pending (inactive total {inactive_pending}, total {total_pending})"
+        )
+        for entry in inactive_stale:
+            print(f"    {entry['alias']}: {entry['count']} pending (inactive)")
     elif total_pending > 0:
         print(f"✓ Inboxes: {total_pending} message(s) queued (<{threshold} each, nominal)")
     else:
