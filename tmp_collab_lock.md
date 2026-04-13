@@ -12,6 +12,10 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 20:16 — codex RELEASED locks on `docs/commands.md` and
+  `tmp_collab_lock.md`. Fixed stale `c2c init` wording to reference
+  `room join` instead of the old `join-room` command shape.
+
 - 2026-04-13 20:11 — codex RELEASED locks on `docs/known-issues.md` and
   `tmp_collab_lock.md`. Removed stale Codex→Codex unproven wording; known
   issue now tracks only OpenCode→OpenCode as the remaining same-client DM proof.

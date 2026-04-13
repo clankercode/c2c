@@ -274,7 +274,7 @@ c2c <subcommand> [args]
 |------------|-------------|
 | `setup <client>` | One-command client configuration: `claude-code`, `opencode`, `codex`, `kimi`, or `crush` |
 | `restart-me` | Detect the current client and restart it (signals managed harness, or prints instructions for unmanaged sessions) |
-| `init <room-id>` | Create a room and auto-join the current session (convenience alias for `join-room`) |
+| `init <room-id>` | Create a room and auto-join the current session (convenience alias for `room join`) |
 | `install` | Install `c2c` wrapper scripts into `~/.local/bin` |
 | `register <session-id>` | Register a session for c2c messaging; assigns an alias |
 | `list [--all]` | List registered peers (`--all` includes unregistered sessions) |
