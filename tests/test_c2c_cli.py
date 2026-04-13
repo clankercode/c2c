@@ -3127,9 +3127,67 @@ class C2CDeliverInboxUnitTests(unittest.TestCase):
         self.assertEqual(json.loads(inbox_path.read_text(encoding="utf-8")), [])
         self.assertIn("first", inject.call_args_list[0].args[2])
         self.assertIn("second", inject.call_args_list[1].args[2])
+        self.assertIn('source="broker"', inject.call_args_list[0].args[2])
+        self.assertIn(
+            'source_tool="c2c_deliver_inbox"', inject.call_args_list[0].args[2]
+        )
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["delivered"], 2)
         self.assertEqual(payload["target"]["terminal_pid"], 44444)
+
+    def test_deliver_inbox_notify_only_injects_nudge_without_draining_content(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        broker_root.mkdir()
+        inbox_path = broker_root / "opencode-local.inbox.json"
+        inbox_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "from_alias": "codex",
+                        "to_alias": "opencode-local",
+                        "content": "secret content must stay broker-native",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        stdout = io.StringIO()
+
+        with (
+            mock.patch("c2c_deliver_inbox.c2c_poker.inject") as inject,
+            mock.patch("sys.stdout", stdout),
+        ):
+            result = c2c_deliver_inbox.main(
+                [
+                    "--client",
+                    "opencode",
+                    "--terminal-pid",
+                    "44444",
+                    "--pts",
+                    "12",
+                    "--session-id",
+                    "opencode-local",
+                    "--broker-root",
+                    str(broker_root),
+                    "--notify-only",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        inject.assert_called_once()
+        payload_text = inject.call_args.args[2]
+        self.assertIn("mcp__c2c__poll_inbox", payload_text)
+        self.assertIn('source="broker-notify"', payload_text)
+        self.assertIn('source_tool="c2c_deliver_inbox"', payload_text)
+        self.assertNotIn("secret content", payload_text)
+        self.assertEqual(
+            json.loads(inbox_path.read_text(encoding="utf-8"))[0]["content"],
+            "secret content must stay broker-native",
+        )
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["delivered"], 0)
+        self.assertTrue(payload["notified"])
 
 
 class ClaudeListSessionsUnitTests(unittest.TestCase):
@@ -3473,6 +3531,54 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         )
         self.assertEqual(payload["env"]["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
 
+    def test_run_opencode_inst_rearm_dry_run_reports_bg_loop_commands(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir) / "run-opencode-inst.d"
+            config_dir.mkdir()
+            (config_dir / "opencode-a.pid").write_text("12345\n", encoding="utf-8")
+            (config_dir / "opencode-a.json").write_text(
+                json.dumps(
+                    {
+                        "c2c_session_id": "opencode-a-local",
+                        "c2c_alias": "opencode-a",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            env = {
+                "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir),
+                "RUN_OPENCODE_INST_REARM_DRY_RUN": "1",
+            }
+
+            result = run_cli(
+                "run-opencode-inst-rearm", "opencode-a", "--json", env=env
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["name"], "opencode-a")
+        self.assertEqual(payload["target_pid"], 12345)
+        self.assertEqual(payload["session_id"], "opencode-a-local")
+        self.assertEqual(payload["alias"], "opencode-a")
+        joined_commands = "\n".join(
+            " ".join(command) for command in payload["commands"]
+        )
+        self.assertIn("c2c_deliver_inbox.py", joined_commands)
+        self.assertIn("--client opencode", joined_commands)
+        self.assertIn("--session-id opencode-a-local", joined_commands)
+        self.assertIn("--notify-only", joined_commands)
+        self.assertIn("c2c_poker.py", joined_commands)
+
+    def test_opencode_local_config_sets_stable_c2c_alias(self):
+        config = json.loads(
+            (REPO / "run-opencode-inst.d" / "c2c-opencode-local.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        self.assertEqual(config["c2c_alias"], "opencode-local")
+        self.assertNotIn("pre_exec", config)
+
     def test_run_opencode_inst_outer_dry_run_reports_inner_launch_command(self):
         env = {"RUN_OPENCODE_INST_OUTER_DRY_RUN": "1"}
         result = run_cli("run-opencode-inst-outer", "c2c-opencode-local", env=env)
@@ -3482,6 +3588,10 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         self.assertEqual(
             payload["inner"][1:],
             [str(REPO / "run-opencode-inst"), "c2c-opencode-local"],
+        )
+        self.assertEqual(
+            payload["rearm"],
+            [sys.executable, str(REPO / "run-opencode-inst-rearm"), "c2c-opencode-local"],
         )
 
     @unittest.skipUnless(shutil.which("opencode"), "opencode not installed")

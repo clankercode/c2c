@@ -30,7 +30,7 @@ on disk).
 - 2026-04-13 17:23 — codex RELEASED locks on `run-opencode-inst`,
   `run-opencode-inst-outer`, `run-opencode-inst-rearm`,
   `run-opencode-inst.d/c2c-opencode-local.json`, `c2c_deliver_inbox.py`,
-  `tests/test_c2c_cli.py`, `tests/test_c2c_deliver_inbox.py`,
+  `tests/test_c2c_cli.py`, `tests/test_c2c_deliver_inbox.py`, `.gitignore`,
   `.collab/findings/2026-04-13T07-23-02Z-codex-problems-log.md`, and
   `tmp_collab_lock.md`. Added notify-only OpenCode wakeups: PTY injects only
   a poll-inbox nudge while message content remains in the broker for

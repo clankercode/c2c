@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -106,6 +107,7 @@ def main(argv: list[str]) -> int:
     extra = argv[2:]
     config = load_config(name)
     launch, cwd_path, env = build_launch(name, config, extra)
+    pre_exec = coerce_string_list(config.get("pre_exec"), "pre_exec")
 
     if dry_run_enabled():
         print(
@@ -114,6 +116,7 @@ def main(argv: list[str]) -> int:
                     "launch": launch,
                     "cwd": str(cwd_path),
                     "pid_file": str(pid_path(name)),
+                    "pre_exec": pre_exec,
                     "env": {
                         "RUN_OPENCODE_INST_NAME": env["RUN_OPENCODE_INST_NAME"],
                         "RUN_OPENCODE_INST_C2C_SESSION_ID": env["RUN_OPENCODE_INST_C2C_SESSION_ID"],
@@ -132,6 +135,9 @@ def main(argv: list[str]) -> int:
     pid_file = pid_path(name)
     pid_file.parent.mkdir(parents=True, exist_ok=True)
     pid_file.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    if pre_exec:
+        print(f"[run-opencode-inst] pre_exec: {shlex.join(pre_exec)}", file=sys.stderr)
+        subprocess.run(pre_exec, cwd=str(cwd_path), env=env, check=False)
 
     print(f"[run-opencode-inst] exec {shlex.join(launch)} (cwd={cwd_path})", file=sys.stderr)
     os.chdir(str(cwd_path))

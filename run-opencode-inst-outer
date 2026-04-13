@@ -23,6 +23,7 @@ DOUBLE_SIGINT_WINDOW_SECONDS = 2.0
 
 HERE = Path(__file__).resolve().parent
 INNER = HERE / "run-opencode-inst"
+REARM = HERE / "run-opencode-inst-rearm"
 
 
 def dry_run_enabled() -> bool:
@@ -39,6 +40,30 @@ def inner_command(name: str, extra: list[str]) -> list[str]:
     return [sys.executable, str(INNER), name, *extra]
 
 
+def rearm_command(name: str) -> list[str]:
+    return [sys.executable, str(REARM), name]
+
+
+def rearm_enabled() -> bool:
+    return os.environ.get("RUN_OPENCODE_INST_REARM", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def maybe_rearm(name: str) -> None:
+    if not rearm_enabled() or not REARM.exists():
+        return
+    completed = subprocess.run(rearm_command(name), cwd=HERE, check=False)
+    if completed.returncode != 0:
+        print(
+            f"[run-opencode-inst-outer] warning: rearm exited code={completed.returncode}",
+            flush=True,
+        )
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
         print(f"usage: {argv[0]} <instance-name> [extra opencode args...]", file=sys.stderr)
@@ -53,7 +78,7 @@ def main(argv: list[str]) -> int:
 
     command = inner_command(name, extra)
     if dry_run_enabled():
-        print(json.dumps({"inner": command}, indent=2))
+        print(json.dumps({"inner": command, "rearm": rearm_command(name)}, indent=2))
         return 0
 
     backoff = INITIAL_BACKOFF_SECONDS
@@ -64,12 +89,17 @@ def main(argv: list[str]) -> int:
         iteration += 1
         print(f"[run-opencode-inst-outer] iter {iteration}: launching {name}", flush=True)
         started = time.monotonic()
+        proc = None
         try:
-            completed = subprocess.run(command, cwd=HERE, check=False)
-            exit_code = completed.returncode
+            proc = subprocess.Popen(command, cwd=HERE)
+            time.sleep(0.5)
+            maybe_rearm(name)
+            exit_code = proc.wait()
         except KeyboardInterrupt:
             now = time.monotonic()
             if now - last_sigint < DOUBLE_SIGINT_WINDOW_SECONDS:
+                if proc is not None and proc.poll() is None:
+                    proc.terminate()
                 print("[run-opencode-inst-outer] double SIGINT - exiting.", flush=True)
                 return 130
             last_sigint = now

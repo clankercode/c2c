@@ -1,4 +1,5 @@
 import io
+import json
 import sys
 import tempfile
 import unittest
@@ -236,6 +237,61 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
             self.assertEqual(result, 0)
             start_daemon.assert_called_once()
             resolve.assert_not_called()
+
+    def test_notify_only_loop_renotifies_when_inbox_changes_inside_debounce(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            broker_root = Path(temp_dir) / "mcp-broker"
+            broker_root.mkdir()
+            inbox_path = broker_root / "opencode-local.inbox.json"
+            inbox_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "from_alias": "codex",
+                            "to_alias": "opencode-local",
+                            "content": "first",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            def replace_message(_seconds):
+                inbox_path.write_text(
+                    json.dumps(
+                        [
+                            {
+                                "from_alias": "codex",
+                                "to_alias": "opencode-local",
+                                "content": "second",
+                            }
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+
+            with (
+                mock.patch("c2c_deliver_inbox.c2c_poker.inject") as inject,
+                mock.patch("c2c_deliver_inbox.time.sleep", side_effect=replace_message),
+            ):
+                result = c2c_deliver_inbox.run_loop(
+                    session_id="opencode-local",
+                    broker_root=broker_root,
+                    client="opencode",
+                    terminal_pid=33333,
+                    pts="9",
+                    dry_run=False,
+                    timeout=0.1,
+                    file_fallback=True,
+                    notify_only=True,
+                    notify_debounce=30,
+                    interval=0,
+                    max_iterations=2,
+                    watched_pid=None,
+                )
+
+            self.assertEqual(result["iterations"], 2)
+            self.assertEqual(inject.call_count, 2)
 
 
 if __name__ == "__main__":

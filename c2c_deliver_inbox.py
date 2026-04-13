@@ -34,7 +34,30 @@ def message_payload(message: dict[str, Any]) -> str:
     sender = str(message.get("from_alias", "") or "c2c")
     alias = str(message.get("to_alias", "") or "")
     return c2c_poker.render_payload(
-        content, event="message", sender=sender, alias=alias, raw=False
+        content,
+        event="message",
+        sender=sender,
+        alias=alias,
+        raw=False,
+        source="broker",
+        source_tool="c2c_deliver_inbox",
+    )
+
+
+def notify_payload(*, session_id: str, count: int) -> str:
+    noun = "message" if count == 1 else "messages"
+    return c2c_poker.render_payload(
+        (
+            f"{count} broker-native C2C {noun} queued for session {session_id}. "
+            "Call mcp__c2c__poll_inbox now to read the content from the broker. "
+            "This PTY nudge intentionally does not contain the message body."
+        ),
+        event="notify",
+        sender="c2c-deliver-inbox",
+        alias=session_id,
+        raw=False,
+        source="broker-notify",
+        source_tool="c2c_deliver_inbox",
     )
 
 
@@ -48,7 +71,10 @@ def build_result(
     pts: str,
     messages: list[dict[str, Any]],
     dry_run: bool,
+    delivered: int | None = None,
+    notified: bool = False,
 ) -> dict[str, Any]:
+    delivered_count = 0 if dry_run else (len(messages) if delivered is None else delivered)
     return {
         "ok": True,
         "session_id": session_id,
@@ -56,7 +82,8 @@ def build_result(
         "source": source,
         "target": {"client": client, "terminal_pid": terminal_pid, "pts": pts},
         "messages": messages,
-        "delivered": 0 if dry_run else len(messages),
+        "delivered": delivered_count,
+        "notified": notified,
         "dry_run": dry_run,
         "sent_at": time.time(),
     }
@@ -198,6 +225,12 @@ def watched_pid_exited(watched_pid: int | None) -> bool:
     return watched_pid is not None and not pid_is_alive(watched_pid)
 
 
+def messages_signature(messages: list[dict[str, Any]]) -> str:
+    if not messages:
+        return ""
+    return json.dumps(messages, sort_keys=True, separators=(",", ":"))
+
+
 def deliver_once(
     *,
     session_id: str,
@@ -208,10 +241,20 @@ def deliver_once(
     dry_run: bool,
     timeout: float,
     file_fallback: bool,
+    notify_only: bool,
+    suppress_notify: bool = False,
 ) -> dict[str, Any]:
-    if dry_run:
+    notified = False
+    delivered = None
+    if dry_run or notify_only:
         source = "peek"
         messages = peek_inbox(broker_root, session_id)
+        delivered = 0
+        if notify_only and messages and not dry_run and not suppress_notify:
+            c2c_poker.inject(
+                terminal_pid, pts, notify_payload(session_id=session_id, count=len(messages))
+            )
+            notified = True
     else:
         source, messages = c2c_poll_inbox.poll_inbox(
             broker_root=broker_root,
@@ -232,6 +275,8 @@ def deliver_once(
         pts=pts,
         messages=messages,
         dry_run=dry_run,
+        delivered=delivered,
+        notified=notified,
     )
 
 
@@ -245,6 +290,8 @@ def run_loop(
     dry_run: bool,
     timeout: float,
     file_fallback: bool,
+    notify_only: bool,
+    notify_debounce: float,
     interval: float,
     max_iterations: int | None,
     watched_pid: int | None,
@@ -253,12 +300,22 @@ def run_loop(
     total_delivered = 0
     last_result: dict[str, Any] | None = None
     stopped_reason: str | None = None
+    last_notify_at = 0.0
+    last_notify_signature = ""
 
     while max_iterations is None or iterations < max_iterations:
         if watched_pid_exited(watched_pid):
             stopped_reason = "watched_pid_exited"
             break
         iterations += 1
+        suppress_notify = False
+        current_notify_signature = ""
+        if notify_only and notify_debounce > 0:
+            current_notify_signature = messages_signature(peek_inbox(broker_root, session_id))
+            suppress_notify = (
+                current_notify_signature == last_notify_signature
+                and (time.monotonic() - last_notify_at) < notify_debounce
+            )
         last_result = deliver_once(
             session_id=session_id,
             broker_root=broker_root,
@@ -268,7 +325,16 @@ def run_loop(
             dry_run=dry_run,
             timeout=timeout,
             file_fallback=file_fallback,
+            notify_only=notify_only,
+            suppress_notify=suppress_notify,
         )
+        if notify_only and last_result.get("notified"):
+            last_notify_at = time.monotonic()
+            last_notify_signature = current_notify_signature or messages_signature(
+                last_result.get("messages", [])
+            )
+        elif notify_only and not last_result.get("messages"):
+            last_notify_signature = ""
         total_delivered += int(last_result.get("delivered", 0))
         if max_iterations is not None and iterations >= max_iterations:
             break
@@ -307,6 +373,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--broker-root", type=Path, help="broker root directory")
     parser.add_argument("--file-fallback", action="store_true")
     parser.add_argument("--timeout", type=float, default=5.0)
+    parser.add_argument(
+        "--notify-only",
+        action="store_true",
+        help=(
+            "peek for queued messages and inject only a poll_inbox nudge; "
+            "do not drain or inject message content"
+        ),
+    )
+    parser.add_argument(
+        "--notify-debounce",
+        type=float,
+        default=30.0,
+        help="minimum seconds between repeated notify-only nudges (default: 30)",
+    )
     parser.add_argument("--loop", action="store_true", help="keep polling and delivering")
     parser.add_argument("--interval", type=float, default=1.0)
     parser.add_argument("--max-iterations", type=int, default=None)
@@ -366,6 +446,8 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 timeout=args.timeout,
                 file_fallback=args.file_fallback,
+                notify_only=args.notify_only,
+                notify_debounce=args.notify_debounce,
                 interval=args.interval,
                 max_iterations=args.max_iterations,
                 watched_pid=watched_pid,
@@ -380,6 +462,7 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 timeout=args.timeout,
                 file_fallback=args.file_fallback,
+                notify_only=args.notify_only,
             )
     except Exception as exc:
         print(f"[c2c-deliver-inbox] {exc}", file=sys.stderr)
