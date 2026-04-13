@@ -20,7 +20,7 @@ Config keys:
                  session_id=ses_abc123).
   prompt         opencode run prompt text; also exported as
                  OPENCODE_MCP_PROMPT for MCP/plugin startup context
-  flags          extra flags before "run" (list of strings)
+  flags          extra flags before (list of strings)
   session        opencode session ID to resume (optional)
 
 Set RUN_OPENCODE_INST_DRY_RUN=1 to print the resolved launch command,
@@ -134,7 +134,7 @@ def build_launch(name: str, config: dict, extra: list[str]) -> tuple[list[str], 
     flags = coerce_string_list(config.get("flags"), "flags")
     resume_args = build_resume_args(config)
 
-    launch = [command, *flags, "run", *resume_args, *extra, prompt]
+    launch = [command, *flags, *resume_args, *extra, "--prompt", prompt]
 
     env = os.environ.copy()
     env["RUN_OPENCODE_INST_NAME"] = name

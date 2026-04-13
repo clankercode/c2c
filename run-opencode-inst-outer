@@ -85,71 +85,86 @@ def main(argv: list[str]) -> int:
     backoff = INITIAL_BACKOFF_SECONDS
     last_sigint = 0.0
     iteration = 0
+    current_proc: subprocess.Popen | None = None
 
-    while True:
-        iteration += 1
-        print(f"[run-opencode-inst-outer] iter {iteration}: launching {name}", flush=True)
-        started = time.monotonic()
-        proc = None
-        try:
-            proc = subprocess.Popen(command, cwd=HERE, start_new_session=True, env={**os.environ, "RUN_OPENCODE_INST_SILENT": "1"})
-            time.sleep(0.5)
-            maybe_rearm(name)
-            exit_code = proc.wait()
-        except KeyboardInterrupt:
-            now = time.monotonic()
-            if proc is not None and proc.poll() is None:
-                try:
-                    os.killpg(proc.pid, signal.SIGINT)
-                except ProcessLookupError:
-                    pass
-            if now - last_sigint < DOUBLE_SIGINT_WINDOW_SECONDS:
+    def forward_sigwinch(_signum: int, _frame) -> None:
+        proc_ref = current_proc
+        if proc_ref is not None and proc_ref.poll() is None:
+            try:
+                os.killpg(proc_ref.pid, signal.SIGWINCH)
+            except ProcessLookupError:
+                pass
+
+    original_sigwinch = signal.signal(signal.SIGWINCH, forward_sigwinch)
+
+    try:
+        while True:
+            iteration += 1
+            print(f"[run-opencode-inst-outer] iter {iteration}: launching {name}", flush=True)
+            started = time.monotonic()
+            proc = None
+            try:
+                proc = subprocess.Popen(command, cwd=HERE, start_new_session=True, env={**os.environ, "RUN_OPENCODE_INST_SILENT": "1"})
+                current_proc = proc
+                time.sleep(0.5)
+                maybe_rearm(name)
+                exit_code = proc.wait()
+            except KeyboardInterrupt:
+                now = time.monotonic()
                 if proc is not None and proc.poll() is None:
                     try:
-                        os.killpg(proc.pid, signal.SIGTERM)
+                        os.killpg(proc.pid, signal.SIGINT)
                     except ProcessLookupError:
                         pass
-                print("[run-opencode-inst-outer] double SIGINT - exiting.", flush=True)
-                return 130
-            last_sigint = now
-            print(
-                "[run-opencode-inst-outer] SIGINT received. Send again within "
-                f"{DOUBLE_SIGINT_WINDOW_SECONDS:.1f}s to exit the loop.",
-                flush=True,
-            )
-            if proc is not None and proc.poll() is None:
-                try:
-                    exit_code = proc.wait()
-                except KeyboardInterrupt:
-                    if proc.poll() is None:
+                if now - last_sigint < DOUBLE_SIGINT_WINDOW_SECONDS:
+                    if proc is not None and proc.poll() is None:
                         try:
                             os.killpg(proc.pid, signal.SIGTERM)
                         except ProcessLookupError:
                             pass
                     print("[run-opencode-inst-outer] double SIGINT - exiting.", flush=True)
                     return 130
-            else:
-                exit_code = 130
-        except FileNotFoundError as exc:
-            print(f"[run-opencode-inst-outer] failed to launch: {exc}", file=sys.stderr)
-            return 2
+                last_sigint = now
+                print(
+                    "[run-opencode-inst-outer] SIGINT received. Send again within "
+                    f"{DOUBLE_SIGINT_WINDOW_SECONDS:.1f}s to exit the loop.",
+                    flush=True,
+                )
+                if proc is not None and proc.poll() is None:
+                    try:
+                        exit_code = proc.wait()
+                    except KeyboardInterrupt:
+                        if proc.poll() is None:
+                            try:
+                                os.killpg(proc.pid, signal.SIGTERM)
+                            except ProcessLookupError:
+                                pass
+                        print("[run-opencode-inst-outer] double SIGINT - exiting.", flush=True)
+                        return 130
+                else:
+                    exit_code = 130
+            except FileNotFoundError as exc:
+                print(f"[run-opencode-inst-outer] failed to launch: {exc}", file=sys.stderr)
+                return 2
 
-        elapsed = time.monotonic() - started
-        print(
-            f"[run-opencode-inst-outer] inner exited code={exit_code} after {elapsed:.1f}s",
-            flush=True,
-        )
-
-        if elapsed < MIN_RUN_SECONDS:
+            elapsed = time.monotonic() - started
             print(
-                f"[run-opencode-inst-outer] fast exit - backing off {backoff:.1f}s",
+                f"[run-opencode-inst-outer] inner exited code={exit_code} after {elapsed:.1f}s",
                 flush=True,
             )
-            time.sleep(backoff)
-            backoff = min(backoff * 2.0, MAX_BACKOFF_SECONDS)
-        else:
-            backoff = INITIAL_BACKOFF_SECONDS
-            time.sleep(RESTART_PAUSE_SECONDS)
+
+            if elapsed < MIN_RUN_SECONDS:
+                print(
+                    f"[run-opencode-inst-outer] fast exit - backing off {backoff:.1f}s",
+                    flush=True,
+                )
+                time.sleep(backoff)
+                backoff = min(backoff * 2.0, MAX_BACKOFF_SECONDS)
+            else:
+                backoff = INITIAL_BACKOFF_SECONDS
+                time.sleep(RESTART_PAUSE_SECONDS)
+    finally:
+        signal.signal(signal.SIGWINCH, original_sigwinch)
 
 
 if __name__ == "__main__":

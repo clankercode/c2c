@@ -297,7 +297,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(payload, indent=2))
         else:
             print(
-                f"skipping OpenCode support loops for {args.name}: {payload['error']}"
+                f"skipping OpenCode support loops for {args.name}: {payload['error']}",
+                file=sys.stderr,
             )
         return 0
 
@@ -339,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, indent=2))
     else:
         state = "rearmed" if payload["ok"] else "failed to rearm"
-        print(f"{state} OpenCode support loops for {args.name}")
+        print(f"{state} OpenCode support loops for {args.name}", file=sys.stderr)
     return 0 if payload["ok"] else 1
 
 
