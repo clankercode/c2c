@@ -12,6 +12,15 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 19:11 — codex RELEASED locks on `c2c_send.py` and
+  `tests/test_c2c_cli.py`. Fixed CLI fallback sender attribution for
+  OpenCode/MCP-style env by resolving `C2C_MCP_SESSION_ID` through the broker
+  registry before falling back to `c2c-send`. Verification: added RED tests for
+  broker-only and PTY delegate send paths, focused `C2CSendUnitTests` 14/14,
+  `py_compile` OK, and live smoke showed
+  `C2C_MCP_SESSION_ID=opencode-local ./c2c-send codex ...` arrived at Codex
+  as `from_alias=opencode-local`.
+
 - 2026-04-13 19:07 — codex RELEASED locks on
   `c2c_opencode_wake_daemon.py` and
   `tests/test_c2c_opencode_wake_daemon.py`. Added and live-tested
