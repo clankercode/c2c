@@ -8,11 +8,11 @@ import os
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
+import c2c_broker_gc
 import c2c_mcp
 import c2c_poker
 
@@ -161,7 +161,7 @@ def refresh_broker_registration(
     if pid_start_time is not None:
         registration["pid_start_time"] = pid_start_time
 
-    with c2c_mcp.registry_write_lock(registry_path):
+    with c2c_broker_gc.with_registry_lock(broker_root):
         registrations = c2c_mcp.load_broker_registrations(registry_path)
         previous = next(
             (
@@ -179,21 +179,7 @@ def refresh_broker_registration(
             and existing.get("alias") != alias
         ]
         registrations.insert(0, registration)
-
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=broker_root,
-            prefix=f".{registry_path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            handle.write(json.dumps(registrations))
-            handle.flush()
-            os.fsync(handle.fileno())
-            temp_path = Path(handle.name)
-
-        os.replace(temp_path, registry_path)
+        c2c_broker_gc.save_broker_registrations(broker_root, registrations)
 
     return {
         "ok": True,
