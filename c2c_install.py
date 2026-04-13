@@ -10,6 +10,8 @@ COMMANDS = [
     "c2c-broker-gc",
     "c2c-configure-claude-code",
     "c2c-configure-codex",
+    "c2c-configure-crush",
+    "c2c-configure-kimi",
     "c2c-configure-opencode",
     "c2c-setup",
     "c2c-deliver-inbox",

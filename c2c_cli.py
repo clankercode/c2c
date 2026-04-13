@@ -4,10 +4,12 @@ import sys
 
 import c2c_broker_gc
 import c2c_configure_claude_code
-import c2c_health
 import c2c_configure_codex
+import c2c_configure_crush
+import c2c_configure_kimi
 import c2c_configure_opencode
 import c2c_deliver_inbox
+import c2c_health
 import c2c_setup
 import c2c_init
 import c2c_inject
@@ -75,6 +77,10 @@ def main(argv: list[str] | None = None) -> int:
         return c2c_configure_claude_code.main(remainder)
     if subcommand == "configure-codex":
         return c2c_configure_codex.main(remainder)
+    if subcommand == "configure-crush":
+        return c2c_configure_crush.main(remainder)
+    if subcommand == "configure-kimi":
+        return c2c_configure_kimi.main(remainder)
     if subcommand == "configure-opencode":
         return c2c_configure_opencode.main(remainder)
     if subcommand == "setup":
