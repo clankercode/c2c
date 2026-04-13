@@ -234,6 +234,15 @@ def main(argv: list[str]) -> int:
             exit_code = proc.returncode
         except KeyboardInterrupt:
             now = time.monotonic()
+            # Terminate child if still alive — prevents orphaned crush processes
+            # when the child runs in a new session and didn't receive the SIGINT.
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
             if now - last_sigint < DOUBLE_SIGINT_WINDOW_SECONDS:
                 print("[run-crush-inst-outer] double SIGINT - exiting.", flush=True)
                 return 130
