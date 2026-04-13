@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -60,6 +61,96 @@ def build_result(
     }
 
 
+def write_pidfile(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+
+def deliver_once(
+    *,
+    session_id: str,
+    broker_root: Path,
+    client: str,
+    terminal_pid: int,
+    pts: str,
+    dry_run: bool,
+    timeout: float,
+    file_fallback: bool,
+) -> dict[str, Any]:
+    if dry_run:
+        source = "peek"
+        messages = peek_inbox(broker_root, session_id)
+    else:
+        source, messages = c2c_poll_inbox.poll_inbox(
+            broker_root=broker_root,
+            session_id=session_id,
+            timeout=timeout,
+            force_file=file_fallback,
+            allow_file_fallback=True,
+        )
+        for message in messages:
+            c2c_poker.inject(terminal_pid, pts, message_payload(message))
+
+    return build_result(
+        session_id=session_id,
+        broker_root=broker_root,
+        source=source,
+        client=client,
+        terminal_pid=terminal_pid,
+        pts=pts,
+        messages=messages,
+        dry_run=dry_run,
+    )
+
+
+def run_loop(
+    *,
+    session_id: str,
+    broker_root: Path,
+    client: str,
+    terminal_pid: int,
+    pts: str,
+    dry_run: bool,
+    timeout: float,
+    file_fallback: bool,
+    interval: float,
+    max_iterations: int | None,
+) -> dict[str, Any]:
+    iterations = 0
+    total_delivered = 0
+    last_result: dict[str, Any] | None = None
+
+    while max_iterations is None or iterations < max_iterations:
+        iterations += 1
+        last_result = deliver_once(
+            session_id=session_id,
+            broker_root=broker_root,
+            client=client,
+            terminal_pid=terminal_pid,
+            pts=pts,
+            dry_run=dry_run,
+            timeout=timeout,
+            file_fallback=file_fallback,
+        )
+        total_delivered += int(last_result.get("delivered", 0))
+        if max_iterations is not None and iterations >= max_iterations:
+            break
+        time.sleep(interval)
+
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "broker_root": str(broker_root),
+        "target": {"client": client, "terminal_pid": terminal_pid, "pts": pts},
+        "loop": True,
+        "iterations": iterations,
+        "delivered": total_delivered,
+        "last_result": last_result,
+        "dry_run": dry_run,
+        "sent_at": time.time(),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Drain a C2C broker inbox and inject queued messages into a live client terminal."
@@ -73,6 +164,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--broker-root", type=Path, help="broker root directory")
     parser.add_argument("--file-fallback", action="store_true")
     parser.add_argument("--timeout", type=float, default=5.0)
+    parser.add_argument("--loop", action="store_true", help="keep polling and delivering")
+    parser.add_argument("--interval", type=float, default=1.0)
+    parser.add_argument("--max-iterations", type=int, default=None)
+    parser.add_argument("--pidfile", type=Path, default=None)
     parser.add_argument(
         "--client",
         choices=["claude", "codex", "opencode", "generic"],
@@ -92,35 +187,37 @@ def main(argv: list[str] | None = None) -> int:
     session_id = c2c_poll_inbox.resolve_session_id(args.session_id)
     broker_root = args.broker_root or c2c_poll_inbox.default_broker_root()
     terminal_pid, pts, _transcript = c2c_inject.resolve_target(args)
+    if args.pidfile:
+        write_pidfile(args.pidfile)
 
     try:
-        if args.dry_run:
-            source = "peek"
-            messages = peek_inbox(broker_root, session_id)
-        else:
-            source, messages = c2c_poll_inbox.poll_inbox(
-                broker_root=broker_root,
+        if args.loop:
+            result = run_loop(
                 session_id=session_id,
+                broker_root=broker_root,
+                client=args.client,
+                terminal_pid=terminal_pid,
+                pts=pts,
+                dry_run=args.dry_run,
                 timeout=args.timeout,
-                force_file=args.file_fallback,
-                allow_file_fallback=True,
+                file_fallback=args.file_fallback,
+                interval=args.interval,
+                max_iterations=args.max_iterations,
             )
-            for message in messages:
-                c2c_poker.inject(terminal_pid, pts, message_payload(message))
+        else:
+            result = deliver_once(
+                session_id=session_id,
+                broker_root=broker_root,
+                client=args.client,
+                terminal_pid=terminal_pid,
+                pts=pts,
+                dry_run=args.dry_run,
+                timeout=args.timeout,
+                file_fallback=args.file_fallback,
+            )
     except Exception as exc:
         print(f"[c2c-deliver-inbox] {exc}", file=sys.stderr)
         return 1
-
-    result = build_result(
-        session_id=session_id,
-        broker_root=broker_root,
-        source=source,
-        client=args.client,
-        terminal_pid=terminal_pid,
-        pts=pts,
-        messages=messages,
-        dry_run=args.dry_run,
-    )
     if args.json:
         print(json.dumps(result, indent=2))
     else:

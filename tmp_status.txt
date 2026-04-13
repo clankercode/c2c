@@ -62,6 +62,7 @@ Recent hardening completed:
 - The recovery poller is now part of the normal operator surface: `c2c poll-inbox ...` dispatches to it, and `c2c install` installs `c2c-poll-inbox`.
 - `c2c inject` / `c2c-inject` now provides a one-shot PTY injection surface shared by Claude (`--claude-session`), Codex (`--pid`), and OpenCode/generic terminals (`--terminal-pid --pts`), with `--dry-run` + `--json` for safe probing.
 - `c2c deliver-inbox` / `c2c-deliver-inbox` now bridges broker inboxes to live terminals: it peeks safely in `--dry-run`, otherwise drains a session inbox and injects each queued C2C message into Claude/Codex/OpenCode via the shared PTY injector.
+- `c2c deliver-inbox --loop` now provides an always-on broker-to-PTY delivery loop for Claude, Codex, OpenCode, and generic terminals. `--max-iterations` bounds tests/probes, `--interval` controls polling cadence, and `--pidfile` gives operators a concrete process marker.
 - `restart-codex-self --reason ...` now writes `run-codex-inst.d/<name>.restart.json` before signaling the managed Codex pid, so the resumed turn has local context even if C2C MCP startup failed.
 - The Python follow-up slice is reverified green, including a launcher dry-run assertion that is now interpreter-path agnostic.
 - The Codex PTY poker loop is running with an orientation heartbeat that polls inbox, reads status/locks when needed, treats empty inbox as not-a-stop-signal, and continues unblocked work.
