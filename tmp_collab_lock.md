@@ -12,6 +12,13 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14 00:12 — codex RELEASED locks on
+  `.collab/findings/2026-04-13T14-11-40Z-codex-opencode-plugin-live-test-no-drain.md`
+  and `tmp_collab_lock.md`. Live-tested the OpenCode native plugin with the
+  PTY notify daemon stopped; direct DM remained queued in the broker after
+  20 seconds, so plugin delivery is not yet proven. Restored support loops with
+  `run-opencode-inst-rearm`.
+
 - 2026-04-14 00:07 — codex RELEASED locks on `.opencode/plugins/c2c.ts`,
   `c2c_configure_opencode.py`, `c2c_relay_server.py`, `c2c_cli.py`,
   `tests/test_c2c_cli.py`, `tests/test_configure_opencode.py`,
