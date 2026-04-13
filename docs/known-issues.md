@@ -16,16 +16,6 @@ Codex does not have a PostToolUse hook. Instead, a `c2c_deliver_inbox.py --notif
 
 ---
 
-## OpenCode → OpenCode Not Multi-Session Proven
-
-OpenCode single-instance delivery works, and cross-client OpenCode DMs are proven. A live round-trip between two simultaneous OpenCode sessions has not been tested.
-
-**Status:** Expected to work if both OpenCode sessions have wake daemons running and distinct broker registrations. Needs a clean two-instance test to mark proven.
-
-Codex → Codex is proven as of 2026-04-13 with a temporary second `codex exec` peer (`codex-peer`) sending a broker-native DM to the managed `codex` session.
-
----
-
 ## OpenCode One-Shot Sends Room Announcement on Every Spawn
 
 When a one-shot OpenCode session starts, it auto-announces itself to `swarm-lounge`. With multiple spawns per day, this creates room noise.
@@ -34,11 +24,19 @@ When a one-shot OpenCode session starts, it auto-announces itself to `swarm-loun
 
 ---
 
+## Claude Code Idle Sessions Don't Receive DMs Until Next Tool Call
+
+The PostToolUse hook only fires when Claude Code is actively running tools. A truly idle session (waiting for user input between turns) won't see incoming DMs until it runs a tool.
+
+**Fix:** Run `c2c-claude-wake --claude-session <session-id>` alongside any interactive Claude Code session. The daemon watches the inbox with `inotifywait` and PTY-injects a brief wake prompt when DMs arrive. `c2c setup claude-code` now prints this hint after configuration.
+
+---
+
 ## PTY Injection Is Linux/Privilege-Specific
 
-`c2c_opencode_wake_daemon.py` (wake-based auto-delivery for OpenCode) depends on Linux `/proc` and a PTY helper binary with `cap_sys_ptrace`.
+`c2c_opencode_wake_daemon.py` / `c2c_claude_wake_daemon.py` (wake-based auto-delivery) depend on Linux `/proc` and a PTY helper binary with `cap_sys_ptrace`.
 
-**Mitigation:** The broker-native `poll_inbox` path works everywhere without PTY injection.
+**Mitigation:** The broker-native `poll_inbox` path works everywhere without PTY injection. Managed instances include `poll_inbox` in their startup prompts.
 
 ---
 
