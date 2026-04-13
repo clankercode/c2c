@@ -2922,6 +2922,57 @@ class C2CListUnitTests(unittest.TestCase):
         self.assertIsNone(peers_by_alias["codex"]["last_seen"])
         self.assertIsNone(peers_by_alias["gpt"]["last_seen"])
 
+    def _make_dead_broker(self) -> tempfile.TemporaryDirectory:
+        """Helper: broker root with one dead (pid=99999999) peer."""
+        tmp = tempfile.TemporaryDirectory()
+        (Path(tmp.name) / "registry.json").write_text(
+            json.dumps([{"session_id": "s1", "alias": "dead-peer", "pid": 99999999}]),
+            encoding="utf-8",
+        )
+        return tmp
+
+    def _run_list_broker(self, broker_root: str, outer_state: dict) -> str:
+        """Call c2c_list.main(["--broker"]) with a mocked outer-loop check and capture stdout."""
+        import io
+        import c2c_list
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"C2C_MCP_BROKER_ROOT": broker_root}),
+            mock.patch("c2c_health.check_outer_loops", return_value=outer_state),
+            redirect_stdout(buf),
+        ):
+            c2c_list.main(["--broker"])
+        return buf.getvalue()
+
+    def test_list_broker_text_suggests_sweep_when_safe(self):
+        """Safe-to-sweep: suggest 'c2c sweep'."""
+        tmp = self._make_dead_broker()
+        try:
+            output = self._run_list_broker(
+                tmp.name, {"safe_to_sweep": True, "running": []}
+            )
+        finally:
+            tmp.cleanup()
+        self.assertIn("c2c sweep", output)
+        self.assertNotIn("outer loops running", output)
+
+    def test_list_broker_text_warns_when_outer_loops_present(self):
+        """Outer loops running: warn instead of suggesting sweep."""
+        tmp = self._make_dead_broker()
+        try:
+            outer_state = {
+                "safe_to_sweep": False,
+                "running": [{"client": "codex", "pid": 1234, "instance": "local", "cmdline": "x"}],
+            }
+            output = self._run_list_broker(tmp.name, outer_state)
+        finally:
+            tmp.cleanup()
+        self.assertIn("outer loops running", output)
+        self.assertIn("codex", output)
+        self.assertNotIn("run `c2c sweep`", output)
+
     def test_list_sessions_includes_alias_for_registered_live_sessions(self):
         sessions = [
             {"name": "agent-one", "session_id": AGENT_ONE_SESSION_ID},

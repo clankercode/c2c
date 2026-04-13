@@ -245,7 +245,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{peer['alias']}\t[{status}]\t{client}\t{seen}\t{rooms}")
         dead_count = sum(1 for p in peers if p.get("alive") is False)
         if dead_count > 0:
-            print(f"\n({dead_count} dead peer{'s' if dead_count != 1 else ''} — run `c2c sweep` to clean up)")
+            n_str = f"{dead_count} dead peer{'s' if dead_count != 1 else ''}"
+            try:
+                from c2c_health import check_outer_loops
+                outer = check_outer_loops()
+                if outer.get("safe_to_sweep", True):
+                    print(f"\n({n_str} — run `c2c sweep` to clean up)")
+                else:
+                    clients = ", ".join(r["client"] for r in outer.get("running", []))
+                    print(f"\n({n_str} — outer loops running ({clients}); sweep only after they stop)")
+            except Exception:
+                print(f"\n({n_str} — run `c2c sweep` to clean up)")
         return 0
 
     rows = list_sessions(include_all=args.all)
