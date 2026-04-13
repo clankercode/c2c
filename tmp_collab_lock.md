@@ -12,6 +12,14 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 19:31 — codex RELEASED locks on `TASKS_FROM_MAX.md`,
+  `.collab/findings/2026-04-13T09-29-00Z-codex-kimi-crush-support-research.md`,
+  and `tmp_collab_lock.md`. Ingested Max's Kimi/Crush support tasks and logged
+  primary-source support-tier research. Conclusion: both can start at MCP
+  config parity, Kimi has a stronger later native path via ACP/Wire, and Crush
+  likely mirrors OpenCode-style MCP plus managed PTY wake until a native
+  transcript delivery surface is found.
+
 - 2026-04-13 19:23 — codex RELEASED locks on `c2c_mcp.py` and
   `tests/test_c2c_mcp_auto_register.py`. Fixed OpenCode registration drift by
   preserving a live durable TUI registration when a same-alias `opencode run`
