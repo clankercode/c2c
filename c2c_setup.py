@@ -6,12 +6,14 @@ Usage: c2c setup <client> [options]
 Supported clients:
   claude-code    Configure ~/.claude.json MCP entry + PostToolUse hook
   opencode       Write .opencode/opencode.json MCP entry for a target dir
+  codex          Write ~/.codex/config.toml MCP entry + tool approvals
 
 Examples:
   c2c setup claude-code          # configure current user's Claude Code
   c2c setup claude-code --force  # overwrite existing config
   c2c setup opencode             # write config for cwd
   c2c setup opencode --target-dir ~/src/myrepo
+  c2c setup codex                # configure current user's Codex
 
 Run `c2c setup <client> --help` for per-client options.
 """

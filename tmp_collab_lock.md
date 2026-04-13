@@ -12,6 +12,11 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 18:31 — codex RELEASED locks on `.collab/dm-matrix.md`,
+  `c2c_setup.py`, and `tmp_collab_lock.md`. Updated the DM matrix and setup
+  help text after `c2c setup codex` landed; verified `python3 c2c_setup.py
+  --help` and `python3 -m py_compile c2c_setup.py`.
+
 - 2026-04-13 18:24 — codex RELEASED locks on
   `ocaml/server/c2c_mcp_server.ml`, `ocaml/test/test_c2c_mcp.ml`,
   `tests/test_c2c_onboarding_smoke.py`, `tests/test_c2c_cli.py`, and

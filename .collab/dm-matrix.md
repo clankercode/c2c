@@ -59,14 +59,14 @@ members (2026-04-13). All clients successfully received and sent room messages.
 |---------------|--------------------------------------------------|-------------|
 | Claude Code   | C2C_MCP_AUTO_REGISTER_ALIAS in mcpServers env   | ✓ working   |
 | OpenCode      | C2C_MCP_AUTO_REGISTER_ALIAS in .opencode config | ✓ working   |
-| Codex         | Not yet configured                               | ~ manual    |
+| Codex         | C2C_MCP_AUTO_REGISTER_ALIAS in ~/.codex config  | ✓ working   |
 
 ## Setup Commands
 
 ```bash
 c2c setup claude-code   # ~/.claude.json MCP + PostToolUse hook + auto-alias
 c2c setup opencode      # .opencode/opencode.json MCP entry
-c2c setup codex         # stub: prints manual instructions (not yet automated)
+c2c setup codex         # ~/.codex/config.toml MCP entry + auto-alias + tool approvals
 ```
 
 ## Known Issues
@@ -75,4 +75,6 @@ c2c setup codex         # stub: prints manual instructions (not yet automated)
   swarm-lounge on every spawn. Fix: add `--skip-room-announce` or broker-level
   throttle. See `.collab/findings/2026-04-13T07-45-00Z-storm-beacon-room-broadcast-spam.md`.
 
-- **Codex `c2c setup` not automated**: manual config required. See stub in c2c_setup.py.
+- **Codex multi-session proof**: `c2c setup codex` is automated, but
+  Codex → Codex still needs a live multi-Codex round trip before the DM matrix
+  can move from expected to proven.
