@@ -189,6 +189,55 @@ def build_env(name: str) -> dict[str, str]:
     return env
 
 
+def _kimi_mcp_config_path(name: str) -> Path:
+    return _instance_dir(name) / "kimi-mcp.json"
+
+
+def _has_explicit_kimi_mcp_config(extra_args: list[str]) -> bool:
+    explicit_flags = {"--mcp-config-file", "--mcp-config"}
+    for arg in extra_args:
+        if arg in explicit_flags:
+            return True
+        if arg.startswith("--mcp-config-file=") or arg.startswith("--mcp-config="):
+            return True
+    return False
+
+
+def _build_kimi_mcp_config(name: str, broker_root: Path) -> dict[str, Any]:
+    return {
+        "mcpServers": {
+            "c2c": {
+                "type": "stdio",
+                "command": "python3",
+                "args": [str(HERE / "c2c_mcp.py")],
+                "env": {
+                    "C2C_MCP_BROKER_ROOT": str(broker_root),
+                    "C2C_MCP_SESSION_ID": name,
+                    "C2C_MCP_AUTO_REGISTER_ALIAS": name,
+                    "C2C_MCP_AUTO_JOIN_ROOMS": "swarm-lounge",
+                    "C2C_MCP_AUTO_DRAIN_CHANNEL": "0",
+                },
+            }
+        }
+    }
+
+
+def prepare_launch_args(
+    name: str, client: str, extra_args: list[str], broker_root: Path
+) -> list[str]:
+    """Return client args, adding managed per-instance config where needed."""
+    if client != "kimi" or _has_explicit_kimi_mcp_config(extra_args):
+        return list(extra_args)
+
+    mcp_config_path = _kimi_mcp_config_path(name)
+    mcp_config_path.parent.mkdir(parents=True, exist_ok=True)
+    mcp_config_path.write_text(
+        json.dumps(_build_kimi_mcp_config(name, broker_root), indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return ["--mcp-config-file", str(mcp_config_path), *extra_args]
+
+
 def write_config(name: str, client: str, extra_args: list[str] | None = None) -> Path:
     """Write a JSON config file for a named instance. Returns the path."""
     cfg = instance_dir(name)
@@ -488,7 +537,8 @@ def run_outer_loop(
             started = time.monotonic()
             child_proc = None
             try:
-                cmd = [binary_path, *extra_args]
+                launch_args = prepare_launch_args(name, client, extra_args, broker_root)
+                cmd = [binary_path, *launch_args]
                 child_proc = subprocess.Popen(cmd, env=env)
 
                 # Start deliver daemon and poker on first iteration (or restart if dead).

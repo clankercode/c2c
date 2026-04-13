@@ -284,15 +284,27 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ValueError) as error:
             print(str(error), file=sys.stderr)
             return 1
-        # If transcript mode finds no participants (e.g. mixed-client swarm with Codex/Kimi/Crush),
-        # automatically fall back to broker archive mode which works across all client types.
-        if not payload["participants"]:
+        # If transcript mode finds fewer participants than the broker, or none at all
+        # (e.g. mixed-client swarm with Codex/Kimi/Crush), fall back to broker archive
+        # mode which works across all client types.
+        # Skip the fallback when test fixtures are in use (C2C_SESSIONS_FIXTURE or
+        # C2C_VERIFY_FIXTURE) to avoid contaminating fixture-based tests with live data.
+        in_test_mode = bool(
+            os.environ.get("C2C_SESSIONS_FIXTURE") or os.environ.get("C2C_VERIFY_FIXTURE")
+        )
+        if not in_test_mode:
+            transcript_count = len(payload["participants"])
             try:
-                payload = verify_progress_broker(alive_only=True)
-                if not args.json:
-                    print("(broker mode — no Claude transcripts found)", file=sys.stderr)
+                broker_payload = verify_progress_broker(alive_only=True)
+                broker_count = len(broker_payload["participants"])
             except (OSError, ValueError):
-                pass
+                broker_payload = None
+                broker_count = 0
+            if broker_payload is not None and broker_count > transcript_count:
+                payload = broker_payload
+                if not args.json:
+                    reason = "no Claude transcripts found" if transcript_count == 0 else f"broker has more participants ({broker_count} vs {transcript_count})"
+                    print(f"(broker mode — {reason})", file=sys.stderr)
 
     if args.json:
         print(json.dumps(payload, indent=2))
