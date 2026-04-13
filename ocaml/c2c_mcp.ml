@@ -9,7 +9,7 @@ type message = { from_alias : string; to_alias : string; content : string }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 
-let server_version = "0.6.4"
+let server_version = "0.6.5"
 
 let server_features =
   [ "liveness"
