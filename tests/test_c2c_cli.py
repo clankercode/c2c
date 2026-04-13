@@ -77,6 +77,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c-send-all",
         "c2c-install",
         "c2c-inject",
+        "c2c-poker-sweep",
         "c2c-verify",
         "c2c-whoami",
         "c2c_register.py",
@@ -89,6 +90,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_deliver_inbox.py",
         "c2c_inject.py",
         "c2c_poker.py",
+        "c2c_poker_sweep.py",
         "c2c_poll_inbox.py",
         "c2c_verify.py",
         "c2c_whoami.py",
@@ -286,6 +288,7 @@ class C2CCLITests(unittest.TestCase):
                 "c2c-inject",
                 "c2c-install",
                 "c2c-list",
+                "c2c-poker-sweep",
                 "c2c-poll-inbox",
                 "c2c-register",
                 "c2c-send",
@@ -298,6 +301,7 @@ class C2CCLITests(unittest.TestCase):
         self.assertTrue((install_dir / "c2c-configure-opencode").exists())
         self.assertTrue((install_dir / "c2c-deliver-inbox").exists())
         self.assertTrue((install_dir / "c2c-inject").exists())
+        self.assertTrue((install_dir / "c2c-poker-sweep").exists())
         self.assertTrue((install_dir / "c2c-poll-inbox").exists())
         self.assertTrue((install_dir / "c2c-register").exists())
         self.assertTrue((install_dir / "c2c-whoami").exists())
@@ -2092,6 +2096,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c-send-all",
                 "c2c-install",
                 "c2c-inject",
+                "c2c-poker-sweep",
                 "c2c-verify",
                 "c2c-whoami",
                 "c2c_register.py",
@@ -2104,6 +2109,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c_deliver_inbox.py",
                 "c2c_inject.py",
                 "c2c_poker.py",
+                "c2c_poker_sweep.py",
                 "c2c_poll_inbox.py",
                 "c2c_verify.py",
                 "c2c_whoami.py",

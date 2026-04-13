@@ -10,6 +10,7 @@ import c2c_install
 import c2c_list
 import c2c_mcp
 import c2c_poll_inbox
+import c2c_poker_sweep
 import c2c_register
 import c2c_send
 import c2c_send_all
@@ -49,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(
-            "usage: c2c <configure-opencode|deliver-inbox|init|inject|install|list|mcp|poll-inbox|register|send|send-all|verify|whoami> [...args]",
+            "usage: c2c <configure-opencode|deliver-inbox|init|inject|install|list|mcp|poker-sweep|poll-inbox|register|send|send-all|verify|whoami> [...args]",
             file=sys.stderr,
         )
         return 2
@@ -70,6 +71,8 @@ def main(argv: list[str] | None = None) -> int:
         return c2c_list.main(remainder)
     if subcommand == "mcp":
         return c2c_mcp.main(remainder)
+    if subcommand == "poker-sweep":
+        return c2c_poker_sweep.main(remainder)
     if subcommand == "poll-inbox":
         return c2c_poll_inbox.main(remainder)
     if subcommand == "register":

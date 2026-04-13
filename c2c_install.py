@@ -14,6 +14,7 @@ COMMANDS = [
     "c2c-install",
     "c2c-list",
     "c2c-poll-inbox",
+    "c2c-poker-sweep",
     "c2c-register",
     "c2c-send",
     "c2c-send-all",

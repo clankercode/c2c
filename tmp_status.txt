@@ -68,6 +68,7 @@ Recent hardening completed:
 - The Python follow-up slice is reverified green, including a launcher dry-run assertion that is now interpreter-path agnostic.
 - The Codex PTY poker loop is running with an orientation heartbeat that polls inbox, reads status/locks when needed, treats empty inbox as not-a-stop-signal, and continues unblocked work.
 - `c2c_poker.py --pid ...` and `--claude-session ...` now watch the original client/session pid after resolving terminal coordinates and exit cleanly if that pid goes away. Poker heartbeat payloads include a fresh `Sent at: ...` timestamp/date on each injection.
+- `c2c poker-sweep` / `c2c-poker-sweep` now lists stale poker processes and can terminate them with `--kill`. It understands both `--pid` and `--claude-session` poker targets and defaults to a no-kill dry run.
 - `c2c_mcp.py` now builds the OCaml server explicitly and launches the built executable directly instead of running through `bash -lc ... dune exec ...`, reducing the documented wrapper-chain leak risk in the MCP launcher path.
 
 Most likely remaining blocker:
