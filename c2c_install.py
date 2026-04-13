@@ -13,6 +13,7 @@ COMMANDS = [
     "c2c-configure-opencode",
     "c2c-setup",
     "c2c-deliver-inbox",
+    "c2c-health",
     "c2c-init",
     "c2c-inject",
     "c2c-install",
