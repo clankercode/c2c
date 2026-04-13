@@ -7714,11 +7714,71 @@ class HealthCheckWireDaemonTests(unittest.TestCase):
             mock.patch("c2c_health.check_dead_letter", return_value={}),
             mock.patch("c2c_health.check_outer_loops", return_value={}),
             mock.patch("c2c_health.check_relay", return_value={}),
+            mock.patch("c2c_health.check_broker_binary", return_value={}),
             mock.patch("c2c_health.check_wire_daemon") as check_wire,
         ):
             c2c_health.run_health_check(Path("/tmp/broker"))
 
         check_wire.assert_called_once_with("kimi-agent")
+
+
+class HealthCheckBrokerBinaryTests(unittest.TestCase):
+    """Tests for c2c_health.check_broker_binary()."""
+
+    def test_binary_does_not_exist_returns_not_exists(self):
+        import c2c_health
+
+        with (
+            mock.patch(
+                "c2c_mcp.built_server_path",
+                return_value=Path("/nonexistent/c2c_mcp_server.exe"),
+            ),
+        ):
+            result = c2c_health.check_broker_binary()
+
+        self.assertFalse(result["exists"])
+        self.assertFalse(result["fresh"])
+
+    def test_fresh_binary_reports_version_and_fresh(self, tmp_path=None):
+        import c2c_health
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as fh:
+            bin_path = Path(fh.name)
+        try:
+            with (
+                mock.patch("c2c_mcp.built_server_path", return_value=bin_path),
+                mock.patch("c2c_mcp.server_is_fresh", return_value=True),
+                mock.patch(
+                    "pathlib.Path.read_text",
+                    return_value='let server_version = "0.6.6"\nother code\n',
+                ),
+            ):
+                result = c2c_health.check_broker_binary()
+        finally:
+            bin_path.unlink(missing_ok=True)
+
+        self.assertTrue(result["exists"])
+        self.assertTrue(result["fresh"])
+        self.assertEqual(result.get("source_version"), "0.6.6")
+
+    def test_stale_binary_reports_not_fresh(self):
+        import c2c_health
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as fh:
+            bin_path = Path(fh.name)
+        try:
+            with (
+                mock.patch("c2c_mcp.built_server_path", return_value=bin_path),
+                mock.patch("c2c_mcp.server_is_fresh", return_value=False),
+            ):
+                result = c2c_health.check_broker_binary()
+        finally:
+            bin_path.unlink(missing_ok=True)
+
+        self.assertTrue(result["exists"])
+        self.assertFalse(result["fresh"])
 
 
 class RefreshPeerTests(unittest.TestCase):
