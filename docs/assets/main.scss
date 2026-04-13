@@ -26,9 +26,14 @@
   --c2c-blue:         #79c0ff;
   --c2c-yellow:       #e3b341;
   --c2c-callout-text: #b5ffd9;
+  --c2c-link-hover:   #7fffd4;
+  --c2c-chrome-bg:    #010409;
+  --c2c-code-text:    #e6edf3;
+  --c2c-strong:       #ffffff;
+  --c2c-status-no:    #f85149;
 }
 
-/* Light mode — all variables explicitly redefined */
+/* Light mode — ALL variables explicitly redefined (none inherit from dark) */
 @media (prefers-color-scheme: light) {
   :root {
     --c2c-green:        #006633;
@@ -44,13 +49,16 @@
     --c2c-blue:         #0550ae;
     --c2c-yellow:       #7d4e00;
     --c2c-callout-text: #1a4731;
+    --c2c-link-hover:   #004d26;
+    --c2c-chrome-bg:    #f6f8fa;
+    --c2c-code-text:    #1f2328;
+    --c2c-strong:       #000000;
+    --c2c-status-no:    #c30000;
   }
-  /* Override minima light-mode site-header which looks fine */
-  .site-header { border-bottom-color: var(--c2c-green); }
+  /* Override minima light-mode chrome so our variables fully control colors */
+  .site-header { background-color: var(--c2c-chrome-bg) !important; border-bottom-color: var(--c2c-green) !important; }
+  .site-footer { background-color: var(--c2c-chrome-bg) !important; border-top-color: var(--c2c-border) !important; }
   .highlight { background-color: var(--c2c-surface) !important; }
-  code { color: var(--c2c-blue); }
-  blockquote { color: var(--c2c-callout-text) !important; }
-  blockquote code { color: var(--c2c-callout-text); }
 }
 
 /* ---- Body ---- */
@@ -95,7 +103,7 @@ a {
 }
 
 a:hover {
-  color: #7fffd4;
+  color: var(--c2c-link-hover);
   text-decoration: underline;
 }
 
@@ -105,7 +113,7 @@ a:visited {
 
 /* ---- Navigation ---- */
 .site-header {
-  background-color: #010409;
+  background-color: var(--c2c-chrome-bg);
   border-bottom: 1px solid var(--c2c-green-dim);
   min-height: 56px;
 }
@@ -170,7 +178,7 @@ pre code {
   background: none !important;
   border: none !important;
   padding: 0 !important;
-  color: #e6edf3;
+  color: var(--c2c-code-text);
   font-size: 0.875em;
   line-height: 1.6;
 }
@@ -235,18 +243,18 @@ blockquote {
   padding: 0.9em 1.3em;
   margin: 1.8em 0;
   border-radius: 0 6px 6px 0;
-  color: #b5ffd9;
+  color: var(--c2c-callout-text);
   font-style: normal;
 }
 
-blockquote strong { color: #fff; }
+blockquote strong { color: var(--c2c-strong); }
 
 blockquote p:last-child { margin-bottom: 0; }
 
 blockquote code {
   background-color: rgba(0,0,0,0.3);
   border-color: var(--c2c-green-dim);
-  color: #b5ffd9;
+  color: var(--c2c-callout-text);
 }
 
 /* ---- Lists ---- */
@@ -265,7 +273,7 @@ ul li, ol li { margin-bottom: 0.3em; }
 
 /* ---- Footer ---- */
 .site-footer {
-  background-color: #010409;
+  background-color: var(--c2c-chrome-bg);
   border-top: 1px solid var(--c2c-border);
   color: var(--c2c-text-muted);
   font-size: 0.85em;
@@ -291,16 +299,16 @@ h1 code, h2 code, h3 code, h4 code {
   padding: 1.2em 1.5em;
   margin: 1.8em 0;
   font-size: 0.95em;
-  color: #b5ffd9;
+  color: var(--c2c-callout-text);
 }
 
 .agent-start code {
   background-color: rgba(0,0,0,0.35);
   border-color: var(--c2c-green-dim);
-  color: #b5ffd9;
+  color: var(--c2c-callout-text);
 }
 
 /* ---- Status badges in tables ---- */
 .status-ok    { color: var(--c2c-green); font-weight: 600; }
 .status-maybe { color: var(--c2c-yellow); }
-.status-no    { color: #f85149; }
+.status-no    { color: var(--c2c-status-no); }
