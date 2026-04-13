@@ -363,24 +363,62 @@ module Broker = struct
   let register t ~session_id ~alias ~pid ~pid_start_time =
     with_registry_lock t (fun () ->
         let regs = load_registrations t in
-        let evicted_regs, kept =
+        (* Split registrations into:
+           - conflicting: entries with our NEW alias held by a DIFFERENT session
+             (alias conflict — must evict to claim the alias)
+           - rest: everything else (our own prior entry if any, other sessions)
+           We do NOT use a single partition with `||` because that wrongly
+           evicts our own prior entry when renaming within the same session,
+           which causes duplicate registry entries for the same session_id.
+           See: same-session re-registration must update in-place, not evict+add. *)
+        let conflicting, rest =
           List.partition
-            (fun reg -> reg.session_id = session_id || reg.alias = alias)
+            (fun reg -> reg.alias = alias && reg.session_id <> session_id)
             regs
         in
-        save_registrations t
-          ({ session_id; alias; pid; pid_start_time
-           ; registered_at = Some (Unix.gettimeofday ()) } :: kept);
-        (* Migrate undrained inbox messages from any evicted reg whose
-           session_id differs from the new one. Done WHILE holding the
-           registry lock so a concurrent enqueue cannot resolve the alias
-           to the stale session_id and write to the about-to-be-deleted
-           inbox file. Inbox locks are taken sequentially under the
-           registry lock — never nested — and always old-then-new, so two
-           concurrent re-registers serialize cleanly through the registry
-           mutex. *)
+        (* Same-session re-registration (alias changed or pid/registered_at
+           refresh): update in-place by replacing the old entry in [rest]. *)
+        let rest_without_self =
+          List.filter (fun reg -> reg.session_id <> session_id) rest
+        in
+        let kept =
+          match
+            List.partition (fun reg -> reg.session_id = session_id) rest
+          with
+          | [], rest_without_self -> rest_without_self
+              (* no prior entry for this session — fresh registration *)
+          | [ old_reg ], rest_without_self ->
+              (* prior entry found — update alias/pid/start_time in place *)
+              let updated_reg =
+                { session_id; alias; pid; pid_start_time
+                ; registered_at = Some (Unix.gettimeofday ()) }
+              in
+              updated_reg :: rest_without_self
+          | multiple, rest_without_self ->
+              (* edge case: same session had multiple entries (shouldn't happen
+                 with the fixed logic, but guard defensively) — keep first, drop rest *)
+              (match multiple with
+               | first :: others ->
+                   let updated_reg =
+                     { session_id; alias; pid; pid_start_time
+                     ; registered_at = Some (Unix.gettimeofday ()) }
+                   in
+                   updated_reg :: rest_without_self
+               | [] -> rest_without_self)
+        in
+        save_registrations t kept;
+        (* Migrate undrained inbox messages from any evicted conflicting reg.
+           Done WHILE holding the registry lock so a concurrent enqueue cannot
+           resolve the alias to the stale session_id and write to the
+           about-to-be-deleted inbox file. Inbox locks are taken sequentially
+           under the registry lock — never nested — and always
+           old-then-new, so two concurrent re-registers serialize cleanly
+           through the registry mutex. *)
         List.iter
           (fun reg ->
+            (* conflicting only contains entries with alias=alias &&
+               session_id<>session_id, so this condition is always true;
+               kept for clarity and safety *)
             if reg.session_id <> session_id then begin
               let migrated =
                 with_inbox_lock t ~session_id:reg.session_id (fun () ->
@@ -397,7 +435,7 @@ module Broker = struct
                     let current = load_inbox t ~session_id in
                     save_inbox t ~session_id (current @ migrated))
             end)
-          evicted_regs)
+          conflicting in
 
   let enqueue_message t ~from_alias ~to_alias ~content =
     with_registry_lock t (fun () ->
