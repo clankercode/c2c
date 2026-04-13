@@ -95,4 +95,7 @@ let rec loop ~broker_root =
           in
           loop ~broker_root)
 
-let () = Lwt_main.run (loop ~broker_root:(broker_root ()))
+let () =
+  let root = broker_root () in
+  C2c_mcp.auto_register_startup ~broker_root:root;
+  Lwt_main.run (loop ~broker_root:root)

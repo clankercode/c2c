@@ -163,6 +163,8 @@ let test_initialize_reports_server_version_and_features () =
             ; "send_all"
             ; "inbox_migration_on_register"
             ; "registry_locked_enqueue"
+            ; "startup_auto_register"
+            ; "send_room_alias_fallback"
             ]
           in
           List.iter
@@ -334,6 +336,26 @@ let test_tools_call_register_prefers_explicit_client_pid_env () =
           check bool "registered pid uses explicit client pid" true (reg.pid = Some 4242);
           check bool "explicit pid start_time absent when proc missing" true
             (reg.pid_start_time = None)))
+
+let test_server_startup_auto_registers_alias_from_env () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-auto";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "opencode-local";
+      Unix.putenv "C2C_MCP_CLIENT_PID" "4242";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+          Unix.putenv "C2C_MCP_CLIENT_PID" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          check int "one registration" 1 (List.length regs);
+          let reg = List.hd regs in
+          check string "registered session" "session-auto" reg.session_id;
+          check string "registered alias" "opencode-local" reg.alias;
+          check bool "registered pid" true (reg.pid = Some 4242)))
 
 let test_tools_call_whoami_uses_current_session_id_when_omitted () =
   with_temp_dir (fun dir ->
@@ -1609,6 +1631,76 @@ let test_tools_call_send_room_via_mcp () =
           check string "to_alias tagged" "storm-recv@mcp-chat" msg.to_alias;
           check string "content" "hello via mcp room" msg.content))
 
+(* Regression: OpenCode's backing model substitutes `alias` for
+   `from_alias` when calling send_room (because join_room uses
+   `alias`). The broker must accept either key so the three-way
+   (Claude Code + Codex + OpenCode) chat actually works. *)
+let test_tools_call_send_room_accepts_alias_as_from_alias_alias () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-sender-alias";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-sender-alias"
+            ~alias:"storm-sender" ~pid:None ~pid_start_time:None;
+          C2c_mcp.Broker.register broker ~session_id:"session-recv-alias"
+            ~alias:"storm-recv" ~pid:None ~pid_start_time:None;
+          let _ =
+            C2c_mcp.Broker.join_room broker ~room_id:"alias-chat"
+              ~alias:"storm-sender" ~session_id:"session-sender-alias"
+          in
+          let _ =
+            C2c_mcp.Broker.join_room broker ~room_id:"alias-chat"
+              ~alias:"storm-recv" ~session_id:"session-recv-alias"
+          in
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 202)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "send_room")
+                    ; ( "arguments",
+                        `Assoc
+                          [ (* Note: `alias` not `from_alias` —
+                               this is the opencode substitution. *)
+                            ("alias", `String "storm-sender")
+                          ; ("room_id", `String "alias-chat")
+                          ; ("content", `String "hello via alias fallback")
+                          ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          (match response with
+           | None -> fail "expected send_room response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               let parsed = Yojson.Safe.from_string text in
+               let delivered =
+                 parsed |> member "delivered_to" |> to_list |> List.map to_string
+               in
+               check int "one delivery via alias fallback" 1
+                 (List.length delivered);
+               check string "delivered to storm-recv" "storm-recv"
+                 (List.hd delivered));
+          let inbox =
+            C2c_mcp.Broker.read_inbox broker ~session_id:"session-recv-alias"
+          in
+          check int "recipient inbox has one message" 1 (List.length inbox);
+          let msg = List.hd inbox in
+          check string "from_alias resolved from alias fallback"
+            "storm-sender" msg.from_alias;
+          check string "content" "hello via alias fallback" msg.content))
+
 let () =
   run "c2c_mcp"
     [ ( "broker",
@@ -1634,6 +1726,8 @@ let () =
               test_tools_call_register_uses_current_session_id_when_omitted
          ; test_case "tools/call register prefers explicit client pid env" `Quick
              test_tools_call_register_prefers_explicit_client_pid_env
+         ; test_case "server startup auto-registers alias from env" `Quick
+             test_server_startup_auto_registers_alias_from_env
          ; test_case "tools/call whoami uses current session id when omitted" `Quick
               test_tools_call_whoami_uses_current_session_id_when_omitted
          ; test_case "tools/call poll_inbox drains messages as tool result" `Quick
@@ -1716,4 +1810,6 @@ let () =
              test_tools_call_join_room_via_mcp
          ; test_case "tools/call send_room via MCP" `Quick
              test_tools_call_send_room_via_mcp
+         ; test_case "tools/call send_room accepts `alias` as from_alias fallback" `Quick
+             test_tools_call_send_room_accepts_alias_as_from_alias_alias
          ] ) ]

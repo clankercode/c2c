@@ -79,4 +79,5 @@ module Broker : sig
 end
 
 val channel_notification : message -> Yojson.Safe.t
+val auto_register_startup : broker_root:string -> unit
 val handle_request : broker_root:string -> Yojson.Safe.t -> Yojson.Safe.t option Lwt.t

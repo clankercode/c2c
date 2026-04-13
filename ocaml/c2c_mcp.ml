@@ -8,7 +8,7 @@ type message = { from_alias : string; to_alias : string; content : string }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 
-let server_version = "0.6.0"
+let server_version = "0.6.1"
 
 let server_features =
   [ "liveness"
@@ -26,6 +26,8 @@ let server_features =
   ; "atomic_write"
   ; "broker_files_mode_0600"
   ; "rooms"
+  ; "startup_auto_register"
+  ; "send_room_alias_fallback"
   ]
 
 let server_info =
@@ -836,6 +838,33 @@ let string_member name json =
   let open Yojson.Safe.Util in
   json |> member name |> to_string
 
+(* Like [string_member] but accepts a list of candidate argument names
+   and picks the first one that is present and non-empty. Used for
+   send / send_all / send_room where OpenCode's model frequently
+   substitutes [alias] for [from_alias] because [join_room] takes
+   [alias]. Keeps existing [from_alias] callers working while
+   unblocking opencode round-trips. *)
+let string_member_any names json =
+  let open Yojson.Safe.Util in
+  let rec find = function
+    | [] ->
+        (* fall through to the first name so the raised exception
+           names the canonical key, matching the pre-existing error
+           surface for missing required arguments. *)
+        (match names with
+         | [] -> invalid_arg "string_member_any: no candidate names"
+         | first :: _ -> json |> member first |> to_string)
+    | name :: rest ->
+        (match json |> member name with
+         | `Null -> find rest
+         | value ->
+             (try
+                let text = to_string value in
+                if String.trim text = "" then find rest else text
+              with _ -> find rest))
+  in
+  find names
+
 let optional_string_member name json =
   let open Yojson.Safe.Util in
   try
@@ -851,12 +880,30 @@ let current_session_id () =
   | Some value when String.trim value <> "" -> Some value
   | _ -> None
 
+let auto_register_alias () =
+  match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
+  | Some value when String.trim value <> "" -> Some (String.trim value)
+  | _ -> None
+
 let current_client_pid () =
   match Sys.getenv_opt "C2C_MCP_CLIENT_PID" with
   | Some value ->
       let trimmed = String.trim value in
       if trimmed = "" then None else (try Some (int_of_string trimmed) with _ -> None)
   | None -> None
+
+let auto_register_startup ~broker_root =
+  match (auto_register_alias (), current_session_id ()) with
+  | Some alias, Some session_id ->
+      let broker = Broker.create ~root:broker_root in
+      let pid =
+        match current_client_pid () with
+        | Some pid -> Some pid
+        | None -> Some (Unix.getppid ())
+      in
+      let pid_start_time = Broker.capture_pid_start_time pid in
+      Broker.register broker ~session_id ~alias ~pid ~pid_start_time
+  | _ -> ()
 
 let resolve_session_id arguments =
   match optional_string_member "session_id" arguments with
@@ -909,13 +956,13 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       in
       Lwt.return (tool_result ~content ~is_error:false)
   | "send" ->
-      let from_alias = string_member "from_alias" arguments in
+      let from_alias = string_member_any [ "from_alias"; "alias" ] arguments in
       let to_alias = string_member "to_alias" arguments in
       let content = string_member "content" arguments in
       Broker.enqueue_message broker ~from_alias ~to_alias ~content;
       Lwt.return (tool_result ~content:"queued" ~is_error:false)
   | "send_all" ->
-      let from_alias = string_member "from_alias" arguments in
+      let from_alias = string_member_any [ "from_alias"; "alias" ] arguments in
       let content = string_member "content" arguments in
       let exclude_aliases =
         let open Yojson.Safe.Util in
@@ -1038,7 +1085,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       in
       Lwt.return (tool_result ~content ~is_error:false)
   | "send_room" ->
-      let from_alias = string_member "from_alias" arguments in
+      let from_alias = string_member_any [ "from_alias"; "alias" ] arguments in
       let room_id = string_member "room_id" arguments in
       let content = string_member "content" arguments in
       let { Broker.sr_delivered_to; sr_skipped; sr_ts } =
