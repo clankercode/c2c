@@ -19,6 +19,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -194,12 +196,46 @@ def main(argv: list[str] | None = None) -> int:
         help="overwrite existing mcpServers.c2c and hook entries",
     )
     parser.add_argument("--json", action="store_true", help="emit JSON result")
+    parser.add_argument(
+        "--auto-wake",
+        action="store_true",
+        help="start the idle wake daemon for the current Claude Code session",
+    )
     args = parser.parse_args(argv)
 
     broker_root = resolve_broker_root(args.broker_root)
     alias = None if args.no_alias else (args.alias or default_alias())
     mcp_entry = configure_mcp(broker_root, args.session_id, alias, force=args.force)
     hook_status = configure_hook(force=args.force)
+
+    wake_daemon_pid: int | None = None
+    wake_log: str | None = None
+    claude_session_id = args.session_id or os.environ.get("CLAUDE_SESSION_ID", "")
+    if args.auto_wake:
+        if claude_session_id:
+            log_path = Path.home() / ".claude" / f"c2c-wake-{claude_session_id}.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                proc = subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(REPO_ROOT / "c2c_claude_wake_daemon.py"),
+                        "--claude-session",
+                        claude_session_id,
+                        "--session-id",
+                        claude_session_id,
+                    ],
+                    stdout=log_path.open("ab"),
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+                wake_daemon_pid = proc.pid
+                wake_log = str(log_path)
+            except Exception as exc:
+                wake_daemon_pid = None
+                wake_log = str(exc)
+        else:
+            wake_log = "CLAUDE_SESSION_ID not set; run inside a Claude Code session"
 
     result = {
         "claude_json": str(CLAUDE_JSON_PATH),
@@ -209,6 +245,8 @@ def main(argv: list[str] | None = None) -> int:
         "alias": alias,
         "mcp_entry": mcp_entry,
         "hook_status": hook_status,
+        "wake_daemon_pid": wake_daemon_pid,
+        "wake_log": wake_log,
     }
 
     if args.json:
@@ -226,11 +264,23 @@ def main(argv: list[str] | None = None) -> int:
             print(f"PostToolUse hook already registered (use --force to re-add)")
         elif hook_status == "hook_script_missing":
             print(f"skipped hook: {HOOK_SCRIPT_PATH} not found")
-        print("Restart Claude Code (or run ./restart-self) to pick up changes.")
         print()
-        print("To auto-wake idle Claude Code sessions on incoming DMs:")
-        print("  nohup c2c-claude-wake --claude-session <session-name-or-id> &")
-        print("  (run once per interactive session; see c2c-claude-wake --help)")
+        print("⚠️  Restart this Claude Code session to load the c2c MCP server.")
+        print("   New Claude sessions opened after setup will already have it.")
+        print()
+        if wake_daemon_pid:
+            print(f"✓ Started idle wake daemon (pid {wake_daemon_pid})")
+            print(f"  log: {wake_log}")
+        elif args.auto_wake:
+            print(f"✗ Failed to start idle wake daemon: {wake_log}")
+        if claude_session_id:
+            print()
+            print("To manually start the idle wake daemon later:")
+            print(f"  nohup c2c-claude-wake --claude-session {claude_session_id} &")
+        else:
+            print()
+            print("To manually start the idle wake daemon later:")
+            print("  nohup c2c-claude-wake --claude-session <session-name-or-id> &")
     return 0
 
 

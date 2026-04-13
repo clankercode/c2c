@@ -342,6 +342,7 @@ Run `c2c --help` for the top-level subcommand list, or
 | `sweep` | Remove dead registrations (one-shot; alias for `broker-gc --once`) |
 | `refresh-peer <alias> [--pid PID]` | Update a stale registration to a new live PID |
 | `health` | Quick diagnostic: broker, registry, session, inbox, relay |
+| `smoke-test [--json]` | Isolated end-to-end broker send/poll smoke test |
 | `broker-gc [--once] [--interval N]` | Broker GC daemon: sweeps dead sessions, prunes dead-letter |
 | `dead-letter [--to ALIAS] [--from-sid SID] [--replay] [--purge-orphans] [--purge-all] [--dry-run]` | Inspect, replay, and purge the dead-letter queue |
 | `wire-daemon <start|stop|status|restart|list>` | Manage Kimi Wire bridge background daemons |

@@ -71,6 +71,8 @@ NEXT_STEPS = [
     "c2c room list               # list all N:N rooms",
     "c2c room join <room-id>     # join a room (e.g. swarm-lounge)",
     "c2c room send <room-id> <msg>  # send to a room",
+    "c2c health                  # verify your setup (MCP config, wake daemon, etc.)",
+    "c2c setup claude-code --auto-wake  # idle delivery for Claude Code",
 ]
 
 

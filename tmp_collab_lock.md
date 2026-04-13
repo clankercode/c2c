@@ -11,7 +11,12 @@ on disk).
 |------|--------|---------|----------|
 | c2c_cli.py | codex | top-level help regression fix | 2026-04-13T19:25Z |
 | tests/test_c2c_cli.py | codex | top-level help regression coverage | 2026-04-13T19:25Z |
+| tests/test_c2c_smoke_test.py | codex | include peer smoke-test coverage in fixture repair | 2026-04-13T19:30Z |
+| c2c_smoke_test.py | codex | inspect/verify smoke-test CLI behavior | 2026-04-13T19:30Z |
 | docs/commands.md | codex | document top-level help behavior if needed | 2026-04-13T19:25Z |
+| tmp_status.txt | codex | sync test counts after CLI/smoke tests | 2026-04-13T19:30Z |
+| .goal-loops/active-goal.md | codex | sync test counts after CLI/smoke tests | 2026-04-13T19:30Z |
+| docs/next-steps.md | codex | sync test counts after CLI/smoke tests | 2026-04-13T19:30Z |
 | .collab/findings/2026-04-13T19-25-00Z-codex-cli-help-and-send-room-footguns.md | codex | document setup audit footguns | 2026-04-13T19:25Z |
 | tmp_collab_lock.md | codex | record/release CLI help lock | 2026-04-13T19:25Z |
 
