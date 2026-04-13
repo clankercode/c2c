@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -162,6 +163,48 @@ def _capture_crush_session_id(name: str) -> None:
         )
 
 
+def kill_orphan_mcp_brokers(session_id: str) -> int:
+    """Kill c2c_mcp_server processes for *session_id* that are orphaned (ppid=1).
+
+    When Crush exits its MCP broker subprocess is reparented to init rather
+    than receiving EOF on stdin (the write-end of its stdin pipe is held open
+    by some other process or file-descriptor inheritance).  This function
+    scans /proc for processes whose cmdline contains 'c2c_mcp_server' and
+    whose environment contains C2C_MCP_SESSION_ID=<session_id>, then sends
+    SIGTERM to each one.
+
+    Returns the number of processes killed (for logging).
+    """
+    killed = 0
+    try:
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            pid = int(entry)
+            try:
+                cmdline_path = f"/proc/{pid}/cmdline"
+                with open(cmdline_path, "rb") as fh:
+                    cmdline = fh.read().decode("utf-8", errors="replace")
+                if "c2c_mcp_server" not in cmdline and "c2c mcp" not in cmdline:
+                    continue
+                environ_path = f"/proc/{pid}/environ"
+                with open(environ_path, "rb") as fh:
+                    environ = fh.read().decode("utf-8", errors="replace")
+                needle = f"C2C_MCP_SESSION_ID={session_id}\0"
+                if needle not in environ:
+                    continue
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    killed += 1
+                except ProcessLookupError:
+                    pass
+            except (PermissionError, FileNotFoundError, OSError):
+                continue
+    except Exception:
+        pass
+    return killed
+
+
 def maybe_rearm(name: str) -> None:
     if not rearm_enabled() or not REARM.exists():
         return
@@ -219,6 +262,10 @@ def main(argv: list[str]) -> int:
         print(json.dumps({"inner": command, "rearm": rearm_command(name)}, indent=2))
         return 0
 
+    # Resolve the stable c2c session ID for this instance (used to kill
+    # orphaned MCP broker processes after each Crush exit).
+    session_id = _load_instance_session_id(name)
+
     backoff = INITIAL_BACKOFF_SECONDS
     last_sigint = 0.0
     iteration = 0
@@ -227,6 +274,7 @@ def main(argv: list[str]) -> int:
         iteration += 1
         print(f"[run-crush-inst-outer] iter {iteration}: launching {name}", flush=True)
         started = time.monotonic()
+        proc = None
         try:
             proc = subprocess.Popen(command, cwd=HERE, start_new_session=True)
             maybe_refresh_peer(name, proc.pid)
@@ -262,6 +310,17 @@ def main(argv: list[str]) -> int:
         except FileNotFoundError as exc:
             print(f"[run-crush-inst-outer] failed to launch: {exc}", file=sys.stderr)
             return 2
+
+        # Kill any orphaned MCP broker processes from this Crush session.
+        # When Crush exits its broker subprocess is sometimes reparented to
+        # init rather than receiving EOF, accumulating leaked processes.
+        if session_id:
+            n = kill_orphan_mcp_brokers(session_id)
+            if n:
+                print(
+                    f"[run-crush-inst-outer] killed {n} orphaned broker(s) for {session_id}",
+                    flush=True,
+                )
 
         elapsed = time.monotonic() - started
         print(
