@@ -71,11 +71,12 @@ These are Max's target experiences, verbatim:
 
 ### Active Work
 
-- **OpenCode plugin `promptAsync` delivery** — CLI drain PROVEN (2026-04-14):
-  inbox drained in <1s via subprocess poll with no MCP log entry, confirming
-  background loop is running. `promptAsync` end-to-end not yet confirmed for
-  managed `--fork` sessions; sidecar now includes `opencode_session_id` for
-  direct session targeting. Needs live persistent TUI session test.
+- **OpenCode plugin `promptAsync` delivery** — JSON parse bug FIXED (da78130,
+  2026-04-14). Root cause: `drainInbox()` expected bare array but `poll-inbox
+  --json` outputs envelope `{source, messages:[]}`. `parsePollResult()` now
+  unwraps. Also: global plugin auto-synced by `run-opencode-inst` at each
+  managed launch. Managed fork sessions use MCP `poll_inbox` (correct path);
+  `promptAsync` targets long-running TUI sessions (needs manual live test).
 - **Crush DM proof** — `c2c_crush_wake_daemon.py` written, Crush MCP config
   ready. Blocked: `ANTHROPIC_API_KEY` not set in Claude Code shell. Will unblock
   when Max provides the key or launches Crush manually.
