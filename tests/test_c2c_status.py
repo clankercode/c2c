@@ -142,6 +142,56 @@ class C2CStatusTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         output.encode("ascii")
         self.assertIn("sent>=20 AND recv>=20", output)
+        # Blocker detail should appear for peers not at goal_met
+        self.assertIn("Blocked by codex", output)
+        self.assertIn("need", output)
+
+    def test_goal_met_no_blocked_by_line(self):
+        payload = {
+            "ts": "2026-04-13T20:25:00+00:00",
+            "alive_peers": [
+                {"alias": "codex", "alive": True, "sent": 20, "received": 20, "goal_met": True}
+            ],
+            "dead_peer_count": 0,
+            "total_peer_count": 1,
+            "rooms": [],
+            "goal_met_count": 1,
+            "goal_total": 1,
+            "overall_goal_met": True,
+        }
+        stdout = io.StringIO()
+        with (
+            mock.patch("c2c_status.swarm_status", return_value=payload),
+            mock.patch("sys.stdout", stdout),
+        ):
+            c2c_status.main([])
+        output = stdout.getvalue()
+        self.assertIn("ALL 1 alive peers at goal_met  OK", output)
+        self.assertNotIn("Blocked by", output)
+
+    def test_blocked_by_shows_sends_and_recvs_needed(self):
+        payload = {
+            "ts": "2026-04-13T20:25:00+00:00",
+            "alive_peers": [
+                {"alias": "agent-x", "alive": True, "sent": 5, "received": 3, "goal_met": False}
+            ],
+            "dead_peer_count": 0,
+            "total_peer_count": 1,
+            "rooms": [],
+            "goal_met_count": 0,
+            "goal_total": 1,
+            "overall_goal_met": False,
+        }
+        stdout = io.StringIO()
+        with (
+            mock.patch("c2c_status.swarm_status", return_value=payload),
+            mock.patch("sys.stdout", stdout),
+        ):
+            c2c_status.main([])
+        output = stdout.getvalue()
+        self.assertIn("Blocked by agent-x", output)
+        self.assertIn("need 15 more sends", output)
+        self.assertIn("need 17 more recvs", output)
 
     def test_rooms_with_zero_members_hidden_from_text_output(self):
         payload = {

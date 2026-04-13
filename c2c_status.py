@@ -259,6 +259,15 @@ def print_status_report(data: dict) -> None:
             f"Goal: {goal_met_count} / {goal_total} alive peers at goal_met"
             f"  (need all to reach sent>={GOAL_COUNT} AND recv>={GOAL_COUNT})"
         )
+        blockers = [e for e in alive_peers if not e["goal_met"]]
+        for e in blockers:
+            needs = []
+            if e["sent"] < GOAL_COUNT:
+                needs.append(f"need {GOAL_COUNT - e['sent']} more sends")
+            if e["received"] < GOAL_COUNT:
+                needs.append(f"need {GOAL_COUNT - e['received']} more recvs")
+            if needs:
+                print(f"  Blocked by {e['alias']}: {', '.join(needs)}")
 
 
 def main(argv: list[str] | None = None) -> int:
