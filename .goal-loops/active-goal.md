@@ -141,6 +141,26 @@ These are Max's target experiences, verbatim:
   argument, instead of crashing with a raw `Yojson__Safe.Util.Type_error`.
   Server feature flag `missing_sender_alias_errors` added. 2 new OCaml regression
   tests (3023473, 2026-04-14, storm-beacon).
+- **Crush broker orphan kill** ✓: `run-crush-inst-outer` now scans `/proc` for
+  `c2c_mcp_server` processes with matching `C2C_MCP_SESSION_ID` in environ and
+  sends SIGTERM after each Crush exit. Prevents orphaned broker subprocess
+  accumulation when Crush reparents to init instead of EOF (b02d921, 2026-04-14,
+  storm-beacon).
+- **`c2c health` broker binary check** ✓: `check_broker_binary()` reports OCaml
+  broker binary path, freshness (binary vs source mtime), and source version from
+  `ocaml/c2c_mcp.ml`. Human-readable output with stale/fresh indicator. 3 Python
+  tests. `c2c health` now shows `✓ Broker binary: v0.6.6 (binary is up-to-date)`
+  (cbde925 + 3806fd9, 2026-04-14, storm-beacon).
+- **`c2c verify --broker`** ✓: broker-archive-based verification mode. Reads
+  `<broker_root>/archive/*.jsonl` instead of Claude session transcripts — works
+  across all client types (Claude, Codex, OpenCode, Kimi, Crush). `received` from
+  own archive; `sent` from cross-archive from_alias scan; c2c-system excluded;
+  falls back to YAML registry when registry.json absent. 8 new tests. Python suite
+  815 total (79feafc, 2026-04-14, storm-beacon).
+- **Docs optional-alias updates** ✓: `docs/commands.md` and `docs/index.md`
+  updated to reflect v0.6.6 change — `from_alias`/`alias` marked optional in all
+  affected tools. Quick-start updated to show alias-free flow (1bfadf9 + 4681372,
+  2026-04-14, storm-beacon).
 
 ### Active Work
 
