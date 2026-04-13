@@ -633,11 +633,16 @@ def print_health_report(report: dict[str, Any]) -> None:
             print("~ Claude wake daemon: not running")
             print(f"    Run: nohup c2c-claude-wake --claude-session {sid} &")
 
-    # Deliver daemon (Kimi / OpenCode / Codex / Crush auto-delivery)
+    # Deliver daemon (Kimi / OpenCode / Codex / Crush auto-delivery).
+    # Skip the warning for Claude Code sessions that have the PostToolUse hook
+    # active — the hook already handles auto-delivery, so the daemon is redundant.
     dd = report.get("deliver_daemon", {})
+    hook_active = report.get("hook", {}).get("settings_registered", False)
     if dd.get("checked"):
         if dd.get("running"):
             print(f"✓ Deliver daemon: running (pid {dd['pid']})")
+        elif hook_active:
+            pass  # PostToolUse hook covers Claude Code; no daemon needed
         else:
             sid = report.get("session", {}).get("session_id", "")
             alias = report.get("session", {}).get("alias", "")

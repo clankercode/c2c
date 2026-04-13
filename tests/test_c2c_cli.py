@@ -8181,6 +8181,126 @@ class HealthCheckDeliverDaemonTests(unittest.TestCase):
             self.assertFalse(result["running"])
 
 
+class HealthPrintDeliverDaemonTests(unittest.TestCase):
+    """Tests for deliver-daemon/hook interaction in print_health_report()."""
+
+    def _make_report(self, *, hook_registered: bool, daemon_running: bool) -> dict:
+        """Build a minimal health report dict for print_health_report testing."""
+        return {
+            "session": {
+                "session_id": "sid-abc",
+                "alias": "test-alias",
+                "registered": True,
+                "resolved": True,
+                "operator_check": False,
+                "inbox_exists": True,
+                "inbox_writable": True,
+                "inbox_pending": 0,
+            },
+            "broker_root": {"path": "/tmp/broker", "exists": True, "writable": True},
+            "registry": {"path": "/tmp/broker/registry.json", "exists": True, "readable": True, "entry_count": 1},
+            "hook": {
+                "hook_exists": hook_registered,
+                "hook_executable": hook_registered,
+                "settings_registered": hook_registered,
+            },
+            "claude_mcp": {"configured": False},
+            "claude_wake_daemon": {"checked": False},
+            "deliver_daemon": {
+                "checked": True,
+                "running": daemon_running,
+                "pid": 12345 if daemon_running else None,
+            },
+            "swarm_lounge": {"alias": "test-alias", "member": True, "room_exists": True},
+            "dead_letter": {"count": 0},
+            "stale_inboxes": {"stale": [], "total_pending": 0},
+            "rooms": {"exists": True, "room_count": 0},
+            "outer_loops": {"running": [], "count": 0},
+            "broker_binary": {"checked": False},
+            "relay": {"configured": False},
+            "wire_daemon": {"checked": False},
+        }
+
+    def _capture_output(self, report: dict) -> str:
+        import c2c_health
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            c2c_health.print_health_report(report)
+        return buf.getvalue()
+
+    def test_deliver_daemon_warning_suppressed_when_hook_active(self):
+        """No deliver-daemon warning for Claude Code sessions with hook active."""
+        import c2c_health  # noqa: F401
+        report = self._make_report(hook_registered=True, daemon_running=False)
+        output = self._capture_output(report)
+        self.assertNotIn("Deliver daemon: not running", output)
+        self.assertNotIn("c2c_deliver_inbox.py", output)
+
+    def test_deliver_daemon_warning_shown_when_hook_not_active(self):
+        """Deliver-daemon warning shown for non-Claude-Code sessions."""
+        import c2c_health  # noqa: F401
+        report = self._make_report(hook_registered=False, daemon_running=False)
+        output = self._capture_output(report)
+        self.assertIn("Deliver daemon: not running", output)
+        self.assertIn("c2c_deliver_inbox.py", output)
+
+    def test_deliver_daemon_ok_shown_when_running(self):
+        """Running deliver daemon always shows as green regardless of hook."""
+        import c2c_health  # noqa: F401
+        report = self._make_report(hook_registered=True, daemon_running=True)
+        output = self._capture_output(report)
+        self.assertIn("Deliver daemon: running (pid 12345)", output)
+
+
+class WakePeerTests(unittest.TestCase):
+    """Tests for c2c_wake_peer.wake_peer()."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.broker_root = Path(self.tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_registry(self, registrations):
+        (self.broker_root / "registry.json").write_text(
+            json.dumps(registrations), encoding="utf-8"
+        )
+
+    def test_unknown_alias_returns_error(self):
+        import c2c_wake_peer
+        rc = c2c_wake_peer.wake_peer("no-such-agent", broker_root=self.broker_root)
+        self.assertEqual(rc, 1)
+
+    def test_dead_pid_returns_error(self):
+        import c2c_wake_peer
+        self._write_registry([
+            {"alias": "dead-agent", "session_id": "sid-dead", "pid": 99999999, "pid_start_time": 1},
+        ])
+        rc = c2c_wake_peer.wake_peer("dead-agent", broker_root=self.broker_root)
+        self.assertEqual(rc, 1)
+
+    def test_dry_run_does_not_call_subprocess(self):
+        import c2c_wake_peer
+        self._write_registry([
+            {"alias": "live-agent", "session_id": "sid-live", "pid": os.getpid(), "pid_start_time": c2c_mcp.read_pid_start_time(os.getpid())},
+        ])
+        # dry-run should succeed without side effects
+        rc = c2c_wake_peer.wake_peer("live-agent", broker_root=self.broker_root, dry_run=True)
+        self.assertEqual(rc, 0)
+
+    def test_json_output_for_unknown_alias(self):
+        import c2c_wake_peer
+        import io
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = c2c_wake_peer.wake_peer("missing", broker_root=self.broker_root, json_out=True)
+        self.assertEqual(rc, 1)
+        out = json.loads(buf.getvalue())
+        self.assertFalse(out["ok"])
+        self.assertIn("not found", out["error"])
+
+
 class RefreshPeerTests(unittest.TestCase):
     """Tests for c2c_refresh_peer.refresh_peer()."""
 
