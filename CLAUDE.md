@@ -114,7 +114,7 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   (`auto_register_startup` now skips if the session already has a live
   alias), but to be safe always use an explicit temp config with
   `C2C_MCP_SESSION_ID=kimi-smoke-$(date +%s)` and `--mcp-config-file`
-  when launching one-shot Kimi/Crush probes. See
+  when launching one-shot Kimi probes. See
   `.collab/findings/2026-04-13T10-50-00Z-storm-beacon-kimi-session-hijack.md`.
 - **Never call `mcp__c2c__sweep` during active swarm operation.**
   Managed harness sessions (kimi, codex, opencode, crush) run as short-lived
@@ -215,7 +215,7 @@ c2c_configure_claude_code.py [--broker-root DIR] [--session-id ID] [--alias NAME
 c2c_configure_codex.py [--broker-root DIR] [--alias NAME] [--force] [--json]  # Appends/replaces [mcp_servers.c2c] in ~/.codex/config.toml with all tools auto-approved
 c2c_configure_opencode.py [--target-dir DIR] [--alias NAME] [--install-global-plugin] [--json]  # Writes .opencode/opencode.json + installs c2c TypeScript delivery plugin. --install-global-plugin also copies to ~/.config/opencode/plugins/.
 c2c_configure_kimi.py [--alias NAME] [--no-alias] [--json]        # Writes ~/.kimi/mcp.json for Kimi Code MCP setup.
-c2c_configure_crush.py [--alias NAME] [--no-alias] [--json]       # Writes ~/.config/crush/crush.json (respects XDG_CONFIG_HOME) for Crush MCP setup.
+c2c_configure_crush.py [--alias NAME] [--no-alias] [--json]       # (Experimental/unsupported) Writes ~/.config/crush/crush.json for Crush MCP setup.
 c2c_deliver_inbox.py (--notify-only | --full) [--loop] [--client CLIENT] [--session-id S] [--pts N] [--terminal-pid P] [--min-inject-gap N] [--submit-delay N]  # Delivery daemon: watches inbox via inotifywait, delivers messages. --notify-only PTY-injects a poll sentinel (message stays in broker); --full injects message text directly. Kimi uses master-side pty_inject with default submit delay 1.5s. --loop runs continuously. Used by managed harnesses (run-codex-inst-outer, run-kimi-inst-outer).
 c2c_inject.py --pts N [--client CLIENT] [--message MSG] [--session-id S] [--submit-delay N]  # One-shot PTY injection. Kimi uses master-side pty_inject with default submit delay 1.5s. Do not use c2c_pts_inject for interactive input.
 c2c_broker_gc.py [--once] [--interval N] [--ttl N] [--dead-letter-ttl N]  # GC daemon: sweeps dead registrations, prunes dead-letter entries. DO NOT run during active swarm — check for outer loops first.
@@ -239,7 +239,7 @@ c2c_opencode_wake_daemon.py --terminal-pid P --pts N [--session-id S] [--min-inj
 c2c_claude_wake_daemon.py [--claude-session NAME_OR_ID | --pid N | --terminal-pid P --pts N] [--session-id S] [--min-inject-gap N] [--once]  # Auto-delivery for Claude Code: watches session inbox, PTY-injects wake prompt when DMs arrive so idle Claude Code sessions get notified. Addresses the gap where PostToolUse hook only fires during active tool calls. c2c-claude-wake is the installed wrapper. See .collab/findings/2026-04-13T11-30-00Z-storm-beacon-claude-wake-delivery-gap.md.
 c2c_pts_inject.py                                                  # Direct /dev/pts/<N> display-side writer. Not a reliable input path for interactive TUIs; kept only for diagnostics/legacy experiments.
 c2c_kimi_wake_daemon.py --terminal-pid P --pts N [--session-id S] [--min-inject-gap N] [--submit-delay N] [--once]  # Auto-delivery for Kimi: watches inbox via inotifywait, injects a wake prompt through master-side pty_inject with default submit delay 1.5s.
-c2c_crush_wake_daemon.py --terminal-pid P --pts N [--session-id S] [--min-inject-gap N] [--once]  # Auto-delivery for Crush: same pattern as opencode wake daemon but for Crush TUI sessions. The managed notify-only wake path is live-proven for Codex<->Crush; message content stays broker-native.
+c2c_crush_wake_daemon.py --terminal-pid P --pts N [--session-id S] [--min-inject-gap N] [--once]  # (Experimental/unsupported) Auto-delivery for Crush. Live-proven once but unreliable due to no compaction.
 c2c_sweep_dryrun.py [--json] [--root DIR]                          # Read-only sweep preview: shows what would be dropped without touching files. Safe to run anytime — use this instead of mcp__c2c__sweep when outer loops are running, to see pending cleanup without disrupting managed sessions.
 c2c_refresh_peer.py <alias> [--pid PID] [--dry-run] [--json]  # Operator escape hatch: fixes stale registrations when a managed client's PID drifts to a dead process. Use: c2c refresh-peer opencode-local --pid $(pgrep -n opencode)
 relay.py                                                           # Polls inbox JSON files and delivers messages to sessions via PTY (legacy)

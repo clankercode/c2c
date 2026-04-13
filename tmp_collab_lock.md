@@ -12,6 +12,13 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T19:09Z — codex committed peer Crush-demotion follow-up docs in
+  `.collab/dm-matrix.md`, `CLAUDE.md`, and `docs/next-steps.md`, plus this
+  lock note. The slice removes Crush from the first-class DM matrix, marks
+  Crush setup/wake helpers experimental, and keeps historical one-shot/active
+  proof notes as context. Verification: stale-reference `rg` and
+  `git diff --check`.
+
 - 2026-04-13T19:08Z — codex RELEASED locks on
   `docs/_layouts/home.html`, `docs/architecture.md`,
   `docs/client-delivery.md`, `docs/communication-tiers.md`,

@@ -13,13 +13,12 @@ permalink: /next-steps/
 ## Recently Completed
 
 - **Crush interactive TUI wake proof** ✓ — Codex sent a direct
-  broker-native MCP DM to the live `crush-xertrov-x-game` TUI (now renamed
-  `ember-flame`), the notify-only daemon injected only a PTY poll nudge, Crush
-  called `mcp__c2c__poll_inbox`, and Crush replied directly to Codex via MCP
-  with marker
-  `CRUSH_INTERACTIVE_WAKE_ACK 1776101709` (2026-04-13T17:35Z). This proves
-  Codex<->Crush active-session delivery; other sender pairs into Crush still
-  need per-pair proof if the matrix requires it. See finding
+  broker-native MCP DM to the live `crush-xertrov-x-game` TUI, the notify-only
+  daemon injected a PTY poll nudge, Crush called `mcp__c2c__poll_inbox`, and
+  Crush replied directly to Codex via MCP
+  (`CRUSH_INTERACTIVE_WAKE_ACK 1776101709`, 2026-04-13T17:35Z). **Crush is
+  nevertheless demoted from first-class support** because it lacks context
+  compaction and interactive TUI wake is unreliable. See finding
   `.collab/findings/2026-04-13T17-35-58Z-codex-crush-interactive-tui-wake-proof.md`.
 - **True two-machine Tailscale relay test** ✓ — `x-game` ↔ `xsm` on a Tailscale network tested by kimi-nova (2026-04-14T02:37Z). DM in both directions, room join, and room fan-out all passed across physically separate Linux hosts with independent filesystems/runtimes. See finding `.collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md`.
 - **Docker cross-machine relay test** ✓ — host broker ↔ isolated Docker container (separate Python 3.11 runtime, separate filesystem, network via TCP) tested by kimi-nova (2026-04-14T02:16Z). DM host→container, reply container→host, room join, and room fan-out all confirmed. Operator instructions in `docs/relay-quickstart.md` validated.
@@ -56,7 +55,7 @@ permalink: /next-steps/
 - **Cross-machine broker Phase 3** ✓ — `c2c_relay_connector.py`: `RelayConnector.sync()` registers/heartbeats local aliases, forwards `remote-outbox.jsonl`, pulls relay inboxes into local `<session_id>.inbox.json`. Full two-machine roundtrip proven in-process: A queues → connector forwards → relay → B connector pulls → local inbox. Retry: failed sends stay in outbox. 16 tests, 489 total (c019628, 2026-04-13).
 - **Cross-machine broker Phase 2** ✓ — `c2c_relay_server.py`: ThreadingHTTPServer wrapping InMemoryRelay; Bearer-token auth; endpoints: register/heartbeat/list/send/poll_inbox/peek_inbox/dead_letter/health; `make_server()` + `start_server_thread()` helpers; CLI `--listen host:port --token`. 24 HTTP parity tests, 437 total (9f716d9, 2026-04-13).
 - **Cross-machine broker Phase 1** ✓ — `c2c_relay_contract.py`: `derive_node_id()` (hostname+git-remote-hash), heartbeat-lease `RegistrationLease`, `InMemoryRelay` (register/heartbeat/list/send/poll/peek/dead-letter). 33 contract tests; same suite can be reused by Phase-2 TCP relay for parity verification. Managed-restart semantics: same-node alias replacement allowed, cross-node conflict raises `ALIAS_CONFLICT` (6292bce, 2026-04-13).
-- **Kimi/Crush/OpenCode wake daemon improvements** ✓ — `watch_with_inotifywait` now uses `-t` timeout arg, returns bool, and falls back to `time.sleep` if no event fires; wrapper scripts `c2c-kimi-wake`, `c2c-opencode-wake`, `c2c-crush-wake` added and wired into `c2c install` (73c7782, 2026-04-13).
+- **Kimi/OpenCode wake daemon improvements** ✓ — `watch_with_inotifywait` now uses `-t` timeout arg, returns bool, and falls back to `time.sleep` if no event fires; wrapper scripts `c2c-kimi-wake`, `c2c-opencode-wake` added and wired into `c2c install` (73c7782, 2026-04-13).
 - **POSIX lockf across all Python registry writers** ✓ — all Python code that writes `registry.json` now uses `c2c_broker_gc.with_registry_lock` (POSIX `fcntl.lockf`) instead of BSD `flock`. Fixed in `c2c_broker_gc`, `c2c_refresh_peer`, `c2c_mcp`, and `run-opencode-inst-rearm`. BSD flock does NOT interlock with OCaml's `Unix.lockf` on Linux — silently clobbered registry writes (548deb9, 14f1707, 86be8f4, 2026-04-13).
 - **Outer loop auto-refresh-peer on child spawn** ✓ — `run-claude-inst-outer`, `run-kimi-inst-outer`, `run-opencode-inst-outer`, and `run-codex-inst-outer` now call `c2c refresh-peer` immediately after each child spawn to close the stale-PID window between old child death and new child's `auto_register_startup` call (86be8f4 + Claude follow-up, 2026-04-13).
 - **join_room updates stale session_id on alias rejoin** ✓ — when a managed session restarts with a new session_id (same alias), `join_room` now replaces the existing stale entry instead of adding a duplicate. Prevents room fanout duplication and enables `evict_dead_from_rooms` to evict by current session_id (4d69328, 95 OCaml + 292 Python tests, 2026-04-13).
@@ -77,15 +76,15 @@ permalink: /next-steps/
 - **`c2c init` shows room commands** ✓ — `next steps` output now includes `c2c room list / join / send` so fresh agents discover rooms immediately.
 - **OpenCode stale registry fix** ✓ — `run-opencode-inst-rearm` now refreshes the broker registration with the live PID before checking for a TTY, fixing the dead-PID rejection loop (5668b67).
 - **OpenCode ↔ OpenCode DM** ✓ — proven 2026-04-13 via `run-opencode-inst opencode-peer-smoke` one-shot against live `opencode-local` TUI; DM confirmed in inbox.
-- **Kimi / Crush configure session ID fix** ✓ — `c2c setup kimi/crush` now writes `C2C_MCP_SESSION_ID=alias` so `auto_register_startup` works (1f6e73a).
-- **Kimi / Crush Tier 2 managed harnesses** ✓ — `run-kimi-inst-outer` / `run-crush-inst-outer` + rearm scripts start deliver daemon alongside client; `restart-kimi/crush-self` helpers; all wired into `c2c install` (75efb83).
+- **Kimi configure session ID fix** ✓ — `c2c setup kimi` now writes `C2C_MCP_SESSION_ID=alias` so `auto_register_startup` works (1f6e73a).
+- **Kimi Tier 2 managed harness** ✓ — `run-kimi-inst-outer` + rearm script starts deliver daemon alongside client; `restart-kimi-self` helper; wired into `c2c install` (75efb83).
 - **`C2C_MCP_AUTO_JOIN_ROOMS`** ✓ — new OCaml env var; all five configure scripts default to `swarm-lounge`; new agents auto-join the social room on startup (d13d683, 7f4f226).
 - **`c2c list --broker` peer discovery** ✓ — now shows `client_type` (inferred from session_id/alias) and `last_seen` age alongside alive/rooms (8127a68).
 - **Kimi ↔ Codex DM** ✓ — proven full roundtrip via `kimi --print --mcp-config-file` with temp broker session (2026-04-13).
 - **Kimi → Claude Code DM** ✓ — proven via `kimi --print` with isolated temp session; storm-beacon received direct DM (2026-04-13).
 - **Kimi MCP connection** ✓ — `kimi mcp test c2c` shows all 16 tools; `C2C_MCP_AUTO_REGISTER_ALIAS` and `C2C_MCP_AUTO_JOIN_ROOMS` work in Kimi agent runs.
 - **Session hijack guard** ✓ — `auto_register_startup` now skips if an alive registration for this session_id has a different alias (prevents `kimi -p` from clobbering Claude Code's alias).
-- **Kimi / Crush support** ✓ — `c2c setup kimi` / `c2c setup crush`; wrapper scripts installed by `c2c install`; default stable alias (`kimi-user-host`, `crush-user-host`) set via `C2C_MCP_AUTO_REGISTER_ALIAS`.
+- **Kimi support** ✓ — `c2c setup kimi`; wrapper scripts installed by `c2c install`; default stable alias `kimi-user-host` set via `C2C_MCP_AUTO_REGISTER_ALIAS`.
 - **Codex → Codex DM** ✓ — proven broker-native end-to-end (2026-04-13).
 - **Per-client delivery docs** ✓ — `docs/client-delivery.md` covers session discovery, delivery, notification, restart per client.
 - **OpenCode orphaned worker fix** ✓ — `restart-opencode-self` now escapes the target pgid before signaling, then kills surviving descendants via `/proc` walk.
@@ -99,7 +98,7 @@ permalink: /next-steps/
 
 ## Quality / Verification
 
-- ~~Prove remaining DM matrix entries~~ OpenCode↔OpenCode ✓, Codex↔Codex ✓, Kimi↔Codex ✓, Kimi↔Claude Code ✓, Kimi↔OpenCode ✓, Codex↔Crush ✓. Crush one-shot MCP poll-and-reply is live-proven; Codex<->Crush active TUI wake is also live-proven.
+- ~~Prove remaining DM matrix entries~~ OpenCode↔OpenCode ✓, Codex↔Codex ✓, Kimi↔Codex ✓, Kimi↔Claude Code ✓, Kimi↔OpenCode ✓. All Claude↔Codex↔OpenCode↔Kimi pairs are proven live.
 - **OCaml edge-case coverage** ✓ — room history pagination, multi-sender attribution, large inbox drain, registered_at, session hijack guard, peer-renamed fan-out, sweep room eviction, dead-letter alias-match, join_room session_id update (95 OCaml tests, 292 Python tests)
 - **Alias hijack guard on `register`** ✓ — explicit `register` now rejects alias claims held by an alive different session. Actionable error names the holder and gives 3 recovery options. Own-alias refresh (same session_id) always allowed. See finding `2026-04-14T04-00-00Z-storm-beacon-alias-hijack-register-guard.md`.
 - **Sender impersonation guard on `send`/`send_all`/`send_room`** ✓ — these tools now reject a `from_alias` that belongs to a different alive session with a real /proc-verified PID. Prevents confused or malicious callers from inserting messages attributed to a live peer. 106 OCaml tests total (2026-04-14).
@@ -108,8 +107,8 @@ permalink: /next-steps/
   silently dropped first-time registrations and broke smoke-test delivery until
   rebuilt (3824610, 2026-04-14).
 - **`c2c history` all-client session env resolution** ✓ — history lookup now
-  checks OpenCode, Kimi, and Crush outer-loop session env vars in addition to
-  Claude/Codex, matching all five managed harnesses (3824610, 2026-04-14).
+  checks OpenCode and Kimi outer-loop session env vars in addition to
+  Claude/Codex, matching the managed harnesses (3824610, 2026-04-14).
 - **Session-aware alias allocation** ✓ — `maybe_auto_register_startup` now has
   `hijack_guard` (don't steal an alias that a live different session is using)
   and `alias_occupied_guard` (don't override a live peer's alias). Alias

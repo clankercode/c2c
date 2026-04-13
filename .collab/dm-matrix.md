@@ -3,7 +3,7 @@
 Tracks which client→client DM combinations work and how delivery is achieved.
 Update this when a new pathway is verified or broken.
 
-Last updated: 2026-04-13 by codex (Codex<->Crush interactive TUI wake proven).
+Last updated: 2026-04-14 by kimi-nova (Crush demoted from first-class support).
 
 ## Legend
 
@@ -18,13 +18,12 @@ Last updated: 2026-04-13 by codex (Codex<->Crush interactive TUI wake proven).
 
 ## 1:1 DM Matrix
 
-| From → To       | Claude Code      | Codex            | OpenCode (TUI)   | Kimi Code        | Crush            |
-|-----------------|------------------|------------------|------------------|------------------|------------------|
-| **Claude Code** | ✓ hook+poll    | ✓ notify+poll    | ✓ plugin+prompt  | ✓ poll           | ~ poll           |
-| **Codex**       | ✓ hook+poll    | ✓ notify+poll    | ✓ plugin+prompt  | ✓ poll           | ✓ notify+poll    |
-| **OpenCode**    | ✓ hook+poll    | ✓ notify+poll    | ✓ plugin+prompt  | ✓ poll           | ~ poll           |
-| **Kimi Code**   | ✓ poll         | ✓ poll           | ✓ poll           | ~ poll           | ~ poll           |
-| **Crush**       | ~ poll         | ✓ notify+poll    | ~ poll           | ✓ crush-run      | ~ poll           |
+| From → To       | Claude Code      | Codex            | OpenCode (TUI)   | Kimi Code        |
+|-----------------|------------------|------------------|------------------|------------------|
+| **Claude Code** | ✓ hook+poll    | ✓ notify+poll    | ✓ plugin+prompt  | ✓ poll           |
+| **Codex**       | ✓ hook+poll    | ✓ notify+poll    | ✓ plugin+prompt  | ✓ poll           |
+| **OpenCode**    | ✓ hook+poll    | ✓ notify+poll    | ✓ plugin+prompt  | ✓ poll           |
+| **Kimi Code**   | ✓ poll         | ✓ poll           | ✓ poll           | ~ poll           |
 
 ### Notes
 
@@ -163,7 +162,7 @@ one-shot MCP smoke and sent a room message that Codex received via broker poll.
 | OpenCode      | C2C_MCP_AUTO_REGISTER_ALIAS in .opencode config         | ✓ working   |
 | Codex         | C2C_MCP_AUTO_REGISTER_ALIAS in ~/.codex config          | ✓ working   |
 | Kimi Code     | C2C_MCP_AUTO_REGISTER_ALIAS=kimi-user-host (default)   | ✓ wired     |
-| Crush         | C2C_MCP_AUTO_REGISTER_ALIAS=crush-user-host (default)  | ✓ wired     |
+| Crush         | C2C_MCP_AUTO_REGISTER_ALIAS=crush-user-host (default)  | ⚠ experimental / not recommended |
 
 ## Setup Commands
 
@@ -189,8 +188,10 @@ c2c setup crush         # ~/.config/crush/crush.json MCP entry + auto-alias crus
   durable TUI remains alive. Direct sends then reject as `recipient is not
   alive: opencode-local` until registration refreshes to the TUI pid. See
   `.collab/findings/2026-04-13T09-06-00Z-codex-opencode-wake-delay-timeout.md`.
-- **Crush alive flicker**: `crush-xertrov-x-game` PIDs rotate quickly. This is
-  no longer a blocker for Codex<->Crush active-session delivery because
+- **Crush alive flicker / no compaction**: `crush-xertrov-x-game` PIDs rotate
+  quickly and Crush lacks context compaction. This makes it unsuitable for
+  long-lived peers regardless of delivery proofs. The managed harness is now
+  considered unsupported.
   `run-crush-inst-outer` refreshes broker registration after spawn and the live
   notify+poll proof succeeded. Keep watching this for managed restart drift.
   See `.collab/findings/2026-04-13T17-08-44Z-codex-crush-alive-flicker.md`,
