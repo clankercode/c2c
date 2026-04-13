@@ -228,6 +228,50 @@ def send_room(
     }
 
 
+def prune_dead_members(
+    room_id: str,
+    broker_root: Path | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Remove members whose alias is not in the broker registry.
+
+    Unlike `mcp__c2c__sweep`, this only modifies room member lists — it never
+    touches registrations or inboxes. Safe to run while managed outer loops are
+    active (no sweep footgun).
+
+    Returns dict with: room_id, before_count, after_count, removed (list of alias)
+    """
+    broot = broker_root or default_broker_root()
+    rdir = room_dir(room_id, broot)
+    members_path = rdir / "members.json"
+    if not members_path.exists():
+        return {"ok": False, "error": f"room not found: {room_id}"}
+
+    # Read registered aliases from registry.json (no lock needed: read-only snapshot)
+    registered: set[str] = {
+        reg.get("alias", "")
+        for reg in load_json_list(broot / "registry.json")
+        if reg.get("alias")
+    }
+
+    with members_lock(rdir):
+        members = load_json_list(members_path)
+        before = len(members)
+        kept = [m for m in members if m.get("alias", "") in registered]
+        removed = [m.get("alias", "?") for m in members if m.get("alias", "") not in registered]
+        if not dry_run and removed:
+            write_json_atomic(members_path, kept)
+
+    return {
+        "ok": True,
+        "room_id": room_id,
+        "before_count": before,
+        "after_count": len(kept),
+        "removed": removed,
+        "dry_run": dry_run,
+    }
+
+
 def list_rooms(broker_root: Path | None = None) -> list[dict]:
     rroot = rooms_root(broker_root)
     if not rroot.exists():
@@ -359,6 +403,14 @@ def main(argv: list[str] | None = None) -> int:
     p_list = sub.add_parser("list", help="list rooms")
     p_list.add_argument("--json", action="store_true")
 
+    p_prune = sub.add_parser(
+        "prune-dead",
+        help="remove members whose alias is no longer in the broker registry (safe during outer loops)",
+    )
+    p_prune.add_argument("room_id")
+    p_prune.add_argument("--dry-run", action="store_true", help="report without modifying")
+    p_prune.add_argument("--json", action="store_true")
+
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     if args.action is None:
@@ -384,6 +436,8 @@ def main(argv: list[str] | None = None) -> int:
         result = room_history(args.room_id, limit=args.limit)
     elif args.action == "list":
         result = list_rooms()
+    elif args.action == "prune-dead":
+        result = prune_dead_members(args.room_id, dry_run=args.dry_run)
     else:
         parser.print_help()
         return 2
