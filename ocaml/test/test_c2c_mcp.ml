@@ -611,6 +611,32 @@ let test_server_startup_auto_registers_alias_from_env () =
           check string "registered alias" "opencode-local" reg.alias;
           check bool "registered pid" true (reg.pid = Some 4242)))
 
+let test_auto_register_startup_skips_when_alive_session_has_different_alias () =
+  (* Regression: kimi -p inherits CLAUDE_SESSION_ID and should NOT evict the
+     running Claude Code session's alias. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let me = Unix.getpid () in
+      let my_start = C2c_mcp.Broker.read_pid_start_time me in
+      (* Pre-register an alive session with alias "claude-code-session" *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"shared-session" ~alias:"claude-code-session"
+        ~pid:(Some me) ~pid_start_time:my_start;
+      (* Now simulate kimi starting with the same session_id but a different alias *)
+      Unix.putenv "C2C_MCP_SESSION_ID" "shared-session";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "kimi-child-alias";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          (* Should still have only the original registration — kimi was blocked *)
+          check int "one registration (hijack blocked)" 1 (List.length regs);
+          let reg = List.hd regs in
+          check string "alias preserved" "claude-code-session" reg.alias))
+
 let test_auto_join_rooms_startup_joins_listed_rooms () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-social";
@@ -2748,6 +2774,8 @@ let () =
              test_tools_call_register_no_alias_falls_back_to_env
          ; test_case "server startup auto-registers alias from env" `Quick
              test_server_startup_auto_registers_alias_from_env
+         ; test_case "auto_register_startup skips when alive session has different alias" `Quick
+             test_auto_register_startup_skips_when_alive_session_has_different_alias
          ; test_case "auto_join_rooms_startup joins listed rooms" `Quick
              test_auto_join_rooms_startup_joins_listed_rooms
          ; test_case "auto_join_rooms_startup skips when no alias" `Quick

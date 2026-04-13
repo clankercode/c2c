@@ -1126,13 +1126,29 @@ let auto_register_startup ~broker_root =
   match (auto_register_alias (), current_session_id ()) with
   | Some alias, Some session_id ->
       let broker = Broker.create ~root:broker_root in
-      let pid =
-        match current_client_pid () with
-        | Some pid -> Some pid
-        | None -> Some (Unix.getppid ())
+      (* Safety guard: if an alive registration already exists for this
+         session_id with a DIFFERENT alias, skip auto-register. This
+         prevents session hijack when a child process (e.g. kimi -p) inherits
+         CLAUDE_SESSION_ID from a running Claude Code session but has a
+         different C2C_MCP_AUTO_REGISTER_ALIAS configured. *)
+      let existing = Broker.list_registrations broker in
+      let hijack_guard =
+        List.exists
+          (fun reg ->
+            reg.session_id = session_id
+            && reg.alias <> alias
+            && Broker.registration_is_alive reg)
+          existing
       in
-      let pid_start_time = Broker.capture_pid_start_time pid in
-      Broker.register broker ~session_id ~alias ~pid ~pid_start_time
+      if not hijack_guard then begin
+        let pid =
+          match current_client_pid () with
+          | Some pid -> Some pid
+          | None -> Some (Unix.getppid ())
+        in
+        let pid_start_time = Broker.capture_pid_start_time pid in
+        Broker.register broker ~session_id ~alias ~pid ~pid_start_time
+      end
   | _ -> ()
 
 (** Auto-join rooms listed in C2C_MCP_AUTO_JOIN_ROOMS (comma-separated) on
