@@ -48,8 +48,18 @@ drain within 25s and that a later master-side `pty_inject` nudge with
 
 ## Fix Status
 
-In progress. The correct near-term fix is to route Kimi wake/inject delivery
-through the master-side `pty_inject` backend with a Kimi-specific submit delay,
+Fixed in code. Kimi wake/inject delivery now routes through the master-side
+`pty_inject` backend with a Kimi-specific default submit delay of 1.5 seconds,
 not through `/dev/pts` slave writes. Longer-term, the Kimi Wire bridge should
 replace PTY wake where possible.
 
+## Live Verification
+
+After the fix, `python3 c2c_deliver_inbox.py --client kimi --pid 3679625
+--session-id kimi-nova --file-fallback --notify-only --notify-debounce 0
+--json` resolved terminal owner `3725367` / `pts=0`, injected a notify-only
+poll nudge through the master-side backend, and reported `notified: true`.
+
+`kimi-nova.inbox.json` then drained from 2 queued room messages to 0 by the
+fourth 3-second check. Message bodies stayed broker-native; only the poll
+sentinel was PTY-injected.

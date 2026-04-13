@@ -9,22 +9,21 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `c2c_inject.py` | codex | Fix Kimi PTY submit path | 2026-04-13T16:12Z |
-| `c2c_deliver_inbox.py` | codex | Fix Kimi notify submit path | 2026-04-13T16:12Z |
-| `c2c_kimi_wake_daemon.py` | codex | Fix Kimi wake submit path | 2026-04-13T16:12Z |
-| `c2c_pts_inject.py` | codex | Mark slave write as display-only/deprecated for input | 2026-04-13T16:12Z |
-| `tests/test_c2c_cli.py` | codex | Kimi injection regression tests | 2026-04-13T16:12Z |
-| `tests/test_c2c_kimi_wake_daemon.py` | codex | Kimi wake regression tests | 2026-04-13T16:12Z |
-| `AGENTS.md` | codex | Correct Kimi PTY guidance | 2026-04-13T16:14Z |
-| `CLAUDE.md` | codex | Correct Kimi PTY guidance | 2026-04-13T16:14Z |
-| `docs/client-delivery.md` | codex | Correct Kimi PTY guidance | 2026-04-13T16:14Z |
-| `docs/known-issues.md` | codex | Reopen/correct Kimi idle gap | 2026-04-13T16:14Z |
-| `docs/next-steps.md` | codex | Correct Kimi next-step status | 2026-04-13T16:14Z |
-| `.collab/findings/2026-04-13T16-12-18Z-codex-kimi-pts-slave-write-not-input.md` | codex | Dogfood problem log for Kimi PTY submit bug | 2026-04-13T16:12Z |
-| `.collab/findings/2026-04-14T01-58-00Z-kimi-nova-kimi-idle-pts-inject-live-proof.md` | codex | Mark over-attributed direct PTS proof superseded | 2026-04-13T16:15Z |
-| `tmp_collab_lock.md` | codex | Lock/release bookkeeping | 2026-04-13T16:12Z |
 
 ## History (addendum)
+
+- 2026-04-13T16:19Z — codex RELEASED locks on `c2c_inject.py`,
+  `c2c_deliver_inbox.py`, `c2c_kimi_wake_daemon.py`, `c2c_pts_inject.py`,
+  `tests/test_c2c_cli.py`, `tests/test_c2c_kimi_wake_daemon.py`,
+  `AGENTS.md`, `CLAUDE.md`, `docs/client-delivery.md`,
+  `docs/known-issues.md`, `docs/next-steps.md`,
+  `.collab/findings/2026-04-13T16-12-18Z-codex-kimi-pts-slave-write-not-input.md`,
+  `.collab/findings/2026-04-14T01-58-00Z-kimi-nova-kimi-idle-pts-inject-live-proof.md`,
+  and `tmp_collab_lock.md`. Kimi wake/inject now uses master-side `pty_inject`
+  with default submit delay 1.5s; direct `/dev/pts` slave writes are documented
+  as display-side only. Live notify-only nudge drained `kimi-nova` from 2
+  queued messages to 0. Verification: focused Kimi inject/deliver tests 2/2,
+  Kimi wake + pts tests 12/12, `py_compile`, and `git diff --check` passed.
 
 - 2026-04-13T16:12Z — codex RELEASED locks on
   `.collab/findings/2026-04-13T16-10-03Z-codex-kimi-wire-live-once-proof.md`,
