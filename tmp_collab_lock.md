@@ -12,6 +12,15 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 11:45 — codex RELEASED locks on `run-kimi-inst`,
+  `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-13T11-45-00Z-codex-kimi-mcp-dune-quota.md`, and
+  `tmp_collab_lock.md`. Removed the conflicting stdin prompt pipe after
+  verifying Kimi `--print --prompt <text>` works, and documented Kimi MCP
+  startup failures caused by Dune being unable to write configurator state while
+  `/tmp` quota/headroom was exhausted. Live mitigation removed stale `/tmp`
+  build/probe directories and restored OCaml MCP build/startup.
+
 - 2026-04-13 11:37 — codex RELEASED locks on `run-kimi-inst`,
   `tests/test_c2c_cli.py`, and `tmp_collab_lock.md`. Completed the Kimi
   prompt-mode launcher slice after catching a dry-run unpack/prompt-mode
