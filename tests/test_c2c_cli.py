@@ -394,6 +394,7 @@ class C2CCLITests(unittest.TestCase):
     def test_install_wrapper_exec_points_to_git_common_root(self):
         """Wrapper exec path must resolve to the main repo root, not a worktree."""
         import subprocess as _subprocess
+
         install_dir = Path(self.temp_dir.name) / "bin"
         env = dict(self.env)
         env["C2C_INSTALL_BIN_DIR"] = str(install_dir)
@@ -403,7 +404,9 @@ class C2CCLITests(unittest.TestCase):
 
         wrapper_content = (install_dir / "c2c").read_text(encoding="utf-8")
         # Extract the exec path from: exec "/path/to/c2c" "$@"
-        exec_line = next(l for l in wrapper_content.splitlines() if l.startswith("exec "))
+        exec_line = next(
+            l for l in wrapper_content.splitlines() if l.startswith("exec ")
+        )
         exec_path = exec_line.split('"')[1]  # e.g. /home/xertrov/src/c2c-msg/c2c
 
         # The wrapper must point to the git-common-dir parent (main repo), not a worktree.
@@ -1233,6 +1236,7 @@ class C2CCLITests(unittest.TestCase):
         env = dict(self.env)
         env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
         env["C2C_SESSION_ID"] = AGENT_ONE_SESSION_ID
+        env["C2C_MCP_AUTO_REGISTER_ALIAS"] = "storm-ember"
         save_registry(
             {
                 "registrations": [
@@ -1808,8 +1812,10 @@ class C2CCLITests(unittest.TestCase):
 
         result = run_cli(
             "c2c-poll-inbox",
-            "--session-id", "ses-count",
-            "--broker-root", str(broker_root),
+            "--session-id",
+            "ses-count",
+            "--broker-root",
+            str(broker_root),
             "--file-fallback",
             env=self.env,
         )
@@ -1829,14 +1835,18 @@ class C2CCLITests(unittest.TestCase):
         broker_root.mkdir()
         inbox_path = broker_root / "ses-one.inbox.json"
         inbox_path.write_text(
-            json.dumps([{"from_alias": "peer", "to_alias": "ses-one", "content": "hi"}]),
+            json.dumps(
+                [{"from_alias": "peer", "to_alias": "ses-one", "content": "hi"}]
+            ),
             encoding="utf-8",
         )
 
         result = run_cli(
             "c2c-poll-inbox",
-            "--session-id", "ses-one",
-            "--broker-root", str(broker_root),
+            "--session-id",
+            "ses-one",
+            "--broker-root",
+            str(broker_root),
             "--file-fallback",
             env=self.env,
         )
@@ -1860,8 +1870,10 @@ class C2CCLITests(unittest.TestCase):
 
         result = run_cli(
             "c2c-poll-inbox",
-            "--session-id", "ses-json",
-            "--broker-root", str(broker_root),
+            "--session-id",
+            "ses-json",
+            "--broker-root",
+            str(broker_root),
             "--file-fallback",
             "--json",
             env=self.env,
@@ -1982,13 +1994,15 @@ class C2CCLITests(unittest.TestCase):
             def wait(self):
                 return 0
 
-        namespace["main"].__globals__["maybe_refresh_peer"] = (
-            lambda name, pid: refresh_calls.append((name, pid))
+        namespace["main"].__globals__["maybe_refresh_peer"] = lambda name, pid: (
+            refresh_calls.append((name, pid))
         )
 
         with (
             mock.patch("subprocess.Popen", return_value=FakeProcess()),
-            mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0)),
+            mock.patch(
+                "subprocess.run", return_value=subprocess.CompletedProcess([], 0)
+            ),
             mock.patch("time.sleep", side_effect=KeyboardInterrupt),
         ):
             with self.assertRaises(KeyboardInterrupt):
@@ -2030,8 +2044,15 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(
             calls[0]["command"],
-            [sys.executable, str(refresh), "storm-beacon", "--pid", "12345",
-             "--session-id", "sid-abc"],
+            [
+                sys.executable,
+                str(refresh),
+                "storm-beacon",
+                "--pid",
+                "12345",
+                "--session-id",
+                "sid-abc",
+            ],
         )
         self.assertEqual(calls[0]["cwd"], root)
         self.assertTrue(calls[0]["capture_output"])
@@ -2046,10 +2067,14 @@ class C2CCLITests(unittest.TestCase):
         cfg_dir.mkdir()
         # Claude format: session_id is in env dict, not top-level
         (cfg_dir / "claude-b.json").write_text(
-            json.dumps({
-                "c2c_alias": "storm-beacon",
-                "env": {"C2C_MCP_SESSION_ID": "d16034fc-5526-414b-a88e-709d1a93e345"},
-            }),
+            json.dumps(
+                {
+                    "c2c_alias": "storm-beacon",
+                    "env": {
+                        "C2C_MCP_SESSION_ID": "d16034fc-5526-414b-a88e-709d1a93e345"
+                    },
+                }
+            ),
             encoding="utf-8",
         )
         refresh = root / "c2c_refresh_peer.py"
@@ -3024,7 +3049,14 @@ class C2CListUnitTests(unittest.TestCase):
         try:
             outer_state = {
                 "safe_to_sweep": False,
-                "running": [{"client": "codex", "pid": 1234, "instance": "local", "cmdline": "x"}],
+                "running": [
+                    {
+                        "client": "codex",
+                        "pid": 1234,
+                        "instance": "local",
+                        "cmdline": "x",
+                    }
+                ],
             }
             output = self._run_list_broker(tmp.name, outer_state)
         finally:
@@ -3042,6 +3074,7 @@ class C2CListUnitTests(unittest.TestCase):
         After last ')': parts[0]=state, parts[1..18]=ppid..itrealvalue, parts[19]=starttime.
         """
         import c2c_list
+
         fake_pid = os.getpid()
         starttime = 30294636
         # 18 filler fields (1-18) after state so parts[19] == starttime
@@ -3049,14 +3082,17 @@ class C2CListUnitTests(unittest.TestCase):
             f"{fake_pid} (Kimi Code) S 1 2 3 4 5 6 "
             f"7 8 9 10 11 12 13 14 15 16 17 18 {starttime} 21 22\n"
         )
-        with mock.patch("pathlib.Path.read_text", return_value=fake_stat), \
-             mock.patch("pathlib.Path.exists", return_value=True):
+        with (
+            mock.patch("pathlib.Path.read_text", return_value=fake_stat),
+            mock.patch("pathlib.Path.exists", return_value=True),
+        ):
             result = c2c_list._pid_alive(fake_pid, starttime)
         self.assertTrue(result, "should be alive when starttime matches")
 
     def test_pid_alive_detects_pid_reuse_with_spaces_in_process_name(self):
         """_pid_alive returns False when starttime mismatches (PID reused), even for spaced names."""
         import c2c_list
+
         fake_pid = os.getpid()
         starttime = 30294636
         fake_stat = (
@@ -3064,8 +3100,10 @@ class C2CListUnitTests(unittest.TestCase):
             f"7 8 9 10 11 12 13 14 15 16 17 18 {starttime} 21 22\n"
         )
         wrong_starttime = 12345
-        with mock.patch("pathlib.Path.read_text", return_value=fake_stat), \
-             mock.patch("pathlib.Path.exists", return_value=True):
+        with (
+            mock.patch("pathlib.Path.read_text", return_value=fake_stat),
+            mock.patch("pathlib.Path.exists", return_value=True),
+        ):
             result = c2c_list._pid_alive(fake_pid, wrong_starttime)
         self.assertFalse(result, "should be dead when starttime mismatches")
 
@@ -7285,13 +7323,15 @@ class RunCrushInstTests(unittest.TestCase):
             def wait(self):
                 return 0
 
-        namespace["main"].__globals__["maybe_refresh_peer"] = (
-            lambda name, pid: refresh_calls.append((name, pid))
+        namespace["main"].__globals__["maybe_refresh_peer"] = lambda name, pid: (
+            refresh_calls.append((name, pid))
         )
 
         with (
             mock.patch("subprocess.Popen", return_value=FakeProcess()),
-            mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0)),
+            mock.patch(
+                "subprocess.run", return_value=subprocess.CompletedProcess([], 0)
+            ),
             mock.patch("time.sleep", side_effect=KeyboardInterrupt),
         ):
             with self.assertRaises(KeyboardInterrupt):
@@ -7519,8 +7559,18 @@ class HealthCheckSessionInboxPendingTests(unittest.TestCase):
 
     def _write_registry(self, session_id: str, alias: str) -> None:
         import os
+
         self.registry_path.write_text(
-            json.dumps([{"session_id": session_id, "alias": alias, "pid": os.getpid(), "pid_start_time": 1}]),
+            json.dumps(
+                [
+                    {
+                        "session_id": session_id,
+                        "alias": alias,
+                        "pid": os.getpid(),
+                        "pid_start_time": 1,
+                    }
+                ]
+            ),
             encoding="utf-8",
         )
 
@@ -7764,7 +7814,9 @@ class RefreshPeerTests(unittest.TestCase):
         new_pid = os.getpid()
         old_session_id = "opencode-c2c-msg"
         new_session_id = "d16034fc-5526-414b-a88e-709d1a93e345"
-        original = [{"session_id": old_session_id, "alias": "storm-beacon", "pid": 99999}]
+        original = [
+            {"session_id": old_session_id, "alias": "storm-beacon", "pid": 99999}
+        ]
         self._write_registry(original)
         result = c2c_refresh_peer.refresh_peer(
             "storm-beacon",
