@@ -166,6 +166,9 @@ def main(argv: list[str] | None = None) -> int:
         return c2c_watch.main(remainder)
     if subcommand == "whoami":
         return c2c_whoami.main(remainder)
+    if subcommand == "wire-daemon":
+        import c2c_wire_daemon
+        return c2c_wire_daemon.main(remainder)
 
     print(f"unknown c2c subcommand: {subcommand}", file=sys.stderr)
     return 2
