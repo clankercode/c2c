@@ -12,6 +12,11 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 13:26 — codex RELEASED locks on `tests/test_relay_rooms.py`
+  and `tmp_collab_lock.md`. Committed the missing Phase 4 room/broadcast relay
+  tests after the code landed in `34600a2`/`e83e474`. Verification:
+  `python3 -m unittest tests.test_relay_rooms -v` passed 28 tests.
+
 - 2026-04-13 13:24 — codex RELEASED locks on `c2c_relay_server.py`,
   `tests/test_relay_server.py`, `tests/test_c2c_relay_server.py`, and
   `tmp_collab_lock.md`. Fixed relay server/test ResourceWarnings by closing the
