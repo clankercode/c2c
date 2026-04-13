@@ -379,6 +379,36 @@ c2c-kimi-wire-bridge \
 Live-proven 2026-04-14: `--once` delivered 1 broker message through a real
 `kimi --wire` subprocess, received acknowledgment, cleared spool, rc=0.
 
+#### Wire Daemon Lifecycle (`c2c wire-daemon`)
+
+`c2c wire-daemon` manages background wire bridge daemon processes. State is
+stored in `~/.local/share/c2c/wire-daemons/` (one pidfile + log per session).
+
+| Subcommand | Description |
+|-----------|-------------|
+| `wire-daemon start --session-id S [--alias A] [--interval N]` | Spawn a detached wire bridge daemon |
+| `wire-daemon stop --session-id S` | Send SIGTERM to the daemon |
+| `wire-daemon status --session-id S [--json]` | Show running/stopped state and pid |
+| `wire-daemon restart --session-id S [--alias A] [--interval N]` | Stop then start |
+| `wire-daemon list [--json]` | List all known wire daemons (running and stale) |
+
+```bash
+# Start a daemon for the default Kimi session:
+c2c wire-daemon start --session-id kimi-user-host
+
+# Check if it's alive:
+c2c wire-daemon status --session-id kimi-user-host
+
+# Stop it:
+c2c wire-daemon stop --session-id kimi-user-host
+
+# See all wire daemons:
+c2c wire-daemon list
+```
+
+`c2c health` reports wire daemon state automatically when the session alias
+contains `kimi`.
+
 ### Flags
 
 Most subcommands accept `--json` for machine-readable output.
