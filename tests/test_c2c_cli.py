@@ -1585,6 +1585,76 @@ class C2CCLITests(unittest.TestCase):
         killpg.assert_called_once_with(12345, signal.SIGTERM)
         self.assertEqual(json.loads(inbox_path.read_text(encoding="utf-8")), [])
 
+    def test_file_fallback_peek_reads_without_draining(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker-peek"
+        broker_root.mkdir()
+        inbox_path = broker_root / "opencode-local.inbox.json"
+        msgs = [{"from_alias": "codex", "to_alias": "opencode-local", "content": "peek test"}]
+        inbox_path.write_text(json.dumps(msgs), encoding="utf-8")
+
+        result = c2c_poll_inbox.file_fallback_peek(broker_root, "opencode-local")
+
+        self.assertEqual(result, msgs)
+        # Inbox must still contain the messages (non-destructive)
+        self.assertEqual(json.loads(inbox_path.read_text(encoding="utf-8")), msgs)
+
+    def test_file_fallback_peek_returns_empty_when_no_inbox(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker-peek-empty"
+        broker_root.mkdir()
+        result = c2c_poll_inbox.file_fallback_peek(broker_root, "ghost-session")
+        self.assertEqual(result, [])
+        # Should NOT create the file (unlike poll which creates it)
+        self.assertFalse((broker_root / "ghost-session.inbox.json").exists())
+
+    def test_c2c_poll_inbox_peek_flag_is_nondestructive(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker-peek-flag"
+        broker_root.mkdir()
+        inbox_path = broker_root / "opencode-local.inbox.json"
+        msgs = [{"from_alias": "storm-beacon", "to_alias": "opencode-local", "content": "hello"}]
+        inbox_path.write_text(json.dumps(msgs), encoding="utf-8")
+
+        result = run_cli(
+            "c2c-poll-inbox",
+            "--session-id",
+            "opencode-local",
+            "--broker-root",
+            str(broker_root),
+            "--peek",
+            "--json",
+            env=self.env,
+        )
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["source"], "file-peek")
+        self.assertEqual(payload["messages"], msgs)
+        # Messages must remain in inbox
+        self.assertEqual(json.loads(inbox_path.read_text(encoding="utf-8")), msgs)
+
+    def test_c2c_peek_inbox_subcommand_is_nondestructive(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker-peek-sub"
+        broker_root.mkdir()
+        inbox_path = broker_root / "opencode-local.inbox.json"
+        msgs = [{"from_alias": "codex", "to_alias": "opencode-local", "content": "subcommand test"}]
+        inbox_path.write_text(json.dumps(msgs), encoding="utf-8")
+
+        result = run_cli(
+            "c2c",
+            "peek-inbox",
+            "--session-id",
+            "opencode-local",
+            "--broker-root",
+            str(broker_root),
+            "--json",
+            env=self.env,
+        )
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["source"], "file-peek")
+        self.assertEqual(payload["messages"], msgs)
+        self.assertEqual(json.loads(inbox_path.read_text(encoding="utf-8")), msgs)
+
     def test_run_codex_inst_allows_explicit_c2c_id_for_multiple_codex_sessions(self):
         config_dir = Path(self.temp_dir.name) / "run-codex-inst.d"
         config_dir.mkdir()
