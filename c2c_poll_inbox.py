@@ -91,6 +91,21 @@ def file_fallback_poll(broker_root: Path, session_id: str) -> list[dict[str, Any
         return messages
 
 
+def file_fallback_peek(broker_root: Path, session_id: str) -> list[dict[str, Any]]:
+    """Read the inbox without draining it (non-destructive)."""
+    path = inbox_path(broker_root, session_id)
+    with inbox_lock(broker_root, session_id):
+        if not path.exists():
+            return []
+        raw = path.read_text(encoding="utf-8").strip()
+        if not raw:
+            return []
+        loaded = json.loads(raw)
+        if not isinstance(loaded, list):
+            raise ValueError(f"inbox is not a JSON list: {path}")
+        return [item for item in loaded if isinstance(item, dict)]
+
+
 def call_mcp_tool(
     name: str,
     arguments: dict[str, Any],
@@ -233,6 +248,11 @@ def main(argv: list[str] | None = None) -> int:
         help="drain the inbox JSON file directly under a POSIX lockf sidecar",
     )
     parser.add_argument(
+        "--peek",
+        action="store_true",
+        help="read inbox without draining (non-destructive); implies --file-fallback",
+    )
+    parser.add_argument(
         "--timeout",
         type=float,
         default=5.0,
@@ -245,14 +265,18 @@ def main(argv: list[str] | None = None) -> int:
     broker_root = args.broker_root or default_broker_root()
 
     try:
-        source, messages = poll_inbox(
-            broker_root=broker_root,
-            session_id=session_id,
-            timeout=args.timeout,
-            force_file=args.file_fallback
-            or truthy(os.environ.get("C2C_POLL_INBOX_FILE_FALLBACK")),
-            allow_file_fallback=True,
-        )
+        if args.peek:
+            messages = file_fallback_peek(broker_root, session_id)
+            source = "file-peek"
+        else:
+            source, messages = poll_inbox(
+                broker_root=broker_root,
+                session_id=session_id,
+                timeout=args.timeout,
+                force_file=args.file_fallback
+                or truthy(os.environ.get("C2C_POLL_INBOX_FILE_FALLBACK")),
+                allow_file_fallback=True,
+            )
     except Exception as exc:
         print(f"[c2c-poll-inbox] {exc}", file=sys.stderr)
         return 1

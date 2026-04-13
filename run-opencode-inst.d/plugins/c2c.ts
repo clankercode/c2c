@@ -161,6 +161,16 @@ const C2CDelivery: Plugin = async (ctx) => {
     }
   }
 
+  /** Extract Msg[] from the poll-inbox --json envelope (or bare array). */
+  function parsePollResult(stdout: string): Msg[] {
+    if (!stdout) return [];
+    const parsed = JSON.parse(stdout);
+    // poll-inbox --json emits {"session_id":...,"messages":[...]} - unwrap it.
+    // Bare arrays are accepted too for forward-compat.
+    const msgs: unknown = Array.isArray(parsed) ? parsed : (parsed as any).messages ?? [];
+    return Array.isArray(msgs) ? (msgs as Msg[]) : [];
+  }
+
   /** Drain inbox using the c2c CLI and return parsed messages. */
   async function drainInbox(): Promise<Msg[]> {
     if (!sessionId) return [];
@@ -169,9 +179,7 @@ const C2CDelivery: Plugin = async (ctx) => {
       if (sessionId) args.push("--session-id", sessionId);
       if (brokerRoot) args.push("--broker-root", brokerRoot);
       const stdout = (await runC2c(args)).trim();
-      if (!stdout) return [];
-      const parsed = JSON.parse(stdout);
-      return Array.isArray(parsed) ? parsed : [];
+      return parsePollResult(stdout);
     } catch (err) {
       await log(`drainInbox error: ${err}`);
       return [];

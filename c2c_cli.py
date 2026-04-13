@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(
-            "usage: c2c <broker-gc|configure-claude-code|configure-codex|configure-crush|configure-kimi|configure-opencode|dead-letter|deliver-inbox|health|init|inject|install|list|mcp|poker-sweep|poll-inbox|prune|refresh-peer|register|restart-me|room|send|send-all|setup|sweep|verify|watch|whoami> [...args]",
+            "usage: c2c <broker-gc|configure-claude-code|configure-codex|configure-crush|configure-kimi|configure-opencode|dead-letter|deliver-inbox|health|init|inject|install|list|mcp|peek-inbox|poker-sweep|poll-inbox|prune|refresh-peer|register|restart-me|room|send|send-all|setup|sweep|verify|watch|whoami> [...args]",
             file=sys.stderr,
         )
         return 2
@@ -104,6 +104,8 @@ def main(argv: list[str] | None = None) -> int:
         return c2c_poker_sweep.main(remainder)
     if subcommand == "poll-inbox":
         return c2c_poll_inbox.main(remainder)
+    if subcommand == "peek-inbox":
+        return c2c_poll_inbox.main(["--peek", *remainder])
     if subcommand == "prune":
         return c2c_prune.main(remainder)
     if subcommand == "refresh-peer":
