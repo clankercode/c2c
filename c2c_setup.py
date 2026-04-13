@@ -36,15 +36,8 @@ def main(argv: list[str] | None = None) -> int:
         import c2c_configure_opencode
         return c2c_configure_opencode.main(remainder)
     if client == "codex":
-        print(
-            "codex: Codex uses ~/.codex/config.toml or project-local .codex/ config.\n"
-            "Codex c2c setup is not yet implemented — contributions welcome!\n"
-            "In the meantime: set the c2c MCP server in your Codex config manually.\n"
-            "Server command: python3 /path/to/c2c_mcp.py\n"
-            "Env: C2C_MCP_BROKER_ROOT=/path/to/.git/c2c/mcp",
-            file=sys.stderr,
-        )
-        return 1
+        import c2c_configure_codex
+        return c2c_configure_codex.main(remainder)
 
     print(
         f"c2c setup: unknown client '{client}'\n"
