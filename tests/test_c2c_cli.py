@@ -3896,6 +3896,65 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
             ],
         )
 
+    def test_run_opencode_inst_outer_forwards_first_sigint_to_child_session(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            outer_path = root / "run-opencode-inst-outer"
+            inner_path = root / "run-opencode-inst"
+            signal_path = root / "signal.txt"
+            child_pid_path = root / "child.pid"
+            shutil.copy2(REPO / "run-opencode-inst-outer", outer_path)
+            inner_path.write_text(
+                "import os, pathlib, signal, sys, time\n"
+                f"signal_path = pathlib.Path({str(signal_path)!r})\n"
+                f"child_pid_path = pathlib.Path({str(child_pid_path)!r})\n"
+                "child_pid_path.write_text(f'{os.getpid()}\\n', encoding='utf-8')\n"
+                "def handle(signum, _frame):\n"
+                "    signal_path.write_text(signal.Signals(signum).name + '\\n', encoding='utf-8')\n"
+                "    raise SystemExit(0)\n"
+                "signal.signal(signal.SIGINT, handle)\n"
+                "signal.signal(signal.SIGTERM, handle)\n"
+                "while True:\n"
+                "    time.sleep(0.1)\n",
+                encoding="utf-8",
+            )
+
+            process = subprocess.Popen(
+                [sys.executable, str(outer_path), "opencode-a"],
+                cwd=root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                deadline = time.monotonic() + CLI_TIMEOUT_SECONDS
+                while time.monotonic() < deadline:
+                    if child_pid_path.exists():
+                        break
+                    time.sleep(0.05)
+                self.assertTrue(child_pid_path.exists(), "child process did not start")
+
+                process.send_signal(signal.SIGINT)
+
+                deadline = time.monotonic() + CLI_TIMEOUT_SECONDS
+                while time.monotonic() < deadline:
+                    if signal_path.exists():
+                        break
+                    time.sleep(0.05)
+
+                process.send_signal(signal.SIGINT)
+                stdout, stderr = process.communicate(timeout=CLI_TIMEOUT_SECONDS)
+
+                self.assertEqual(process.returncode, 130, stderr)
+                self.assertTrue(signal_path.exists(), stdout + stderr)
+                self.assertEqual(
+                    signal_path.read_text(encoding="utf-8").strip(), "SIGINT"
+                )
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=CLI_TIMEOUT_SECONDS)
+
     @unittest.skipUnless(shutil.which("opencode"), "opencode not installed")
     def test_opencode_repo_local_config_lists_c2c_server(self):
         result = subprocess.run(
@@ -4113,6 +4172,64 @@ class RestartOpenCodeSelfTests(unittest.TestCase):
                 except subprocess.TimeoutExpired:
                     sleeper.kill()
                     sleeper.wait(timeout=CLI_TIMEOUT_SECONDS)
+
+    def test_restart_opencode_self_kills_detached_child_from_snapshot(self):
+        config_dir = Path(self.temp_dir.name) / "run-opencode-inst.d"
+        config_dir.mkdir()
+        child_pid_path = Path(self.temp_dir.name) / "child.pid"
+        parent_script = (
+            "import pathlib, signal, subprocess, sys, time\n"
+            f"child_pid_path = pathlib.Path({str(child_pid_path)!r})\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], start_new_session=True)\n"
+            "child_pid_path.write_text(f'{child.pid}\\n', encoding='utf-8')\n"
+            "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))\n"
+            "while True:\n"
+            "    time.sleep(1)\n"
+        )
+        parent = subprocess.Popen(
+            [sys.executable, "-c", parent_script], start_new_session=True
+        )
+        child_pid = None
+        try:
+            deadline = time.monotonic() + CLI_TIMEOUT_SECONDS
+            while time.monotonic() < deadline:
+                if child_pid_path.exists():
+                    child_pid = int(child_pid_path.read_text(encoding="utf-8").strip())
+                    break
+                time.sleep(0.05)
+            self.assertIsNotNone(child_pid, "child pid file was not created")
+
+            (config_dir / "opencode-a.pid").write_text(
+                f"{parent.pid}\n", encoding="utf-8"
+            )
+            env = dict(self.env)
+            env["RUN_OPENCODE_INST_CONFIG_DIR"] = str(config_dir)
+            env["RUN_OPENCODE_INST_NAME"] = "opencode-a"
+
+            result = run_cli(
+                "restart-opencode-self",
+                "--expect-comm",
+                "python",
+                env=env,
+            )
+
+            self.assertEqual(result_code(result), 0, result.stderr)
+            parent.wait(timeout=CLI_TIMEOUT_SECONDS)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(child_pid, 0)
+        finally:
+            if parent.poll() is None:
+                parent.terminate()
+                try:
+                    parent.wait(timeout=CLI_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    parent.kill()
+                    parent.wait(timeout=CLI_TIMEOUT_SECONDS)
+            if child_pid is not None:
+                try:
+                    os.kill(child_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
     def test_restart_opencode_self_requires_instance_name(self):
         env = dict(self.env)
@@ -5072,6 +5189,122 @@ class C2CConfigureKimiDefaultAliasTests(unittest.TestCase):
             config = json.loads(mcp_path.read_text(encoding="utf-8"))
             env = config["mcpServers"]["c2c"]["env"]
             self.assertNotIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
+
+
+class RestartMeUnitTests(unittest.TestCase):
+    """Unit tests for c2c_restart_me helper functions."""
+
+    def test_build_restart_argv_claude_code_with_uuid(self):
+        import c2c_restart_me
+
+        result = c2c_restart_me.build_restart_argv(
+            "claude-code",
+            "abc-123",
+            ["/usr/bin/claude", "--dangerously-skip-permissions"],
+        )
+        self.assertEqual(result[0], "/usr/bin/claude")
+        self.assertIn("--resume", result)
+        idx = result.index("--resume")
+        self.assertEqual(result[idx + 1], "abc-123")
+        self.assertIn("--dangerously-skip-permissions", result)
+
+    def test_build_restart_argv_claude_code_no_uuid(self):
+        import c2c_restart_me
+
+        result = c2c_restart_me.build_restart_argv(
+            "claude-code", None, ["/usr/bin/claude"]
+        )
+        self.assertEqual(result, ["/usr/bin/claude"])
+        self.assertNotIn("--resume", result)
+
+    def test_build_restart_argv_claude_code_skips_prior_resume(self):
+        import c2c_restart_me
+
+        result = c2c_restart_me.build_restart_argv(
+            "claude-code",
+            "new-uuid",
+            ["/usr/bin/claude", "--resume", "old-uuid"],
+        )
+        self.assertIn("--resume", result)
+        idx = result.index("--resume")
+        self.assertEqual(result[idx + 1], "new-uuid")
+        # old-uuid should not appear
+        self.assertNotIn("old-uuid", result)
+
+    def test_build_restart_argv_codex(self):
+        import c2c_restart_me
+
+        result = c2c_restart_me.build_restart_argv(
+            "codex", None, ["/usr/local/bin/codex", "--some-flag"]
+        )
+        self.assertEqual(result, ["/usr/local/bin/codex"])
+
+    def test_build_restart_argv_opencode(self):
+        import c2c_restart_me
+
+        result = c2c_restart_me.build_restart_argv(
+            "opencode", None, ["/usr/local/bin/opencode"]
+        )
+        self.assertEqual(result, ["/usr/local/bin/opencode"])
+
+    def test_uuid_from_cmdline_extracts_resume_arg(self):
+        import c2c_restart_me
+
+        cmdline = ["claude", "--resume", "abc-def-123-456-7890"]
+        result = c2c_restart_me._uuid_from_cmdline(cmdline)
+        self.assertEqual(result, "abc-def-123-456-7890")
+
+    def test_uuid_from_cmdline_returns_none_without_resume(self):
+        import c2c_restart_me
+
+        result = c2c_restart_me._uuid_from_cmdline(["claude", "--some-flag"])
+        self.assertIsNone(result)
+
+    def test_uuid_from_cmdline_returns_none_for_non_uuid(self):
+        import c2c_restart_me
+
+        result = c2c_restart_me._uuid_from_cmdline(["claude", "--resume", "notauuid"])
+        self.assertIsNone(result)
+
+    def test_uuid_from_claude_dir_returns_newest_jsonl_stem(self):
+        import c2c_restart_me
+
+        with tempfile.TemporaryDirectory() as tmp:
+            slug = "home-user-src-repo"
+            proj_dir = Path(tmp) / ".claude" / "projects" / slug
+            proj_dir.mkdir(parents=True)
+            old_file = proj_dir / "old-uuid-1111.jsonl"
+            new_file = proj_dir / "new-uuid-2222.jsonl"
+            old_file.write_text("[]", encoding="utf-8")
+            import time as _time
+
+            _time.sleep(0.01)
+            new_file.write_text("[]", encoding="utf-8")
+
+            # Point the function at our temp dir by monkeypatching Path.home()
+            with mock.patch(
+                "c2c_restart_me.Path.home", return_value=Path(tmp)
+            ):
+                # Need a fake /proc/<pid>/cwd symlink pointing at our dir
+                # Instead call _uuid_from_claude_dir directly with a real pid
+                # by patching os.readlink
+                cwd = f"/home/user/src/repo"
+                with mock.patch("os.readlink", return_value=cwd):
+                    result = c2c_restart_me._uuid_from_claude_dir(12345)
+
+            self.assertEqual(result, "new-uuid-2222")
+
+    def test_print_unmanaged_instructions_includes_resume(self):
+        import c2c_restart_me
+        import io
+        from unittest.mock import patch
+
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            c2c_restart_me.print_unmanaged_instructions("claude-code")
+            output = mock_out.getvalue()
+
+        self.assertIn("claude --resume", output)
+        self.assertIn("/exit", output)
 
 
 def result_code(result):
