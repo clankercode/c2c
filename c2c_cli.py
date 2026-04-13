@@ -3,6 +3,7 @@ import os
 import sys
 
 import c2c_broker_gc
+import c2c_dead_letter
 import c2c_configure_claude_code
 import c2c_configure_codex
 import c2c_configure_crush
@@ -62,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(
-            "usage: c2c <broker-gc|configure-claude-code|configure-codex|configure-crush|configure-kimi|configure-opencode|deliver-inbox|health|init|inject|install|list|mcp|poker-sweep|poll-inbox|prune|refresh-peer|register|restart-me|room|send|send-all|setup|sweep|verify|watch|whoami> [...args]",
+            "usage: c2c <broker-gc|configure-claude-code|configure-codex|configure-crush|configure-kimi|configure-opencode|dead-letter|deliver-inbox|health|init|inject|install|list|mcp|poker-sweep|poll-inbox|prune|refresh-peer|register|restart-me|room|send|send-all|setup|sweep|verify|watch|whoami> [...args]",
             file=sys.stderr,
         )
         return 2
@@ -71,6 +72,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if subcommand == "broker-gc":
         return c2c_broker_gc.main(remainder)
+    if subcommand == "dead-letter":
+        return c2c_dead_letter.main(remainder)
     if subcommand == "health":
         return c2c_health.main(remainder)
     if subcommand == "configure-claude-code":

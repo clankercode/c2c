@@ -12,12 +12,20 @@ Usage:
     c2c_dead_letter.py --replay --to <alias>    # re-send filtered records
                                                 # via c2c-send broker path
     c2c_dead_letter.py --replay --dry-run       # print what would be sent
+    c2c_dead_letter.py --purge-orphans          # remove entries whose to_alias
+                                                # is unregistered for >1h
+    c2c_dead_letter.py --purge-all              # remove all entries
 
 Read-only by default. `--replay` invokes `c2c_send.send_to_alias` for each
 filtered record, which will go through the standard broker resolution path
 (YAML registry first, broker registry fallback). Dead-letter.jsonl is not
 modified — replay is idempotent; operators can re-run after transient
 failures.
+
+`--purge-orphans` removes entries older than --orphan-ttl seconds whose
+to_alias (stripping @room_id suffix) is no longer in the registry. This
+cleans up transient aliases that will never re-register. Safe to run at any
+time; aliases that ARE registered are always preserved for redelivery.
 """
 import argparse
 import json
@@ -178,7 +186,7 @@ def print_show(records: list[dict]) -> None:
         print()
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", help="broker directory (default: $(git rev-parse --git-common-dir)/c2c/mcp)")
     parser.add_argument("--list", action="store_true", help="one-line per record")
@@ -194,12 +202,78 @@ def main() -> int:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="with --replay: print what would be sent, do not actually send",
+        help="with --replay/--purge-orphans/--purge-all: report without modifying",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--purge-orphans",
+        action="store_true",
+        help="remove entries whose to_alias is unregistered for longer than --orphan-ttl",
+    )
+    parser.add_argument(
+        "--orphan-ttl",
+        type=float,
+        default=3600.0,
+        metavar="SECONDS",
+        help="minimum age for orphan pruning (default: 3600 = 1h)",
+    )
+    parser.add_argument(
+        "--purge-all",
+        action="store_true",
+        help="remove ALL dead-letter entries (operator override)",
+    )
+    args = parser.parse_args(argv)
 
     root = resolve_broker_root(args.root)
     path = root / "dead-letter.jsonl"
+
+    # --- purge-orphans mode ---
+    if args.purge_orphans:
+        try:
+            import c2c_broker_gc
+            result = c2c_broker_gc.purge_orphan_dead_letter(
+                root, ttl_seconds=args.orphan_ttl, dry_run=args.dry_run
+            )
+        except ImportError:
+            print("error: c2c_broker_gc not available", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            purged = result.get("purged_count", 0)
+            before = result.get("before_count", 0)
+            after = result.get("after_count", 0)
+            dry_str = " (dry-run)" if args.dry_run else ""
+            if purged:
+                print(f"Purged {purged} orphan entry/entries{dry_str} ({before} → {after} remaining).")
+            else:
+                print(f"No orphan entries (alias unregistered >{int(args.orphan_ttl)}s). {before} entries remain.")
+        return 0 if result.get("ok", True) else 1
+
+    # --- purge-all mode ---
+    if args.purge_all:
+        if not path.exists():
+            print("Dead-letter queue is already empty.")
+            return 0
+        records_all = load_records(path)
+        count = len(records_all)
+        if args.dry_run:
+            if args.json:
+                print(json.dumps({"dry_run": True, "would_purge": count}))
+            else:
+                print(f"dry-run: would remove {count} entries.")
+            return 0
+        try:
+            import c2c_broker_gc
+            with c2c_broker_gc.with_dead_letter_lock(root):
+                path.write_text("", encoding="utf-8")
+        except ImportError:
+            path.write_text("", encoding="utf-8")
+        if args.json:
+            print(json.dumps({"ok": True, "purged_count": count}))
+        else:
+            print(f"Purged all {count} dead-letter entries.")
+        return 0
+
     records = load_records(path)
     filtered = filter_records(records, args.to, getattr(args, "from_sid"))
 
