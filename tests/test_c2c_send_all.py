@@ -29,6 +29,7 @@ def run_send_all(
     env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
     env["C2C_MCP_SESSION_ID"] = session_id
     env["C2C_MCP_AUTO_DRAIN_CHANNEL"] = "0"
+    env["C2C_MCP_AUTO_REGISTER_ALIAS"] = ""  # prevent live-session alias from leaking
     env["C2C_REGISTRY_PATH"] = str(broker_root / "isolated-yaml-registry.yaml")
     env["C2C_SESSIONS_FIXTURE"] = str(broker_root / "isolated-sessions.json")
     if extra_env:

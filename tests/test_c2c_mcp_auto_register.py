@@ -18,7 +18,7 @@ AGENT_ONE_SESSION_ID = "6e45bbe8-998c-4140-b77e-c6f117e6ca4b"
 
 class C2CMcpAutoRegisterTests(unittest.TestCase):
     def test_auto_register_disabled_by_default(self):
-        with mock.patch.dict(os.environ, {}, clear=False):
+        with mock.patch.dict(os.environ, {"C2C_MCP_AUTO_REGISTER_ALIAS": ""}, clear=False):
             self.assertIsNone(c2c_mcp.auto_register_alias_from_env())
 
     def test_auto_register_alias_from_env_trims_and_rejects_blank(self):
