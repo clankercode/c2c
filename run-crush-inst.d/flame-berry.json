@@ -2,8 +2,10 @@
   "command": "crush",
   "cwd": "/home/xertrov/src/c2c-msg",
   "c2c_session_id": "flame-berry",
-  "c2c_alias": "flame-berry",
+  "c2c_alias": "ember-flame",
   "title": "flame-berry",
-  "flags": ["-y"],
+  "flags": [
+    "-y"
+  ],
   "crush_session_id": "b41dbca2c6242bff"
 }
