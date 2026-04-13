@@ -1267,7 +1267,14 @@ let current_client_pid () =
   match Sys.getenv_opt "C2C_MCP_CLIENT_PID" with
   | Some value ->
       let trimmed = String.trim value in
-      if trimmed = "" then None else (try Some (int_of_string trimmed) with _ -> None)
+      if trimmed = "" then None
+      else
+        (try
+           let pid = int_of_string trimmed in
+           if pid > 0 && Sys.file_exists (Printf.sprintf "/proc/%d" pid)
+           then Some pid
+           else None
+         with _ -> None)
   | None -> None
 
 let auto_register_startup ~broker_root =
