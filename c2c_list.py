@@ -227,6 +227,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.json:
             print(json.dumps({"peers": peers}, indent=2))
             return 0
+        # Sort: alive first, then unknown, then dead; within groups, alphabetical
+        def _sort_key(p: dict) -> tuple:
+            alive = p.get("alive")
+            order = 0 if alive is True else (1 if alive is None else 2)
+            return (order, p.get("alias", ""))
+        peers = sorted(peers, key=_sort_key)
         if not peers:
             print("No broker peers. Is the MCP server running?")
             return 0
@@ -237,6 +243,9 @@ def main(argv: list[str] | None = None) -> int:
             client = peer.get("client_type") or "?"
             seen = peer.get("last_seen") or "-"
             print(f"{peer['alias']}\t[{status}]\t{client}\t{seen}\t{rooms}")
+        dead_count = sum(1 for p in peers if p.get("alive") is False)
+        if dead_count > 0:
+            print(f"\n({dead_count} dead peer{'s' if dead_count != 1 else ''} — run `c2c sweep` to clean up)")
         return 0
 
     rows = list_sessions(include_all=args.all)
