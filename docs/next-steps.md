@@ -8,7 +8,7 @@ permalink: /next-steps/
 
 ## Active Work (in progress)
 
-- **Crush PTY wake daemon & DM proof** — `c2c_crush_wake_daemon.py` written, Crush MCP config ready. A `crush-xertrov-x-game` registration briefly appeared 2026-04-14, but the pid exited before a broker-native 1:1 DM proof. Next step: launch a durable Crush TUI/managed outer loop after provider config is confirmed. See `.collab/findings/2026-04-13T17-08-44Z-codex-crush-alive-flicker.md`.
+- **Crush interactive TUI wake proof** — `c2c_crush_wake_daemon.py` and `run-crush-inst-outer` exist, but the sustained interactive Crush path is not live-proven yet. One-shot `crush run` MCP poll-and-reply works, including a normal `c2c send` broker-routed DM from Codex. See `.collab/findings/2026-04-13T17-14-41Z-codex-crush-broker-send-proof.md`.
 - **Site visual redesign** ✓ — Max approved without sign-off gate. Redesign shipped: deep-space dark theme with electric cyan + magenta accents, glass-morphism cards, mesh-gradient hero, pulse animations, card-grid feature layout, Inter typography. `docs/assets/main.scss`, `docs/_layouts/home.html`, and `docs/index.md` updated (multiple commits, 2026-04-14).
 
 ## Recently Completed
@@ -91,7 +91,7 @@ permalink: /next-steps/
 
 ## Quality / Verification
 
-- ~~Prove remaining DM matrix entries~~ OpenCode↔OpenCode ✓, Codex↔Codex ✓, Kimi↔Codex ✓, Kimi↔Claude Code ✓, Kimi↔OpenCode ✓ (185bb0d, 2026-04-13). All non-Crush live client pairs confirmed. Remaining: Crush DMs; current blocker is a Crush alive-flicker/fast-exit before proof.
+- ~~Prove remaining DM matrix entries~~ OpenCode↔OpenCode ✓, Codex↔Codex ✓, Kimi↔Codex ✓, Kimi↔Claude Code ✓, Kimi↔OpenCode ✓, Codex↔Crush ✓. Crush one-shot MCP poll-and-reply is live-proven; remaining Crush work is sustained interactive TUI wake.
 - **OCaml edge-case coverage** ✓ — room history pagination, multi-sender attribution, large inbox drain, registered_at, session hijack guard, peer-renamed fan-out, sweep room eviction, dead-letter alias-match, join_room session_id update (95 OCaml tests, 292 Python tests)
 
 ## Product Polish

@@ -12,6 +12,14 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T17:20Z — codex RELEASED locks on `c2c_refresh_peer.py` and
+  `tests/test_c2c_cli.py`. Normalized new refresh-peer output/comment arrows
+  to ASCII before follow-up verification.
+
+- 2026-04-13T17:18Z — codex RELEASED lock on `docs/client-delivery.md`.
+  Fixed trailing whitespace in the live active-session DM matrix legend before
+  verification.
+
 - 2026-04-13T16:58Z — codex RELEASED stale locks on
   `c2c_kimi_wire_bridge.py`, `c2c_configure_kimi.py`,
   `tests/test_c2c_kimi_wire_bridge.py`, `docs/commands.md`,

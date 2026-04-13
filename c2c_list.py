@@ -80,11 +80,16 @@ def _pid_alive(pid: int, pid_start_time: int | None) -> bool | None:
     if pid_start_time:
         try:
             stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-            fields = stat.split()
-            if len(fields) > 21:
-                start = int(fields[21])
-                if start != pid_start_time:
-                    return False  # pid reused
+            # Parse carefully: comm field may contain spaces, so find the last ')'
+            # and parse fields after it. starttime is field 22 (1-indexed overall),
+            # which is index 19 (0-indexed) in the tail after 'state'.
+            tail_start = stat.rfind(")")
+            if tail_start != -1 and tail_start + 2 < len(stat):
+                parts = stat[tail_start + 2 :].split()
+                if len(parts) > 19:
+                    start = int(parts[19])
+                    if start != pid_start_time:
+                        return False  # pid reused
         except (OSError, ValueError):
             pass
     return True

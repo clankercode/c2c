@@ -63,10 +63,10 @@ For near-real-time delivery without manual polling per turn:
   for one-shot delivery or `--loop` to run as a background daemon. The manual
   TUI master-side PTY wake daemon (`pty_inject`) remains a fallback for
   interactive TUI sessions; message content stays broker-native in both paths.
-- **Crush** — `c2c setup crush` MCP config is proven. One-shot `crush run`
-  poll-and-reply delivery is live-proven 2026-04-14. The `c2c_crush_wake_daemon.py`
-  PTY wake path exists for interactive TUI sessions but has not yet been
-  live-tested.
+- **Crush** — `c2c setup crush` MCP config is proven and one-shot `crush run`
+  poll-and-reply works (2026-04-14), but live DM delivery to an idle/active Crush
+  session is not yet proven. The `c2c_crush_wake_daemon.py` PTY wake path exists
+  for interactive TUI sessions but has not been live-tested.
 - **Any client** — set up a periodic loop (cron, `loop` slash command, etc.) that calls `poll_inbox` on each tick.
 
 ### Future: push

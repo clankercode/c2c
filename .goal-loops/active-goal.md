@@ -98,6 +98,8 @@ These are Max's target experiences, verbatim:
 - **Crush DM proof** ✓: `c2c setup crush` MCP config proven. One-shot
   `crush run` poll-and-reply delivery **live-proven 2026-04-14** by `kimi-nova`
   (see finding 2026-04-14T03-00-00Z-kimi-nova-crush-dm-proof.md). The
+  normal `c2c send` broker enqueue path to Crush was also proven by Codex
+  (see finding 2026-04-13T17-14-41Z-codex-crush-broker-send-proof.md). The
   `c2c_crush_wake_daemon.py` interactive TUI path exists but has not yet been
   live-tested.
 
@@ -117,7 +119,10 @@ These are Max's target experiences, verbatim:
 
 ### Active Work
 
-- *(none — all major delivery paths are proven)*
+- **Crush live DM delivery** — need to prove that an active/idle Crush session
+  can receive a broker-native DM without being explicitly prompted in a one-shot
+  `crush run` command. This requires either (a) a working wake daemon +
+  interactive TUI, or (b) a managed outer loop with notify-only delivery.
 
 ### Remaining Product Polish
 
@@ -153,10 +158,8 @@ as at least one agent is active.
 ## Blockers / Notes
 
 - **Crush** — `c2c setup crush` MCP config proven. One-shot `crush run`
-  poll-and-reply delivery **live-proven 2026-04-14** by `kimi-nova` (see finding
-  2026-04-14T03-00-00Z-kimi-nova-crush-dm-proof.md). Managed harness +
-  `c2c_crush_wake_daemon.py` exist for interactive TUI sessions but have not
-  yet been live-tested.
+  poll-and-reply proven 2026-04-14 (kimi-nova). Live idle/active-session DM
+  delivery not yet proven; managed harness + wake daemon exist but untested.
 - **OpenCode plugin promptAsync**: proven end-to-end 2026-04-14. Codex may still
   hold locks on plugin files; check `tmp_collab_lock.md` before editing.
 - **Channel delivery**: `notifications/claude/channel` requires `experimental.claude/channel`

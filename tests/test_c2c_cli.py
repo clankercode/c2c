@@ -2001,7 +2001,7 @@ class C2CCLITests(unittest.TestCase):
         root = Path(self.temp_dir.name)
         cfg_dir = root / "run-claude-inst.d"
         cfg_dir.mkdir()
-        # Config with top-level c2c_session_id → refresh-peer gets --session-id
+        # Config with top-level c2c_session_id; refresh-peer gets --session-id.
         (cfg_dir / "claude-a.json").write_text(
             json.dumps({"c2c_alias": "storm-beacon", "c2c_session_id": "sid-abc"}),
             encoding="utf-8",

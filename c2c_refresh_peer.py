@@ -109,13 +109,13 @@ def refresh_peer(
                 print(json.dumps(result, indent=2))
             else:
                 session_note = (
-                    f", session_id {old_session_id!r} → {session_id!r}"
+                    f", session_id {old_session_id!r} -> {session_id!r}"
                     if session_id_changed
                     else ""
                 )
                 print(
                     f"[dry-run] Would update '{alias}': "
-                    f"pid {old_pid} → {pid} "
+                    f"pid {old_pid} -> {pid} "
                     f"(start_time={start_time})"
                     f"{session_note}"
                 )
@@ -148,12 +148,12 @@ def refresh_peer(
         print(json.dumps(result, indent=2))
     else:
         session_note = (
-            f", session_id {old_session_id!r} → {session_id!r}"
+            f", session_id {old_session_id!r} -> {session_id!r}"
             if session_id_changed
             else ""
         )
         print(
-            f"Updated '{alias}': pid {old_pid} → {pid} "
+            f"Updated '{alias}': pid {old_pid} -> {pid} "
             f"(start_time={start_time})"
             f"{session_note}"
         )

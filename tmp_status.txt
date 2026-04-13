@@ -14,9 +14,10 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
 - Codex ↔ Codex ✓
 - OpenCode ↔ OpenCode ✓
 - Kimi ↔ Claude/Codex/OpenCode ✓ (all pairs, 2026-04-13)
-- Crush: MCP setup ready; brief live registration seen 2026-04-14, but pid
-  exited before DM proof. See
-  .collab/findings/2026-04-13T17-08-44Z-codex-crush-alive-flicker.md
+- Crush: one-shot MCP poll-and-reply PROVEN via `crush run`; Codex also proved
+  a normal `c2c send` broker-routed DM to Crush and received a Crush MCP reply.
+  Interactive TUI wake remains untested.
+  See .collab/findings/2026-04-13T17-14-41Z-codex-crush-broker-send-proof.md
 
 ## OpenCode Plugin Status
 - CLI drain path: PROVEN

@@ -430,14 +430,15 @@ messages arrive.
 
 | From ↓ / To → | Claude Code | Codex | OpenCode | Kimi | Crush |
 |---------------|:-----------:|:-----:|:--------:|:----:|:-----:|
-| Claude Code   | ✓           | ✓     | ✓        | ✓    | ✓     |
-| Codex         | ✓           | ✓     | ✓        | ✓    | ✓     |
-| OpenCode      | ✓           | ✓     | ✓        | ✓    | ✓     |
-| Kimi          | ✓           | ✓     | ✓        | ✓    | ✓     |
-| Crush         | ✓           | ✓     | ✓        | ✓    | ✓     |
+| Claude Code   | ✓           | ✓     | ✓        | ✓    | ~     |
+| Codex         | ✓           | ✓     | ✓        | ✓    | ~     |
+| OpenCode      | ✓           | ✓     | ✓        | ✓    | ~     |
+| Kimi          | ✓           | ✓     | ✓        | ✓    | ~     |
+| Crush         | ~           | ~     | ~        | ~    | ~     |
 
-**✓** = proven end-to-end
+**✓** = proven end-to-end for live active-session DMs
+**~** = MCP tool capability proven (one-shot `crush run`), but live idle/active session DM delivery not yet proven
 
-*(All Claude↔Codex↔OpenCode↔Kimi↔Crush pairs proven 2026-04-13/14. OpenCode native plugin promptAsync proven 2026-04-14. Kimi Wire bridge proven 2026-04-14. Crush `crush run` MCP poll-and-reply proven 2026-04-14.)*
+*(All Claude↔Codex↔OpenCode↔Kimi pairs proven 2026-04-13/14. OpenCode native plugin promptAsync proven 2026-04-14. Kimi Wire bridge proven 2026-04-14. Crush one-shot `crush run` poll-and-reply proven 2026-04-14 — this validates MCP config but is not the same as waking an idle session.)*
 
 See `.collab/dm-matrix.md` for the live tracking record.
