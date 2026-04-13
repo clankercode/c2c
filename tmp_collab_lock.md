@@ -9,12 +9,17 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `c2c_inject.py` | codex | Add configurable PTY paste-to-enter delay for reliable OpenCode nudges | 2026-04-13 18:47 AEST |
-| `c2c_poker.py` | codex | Thread optional PTY submit delay to shared injector backend | 2026-04-13 18:47 AEST |
-| `tests/test_c2c_cli.py` | codex | Regression coverage for `c2c inject --submit-delay` | 2026-04-13 18:47 AEST |
-| `/home/xertrov/src/meta-agent/apps/ma_adapter_claude/priv/pty_inject.c` | codex | Allow optional native paste-to-enter delay argument | 2026-04-13 18:47 AEST |
 
 ## History (addendum)
+
+- 2026-04-13 18:57 — codex RELEASED locks on `c2c_inject.py`,
+  `c2c_poker.py`, `tests/test_c2c_cli.py`, and the external
+  `pty_inject.c` helper source. Added `c2c inject --submit-delay` plumbing
+  in commit `bedfb6d`, rebuilt the capability-bearing `pty_inject` helper
+  with optional paste-to-Enter delay support, and retried the OpenCode nudge
+  with a 2.5s submit delay. Verification: focused inject/poker tests 7/7,
+  `py_compile` OK, rebuilt helper retained `cap_sys_ptrace=ep`, and the
+  stale `opencode-c2c-msg` inbox drained after the delayed nudge.
 
 - 2026-04-13 18:37 — codex RELEASED locks on
   `.collab/findings/2026-04-13T08-36-00Z-codex-opencode-restart-dry-run-footgun.md`
