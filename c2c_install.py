@@ -14,6 +14,7 @@ COMMANDS = [
     "c2c-poll-inbox",
     "c2c-register",
     "c2c-send",
+    "c2c-send-all",
     "c2c-verify",
     "c2c-whoami",
 ]

@@ -10,11 +10,12 @@ import c2c_mcp
 import c2c_poll_inbox
 import c2c_register
 import c2c_send
+import c2c_send_all
 import c2c_verify
 import c2c_whoami
 
 
-SAFE_AUTO_APPROVE_SUBCOMMANDS = {"send", "list", "whoami", "verify"}
+SAFE_AUTO_APPROVE_SUBCOMMANDS = {"send", "send-all", "list", "whoami", "verify"}
 
 
 def auto_approve_enabled() -> bool:
@@ -39,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(
-            "usage: c2c <deliver-inbox|inject|install|list|mcp|poll-inbox|register|send|verify|whoami> [...args]",
+            "usage: c2c <deliver-inbox|inject|install|list|mcp|poll-inbox|register|send|send-all|verify|whoami> [...args]",
             file=sys.stderr,
         )
         return 2
@@ -62,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
         return c2c_register.main(remainder)
     if subcommand == "send":
         return c2c_send.main(remainder)
+    if subcommand == "send-all":
+        return c2c_send_all.main(remainder)
     if subcommand == "verify":
         return c2c_verify.main(remainder)
     if subcommand == "whoami":

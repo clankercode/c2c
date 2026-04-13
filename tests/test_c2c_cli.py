@@ -72,6 +72,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c-register",
         "c2c-list",
         "c2c-send",
+        "c2c-send-all",
         "c2c-install",
         "c2c-inject",
         "c2c-verify",
@@ -79,6 +80,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_register.py",
         "c2c_list.py",
         "c2c_send.py",
+        "c2c_send_all.py",
         "c2c_install.py",
         "c2c_deliver_inbox.py",
         "c2c_inject.py",
@@ -281,6 +283,7 @@ class C2CCLITests(unittest.TestCase):
                 "c2c-poll-inbox",
                 "c2c-register",
                 "c2c-send",
+                "c2c-send-all",
                 "c2c-verify",
                 "c2c-whoami",
             ],
@@ -347,6 +350,17 @@ class C2CCLITests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         poll_main.assert_called_once_with(["--json"])
+
+    def test_c2c_send_all_subcommand_dispatches_to_broadcast_client(self):
+        with mock.patch("c2c_cli.c2c_send_all.main", return_value=0) as send_all_main:
+            result = c2c_cli.main(
+                ["send-all", "--from-alias", "me", "hello swarm", "--json"]
+            )
+
+        self.assertEqual(result, 0)
+        send_all_main.assert_called_once_with(
+            ["--from-alias", "me", "hello swarm", "--json"]
+        )
 
     def test_c2c_mcp_defaults_broker_root_to_shared_git_c2c_dir(self):
         expected = REPO / ".git" / "c2c" / "mcp"
@@ -2016,6 +2030,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c-register",
                 "c2c-list",
                 "c2c-send",
+                "c2c-send-all",
                 "c2c-install",
                 "c2c-inject",
                 "c2c-verify",
@@ -2023,6 +2038,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c_register.py",
                 "c2c_list.py",
                 "c2c_send.py",
+                "c2c_send_all.py",
                 "c2c_install.py",
                 "c2c_deliver_inbox.py",
                 "c2c_inject.py",
