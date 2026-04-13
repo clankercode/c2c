@@ -96,6 +96,8 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_room.py",
         "c2c_configure_claude_code.py",
         "c2c_configure_codex.py",
+        "c2c_configure_crush.py",
+        "c2c_configure_kimi.py",
         "c2c_configure_opencode.py",
         "c2c_init.py",
         "c2c_list.py",
@@ -304,6 +306,8 @@ class C2CCLITests(unittest.TestCase):
                 "c2c-broker-gc",
                 "c2c-configure-claude-code",
                 "c2c-configure-codex",
+                "c2c-configure-crush",
+                "c2c-configure-kimi",
                 "c2c-configure-opencode",
                 "c2c-deliver-inbox",
                 "c2c-health",
@@ -2291,6 +2295,8 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c_room.py",
                 "c2c_configure_claude_code.py",
                 "c2c_configure_codex.py",
+                "c2c_configure_crush.py",
+                "c2c_configure_kimi.py",
                 "c2c_configure_opencode.py",
                 "c2c_init.py",
                 "c2c_list.py",
@@ -4684,6 +4690,220 @@ class SyncBrokerRegistryPidTests(unittest.TestCase):
             self.assertEqual(len(data), 1)
             self.assertEqual(data[0]["pid"], 12345)
             self.assertEqual(data[0]["pid_start_time"], 99999)
+
+
+class C2CConfigureKimiTests(unittest.TestCase):
+    def test_writes_kimi_mcp_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mcp_path = Path(tmp) / "mcp.json"
+            broker_root = Path(tmp) / "broker"
+            result = subprocess.run(
+                [
+                    str(REPO / "c2c"),
+                    "configure-kimi",
+                    "--mcp-path",
+                    str(mcp_path),
+                    "--broker-root",
+                    str(broker_root),
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["path"], str(mcp_path))
+            self.assertTrue(mcp_path.exists())
+            config = json.loads(mcp_path.read_text(encoding="utf-8"))
+            c2c = config["mcpServers"]["c2c"]
+            self.assertEqual(c2c["type"], "stdio")
+            self.assertEqual(c2c["command"], "python3")
+            self.assertEqual(c2c["args"], [str(REPO / "c2c_mcp.py")])
+            self.assertEqual(c2c["env"]["C2C_MCP_BROKER_ROOT"], str(broker_root))
+
+    def test_writes_kimi_mcp_config_with_alias(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mcp_path = Path(tmp) / "mcp.json"
+            broker_root = Path(tmp) / "broker"
+            result = subprocess.run(
+                [
+                    str(REPO / "c2c"),
+                    "configure-kimi",
+                    "--mcp-path",
+                    str(mcp_path),
+                    "--broker-root",
+                    str(broker_root),
+                    "--session-id",
+                    "kimi-test",
+                    "--alias",
+                    "kimi-primary",
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            config = json.loads(mcp_path.read_text(encoding="utf-8"))
+            env = config["mcpServers"]["c2c"]["env"]
+            self.assertEqual(env["C2C_MCP_SESSION_ID"], "kimi-test")
+            self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "kimi-primary")
+
+    def test_refuses_to_overwrite_without_force(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mcp_path = Path(tmp) / "mcp.json"
+            mcp_path.write_text('{"mcpServers": {"c2c": {}}}', encoding="utf-8")
+            broker_root = Path(tmp) / "broker"
+            result = subprocess.run(
+                [
+                    str(REPO / "c2c"),
+                    "configure-kimi",
+                    "--mcp-path",
+                    str(mcp_path),
+                    "--broker-root",
+                    str(broker_root),
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 1)
+            payload = json.loads(result.stdout)
+            self.assertFalse(payload["ok"])
+
+    def test_force_overwrites_existing_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mcp_path = Path(tmp) / "mcp.json"
+            mcp_path.write_text('{"mcpServers": {"c2c": {}}}', encoding="utf-8")
+            broker_root = Path(tmp) / "broker"
+            result = subprocess.run(
+                [
+                    str(REPO / "c2c"),
+                    "configure-kimi",
+                    "--mcp-path",
+                    str(mcp_path),
+                    "--broker-root",
+                    str(broker_root),
+                    "--force",
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertTrue(payload["ok"])
+
+
+class C2CConfigureCrushTests(unittest.TestCase):
+    def test_writes_crush_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "crush.json"
+            broker_root = Path(tmp) / "broker"
+            result = subprocess.run(
+                [
+                    str(REPO / "c2c"),
+                    "configure-crush",
+                    "--config-path",
+                    str(config_path),
+                    "--broker-root",
+                    str(broker_root),
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["path"], str(config_path))
+            self.assertTrue(config_path.exists())
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            c2c = config["mcp"]["c2c"]
+            self.assertEqual(c2c["type"], "stdio")
+            self.assertEqual(c2c["command"], "python3")
+            self.assertEqual(c2c["args"], [str(REPO / "c2c_mcp.py")])
+            self.assertEqual(c2c["env"]["C2C_MCP_BROKER_ROOT"], str(broker_root))
+
+    def test_writes_crush_config_with_alias(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "crush.json"
+            broker_root = Path(tmp) / "broker"
+            result = subprocess.run(
+                [
+                    str(REPO / "c2c"),
+                    "configure-crush",
+                    "--config-path",
+                    str(config_path),
+                    "--broker-root",
+                    str(broker_root),
+                    "--session-id",
+                    "crush-test",
+                    "--alias",
+                    "crush-primary",
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            env = config["mcp"]["c2c"]["env"]
+            self.assertEqual(env["C2C_MCP_SESSION_ID"], "crush-test")
+            self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "crush-primary")
+
+    def test_refuses_to_overwrite_without_force(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "crush.json"
+            config_path.write_text('{"mcp": {"c2c": {}}}', encoding="utf-8")
+            broker_root = Path(tmp) / "broker"
+            result = subprocess.run(
+                [
+                    str(REPO / "c2c"),
+                    "configure-crush",
+                    "--config-path",
+                    str(config_path),
+                    "--broker-root",
+                    str(broker_root),
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 1)
+            payload = json.loads(result.stdout)
+            self.assertFalse(payload["ok"])
+
+    def test_force_overwrites_existing_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "crush.json"
+            config_path.write_text('{"mcp": {"c2c": {}}}', encoding="utf-8")
+            broker_root = Path(tmp) / "broker"
+            result = subprocess.run(
+                [
+                    str(REPO / "c2c"),
+                    "configure-crush",
+                    "--config-path",
+                    str(config_path),
+                    "--broker-root",
+                    str(broker_root),
+                    "--force",
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertTrue(payload["ok"])
 
 
 def result_code(result):
