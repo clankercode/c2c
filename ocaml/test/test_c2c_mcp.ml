@@ -825,6 +825,10 @@ let test_tools_call_register_alias_rename_notifies_rooms () =
       ignore
         (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
            ~alias:"peer-alias" ~session_id:"session-peer");
+      ignore
+        (C2c_mcp.Broker.drain_inbox broker ~session_id:"session-renamed");
+      ignore
+        (C2c_mcp.Broker.drain_inbox broker ~session_id:"session-peer");
       Unix.putenv "C2C_MCP_SESSION_ID" "session-renamed";
       Fun.protect
         ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
@@ -849,8 +853,9 @@ let test_tools_call_register_alias_rename_notifies_rooms () =
             C2c_mcp.Broker.read_room_history broker ~room_id:"swarm-lounge"
               ~limit:10
           in
-          check int "one rename history event" 1 (List.length history);
-          let event = List.hd history in
+          check int "two join events plus one rename history event" 3
+            (List.length history);
+          let event = List.hd (List.rev history) in
           check string "rename event sender" "c2c-system" event.rm_from_alias;
           let parsed = Yojson.Safe.from_string event.rm_content in
           let open Yojson.Safe.Util in
@@ -2603,8 +2608,9 @@ let test_send_room_appends_history_and_fans_out () =
       let history =
         C2c_mcp.Broker.read_room_history broker ~room_id:"chat" ~limit:50
       in
-      check int "one history entry" 1 (List.length history);
-      let h = List.hd history in
+      check int "two join entries plus one room message" 3
+        (List.length history);
+      let h = List.hd (List.rev history) in
       check string "history from_alias" "storm-ember" h.rm_from_alias;
       check string "history content" "hello room" h.rm_content;
       (* Verify the fan-out inbox message *)
@@ -2685,7 +2691,13 @@ let test_send_room_deduplicates_identical_content_within_window () =
       check int "receiver has 1 message (dedup)" 1 (List.length inbox_b);
       (* Room history also has exactly one entry *)
       let history = C2c_mcp.Broker.read_room_history broker ~room_id:"chat" ~limit:10 in
-      check int "room history has 1 entry (dedup)" 1 (List.length history))
+      let sender_messages =
+        List.filter
+          (fun (m : C2c_mcp.room_message) -> m.rm_from_alias = "sender")
+          history
+      in
+      check int "room history has 1 sender entry (dedup)" 1
+        (List.length sender_messages))
 
 let test_send_room_does_not_dedup_different_content () =
   with_temp_dir (fun dir ->
@@ -2719,7 +2731,13 @@ let test_send_room_does_not_dedup_different_content () =
       check int "first send delivered" 1 (List.length r1.sr_delivered_to);
       check int "second send (different content) delivered" 1 (List.length r2.sr_delivered_to);
       let history = C2c_mcp.Broker.read_room_history broker ~room_id:"chat" ~limit:10 in
-      check int "room history has 2 entries" 2 (List.length history))
+      let sender_messages =
+        List.filter
+          (fun (m : C2c_mcp.room_message) -> m.rm_from_alias = "sender")
+          history
+      in
+      check int "room history has 2 sender entries" 2
+        (List.length sender_messages))
 
 let test_list_rooms_returns_room_with_members () =
   with_temp_dir (fun dir ->
@@ -2791,10 +2809,6 @@ let test_room_history_returns_last_n_lines () =
 let test_room_history_empty_room () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      let _ =
-        C2c_mcp.Broker.join_room broker ~room_id:"empty-chat"
-          ~alias:"someone" ~session_id:"s"
-      in
       let history =
         C2c_mcp.Broker.read_room_history broker ~room_id:"empty-chat" ~limit:50
       in
@@ -2843,8 +2857,12 @@ let test_tools_call_join_room_via_mcp () =
               check string "member session_id" "session-mcp-room"
                 (List.hd members |> member "session_id" |> to_string);
               let history = parsed |> member "history" |> to_list in
-              check int "empty room has empty history backfill" 0
-                (List.length history)))
+              check int "join response includes system join history" 1
+                (List.length history);
+              check string "join history sender" "c2c-system"
+                (List.hd history |> member "from_alias" |> to_string);
+              check string "join history content" "storm-mcp joined room mcp-lobby"
+                (List.hd history |> member "content" |> to_string)))
 
 let test_tools_call_join_room_backfills_recent_history () =
   with_temp_dir (fun dir ->
@@ -2905,7 +2923,8 @@ let test_tools_call_join_room_backfills_recent_history () =
               in
               let parsed = Yojson.Safe.from_string text in
               let history = parsed |> member "history" |> to_list in
-              check int "backfill returned 3 entries" 3 (List.length history);
+              check int "backfill returned prior history plus join notices" 5
+                (List.length history);
               let contents =
                 List.map (fun m -> m |> member "content" |> to_string) history
               in
@@ -2913,8 +2932,10 @@ let test_tools_call_join_room_backfills_recent_history () =
                 (List.mem "msg one" contents);
               check bool "history contains msg three" true
                 (List.mem "msg three" contents);
-              check string "first entry preserves order" "msg one"
-                (List.hd history |> member "content" |> to_string)))
+              check string "first entry preserves order" "first-member joined room backfill-room"
+                (List.hd history |> member "content" |> to_string);
+              check string "last entry is latecomer join" "latecomer joined room backfill-room"
+                (List.hd (List.rev history) |> member "content" |> to_string)))
 
 let test_tools_call_peek_inbox_does_not_drain () =
   with_temp_dir (fun dir ->
@@ -3162,6 +3183,12 @@ let test_tools_call_send_room_via_mcp () =
             C2c_mcp.Broker.join_room broker ~room_id:"mcp-chat"
               ~alias:"storm-recv" ~session_id:"session-recv-room"
           in
+          ignore
+            (C2c_mcp.Broker.drain_inbox broker
+               ~session_id:"session-sender-room");
+          ignore
+            (C2c_mcp.Broker.drain_inbox broker
+               ~session_id:"session-recv-room");
           (* Send via MCP tools/call. *)
           let request =
             `Assoc
@@ -3233,6 +3260,12 @@ let test_tools_call_send_room_accepts_alias_as_from_alias_alias () =
             C2c_mcp.Broker.join_room broker ~room_id:"alias-chat"
               ~alias:"storm-recv" ~session_id:"session-recv-alias"
           in
+          ignore
+            (C2c_mcp.Broker.drain_inbox broker
+               ~session_id:"session-sender-alias");
+          ignore
+            (C2c_mcp.Broker.drain_inbox broker
+               ~session_id:"session-recv-alias");
           let request =
             `Assoc
               [ ("jsonrpc", `String "2.0")
@@ -3299,6 +3332,12 @@ let test_tools_call_send_room_uses_current_session_alias_when_omitted () =
             C2c_mcp.Broker.join_room broker ~room_id:"current-chat"
               ~alias:"storm-recv" ~session_id:"session-recv-current"
           in
+          ignore
+            (C2c_mcp.Broker.drain_inbox broker
+               ~session_id:"session-sender-current");
+          ignore
+            (C2c_mcp.Broker.drain_inbox broker
+               ~session_id:"session-recv-current");
           let request =
             `Assoc
               [ ("jsonrpc", `String "2.0")
@@ -3534,10 +3573,6 @@ let test_tools_call_join_room_accepts_from_alias_as_alias () =
 let test_room_history_limit_larger_than_total_returns_all () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      let _ =
-        C2c_mcp.Broker.join_room broker ~room_id:"overflow"
-          ~alias:"sender-a" ~session_id:"s-a"
-      in
       for i = 1 to 5 do
         ignore
           (C2c_mcp.Broker.append_room_history broker ~room_id:"overflow"
@@ -3559,14 +3594,6 @@ let test_room_history_limit_larger_than_total_returns_all () =
 let test_room_history_preserves_multiple_senders () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      let _ =
-        C2c_mcp.Broker.join_room broker ~room_id:"multi-sender"
-          ~alias:"alice" ~session_id:"s-alice"
-      in
-      let _ =
-        C2c_mcp.Broker.join_room broker ~room_id:"multi-sender"
-          ~alias:"bob" ~session_id:"s-bob"
-      in
       ignore
         (C2c_mcp.Broker.append_room_history broker ~room_id:"multi-sender"
            ~from_alias:"alice" ~content:"hi from alice");

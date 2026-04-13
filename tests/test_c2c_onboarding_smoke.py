@@ -227,9 +227,11 @@ class OnboardingSmokeTest(unittest.TestCase):
             _tool_call(
                 bob, 3, "join_room", {"room_id": "smoke", "alias": "bob-room"}
             )
+            _tool_call(alice, 4, "poll_inbox", {})
+            _tool_call(bob, 4, "poll_inbox", {})
             send_resp = _tool_call(
                 alice,
-                4,
+                5,
                 "send_room",
                 {
                     "from_alias": "alice-room",
@@ -239,7 +241,7 @@ class OnboardingSmokeTest(unittest.TestCase):
             )
             parsed = json.loads(_tool_text(send_resp))
             self.assertIn("bob-room", parsed["delivered_to"])
-            poll_resp = _tool_call(bob, 5, "poll_inbox", {})
+            poll_resp = _tool_call(bob, 6, "poll_inbox", {})
             messages = json.loads(_tool_text(poll_resp))
             self.assertEqual(len(messages), 1)
             self.assertEqual(messages[0]["from_alias"], "alice-room")

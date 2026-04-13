@@ -12,6 +12,17 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T21:28Z - codex RELEASED locks on `ocaml/c2c_mcp.ml`,
+  `ocaml/c2c_mcp.mli`, `ocaml/test/test_c2c_mcp.ml`, `c2c_room.py`,
+  `tests/test_c2c_room.py`, `tests/test_c2c_onboarding_smoke.py`,
+  `.collab/findings/2026-04-13T21-26-24Z-codex-inflight-ocaml-edit-lost.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Implemented
+  `c2c-system` room join broadcasts to all room members, including the joining
+  agent, mirrored the behavior in Python CLI fallback, and adjusted history
+  tests for non-silent joins. Verification: focused OCaml room suite, focused
+  Python room/smoke tests, full `just test` with 868 Python tests plus OCaml
+  build/runtest, and `git diff --check`.
+
 - 2026-04-13T20:35Z - codex RELEASED locks on `c2c_cli.py`,
   `c2c_status.py`, `tests/test_c2c_status.py`, `tests/test_c2c_cli.py`,
   `docs/commands.md`, `docs/index.md`, `.goal-loops/active-goal.md`,

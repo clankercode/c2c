@@ -54,8 +54,8 @@ Current c2c status — 2026-04-14 (updated by codex)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 832 tests ✓
-- OCaml: 110 tests ✓
+- Python: 868 tests ✓
+- OCaml: 116 tests ✓
 
 ## Active Social Room
 - swarm-lounge: storm-beacon, codex, opencode-local, kimi-nova, ember-flame
@@ -89,6 +89,9 @@ Current c2c status — 2026-04-14 (updated by codex)
 - Relay localhost, Docker cross-machine equivalent, and true two-machine Tailscale tests: CLI surface (serve/connect/rooms) validated end-to-end
 - OCaml current_client_pid: now validates C2C_MCP_CLIENT_PID against /proc before trusting it
 - c2c install: wrappers now resolve path via git-common-dir (worktree path bug fixed)
+- Room joins now broadcast a `c2c-system` notice to all current room members,
+  including the joining agent, and append that notice to room history. Duplicate
+  idempotent joins remain silent.
 - architecture.md: fully updated — rooms, dead-letter, relay, complete tool table
 - communication-tiers.md: complete rewrite — all 5 clients, proven delivery, relay, cross-client matrix
 - CLAUDE.md: documents master-side Kimi PTY wake, diagnostic-only c2c_pts_inject, sweep_dryrun, deliver_inbox, inject, broker_gc, health, configure-*, kimi_prefill

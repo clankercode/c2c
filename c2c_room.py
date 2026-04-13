@@ -101,6 +101,12 @@ def load_json_list(path: Path) -> list[dict]:
 
 # --- room operations ---
 
+ROOM_SYSTEM_ALIAS = "c2c-system"
+
+
+def room_join_content(alias: str, room_id: str) -> str:
+    return f"{alias} joined room {room_id}"
+
 
 def init_room(room_id: str, broker_root: Path | None = None) -> dict:
     rdir = room_dir(room_id, broker_root)
@@ -123,6 +129,7 @@ def join_room(
     rdir = room_dir(room_id, broker_root)
     init_room(room_id, broker_root)
     members_path = rdir / "members.json"
+    changed = False
     with members_lock(rdir):
         members = load_json_list(members_path)
         already = any(
@@ -155,6 +162,14 @@ def join_room(
         updated.append(member)
         if updated != members:
             write_json_atomic(members_path, updated)
+            changed = True
+    if changed:
+        send_room(
+            room_id,
+            ROOM_SYSTEM_ALIAS,
+            room_join_content(alias, room_id),
+            broker_root,
+        )
     return {
         "ok": True,
         "room_id": room_id,

@@ -44,6 +44,7 @@ let server_features =
   ; "send_alias_impersonation_guard"
   ; "missing_sender_alias_errors"
   ; "prune_rooms_tool"
+  ; "room_join_system_broadcast"
   ]
 
 let server_info =
@@ -949,10 +950,73 @@ module Broker = struct
     write_json_file (room_members_path t ~room_id)
       (`List (List.map room_member_to_json members))
 
+  let room_system_alias = "c2c-system"
+
+  let room_join_content ~alias ~room_id = alias ^ " joined room " ^ room_id
+
+  let append_room_history_unchecked t ~room_id ~from_alias ~content =
+    let ts = Unix.gettimeofday () in
+    with_room_history_lock t ~room_id (fun () ->
+        let oc =
+          open_out_gen
+            [ Open_wronly; Open_append; Open_creat ]
+            0o600 (room_history_path t ~room_id)
+        in
+        Fun.protect
+          ~finally:(fun () -> try close_out oc with _ -> ())
+          (fun () ->
+            let record =
+              `Assoc
+                [ ("ts", `Float ts)
+                ; ("from_alias", `String from_alias)
+                ; ("content", `String content)
+                ]
+            in
+            output_string oc (Yojson.Safe.to_string record);
+            output_char oc '\n'));
+    ts
+
+  let fan_out_room_message t ~room_id ~from_alias ~content =
+    let members =
+      with_room_members_lock t ~room_id (fun () ->
+          load_room_members t ~room_id)
+    in
+    let delivered = ref [] in
+    let skipped = ref [] in
+    List.iter
+      (fun m ->
+        if m.rm_alias = from_alias then ()
+        else begin
+          let tagged_to = m.rm_alias ^ "@" ^ room_id in
+          try
+            with_registry_lock t (fun () ->
+                match resolve_live_session_id_by_alias t m.rm_alias with
+                | Resolved session_id ->
+                    with_inbox_lock t ~session_id (fun () ->
+                        let current = load_inbox t ~session_id in
+                        let next =
+                          current @ [ { from_alias; to_alias = tagged_to; content } ]
+                        in
+                        save_inbox t ~session_id next);
+                    delivered := m.rm_alias :: !delivered
+                | All_recipients_dead | Unknown_alias ->
+                    skipped := m.rm_alias :: !skipped)
+          with _ ->
+            skipped := m.rm_alias :: !skipped
+        end)
+      members;
+    (List.rev !delivered, List.rev !skipped)
+
+  let broadcast_room_join t ~room_id ~alias =
+    let content = room_join_content ~alias ~room_id in
+    ignore (append_room_history_unchecked t ~room_id ~from_alias:room_system_alias ~content);
+    ignore (fan_out_room_message t ~room_id ~from_alias:room_system_alias ~content)
+
   let join_room t ~room_id ~alias ~session_id =
     if not (valid_room_id room_id) then
       invalid_arg ("invalid room_id: " ^ room_id);
-    with_room_members_lock t ~room_id (fun () ->
+    let updated, should_broadcast =
+      with_room_members_lock t ~room_id (fun () ->
         let members = load_room_members t ~room_id in
         (* Same alias with a new session_id is a restart. Same session_id with
            a new alias is a rename. In both cases there must be only one member
@@ -975,7 +1039,10 @@ module Broker = struct
         in
         let updated = kept @ [ member ] in
         if updated <> members then save_room_members t ~room_id updated;
-        updated)
+        (updated, updated <> members))
+    in
+    if should_broadcast then broadcast_room_join t ~room_id ~alias;
+    updated
 
   let leave_room t ~room_id ~alias =
     if not (valid_room_id room_id) then
@@ -1066,26 +1133,7 @@ module Broker = struct
   let append_room_history t ~room_id ~from_alias ~content =
     if not (valid_room_id room_id) then
       invalid_arg ("invalid room_id: " ^ room_id);
-    let ts = Unix.gettimeofday () in
-    with_room_history_lock t ~room_id (fun () ->
-        let oc =
-          open_out_gen
-            [ Open_wronly; Open_append; Open_creat ]
-            0o600 (room_history_path t ~room_id)
-        in
-        Fun.protect
-          ~finally:(fun () -> try close_out oc with _ -> ())
-          (fun () ->
-            let record =
-              `Assoc
-                [ ("ts", `Float ts)
-                ; ("from_alias", `String from_alias)
-                ; ("content", `String content)
-                ]
-            in
-            output_string oc (Yojson.Safe.to_string record);
-            output_char oc '\n'));
-    ts
+    append_room_history_unchecked t ~room_id ~from_alias ~content
 
   let read_room_history t ~room_id ~limit =
     if not (valid_room_id room_id) then
@@ -1151,42 +1199,16 @@ module Broker = struct
       { sr_delivered_to = []; sr_skipped = []; sr_ts = now }
     else begin
     (* Step 1: append to history (under history lock, released before fan-out) *)
-    let ts = append_room_history t ~room_id ~from_alias ~content in
-    (* Step 2: load current members snapshot *)
-    let members =
-      with_room_members_lock t ~room_id (fun () ->
-          load_room_members t ~room_id)
-    in
-    (* Step 3: fan out to each member except sender. For each recipient,
+    let ts = append_room_history_unchecked t ~room_id ~from_alias ~content in
+    (* Step 2: fan out to each member except sender. For each recipient,
        take registry_lock -> inbox_lock (existing lock order) and enqueue
        with to_alias tagged as "<alias>@<room_id>" so the recipient can
        distinguish room messages from direct messages. *)
-    let delivered = ref [] in
-    let skipped = ref [] in
-    List.iter
-      (fun m ->
-        if m.rm_alias = from_alias then ()
-        else begin
-          let tagged_to = m.rm_alias ^ "@" ^ room_id in
-          try
-            with_registry_lock t (fun () ->
-                match resolve_live_session_id_by_alias t m.rm_alias with
-                | Resolved session_id ->
-                    with_inbox_lock t ~session_id (fun () ->
-                        let current = load_inbox t ~session_id in
-                        let next =
-                          current @ [ { from_alias; to_alias = tagged_to; content } ]
-                        in
-                        save_inbox t ~session_id next);
-                    delivered := m.rm_alias :: !delivered
-                | All_recipients_dead | Unknown_alias ->
-                    skipped := m.rm_alias :: !skipped)
-          with _ ->
-            skipped := m.rm_alias :: !skipped
-        end)
-      members;
-    { sr_delivered_to = List.rev !delivered
-    ; sr_skipped = List.rev !skipped
+    let delivered, skipped =
+      fan_out_room_message t ~room_id ~from_alias ~content
+    in
+    { sr_delivered_to = delivered
+    ; sr_skipped = skipped
     ; sr_ts = ts
     }
     end

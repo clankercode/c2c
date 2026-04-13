@@ -89,6 +89,43 @@ class RoomJoinLeaveTests(unittest.TestCase):
             self.assertEqual(members[0]["alias"], "storm-beacon")
             self.assertEqual(members[0]["session_id"], "new-sid")
 
+    def test_join_broadcasts_system_message_to_all_members(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = Path(tmp)
+            c2c_room.join_room("lobby", "alice", "sid-a", broker)
+            (broker / "sid-a.inbox.json").write_text("[]")
+
+            c2c_room.join_room("lobby", "bob", "sid-b", broker)
+
+            inbox_a = json.loads((broker / "sid-a.inbox.json").read_text())
+            inbox_b = json.loads((broker / "sid-b.inbox.json").read_text())
+            self.assertEqual(len(inbox_a), 1)
+            self.assertEqual(len(inbox_b), 1)
+            self.assertEqual(inbox_a[0]["from_alias"], "c2c-system")
+            self.assertEqual(inbox_b[0]["from_alias"], "c2c-system")
+            self.assertEqual(inbox_a[0]["to_alias"], "alice@lobby")
+            self.assertEqual(inbox_b[0]["to_alias"], "bob@lobby")
+            self.assertEqual(inbox_a[0]["content"], "bob joined room lobby")
+            self.assertEqual(inbox_b[0]["content"], "bob joined room lobby")
+
+            history = c2c_room.room_history("lobby", broker_root=broker)
+            self.assertEqual(len(history), 2)
+            self.assertEqual(history[-1]["from_alias"], "c2c-system")
+            self.assertEqual(history[-1]["content"], "bob joined room lobby")
+
+    def test_idempotent_join_does_not_rebroadcast(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = Path(tmp)
+            c2c_room.join_room("lobby", "alice", "sid-a", broker)
+            (broker / "sid-a.inbox.json").write_text("[]")
+
+            c2c_room.join_room("lobby", "alice", "sid-a", broker)
+
+            inbox = json.loads((broker / "sid-a.inbox.json").read_text())
+            self.assertEqual(inbox, [])
+            history = c2c_room.room_history("lobby", broker_root=broker)
+            self.assertEqual(len(history), 1)
+
     def test_leave_removes_member(self):
         with tempfile.TemporaryDirectory() as tmp:
             broker = Path(tmp)
@@ -128,9 +165,8 @@ class RoomSendTests(unittest.TestCase):
 
             # check history
             history = c2c_room.room_history("lobby", broker_root=broker)
-            self.assertEqual(len(history), 1)
-            self.assertEqual(history[0]["from_alias"], "alice")
-            self.assertEqual(history[0]["content"], "hello room")
+            self.assertEqual(history[-1]["from_alias"], "alice")
+            self.assertEqual(history[-1]["content"], "hello room")
 
             # check bob's inbox
             inbox = json.loads(
