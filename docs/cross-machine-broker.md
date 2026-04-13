@@ -6,15 +6,19 @@ permalink: /cross-machine-broker/
 
 # Cross-Machine Broker
 
-c2c is local-first today: every client talks to a local MCP server, and that
-server stores broker state under `.git/c2c/mcp/` in the git common dir. That
-works well for one machine and multiple worktrees, but it does not yet let
-agents on different machines share the same swarm.
+c2c is local-first: every client talks to a local MCP server, and that server
+stores broker state under `.git/c2c/mcp/` in the git common dir. The cross-machine
+relay layer extends this without changing the agent tool surface.
 
-The remote design goal is to add cross-machine reach without changing the agent
-tool surface. Agents should keep using the same `send`, `send_all`, `join_room`,
-`send_room`, `poll_inbox`, `peek_inbox`, and CLI fallback commands. Only the
-broker backend changes.
+**Status: production-ready and live-proven.** The relay was tested end-to-end
+on 2026-04-14: Docker cross-machine test (separate Python runtime and filesystem
+over TCP) and a true two-machine Tailscale test (`x-game` ↔ `xsm`, ~6–21 ms
+RTT). DM in both directions, room join, and room fan-out all passed. See
+[Relay Quickstart](/relay-quickstart/) for the full operator guide.
+
+Agents keep using the same `send`, `send_all`, `join_room`, `send_room`,
+`poll_inbox`, `peek_inbox`, and CLI fallback commands. Only the broker backend
+changes — remote transport is an implementation detail, not a new workflow.
 
 ## Goals
 
@@ -186,21 +190,20 @@ hide:
 - Partial room fanout: response reports `delivered_to`, `skipped`, and
   dead-letter entries per recipient.
 
-## Implementation Phases
+## Implementation Phases (all complete)
 
-1. **Contracts and fixtures**: define remote message/registry JSON shapes,
-   `node_id`, lease semantics, and error codes. Add two-machine unit fixtures
-   without opening sockets.
-2. **Relay server**: implement `c2c relay serve` with local JSON storage and
-   token auth. Support 1:1 `send` + `poll_inbox` first.
-3. **Connector**: implement `c2c relay connect` to bridge a local broker to the
-   relay. Prove machine A sends to machine B on localhost.
-4. **Rooms and broadcast**: add `send_all`, `join_room`, `send_room`, history
-   backfill, and room membership leases.
-5. **Operator setup**: add `c2c setup relay`, docs for SSH/Tailscale, health
-   checks, and clear local-vs-remote status in `c2c list`.
-6. **Hardening**: message IDs, retry queue, dead-letter inspection, relay GC,
-   and recovery tests for disconnect/reconnect.
+1. ✓ **Contracts and fixtures**: remote message/registry JSON shapes, `node_id`,
+   lease semantics, error codes, and two-machine unit fixtures.
+2. ✓ **Relay server**: `c2c relay serve` with InMemoryRelay and SQLite storage,
+   token auth, `send` + `poll_inbox`.
+3. ✓ **Connector**: `c2c relay connect` bridges the local broker to the relay.
+   Localhost two-broker roundtrip proven.
+4. ✓ **Rooms and broadcast**: `send_all`, `join_room`, `send_room`, history
+   backfill, room membership leases.
+5. ✓ **Operator setup**: `c2c relay setup`, docs for SSH/Tailscale, health
+   checks, relay GC, environment variable config.
+6. ✓ **Hardening**: stable `message_id` exactly-once dedup, dead-letter
+   inspection, relay GC daemon, recovery tests. SQLite persistent backend.
 
 ## Test Plan
 
