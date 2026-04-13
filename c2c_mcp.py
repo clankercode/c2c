@@ -247,6 +247,30 @@ def built_server_path() -> Path:
     return ROOT / "_build" / "default" / "ocaml" / "server" / "c2c_mcp_server.exe"
 
 
+def server_is_fresh(server_path: Path) -> bool:
+    """Return True if the binary exists and is newer than all OCaml source/build files.
+
+    Avoids calling ``dune build`` when nothing has changed, which prevents the
+    dune-lock-pile-up that occurs when many c2c_mcp.py processes start in rapid
+    succession (e.g., during fast outer-loop restarts).
+    """
+    if not server_path.exists():
+        return False
+    try:
+        server_mtime = server_path.stat().st_mtime
+    except OSError:
+        return False
+    ocaml_dir = ROOT / "ocaml"
+    for pattern in ("*.ml", "*.mli", "dune", "dune-project"):
+        for src in ocaml_dir.rglob(pattern):
+            try:
+                if src.stat().st_mtime > server_mtime:
+                    return False
+            except OSError:
+                pass
+    return True
+
+
 def build_server(env: dict[str, str]) -> None:
     subprocess.run(
         [
@@ -294,19 +318,26 @@ def main(argv: list[str] | None = None) -> int:
             )
     maybe_auto_register_startup(env)
     server_path = built_server_path()
-    try:
-        build_server(env)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        if server_path.exists():
-            reason = "timed out" if isinstance(exc, subprocess.TimeoutExpired) else "failed"
-            print(
-                f"c2c_mcp: WARNING build {reason} but existing binary found at {server_path}; "
-                "using it. Rebuild manually if source has changed.",
-                file=sys.stderr,
-                flush=True,
-            )
-        else:
-            raise
+    if server_is_fresh(server_path):
+        print(
+            f"c2c_mcp: binary is up-to-date, skipping dune build",
+            file=sys.stderr,
+            flush=True,
+        )
+    else:
+        try:
+            build_server(env)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            if server_path.exists():
+                reason = "timed out" if isinstance(exc, subprocess.TimeoutExpired) else "failed"
+                print(
+                    f"c2c_mcp: WARNING build {reason} but existing binary found at {server_path}; "
+                    "using it. Rebuild manually if source has changed.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                raise
     return subprocess.run(
         [str(server_path), *args], cwd=ROOT, env=env
     ).returncode
