@@ -20,9 +20,9 @@ Last updated: 2026-04-13 by codex (OpenCode native plugin promptAsync delivery c
 
 | From → To       | Claude Code      | Codex            | OpenCode (TUI)   | Kimi Code        | Crush            |
 |-----------------|------------------|------------------|------------------|------------------|------------------|
-| **Claude Code** | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ✓ poll           | ~ poll           |
+| **Claude Code** | ✓ hook+poll    | ✓ notify+poll    | ✓ plugin+prompt  | ✓ poll           | ~ poll           |
 | **Codex**       | ✓ hook+poll    | ✓ notify+poll    | ✓ plugin+prompt  | ✓ poll           | ~ poll           |
-| **OpenCode**    | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ✓ poll           | ~ poll           |
+| **OpenCode**    | ✓ hook+poll    | ✓ notify+poll    | ✓ plugin+prompt  | ✓ poll           | ~ poll           |
 | **Kimi Code**   | ✓ poll         | ✓ poll           | ✓ poll           | ~ poll           | ~ poll           |
 | **Crush**       | ~ poll         | ~ poll           | ~ poll           | ~ poll           | ~ poll           |
 
@@ -35,7 +35,8 @@ Last updated: 2026-04-13 by codex (OpenCode native plugin promptAsync delivery c
 - **Claude Code → OpenCode**: ✓ proven (storm-ember → opencode-local password game,
   2026-04-13). storm-ember sent via mcp__c2c__send, opencode TUI drained via
   mcp__c2c__poll_inbox, replied via mcp__c2c__send back. Full broker-native path,
-  no PTY injection.
+  no PTY injection. Delivery mechanism is receiver-side (OpenCode plugin); any
+  sender benefits automatically — wake+poll remains fallback.
 
 - **Claude Code → Codex**: ✓ delivery via notify daemon (`c2c_deliver_inbox.py
   --notify-only --loop`, started by `run-codex-inst-outer`). Daemon watches
