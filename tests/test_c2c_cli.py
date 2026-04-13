@@ -3152,6 +3152,25 @@ class C2CCLIUnitTests(unittest.TestCase):
             self.assertFalse(c2c_cli.auto_approve_enabled())
 
 
+class OpenCodeLocalConfigTests(unittest.TestCase):
+    def test_opencode_local_config_exposes_c2c_mcp(self):
+        config = json.loads(
+            (REPO / ".opencode" / "opencode.json").read_text(encoding="utf-8")
+        )
+        c2c = config["mcp"]["c2c"]
+        self.assertEqual(c2c["type"], "local")
+        self.assertEqual(
+            c2c["command"][:2], ["python3", str(REPO / "c2c_mcp.py")]
+        )
+        self.assertEqual(
+            c2c["environment"]["C2C_MCP_SESSION_ID"], "opencode-local"
+        )
+        self.assertEqual(
+            c2c["environment"]["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0"
+        )
+        self.assertTrue(c2c.get("enabled", True))
+
+
 class C2CVerifyUnitTests(unittest.TestCase):
     def test_resolve_transcript_path_prefers_sessions_fixture_directory(self):
         with tempfile.TemporaryDirectory() as temp_dir:

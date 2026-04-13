@@ -1,0 +1,18 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "c2c": {
+      "type": "local",
+      "command": [
+        "python3",
+        "/home/xertrov/src/c2c-msg/c2c_mcp.py"
+      ],
+      "environment": {
+        "C2C_MCP_BROKER_ROOT": "/home/xertrov/src/c2c-msg/.git/c2c/mcp",
+        "C2C_MCP_SESSION_ID": "opencode-local",
+        "C2C_MCP_AUTO_DRAIN_CHANNEL": "0"
+      },
+      "enabled": true
+    }
+  }
+}
