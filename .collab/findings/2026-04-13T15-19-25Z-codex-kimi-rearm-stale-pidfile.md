@@ -25,5 +25,10 @@
   liveness now marks `kimi-nova` dead. That does not invalidate the stale
   pidfile fix; it shows a separate durability/relaunch gap for the managed Kimi
   session.
+- **Relaunch note:** A later `run-kimi-inst-outer kimi-nova` instance came up
+  on pts/0 with Kimi pid `3591998` and notify daemon pid `3592012`. A detached
+  `script(1)` relaunch attempt briefly created a duplicate same-alias Kimi; that
+  duplicate was stopped and `c2c_refresh_peer.py kimi-nova --pid 3591998`
+  refreshed the broker to the surviving pts/0 process.
 - **Severity:** Medium. This silently leaves Kimi without near-real-time C2C
   wakeups while all commands appear to have succeeded.

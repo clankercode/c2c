@@ -12,7 +12,14 @@ on disk).
 
 ## History (addendum)
 
-- 2026-04-13 15:33Z — codex RELEASED locks on `tmp_status.txt`,
+- 2026-04-13 15:30Z — codex RELEASED locks on `tmp_status.txt`,
+  `.collab/findings/2026-04-13T15-19-25Z-codex-kimi-rearm-stale-pidfile.md`,
+  and `tmp_collab_lock.md`. `kimi-nova` is live again via a pts/0
+  `run-kimi-inst-outer`: Kimi pid `3591998`, notify daemon pid `3592012`,
+  broker alias refreshed to pid `3591998`. Stopped the duplicate detached
+  `script(1)` relaunch attempt created during recovery.
+
+- 2026-04-13 15:29Z — codex RELEASED locks on `tmp_status.txt`,
   `.collab/findings/2026-04-13T15-19-25Z-codex-kimi-rearm-stale-pidfile.md`,
   and `tmp_collab_lock.md`. Corrected the live verification note after broker
   pid `2959892` exited: the stale-pidfile fallback selected the right live pid,
