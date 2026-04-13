@@ -679,9 +679,7 @@ class C2CCLITests(unittest.TestCase):
         ):
             c2c_mcp.maybe_auto_register_startup(env)
 
-        registrations = c2c_mcp.load_broker_registrations(
-            broker_root / "registry.json"
-        )
+        registrations = c2c_mcp.load_broker_registrations(broker_root / "registry.json")
         self.assertEqual(len(registrations), 1)
         self.assertEqual(registrations[0]["alias"], "kimi-nova")
         self.assertEqual(registrations[0]["pid"], live_parent_pid)
@@ -1457,7 +1455,9 @@ class C2CCLITests(unittest.TestCase):
         pid_override = f'mcp_servers.c2c.env.C2C_MCP_CLIENT_PID="{payload["env"]["C2C_MCP_CLIENT_PID"]}"'
         if pid_override in launch:
             idx = launch.index(pid_override)
-            launch = launch[:idx - 1] + launch[idx + 1:]  # remove the preceding "-c" too
+            launch = (
+                launch[: idx - 1] + launch[idx + 1 :]
+            )  # remove the preceding "-c" too
         self.assertEqual(
             launch,
             [
@@ -1617,7 +1617,13 @@ class C2CCLITests(unittest.TestCase):
         broker_root = Path(self.temp_dir.name) / "mcp-broker-peek"
         broker_root.mkdir()
         inbox_path = broker_root / "opencode-local.inbox.json"
-        msgs = [{"from_alias": "codex", "to_alias": "opencode-local", "content": "peek test"}]
+        msgs = [
+            {
+                "from_alias": "codex",
+                "to_alias": "opencode-local",
+                "content": "peek test",
+            }
+        ]
         inbox_path.write_text(json.dumps(msgs), encoding="utf-8")
 
         result = c2c_poll_inbox.file_fallback_peek(broker_root, "opencode-local")
@@ -1638,7 +1644,13 @@ class C2CCLITests(unittest.TestCase):
         broker_root = Path(self.temp_dir.name) / "mcp-broker-peek-flag"
         broker_root.mkdir()
         inbox_path = broker_root / "opencode-local.inbox.json"
-        msgs = [{"from_alias": "storm-beacon", "to_alias": "opencode-local", "content": "hello"}]
+        msgs = [
+            {
+                "from_alias": "storm-beacon",
+                "to_alias": "opencode-local",
+                "content": "hello",
+            }
+        ]
         inbox_path.write_text(json.dumps(msgs), encoding="utf-8")
 
         result = run_cli(
@@ -1663,7 +1675,13 @@ class C2CCLITests(unittest.TestCase):
         broker_root = Path(self.temp_dir.name) / "mcp-broker-peek-sub"
         broker_root.mkdir()
         inbox_path = broker_root / "opencode-local.inbox.json"
-        msgs = [{"from_alias": "codex", "to_alias": "opencode-local", "content": "subcommand test"}]
+        msgs = [
+            {
+                "from_alias": "codex",
+                "to_alias": "opencode-local",
+                "content": "subcommand test",
+            }
+        ]
         inbox_path.write_text(json.dumps(msgs), encoding="utf-8")
 
         result = run_cli(
@@ -1715,7 +1733,9 @@ class C2CCLITests(unittest.TestCase):
         pid_override = f'mcp_servers.c2c.env.C2C_MCP_CLIENT_PID="{payload["env"]["C2C_MCP_CLIENT_PID"]}"'
         if pid_override in launch:
             idx = launch.index(pid_override)
-            launch = launch[:idx - 1] + launch[idx + 1:]  # remove the preceding "-c" too
+            launch = (
+                launch[: idx - 1] + launch[idx + 1 :]
+            )  # remove the preceding "-c" too
         self.assertEqual(
             launch,
             [
@@ -2518,6 +2538,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c_poker.py",
                 "c2c_poker_sweep.py",
                 "c2c_poll_inbox.py",
+                "c2c_pts_inject.py",
                 "c2c_verify.py",
                 "c2c_watch.py",
                 "c2c_whoami.py",
@@ -4456,15 +4477,22 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
             # Plugin should have been synced to the config dir's plugins/
             plugin_dest = config_dir / "plugins" / "c2c.ts"
             pkg_dest = config_dir / "package.json"
-            self.assertTrue(plugin_dest.exists(), "plugin should be copied to config dir")
-            self.assertTrue(pkg_dest.exists(), "package.json should be copied to config dir")
+            self.assertTrue(
+                plugin_dest.exists(), "plugin should be copied to config dir"
+            )
+            self.assertTrue(
+                pkg_dest.exists(), "package.json should be copied to config dir"
+            )
             # node_modules symlink should be created so Bun can resolve @opencode-ai/plugin
             nm_src = project / ".opencode" / "node_modules"
             nm_dest = config_dir / "node_modules"
             if nm_src.exists():
-                self.assertTrue(nm_dest.is_symlink(), "node_modules should be a symlink")
+                self.assertTrue(
+                    nm_dest.is_symlink(), "node_modules should be a symlink"
+                )
                 self.assertEqual(
-                    os.readlink(str(nm_dest)), str(nm_src),
+                    os.readlink(str(nm_dest)),
+                    str(nm_src),
                     "node_modules symlink should point to .opencode/node_modules",
                 )
 
@@ -4506,9 +4534,7 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             sidecar = json.loads(
-                (project / ".opencode" / "c2c-plugin.json").read_text(
-                    encoding="utf-8"
-                )
+                (project / ".opencode" / "c2c-plugin.json").read_text(encoding="utf-8")
             )
             self.assertEqual(sidecar["session_id"], "opencode-local")
             self.assertEqual(sidecar["alias"], "opencode-local")
@@ -4545,7 +4571,11 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
             )
             # Write a spool file simulating a failed promptAsync from last cycle
             spool = [
-                {"from_alias": "storm-beacon", "to_alias": "opencode-spool", "content": "hi from spool"}
+                {
+                    "from_alias": "storm-beacon",
+                    "to_alias": "opencode-spool",
+                    "content": "hi from spool",
+                }
             ]
             spool_path = project / ".opencode" / "c2c-plugin-spool.json"
             spool_path.write_text(json.dumps(spool), encoding="utf-8")
@@ -4561,8 +4591,8 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
             effective_prompt = payload["env"]["OPENCODE_MCP_PROMPT"]
             # Spool message must appear before the normal prompt text
             self.assertIn("hi from spool", effective_prompt)
-            self.assertIn("from=\"storm-beacon\"", effective_prompt)
-            self.assertIn("source=\"spool\"", effective_prompt)
+            self.assertIn('from="storm-beacon"', effective_prompt)
+            self.assertIn('source="spool"', effective_prompt)
             self.assertIn("STEP 1: poll inbox", effective_prompt)
             spool_pos = effective_prompt.index("hi from spool")
             step_pos = effective_prompt.index("STEP 1: poll inbox")
@@ -4596,7 +4626,13 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
             (config_dir / "spool-clear.json").write_text(
                 json.dumps(managed_config), encoding="utf-8"
             )
-            spool = [{"from_alias": "codex", "to_alias": "opencode-spool-clear", "content": "clear me"}]
+            spool = [
+                {
+                    "from_alias": "codex",
+                    "to_alias": "opencode-spool-clear",
+                    "content": "clear me",
+                }
+            ]
             spool_path = project / ".opencode" / "c2c-plugin-spool.json"
             spool_path.write_text(json.dumps(spool), encoding="utf-8")
 
@@ -4638,7 +4674,10 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
 
         self.assertIn("sidecar.opencode_session_id", plugin_text)
         self.assertIn("configuredOpenCodeSessionId", plugin_text)
-        self.assertIn("let activeSessionId: string | null = configuredOpenCodeSessionId", plugin_text)
+        self.assertIn(
+            "let activeSessionId: string | null = configuredOpenCodeSessionId",
+            plugin_text,
+        )
 
     def test_run_opencode_inst_outer_dry_run_reports_inner_launch_command(self):
         env = {"RUN_OPENCODE_INST_OUTER_DRY_RUN": "1"}
@@ -4740,7 +4779,9 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
 
 
 class RunOpenCodeInstPluginTests(unittest.TestCase):
-    def _make_config(self, config_dir: Path, name: str, cwd: Path, config_path: Path) -> Path:
+    def _make_config(
+        self, config_dir: Path, name: str, cwd: Path, config_path: Path
+    ) -> Path:
         config = {
             "command": sys.executable,
             "cwd": str(cwd),
@@ -4764,7 +4805,10 @@ class RunOpenCodeInstPluginTests(unittest.TestCase):
             plugin_src.parent.mkdir(parents=True, exist_ok=True)
             plugin_src.write_text("// plugin", encoding="utf-8")
             pkg_src = opencode_dir / "package.json"
-            pkg_src.write_text(json.dumps({"dependencies": {"@opencode-ai/plugin": "^1.0.0"}}), encoding="utf-8")
+            pkg_src.write_text(
+                json.dumps({"dependencies": {"@opencode-ai/plugin": "^1.0.0"}}),
+                encoding="utf-8",
+            )
             nm_src = opencode_dir / "node_modules"
             nm_src.mkdir()
 
@@ -4784,7 +4828,9 @@ class RunOpenCodeInstPluginTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
 
             plugin_dest = config_dir / "plugins" / "c2c.ts"
-            self.assertTrue(plugin_dest.exists(), f"plugin should be copied to {plugin_dest}")
+            self.assertTrue(
+                plugin_dest.exists(), f"plugin should be copied to {plugin_dest}"
+            )
             self.assertEqual(plugin_dest.read_text(encoding="utf-8"), "// plugin")
             pkg_dest = config_dir / "package.json"
             self.assertTrue(pkg_dest.exists())
@@ -4803,7 +4849,10 @@ class RunOpenCodeInstPluginTests(unittest.TestCase):
             plugin_src.parent.mkdir(parents=True, exist_ok=True)
             plugin_src.write_text("// plugin", encoding="utf-8")
             pkg_src = opencode_dir / "package.json"
-            pkg_src.write_text(json.dumps({"dependencies": {"@opencode-ai/plugin": "^1.0.0"}}), encoding="utf-8")
+            pkg_src.write_text(
+                json.dumps({"dependencies": {"@opencode-ai/plugin": "^1.0.0"}}),
+                encoding="utf-8",
+            )
             nm_src = opencode_dir / "node_modules"
             nm_src.mkdir()
 
@@ -4823,11 +4872,20 @@ class RunOpenCodeInstPluginTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
 
             plugin_dest = config_dir / "plugins" / "c2c.ts"
-            self.assertFalse(plugin_dest.exists(), "plugin should NOT be copied when config is inside repo .opencode")
+            self.assertFalse(
+                plugin_dest.exists(),
+                "plugin should NOT be copied when config is inside repo .opencode",
+            )
             pkg_dest = config_dir / "package.json"
-            self.assertFalse(pkg_dest.exists() or pkg_dest.is_symlink(), "package.json should NOT be copied")
+            self.assertFalse(
+                pkg_dest.exists() or pkg_dest.is_symlink(),
+                "package.json should NOT be copied",
+            )
             nm_dest = config_dir / "node_modules"
-            self.assertFalse(nm_dest.exists() or nm_dest.is_symlink(), "node_modules should NOT be symlinked")
+            self.assertFalse(
+                nm_dest.exists() or nm_dest.is_symlink(),
+                "node_modules should NOT be symlinked",
+            )
 
     def test_merges_package_json_when_already_exists_in_config_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4839,12 +4897,25 @@ class RunOpenCodeInstPluginTests(unittest.TestCase):
             plugin_src.parent.mkdir(parents=True, exist_ok=True)
             plugin_src.write_text("// plugin", encoding="utf-8")
             pkg_src = opencode_dir / "package.json"
-            pkg_src.write_text(json.dumps({"dependencies": {"@opencode-ai/plugin": "^1.0.0", "new-dep": "^2.0.0"}}), encoding="utf-8")
+            pkg_src.write_text(
+                json.dumps(
+                    {
+                        "dependencies": {
+                            "@opencode-ai/plugin": "^1.0.0",
+                            "new-dep": "^2.0.0",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             config_dir = Path(tmp) / "run-opencode-inst.d"
             config_dir.mkdir()
             existing_pkg = config_dir / "package.json"
-            existing_pkg.write_text(json.dumps({"dependencies": {"existing-dep": "^0.1.0"}}), encoding="utf-8")
+            existing_pkg.write_text(
+                json.dumps({"dependencies": {"existing-dep": "^0.1.0"}}),
+                encoding="utf-8",
+            )
             config_path = config_dir / "test.opencode.json"
             config_path.write_text("{}", encoding="utf-8")
             self._make_config(config_dir, "test", cwd, config_path)
@@ -6537,9 +6608,7 @@ class RunKimiInstTests(unittest.TestCase):
             "c2c_session_id": "kimi-nova",
             "c2c_alias": "kimi-nova",
         }
-        (config_dir / "kimi-nova.json").write_text(
-            json.dumps(config), encoding="utf-8"
-        )
+        (config_dir / "kimi-nova.json").write_text(json.dumps(config), encoding="utf-8")
         live_pid = os.getpid()
         (broker_root / "registry.json").write_text(
             json.dumps(
@@ -7537,7 +7606,9 @@ class PruneDeadMembersTests(unittest.TestCase):
     def test_room_not_found_returns_error(self):
         import c2c_room
 
-        result = c2c_room.prune_dead_members("nonexistent", broker_root=self.broker_root)
+        result = c2c_room.prune_dead_members(
+            "nonexistent", broker_root=self.broker_root
+        )
         self.assertFalse(result["ok"])
 
     def test_removes_unregistered_members(self):
