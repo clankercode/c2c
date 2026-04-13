@@ -303,6 +303,24 @@ def purge_orphan_dead_letter(
             "purged_count": purged, "dry_run": dry_run}
 
 
+def _outer_loops_running() -> bool:
+    """Return True if any managed-harness outer loops are currently active.
+
+    When outer loops are running, the managed session's inner process is short-lived
+    (it dies between iterations).  Sweeping during this window would remove
+    registrations that the outer loop is about to re-create.
+    """
+    import subprocess as _sp
+    try:
+        out = _sp.run(
+            ["pgrep", "-f", r"run-(kimi|codex|opencode|crush|claude)-inst-outer"],
+            capture_output=True, text=True, timeout=3.0,
+        )
+        return out.returncode == 0
+    except Exception:
+        return False
+
+
 def run_gc_loop(
     broker_root: Path,
     interval_seconds: float,
@@ -322,7 +340,17 @@ def run_gc_loop(
         iteration += 1
         print(f"[broker-gc] iteration {iteration}: sweeping...", flush=True)
 
-        result = sweep_dead_registrations(broker_root, dry_run=dry_run)
+        if _outer_loops_running():
+            # Skip registry sweep to avoid the managed-session sweep footgun.
+            # Dead-letter cleanup is safe regardless — it never touches registrations.
+            print(
+                "[broker-gc] outer loops active — skipping registry sweep "
+                "(safe_to_sweep=False); dead-letter cleanup will still run.",
+                flush=True,
+            )
+            result = {"ok": True, "before_count": 0, "after_count": 0, "removed_count": 0, "removed": [], "skipped": True}
+        else:
+            result = sweep_dead_registrations(broker_root, dry_run=dry_run)
         dl_result = purge_old_dead_letter(broker_root, ttl_seconds=dead_letter_ttl, dry_run=dry_run)
         orphan_result = purge_orphan_dead_letter(broker_root, ttl_seconds=orphan_dead_letter_ttl, dry_run=dry_run)
 

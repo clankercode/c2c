@@ -6553,111 +6553,6 @@ class SweepDeadRegistrationsTests(unittest.TestCase):
         self.assertEqual(result, 0)
 
 
-class PruneDeadMembersTests(unittest.TestCase):
-    """Tests for c2c_room.prune_dead_members()."""
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        self.broker_root = Path(self.tmpdir)
-        # Create registry.json
-        self.registry_path = self.broker_root / "registry.json"
-        # Create a room
-        self.room_id = "test-room"
-        self.room_dir = self.broker_root / "rooms" / self.room_id
-        self.room_dir.mkdir(parents=True)
-        self.members_path = self.room_dir / "members.json"
-
-    def tearDown(self):
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def _write_registry(self, registrations):
-        self.registry_path.write_text(json.dumps(registrations), encoding="utf-8")
-
-    def _write_members(self, members):
-        self.members_path.write_text(json.dumps(members), encoding="utf-8")
-
-    def _read_members(self):
-        return json.loads(self.members_path.read_text(encoding="utf-8"))
-
-    def test_removes_unregistered_members(self):
-        import c2c_room
-
-        self._write_registry([{"alias": "alive", "session_id": "s1"}])
-        self._write_members([
-            {"alias": "alive", "session_id": "s1", "joined_at": 0.0},
-            {"alias": "dead-smoke", "session_id": "smoke1", "joined_at": 0.0},
-        ])
-        result = c2c_room.prune_dead_members(self.room_id, broker_root=self.broker_root)
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["before_count"], 2)
-        self.assertEqual(result["after_count"], 1)
-        self.assertIn("dead-smoke", result["removed"])
-        members = self._read_members()
-        self.assertEqual(len(members), 1)
-        self.assertEqual(members[0]["alias"], "alive")
-
-    def test_keeps_all_registered_members(self):
-        import c2c_room
-
-        self._write_registry([
-            {"alias": "a1", "session_id": "s1"},
-            {"alias": "a2", "session_id": "s2"},
-        ])
-        self._write_members([
-            {"alias": "a1", "session_id": "s1", "joined_at": 0.0},
-            {"alias": "a2", "session_id": "s2", "joined_at": 0.0},
-        ])
-        result = c2c_room.prune_dead_members(self.room_id, broker_root=self.broker_root)
-        self.assertEqual(result["removed"], [])
-        self.assertEqual(result["after_count"], 2)
-
-    def test_dry_run_does_not_modify_file(self):
-        import c2c_room
-
-        self._write_registry([])
-        self._write_members([
-            {"alias": "dead", "session_id": "s1", "joined_at": 0.0},
-        ])
-        result = c2c_room.prune_dead_members(
-            self.room_id, broker_root=self.broker_root, dry_run=True
-        )
-        self.assertTrue(result["dry_run"])
-        self.assertIn("dead", result["removed"])
-        # File unchanged
-        members = self._read_members()
-        self.assertEqual(len(members), 1)
-
-    def test_missing_room_returns_error(self):
-        import c2c_room
-
-        self._write_registry([])
-        result = c2c_room.prune_dead_members("no-such-room", broker_root=self.broker_root)
-        self.assertFalse(result["ok"])
-
-    def test_empty_registry_removes_all(self):
-        import c2c_room
-
-        self._write_registry([])
-        self._write_members([
-            {"alias": "smoke1", "session_id": "s1", "joined_at": 0.0},
-            {"alias": "smoke2", "session_id": "s2", "joined_at": 0.0},
-        ])
-        result = c2c_room.prune_dead_members(self.room_id, broker_root=self.broker_root)
-        self.assertEqual(result["after_count"], 0)
-        self.assertEqual(len(result["removed"]), 2)
-        members = self._read_members()
-        self.assertEqual(members, [])
-
-    def test_lock_file_created(self):
-        import c2c_room
-
-        self._write_registry([])
-        self._write_members([])
-        c2c_room.prune_dead_members(self.room_id, broker_root=self.broker_root)
-        lock_path = self.room_dir / "members.lock"
-        self.assertTrue(lock_path.exists(), "members.lock should be created")
-
-
 def result_code(result):
     return result.returncode
 
@@ -6921,3 +6816,23 @@ class PruneDeadMembersTests(unittest.TestCase):
         self.assertEqual(result["removed"], ["gone"])
         # Members file unchanged
         self.assertEqual(self._read_members("test-room"), ["alice", "gone"])
+
+    def test_empty_registry_removes_all(self):
+        import c2c_room
+
+        self._write_registry([])
+        self._write_members("test-room", ["smoke1", "smoke2"])
+        result = c2c_room.prune_dead_members("test-room", broker_root=self.broker_root)
+        self.assertEqual(result["after_count"], 0)
+        self.assertEqual(len(result["removed"]), 2)
+        self.assertEqual(self._read_members("test-room"), [])
+
+    def test_lock_file_created(self):
+        """prune_dead_members should create members.lock (POSIX lockf sidecar)."""
+        import c2c_room
+
+        self._write_registry(["alice"])
+        self._write_members("test-room", ["alice"])
+        c2c_room.prune_dead_members("test-room", broker_root=self.broker_root)
+        lock_path = self.rooms_root / "test-room" / "members.lock"
+        self.assertTrue(lock_path.exists(), "members.lock should be created by prune")
