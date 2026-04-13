@@ -5619,7 +5619,7 @@ class RunKimiInstTests(unittest.TestCase):
         self.assertEqual(payload["env"]["RUN_KIMI_INST_C2C_SESSION_ID"], "kimi-test")
         self.assertEqual(payload["env"]["C2C_MCP_AUTO_REGISTER_ALIAS"], "kimi-test")
 
-    def test_run_kimi_inst_dry_run_uses_print_mode_when_prompt_configured(self):
+    def test_run_kimi_inst_dry_run_uses_interactive_prompt_when_prompt_configured(self):
         config_dir = Path(self.temp_dir.name) / "run-kimi-inst.d"
         config_dir.mkdir()
         config = {
@@ -5639,10 +5639,37 @@ class RunKimiInstTests(unittest.TestCase):
         self.assertEqual(result_code(result), 0, result.stderr)
         payload = json.loads(result.stdout)
         self.assertEqual(
+            payload["launch"][:4],
+            ["kimi", "--yolo", "--prompt", "poll inbox"],
+        )
+        self.assertNotIn("--trust-all-tools", payload["launch"])
+        self.assertNotIn("--print", payload["launch"])
+        self.assertEqual(payload["prompt_mode"], "interactive-tui")
+
+    def test_run_kimi_inst_dry_run_uses_print_mode_when_explicitly_configured(self):
+        config_dir = Path(self.temp_dir.name) / "run-kimi-inst.d"
+        config_dir.mkdir()
+        config = {
+            "command": "kimi",
+            "cwd": self.temp_dir.name,
+            "c2c_session_id": "kimi-test",
+            "c2c_alias": "kimi-test",
+            "prompt": "poll inbox",
+            "print": True,
+        }
+        (config_dir / "kimi-a.json").write_text(json.dumps(config), encoding="utf-8")
+        env = dict(self.env)
+        env["RUN_KIMI_INST_DRY_RUN"] = "1"
+        env["RUN_KIMI_INST_CONFIG_DIR"] = str(config_dir)
+
+        result = run_cli("run-kimi-inst", "kimi-a", env=env)
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(
             payload["launch"][:5],
             ["kimi", "--yolo", "--print", "--prompt", "poll inbox"],
         )
-        self.assertNotIn("--trust-all-tools", payload["launch"])
         self.assertEqual(payload["prompt_mode"], "non-interactive")
 
     def test_run_kimi_inst_help_exits_without_config_lookup(self):
