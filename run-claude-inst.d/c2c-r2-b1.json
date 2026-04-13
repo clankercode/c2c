@@ -1,7 +1,8 @@
 {
   "command": "claude",
   "flags": [
-    "--continue",
+    "--resume",
+    "c78d64e9-1c7d-413f-8440-6ab33e0bf8fe",
     "--dangerously-skip-permissions",
     "--dangerously-load-development-channels",
     "server:c2c"
