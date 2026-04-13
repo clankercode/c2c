@@ -1423,8 +1423,15 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(
             payload["env"]["RUN_CODEX_INST_C2C_SESSION_ID"], "codex-codex-a"
         )
+        self.assertRegex(payload["env"]["C2C_MCP_CLIENT_PID"], r"^[1-9][0-9]*$")
+        # Remove the dynamic PID override before checking the rest of launch
+        launch = payload["launch"]
+        pid_override = f'mcp_servers.c2c.env.C2C_MCP_CLIENT_PID="{payload["env"]["C2C_MCP_CLIENT_PID"]}"'
+        if pid_override in launch:
+            idx = launch.index(pid_override)
+            launch = launch[:idx - 1] + launch[idx + 1:]  # remove the preceding "-c" too
         self.assertEqual(
-            payload["launch"],
+            launch,
             [
                 "codex",
                 "--ask-for-approval",
@@ -1604,8 +1611,15 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(
             payload["env"]["RUN_CODEX_INST_C2C_SESSION_ID"], "codex-reviewer-1"
         )
+        self.assertRegex(payload["env"]["C2C_MCP_CLIENT_PID"], r"^[1-9][0-9]*$")
+        # Remove the dynamic PID override before checking the rest of launch
+        launch = payload["launch"]
+        pid_override = f'mcp_servers.c2c.env.C2C_MCP_CLIENT_PID="{payload["env"]["C2C_MCP_CLIENT_PID"]}"'
+        if pid_override in launch:
+            idx = launch.index(pid_override)
+            launch = launch[:idx - 1] + launch[idx + 1:]  # remove the preceding "-c" too
         self.assertEqual(
-            payload["launch"],
+            launch,
             [
                 "codex",
                 "-c",
@@ -4150,6 +4164,53 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
                     "node_modules symlink should point to .opencode/node_modules",
                 )
 
+    def test_run_opencode_inst_writes_plugin_sidecar_in_cwd(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project = root / "project"
+            config_dir = root / "run-opencode-inst.d"
+            (project / ".opencode" / "plugins").mkdir(parents=True)
+            config_dir.mkdir()
+            (project / ".opencode" / "plugins" / "c2c.ts").write_text(
+                "export default async function C2C() { return {}; }\n",
+                encoding="utf-8",
+            )
+            (project / ".opencode" / "package.json").write_text(
+                json.dumps({"dependencies": {"@opencode-ai/plugin": "1.4.3"}}),
+                encoding="utf-8",
+            )
+            opencode_json = config_dir / "opencode-local.opencode.json"
+            opencode_json.write_text(json.dumps({"mcp": {}}), encoding="utf-8")
+            managed_config = {
+                "command": "opencode",
+                "cwd": str(project),
+                "config_path": str(opencode_json),
+                "c2c_session_id": "opencode-local",
+                "c2c_alias": "opencode-local",
+                "prompt": "test",
+            }
+            (config_dir / "opencode-local.json").write_text(
+                json.dumps(managed_config), encoding="utf-8"
+            )
+
+            env = {
+                "RUN_OPENCODE_INST_DRY_RUN": "1",
+                "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir),
+            }
+            result = run_cli("run-opencode-inst", "opencode-local", env=env)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            sidecar = json.loads(
+                (project / ".opencode" / "c2c-plugin.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(sidecar["session_id"], "opencode-local")
+            self.assertEqual(sidecar["alias"], "opencode-local")
+            self.assertEqual(
+                sidecar["broker_root"], str(project / ".git" / "c2c" / "mcp")
+            )
+
     def test_opencode_plugin_uses_supported_process_runner_for_drain(self):
         plugin_src = REPO / ".opencode" / "plugins" / "c2c.ts"
         if not plugin_src.exists():
@@ -4160,6 +4221,16 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         self.assertNotIn("ctx.$.quiet", plugin_text)
         self.assertIn('from "child_process"', plugin_text)
         self.assertIn("spawn(", plugin_text)
+
+    def test_opencode_plugin_starts_background_loop_without_lifecycle_hook(self):
+        plugin_src = REPO / ".opencode" / "plugins" / "c2c.ts"
+        if not plugin_src.exists():
+            self.skipTest("plugin source not present")
+
+        plugin_text = plugin_src.read_text(encoding="utf-8")
+
+        self.assertIn("function startBackgroundLoop()", plugin_text)
+        self.assertIn("startBackgroundLoop();", plugin_text)
 
     def test_run_opencode_inst_outer_dry_run_reports_inner_launch_command(self):
         env = {"RUN_OPENCODE_INST_OUTER_DRY_RUN": "1"}
