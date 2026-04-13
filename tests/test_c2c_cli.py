@@ -2410,6 +2410,19 @@ class C2CListUnitTests(unittest.TestCase):
         )
         self.assertEqual(reloaded, seeded)
 
+    def test_infer_client_type_from_session_id_and_alias(self):
+        from c2c_list import _infer_client_type
+
+        self.assertEqual(_infer_client_type("storm-beacon", "d16034fc-5526-414b-a88e-709d1a93e345"), "claude-code")
+        self.assertEqual(_infer_client_type("claude-bob-local", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"), "claude-code")
+        self.assertEqual(_infer_client_type("codex", "codex-local"), "codex")
+        self.assertEqual(_infer_client_type("codex-worker", "codex-worker-session"), "codex")
+        self.assertEqual(_infer_client_type("opencode-local", "opencode-local"), "opencode")
+        self.assertEqual(_infer_client_type("opencode-x", "opencode-x"), "opencode")
+        self.assertEqual(_infer_client_type("kimi-alice-host", "kimi-alice-host"), "kimi")
+        self.assertEqual(_infer_client_type("crush-bob-host", "crush-bob-host"), "crush")
+        self.assertEqual(_infer_client_type("mystery", "mystery-session"), "?")
+
     def test_list_broker_flag_reads_broker_registry(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             broker_root = Path(temp_dir)
@@ -2446,8 +2459,13 @@ class C2CListUnitTests(unittest.TestCase):
         self.assertIsNone(peers_by_alias["codex"]["alive"])
         self.assertEqual(peers_by_alias["codex"]["rooms"], [])
         self.assertEqual(peers_by_alias["codex"]["session_id"], "codex-local")
+        self.assertEqual(peers_by_alias["codex"]["client_type"], "codex")
         self.assertIsNone(peers_by_alias["gpt"]["alive"])
         self.assertEqual(peers_by_alias["gpt"]["session_id"], "opencode-local")
+        self.assertEqual(peers_by_alias["gpt"]["client_type"], "opencode")
+        # last_seen is None when no inbox file exists
+        self.assertIsNone(peers_by_alias["codex"]["last_seen"])
+        self.assertIsNone(peers_by_alias["gpt"]["last_seen"])
 
     def test_list_sessions_includes_alias_for_registered_live_sessions(self):
         sessions = [

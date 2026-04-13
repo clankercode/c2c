@@ -2,6 +2,8 @@
 import argparse
 import json
 import os
+import re
+import time
 from pathlib import Path
 
 from c2c_registry import (
@@ -109,6 +111,42 @@ def _peer_rooms(broker_root: Path, alias: str) -> list[str]:
     return result
 
 
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def _infer_client_type(alias: str, session_id: str) -> str:
+    if _UUID_RE.fullmatch(session_id):
+        return "claude-code"
+    if session_id.startswith("codex") or alias == "codex" or alias.startswith("codex-"):
+        return "codex"
+    if session_id.startswith("opencode") or alias.startswith("opencode"):
+        return "opencode"
+    if alias.startswith("kimi-"):
+        return "kimi"
+    if alias.startswith("crush-"):
+        return "crush"
+    return "?"
+
+
+def _last_seen_str(broker_root: Path, session_id: str) -> str | None:
+    inbox_path = broker_root / f"{session_id}.inbox.json"
+    if not inbox_path.exists():
+        return None
+    try:
+        age_s = time.time() - inbox_path.stat().st_mtime
+        if age_s < 60:
+            return f"{int(age_s)}s ago"
+        elif age_s < 3600:
+            return f"{int(age_s / 60)}m ago"
+        else:
+            return f"{int(age_s / 3600)}h ago"
+    except OSError:
+        return None
+
+
 def list_broker_peers() -> list[dict]:
     """Return every registration currently in the broker registry.
 
@@ -134,13 +172,16 @@ def list_broker_peers() -> list[dict]:
             pid_start_time: int | None = int(str(pst_raw)) if pst_raw is not None else None
         except (ValueError, TypeError):
             pid_start_time = None
+        session_id = str(registration.get("session_id", ""))
         rows.append(
             {
                 "alias": alias,
-                "session_id": str(registration.get("session_id", "")),
+                "session_id": session_id,
                 "pid": pid or None,
                 "alive": _pid_alive(pid, pid_start_time),
                 "rooms": _peer_rooms(broker_root, alias),
+                "client_type": _infer_client_type(alias, session_id),
+                "last_seen": _last_seen_str(broker_root, session_id),
             }
         )
     return rows
@@ -170,7 +211,9 @@ def main(argv: list[str] | None = None) -> int:
             alive = peer.get("alive")
             status = "alive" if alive is True else ("dead" if alive is False else "?")
             rooms = ", ".join(peer.get("rooms") or []) or "-"
-            print(f"{peer['alias']}\t[{status}]\t{rooms}\t{peer['session_id']}")
+            client = peer.get("client_type") or "?"
+            seen = peer.get("last_seen") or "-"
+            print(f"{peer['alias']}\t[{status}]\t{client}\t{seen}\t{rooms}")
         return 0
 
     rows = list_sessions(include_all=args.all)
