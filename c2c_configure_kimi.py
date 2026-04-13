@@ -186,12 +186,9 @@ def main(argv: list[str] | None = None) -> int:
             print()
             print("For near-real-time auto-delivery:")
             sid = alias or f"kimi-{os.environ.get('USER', 'user')}-{os.uname().nodename}"
-            pidfile = f"~/.local/share/c2c/kimi-wire/{sid}.pid"
             print("  Preferred — Wire bridge daemon (no PTY, headless):")
-            print(f"    c2c-kimi-wire-bridge --session-id {sid} \\")
-            print(f"        --loop --daemon --pidfile {pidfile}")
-            print("    # Check it's running:")
-            print(f"    cat {pidfile}")
+            print(f"    c2c wire-daemon start --session-id {sid}")
+            print(f"    c2c wire-daemon status --session-id {sid}  # check")
             print("  Fallback — PTY wake daemon (for interactive TUI sessions):")
             print("    nohup c2c-kimi-wake --terminal-pid <ghostty-pid> --pts <pts> &")
             print("  Managed harness (auto-restart + notify delivery):")
