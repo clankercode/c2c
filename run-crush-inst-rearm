@@ -114,7 +114,51 @@ def load_config(name: str) -> dict[str, Any]:
         return {}
 
 
-def default_session_id(name: str) -> str:
+def _broker_session_id_for_pid(pid: int) -> str | None:
+    """Look up the registered session_id for a PID from the broker registry.
+
+    Crush clients don't always honour C2C_MCP_SESSION_ID — they may use their
+    own internal session identifier.  Reading the live broker registry by PID
+    gives the ground truth without relying on a potentially stale config.
+    """
+    try:
+        import json as _json
+        import subprocess as _sp
+
+        result = _sp.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=HERE,
+        )
+        if result.returncode != 0:
+            return None
+        common_dir = Path(result.stdout.strip())
+        if not common_dir.is_absolute():
+            common_dir = (HERE / common_dir).resolve()
+        reg_path = common_dir / "c2c" / "mcp" / "registry.json"
+        if not reg_path.exists():
+            return None
+        regs = _json.loads(reg_path.read_text(encoding="utf-8"))
+        if not isinstance(regs, list):
+            return None
+        for reg in regs:
+            if reg.get("pid") == pid:
+                return reg.get("session_id") or None
+    except Exception:
+        pass
+    return None
+
+
+def default_session_id(name: str, pid: int | None = None) -> str:
+    # First: check broker registry for the actual registered session_id for
+    # this PID — crush clients may ignore C2C_MCP_SESSION_ID and use their own
+    # internal session identifier instead.
+    if pid is not None:
+        live_sid = _broker_session_id_for_pid(pid)
+        if live_sid:
+            return live_sid
     env_value = os.environ.get("RUN_CRUSH_INST_C2C_SESSION_ID", "").strip()
     if env_value:
         return env_value
@@ -227,7 +271,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[run-crush-inst-rearm] pid file not found: {pid_path(args.name)}", file=sys.stderr)
         return 2
 
-    session_id = args.session_id or default_session_id(args.name)
+    session_id = args.session_id or default_session_id(args.name, pid=target_pid)
     deliver_command = build_deliver_command(args.name, target_pid, session_id, args.start_timeout)
     poker_command = build_poker_command(args.name, target_pid, session_id)
 
