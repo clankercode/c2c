@@ -25,6 +25,9 @@ htmlcov/
 .venv/
 venv/
 ENV/
+docs/.bundle/
+docs/_site/
+docs/vendor/
 .idea/
 .vscode/
 *.swp
