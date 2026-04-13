@@ -543,7 +543,7 @@ class C2CCLITests(unittest.TestCase):
     ):
         stderr = io.StringIO()
         with (
-            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch.dict(os.environ, {"C2C_MCP_SESSION_ID": ""}, clear=False),
             mock.patch(
                 "c2c_mcp.default_broker_root",
                 return_value=REPO / ".git" / "c2c" / "mcp",
@@ -566,7 +566,8 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(run_mock.call_count, 2)
         env = run_mock.call_args_list[1].kwargs["env"]
         self.assertEqual(env["C2C_MCP_BROKER_ROOT"], str(REPO / ".git" / "c2c" / "mcp"))
-        self.assertNotIn("C2C_MCP_SESSION_ID", env)
+        # The key may be absent OR empty — either means session ID was not resolved.
+        self.assertFalse(env.get("C2C_MCP_SESSION_ID"), "session ID should be unset when discovery fails")
         warning = stderr.getvalue()
         self.assertIn("c2c_mcp: WARNING session discovery failed", warning)
         self.assertIn("tool calls will need an explicit session_id", warning)
@@ -647,6 +648,8 @@ class C2CCLITests(unittest.TestCase):
                 {
                     "C2C_REGISTRY_PATH": str(self.registry_path),
                     "C2C_MCP_BROKER_ROOT": str(broker_root),
+                    # Clear any real session ID so default_session_id() is invoked.
+                    "C2C_MCP_SESSION_ID": "",
                 },
                 clear=False,
             ),
@@ -935,6 +938,7 @@ class C2CCLITests(unittest.TestCase):
         env = dict(self.env)
         env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
         env["C2C_SESSION_ID"] = AGENT_ONE_SESSION_ID
+        env["C2C_MCP_SESSION_ID"] = AGENT_ONE_SESSION_ID
         save_registry(
             {
                 "registrations": [
@@ -4093,7 +4097,7 @@ class C2CWhoamiUnitTests(unittest.TestCase):
             raise FileNotFoundError(str(path_self))
 
         with (
-            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch.dict(os.environ, {"C2C_SESSION_ID": "", "C2C_SESSION_PID": ""}, clear=False),
             mock.patch("c2c_whoami.os.getpid", return_value=5000),
             mock.patch(
                 "c2c_whoami.parent_process_chain",
@@ -4111,7 +4115,7 @@ class C2CWhoamiUnitTests(unittest.TestCase):
 
     def test_current_session_identifier_uses_single_claude_child_of_parent_shell(self):
         with (
-            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch.dict(os.environ, {"C2C_SESSION_ID": "", "C2C_SESSION_PID": ""}, clear=False),
             mock.patch("c2c_whoami.os.getpid", return_value=5000),
             mock.patch(
                 "c2c_whoami.parent_process_chain",
@@ -4128,7 +4132,7 @@ class C2CWhoamiUnitTests(unittest.TestCase):
         self,
     ):
         with (
-            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch.dict(os.environ, {"C2C_SESSION_ID": "", "C2C_SESSION_PID": ""}, clear=False),
             mock.patch("c2c_whoami.os.getpid", return_value=5000),
             mock.patch(
                 "c2c_whoami.parent_process_chain",
