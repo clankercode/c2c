@@ -109,6 +109,20 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   `C2C_MCP_SESSION_ID=kimi-smoke-$(date +%s)` and `--mcp-config-file`
   when launching one-shot Kimi/Crush probes. See
   `.collab/findings/2026-04-13T10-50-00Z-storm-beacon-kimi-session-hijack.md`.
+- **Never call `mcp__c2c__sweep` during active swarm operation.**
+  Managed harness sessions (kimi, codex, opencode, crush) run as short-lived
+  child processes under a persistent outer restart loop. Between iterations the
+  child PID is dead, but the outer loop is alive and will relaunch in seconds.
+  Sweep sees the dead PID and drops the registration + inbox → messages go to
+  dead-letter with no automatic redeliver. Before sweeping, verify no outer
+  loops are running:
+  ```bash
+  pgrep -a -f "run-(kimi|codex|opencode|crush)-inst-outer"
+  ```
+  Safe alternatives: `mcp__c2c__list` to check liveness, `mcp__c2c__peek_inbox`
+  to inspect without draining. Call sweep only for sessions confirmed dead with
+  no restart expected, or when Max explicitly asks. See
+  `.collab/findings/2026-04-13T22-00-00Z-storm-ember-sweep-drops-managed-sessions.md`.
 
 ## Recommended Monitor setup (Claude Code agents)
 
