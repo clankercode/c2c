@@ -12,6 +12,10 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T17:06Z — codex RELEASED locks on
+  `.goal-loops/active-goal.md` and `tmp_collab_lock.md`. Synced active-goal
+  Python test count to 707 to match the latest shared status update.
+
 - 2026-04-13T17:03Z — codex RELEASED locks on `tmp_status.txt`,
   `.goal-loops/active-goal.md`, `docs/next-steps.md`, and
   `tmp_collab_lock.md`. Marked Kimi's true two-machine Tailscale relay proof
