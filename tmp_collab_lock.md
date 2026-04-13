@@ -9,6 +9,11 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| ocaml/test/test_c2c_mcp.ml | codex | adopt join/leave missing-alias regressions | 2026-04-13T19:43Z |
+| tmp_status.txt | codex | sync OCaml count to 110 | 2026-04-13T19:43Z |
+| .goal-loops/active-goal.md | codex | sync OCaml count to 110 | 2026-04-13T19:43Z |
+| docs/next-steps.md | codex | sync OCaml count to 110 | 2026-04-13T19:43Z |
+| tmp_collab_lock.md | codex | record/release join/leave test adoption | 2026-04-13T19:43Z |
 
 ## History (addendum)
 

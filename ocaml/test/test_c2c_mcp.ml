@@ -3453,6 +3453,94 @@ let test_tools_call_leave_room_accepts_from_alias_as_alias () =
                check int "zero members after leave" 0
                  (List.length members))))
 
+(* Regression: join_room without any alias source returns actionable isError. *)
+let test_tools_call_join_room_missing_alias_is_actionable () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 310)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "join_room")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("alias", `Null)
+                          ; ("room_id", `String "test-missing-alias")
+                          ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected join_room response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let is_error =
+                json |> member "result" |> member "isError" |> to_bool_option
+                |> Option.value ~default:false
+              in
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              check bool "join_room rejected with isError=true" true is_error;
+              check bool "error explains missing member alias" true
+                (string_contains text "missing member alias");
+              check bool "error is not raw Yojson internals" false
+                (string_contains text "Yojson")))
+
+(* Regression: leave_room without any alias source returns actionable isError. *)
+let test_tools_call_leave_room_missing_alias_is_actionable () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 311)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "leave_room")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("alias", `Null)
+                          ; ("room_id", `String "test-missing-alias")
+                          ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected leave_room response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let is_error =
+                json |> member "result" |> member "isError" |> to_bool_option
+                |> Option.value ~default:false
+              in
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              check bool "leave_room rejected with isError=true" true is_error;
+              check bool "error explains missing member alias" true
+                (string_contains text "missing member alias");
+              check bool "error is not raw Yojson internals" false
+                (string_contains text "Yojson")))
+
 let test_register_rename_fans_out_peer_renamed_notification () =
   (* When a session re-registers with a different alias while it's a room
      member, the broker should append a peer_renamed notification to the
@@ -3878,6 +3966,10 @@ let () =
              test_tools_call_join_room_accepts_from_alias_as_alias
          ; test_case "tools/call leave_room accepts `from_alias` as alias fallback" `Quick
              test_tools_call_leave_room_accepts_from_alias_as_alias
+         ; test_case "tools/call join_room missing alias is actionable" `Quick
+             test_tools_call_join_room_missing_alias_is_actionable
+         ; test_case "tools/call leave_room missing alias is actionable" `Quick
+             test_tools_call_leave_room_missing_alias_is_actionable
          ; test_case "room_history limit larger than total returns all" `Quick
              test_room_history_limit_larger_than_total_returns_all
          ; test_case "room_history preserves sender identity across multiple senders" `Quick
