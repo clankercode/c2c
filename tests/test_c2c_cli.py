@@ -5609,6 +5609,53 @@ class HealthCheckHookTests(unittest.TestCase):
         self.assertFalse(result["ok"])
 
 
+class HealthCheckSwarmLoungeTests(unittest.TestCase):
+    """Tests for c2c_health.check_swarm_lounge()."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.broker_root = Path(self.tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_no_alias_returns_not_member(self):
+        import c2c_health
+        result = c2c_health.check_swarm_lounge(self.broker_root, None)
+        self.assertFalse(result["member"])
+        self.assertFalse(result["room_exists"])
+
+    def test_room_missing_returns_not_member(self):
+        import c2c_health
+        result = c2c_health.check_swarm_lounge(self.broker_root, "my-alias")
+        self.assertFalse(result["member"])
+        self.assertFalse(result["room_exists"])
+
+    def test_alias_in_members_returns_member(self):
+        import c2c_health
+        lounge = self.broker_root / "rooms" / "swarm-lounge"
+        lounge.mkdir(parents=True)
+        (lounge / "members.json").write_text(
+            json.dumps([{"alias": "my-alias", "session_id": "s1"}]),
+            encoding="utf-8",
+        )
+        result = c2c_health.check_swarm_lounge(self.broker_root, "my-alias")
+        self.assertTrue(result["member"])
+        self.assertTrue(result["room_exists"])
+
+    def test_alias_not_in_members_returns_not_member(self):
+        import c2c_health
+        lounge = self.broker_root / "rooms" / "swarm-lounge"
+        lounge.mkdir(parents=True)
+        (lounge / "members.json").write_text(
+            json.dumps([{"alias": "other-alias", "session_id": "s1"}]),
+            encoding="utf-8",
+        )
+        result = c2c_health.check_swarm_lounge(self.broker_root, "my-alias")
+        self.assertFalse(result["member"])
+        self.assertTrue(result["room_exists"])
+
+
 class RefreshPeerTests(unittest.TestCase):
     """Tests for c2c_refresh_peer.refresh_peer()."""
 
