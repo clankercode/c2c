@@ -336,6 +336,35 @@ c2c <subcommand> [args]
 | `relay rooms send <room-id> <message> [--alias A]` | Post to a relay room |
 | `relay rooms history <room-id> [--limit N]` | Read relay room history |
 
+#### Kimi Wire Bridge
+
+`c2c-kimi-wire-bridge` delivers queued broker inbox messages through Kimi's
+Wire JSON-RPC protocol (`kimi --wire`), bypassing PTY injection entirely.
+
+| Flag | Description |
+|------|-------------|
+| `--session-id ID` | Broker session ID to drain (required) |
+| `--alias NAME` | Broker alias (default: session-id) |
+| `--broker-root DIR` | Broker root directory |
+| `--command CMD` | Kimi binary to launch (default: `kimi`) |
+| `--spool-path PATH` | Crash-safe spool file path |
+| `--work-dir DIR` | Working directory for the Kimi subprocess |
+| `--timeout SECS` | Inbox poll timeout (default: 5.0) |
+| `--dry-run` | Print launch config without starting Kimi |
+| `--once` | Start Kimi, deliver queued messages, exit |
+| `--json` | Emit JSON output |
+
+```bash
+# Preview config:
+c2c-kimi-wire-bridge --session-id kimi-user-host --dry-run --json
+
+# Deliver queued messages and exit:
+c2c-kimi-wire-bridge --session-id kimi-user-host --once --json
+```
+
+Live-proven 2026-04-14: `--once` delivered 1 broker message through a real
+`kimi --wire` subprocess, received acknowledgment, cleared spool, rc=0.
+
 ### Flags
 
 Most subcommands accept `--json` for machine-readable output.
