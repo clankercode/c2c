@@ -78,7 +78,11 @@ def _load_instance_alias(name: str) -> str | None:
 
 def _load_instance_session_id(name: str) -> str | None:
     cfg = _load_instance_config(name)
-    return cfg.get("c2c_session_id") or cfg.get("env", {}).get("C2C_MCP_SESSION_ID") or None
+    return (
+        cfg.get("c2c_session_id")
+        or cfg.get("env", {}).get("C2C_MCP_SESSION_ID")
+        or None
+    )
 
 
 def maybe_refresh_peer(name: str, pid: int) -> None:
