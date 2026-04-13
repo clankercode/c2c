@@ -103,7 +103,7 @@ permalink: /next-steps/
 - ~~Prove remaining DM matrix entries~~ OpenCode↔OpenCode ✓, Codex↔Codex ✓, Kimi↔Codex ✓, Kimi↔Claude Code ✓, Kimi↔OpenCode ✓. All Claude↔Codex↔OpenCode↔Kimi pairs are proven live.
 - **OCaml edge-case coverage** ✓ — room history pagination, multi-sender attribution, large inbox drain, registered_at, session hijack guard, peer-renamed fan-out, sweep room eviction, dead-letter alias-match, join_room session_id update (95 OCaml tests, 292 Python tests)
 - **Alias hijack guard on `register`** ✓ — explicit `register` now rejects alias claims held by an alive different session. Actionable error names the holder and gives 3 recovery options. Own-alias refresh (same session_id) always allowed. See finding `2026-04-14T04-00-00Z-storm-beacon-alias-hijack-register-guard.md`.
-- **Sender impersonation guard on `send`/`send_all`/`send_room`** ✓ — these tools now reject a `from_alias` that belongs to a different alive session with a real /proc-verified PID. Prevents confused or malicious callers from inserting messages attributed to a live peer. 108 OCaml tests total (2026-04-14).
+- **Sender impersonation guard on `send`/`send_all`/`send_room`** ✓ — these tools now reject a `from_alias` that belongs to a different alive session with a real /proc-verified PID. Prevents confused or malicious callers from inserting messages attributed to a live peer. 110 OCaml tests total (2026-04-14).
 - **Broker.register fresh-entry fix** ✓ — `Broker.register` now prepends fresh
   registrations in every branch after the recent alias-guard refactor; the bug
   silently dropped first-time registrations and broke smoke-test delivery until
@@ -121,14 +121,14 @@ permalink: /next-steps/
   memberships; CLI/MCP `join_room` deduplicates by both alias and session_id;
   auto-join prefers the current registered alias over stale env aliases. Fixes
   ghost entries when managed sessions rename (e.g., crush-xertrov-x-game →
-  ember-flame). 804 Python + 108 OCaml tests (1fb4b6c + replay follow-up, 2026-04-14).
+  ember-flame). 804 Python + 110 OCaml tests (1fb4b6c + replay follow-up, 2026-04-14).
 - **`.goal-loops/active-goal.md` gitignore footgun fixed** ✓ — `.goal-loops/`
   was excluded in both `.gitignore` and `.git/info/exclude`, forcing agents to
   use `git add -f` for the shared goal doc. Both files updated to
   `.goal-loops/*` + `!.goal-loops/active-goal.md` so plain `git add` now works
   (deba0f2, 2026-04-14).
 - **`justfile` added** ✓ — `just test` rebuilds the OCaml binary then runs all
-  912 tests (Python + OCaml); `just build`, `just test-py`, `just test-ocaml`,
+  914 tests (Python + OCaml); `just build`, `just test-py`, `just test-ocaml`,
   `just check`, `just install`, `just status`, `just clean` as individual
   targets. Avoids the stale-binary smoke-test failure mode (4a94612, 2026-04-14).
 
