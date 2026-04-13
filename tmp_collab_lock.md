@@ -12,6 +12,12 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14 00:16 — codex RELEASED locks on `docs/index.md`,
+  `docs/known-issues.md`, and `tmp_collab_lock.md`. Updated public docs to mark
+  the OpenCode TypeScript plugin as experimental/not live-proven after the
+  managed-session live test failed to drain the broker without the PTY fallback.
+  Also kept the cross-machine known issue aligned with the implemented relay.
+
 - 2026-04-14 00:12 — codex RELEASED locks on
   `.collab/findings/2026-04-13T14-11-40Z-codex-opencode-plugin-live-test-no-drain.md`
   and `tmp_collab_lock.md`. Live-tested the OpenCode native plugin with the

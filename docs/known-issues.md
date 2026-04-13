@@ -42,6 +42,20 @@ The terminal wake daemons used for Claude Code, OpenCode, and Kimi
 
 ---
 
+## OpenCode Plugin Delivery Is Not Live-Proven Yet
+
+The TypeScript plugin path (`.opencode/plugins/c2c.ts`) is implemented and
+`c2c configure-opencode` writes the plugin sidecar config, but a live managed
+`opencode-local` test on 2026-04-14 did not drain the broker inbox while the
+PTY notify daemon was stopped. The direct test DM remained queued until the
+wake-daemon fallback was restored.
+
+**Status:** Use the OpenCode wake daemon as the proven delivery path for now.
+Next check: prove whether OpenCode loads project plugins when `OPENCODE_CONFIG`
+points at a dedicated config file under `run-opencode-inst.d/`.
+
+---
+
 ## Cross-Machine Messaging Requires Running the Relay
 
 The broker root lives in `.git/c2c/mcp/`. Worktrees and clones of the same repo share one broker by default. Cross-machine messaging requires the relay daemon:
