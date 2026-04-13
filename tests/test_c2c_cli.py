@@ -524,7 +524,7 @@ class C2CCLITests(unittest.TestCase):
             mock.patch("c2c_mcp.current_session_identifier", return_value="11111"),
             mock.patch("c2c_mcp.load_sessions", side_effect=[[], []]) as load_mock,
             mock.patch("c2c_mcp.find_session", side_effect=[None, None]),
-            mock.patch("c2c_mcp.time.monotonic", side_effect=[100.0, 100.5, 102.1]),
+            mock.patch("c2c_mcp.time.monotonic", side_effect=[100.0, 100.5, 110.1]),
             mock.patch("c2c_mcp.time.sleep") as sleep_mock,
         ):
             with self.assertRaisesRegex(ValueError, "session not found: 11111"):
@@ -535,7 +535,10 @@ class C2CCLITests(unittest.TestCase):
             c2c_mcp.SESSION_DISCOVERY_POLL_INTERVAL_SECONDS
         )
 
-    def test_c2c_mcp_main_skips_session_env_when_current_session_unresolvable(self):
+    def test_c2c_mcp_main_warns_and_skips_session_env_when_current_session_unresolvable(
+        self,
+    ):
+        stderr = io.StringIO()
         with (
             mock.patch.dict(os.environ, {}, clear=False),
             mock.patch(
@@ -550,6 +553,7 @@ class C2CCLITests(unittest.TestCase):
                 ),
             ),
             mock.patch("c2c_mcp.subprocess.run") as run_mock,
+            mock.patch("sys.stderr", stderr),
         ):
             run_mock.return_value.returncode = 0
 
@@ -560,6 +564,9 @@ class C2CCLITests(unittest.TestCase):
         env = run_mock.call_args_list[1].kwargs["env"]
         self.assertEqual(env["C2C_MCP_BROKER_ROOT"], str(REPO / ".git" / "c2c" / "mcp"))
         self.assertNotIn("C2C_MCP_SESSION_ID", env)
+        warning = stderr.getvalue()
+        self.assertIn("c2c_mcp: WARNING session discovery failed", warning)
+        self.assertIn("tool calls will need an explicit session_id", warning)
 
     def test_c2c_mcp_main_exports_current_client_pid_for_server_register(self):
         with (
@@ -2870,6 +2877,8 @@ class C2CInjectUnitTests(unittest.TestCase):
         self.assertEqual(payload["pts"], "9")
         self.assertTrue(payload["dry_run"])
         self.assertIn('<c2c event="message" from="c2c-inject"', payload["payload"])
+        self.assertIn('source="pty"', payload["payload"])
+        self.assertIn('source_tool="c2c_inject"', payload["payload"])
         self.assertIn("hello codex", payload["payload"])
 
     def test_inject_terminal_target_writes_raw_message_for_opencode(self):
@@ -2929,6 +2938,8 @@ class C2CInjectUnitTests(unittest.TestCase):
         self.assertEqual(inject.call_args.args[0:2], (22222, "11"))
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["client"], "claude")
+        self.assertIn('source="pty"', payload["payload"])
+        self.assertIn('source_tool="c2c_inject"', payload["payload"])
         self.assertIn("hello claude", payload["payload"])
 
 
@@ -3171,7 +3182,7 @@ class ClaudeSendMsgUnitTests(unittest.TestCase):
                 sender_name="agent-one",
                 sender_alias="storm-herald",
             ),
-            '<c2c event="message" from="agent-one" alias="storm-herald">\nhello peer\n</c2c>',
+            '<c2c event="message" from="agent-one" alias="storm-herald" source="pty" source_tool="claude_send_msg">\nhello peer\n</c2c>',
         )
 
     def test_render_payload_omits_alias_when_sender_alias_missing(self):
@@ -3182,7 +3193,7 @@ class ClaudeSendMsgUnitTests(unittest.TestCase):
                 sender_name="c2c-send",
                 sender_alias="",
             ),
-            '<c2c event="message" from="c2c-send">\nhello peer\n</c2c>',
+            '<c2c event="message" from="c2c-send" source="pty" source_tool="claude_send_msg">\nhello peer\n</c2c>',
         )
 
     def test_inject_delegates_to_external_pty_helper_with_terminal_metadata(self):
@@ -3229,7 +3240,7 @@ class ClaudeSendMsgUnitTests(unittest.TestCase):
         load_sessions.assert_called_once_with()
         inject.assert_called_once_with(
             full_session,
-            '<c2c event="message" from="c2c-send">\nhello peer\n</c2c>',
+            '<c2c event="message" from="c2c-send" source="pty" source_tool="claude_send_msg">\nhello peer\n</c2c>',
         )
         self.assertEqual(
             result,
@@ -3274,7 +3285,7 @@ class ClaudeSendMsgUnitTests(unittest.TestCase):
 
         inject.assert_called_once_with(
             full_session,
-            '<c2c event="message" from="c2c-send">\nhello peer\n</c2c>',
+            '<c2c event="message" from="c2c-send" source="pty" source_tool="claude_send_msg">\nhello peer\n</c2c>',
         )
         self.assertEqual(result["session_id"], AGENT_TWO_SESSION_ID)
 
@@ -3310,7 +3321,7 @@ class ClaudeSendMsgUnitTests(unittest.TestCase):
         load_sessions.assert_called_once_with()
         inject.assert_called_once_with(
             full_session,
-            '<c2c event="message" from="c2c-send">\nhello peer\n</c2c>',
+            '<c2c event="message" from="c2c-send" source="pty" source_tool="claude_send_msg">\nhello peer\n</c2c>',
         )
         self.assertEqual(result["session_id"], AGENT_TWO_SESSION_ID)
 

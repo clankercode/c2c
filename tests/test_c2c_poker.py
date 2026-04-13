@@ -102,6 +102,8 @@ class C2CPokerWatchPidTests(unittest.TestCase):
         payload = inject.call_args.args[2]
         self.assertIn("wake", payload)
         self.assertIn("Sent at: 2026-04-13 15:12:00 AEST", payload)
+        self.assertIn('source="pty"', payload)
+        self.assertIn('source_tool="c2c_poker"', payload)
 
 
 if __name__ == "__main__":

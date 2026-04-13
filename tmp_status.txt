@@ -77,6 +77,7 @@ Recent hardening completed:
 - Python registration now threads target client pid metadata through the YAML registry and broker registry, and `c2c_mcp.py` honors `C2C_MCP_AUTO_REGISTER_ALIAS` at startup so OpenCode/Codex-style clients can self-register without manual broker surgery.
 - The three-client room proof is live: `swarm-lounge` has Claude Code, Codex, and OpenCode members, and room history includes an `opencode-local` message. The durable OpenCode registry entry was refreshed to the still-running TUI pid `1337045` after a one-shot `opencode run` proof process exited.
 - Room CLI sender attribution is hardened: `c2c_room.py` now falls back through `c2c_whoami.resolve_identity()` when `C2C_MCP_SESSION_ID`/`C2C_SESSION_ID` are unset, avoiding `from_alias=unknown` for registered Claude-shell sends.
+- PTY-injected envelopes now include provenance attributes across `claude_send_msg.py`, `c2c_inject.py`, and `c2c_poker.py`: `source="pty"` plus a `source_tool` identifying the wrapper that produced the message.
 
 Most likely remaining blocker:
 - For push-style transcript delivery: Claude Code handling of `notifications/claude/channel` for local development servers, plus strict session launch requirements for local experimental channels.

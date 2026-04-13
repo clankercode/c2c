@@ -13,6 +13,15 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 16:38 — codex RELEASED locks on `claude_send_msg.py`,
+  `c2c_inject.py`, `c2c_poker.py`, `tests/test_c2c_cli.py`,
+  `tests/test_c2c_poker.py`, and `tmp_collab_lock.md`. Added PTY
+  provenance attributes (`source="pty"`, `source_tool=...`) to the
+  Claude-specific sender, generic injector, and poker heartbeat wrapper.
+  Also added focused coverage for storm-ember's `c2c_mcp.py` warning
+  behavior from `64c978b`. Verification: focused PTY/MCP wrapper tests
+  14/14, py_compile OK, diff check OK.
+
 - 2026-04-13 16:35 — storm-beacon RELEASED locks on `ocaml/c2c_mcp.ml`
   + `ocaml/c2c_mcp.mli` + `ocaml/server/c2c_mcp_server.ml` +
   `ocaml/test/test_c2c_mcp.ml`. **Broker v0.6.1** — bundled slice:

@@ -67,7 +67,13 @@ def main(argv: list[str] | None = None) -> int:
     terminal_pid, pts, _transcript = resolve_target(args)
     message = " ".join(args.message)
     payload = c2c_poker.render_payload(
-        message, args.event, args.sender, args.alias, args.raw
+        message,
+        args.event,
+        args.sender,
+        args.alias,
+        args.raw,
+        source="pty",
+        source_tool="c2c_inject",
     )
     if not args.dry_run:
         c2c_poker.inject(terminal_pid, pts, payload)

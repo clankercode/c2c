@@ -86,6 +86,8 @@ def render_payload(
     event: str = "message",
     sender_name: str = "c2c-send",
     sender_alias: str = "",
+    source: str = "pty",
+    source_tool: str = "claude_send_msg",
 ) -> str:
     if message.lstrip().startswith("<"):
         return message
@@ -96,6 +98,10 @@ def render_payload(
     ]
     if sender_alias:
         attributes.append(f"alias={quoteattr(sender_alias)}")
+    if source:
+        attributes.append(f"source={quoteattr(source)}")
+    if source_tool:
+        attributes.append(f"source_tool={quoteattr(source_tool)}")
     return f"<c2c {' '.join(attributes)}>\n{message}\n</c2c>"
 
 

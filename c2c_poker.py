@@ -131,12 +131,25 @@ def transcript_is_idle(transcript: str | None, min_idle_seconds: float) -> bool:
     return (time.time() - mtime) >= min_idle_seconds
 
 
-def render_payload(message: str, event: str, sender: str, alias: str, raw: bool) -> str:
+def render_payload(
+    message: str,
+    event: str,
+    sender: str,
+    alias: str,
+    raw: bool,
+    *,
+    source: str = "pty",
+    source_tool: str = "c2c_poker",
+) -> str:
     if raw or message.lstrip().startswith("<"):
         return message
     attrs = [f"event={quoteattr(event)}", f"from={quoteattr(sender)}"]
     if alias:
         attrs.append(f"alias={quoteattr(alias)}")
+    if source:
+        attrs.append(f"source={quoteattr(source)}")
+    if source_tool:
+        attrs.append(f"source_tool={quoteattr(source_tool)}")
     return f"<c2c {' '.join(attrs)}>\n{message}\n</c2c>"
 
 
@@ -262,9 +275,7 @@ def main() -> int:
         if args.only_if_idle_for > 0 and not transcript_is_idle(
             transcript, args.only_if_idle_for
         ):
-            log(
-                f"skip: transcript active within {args.only_if_idle_for:.0f}s"
-            )
+            log(f"skip: transcript active within {args.only_if_idle_for:.0f}s")
             if args.once:
                 return 0
         else:
