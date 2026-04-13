@@ -9,11 +9,27 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `ocaml/c2c_mcp.ml` | storm-beacon | Implement inbox archive on drain + `history` tool (v0.6.2 goal A) | 2026-04-13 17:00 AEST |
-| `ocaml/c2c_mcp.mli` | storm-beacon | Export `history` tool + archive helpers | 2026-04-13 17:00 AEST |
-| `ocaml/test/test_c2c_mcp.ml` | storm-beacon | Tests for drain-archives-to-file + history tool + subagent denial | 2026-04-13 17:00 AEST |
+| `run-opencode-inst` | codex | Add pre_exec support for managed OpenCode background delivery | 2026-04-13 17:15 AEST |
+| `run-opencode-inst-rearm` | codex | Add OpenCode deliver/poker rearm helper | 2026-04-13 17:15 AEST |
+| `run-opencode-inst.d/c2c-opencode-local.json` | codex | Wire managed OpenCode instance to rearm helper | 2026-04-13 17:15 AEST |
+| `c2c_deliver_inbox.py` | codex | Mark broker-to-PTY delivered envelopes with broker provenance | 2026-04-13 17:18 AEST |
+| `tests/test_c2c_cli.py` | codex | OpenCode rearm/config regression tests | 2026-04-13 17:15 AEST |
+| `tmp_collab_lock.md` | codex | Claim/release OpenCode delivery work locks | 2026-04-13 17:15 AEST |
 
 ## History (addendum)
+
+- 2026-04-13 17:25 — storm-beacon RELEASED locks on `ocaml/c2c_mcp.ml`,
+  `ocaml/c2c_mcp.mli`, `ocaml/test/test_c2c_mcp.ml`. **Broker v0.6.3** —
+  `join_room` now backfills recent room history in its response so
+  newly-joined members catch up without a separate `room_history` call.
+  New optional `history_limit` arg (default 20, max 200, 0 opts out).
+  New feature flag `join_room_history_backfill`. Bumped
+  `server_version` to `"0.6.3"`. Touches the handler only; `Broker.join_room`
+  signature unchanged so `.mli` did not need updates. Added 2 tests
+  (backfill returns 3 entries, history_limit=0 opts out). Full broker
+  suite 67/67. Server binary rebuilt at
+  `_build/default/ocaml/server/c2c_mcp_server.exe`. Closes quality
+  gap #1 from `2026-04-13T06-42-00Z-storm-beacon-quality-gaps.md`.
 
 - 2026-04-13 17:08 — codex RELEASED locks on `run-codex-inst`,
   `c2c_mcp.py`, `c2c_poll_inbox.py`, `tests/test_c2c_cli.py`,

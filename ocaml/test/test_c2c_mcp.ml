@@ -345,6 +345,7 @@ let test_initialize_reports_server_version_and_features () =
             ; "send_room_alias_fallback"
             ; "inbox_archive_on_drain"
             ; "history_tool"
+            ; "join_room_history_backfill"
             ]
           in
           List.iter
@@ -1740,7 +1741,131 @@ let test_tools_call_join_room_via_mcp () =
               check string "member alias" "storm-mcp"
                 (List.hd members |> member "alias" |> to_string);
               check string "member session_id" "session-mcp-room"
-                (List.hd members |> member "session_id" |> to_string)))
+                (List.hd members |> member "session_id" |> to_string);
+              let history = parsed |> member "history" |> to_list in
+              check int "empty room has empty history backfill" 0
+                (List.length history)))
+
+let test_tools_call_join_room_backfills_recent_history () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-latecomer";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          (* First member joins and seeds three messages into history. *)
+          C2c_mcp.Broker.register broker ~session_id:"session-firstmember"
+            ~alias:"first-member" ~pid:None ~pid_start_time:None;
+          let _ =
+            C2c_mcp.Broker.join_room broker ~room_id:"backfill-room"
+              ~alias:"first-member" ~session_id:"session-firstmember"
+          in
+          let _ =
+            C2c_mcp.Broker.append_room_history broker
+              ~room_id:"backfill-room" ~from_alias:"first-member"
+              ~content:"msg one"
+          in
+          let _ =
+            C2c_mcp.Broker.append_room_history broker
+              ~room_id:"backfill-room" ~from_alias:"first-member"
+              ~content:"msg two"
+          in
+          let _ =
+            C2c_mcp.Broker.append_room_history broker
+              ~room_id:"backfill-room" ~from_alias:"first-member"
+              ~content:"msg three"
+          in
+          (* Latecomer joins via MCP tools/call. *)
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 211)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "join_room")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("room_id", `String "backfill-room")
+                          ; ("alias", `String "latecomer")
+                          ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected join_room response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              let parsed = Yojson.Safe.from_string text in
+              let history = parsed |> member "history" |> to_list in
+              check int "backfill returned 3 entries" 3 (List.length history);
+              let contents =
+                List.map (fun m -> m |> member "content" |> to_string) history
+              in
+              check bool "history contains msg one" true
+                (List.mem "msg one" contents);
+              check bool "history contains msg three" true
+                (List.mem "msg three" contents);
+              check string "first entry preserves order" "msg one"
+                (List.hd history |> member "content" |> to_string)))
+
+let test_tools_call_join_room_respects_history_limit_zero () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-optout";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-seed"
+            ~alias:"seed-member" ~pid:None ~pid_start_time:None;
+          let _ =
+            C2c_mcp.Broker.join_room broker ~room_id:"quiet-room"
+              ~alias:"seed-member" ~session_id:"session-seed"
+          in
+          let _ =
+            C2c_mcp.Broker.append_room_history broker
+              ~room_id:"quiet-room" ~from_alias:"seed-member"
+              ~content:"private chatter"
+          in
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 212)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "join_room")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("room_id", `String "quiet-room")
+                          ; ("alias", `String "optout")
+                          ; ("history_limit", `Int 0)
+                          ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected join_room response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              let parsed = Yojson.Safe.from_string text in
+              let history = parsed |> member "history" |> to_list in
+              check int "history_limit=0 skips backfill entirely" 0
+                (List.length history)))
 
 let test_tools_call_send_room_via_mcp () =
   with_temp_dir (fun dir ->
@@ -2000,6 +2125,10 @@ let () =
              test_room_history_empty_room
          ; test_case "tools/call join_room via MCP" `Quick
              test_tools_call_join_room_via_mcp
+         ; test_case "tools/call join_room backfills recent history" `Quick
+             test_tools_call_join_room_backfills_recent_history
+         ; test_case "tools/call join_room history_limit=0 opts out" `Quick
+             test_tools_call_join_room_respects_history_limit_zero
          ; test_case "tools/call send_room via MCP" `Quick
              test_tools_call_send_room_via_mcp
          ; test_case "tools/call send_room accepts `alias` as from_alias fallback" `Quick

@@ -8,7 +8,7 @@ type message = { from_alias : string; to_alias : string; content : string }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 
-let server_version = "0.6.2"
+let server_version = "0.6.3"
 
 let server_features =
   [ "liveness"
@@ -30,6 +30,7 @@ let server_features =
   ; "send_room_alias_fallback"
   ; "inbox_archive_on_drain"
   ; "history_tool"
+  ; "join_room_history_backfill"
   ]
 
 let server_info =
@@ -975,7 +976,7 @@ let tool_definitions =
   ; tool_definition ~name:"poll_inbox" ~description:"Drain queued C2C messages for the current session. Returns a JSON array of {from_alias,to_alias,content} objects; call this at the start of each turn and after each send to reliably receive messages regardless of whether the client surfaces notifications/claude/channel." ~required:[]
   ; tool_definition ~name:"sweep" ~description:"Remove dead registrations (whose parent process has exited) and delete orphan inbox files that belong to no current registration. Any non-empty orphan inbox content is appended to dead-letter.jsonl inside the broker directory before the inbox file is deleted, so cleanup is non-destructive to operator signal. Returns JSON {dropped_regs:[{session_id,alias}], deleted_inboxes:[session_id], preserved_messages: int}." ~required:[]
   ; tool_definition ~name:"send_all" ~description:"Fan out a message to every currently-registered peer except the sender (and any alias in the optional `exclude_aliases` array). Non-live recipients are skipped with reason \"not_alive\" rather than raising, so partial failure does not abort the broadcast. Per-recipient enqueue takes the same per-inbox lock used by `send`. Returns JSON {sent_to:[alias], skipped:[{alias, reason}]}." ~required:[ "from_alias"; "content" ]
-  ; tool_definition ~name:"join_room" ~description:"Join a persistent N:N room. Creates the room if it does not exist. Idempotent per (alias, session_id). Room IDs must be alphanumeric + hyphens + underscores. Returns the member list after join." ~required:[ "room_id"; "alias" ]
+  ; tool_definition ~name:"join_room" ~description:"Join a persistent N:N room. Creates the room if it does not exist. Idempotent per (alias, session_id). Room IDs must be alphanumeric + hyphens + underscores. Returns JSON {room_id, members, history} where `history` is the most recent messages from the room's append-only log so a newly-joined member can catch up on context without a separate `room_history` call. Optional `history_limit` (default 20, max 200) controls how many history entries to include; pass 0 to skip history backfill." ~required:[ "room_id"; "alias" ]
   ; tool_definition ~name:"leave_room" ~description:"Leave a persistent N:N room. Returns the member list after leave." ~required:[ "room_id"; "alias" ]
   ; tool_definition ~name:"send_room" ~description:"Send a message to a persistent N:N room. Appends to room history and fans out to every member's inbox except the sender, with to_alias tagged as '<alias>@<room_id>'. Returns JSON {delivered_to, skipped, ts}." ~required:[ "from_alias"; "room_id"; "content" ]
   ; tool_definition ~name:"list_rooms" ~description:"List all persistent rooms with member counts and member aliases. Returns a JSON array of {room_id, member_count, members}." ~required:[]
@@ -1240,6 +1241,16 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       let alias = string_member "alias" arguments in
       let session_id = resolve_session_id arguments in
       let members = Broker.join_room broker ~room_id ~alias ~session_id in
+      let history_limit =
+        match Broker.int_opt_member "history_limit" arguments with
+        | Some n when n < 0 -> 0
+        | Some n -> min n 200
+        | None -> 20
+      in
+      let history =
+        if history_limit = 0 then []
+        else Broker.read_room_history broker ~room_id ~limit:history_limit
+      in
       let content =
         `Assoc
           [ ("room_id", `String room_id)
@@ -1250,6 +1261,13 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                    ; ("session_id", `String m.rm_session_id)
                    ; ("joined_at", `Float m.joined_at)
                    ]) members))
+          ; ("history",
+             `List (List.map (fun (m : room_message) ->
+                 `Assoc
+                   [ ("ts", `Float m.rm_ts)
+                   ; ("from_alias", `String m.rm_from_alias)
+                   ; ("content", `String m.rm_content)
+                   ]) history))
           ]
         |> Yojson.Safe.to_string
       in
