@@ -272,8 +272,59 @@ def prune_dead_members(
     }
 
 
+def _read_pid_start_time(pid: int) -> int | None:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    tail_start = stat.rfind(")")
+    if tail_start == -1 or tail_start + 2 >= len(stat):
+        return None
+    parts = stat[tail_start + 2 :].split()
+    if len(parts) <= 19:
+        return None
+    try:
+        return int(parts[19])
+    except ValueError:
+        return None
+
+
+def _registration_alive(reg: dict | None) -> bool | None:
+    if reg is None:
+        return False
+    pid = reg.get("pid")
+    if not isinstance(pid, int):
+        return None
+    if not Path(f"/proc/{pid}").exists():
+        return False
+    start_time = reg.get("pid_start_time")
+    if isinstance(start_time, int):
+        return _read_pid_start_time(pid) == start_time
+    return True
+
+
+def _room_member_details(broot: Path, members: list[dict]) -> list[dict]:
+    registrations = load_json_list(broot / "registry.json")
+    by_session = {r.get("session_id"): r for r in registrations if r.get("session_id")}
+    by_alias = {r.get("alias"): r for r in registrations if r.get("alias")}
+    result = []
+    for member in members:
+        alias = str(member.get("alias", "?"))
+        session_id = str(member.get("session_id", ""))
+        reg = by_session.get(session_id) or by_alias.get(alias)
+        result.append(
+            {
+                "alias": alias,
+                "session_id": session_id,
+                "alive": _registration_alive(reg),
+            }
+        )
+    return result
+
+
 def list_rooms(broker_root: Path | None = None) -> list[dict]:
-    rroot = rooms_root(broker_root)
+    broot = broker_root or default_broker_root()
+    rroot = rooms_root(broot)
     if not rroot.exists():
         return []
     result = []
@@ -282,11 +333,19 @@ def list_rooms(broker_root: Path | None = None) -> list[dict]:
             continue
         members_path = entry / "members.json"
         members = load_json_list(members_path)
+        member_details = _room_member_details(broot, members)
+        alive_count = sum(1 for m in member_details if m["alive"] is True)
+        dead_count = sum(1 for m in member_details if m["alive"] is False)
+        unknown_count = sum(1 for m in member_details if m["alive"] is None)
         result.append(
             {
                 "room_id": entry.name,
                 "member_count": len(members),
                 "members": [m.get("alias", "?") for m in members],
+                "alive_member_count": alive_count,
+                "dead_member_count": dead_count,
+                "unknown_member_count": unknown_count,
+                "member_details": member_details,
             }
         )
     return result

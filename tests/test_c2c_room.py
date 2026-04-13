@@ -141,6 +141,34 @@ class RoomListTests(unittest.TestCase):
             self.assertEqual(room_map["lobby"]["member_count"], 2)
             self.assertEqual(room_map["dev"]["member_count"], 1)
 
+    def test_list_includes_member_liveness_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = Path(tmp)
+            c2c_room.join_room("lobby", "alice", "sid-a", broker)
+            c2c_room.join_room("lobby", "bob", "sid-b", broker)
+            c2c_room.join_room("lobby", "carol", "sid-c", broker)
+            (broker / "registry.json").write_text(
+                json.dumps(
+                    [
+                        {"alias": "alice", "session_id": "sid-a", "pid": os.getpid()},
+                        {"alias": "bob", "session_id": "sid-b", "pid": 999999999},
+                        {"alias": "carol", "session_id": "sid-c"},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            rooms = c2c_room.list_rooms(broker)
+
+            lobby = rooms[0]
+            self.assertEqual(lobby["alive_member_count"], 1)
+            self.assertEqual(lobby["dead_member_count"], 1)
+            self.assertEqual(lobby["unknown_member_count"], 1)
+            detail = {m["alias"]: m for m in lobby["member_details"]}
+            self.assertIs(detail["alice"]["alive"], True)
+            self.assertIs(detail["bob"]["alive"], False)
+            self.assertIsNone(detail["carol"]["alive"])
+
     def test_list_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
             broker = Path(tmp)

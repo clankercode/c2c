@@ -1134,6 +1134,58 @@ module Broker = struct
     { ri_room_id : string
     ; ri_member_count : int
     ; ri_members : string list
+    ; ri_alive_member_count : int
+    ; ri_dead_member_count : int
+    ; ri_unknown_member_count : int
+    ; ri_member_details : room_member_info list
+    }
+  and room_member_info =
+    { rmi_alias : string
+    ; rmi_session_id : string
+    ; rmi_alive : bool option
+    }
+
+  let room_member_liveness t members =
+    let regs = list_registrations t in
+    let find_reg member =
+      match
+        List.find_opt
+          (fun reg -> reg.session_id = member.rm_session_id)
+          regs
+      with
+      | Some reg -> Some reg
+      | None -> List.find_opt (fun reg -> reg.alias = member.rm_alias) regs
+    in
+    List.map
+      (fun member ->
+        let alive =
+          match find_reg member with
+          | None -> Some false
+          | Some reg ->
+              (match reg.pid with
+               | None -> None
+               | Some _ -> Some (registration_is_alive reg))
+        in
+        { rmi_alias = member.rm_alias
+        ; rmi_session_id = member.rm_session_id
+        ; rmi_alive = alive
+        })
+      members
+
+  let room_info_of_members t ~room_id members =
+    let details = room_member_liveness t members in
+    let count_by predicate =
+      List.fold_left
+        (fun count detail -> if predicate detail.rmi_alive then count + 1 else count)
+        0 details
+    in
+    { ri_room_id = room_id
+    ; ri_member_count = List.length members
+    ; ri_members = List.map (fun m -> m.rm_alias) members
+    ; ri_alive_member_count = count_by (( = ) (Some true))
+    ; ri_dead_member_count = count_by (( = ) (Some false))
+    ; ri_unknown_member_count = count_by (( = ) None)
+    ; ri_member_details = details
     }
 
   let list_rooms t =
@@ -1151,10 +1203,7 @@ module Broker = struct
               try load_room_members t ~room_id:name
               with _ -> []
             in
-            { ri_room_id = name
-            ; ri_member_count = List.length members
-            ; ri_members = List.map (fun m -> m.rm_alias) members
-            } :: acc
+            room_info_of_members t ~room_id:name members :: acc
           end else acc)
         []
         entries
@@ -1184,10 +1233,7 @@ module Broker = struct
             in
             if List.exists (fun m -> m.rm_session_id = session_id) members
             then
-              { ri_room_id = name
-              ; ri_member_count = List.length members
-              ; ri_members = List.map (fun m -> m.rm_alias) members
-              } :: acc
+              room_info_of_members t ~room_id:name members :: acc
             else acc
           end else acc)
         []
@@ -1209,6 +1255,27 @@ let channel_notification ({ from_alias; to_alias; content } : message) =
                 ; ("to_alias", `String to_alias)
                 ] )
           ] )
+    ]
+
+let room_member_detail_json (detail : Broker.room_member_info) =
+  `Assoc
+    [ ("alias", `String detail.rmi_alias)
+    ; ("session_id", `String detail.rmi_session_id)
+    ; ( "alive",
+        match detail.rmi_alive with
+        | Some value -> `Bool value
+        | None -> `Null )
+    ]
+
+let room_info_json (r : Broker.room_info) =
+  `Assoc
+    [ ("room_id", `String r.ri_room_id)
+    ; ("member_count", `Int r.ri_member_count)
+    ; ("members", `List (List.map (fun a -> `String a) r.ri_members))
+    ; ("alive_member_count", `Int r.ri_alive_member_count)
+    ; ("dead_member_count", `Int r.ri_dead_member_count)
+    ; ("unknown_member_count", `Int r.ri_unknown_member_count)
+    ; ("member_details", `List (List.map room_member_detail_json r.ri_member_details))
     ]
 
 let tool_definitions =
@@ -1954,15 +2021,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       let rooms = Broker.list_rooms broker in
       let content =
         `List
-          (List.map
-             (fun (r : Broker.room_info) ->
-               `Assoc
-                 [ ("room_id", `String r.ri_room_id)
-                 ; ("member_count", `Int r.ri_member_count)
-                 ; ("members",
-                    `List (List.map (fun a -> `String a) r.ri_members))
-                 ])
-             rooms)
+          (List.map room_info_json rooms)
         |> Yojson.Safe.to_string
       in
       Lwt.return (tool_result ~content ~is_error:false)
@@ -1982,15 +2041,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
            let rooms = Broker.my_rooms broker ~session_id in
            let content =
              `List
-               (List.map
-                  (fun (r : Broker.room_info) ->
-                    `Assoc
-                      [ ("room_id", `String r.ri_room_id)
-                      ; ("member_count", `Int r.ri_member_count)
-                      ; ("members",
-                         `List (List.map (fun a -> `String a) r.ri_members))
-                      ])
-                  rooms)
+               (List.map room_info_json rooms)
              |> Yojson.Safe.to_string
            in
            Lwt.return (tool_result ~content ~is_error:false))

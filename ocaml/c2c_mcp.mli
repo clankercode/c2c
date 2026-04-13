@@ -89,6 +89,15 @@ module Broker : sig
     { ri_room_id : string
     ; ri_member_count : int
     ; ri_members : string list
+    ; ri_alive_member_count : int
+    ; ri_dead_member_count : int
+    ; ri_unknown_member_count : int
+    ; ri_member_details : room_member_info list
+    }
+  and room_member_info =
+    { rmi_alias : string
+    ; rmi_session_id : string
+    ; rmi_alive : bool option
     }
 
   val list_rooms : t -> room_info list

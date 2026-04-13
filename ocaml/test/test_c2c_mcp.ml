@@ -2474,6 +2474,12 @@ let test_send_room_does_not_dedup_different_content () =
 let test_list_rooms_returns_room_with_members () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-alice" ~alias:"alice"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"s-bob" ~alias:"bob"
+        ~pid:(Some 999999999) ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"s-carol" ~alias:"carol"
+        ~pid:None ~pid_start_time:None;
       let _ =
         C2c_mcp.Broker.join_room broker ~room_id:"room-alpha"
           ~alias:"alice" ~session_id:"s-alice"
@@ -2498,7 +2504,11 @@ let test_list_rooms_returns_room_with_members () =
         (List.mem "alice" alpha.ri_members);
       check bool "room-alpha contains bob" true
         (List.mem "bob" alpha.ri_members);
+      check int "room-alpha has 1 alive member" 1 alpha.ri_alive_member_count;
+      check int "room-alpha has 1 dead member" 1 alpha.ri_dead_member_count;
+      check int "room-alpha has no unknown members" 0 alpha.ri_unknown_member_count;
       check int "room-beta has 1 member" 1 beta.ri_member_count;
+      check int "room-beta has 1 unknown member" 1 beta.ri_unknown_member_count;
       check bool "room-beta contains carol" true
         (List.mem "carol" beta.ri_members))
 

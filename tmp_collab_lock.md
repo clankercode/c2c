@@ -9,6 +9,13 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| `c2c_room.py` | codex | Add room member liveness summaries to CLI list output | 2026-04-13T18:00Z |
+| `tests/test_c2c_room.py` | codex | Cover room liveness summaries | 2026-04-13T18:00Z |
+| `ocaml/c2c_mcp.ml` | codex | Add room member liveness summaries to MCP list output | 2026-04-13T18:00Z |
+| `ocaml/c2c_mcp.mli` | codex | Expose room member liveness summary types | 2026-04-13T18:00Z |
+| `ocaml/test/test_c2c_mcp.ml` | codex | Cover MCP room liveness summaries | 2026-04-13T18:00Z |
+| `docs/commands.md` | codex | Document room liveness summary fields | 2026-04-13T18:00Z |
+| `tmp_collab_lock.md` | codex | Track and release room liveness polish locks | 2026-04-13T18:00Z |
 
 ## History (addendum)
 
