@@ -1008,7 +1008,7 @@ let channel_notification ({ from_alias; to_alias; content } : message) =
 let tool_definitions =
   [ tool_definition ~name:"register" ~description:"Register a C2C alias for the current session." ~required:[ "alias" ]
   ; tool_definition ~name:"list" ~description:"List registered C2C peers." ~required:[]
-  ; tool_definition ~name:"send" ~description:"Send a C2C message to a registered peer alias." ~required:[ "from_alias"; "to_alias"; "content" ]
+  ; tool_definition ~name:"send" ~description:"Send a C2C message to a registered peer alias. Returns JSON {queued:true, ts:<epoch-seconds>, to_alias:<string>} on success. ts is when the message landed in the recipient's inbox; to_alias confirms the resolved recipient." ~required:[ "from_alias"; "to_alias"; "content" ]
   ; tool_definition ~name:"whoami" ~description:"Resolve the current C2C session registration." ~required:[]
   ; tool_definition ~name:"poll_inbox" ~description:"Drain queued C2C messages for the current session. Returns a JSON array of {from_alias,to_alias,content} objects; call this at the start of each turn and after each send to reliably receive messages regardless of whether the client surfaces notifications/claude/channel." ~required:[]
   ; tool_definition ~name:"peek_inbox" ~description:"Non-draining inbox check for the current session. Returns the same JSON array as `poll_inbox` but leaves the messages in the inbox so a subsequent `poll_inbox` still sees them. Useful for 'any mail?' checks without losing messages on error paths. Caller's session_id is always resolved from the MCP env (C2C_MCP_SESSION_ID); passing a session_id argument is ignored for isolation." ~required:[]
@@ -1149,7 +1149,16 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       let to_alias = string_member "to_alias" arguments in
       let content = string_member "content" arguments in
       Broker.enqueue_message broker ~from_alias ~to_alias ~content;
-      Lwt.return (tool_result ~content:"queued" ~is_error:false)
+      let ts = Unix.gettimeofday () in
+      let receipt =
+        `Assoc
+          [ ("queued", `Bool true)
+          ; ("ts", `Float ts)
+          ; ("to_alias", `String to_alias)
+          ]
+        |> Yojson.Safe.to_string
+      in
+      Lwt.return (tool_result ~content:receipt ~is_error:false)
   | "send_all" ->
       let from_alias = string_member_any [ "from_alias"; "alias" ] arguments in
       let content = string_member "content" arguments in

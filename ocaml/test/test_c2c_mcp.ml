@@ -461,6 +461,44 @@ let test_tools_call_send_routes_message_through_broker () =
        let msg = List.hd inbox in
        check string "mcp routed content" "hello from mcp" msg.content)
 
+let test_tools_call_send_returns_receipt_json () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-x" ~alias:"sender-x" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-y" ~alias:"receiver-y" ~pid:None ~pid_start_time:None;
+      let request =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 99)
+          ; ("method", `String "tools/call")
+          ; ( "params",
+              `Assoc
+                [ ("name", `String "send")
+                ; ( "arguments",
+                    `Assoc
+                      [ ("from_alias", `String "sender-x")
+                      ; ("to_alias", `String "receiver-y")
+                      ; ("content", `String "receipt test payload")
+                      ] )
+                ] )
+          ]
+      in
+      let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+      match response with
+      | None -> fail "expected send response"
+      | Some json ->
+          let open Yojson.Safe.Util in
+          let text =
+            json |> member "result" |> member "content" |> index 0
+            |> member "text" |> to_string
+          in
+          let receipt = Yojson.Safe.from_string text in
+          check bool "queued is true" true (receipt |> member "queued" |> to_bool);
+          check string "to_alias in receipt" "receiver-y"
+            (receipt |> member "to_alias" |> to_string);
+          let ts = receipt |> member "ts" |> to_float in
+          check bool "ts is positive" true (ts > 0.0))
+
 let test_tools_call_register_uses_current_session_id_when_omitted () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-live";
@@ -2318,6 +2356,7 @@ let () =
          ; test_case "tools/list makes current-session args optional" `Quick
              test_tools_list_marks_register_and_whoami_session_id_as_optional
          ; test_case "tools/call send routes through broker" `Quick test_tools_call_send_routes_message_through_broker
+         ; test_case "tools/call send returns receipt JSON" `Quick test_tools_call_send_returns_receipt_json
          ; test_case "tools/call register uses current session id when omitted" `Quick
               test_tools_call_register_uses_current_session_id_when_omitted
          ; test_case "tools/call register prefers explicit client pid env" `Quick
