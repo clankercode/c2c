@@ -357,6 +357,38 @@ def check_wire_daemon(session_id: str | None) -> dict[str, Any]:
     return result
 
 
+def check_broker_binary() -> dict[str, Any]:
+    """Check OCaml MCP broker binary: existence, freshness, and source version."""
+    import re
+
+    result: dict[str, Any] = {"exists": False, "fresh": False}
+    try:
+        server_path = c2c_mcp.built_server_path()
+        result["path"] = str(server_path)
+        result["exists"] = server_path.exists()
+        if result["exists"]:
+            result["mtime"] = server_path.stat().st_mtime
+            result["fresh"] = c2c_mcp.server_is_fresh(server_path)
+    except Exception as exc:
+        result["error"] = str(exc)
+        return result
+
+    # Read server_version from OCaml source (the source version, not necessarily
+    # the running binary version — verify with binary freshness).
+    try:
+        ml_path = Path(__file__).resolve().parent / "ocaml" / "c2c_mcp.ml"
+        if ml_path.exists():
+            for line in ml_path.read_text(encoding="utf-8").splitlines():
+                m = re.match(r'^let server_version = "(.+)"', line.strip())
+                if m:
+                    result["source_version"] = m.group(1)
+                    break
+    except Exception:
+        pass
+
+    return result
+
+
 def check_relay(broker_root: Path) -> dict[str, Any]:
     """Check relay server connectivity (if configured)."""
     result: dict[str, Any] = {"configured": False}
@@ -409,6 +441,7 @@ def run_health_check(broker_root: Path, session_id: str | None = None) -> dict[s
         "outer_loops": check_outer_loops(),
         "wire_daemon": check_wire_daemon(effective_session_id),
         "relay": check_relay(broker_root),
+        "broker_binary": check_broker_binary(),
     }
 
 
@@ -567,6 +600,19 @@ def print_health_report(report: dict[str, Any]) -> None:
             print("    Run: c2c relay status  to diagnose")
     else:
         print("○ Relay: not configured (local-only; run 'c2c relay setup' to enable)")
+
+    # Broker binary
+    bb = report.get("broker_binary", {})
+    if not bb.get("exists"):
+        print("✗ Broker binary: not built — run: opam exec -- dune build ./ocaml/server/c2c_mcp_server.exe")
+    else:
+        src_ver = bb.get("source_version", "unknown")
+        if bb.get("fresh"):
+            print(f"✓ Broker binary: v{src_ver} (binary is up-to-date)")
+        else:
+            print(f"~ Broker binary: binary is STALE (source is v{src_ver} but binary predates source)")
+            print("    Run: opam exec -- dune build ./ocaml/server/c2c_mcp_server.exe")
+            print("    Then restart your agent session to pick up the new binary.")
 
     print()
 
