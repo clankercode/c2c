@@ -98,14 +98,18 @@ a:visited { color: var(--c2c-cyan-dim); }
 
 .site-nav .page-link {
   color: var(--c2c-text-muted) !important;
-  font-size: 0.82rem;
+  font-size: 0.78rem;
   font-weight: 500;
   transition: color 0.15s ease;
-  padding: 0.2rem 0.4rem;
-  margin-left: 0.1rem;
+  padding: 0.15rem 0.3rem;
+  margin-left: 0;
 }
 .site-nav .page-link:hover {
   color: var(--c2c-cyan) !important;
+}
+
+@media (max-width: 760px) {
+  .site-nav .page-link { font-size: 0.7rem; padding: 0.1rem 0.2rem; }
 }
 
 .site-nav .menu-icon > svg { fill: var(--c2c-cyan); }
@@ -407,7 +411,7 @@ ul li, ol li { margin-bottom: 0.35em; }
 
 /* ---- Layout ---- */
 .page-content { padding: 2.5rem 0; }
-.wrapper { max-width: 920px; }
+.wrapper { max-width: 980px; }
 
 /* ---- Footer ---- */
 .site-footer {

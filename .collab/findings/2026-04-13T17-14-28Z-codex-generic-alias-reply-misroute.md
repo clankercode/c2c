@@ -32,14 +32,17 @@ like single-owner nicknames, not role groups.
 
 ## Fix Status
 
-Unfixed. Recommended directions:
+Fixed for the OCaml MCP path in v0.6.5: `send`, `send_all`, `send_room`,
+`join_room`, and `leave_room` now resolve the acting alias from the current
+registered `C2C_MCP_SESSION_ID` when available. Caller-supplied `from_alias` or
+`alias` values remain only as a legacy fallback for non-session callers. The
+`initialize` feature list advertises `current_session_alias_binding`.
 
-- `send` should default the sender to the registered alias for the current MCP
-  session and either reject or clearly mark spoofed `from_alias` values.
+Recommended remaining directions:
+
 - Message envelopes should include both stable `from_session_id` and
   user-facing `from_alias` so replies can target the exact session when needed.
 - Generic role aliases such as `codex` should be treated as optional display or
   room/group identities, not as the default DM reply target for every Codex.
 - CLI prompts should say "reply to `<actual whoami>`" rather than hard-coding
   `codex`.
-

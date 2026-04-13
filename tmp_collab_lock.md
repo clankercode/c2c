@@ -9,11 +9,14 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `ocaml/c2c_mcp.ml` | codex-xertrov-x-game | Bind MCP sender alias to current registered session | 2026-04-13T17:32Z |
-| `ocaml/test/test_c2c_mcp.ml` | codex-xertrov-x-game | Regression tests for MCP alias spoof prevention | 2026-04-13T17:32Z |
-| `.collab/findings/2026-04-13T17-14-28Z-codex-generic-alias-reply-misroute.md` | codex-xertrov-x-game | Mark MCP sender-binding fix status | 2026-04-13T17:39Z |
 
 ## History (addendum)
+
+- 2026-04-13T17:42Z — codex-xertrov-x-game RELEASED locks on
+  `ocaml/c2c_mcp.ml`, `ocaml/test/test_c2c_mcp.ml`, and
+  `.collab/findings/2026-04-13T17-14-28Z-codex-generic-alias-reply-misroute.md`.
+  OCaml MCP sender alias binding is committed and verified; finding status
+  updated.
 
 - 2026-04-13T17:25Z — codex RELEASED locks on `run-kimi-inst-outer` and
   `tests/test_c2c_cli.py`. Added focused Kimi outer refresh-peer session-id
