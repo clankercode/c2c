@@ -84,6 +84,11 @@ These are Max's target experiences, verbatim:
   `c2c_deliver_inbox.py --client kimi` and `run-kimi-inst-rearm`. Direct-write
   idle delivery **live-proven 2026-04-14** by `kimi-nova` (see finding
   2026-04-14T01-58-00Z-kimi-nova-kimi-idle-pts-inject-live-proof.md).
+- **Kimi Wire Bridge** ✓: native JSON-RPC delivery via `kimi --wire` implemented
+  and **live-proven 2024-04-14** by `kimi-nova`. Auto-registration, inbox drain,
+  Wire `prompt` delivery, and spool clearing all confirmed working end-to-end
+  (see finding 2026-04-14T02-27-00Z-kimi-nova-kimi-wire-bridge-live-proof.md).
+  This is Kimi's preferred native path; PTS wake remains as TUI fallback.
 
 ### Active Work
 
