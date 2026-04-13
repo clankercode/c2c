@@ -719,6 +719,202 @@ let test_sweep_preserves_nonempty_orphan_to_dead_letter () =
       in
       check bool "alpha message with session id preserved" true has_alpha)
 
+let test_tools_call_send_all_routes_through_broker_and_returns_result () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-sender" ~alias:"storm-sender"
+        ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-a" ~alias:"storm-a"
+        ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-b" ~alias:"storm-b"
+        ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-c" ~alias:"storm-c"
+        ~pid:None ~pid_start_time:None;
+      let request =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 42)
+          ; ("method", `String "tools/call")
+          ; ( "params",
+              `Assoc
+                [ ("name", `String "send_all")
+                ; ( "arguments",
+                    `Assoc
+                      [ ("from_alias", `String "storm-sender")
+                      ; ("content", `String "swarm broadcast")
+                      ; ( "exclude_aliases",
+                          `List [ `String "storm-b" ] )
+                      ] )
+                ] )
+          ]
+      in
+      let response =
+        Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+      in
+      let result_json =
+        match response with
+        | None -> fail "expected tools/call response"
+        | Some resp ->
+            let open Yojson.Safe.Util in
+            let text =
+              resp
+              |> member "result"
+              |> member "content"
+              |> to_list
+              |> List.hd
+              |> member "text"
+              |> to_string
+            in
+            Yojson.Safe.from_string text
+      in
+      let open Yojson.Safe.Util in
+      let sent_to =
+        result_json
+        |> member "sent_to"
+        |> to_list
+        |> List.map to_string
+      in
+      let skipped =
+        result_json
+        |> member "skipped"
+        |> to_list
+      in
+      check int "two aliases received (sender+exclude skipped)" 2
+        (List.length sent_to);
+      check bool "storm-a received" true (List.mem "storm-a" sent_to);
+      check bool "storm-c received" true (List.mem "storm-c" sent_to);
+      check bool "sender not in sent_to" false
+        (List.mem "storm-sender" sent_to);
+      check bool "excluded alias not in sent_to" false
+        (List.mem "storm-b" sent_to);
+      check int "nothing skipped (no dead peers)" 0 (List.length skipped);
+      let inbox_a =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"session-a"
+      in
+      let inbox_b =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"session-b"
+      in
+      check int "storm-a delivery landed" 1 (List.length inbox_a);
+      check int "storm-b excluded, inbox untouched" 0 (List.length inbox_b);
+      let msg = List.hd inbox_a in
+      check string "content arrived" "swarm broadcast" msg.content;
+      check string "from_alias stamped" "storm-sender" msg.from_alias;
+      check string "to_alias is per-recipient" "storm-a" msg.to_alias)
+
+let test_send_all_fans_out_and_skips_sender () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-sender" ~alias:"storm-sender"
+        ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-a" ~alias:"storm-a"
+        ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-b" ~alias:"storm-b"
+        ~pid:None ~pid_start_time:None;
+      let result =
+        C2c_mcp.Broker.send_all broker
+          ~from_alias:"storm-sender"
+          ~content:"hello everyone"
+          ~exclude_aliases:[]
+      in
+      check int "two recipients received" 2 (List.length result.sent_to);
+      check bool "storm-a in sent_to" true
+        (List.mem "storm-a" result.sent_to);
+      check bool "storm-b in sent_to" true
+        (List.mem "storm-b" result.sent_to);
+      check bool "sender excluded from sent_to" false
+        (List.mem "storm-sender" result.sent_to);
+      check int "no one skipped" 0 (List.length result.skipped);
+      let inbox_a =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"session-a"
+      in
+      let inbox_b =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"session-b"
+      in
+      let inbox_sender =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"session-sender"
+      in
+      check int "storm-a inbox has one message" 1 (List.length inbox_a);
+      check int "storm-b inbox has one message" 1 (List.length inbox_b);
+      check int "sender inbox untouched" 0 (List.length inbox_sender);
+      let msg = List.hd inbox_a in
+      check string "content preserved" "hello everyone" msg.content;
+      check string "from_alias stamped" "storm-sender" msg.from_alias;
+      check string "to_alias per-recipient" "storm-a" msg.to_alias)
+
+let test_send_all_honors_exclude_aliases () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-sender" ~alias:"storm-sender"
+        ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-a" ~alias:"storm-a"
+        ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-b" ~alias:"storm-b"
+        ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-c" ~alias:"storm-c"
+        ~pid:None ~pid_start_time:None;
+      let result =
+        C2c_mcp.Broker.send_all broker
+          ~from_alias:"storm-sender"
+          ~content:"targeted broadcast"
+          ~exclude_aliases:[ "storm-b" ]
+      in
+      check int "two recipients (b excluded)" 2 (List.length result.sent_to);
+      check bool "storm-a delivered" true
+        (List.mem "storm-a" result.sent_to);
+      check bool "storm-c delivered" true
+        (List.mem "storm-c" result.sent_to);
+      check bool "storm-b skipped by exclude" false
+        (List.mem "storm-b" result.sent_to);
+      check int "excluded alias not in skipped list" 0
+        (List.length result.skipped);
+      let inbox_b =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"session-b"
+      in
+      check int "storm-b inbox untouched" 0 (List.length inbox_b))
+
+let test_send_all_skips_dead_recipients_with_reason () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let dead = dead_pid () in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-sender" ~alias:"storm-sender"
+        ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-live" ~alias:"storm-live"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-dead" ~alias:"storm-dead"
+        ~pid:(Some dead) ~pid_start_time:None;
+      let result =
+        C2c_mcp.Broker.send_all broker
+          ~from_alias:"storm-sender"
+          ~content:"status ping"
+          ~exclude_aliases:[]
+      in
+      check int "one live recipient" 1 (List.length result.sent_to);
+      check string "live recipient is storm-live"
+        "storm-live" (List.hd result.sent_to);
+      check int "one skipped" 1 (List.length result.skipped);
+      let alias, reason = List.hd result.skipped in
+      check string "skipped alias is storm-dead" "storm-dead" alias;
+      check string "skip reason is not_alive" "not_alive" reason;
+      let inbox_dead =
+        try C2c_mcp.Broker.read_inbox broker ~session_id:"session-dead"
+        with _ -> []
+      in
+      check int "dead inbox untouched" 0 (List.length inbox_dead))
+
 let test_sweep_empty_orphan_writes_no_dead_letter () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -782,6 +978,14 @@ let () =
              test_sweep_preserves_nonempty_orphan_to_dead_letter
          ; test_case "sweep empty orphan writes no dead-letter" `Quick
              test_sweep_empty_orphan_writes_no_dead_letter
+         ; test_case "send_all fans out and skips sender" `Quick
+             test_send_all_fans_out_and_skips_sender
+         ; test_case "send_all honors exclude_aliases" `Quick
+             test_send_all_honors_exclude_aliases
+         ; test_case "send_all skips dead recipients with reason" `Quick
+             test_send_all_skips_dead_recipients_with_reason
+         ; test_case "tools/call send_all routes through broker and returns result" `Quick
+             test_tools_call_send_all_routes_through_broker_and_returns_result
          ; test_case "read_pid_start_time self is Some" `Quick
              test_read_pid_start_time_for_self_is_some
          ; test_case "registration persists pid_start_time" `Quick

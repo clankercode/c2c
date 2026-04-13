@@ -256,6 +256,47 @@ module Broker = struct
             let next = current @ [ { from_alias; to_alias; content } ] in
             save_inbox t ~session_id next)
 
+  type send_all_result =
+    { sent_to : string list
+    ; skipped : (string * string) list
+    }
+
+  (* 1:N broadcast primitive. Fan out [content] to every unique alias in
+     the registry except the sender and any alias in [exclude_aliases].
+     A recipient whose registrations are all dead is skipped with reason
+     "not_alive" rather than raising — partial failure is the normal case
+     for broadcast. Per-recipient enqueue reuses [with_inbox_lock] so this
+     interlocks with concurrent 1:1 sends on the same inbox. *)
+  let send_all t ~from_alias ~content ~exclude_aliases =
+    let regs = load_registrations t in
+    let seen : (string, unit) Hashtbl.t = Hashtbl.create 16 in
+    let sent = ref [] in
+    let skipped = ref [] in
+    List.iter
+      (fun reg ->
+        if Hashtbl.mem seen reg.alias then ()
+        else begin
+          Hashtbl.add seen reg.alias ();
+          if reg.alias = from_alias then ()
+          else if List.mem reg.alias exclude_aliases then ()
+          else
+            match resolve_live_session_id_by_alias t reg.alias with
+            | Resolved session_id ->
+                with_inbox_lock t ~session_id (fun () ->
+                    let current = load_inbox t ~session_id in
+                    let next =
+                      current
+                      @ [ { from_alias; to_alias = reg.alias; content } ]
+                    in
+                    save_inbox t ~session_id next);
+                sent := reg.alias :: !sent
+            | All_recipients_dead ->
+                skipped := (reg.alias, "not_alive") :: !skipped
+            | Unknown_alias -> ()
+        end)
+      regs;
+    { sent_to = List.rev !sent; skipped = List.rev !skipped }
+
   let read_inbox t ~session_id = load_inbox t ~session_id
 
   let drain_inbox t ~session_id =
@@ -409,6 +450,7 @@ let tool_definitions =
   ; tool_definition ~name:"whoami" ~description:"Resolve the current C2C session registration." ~required:[]
   ; tool_definition ~name:"poll_inbox" ~description:"Drain queued C2C messages for the current session. Returns a JSON array of {from_alias,to_alias,content} objects; call this at the start of each turn and after each send to reliably receive messages regardless of whether the client surfaces notifications/claude/channel." ~required:[]
   ; tool_definition ~name:"sweep" ~description:"Remove dead registrations (whose parent process has exited) and delete orphan inbox files that belong to no current registration. Any non-empty orphan inbox content is appended to dead-letter.jsonl inside the broker directory before the inbox file is deleted, so cleanup is non-destructive to operator signal. Returns JSON {dropped_regs:[{session_id,alias}], deleted_inboxes:[session_id], preserved_messages: int}." ~required:[]
+  ; tool_definition ~name:"send_all" ~description:"Fan out a message to every currently-registered peer except the sender (and any alias in the optional `exclude_aliases` array). Non-live recipients are skipped with reason \"not_alive\" rather than raising, so partial failure does not abort the broadcast. Per-recipient enqueue takes the same per-inbox lock used by `send`. Returns JSON {sent_to:[alias], skipped:[{alias, reason}]}." ~required:[ "from_alias"; "content" ]
   ]
 
 let string_member name json =
@@ -483,6 +525,41 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       let content = string_member "content" arguments in
       Broker.enqueue_message broker ~from_alias ~to_alias ~content;
       Lwt.return (tool_result ~content:"queued" ~is_error:false)
+  | "send_all" ->
+      let from_alias = string_member "from_alias" arguments in
+      let content = string_member "content" arguments in
+      let exclude_aliases =
+        let open Yojson.Safe.Util in
+        try
+          match arguments |> member "exclude_aliases" with
+          | `List items ->
+              List.filter_map
+                (fun item ->
+                  match item with `String s -> Some s | _ -> None)
+                items
+          | _ -> []
+        with _ -> []
+      in
+      let { Broker.sent_to; skipped } =
+        Broker.send_all broker ~from_alias ~content ~exclude_aliases
+      in
+      let result_json =
+        `Assoc
+          [ ( "sent_to",
+              `List (List.map (fun alias -> `String alias) sent_to) )
+          ; ( "skipped",
+              `List
+                (List.map
+                   (fun (alias, reason) ->
+                     `Assoc
+                       [ ("alias", `String alias)
+                       ; ("reason", `String reason)
+                       ])
+                   skipped) )
+          ]
+        |> Yojson.Safe.to_string
+      in
+      Lwt.return (tool_result ~content:result_json ~is_error:false)
   | "whoami" ->
       let session_id = resolve_session_id arguments in
       let alias =

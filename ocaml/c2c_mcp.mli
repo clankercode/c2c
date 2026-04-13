@@ -23,6 +23,18 @@ module Broker : sig
   val read_pid_start_time : int -> int option
   val capture_pid_start_time : int option -> int option
   val enqueue_message : t -> from_alias:string -> to_alias:string -> content:string -> unit
+
+  type send_all_result =
+    { sent_to : string list
+    ; skipped : (string * string) list
+    }
+
+  val send_all :
+    t
+    -> from_alias:string
+    -> content:string
+    -> exclude_aliases:string list
+    -> send_all_result
   val read_inbox : t -> session_id:string -> message list
   val drain_inbox : t -> session_id:string -> message list
   val with_inbox_lock : t -> session_id:string -> (unit -> 'a) -> 'a
