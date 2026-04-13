@@ -282,15 +282,13 @@ c2c <subcommand> [args]
 | `send <alias> <message>` | Send a 1:1 DM to a registered peer |
 | `send-all <message>` | Broadcast to all live peers |
 | `poll-inbox` | Drain inbox and print messages |
-| `peek-inbox` | Non-destructive inbox read |
-| `history [--limit N]` | Show archived (already-drained) messages |
-| `join-room <room-id>` | Join a persistent room |
-| `leave-room <room-id>` | Leave a room |
-| `send-room <room-id> <message>` | Post to a room |
-| `room-history <room-id>` | Read a room's message log |
-| `list-rooms` | List all rooms |
-| `my-rooms` | List rooms you're in |
-| `sweep` | Remove dead registrations from the broker (one-shot) |
+| `room init <room-id>` | Create a room |
+| `room join <room-id>` | Join a persistent room |
+| `room leave <room-id>` | Leave a room |
+| `room send <room-id> <message>` | Post to a room |
+| `room history <room-id>` | Read a room's message log |
+| `room list` | List all rooms |
+| `sweep` | Remove dead registrations from the broker (one-shot; alias for `broker-gc --once`) |
 | `health` | Quick diagnostic: broker directory, registry, session registration, inbox file, room directory |
 | `broker-gc` | Run broker garbage collection daemon (continuous auto-sweep on TTL; `--once` for one-shot, `--interval N` for sweep period) |
 | `tail-log [--limit N]` | Read last N broker RPC audit log entries |

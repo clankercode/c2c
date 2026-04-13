@@ -62,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(
-            "usage: c2c <broker-gc|configure-claude-code|configure-codex|configure-opencode|deliver-inbox|health|init|inject|install|list|mcp|poker-sweep|poll-inbox|prune|register|restart-me|room|send|send-all|setup|verify|watch|whoami> [...args]",
+            "usage: c2c <broker-gc|configure-claude-code|configure-codex|configure-crush|configure-kimi|configure-opencode|deliver-inbox|health|init|inject|install|list|mcp|poker-sweep|poll-inbox|prune|register|restart-me|room|send|send-all|setup|sweep|verify|watch|whoami> [...args]",
             file=sys.stderr,
         )
         return 2
@@ -113,6 +113,9 @@ def main(argv: list[str] | None = None) -> int:
         return c2c_send.main(remainder)
     if subcommand == "send-all":
         return c2c_send_all.main(remainder)
+    if subcommand == "sweep":
+        # alias for broker-gc --once
+        return c2c_broker_gc.main(["--once"] + remainder)
     if subcommand == "verify":
         return c2c_verify.main(remainder)
     if subcommand == "watch":
