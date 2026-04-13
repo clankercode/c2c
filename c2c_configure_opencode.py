@@ -43,7 +43,6 @@ def build_config(session_id: str, alias: str) -> dict:
                 "environment": {
                     "C2C_MCP_BROKER_ROOT": str(BROKER_ROOT),
                     "C2C_MCP_SESSION_ID": session_id,
-                    "C2C_MCP_AUTO_REGISTER_ALIAS": alias,
                     "C2C_MCP_AUTO_DRAIN_CHANNEL": "0",
                     "C2C_MCP_AUTO_JOIN_ROOMS": "swarm-lounge",
                 },

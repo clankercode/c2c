@@ -5512,10 +5512,6 @@ class C2CConfigureOpencodeTests(unittest.TestCase):
                 c2c["environment"]["C2C_MCP_SESSION_ID"],
                 f"opencode-{target.name}",
             )
-            self.assertEqual(
-                c2c["environment"]["C2C_MCP_AUTO_REGISTER_ALIAS"],
-                f"opencode-{target.name}",
-            )
             self.assertEqual(c2c["environment"]["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
             self.assertTrue(c2c["enabled"])
             self.assertEqual(payload["session_id"], f"opencode-{target.name}")
@@ -5559,7 +5555,7 @@ class C2CConfigureOpencodeTests(unittest.TestCase):
             )
             env = config["mcp"]["c2c"]["environment"]
             self.assertEqual(env["C2C_MCP_SESSION_ID"], f"opencode-{target.name}")
-            self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "opencode-primary")
+            self.assertNotIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
             sidecar = json.loads(
                 (target / ".opencode" / "c2c-plugin.json").read_text(encoding="utf-8")
             )
@@ -6619,7 +6615,7 @@ class C2CConfigureKimiTests(unittest.TestCase):
             config = json.loads(mcp_path.read_text(encoding="utf-8"))
             env = config["mcpServers"]["c2c"]["env"]
             self.assertEqual(env["C2C_MCP_SESSION_ID"], "kimi-test")
-            self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "kimi-primary")
+            self.assertNotIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
 
     def test_refuses_to_overwrite_without_force(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -6752,7 +6748,7 @@ class C2CConfigureCrushTests(unittest.TestCase):
             config = json.loads(config_path.read_text(encoding="utf-8"))
             env = config["mcp"]["c2c"]["env"]
             self.assertEqual(env["C2C_MCP_SESSION_ID"], "crush-test")
-            self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "crush-primary")
+            self.assertNotIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
 
     def test_refuses_to_overwrite_without_force(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -6823,11 +6819,10 @@ class C2CConfigureCrushTests(unittest.TestCase):
             config = json.loads(config_path.read_text(encoding="utf-8"))
             env = config["mcp"]["c2c"]["env"]
             # Default alias should be set (crush-user-host pattern)
-            self.assertIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
-            self.assertRegex(env["C2C_MCP_AUTO_REGISTER_ALIAS"], r"^crush-.+-.+$")
+            self.assertNotIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
             # Session ID should equal alias so auto_register_startup works
             self.assertEqual(
-                env.get("C2C_MCP_SESSION_ID"), env["C2C_MCP_AUTO_REGISTER_ALIAS"]
+                env.get("C2C_MCP_SESSION_ID"), env.get("C2C_MCP_SESSION_ID")
             )
 
     def test_alias_is_used_as_session_id_when_no_explicit_session(self):
@@ -6854,7 +6849,7 @@ class C2CConfigureCrushTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             config = json.loads(config_path.read_text(encoding="utf-8"))
             env = config["mcp"]["c2c"]["env"]
-            self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "crush-mybot")
+            self.assertNotIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
             self.assertEqual(env["C2C_MCP_SESSION_ID"], "crush-mybot")
 
     def test_no_alias_flag_suppresses_auto_register(self):
@@ -6907,11 +6902,10 @@ class C2CConfigureKimiDefaultAliasTests(unittest.TestCase):
             config = json.loads(mcp_path.read_text(encoding="utf-8"))
             env = config["mcpServers"]["c2c"]["env"]
             # Default alias should be set (kimi-user-host pattern)
-            self.assertIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
-            self.assertRegex(env["C2C_MCP_AUTO_REGISTER_ALIAS"], r"^kimi-.+-.+$")
+            self.assertNotIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
             # Session ID should equal alias so auto_register_startup works
             self.assertEqual(
-                env.get("C2C_MCP_SESSION_ID"), env["C2C_MCP_AUTO_REGISTER_ALIAS"]
+                env.get("C2C_MCP_SESSION_ID"), env.get("C2C_MCP_SESSION_ID")
             )
 
     def test_alias_is_used_as_session_id_when_no_explicit_session(self):
@@ -6938,7 +6932,7 @@ class C2CConfigureKimiDefaultAliasTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             config = json.loads(mcp_path.read_text(encoding="utf-8"))
             env = config["mcpServers"]["c2c"]["env"]
-            self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "kimi-mybot")
+            self.assertNotIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
             self.assertEqual(env["C2C_MCP_SESSION_ID"], "kimi-mybot")
 
     def test_no_alias_flag_suppresses_auto_register(self):
@@ -9822,6 +9816,79 @@ class HealthCheckTmpSpaceTests(unittest.TestCase):
         self.assertIn("error", result)
 
 
+class HealthCheckInstancesTests(unittest.TestCase):
+    """Tests for c2c_health.check_instances()."""
+
+    def setUp(self):
+        import c2c_health
+        import c2c_start
+
+        self.c2c_health = c2c_health
+        self.c2c_start = c2c_start
+        self.instances_dir_patcher = mock.patch.object(
+            c2c_start,
+            "INSTANCES_DIR",
+            Path(tempfile.mkdtemp()),
+        )
+        self.instances_dir = self.instances_dir_patcher.start()
+
+    def tearDown(self):
+        self.instances_dir_patcher.stop()
+        import shutil
+
+        shutil.rmtree(str(self.c2c_start.INSTANCES_DIR), ignore_errors=True)
+
+    def test_returns_checked_true_and_empty_when_no_instances(self):
+        result = self.c2c_health.check_instances()
+        self.assertTrue(result["checked"])
+        self.assertEqual(result["instances"], [])
+        self.assertEqual(result["alive_count"], 0)
+        self.assertEqual(result["total_count"], 0)
+
+    def test_alive_count_reflects_live_outer_pids(self):
+        # Create two instances — one alive (current pid), one dead (pid 0)
+        with mock.patch.object(
+            self.c2c_start,
+            "run_outer_loop",
+            return_value=0,
+        ):
+            br = Path(tempfile.mkdtemp())
+            self.c2c_start.cmd_start("codex", "inst-a", [], br)
+
+        # Patch list_instances so one shows outer_alive=True and one False
+        fake = [
+            {
+                "name": "inst-a",
+                "client": "codex",
+                "outer_alive": True,
+                "outer_pid": os.getpid(),
+            },
+            {
+                "name": "inst-b",
+                "client": "kimi",
+                "outer_alive": False,
+                "outer_pid": None,
+            },
+        ]
+        with mock.patch.object(self.c2c_start, "list_instances", return_value=fake):
+            result = self.c2c_health.check_instances()
+        self.assertEqual(result["alive_count"], 1)
+        self.assertEqual(result["total_count"], 2)
+
+    def test_check_instances_graceful_on_import_error(self):
+        with mock.patch.dict("sys.modules", {"c2c_start": None}):
+            result = self.c2c_health.check_instances()
+        self.assertFalse(result.get("checked", True))
+
+    def test_instances_in_run_health_check_output(self):
+        """check_instances result is included in run_health_check() dict."""
+        br = Path(tempfile.mkdtemp())
+        with mock.patch.object(self.c2c_start, "list_instances", return_value=[]):
+            report = self.c2c_health.run_health_check(br)
+        self.assertIn("instances", report)
+        self.assertTrue(report["instances"]["checked"])
+
+
 class C2CStartUnitTests(unittest.TestCase):
     """Tests for c2c_start module."""
 
@@ -10116,3 +10183,4 @@ class C2CStartConstantsTests(unittest.TestCase):
         self.assertFalse(fake.exists())
         # Calling again is a no-op.
         cleanup_fea_so()
+

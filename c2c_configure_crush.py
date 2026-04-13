@@ -77,8 +77,6 @@ def write_crush_config(
     effective_session = session_hint or alias_hint
     if effective_session:
         env["C2C_MCP_SESSION_ID"] = effective_session
-    if alias_hint:
-        env["C2C_MCP_AUTO_REGISTER_ALIAS"] = alias_hint
     env["C2C_MCP_AUTO_JOIN_ROOMS"] = "swarm-lounge"
 
     c2c_config = {
