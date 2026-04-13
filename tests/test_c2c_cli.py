@@ -5172,6 +5172,35 @@ class C2CConfigureCrushTests(unittest.TestCase):
             # Default alias should be set (crush-user-host pattern)
             self.assertIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
             self.assertRegex(env["C2C_MCP_AUTO_REGISTER_ALIAS"], r"^crush-.+-.+$")
+            # Session ID should equal alias so auto_register_startup works
+            self.assertEqual(env.get("C2C_MCP_SESSION_ID"), env["C2C_MCP_AUTO_REGISTER_ALIAS"])
+
+    def test_alias_is_used_as_session_id_when_no_explicit_session(self):
+        """When --alias is given but no --session-id, session ID defaults to alias."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "crush.json"
+            broker_root = Path(tmp) / "broker"
+            result = subprocess.run(
+                [
+                    str(REPO / "c2c"),
+                    "configure-crush",
+                    "--config-path",
+                    str(config_path),
+                    "--broker-root",
+                    str(broker_root),
+                    "--alias",
+                    "crush-mybot",
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            env = config["mcp"]["c2c"]["env"]
+            self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "crush-mybot")
+            self.assertEqual(env["C2C_MCP_SESSION_ID"], "crush-mybot")
 
     def test_no_alias_flag_suppresses_auto_register(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -5196,6 +5225,8 @@ class C2CConfigureCrushTests(unittest.TestCase):
             config = json.loads(config_path.read_text(encoding="utf-8"))
             env = config["mcp"]["c2c"]["env"]
             self.assertNotIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
+            # No alias means no session ID either
+            self.assertNotIn("C2C_MCP_SESSION_ID", env)
 
 
 class C2CConfigureKimiDefaultAliasTests(unittest.TestCase):
@@ -5223,6 +5254,35 @@ class C2CConfigureKimiDefaultAliasTests(unittest.TestCase):
             # Default alias should be set (kimi-user-host pattern)
             self.assertIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
             self.assertRegex(env["C2C_MCP_AUTO_REGISTER_ALIAS"], r"^kimi-.+-.+$")
+            # Session ID should equal alias so auto_register_startup works
+            self.assertEqual(env.get("C2C_MCP_SESSION_ID"), env["C2C_MCP_AUTO_REGISTER_ALIAS"])
+
+    def test_alias_is_used_as_session_id_when_no_explicit_session(self):
+        """When --alias is given but no --session-id, session ID defaults to alias."""
+        with tempfile.TemporaryDirectory() as tmp:
+            mcp_path = Path(tmp) / "mcp.json"
+            broker_root = Path(tmp) / "broker"
+            result = subprocess.run(
+                [
+                    str(REPO / "c2c"),
+                    "configure-kimi",
+                    "--mcp-path",
+                    str(mcp_path),
+                    "--broker-root",
+                    str(broker_root),
+                    "--alias",
+                    "kimi-mybot",
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            config = json.loads(mcp_path.read_text(encoding="utf-8"))
+            env = config["mcpServers"]["c2c"]["env"]
+            self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "kimi-mybot")
+            self.assertEqual(env["C2C_MCP_SESSION_ID"], "kimi-mybot")
 
     def test_no_alias_flag_suppresses_auto_register(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -5247,6 +5307,8 @@ class C2CConfigureKimiDefaultAliasTests(unittest.TestCase):
             config = json.loads(mcp_path.read_text(encoding="utf-8"))
             env = config["mcpServers"]["c2c"]["env"]
             self.assertNotIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
+            # No alias means no session ID either
+            self.assertNotIn("C2C_MCP_SESSION_ID", env)
 
 
 class RestartMeUnitTests(unittest.TestCase):

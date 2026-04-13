@@ -68,8 +68,11 @@ def write_kimi_config(
     env = {
         "C2C_MCP_BROKER_ROOT": str(broker_root),
     }
-    if session_hint:
-        env["C2C_MCP_SESSION_ID"] = session_hint
+    # Kimi has no native session ID env var; use alias as stable session ID
+    # so auto_register_startup works on every restart.
+    effective_session = session_hint or alias_hint
+    if effective_session:
+        env["C2C_MCP_SESSION_ID"] = effective_session
     if alias_hint:
         env["C2C_MCP_AUTO_REGISTER_ALIAS"] = alias_hint
     env["C2C_MCP_AUTO_JOIN_ROOMS"] = "swarm-lounge"
