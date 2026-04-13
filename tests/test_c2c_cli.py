@@ -632,7 +632,11 @@ class C2CCLITests(unittest.TestCase):
 
     def test_c2c_mcp_main_exports_parent_client_pid_for_server_register(self):
         with (
-            mock.patch.dict(os.environ, {"C2C_MCP_SESSION_ID": ""}, clear=False),
+            mock.patch.dict(
+                os.environ,
+                {"C2C_MCP_SESSION_ID": "", "C2C_MCP_CLIENT_PID": ""},
+                clear=False,
+            ),
             mock.patch(
                 "c2c_mcp.default_broker_root",
                 return_value=REPO / ".git" / "c2c" / "mcp",
@@ -6509,10 +6513,14 @@ class SweepDeadRegistrationsTests(unittest.TestCase):
         """sweep_dead_registrations should create registry.json.lock (POSIX lockf sidecar)."""
         import c2c_broker_gc
 
-        self._write_registry([{"alias": "live", "session_id": "s1", "pid": os.getpid()}])
+        self._write_registry(
+            [{"alias": "live", "session_id": "s1", "pid": os.getpid()}]
+        )
         c2c_broker_gc.sweep_dead_registrations(self.broker_root)
         lock_path = self.broker_root / "registry.json.lock"
-        self.assertTrue(lock_path.exists(), "registry.json.lock should exist after sweep")
+        self.assertTrue(
+            lock_path.exists(), "registry.json.lock should exist after sweep"
+        )
 
     def test_atomic_write_no_temp_files(self):
         """sweep_dead_registrations should leave no .tmp files behind."""
@@ -6535,10 +6543,13 @@ class SweepDeadRegistrationsTests(unittest.TestCase):
     def test_main_uses_env_broker_root_without_importing_c2c_mcp(self):
         import c2c_broker_gc
 
-        self._write_registry([{"alias": "live", "session_id": "s1", "pid": os.getpid()}])
+        self._write_registry(
+            [{"alias": "live", "session_id": "s1", "pid": os.getpid()}]
+        )
         env = {"C2C_MCP_BROKER_ROOT": str(self.broker_root)}
         with mock.patch.dict(os.environ, env, clear=False):
-            result = c2c_broker_gc.main(["--once", "--dry-run", "--json"])
+            with mock.patch("sys.stdout", new=io.StringIO()):
+                result = c2c_broker_gc.main(["--once", "--dry-run", "--json"])
         self.assertEqual(result, 0)
 
 
@@ -6575,10 +6586,15 @@ class BrokerGcDeadLetterTests(unittest.TestCase):
         dl_path = self.broker_root / "dead-letter.jsonl"
         if not dl_path.exists():
             return []
-        return [line for line in dl_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        return [
+            line
+            for line in dl_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
 
     def test_purge_old_no_file_returns_empty(self):
         import c2c_broker_gc
+
         result = c2c_broker_gc.purge_old_dead_letter(self.broker_root)
         self.assertTrue(result["ok"])
         self.assertEqual(result["before_count"], 0)
@@ -6586,30 +6602,46 @@ class BrokerGcDeadLetterTests(unittest.TestCase):
 
     def test_purge_old_keeps_fresh_entries(self):
         import c2c_broker_gc
+
         now = time.time()
-        self._write_dead_letter([
-            json.dumps({"deleted_at": now - 100, "message": {"to_alias": "alice"}}),
-        ])
+        self._write_dead_letter(
+            [
+                json.dumps({"deleted_at": now - 100, "message": {"to_alias": "alice"}}),
+            ]
+        )
         result = c2c_broker_gc.purge_old_dead_letter(self.broker_root, ttl_seconds=3600)
         self.assertEqual(result["purged_count"], 0)
         self.assertEqual(result["after_count"], 1)
 
     def test_purge_old_removes_stale_entries(self):
         import c2c_broker_gc
+
         now = time.time()
-        self._write_dead_letter([
-            json.dumps({"deleted_at": now - 10000, "message": {"to_alias": "alice"}}),
-        ])
+        self._write_dead_letter(
+            [
+                json.dumps(
+                    {"deleted_at": now - 10000, "message": {"to_alias": "alice"}}
+                ),
+            ]
+        )
         result = c2c_broker_gc.purge_old_dead_letter(self.broker_root, ttl_seconds=3600)
         self.assertEqual(result["purged_count"], 1)
         self.assertEqual(result["after_count"], 0)
 
     def test_purge_old_malformed_line_kept(self):
         import c2c_broker_gc
-        self._write_dead_letter([
-            "not-json",
-            json.dumps({"deleted_at": time.time() - 10000, "message": {"to_alias": "alice"}}),
-        ])
+
+        self._write_dead_letter(
+            [
+                "not-json",
+                json.dumps(
+                    {
+                        "deleted_at": time.time() - 10000,
+                        "message": {"to_alias": "alice"},
+                    }
+                ),
+            ]
+        )
         result = c2c_broker_gc.purge_old_dead_letter(self.broker_root, ttl_seconds=3600)
         self.assertEqual(result["before_count"], 2)
         self.assertEqual(result["purged_count"], 1)
@@ -6619,58 +6651,95 @@ class BrokerGcDeadLetterTests(unittest.TestCase):
 
     def test_purge_old_dry_run_no_modify(self):
         import c2c_broker_gc
+
         now = time.time()
-        self._write_dead_letter([
-            json.dumps({"deleted_at": now - 10000, "message": {"to_alias": "alice"}}),
-        ])
-        result = c2c_broker_gc.purge_old_dead_letter(self.broker_root, ttl_seconds=3600, dry_run=True)
+        self._write_dead_letter(
+            [
+                json.dumps(
+                    {"deleted_at": now - 10000, "message": {"to_alias": "alice"}}
+                ),
+            ]
+        )
+        result = c2c_broker_gc.purge_old_dead_letter(
+            self.broker_root, ttl_seconds=3600, dry_run=True
+        )
         self.assertEqual(result["purged_count"], 1)
         self.assertEqual(len(self._read_dead_letter()), 1)
 
     def test_purge_orphan_no_file_returns_empty(self):
         import c2c_broker_gc
+
         result = c2c_broker_gc.purge_orphan_dead_letter(self.broker_root)
         self.assertTrue(result["ok"])
         self.assertEqual(result["before_count"], 0)
 
     def test_purge_orphan_keeps_registered_alias(self):
         import c2c_broker_gc
+
         self._write_registry([{"alias": "alice", "session_id": "s1"}])
         now = time.time()
-        self._write_dead_letter([
-            json.dumps({"deleted_at": now - 10000, "message": {"to_alias": "alice"}}),
-        ])
-        result = c2c_broker_gc.purge_orphan_dead_letter(self.broker_root, ttl_seconds=3600)
+        self._write_dead_letter(
+            [
+                json.dumps(
+                    {"deleted_at": now - 10000, "message": {"to_alias": "alice"}}
+                ),
+            ]
+        )
+        result = c2c_broker_gc.purge_orphan_dead_letter(
+            self.broker_root, ttl_seconds=3600
+        )
         self.assertEqual(result["purged_count"], 0)
         self.assertEqual(len(self._read_dead_letter()), 1)
 
     def test_purge_orphan_removes_unregistered_alias(self):
         import c2c_broker_gc
+
         self._write_registry([{"alias": "alice", "session_id": "s1"}])
         now = time.time()
-        self._write_dead_letter([
-            json.dumps({"deleted_at": now - 10000, "message": {"to_alias": "bob"}}),
-        ])
-        result = c2c_broker_gc.purge_orphan_dead_letter(self.broker_root, ttl_seconds=3600)
+        self._write_dead_letter(
+            [
+                json.dumps({"deleted_at": now - 10000, "message": {"to_alias": "bob"}}),
+            ]
+        )
+        result = c2c_broker_gc.purge_orphan_dead_letter(
+            self.broker_root, ttl_seconds=3600
+        )
         self.assertEqual(result["purged_count"], 1)
         self.assertEqual(len(self._read_dead_letter()), 0)
 
     def test_purge_orphan_strips_room_suffix(self):
         import c2c_broker_gc
+
         self._write_registry([{"alias": "alice", "session_id": "s1"}])
         now = time.time()
-        self._write_dead_letter([
-            json.dumps({"deleted_at": now - 10000, "message": {"to_alias": "bob@swarm-lounge"}}),
-        ])
-        result = c2c_broker_gc.purge_orphan_dead_letter(self.broker_root, ttl_seconds=3600)
+        self._write_dead_letter(
+            [
+                json.dumps(
+                    {
+                        "deleted_at": now - 10000,
+                        "message": {"to_alias": "bob@swarm-lounge"},
+                    }
+                ),
+            ]
+        )
+        result = c2c_broker_gc.purge_orphan_dead_letter(
+            self.broker_root, ttl_seconds=3600
+        )
         self.assertEqual(result["purged_count"], 1)
 
     def test_purge_orphan_dry_run_no_modify(self):
         import c2c_broker_gc
+
         now = time.time()
-        self._write_dead_letter([
-            json.dumps({"deleted_at": now - 10000, "message": {"to_alias": "orphan"}}),
-        ])
-        result = c2c_broker_gc.purge_orphan_dead_letter(self.broker_root, ttl_seconds=3600, dry_run=True)
+        self._write_dead_letter(
+            [
+                json.dumps(
+                    {"deleted_at": now - 10000, "message": {"to_alias": "orphan"}}
+                ),
+            ]
+        )
+        result = c2c_broker_gc.purge_orphan_dead_letter(
+            self.broker_root, ttl_seconds=3600, dry_run=True
+        )
         self.assertEqual(result["purged_count"], 1)
         self.assertEqual(len(self._read_dead_letter()), 1)
