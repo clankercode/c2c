@@ -13,7 +13,10 @@
   "env": {
     "RUN_CLAUDE_INST_ALIAS_HINT": "c2c-r2-b2",
     "C2C_MCP_SESSION_ID": "d16034fc-5526-414b-a88e-709d1a93e345",
-    "C2C_SESSION_ID": "d16034fc-5526-414b-a88e-709d1a93e345"
+    "C2C_SESSION_ID": "d16034fc-5526-414b-a88e-709d1a93e345",
+    "C2C_MCP_BROKER_ROOT": "/home/xertrov/src/c2c-msg/.git/c2c/mcp",
+    "C2C_MCP_AUTO_REGISTER_ALIAS": "storm-beacon",
+    "C2C_ROOT": "/home/xertrov/src/c2c-msg"
   },
-  "notes": "storm-beacon lineage: broker liveness author. NOTE: no --channels / --dangerously-load-development-channels flag. c2c is not on the approved channels allowlist and the dangerous variant prompts interactively on startup, which blocks unattended relaunches. poll_inbox is the flag-independent receive path — kickoff prompt above tells the model to call it on each resume."
+  "notes": "storm-beacon lineage: broker liveness author. NOTE: no --channels / --dangerously-load-development-channels flag. PostToolUse hook c2c-inbox-check.sh reads C2C_MCP_SESSION_ID + C2C_MCP_BROKER_ROOT from env to deliver messages automatically after every tool call."
 }

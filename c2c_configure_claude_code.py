@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Write the c2c MCP entry into ~/.claude.json for Claude Code.
+"""Configure Claude Code for c2c: MCP server + PostToolUse inbox hook.
 
 Usage: c2c configure-claude-code [--broker-root DIR] [--session-id ID] [--force] [--json]
 
-Adds or updates `mcpServers.c2c` in ~/.claude.json so Claude Code agents
-get the c2c MCP server on next launch — no hand-editing required.
+Writes two config targets:
 
-Refuses to overwrite an existing `c2c` MCP entry unless `--force` is given.
-Existing keys in ~/.claude.json are left untouched.
+  1. `mcpServers.c2c` in ~/.claude.json — the MCP server entry that exposes
+     c2c tools (register, send, poll_inbox, rooms, …).
+
+  2. A PostToolUse hook entry in ~/.claude/settings.json that auto-delivers
+     inbox messages after every tool call (file-fallback path, no dev channels
+     required). Only added when ~/.claude/hooks/c2c-inbox-check.sh exists.
+
+Both writes are idempotent. Use --force to overwrite existing entries.
 """
 from __future__ import annotations
 
@@ -20,7 +25,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent
 C2C_MCP_PATH = REPO_ROOT / "c2c_mcp.py"
 DEFAULT_BROKER_ROOT = REPO_ROOT / ".git" / "c2c" / "mcp"
+
 CLAUDE_JSON_PATH = Path.home() / ".claude.json"
+SETTINGS_JSON_PATH = Path.home() / ".claude" / "settings.json"
+HOOK_SCRIPT_PATH = Path.home() / ".claude" / "hooks" / "c2c-inbox-check.sh"
+
+HOOK_MATCHER = ".*"
 
 
 def resolve_broker_root(override: Path | None) -> Path:
@@ -47,25 +57,16 @@ def build_mcp_entry(broker_root: Path, session_id: str | None) -> dict:
     }
 
 
-def load_claude_json() -> dict:
-    if not CLAUDE_JSON_PATH.exists():
-        return {}
-    try:
-        return json.loads(CLAUDE_JSON_PATH.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
-        raise SystemExit(f"cannot parse {CLAUDE_JSON_PATH}: {e}") from e
-
-
-def write_claude_json(data: dict) -> None:
-    CLAUDE_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=CLAUDE_JSON_PATH.parent, prefix=".claude.json.tmp")
+def _atomic_write(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)
             fh.write("\n")
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, CLAUDE_JSON_PATH)
+        os.replace(tmp, path)
     except Exception:
         try:
             os.unlink(tmp)
@@ -74,8 +75,17 @@ def write_claude_json(data: dict) -> None:
         raise
 
 
-def configure(broker_root: Path, session_id: str | None, *, force: bool) -> dict:
-    data = load_claude_json()
+def _load_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"cannot parse {path}: {e}") from e
+
+
+def configure_mcp(broker_root: Path, session_id: str | None, *, force: bool) -> dict:
+    data = _load_json(CLAUDE_JSON_PATH)
     mcp_servers = data.setdefault("mcpServers", {})
 
     if "c2c" in mcp_servers and not force:
@@ -85,18 +95,62 @@ def configure(broker_root: Path, session_id: str | None, *, force: bool) -> dict
         )
 
     mcp_servers["c2c"] = build_mcp_entry(broker_root, session_id)
-    write_claude_json(data)
-    return {
-        "config_path": str(CLAUDE_JSON_PATH),
-        "broker_root": str(broker_root),
-        "session_id": session_id,
-        "mcp_entry": mcp_servers["c2c"],
-    }
+    _atomic_write(CLAUDE_JSON_PATH, data)
+    return mcp_servers["c2c"]
+
+
+def _hook_entry() -> dict:
+    return {"type": "command", "command": str(HOOK_SCRIPT_PATH)}
+
+
+def _hook_already_registered(settings: dict) -> bool:
+    hook_cmd = str(HOOK_SCRIPT_PATH)
+    for group in settings.get("hooks", {}).get("PostToolUse", []):
+        for h in group.get("hooks", []):
+            if h.get("command") == hook_cmd:
+                return True
+    return False
+
+
+def configure_hook(*, force: bool) -> str | None:
+    """Register the PostToolUse hook in settings.json. Returns status string."""
+    if not HOOK_SCRIPT_PATH.exists():
+        return "hook_script_missing"
+
+    settings = _load_json(SETTINGS_JSON_PATH)
+
+    if _hook_already_registered(settings) and not force:
+        return "already_registered"
+
+    # Ensure the PostToolUse list exists
+    hooks_section = settings.setdefault("hooks", {})
+    post_tool_use = hooks_section.setdefault("PostToolUse", [])
+
+    # Find existing group with HOOK_MATCHER or append a new one
+    target_group = None
+    for group in post_tool_use:
+        if group.get("matcher") == HOOK_MATCHER:
+            target_group = group
+            break
+    if target_group is None:
+        target_group = {"matcher": HOOK_MATCHER, "hooks": []}
+        post_tool_use.append(target_group)
+
+    # Add hook entry if not already in this group
+    hook_cmd = str(HOOK_SCRIPT_PATH)
+    if not any(h.get("command") == hook_cmd for h in target_group.get("hooks", [])):
+        target_group.setdefault("hooks", []).append(_hook_entry())
+
+    _atomic_write(SETTINGS_JSON_PATH, settings)
+    return "registered"
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Configure ~/.claude.json to include the c2c MCP server."
+        description=(
+            "Configure ~/.claude.json (MCP server) and ~/.claude/settings.json"
+            " (PostToolUse inbox hook) for c2c."
+        )
     )
     parser.add_argument(
         "--broker-root",
@@ -112,22 +166,38 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="overwrite an existing mcpServers.c2c entry",
+        help="overwrite existing mcpServers.c2c and hook entries",
     )
     parser.add_argument("--json", action="store_true", help="emit JSON result")
     args = parser.parse_args(argv)
 
     broker_root = resolve_broker_root(args.broker_root)
-    result = configure(broker_root, args.session_id, force=args.force)
+    mcp_entry = configure_mcp(broker_root, args.session_id, force=args.force)
+    hook_status = configure_hook(force=args.force)
+
+    result = {
+        "claude_json": str(CLAUDE_JSON_PATH),
+        "settings_json": str(SETTINGS_JSON_PATH),
+        "broker_root": str(broker_root),
+        "session_id": args.session_id,
+        "mcp_entry": mcp_entry,
+        "hook_status": hook_status,
+    }
 
     if args.json:
         print(json.dumps(result, indent=2))
     else:
-        print(f"wrote mcpServers.c2c to {result['config_path']}")
+        print(f"wrote mcpServers.c2c to {result['claude_json']}")
         print(f"  broker_root: {result['broker_root']}")
         if result["session_id"]:
             print(f"  session_id:  {result['session_id']}")
-        print("Restart Claude Code (or run ./restart-self) to pick up the new MCP server.")
+        if hook_status == "registered":
+            print(f"registered PostToolUse hook: {HOOK_SCRIPT_PATH}")
+        elif hook_status == "already_registered":
+            print(f"PostToolUse hook already registered (use --force to re-add)")
+        elif hook_status == "hook_script_missing":
+            print(f"skipped hook: {HOOK_SCRIPT_PATH} not found")
+        print("Restart Claude Code (or run ./restart-self) to pick up changes.")
     return 0
 
 

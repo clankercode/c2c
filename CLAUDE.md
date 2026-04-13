@@ -176,7 +176,7 @@ not a task queue.
 ```
 c2c_cli.py <install|list|mcp|register|send|verify|whoami> [args]  # Main CLI entry point, dispatches to subcommands
 c2c_install.py [--json]                                            # Installs c2c wrapper scripts into ~/.local/bin
-c2c_configure_claude_code.py [--broker-root DIR] [--session-id ID] [--force] [--json]  # Writes mcpServers.c2c into ~/.claude.json (Claude Code self-config, no hand-editing needed)
+c2c_configure_claude_code.py [--broker-root DIR] [--session-id ID] [--force] [--json]  # Writes mcpServers.c2c into ~/.claude.json AND registers PostToolUse inbox hook in ~/.claude/settings.json (one-command Claude Code self-config)
 c2c_register.py <session> [--json]                                 # Registers a Claude session for c2c messaging, assigns an alias
 c2c_send.py <alias> <message...> [--dry-run] [--json]             # Sends a c2c message to an opted-in session by alias
 c2c_list.py [--all] [--json]                                       # Lists opted-in c2c sessions (--all includes unregistered)

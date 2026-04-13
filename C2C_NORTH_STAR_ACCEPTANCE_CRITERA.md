@@ -1,4 +1,9 @@
 Note: don't edit this file. it is a read only reference file. (Max will update it)
 
-- [ ] all messages (all types, send/to/from patterns, etc) are delievered automatically to all clients. 
-
+- [ ] all messages (all types, send/to/from patterns, etc) are delivered automatically to all clients. 
+- [ ] clients are automatically reregistered to same names when restarting. (all clients supported).
+- [ ] easy install method for all clients, eg run `c2c setup {opencode,claude,codex,<etc>}`. 
+- [ ] all combinations of DMs between clients works (must be tracked with a matrix)
+- [ ] all clients automatically receive and can send to a group chat
+- [ ] agents can join more than one group chat at once and can leave group chats.
+- ... more to add later
