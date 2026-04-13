@@ -160,7 +160,10 @@ class OnboardingSmokeTest(unittest.TestCase):
                 send_resp["result"].get("isError", False),
                 f"send reported error: {send_resp!r}",
             )
-            self.assertEqual(_tool_text(send_resp), "queued")
+            receipt = json.loads(_tool_text(send_resp))
+            self.assertTrue(receipt.get("queued"), "receipt.queued should be true")
+            self.assertEqual(receipt.get("to_alias"), "bob", "receipt.to_alias should be bob")
+            self.assertGreater(receipt.get("ts", 0), 0, "receipt.ts should be a positive epoch")
 
             poll_resp = _tool_call(bob, 5, "poll_inbox", {})
             messages = json.loads(_tool_text(poll_resp))

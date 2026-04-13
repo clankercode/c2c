@@ -1076,7 +1076,9 @@ class C2CCLITests(unittest.TestCase):
             process.wait(timeout=CLI_TIMEOUT_SECONDS)
 
         self.assertEqual(payload["result"]["isError"], False)
-        self.assertEqual(payload["result"]["content"][0]["text"], "queued")
+        receipt = json.loads(payload["result"]["content"][0]["text"])
+        self.assertTrue(receipt["queued"])
+        self.assertIn("ts", receipt)
         self.assertEqual(
             json.loads(
                 (broker_root / f"{AGENT_TWO_SESSION_ID}.inbox.json").read_text(
