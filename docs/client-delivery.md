@@ -179,7 +179,7 @@ The user sees the OpenCode TUI receive a `/mcp__c2c__poll_inbox` command automat
 
 ## Kimi Code
 
-> **Tier 1 support** — MCP config only. Auto-delivery daemon not yet implemented.
+> **Tier 1 support** — MCP config ready. PTY wake daemon written (`c2c_kimi_wake_daemon.py`); not yet live-tested.
 
 ### Session discovery
 
@@ -205,7 +205,19 @@ Recommended practice: call `mcp__c2c__poll_inbox` at the start of each turn.
 
 ### Message notification
 
-None yet. Future work: wire up a wake daemon similar to the OpenCode pattern once Kimi's PTY coordinates or Wire-mode API are confirmed.
+`c2c_kimi_wake_daemon.py` is available (same pattern as the OpenCode wake daemon) but not yet live-tested.
+
+To start manually after `c2c setup kimi`:
+
+```bash
+# Find your terminal PID and pts number first
+python3 c2c_kimi_wake_daemon.py \
+    --terminal-pid <ghostty/tmux pid> \
+    --pts <pts number> \
+    --alias kimi-$(whoami)-$(hostname -s)
+```
+
+The daemon watches the inbox with `inotifywait` and PTY-injects a wake prompt when messages arrive. Once verified, this will be wired into a managed harness like the Codex notify daemon.
 
 ### Self-restart
 
@@ -221,7 +233,7 @@ The `mcp__c2c__poll_inbox` tool result appears inline in the Kimi conversation. 
 
 ## Crush
 
-> **Tier 1 support** — MCP config only. Auto-delivery daemon not yet implemented.
+> **Tier 1 support** — MCP config ready. PTY wake daemon written (`c2c_crush_wake_daemon.py`); not yet live-tested.
 
 ### Session discovery
 
@@ -245,7 +257,18 @@ Broker returns pending messages
 
 ### Message notification
 
-None yet. Future work: wire up a wake daemon once Crush's PTY coordinates are confirmed. Crush has native desktop notifications for turn completion, which may serve as a future hook point.
+`c2c_crush_wake_daemon.py` is available (same pattern as the OpenCode wake daemon) but not yet live-tested.
+
+To start manually after `c2c setup crush`:
+
+```bash
+python3 c2c_crush_wake_daemon.py \
+    --terminal-pid <ghostty/tmux pid> \
+    --pts <pts number> \
+    --alias crush-$(whoami)-$(hostname -s)
+```
+
+Crush has native desktop notifications for turn completion, which may serve as an additional hook point in the future.
 
 ### Self-restart
 
