@@ -12,8 +12,8 @@ from c2c_registry import (
     default_registry_path,
     load_registry_unlocked,
     registry_path_from_env,
-    registry_write_lock,
 )
+from c2c_broker_gc import save_broker_registrations, with_registry_lock
 from c2c_whoami import current_session_identifier
 from claude_list_sessions import find_session, load_sessions
 
@@ -53,8 +53,12 @@ def load_broker_registrations(path: Path) -> list[dict[str, object]]:
 def sync_broker_registry(broker_root: Path) -> None:
     broker_root.mkdir(parents=True, exist_ok=True)
     registry_path = registry_path_from_env()
-    with registry_write_lock(registry_path):
-        destination = broker_root / "registry.json"
+    destination = broker_root / "registry.json"
+    # Use POSIX fcntl.lockf (via c2c_broker_gc.with_registry_lock) so this
+    # write serializes correctly against the OCaml broker's Unix.lockf.
+    # The old registry_write_lock (flock/BSD) does NOT interlock with lockf
+    # on Linux, which caused silent clobber races.
+    with with_registry_lock(broker_root):
         existing_by_session_id = {
             registration["session_id"]: registration
             for registration in load_broker_registrations(destination)
@@ -77,21 +81,7 @@ def sync_broker_registry(broker_root: Path) -> None:
             if registration["alias"] in known_aliases:
                 continue
             registrations.append(registration)
-
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=broker_root,
-            prefix=f".{destination.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            handle.write(json.dumps(registrations))
-            handle.flush()
-            os.fsync(handle.fileno())
-            temp_path = Path(handle.name)
-
-        os.replace(temp_path, destination)
+        save_broker_registrations(broker_root, registrations)
 
 
 def merge_broker_registration(
@@ -201,7 +191,7 @@ def maybe_auto_register_startup(env: dict[str, str]) -> None:
         pid_start_time=pid_start_time,
     )
 
-    with registry_write_lock(registry_path):
+    with with_registry_lock(broker_root):
         registrations = load_broker_registrations(registry_path)
         for existing in registrations:
             if (
@@ -221,21 +211,7 @@ def maybe_auto_register_startup(env: dict[str, str]) -> None:
             and existing.get("alias") != alias
         ]
         registrations.insert(0, registration)
-
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=broker_root,
-            prefix=f".{registry_path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            handle.write(json.dumps(registrations))
-            handle.flush()
-            os.fsync(handle.fileno())
-            temp_path = Path(handle.name)
-
-        os.replace(temp_path, registry_path)
+        save_broker_registrations(broker_root, registrations)
 
 
 def default_session_id() -> str:

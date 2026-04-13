@@ -17,9 +17,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import c2c_mcp
-
-
 DEFAULT_TTL_SECONDS = 3600  # 1 hour
 DEFAULT_INTERVAL_SECONDS = 300  # 5 minutes
 MIN_INTERVAL_SECONDS = 60  # 1 minute minimum
