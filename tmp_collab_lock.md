@@ -9,6 +9,9 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| `run-claude-inst-outer` | codex | Add refresh-peer on child spawn | 2026-04-13T16:52Z |
+| `tests/test_c2c_cli.py` | codex | Regression tests for Claude outer refresh-peer | 2026-04-13T16:52Z |
+| `tmp_collab_lock.md` | codex | Record/release Claude outer refresh locks | 2026-04-13T16:52Z |
 
 ## History (addendum)
 
