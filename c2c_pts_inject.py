@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Direct PTS write injection — alternative to pty_inject for clients that
-don't handle bracketed paste well when idle (e.g., Kimi Code).
+"""Direct PTY-slave writer.
 
 Writes plain text directly to /dev/pts/<N>, followed by CR+LF.  This
-bypasses the terminal emulator's master-fd and avoids bracketed-paste
-sequences that prompt_toolkit may treat as buffer insertions without
-auto-submission.
+is useful only when intentionally writing display output to a terminal. It is
+not a reliable input injection path for interactive TUIs: keyboard input
+arrives through the PTY master side, while writing to the slave can make text
+appear without delivering it to the program's stdin.
 """
 from __future__ import annotations
 
@@ -25,11 +25,9 @@ def inject(
 
     Args:
         pts_num: PTS slave number (e.g., "0" or 0).
-        message: Text to inject.
+        message: Text to write to the terminal display side.
         crlf: If True, append ``\r\n`` after the message.
-        char_delay: Seconds to sleep between each character.  Use a small
-            value (e.g., 0.001) if the target TUI needs keystroke-by-keystroke
-            delivery rather than a bulk write.
+        char_delay: Seconds to sleep between each character.
     """
     pts_path = Path(f"/dev/pts/{pts_num}")
     if not pts_path.exists():

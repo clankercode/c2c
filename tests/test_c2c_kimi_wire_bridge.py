@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
+import unittest.mock as mock
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -268,6 +269,122 @@ class CLITests(unittest.TestCase):
             # assertion must be inside the with-block before temp dir cleanup
             self.assertEqual(len(spool.read()), 1)
             self.assertEqual(spool.read()[0]["content"], "kept")
+
+
+class RunOnceLiveTests(unittest.TestCase):
+    """Tests for run_once_live() using a mocked subprocess.Popen."""
+
+    def _make_mock_proc(self, *wire_responses: str) -> mock.MagicMock:
+        """Build a mock Popen process with canned Wire JSON-RPC stdout lines."""
+        proc = mock.MagicMock()
+        proc.stdin = io.StringIO()
+        proc.stdout = io.StringIO("".join(wire_responses))
+        proc.wait.return_value = 0
+        return proc
+
+    def test_run_once_live_delivers_spooled_message(self):
+        """run_once_live delivers a pre-spooled message and clears the spool."""
+        init_resp = '{"jsonrpc":"2.0","id":"1","result":{"protocol_version":"1.9"}}\n'
+        prompt_resp = '{"jsonrpc":"2.0","id":"2","result":{"status":"finished"}}\n'
+        proc = self._make_mock_proc(init_resp, prompt_resp)
+
+        # run_once_live closes proc.stdin in its finally block; capture writes
+        # to a side buffer so we can inspect them after the call returns.
+        written_buf = io.StringIO()
+        proc.stdin = mock.MagicMock()
+        proc.stdin.write.side_effect = written_buf.write
+        proc.stdin.flush.return_value = None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            broker_root = Path(tmp) / "broker"
+            spool_path = Path(tmp) / "spool.json"
+            spool = bridge.C2CSpool(spool_path)
+            spool.append([{"from_alias": "codex", "to_alias": "kimi-wire", "content": "wire-test"}])
+
+            with mock.patch("subprocess.Popen", return_value=proc):
+                result = bridge.run_once_live(
+                    session_id="kimi-wire",
+                    alias="kimi-wire",
+                    broker_root=broker_root,
+                    work_dir=Path(tmp),
+                    command="kimi",
+                    spool_path=spool_path,
+                    timeout=0.0,
+                )
+
+            self.assertEqual(result["delivered"], 1)
+            self.assertTrue(result["ok"])
+            self.assertEqual(spool.read(), [])
+            self.assertIn("wire-test", written_buf.getvalue())
+
+    def test_run_once_live_launch_includes_wire_and_yolo(self):
+        """Subprocess is launched with --wire and --yolo flags."""
+        init_resp = '{"jsonrpc":"2.0","id":"1","result":{"protocol_version":"1.9"}}\n'
+        proc = self._make_mock_proc(init_resp)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("subprocess.Popen", return_value=proc) as mock_popen:
+                bridge.run_once_live(
+                    session_id="s",
+                    alias="s",
+                    broker_root=Path(tmp) / "broker",
+                    work_dir=Path(tmp),
+                    command="kimi",
+                    spool_path=Path(tmp) / "spool.json",
+                    timeout=0.0,
+                )
+
+        launch_cmd = mock_popen.call_args[0][0]
+        self.assertIn("--wire", launch_cmd)
+        self.assertIn("--yolo", launch_cmd)
+        self.assertIn("--mcp-config-file", launch_cmd)
+        self.assertIn("--work-dir", launch_cmd)
+
+    def test_run_once_live_writes_valid_mcp_config_json(self):
+        """A valid MCP config JSON file is written and passed to kimi."""
+        init_resp = '{"jsonrpc":"2.0","id":"1","result":{"protocol_version":"1.9"}}\n'
+        proc = self._make_mock_proc(init_resp)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("subprocess.Popen", return_value=proc) as mock_popen:
+                bridge.run_once_live(
+                    session_id="test-sid",
+                    alias="test-alias",
+                    broker_root=Path(tmp) / "broker",
+                    work_dir=Path(tmp),
+                    command="kimi",
+                    spool_path=Path(tmp) / "spool.json",
+                    timeout=0.0,
+                )
+
+        launch_cmd = mock_popen.call_args[0][0]
+        cfg_idx = launch_cmd.index("--mcp-config-file") + 1
+        cfg_path = Path(launch_cmd[cfg_idx])
+        # The temp config is deleted after the function returns — we can't read it
+        # directly, but we can check the launch args contain a path that ends in .json
+        self.assertTrue(str(cfg_path).endswith(".json"))
+
+    def test_run_once_live_returns_zero_delivered_when_nothing_queued(self):
+        """run_once_live returns delivered=0 when spool and inbox are empty."""
+        init_resp = '{"jsonrpc":"2.0","id":"1","result":{"protocol_version":"1.9"}}\n'
+        proc = self._make_mock_proc(init_resp)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            broker_root = Path(tmp) / "broker"
+            broker_root.mkdir(parents=True)
+            with mock.patch("subprocess.Popen", return_value=proc):
+                result = bridge.run_once_live(
+                    session_id="empty-session",
+                    alias="empty-session",
+                    broker_root=broker_root,
+                    work_dir=Path(tmp),
+                    command="kimi",
+                    spool_path=Path(tmp) / "spool.json",
+                    timeout=0.0,
+                )
+
+        self.assertEqual(result["delivered"], 0)
+        self.assertTrue(result["ok"])
 
 
 if __name__ == "__main__":

@@ -306,6 +306,7 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
                     timeout=0.1,
                     file_fallback=True,
                     notify_only=True,
+                    submit_delay=None,
                     notify_debounce=30,
                     interval=0,
                     max_iterations=2,

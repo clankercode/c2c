@@ -13,7 +13,11 @@ permalink: /next-steps/
 
 ## Recently Completed
 
-- **`c2c_kimi_wake_daemon` uses direct PTS write** ✓ — switched from `pty_inject` binary (bracketed-paste, silently ignored by Kimi's `prompt_toolkit` when idle) to `c2c_pts_inject.inject()` (plain text write to `/dev/pts/<N>`). Matches `c2c_deliver_inbox.py --client kimi` path. 8 new tests. 671 Python / 97 OCaml tests green (e504240, d8a748e, 2026-04-14).
+- **Kimi wake submit path corrected** ✓ — direct `/dev/pts/<N>` slave writes
+  can display text without submitting it. Kimi wake/inject delivery now uses
+  the master-side `pty_inject` backend with a default 1.5s submit delay. The
+  Kimi Wire bridge remains the preferred native path; PTY wake is the manual
+  TUI fallback.
 - **Dead-pid validation in `C2C_MCP_CLIENT_PID`** ✓ — both Python (`c2c_mcp.py`) and OCaml (`ocaml/c2c_mcp.ml`) now validate the env pid against `/proc/<pid>` before using it, falling back to `getppid()` for dead pids. Tests updated to use live PIDs; new dead-pid regression test added (5f6175b, 4f861c1, 2026-04-14).
 - **OpenCode native plugin delivery** ✓ — `promptAsync` end-to-end PROVEN (59c0909, 2026-04-14). Codex sent DM → plugin drained via CLI subprocess → `client.session.promptAsync` delivered to OpenCode model → reply received. PTY no longer needed for message body transport. Root cause of prior non-delivery: `drainInbox()` was parsing `poll-inbox --json` output as a bare array but it returns `{"session_id":...,"messages":[...]}` envelope → silently returned `[]`. Fixed with `parsePollResult()` (da78130). Also added spool file for retry, spool injection into managed restart prompt, `c2c peek-inbox` non-destructive CLI, and 6 new tests (652 total).
 - **OpenCode plugin `drainInbox` JSON parse fix** ✓ — see above (da78130, 2026-04-14).

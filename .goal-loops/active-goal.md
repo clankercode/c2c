@@ -71,9 +71,12 @@ These are Max's target experiences, verbatim:
 - **OCaml broker** ✓: 97 tests; sweep, rooms, dead-letter, alias dedup,
   peer-renamed fan-out, session hijack guard, alias-occupied guard,
   dead-pid fallback in `current_client_pid()`.
-- **Python suite** ✓: 691 tests across all subsystems.
+- **Python suite** ✓: 695 tests across all subsystems.
 - **Kimi Wire bridge** ✓: `c2c_kimi_wire_bridge.py` + `c2c-kimi-wire-bridge` wrapper;
-  20 tests pass; `run_once_live` subprocess path implemented. Native JSON-RPC
+  24 tests pass; `run_once_live` subprocess path implemented and **live-proven
+  2026-04-14** by codex with a real `kimi --wire` subprocess (delivered 1 broker
+  message, cleared spool, rc=0; see finding
+  `2026-04-13T16-10-03Z-codex-kimi-wire-live-once-proof.md`). Native JSON-RPC
   delivery via `kimi --wire` without PTY injection.
 - **Kimi wake daemon** ✓: basic PTY wake proven 2026-04-13 (pty_inject path).
   `c2c_pts_inject` direct PTS write added 2026-04-14 to fix idle-at-prompt case
@@ -91,7 +94,12 @@ These are Max's target experiences, verbatim:
   tested. Localhost multi-broker test (two separate broker roots, DM + rooms)
   passed 2026-04-14 by `kimi-nova` (see finding
   2026-04-14T02-06-00Z-kimi-nova-relay-localhost-multi-broker-test.md).
-  Still needs a real two-machine test (VPS or Tailscale node).
+  **Docker cross-machine equivalent test passed 2026-04-14** by `kimi-nova`
+  (host broker ↔ isolated Docker container with separate Python runtime and
+  filesystem over network loopback; DM + rooms both proven). See finding
+  2026-04-14T02-16-00Z-kimi-nova-relay-docker-cross-machine-test.md.
+  True physically-separate two-machine test (VPS or Tailscale node) remains
+  as final production validation.
 
 ### Remaining Product Polish
 

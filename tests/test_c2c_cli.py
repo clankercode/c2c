@@ -3503,7 +3503,7 @@ class C2CInjectUnitTests(unittest.TestCase):
         self.assertEqual(payload["payload"], "raw prompt")
         self.assertFalse(payload["dry_run"])
 
-    def test_inject_kimi_client_uses_pts_inject_not_pty_inject(self):
+    def test_inject_kimi_client_uses_master_pty_with_default_delay(self):
         stdout = io.StringIO()
 
         with (
@@ -3526,11 +3526,17 @@ class C2CInjectUnitTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
-        pty_inject.assert_not_called()
-        pts_inject.assert_called_once_with("12", "wake prompt")
+        pts_inject.assert_not_called()
+        pty_inject.assert_called_once_with(
+            44444,
+            "12",
+            "wake prompt",
+            submit_delay=1.5,
+        )
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["client"], "kimi")
         self.assertEqual(payload["payload"], "wake prompt")
+        self.assertEqual(payload["submit_delay"], 1.5)
         self.assertFalse(payload["dry_run"])
 
     def test_inject_submit_delay_is_forwarded_to_pty_backend(self):
@@ -3772,7 +3778,7 @@ class C2CDeliverInboxUnitTests(unittest.TestCase):
         self.assertEqual(payload["delivered"], 0)
         self.assertTrue(payload["notified"])
 
-    def test_deliver_inbox_kimi_notify_only_uses_pts_inject(self):
+    def test_deliver_inbox_kimi_notify_only_uses_master_pty_with_default_delay(self):
         broker_root = Path(self.temp_dir.name) / "mcp-broker"
         broker_root.mkdir()
         inbox_path = broker_root / "kimi-nova.inbox.json"
@@ -3813,9 +3819,11 @@ class C2CDeliverInboxUnitTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
-        pty_inject.assert_not_called()
-        pts_inject.assert_called_once()
-        payload_text = pts_inject.call_args.args[1]
+        pts_inject.assert_not_called()
+        pty_inject.assert_called_once()
+        self.assertEqual(pty_inject.call_args.args[:2], (44444, "12"))
+        self.assertEqual(pty_inject.call_args.kwargs, {"submit_delay": 1.5})
+        payload_text = pty_inject.call_args.args[2]
         self.assertIn("mcp__c2c__poll_inbox", payload_text)
         self.assertIn('source="broker-notify"', payload_text)
         self.assertNotIn("secret content", payload_text)

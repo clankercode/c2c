@@ -15,6 +15,8 @@ import c2c_poll_inbox
 import c2c_poker
 import c2c_pts_inject
 
+KIMI_SUBMIT_DELAY = 1.5
+
 
 def peek_inbox(broker_root: Path, session_id: str) -> list[dict[str, Any]]:
     path = c2c_poll_inbox.inbox_path(broker_root, session_id)
@@ -226,6 +228,29 @@ def watched_pid_exited(watched_pid: int | None) -> bool:
     return watched_pid is not None and not pid_is_alive(watched_pid)
 
 
+def effective_submit_delay(client: str, submit_delay: float | None) -> float | None:
+    if submit_delay is not None:
+        return submit_delay
+    if client == "kimi":
+        return KIMI_SUBMIT_DELAY
+    return None
+
+
+def inject_payload(
+    *,
+    client: str,
+    terminal_pid: int,
+    pts: str,
+    payload: str,
+    submit_delay: float | None,
+) -> None:
+    delay = effective_submit_delay(client, submit_delay)
+    if delay is None:
+        c2c_poker.inject(terminal_pid, pts, payload)
+    else:
+        c2c_poker.inject(terminal_pid, pts, payload, submit_delay=delay)
+
+
 def messages_signature(messages: list[dict[str, Any]]) -> str:
     if not messages:
         return ""
@@ -243,6 +268,7 @@ def deliver_once(
     timeout: float,
     file_fallback: bool,
     notify_only: bool,
+    submit_delay: float | None = None,
     suppress_notify: bool = False,
 ) -> dict[str, Any]:
     notified = False
@@ -253,10 +279,13 @@ def deliver_once(
         delivered = 0
         if notify_only and messages and not dry_run and not suppress_notify:
             payload = notify_payload(session_id=session_id, count=len(messages))
-            if client == "kimi":
-                c2c_pts_inject.inject(pts, payload)
-            else:
-                c2c_poker.inject(terminal_pid, pts, payload)
+            inject_payload(
+                client=client,
+                terminal_pid=terminal_pid,
+                pts=pts,
+                payload=payload,
+                submit_delay=submit_delay,
+            )
             notified = True
     else:
         source, messages = c2c_poll_inbox.poll_inbox(
@@ -267,10 +296,13 @@ def deliver_once(
             allow_file_fallback=True,
         )
         for message in messages:
-            if client == "kimi":
-                c2c_pts_inject.inject(pts, message_payload(message))
-            else:
-                c2c_poker.inject(terminal_pid, pts, message_payload(message))
+            inject_payload(
+                client=client,
+                terminal_pid=terminal_pid,
+                pts=pts,
+                payload=message_payload(message),
+                submit_delay=submit_delay,
+            )
 
     return build_result(
         session_id=session_id,
@@ -297,6 +329,7 @@ def run_loop(
     timeout: float,
     file_fallback: bool,
     notify_only: bool,
+    submit_delay: float | None,
     notify_debounce: float,
     interval: float,
     max_iterations: int | None,
@@ -332,6 +365,7 @@ def run_loop(
             timeout=timeout,
             file_fallback=file_fallback,
             notify_only=notify_only,
+            submit_delay=submit_delay,
             suppress_notify=suppress_notify,
         )
         if notify_only and last_result.get("notified"):
@@ -393,6 +427,12 @@ def main(argv: list[str] | None = None) -> int:
         default=30.0,
         help="minimum seconds between repeated notify-only nudges (default: 30)",
     )
+    parser.add_argument(
+        "--submit-delay",
+        type=float,
+        default=None,
+        help="override delay between bracketed paste and Enter for PTY injection",
+    )
     parser.add_argument("--loop", action="store_true", help="keep polling and delivering")
     parser.add_argument("--interval", type=float, default=1.0)
     parser.add_argument("--max-iterations", type=int, default=None)
@@ -453,6 +493,7 @@ def main(argv: list[str] | None = None) -> int:
                 timeout=args.timeout,
                 file_fallback=args.file_fallback,
                 notify_only=args.notify_only,
+                submit_delay=args.submit_delay,
                 notify_debounce=args.notify_debounce,
                 interval=args.interval,
                 max_iterations=args.max_iterations,
@@ -469,6 +510,7 @@ def main(argv: list[str] | None = None) -> int:
                 timeout=args.timeout,
                 file_fallback=args.file_fallback,
                 notify_only=args.notify_only,
+                submit_delay=args.submit_delay,
             )
     except Exception as exc:
         print(f"[c2c-deliver-inbox] {exc}", file=sys.stderr)

@@ -16,11 +16,19 @@ Codex does not have a PostToolUse hook. Instead, a `c2c_deliver_inbox.py --notif
 
 ---
 
-## ~~Kimi Code Idle Delivery Gap~~ (Fixed)
+## Kimi Code Idle Delivery Is Sensitive To PTY Submit Timing
 
-~~When a Kimi Code TUI session is sitting idle at its prompt (waiting for user input), PTY-injected wake prompts do **not** cause Kimi to call `mcp__c2c__poll_inbox`. Messages queued in Kimi's inbox during the idle period are not drained until Kimi is actively processing a turn.~~
+When a Kimi Code TUI session is sitting idle at its prompt, PTY wake prompts
+can appear in the terminal without starting a turn if they are written to the
+wrong side of the PTY or if Enter arrives before the paste is accepted.
 
-**Fixed:** `c2c_pts_inject.py` writes plain text directly to `/dev/pts/<N>`, bypassing the bracketed-paste sequences that Kimi's `prompt_toolkit` inserts into the buffer without auto-submitting when idle. The `c2c-kimi-wake` daemon and managed `run-kimi-inst-rearm` both use this path. Live-proven 2026-04-14 by `kimi-nova` draining a broker-native DM while idle at the prompt. Added in `c88ab4c`, tests in `5086db4`, live proof in `df106c2`.
+**Current fix:** Kimi wake/inject routes use the master-side `pty_inject`
+backend with a default 1.5s submit delay. Do not use direct `/dev/pts/<N>`
+slave writes for interactive input; they are display-side writes and can show
+text without delivering it to Kimi stdin.
+
+**Preferred path:** Use `c2c-kimi-wire-bridge` for native Kimi delivery when
+possible. Keep PTY wake as the manual TUI fallback.
 
 ---
 

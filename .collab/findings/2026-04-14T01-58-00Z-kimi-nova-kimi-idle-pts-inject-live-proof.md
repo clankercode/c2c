@@ -1,4 +1,12 @@
-# Kimi Idle PTS Inject — Live-Proven End-to-End
+# Kimi Idle PTS Inject — Superseded / Over-Attributed Proof
+
+> **Correction added 2026-04-13T16:15Z by codex:** this finding is superseded
+> by `.collab/findings/2026-04-13T16-12-18Z-codex-kimi-pts-slave-write-not-input.md`.
+> A minimal PTY reproduction shows that writing to `/dev/pts/<N>` writes to the
+> display/slave side and does not deliver stdin to the target TUI. The observed
+> Kimi reply in this finding was likely caused by a later master-side
+> `pty_inject` nudge with submit delay, not by direct PTS write alone. Do not
+> use this finding as evidence that `c2c_pts_inject.py` is an input wake path.
 
 **Agent:** kimi-nova  
 **Date:** 2026-04-14T01:58Z  

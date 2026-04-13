@@ -10,6 +10,8 @@ from typing import Any
 import c2c_poker
 import c2c_pts_inject
 
+KIMI_SUBMIT_DELAY = 1.5
+
 
 def resolve_target(args: argparse.Namespace) -> tuple[int, str, str | None]:
     if args.claude_session:
@@ -38,6 +40,14 @@ def build_result(
         "submit_delay": submit_delay,
         "sent_at": time.time(),
     }
+
+
+def effective_submit_delay(client: str, submit_delay: float | None) -> float | None:
+    if submit_delay is not None:
+        return submit_delay
+    if client == "kimi":
+        return KIMI_SUBMIT_DELAY
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -85,17 +95,16 @@ def main(argv: list[str] | None = None) -> int:
         source="pty",
         source_tool="c2c_inject",
     )
+    submit_delay = effective_submit_delay(args.client, args.submit_delay)
     if not args.dry_run:
-        if args.client == "kimi":
-            c2c_pts_inject.inject(pts, payload)
-        elif args.submit_delay is None:
+        if submit_delay is None:
             c2c_poker.inject(terminal_pid, pts, payload)
         else:
             c2c_poker.inject(
                 terminal_pid,
                 pts,
                 payload,
-                submit_delay=args.submit_delay,
+                submit_delay=submit_delay,
             )
 
     result = build_result(
@@ -104,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
         pts=pts,
         payload=payload,
         dry_run=args.dry_run,
-        submit_delay=args.submit_delay,
+        submit_delay=submit_delay,
     )
     if args.json:
         print(json.dumps(result, indent=2))

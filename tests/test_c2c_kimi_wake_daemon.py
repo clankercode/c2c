@@ -13,42 +13,57 @@ if str(REPO) not in sys.path:
 import c2c_kimi_wake_daemon
 
 
-class KimiWakeDaemonPtsInjectTests(unittest.TestCase):
-    def test_pts_inject_calls_c2c_pts_inject_with_correct_args(self):
-        mock_inject = mock.MagicMock()
-        with mock.patch("c2c_kimi_wake_daemon.c2c_pts_inject") as mock_mod:
-            mock_mod.inject = mock_inject
-            result = c2c_kimi_wake_daemon.pts_inject(7, "wake up", dry_run=False)
+class KimiWakeDaemonPtyInjectTests(unittest.TestCase):
+    def test_wake_inject_uses_master_pty_with_default_delay(self):
+        with mock.patch("c2c_kimi_wake_daemon.c2c_poker.inject") as mock_inject:
+            result = c2c_kimi_wake_daemon.wake_inject(
+                terminal_pid=44444,
+                pts=7,
+                message="wake up",
+                dry_run=False,
+            )
 
         self.assertTrue(result)
-        mock_inject.assert_called_once_with(7, "wake up")
+        mock_inject.assert_called_once_with(44444, "7", "wake up", submit_delay=1.5)
 
-    def test_pts_inject_dry_run_skips_inject(self):
-        mock_inject = mock.MagicMock()
-        with mock.patch("c2c_kimi_wake_daemon.c2c_pts_inject") as mock_mod:
-            mock_mod.inject = mock_inject
-            result = c2c_kimi_wake_daemon.pts_inject(7, "wake up", dry_run=True)
+    def test_wake_inject_dry_run_skips_inject(self):
+        with mock.patch("c2c_kimi_wake_daemon.c2c_poker.inject") as mock_inject:
+            result = c2c_kimi_wake_daemon.wake_inject(
+                terminal_pid=44444,
+                pts=7,
+                message="wake up",
+                dry_run=True,
+            )
 
         self.assertTrue(result)
         mock_inject.assert_not_called()
 
-    def test_pts_inject_returns_false_on_exception(self):
-        with mock.patch("c2c_kimi_wake_daemon.c2c_pts_inject") as mock_mod:
-            mock_mod.inject.side_effect = PermissionError("permission denied")
-            result = c2c_kimi_wake_daemon.pts_inject(7, "wake up", dry_run=False)
+    def test_wake_inject_returns_false_on_exception(self):
+        with mock.patch("c2c_kimi_wake_daemon.c2c_poker.inject") as mock_inject:
+            mock_inject.side_effect = PermissionError("permission denied")
+            result = c2c_kimi_wake_daemon.wake_inject(
+                terminal_pid=44444,
+                pts=7,
+                message="wake up",
+                dry_run=False,
+            )
 
         self.assertFalse(result)
 
-    def test_pts_inject_does_not_use_subprocess_pty_inject_binary(self):
-        """Ensure we never fall back to the old pty_inject subprocess binary."""
+    def test_wake_inject_does_not_use_pts_slave_writer(self):
         with (
-            mock.patch("c2c_kimi_wake_daemon.c2c_pts_inject") as mock_mod,
-            mock.patch("subprocess.run") as mock_subproc,
+            mock.patch("c2c_kimi_wake_daemon.c2c_poker.inject") as mock_inject,
+            mock.patch("c2c_kimi_wake_daemon.c2c_pts_inject.inject") as pts_inject,
         ):
-            mock_mod.inject = mock.MagicMock()
-            c2c_kimi_wake_daemon.pts_inject(7, "wake up", dry_run=False)
+            c2c_kimi_wake_daemon.wake_inject(
+                terminal_pid=44444,
+                pts=7,
+                message="wake up",
+                dry_run=False,
+            )
 
-        mock_subproc.assert_not_called()
+        mock_inject.assert_called_once()
+        pts_inject.assert_not_called()
 
 
 class KimiWakeDaemonInboxTests(unittest.TestCase):

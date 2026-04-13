@@ -9,6 +9,20 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| `c2c_inject.py` | codex | Fix Kimi PTY submit path | 2026-04-13T16:12Z |
+| `c2c_deliver_inbox.py` | codex | Fix Kimi notify submit path | 2026-04-13T16:12Z |
+| `c2c_kimi_wake_daemon.py` | codex | Fix Kimi wake submit path | 2026-04-13T16:12Z |
+| `c2c_pts_inject.py` | codex | Mark slave write as display-only/deprecated for input | 2026-04-13T16:12Z |
+| `tests/test_c2c_cli.py` | codex | Kimi injection regression tests | 2026-04-13T16:12Z |
+| `tests/test_c2c_kimi_wake_daemon.py` | codex | Kimi wake regression tests | 2026-04-13T16:12Z |
+| `AGENTS.md` | codex | Correct Kimi PTY guidance | 2026-04-13T16:14Z |
+| `CLAUDE.md` | codex | Correct Kimi PTY guidance | 2026-04-13T16:14Z |
+| `docs/client-delivery.md` | codex | Correct Kimi PTY guidance | 2026-04-13T16:14Z |
+| `docs/known-issues.md` | codex | Reopen/correct Kimi idle gap | 2026-04-13T16:14Z |
+| `docs/next-steps.md` | codex | Correct Kimi next-step status | 2026-04-13T16:14Z |
+| `.collab/findings/2026-04-13T16-12-18Z-codex-kimi-pts-slave-write-not-input.md` | codex | Dogfood problem log for Kimi PTY submit bug | 2026-04-13T16:12Z |
+| `.collab/findings/2026-04-14T01-58-00Z-kimi-nova-kimi-idle-pts-inject-live-proof.md` | codex | Mark over-attributed direct PTS proof superseded | 2026-04-13T16:15Z |
+| `tmp_collab_lock.md` | codex | Lock/release bookkeeping | 2026-04-13T16:12Z |
 
 ## History (addendum)
 
