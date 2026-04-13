@@ -64,8 +64,13 @@ def check_registry(broker_root: Path) -> dict[str, Any]:
     return result
 
 
-def check_session(broker_root: Path) -> dict[str, Any]:
-    """Check current session registration and inbox."""
+def check_session(broker_root: Path, session_id: str | None = None) -> dict[str, Any]:
+    """Check current session registration and inbox.
+
+    If session_id is given, check that session directly without resolving
+    the caller's identity from env vars.  Useful for operator health checks
+    run outside an agent context.
+    """
     result = {
         "resolved": False,
         "registered": False,
@@ -73,30 +78,45 @@ def check_session(broker_root: Path) -> dict[str, Any]:
         "session_id": None,
         "inbox_exists": False,
         "inbox_writable": False,
+        "operator_check": session_id is not None,  # True when bypassing identity resolution
     }
 
     try:
-        _, registration = c2c_whoami.resolve_identity(None)
-        result["resolved"] = True
+        if session_id is not None:
+            # Operator mode: look up this session in the registry directly
+            registry_path = broker_root / "registry.json"
+            registrations = c2c_mcp.load_broker_registrations(registry_path)
+            registration = next(
+                (r for r in registrations if r.get("session_id") == session_id),
+                None,
+            )
+            result["resolved"] = True
+            if registration:
+                result["registered"] = True
+                result["alias"] = registration.get("alias")
+                result["session_id"] = registration.get("session_id")
+        else:
+            _, registration = c2c_whoami.resolve_identity(None)
+            result["resolved"] = True
 
-        if registration:
-            result["registered"] = True
-            result["alias"] = registration.get("alias")
-            result["session_id"] = registration.get("session_id")
+            if registration:
+                result["registered"] = True
+                result["alias"] = registration.get("alias")
+                result["session_id"] = registration.get("session_id")
 
-            # Check inbox
-            if result["session_id"]:
-                inbox_path = broker_root / f"{result['session_id']}.inbox.json"
-                result["inbox_exists"] = inbox_path.exists()
+        # Check inbox
+        sid = result["session_id"]
+        if sid:
+            inbox_path = broker_root / f"{sid}.inbox.json"
+            result["inbox_exists"] = inbox_path.exists()
 
-                if inbox_path.exists():
-                    try:
-                        # Try to read and write back (no-op if same content)
-                        current = json.loads(inbox_path.read_text())
-                        inbox_path.write_text(json.dumps(current))
-                        result["inbox_writable"] = True
-                    except Exception:
-                        pass
+            if inbox_path.exists():
+                try:
+                    current = json.loads(inbox_path.read_text())
+                    inbox_path.write_text(json.dumps(current))
+                    result["inbox_writable"] = True
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -215,9 +235,9 @@ def check_dead_letter(broker_root: Path) -> dict[str, Any]:
     return result
 
 
-def run_health_check(broker_root: Path) -> dict[str, Any]:
+def run_health_check(broker_root: Path, session_id: str | None = None) -> dict[str, Any]:
     """Run full health check."""
-    session = check_session(broker_root)
+    session = check_session(broker_root, session_id=session_id)
     return {
         "ok": True,
         "broker_root": check_broker_root(broker_root),
@@ -261,11 +281,17 @@ def print_health_report(report: dict[str, Any]) -> None:
                 f"{inbox_status} Inbox: {'writable' if sess['inbox_writable'] else 'NOT writable'}"
             )
         else:
-            print("✗ Session: not registered")
-            print("    Run: c2c register <session-id>")
+            if sess.get("operator_check"):
+                print(f"✗ Session: session_id not found in registry")
+            else:
+                print("✗ Session: not registered")
+                print("    Run: c2c register <session-id>")
     else:
-        print("✗ Session: could not resolve identity")
-        print("    Set C2C_MCP_SESSION_ID or run c2c register")
+        if sess.get("operator_check"):
+            print("✗ Session: could not look up session")
+        else:
+            print("○ Session: no agent context (run inside Claude/Codex/OpenCode/Kimi for session check)")
+            print("    Tip: c2c health --session-id <id>  to check a specific session")
 
     # Rooms
     rooms = report["rooms"]
@@ -318,11 +344,20 @@ def print_health_report(report: dict[str, Any]) -> None:
     print()
 
     # Overall status
-    healthy = br["writable"] and sess["registered"] and sess["inbox_writable"]
+    # When no agent context is available (CLI run outside an agent), don't
+    # count the missing session as an issue — just assess broker health.
+    no_agent_context = not sess["resolved"] and not sess.get("operator_check")
+    if no_agent_context:
+        healthy = br["writable"]
+    else:
+        healthy = br["writable"] and sess["registered"] and sess["inbox_writable"]
 
     if healthy:
         print("Overall: HEALTHY")
-        print("You can send and receive c2c messages.")
+        if no_agent_context:
+            print("Broker is reachable. Run inside an agent or pass --session-id to check session health.")
+        else:
+            print("You can send and receive c2c messages.")
     else:
         print("Overall: ISSUES DETECTED")
         print("Fix the errors above before using c2c.")
@@ -336,6 +371,10 @@ def main(argv: list[str] | None = None) -> int:
         "--broker-root",
         type=Path,
         help="broker root directory (default: auto-detect)",
+    )
+    parser.add_argument(
+        "--session-id",
+        help="check this session_id specifically (operator mode; skips auto-detect)",
     )
     parser.add_argument(
         "--json",
@@ -354,7 +393,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             broker_root = Path(c2c_mcp.default_broker_root())
 
-    report = run_health_check(broker_root)
+    report = run_health_check(broker_root, session_id=args.session_id)
 
     if args.json:
         print(json.dumps(report, indent=2))
@@ -362,11 +401,16 @@ def main(argv: list[str] | None = None) -> int:
         print_health_report(report)
 
     # Return 0 if healthy, 1 if issues
-    healthy = (
-        report["broker_root"]["writable"]
-        and report["session"]["registered"]
-        and report["session"]["inbox_writable"]
-    )
+    sess = report["session"]
+    no_agent_context = not sess["resolved"] and not sess.get("operator_check")
+    if no_agent_context:
+        healthy = report["broker_root"]["writable"]
+    else:
+        healthy = (
+            report["broker_root"]["writable"]
+            and sess["registered"]
+            and sess["inbox_writable"]
+        )
 
     return 0 if healthy else 1
 
