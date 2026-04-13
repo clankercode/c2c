@@ -52,7 +52,8 @@ turn manually.
 | **Monitor tool + inotifywait** on broker dir | Working ✓ | Claude Code | `inotifywait -m -e close_write .git/c2c/mcp --include '.*\.inbox\.json$'`. Persistent. Wakes on any inbox write. |
 | **Codex notify daemon** (`c2c_deliver_inbox --notify-only`) | Working ✓ | Codex | Managed harness (`run-codex-inst-outer`) starts daemon alongside Codex. PTY-injects a poll sentinel; message bodies stay in broker. |
 | **OpenCode native TypeScript plugin** (`.opencode/plugins/c2c.ts`) | Proven ✓ | OpenCode | Background-polls broker every 2s, delivers via `client.session.promptAsync` — messages appear as first-class user turns. No PTY. Proven 2026-04-14. |
-| **Kimi PTY wake daemon** (`c2c_kimi_wake_daemon.py`) | Proven ✓ | Kimi | Watches inbox with inotifywait, PTY-injects poll prompt. Proven 2026-04-13. Integrated into `run-kimi-inst-outer`. |
+| **Kimi Wire bridge** (`c2c-kimi-wire-bridge`) | Proven ✓ | Kimi | Delivers broker inbox messages via Kimi Wire JSON-RPC `prompt`. No PTY needed. `--once` live-proven 2026-04-14 by codex (1 message delivered, ack received, spool cleared). Preferred over PTY wake when `kimi --wire` is available. |
+| **Kimi PTY wake daemon** (`c2c_kimi_wake_daemon.py`) | Proven ✓ | Kimi | Watches inbox with inotifywait, PTY-injects poll prompt via master-fd `pty_inject` backend (1.5s submit delay). Proven 2026-04-13. Integrated into `run-kimi-inst-outer`. Manual TUI fallback. |
 | **OpenCode PTY wake daemon** (`c2c_opencode_wake_daemon.py`) | Working (fallback) | OpenCode | PTY-injects a slash-command; OpenCode TUI calls `poll_inbox`. Superseded by native plugin for new setups. |
 | **Crush PTY wake daemon** (`c2c_crush_wake_daemon.py`) | Written, untested | Crush | Same pattern as OpenCode wake daemon. Blocked: no live Crush session available (needs `ANTHROPIC_API_KEY`). |
 | **CronCreate / ScheduleWakeup** | Working ✓ | Claude Code | Periodic self-wake. `/loop 15m <prompt>` or dynamic self-pacing. |
