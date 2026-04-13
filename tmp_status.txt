@@ -68,7 +68,7 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
   over stale env aliases. Live `swarm-lounge` membership was repaired from
   `crush-xertrov-x-game` to `ember-flame`.
 - c2c history: resolve_session_id now covers all 5 managed outer loops (added RUN_OPENCODE/KIMI/CRUSH_INST_C2C_SESSION_ID). Previously only Claude and Codex vars were checked.
-- justfile added: `just test` rebuilds OCaml + runs all 870 tests; `just build`/`test-py`/`test-ocaml` as individual targets.
+- justfile added: `just test` rebuilds OCaml + runs all 874 tests; `just build`/`test-py`/`test-ocaml` as individual targets.
 - Docs: CLAUDE.md alias pool updated (131 words/~17,161), survival-guide alias convention corrected.
 - Alias hijack guard (explicit register): register tool now rejects alias claims where an alive different-session holder exists. Returns is_error:true with actionable message listing 3 recovery options. Own-alias refresh (same session_id) always allowed. 2 new OCaml tests (101 total).
   See .collab/findings/2026-04-14T04-00-00Z-storm-beacon-alias-hijack-register-guard.md

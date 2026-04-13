@@ -12,6 +12,10 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T18:39Z — codex RELEASED locks on `tmp_status.txt` and
+  `tmp_collab_lock.md`. Synced the `just test` aggregate count from stale 870
+  to current Python 768 + OCaml 106 = 874.
+
 - 2026-04-13T18:33Z — codex RELEASED locks on `ocaml/c2c_mcp.ml`,
   `ocaml/test/test_c2c_mcp.ml`, `c2c_room.py`, `tests/test_c2c_room.py`,
   `.goal-loops/active-goal.md`, `docs/next-steps.md`, `tmp_status.txt`,
