@@ -15,6 +15,7 @@ permalink: /next-steps/
 
 ## Recently Completed
 
+- **broker-gc registry locking** ✓ — `sweep_dead_registrations` now holds POSIX fcntl.lockf on `registry.json.lock` (same sidecar as OCaml's `Unix.lockf`) for the entire read-decide-write cycle; writes are atomic (temp file + `os.fsync` + `os.replace`). Prevents the race where Python GC and OCaml MCP server clobbered each other's registry writes. Key lesson: `c2c_registry.registry_write_lock` uses BSD `fcntl.flock`, which does NOT interlock with OCaml's POSIX `Unix.lockf` — always use `c2c_broker_gc.with_registry_lock` for the JSON broker registry (86be8f4, 2026-04-13).
 - **join_room updates stale session_id on alias rejoin** ✓ — when a managed session restarts with a new session_id (same alias), `join_room` now replaces the existing stale entry instead of adding a duplicate. Prevents room fanout duplication and enables `evict_dead_from_rooms` to evict by current session_id (4d69328, 95 OCaml + 292 Python tests, 2026-04-13).
 - **`c2c health` shows outer-loop status** ✓ — health check now reports which managed-harness outer loops are running and warns agents NOT to call sweep while they are active (sweep footgun guard). Also shows `safe_to_sweep: false` in JSON output (930d424, 2026-04-13).
 - **broker-gc dead-letter locking + `--dead-letter-ttl` / `--orphan-dead-letter-ttl` args** ✓ — `purge_old_dead_letter` and `purge_orphan_dead_letter` now hold POSIX fcntl.lockf on `dead-letter.jsonl.lock` sidecar (interlocks with OCaml); both TTLs configurable via CLI (407578a, 2026-04-13).

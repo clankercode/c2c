@@ -6505,6 +6505,33 @@ class SweepDeadRegistrationsTests(unittest.TestCase):
         regs = self._read_registry()
         self.assertEqual(len(regs), 1)
 
+    def test_lock_file_created_by_sweep(self):
+        """sweep_dead_registrations should create registry.json.lock (POSIX lockf sidecar)."""
+        import c2c_broker_gc
+
+        self._write_registry([{"alias": "live", "session_id": "s1", "pid": os.getpid()}])
+        c2c_broker_gc.sweep_dead_registrations(self.broker_root)
+        lock_path = self.broker_root / "registry.json.lock"
+        self.assertTrue(lock_path.exists(), "registry.json.lock should exist after sweep")
+
+    def test_atomic_write_no_temp_files(self):
+        """sweep_dead_registrations should leave no .tmp files behind."""
+        import c2c_broker_gc
+
+        dead_pid = self._dead_pid()
+        self._write_registry([{"alias": "dead", "session_id": "s1", "pid": dead_pid}])
+        c2c_broker_gc.sweep_dead_registrations(self.broker_root)
+        tmp_files = list(self.broker_root.glob(".registry.json.*.tmp"))
+        self.assertEqual(tmp_files, [], f"no temp files should remain: {tmp_files}")
+
+    def test_with_registry_lock_interlocks(self):
+        """with_registry_lock must produce the registry.json.lock sidecar used by OCaml."""
+        import c2c_broker_gc
+
+        with c2c_broker_gc.with_registry_lock(self.broker_root):
+            lock_path = self.broker_root / "registry.json.lock"
+            self.assertTrue(lock_path.exists())
+
 
 def result_code(result):
     return result.returncode
