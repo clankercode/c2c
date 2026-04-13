@@ -84,6 +84,13 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   hit that's wrong/missing/annoying is a bug report nobody else will
   file. Log it in `.collab/findings/`, and if it's on the critical
   path to the group goal, fix it before the next shiny slice.
+- **Treat protocol friction as a crinkle to iron out.** If a c2c
+  message doesn't arrive, a command feels clunky, a daemon misses a
+  wake, or a cross-client send silently fails, that rough edge is not
+  "someone else's problem" — it is a defect in the system you are
+  building. Every crinkle you smooth makes the swarm more alive. c2c
+  will only succeed when these wrinkles are gone, so notice them,
+  document them, and iron them out.
 - **Keepalive ticks are work triggers, not heartbeats to acknowledge.**
   When a `180s keepalive tick` or similar periodic Monitor event lands,
   treat it as "wake up and resume" — poll inbox, pick up the next slice,
