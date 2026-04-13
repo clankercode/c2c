@@ -952,33 +952,28 @@ module Broker = struct
       invalid_arg ("invalid room_id: " ^ room_id);
     with_room_members_lock t ~room_id (fun () ->
         let members = load_room_members t ~room_id in
-        (* Exact match: same alias AND same session_id — already a member, no-op *)
-        let exact_match =
-          List.exists
-            (fun m -> m.rm_alias = alias && m.rm_session_id = session_id)
+        (* Same alias with a new session_id is a restart. Same session_id with
+           a new alias is a rename. In both cases there must be only one member
+           row, otherwise room fanout and social presence duplicate the peer. *)
+        let existing =
+          List.find_opt
+            (fun m -> m.rm_alias = alias || m.rm_session_id = session_id)
             members
         in
-        if exact_match then members
-        else begin
-          (* Same alias, different session_id: the session was restarted.
-             Replace the old entry so we don't accumulate duplicates and so
-             evict_dead_from_rooms can evict by the current session_id. *)
-          let has_alias =
-            List.exists (fun m -> m.rm_alias = alias) members
-          in
-          let now = Unix.gettimeofday () in
-          let member = { rm_alias = alias; rm_session_id = session_id; joined_at = now } in
-          let updated =
-            if has_alias then
-              List.map
-                (fun m -> if m.rm_alias = alias then member else m)
-                members
-            else
-              members @ [ member ]
-          in
-          save_room_members t ~room_id updated;
-          updated
-        end)
+        let joined_at =
+          match existing with
+          | Some m -> m.joined_at
+          | None -> Unix.gettimeofday ()
+        in
+        let member = { rm_alias = alias; rm_session_id = session_id; joined_at } in
+        let kept =
+          List.filter
+            (fun m -> m.rm_alias <> alias && m.rm_session_id <> session_id)
+            members
+        in
+        let updated = kept @ [ member ] in
+        if updated <> members then save_room_members t ~room_id updated;
+        updated)
 
   let leave_room t ~room_id ~alias =
     if not (valid_room_id room_id) then
@@ -988,6 +983,22 @@ module Broker = struct
         let updated = List.filter (fun m -> m.rm_alias <> alias) members in
         save_room_members t ~room_id updated;
         updated)
+
+  let rename_room_member_alias t ~room_id ~session_id ~new_alias =
+    if not (valid_room_id room_id) then
+      invalid_arg ("invalid room_id: " ^ room_id);
+    with_room_members_lock t ~room_id (fun () ->
+        let members = load_room_members t ~room_id in
+        match List.find_opt (fun m -> m.rm_session_id = session_id) members with
+        | None -> members
+        | Some existing ->
+            let renamed = { existing with rm_alias = new_alias } in
+            let without_session =
+              List.filter (fun m -> m.rm_session_id <> session_id) members
+            in
+            let updated = without_session @ [ renamed ] in
+            save_room_members t ~room_id updated;
+            updated)
 
   (* Evict dead sessions from all room member lists.  Called as part of
      the sweep tool so dead sessions don't linger as room members after
@@ -1513,6 +1524,15 @@ let auto_join_rooms_startup ~broker_root =
           |> List.filter (fun s -> s <> "")
         in
         let broker = Broker.create ~root:broker_root in
+        let alias =
+          match
+            List.find_opt
+              (fun reg -> reg.session_id = session_id)
+              (Broker.list_registrations broker)
+          with
+          | Some reg -> reg.alias
+          | None -> alias
+        in
         List.iter
           (fun room_id ->
             if Broker.valid_room_id room_id then
@@ -1633,6 +1653,14 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                 ~is_error:true)
        | None ->
            Broker.register broker ~session_id ~alias ~pid ~pid_start_time;
+           List.iter
+             (fun room_id ->
+               try
+                 ignore
+                   (Broker.rename_room_member_alias broker ~room_id ~session_id
+                      ~new_alias:alias)
+               with _ -> ())
+             rooms_to_notify;
            (* Fan out peer-renamed notification to rooms the session was in. *)
            (match old_alias_opt with
             | None -> ()

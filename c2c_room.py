@@ -129,15 +129,32 @@ def join_room(
             m.get("alias") == alias and m.get("session_id") == session_id
             for m in members
         )
-        if not already:
-            members.append(
-                {
-                    "alias": alias,
-                    "session_id": session_id,
-                    "joined_at": time.time(),
-                }
-            )
-            write_json_atomic(members_path, members)
+        existing = next(
+            (
+                m
+                for m in members
+                if m.get("alias") == alias or m.get("session_id") == session_id
+            ),
+            None,
+        )
+        joined_at = (
+            existing.get("joined_at")
+            if isinstance(existing, dict) and "joined_at" in existing
+            else time.time()
+        )
+        member = {
+            "alias": alias,
+            "session_id": session_id,
+            "joined_at": joined_at,
+        }
+        updated = [
+            m
+            for m in members
+            if m.get("alias") != alias and m.get("session_id") != session_id
+        ]
+        updated.append(member)
+        if updated != members:
+            write_json_atomic(members_path, updated)
     return {
         "ok": True,
         "room_id": room_id,

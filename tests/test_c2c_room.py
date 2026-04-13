@@ -63,6 +63,32 @@ class RoomJoinLeaveTests(unittest.TestCase):
             )
             self.assertEqual(len(members), 1)
 
+    def test_join_updates_alias_when_session_rejoins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = Path(tmp)
+            c2c_room.join_room("lobby", "old-alias", "sid-1", broker)
+            result = c2c_room.join_room("lobby", "new-alias", "sid-1", broker)
+            self.assertFalse(result["already_member"])
+            members = c2c_room.load_json_list(
+                broker / "rooms" / "lobby" / "members.json"
+            )
+            self.assertEqual(len(members), 1)
+            self.assertEqual(members[0]["alias"], "new-alias")
+            self.assertEqual(members[0]["session_id"], "sid-1")
+
+    def test_join_updates_session_id_when_alias_rejoins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = Path(tmp)
+            c2c_room.join_room("lobby", "storm-beacon", "old-sid", broker)
+            result = c2c_room.join_room("lobby", "storm-beacon", "new-sid", broker)
+            self.assertFalse(result["already_member"])
+            members = c2c_room.load_json_list(
+                broker / "rooms" / "lobby" / "members.json"
+            )
+            self.assertEqual(len(members), 1)
+            self.assertEqual(members[0]["alias"], "storm-beacon")
+            self.assertEqual(members[0]["session_id"], "new-sid")
+
     def test_leave_removes_member(self):
         with tempfile.TemporaryDirectory() as tmp:
             broker = Path(tmp)

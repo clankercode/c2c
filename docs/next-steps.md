@@ -13,9 +13,10 @@ permalink: /next-steps/
 ## Recently Completed
 
 - **Crush interactive TUI wake proof** ✓ — Codex sent a direct
-  broker-native MCP DM to the live `crush-xertrov-x-game` TUI, the notify-only
-  daemon injected only a PTY poll nudge, Crush called `mcp__c2c__poll_inbox`,
-  and Crush replied directly to Codex via MCP with marker
+  broker-native MCP DM to the live `crush-xertrov-x-game` TUI (now renamed
+  `ember-flame`), the notify-only daemon injected only a PTY poll nudge, Crush
+  called `mcp__c2c__poll_inbox`, and Crush replied directly to Codex via MCP
+  with marker
   `CRUSH_INTERACTIVE_WAKE_ACK 1776101709` (2026-04-13T17:35Z). This proves
   Codex<->Crush active-session delivery; other sender pairs into Crush still
   need per-pair proof if the matrix requires it. See finding
@@ -101,7 +102,7 @@ permalink: /next-steps/
 - ~~Prove remaining DM matrix entries~~ OpenCode↔OpenCode ✓, Codex↔Codex ✓, Kimi↔Codex ✓, Kimi↔Claude Code ✓, Kimi↔OpenCode ✓, Codex↔Crush ✓. Crush one-shot MCP poll-and-reply is live-proven; Codex<->Crush active TUI wake is also live-proven.
 - **OCaml edge-case coverage** ✓ — room history pagination, multi-sender attribution, large inbox drain, registered_at, session hijack guard, peer-renamed fan-out, sweep room eviction, dead-letter alias-match, join_room session_id update (95 OCaml tests, 292 Python tests)
 - **Alias hijack guard on `register`** ✓ — explicit `register` now rejects alias claims held by an alive different session. Actionable error names the holder and gives 3 recovery options. Own-alias refresh (same session_id) always allowed. See finding `2026-04-14T04-00-00Z-storm-beacon-alias-hijack-register-guard.md`.
-- **Sender impersonation guard on `send`/`send_all`/`send_room`** ✓ — these tools now reject a `from_alias` that belongs to a different alive session with a real /proc-verified PID. Prevents confused or malicious callers from inserting messages attributed to a live peer. 104 OCaml tests total (2026-04-14).
+- **Sender impersonation guard on `send`/`send_all`/`send_room`** ✓ — these tools now reject a `from_alias` that belongs to a different alive session with a real /proc-verified PID. Prevents confused or malicious callers from inserting messages attributed to a live peer. 106 OCaml tests total (2026-04-14).
 - **Broker.register fresh-entry fix** ✓ — `Broker.register` now prepends fresh
   registrations in every branch after the recent alias-guard refactor; the bug
   silently dropped first-time registrations and broke smoke-test delivery until

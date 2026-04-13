@@ -984,6 +984,28 @@ let test_auto_join_rooms_startup_joins_listed_rooms () =
           check bool "joined swarm-lounge" true (List.mem "swarm-lounge" room_ids);
           check bool "joined design-review" true (List.mem "design-review" room_ids)))
 
+let test_auto_join_rooms_startup_prefers_registered_alias () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-social"
+        ~alias:"new-alias" ~pid:None ~pid_start_time:None;
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-social";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "old-env-alias";
+      Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "swarm-lounge";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+          Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "")
+        (fun () ->
+          C2c_mcp.auto_join_rooms_startup ~broker_root:dir;
+          let members =
+            C2c_mcp.Broker.read_room_members broker ~room_id:"swarm-lounge"
+          in
+          check (list string) "auto-join uses current registered alias"
+            [ "new-alias" ]
+            (List.map (fun m -> m.C2c_mcp.rm_alias) members)))
+
 let test_auto_join_rooms_startup_skips_when_no_alias () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "";
@@ -3376,7 +3398,15 @@ let test_register_rename_fans_out_peer_renamed_notification () =
                 with _ -> false)
               history
           in
-          check bool "peer_renamed in room history" true found))
+          check bool "peer_renamed in room history" true found;
+          let members =
+            C2c_mcp.Broker.read_room_members
+              (C2c_mcp.Broker.create ~root:dir)
+              ~room_id:"rename-test-room"
+          in
+          check (list string) "room member alias updated after rename"
+            [ "new-alias" ]
+            (List.map (fun m -> m.C2c_mcp.rm_alias) members)))
 
 let test_join_room_updates_session_id_on_alias_rejoin () =
   (* When the same alias joins a room twice with different session_ids
@@ -3397,6 +3427,24 @@ let test_join_room_updates_session_id_on_alias_rejoin () =
       let m = List.hd members in
       check string "alias preserved" "kimi-nova" m.C2c_mcp.rm_alias;
       check string "session_id updated to latest" "kimi-nova" m.C2c_mcp.rm_session_id)
+
+let test_join_room_updates_alias_on_session_rejoin () =
+  (* When the same session joins a room under a new alias, it is a rename,
+     not a second membership. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let _m1 =
+        C2c_mcp.Broker.join_room broker ~room_id:"test-room"
+          ~alias:"old-alias" ~session_id:"stable-session"
+      in
+      let members =
+        C2c_mcp.Broker.join_room broker ~room_id:"test-room"
+          ~alias:"new-alias" ~session_id:"stable-session"
+      in
+      check int "only one member after session alias rejoin" 1 (List.length members);
+      let m = List.hd members in
+      check string "alias updated to latest" "new-alias" m.C2c_mcp.rm_alias;
+      check string "session_id preserved" "stable-session" m.C2c_mcp.rm_session_id)
 
 (* send should reject if from_alias is held by an alive different session. *)
 let test_tools_call_send_rejects_impersonation () =
@@ -3596,6 +3644,8 @@ let () =
              test_auto_register_startup_skips_when_alive_session_owns_alias
          ; test_case "auto_join_rooms_startup joins listed rooms" `Quick
              test_auto_join_rooms_startup_joins_listed_rooms
+         ; test_case "auto_join_rooms_startup prefers current registered alias" `Quick
+             test_auto_join_rooms_startup_prefers_registered_alias
          ; test_case "auto_join_rooms_startup skips when no alias" `Quick
              test_auto_join_rooms_startup_skips_when_no_alias
          ; test_case "auto_join_rooms_startup empty env is noop" `Quick
@@ -3728,6 +3778,8 @@ let () =
              test_register_rename_fans_out_peer_renamed_notification
          ; test_case "join_room updates session_id when alias rejoins with new session" `Quick
              test_join_room_updates_session_id_on_alias_rejoin
+         ; test_case "join_room updates alias when session rejoins with new alias" `Quick
+             test_join_room_updates_alias_on_session_rejoin
          ; test_case "tools/call send rejects impersonation of alive alias" `Quick
              test_tools_call_send_rejects_impersonation
          ; test_case "tools/call send_all rejects impersonation of alive alias" `Quick

@@ -12,6 +12,24 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T18:33Z — codex RELEASED locks on `ocaml/c2c_mcp.ml`,
+  `ocaml/test/test_c2c_mcp.ml`, `c2c_room.py`, `tests/test_c2c_room.py`,
+  `.goal-loops/active-goal.md`, `docs/next-steps.md`, `tmp_status.txt`,
+  `.collab/findings/2026-04-13T18-23-00Z-codex-room-rename-membership-drift.md`,
+  and `tmp_collab_lock.md`. Extended the room rename fix so MCP startup
+  auto-join prefers the current registered alias, OCaml and Python room joins
+  deduplicate by alias or session ID, live `swarm-lounge` duplicate membership
+  was collapsed to `ember-flame`, and shared test counts are now Python 768 /
+  OCaml 106.
+
+- 2026-04-13T18:27Z — codex RELEASED locks on `ocaml/c2c_mcp.ml`,
+  `ocaml/test/test_c2c_mcp.ml`,
+  `.collab/findings/2026-04-13T18-23-00Z-codex-room-rename-membership-drift.md`,
+  `tmp_status.txt`, `docs/next-steps.md`, and `tmp_collab_lock.md`. Fixed
+  same-session register renames so room membership aliases follow the registry,
+  added a regression, documented the live drift, and repaired `swarm-lounge`
+  membership from `crush-xertrov-x-game` to `ember-flame`.
+
 - 2026-04-13T18:21Z — codex RELEASED locks on
   `.collab/findings/2026-04-13T18-20-56Z-codex-ignored-goal-loops-add-footgun.md`
   and `tmp_collab_lock.md`. Documented the ignored `.goal-loops` add footgun
