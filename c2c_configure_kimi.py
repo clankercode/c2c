@@ -72,6 +72,7 @@ def write_kimi_config(
         env["C2C_MCP_SESSION_ID"] = session_hint
     if alias_hint:
         env["C2C_MCP_AUTO_REGISTER_ALIAS"] = alias_hint
+    env["C2C_MCP_AUTO_JOIN_ROOMS"] = "swarm-lounge"
 
     c2c_config = {
         "type": "stdio",

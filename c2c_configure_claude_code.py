@@ -58,6 +58,7 @@ def build_mcp_entry(broker_root: Path, session_id: str | None, alias: str | None
         env["C2C_MCP_SESSION_ID"] = session_id
     if alias:
         env["C2C_MCP_AUTO_REGISTER_ALIAS"] = alias
+    env["C2C_MCP_AUTO_JOIN_ROOMS"] = "swarm-lounge"
     return {
         "type": "stdio",
         "command": "python3",

@@ -66,6 +66,7 @@ def build_toml_block(broker_root: Path, alias: str) -> str:
         f'C2C_MCP_BROKER_ROOT = "{broker_root}"',
         f'C2C_MCP_SESSION_ID = "{alias}"',
         f'C2C_MCP_AUTO_REGISTER_ALIAS = "{alias}"',
+        'C2C_MCP_AUTO_JOIN_ROOMS = "swarm-lounge"',
         "",
     ]
     for tool in C2C_TOOLS:
