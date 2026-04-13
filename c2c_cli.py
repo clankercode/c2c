@@ -45,15 +45,17 @@ SAFE_AUTO_APPROVE_SUBCOMMANDS = {
     "history",
     "smoke-test",
     "wake-peer",
+    "instances",
 }
 
 USAGE = (
     "usage: c2c "
     "<broker-gc|configure-claude-code|configure-codex|configure-crush|"
     "configure-kimi|configure-opencode|dead-letter|deliver-inbox|health|"
-    "history|init|inject|install|list|mcp|peek-inbox|poker-sweep|poll-inbox|"
-    "prune|refresh-peer|register|restart-me|room|send|send-all|setup|"
-    "smoke-test|status|sweep|verify|wake-peer|watch|whoami|wire-daemon> [...args]"
+    "history|init|inject|install|instances|list|mcp|peek-inbox|poker-sweep|"
+    "poll-inbox|prune|refresh-peer|register|restart|restart-me|room|send|"
+    "send-all|setup|smoke-test|start|status|stop|sweep|verify|wake-peer|"
+    "watch|whoami|wire-daemon> [...args]"
 )
 
 
@@ -188,6 +190,9 @@ def main(argv: list[str] | None = None) -> int:
     if subcommand == "wake-peer":
         import c2c_wake_peer
         return c2c_wake_peer.main(remainder)
+    if subcommand in ("start", "stop", "restart", "instances"):
+        import c2c_start
+        return c2c_start.main([subcommand, *remainder])
     if subcommand == "watch":
         return c2c_watch.main(remainder)
     if subcommand == "whoami":

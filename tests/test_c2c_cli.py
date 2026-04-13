@@ -369,6 +369,7 @@ class C2CCLITests(unittest.TestCase):
                 "c2c-init",
                 "c2c-inject",
                 "c2c-install",
+                "c2c-instances",
                 "c2c-kimi-wake",
                 "c2c-kimi-wire-bridge",
                 "c2c-list",
@@ -377,11 +378,14 @@ class C2CCLITests(unittest.TestCase):
                 "c2c-poll-inbox",
                 "c2c-prune",
                 "c2c-register",
+                "c2c-restart",
                 "c2c-restart-me",
                 "c2c-room",
                 "c2c-send",
                 "c2c-send-all",
                 "c2c-setup",
+                "c2c-start",
+                "c2c-stop",
                 "c2c-verify",
                 "c2c-wake-peer",
                 "c2c-watch",
@@ -9589,3 +9593,129 @@ class HealthCheckTmpSpaceTests(unittest.TestCase):
         result = self.c2c_health.check_tmp_space(bad_dir)
         self.assertFalse(result["checked"])
         self.assertIn("error", result)
+
+
+class C2CStartUnitTests(unittest.TestCase):
+    """Tests for c2c_start module."""
+
+    def setUp(self):
+        import c2c_start
+        self.c2c_start = c2c_start
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.instances_dir = Path(self.temp_dir.name) / "instances"
+        # Patch INSTANCES_DIR to point at temp dir.
+        self._orig_instances_dir = c2c_start.INSTANCES_DIR
+        c2c_start.INSTANCES_DIR = self.instances_dir
+
+    def tearDown(self):
+        self.c2c_start.INSTANCES_DIR = self._orig_instances_dir
+        self.temp_dir.cleanup()
+
+    def test_default_name_uses_client_and_hostname(self):
+        name = self.c2c_start.default_name("claude")
+        self.assertTrue(name.startswith("claude-"), name)
+
+    def test_default_name_different_per_client(self):
+        self.assertNotEqual(
+            self.c2c_start.default_name("codex"),
+            self.c2c_start.default_name("kimi"),
+        )
+
+    def test_invalid_client_rejected(self):
+        broker_root = Path(self.temp_dir.name)
+        buf = io.StringIO()
+        with mock.patch("sys.stderr", buf):
+            rc = self.c2c_start.cmd_start(
+                "nonexistent-client", "test-name", [], broker_root
+            )
+        self.assertEqual(rc, 1)
+        self.assertIn("nonexistent-client", buf.getvalue())
+
+    def test_invalid_client_rejected_json(self):
+        broker_root = Path(self.temp_dir.name)
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = self.c2c_start.cmd_start(
+                "nonexistent-client", "test-name", [], broker_root, json_out=True
+            )
+        self.assertEqual(rc, 1)
+        result = json.loads(buf.getvalue())
+        self.assertFalse(result["ok"])
+        self.assertIn("error", result)
+
+    def test_config_json_written_on_start(self):
+        broker_root = Path(self.temp_dir.name) / "broker"
+        # Mock run_outer_loop so it doesn't actually launch anything.
+        with mock.patch.object(self.c2c_start, "run_outer_loop", return_value=0):
+            rc = self.c2c_start.cmd_start("claude", "my-agent", ["--arg"], broker_root)
+        self.assertEqual(rc, 0)
+        cfg = self.c2c_start.load_instance_config("my-agent")
+        self.assertIsNotNone(cfg)
+        self.assertEqual(cfg["client"], "claude")
+        self.assertEqual(cfg["name"], "my-agent")
+        self.assertEqual(cfg["session_id"], "my-agent")
+        self.assertEqual(cfg["alias"], "my-agent")
+        self.assertEqual(cfg["extra_args"], ["--arg"])
+
+    def test_duplicate_name_rejected(self):
+        broker_root = Path(self.temp_dir.name) / "broker"
+        # Write a fake pidfile with the current process PID (alive).
+        inst_dir = self.instances_dir / "my-agent"
+        inst_dir.mkdir(parents=True, exist_ok=True)
+        (inst_dir / "outer.pid").write_text(str(os.getpid()))
+        buf = io.StringIO()
+        with mock.patch("sys.stderr", buf):
+            rc = self.c2c_start.cmd_start("claude", "my-agent", [], broker_root)
+        self.assertEqual(rc, 1)
+        self.assertIn("already running", buf.getvalue())
+
+    def test_stop_nonexistent_returns_error(self):
+        buf = io.StringIO()
+        with mock.patch("sys.stderr", buf):
+            rc = self.c2c_start.cmd_stop("no-such-instance")
+        self.assertEqual(rc, 1)
+
+    def test_stop_nonexistent_json_returns_error(self):
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = self.c2c_start.cmd_stop("no-such-instance", json_out=True)
+        self.assertEqual(rc, 1)
+        result = json.loads(buf.getvalue())
+        self.assertFalse(result["ok"])
+
+    def test_list_instances_empty(self):
+        instances = self.c2c_start.list_instances()
+        self.assertEqual(instances, [])
+
+    def test_list_instances_returns_configured(self):
+        broker_root = Path(self.temp_dir.name) / "broker"
+        with mock.patch.object(self.c2c_start, "run_outer_loop", return_value=0):
+            self.c2c_start.cmd_start("codex", "test-codex", [], broker_root)
+        instances = self.c2c_start.list_instances()
+        self.assertEqual(len(instances), 1)
+        self.assertEqual(instances[0]["name"], "test-codex")
+        self.assertEqual(instances[0]["client"], "codex")
+
+    def test_build_env_sets_required_vars(self):
+        broker_root = Path("/fake/broker")
+        env = self.c2c_start.build_env("my-agent", "claude", broker_root)
+        self.assertEqual(env["C2C_MCP_SESSION_ID"], "my-agent")
+        self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "my-agent")
+        self.assertEqual(env["C2C_MCP_BROKER_ROOT"], "/fake/broker")
+        self.assertEqual(env["C2C_MCP_AUTO_JOIN_ROOMS"], "swarm-lounge")
+        self.assertEqual(env["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
+
+    def test_instances_cli_empty_json(self):
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = self.c2c_start.main(["instances", "--json"])
+        self.assertEqual(rc, 0)
+        result = json.loads(buf.getvalue())
+        self.assertEqual(result, [])
+
+    def test_instances_cli_text_empty(self):
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = self.c2c_start.main(["instances"])
+        self.assertEqual(rc, 0)
+        self.assertIn("No c2c instances", buf.getvalue())
