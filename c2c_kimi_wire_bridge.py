@@ -26,6 +26,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -332,6 +333,66 @@ def run_once_live(
             pass
 
 
+def _has_pending_messages(broker_root: Path, session_id: str, spool_path: Path) -> bool:
+    """Return True if the spool or broker inbox has queued messages (non-destructive)."""
+    if C2CSpool(spool_path).read():
+        return True
+    try:
+        return bool(c2c_poll_inbox.file_fallback_peek(broker_root, session_id))
+    except Exception:
+        return False
+
+
+def run_loop_live(
+    *,
+    session_id: str,
+    alias: str,
+    broker_root: Path,
+    work_dir: Path,
+    command: str,
+    spool_path: Path,
+    timeout: float,
+    interval: float = 5.0,
+    max_iterations: int | None = None,
+) -> dict[str, Any]:
+    """Poll broker inbox every `interval` seconds; start Wire subprocess only when messages are queued.
+
+    This is the daemon mode for the Wire bridge: it runs forever (or until
+    `max_iterations`) and delivers batches via fresh Wire subprocesses.  The
+    pre-check via `file_fallback_peek` keeps it cheap when the inbox is empty —
+    no Wire subprocess is started until there is something to deliver.
+
+    Returns after `max_iterations` cycles (or immediately if interrupted).
+    """
+    iterations = 0
+    total_delivered = 0
+    errors = 0
+
+    while max_iterations is None or iterations < max_iterations:
+        if _has_pending_messages(broker_root, session_id, spool_path):
+            try:
+                result = run_once_live(
+                    session_id=session_id,
+                    alias=alias,
+                    broker_root=broker_root,
+                    work_dir=work_dir,
+                    command=command,
+                    spool_path=spool_path,
+                    timeout=timeout,
+                )
+                total_delivered += result.get("delivered", 0)
+            except Exception as exc:
+                errors += 1
+                print(f"[kimi-wire] delivery error: {exc}", file=sys.stderr, flush=True)
+
+        iterations += 1
+        if max_iterations is None or iterations < max_iterations:
+            time.sleep(interval)
+
+    return {"ok": errors == 0, "iterations": iterations,
+            "total_delivered": total_delivered, "errors": errors}
+
+
 def run_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description="Deliver c2c inbox messages through Kimi Wire JSON-RPC."
@@ -350,6 +411,12 @@ def run_main(argv: list[str]) -> int:
                         help="print config without starting Kimi")
     parser.add_argument("--once", action="store_true",
                         help="start Kimi, deliver, and exit")
+    parser.add_argument("--loop", action="store_true",
+                        help="poll inbox repeatedly; start Wire subprocess only when messages are queued")
+    parser.add_argument("--interval", type=float, default=5.0,
+                        help="seconds between inbox checks in --loop mode (default: 5)")
+    parser.add_argument("--max-iterations", type=int, default=None,
+                        help="stop after N loop iterations (default: run forever)")
     parser.add_argument("--json", action="store_true", help="emit JSON output")
     parser.add_argument("--timeout", type=float, default=5.0,
                         help="inbox poll timeout (seconds)")
@@ -391,6 +458,28 @@ def run_main(argv: list[str]) -> int:
         else:
             delivered = result.get("delivered", 0)
             print(f"delivered {delivered} message(s) via Kimi Wire")
+        return 0 if result.get("ok") else 1
+
+    if args.loop:
+        result = run_loop_live(
+            session_id=args.session_id,
+            alias=alias,
+            broker_root=args.broker_root,
+            work_dir=args.work_dir,
+            command=args.command,
+            spool_path=spool_path,
+            timeout=args.timeout,
+            interval=args.interval,
+            max_iterations=args.max_iterations,
+        )
+        if args.json:
+            print(json.dumps(result))
+        else:
+            print(
+                f"loop done: {result['iterations']} iteration(s), "
+                f"{result['total_delivered']} delivered, "
+                f"{result['errors']} error(s)"
+            )
         return 0 if result.get("ok") else 1
 
     parser.print_help()

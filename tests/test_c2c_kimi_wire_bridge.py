@@ -387,5 +387,153 @@ class RunOnceLiveTests(unittest.TestCase):
         self.assertTrue(result["ok"])
 
 
+class HasPendingMessagesTests(unittest.TestCase):
+    """Tests for _has_pending_messages() — the cheap inbox pre-check."""
+
+    def test_returns_true_when_spool_has_messages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spool_path = Path(tmp) / "spool.json"
+            bridge.C2CSpool(spool_path).append([{"content": "x"}])
+            result = bridge._has_pending_messages(Path(tmp) / "broker", "s", spool_path)
+        self.assertTrue(result)
+
+    def test_returns_true_when_inbox_file_has_messages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker_root = Path(tmp) / "broker"
+            broker_root.mkdir(parents=True)
+            inbox = broker_root / "test-session.inbox.json"
+            inbox.write_text(
+                json.dumps([{"from_alias": "a", "to_alias": "b", "content": "hi"}]),
+                encoding="utf-8",
+            )
+            result = bridge._has_pending_messages(broker_root, "test-session",
+                                                   Path(tmp) / "spool.json")
+        self.assertTrue(result)
+
+    def test_returns_false_when_both_spool_and_inbox_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker_root = Path(tmp) / "broker"
+            broker_root.mkdir(parents=True)
+            result = bridge._has_pending_messages(broker_root, "empty-session",
+                                                   Path(tmp) / "spool.json")
+        self.assertFalse(result)
+
+
+class RunLoopLiveTests(unittest.TestCase):
+    """Tests for run_loop_live() — the persistent Wire delivery daemon."""
+
+    def _make_mock_proc(self, *wire_responses: str) -> mock.MagicMock:
+        proc = mock.MagicMock()
+        buf = io.StringIO()
+        proc.stdin = mock.MagicMock()
+        proc.stdin.write.side_effect = buf.write
+        proc.stdin.flush.return_value = None
+        proc.stdout = io.StringIO("".join(wire_responses))
+        proc.wait.return_value = 0
+        return proc
+
+    def test_loop_delivers_messages_across_multiple_iterations(self):
+        """Delivers messages found in successive iterations."""
+        init = '{"jsonrpc":"2.0","id":"1","result":{"protocol_version":"1.9"}}\n'
+        prompt_ok = '{"jsonrpc":"2.0","id":"2","result":{"status":"finished"}}\n'
+        # Two iterations: first has a message, second is empty
+        procs = [self._make_mock_proc(init, prompt_ok), self._make_mock_proc(init)]
+        proc_iter = iter(procs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            broker_root = Path(tmp) / "broker"
+            broker_root.mkdir()
+            spool_path = Path(tmp) / "spool.json"
+            bridge.C2CSpool(spool_path).append([{"from_alias": "a", "content": "loop-msg"}])
+
+            with mock.patch("subprocess.Popen", side_effect=lambda *a, **k: next(proc_iter)):
+                result = bridge.run_loop_live(
+                    session_id="kimi-wire",
+                    alias="kimi-wire",
+                    broker_root=broker_root,
+                    work_dir=Path(tmp),
+                    command="kimi",
+                    spool_path=spool_path,
+                    timeout=0.0,
+                    interval=0.0,
+                    max_iterations=2,
+                )
+
+        self.assertEqual(result["iterations"], 2)
+        self.assertEqual(result["total_delivered"], 1)
+        self.assertEqual(result["errors"], 0)
+        self.assertTrue(result["ok"])
+
+    def test_loop_skips_wire_subprocess_when_inbox_empty(self):
+        """Wire subprocess is NOT started when inbox is empty on every iteration."""
+        with tempfile.TemporaryDirectory() as tmp:
+            broker_root = Path(tmp) / "broker"
+            broker_root.mkdir()
+
+            with mock.patch("subprocess.Popen") as mock_popen:
+                result = bridge.run_loop_live(
+                    session_id="kimi-wire-empty",
+                    alias="kimi-wire-empty",
+                    broker_root=broker_root,
+                    work_dir=Path(tmp),
+                    command="kimi",
+                    spool_path=Path(tmp) / "spool.json",
+                    timeout=0.0,
+                    interval=0.0,
+                    max_iterations=3,
+                )
+
+        mock_popen.assert_not_called()
+        self.assertEqual(result["iterations"], 3)
+        self.assertEqual(result["total_delivered"], 0)
+
+    def test_loop_counts_errors_but_continues(self):
+        """Delivery errors increment error count but do not abort the loop."""
+        with tempfile.TemporaryDirectory() as tmp:
+            broker_root = Path(tmp) / "broker"
+            broker_root.mkdir()
+            spool_path = Path(tmp) / "spool.json"
+            bridge.C2CSpool(spool_path).append([{"content": "will-fail"}])
+
+            with mock.patch("subprocess.Popen", side_effect=OSError("kimi not found")):
+                result = bridge.run_loop_live(
+                    session_id="kimi-wire-err",
+                    alias="kimi-wire-err",
+                    broker_root=broker_root,
+                    work_dir=Path(tmp),
+                    command="kimi",
+                    spool_path=spool_path,
+                    timeout=0.0,
+                    interval=0.0,
+                    max_iterations=2,
+                )
+
+        self.assertEqual(result["iterations"], 2)
+        self.assertGreater(result["errors"], 0)
+        self.assertFalse(result["ok"])
+
+    def test_loop_cli_flag_runs_loop_mode(self):
+        """--loop flag activates loop mode in the CLI."""
+        with tempfile.TemporaryDirectory() as tmp:
+            broker_root = Path(tmp) / "broker"
+            broker_root.mkdir()
+
+            with mock.patch("subprocess.Popen") as mock_popen:
+                rc, output = bridge.run_main_capture([
+                    "--session-id", "kimi-wire-loop",
+                    "--broker-root", str(broker_root),
+                    "--work-dir", tmp,
+                    "--loop",
+                    "--interval", "0",
+                    "--max-iterations", "1",
+                    "--json",
+                ])
+
+        self.assertEqual(rc, 0)
+        payload = json.loads(output)
+        self.assertEqual(payload["iterations"], 1)
+        mock_popen.assert_not_called()  # empty inbox → no subprocess
+
+
 if __name__ == "__main__":
     unittest.main()
