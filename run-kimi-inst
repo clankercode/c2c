@@ -9,7 +9,7 @@ os.execvpe preserves the pid, so the companion restart-kimi-self helper can
 signal the live Kimi process and let the outer loop relaunch it.
 
 Config keys:
-  command         kimi binary path or name (default: "kimi")
+  command         kimi binary path/name, or argv prefix list (default: "kimi")
   cwd             working directory (default: dir containing this script)
   c2c_session_id  unique MCP session ID for broker registration
   c2c_alias       stable alias peers use to address this instance
@@ -17,6 +17,7 @@ Config keys:
   prompt          if set, passes an initial `kimi --prompt "<prompt>"` while
                   staying in interactive TUI mode
   print           if true, adds `--print` for non-interactive one-shot mode
+  subcommand      interactive subcommand (default: "term"; ignored in print mode)
   flags           extra CLI flags (list of strings)
   env             extra environment variables (dict string→string)
 
@@ -95,6 +96,14 @@ def coerce_string(value, field: str, *, required: bool = False) -> str:
     return value
 
 
+def coerce_command(value, field: str) -> list[str]:
+    if isinstance(value, str) and value:
+        return [value]
+    if isinstance(value, list) and value and all(isinstance(item, str) and item for item in value):
+        return list(value)
+    raise SystemExit(f"[run-kimi-inst] {field} must be a non-empty string or list of strings")
+
+
 def coerce_bool(value, field: str) -> bool:
     if value is None:
         return False
@@ -111,7 +120,7 @@ def default_session_id(name: str) -> str:
 def build_launch(
     name: str, config: dict, extra: list[str]
 ) -> tuple[list[str], Path, dict[str, str], bool]:
-    command = coerce_string(config.get("command", "kimi"), "command", required=True)
+    command = coerce_command(config.get("command", "kimi"), "command")
     flags = coerce_string_list(config.get("flags"), "flags")
     if "--yolo" not in flags and "--yes" not in flags and "-y" not in flags:
         flags.append("--yolo")
@@ -133,11 +142,11 @@ def build_launch(
 
     prompt = coerce_string(config.get("prompt"), "prompt")
     print_mode = coerce_bool(config.get("print"), "print")
+    subcommand = "" if print_mode else coerce_string(config.get("subcommand") or "term", "subcommand")
     mode_flags = ["--print"] if print_mode else []
-    if prompt:
-        launch = [command, *flags, *mode_flags, "--prompt", prompt, *extra]
-    else:
-        launch = [command, *flags, *mode_flags, *extra]
+    prompt_args = ["--prompt", prompt] if prompt else []
+    subcommand_args = [subcommand] if subcommand else []
+    launch = [*command, *flags, *mode_flags, *prompt_args, *extra, *subcommand_args]
 
     env = os.environ.copy()
     env.update(env_extra)
