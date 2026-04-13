@@ -34,6 +34,8 @@ import sys
 import time
 from pathlib import Path
 
+import c2c_pts_inject
+
 ROOT = Path(__file__).resolve().parent
 
 WAKE_PROMPT_TEMPLATE = (
@@ -90,7 +92,6 @@ def pts_inject(
         print(f"[kimi-wake] dry-run: would inject to /dev/pts/{pts}: {message[:80]}...")
         return True
     try:
-        import c2c_pts_inject
         c2c_pts_inject.inject(pts, message)
         return True
     except Exception as exc:
