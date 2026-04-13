@@ -11,12 +11,16 @@
   it copied plugin files and rewrote `.opencode/c2c-plugin.json` before printing
   the dry-run JSON. One test used the real repo as `cwd` with fake alias/session
   values, so a focused test run could silently corrupt the ignored live sidecar.
+  After the first fix, two non-dry fake-launch tests were also found to use the
+  real repo as `cwd`, which could still rewrite the live sidecar during focused
+  verification.
 - **Fix status:** Fixed in Codex work after this finding. Dry-run no longer
   applies plugin-copy or sidecar-write side effects. Tests that need to verify
   those side effects now run a harmless short-lived fake command instead of
-  relying on dry-run mutation. `run-opencode-inst-rearm` now refreshes the
-  plugin sidecar from the managed config, so rearming support loops repairs this
-  drift in live sessions.
+  relying on dry-run mutation, and those fake launches now use isolated temp
+  project directories rather than the live repo. `run-opencode-inst-rearm` now
+  refreshes the plugin sidecar from the managed config, so rearming support loops
+  repairs this drift in live sessions.
 - **Severity:** High for agent UX. The broker and PTY wake loops can look
   healthy while the native OpenCode plugin polls or attributes the wrong
   session, making plugin delivery failures misleading.

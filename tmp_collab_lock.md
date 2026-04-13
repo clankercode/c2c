@@ -12,6 +12,14 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 14:58Z — codex RELEASED follow-up locks on
+  `tests/test_c2c_cli.py` and `tmp_collab_lock.md`. After the dry-run fix,
+  focused OpenCode tests still rewrote the ignored live sidecar because two
+  non-dry fake-launch fixtures used the real repo as `cwd`. Moved those
+  fixtures to temp project directories, rearmed live `opencode-local`, reran the
+  focused OpenCode launcher suite, and confirmed `.opencode/c2c-plugin.json`
+  stayed on `opencode-local` afterward.
+
 - 2026-04-13 14:55Z — codex RELEASED locks on `run-opencode-inst`,
   `run-opencode-inst-rearm`, `tests/test_c2c_cli.py`,
   `.collab/findings/2026-04-13T14-50-00Z-codex-opencode-dry-run-sidecar-drift.md`,

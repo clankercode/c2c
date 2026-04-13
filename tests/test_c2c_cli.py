@@ -3882,7 +3882,9 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
 
     def test_run_opencode_inst_silent_suppresses_wrapper_stderr(self):
         with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir) / "repo"
             config_dir = Path(temp_dir) / "run-opencode-inst.d"
+            project.mkdir()
             config_dir.mkdir()
             opencode_config = config_dir / "opencode-a.opencode.json"
             opencode_config.write_text(json.dumps({"mcp": {}}), encoding="utf-8")
@@ -3890,7 +3892,7 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
                 json.dumps(
                     {
                         "command": sys.executable,
-                        "cwd": str(REPO),
+                        "cwd": str(project),
                         "config_path": str(opencode_config),
                         "c2c_session_id": "opencode-a-local",
                         "c2c_alias": "opencode-a",
@@ -4239,13 +4241,24 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         if not plugin_src.exists():
             self.skipTest("plugin source not present")
         with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir) / "repo"
             config_dir = Path(temp_dir) / "run-opencode-inst.d"
+            (project / ".opencode" / "plugins").mkdir(parents=True)
             config_dir.mkdir()
+            (project / ".opencode" / "plugins" / "c2c.ts").write_text(
+                plugin_src.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            (project / ".opencode" / "package.json").write_text(
+                json.dumps({"dependencies": {"@opencode-ai/plugin": "1.4.3"}}),
+                encoding="utf-8",
+            )
+            (project / ".opencode" / "node_modules").mkdir()
             opencode_json = config_dir / "test-inst.opencode.json"
             opencode_json.write_text(json.dumps({"mcp": {}}), encoding="utf-8")
             managed_config = {
                 "command": sys.executable,
-                "cwd": str(REPO),
+                "cwd": str(project),
                 "config_path": str(opencode_json),
                 "c2c_session_id": "test-inst",
                 "c2c_alias": "test-inst",
@@ -4266,7 +4279,7 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
             self.assertTrue(plugin_dest.exists(), "plugin should be copied to config dir")
             self.assertTrue(pkg_dest.exists(), "package.json should be copied to config dir")
             # node_modules symlink should be created so Bun can resolve @opencode-ai/plugin
-            nm_src = REPO / ".opencode" / "node_modules"
+            nm_src = project / ".opencode" / "node_modules"
             nm_dest = config_dir / "node_modules"
             if nm_src.exists():
                 self.assertTrue(nm_dest.is_symlink(), "node_modules should be a symlink")
