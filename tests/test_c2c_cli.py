@@ -3569,6 +3569,53 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         self.assertIn("--notify-only", joined_commands)
         self.assertIn("c2c_poker.py", joined_commands)
 
+    def test_run_opencode_inst_rearm_skips_live_process_without_tty(self):
+        sleeper = subprocess.Popen(
+            ["sleep", "60"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                config_dir = Path(temp_dir) / "run-opencode-inst.d"
+                config_dir.mkdir()
+                (config_dir / "opencode-a.json").write_text(
+                    json.dumps(
+                        {
+                            "c2c_session_id": "opencode-a-local",
+                            "c2c_alias": "opencode-a",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                env = {"RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir)}
+
+                result = run_cli(
+                    "run-opencode-inst-rearm",
+                    "opencode-a",
+                    "--pid",
+                    str(sleeper.pid),
+                    "--start-timeout",
+                    "0.1",
+                    "--json",
+                    env=env,
+                )
+        finally:
+            sleeper.terminate()
+            try:
+                sleeper.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                sleeper.kill()
+                sleeper.wait(timeout=1)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["skipped"])
+        self.assertEqual(payload["reason"], "target_has_no_tty")
+        self.assertIn("no /dev/pts", payload["error"])
+
     def test_opencode_local_config_sets_stable_c2c_alias(self):
         config = json.loads(
             (REPO / "run-opencode-inst.d" / "c2c-opencode-local.json").read_text(

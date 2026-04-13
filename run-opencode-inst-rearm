@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import c2c_poker
+
 HERE = Path(__file__).resolve().parent
 DEFAULT_CONFIG_DIR = HERE / "run-opencode-inst.d"
 FALSE_STRINGS = {"", "0", "false", "no", "off"}
@@ -226,6 +228,11 @@ def dry_run_enabled(args: argparse.Namespace) -> bool:
     )
 
 
+def resolve_terminal_target(pid: int) -> dict[str, Any]:
+    terminal_pid, pts, _transcript = c2c_poker.resolve_pid(pid)
+    return {"terminal_pid": terminal_pid, "pts": pts}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Restart OpenCode support loops for a run-opencode-inst instance."
@@ -264,12 +271,34 @@ def main(argv: list[str] | None = None) -> int:
         "pidfiles": pidfiles,
         "commands": [commands["deliver"], commands["poker"]],
         "dry_run": dry_run_enabled(args),
+        "skipped": False,
     }
     if payload["dry_run"]:
         if args.json:
             print(json.dumps(payload, indent=2))
         else:
             print(f"would rearm OpenCode support loops for {args.name} pid={target_pid}")
+        return 0
+
+    try:
+        payload["terminal_target"] = resolve_terminal_target(target_pid)
+    except Exception as exc:
+        payload.update(
+            {
+                "ok": True,
+                "skipped": True,
+                "reason": "target_has_no_tty",
+                "error": str(exc),
+                "stopped": [],
+                "started": {},
+            }
+        )
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            print(
+                f"skipping OpenCode support loops for {args.name}: {payload['error']}"
+            )
         return 0
 
     stopped = [

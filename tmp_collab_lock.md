@@ -12,6 +12,15 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 17:31 — codex RELEASED locks on
+  `run-opencode-inst-rearm`, `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-13T07-31-32Z-codex-opencode-rearm-no-tty.md`,
+  and `tmp_collab_lock.md`. Fixed the OpenCode rearm loop so it preflights
+  whether the managed pid has an injectable PTY and exits cleanly with
+  `skipped=true`/`reason=target_has_no_tty` for non-interactive
+  `opencode run` wrappers instead of spawning failing helper processes on
+  every outer-loop iteration.
+
 - 2026-04-13 17:45 — storm-beacon RELEASED locks on `ocaml/c2c_mcp.ml`
   and `ocaml/test/test_c2c_mcp.ml`. Added `peek_inbox` tool: a
   non-draining inbox check that returns the same JSON shape as
