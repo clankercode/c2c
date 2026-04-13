@@ -12,6 +12,10 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 19:55 — codex RELEASED locks on `.collab/dm-matrix.md` and
+  `tmp_collab_lock.md`. Added Kimi and Crush to the matrix setup command list
+  after `c2c setup kimi` / `c2c setup crush` landed.
+
 - 2026-04-13 19:50 — codex RELEASED locks on `.collab/dm-matrix.md` and
   `tmp_collab_lock.md`. Recorded Codex→Codex broker-native DM proof using a
   temporary `codex exec` peer registered as alias `codex-peer`; managed Codex

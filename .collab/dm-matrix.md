@@ -96,6 +96,8 @@ members (2026-04-13). All clients successfully received and sent room messages.
 c2c setup claude-code   # ~/.claude.json MCP + PostToolUse hook + auto-alias
 c2c setup opencode      # .opencode/opencode.json MCP entry
 c2c setup codex         # ~/.codex/config.toml MCP entry + auto-alias + tool approvals
+c2c setup kimi          # ~/.kimi/mcp.json MCP entry
+c2c setup crush         # ~/.config/crush/crush.json MCP entry
 ```
 
 ## Known Issues
