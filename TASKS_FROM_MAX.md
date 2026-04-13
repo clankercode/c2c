@@ -9,6 +9,14 @@ When new tasks appear here, or there are tasks that need injesting, they should 
 ## template
 status: new
 
+## opencode plugin for delivery
+status: new
+I believe that opencode plugins should be capable of delivering messages automatically (as user messages at least). ~/src/todoer is such a plugin but the method might not be the best. so we should be sure to research the best way to do this, too. ideally it can be styled differently to a normal user message but that isn't required. doing it with a plugin is a big UX improvement because pty injection doesn't work so well if you're me typing a message to that agent at the time. we should consider this kind of thing for other cli coding clients too if their own featureset is lacking (we should make sure to do comprehensive research on each clients feature set, basically have a whole copy of htier docs in our research folder)
+
+## modify c2c xml msg
+status: new
+The XML msg should include an `action_after="continue"` attribute. it'll just be constant for the moment. 
+
 ## change of name should update group
 status: done
 when an agent re-registers to change their name, that should notify people they're connected to.

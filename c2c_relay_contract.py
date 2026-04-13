@@ -149,6 +149,10 @@ class InMemoryRelay:
         self._inboxes: dict[tuple[str, str], list[dict]] = {}
         # dead-letter records
         self._dead_letter: list[dict] = []
+        # room_id → list of member aliases (ordered by join time)
+        self._rooms: dict[str, list[str]] = {}
+        # room_id → list of message history records
+        self._room_history: dict[str, list[dict]] = {}
 
     # --- registration ---
 
@@ -297,6 +301,123 @@ class InMemoryRelay:
         """Return dead-letter entries (not consumed)."""
         with self._lock:
             return list(self._dead_letter)
+
+    # --- rooms ---
+
+    def join_room(self, alias: str, room_id: str) -> dict:
+        """Add alias to a room. Creates room on first join. No-op if already a member."""
+        with self._lock:
+            if alias not in self._leases:
+                raise RelayError(RELAY_ERR_UNKNOWN_ALIAS,
+                                 f"alias {alias!r} is not registered")
+            members = self._rooms.setdefault(room_id, [])
+            if alias not in members:
+                members.append(alias)
+            if room_id not in self._room_history:
+                self._room_history[room_id] = []
+            return {"ok": True, "room_id": room_id, "alias": alias,
+                    "member_count": len(members)}
+
+    def leave_room(self, alias: str, room_id: str) -> dict:
+        """Remove alias from a room. No-op if not a member."""
+        with self._lock:
+            members = self._rooms.get(room_id, [])
+            if alias in members:
+                members.remove(alias)
+            return {"ok": True, "room_id": room_id, "alias": alias,
+                    "member_count": len(members)}
+
+    def send_room(self, from_alias: str, room_id: str, content: str,
+                  message_id: Optional[str] = None) -> dict:
+        """Fan out to all alive room members except the sender.
+
+        Delivers to members whose alias has a live lease; dead or missing
+        aliases are added to dead-letter and listed in skipped.
+        """
+        import uuid as _uuid
+        msg_id = message_id or str(_uuid.uuid4())
+        ts = time.time()
+
+        with self._lock:
+            members = list(self._rooms.get(room_id, []))
+            if not members:
+                return {"ok": True, "delivered_to": [], "skipped": [],
+                        "room_id": room_id, "ts": ts}
+            delivered_to: list[str] = []
+            skipped: list[str] = []
+            for alias in members:
+                if alias == from_alias:
+                    continue
+                lease = self._leases.get(alias)
+                msg = {
+                    "message_id": msg_id,
+                    "from_alias": from_alias,
+                    "to_alias": f"{alias}@{room_id}",
+                    "content": content,
+                    "ts": ts,
+                    "room_id": room_id,
+                }
+                if lease is None or not lease.is_alive():
+                    self._dead_letter.append({**msg, "reason": "recipient_dead"})
+                    skipped.append(alias)
+                    continue
+                key = (lease.node_id, lease.session_id)
+                self._inboxes.setdefault(key, []).append(msg)
+                delivered_to.append(alias)
+            # Append to room history
+            self._room_history.setdefault(room_id, []).append({
+                "message_id": msg_id,
+                "from_alias": from_alias,
+                "room_id": room_id,
+                "content": content,
+                "ts": ts,
+            })
+            return {"ok": True, "delivered_to": delivered_to, "skipped": skipped,
+                    "room_id": room_id, "ts": ts}
+
+    def room_history(self, room_id: str, limit: int = 50) -> list[dict]:
+        """Return up to `limit` most recent messages from a room."""
+        with self._lock:
+            history = self._room_history.get(room_id, [])
+            return list(history[-limit:])
+
+    def list_rooms(self) -> list[dict]:
+        """Return all rooms with member counts."""
+        with self._lock:
+            return [
+                {"room_id": rid, "member_count": len(members),
+                 "members": list(members)}
+                for rid, members in self._rooms.items()
+            ]
+
+    def send_all(self, from_alias: str, content: str,
+                 message_id: Optional[str] = None) -> dict:
+        """Broadcast to all alive registered aliases except the sender."""
+        import uuid as _uuid
+        msg_id = message_id or str(_uuid.uuid4())
+        ts = time.time()
+
+        with self._lock:
+            delivered_to: list[str] = []
+            skipped: list[str] = []
+            for alias, lease in self._leases.items():
+                if alias == from_alias:
+                    continue
+                msg = {
+                    "message_id": msg_id,
+                    "from_alias": from_alias,
+                    "to_alias": alias,
+                    "content": content,
+                    "ts": ts,
+                }
+                if not lease.is_alive():
+                    skipped.append(alias)
+                    continue
+                key = (lease.node_id, lease.session_id)
+                self._inboxes.setdefault(key, []).append(msg)
+                delivered_to.append(alias)
+            return {"ok": True, "delivered_to": delivered_to, "skipped": skipped,
+                    "ts": ts}
 
     # --- helpers for tests ---
 
