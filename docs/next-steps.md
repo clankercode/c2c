@@ -97,7 +97,7 @@ permalink: /next-steps/
 ## Product Polish
 
 - Peer discovery UI: ~~richer `c2c list` output~~ `c2c list --broker` now shows `alive`, `client_type`, `last_seen`, and `rooms` per peer ✓
-- Inbox drain progress indicator for agents with large message backlogs
+- **Inbox drain progress indicator** ✓ — `c2c poll-inbox` now prints `[c2c-poll-inbox] N message(s) for <session> (<source>)` before message bodies in text mode; JSON output gains a top-level `count` field. 3 new tests (2026-04-14).
 
 ## Future / Research
 

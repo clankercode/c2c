@@ -220,6 +220,7 @@ def print_result(
                     "session_id": session_id,
                     "broker_root": str(broker_root),
                     "source": source,
+                    "count": len(messages),
                     "messages": messages,
                 }
             )
@@ -228,6 +229,8 @@ def print_result(
     if not messages:
         print(f"[c2c-poll-inbox] no messages for {session_id} ({source})")
         return
+    n = len(messages)
+    print(f"[c2c-poll-inbox] {n} message{'s' if n != 1 else ''} for {session_id} ({source})")
     for item in messages:
         print(
             f"<c2c event=\"message\" from=\"{item.get('from_alias', '')}\" "

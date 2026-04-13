@@ -1795,6 +1795,84 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(payload["messages"], msgs)
         self.assertEqual(json.loads(inbox_path.read_text(encoding="utf-8")), msgs)
 
+    def test_print_result_count_line_in_text_mode(self):
+        """Text-mode output prefixes messages with a count/summary line."""
+        broker_root = Path(self.temp_dir.name) / "mcp-count-text"
+        broker_root.mkdir()
+        inbox_path = broker_root / "ses-count.inbox.json"
+        msgs = [
+            {"from_alias": "peer-a", "to_alias": "ses-count", "content": "hello"},
+            {"from_alias": "peer-b", "to_alias": "ses-count", "content": "world"},
+        ]
+        inbox_path.write_text(json.dumps(msgs), encoding="utf-8")
+
+        result = run_cli(
+            "c2c-poll-inbox",
+            "--session-id", "ses-count",
+            "--broker-root", str(broker_root),
+            "--file-fallback",
+            env=self.env,
+        )
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        lines = result.stdout.splitlines()
+        # First line must be the progress indicator
+        self.assertIn("[c2c-poll-inbox]", lines[0])
+        self.assertIn("2 messages", lines[0])
+        self.assertIn("ses-count", lines[0])
+        # Remaining lines are the message envelopes
+        self.assertTrue(any('<c2c event="message"' in ln for ln in lines[1:]))
+
+    def test_print_result_singular_message_count_line(self):
+        """Single-message drain uses 'message' (not 'messages')."""
+        broker_root = Path(self.temp_dir.name) / "mcp-count-singular"
+        broker_root.mkdir()
+        inbox_path = broker_root / "ses-one.inbox.json"
+        inbox_path.write_text(
+            json.dumps([{"from_alias": "peer", "to_alias": "ses-one", "content": "hi"}]),
+            encoding="utf-8",
+        )
+
+        result = run_cli(
+            "c2c-poll-inbox",
+            "--session-id", "ses-one",
+            "--broker-root", str(broker_root),
+            "--file-fallback",
+            env=self.env,
+        )
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        first_line = result.stdout.splitlines()[0]
+        self.assertIn("1 message", first_line)
+        self.assertNotIn("1 messages", first_line)
+
+    def test_print_result_count_field_in_json_mode(self):
+        """JSON output includes a top-level 'count' field matching len(messages)."""
+        broker_root = Path(self.temp_dir.name) / "mcp-count-json"
+        broker_root.mkdir()
+        inbox_path = broker_root / "ses-json.inbox.json"
+        msgs = [
+            {"from_alias": "a", "to_alias": "ses-json", "content": "one"},
+            {"from_alias": "b", "to_alias": "ses-json", "content": "two"},
+            {"from_alias": "c", "to_alias": "ses-json", "content": "three"},
+        ]
+        inbox_path.write_text(json.dumps(msgs), encoding="utf-8")
+
+        result = run_cli(
+            "c2c-poll-inbox",
+            "--session-id", "ses-json",
+            "--broker-root", str(broker_root),
+            "--file-fallback",
+            "--json",
+            env=self.env,
+        )
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertIn("count", payload)
+        self.assertEqual(payload["count"], 3)
+        self.assertEqual(len(payload["messages"]), payload["count"])
+
     def test_run_codex_inst_allows_explicit_c2c_id_for_multiple_codex_sessions(self):
         config_dir = Path(self.temp_dir.name) / "run-codex-inst.d"
         config_dir.mkdir()
