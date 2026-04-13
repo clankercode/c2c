@@ -70,6 +70,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         shutil.copy2(source_git_path, target_git_path)
     for relative_path in [
         "c2c",
+        "c2c-broker-gc",
         "c2c-configure-claude-code",
         "c2c-configure-codex",
         "c2c-configure-opencode",
@@ -89,6 +90,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c-verify",
         "c2c-watch",
         "c2c-whoami",
+        "c2c_broker_gc.py",
         "c2c_register.py",
         "c2c_restart_me.py",
         "c2c_room.py",
@@ -110,6 +112,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_verify.py",
         "c2c_watch.py",
         "c2c_whoami.py",
+        "c2c_broker_gc.py",
         "c2c_cli.py",
         "c2c_mcp.py",
         "c2c_registry.py",
@@ -298,6 +301,7 @@ class C2CCLITests(unittest.TestCase):
             sorted(payload["installed_commands"]),
             [
                 "c2c",
+                "c2c-broker-gc",
                 "c2c-configure-claude-code",
                 "c2c-configure-codex",
                 "c2c-configure-opencode",
@@ -2259,6 +2263,7 @@ class C2CTestHelpersTests(unittest.TestCase):
 
             for relative_path in [
                 "c2c",
+                "c2c-broker-gc",
                 "c2c-configure-claude-code",
                 "c2c-configure-codex",
                 "c2c-configure-opencode",
@@ -2278,6 +2283,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c-verify",
                 "c2c-watch",
                 "c2c-whoami",
+                "c2c_broker_gc.py",
                 "c2c_register.py",
                 "c2c_restart_me.py",
                 "c2c_room.py",

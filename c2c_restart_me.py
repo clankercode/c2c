@@ -257,21 +257,26 @@ def _pty_inject_available() -> bool:
     return PTY_INJECT.exists() and os.access(PTY_INJECT, os.X_OK)
 
 
-def _fork_restart_daemon(client_pid: int, terminal_pid: int, pts: int, restart_cmd: str) -> None:
-    """Double-fork a daemon that waits for client_pid to die, then PTY-injects restart_cmd."""
-    # Double-fork: daemon is adopted by init, so it won't become a zombie
+def _fork_restart_daemon(
+    client_pid: int,
+    terminal_pid: int | None,
+    pts: int | None,
+    restart_cmd: str,
+) -> None:
+    """Double-fork a daemon that waits for client_pid to die, then PTY-injects restart_cmd.
+
+    terminal_pid and pts are optional: if missing, the daemon waits but doesn't inject.
+    """
     pid = os.fork()
     if pid != 0:
-        # Parent: wait for child (intermediate) and return
         os.waitpid(pid, 0)
         return
 
-    # Child (intermediate): fork again and exit so parent can return
     pid2 = os.fork()
     if pid2 != 0:
         os._exit(0)
 
-    # Grandchild (actual daemon): detach from session
+    # Grandchild (daemon): detach
     os.setsid()
 
     # Wait for the client process to exit (up to 5 minutes)
@@ -281,13 +286,14 @@ def _fork_restart_daemon(client_pid: int, terminal_pid: int, pts: int, restart_c
             break
         time.sleep(0.5)
     else:
-        # Timed out — do nothing
         os._exit(1)
+
+    if terminal_pid is None or pts is None:
+        os._exit(0)
 
     # Brief pause to let the shell prompt appear
     time.sleep(0.3)
 
-    # PTY-inject the restart command followed by Enter
     try:
         subprocess.run(
             [str(PTY_INJECT), str(terminal_pid), str(pts), restart_cmd + "\n"],
@@ -299,8 +305,28 @@ def _fork_restart_daemon(client_pid: int, terminal_pid: int, pts: int, restart_c
     os._exit(0)
 
 
+def _signal_client(client_pid: int, sig: int = 15) -> bool:
+    """Send a signal to the client process. Returns True if sent successfully."""
+    try:
+        # Safety: refuse to signal init or ourselves
+        if client_pid <= 1 or client_pid == os.getpid():
+            return False
+        os.kill(client_pid, sig)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
 def restart_unmanaged(client: str, client_pid: int) -> int:
-    """Attempt a process-level restart for an unmanaged client session."""
+    """Process-level restart for an unmanaged client session.
+
+    Flow:
+    1. Resolve session UUID + build restart argv
+    2. Fork a daemon that waits for client_pid to die then PTY-injects the restart
+    3. Send SIGTERM to the client directly — no /exit needed from the agent
+    """
+    import signal as _signal
+
     cmdline = proc_cmdline(client_pid)
     uuid = get_session_uuid(client, client_pid)
     restart_argv = build_restart_argv(client, uuid, cmdline)
@@ -312,39 +338,41 @@ def restart_unmanaged(client: str, client_pid: int) -> int:
 
     restart_cmd = " ".join(restart_argv)
 
-    # Find terminal info for PTY injection
+    # Find terminal info for PTY injection (relaunch step)
     pts = pts_from_fd0(client_pid)
     terminal_pid = find_terminal_pid(client_pid) if pts is not None else None
+    pty_ok = _pty_inject_available() and pts is not None and terminal_pid is not None
 
-    if not _pty_inject_available() or pts is None or terminal_pid is None:
-        # Fallback: print instructions with the exact restart command
-        print(f"[c2c restart-me] cannot inject restart automatically")
-        if pts is None:
-            print(f"  (no PTY slave found on fd 0 of pid {client_pid})")
-        elif terminal_pid is None:
-            print(f"  (no terminal emulator found in process tree)")
-        elif not _pty_inject_available():
-            print(f"  (pty_inject not found at {PTY_INJECT})")
-        print()
-        print(f"Restart command: {restart_cmd}")
-        print()
-        print_unmanaged_instructions(client)
-        return 0
+    # Always arm the daemon (it waits for the client to die)
+    _fork_restart_daemon(
+        client_pid,
+        terminal_pid if pty_ok else None,
+        pts if pty_ok else None,
+        restart_cmd,
+    )
 
-    # Arm the restart daemon
-    _fork_restart_daemon(client_pid, terminal_pid, pts, restart_cmd)
-
-    print(f"[c2c restart-me] restart daemon armed for {client} (pid={client_pid})")
-    print(f"  terminal: pid={terminal_pid} pts={pts}")
+    print(f"[c2c restart-me] restarting {client} (pid={client_pid})", flush=True)
     print(f"  restart command: {restart_cmd}")
+    if pty_ok:
+        print(f"  relaunch via: pty_inject terminal={terminal_pid} pts={pts}")
+    else:
+        reasons = []
+        if not _pty_inject_available():
+            reasons.append(f"pty_inject not at {PTY_INJECT}")
+        if pts is None:
+            reasons.append("no PTY on fd 0")
+        if terminal_pid is None:
+            reasons.append("no terminal emulator in process tree")
+        print(f"  relaunch: manual — {'; '.join(reasons)}")
+        print(f"  run this after session ends: {restart_cmd}")
     print()
-    print(f"Daemon will inject the restart command once this {client} session exits.")
-    if client == "claude-code":
-        print("To restart now: type /exit")
-    elif client == "codex":
-        print("To restart now: type :quit or Ctrl-C")
-    elif client == "opencode":
-        print("To restart now: type :quit")
+
+    # Signal the client to exit — daemon handles relaunch
+    if _signal_client(client_pid, _signal.SIGTERM):
+        print(f"[c2c restart-me] sent SIGTERM to {client} pid={client_pid} — restarting…")
+    else:
+        print(f"[c2c restart-me] could not signal pid={client_pid} — session will restart when it exits naturally")
+
     return 0
 
 
