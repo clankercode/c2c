@@ -363,7 +363,9 @@ class C2CCLITests(unittest.TestCase):
         with mock.patch(
             "c2c_cli.c2c_deliver_inbox.main", return_value=0
         ) as deliver_main:
-            result = c2c_cli.main(["deliver-inbox", "--pid", "123", "--session-id", "s"])
+            result = c2c_cli.main(
+                ["deliver-inbox", "--pid", "123", "--session-id", "s"]
+            )
 
         self.assertEqual(result, 0)
         deliver_main.assert_called_once_with(["--pid", "123", "--session-id", "s"])
@@ -1497,7 +1499,9 @@ class C2CCLITests(unittest.TestCase):
                 "deliver": str(config_dir / "codex-a.deliver.pid"),
             },
         )
-        joined_commands = "\n".join(" ".join(command) for command in payload["commands"])
+        joined_commands = "\n".join(
+            " ".join(command) for command in payload["commands"]
+        )
         self.assertIn("c2c_poker.py", joined_commands)
         self.assertIn("c2c_deliver_inbox.py", joined_commands)
         self.assertIn("--session-id codex-a-local", joined_commands)
@@ -2978,7 +2982,10 @@ class C2CDeliverInboxUnitTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         inject.assert_not_called()
-        self.assertEqual(json.loads(inbox_path.read_text(encoding="utf-8"))[0]["content"], "queued hello")
+        self.assertEqual(
+            json.loads(inbox_path.read_text(encoding="utf-8"))[0]["content"],
+            "queued hello",
+        )
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["delivered"], 0)
         self.assertEqual(payload["messages"][0]["content"], "queued hello")
@@ -3007,7 +3014,10 @@ class C2CDeliverInboxUnitTests(unittest.TestCase):
         stdout = io.StringIO()
 
         with (
-            mock.patch("c2c_deliver_inbox.c2c_poll_inbox.call_mcp_tool", side_effect=RuntimeError("mcp unavailable")),
+            mock.patch(
+                "c2c_deliver_inbox.c2c_poll_inbox.call_mcp_tool",
+                side_effect=RuntimeError("mcp unavailable"),
+            ),
             mock.patch("c2c_deliver_inbox.c2c_poker.inject") as inject,
             mock.patch("sys.stdout", stdout),
         ):
@@ -3337,15 +3347,12 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         )
         c2c = config["mcp"]["c2c"]
         self.assertEqual(c2c["type"], "local")
+        self.assertEqual(c2c["command"][:2], ["python3", str(REPO / "c2c_mcp.py")])
+        self.assertEqual(c2c["environment"]["C2C_MCP_SESSION_ID"], "opencode-local")
         self.assertEqual(
-            c2c["command"][:2], ["python3", str(REPO / "c2c_mcp.py")]
+            c2c["environment"]["C2C_MCP_AUTO_REGISTER_ALIAS"], "opencode-local"
         )
-        self.assertEqual(
-            c2c["environment"]["C2C_MCP_SESSION_ID"], "opencode-local"
-        )
-        self.assertEqual(
-            c2c["environment"]["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0"
-        )
+        self.assertEqual(c2c["environment"]["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
         self.assertTrue(c2c.get("enabled", True))
 
     def test_run_opencode_inst_dry_run_reports_local_config_and_session(self):
@@ -3363,8 +3370,9 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         self.assertEqual(payload["cwd"], str(REPO))
         self.assertIn("opencode", payload["launch"][0])
         self.assertIn("run", payload["launch"])
+        self.assertEqual(payload["env"]["C2C_MCP_SESSION_ID"], "opencode-local")
         self.assertEqual(
-            payload["env"]["C2C_MCP_SESSION_ID"], "opencode-local"
+            payload["env"]["C2C_MCP_AUTO_REGISTER_ALIAS"], "opencode-local"
         )
         self.assertEqual(
             payload["env"]["C2C_MCP_BROKER_ROOT"],
@@ -3421,9 +3429,7 @@ class C2CConfigureOpencodeTests(unittest.TestCase):
             config = json.loads(config_path.read_text(encoding="utf-8"))
             c2c = config["mcp"]["c2c"]
             self.assertEqual(c2c["type"], "local")
-            self.assertEqual(
-                c2c["command"], ["python3", str(REPO / "c2c_mcp.py")]
-            )
+            self.assertEqual(c2c["command"], ["python3", str(REPO / "c2c_mcp.py")])
             self.assertEqual(
                 c2c["environment"]["C2C_MCP_BROKER_ROOT"],
                 str(REPO / ".git" / "c2c" / "mcp"),
@@ -3433,8 +3439,10 @@ class C2CConfigureOpencodeTests(unittest.TestCase):
                 f"opencode-{target.name}",
             )
             self.assertEqual(
-                c2c["environment"]["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0"
+                c2c["environment"]["C2C_MCP_AUTO_REGISTER_ALIAS"],
+                f"opencode-{target.name}",
             )
+            self.assertEqual(c2c["environment"]["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
             self.assertTrue(c2c["enabled"])
             self.assertEqual(payload["session_id"], f"opencode-{target.name}")
 
@@ -3885,12 +3893,8 @@ class C2CPruneUnitTests(unittest.TestCase):
         self._seed_registry()
 
         with (
-            mock.patch.dict(
-                os.environ, {"C2C_REGISTRY_PATH": str(self.registry_path)}
-            ),
-            mock.patch(
-                "c2c_prune.load_sessions", side_effect=self._mock_load_sessions
-            ),
+            mock.patch.dict(os.environ, {"C2C_REGISTRY_PATH": str(self.registry_path)}),
+            mock.patch("c2c_prune.load_sessions", side_effect=self._mock_load_sessions),
         ):
             rc = c2c_prune.main([])
 
@@ -3903,12 +3907,8 @@ class C2CPruneUnitTests(unittest.TestCase):
         self._seed_registry()
 
         with (
-            mock.patch.dict(
-                os.environ, {"C2C_REGISTRY_PATH": str(self.registry_path)}
-            ),
-            mock.patch(
-                "c2c_prune.load_sessions", side_effect=self._mock_load_sessions
-            ),
+            mock.patch.dict(os.environ, {"C2C_REGISTRY_PATH": str(self.registry_path)}),
+            mock.patch("c2c_prune.load_sessions", side_effect=self._mock_load_sessions),
         ):
             rc = c2c_prune.main(["--dry-run"])
 
@@ -3924,12 +3924,8 @@ class C2CPruneUnitTests(unittest.TestCase):
         self._seed_registry()
 
         with (
-            mock.patch.dict(
-                os.environ, {"C2C_REGISTRY_PATH": str(self.registry_path)}
-            ),
-            mock.patch(
-                "c2c_prune.load_sessions", side_effect=self._mock_load_sessions
-            ),
+            mock.patch.dict(os.environ, {"C2C_REGISTRY_PATH": str(self.registry_path)}),
+            mock.patch("c2c_prune.load_sessions", side_effect=self._mock_load_sessions),
             mock.patch("sys.stdout", new_callable=io.StringIO) as mock_stdout,
         ):
             rc = c2c_prune.main(["--json"])
@@ -3940,9 +3936,7 @@ class C2CPruneUnitTests(unittest.TestCase):
         self.assertFalse(payload["dry_run"])
         removed_aliases = sorted(entry["alias"] for entry in payload["pruned"])
         self.assertEqual(removed_aliases, ["ember-crown", "silver-banner"])
-        removed_session_ids = sorted(
-            entry["session_id"] for entry in payload["pruned"]
-        )
+        removed_session_ids = sorted(entry["session_id"] for entry in payload["pruned"])
         self.assertEqual(
             removed_session_ids,
             sorted([AGENT_TWO_SESSION_ID, self.stale_session_id]),
@@ -4049,19 +4043,21 @@ class SyncBrokerRegistryPidTests(unittest.TestCase):
             broker_root = Path(tmpdir) / "broker"
             broker_root.mkdir()
             (broker_root / "registry.json").write_text(
-                json.dumps([{
-                    "session_id": "live-session",
-                    "alias": "storm-live",
-                    "pid": 12345,
-                    "pid_start_time": 99999,
-                }]),
+                json.dumps(
+                    [
+                        {
+                            "session_id": "live-session",
+                            "alias": "storm-live",
+                            "pid": 12345,
+                            "pid_start_time": 99999,
+                        }
+                    ]
+                ),
                 encoding="utf-8",
             )
             yaml_path = Path(tmpdir) / "registry.yaml"
             yaml_path.write_text(
-                "registrations:\n"
-                "  - session_id: live-session\n"
-                "    alias: storm-live\n",
+                "registrations:\n  - session_id: live-session\n    alias: storm-live\n",
                 encoding="utf-8",
             )
             with mock.patch("c2c_mcp.registry_path_from_env", return_value=yaml_path):

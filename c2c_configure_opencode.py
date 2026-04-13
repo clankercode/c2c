@@ -13,6 +13,7 @@ Refuses to overwrite an existing `.opencode/opencode.json` unless
 `--force` is given. The point is one-command opencode-c2c onboarding
 for any repo without hand-editing settings.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -38,6 +39,7 @@ def build_config(session_id: str) -> dict:
                 "environment": {
                     "C2C_MCP_BROKER_ROOT": str(BROKER_ROOT),
                     "C2C_MCP_SESSION_ID": session_id,
+                    "C2C_MCP_AUTO_REGISTER_ALIAS": session_id,
                     "C2C_MCP_AUTO_DRAIN_CHANNEL": "0",
                 },
                 "enabled": True,
@@ -68,9 +70,7 @@ def write_config(target_dir: Path, *, force: bool) -> tuple[Path, str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description=(
-            "Write a repo-local OpenCode config exposing the c2c MCP server."
-        )
+        description=("Write a repo-local OpenCode config exposing the c2c MCP server.")
     )
     parser.add_argument(
         "--target-dir",
@@ -100,8 +100,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  session id: {session_id}")
         print(f"  broker root: {BROKER_ROOT}")
         print(
-            "Now run 'cd " + str(args.target_dir.resolve()) +
-            " && opencode mcp list' to verify, or launch opencode from that dir."
+            "Now run 'cd "
+            + str(args.target_dir.resolve())
+            + " && opencode mcp list' to verify, or launch opencode from that dir."
         )
     return 0
 

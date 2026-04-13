@@ -91,6 +91,7 @@ def build_launch(name: str, config: dict, extra: list[str]) -> tuple[list[str], 
     env["RUN_OPENCODE_INST_C2C_SESSION_ID"] = c2c_session_id
     env["RUN_OPENCODE_INST_CONFIG_PATH"] = config_path_value
     env["C2C_MCP_SESSION_ID"] = c2c_session_id
+    env["C2C_MCP_AUTO_REGISTER_ALIAS"] = c2c_session_id
     env["C2C_MCP_BROKER_ROOT"] = str(cwd_path / ".git" / "c2c" / "mcp")
     env["C2C_MCP_AUTO_DRAIN_CHANNEL"] = "0"
     return launch, cwd_path, env
@@ -118,6 +119,7 @@ def main(argv: list[str]) -> int:
                         "RUN_OPENCODE_INST_C2C_SESSION_ID": env["RUN_OPENCODE_INST_C2C_SESSION_ID"],
                         "RUN_OPENCODE_INST_CONFIG_PATH": env["RUN_OPENCODE_INST_CONFIG_PATH"],
                         "C2C_MCP_SESSION_ID": env["C2C_MCP_SESSION_ID"],
+                        "C2C_MCP_AUTO_REGISTER_ALIAS": env["C2C_MCP_AUTO_REGISTER_ALIAS"],
                         "C2C_MCP_BROKER_ROOT": env["C2C_MCP_BROKER_ROOT"],
                         "C2C_MCP_AUTO_DRAIN_CHANNEL": env["C2C_MCP_AUTO_DRAIN_CHANNEL"],
                     },

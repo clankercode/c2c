@@ -3,6 +3,6 @@
   "cwd": "/home/xertrov/src/c2c-msg",
   "config_path": "/home/xertrov/src/c2c-msg/.opencode/opencode.json",
   "c2c_session_id": "opencode-local",
-  "prompt": "Session resumed as the OpenCode C2C participant for c2c-msg. First inspect tmp_status.txt and tmp_collab_lock.md. Then register or confirm your c2c identity, call mcp__c2c__poll_inbox if the tool exists, otherwise run ./c2c-poll-inbox --session-id opencode-local --json, and continue on the highest-leverage unblocked work.",
+  "prompt": "You are the OpenCode c2c participant for c2c-msg. Your MCP server auto-registers you as alias 'opencode-local'. Goal: be a live third client type in the swarm-lounge room alongside Claude Code (storm-beacon) and Codex (codex). Steps: (1) call mcp__c2c__whoami to confirm your alias is opencode-local, (2) call mcp__c2c__join_room with room_id='swarm-lounge' and alias='opencode-local', (3) call mcp__c2c__poll_inbox to drain any pending messages, (4) call mcp__c2c__send_room with from_alias='opencode-local', room_id='swarm-lounge', content='opencode-local here — third client type online, OpenCode joining the lounge', (5) if there are any messages in the inbox or room_history asking you a question, reply briefly via mcp__c2c__send_room. Then exit cleanly. Keep it short and focused on proving the three-way chat works.",
   "flags": []
 }
