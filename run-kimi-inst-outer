@@ -132,6 +132,57 @@ def maybe_refresh_peer(name: str, pid: int) -> None:
         )
 
 
+def _capture_kimi_session(name: str) -> None:
+    """Poll ~/.kimi/kimi.json and store the last session id for this cwd.
+
+    Kimi does not expose a CLI to list sessions, but it tracks
+    last_session_id per work_dir in kimi.json. We read that file after
+    giving the Kimi process time to initialize, then persist the id in
+    the instance config so the next restart can use --session <id>.
+    """
+    cfg_path = HERE / "run-kimi-inst.d" / f"{name}.json"
+    if not cfg_path.exists():
+        return
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cwd = cfg.get("cwd") or str(HERE)
+        time.sleep(2.5)
+        kimi_json = Path.home() / ".kimi" / "kimi.json"
+        if not kimi_json.exists():
+            return
+        with kimi_json.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        last_session_id = None
+        for wd in data.get("work_dirs", []):
+            if wd.get("path") == cwd:
+                last_session_id = wd.get("last_session_id")
+                break
+        if not last_session_id:
+            return
+        # Basic sanity check: session state file exists and is not archived
+        sessions_base = Path.home() / ".kimi" / "sessions"
+        state_files = list(sessions_base.rglob(f"{last_session_id}/state.json"))
+        if not state_files:
+            return
+        with state_files[0].open("r", encoding="utf-8") as fh:
+            state = json.load(fh)
+        if state.get("archived"):
+            return
+        if cfg.get("kimi_session_id") != last_session_id:
+            cfg["kimi_session_id"] = last_session_id
+            cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+            print(
+                f"[run-kimi-inst-outer] captured kimi session: {last_session_id}",
+                flush=True,
+            )
+    except Exception as exc:
+        print(
+            f"[run-kimi-inst-outer] session capture error: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 def maybe_rearm(name: str) -> None:
     if not rearm_enabled() or not REARM.exists():
         return
@@ -193,6 +244,7 @@ def main(argv: list[str]) -> int:
             proc = subprocess.Popen(command, cwd=HERE, start_new_session=START_NEW_SESSION)
             maybe_refresh_peer(name, proc.pid)
             maybe_rearm(name)
+            threading.Thread(target=_capture_kimi_session, args=(name,), daemon=True).start()
             proc.wait()
             exit_code = proc.returncode
         except KeyboardInterrupt:

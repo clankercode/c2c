@@ -160,15 +160,28 @@ def build_launch(
     prompt = coerce_string(config.get("prompt"), "prompt")
     print_mode = coerce_bool(config.get("print"), "print")
     interactive_prompt = ""
+
+    # Session resumption: prefer explicit --session <id> if captured,
+    # otherwise fall back to --continue for the cwd's last session.
+    session_flags: list[str] = []
+    kimi_session_id = coerce_string(config.get("kimi_session_id"), "kimi_session_id")
+    if not print_mode:
+        filtered_flags = [f for f in flags if f not in ("--continue", "-C", "--session", "-S", "-r")]
+        if kimi_session_id:
+            session_flags = ["--session", kimi_session_id]
+        else:
+            session_flags = ["--continue"]
+        flags = filtered_flags
+
     if print_mode:
         mode_flags = ["--print"]
         prompt_args = ["--prompt", prompt] if prompt else []
         launch = [*command, *flags, *mode_flags, *prompt_args, *extra]
     elif prompt and (runner := kimi_prefill_runner(command)) is not None:
-        launch = [*runner, *flags, "--prompt", prompt, *extra]
+        launch = [*runner, *flags, *session_flags, "--prompt", prompt, *extra]
         interactive_prompt = "prefill"
     else:
-        launch = [*command, *flags, *extra]
+        launch = [*command, *flags, *session_flags, *extra]
         if prompt:
             interactive_prompt = "not-sent"
 
