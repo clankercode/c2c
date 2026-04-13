@@ -613,6 +613,20 @@ class RunLoopLiveTests(unittest.TestCase):
         self.assertEqual(payload["iterations"], 1)
         mock_popen.assert_not_called()  # empty inbox → no subprocess
 
+    def test_once_and_loop_are_mutually_exclusive(self):
+        """--once and --loop together should exit with an argparse error (code 2)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            broker_root = Path(tmp) / "broker"
+            broker_root.mkdir()
+            with self.assertRaises(SystemExit) as ctx:
+                bridge.run_main([
+                    "--session-id", "kimi-wire-excl",
+                    "--broker-root", str(broker_root),
+                    "--once",
+                    "--loop",
+                ])
+        self.assertEqual(ctx.exception.code, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
