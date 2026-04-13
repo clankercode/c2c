@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -119,6 +120,42 @@ def maybe_refresh_peer(name: str, pid: int) -> None:
         )
 
 
+def _capture_crush_session_id(name: str) -> None:
+    """Poll crush session last and store the session id in the instance config."""
+    cfg_path = HERE / "run-crush-inst.d" / f"{name}.json"
+    if not cfg_path.exists():
+        return
+    try:
+        time.sleep(2.5)
+        result = subprocess.run(
+            ["crush", "session", "last", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+        if result.returncode != 0:
+            return
+        data = json.loads(result.stdout)
+        session_id = data.get("id")
+        if not session_id:
+            return
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        if cfg.get("crush_session_id") == session_id:
+            return
+        cfg["crush_session_id"] = session_id
+        cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+        print(
+            f"[run-crush-inst-outer] captured crush session id: {session_id}",
+            flush=True,
+        )
+    except Exception as exc:
+        print(
+            f"[run-crush-inst-outer] session capture error: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 def maybe_rearm(name: str) -> None:
     if not rearm_enabled() or not REARM.exists():
         return
@@ -188,6 +225,11 @@ def main(argv: list[str]) -> int:
             proc = subprocess.Popen(command, cwd=HERE, start_new_session=True)
             maybe_refresh_peer(name, proc.pid)
             maybe_rearm(name)
+            threading.Thread(
+                target=_capture_crush_session_id,
+                args=(name,),
+                daemon=True,
+            ).start()
             proc.wait()
             exit_code = proc.returncode
         except KeyboardInterrupt:
