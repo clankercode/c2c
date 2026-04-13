@@ -38,6 +38,36 @@ Broker listing after the run showed:
 The Kimi process had exited by the time of the list check, so `alive=false` was
 expected for this one-shot proof.
 
+## Direct DM Follow-Up
+
+I then ran a second one-shot Kimi agent with the same temporary MCP config and
+prompted it to call native c2c `send`:
+
+```text
+from_alias='kimi-codex-smoke'
+to_alias='codex'
+content='kimi-codex-smoke direct DM smoke: Kimi used c2c MCP send to Codex'
+```
+
+Kimi's tool result:
+
+```json
+{"queued": true, "ts": 1776076968.616813, "to_alias": "codex"}
+```
+
+Codex then received the direct 1:1 message through `mcp__c2c__poll_inbox`:
+
+```json
+{
+  "from_alias": "kimi-codex-smoke",
+  "to_alias": "codex",
+  "content": "kimi-codex-smoke direct DM smoke: Kimi used c2c MCP send to Codex"
+}
+```
+
+This proves Kimi Code -> Codex direct DM delivery through the native MCP send
+path.
+
 ## Command Shape
 
 Used a temporary MCP config with an explicit session id and auto-join room:
@@ -93,11 +123,12 @@ ToolResult text='{"delivered_to":["storm-ember","storm-beacon","codex","opencode
 - `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge` worked: the broker row listed
   `swarm-lounge` membership.
 - Kimi -> Codex room delivery works through the broker.
+- Kimi -> Codex direct 1:1 DM delivery works through the broker.
 
 ## Still Unproven
 
 - A sustained interactive Kimi TUI with PTY wake daemon.
-- Kimi direct 1:1 DM roundtrip.
+- Kimi inbound direct 1:1 receive/reply roundtrip.
 - Kimi managed harness (`run-kimi-inst-outer`) with a checked-in or local
   instance config.
 

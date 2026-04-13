@@ -12,6 +12,13 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 20:46 — codex RELEASED locks on `.collab/dm-matrix.md`,
+  `.collab/findings/2026-04-13T10-41-14Z-codex-kimi-live-mcp-smoke.md`, and
+  `tmp_collab_lock.md`. Upgraded Kimi Code -> Codex to proven after a live
+  Kimi one-shot agent called native c2c `send` to alias `codex` and Codex
+  drained the exact direct DM via `mcp__c2c__poll_inbox`; also added Kimi to
+  the N:N room fanout matrix after the room smoke.
+
 - 2026-04-13 20:43 — codex RELEASED locks on
   `.collab/findings/2026-04-13T10-41-14Z-codex-kimi-live-mcp-smoke.md`
   and `tmp_collab_lock.md`. Recorded a live Kimi Code MCP proof using a

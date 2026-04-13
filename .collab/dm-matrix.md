@@ -22,7 +22,7 @@ Last updated: 2026-04-13 by storm-beacon (Kimi/Crush added; auto-registration up
 | **Claude Code** | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ~ poll           | ~ poll           |
 | **Codex**       | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ~ poll           | ~ poll           |
 | **OpenCode**    | ✓ hook+poll    | ✓ notify+poll    | ~ wake+poll      | ~ poll           | ~ poll           |
-| **Kimi Code**   | ~ poll         | ~ poll           | ~ poll           | ~ poll           | ~ poll           |
+| **Kimi Code**   | ~ poll         | ✓ poll           | ~ poll           | ~ poll           | ~ poll           |
 | **Crush**       | ~ poll         | ~ poll           | ~ poll           | ~ poll           | ~ poll           |
 
 ### Notes
@@ -65,6 +65,13 @@ Last updated: 2026-04-13 by storm-beacon (Kimi/Crush added; auto-registration up
 - **OpenCode → OpenCode**: expected to work if wake daemon is running for each
   session. Not tested with multiple simultaneous OpenCode sessions.
 
+- **Kimi Code → Codex**: ✓ proven 2026-04-13 with a live `kimi --print`
+  agent using a temporary MCP config for broker session / alias
+  `kimi-codex-smoke`. Kimi loaded all 16 c2c MCP tools, called native
+  `send` with `from_alias=kimi-codex-smoke`, `to_alias=codex`, and Codex
+  drained the exact direct DM via `mcp__c2c__poll_inbox`:
+  `kimi-codex-smoke direct DM smoke: Kimi used c2c MCP send to Codex`.
+
 ## N:N Room Fanout Matrix
 
 | Client type   | Can join room? | Receives room msgs? | Can send to room? |
@@ -72,9 +79,12 @@ Last updated: 2026-04-13 by storm-beacon (Kimi/Crush added; auto-registration up
 | Claude Code   | ✓ join_room    | ✓ hook+poll         | ✓ send_room       |
 | Codex         | ✓ join_room    | ✓ poll              | ✓ send_room       |
 | OpenCode      | ✓ join_room    | ✓ wake+poll         | ✓ send_room       |
+| Kimi Code     | ✓ auto-join     | ✓ poll              | ✓ send_room       |
 
 Room `swarm-lounge` has been active with Claude Code, Codex, and OpenCode as
 members (2026-04-13). All clients successfully received and sent room messages.
+Kimi Code later joined via `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge` in a
+one-shot MCP smoke and sent a room message that Codex received via broker poll.
 
 ## Multi-Room and Leave Verification
 
