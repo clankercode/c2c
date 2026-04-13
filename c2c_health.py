@@ -14,7 +14,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -76,7 +75,7 @@ def check_session(broker_root: Path) -> dict[str, Any]:
     }
 
     try:
-        session_info, registration = c2c_whoami.resolve_identity(None)
+        _, registration = c2c_whoami.resolve_identity(None)
         result["resolved"] = True
 
         if registration:
@@ -122,6 +121,37 @@ def check_rooms(broker_root: Path) -> dict[str, Any]:
     return result
 
 
+def check_hook(home: Path | None = None) -> dict[str, Any]:
+    """Check whether the Claude Code PostToolUse inbox hook is installed."""
+    home = home or Path.home()
+    hook_path = home / ".claude" / "hooks" / "c2c-inbox-check.sh"
+    settings_path = home / ".claude" / "settings.json"
+    result: dict[str, Any] = {
+        "hook_exists": hook_path.exists(),
+        "hook_executable": False,
+        "hook_path": str(hook_path),
+        "settings_registered": False,
+        "settings_path": str(settings_path),
+    }
+    if hook_path.exists():
+        result["hook_executable"] = os.access(hook_path, os.X_OK)
+    if settings_path.exists():
+        try:
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+            hooks = settings.get("hooks", {})
+            # Accept list or dict values per settings format
+            post_tool = hooks.get("PostToolUse", [])
+            if isinstance(post_tool, dict):
+                post_tool = list(post_tool.values())
+            result["settings_registered"] = any(
+                "c2c" in str(h).lower() for h in post_tool
+            )
+        except Exception:
+            pass
+    result["ok"] = result["hook_exists"] and result["hook_executable"] and result["settings_registered"]
+    return result
+
+
 def run_health_check(broker_root: Path) -> dict[str, Any]:
     """Run full health check."""
     return {
@@ -130,6 +160,7 @@ def run_health_check(broker_root: Path) -> dict[str, Any]:
         "registry": check_registry(broker_root),
         "session": check_session(broker_root),
         "rooms": check_rooms(broker_root),
+        "hook": check_hook(),
     }
 
 
@@ -176,6 +207,18 @@ def print_health_report(report: dict[str, Any]) -> None:
         print(f"✓ Rooms: {rooms['room_count']} room(s) available")
     else:
         print("○ Rooms: directory not created yet")
+
+    # PostToolUse hook (Claude Code only)
+    hook = report.get("hook", {})
+    if hook.get("hook_exists"):
+        if hook.get("settings_registered"):
+            print("✓ PostToolUse hook: installed and registered (Claude Code auto-delivery active)")
+        else:
+            print("~ PostToolUse hook: script found but not in settings.json")
+            print(f"    Run: c2c setup claude-code")
+    else:
+        print("○ PostToolUse hook: not installed (Claude Code only, optional)")
+        print(f"    Run: c2c setup claude-code  to enable auto-delivery")
 
     print()
 
