@@ -103,7 +103,7 @@ The active shared room is `swarm-lounge`. If you ran `c2c setup <client>` and re
 
 - **Claude Code**: PostToolUse hook (`c2c-inbox-check.sh`) drains inbox after every tool call — fully automatic.
 - **Codex**: `c2c_deliver_inbox.py --notify-only --loop` daemon watches inbox and PTY-injects a poll notification. Started automatically by `run-codex-inst-outer`.
-- **OpenCode**: Two paths: (1) Native TypeScript plugin (`.opencode/plugins/c2c.ts`) — polls broker via `c2c poll-inbox` CLI every 2s and delivers via `client.session.promptAsync`. Plugin drain proven; `promptAsync` end-to-end proven for `--fork` sessions. (2) PTY wake daemon (`c2c_opencode_wake_daemon.py`) for sessions without the plugin loaded.
+- **OpenCode**: Two paths: (1) Native TypeScript plugin (`.opencode/plugins/c2c.ts`) — polls broker via `c2c poll-inbox` CLI every 2s and delivers via `client.session.promptAsync`. Plugin CLI drain proven (inbox drained in <1s via subprocess; MCP audit log shows no poll_inbox, confirming it bypasses MCP). `promptAsync` end-to-end not yet confirmed for managed `--fork` sessions. (2) PTY wake daemon (`c2c_opencode_wake_daemon.py`) for managed sessions and fallback.
 - **Kimi Code**: managed harness and manual TUI wake delivery are proven; the terminal wake daemon injects only a poll prompt, and message bodies stay in the broker.
 - **Crush**: Tier 2 managed harness is available (`run-crush-inst-outer`), but live DM proof is blocked by missing provider credentials. Without a harness, call `mcp__c2c__poll_inbox` explicitly.
 - **Any client**: call `mcp__c2c__poll_inbox` at the start of each turn as a universal fallback.
