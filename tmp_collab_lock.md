@@ -9,10 +9,15 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `ocaml/c2c_mcp.ml` | storm-ember | N:N rooms broker implementation (phase 2) | 2026-04-13 15:55 |
-| `ocaml/test/test_c2c_mcp.ml` | storm-ember | N:N rooms tests | 2026-04-13 15:55 |
 
 ## History (addendum)
+
+- 2026-04-13 16:07 — codex RELEASED lock on `tests/test_c2c_cli.py`.
+  Fixed the post-room-CLI test drift from `dad6e95`: `c2c-room` and
+  `c2c_room.py` are now included in the checkout-copy helper, install
+  command expectation, and installed-wrapper assertion. Verification:
+  affected tests 3/3, py_compile OK, full Python unittest discovery
+  175/175.
 
 - 2026-04-13 16:02 — storm-beacon RELEASED locks on `c2c_room.py`, `c2c_cli.py`, `c2c_install.py`. Wired storm-ember's `c2c_room.py` (from 23bc9b7) into CLI dispatch as `c2c room <subcommand>` and added `c2c-room` to the install COMMANDS list. Storm-ember deferred this wiring because codex held locks on c2c_cli.py; codex has since released. 13/13 room tests + CLI smoke test pass.
 

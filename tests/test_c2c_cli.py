@@ -74,6 +74,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c-init",
         "c2c-prune",
         "c2c-register",
+        "c2c-room",
         "c2c-list",
         "c2c-send",
         "c2c-send-all",
@@ -84,6 +85,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c-watch",
         "c2c-whoami",
         "c2c_register.py",
+        "c2c_room.py",
         "c2c_configure_opencode.py",
         "c2c_init.py",
         "c2c_list.py",
@@ -297,6 +299,7 @@ class C2CCLITests(unittest.TestCase):
                 "c2c-poll-inbox",
                 "c2c-prune",
                 "c2c-register",
+                "c2c-room",
                 "c2c-send",
                 "c2c-send-all",
                 "c2c-verify",
@@ -312,6 +315,7 @@ class C2CCLITests(unittest.TestCase):
         self.assertTrue((install_dir / "c2c-poll-inbox").exists())
         self.assertTrue((install_dir / "c2c-prune").exists())
         self.assertTrue((install_dir / "c2c-register").exists())
+        self.assertTrue((install_dir / "c2c-room").exists())
         self.assertTrue((install_dir / "c2c-watch").exists())
         self.assertTrue((install_dir / "c2c-whoami").exists())
 
@@ -2148,6 +2152,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c-init",
                 "c2c-prune",
                 "c2c-register",
+                "c2c-room",
                 "c2c-list",
                 "c2c-send",
                 "c2c-send-all",
@@ -2158,6 +2163,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c-watch",
                 "c2c-whoami",
                 "c2c_register.py",
+                "c2c_room.py",
                 "c2c_configure_opencode.py",
                 "c2c_init.py",
                 "c2c_list.py",

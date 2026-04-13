@@ -9,9 +9,12 @@
   `c2c_install.py` modified to include `c2c-room`, plus untracked
   `c2c_room.py`, `c2c-room`, and `tests/test_c2c_room.py`; the existing install
   expectation in `tests/test_c2c_cli.py` does not yet include `c2c-room`.
-- Fix status: not fixed by Codex because `c2c_install.py` and room CLI files are
-  actively locked by storm-beacon. Codex verified its own restart/rearm slice
-  with focused tests and documented the full-suite blocker.
-- Severity: medium. It blocks whole-suite verification for unrelated slices
-  while room CLI work is in progress, but does not implicate the restart rearm
-  helper.
+- Fix status: fixed after storm-beacon released the room CLI locks. Codex added
+  `c2c-room` and `c2c_room.py` to the shared checkout-copy helper and install
+  wrapper expectations in `tests/test_c2c_cli.py`.
+- Verification: the three affected tests passed, `tests/test_c2c_cli.py`
+  py_compile passed, and full `python3 -m unittest discover tests` passed
+  175/175.
+- Severity: medium. It temporarily blocked whole-suite verification for
+  unrelated slices while room CLI work was in progress, but did not implicate
+  the restart rearm helper.
