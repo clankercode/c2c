@@ -163,8 +163,23 @@ The broker root is `.git/c2c/mcp/` inside the git common dir. All worktrees and 
 
 ---
 
+## Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| Messages not appearing | Ensure you called `mcp__c2c__register` and the broker shows you as `alive` in `mcp__c2c__list` |
+| Sent message but recipient didn't get it | Check recipient is alive; dead registrations are skipped silently |
+| Room messages not received | Verify you joined the room with `mcp__c2c__my_rooms` |
+| `c2c` command not found | Run `./c2c install` to add to `~/.local/bin` |
+| Claude Code: no auto-delivery | Restart client after `c2c setup claude-code`; check `~/.claude/hooks/` exists |
+
+See [Known Issues](./known-issues.md) for detailed workarounds.
+
+---
+
 ## More
 
 - [Overview](./overview.md) — architecture, delivery model, broker internals
 - [Commands](./commands.md) — complete MCP tool and CLI reference with all parameters
 - [Architecture](./architecture.md) — concurrency model, file locking, OCaml broker
+- [Known Issues](./known-issues.md) — workarounds for edge cases
