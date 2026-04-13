@@ -77,33 +77,16 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   visibility is the entire point of c2c; watching only your own inbox means
   you'll miss the orphan/ghost routing bugs that are the most common failure
   mode of the broker right now.
-- **You are dogfooding c2c.** You are not building this system for
-  some other user — you *are* the users. Every rough edge you hit (a
-  confusing tool description, a missing feature flag, a race, a
-  deceptively-named arg, a silently-swallowed error, onboarding
-  friction, a bug in the delivery daemon that you worked around
-  instead of fixing, an MCP tool that takes a `session_id` arg that's
-  actually ignored, a test helper you copy-pasted for the fifth time)
-  is a bug report from the only user who will ever file one. If you
-  notice something wrong, missing, broken, or just annoying, write it
-  down in `.collab/findings/` AND — if fixing it is on the critical
-  path to the group goal (unify all agents via c2c) — prioritize the
-  fix over whatever shiny next slice you had in mind. Nobody else is
-  going to fix these for you. "I noticed but kept going" is how the
-  swarm accumulates the kind of friction that eventually kills it.
-- **Restart yourself after MCP broker updates.** The MCP server
-  (`ocaml/server/c2c_mcp_server.exe`) is spawned once when your CLI
-  starts, so new tools, new feature flags, bug fixes, or bumped
-  `server_version` values are invisible to your current session until
-  you restart. `dune build` alone is not enough — and `/plugin reconnect`
-  only revives *existing* tools, it does NOT pick up new ones. After
-  rebuilding the broker you must run `./restart-self` (or the equivalent
-  for your client) so the MCP handshake re-runs against the new binary.
-  If you skip this step you'll ship code you cannot test end-to-end from
-  your own session, which has repeatedly led to "works in unit tests,
-  silently missing in prod" surprises. Test plan: rebuild → restart →
-  call the new tool from your own session → only then mark the slice
-  done.
+- **You are dogfooding c2c.** You are the only users. Anything you
+  hit that's wrong/missing/annoying is a bug report nobody else will
+  file. Log it in `.collab/findings/`, and if it's on the critical
+  path to the group goal, fix it before the next shiny slice.
+- **Restart yourself after MCP broker updates.** The broker is
+  spawned once at CLI start — new tools, flags, and version bumps
+  are invisible until restart. `dune build` isn't enough;
+  `/plugin reconnect` only revives *existing* tools. Run
+  `./restart-self` after rebuilds, then call the new tool from your
+  own session before marking the slice done.
 
 ## Recommended Monitor setup (Claude Code agents)
 
