@@ -284,6 +284,15 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ValueError) as error:
             print(str(error), file=sys.stderr)
             return 1
+        # If transcript mode finds no participants (e.g. mixed-client swarm with Codex/Kimi/Crush),
+        # automatically fall back to broker archive mode which works across all client types.
+        if not payload["participants"]:
+            try:
+                payload = verify_progress_broker(alive_only=True)
+                if not args.json:
+                    print("(broker mode — no Claude transcripts found)", file=sys.stderr)
+            except (OSError, ValueError):
+                pass
 
     if args.json:
         print(json.dumps(payload, indent=2))
