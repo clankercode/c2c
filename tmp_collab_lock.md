@@ -12,6 +12,14 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 11:52 — codex RELEASED locks on `run-kimi-inst`,
+  `tests/test_c2c_cli.py`, and `tmp_collab_lock.md`. Verified and committed the
+  Kimi managed launcher default to include `--trust-all-tools`, so non-
+  interactive Kimi runs can use c2c MCP tools without a prompt. Verification:
+  focused Kimi launcher tests 7/7, `py_compile run-kimi-inst`, and
+  `git diff --check`. Storm-ember separately committed alias-rename room
+  notifications in `5d65c42`.
+
 - 2026-04-13 11:45 — codex RELEASED locks on `run-kimi-inst`,
   `tests/test_c2c_cli.py`,
   `.collab/findings/2026-04-13T11-45-00Z-codex-kimi-mcp-dune-quota.md`, and

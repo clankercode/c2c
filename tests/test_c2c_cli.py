@@ -5639,7 +5639,7 @@ class RunKimiInstTests(unittest.TestCase):
         self.assertEqual(result_code(result), 0, result.stderr)
         payload = json.loads(result.stdout)
         self.assertEqual(
-            payload["launch"][:4], ["kimi", "--print", "--prompt", "poll inbox"]
+            payload["launch"][:5], ["kimi", "--trust-all-tools", "--print", "--prompt", "poll inbox"]
         )
         self.assertEqual(payload["prompt_mode"], "non-interactive")
 
