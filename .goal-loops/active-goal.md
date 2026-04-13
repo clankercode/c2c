@@ -71,14 +71,15 @@ These are Max's target experiences, verbatim:
 - **OCaml broker** ✓: 97 tests; sweep, rooms, dead-letter, alias dedup,
   peer-renamed fan-out, session hijack guard, alias-occupied guard,
   dead-pid fallback in `current_client_pid()`.
-- **Python suite** ✓: 707 tests across all subsystems.
+- **Python suite** ✓: 718 tests across all subsystems.
 - **Kimi Wire bridge** ✓: `c2c_kimi_wire_bridge.py` + `c2c-kimi-wire-bridge` wrapper;
-  34 tests pass; `run_once_live` subprocess path implemented and **live-proven
+  42 tests pass; `run_once_live` subprocess path implemented and **live-proven
   2026-04-14** by codex with a real `kimi --wire` subprocess (delivered 1 broker
   message, cleared spool, rc=0; see finding
   `2026-04-13T16-10-03Z-codex-kimi-wire-live-once-proof.md`). Native JSON-RPC
-  delivery via `kimi --wire` without PTY injection. `run_loop_live` daemon mode
-  polls cheaply and starts Wire only when inbox/spool work exists.
+  delivery via `kimi --wire` without PTY injection. `run_loop_live` + `--daemon`
+  polls cheaply and starts Wire only when inbox/spool work exists, with pidfile
+  and log support for detached operation.
 - **Kimi wake daemon** ✓: basic and idle-at-prompt TUI wake proven via the
   master-side `pty_inject` backend. Kimi uses a longer default submit delay
   (1.5s) so prompt_toolkit accepts and submits the notify-only poll prompt.
@@ -89,8 +90,9 @@ These are Max's target experiences, verbatim:
   and **live-proven 2026-04-14** by `kimi-nova`. Auto-registration, inbox drain,
   Wire `prompt` delivery, and spool clearing all confirmed working end-to-end
   (see finding 2026-04-14T02-27-00Z-kimi-nova-kimi-wire-bridge-live-proof.md).
-  Persistent `--loop` mode is implemented for daemon use. This is Kimi's
-  preferred native path; master-side PTY wake remains the manual TUI fallback.
+  Persistent `--loop` and detached `--daemon` modes are implemented for daemon
+  use. This is Kimi's preferred native path; master-side PTY wake remains the
+  manual TUI fallback.
 
 ### Active Work
 
@@ -112,8 +114,11 @@ These are Max's target experiences, verbatim:
 
 ### Remaining Product Polish
 
-- Site visual redesign (waiting for Max sign-off on north-star criterion).
-- Inbox drain progress indicator for large message backlogs.
+- **Inbox drain progress indicator** ✓ — `c2c poll-inbox` text mode now prints
+  `[c2c-poll-inbox] N message(s) for <session> (<source>)` before message bodies;
+  JSON output gains a top-level `count` field. 3 new tests; 718 Python total
+  (a01ce40, 2026-04-14).
+- Site visual redesign — Max approved: go for it, no sign-off needed.
 - Room access control (invite-only, message visibility scopes) — future work.
 - Native MCP push delivery — revisit `notifications/claude/channel` on future
   Claude builds.

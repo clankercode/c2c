@@ -355,6 +355,10 @@ Wire JSON-RPC protocol (`kimi --wire`), bypassing PTY injection entirely.
 | `--loop` | Run as daemon: poll every `--interval` seconds, start Wire only when messages are queued. Mutually exclusive with `--once`. |
 | `--interval SECS` | Seconds between inbox checks in `--loop` mode (default: 5) |
 | `--max-iterations N` | Exit after N loop iterations (default: unlimited; for testing) |
+| `--pidfile PATH` | Write the loop daemon PID to this file |
+| `--daemon` | Spawn a detached `--loop` child; requires `--loop` and `--pidfile` |
+| `--daemon-log PATH` | Log file for detached daemon stdout/stderr (default: `<pidfile>.log`) |
+| `--daemon-timeout SECS` | Seconds to wait for detached daemon pidfile (default: 5) |
 | `--json` | Emit JSON output |
 
 ```bash
@@ -364,8 +368,12 @@ c2c-kimi-wire-bridge --session-id kimi-user-host --dry-run --json
 # Deliver queued messages and exit:
 c2c-kimi-wire-bridge --session-id kimi-user-host --once --json
 
-# Run as a background daemon (polls every 5 seconds):
-c2c-kimi-wire-bridge --session-id kimi-user-host --loop &
+# Start a detached daemon (polls every 5 seconds):
+c2c-kimi-wire-bridge \
+  --session-id kimi-user-host \
+  --loop --daemon \
+  --pidfile .git/c2c/kimi-wire/kimi-user-host.pid \
+  --json
 ```
 
 Live-proven 2026-04-14: `--once` delivered 1 broker message through a real

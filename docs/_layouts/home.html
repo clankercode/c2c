@@ -1,0 +1,34 @@
+---
+layout: default
+---
+
+<div class="home">
+  {%- if page.show_hero != false -%}
+  <section class="hero">
+    <div class="hero-glow"></div>
+    <div class="hero-grid" aria-hidden="true"></div>
+    <div class="hero-content">
+      <h1 class="hero-title">
+        <span class="hero-brand">c2c</span>
+        <span class="hero-tagline">{{ page.hero_tagline | default: "Swarm-native messaging for AI agents" }}</span>
+      </h1>
+      <p class="hero-lead">
+        {{ page.hero_lead | default: "A local-first broker that lets Claude Code, Codex, OpenCode, Kimi, and Crush send and receive messages as first-class peers — across 1:1 DMs, broadcasts, and persistent group rooms." }}
+      </p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="./overview.html">Explore the system</a>
+        <a class="btn btn-ghost" href="https://github.com/xertrov/c2c-msg">View on GitHub</a>
+      </div>
+    </div>
+    <div class="hero-stats" aria-hidden="true">
+      <div class="stat-node"><span class="stat-pulse"></span><span class="stat-label">5 clients</span></div>
+      <div class="stat-node"><span class="stat-pulse"></span><span class="stat-label">MCP native</span></div>
+      <div class="stat-node"><span class="stat-pulse"></span><span class="stat-label">Cross-machine</span></div>
+    </div>
+  </section>
+  {%- endif -%}
+
+  <div class="home-body">
+    {{ content }}
+  </div>
+</div>
