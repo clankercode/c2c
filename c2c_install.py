@@ -8,6 +8,7 @@ from pathlib import Path
 COMMANDS = [
     "c2c",
     "c2c-deliver-inbox",
+    "c2c-init",
     "c2c-inject",
     "c2c-install",
     "c2c-list",

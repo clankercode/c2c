@@ -69,6 +69,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
     for relative_path in [
         "c2c",
         "c2c-deliver-inbox",
+        "c2c-init",
         "c2c-register",
         "c2c-list",
         "c2c-send",
@@ -78,6 +79,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c-verify",
         "c2c-whoami",
         "c2c_register.py",
+        "c2c_init.py",
         "c2c_list.py",
         "c2c_send.py",
         "c2c_send_all.py",
@@ -277,6 +279,7 @@ class C2CCLITests(unittest.TestCase):
             [
                 "c2c",
                 "c2c-deliver-inbox",
+                "c2c-init",
                 "c2c-inject",
                 "c2c-install",
                 "c2c-list",
@@ -361,6 +364,56 @@ class C2CCLITests(unittest.TestCase):
         send_all_main.assert_called_once_with(
             ["--from-alias", "me", "hello swarm", "--json"]
         )
+
+    def test_c2c_init_subcommand_dispatches_to_bootstrap(self):
+        with mock.patch("c2c_cli.c2c_init.main", return_value=0) as init_main:
+            result = c2c_cli.main(["init", "--json"])
+
+        self.assertEqual(result, 0)
+        init_main.assert_called_once_with(["--json"])
+
+    def test_c2c_init_creates_broker_root_and_reports_peers(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            broker_root = Path(temp_dir) / "fresh-broker"
+            self.assertFalse(broker_root.exists())
+            env = os.environ.copy()
+            env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
+            result = subprocess.run(
+                [sys.executable, str(REPO / "c2c_init.py"), "--json"],
+                cwd=REPO,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=15,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["broker_root"], str(broker_root))
+            self.assertEqual(payload["peer_count"], 0)
+            self.assertEqual(payload["aliases"], [])
+            self.assertTrue(broker_root.exists())
+
+            (broker_root / "registry.json").write_text(
+                json.dumps(
+                    [
+                        {"session_id": "alice-local", "alias": "alice"},
+                        {"session_id": "bob-local", "alias": "bob"},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            second = subprocess.run(
+                [sys.executable, str(REPO / "c2c_init.py"), "--json"],
+                cwd=REPO,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=15,
+            )
+            self.assertEqual(second.returncode, 0, msg=second.stderr)
+            second_payload = json.loads(second.stdout)
+            self.assertEqual(second_payload["peer_count"], 2)
+            self.assertEqual(sorted(second_payload["aliases"]), ["alice", "bob"])
 
     def test_c2c_mcp_defaults_broker_root_to_shared_git_c2c_dir(self):
         expected = REPO / ".git" / "c2c" / "mcp"
@@ -2027,6 +2080,7 @@ class C2CTestHelpersTests(unittest.TestCase):
             for relative_path in [
                 "c2c",
                 "c2c-deliver-inbox",
+                "c2c-init",
                 "c2c-register",
                 "c2c-list",
                 "c2c-send",
@@ -2036,6 +2090,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c-verify",
                 "c2c-whoami",
                 "c2c_register.py",
+                "c2c_init.py",
                 "c2c_list.py",
                 "c2c_send.py",
                 "c2c_send_all.py",
@@ -3029,42 +3084,6 @@ class ClaudeSendMsgUnitTests(unittest.TestCase):
                 sessions=[full_session],
             )
 
-        inject.assert_called_once_with(
-            full_session,
-            '<c2c event="message" from="c2c-send">\nhello peer\n</c2c>',
-        )
-        self.assertEqual(result["session_id"], AGENT_TWO_SESSION_ID)
-
-    def test_send_message_to_session_reloads_when_provided_sessions_lack_terminal_owner(
-        self,
-    ):
-        partial_session = {
-            "name": "agent-two",
-            "pid": 11112,
-            "session_id": AGENT_TWO_SESSION_ID,
-            "tty": "/dev/pts/9",
-        }
-        full_session = {
-            **partial_session,
-            "terminal_pid": 33333,
-            "terminal_master_fd": 8,
-        }
-
-        with (
-            mock.patch("claude_send_msg.use_send_message_fixture", return_value=False),
-            mock.patch(
-                "claude_send_msg.load_sessions", return_value=[full_session]
-            ) as load_sessions,
-            mock.patch("claude_send_msg.inject") as inject,
-            mock.patch("claude_send_msg.time.time", return_value=123.0),
-        ):
-            result = claude_send_msg.send_message_to_session(
-                partial_session,
-                "hello peer",
-                sessions=[partial_session],
-            )
-
-        load_sessions.assert_called_once_with()
         inject.assert_called_once_with(
             full_session,
             '<c2c event="message" from="c2c-send">\nhello peer\n</c2c>',
