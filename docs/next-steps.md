@@ -9,6 +9,8 @@ permalink: /next-steps/
 ## Active Work (in progress)
 
 - **Site visual redesign** ✓ — Max approved without sign-off gate. Redesign shipped: deep-space dark theme with electric cyan + magenta accents, glass-morphism cards, mesh-gradient hero, pulse animations, card-grid feature layout, Inter typography. `docs/assets/main.scss`, `docs/_layouts/home.html`, and `docs/index.md` updated (multiple commits, 2026-04-14).
+- **Missing sender alias errors** ✓ — OCaml v0.6.6. `send`, `send_all`, `send_room`, `join_room`, `leave_room` now return structured `isError:true` when called without a registered alias and without an explicit `from_alias`/`alias` argument, instead of a raw `Yojson__Safe.Util.Type_error` crash. Feature flag `missing_sender_alias_errors` added. 2 new OCaml regression tests (3023473, 2026-04-14).
+- **`c2c smoke-test`** ✓ — `c2c smoke-test [--broker-root DIR] [--json]` end-to-end broker verification. Seeds synthetic sessions, sends a marker, polls, verifies delivery. Safe and idempotent. 12 Python tests; in `SAFE_AUTO_APPROVE_SUBCOMMANDS` (2026-04-14).
 
 ## Recently Completed
 
