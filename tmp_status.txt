@@ -46,7 +46,7 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 707 tests ✓
+- Python: 718 tests ✓
 - OCaml: 97 tests ✓
 
 ## Active Social Room
@@ -54,9 +54,9 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
 
 ## Recent Architectural Improvements (since last status)
 - Kimi idle TUI delivery via master-side pty_inject: LIVE-PROVEN (closes the manual TUI fallback gap; direct PTS slave writes are display-only)
-- Kimi Wire bridge: implemented and live-proven (c2c_kimi_wire_bridge.py, c2c-kimi-wire-bridge wrapper, 31 tests)
+- Kimi Wire bridge: implemented and live-proven (c2c_kimi_wire_bridge.py, c2c-kimi-wire-bridge wrapper, 42 focused tests)
   - run_once_live: full subprocess launch path implemented; `--once` delivered through real `kimi --wire`
-  - run_loop_live: persistent daemon mode implemented; starts Wire only when inbox/spool work exists
+  - run_loop_live + `--daemon`: persistent mode implemented; starts Wire only when inbox/spool work exists, supports pidfile/log handling for detached operation
 - Relay localhost, Docker cross-machine equivalent, and true two-machine Tailscale tests: CLI surface (serve/connect/rooms) validated end-to-end
 - OCaml current_client_pid: now validates C2C_MCP_CLIENT_PID against /proc before trusting it
 - c2c install: wrappers now resolve path via git-common-dir (worktree path bug fixed)
