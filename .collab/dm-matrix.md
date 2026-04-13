@@ -152,17 +152,17 @@ c2c setup crush         # ~/.config/crush/crush.json MCP entry + auto-alias crus
 
 ## Known Issues
 
-- **opencode-local room spam**: one-shot opencode sends "online" message to
-  swarm-lounge on every spawn. Fix: add `--skip-room-announce` or broker-level
-  throttle. See `.collab/findings/2026-04-13T07-45-00Z-storm-beacon-room-broadcast-spam.md`.
-
 - **OpenCode registration liveness drift**: short-lived `opencode run` workers
   can temporarily register alias `opencode-local` to their own pid while the
   durable TUI remains alive. Direct sends then reject as `recipient is not
   alive: opencode-local` until registration refreshes to the TUI pid. See
   `.collab/findings/2026-04-13T09-06-00Z-codex-opencode-wake-delay-timeout.md`.
 
-- **opencode-local room spam dedup**: broker-level 60s dedup landed in 4d4522c as
-  a safety net against rapid identical messages. The one-shot prompt still sends
-  on every spawn, but at most one announcement per 60s reaches the room history.
-  Full fix (conditional announce) is still pending.
+## Resolved Issues
+
+- ~~**opencode-local room spam**~~: FIXED. One-shot config now only announces to
+  swarm-lounge when at least one non-room DM was found and replied to (conditional
+  STEP 3). Broker-level 60s dedup (4d4522c) remains as safety net.
+
+- ~~**opencode-local room spam dedup**~~: FIXED. Conditional announce in one-shot
+  prompt is the full fix; 60s broker-level dedup is the safety net.
