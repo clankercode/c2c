@@ -117,7 +117,19 @@ def main(argv: list[str]) -> int:
                 f"{DOUBLE_SIGINT_WINDOW_SECONDS:.1f}s to exit the loop.",
                 flush=True,
             )
-            exit_code = 130
+            if proc is not None and proc.poll() is None:
+                try:
+                    exit_code = proc.wait()
+                except KeyboardInterrupt:
+                    if proc.poll() is None:
+                        try:
+                            os.killpg(proc.pid, signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+                    print("[run-opencode-inst-outer] double SIGINT - exiting.", flush=True)
+                    return 130
+            else:
+                exit_code = 130
         except FileNotFoundError as exc:
             print(f"[run-opencode-inst-outer] failed to launch: {exc}", file=sys.stderr)
             return 2

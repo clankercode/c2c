@@ -3887,13 +3887,10 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
             payload["inner"][1:],
             [str(REPO / "run-opencode-inst"), "c2c-opencode-local"],
         )
+        self.assertTrue(Path(payload["rearm"][0]).name.startswith("python"))
         self.assertEqual(
-            payload["rearm"],
-            [
-                sys.executable,
-                str(REPO / "run-opencode-inst-rearm"),
-                "c2c-opencode-local",
-            ],
+            payload["rearm"][1:],
+            [str(REPO / "run-opencode-inst-rearm"), "c2c-opencode-local"],
         )
 
     def test_run_opencode_inst_outer_forwards_first_sigint_to_child_session(self):
@@ -3903,13 +3900,18 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
             inner_path = root / "run-opencode-inst"
             signal_path = root / "signal.txt"
             child_pid_path = root / "child.pid"
+            launch_log_path = root / "launches.txt"
             shutil.copy2(REPO / "run-opencode-inst-outer", outer_path)
             inner_path.write_text(
                 "import os, pathlib, signal, sys, time\n"
                 f"signal_path = pathlib.Path({str(signal_path)!r})\n"
                 f"child_pid_path = pathlib.Path({str(child_pid_path)!r})\n"
+                f"launch_log_path = pathlib.Path({str(launch_log_path)!r})\n"
+                "with launch_log_path.open('a', encoding='utf-8') as handle:\n"
+                "    handle.write(f'{os.getpid()}\\n')\n"
                 "child_pid_path.write_text(f'{os.getpid()}\\n', encoding='utf-8')\n"
                 "def handle(signum, _frame):\n"
+                "    time.sleep(1.0)\n"
                 "    signal_path.write_text(signal.Signals(signum).name + '\\n', encoding='utf-8')\n"
                 "    raise SystemExit(0)\n"
                 "signal.signal(signal.SIGINT, handle)\n"
@@ -3941,6 +3943,11 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
                     if signal_path.exists():
                         break
                     time.sleep(0.05)
+
+                launches = launch_log_path.read_text(encoding="utf-8").splitlines()
+                self.assertEqual(
+                    launches, [child_pid_path.read_text(encoding="utf-8").strip()]
+                )
 
                 process.send_signal(signal.SIGINT)
                 stdout, stderr = process.communicate(timeout=CLI_TIMEOUT_SECONDS)
@@ -5283,9 +5290,7 @@ class RestartMeUnitTests(unittest.TestCase):
             new_file.write_text("[]", encoding="utf-8")
 
             # Point the function at our temp dir by monkeypatching Path.home()
-            with mock.patch(
-                "c2c_restart_me.Path.home", return_value=Path(tmp)
-            ):
+            with mock.patch("c2c_restart_me.Path.home", return_value=Path(tmp)):
                 # Need a fake /proc/<pid>/cwd symlink pointing at our dir
                 # Instead call _uuid_from_claude_dir directly with a real pid
                 # by patching os.readlink
