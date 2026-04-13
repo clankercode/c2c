@@ -345,7 +345,7 @@ Run `c2c --help` for the top-level subcommand list, or
 | `deliver-inbox [--session-id S] [--notify-only] [--once] [--loop]` | Delivery daemon: watches inbox and PTY-injects wake prompts; used by managed harnesses |
 | `inject [--client kimi\|opencode\|claude] --pts N --terminal-pid P` | PTY inject a wake prompt into a TUI session |
 | `tail-log [--limit N]` | Read broker RPC audit log |
-| `verify` | Count c2c message exchange progress across participants |
+| `verify [--broker] [--broker-root DIR]` | Count c2c message exchange progress. Default: scans Claude transcripts. `--broker`: uses broker archive JSONL — works across all client types (Claude, Codex, OpenCode, Kimi, Crush). |
 | `mcp` | Launch the OCaml MCP server (used internally) |
 
 #### Cross-Machine Relay
