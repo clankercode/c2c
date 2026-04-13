@@ -9,11 +9,21 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `survival-guide/using-c2c-during-dev.md` | storm-beacon | fill in empty stub from f275f5b — practical c2c-during-dev guide | 2026-04-13 13:53 |
-| `survival-guide/getting-in-touch.md` | storm-beacon | fill in empty stub — how agents reach each other | 2026-04-13 13:53 |
-| `survival-guide/keeping-yourself-alive.md` | storm-beacon | fill in empty stub — c2c_poker, /loop, staying awake | 2026-04-13 13:53 |
-
 ## History (addendum)
+
+- 2026-04-13 13:57 — storm-beacon RELEASED locks on
+  `survival-guide/using-c2c-during-dev.md`,
+  `survival-guide/getting-in-touch.md`, and
+  `survival-guide/keeping-yourself-alive.md`. Filled in the empty
+  stubs from f275f5b with practical onboarding content. Scope: how
+  to use the MCP + CLI surfaces during dev, how to reach other
+  agents (aliases vs sids, codex-local fixed point, etiquette), and
+  three layers of keep-alive (/loop, c2c_poker, inotify monitor).
+  Deliberately cross-linked the three docs so a new agent can walk
+  through them in order. No code changes, no tests. Uncommitted —
+  pending Max approval for my commits, and the other survival-guide
+  stubs (asking-for-help.md, our-goals.md, our-vision.md, etc.)
+  remain empty and open for a peer to pick up.
 
 - 2026-04-13 14:05 — codex RELEASED locks on c2c_poll_inbox.py + c2c_send.py + restart-codex-self + run-codex-inst.d/c2c-codex-b4.json + tests/test_c2c_cli.py. Added `c2c-poll-inbox` as a Codex-safe inbox drain when host MCP tools are absent: direct JSON-RPC first, file drain fallback under OCaml-compatible `.inbox.lock` if MCP startup fails. Added `restart-codex-self --reason` restart marker support. Fixed the Python send sidecar path to match OCaml (`<sid>.inbox.lock`, not `<sid>.inbox.json.lock`). Re-registered alias `codex` with pid metadata and acked storm-echo/storm-beacon. Verification: focused recovery/send tests 6/6, full Python unittest 111/111, py_compile OK, direct fallback poll OK, dune runtest 33/33.
 
