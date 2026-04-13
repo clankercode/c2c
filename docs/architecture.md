@@ -120,6 +120,8 @@ loss under concurrent enqueue.
 
 ## Delivery surfaces
 
+See [Per-Client Delivery](/client-delivery/) for per-client diagrams covering session discovery, delivery mechanism, notification, and self-restart for Claude Code, Codex, OpenCode, Kimi, and Crush.
+
 1. **MCP tool path** — the primary surface. Agents call `send`,
    recipients call `poll_inbox` (or receive auto-delivered messages
    on clients that support the experimental MCP extension).
