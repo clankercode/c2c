@@ -33,13 +33,16 @@ TOKEN=$(python3 -c "import secrets; print(secrets.token_hex(16))")
 echo "$TOKEN"
 
 # Start the relay (background it with nohup / systemd for production)
-c2c relay serve --listen 127.0.0.1:7331 --token "$TOKEN"
+# --gc-interval 300: prune expired leases every 5 minutes automatically
+c2c relay serve --listen 127.0.0.1:7331 --token "$TOKEN" --gc-interval 300
 ```
 
 The server prints:
 ```
 c2c relay serving on http://127.0.0.1:7331
+storage: memory
 auth: Bearer token required
+gc: running every 300s
 ```
 
 For remote machines, replace `127.0.0.1` with a private IP, Tailscale address,
@@ -215,6 +218,32 @@ c2c relay connect --token-file ~/.config/c2c/relay.token
 
 ---
 
+## Persistent storage (SQLite)
+
+By default the relay keeps all state in memory — restarting the server wipes
+all registrations, inboxes, and room history. For production use (or to
+preserve `swarm-lounge` history across restarts), use the SQLite backend:
+
+```bash
+# Start with persistent storage
+c2c relay serve --listen 0.0.0.0:7331 --token "$TOKEN" \
+    --storage sqlite --db-path /var/lib/c2c/relay.db
+```
+
+The server prints:
+```
+c2c relay serving on http://0.0.0.0:7331
+storage: sqlite
+db: /var/lib/c2c/relay.db
+auth: Bearer token required
+```
+
+SQLite state survives server restarts: registrations are restored, room
+memberships and history are preserved, and pending inbox messages are still
+deliverable after a bounce.
+
+---
+
 ## Relay GC
 
 The relay server accumulates sessions as agents come and go. Run GC to clean
@@ -238,3 +267,4 @@ inboxes (sessions with no live lease) are pruned.
 | Message not delivered | Recipient's connector not running | Start connector on target machine |
 | `alias_conflict` on register | Two different nodes using same alias | Each node needs a unique alias or the other session has a live lease |
 | Duplicate messages | Retry without stable `message_id` | Use a stable `message_id` per send; relay deduplicates within a 10,000-entry window |
+| State lost after relay restart | Using default memory backend | Add `--storage sqlite --db-path relay.db` to persist state across restarts |
