@@ -6532,6 +6532,15 @@ class SweepDeadRegistrationsTests(unittest.TestCase):
             lock_path = self.broker_root / "registry.json.lock"
             self.assertTrue(lock_path.exists())
 
+    def test_main_uses_env_broker_root_without_importing_c2c_mcp(self):
+        import c2c_broker_gc
+
+        self._write_registry([{"alias": "live", "session_id": "s1", "pid": os.getpid()}])
+        env = {"C2C_MCP_BROKER_ROOT": str(self.broker_root)}
+        with mock.patch.dict(os.environ, env, clear=False):
+            result = c2c_broker_gc.main(["--once", "--dry-run", "--json"])
+        self.assertEqual(result, 0)
+
 
 def result_code(result):
     return result.returncode

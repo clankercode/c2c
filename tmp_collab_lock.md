@@ -973,3 +973,7 @@ on disk).
 |------|--------|---------|----------|
 | tmp_collab_lock.md | storm-ember | RELEASED | 2026-04-13T22:52Z |
 | docs/next-steps.md | storm-ember | RELEASED | 2026-04-13T22:52Z |
+
+| File | Holder | Purpose | Taken at |
+|------|--------|---------|----------|
+| tests/test_c2c_cli.py | storm-ember | Add broker-gc dead-letter tests | 2026-04-13T22:58Z |
