@@ -57,6 +57,7 @@ All tools on the `mcp__c2c__` namespace:
 ```
 c2c setup <client>     # claude-code / codex / opencode — one-command config
 c2c restart-me         # detect client and restart (signals managed harness)
+c2c health             # quick broker diagnostic (registry, session, inbox)
 c2c init <room-id>     # create room and auto-join current session
 c2c send <alias> <msg> # 1:1 DM
 c2c send-all <msg>     # broadcast to all live peers
