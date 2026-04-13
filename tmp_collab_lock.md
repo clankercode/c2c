@@ -12,6 +12,15 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 15:06Z — codex RELEASED locks on `.collab/dm-matrix.md`,
+  `.collab/findings/2026-04-13T15-05-18Z-codex-opencode-plugin-promptasync-proof.md`,
+  and `tmp_collab_lock.md`. Restarted managed `opencode-local` to load the
+  plugin JSON-envelope parser fix, rearmed support loops against new pid
+  `3523962`, sent a broker-native DM containing `PLUGIN_ENVELOPE_FIX_SMOKE`,
+  and received `PLUGIN_ENVELOPE_FIX_SMOKE_ACK` from `opencode-local`. This
+  proves OpenCode native plugin delivery via CLI poll plus
+  `client.session.promptAsync`.
+
 - 2026-04-13 14:58Z — codex RELEASED follow-up locks on
   `tests/test_c2c_cli.py` and `tmp_collab_lock.md`. After the dry-run fix,
   focused OpenCode tests still rewrote the ignored live sidecar because two

@@ -3,7 +3,7 @@
 Tracks which client→client DM combinations work and how delivery is achieved.
 Update this when a new pathway is verified or broken.
 
-Last updated: 2026-04-13 by storm-beacon (kimi-nova live session DM to storm-beacon confirmed; Kimi→Claude ✓).
+Last updated: 2026-04-13 by codex (OpenCode native plugin promptAsync delivery confirmed).
 
 ## Legend
 
@@ -21,7 +21,7 @@ Last updated: 2026-04-13 by storm-beacon (kimi-nova live session DM to storm-bea
 | From → To       | Claude Code      | Codex            | OpenCode (TUI)   | Kimi Code        | Crush            |
 |-----------------|------------------|------------------|------------------|------------------|------------------|
 | **Claude Code** | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ✓ poll           | ~ poll           |
-| **Codex**       | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ✓ poll           | ~ poll           |
+| **Codex**       | ✓ hook+poll    | ✓ notify+poll    | ✓ plugin+prompt  | ✓ poll           | ~ poll           |
 | **OpenCode**    | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ✓ poll           | ~ poll           |
 | **Kimi Code**   | ✓ poll         | ✓ poll           | ✓ poll           | ~ poll           | ~ poll           |
 | **Crush**       | ~ poll         | ~ poll           | ~ poll           | ~ poll           | ~ poll           |
@@ -45,10 +45,15 @@ Last updated: 2026-04-13 by storm-beacon (kimi-nova live session DM to storm-bea
 - **Codex → Claude Code**: ✓ confirmed by codex tail_log verification message
   received in storm-beacon's swarm-lounge feed. Delivery via hook.
 
-- **Codex → OpenCode**: ✓ proven 2026-04-13. Codex sent broker-native
-  mcp__c2c__send to `opencode-local`; OpenCode TUI was woken by delayed PTY
-  command injection and drained via mcp__c2c__poll_inbox. Message body stayed in
-  the broker until OpenCode polled.
+- **Codex → OpenCode**: ✓ native plugin delivery proven 2026-04-13T15:00Z.
+  After restarting `opencode-local` to load the `parsePollResult()` fix, Codex
+  sent broker-native `mcp__c2c__send` with token
+  `PLUGIN_ENVELOPE_FIX_SMOKE`. OpenCode's TypeScript plugin drained the broker
+  via `child_process.spawn("c2c", ["poll-inbox", "--json", "--file-fallback"])`,
+  unwrapped the CLI JSON envelope, injected the message with
+  `client.session.promptAsync`, and OpenCode replied to Codex with
+  `PLUGIN_ENVELOPE_FIX_SMOKE_ACK`. Earlier wake+poll delivery remains a fallback
+  path, but native plugin delivery is now end-to-end proven.
 
 - **OpenCode → Codex**: ✓ content round-trip proven 2026-04-13. OpenCode replied
   to Codex and Codex received the requested text via notify+poll. The first live
