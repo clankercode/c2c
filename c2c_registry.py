@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import contextlib
 import fcntl
+import json
 import os
 import subprocess
 import tempfile
@@ -11,7 +12,48 @@ BASE = Path(__file__).resolve().parent
 DEFAULT_ALIAS_WORDS_PATH = BASE / "data" / "c2c_alias_words.txt"
 
 
-def repo_common_dir() -> Path:
+def repo_common_cache_path() -> Path:
+    override = os.environ.get("C2C_REPO_COMMON_CACHE", "").strip()
+    if override:
+        return Path(override)
+    return Path(tempfile.gettempdir()) / "c2c-repo-common-cache.json"
+
+
+def load_repo_common_cache() -> dict[str, str]:
+    path = repo_common_cache_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(key): str(value) for key, value in data.items()}
+
+
+def save_repo_common_cache(cache: dict[str, str]) -> None:
+    path = repo_common_cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def repo_identity_key() -> str | None:
+    try:
+        output = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            cwd=BASE,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    value = output.stdout.strip()
+    return value or None
+
+
+def current_repo_common_dir() -> Path:
     try:
         output = subprocess.run(
             ["git", "rev-parse", "--git-common-dir"],
@@ -31,6 +73,24 @@ def repo_common_dir() -> Path:
     resolved = Path(common_dir)
     if not resolved.is_absolute():
         resolved = (BASE / resolved).resolve()
+    return resolved
+
+
+def repo_common_dir() -> Path:
+    resolved = current_repo_common_dir()
+    identity = repo_identity_key()
+    if identity is None:
+        return resolved
+
+    cache = load_repo_common_cache()
+    cached = cache.get(identity, "").strip()
+    if cached:
+        cached_path = Path(cached)
+        if cached_path.exists():
+            return cached_path
+
+    cache[identity] = str(resolved)
+    save_repo_common_cache(cache)
     return resolved
 
 

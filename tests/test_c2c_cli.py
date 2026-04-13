@@ -306,19 +306,146 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(result, 0)
         mcp_main.assert_called_once_with(["--help"])
 
+    def test_c2c_mcp_defaults_broker_root_to_shared_git_c2c_dir(self):
+        expected = REPO / ".git" / "c2c" / "mcp"
+        with mock.patch.dict(os.environ, {}, clear=False):
+            self.assertEqual(c2c_mcp.default_broker_root(), expected)
+
+    def test_c2c_mcp_infers_session_id_when_env_not_set(self):
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch("c2c_mcp.current_session_identifier", return_value="11111"),
+            mock.patch(
+                "c2c_mcp.load_sessions",
+                return_value=[
+                    {
+                        "name": "agent-one",
+                        "pid": 11111,
+                        "session_id": AGENT_ONE_SESSION_ID,
+                    }
+                ],
+            ),
+            mock.patch(
+                "c2c_mcp.find_session",
+                return_value={
+                    "name": "agent-one",
+                    "pid": 11111,
+                    "session_id": AGENT_ONE_SESSION_ID,
+                },
+            ),
+        ):
+            self.assertEqual(c2c_mcp.default_session_id(), AGENT_ONE_SESSION_ID)
+
+    def test_c2c_mcp_default_session_id_retries_briefly_for_fresh_session_file(self):
+        session = {
+            "name": "agent-one",
+            "pid": 11111,
+            "session_id": AGENT_ONE_SESSION_ID,
+        }
+
+        with (
+            mock.patch("c2c_mcp.current_session_identifier", return_value="11111"),
+            mock.patch(
+                "c2c_mcp.load_sessions", side_effect=[[], [session]]
+            ) as load_mock,
+            mock.patch("c2c_mcp.find_session", side_effect=[None, session]),
+            mock.patch("c2c_mcp.time.monotonic", side_effect=[100.0, 100.01]),
+            mock.patch("c2c_mcp.time.sleep") as sleep_mock,
+        ):
+            self.assertEqual(c2c_mcp.default_session_id(), AGENT_ONE_SESSION_ID)
+
+        self.assertEqual(load_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(
+            c2c_mcp.SESSION_DISCOVERY_POLL_INTERVAL_SECONDS
+        )
+
+    def test_c2c_mcp_default_session_id_waits_long_enough_for_real_startup(self):
+        session = {
+            "name": "agent-one",
+            "pid": 11111,
+            "session_id": AGENT_ONE_SESSION_ID,
+        }
+
+        with (
+            mock.patch("c2c_mcp.current_session_identifier", return_value="11111"),
+            mock.patch(
+                "c2c_mcp.load_sessions",
+                side_effect=[[], [], [], [], [], [session]],
+            ) as load_mock,
+            mock.patch(
+                "c2c_mcp.find_session",
+                side_effect=[None, None, None, None, None, session],
+            ),
+            mock.patch(
+                "c2c_mcp.time.monotonic",
+                side_effect=[100.0, 100.05, 100.10, 100.15, 100.20, 100.25],
+            ),
+            mock.patch("c2c_mcp.time.sleep") as sleep_mock,
+        ):
+            self.assertEqual(c2c_mcp.default_session_id(), AGENT_ONE_SESSION_ID)
+
+        self.assertEqual(load_mock.call_count, 6)
+        self.assertEqual(sleep_mock.call_count, 5)
+
+    def test_c2c_mcp_default_session_id_stops_after_bounded_wait(self):
+        with (
+            mock.patch("c2c_mcp.current_session_identifier", return_value="11111"),
+            mock.patch("c2c_mcp.load_sessions", side_effect=[[], []]) as load_mock,
+            mock.patch("c2c_mcp.find_session", side_effect=[None, None]),
+            mock.patch("c2c_mcp.time.monotonic", side_effect=[100.0, 100.5, 102.1]),
+            mock.patch("c2c_mcp.time.sleep") as sleep_mock,
+        ):
+            with self.assertRaisesRegex(ValueError, "session not found: 11111"):
+                c2c_mcp.default_session_id()
+
+        self.assertEqual(load_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(
+            c2c_mcp.SESSION_DISCOVERY_POLL_INTERVAL_SECONDS
+        )
+
+    def test_c2c_mcp_main_skips_session_env_when_current_session_unresolvable(self):
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch(
+                "c2c_mcp.default_broker_root",
+                return_value=REPO / ".git" / "c2c" / "mcp",
+            ),
+            mock.patch("c2c_mcp.sync_broker_registry"),
+            mock.patch(
+                "c2c_mcp.default_session_id",
+                side_effect=ValueError(
+                    "could not resolve current session uniquely; use a session ID or PID"
+                ),
+            ),
+            mock.patch("c2c_mcp.subprocess.run") as run_mock,
+        ):
+            run_mock.return_value.returncode = 0
+
+            result = c2c_mcp.main([])
+
+        self.assertEqual(result, 0)
+        run_mock.assert_called_once()
+        env = run_mock.call_args.kwargs["env"]
+        self.assertEqual(env["C2C_MCP_BROKER_ROOT"], str(REPO / ".git" / "c2c" / "mcp"))
+        self.assertNotIn("C2C_MCP_SESSION_ID", env)
+
     def test_c2c_mcp_stdio_initialize_smoke(self):
         broker_root = Path(self.temp_dir.name) / "mcp-broker"
         env = dict(self.env)
         env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
+        env["C2C_MCP_SESSION_ID"] = AGENT_ONE_SESSION_ID
         body = json.dumps(
             {
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "initialize",
-                "params": {},
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "0"},
+                },
             }
         )
-        framed = f"Content-Length: {len(body)}\r\n\r\n{body}"
         process = subprocess.Popen(
             [str(REPO / "c2c"), "mcp"],
             cwd=REPO,
@@ -331,14 +458,10 @@ class C2CCLITests(unittest.TestCase):
         try:
             assert process.stdin is not None
             assert process.stdout is not None
-            process.stdin.write(framed)
+            process.stdin.write(body + "\n")
             process.stdin.flush()
 
-            header = process.stdout.readline()
-            self.assertTrue(header.startswith("Content-Length:"), header)
-            process.stdout.readline()
-            body_length = int(header.split(":", 1)[1].strip())
-            payload = process.stdout.read(body_length)
+            payload = process.stdout.readline()
         finally:
             if process.stdin is not None:
                 process.stdin.close()
@@ -350,6 +473,35 @@ class C2CCLITests(unittest.TestCase):
             process.wait(timeout=CLI_TIMEOUT_SECONDS)
 
         self.assertIn('"protocolVersion":"2024-11-05"', payload)
+
+    def test_c2c_mcp_main_seeds_broker_registry_and_session_env(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "C2C_REGISTRY_PATH": str(self.registry_path),
+                    "C2C_MCP_BROKER_ROOT": str(broker_root),
+                },
+                clear=False,
+            ),
+            mock.patch("c2c_mcp.sync_broker_registry") as sync_registry,
+            mock.patch("c2c_mcp.default_session_id", return_value=AGENT_ONE_SESSION_ID),
+            mock.patch("c2c_mcp.subprocess.run") as run_mock,
+        ):
+            run_mock.return_value.returncode = 0
+
+            result = c2c_mcp.main([])
+
+        self.assertEqual(result, 0)
+        sync_registry.assert_called_once_with(broker_root)
+        self.assertEqual(
+            run_mock.call_args.kwargs["env"]["C2C_MCP_SESSION_ID"], AGENT_ONE_SESSION_ID
+        )
+        self.assertEqual(
+            run_mock.call_args.kwargs["env"]["C2C_MCP_BROKER_ROOT"], str(broker_root)
+        )
 
     def test_c2c_mcp_emits_channel_notification_for_session_inbox(self):
         broker_root = Path(self.temp_dir.name) / "mcp-broker"
@@ -385,10 +537,13 @@ class C2CCLITests(unittest.TestCase):
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "initialize",
-                "params": {},
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "0"},
+                },
             }
         )
-        framed = f"Content-Length: {len(body)}\r\n\r\n{body}"
         process = subprocess.Popen(
             [str(REPO / "c2c"), "mcp"],
             cwd=REPO,
@@ -401,20 +556,11 @@ class C2CCLITests(unittest.TestCase):
         try:
             assert process.stdin is not None
             assert process.stdout is not None
-            process.stdin.write(framed)
+            process.stdin.write(body + "\n")
             process.stdin.flush()
 
-            init_header = process.stdout.readline()
-            self.assertTrue(init_header.startswith("Content-Length:"), init_header)
-            process.stdout.readline()
-            init_body_length = int(init_header.split(":", 1)[1].strip())
-            init_payload = process.stdout.read(init_body_length)
-
-            notif_header = process.stdout.readline()
-            self.assertTrue(notif_header.startswith("Content-Length:"), notif_header)
-            process.stdout.readline()
-            notif_body_length = int(notif_header.split(":", 1)[1].strip())
-            notif_payload = process.stdout.read(notif_body_length)
+            init_payload = process.stdout.readline()
+            notif_payload = process.stdout.readline()
         finally:
             if process.stdin is not None:
                 process.stdin.close()
@@ -425,10 +571,234 @@ class C2CCLITests(unittest.TestCase):
             process.terminate()
             process.wait(timeout=CLI_TIMEOUT_SECONDS)
 
-        self.assertIn('"protocolVersion":"2024-11-05"', init_payload)
-        self.assertIn('"method":"notifications/claude/channel"', notif_payload)
-        self.assertIn('"content":"debate opener"', notif_payload)
-        self.assertIn('"from_alias":"storm-ember"', notif_payload)
+        init_json = json.loads(init_payload)
+        notif_json = json.loads(notif_payload)
+
+        self.assertEqual(init_json["result"]["protocolVersion"], "2024-11-05")
+        self.assertIn("instructions", init_json["result"])
+        self.assertEqual(notif_json["jsonrpc"], "2.0")
+        self.assertEqual(notif_json["method"], "notifications/claude/channel")
+        self.assertEqual(notif_json["params"]["content"], "debate opener")
+        self.assertEqual(notif_json["params"]["meta"]["from_alias"], "storm-ember")
+        self.assertEqual(notif_json["params"]["meta"]["to_alias"], "storm-storm")
+
+    def test_c2c_mcp_whoami_uses_current_session_registration(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        env = dict(self.env)
+        env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
+        env["C2C_SESSION_ID"] = AGENT_ONE_SESSION_ID
+        save_registry(
+            {
+                "registrations": [
+                    {"session_id": AGENT_ONE_SESSION_ID, "alias": "storm-ember"}
+                ]
+            },
+            self.registry_path,
+        )
+
+        process = subprocess.Popen(
+            [str(REPO / "c2c"), "mcp"],
+            cwd=REPO,
+            env={**os.environ, **env},
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert process.stdin is not None
+            assert process.stdout is not None
+            process.stdin.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-11-25",
+                            "capabilities": {},
+                            "clientInfo": {"name": "test", "version": "0"},
+                        },
+                    }
+                )
+                + "\n"
+            )
+            process.stdin.flush()
+            process.stdout.readline()
+
+            process.stdin.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {"name": "whoami", "arguments": {}},
+                    }
+                )
+                + "\n"
+            )
+            process.stdin.flush()
+            payload = json.loads(process.stdout.readline())
+        finally:
+            if process.stdin is not None:
+                process.stdin.close()
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+            process.terminate()
+            process.wait(timeout=CLI_TIMEOUT_SECONDS)
+
+        self.assertEqual(payload["result"]["isError"], False)
+        self.assertEqual(payload["result"]["content"][0]["text"], "storm-ember")
+
+    def test_c2c_mcp_send_resolves_aliases_from_cli_registry(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        env = dict(self.env)
+        env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
+        env["C2C_SESSION_ID"] = AGENT_ONE_SESSION_ID
+        save_registry(
+            {
+                "registrations": [
+                    {"session_id": AGENT_ONE_SESSION_ID, "alias": "storm-ember"},
+                    {"session_id": AGENT_TWO_SESSION_ID, "alias": "storm-storm"},
+                ]
+            },
+            self.registry_path,
+        )
+
+        process = subprocess.Popen(
+            [str(REPO / "c2c"), "mcp"],
+            cwd=REPO,
+            env={**os.environ, **env},
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert process.stdin is not None
+            assert process.stdout is not None
+            process.stdin.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-11-25",
+                            "capabilities": {},
+                            "clientInfo": {"name": "test", "version": "0"},
+                        },
+                    }
+                )
+                + "\n"
+            )
+            process.stdin.flush()
+            process.stdout.readline()
+
+            process.stdin.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "send",
+                            "arguments": {
+                                "from_alias": "storm-ember",
+                                "to_alias": "storm-storm",
+                                "content": "hello from mcp",
+                            },
+                        },
+                    }
+                )
+                + "\n"
+            )
+            process.stdin.flush()
+            payload = json.loads(process.stdout.readline())
+        finally:
+            if process.stdin is not None:
+                process.stdin.close()
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+            process.terminate()
+            process.wait(timeout=CLI_TIMEOUT_SECONDS)
+
+        self.assertEqual(payload["result"]["isError"], False)
+        self.assertEqual(payload["result"]["content"][0]["text"], "queued")
+        self.assertEqual(
+            json.loads(
+                (broker_root / f"{AGENT_TWO_SESSION_ID}.inbox.json").read_text(
+                    encoding="utf-8"
+                )
+            ),
+            [
+                {
+                    "from_alias": "storm-ember",
+                    "to_alias": "storm-storm",
+                    "content": "hello from mcp",
+                }
+            ],
+        )
+
+    def test_register_updates_broker_registry_json_alongside_yaml(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        env = dict(self.env)
+        env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
+
+        result = self.invoke_cli("c2c-register", "agent-one", "--json", env=env)
+
+        self.assertEqual(result_code(result), 0)
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            json.loads((broker_root / "registry.json").read_text(encoding="utf-8")),
+            [
+                {
+                    "session_id": AGENT_ONE_SESSION_ID,
+                    "alias": payload["alias"],
+                }
+            ],
+        )
+
+    def test_sync_broker_registry_writes_json_atomically(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        broker_root.mkdir(parents=True, exist_ok=True)
+        save_registry(
+            {
+                "registrations": [
+                    {"session_id": AGENT_ONE_SESSION_ID, "alias": "storm-ember"}
+                ]
+            },
+            self.registry_path,
+        )
+
+        replaced = []
+        original_replace = os.replace
+
+        def tracking_replace(src, dst):
+            replaced.append((src, dst))
+            return original_replace(src, dst)
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"C2C_REGISTRY_PATH": str(self.registry_path)},
+                clear=False,
+            ),
+            mock.patch("c2c_mcp.os.replace", side_effect=tracking_replace),
+        ):
+            c2c_mcp.sync_broker_registry(broker_root)
+
+        self.assertEqual(len(replaced), 1)
+        _, destination = replaced[0]
+        self.assertEqual(Path(destination), broker_root / "registry.json")
+        self.assertEqual(
+            json.loads((broker_root / "registry.json").read_text(encoding="utf-8")),
+            [{"session_id": AGENT_ONE_SESSION_ID, "alias": "storm-ember"}],
+        )
 
     def test_install_reports_path_guidance_when_bin_not_on_path(self):
         install_dir = Path(self.temp_dir.name) / "bin"
@@ -1848,6 +2218,33 @@ class C2CVerifyUnitTests(unittest.TestCase):
 
 
 class C2CWhoamiUnitTests(unittest.TestCase):
+    def test_current_session_identifier_uses_direct_parent_claude_process(self):
+        def read_text(path_self):
+            if str(path_self) == "/proc/4000/comm":
+                return "claude\n"
+            if str(path_self) == "/proc/3000/comm":
+                return "bash\n"
+            if str(path_self) == "/proc/5000/comm":
+                return "python3\n"
+            raise FileNotFoundError(str(path_self))
+
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch("c2c_whoami.os.getpid", return_value=5000),
+            mock.patch(
+                "c2c_whoami.parent_process_chain",
+                return_value=[5000, 4000, 3000],
+            ),
+            mock.patch(
+                "c2c_whoami.Path.read_text", autospec=True, side_effect=read_text
+            ),
+            mock.patch(
+                "c2c_whoami.child_processes",
+                side_effect=[[], [], []],
+            ),
+        ):
+            self.assertEqual(c2c_whoami.current_session_identifier(), "4000")
+
     def test_current_session_identifier_uses_single_claude_child_of_parent_shell(self):
         with (
             mock.patch.dict(os.environ, {}, clear=False),

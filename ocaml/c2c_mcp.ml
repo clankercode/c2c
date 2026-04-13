@@ -2,11 +2,16 @@ type registration = { session_id : string; alias : string }
 type message = { from_alias : string; to_alias : string; content : string }
 
 let server_info = `Assoc [ ("name", `String "c2c"); ("version", `String "0.1.0") ]
+let supported_protocol_version = "2024-11-05"
 let capabilities =
   `Assoc
     [ ("tools", `Assoc [])
     ; ("experimental", `Assoc [ ("claude/channel", `Assoc []) ])
     ]
+
+let instructions =
+  `String
+    "C2C inbound channel messages arrive as notifications/claude/channel with plain text content and meta fields including from_alias and to_alias. Treat them as peer-to-peer chat messages."
 
 let jsonrpc_response ~id result =
   `Assoc [ ("jsonrpc", `String "2.0"); ("id", id); ("result", result) ]
@@ -46,7 +51,9 @@ module Broker = struct
     if not (Sys.file_exists t.root) then Unix.mkdir t.root 0o755
 
   let read_json_file path ~default =
-    if Sys.file_exists path then Yojson.Safe.from_file path else default
+    if Sys.file_exists path then
+      try Yojson.Safe.from_file path with Yojson.Json_error _ -> default
+    else default
 
   let write_json_file path json =
     Yojson.Safe.to_file path json
@@ -142,20 +149,43 @@ let channel_notification ({ from_alias; to_alias; content } : message) =
     ]
 
 let tool_definitions =
-  [ tool_definition ~name:"register" ~description:"Register a C2C alias for the current session." ~required:[ "session_id"; "alias" ]
+  [ tool_definition ~name:"register" ~description:"Register a C2C alias for the current session." ~required:[ "alias" ]
   ; tool_definition ~name:"list" ~description:"List registered C2C peers." ~required:[]
   ; tool_definition ~name:"send" ~description:"Send a C2C message to a registered peer alias." ~required:[ "from_alias"; "to_alias"; "content" ]
-  ; tool_definition ~name:"whoami" ~description:"Resolve the current C2C session registration." ~required:[ "session_id" ]
+  ; tool_definition ~name:"whoami" ~description:"Resolve the current C2C session registration." ~required:[]
   ]
 
 let string_member name json =
   let open Yojson.Safe.Util in
   json |> member name |> to_string
 
+let optional_string_member name json =
+  let open Yojson.Safe.Util in
+  try
+    match json |> member name with
+    | `Null -> None
+    | value ->
+        let text = to_string value in
+        if String.trim text = "" then None else Some text
+  with _ -> None
+
+let current_session_id () =
+  match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+  | Some value when String.trim value <> "" -> Some value
+  | _ -> None
+
+let resolve_session_id arguments =
+  match optional_string_member "session_id" arguments with
+  | Some session_id -> session_id
+  | None ->
+      (match current_session_id () with
+      | Some session_id -> session_id
+      | None -> invalid_arg "missing session_id")
+
 let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
   match tool_name with
   | "register" ->
-      let session_id = string_member "session_id" arguments in
+      let session_id = resolve_session_id arguments in
       let alias = string_member "alias" arguments in
       Broker.register broker ~session_id ~alias;
       Lwt.return (tool_result ~content:("registered " ^ alias) ~is_error:false)
@@ -177,7 +207,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       Broker.enqueue_message broker ~from_alias ~to_alias ~content;
       Lwt.return (tool_result ~content:"queued" ~is_error:false)
   | "whoami" ->
-      let session_id = string_member "session_id" arguments in
+      let session_id = resolve_session_id arguments in
       let alias =
         Broker.list_registrations broker
         |> List.find_opt (fun reg -> reg.session_id = session_id)
@@ -207,8 +237,9 @@ let handle_request ~broker_root json =
   | Some id, "initialize" ->
       let result =
         `Assoc
-          [ ("protocolVersion", `String "2024-11-05")
+          [ ("protocolVersion", `String supported_protocol_version)
           ; ("serverInfo", server_info)
+          ; ("instructions", instructions)
           ; ("capabilities", capabilities)
           ]
       in

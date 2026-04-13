@@ -55,8 +55,20 @@ def parent_process_chain(start_pid: int) -> list[int]:
     return chain
 
 
+def process_name(pid: int) -> str | None:
+    if not isinstance(pid, int):
+        return None
+    comm_path = Path(f"/proc/{pid}/comm")
+    try:
+        return comm_path.read_text().strip()
+    except Exception:
+        return None
+
+
 def infer_current_session_pid() -> str:
     for pid in parent_process_chain(os.getpid()):
+        if process_name(pid) == "claude":
+            return str(pid)
         claude_children = [
             child_pid for child_pid, name in child_processes(pid) if name == "claude"
         ]

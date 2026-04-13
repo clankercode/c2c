@@ -47,8 +47,7 @@ let rec read_message () =
 let write_message json =
   let open Lwt.Syntax in
   let body = Yojson.Safe.to_string json in
-  let framed = Printf.sprintf "Content-Length: %d\r\n\r\n%s" (String.length body) body in
-  let* () = Lwt_io.write Lwt_io.stdout framed in
+  let* () = Lwt_io.write_line Lwt_io.stdout body in
   Lwt_io.flush Lwt_io.stdout
 
 let jsonrpc_error ~id ~code ~message =

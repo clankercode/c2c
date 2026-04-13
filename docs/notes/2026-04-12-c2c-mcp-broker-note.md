@@ -50,3 +50,15 @@ The shared broker is the cross-session rendezvous point.
 2. Add a minimal broker module with shared registry/inbox files.
 3. Add tests for broker-backed register/list/send behavior.
 4. Leave actual Claude Code channel emission as a narrow next step once the broker and CLI shape are stable.
+
+## Current Observed Blockers
+
+- Fresh PTY-launched Claude sessions were not reliably discoverable immediately after process spawn. In live runs, Claude often did not register the session until the PTY received an initial interaction. A single immediate `Enter` was flaky; a retry about 1 second later was reliable.
+- Fresh channel-enabled sessions successfully executed `mcp__c2c__list`, `mcp__c2c__whoami`, and `mcp__c2c__send`.
+- Broker behavior is working through enqueue and drain:
+  - sender-side `mcp__c2c__send` returns `queued`
+  - target inbox files receive the message
+  - subsequent receiver MCP traffic drains the inbox back to `[]`
+- Despite that, the receiving Claude transcript still does not show the inbound message content.
+
+Current working hypothesis: the shared broker path is functioning, but `notifications/claude/channel` are not being surfaced into the receiver conversation/transcript by Claude Code. Treat this as an upstream Claude channel notification issue until disproven.

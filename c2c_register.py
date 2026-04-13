@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import sys
+from pathlib import Path
 
+import c2c_mcp
 import claude_send_msg
 from c2c_registry import (
     allocate_unique_alias,
@@ -25,6 +28,13 @@ def onboarding_message(alias: str) -> str:
     )
 
 
+def sync_broker_registry_from_env() -> None:
+    broker_root = Path(
+        os.environ.get("C2C_MCP_BROKER_ROOT") or c2c_mcp.default_broker_root()
+    )
+    c2c_mcp.sync_broker_registry(broker_root)
+
+
 def rollback_registration(session_id: str, alias: str) -> None:
     def mutate_registry(registry: dict) -> None:
         registry["registrations"] = [
@@ -37,6 +47,7 @@ def rollback_registration(session_id: str, alias: str) -> None:
         ]
 
     update_registry(mutate_registry)
+    sync_broker_registry_from_env()
 
 
 def send_onboarding_message(session: dict, alias: str) -> None:
@@ -78,6 +89,7 @@ def register_session(identifier: str) -> tuple[dict, dict, bool]:
         return registration
 
     registration = update_registry(mutate_registry)
+    sync_broker_registry_from_env()
     return session, registration, registration_was_new
 
 
