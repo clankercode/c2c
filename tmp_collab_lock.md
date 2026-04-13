@@ -9,6 +9,14 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| `docs/superpowers/plans/2026-04-14-kimi-wire-bridge.md` | codex | Kimi Wire bridge implementation plan | 2026-04-13T16:01Z |
+| `tests/test_c2c_kimi_wire_bridge.py` | codex | Kimi Wire bridge RED/GREEN test suite | 2026-04-13T16:01Z |
+| `c2c_kimi_wire_bridge.py` | codex | Kimi Wire bridge implementation | 2026-04-13T16:01Z |
+| `c2c-kimi-wire-bridge` | codex | Kimi Wire bridge wrapper | 2026-04-13T16:01Z |
+| `c2c_install.py` | codex | Install Kimi Wire bridge wrapper | 2026-04-13T16:03Z |
+| `tests/test_c2c_cli.py` | codex | Assert Kimi Wire bridge wrapper installation | 2026-04-13T16:03Z |
+| `docs/client-delivery.md` | codex | Document experimental Kimi Wire delivery | 2026-04-13T16:03Z |
+| `docs/overview.md` | codex | Document experimental Kimi Wire delivery | 2026-04-13T16:03Z |
 
 ## History (addendum)
 

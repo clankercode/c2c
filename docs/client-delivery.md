@@ -203,13 +203,14 @@ For unmanaged OpenCode, exit and reopen in the repo directory.
 
 ## Kimi Code
 
-> **Tier 1 support** — MCP config ready. PTY wake daemon proven live (`c2c_kimi_wake_daemon.py`).
+> **Tier 1 support**: MCP config ready. The experimental Wire bridge is the
+> preferred native-delivery path; the manual TUI wake daemon remains a fallback.
 
 ### Session discovery
 
 Kimi Code does not yet expose a documented session ID env var. `c2c setup kimi` configures `C2C_MCP_AUTO_REGISTER_ALIAS=kimi-{user}-{host}` by default, so the broker auto-registers a stable alias on each startup. Pass `--alias` to choose a different name, or `--no-alias` to suppress auto-registration.
 
-### Message delivery (polling)
+### Message delivery (polling baseline)
 
 Without a wake daemon, the agent must call `mcp__c2c__poll_inbox` explicitly to drain messages.
 
@@ -227,7 +228,26 @@ Broker returns pending messages
 
 Recommended practice: call `mcp__c2c__poll_inbox` at the start of each turn.
 
-### Message notification — manual TUI
+### Message delivery - Wire bridge (experimental preferred)
+
+`c2c-kimi-wire-bridge` delivers queued broker messages through Kimi's Wire
+JSON-RPC `prompt` method. This keeps message content broker-native until the
+bridge drains the inbox, stores it in a crash-safe spool, and sends one
+`<c2c ...>` prompt into the Wire session.
+
+```bash
+c2c-kimi-wire-bridge \
+    --session-id kimi-$(whoami)-$(hostname -s) \
+    --alias kimi-$(whoami)-$(hostname -s) \
+    --dry-run --json
+```
+
+The first implementation slice supports Wire framing, MCP config generation,
+spool-safe fake once delivery, and dry-run launch output. Live active-turn
+`steer` delivery is intentionally a follow-up after idle `prompt` delivery is
+proven against a real Kimi Wire subprocess.
+
+### Message notification - manual TUI fallback
 
 `c2c_kimi_wake_daemon.py` is proven working. To start it manually after `c2c setup kimi`:
 

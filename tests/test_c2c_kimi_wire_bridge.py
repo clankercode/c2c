@@ -265,8 +265,9 @@ class CLITests(unittest.TestCase):
                     timeout=1.0,
                 )
 
-        self.assertEqual(len(spool.read()), 1)
-        self.assertEqual(spool.read()[0]["content"], "kept")
+            # assertion must be inside the with-block before temp dir cleanup
+            self.assertEqual(len(spool.read()), 1)
+            self.assertEqual(spool.read()[0]["content"], "kept")
 
 
 if __name__ == "__main__":

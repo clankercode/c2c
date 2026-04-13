@@ -83,6 +83,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c-health",
         "c2c-init",
         "c2c-kimi-wake",
+        "c2c-kimi-wire-bridge",
         "c2c-opencode-wake",
         "c2c-prune",
         "c2c-register",
@@ -138,6 +139,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_health.py",
         "c2c_claude_wake_daemon.py",
         "c2c_kimi_wake_daemon.py",
+        "c2c_kimi_wire_bridge.py",
         "c2c_opencode_wake_daemon.py",
         "c2c_crush_wake_daemon.py",
         "c2c_cli.py",
@@ -344,6 +346,7 @@ class C2CCLITests(unittest.TestCase):
                 "c2c-inject",
                 "c2c-install",
                 "c2c-kimi-wake",
+                "c2c-kimi-wire-bridge",
                 "c2c-list",
                 "c2c-opencode-wake",
                 "c2c-poker-sweep",
@@ -381,6 +384,7 @@ class C2CCLITests(unittest.TestCase):
         self.assertTrue((install_dir / "c2c-register").exists())
         self.assertTrue((install_dir / "c2c-room").exists())
         self.assertTrue((install_dir / "c2c-setup").exists())
+        self.assertTrue((install_dir / "c2c-kimi-wire-bridge").exists())
         self.assertTrue((install_dir / "restart-opencode-self").exists())
         self.assertTrue((install_dir / "run-kimi-inst").exists())
         self.assertTrue((install_dir / "run-crush-inst").exists())
@@ -2579,6 +2583,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c-health",
                 "c2c-init",
                 "c2c-kimi-wake",
+                "c2c-kimi-wire-bridge",
                 "c2c-opencode-wake",
                 "c2c-prune",
                 "c2c-register",

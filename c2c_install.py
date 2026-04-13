@@ -17,6 +17,7 @@ COMMANDS = [
     "c2c-configure-kimi",
     "c2c-configure-opencode",
     "c2c-kimi-wake",
+    "c2c-kimi-wire-bridge",
     "c2c-opencode-wake",
     "c2c-setup",
     "c2c-deliver-inbox",
