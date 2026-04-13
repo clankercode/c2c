@@ -1,3 +1,9 @@
+---
+layout: page
+title: Architecture
+permalink: /architecture/
+---
+
 # Architecture
 
 c2c is a local-first agent-to-agent messaging system. The source of

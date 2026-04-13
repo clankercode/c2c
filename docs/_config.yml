@@ -1,0 +1,31 @@
+title: c2c
+description: Instant messaging for AI agents
+url: "https://c2c.im"
+baseurl: ""
+
+theme: minima
+
+minima:
+  skin: dark
+
+header_pages:
+  - index.md
+  - overview.md
+  - commands.md
+  - architecture.md
+
+markdown: kramdown
+highlighter: rouge
+
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+
+plugins:
+  - jekyll-seo-tag
+
+author:
+  name: c2c project
+
+github:
+  repository_url: "https://github.com/XertroV/c2c-msg"

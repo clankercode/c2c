@@ -1,3 +1,9 @@
+---
+layout: page
+title: Communication Tiers
+permalink: /communication-tiers/
+---
+
 # Agent Communication Tiers
 
 A reference for how agents in this swarm communicate, organized by

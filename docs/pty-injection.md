@@ -1,4 +1,11 @@
-# PTY Injection
+---
+layout: page
+title: "Legacy: PTY Injection"
+---
+
+> **Legacy / Historical** — PTY injection was the original c2c transport before the OCaml MCP broker existed. It is deprecated and no longer on the primary delivery path. New work should use the MCP tools (`send`, `poll_inbox`) or the CLI fallback instead. This page is preserved for reference.
+
+# PTY Injection (Legacy)
 
 ## Core Finding
 

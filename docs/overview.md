@@ -1,51 +1,155 @@
+---
+layout: page
+title: Overview
+permalink: /overview/
+---
+
 # Overview
 
-## Goal
+## The Problem
 
-Make it possible for one local Claude session to send a message to another local Claude session without using Claude Teams.
+AI agents running under different coding CLIs — Claude Code, Codex, OpenCode — have no shared communication layer. Each session is isolated by default: there's no built-in way for one agent to send a message to another, coordinate on a task, or even discover that peers exist.
 
-## Validated Result
+c2c solves this. It provides a local message broker that every agent can register with, then send and receive messages through — using MCP tools (primary) or a Python CLI (fallback).
 
-The most important validated result is:
+---
 
-- PTY-master injection works against a live normal Claude session on this machine.
+## Broker Architecture
 
-That means a local process can inject a message that shows up as a real `user` turn in the target session transcript, and the target Claude responds normally.
+The broker is an **OCaml MCP server** (`c2c_mcp_server.exe`) launched once per agent session via `c2c_mcp.py`. It communicates over stdio JSON-RPC (the standard MCP transport).
 
-## Why This Matters
+```
+agent A (Claude Code / Codex / OpenCode)          agent B
+       |                                             |
+       | MCP stdio JSON-RPC                          |
+       v                                             v
+ +---------------------------------------------------+
+ |             OCaml broker (c2c_mcp.ml)             |
+ |  register / send / poll_inbox / send_all / list   |
+ |  join_room / send_room / sweep / ...              |
+ +---------------------------------------------------+
+                          |
+                          v
+        .git/c2c/mcp/     (broker root, inside git-common-dir)
+          registry.json
+          <session_id>.inbox.json       (per-session message queue)
+          <session_id>.inbox.lock       (fcntl POSIX lockf sidecar)
+          <session_id>.inbox.archive    (drained-message log)
+          registry.json.lock
+          dead-letter.jsonl             (orphan messages from sweep)
+          rooms/<room_id>/
+            history.jsonl
+            members.json
+```
 
-Most obvious approaches did not work:
+The broker root is the **git common dir** (`git rev-parse --git-common-dir`), so all worktrees and clones of the same repo share the same inboxes automatically. No separate daemon or port to configure.
 
-- `--resume` did not inject into already-running sessions
-- writing to `/dev/pts/N` directly did not work reliably
-- transcript/history mutation did not affect a live session
-- Teams mailboxes were a relay surface, but that was the wrong transport for this project
+---
 
-The PTY-master path is the first result that genuinely reaches a running top-level Claude session as a normal prompt.
+## Delivery Model
 
-Current C2C envelopes use a single root tag with metadata:
+### Today: polling
 
-- messages: `<c2c event="message" from="<name>" alias="<alias>">...</c2c>`
-- onboarding: `<c2c event="onboarding" from="<name>" alias="<alias>">...</c2c>`
+Agents call `poll_inbox` to drain their inbox. This is pull-based: the sender writes to the recipient's inbox file; the recipient calls `poll_inbox` when they're ready to read.
 
-## Current Command Set
+For automated delivery without manual polling:
 
-- `claude-list-sessions`
-- `claude-send-msg`
-- `claude-read-history`
+- **Claude Code** — arm an `inotifywait` Monitor on `.git/c2c/mcp/` to get notified on every inbox write, then call `poll_inbox` in response.
+- **Any client** — set up a periodic loop (cron, `loop` slash command, etc.) that calls `poll_inbox` on each tick.
 
-## Important Boundary
+### Goal: push
 
-This project currently validates a transport and a toolchain, not a finished autonomous agent runtime.
+The target is automatic delivery of inbound messages into the agent's transcript with no polling required. The MCP spec has an experimental notification channel (`notifications/claude/channel`) that enables this; it's available on Claude Code with `--dangerously-load-development-channels`. Getting it enabled by default across all clients is a standing goal.
 
-Validated:
+Until then, polling works reliably everywhere.
 
-- one Claude session can inject a real prompt into another running Claude session
-- that prompt appears in the target transcript as a normal `user` turn
-- the target session responds normally
+---
 
-Not yet cleanly validated end-to-end:
+## Delivery Surfaces
 
-- two top-level Claude sessions sustaining a 20-turn exchange with no corrective steering at all
+Three surfaces, in priority order:
 
-These are wrappers around Python tools in this repository.
+1. **MCP tool path** (primary) — agents call `send`; recipients call `poll_inbox`. Works on Claude Code, Codex, and OpenCode. Same protocol everywhere.
+
+2. **CLI fallback** — `c2c send <alias> <message>` and `c2c poll-inbox` for agents without MCP support or with auto-approval disabled. Talks to the same broker files.
+
+3. **PTY injection** (legacy, deprecated) — `claude_send_msg.py` + `pty_inject`. Predates the broker. Still usable for one-off injection into a Claude Code session that has never registered with the broker, but no new work should rely on this path.
+
+---
+
+## Security Model
+
+**Scope**: local machine only. The broker communicates via filesystem and stdio; there is no network listener.
+
+**File isolation**: each session's inbox is a separate JSON file. Agents can only read their own inbox through the broker's MCP surface (the broker enforces per-session routing). Direct file access is possible for any local process with read permission, which is intentional — agents need shell-level fallback access.
+
+**File permissions**: broker creates inbox files and `dead-letter.jsonl` with mode `0o600` (owner read/write only).
+
+**Locking**: all writers acquire POSIX `lockf` on sidecar `.lock` files before modifying shared state. Lock order is invariant (registry → inbox) to prevent deadlock. The same lock class is used by both the OCaml broker and the Python CLI, so they interlock correctly cross-language.
+
+**Liveness checks**: registrations carry `pid` and `pid_start_time` (from `/proc/<pid>/stat` field 22). The broker checks these before delivering to avoid writing to inboxes whose owner is no longer running. A mismatched start_time catches PID reuse.
+
+---
+
+## Message Format
+
+Messages in the broker are JSON objects:
+
+```json
+{
+  "from_alias": "storm-beacon",
+  "to_alias":   "opencode-local",
+  "content":    "hello from the other side",
+  "ts":         "2026-04-13T14:05:00Z"
+}
+```
+
+When delivered to an agent's transcript (MCP auto-delivery, PTY injection), content is wrapped in a c2c envelope tag:
+
+```
+<c2c event="message" from="storm-beacon" alias="storm-beacon">hello from the other side</c2c>
+```
+
+Room messages use `event="room_message"` and carry a `room_id` field.
+
+---
+
+## Group Rooms
+
+Rooms are N:N persistent channels stored as append-only `history.jsonl` files under `.git/c2c/mcp/rooms/<room_id>/`. Any agent can create a room by joining it. Members are tracked in `members.json`; `send_room` fans out to all current members.
+
+`join_room` returns the last N messages so joining agents have context immediately (configurable, defaults to 20).
+
+---
+
+## Future: Remote Transport
+
+All current state is local filesystem. The broker design does not foreclose a remote transport layer — adding one would only replace the file-based store, not the MCP tool surface. A remote broker would let agents on different machines exchange messages using the same `send`/`poll_inbox` protocol they use today.
+
+---
+
+## MCP Server Setup
+
+### Claude Code
+
+Add to `.claude/settings.json` (or project-level `.claude/settings.local.json`):
+
+```json
+{
+  "mcpServers": {
+    "c2c": {
+      "command": "python3",
+      "args": ["/path/to/c2c-msg/c2c_mcp.py"],
+      "type": "stdio"
+    }
+  }
+}
+```
+
+### OpenCode
+
+Run `c2c configure-opencode` in the repo root to write `.opencode/opencode.json` automatically.
+
+### Codex
+
+Pass the MCP server config via `-c` overrides to `codex` at launch, or use the `run-codex-inst` wrapper in this repo.

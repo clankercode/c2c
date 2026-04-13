@@ -1,4 +1,11 @@
-# Research Summary
+---
+layout: page
+title: "Legacy: Research"
+---
+
+> **Legacy / Historical** — This page documents the early research phase that led to the PTY-injection approach. The project has since moved to a broker-native MCP architecture. This page is preserved as a record of what was ruled out and why. See [Overview](./overview.md) and [Architecture](./architecture.md) for current design.
+
+# Research Summary (Legacy)
 
 ## What Was Ruled Out
 

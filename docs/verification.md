@@ -1,4 +1,11 @@
-# Verification
+---
+layout: page
+title: "Legacy: Verification"
+---
+
+> **Legacy / Historical** — This page describes the PTY-injection-era verification approach (counting `<c2c event="message">` markers in session transcripts). The current broker-native delivery path uses `c2c verify` (CLI) or direct inspection of inbox archive files. This page is preserved for reference.
+
+# Verification (Legacy)
 
 ## Best Verification Surface
 
