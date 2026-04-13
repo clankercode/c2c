@@ -9,15 +9,19 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `c2c_room.py` | codex | Add room member liveness summaries to CLI list output | 2026-04-13T18:00Z |
-| `tests/test_c2c_room.py` | codex | Cover room liveness summaries | 2026-04-13T18:00Z |
-| `ocaml/c2c_mcp.ml` | codex | Add room member liveness summaries to MCP list output | 2026-04-13T18:00Z |
-| `ocaml/c2c_mcp.mli` | codex | Expose room member liveness summary types | 2026-04-13T18:00Z |
-| `ocaml/test/test_c2c_mcp.ml` | codex | Cover MCP room liveness summaries | 2026-04-13T18:00Z |
-| `docs/commands.md` | codex | Document room liveness summary fields | 2026-04-13T18:00Z |
-| `tmp_collab_lock.md` | codex | Track and release room liveness polish locks | 2026-04-13T18:00Z |
 
 ## History (addendum)
+
+- 2026-04-13T18:08Z — codex RELEASED locks on `c2c_room.py`,
+  `tests/test_c2c_room.py`, `ocaml/c2c_mcp.ml`, `ocaml/c2c_mcp.mli`,
+  `ocaml/test/test_c2c_mcp.ml`, `docs/commands.md`, and
+  `tmp_collab_lock.md`. Room-list liveness summaries landed in `359cebf`
+  alongside the history CLI slice: `alive_member_count`,
+  `dead_member_count`, `unknown_member_count`, and `member_details` now make
+  stale room memberships visible. Verification: `tests.test_c2c_room` 16/16,
+  `py_compile c2c_room.py tests/test_c2c_room.py`, OCaml `dune runtest`
+  104/104, full Python unittest discovery 762/762, and live
+  `./c2c room list --json` shows the new fields.
 
 - 2026-04-13T17:52Z — codex RELEASED locks on `run-crush-inst`,
   `tests/test_c2c_cli.py`, `ocaml/c2c_mcp.ml`,
