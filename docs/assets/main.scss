@@ -1,0 +1,264 @@
+---
+---
+@charset "utf-8";
+
+@import "minima";
+
+/* =====================================================
+   c2c custom theme — agent-first terminal dark look
+   ===================================================== */
+
+:root {
+  --c2c-green:      #00d97e;
+  --c2c-green-dim:  #00a861;
+  --c2c-green-faint:#003d22;
+  --c2c-bg:         #0d1117;
+  --c2c-surface:    #161b22;
+  --c2c-surface2:   #1c2128;
+  --c2c-border:     #21262d;
+  --c2c-text:       #c9d1d9;
+  --c2c-text-muted: #8b949e;
+  --c2c-blue:       #79c0ff;
+  --c2c-yellow:     #e3b341;
+}
+
+/* ---- Body ---- */
+body {
+  background-color: var(--c2c-bg);
+  color: var(--c2c-text);
+  font-size: 15px;
+  line-height: 1.75;
+}
+
+/* ---- Typography ---- */
+h1, h2, h3, h4, h5 {
+  color: #f0f6fc;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+h1 {
+  font-size: 2rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 2px solid var(--c2c-green);
+  display: inline-block;
+}
+
+h2 {
+  font-size: 1.35rem;
+  margin-top: 2.5rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--c2c-border);
+}
+
+h3 {
+  font-size: 1.05rem;
+  color: var(--c2c-green);
+  margin-top: 1.8rem;
+}
+
+/* ---- Links ---- */
+a {
+  color: var(--c2c-green);
+  text-decoration: none;
+}
+
+a:hover {
+  color: #7fffd4;
+  text-decoration: underline;
+}
+
+a:visited {
+  color: var(--c2c-green-dim);
+}
+
+/* ---- Navigation ---- */
+.site-header {
+  background-color: #010409;
+  border-bottom: 1px solid var(--c2c-green-dim);
+  min-height: 56px;
+}
+
+.site-title,
+.site-title:visited {
+  color: var(--c2c-green) !important;
+  font-weight: 700;
+  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+  letter-spacing: 0.04em;
+  font-size: 1.15rem !important;
+}
+
+.site-title::before {
+  content: "> ";
+  opacity: 0.45;
+}
+
+.site-nav .page-link {
+  color: var(--c2c-text-muted) !important;
+  font-size: 0.875rem;
+  transition: color 0.1s;
+}
+
+.site-nav .page-link:hover {
+  color: var(--c2c-green) !important;
+  text-decoration: none;
+}
+
+.site-nav .menu-icon > svg { fill: var(--c2c-green); }
+
+/* ---- Horizontal rule ---- */
+hr {
+  border: none;
+  border-top: 1px solid var(--c2c-border);
+  margin: 2.5rem 0;
+}
+
+/* ---- Code (inline) ---- */
+code {
+  background-color: var(--c2c-surface);
+  border: 1px solid var(--c2c-border);
+  border-radius: 4px;
+  padding: 0.12em 0.42em;
+  font-size: 0.875em;
+  color: var(--c2c-blue);
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+}
+
+/* ---- Code blocks ---- */
+pre {
+  background-color: var(--c2c-surface) !important;
+  border: 1px solid var(--c2c-border) !important;
+  border-left: 3px solid var(--c2c-green) !important;
+  border-radius: 6px !important;
+  padding: 1.1em 1.4em !important;
+  overflow-x: auto;
+  margin: 1.2em 0;
+}
+
+pre code {
+  background: none !important;
+  border: none !important;
+  padding: 0 !important;
+  color: #e6edf3;
+  font-size: 0.875em;
+  line-height: 1.6;
+}
+
+/* Syntax highlight overrides for dark bg */
+.highlight {
+  background-color: var(--c2c-surface) !important;
+  border-radius: 6px;
+}
+
+/* ---- Tables ---- */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+  margin: 1.5em 0;
+  background-color: var(--c2c-surface);
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--c2c-border);
+}
+
+thead {
+  background-color: var(--c2c-surface2);
+}
+
+th {
+  color: var(--c2c-green);
+  font-weight: 600;
+  text-align: left;
+  padding: 0.65em 1em;
+  border-bottom: 1px solid var(--c2c-green-dim);
+  white-space: nowrap;
+}
+
+td {
+  padding: 0.5em 1em;
+  border-bottom: 1px solid var(--c2c-border);
+  color: var(--c2c-text);
+  vertical-align: top;
+}
+
+tr:last-child td { border-bottom: none; }
+
+tr:hover td { background-color: var(--c2c-surface2); }
+
+/* ---- Blockquotes — agent callout boxes ---- */
+blockquote {
+  border-left: 3px solid var(--c2c-green);
+  background-color: var(--c2c-green-faint);
+  padding: 0.9em 1.3em;
+  margin: 1.8em 0;
+  border-radius: 0 6px 6px 0;
+  color: #b5ffd9;
+  font-style: normal;
+}
+
+blockquote strong { color: #fff; }
+
+blockquote p:last-child { margin-bottom: 0; }
+
+blockquote code {
+  background-color: rgba(0,0,0,0.3);
+  border-color: var(--c2c-green-dim);
+  color: #b5ffd9;
+}
+
+/* ---- Lists ---- */
+ul, ol { padding-left: 1.6em; }
+
+ul li, ol li { margin-bottom: 0.3em; }
+
+/* ---- Page content ---- */
+.page-content {
+  padding: 2.5rem 0;
+}
+
+.wrapper {
+  max-width: 880px;
+}
+
+/* ---- Footer ---- */
+.site-footer {
+  background-color: #010409;
+  border-top: 1px solid var(--c2c-border);
+  color: var(--c2c-text-muted);
+  font-size: 0.85em;
+}
+
+.site-footer a { color: var(--c2c-text-muted); }
+.site-footer a:hover { color: var(--c2c-green); }
+
+/* ---- Inline code in headings ---- */
+h1 code, h2 code, h3 code, h4 code {
+  font-size: 0.85em;
+  color: var(--c2c-green);
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+/* ---- "Agent quick-start" banner at page top ---- */
+.agent-start {
+  background: var(--c2c-green-faint);
+  border: 1px solid var(--c2c-green-dim);
+  border-radius: 8px;
+  padding: 1.2em 1.5em;
+  margin: 1.8em 0;
+  font-size: 0.95em;
+  color: #b5ffd9;
+}
+
+.agent-start code {
+  background-color: rgba(0,0,0,0.35);
+  border-color: var(--c2c-green-dim);
+  color: #b5ffd9;
+}
+
+/* ---- Status badges in tables ---- */
+.status-ok    { color: var(--c2c-green); font-weight: 600; }
+.status-maybe { color: var(--c2c-yellow); }
+.status-no    { color: #f85149; }
