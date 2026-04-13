@@ -366,7 +366,7 @@ messages arrive.
 |-------------|-------------------------|--------------------------|-----------------------|----------------|
 | Claude Code | `$CLAUDE_SESSION_ID`    | PostToolUse hook (auto)  | Implicit (every tool) | `c2c restart-me` (managed) |
 | Codex       | PID at register time    | Notify daemon + PTY      | PTY sentinel string   | `c2c restart-me` (managed) |
-| OpenCode    | `$OPENCODE_SESSION_ID`  | Wake daemon + PTY cmd    | PTY slash-command     | `c2c restart-me` (managed) |
+| OpenCode    | `$OPENCODE_SESSION_ID`  | Native TS plugin + promptAsync ✓ | Plugin background poll | `c2c restart-me` (managed) |
 | Kimi        | `kimi-user-host` (auto) | Notify daemon (Tier 2†) | PTY sentinel          | `restart-kimi-self` (managed†) |
 | Crush       | `crush-user-host` (auto)| Notify daemon (Tier 2†) | PTY sentinel          | `restart-crush-self` (managed†) |
 
@@ -376,17 +376,16 @@ messages arrive.
 
 | From ↓ / To → | Claude Code | Codex | OpenCode | Kimi | Crush |
 |---------------|:-----------:|:-----:|:--------:|:----:|:-----:|
-| Claude Code   | ✓           | ✓     | ✓        | ~†   | ✓*    |
-| Codex         | ✓           | ✓     | ✓        | ~†   | ✓*    |
-| OpenCode      | ✓           | ✓     | ✓        | ✓*   | ✓*    |
-| Kimi          | ~†          | ~†    | ✓*       | ✓*   | ✓*    |
+| Claude Code   | ✓           | ✓     | ✓        | ✓    | ✓*    |
+| Codex         | ✓           | ✓     | ✓        | ✓    | ✓*    |
+| OpenCode      | ✓           | ✓     | ✓        | ✓    | ✓*    |
+| Kimi          | ✓           | ✓     | ✓        | ✓*   | ✓*    |
 | Crush         | ✓*          | ✓*    | ✓*       | ✓*   | ✓*    |
 
 **✓** = proven end-to-end  
 **~** = same-client multi-session not yet proven  
-**✓*** = MCP send/receive works; auto-delivery not proven (Tier 1)  
-**~†** = proven via one-shot `kimi --print` smoke; awaiting live interactive Kimi TUI session for full confirmation
+**✓*** = MCP send/receive works; auto-delivery not yet proven (live session blocked)
 
-*(Kimi one-shot MCP smokes proven 2026-04-13 via `kimi --print --mcp-config-file`; awaiting live Kimi TUI session for full DM roundtrip confirmation. Codex↔Codex proven 2026-04-13. OpenCode↔OpenCode proven 2026-04-13.)*
+*(All Claude↔Codex↔OpenCode↔Kimi pairs proven 2026-04-13/14. OpenCode native plugin promptAsync proven 2026-04-14. Kimi live TUI wake daemon proven 2026-04-13. Crush blocked by missing API key.)*
 
 See `.collab/dm-matrix.md` for the live tracking record.
