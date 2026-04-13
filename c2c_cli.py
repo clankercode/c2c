@@ -109,6 +109,22 @@ def main(argv: list[str] | None = None) -> int:
     if subcommand == "refresh-peer":
         import c2c_refresh_peer
         return c2c_refresh_peer.main(remainder)
+    if subcommand == "relay":
+        # c2c relay serve [--listen HOST:PORT] [--token TOKEN] [--token-file PATH] [--verbose]
+        # c2c relay connect --relay-url URL [--token TOKEN] [--node-id ID] [--broker-root DIR] [--interval N] [--once]
+        if remainder and remainder[0] == "serve":
+            import c2c_relay_server
+            return c2c_relay_server.main(remainder[1:])
+        if remainder and remainder[0] == "connect":
+            import c2c_relay_connector
+            return c2c_relay_connector.main(remainder[1:])
+        print(
+            "usage: c2c relay <subcommand> ...\n"
+            "  serve    --listen HOST:PORT [--token TOKEN] [--token-file PATH] [--verbose]\n"
+            "  connect  --relay-url URL [--token TOKEN] [--node-id ID] [--broker-root DIR] [--interval N] [--once]",
+            file=sys.stderr,
+        )
+        return 2
     if subcommand == "register":
         return c2c_register.main(remainder)
     if subcommand == "restart-me":
