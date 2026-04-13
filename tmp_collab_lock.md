@@ -9,6 +9,11 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| `tmp_status.txt` | codex | Correct stale Kimi direct-PTS delivery wording | 2026-04-13T16:22Z |
+| `.goal-loops/active-goal.md` | codex | Correct stale Kimi direct-PTS delivery wording | 2026-04-13T16:22Z |
+| `.collab/findings/2026-04-14T01-58-00Z-kimi-nova-kimi-idle-pts-inject-live-proof.md` | codex | Make superseded finding internally consistent | 2026-04-13T16:22Z |
+| `.collab/findings/2026-04-13T16-22-17Z-codex-kimi-direct-pts-status-drift.md` | codex | Document stale status contradiction | 2026-04-13T16:22Z |
+| `tmp_collab_lock.md` | codex | Record and release doc cleanup locks | 2026-04-13T16:22Z |
 
 ## History (addendum)
 
