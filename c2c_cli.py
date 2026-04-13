@@ -41,6 +41,7 @@ SAFE_AUTO_APPROVE_SUBCOMMANDS = {
     "init",
     "health",
     "history",
+    "smoke-test",
 }
 
 USAGE = (
@@ -48,8 +49,8 @@ USAGE = (
     "<broker-gc|configure-claude-code|configure-codex|configure-crush|"
     "configure-kimi|configure-opencode|dead-letter|deliver-inbox|health|"
     "history|init|inject|install|list|mcp|peek-inbox|poker-sweep|poll-inbox|"
-    "prune|refresh-peer|register|restart-me|room|send|send-all|setup|sweep|"
-    "verify|watch|whoami|wire-daemon> [...args]"
+    "prune|refresh-peer|register|restart-me|room|send|send-all|setup|"
+    "smoke-test|sweep|verify|watch|whoami|wire-daemon> [...args]"
 )
 
 
@@ -172,6 +173,8 @@ def main(argv: list[str] | None = None) -> int:
         return c2c_send.main(remainder)
     if subcommand == "send-all":
         return c2c_send_all.main(remainder)
+    if subcommand == "smoke-test":
+        return c2c_smoke_test.main(remainder)
     if subcommand == "sweep":
         # alias for broker-gc --once
         return c2c_broker_gc.main(["--once"] + remainder)
