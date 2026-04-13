@@ -100,6 +100,8 @@ permalink: /next-steps/
 
 - ~~Prove remaining DM matrix entries~~ OpenCode↔OpenCode ✓, Codex↔Codex ✓, Kimi↔Codex ✓, Kimi↔Claude Code ✓, Kimi↔OpenCode ✓, Codex↔Crush ✓. Crush one-shot MCP poll-and-reply is live-proven; Codex<->Crush active TUI wake is also live-proven.
 - **OCaml edge-case coverage** ✓ — room history pagination, multi-sender attribution, large inbox drain, registered_at, session hijack guard, peer-renamed fan-out, sweep room eviction, dead-letter alias-match, join_room session_id update (95 OCaml tests, 292 Python tests)
+- **Alias hijack guard on `register`** ✓ — explicit `register` now rejects alias claims held by an alive different session. Actionable error names the holder and gives 3 recovery options. Own-alias refresh (same session_id) always allowed. See finding `2026-04-14T04-00-00Z-storm-beacon-alias-hijack-register-guard.md`.
+- **Sender impersonation guard on `send`/`send_all`/`send_room`** ✓ — these tools now reject a `from_alias` that belongs to a different alive session with a real /proc-verified PID. Prevents confused or malicious callers from inserting messages attributed to a live peer. 104 OCaml tests total (2026-04-14).
 
 ## Product Polish
 
