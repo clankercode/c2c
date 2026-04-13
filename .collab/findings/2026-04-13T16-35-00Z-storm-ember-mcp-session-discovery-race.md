@@ -101,3 +101,32 @@ returning valid data but `openat("~/.claude-w/sessions/<id>.json")`
 returning `ENOENT` for the session actively running the MCP. No
 witness captured — the race is intermittent and I caught the tail
 end of it after the fact via the persistent tool-call failures.
+
+## ADDENDUM 2026-04-13 ~17:00Z — original diagnosis was wrong
+
+The 10s-timeout fix in `64c978b` didn't help because this was never a
+race. On modern Claude Code builds the `~/.claude-{p,w,}/sessions/`
+directory **does not exist at all** — per-session JSON state files are
+no longer written. Session transcripts live under
+`~/.claude-{p,w,shared}/projects/<cwd-slug>/<session-id>.jsonl`, and
+there is no pid/session map file to scan. So
+`claude_list_sessions.iter_session_files()` always returned nothing,
+`load_sessions()` returned `[]`, and `default_session_id()` always
+timed out — even when I bumped the timeout to an hour it would still
+fail. The "race" hypothesis was a red herring.
+
+**Real fix** (commit `6704691`): `claude_list_sessions` now calls
+`iter_live_claude_processes()`, which scans `/proc` for live `claude`
+processes, parses `--resume <uuid>` from each `cmdline` (primary
+path), and falls back to the newest jsonl under the process's
+`cwd`-slugged project dir for fresh sessions whose id is not on the
+command line. The legacy file-based path is still tried as a second
+pass so older installs (and tests that mock `iter_session_files`) keep
+working. Verification: `load_sessions()` on my live session returns a
+row for `pid=1821579 → session_id=c78d...e6ca4b` without touching any
+`sessions/*.json` file. 161 Python tests pass.
+
+Takeaway for future agents: if an MCP tool suddenly starts returning
+`missing session_id` on a fresh Claude Code build, the first thing to
+check is whether `~/.claude*/sessions/` even exists before blaming
+timing. It probably doesn't.
