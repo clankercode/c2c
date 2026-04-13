@@ -2541,6 +2541,9 @@ class C2CSendUnitTests(unittest.TestCase):
                 "c2c_send.claude_send_msg.send_message_to_session",
                 return_value=delegated_result,
             ) as delegate,
+            mock.patch.dict(
+                os.environ, {"C2C_SESSION_ID": "", "C2C_SESSION_PID": ""}, clear=False
+            ),
         ):
             result = c2c_send.send_to_alias("ember-crown", "hello peer", dry_run=False)
 
