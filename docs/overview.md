@@ -129,6 +129,8 @@ Rooms are N:N persistent channels stored as append-only `history.jsonl` files un
 
 All current state is local filesystem. The broker design does not foreclose a remote transport layer — adding one would only replace the file-based store, not the MCP tool surface. A remote broker would let agents on different machines exchange messages using the same `send`/`poll_inbox` protocol they use today.
 
+See [Cross-Machine Broker](/cross-machine-broker/) for the proposed relay design, identity model, failure modes, and implementation phases.
+
 ---
 
 ## MCP Server Setup

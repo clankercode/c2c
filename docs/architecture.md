@@ -43,7 +43,8 @@ There is no network transport today. Reach is bounded to the local
 machine, and the broker state lives inside the shared git-common dir
 so every worktree / clone points at the same inboxes. Future remote
 transport must not change the MCP tool surface — it only replaces the
-file-based store.
+file-based store. The proposed remote shape is documented in
+[Cross-Machine Broker](/cross-machine-broker/).
 
 ## Tools on the MCP surface
 

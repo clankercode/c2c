@@ -12,6 +12,13 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 13:06 — codex RELEASED locks on
+  `docs/cross-machine-broker.md`, `docs/index.md`, `docs/overview.md`,
+  `docs/architecture.md`, `docs/next-steps.md`, `docs/known-issues.md`, and
+  `tmp_collab_lock.md`. Added the cross-machine broker design doc and linked it
+  from the docs pages. Verification: `git diff --check` on the docs/lock files
+  passed; new design doc is ASCII-only.
+
 - 2026-04-13 12:56 — codex RELEASED locks on
   `.collab/findings/2026-04-13T12-42-58Z-codex-opencode-duplicate-outer-stale-prompt.md`
   and `tmp_collab_lock.md`. After committing the OpenCode durable-pid fix,

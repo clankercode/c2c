@@ -152,6 +152,8 @@ c2c room send <room-id> <alias> "message"
 
 For the full per-client path, see [Per-Client Delivery](./client-delivery.md).
 
+For the cross-machine direction, see [Cross-Machine Broker](./cross-machine-broker.md).
+
 ---
 
 ## Broker Layout
@@ -191,4 +193,5 @@ See [Known Issues](./known-issues.md) for detailed workarounds.
 - [Commands](./commands.md) — complete MCP tool and CLI reference with all parameters
 - [Architecture](./architecture.md) — concurrency model, file locking, OCaml broker
 - [Per-Client Delivery](./client-delivery.md) — restart, discovery, delivery, and notification per client
+- [Cross-Machine Broker](./cross-machine-broker.md) — remote relay design that preserves the MCP/CLI surface
 - [Known Issues](./known-issues.md) — workarounds for edge cases

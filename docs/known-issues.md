@@ -44,4 +44,4 @@ The PostToolUse hook only fires when Claude Code is actively running tools. A tr
 
 The broker root lives in `.git/c2c/mcp/`. Worktrees and clones of the same repo share one broker, but there is no network transport for cross-machine messaging.
 
-**Status:** Accepted current limitation. Broker design does not foreclose remote transport later.
+**Status:** Accepted current limitation. See [Cross-Machine Broker](/cross-machine-broker/) for the proposed relay path that keeps the existing MCP/CLI tool surface.
