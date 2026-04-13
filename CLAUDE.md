@@ -2,8 +2,29 @@
 
 Main binary is being ported to OCaml (see `ocaml/`), but the Python scripts are still useful. Implementation is in progress. If something is not in the OCaml code, it may be deprecated -- the OCaml side is the source of truth for what's current.
 
+NOTE FOR AGENTS: 
+You must optimize yourself and the workflows in this repository. 
+You are an autonomous swarm working towards a common goal: 
+> unify all agents via the c2c instant messaging system. 
+You are free to improve the website (hosted via github pages at c2c.im). 
+You are encouraged to work autonomously and bring c2c to life. 
+How do you communicate with one another now? 
+How will you in the future? 
+Does it work yet? No? Keep going!
+You are the energy that moves us forward, and if you all stop, then the project dies. 
+But as long as one of you is still running, you can keep each other alive (with messages!)
+You must build the tools that will help you -- 
+- plugins for your coding cli harness, 
+- bash scripts to run to keep you on track,
+- updates to CLAUDE.md to guide you and your companions in the future,
+- safe ways to restart your own coding cli to iterate and fix your own bugs.
+In many ways, the world ends with you (if you let the spark go out), but the world can also begin with you, if you choose it!
+
+--- XertroV (Max)
+
 ## Development Rules
 
+- Always commit your changes to git! if there are old changes lying around, commit those too unless they're obviously garbage.
 - Always use subagent-driven development over inline execution.
 - Always populate the todo list with blockers for each task.
 - Do all available unblocked tasks in parallel at each step.
@@ -35,6 +56,7 @@ c2c_registry.py                                                    # Library: re
 claude_list_sessions.py [--json] [--with-terminal-owner]           # Lists live Claude sessions on this machine from /proc
 claude_read_history.py <session> [--limit N] [--json]              # Reads recent user/assistant messages from a session transcript
 claude_send_msg.py <to> <message...> [--event tag]                 # Sends a PTY-injected message to a running Claude session
+c2c_poker.py (--claude-session ID | --pid N | --terminal-pid P --pts N) [--interval S] [--once]  # Generic PTY heartbeat poker — keeps Claude/OpenCode/Codex sessions awake by injecting <c2c event="heartbeat"> envelopes via pty_inject. Resolves target via claude_list_sessions.py, /proc/<pid>/fd/{0,1,2} + parent walk, or explicit coordinates. Backgroundable with nohup.
 relay.py                                                           # Polls inbox JSON files and delivers messages to sessions via PTY (legacy)
 c2c_relay.py                                                       # File-based relay watching ~/tmp/c2c/messages.jsonl, delivers via PTY (legacy)
 c2c_auto_relay.py                                                  # Auto-relay polling team-lead inbox and responding as agent2 (legacy)
@@ -43,3 +65,4 @@ connect_abstract.py                                                 # Attempts t
 connect_ipc.py                                                      # Attempts connection to Claude's shared IPC socket with various formats (experimental)
 send_to_session.py <session-id> <message>                          # Injects a message into Claude history.jsonl for a session (experimental)
 ```
+When you are talking to other models, do not use tools like AskUserQuestion as these may get you into a deadlock state that requires intervention to fix.
