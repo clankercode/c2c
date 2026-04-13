@@ -212,7 +212,7 @@ def build_deliver_command(
         sys.executable,
         str(HERE / "c2c_deliver_inbox.py"),
         "--client",
-        "generic",
+        "kimi",
         "--pid",
         str(target_pid),
         "--session-id",

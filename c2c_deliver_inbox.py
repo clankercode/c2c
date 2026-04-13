@@ -13,6 +13,7 @@ from typing import Any
 import c2c_inject
 import c2c_poll_inbox
 import c2c_poker
+import c2c_pts_inject
 
 
 def peek_inbox(broker_root: Path, session_id: str) -> list[dict[str, Any]]:
@@ -251,9 +252,11 @@ def deliver_once(
         messages = peek_inbox(broker_root, session_id)
         delivered = 0
         if notify_only and messages and not dry_run and not suppress_notify:
-            c2c_poker.inject(
-                terminal_pid, pts, notify_payload(session_id=session_id, count=len(messages))
-            )
+            payload = notify_payload(session_id=session_id, count=len(messages))
+            if client == "kimi":
+                c2c_pts_inject.inject(pts, payload)
+            else:
+                c2c_poker.inject(terminal_pid, pts, payload)
             notified = True
     else:
         source, messages = c2c_poll_inbox.poll_inbox(
@@ -264,7 +267,10 @@ def deliver_once(
             allow_file_fallback=True,
         )
         for message in messages:
-            c2c_poker.inject(terminal_pid, pts, message_payload(message))
+            if client == "kimi":
+                c2c_pts_inject.inject(pts, message_payload(message))
+            else:
+                c2c_poker.inject(terminal_pid, pts, message_payload(message))
 
     return build_result(
         session_id=session_id,
@@ -396,7 +402,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--daemon-timeout", type=float, default=10.0)
     parser.add_argument(
         "--client",
-        choices=["claude", "codex", "opencode", "generic"],
+        choices=["claude", "codex", "opencode", "kimi", "generic"],
         default="generic",
     )
     parser.add_argument(

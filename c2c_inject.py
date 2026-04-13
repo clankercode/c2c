@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 import c2c_poker
+import c2c_pts_inject
 
 
 def resolve_target(args: argparse.Namespace) -> tuple[int, str, str | None]:
@@ -50,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pts", metavar="N", help="required with --terminal-pid")
     parser.add_argument(
         "--client",
-        choices=["claude", "codex", "opencode", "generic"],
+        choices=["claude", "codex", "opencode", "kimi", "generic"],
         default="generic",
         help="client label for result metadata (default: generic)",
     )
@@ -85,7 +86,9 @@ def main(argv: list[str] | None = None) -> int:
         source_tool="c2c_inject",
     )
     if not args.dry_run:
-        if args.submit_delay is None:
+        if args.client == "kimi":
+            c2c_pts_inject.inject(pts, payload)
+        elif args.submit_delay is None:
             c2c_poker.inject(terminal_pid, pts, payload)
         else:
             c2c_poker.inject(
