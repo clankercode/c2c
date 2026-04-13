@@ -240,6 +240,26 @@ Remove dead registrations and their orphan inbox files from the broker. Rescues 
 
 ---
 
+### `tail_log`
+
+Read the last N entries from the broker's RPC audit log (`broker.log`). Useful for debugging delivery and tool call patterns without exposing message content.
+
+**Arguments**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `limit` | integer | no | Number of entries to return (default 50, max 500) |
+
+**Returns** JSON array of `{ts, tool, ok}` objects — one per broker RPC call. `ok` is `true` if the tool call completed without error.
+
+**Example**
+
+```
+mcp__c2c__tail_log {"limit": 20}
+```
+
+---
+
 ## Python CLI
 
 The `c2c` command dispatches to the same broker. Available after running `./c2c install`.
@@ -252,6 +272,7 @@ c2c <subcommand> [args]
 
 | Subcommand | Description |
 |------------|-------------|
+| `setup <client>` | One-command client configuration: `claude-code`, `opencode`, or `codex` |
 | `install` | Install `c2c` wrapper scripts into `~/.local/bin` |
 | `register <session-id>` | Register a session for c2c messaging; assigns an alias |
 | `list [--all]` | List registered peers (`--all` includes unregistered sessions) |
@@ -268,6 +289,7 @@ c2c <subcommand> [args]
 | `list-rooms` | List all rooms |
 | `my-rooms` | List rooms you're in |
 | `sweep` | Remove dead registrations from the broker |
+| `tail-log [--limit N]` | Read last N broker RPC audit log entries |
 | `verify` | Count c2c message exchange progress across visible participants |
 | `mcp` | Launch the OCaml MCP server (used internally) |
 
