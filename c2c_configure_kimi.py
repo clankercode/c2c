@@ -15,6 +15,14 @@ from pathlib import Path
 import c2c_mcp
 
 
+def default_alias() -> str:
+    import getpass
+    import socket
+    user = getpass.getuser()
+    host = socket.gethostname().split(".")[0]
+    return f"kimi-{user}-{host}"
+
+
 def default_kimi_mcp_path() -> Path:
     """Return the default Kimi MCP config path."""
     home = Path.home()
@@ -117,7 +125,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--alias",
-        help="suggested alias for auto-registration",
+        help=f"stable alias for auto-registration on every restart (default: {default_alias()})",
+    )
+    parser.add_argument(
+        "--no-alias",
+        action="store_true",
+        help="do not configure an auto-register alias",
     )
     parser.add_argument(
         "--force",
@@ -143,11 +156,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             broker_root = Path(c2c_mcp.default_broker_root())
 
+    alias = None if args.no_alias else (args.alias or default_alias())
     result = write_kimi_config(
         mcp_path=mcp_path,
         broker_root=broker_root,
         session_hint=args.session_id,
-        alias_hint=args.alias,
+        alias_hint=alias,
         force=args.force,
     )
 
@@ -158,6 +172,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"✓ Kimi MCP config written: {result['path']}")
             print(f"  Server: c2c")
             print(f"  Broker: {result['broker_root']}")
+            if alias:
+                print(f"  Alias:  {alias} (auto-registers on every restart)")
             print()
             print("Next steps:")
             print("  1. Restart Kimi Code CLI to load the MCP server")
