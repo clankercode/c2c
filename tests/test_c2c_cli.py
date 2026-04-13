@@ -3548,7 +3548,11 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         )
         self.assertEqual(
             payload["env"]["RUN_OPENCODE_INST_CONFIG_PATH"],
-            str(REPO / ".opencode" / "opencode.json"),
+            str(REPO / "run-opencode-inst.d" / "c2c-opencode-local.opencode.json"),
+        )
+        self.assertEqual(
+            payload["env"]["OPENCODE_CONFIG"],
+            str(REPO / "run-opencode-inst.d" / "c2c-opencode-local.opencode.json"),
         )
         self.assertEqual(payload["cwd"], str(REPO))
         self.assertIn("opencode", payload["launch"][0])
@@ -3658,6 +3662,10 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         )
 
         self.assertEqual(config["c2c_alias"], "opencode-local")
+        self.assertEqual(
+            config["config_path"],
+            str(REPO / "run-opencode-inst.d" / "c2c-opencode-local.opencode.json"),
+        )
         self.assertNotIn("pre_exec", config)
 
     def test_run_opencode_inst_outer_dry_run_reports_inner_launch_command(self):

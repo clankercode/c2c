@@ -115,12 +115,12 @@ def load_config(name: str) -> dict[str, Any]:
 
 
 def default_session_id(name: str) -> str:
-    env_value = os.environ.get("RUN_OPENCODE_INST_C2C_SESSION_ID", "").strip()
-    if env_value:
-        return env_value
     config_value = str(load_config(name).get("c2c_session_id", "")).strip()
     if config_value:
         return config_value
+    env_value = os.environ.get("RUN_OPENCODE_INST_C2C_SESSION_ID", "").strip()
+    if env_value:
+        return env_value
     return f"opencode-{name}"
 
 
