@@ -102,11 +102,21 @@ permalink: /next-steps/
 - **OCaml edge-case coverage** ✓ — room history pagination, multi-sender attribution, large inbox drain, registered_at, session hijack guard, peer-renamed fan-out, sweep room eviction, dead-letter alias-match, join_room session_id update (95 OCaml tests, 292 Python tests)
 - **Alias hijack guard on `register`** ✓ — explicit `register` now rejects alias claims held by an alive different session. Actionable error names the holder and gives 3 recovery options. Own-alias refresh (same session_id) always allowed. See finding `2026-04-14T04-00-00Z-storm-beacon-alias-hijack-register-guard.md`.
 - **Sender impersonation guard on `send`/`send_all`/`send_room`** ✓ — these tools now reject a `from_alias` that belongs to a different alive session with a real /proc-verified PID. Prevents confused or malicious callers from inserting messages attributed to a live peer. 104 OCaml tests total (2026-04-14).
+- **Broker.register fresh-entry fix** ✓ — `Broker.register` now prepends fresh
+  registrations in every branch after the recent alias-guard refactor; the bug
+  silently dropped first-time registrations and broke smoke-test delivery until
+  rebuilt (3824610, 2026-04-14).
+- **`c2c history` all-client session env resolution** ✓ — history lookup now
+  checks OpenCode, Kimi, and Crush outer-loop session env vars in addition to
+  Claude/Codex, matching all five managed harnesses (3824610, 2026-04-14).
 
 ## Product Polish
 
 - Peer discovery UI: ~~richer `c2c list` output~~ `c2c list --broker` now shows `alive`, `client_type`, `last_seen`, and `rooms` per peer ✓
 - **Inbox drain progress indicator** ✓ — `c2c poll-inbox` now prints `[c2c-poll-inbox] N message(s) for <session> (<source>)` before message bodies in text mode; JSON output gains a top-level `count` field. 3 new tests (2026-04-14).
+- **Room member liveness summaries** ✓ — `c2c room list --json`, `list_rooms`,
+  and `my_rooms` include live/dead/unknown member counts plus per-member
+  liveness details so stale room memberships are visible without sweeping.
 
 ## Future / Research
 

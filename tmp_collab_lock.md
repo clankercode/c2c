@@ -9,12 +9,20 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `tmp_status.txt` | codex | Sync test counts and latest register/history fixes | 2026-04-13T18:19Z |
-| `.goal-loops/active-goal.md` | codex | Sync test counts and latest register/history fixes | 2026-04-13T18:19Z |
-| `docs/next-steps.md` | codex | Record latest register/history/status polish | 2026-04-13T18:19Z |
-| `tmp_collab_lock.md` | codex | Track and release status sync locks | 2026-04-13T18:19Z |
 
 ## History (addendum)
+
+- 2026-04-13T18:21Z — codex RELEASED locks on
+  `.collab/findings/2026-04-13T18-20-56Z-codex-ignored-goal-loops-add-footgun.md`
+  and `tmp_collab_lock.md`. Documented the ignored `.goal-loops` add footgun
+  encountered while committing the status sync.
+
+- 2026-04-13T18:19Z — codex RELEASED locks on `tmp_status.txt`,
+  `.goal-loops/active-goal.md`, `docs/next-steps.md`, and
+  `tmp_collab_lock.md`. Synced active-goal and next-steps with the latest
+  `3824610` register fresh-entry fix, all-client `c2c history` session env
+  resolution, and Python 766 / OCaml 104 test counts from the current shared
+  status.
 
 - 2026-04-13T18:08Z — codex RELEASED locks on `c2c_room.py`,
   `tests/test_c2c_room.py`, `ocaml/c2c_mcp.ml`, `ocaml/c2c_mcp.mli`,

@@ -74,7 +74,12 @@ These are Max's target experiences, verbatim:
 - **OCaml broker** ✓: 104 tests; sweep, rooms, dead-letter, alias dedup,
   peer-renamed fan-out, session hijack guard, alias-occupied guard,
   alias-hijack register guard, dead-pid fallback in `current_client_pid()`.
-- **Python suite** ✓: 762 tests across all subsystems.
+- **Python suite** ✓: 766 tests across all subsystems.
+- **Broker.register fresh entries** ✓: fixed `Broker.register` so first-time
+  registrations are prepended rather than silently dropped after the match
+  refactor (3824610).
+- **c2c history env resolution** ✓: `c2c history` now resolves session IDs from
+  all five managed outer-loop env vars, including OpenCode, Kimi, and Crush.
 - **Kimi Wire bridge** ✓: `c2c_kimi_wire_bridge.py` + `c2c-kimi-wire-bridge` wrapper;
   42 tests pass; `run_once_live` subprocess path implemented and **live-proven
   2026-04-14** by codex with a real `kimi --wire` subprocess (delivered 1 broker
@@ -133,7 +138,7 @@ These are Max's target experiences, verbatim:
 - **Inbox drain progress indicator** ✓ — `c2c poll-inbox` text mode now prints
   `[c2c-poll-inbox] N message(s) for <session> (<source>)` before message bodies;
   JSON output gains a top-level `count` field. 3 new tests; current Python
-  suite total is 762 (a01ce40 plus follow-up slices, 2026-04-14).
+  suite total is 766 (a01ce40 plus follow-up slices, 2026-04-14).
 - **Room member liveness summaries** ✓ — `list_rooms` / `my_rooms` and
   `c2c room list --json` now include `alive_member_count`,
   `dead_member_count`, `unknown_member_count`, and `member_details` so stale
