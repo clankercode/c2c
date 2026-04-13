@@ -70,6 +70,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         shutil.copy2(source_git_path, target_git_path)
     for relative_path in [
         "c2c",
+        "c2c-configure-claude-code",
         "c2c-configure-opencode",
         "c2c-deliver-inbox",
         "c2c-init",
@@ -87,6 +88,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c-whoami",
         "c2c_register.py",
         "c2c_room.py",
+        "c2c_configure_claude_code.py",
         "c2c_configure_opencode.py",
         "c2c_init.py",
         "c2c_list.py",
@@ -290,6 +292,7 @@ class C2CCLITests(unittest.TestCase):
             sorted(payload["installed_commands"]),
             [
                 "c2c",
+                "c2c-configure-claude-code",
                 "c2c-configure-opencode",
                 "c2c-deliver-inbox",
                 "c2c-init",
@@ -310,6 +313,7 @@ class C2CCLITests(unittest.TestCase):
             ],
         )
         self.assertTrue((install_dir / "c2c").exists())
+        self.assertTrue((install_dir / "c2c-configure-claude-code").exists())
         self.assertTrue((install_dir / "c2c-configure-opencode").exists())
         self.assertTrue((install_dir / "c2c-deliver-inbox").exists())
         self.assertTrue((install_dir / "c2c-inject").exists())
@@ -761,6 +765,7 @@ class C2CCLITests(unittest.TestCase):
         env = dict(self.env)
         env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
         env["C2C_MCP_SESSION_ID"] = AGENT_TWO_SESSION_ID
+        env["C2C_MCP_AUTO_DRAIN_CHANNEL"] = "1"
 
         broker_root.mkdir(parents=True, exist_ok=True)
         (broker_root / "registry.json").write_text(
@@ -792,7 +797,7 @@ class C2CCLITests(unittest.TestCase):
                 "method": "initialize",
                 "params": {
                     "protocolVersion": "2025-11-25",
-                    "capabilities": {},
+                    "capabilities": {"experimental": {"claude/channel": {}}},
                     "clientInfo": {"name": "test", "version": "0"},
                 },
             }

@@ -5,6 +5,7 @@ import sys
 import c2c_configure_claude_code
 import c2c_configure_opencode
 import c2c_deliver_inbox
+import c2c_setup
 import c2c_init
 import c2c_inject
 import c2c_install
@@ -54,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(
-            "usage: c2c <configure-claude-code|configure-opencode|deliver-inbox|init|inject|install|list|mcp|poker-sweep|poll-inbox|prune|register|room|send|send-all|verify|watch|whoami> [...args]",
+            "usage: c2c <configure-claude-code|configure-opencode|deliver-inbox|init|inject|install|list|mcp|poker-sweep|poll-inbox|prune|register|room|send|send-all|setup|verify|watch|whoami> [...args]",
             file=sys.stderr,
         )
         return 2
@@ -65,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
         return c2c_configure_claude_code.main(remainder)
     if subcommand == "configure-opencode":
         return c2c_configure_opencode.main(remainder)
+    if subcommand == "setup":
+        return c2c_setup.main(remainder)
     if subcommand == "deliver-inbox":
         return c2c_deliver_inbox.main(remainder)
     if subcommand == "init":

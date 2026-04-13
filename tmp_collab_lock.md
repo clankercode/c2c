@@ -12,6 +12,7 @@ on disk).
 | `ocaml/server/c2c_mcp_server.ml` | codex | make auto-drain capability-aware | 2026-04-13 18:09 |
 | `ocaml/test/test_c2c_mcp.ml` | codex | regression for silent auto-drain when dev channels absent | 2026-04-13 18:09 |
 | `tests/test_c2c_onboarding_smoke.py` | codex | server-loop regression for capability-aware auto-drain | 2026-04-13 18:09 |
+| `tests/test_c2c_cli.py` | codex | update channel-notification fixture for capability-gated auto-drain | 2026-04-13 18:18 |
 | `tmp_collab_lock.md` | codex | claim/release auto-drain fix locks | 2026-04-13 18:09 |
 
 ## History (addendum)
