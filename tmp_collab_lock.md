@@ -9,8 +9,14 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| `ocaml/c2c_mcp.ml` | codex-xertrov-x-game | Bind MCP sender alias to current registered session | 2026-04-13T17:32Z |
+| `ocaml/test/test_c2c_mcp.ml` | codex-xertrov-x-game | Regression tests for MCP alias spoof prevention | 2026-04-13T17:32Z |
 
 ## History (addendum)
+
+- 2026-04-13T17:25Z — codex RELEASED locks on `run-kimi-inst-outer` and
+  `tests/test_c2c_cli.py`. Added focused Kimi outer refresh-peer session-id
+  coverage.
 
 - 2026-04-13T17:20Z — codex RELEASED locks on `c2c_refresh_peer.py` and
   `tests/test_c2c_cli.py`. Normalized new refresh-peer output/comment arrows

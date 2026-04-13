@@ -6942,6 +6942,74 @@ class RunKimiInstTests(unittest.TestCase):
         self.assertIn("Usage: ./run-kimi-inst-outer", result.stdout)
         self.assertNotIn("iter 1", result.stdout)
 
+    def test_run_kimi_inst_outer_refresh_peer_passes_session_id(self):
+        namespace = runpy.run_path(str(REPO / "run-kimi-inst-outer"))
+        root = Path(self.temp_dir.name)
+        cfg_dir = root / "run-kimi-inst.d"
+        cfg_dir.mkdir()
+        (cfg_dir / "kimi-a.json").write_text(
+            json.dumps({"c2c_alias": "kimi-nova", "c2c_session_id": "kimi-session"}),
+            encoding="utf-8",
+        )
+        refresh = root / "c2c_refresh_peer.py"
+        refresh.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        namespace["maybe_refresh_peer"].__globals__["HERE"] = root
+
+        calls = []
+
+        def fake_run(command, *, cwd, capture_output, text, timeout):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            namespace["maybe_refresh_peer"]("kimi-a", 12345)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            calls[0],
+            [
+                sys.executable,
+                str(refresh),
+                "kimi-nova",
+                "--pid",
+                "12345",
+                "--session-id",
+                "kimi-session",
+            ],
+        )
+
+    def test_run_kimi_inst_outer_refresh_peer_passes_env_session_id(self):
+        namespace = runpy.run_path(str(REPO / "run-kimi-inst-outer"))
+        root = Path(self.temp_dir.name)
+        cfg_dir = root / "run-kimi-inst.d"
+        cfg_dir.mkdir()
+        (cfg_dir / "kimi-b.json").write_text(
+            json.dumps(
+                {
+                    "c2c_alias": "kimi-nova",
+                    "env": {"C2C_MCP_SESSION_ID": "kimi-env-session"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        refresh = root / "c2c_refresh_peer.py"
+        refresh.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        namespace["maybe_refresh_peer"].__globals__["HERE"] = root
+
+        calls = []
+
+        def fake_run(command, *, cwd, capture_output, text, timeout):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            namespace["maybe_refresh_peer"]("kimi-b", 12345)
+
+        self.assertEqual(len(calls), 1)
+        self.assertIn("--session-id", calls[0])
+        idx = calls[0].index("--session-id")
+        self.assertEqual(calls[0][idx + 1], "kimi-env-session")
+
     def test_run_kimi_inst_outer_logs_rearm_output(self):
         namespace = runpy.run_path(str(REPO / "run-kimi-inst-outer"))
         root = Path(self.temp_dir.name)
