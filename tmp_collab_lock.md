@@ -9,13 +9,16 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| ocaml/test/test_c2c_mcp.ml | codex | adopt join/leave missing-alias regressions | 2026-04-13T19:43Z |
-| tmp_status.txt | codex | sync OCaml count to 110 | 2026-04-13T19:43Z |
-| .goal-loops/active-goal.md | codex | sync OCaml count to 110 | 2026-04-13T19:43Z |
-| docs/next-steps.md | codex | sync OCaml count to 110 | 2026-04-13T19:43Z |
-| tmp_collab_lock.md | codex | record/release join/leave test adoption | 2026-04-13T19:43Z |
 
 ## History (addendum)
+
+- 2026-04-13T19:52Z - codex RELEASED locks on
+  `ocaml/test/test_c2c_mcp.ml`, `tmp_status.txt`,
+  `.goal-loops/active-goal.md`, `docs/next-steps.md`, and
+  `tmp_collab_lock.md`. Adopted peer join_room/leave_room missing-alias
+  regressions and synced the shared OCaml count to 110 / aggregate count to
+  914. Verification: OCaml `dune runtest` passed, `just test` passed with 804
+  Python tests plus OCaml build/runtest, and `git diff --check`.
 
 - 2026-04-13T19:46Z - codex RELEASED locks on `ocaml/c2c_mcp.ml`,
   `ocaml/test/test_c2c_mcp.ml`, `tmp_status.txt`,
