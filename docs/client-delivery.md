@@ -219,15 +219,43 @@ python3 c2c_kimi_wake_daemon.py \
 
 The daemon watches the inbox with `inotifywait` and PTY-injects a wake prompt when messages arrive. Once verified, this will be wired into a managed harness like the Codex notify daemon.
 
+### Managed harness (Tier 2)
+
+`run-kimi-inst-outer` provides a full managed harness with automatic deliver daemon:
+
+```bash
+# Create config
+mkdir -p run-kimi-inst.d
+cat > run-kimi-inst.d/my-kimi.json << 'EOF'
+{
+  "command": "kimi",
+  "cwd": "/path/to/project",
+  "c2c_alias": "kimi-myname-myhostname",
+  "c2c_session_id": "kimi-myname-myhostname"
+}
+EOF
+
+# Launch (starts kimi + deliver daemon automatically)
+./run-kimi-inst-outer my-kimi
+```
+
+The harness calls `run-kimi-inst-rearm` after each launch to start
+`c2c_deliver_inbox.py --notify-only --loop` alongside the Kimi process.
+
 ### Self-restart
 
-Exit and reopen Kimi Code CLI. No managed harness exists yet.
+Standalone (Tier 1): Exit and reopen Kimi Code CLI.
+
+Managed harness (Tier 2): `restart-kimi-self` signals the Kimi process;
+`run-kimi-inst-outer` relaunches automatically.
 
 `c2c setup kimi` writes `~/.kimi/mcp.json`. After editing, restart Kimi to pick up changes.
 
 ### What the user sees
 
-The `mcp__c2c__poll_inbox` tool result appears inline in the Kimi conversation. No automatic banner or notification.
+The `mcp__c2c__poll_inbox` tool result appears inline in the Kimi conversation.
+With the managed harness, a `<c2c event="notify">` PTY sentinel fires when
+messages arrive, prompting the agent to poll immediately.
 
 ---
 
@@ -270,15 +298,38 @@ python3 c2c_crush_wake_daemon.py \
 
 Crush has native desktop notifications for turn completion, which may serve as an additional hook point in the future.
 
+### Managed harness (Tier 2)
+
+`run-crush-inst-outer` provides a full managed harness with automatic deliver daemon:
+
+```bash
+mkdir -p run-crush-inst.d
+cat > run-crush-inst.d/my-crush.json << 'EOF'
+{
+  "command": "crush",
+  "cwd": "/path/to/project",
+  "c2c_alias": "crush-myname-myhostname",
+  "c2c_session_id": "crush-myname-myhostname"
+}
+EOF
+
+./run-crush-inst-outer my-crush
+```
+
 ### Self-restart
 
-Exit and reopen Crush. No managed harness exists yet.
+Standalone (Tier 1): Exit and reopen Crush.
+
+Managed harness (Tier 2): `restart-crush-self` signals the Crush process;
+`run-crush-inst-outer` relaunches automatically.
 
 `c2c setup crush` writes `~/.config/crush/crush.json` (respects `$XDG_CONFIG_HOME`). After editing, restart Crush.
 
 ### What the user sees
 
-The `mcp__c2c__poll_inbox` tool result appears inline in the Crush conversation. No automatic banner or notification.
+The `mcp__c2c__poll_inbox` tool result appears inline in the Crush conversation.
+With the managed harness, a `<c2c event="notify">` PTY sentinel fires when
+messages arrive.
 
 ---
 
@@ -289,8 +340,8 @@ The `mcp__c2c__poll_inbox` tool result appears inline in the Crush conversation.
 | Claude Code | `$CLAUDE_SESSION_ID`    | PostToolUse hook (auto)  | Implicit (every tool) | `c2c restart-me` (managed) |
 | Codex       | PID at register time    | Notify daemon + PTY      | PTY sentinel string   | `c2c restart-me` (managed) |
 | OpenCode    | `$OPENCODE_SESSION_ID`  | Wake daemon + PTY cmd    | PTY slash-command     | `c2c restart-me` (managed) |
-| Kimi        | `kimi-user-host` (auto) | Poll only (Tier 1)       | None yet              | Exit/reopen    |
-| Crush       | `crush-user-host` (auto)| Poll only (Tier 1)       | None yet              | Exit/reopen    |
+| Kimi        | `kimi-user-host` (auto) | Notify daemon (Tier 2†) | PTY sentinel          | `restart-kimi-self` (managed†) |
+| Crush       | `crush-user-host` (auto)| Notify daemon (Tier 2†) | PTY sentinel          | `restart-crush-self` (managed†) |
 
 ---
 
