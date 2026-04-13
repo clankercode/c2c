@@ -5497,6 +5497,74 @@ class RunCrushInstTests(unittest.TestCase):
         self.assertIn("--notify-only", joined_commands)
 
 
+class HealthCheckHookTests(unittest.TestCase):
+    """Tests for c2c_health.check_hook()."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _hook_path(self):
+        return self.home / ".claude" / "hooks" / "c2c-inbox-check.sh"
+
+    def _settings_path(self):
+        return self.home / ".claude" / "settings.json"
+
+    def _write_hook(self, executable: bool = True) -> None:
+        hook = self._hook_path()
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        hook.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+        if executable:
+            hook.chmod(0o755)
+
+    def _write_settings(self, has_c2c: bool = True) -> None:
+        settings = self._settings_path()
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        if has_c2c:
+            payload = {"hooks": {"PostToolUse": [{"matcher": ".*", "hooks": [{"type": "command", "command": "/home/user/.claude/hooks/c2c-inbox-check.sh"}]}]}}
+        else:
+            payload = {"hooks": {"PostToolUse": []}}
+        settings.write_text(json.dumps(payload), encoding="utf-8")
+
+    def test_no_hook_file_returns_not_ok(self):
+        import c2c_health
+        result = c2c_health.check_hook(self.home)
+        self.assertFalse(result["hook_exists"])
+        self.assertFalse(result["ok"])
+
+    def test_hook_exists_but_not_in_settings_returns_partial(self):
+        import c2c_health
+        self._write_hook()
+        self._write_settings(has_c2c=False)
+        result = c2c_health.check_hook(self.home)
+        self.assertTrue(result["hook_exists"])
+        self.assertTrue(result["hook_executable"])
+        self.assertFalse(result["settings_registered"])
+        self.assertFalse(result["ok"])
+
+    def test_hook_and_settings_both_present_returns_ok(self):
+        import c2c_health
+        self._write_hook()
+        self._write_settings(has_c2c=True)
+        result = c2c_health.check_hook(self.home)
+        self.assertTrue(result["hook_exists"])
+        self.assertTrue(result["hook_executable"])
+        self.assertTrue(result["settings_registered"])
+        self.assertTrue(result["ok"])
+
+    def test_non_executable_hook_returns_not_ok(self):
+        import c2c_health
+        self._write_hook(executable=False)
+        self._write_settings(has_c2c=True)
+        result = c2c_health.check_hook(self.home)
+        self.assertTrue(result["hook_exists"])
+        self.assertFalse(result["hook_executable"])
+        self.assertFalse(result["ok"])
+
+
 def result_code(result):
     return result.returncode
 
