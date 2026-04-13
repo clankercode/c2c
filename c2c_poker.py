@@ -173,9 +173,18 @@ def pid_is_alive(pid: int) -> bool:
     return True
 
 
-def inject(terminal_pid: int, pts_num: str, payload: str) -> None:
+def inject(
+    terminal_pid: int,
+    pts_num: str,
+    payload: str,
+    *,
+    submit_delay: float | None = None,
+) -> None:
+    command = [str(PTY_INJECT), str(terminal_pid), str(pts_num), payload]
+    if submit_delay is not None:
+        command.append(f"{submit_delay:g}")
     subprocess.run(
-        [str(PTY_INJECT), str(terminal_pid), str(pts_num), payload],
+        command,
         check=True,
         capture_output=True,
         text=True,

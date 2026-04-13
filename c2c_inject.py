@@ -25,6 +25,7 @@ def build_result(
     pts: str,
     payload: str,
     dry_run: bool,
+    submit_delay: float | None,
 ) -> dict[str, Any]:
     return {
         "ok": True,
@@ -33,6 +34,7 @@ def build_result(
         "pts": pts,
         "payload": payload,
         "dry_run": dry_run,
+        "submit_delay": submit_delay,
         "sent_at": time.time(),
     }
 
@@ -56,6 +58,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--from", dest="sender", default="c2c-inject")
     parser.add_argument("--alias", default="")
     parser.add_argument("--raw", action="store_true", help="do not wrap in <c2c>")
+    parser.add_argument(
+        "--submit-delay",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="override the PTY helper delay between paste and Enter",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("message", nargs="+")
@@ -76,7 +85,15 @@ def main(argv: list[str] | None = None) -> int:
         source_tool="c2c_inject",
     )
     if not args.dry_run:
-        c2c_poker.inject(terminal_pid, pts, payload)
+        if args.submit_delay is None:
+            c2c_poker.inject(terminal_pid, pts, payload)
+        else:
+            c2c_poker.inject(
+                terminal_pid,
+                pts,
+                payload,
+                submit_delay=args.submit_delay,
+            )
 
     result = build_result(
         client=args.client,
@@ -84,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
         pts=pts,
         payload=payload,
         dry_run=args.dry_run,
+        submit_delay=args.submit_delay,
     )
     if args.json:
         print(json.dumps(result, indent=2))
