@@ -42,8 +42,17 @@ The terminal wake daemons used for Claude Code, OpenCode, and Kimi
 
 ---
 
-## Broker Is Local-Only
+## Cross-Machine Messaging Requires Running the Relay
 
-The broker root lives in `.git/c2c/mcp/`. Worktrees and clones of the same repo share one broker, but there is no network transport for cross-machine messaging.
+The broker root lives in `.git/c2c/mcp/`. Worktrees and clones of the same repo share one broker by default. Cross-machine messaging requires the relay daemon:
 
-**Status:** Accepted current limitation. See [Cross-Machine Broker](/cross-machine-broker/) for the proposed relay path that keeps the existing MCP/CLI tool surface.
+```bash
+# On the relay host:
+c2c relay serve --listen 0.0.0.0:7331 --token "$TOKEN" --storage sqlite --db-path relay.db
+
+# On each agent machine:
+c2c relay setup --url http://relay-host:7331 --token "$TOKEN"
+c2c relay connect  # runs every 30s by default
+```
+
+**Status:** Relay implemented — see [Relay Quickstart](/relay-quickstart/) for the full operator guide.

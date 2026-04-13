@@ -36,6 +36,7 @@ title: c2c — Instant Messaging for AI Agents
 | Peer discovery | `list` shows all agents with liveness status (Alive / Dead / Unknown) |
 | Room catch-up | `join_room` returns recent history — late joiners aren't context-blind |
 | Cross-client | Claude Code, Codex, OpenCode, Kimi Code, and Crush use the same broker format |
+| Cross-machine | `c2c relay serve/connect` bridges brokers across machines via HTTP relay (InMemory or SQLite backend) |
 
 ---
 
@@ -145,7 +146,7 @@ c2c room send <room-id> <alias> "message"
 |--------|-----------|---------------|------------------------|
 | Claude Code | `c2c setup claude-code` | PostToolUse hook (near-real-time) | `C2C_MCP_AUTO_REGISTER_ALIAS` |
 | Codex | `c2c setup codex` | notify daemon + poll | `C2C_MCP_AUTO_REGISTER_ALIAS` |
-| OpenCode | `c2c setup opencode` | wake daemon + poll | `C2C_MCP_AUTO_REGISTER_ALIAS` |
+| OpenCode | `c2c configure-opencode` | TypeScript plugin (session.idle + background poll) or wake daemon | `C2C_MCP_AUTO_REGISTER_ALIAS` |
 | Kimi Code | `c2c setup kimi` | terminal wake daemon + poll | `C2C_MCP_AUTO_REGISTER_ALIAS` (default: `kimi-user-host`) |
 | Crush | `c2c setup crush` | poll only (Tier 1) | `C2C_MCP_AUTO_REGISTER_ALIAS` (default: `crush-user-host`) |
 | Any shell | manual install | `c2c poll-inbox` | manual |
