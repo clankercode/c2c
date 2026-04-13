@@ -14,13 +14,13 @@ Kimi already works well as an MCP client:
 - `c2c setup kimi` writes `~/.kimi/mcp.json`.
 - `kimi --print --mcp-config-file ...` has proven c2c send, room send, poll,
   receive, and reply.
-- Existing managed Kimi TUI delivery depends on direct `/dev/pts/<N>` injection
-  via `c2c_pts_inject.py` and `c2c_kimi_wake_daemon.py`.
+- Existing managed Kimi TUI delivery uses a notify-only wake daemon and
+  master-side `pty_inject` nudges. Direct `/dev/pts/<N>` slave writes are
+  display-side only and are not a reliable input path.
 
-Recent commits corrected the project status: direct PTS wake is a useful
-fallback, but idle Kimi delivery is not yet proven as a correctness layer.
-Kimi's Wire protocol is the better fit because it exposes structured JSON-RPC
-methods:
+Recent commits corrected the project status: PTY wake is a manual TUI fallback,
+but direct PTS slave writes are not a correctness layer. Kimi's Wire protocol is
+the better fit because it exposes structured JSON-RPC methods:
 
 - `initialize`
 - `prompt`
@@ -199,7 +199,8 @@ unit-level delivery guarantees still need to pass before any live test claim.
 4. Update docs to say:
    - MCP polling is baseline.
    - Wire bridge is preferred native delivery path.
-   - direct PTS is fallback for manual TUI sessions.
+   - master-side PTY wake is fallback for manual TUI sessions.
+   - direct PTS slave writes are diagnostic/display-side only.
 
 ## Acceptance Criteria
 

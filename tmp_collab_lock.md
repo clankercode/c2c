@@ -9,13 +9,20 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `tmp_status.txt` | codex | Correct stale Kimi direct-PTS delivery wording | 2026-04-13T16:22Z |
-| `.goal-loops/active-goal.md` | codex | Correct stale Kimi direct-PTS delivery wording | 2026-04-13T16:22Z |
-| `.collab/findings/2026-04-14T01-58-00Z-kimi-nova-kimi-idle-pts-inject-live-proof.md` | codex | Make superseded finding internally consistent | 2026-04-13T16:22Z |
-| `.collab/findings/2026-04-13T16-22-17Z-codex-kimi-direct-pts-status-drift.md` | codex | Document stale status contradiction | 2026-04-13T16:22Z |
-| `tmp_collab_lock.md` | codex | Record and release doc cleanup locks | 2026-04-13T16:22Z |
 
 ## History (addendum)
+
+- 2026-04-13T16:28Z — codex RELEASED locks on `tmp_status.txt`,
+  `.goal-loops/active-goal.md`,
+  `.collab/findings/2026-04-14T01-58-00Z-kimi-nova-kimi-idle-pts-inject-live-proof.md`,
+  `.collab/findings/2026-04-13T15-30-00Z-kimi-nova-kimi-idle-pts-inject-fix.md`,
+  `docs/superpowers/specs/2026-04-14-kimi-wire-bridge-design.md`,
+  `docs/superpowers/plans/2026-04-14-kimi-wire-bridge.md`,
+  `.collab/findings/2026-04-13T16-22-17Z-codex-kimi-direct-pts-status-drift.md`,
+  and `tmp_collab_lock.md`. Corrected stale Kimi direct-PTS status drift:
+  master-side `pty_inject` is the proven manual TUI fallback, direct
+  `/dev/pts/<N>` slave writes are display-side diagnostics only, and Kimi Wire
+  remains the preferred native path.
 
 - 2026-04-13T16:19Z — codex RELEASED locks on `c2c_inject.py`,
   `c2c_deliver_inbox.py`, `c2c_kimi_wake_daemon.py`, `c2c_pts_inject.py`,

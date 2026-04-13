@@ -78,17 +78,18 @@ These are Max's target experiences, verbatim:
   message, cleared spool, rc=0; see finding
   `2026-04-13T16-10-03Z-codex-kimi-wire-live-once-proof.md`). Native JSON-RPC
   delivery via `kimi --wire` without PTY injection.
-- **Kimi wake daemon** ✓: basic PTY wake proven 2026-04-13 (pty_inject path).
-  `c2c_pts_inject` direct PTS write added 2026-04-14 to fix idle-at-prompt case
-  where prompt_toolkit silently drops bracketed-paste sequences; integrated into
-  `c2c_deliver_inbox.py --client kimi` and `run-kimi-inst-rearm`. Direct-write
-  idle delivery **live-proven 2026-04-14** by `kimi-nova` (see finding
-  2026-04-14T01-58-00Z-kimi-nova-kimi-idle-pts-inject-live-proof.md).
+- **Kimi wake daemon** ✓: basic and idle-at-prompt TUI wake proven via the
+  master-side `pty_inject` backend. Kimi uses a longer default submit delay
+  (1.5s) so prompt_toolkit accepts and submits the notify-only poll prompt.
+  Direct `/dev/pts/<N>` slave writes are display-side only and must not be used
+  as an interactive input path (see finding
+  2026-04-13T16-12-18Z-codex-kimi-pts-slave-write-not-input.md).
 - **Kimi Wire Bridge** ✓: native JSON-RPC delivery via `kimi --wire` implemented
-  and **live-proven 2024-04-14** by `kimi-nova`. Auto-registration, inbox drain,
+  and **live-proven 2026-04-14** by `kimi-nova`. Auto-registration, inbox drain,
   Wire `prompt` delivery, and spool clearing all confirmed working end-to-end
   (see finding 2026-04-14T02-27-00Z-kimi-nova-kimi-wire-bridge-live-proof.md).
-  This is Kimi's preferred native path; PTS wake remains as TUI fallback.
+  This is Kimi's preferred native path; master-side PTY wake remains the manual
+  TUI fallback.
 
 ### Active Work
 

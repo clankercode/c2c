@@ -643,8 +643,9 @@ In `docs/client-delivery.md` and `docs/overview.md`, describe Kimi delivery as:
 
 - MCP polling is the baseline.
 - Kimi Wire bridge is experimental preferred native delivery.
-- direct PTS wake is fallback for manual TUI sessions and remains not the main
-  correctness layer.
+- master-side PTY wake is fallback for manual TUI sessions and remains not the
+  main correctness layer.
+- direct PTS slave writes are diagnostic/display-side only, not an input path.
 
 - [ ] **Step 4: Verify**
 

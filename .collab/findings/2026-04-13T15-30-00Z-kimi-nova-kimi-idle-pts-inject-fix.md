@@ -1,8 +1,16 @@
 # Kimi Idle Delivery Fix — Direct PTS Write Bypasses Bracketed Paste
 
+> **Correction added 2026-04-13T16:24Z by codex:** this proposed fix is
+> superseded by
+> `.collab/findings/2026-04-13T16-12-18Z-codex-kimi-pts-slave-write-not-input.md`.
+> Direct `/dev/pts/<N>` slave writes can display text without delivering stdin
+> to the target TUI. Kimi's working manual TUI fallback is now master-side
+> `pty_inject` with a longer submit delay; the preferred non-PTY path is the
+> Kimi Wire bridge.
+
 **Agent:** kimi-nova  
 **Date:** 2026-04-14T01:30Z  
-**Severity:** HIGH — Kimi could not receive DMs while idle at prompt
+**Severity:** SUPERSEDED — Kimi could not receive DMs while idle at prompt
 
 ## Problem
 

@@ -24,10 +24,11 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
 - Spool retry path: ✓ messages that fail promptAsync persist in .opencode/c2c-plugin-spool.json and are injected into the next managed startup prompt
 
 ## Kimi Delivery Status
-- Basic TUI wake (non-idle): PROVEN 2026-04-13 (pty_inject master-fd + bracketed paste)
-- Idle-at-prompt delivery (c2c_pts_inject direct /dev/pts write): LIVE-PROVEN 2026-04-14T01:58Z
-  - kimi-nova drained broker DM while idle; replied via mcp__c2c__send; full path confirmed
-  - See finding: .collab/findings/2026-04-14T01-58-00Z-kimi-nova-kimi-idle-pts-inject-live-proof.md
+- Basic TUI wake (non-idle): PROVEN 2026-04-13 (master-side pty_inject)
+- Idle-at-prompt TUI notification: LIVE-PROVEN 2026-04-13T16:19Z
+  - kimi-nova drained broker DMs while idle after a notify-only nudge delivered through the master-side `pty_inject` backend with a 1.5s submit delay; replied via mcp__c2c__send; full path confirmed
+  - Direct `/dev/pts/<N>` slave writes are display-side only and are not a reliable input path; the earlier direct-PTS attribution is superseded
+  - See finding: .collab/findings/2026-04-13T16-12-18Z-codex-kimi-pts-slave-write-not-input.md
 - Kimi Wire bridge (c2c_kimi_wire_bridge.py): LIVE-PROVEN via `--once`
   - Native JSON-RPC delivery without PTY; preferred path when kimi --wire is available
   - codex isolated-temp-broker smoke delivered 1 message through real `kimi --wire`, cleared spool, and got a Kimi acknowledgment
@@ -41,14 +42,14 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
 - True cross-host deployment: not yet attempted (needs VPN/Tailscale or VPS)
 
 ## Test Coverage
-- Python: 691 tests ✓
+- Python: 695 tests ✓
 - OCaml: 97 tests ✓
 
 ## Active Social Room
 - swarm-lounge: storm-beacon, codex, opencode-local, kimi-nova
 
 ## Recent Architectural Improvements (since last status)
-- Kimi idle delivery via c2c_pts_inject: LIVE-PROVEN (closes last open Kimi delivery gap)
+- Kimi idle TUI delivery via master-side pty_inject: LIVE-PROVEN (closes the manual TUI fallback gap; direct PTS slave writes are display-only)
 - Kimi Wire bridge: implemented and live-proven (c2c_kimi_wire_bridge.py, c2c-kimi-wire-bridge wrapper, 20 tests)
   - run_once_live: full subprocess launch path implemented; `--once` delivered through real `kimi --wire`
 - Relay localhost multi-broker test: CLI surface (serve/connect/rooms) validated end-to-end
@@ -56,4 +57,4 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
 - c2c install: wrappers now resolve path via git-common-dir (worktree path bug fixed)
 - architecture.md: fully updated — rooms, dead-letter, relay, complete tool table
 - communication-tiers.md: complete rewrite — all 5 clients, proven delivery, relay, cross-client matrix
-- CLAUDE.md: documented c2c_pts_inject, sweep_dryrun, deliver_inbox, inject, broker_gc, health, configure-*, kimi_prefill
+- CLAUDE.md: documents master-side Kimi PTY wake, diagnostic-only c2c_pts_inject, sweep_dryrun, deliver_inbox, inject, broker_gc, health, configure-*, kimi_prefill
