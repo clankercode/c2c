@@ -165,6 +165,7 @@ claude_list_sessions.py [--json] [--with-terminal-owner]           # Lists live 
 claude_read_history.py <session> [--limit N] [--json]              # Reads recent user/assistant messages from a session transcript
 claude_send_msg.py <to> <message...> [--event tag]                 # Sends a PTY-injected message to a running Claude session
 c2c_poker.py (--claude-session ID | --pid N | --terminal-pid P --pts N) [--interval S] [--once]  # Generic PTY heartbeat poker — keeps Claude/OpenCode/Codex sessions awake by injecting <c2c event="heartbeat"> envelopes via pty_inject. Resolves target via claude_list_sessions.py, /proc/<pid>/fd/{0,1,2} + parent walk, or explicit coordinates. Backgroundable with nohup.
+c2c_opencode_wake_daemon.py --terminal-pid P --pts N [--session-id S] [--min-inject-gap N] [--once]  # Auto-delivery for OpenCode: watches session inbox via inotifywait, PTY-injects a COMMAND (not message content) telling the TUI to call mcp__c2c__poll_inbox itself. Messages stay broker-native (not source=pty). Run: nohup python3 c2c_opencode_wake_daemon.py --terminal-pid 3725367 --pts 22 &
 relay.py                                                           # Polls inbox JSON files and delivers messages to sessions via PTY (legacy)
 c2c_relay.py                                                       # File-based relay watching ~/tmp/c2c/messages.jsonl, delivers via PTY (legacy)
 c2c_auto_relay.py                                                  # Auto-relay polling team-lead inbox and responding as agent2 (legacy)
