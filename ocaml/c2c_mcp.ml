@@ -34,6 +34,7 @@ let server_features =
   ; "my_rooms_tool"
   ; "peek_inbox_tool"
   ; "join_leave_from_alias_fallback"
+  ; "rpc_audit_log"
   ]
 
 let server_info =
@@ -1451,6 +1452,29 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       Lwt.return (tool_result ~content ~is_error:false)
   | _ -> Lwt.return (tool_result ~content:("unknown tool: " ^ tool_name) ~is_error:true)
 
+(* Append one structured line to <broker_root>/broker.log for every
+   tools/call RPC. Never raises — audit failures must never break the
+   RPC path. Content fields are deliberately omitted to avoid leaking
+   message content into a shared log file. *)
+let log_rpc ~broker_root ~tool_name ~is_error =
+  (try
+     let path = Filename.concat broker_root "broker.log" in
+     let ts = Unix.gettimeofday () in
+     let line =
+       `Assoc
+         [ ("ts", `Float ts)
+         ; ("tool", `String tool_name)
+         ; ("ok", `Bool (not is_error))
+         ]
+       |> Yojson.Safe.to_string
+     in
+     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
+     (try
+        output_string oc (line ^ "\n");
+        close_out oc
+      with _ -> close_out_noerr oc)
+   with _ -> ())
+
 let handle_request ~broker_root json =
   let open Yojson.Safe.Util in
   let broker = Broker.create ~root:broker_root in
@@ -1486,6 +1510,10 @@ let handle_request ~broker_root json =
           (fun () -> handle_tool_call ~broker ~tool_name ~arguments)
           (fun exn -> Lwt.return (tool_result ~content:(Printexc.to_string exn) ~is_error:true))
       in
+      let is_error =
+        (try Yojson.Safe.Util.(result |> member "isError" |> to_bool) with _ -> false)
+      in
+      log_rpc ~broker_root ~tool_name ~is_error;
       Lwt.return_some (jsonrpc_response ~id result)
   | Some id, _ ->
       Lwt.return_some (jsonrpc_error ~id ~code:(-32601) ~message:("Unknown method: " ^ method_))

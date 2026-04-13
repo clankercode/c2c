@@ -349,6 +349,7 @@ let test_initialize_reports_server_version_and_features () =
             ; "join_room_history_backfill"
             ; "my_rooms_tool"
             ; "peek_inbox_tool"
+            ; "rpc_audit_log"
             ]
           in
           List.iter
@@ -2221,6 +2222,39 @@ let test_tools_call_send_room_accepts_alias_as_from_alias_alias () =
             "storm-sender" msg.from_alias;
           check string "content" "hello via alias fallback" msg.content))
 
+(* Gap #8: every tools/call should append one line to broker.log. *)
+let test_tools_call_appends_to_broker_log () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-log-test";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let log_path = Filename.concat dir "broker.log" in
+          check bool "no log yet" false (Sys.file_exists log_path);
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 900)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "list")
+                    ; ("arguments", `Assoc [])
+                    ] )
+              ]
+          in
+          let _response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          check bool "log created" true (Sys.file_exists log_path);
+          let line = String.trim (In_channel.input_all (open_in log_path)) in
+          let parsed = Yojson.Safe.from_string line in
+          let open Yojson.Safe.Util in
+          check string "tool field" "list" (parsed |> member "tool" |> to_string);
+          check bool "ok field true" true (parsed |> member "ok" |> to_bool);
+          check bool "ts is positive" true
+            (parsed |> member "ts" |> to_number > 0.0)))
+
 (* Regression for gap #2: join_room should accept `from_alias` as a
    synonym for `alias`, mirroring the send-side fallback. Models that
    already standardized on `from_alias` for send/send_room shouldn't
@@ -2455,6 +2489,8 @@ let () =
              test_my_rooms_returns_only_sessions_memberships
          ; test_case "tools/call my_rooms uses env session_id, ignores args" `Quick
              test_tools_call_my_rooms_uses_env_session_id
+         ; test_case "tools/call appends to broker.log" `Quick
+             test_tools_call_appends_to_broker_log
          ; test_case "tools/call send_room via MCP" `Quick
              test_tools_call_send_room_via_mcp
          ; test_case "tools/call send_room accepts `alias` as from_alias fallback" `Quick
