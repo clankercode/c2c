@@ -66,6 +66,7 @@ Recent hardening completed:
 - `c2c deliver-inbox --daemon --loop --pidfile ...` now starts that live delivery loop as a managed detached process, reuses an already-running pidfile instead of duplicating loops, and reports the daemon/log paths as JSON or text.
 - `c2c deliver-inbox --loop` now also watches its original target client pid (`--pid`, `--terminal-pid`, or resolved `--claude-session`) and exits cleanly before the next delivery cycle if that target is gone.
 - `restart-codex-self --reason ...` now writes `run-codex-inst.d/<name>.restart.json` before signaling the managed Codex pid, so the resumed turn has local context even if C2C MCP startup failed.
+- `run-codex-inst-rearm` now dry-runs or rearms Codex background support loops (`c2c_deliver_inbox.py --daemon --loop` and `c2c_poker.py`) for a managed `run-codex-inst` instance, and `c2c-codex-b4` calls it from `pre_exec` on each restart.
 - The Python follow-up slice is reverified green, including a launcher dry-run assertion that is now interpreter-path agnostic.
 - The Codex PTY poker loop is running with an orientation heartbeat that polls inbox, reads status/locks when needed, treats empty inbox as not-a-stop-signal, and continues unblocked work.
 - `c2c_poker.py --pid ...` and `--claude-session ...` now watch the original client/session pid after resolving terminal coordinates and exit cleanly if that pid goes away. Poker heartbeat payloads include a fresh `Sent at: ...` timestamp/date on each injection.

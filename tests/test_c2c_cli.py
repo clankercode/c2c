@@ -1464,6 +1464,53 @@ class C2CCLITests(unittest.TestCase):
             payload["inner"][1:], [str(REPO / "run-codex-inst"), "codex-a", "--search"]
         )
 
+    def test_run_codex_inst_rearm_dry_run_reports_bg_loop_commands(self):
+        config_dir = Path(self.temp_dir.name) / "run-codex-inst.d"
+        config_dir.mkdir()
+        (config_dir / "codex-a.pid").write_text("12345\n", encoding="utf-8")
+        env = dict(self.env)
+        env["RUN_CODEX_INST_CONFIG_DIR"] = str(config_dir)
+
+        result = run_cli(
+            "run-codex-inst-rearm",
+            "codex-a",
+            "--session-id",
+            "codex-a-local",
+            "--dry-run",
+            "--json",
+            env=env,
+        )
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["name"], "codex-a")
+        self.assertEqual(payload["target_pid"], 12345)
+        self.assertEqual(payload["session_id"], "codex-a-local")
+        self.assertTrue(payload["dry_run"])
+        self.assertEqual(
+            payload["pidfiles"],
+            {
+                "poker": str(config_dir / "codex-a.poker.pid"),
+                "deliver": str(config_dir / "codex-a.deliver.pid"),
+            },
+        )
+        joined_commands = "\n".join(" ".join(command) for command in payload["commands"])
+        self.assertIn("c2c_poker.py", joined_commands)
+        self.assertIn("c2c_deliver_inbox.py", joined_commands)
+        self.assertIn("--session-id codex-a-local", joined_commands)
+
+    def test_codex_b4_config_rearms_bg_loops_before_resume(self):
+        config = json.loads(
+            (REPO / "run-codex-inst.d" / "c2c-codex-b4.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        self.assertEqual(
+            config["pre_exec"],
+            [str(REPO / "run-codex-inst-rearm"), "c2c-codex-b4"],
+        )
+
     def test_restart_codex_self_dry_run_reads_pid_file_without_signaling(self):
         config_dir = Path(self.temp_dir.name) / "run-codex-inst.d"
         config_dir.mkdir()
