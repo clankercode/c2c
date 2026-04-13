@@ -21,6 +21,7 @@ RESTART_PAUSE_SECONDS = 1.5
 INITIAL_BACKOFF_SECONDS = 2.0
 MAX_BACKOFF_SECONDS = 60.0
 DOUBLE_SIGINT_WINDOW_SECONDS = 2.0
+HELP_FLAGS = {"-h", "--help"}
 
 HERE = Path(__file__).resolve().parent
 INNER = HERE / "run-kimi-inst"
@@ -66,6 +67,9 @@ def maybe_rearm(name: str) -> None:
 
 
 def main(argv: list[str]) -> int:
+    if len(argv) == 2 and argv[1] in HELP_FLAGS:
+        print(__doc__.strip())
+        return 0
     if len(argv) < 2:
         print(f"usage: {argv[0]} <instance-name> [extra kimi args...]", file=sys.stderr)
         return 2

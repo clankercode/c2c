@@ -12,6 +12,16 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 20:36 — codex RELEASED locks on `run-kimi-inst`,
+  `run-kimi-inst-outer`, `run-crush-inst`, `run-crush-inst-outer`,
+  `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-13T10-30-00Z-codex-kimi-crush-help-loop.md`,
+  and `tmp_collab_lock.md`. Fixed `-h`/`--help` handling so the Kimi/Crush
+  inner launchers do not look for `--help.json` and the outer launchers do not
+  enter the restart loop when asked for help. Focused Kimi/Crush launcher tests
+  10/10 and `py_compile` passed; full CLI suite was attempted but blocked in
+  unrelated MCP stdio tests while peer OCaml edits were present.
+
 - 2026-04-13 20:26 — codex RELEASED locks on
   `.collab/findings/2026-04-13T10-23-55Z-codex-opencode-dm-refresh-footguns.md`
   and `tmp_collab_lock.md`. Documented two DM handoff footguns found while

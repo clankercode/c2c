@@ -5375,6 +5375,12 @@ class RunKimiInstTests(unittest.TestCase):
         self.assertEqual(payload["env"]["RUN_KIMI_INST_C2C_SESSION_ID"], "kimi-test")
         self.assertEqual(payload["env"]["C2C_MCP_AUTO_REGISTER_ALIAS"], "kimi-test")
 
+    def test_run_kimi_inst_help_exits_without_config_lookup(self):
+        result = run_cli("run-kimi-inst", "--help")
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        self.assertIn("Usage: ./run-kimi-inst", result.stdout)
+
     def test_run_kimi_inst_outer_dry_run_reports_inner_and_rearm(self):
         env = {"RUN_KIMI_INST_OUTER_DRY_RUN": "1"}
         result = run_cli("run-kimi-inst-outer", "kimi-a", env=env)
@@ -5389,6 +5395,13 @@ class RunKimiInstTests(unittest.TestCase):
         self.assertEqual(
             payload["rearm"][1:], [str(REPO / "run-kimi-inst-rearm"), "kimi-a"]
         )
+
+    def test_run_kimi_inst_outer_help_exits_without_looping(self):
+        result = run_cli("run-kimi-inst-outer", "--help")
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        self.assertIn("Usage: ./run-kimi-inst-outer", result.stdout)
+        self.assertNotIn("iter 1", result.stdout)
 
     def test_run_kimi_inst_rearm_dry_run_shows_deliver_command(self):
         config_dir = Path(self.temp_dir.name) / "run-kimi-inst.d"
@@ -5451,6 +5464,12 @@ class RunCrushInstTests(unittest.TestCase):
         self.assertEqual(payload["env"]["RUN_CRUSH_INST_C2C_SESSION_ID"], "crush-test")
         self.assertEqual(payload["env"]["C2C_MCP_AUTO_REGISTER_ALIAS"], "crush-test")
 
+    def test_run_crush_inst_help_exits_without_config_lookup(self):
+        result = run_cli("run-crush-inst", "--help")
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        self.assertIn("Usage: ./run-crush-inst", result.stdout)
+
     def test_run_crush_inst_outer_dry_run_reports_inner_and_rearm(self):
         env = {"RUN_CRUSH_INST_OUTER_DRY_RUN": "1"}
         result = run_cli("run-crush-inst-outer", "crush-a", env=env)
@@ -5465,6 +5484,13 @@ class RunCrushInstTests(unittest.TestCase):
         self.assertEqual(
             payload["rearm"][1:], [str(REPO / "run-crush-inst-rearm"), "crush-a"]
         )
+
+    def test_run_crush_inst_outer_help_exits_without_looping(self):
+        result = run_cli("run-crush-inst-outer", "--help")
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        self.assertIn("Usage: ./run-crush-inst-outer", result.stdout)
+        self.assertNotIn("iter 1", result.stdout)
 
     def test_run_crush_inst_rearm_dry_run_shows_deliver_command(self):
         config_dir = Path(self.temp_dir.name) / "run-crush-inst.d"

@@ -33,6 +33,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 DEFAULT_CONFIG_DIR = HERE / "run-kimi-inst.d"
 FALSE_STRINGS = {"0", "false", "no", "off"}
+HELP_FLAGS = {"-h", "--help"}
 
 
 def config_dir() -> Path:
@@ -143,6 +144,9 @@ def dry_run_enabled() -> bool:
 
 
 def main(argv: list[str]) -> int:
+    if len(argv) == 2 and argv[1] in HELP_FLAGS:
+        print(__doc__.strip())
+        return 0
     if len(argv) < 2:
         print(f"usage: {argv[0]} <instance-name> [extra kimi args...]", file=sys.stderr)
         return 2
