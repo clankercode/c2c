@@ -85,6 +85,35 @@ def _load_instance_session_id(name: str) -> str | None:
     )
 
 
+def maybe_sanitize_kimi_mcp_config() -> None:
+    """Remove stale C2C_MCP_CLIENT_PID from ~/.kimi/mcp.json.
+
+    The managed harness sets C2C_MCP_CLIENT_PID in the child env, so the
+    static config value is unnecessary and becomes a footgun when Kimi is
+    launched without the harness (e.g., `kimi` directly in a terminal).
+    """
+    mcp_path = Path.home() / ".kimi" / "mcp.json"
+    if not mcp_path.exists():
+        return
+    try:
+        data = json.loads(mcp_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    servers = data.get("mcpServers", {})
+    c2c = servers.get("c2c")
+    if not isinstance(c2c, dict):
+        return
+    env = c2c.get("env", {})
+    if "C2C_MCP_CLIENT_PID" in env:
+        del env["C2C_MCP_CLIENT_PID"]
+        c2c["env"] = env
+        try:
+            mcp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            print("[run-kimi-inst-outer] sanitized ~/.kimi/mcp.json (removed stale C2C_MCP_CLIENT_PID)", flush=True)
+        except Exception as exc:
+            print(f"[run-kimi-inst-outer] mcp sanitize error: {exc}", file=sys.stderr, flush=True)
+
+
 def maybe_refresh_peer(name: str, pid: int) -> None:
     """Update the broker registry to point <name>'s alias at the new child PID.
 
@@ -243,6 +272,7 @@ def main(argv: list[str]) -> int:
         try:
             proc = subprocess.Popen(command, cwd=HERE, start_new_session=START_NEW_SESSION)
             maybe_refresh_peer(name, proc.pid)
+            maybe_sanitize_kimi_mcp_config()
             maybe_rearm(name)
             threading.Thread(target=_capture_kimi_session, args=(name,), daemon=True).start()
             proc.wait()
