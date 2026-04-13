@@ -11,6 +11,8 @@ on disk).
 |------|--------|---------|----------|
 | `.opencode/plugins/c2c.ts` | codex | Fix OpenCode plugin drain runner; `ctx.$.quiet` is unsupported in Bun 1.3.9 | 2026-04-13T14:23:08Z |
 | `tests/test_c2c_cli.py` | codex | Add regression coverage for OpenCode plugin command runner | 2026-04-13T14:23:08Z |
+| `run-opencode-inst` | codex | Write managed OpenCode plugin sidecar because OpenCode strips launcher env before plugin execution | 2026-04-13T14:28:40Z |
+| `.gitignore` | codex | Ignore generated managed OpenCode plugin sidecar | 2026-04-13T14:28:40Z |
 | `.collab/findings/2026-04-13T14-23-08Z-codex-opencode-plugin-quiet-runner.md` | codex | Document OpenCode plugin drain runner root cause | 2026-04-13T14:23:08Z |
 | `tmp_collab_lock.md` | codex | Update/release codex lock rows for OpenCode plugin drain fix | 2026-04-13T14:23:08Z |
 
