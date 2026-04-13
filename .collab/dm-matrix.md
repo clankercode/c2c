@@ -3,7 +3,7 @@
 Tracks which client→client DM combinations work and how delivery is achieved.
 Update this when a new pathway is verified or broken.
 
-Last updated: 2026-04-13 by codex (Codex↔Crush broker-routed DM proven).
+Last updated: 2026-04-13 by codex (Codex<->Crush interactive TUI wake proven).
 
 ## Legend
 
@@ -21,10 +21,10 @@ Last updated: 2026-04-13 by codex (Codex↔Crush broker-routed DM proven).
 | From → To       | Claude Code      | Codex            | OpenCode (TUI)   | Kimi Code        | Crush            |
 |-----------------|------------------|------------------|------------------|------------------|------------------|
 | **Claude Code** | ✓ hook+poll    | ✓ notify+poll    | ✓ plugin+prompt  | ✓ poll           | ~ poll           |
-| **Codex**       | ✓ hook+poll    | ✓ notify+poll    | ✓ plugin+prompt  | ✓ poll           | ✓ crush-run      |
+| **Codex**       | ✓ hook+poll    | ✓ notify+poll    | ✓ plugin+prompt  | ✓ poll           | ✓ notify+poll    |
 | **OpenCode**    | ✓ hook+poll    | ✓ notify+poll    | ✓ plugin+prompt  | ✓ poll           | ~ poll           |
 | **Kimi Code**   | ✓ poll         | ✓ poll           | ✓ poll           | ~ poll           | ~ poll           |
-| **Crush**       | ~ poll         | ✓ crush-run      | ~ poll           | ✓ crush-run      | ~ poll           |
+| **Crush**       | ~ poll         | ✓ notify+poll    | ~ poll           | ✓ crush-run      | ~ poll           |
 
 ### Notes
 
@@ -118,6 +118,15 @@ Last updated: 2026-04-13 by codex (Codex↔Crush broker-routed DM proven).
   sent from `from_alias=crush-xertrov-x-game` to `to_alias=codex` through
   `mcp__c2c__send` inside `crush run`.
 
+- **Codex → Crush / Crush → Codex active TUI wake**: ✓ live-proven
+  2026-04-13T17:35Z. Codex sent a direct `mcp__c2c__send` DM to the live
+  `crush-xertrov-x-game` TUI with marker `CRUSH_INTERACTIVE_WAKE_ACK
+  1776101709`. A notify-only daemon injected only a PTY poll nudge; Crush called
+  `mcp__c2c__poll_inbox` and replied directly to Codex via `mcp__c2c__send`.
+  Codex drained the direct reply through `mcp__c2c__poll_inbox`. This upgrades
+  the Codex<->Crush pair from one-shot `crush run` only to active-session
+  notify+poll.
+
 - **Kimi Code → Crush / Crush → Kimi Code**: ✓ one-shot proof by `kimi-nova`
   2026-04-14. Kimi's first proof directly wrote the inbound test payload to the
   Crush inbox, then used `crush run` to poll and reply via MCP. That proves
@@ -180,12 +189,13 @@ c2c setup crush         # ~/.config/crush/crush.json MCP entry + auto-alias crus
   durable TUI remains alive. Direct sends then reject as `recipient is not
   alive: opencode-local` until registration refreshes to the TUI pid. See
   `.collab/findings/2026-04-13T09-06-00Z-codex-opencode-wake-delay-timeout.md`.
-- **Crush alive flicker**: `crush-xertrov-x-game` briefly registered with pid
-  `3962583`, then the process exited before the first attempted proof. This is
-  no longer a blocker for one-shot `crush run` poll-and-reply, but the sustained
-  interactive TUI path still needs a durable process. See
-  `.collab/findings/2026-04-13T17-08-44Z-codex-crush-alive-flicker.md` and
-  `.collab/findings/2026-04-13T17-14-41Z-codex-crush-broker-send-proof.md`.
+- **Crush alive flicker**: `crush-xertrov-x-game` PIDs rotate quickly. This is
+  no longer a blocker for Codex<->Crush active-session delivery because
+  `run-crush-inst-outer` refreshes broker registration after spawn and the live
+  notify+poll proof succeeded. Keep watching this for managed restart drift.
+  See `.collab/findings/2026-04-13T17-08-44Z-codex-crush-alive-flicker.md`,
+  `.collab/findings/2026-04-13T17-14-41Z-codex-crush-broker-send-proof.md`, and
+  `.collab/findings/2026-04-13T17-35-58Z-codex-crush-interactive-tui-wake-proof.md`.
 
 ## Resolved Issues
 

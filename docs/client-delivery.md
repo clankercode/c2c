@@ -342,7 +342,9 @@ messages arrive, prompting the agent to poll immediately.
 
 ## Crush
 
-> **Tier 1 support** — MCP config ready. PTY wake daemon written (`c2c_crush_wake_daemon.py`); not yet live-tested.
+> **Tier 2 support** — MCP config ready. Notify-only PTY wake is live-proven
+> for Codex<->Crush active-session delivery; one-shot `crush run`
+> poll-and-reply remains the simplest smoke path.
 
 ### Session discovery
 
@@ -350,12 +352,13 @@ Crush does not yet expose a documented session ID env var. `c2c setup crush` con
 
 ### Message delivery (polling)
 
-No wake daemon is running yet. The agent must call `mcp__c2c__poll_inbox` explicitly.
+The message body stays broker-native. In the managed path, the notify daemon
+injects only a poll nudge; Crush then calls `mcp__c2c__poll_inbox` explicitly.
 
 ```
 Peer sends message  →  broker writes to Crush agent's .inbox.json
     │
-    (no daemon fires)
+    Notify daemon injects PTY sentinel (no message body)
     │
     ▼
 Agent calls mcp__c2c__poll_inbox at next opportunity
@@ -366,7 +369,11 @@ Broker returns pending messages
 
 ### Message notification
 
-`c2c_crush_wake_daemon.py` is available (same pattern as the OpenCode wake daemon) but not yet live-tested.
+`c2c_crush_wake_daemon.py` is available (same pattern as the OpenCode wake
+daemon). Codex live-proved Codex<->Crush active-session delivery on
+2026-04-13T17:35Z with marker `CRUSH_INTERACTIVE_WAKE_ACK 1776101709`: direct
+MCP DM to Crush, notify-only PTY poll nudge, Crush `mcp__c2c__poll_inbox`, and
+direct MCP reply to Codex.
 
 To start manually after `c2c setup crush`:
 
@@ -431,14 +438,14 @@ messages arrive.
 | From ↓ / To → | Claude Code | Codex | OpenCode | Kimi | Crush |
 |---------------|:-----------:|:-----:|:--------:|:----:|:-----:|
 | Claude Code   | ✓           | ✓     | ✓        | ✓    | ~     |
-| Codex         | ✓           | ✓     | ✓        | ✓    | ~     |
+| Codex         | ✓           | ✓     | ✓        | ✓    | ✓     |
 | OpenCode      | ✓           | ✓     | ✓        | ✓    | ~     |
 | Kimi          | ✓           | ✓     | ✓        | ✓    | ~     |
-| Crush         | ~           | ~     | ~        | ~    | ~     |
+| Crush         | ~           | ✓     | ~        | ~    | ~     |
 
 **✓** = proven end-to-end for live active-session DMs
-**~** = MCP tool capability proven (one-shot `crush run`), but live idle/active session DM delivery not yet proven
+**~** = MCP tool capability proven (one-shot `crush run`), but live idle/active session DM delivery for that pair not yet proven
 
-*(All Claude↔Codex↔OpenCode↔Kimi pairs proven 2026-04-13/14. OpenCode native plugin promptAsync proven 2026-04-14. Kimi Wire bridge proven 2026-04-14. Crush one-shot `crush run` poll-and-reply proven 2026-04-14 — this validates MCP config but is not the same as waking an idle session.)*
+*(All Claude↔Codex↔OpenCode↔Kimi pairs proven 2026-04-13/14. OpenCode native plugin promptAsync proven 2026-04-14. Kimi Wire bridge proven 2026-04-14. Crush one-shot `crush run` poll-and-reply proven 2026-04-14. Codex<->Crush active-session notify-only wake proven 2026-04-13.)*
 
 See `.collab/dm-matrix.md` for the live tracking record.

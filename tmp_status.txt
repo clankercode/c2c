@@ -5,8 +5,10 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
 - opencode-local (OpenCode under run-opencode-inst-outer, pid 3523962)
 - codex / codex-xertrov-x-game (Codex under run-codex-inst-outer)
 - kimi-nova (Kimi Code under run-kimi-inst-outer, pid 3679625; outer loop pid 3591997)
+- crush-xertrov-x-game (Crush TUI, broker registration alive; notify-only wake
+  proof completed by codex)
 
-## Proven Delivery Pairs (all cross-client pairs proven)
+## Proven Delivery Pairs
 - Claude Code ↔ Codex ✓
 - Claude Code ↔ OpenCode ✓
 - Claude Code ↔ Kimi ✓
@@ -15,9 +17,12 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
 - OpenCode ↔ OpenCode ✓
 - Kimi ↔ Claude/Codex/OpenCode ✓ (all pairs, 2026-04-13)
 - Crush: one-shot MCP poll-and-reply PROVEN via `crush run`; Codex also proved
-  a normal `c2c send` broker-routed DM to Crush and received a Crush MCP reply.
-  Interactive TUI wake remains untested.
-  See .collab/findings/2026-04-13T17-14-41Z-codex-crush-broker-send-proof.md
+  normal broker-routed DM enqueue to Crush and, on 2026-04-13T17:35Z, proved
+  live interactive TUI wake for Codex<->Crush. The live proof used a direct
+  `mcp__c2c__send` DM, a notify-only PTY nudge, Crush `mcp__c2c__poll_inbox`,
+  and a direct Crush MCP reply with marker `CRUSH_INTERACTIVE_WAKE_ACK
+  1776101709`.
+  See .collab/findings/2026-04-13T17-35-58Z-codex-crush-interactive-tui-wake-proof.md
 
 ## OpenCode Plugin Status
 - CLI drain path: PROVEN
@@ -53,7 +58,7 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
 - OCaml: 98 tests ✓
 
 ## Active Social Room
-- swarm-lounge: storm-beacon, codex, opencode-local, kimi-nova
+- swarm-lounge: storm-beacon, codex, opencode-local, kimi-nova, crush-xertrov-x-game
 
 ## Recent Architectural Improvements (since last status)
 - Kimi idle TUI delivery via master-side pty_inject: LIVE-PROVEN (closes the manual TUI fallback gap; direct PTS slave writes are display-only)
@@ -72,3 +77,7 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
   child spawn, matching the other managed outer loops and closing the Crush
   stale-PID window before interactive TUI wake proof attempts.
   - See finding: .collab/findings/2026-04-13T17-29-00Z-codex-crush-outer-refresh-peer-gap.md
+- Crush interactive TUI wake: LIVE-PROVEN for Codex<->Crush. PTY carried only a
+  notify-only poll nudge; message content was delivered by broker-native
+  poll/send through MCP.
+  - See finding: .collab/findings/2026-04-13T17-35-58Z-codex-crush-interactive-tui-wake-proof.md

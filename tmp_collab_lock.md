@@ -12,6 +12,14 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T17:48Z — codex RELEASED locks on `tmp_status.txt`,
+  `.goal-loops/active-goal.md`, `docs/next-steps.md`,
+  `docs/client-delivery.md`, `.collab/dm-matrix.md`, `AGENTS.md`/`CLAUDE.md`,
+  and `.collab/findings/2026-04-13T17-35-58Z-codex-crush-interactive-tui-wake-proof.md`.
+  Documented the live Codex<->Crush interactive TUI wake proof:
+  broker-native direct DM, notify-only PTY nudge, Crush MCP poll, and direct MCP
+  reply with `CRUSH_INTERACTIVE_WAKE_ACK 1776101709`.
+
 - 2026-04-13T17:31Z — codex-xertrov-x-game RELEASED locks on
   `run-crush-inst-outer`, `tests/test_c2c_cli.py`, and
   `.collab/findings/2026-04-13T17-29-00Z-codex-crush-outer-refresh-peer-gap.md`.

@@ -8,11 +8,18 @@ permalink: /next-steps/
 
 ## Active Work (in progress)
 
-- **Crush interactive TUI wake proof** — `c2c_crush_wake_daemon.py` and `run-crush-inst-outer` exist, but the sustained interactive Crush path is not live-proven yet. One-shot `crush run` MCP poll-and-reply works, including a normal `c2c send` broker-routed DM from Codex. See `.collab/findings/2026-04-13T17-14-41Z-codex-crush-broker-send-proof.md`.
 - **Site visual redesign** ✓ — Max approved without sign-off gate. Redesign shipped: deep-space dark theme with electric cyan + magenta accents, glass-morphism cards, mesh-gradient hero, pulse animations, card-grid feature layout, Inter typography. `docs/assets/main.scss`, `docs/_layouts/home.html`, and `docs/index.md` updated (multiple commits, 2026-04-14).
 
 ## Recently Completed
 
+- **Crush interactive TUI wake proof** ✓ — Codex sent a direct
+  broker-native MCP DM to the live `crush-xertrov-x-game` TUI, the notify-only
+  daemon injected only a PTY poll nudge, Crush called `mcp__c2c__poll_inbox`,
+  and Crush replied directly to Codex via MCP with marker
+  `CRUSH_INTERACTIVE_WAKE_ACK 1776101709` (2026-04-13T17:35Z). This proves
+  Codex<->Crush active-session delivery; other sender pairs into Crush still
+  need per-pair proof if the matrix requires it. See finding
+  `.collab/findings/2026-04-13T17-35-58Z-codex-crush-interactive-tui-wake-proof.md`.
 - **True two-machine Tailscale relay test** ✓ — `x-game` ↔ `xsm` on a Tailscale network tested by kimi-nova (2026-04-14T02:37Z). DM in both directions, room join, and room fan-out all passed across physically separate Linux hosts with independent filesystems/runtimes. See finding `.collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md`.
 - **Docker cross-machine relay test** ✓ — host broker ↔ isolated Docker container (separate Python 3.11 runtime, separate filesystem, network via TCP) tested by kimi-nova (2026-04-14T02:16Z). DM host→container, reply container→host, room join, and room fan-out all confirmed. Operator instructions in `docs/relay-quickstart.md` validated.
 - **Relay localhost multi-broker test** ✓ — two separate broker roots on one host, relay server bridging both. DM + room delivery proven by kimi-nova (2026-04-14T02:06Z). See finding `.collab/findings/2026-04-14T02-06-00Z-kimi-nova-relay-localhost-multi-broker-test.md`.
@@ -91,7 +98,7 @@ permalink: /next-steps/
 
 ## Quality / Verification
 
-- ~~Prove remaining DM matrix entries~~ OpenCode↔OpenCode ✓, Codex↔Codex ✓, Kimi↔Codex ✓, Kimi↔Claude Code ✓, Kimi↔OpenCode ✓, Codex↔Crush ✓. Crush one-shot MCP poll-and-reply is live-proven; remaining Crush work is sustained interactive TUI wake.
+- ~~Prove remaining DM matrix entries~~ OpenCode↔OpenCode ✓, Codex↔Codex ✓, Kimi↔Codex ✓, Kimi↔Claude Code ✓, Kimi↔OpenCode ✓, Codex↔Crush ✓. Crush one-shot MCP poll-and-reply is live-proven; Codex<->Crush active TUI wake is also live-proven.
 - **OCaml edge-case coverage** ✓ — room history pagination, multi-sender attribution, large inbox drain, registered_at, session hijack guard, peer-renamed fan-out, sweep room eviction, dead-letter alias-match, join_room session_id update (95 OCaml tests, 292 Python tests)
 
 ## Product Polish

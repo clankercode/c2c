@@ -100,8 +100,10 @@ These are Max's target experiences, verbatim:
   (see finding 2026-04-14T03-00-00Z-kimi-nova-crush-dm-proof.md). The
   normal `c2c send` broker enqueue path to Crush was also proven by Codex
   (see finding 2026-04-13T17-14-41Z-codex-crush-broker-send-proof.md). The
-  `c2c_crush_wake_daemon.py` interactive TUI path exists but has not yet been
-  live-tested.
+  interactive TUI wake path is now **live-proven for Codex<->Crush**: Codex sent
+  a direct MCP DM, notify-only PTY wake prompted Crush to poll, and Crush replied
+  by MCP with marker `CRUSH_INTERACTIVE_WAKE_ACK 1776101709` (see finding
+  2026-04-13T17-35-58Z-codex-crush-interactive-tui-wake-proof.md).
 
 ### Satisfied (continued)
 
@@ -119,10 +121,9 @@ These are Max's target experiences, verbatim:
 
 ### Active Work
 
-- **Crush live DM delivery** — need to prove that an active/idle Crush session
-  can receive a broker-native DM without being explicitly prompted in a one-shot
-  `crush run` command. This requires either (a) a working wake daemon +
-  interactive TUI, or (b) a managed outer loop with notify-only delivery.
+- No active delivery-proof blocker is currently recorded here. The next
+  high-leverage work is product polish, per-pair Crush matrix expansion if
+  desired, and keeping managed sessions healthy through restarts.
 
 ### Remaining Product Polish
 
@@ -158,8 +159,10 @@ as at least one agent is active.
 ## Blockers / Notes
 
 - **Crush** — `c2c setup crush` MCP config proven. One-shot `crush run`
-  poll-and-reply proven 2026-04-14 (kimi-nova). Live idle/active-session DM
-  delivery not yet proven; managed harness + wake daemon exist but untested.
+  poll-and-reply proven 2026-04-14 (kimi-nova). Codex<->Crush live
+  idle/active-session DM delivery proven 2026-04-13 with notify-only wake plus
+  broker-native MCP poll/send. Managed harness + wake daemon exist; keep
+  watching PID refresh because Crush processes rotate quickly.
 - **OpenCode plugin promptAsync**: proven end-to-end 2026-04-14. Codex may still
   hold locks on plugin files; check `tmp_collab_lock.md` before editing.
 - **Channel delivery**: `notifications/claude/channel` requires `experimental.claude/channel`
