@@ -120,7 +120,10 @@ class C2CHistoryTests(unittest.TestCase):
     def test_main_no_session_id_returns_error(self) -> None:
         env_backup = {k: os.environ.pop(k, None)
                       for k in ("C2C_MCP_SESSION_ID", "RUN_CLAUDE_INST_C2C_SESSION_ID",
-                                "RUN_CODEX_INST_C2C_SESSION_ID")}
+                                "RUN_CODEX_INST_C2C_SESSION_ID",
+                                "RUN_OPENCODE_INST_C2C_SESSION_ID",
+                                "RUN_KIMI_INST_C2C_SESSION_ID",
+                                "RUN_CRUSH_INST_C2C_SESSION_ID")}
         try:
             rc = c2c_history.main(["--broker-root", str(self.broker_root)])
             self.assertEqual(rc, 1)

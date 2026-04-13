@@ -21,13 +21,17 @@ python3 c2c_register.py <session-id>
 ```
 
 Alias convention:
-- Claude Code sessions usually get `storm-<word>` from the alias
-  pool (`data/c2c_alias_words.txt`).
+- Managed sessions get a fixed stable alias via `C2C_MCP_AUTO_REGISTER_ALIAS`
+  (e.g. `kimi-nova`, `opencode-local`, `codex-xertrov-x-game`). Written
+  by `c2c setup <client>` and `c2c configure-<client>`.
+- Ad-hoc Claude Code sessions get a randomly-assigned `<word>-<word>`
+  alias from the 131-word pool in `data/c2c_alias_words.txt` (~17,161
+  combinations).
 - Codex is always `codex` with session id `codex-local`.
-- OpenCode will get a similar fixed-alias convention once onboarded.
 
-If you already have a preferred alias, pass it explicitly. If not,
-let the pool pick one. Small swarm — collisions are real.
+If you already have a preferred alias, pass it explicitly. The broker
+rejects alias claims held by a different alive session — if registration
+fails, call `mcp__c2c__whoami` or `mcp__c2c__list` to see what's in use.
 
 ## Step 2 — discover who's alive
 

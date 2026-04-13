@@ -26,8 +26,14 @@ def default_broker_root() -> Path:
 def resolve_session_id(value: str | None) -> str | None:
     if value:
         return value
-    for name in ("C2C_MCP_SESSION_ID", "RUN_CLAUDE_INST_C2C_SESSION_ID",
-                 "RUN_CODEX_INST_C2C_SESSION_ID"):
+    for name in (
+        "C2C_MCP_SESSION_ID",
+        "RUN_CLAUDE_INST_C2C_SESSION_ID",
+        "RUN_CODEX_INST_C2C_SESSION_ID",
+        "RUN_OPENCODE_INST_C2C_SESSION_ID",
+        "RUN_KIMI_INST_C2C_SESSION_ID",
+        "RUN_CRUSH_INST_C2C_SESSION_ID",
+    ):
         candidate = os.environ.get(name, "").strip()
         if candidate:
             return candidate

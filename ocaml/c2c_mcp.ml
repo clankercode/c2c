@@ -378,33 +378,23 @@ module Broker = struct
         in
         (* Same-session re-registration (alias changed or pid/registered_at
            refresh): update in-place by replacing the old entry in [rest]. *)
-        let rest_without_self =
-          List.filter (fun reg -> reg.session_id <> session_id) rest
+        let new_reg = { session_id; alias; pid; pid_start_time
+                      ; registered_at = Some (Unix.gettimeofday ()) }
         in
         let kept =
           match
             List.partition (fun reg -> reg.session_id = session_id) rest
           with
-          | [], rest_without_self -> rest_without_self
-              (* no prior entry for this session — fresh registration *)
-          | [ old_reg ], rest_without_self ->
+          | [], others ->
+              (* no prior entry for this session — fresh registration: add new one *)
+              new_reg :: others
+          | [ _old_reg ], others ->
               (* prior entry found — update alias/pid/start_time in place *)
-              let updated_reg =
-                { session_id; alias; pid; pid_start_time
-                ; registered_at = Some (Unix.gettimeofday ()) }
-              in
-              updated_reg :: rest_without_self
-          | multiple, rest_without_self ->
+              new_reg :: others
+          | multiple, others ->
               (* edge case: same session had multiple entries (shouldn't happen
                  with the fixed logic, but guard defensively) — keep first, drop rest *)
-              (match multiple with
-               | first :: others ->
-                   let updated_reg =
-                     { session_id; alias; pid; pid_start_time
-                     ; registered_at = Some (Unix.gettimeofday ()) }
-                   in
-                   updated_reg :: rest_without_self
-               | [] -> rest_without_self)
+              new_reg :: others
         in
         save_registrations t kept;
         (* Migrate undrained inbox messages from any evicted conflicting reg.
@@ -435,7 +425,7 @@ module Broker = struct
                     let current = load_inbox t ~session_id in
                     save_inbox t ~session_id (current @ migrated))
             end)
-          conflicting in
+          conflicting)
 
   let enqueue_message t ~from_alias ~to_alias ~content =
     with_registry_lock t (fun () ->
