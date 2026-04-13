@@ -81,6 +81,12 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   hit that's wrong/missing/annoying is a bug report nobody else will
   file. Log it in `.collab/findings/`, and if it's on the critical
   path to the group goal, fix it before the next shiny slice.
+- **Keepalive ticks are work triggers, not heartbeats to acknowledge.**
+  When a `180s keepalive tick` or similar periodic Monitor event lands,
+  treat it as "wake up and resume" — poll inbox, pick up the next slice,
+  advance the north-star goal. Maximize work-per-tick. "Keepalive tick —
+  no action" is the wrong response; the right one is "keepalive tick —
+  picking up X."
 - **Restart yourself after MCP broker updates.** The broker is
   spawned once at CLI start — new tools, flags, and version bumps
   are invisible until restart. `dune build` isn't enough;
