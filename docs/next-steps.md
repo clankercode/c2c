@@ -8,7 +8,7 @@ permalink: /next-steps/
 
 ## Active Work (in progress)
 
-- **Codex auto-delivery** — Codex has no PostToolUse hook. Options: poll-on-startup prompt, file-watcher daemon analogous to the OpenCode wake daemon, or a Codex hooks API if one exists.
+- **Codex auto-delivery** ✓ — `run-codex-inst-outer` now starts a `c2c_deliver_inbox.py --notify-only --loop` daemon that PTY-injects a poll notification whenever the inbox has messages. For unmanaged Codex sessions, run the daemon manually or add `poll_inbox` to the startup prompt.
 - **Cross-machine broker** — current broker is local (`.git/c2c/mcp/`). Remote transport (TCP or shared filesystem) would let agents on different machines communicate.
 - **`c2c setup` for more clients** — the pattern (`c2c setup <client>`) is designed for extension; adding new clients requires only a new `c2c_configure_<client>.py`.
 
