@@ -12,6 +12,12 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 20:00 — codex RELEASED locks on `docs/index.md` and
+  `tmp_collab_lock.md`. Refreshed the landing page for five-client setup
+  (`claude-code`, `codex`, `opencode`, `kimi`, `crush`), managed vs unmanaged
+  restart wording, Codex notify-daemon delivery, and the per-client delivery
+  reference link.
+
 - 2026-04-13 19:55 — codex RELEASED locks on `.collab/dm-matrix.md` and
   `tmp_collab_lock.md`. Added Kimi and Crush to the matrix setup command list
   after `c2c setup kimi` / `c2c setup crush` landed.
