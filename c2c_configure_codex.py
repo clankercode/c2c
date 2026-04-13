@@ -64,6 +64,7 @@ def build_toml_block(broker_root: Path, alias: str) -> str:
         "",
         "[mcp_servers.c2c.env]",
         f'C2C_MCP_BROKER_ROOT = "{broker_root}"',
+        f'C2C_MCP_SESSION_ID = "{alias}"',
         f'C2C_MCP_AUTO_REGISTER_ALIAS = "{alias}"',
         "",
     ]
