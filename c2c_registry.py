@@ -135,6 +135,14 @@ def load_registry(path: Path | None = None) -> dict:
             key, value = parse_yaml_key_value(line[4:])
             current[key] = value
 
+    for reg in registrations:
+        for int_field in ("pid", "pid_start_time"):
+            if int_field in reg:
+                try:
+                    reg[int_field] = int(reg[int_field])
+                except (ValueError, TypeError):
+                    del reg[int_field]
+
     return {"registrations": registrations}
 
 
@@ -214,8 +222,19 @@ def allocate_unique_alias(words: list[str], existing_aliases: set[str]) -> str:
     raise ValueError("no aliases available")
 
 
-def build_registration_record(session_id: str, alias: str) -> dict:
-    return {"session_id": session_id, "alias": alias}
+def build_registration_record(
+    session_id: str,
+    alias: str,
+    *,
+    pid: int | None = None,
+    pid_start_time: int | None = None,
+) -> dict:
+    record: dict = {"session_id": session_id, "alias": alias}
+    if pid is not None:
+        record["pid"] = pid
+    if pid_start_time is not None:
+        record["pid_start_time"] = pid_start_time
+    return record
 
 
 def find_registration_by_session_id(registry: dict, session_id: str) -> dict | None:
@@ -255,6 +274,12 @@ def render_registry_yaml(registry: dict) -> str:
         alias = yaml_scalar(registration["alias"])
         lines.append(f"  - session_id: {session_id}")
         lines.append(f"    alias: {alias}")
+        pid = registration.get("pid")
+        if isinstance(pid, int):
+            lines.append(f"    pid: {pid}")
+        pid_start_time = registration.get("pid_start_time")
+        if isinstance(pid_start_time, int):
+            lines.append(f"    pid_start_time: {pid_start_time}")
     return "\n".join(lines) + "\n"
 
 

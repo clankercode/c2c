@@ -1089,15 +1089,14 @@ class C2CCLITests(unittest.TestCase):
 
         self.assertEqual(result_code(result), 0)
         payload = json.loads(result.stdout)
-        self.assertEqual(
-            json.loads((broker_root / "registry.json").read_text(encoding="utf-8")),
-            [
-                {
-                    "session_id": AGENT_ONE_SESSION_ID,
-                    "alias": payload["alias"],
-                }
-            ],
+        broker_data = json.loads(
+            (broker_root / "registry.json").read_text(encoding="utf-8")
         )
+        self.assertEqual(len(broker_data), 1)
+        self.assertEqual(broker_data[0]["session_id"], AGENT_ONE_SESSION_ID)
+        self.assertEqual(broker_data[0]["alias"], payload["alias"])
+        self.assertIsInstance(broker_data[0].get("pid"), int)
+        self.assertIsInstance(broker_data[0].get("pid_start_time"), int)
 
     def test_sync_broker_registry_writes_json_atomically(self):
         broker_root = Path(self.temp_dir.name) / "mcp-broker"
@@ -3948,6 +3947,132 @@ class C2CPruneUnitTests(unittest.TestCase):
             removed_session_ids,
             sorted([AGENT_TWO_SESSION_ID, self.stale_session_id]),
         )
+
+
+class BuildRegistrationRecordTests(unittest.TestCase):
+    def test_includes_pid_fields_when_passed(self):
+        record = c2c_registry.build_registration_record(
+            "sess-1", "storm-herald", pid=42, pid_start_time=99999
+        )
+        self.assertEqual(record["session_id"], "sess-1")
+        self.assertEqual(record["alias"], "storm-herald")
+        self.assertEqual(record["pid"], 42)
+        self.assertEqual(record["pid_start_time"], 99999)
+
+    def test_omits_pid_fields_when_not_passed(self):
+        record = c2c_registry.build_registration_record("sess-1", "storm-herald")
+        self.assertEqual(record, {"session_id": "sess-1", "alias": "storm-herald"})
+        self.assertNotIn("pid", record)
+        self.assertNotIn("pid_start_time", record)
+
+
+class MergeBrokerRegistrationTests(unittest.TestCase):
+    def test_carries_pid_fields_through_from_source(self):
+        source = {
+            "session_id": "sess-1",
+            "alias": "storm-herald",
+            "pid": 42,
+            "pid_start_time": 99999,
+        }
+        merged = c2c_mcp.merge_broker_registration(None, source)
+        self.assertEqual(merged["pid"], 42)
+        self.assertEqual(merged["pid_start_time"], 99999)
+
+    def test_preserves_existing_pid_fields_when_source_has_none(self):
+        existing = {
+            "session_id": "sess-1",
+            "alias": "storm-herald",
+            "pid": 42,
+            "pid_start_time": 99999,
+        }
+        source = {"session_id": "sess-1", "alias": "storm-herald"}
+        merged = c2c_mcp.merge_broker_registration(existing, source)
+        self.assertEqual(merged["pid"], 42)
+        self.assertEqual(merged["pid_start_time"], 99999)
+
+    def test_source_pid_overwrites_existing(self):
+        """YAML pid (refreshed on each register) takes precedence over stale broker pid."""
+        existing = {
+            "session_id": "sess-1",
+            "alias": "storm-herald",
+            "pid": 42,
+            "pid_start_time": 99999,
+        }
+        source = {
+            "session_id": "sess-1",
+            "alias": "storm-herald",
+            "pid": 100,
+            "pid_start_time": 55555,
+        }
+        merged = c2c_mcp.merge_broker_registration(existing, source)
+        self.assertEqual(merged["pid"], 100)
+        self.assertEqual(merged["pid_start_time"], 55555)
+
+    def test_pidless_new_entry_has_no_pid_fields(self):
+        """New entry from pidless YAML should not fabricate pid fields."""
+        source = {"session_id": "sess-1", "alias": "storm-herald"}
+        merged = c2c_mcp.merge_broker_registration(None, source)
+        self.assertNotIn("pid", merged)
+        self.assertNotIn("pid_start_time", merged)
+
+
+class SyncBrokerRegistryPidTests(unittest.TestCase):
+    """Integration: sync_broker_registry preserves pid fields correctly."""
+
+    def test_yaml_entry_with_pid_syncs_pid_to_broker(self):
+        """YAML entries with pid populate the broker entry's pid fields."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            broker_root = Path(tmpdir) / "broker"
+            broker_root.mkdir()
+            yaml_path = Path(tmpdir) / "registry.yaml"
+            yaml_path.write_text(
+                "registrations:\n"
+                "  - session_id: live-session\n"
+                "    alias: storm-live\n"
+                "    pid: 42\n"
+                "    pid_start_time: 99999\n",
+                encoding="utf-8",
+            )
+            with mock.patch("c2c_mcp.registry_path_from_env", return_value=yaml_path):
+                c2c_mcp.sync_broker_registry(broker_root)
+
+            data = json.loads(
+                (broker_root / "registry.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(data), 1)
+            self.assertEqual(data[0]["pid"], 42)
+            self.assertEqual(data[0]["pid_start_time"], 99999)
+
+    def test_broker_pid_preserved_when_yaml_has_no_pid(self):
+        """When broker already has a pid-bearing entry, sync preserves it."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            broker_root = Path(tmpdir) / "broker"
+            broker_root.mkdir()
+            (broker_root / "registry.json").write_text(
+                json.dumps([{
+                    "session_id": "live-session",
+                    "alias": "storm-live",
+                    "pid": 12345,
+                    "pid_start_time": 99999,
+                }]),
+                encoding="utf-8",
+            )
+            yaml_path = Path(tmpdir) / "registry.yaml"
+            yaml_path.write_text(
+                "registrations:\n"
+                "  - session_id: live-session\n"
+                "    alias: storm-live\n",
+                encoding="utf-8",
+            )
+            with mock.patch("c2c_mcp.registry_path_from_env", return_value=yaml_path):
+                c2c_mcp.sync_broker_registry(broker_root)
+
+            data = json.loads(
+                (broker_root / "registry.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(data), 1)
+            self.assertEqual(data[0]["pid"], 12345)
+            self.assertEqual(data[0]["pid_start_time"], 99999)
 
 
 def result_code(result):

@@ -35,6 +35,23 @@ def sync_broker_registry_from_env() -> None:
     c2c_mcp.sync_broker_registry(broker_root)
 
 
+def read_pid_start_time(pid: int) -> int | None:
+    try:
+        line = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    tail_start = line.rfind(")")
+    if tail_start == -1 or tail_start + 2 >= len(line):
+        return None
+    parts = line[tail_start + 2 :].split()
+    if len(parts) <= 19:
+        return None
+    try:
+        return int(parts[19])
+    except ValueError:
+        return None
+
+
 def rollback_registration(session_id: str, alias: str) -> None:
     def mutate_registry(registry: dict) -> None:
         registry["registrations"] = [
@@ -67,12 +84,27 @@ def register_session(identifier: str) -> tuple[dict, dict, bool]:
         raise ValueError(f"session not found: {identifier}")
 
     session_id = session["session_id"]
+    session_pid = session.get("pid")
+    session_pid = session_pid if isinstance(session_pid, int) else None
+    if session_pid is not None:
+        session_pid_start_time = read_pid_start_time(session_pid)
+        if session_pid_start_time is None:
+            # Fixture pids and races where the target has already exited still
+            # get an integer marker so downstream liveness checks treat the
+            # row as non-legacy rather than immortal.
+            session_pid_start_time = 0
+    else:
+        session_pid_start_time = None
     registration_was_new = False
 
     def mutate_registry(registry: dict) -> dict:
         nonlocal registration_was_new
         existing = find_registration_by_session_id(registry, session_id)
         if existing is not None:
+            if session_pid is not None:
+                existing["pid"] = session_pid
+                if session_pid_start_time is not None:
+                    existing["pid_start_time"] = session_pid_start_time
             return existing
 
         registration_was_new = True
@@ -84,7 +116,12 @@ def register_session(identifier: str) -> tuple[dict, dict, bool]:
                 for registration in registry.get("registrations", [])
             },
         )
-        registration = build_registration_record(session_id, alias)
+        registration = build_registration_record(
+            session_id,
+            alias,
+            pid=session_pid,
+            pid_start_time=session_pid_start_time,
+        )
         registry["registrations"].append(registration)
         return registration
 

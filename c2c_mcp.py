@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from c2c_registry import (
+    build_registration_record,
     default_registry_path,
     load_registry_unlocked,
     registry_path_from_env,
@@ -99,7 +100,87 @@ def merge_broker_registration(
     merged = dict(existing or {})
     merged["session_id"] = registration["session_id"]
     merged["alias"] = registration["alias"]
+    for field in ("pid", "pid_start_time"):
+        if field in registration:
+            merged[field] = registration[field]
     return merged
+
+
+def auto_register_alias_from_env(env: dict[str, str] | None = None) -> str | None:
+    source = os.environ if env is None else env
+    alias = str(source.get("C2C_MCP_AUTO_REGISTER_ALIAS", "")).strip()
+    return alias or None
+
+
+def current_client_pid_from_env(env: dict[str, str]) -> int | None:
+    value = str(env.get("C2C_MCP_CLIENT_PID", "")).strip()
+    if value:
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return os.getppid()
+
+
+def read_pid_start_time(pid: int) -> int | None:
+    try:
+        line = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    tail_start = line.rfind(")")
+    if tail_start == -1 or tail_start + 2 >= len(line):
+        return None
+    parts = line[tail_start + 2 :].split()
+    if len(parts) <= 19:
+        return None
+    try:
+        return int(parts[19])
+    except ValueError:
+        return None
+
+
+def maybe_auto_register_startup(env: dict[str, str]) -> None:
+    alias = auto_register_alias_from_env(env)
+    session_id = str(env.get("C2C_MCP_SESSION_ID", "")).strip()
+    if not alias or not session_id:
+        return
+
+    broker_root = Path(env.get("C2C_MCP_BROKER_ROOT") or default_broker_root())
+    broker_root.mkdir(parents=True, exist_ok=True)
+    registry_path = broker_root / "registry.json"
+    pid = current_client_pid_from_env(env)
+    pid_start_time = read_pid_start_time(pid) if pid is not None else None
+    registration = build_registration_record(
+        session_id,
+        alias,
+        pid=pid,
+        pid_start_time=pid_start_time,
+    )
+
+    with registry_write_lock(registry_path):
+        registrations = load_broker_registrations(registry_path)
+        registrations = [
+            existing
+            for existing in registrations
+            if existing.get("session_id") != session_id
+            and existing.get("alias") != alias
+        ]
+        registrations.insert(0, registration)
+
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=broker_root,
+            prefix=f".{registry_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            handle.write(json.dumps(registrations))
+            handle.flush()
+            os.fsync(handle.fileno())
+            temp_path = Path(handle.name)
+
+        os.replace(temp_path, registry_path)
 
 
 def default_session_id() -> str:
@@ -150,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
             env["C2C_MCP_SESSION_ID"] = default_session_id()
         except ValueError:
             pass
+    maybe_auto_register_startup(env)
     build_server(env)
     return subprocess.run(
         [str(built_server_path()), *args], cwd=ROOT, env=env
