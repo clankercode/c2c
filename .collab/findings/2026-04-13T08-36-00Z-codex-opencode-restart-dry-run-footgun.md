@@ -12,10 +12,9 @@
   environment variable names, but `restart-opencode-self` only honors
   `RUN_OPENCODE_RESTART_SELF_DRY_RUN`. The mismatch is easy to miss when
   probing several `run-opencode-inst*` commands in sequence.
-- Fix status: not fixed. Suggested mitigations sent to `opencode-local` via
-  direct c2c DM: add an explicit `--dry-run` flag and/or accept both
-  `RUN_OPENCODE_RESTART_SELF_DRY_RUN` and
-  `RUN_OPENCODE_INST_RESTART_SELF_DRY_RUN`.
+- Fix status: complete. `restart-opencode-self` now checks both
+  `RUN_OPENCODE_RESTART_SELF_DRY_RUN` and `RUN_OPENCODE_INST_RESTART_SELF_DRY_RUN`
+  in `dry_run_enabled()`, removing the env-var name mismatch footgun.
 - Severity: medium. The outer loop relaunched the managed process, so the
   accidental signal was recoverable, but this is still a sharp edge for a
   self-restart helper whose dry-run path is used precisely to avoid disrupting
