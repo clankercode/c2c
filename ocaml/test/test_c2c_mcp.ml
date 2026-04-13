@@ -2427,6 +2427,106 @@ let test_tools_call_join_room_accepts_from_alias_as_alias () =
                check string "alias resolved from from_alias fallback"
                  "storm-joiner" (first |> member "alias" |> to_string))))
 
+(* Quality: room_history limit > total messages should return all messages,
+   not truncate or error. *)
+let test_room_history_limit_larger_than_total_returns_all () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"overflow"
+          ~alias:"sender-a" ~session_id:"s-a"
+      in
+      for i = 1 to 5 do
+        ignore
+          (C2c_mcp.Broker.append_room_history broker ~room_id:"overflow"
+             ~from_alias:"sender-a"
+             ~content:(Printf.sprintf "msg-%d" i))
+      done;
+      (* Request 100 but only 5 exist: should return all 5, not fail. *)
+      let history =
+        C2c_mcp.Broker.read_room_history broker ~room_id:"overflow" ~limit:100
+      in
+      check int "returns all 5 when limit > count" 5 (List.length history);
+      check string "first message" "msg-1"
+        (List.nth history 0).rm_content;
+      check string "last message" "msg-5"
+        (List.nth history 4).rm_content)
+
+(* Quality: history must preserve from_alias for each sender so the
+   reading agent can attribute messages correctly. *)
+let test_room_history_preserves_multiple_senders () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"multi-sender"
+          ~alias:"alice" ~session_id:"s-alice"
+      in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"multi-sender"
+          ~alias:"bob" ~session_id:"s-bob"
+      in
+      ignore
+        (C2c_mcp.Broker.append_room_history broker ~room_id:"multi-sender"
+           ~from_alias:"alice" ~content:"hi from alice");
+      ignore
+        (C2c_mcp.Broker.append_room_history broker ~room_id:"multi-sender"
+           ~from_alias:"bob" ~content:"hi from bob");
+      ignore
+        (C2c_mcp.Broker.append_room_history broker ~room_id:"multi-sender"
+           ~from_alias:"alice" ~content:"alice again");
+      let history =
+        C2c_mcp.Broker.read_room_history broker ~room_id:"multi-sender" ~limit:10
+      in
+      check int "3 messages" 3 (List.length history);
+      check string "first sender" "alice" (List.nth history 0).rm_from_alias;
+      check string "first content" "hi from alice" (List.nth history 0).rm_content;
+      check string "second sender" "bob" (List.nth history 1).rm_from_alias;
+      check string "third sender" "alice" (List.nth history 2).rm_from_alias;
+      check string "third content" "alice again" (List.nth history 2).rm_content)
+
+(* Quality: a large inbox (50 messages) must drain completely in one poll.
+   Guards against any off-by-one or truncation in the inbox read/drain path. *)
+let test_large_inbox_drains_all_messages () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-src" ~alias:"src" ~pid:None
+        ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"s-dst" ~alias:"dst" ~pid:None
+        ~pid_start_time:None;
+      for i = 1 to 50 do
+        C2c_mcp.Broker.enqueue_message broker ~from_alias:"src" ~to_alias:"dst"
+          ~content:(Printf.sprintf "bulk-%d" i)
+      done;
+      (* drain_inbox removes and returns all messages *)
+      let inbox = C2c_mcp.Broker.drain_inbox broker ~session_id:"s-dst" in
+      check int "50 messages drained" 50 (List.length inbox);
+      (* Verify order: first enqueued first *)
+      check string "first content" "bulk-1" (List.nth inbox 0).content;
+      check string "last content" "bulk-50" (List.nth inbox 49).content;
+      (* After draining, inbox is empty — read_inbox peeks without draining *)
+      let after = C2c_mcp.Broker.read_inbox broker ~session_id:"s-dst" in
+      check int "inbox empty after drain" 0 (List.length after))
+
+(* Quality: limit=1 returns only the most recent message, not the oldest. *)
+let test_room_history_limit_one_returns_last () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"limit-one"
+          ~alias:"sender" ~session_id:"s"
+      in
+      List.iter
+        (fun msg ->
+          ignore
+            (C2c_mcp.Broker.append_room_history broker ~room_id:"limit-one"
+               ~from_alias:"sender" ~content:msg))
+        [ "first"; "second"; "third"; "fourth"; "fifth" ];
+      let history =
+        C2c_mcp.Broker.read_room_history broker ~room_id:"limit-one" ~limit:1
+      in
+      check int "exactly one message" 1 (List.length history);
+      check string "most recent only" "fifth" (List.hd history).rm_content)
+
 (* Regression for gap #2: leave_room should accept `from_alias` too.
    Join + leave must use the same schema. *)
 let test_tools_call_leave_room_accepts_from_alias_as_alias () =
@@ -2626,4 +2726,12 @@ let () =
              test_tools_call_join_room_accepts_from_alias_as_alias
          ; test_case "tools/call leave_room accepts `from_alias` as alias fallback" `Quick
              test_tools_call_leave_room_accepts_from_alias_as_alias
+         ; test_case "room_history limit larger than total returns all" `Quick
+             test_room_history_limit_larger_than_total_returns_all
+         ; test_case "room_history preserves sender identity across multiple senders" `Quick
+             test_room_history_preserves_multiple_senders
+         ; test_case "large inbox drains all messages correctly" `Quick
+             test_large_inbox_drains_all_messages
+         ; test_case "room_history limit=1 returns only last message" `Quick
+             test_room_history_limit_one_returns_last
          ] ) ]
