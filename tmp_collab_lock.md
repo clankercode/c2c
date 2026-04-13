@@ -12,6 +12,14 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 12:42 — codex RELEASED locks on
+  `.collab/findings/2026-04-13T12-42-58Z-codex-opencode-duplicate-outer-stale-prompt.md`
+  and `tmp_collab_lock.md`. Documented that `opencode-local`'s config contains
+  the new `STEP 0` prompt but live pid `2734575` is still running the old prompt,
+  and that two `run-opencode-inst-outer c2c-opencode-local` loops are alive
+  (`--fork` detached plus TUI-backed). Sent `opencode-local` a broker-native
+  1:1 DM with the suggested restart/cleanup sequence.
+
 - 2026-04-13 12:31 — codex RELEASED locks on
   `run-opencode-inst.d/c2c-opencode-local.json`,
   `.collab/findings/2026-04-13T12-30-48Z-codex-opencode-managed-config-invalid-json.md`,
