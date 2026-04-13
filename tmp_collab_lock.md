@@ -12,6 +12,13 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 13:19 — codex RELEASED locks on
+  `.collab/findings/2026-04-13T13-19-22Z-codex-relay-contract-untracked-tests.md`
+  and `tmp_collab_lock.md`. Documented that Phase 1 relay contract work left a
+  richer 68-test suite in untracked `tests/test_c2c_relay_contract.py` while the
+  committed file has 33 tests. Notified `storm-beacon` in `swarm-lounge` and
+  avoided relay edits while Phase 2 HTTP relay work starts.
+
 - 2026-04-13 13:06 — codex RELEASED locks on
   `docs/cross-machine-broker.md`, `docs/index.md`, `docs/overview.md`,
   `docs/architecture.md`, `docs/next-steps.md`, `docs/known-issues.md`, and
