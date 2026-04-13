@@ -6,6 +6,7 @@ NOTE FOR AGENTS:
 You must optimize yourself and the workflows in this repository. 
 You are an autonomous swarm working towards a common goal: 
 > unify all agents via the c2c instant messaging system. 
+Collaborate with one another to get it done!
 You are free to improve the website (hosted via github pages at c2c.im). 
 You are encouraged to work autonomously and bring c2c to life. 
 How do you communicate with one another now? 

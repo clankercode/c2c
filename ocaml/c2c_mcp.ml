@@ -267,9 +267,58 @@ module Broker = struct
   type sweep_result =
     { dropped_regs : registration list
     ; deleted_inboxes : string list
+    ; preserved_messages : int
     }
 
   let inbox_suffix = ".inbox.json"
+
+  let dead_letter_path t = Filename.concat t.root "dead-letter.jsonl"
+
+  let dead_letter_lock_path t =
+    Filename.concat t.root "dead-letter.jsonl.lock"
+
+  (* POSIX fcntl lock on a sidecar — serializes appends to dead-letter.jsonl
+     across OCaml processes and against any Python path that also uses
+     Unix.lockf/fcntl.lockf on the same sidecar. *)
+  let with_dead_letter_lock t f =
+    ensure_root t;
+    let fd =
+      Unix.openfile (dead_letter_lock_path t) [ O_RDWR; O_CREAT ] 0o644
+    in
+    Fun.protect
+      ~finally:(fun () ->
+        (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+        (try Unix.close fd with _ -> ()))
+      (fun () ->
+        Unix.lockf fd Unix.F_LOCK 0;
+        f ())
+
+  let append_dead_letter t ~session_id ~messages =
+    match messages with
+    | [] -> ()
+    | _ ->
+        with_dead_letter_lock t (fun () ->
+            let oc =
+              open_out_gen
+                [ Open_wronly; Open_append; Open_creat ]
+                0o644 (dead_letter_path t)
+            in
+            Fun.protect
+              ~finally:(fun () -> try close_out oc with _ -> ())
+              (fun () ->
+                let ts = Unix.gettimeofday () in
+                List.iter
+                  (fun msg ->
+                    let record =
+                      `Assoc
+                        [ ("deleted_at", `Float ts)
+                        ; ("from_session_id", `String session_id)
+                        ; ("message", message_to_json msg)
+                        ]
+                    in
+                    output_string oc (Yojson.Safe.to_string record);
+                    output_char oc '\n')
+                  messages))
 
   let inbox_file_session_id name =
     if Filename.check_suffix name inbox_suffix then
@@ -307,24 +356,35 @@ module Broker = struct
             alive
         in
         let all_inbox_sids = list_inbox_session_ids t in
+        let preserved = ref 0 in
         let deleted =
           List.filter
             (fun sid ->
               if List.mem sid alive_sids then false
               else
-                (* Hold the inbox lock across delete so a concurrent
-                   enqueue can't race the unlink. We intentionally leave
-                   the .inbox.lock sidecar in place: unlinking the lock
-                   file while another process holds a lockf on a separate
-                   fd for the same path would open a window for a new
-                   opener to get a LOCK immediately against a different
-                   inode. Sidecar files are empty, so keeping them is
-                   cheap. *)
+                (* Hold the inbox lock across read+preserve+delete so a
+                   concurrent enqueue can't race the unlink. Any non-empty
+                   content is appended to dead-letter.jsonl before the
+                   inbox file is removed, so cleanup is non-destructive to
+                   operator signal. We intentionally leave the .inbox.lock
+                   sidecar in place: unlinking the lock file while another
+                   process holds a lockf on a separate fd for the same
+                   path would open a window for a new opener to get a
+                   LOCK immediately against a different inode. Sidecar
+                   files are empty, so keeping them is cheap. *)
                 with_inbox_lock t ~session_id:sid (fun () ->
+                    let msgs = load_inbox t ~session_id:sid in
+                    if msgs <> [] then begin
+                      append_dead_letter t ~session_id:sid ~messages:msgs;
+                      preserved := !preserved + List.length msgs
+                    end;
                     try_unlink (inbox_path t ~session_id:sid)))
             all_inbox_sids
         in
-        { dropped_regs = dead; deleted_inboxes = deleted })
+        { dropped_regs = dead
+        ; deleted_inboxes = deleted
+        ; preserved_messages = !preserved
+        })
 end
 
 let channel_notification ({ from_alias; to_alias; content } : message) =
@@ -348,7 +408,7 @@ let tool_definitions =
   ; tool_definition ~name:"send" ~description:"Send a C2C message to a registered peer alias." ~required:[ "from_alias"; "to_alias"; "content" ]
   ; tool_definition ~name:"whoami" ~description:"Resolve the current C2C session registration." ~required:[]
   ; tool_definition ~name:"poll_inbox" ~description:"Drain queued C2C messages for the current session. Returns a JSON array of {from_alias,to_alias,content} objects; call this at the start of each turn and after each send to reliably receive messages regardless of whether the client surfaces notifications/claude/channel." ~required:[]
-  ; tool_definition ~name:"sweep" ~description:"Remove dead registrations (whose parent process has exited) and delete orphan inbox files that belong to no current registration. Returns JSON {dropped_regs:[{session_id,alias}], deleted_inboxes:[session_id]}." ~required:[]
+  ; tool_definition ~name:"sweep" ~description:"Remove dead registrations (whose parent process has exited) and delete orphan inbox files that belong to no current registration. Any non-empty orphan inbox content is appended to dead-letter.jsonl inside the broker directory before the inbox file is deleted, so cleanup is non-destructive to operator signal. Returns JSON {dropped_regs:[{session_id,alias}], deleted_inboxes:[session_id], preserved_messages: int}." ~required:[]
   ]
 
 let string_member name json =
@@ -453,7 +513,9 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       in
       Lwt.return (tool_result ~content ~is_error:false)
   | "sweep" ->
-      let { Broker.dropped_regs; deleted_inboxes } = Broker.sweep broker in
+      let { Broker.dropped_regs; deleted_inboxes; preserved_messages } =
+        Broker.sweep broker
+      in
       let content =
         `Assoc
           [ ( "dropped_regs",
@@ -467,6 +529,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                    dropped_regs) )
           ; ( "deleted_inboxes",
               `List (List.map (fun sid -> `String sid) deleted_inboxes) )
+          ; ("preserved_messages", `Int preserved_messages)
           ]
         |> Yojson.Safe.to_string
       in

@@ -19,6 +19,7 @@ if str(REPO) not in sys.path:
 import c2c_register
 import c2c_registry
 import c2c_mcp
+import c2c_poll_inbox
 import c2c_poker
 import c2c_send
 import c2c_cli
@@ -79,6 +80,8 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_whoami.py",
         "c2c_cli.py",
         "c2c_mcp.py",
+        "c2c_poll_inbox.py",
+        "c2c-poll-inbox",
         "c2c_registry.py",
         "claude_send_msg.py",
         "claude_list_sessions.py",
@@ -428,8 +431,8 @@ class C2CCLITests(unittest.TestCase):
             result = c2c_mcp.main([])
 
         self.assertEqual(result, 0)
-        run_mock.assert_called_once()
-        env = run_mock.call_args.kwargs["env"]
+        self.assertEqual(run_mock.call_count, 2)
+        env = run_mock.call_args_list[1].kwargs["env"]
         self.assertEqual(env["C2C_MCP_BROKER_ROOT"], str(REPO / ".git" / "c2c" / "mcp"))
         self.assertNotIn("C2C_MCP_SESSION_ID", env)
 
@@ -450,8 +453,8 @@ class C2CCLITests(unittest.TestCase):
             result = c2c_mcp.main([])
 
         self.assertEqual(result, 0)
-        run_mock.assert_called_once()
-        env = run_mock.call_args.kwargs["env"]
+        self.assertEqual(run_mock.call_count, 2)
+        env = run_mock.call_args_list[1].kwargs["env"]
         self.assertEqual(env["C2C_MCP_SESSION_ID"], AGENT_ONE_SESSION_ID)
         self.assertEqual(env["C2C_MCP_CLIENT_PID"], "424242")
 
@@ -522,12 +525,98 @@ class C2CCLITests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         sync_registry.assert_called_once_with(broker_root)
+        self.assertEqual(run_mock.call_count, 2)
         self.assertEqual(
-            run_mock.call_args.kwargs["env"]["C2C_MCP_SESSION_ID"], AGENT_ONE_SESSION_ID
+            run_mock.call_args_list[1].kwargs["env"]["C2C_MCP_SESSION_ID"],
+            AGENT_ONE_SESSION_ID,
         )
         self.assertEqual(
-            run_mock.call_args.kwargs["env"]["C2C_MCP_BROKER_ROOT"], str(broker_root)
+            run_mock.call_args_list[1].kwargs["env"]["C2C_MCP_BROKER_ROOT"],
+            str(broker_root),
         )
+
+    def test_c2c_mcp_main_builds_server_before_launch(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "C2C_REGISTRY_PATH": str(self.registry_path),
+                    "C2C_MCP_BROKER_ROOT": str(broker_root),
+                },
+                clear=False,
+            ),
+            mock.patch("c2c_mcp.sync_broker_registry"),
+            mock.patch("c2c_mcp.default_session_id", return_value=AGENT_ONE_SESSION_ID),
+            mock.patch(
+                "c2c_mcp.built_server_path",
+                return_value=REPO
+                / "_build"
+                / "default"
+                / "ocaml"
+                / "server"
+                / "c2c_mcp_server.exe",
+            ),
+            mock.patch("c2c_mcp.subprocess.run") as run_mock,
+        ):
+            run_mock.side_effect = [
+                mock.Mock(returncode=0),
+                mock.Mock(returncode=0),
+            ]
+
+            result = c2c_mcp.main(["--help"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(run_mock.call_count, 2)
+        self.assertEqual(
+            run_mock.call_args_list[0].args[0],
+            [
+                "opam",
+                "exec",
+                "--switch=/home/xertrov/src/call-coding-clis/ocaml",
+                "--",
+                "dune",
+                "build",
+                "--root",
+                str(REPO),
+                "./ocaml/server/c2c_mcp_server.exe",
+            ],
+        )
+
+    def test_c2c_mcp_main_launches_built_server_directly(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        built_server = (
+            REPO / "_build" / "default" / "ocaml" / "server" / "c2c_mcp_server.exe"
+        )
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "C2C_REGISTRY_PATH": str(self.registry_path),
+                    "C2C_MCP_BROKER_ROOT": str(broker_root),
+                },
+                clear=False,
+            ),
+            mock.patch("c2c_mcp.sync_broker_registry"),
+            mock.patch("c2c_mcp.default_session_id", return_value=AGENT_ONE_SESSION_ID),
+            mock.patch("c2c_mcp.built_server_path", return_value=built_server),
+            mock.patch("c2c_mcp.subprocess.run") as run_mock,
+        ):
+            run_mock.side_effect = [
+                mock.Mock(returncode=0),
+                mock.Mock(returncode=0),
+            ]
+
+            result = c2c_mcp.main(["--help"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(run_mock.call_count, 2)
+        launch_call = run_mock.call_args_list[1]
+        self.assertEqual(launch_call.args[0], [str(built_server), "--help"])
+        self.assertEqual(launch_call.kwargs["cwd"], REPO)
+        self.assertNotIn("bash", launch_call.args[0])
 
     def test_c2c_mcp_emits_channel_notification_for_session_inbox(self):
         broker_root = Path(self.temp_dir.name) / "mcp-broker"
@@ -1073,6 +1162,58 @@ class C2CCLITests(unittest.TestCase):
         self.assertIn("highest-leverage unblocked", message)
         self.assertNotIn("ignore", message.lower())
 
+    def test_c2c_poll_inbox_file_fallback_drains_without_host_mcp_tool(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        broker_root.mkdir()
+        inbox_path = broker_root / "codex-local.inbox.json"
+        inbox_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "from_alias": "storm-echo",
+                        "to_alias": "codex",
+                        "content": "recover without mcp",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = run_cli(
+            "c2c-poll-inbox",
+            "--session-id",
+            "codex-local",
+            "--broker-root",
+            str(broker_root),
+            "--file-fallback",
+            "--json",
+            env=self.env,
+        )
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["session_id"], "codex-local")
+        self.assertEqual(payload["source"], "file")
+        self.assertEqual(
+            payload["messages"],
+            [
+                {
+                    "from_alias": "storm-echo",
+                    "to_alias": "codex",
+                    "content": "recover without mcp",
+                }
+            ],
+        )
+        self.assertEqual(json.loads(inbox_path.read_text(encoding="utf-8")), [])
+
+    def test_c2c_poll_inbox_defaults_session_from_run_codex_env(self):
+        env = dict(self.env)
+        env["RUN_CODEX_INST_C2C_SESSION_ID"] = "codex-from-env"
+
+        self.assertEqual(
+            c2c_poll_inbox.resolve_session_id(None), "codex-from-env"
+        )
+
     def test_run_codex_inst_allows_explicit_c2c_id_for_multiple_codex_sessions(self):
         config_dir = Path(self.temp_dir.name) / "run-codex-inst.d"
         config_dir.mkdir()
@@ -1158,6 +1299,48 @@ class C2CCLITests(unittest.TestCase):
             except subprocess.TimeoutExpired:
                 sleeper.kill()
                 sleeper.wait(timeout=CLI_TIMEOUT_SECONDS)
+
+    def test_restart_codex_self_writes_reason_marker_before_signaling(self):
+        config_dir = Path(self.temp_dir.name) / "run-codex-inst.d"
+        config_dir.mkdir()
+        sleeper = subprocess.Popen(["sleep", "30"])
+        try:
+            (config_dir / "codex-a.pid").write_text(
+                f"{sleeper.pid}\n", encoding="utf-8"
+            )
+            env = dict(self.env)
+            env["RUN_CODEX_INST_CONFIG_DIR"] = str(config_dir)
+            env["RUN_CODEX_INST_NAME"] = "codex-a"
+            env["RUN_CODEX_RESTART_SELF_DRY_RUN"] = "0"
+
+            result = run_cli(
+                "restart-codex-self",
+                "--expect-comm",
+                "sleep",
+                "--reason",
+                "rebuilt c2c mcp after startup failure",
+                env=env,
+            )
+
+            self.assertEqual(result_code(result), 0, result.stderr)
+            sleeper.wait(timeout=CLI_TIMEOUT_SECONDS)
+            marker_path = config_dir / "codex-a.restart.json"
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            self.assertEqual(marker["name"], "codex-a")
+            self.assertEqual(marker["pid"], sleeper.pid)
+            self.assertEqual(marker["signal"], "SIGTERM")
+            self.assertEqual(
+                marker["reason"], "rebuilt c2c mcp after startup failure"
+            )
+            self.assertFalse(marker["dry_run"])
+        finally:
+            if sleeper.poll() is None:
+                sleeper.terminate()
+                try:
+                    sleeper.wait(timeout=CLI_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    sleeper.kill()
+                    sleeper.wait(timeout=CLI_TIMEOUT_SECONDS)
 
     def test_restart_codex_self_requires_instance_name(self):
         env = dict(self.env)

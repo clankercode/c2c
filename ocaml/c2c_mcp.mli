@@ -30,9 +30,11 @@ module Broker : sig
   type sweep_result =
     { dropped_regs : registration list
     ; deleted_inboxes : string list
+    ; preserved_messages : int
     }
 
   val sweep : t -> sweep_result
+  val dead_letter_path : t -> string
 end
 
 val channel_notification : message -> Yojson.Safe.t

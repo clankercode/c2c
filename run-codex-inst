@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""
+Inner launcher for a named Codex instance.
+
+Usage: ./run-codex-inst <instance-name> [extra codex args...]
+
+Reads ./run-codex-inst.d/<name>.json, builds a Codex resume command, writes its
+own pid to ./run-codex-inst.d/<name>.pid, sets a terminal title, and execs
+Codex. os.execvpe preserves the pid, so the companion `restart-codex-self`
+helper can signal the live Codex process and let the outer loop relaunch it.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+DEFAULT_CONFIG_DIR = HERE / "run-codex-inst.d"
+FALSE_STRINGS = {"0", "false", "no", "off"}
+
+
+def config_dir() -> Path:
+    override = os.environ.get("RUN_CODEX_INST_CONFIG_DIR", "").strip()
+    if override:
+        return Path(override)
+    return DEFAULT_CONFIG_DIR
+
+
+def config_path(name: str) -> Path:
+    return config_dir() / f"{name}.json"
+
+
+def pid_path(name: str) -> Path:
+    return config_dir() / f"{name}.pid"
+
+
+def load_config(name: str) -> dict:
+    path = config_path(name)
+    if not path.exists():
+        raise SystemExit(f"[run-codex-inst] config not found: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"[run-codex-inst] invalid JSON in {path}: {exc}")
+    if not isinstance(data, dict):
+        raise SystemExit(f"[run-codex-inst] config root must be an object: {path}")
+    return data
+
+
+def coerce_string_list(value, field: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise SystemExit(f"[run-codex-inst] {field} must be list of strings")
+    return list(value)
+
+
+def coerce_string_dict(value, field: str) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not all(
+        isinstance(key, str) and isinstance(item, str) for key, item in value.items()
+    ):
+        raise SystemExit(f"[run-codex-inst] {field} must be dict of string to string")
+    return dict(value)
+
+
+def coerce_string(value, field: str, *, required: bool = False) -> str:
+    if value is None:
+        if required:
+            raise SystemExit(f"[run-codex-inst] {field} is required")
+        return ""
+    if not isinstance(value, str):
+        raise SystemExit(f"[run-codex-inst] {field} must be a string")
+    return value
+
+
+def default_c2c_session_id(name: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", name.strip()).strip("-")
+    return "codex-" + (normalized or "instance")
+
+
+def toml_string_override(key: str, value: str) -> str:
+    return f"{key}={json.dumps(value)}"
+
+
+def c2c_config_overrides(c2c_session_id: str) -> list[str]:
+    return [
+        "-c",
+        toml_string_override(
+            "mcp_servers.c2c.env.C2C_MCP_SESSION_ID", c2c_session_id
+        ),
+        "-c",
+        toml_string_override("mcp_servers.c2c.env.C2C_MCP_AUTO_DRAIN_CHANNEL", "0"),
+    ]
+
+
+def build_launch(name: str, config: dict, extra: list[str]) -> tuple[list[str], Path, dict[str, str]]:
+    command = coerce_string(config.get("command", "codex"), "command", required=True)
+    mode = coerce_string(config.get("mode", "resume"), "mode") or "resume"
+    resume_target = coerce_string(config.get("resume"), "resume", required=True)
+    prompt = coerce_string(config.get("prompt"), "prompt", required=True)
+    flags = coerce_string_list(config.get("flags"), "flags")
+    env_extra = coerce_string_dict(config.get("env"), "env")
+    cwd = coerce_string(config.get("cwd") or str(HERE), "cwd", required=True)
+    cwd_path = Path(cwd).expanduser()
+    if not cwd_path.exists():
+        raise SystemExit(f"[run-codex-inst] cwd does not exist: {cwd_path}")
+
+    c2c_session_id = coerce_string(
+        config.get("c2c_session_id") or default_c2c_session_id(name),
+        "c2c_session_id",
+        required=True,
+    )
+    launch = [
+        command,
+        *flags,
+        *extra,
+        *c2c_config_overrides(c2c_session_id),
+    ]
+    if mode == "resume":
+        launch.extend(["resume", resume_target, prompt])
+    elif mode == "exec-resume":
+        launch.extend(["exec", "resume", resume_target, prompt])
+    else:
+        raise SystemExit("[run-codex-inst] mode must be resume or exec-resume")
+
+    env = os.environ.copy()
+    env.update(env_extra)
+    env["RUN_CODEX_INST_NAME"] = name
+    env["RUN_CODEX_INST_C2C_SESSION_ID"] = c2c_session_id
+    return launch, cwd_path, env
+
+
+def set_terminal_title(title: str) -> None:
+    if not sys.stdout.isatty():
+        return
+    sys.stdout.write(f"\033]0;{title}\007")
+    sys.stdout.flush()
+
+
+def dry_run_enabled() -> bool:
+    return os.environ.get("RUN_CODEX_INST_DRY_RUN", "").strip().lower() not in (
+        {""} | FALSE_STRINGS
+    )
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2:
+        print(f"usage: {argv[0]} <instance-name> [extra codex args...]", file=sys.stderr)
+        return 2
+
+    name = argv[1]
+    extra = argv[2:]
+    config = load_config(name)
+    launch, cwd_path, env = build_launch(name, config, extra)
+    title = coerce_string(config.get("title") or name, "title", required=True)
+    pre_exec = coerce_string_list(config.get("pre_exec"), "pre_exec")
+    pid_file = pid_path(name)
+
+    if dry_run_enabled():
+        print(
+            json.dumps(
+                {
+                    "launch": launch,
+                    "cwd": str(cwd_path),
+                    "pid_file": str(pid_file),
+                    "env": {
+                        "RUN_CODEX_INST_NAME": env["RUN_CODEX_INST_NAME"],
+                        "RUN_CODEX_INST_C2C_SESSION_ID": env[
+                            "RUN_CODEX_INST_C2C_SESSION_ID"
+                        ],
+                    },
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+    set_terminal_title(title)
+    if pre_exec:
+        print(f"[run-codex-inst] pre_exec: {shlex.join(pre_exec)}", file=sys.stderr)
+        subprocess.run(pre_exec, cwd=str(cwd_path), env=env, check=False)
+
+    print(f"[run-codex-inst] exec {shlex.join(launch)} (cwd={cwd_path})", file=sys.stderr)
+    os.chdir(str(cwd_path))
+    try:
+        os.execvpe(launch[0], launch, env)
+    except FileNotFoundError as exc:
+        raise SystemExit(f"[run-codex-inst] command not found: {launch[0]} ({exc})")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

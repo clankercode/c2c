@@ -669,6 +669,70 @@ let test_sweep_preserves_legacy_pidless_reg () =
       check bool "legacy inbox file still present" true
         (Sys.file_exists (Filename.concat dir "legacy-session.inbox.json")))
 
+let test_sweep_preserves_nonempty_orphan_to_dead_letter () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-live" ~alias:"storm-live"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+      (* Orphan inbox with 2 messages. *)
+      write_file (Filename.concat dir "ghost-sid.inbox.json")
+        {|[{"from_alias":"storm-ember","to_alias":"storm-storm","content":"alpha"},{"from_alias":"storm-beacon","to_alias":"storm-storm","content":"beta"}]|};
+      let result = C2c_mcp.Broker.sweep broker in
+      check int "one orphan deleted" 1 (List.length result.deleted_inboxes);
+      check int "two messages preserved" 2 result.preserved_messages;
+      check bool "orphan file gone" false
+        (Sys.file_exists (Filename.concat dir "ghost-sid.inbox.json"));
+      let dead_letter = C2c_mcp.Broker.dead_letter_path broker in
+      check bool "dead-letter file exists" true (Sys.file_exists dead_letter);
+      let contents =
+        let ic = open_in dead_letter in
+        Fun.protect
+          ~finally:(fun () -> close_in ic)
+          (fun () ->
+            let buf = Buffer.create 512 in
+            try
+              while true do
+                Buffer.add_string buf (input_line ic);
+                Buffer.add_char buf '\n'
+              done;
+              Buffer.contents buf
+            with End_of_file -> Buffer.contents buf)
+      in
+      let lines =
+        String.split_on_char '\n' contents
+        |> List.filter (fun l -> l <> "")
+      in
+      check int "dead-letter records" 2 (List.length lines);
+      let has_alpha =
+        List.exists
+          (fun line ->
+            try
+              let json = Yojson.Safe.from_string line in
+              let open Yojson.Safe.Util in
+              let msg = json |> member "message" in
+              let content = msg |> member "content" |> to_string in
+              let sid = json |> member "from_session_id" |> to_string in
+              content = "alpha" && sid = "ghost-sid"
+            with _ -> false)
+          lines
+      in
+      check bool "alpha message with session id preserved" true has_alpha)
+
+let test_sweep_empty_orphan_writes_no_dead_letter () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-live" ~alias:"storm-live"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+      write_file (Filename.concat dir "empty-orphan.inbox.json") "[]";
+      let result = C2c_mcp.Broker.sweep broker in
+      check int "one orphan deleted" 1 (List.length result.deleted_inboxes);
+      check int "no messages preserved" 0 result.preserved_messages;
+      let dead_letter = C2c_mcp.Broker.dead_letter_path broker in
+      check bool "no dead-letter noise for empty orphan" false
+        (Sys.file_exists dead_letter))
+
 let () =
   run "c2c_mcp"
     [ ( "broker",
@@ -714,6 +778,10 @@ let () =
              test_sweep_preserves_live_reg_and_its_inbox
          ; test_case "sweep preserves legacy pidless reg" `Quick
              test_sweep_preserves_legacy_pidless_reg
+         ; test_case "sweep preserves non-empty orphan to dead-letter" `Quick
+             test_sweep_preserves_nonempty_orphan_to_dead_letter
+         ; test_case "sweep empty orphan writes no dead-letter" `Quick
+             test_sweep_empty_orphan_writes_no_dead_letter
          ; test_case "read_pid_start_time self is Some" `Quick
              test_read_pid_start_time_for_self_is_some
          ; test_case "registration persists pid_start_time" `Quick

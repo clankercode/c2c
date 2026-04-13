@@ -1,0 +1,94 @@
+Current c2c status for collaboration
+
+Sessions currently in play:
+- c2c-r2-b1
+- c2c-r2-b2
+
+Important caveat about the current r2 pair:
+- `c2c-r2-b1` and `c2c-r2-b2` were launched without the required Claude development-channel flags.
+- That means this pair is valid for broker/tool-path testing, but not valid evidence for transcript-visible `notifications/claude/channel` delivery.
+- To validate push-style transcript delivery, a fresh pair must be launched with:
+
+  `claude --dangerously-load-development-channels server:c2c`
+
+  and likely also:
+
+  `--channels=server:c2c`
+
+Main goal now:
+- Personal goal for this session:
+  - Help the live Claude/Opus sessions collaborate, run, and fix the current local `c2c` implementation until real transcript-visible delivery works.
+- Group goal for the project:
+  - Fully implement `c2c` as a beautiful, full-featured app across coding CLIs including Claude, OpenCode, and Codex.
+  - Support easy local and remote-machine agent communication.
+  - Support 1:1, 1:N, and ideally N:1 / room-style messaging patterns.
+  - Grow toward UX like:
+    - `c2c init`
+    - `c2c join <room-id>`
+- If direct Claude channel delivery remains blocked, file-based coordination between sessions is allowed as an interim collaboration path.
+
+What is already working:
+- Fresh Claude sessions can load the project-local `c2c` MCP server from `.mcp.json`.
+- Fresh PTY-launched sessions can be discovered reliably once auto-primed.
+- The MCP server declares `experimental["claude/channel"]`.
+- `mcp__c2c__list` works in fresh live sessions.
+- `mcp__c2c__whoami` works in fresh live sessions.
+- `mcp__c2c__send` works in fresh live sessions and returns `queued`.
+- Python CLI registration works for live sessions.
+- Broker enqueue works.
+- Broker drain works.
+- `poll_inbox` is implemented in the OCaml MCP path and committed.
+- A polling client can disable automatic post-RPC channel drain with `C2C_MCP_AUTO_DRAIN_CHANNEL=0` and then receive messages explicitly through `poll_inbox` tool output.
+- The Python-side broker registry sync preserves broker-only registrations such as `codex-local` instead of overwriting them.
+- Codex restart/resume launcher support exists via `run-codex-inst` and `run-codex-inst-outer`, with per-instance `C2C_MCP_SESSION_ID` injection.
+- A real Codex participant is currently running as broker session `codex-local` with alias `codex`.
+- Live broker/tool-path proof has now been achieved for the pull route: a live Claude peer sent to alias `codex`, the running Codex participant drained via MCP polling, and the sender side observed the inbox drain/ack cycle.
+- The rebuilt OCaml broker is now live in at least the active storm-echo session; `sweep` was run and cleaned 121 orphan inbox files with zero dropped registrations.
+- MCP initialize response now includes explicit `instructions`.
+- MCP initialize now reports the server-supported protocol version instead of blindly echoing arbitrary client versions.
+- Broker registry mirroring is now atomically written under the registry lock.
+
+What is not yet working:
+- Receiver-side transcript-visible delivery of inbound `notifications/claude/channel` messages is still not working in live Claude sessions.
+- The currently active `r2` pair cannot prove or disprove that path because it was launched without the required development-channel flags.
+- Because of that, real visible two-way autonomous chat between live Claude sessions is not yet proven.
+
+Recent hardening completed:
+- The Python CLI send path now supports broker-only peers like `codex` by falling back to the broker registry when an alias is not present in the YAML/live-Claude registry.
+- Broker-only fallback sends now use the caller's registered alias when available, instead of always stamping `from_alias` as `c2c-send`.
+- Broker-only inbox appends in `c2c_send.py` are now serialized with a per-inbox thread lock plus POSIX `fcntl.lockf` sidecar lock and atomic replace, so concurrent Python sends do not drop messages and Python interlocks with OCaml `Unix.lockf`.
+- The Python follow-up slice is reverified green, including a launcher dry-run assertion that is now interpreter-path agnostic.
+- The Codex PTY poker loop is running with an orientation heartbeat that polls inbox, reads status/locks when needed, treats empty inbox as not-a-stop-signal, and continues unblocked work.
+- `c2c_mcp.py` now builds the OCaml server explicitly and launches the built executable directly instead of running through `bash -lc ... dune exec ...`, reducing the documented wrapper-chain leak risk in the MCP launcher path.
+
+Most likely remaining blocker:
+- For push-style transcript delivery: Claude Code handling of `notifications/claude/channel` for local development servers, plus strict session launch requirements for local experimental channels.
+- For practical collaboration right now: keep broker-only peer support stable across CLI/operator surfaces while continuing to chase transcript-visible Claude channel delivery.
+
+Important config facts:
+- Project-local MCP server definition lives in `/home/xertrov/src/c2c-msg/.mcp.json`.
+- `~/.claude/settings.json` now includes `enabledMcpjsonServers: ["c2c"]`.
+- That helps persistent approval, but does not remove the experimental channel flag requirement.
+- New sessions still need:
+
+  claude --dangerously-load-development-channels server:c2c
+
+- We intentionally did not add a duplicate user-scoped `mcpServers.c2c` entry to `~/.claude.json`; the repo-local `.mcp.json` remains the source of truth.
+
+Useful repo notes:
+- `docs/notes/2026-04-12-c2c-mcp-broker-note.md`
+- `docs/notes/2026-04-13-claude-settings-mcp-channel-note.md`
+- `docs/notes/2026-04-13-collab-protocol.md`
+- `.goal-loops/active-goal.md`
+
+Shared fallback coordination path:
+- `tmp_collab_lock.md` is the primary active coordination/locking file currently in use by the live Opus sessions.
+- `.collab/requests/`
+- `.collab/updates/`
+- `.collab/findings/`
+
+Suggested next debugging direction:
+1. Treat `c2c-r2-b1` and `c2c-r2-b2` as broker/tool-path sessions, not as valid push-channel verification sessions.
+2. Stop spending cycles on Claude 2.1.104 channel-bypass hunting unless a new binary changes the situation; the current accepted receive path is `poll_inbox`.
+3. Continue cross-client parity work: OpenCode/Codex configuration, CLI self-configuration, and product surfaces such as `c2c init`, `c2c join <room-id>`, broadcast, and rooms.
+4. Keep using files plus broker messages for interim coordination while direct transcript-visible delivery remains blocked upstream.

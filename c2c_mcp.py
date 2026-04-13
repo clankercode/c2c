@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import json
 import os
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -20,6 +19,7 @@ from claude_list_sessions import find_session, load_sessions
 
 ROOT = Path(__file__).resolve().parent
 SWITCH = "/home/xertrov/src/call-coding-clis/ocaml"
+SERVER_BUILD_TARGET = "./ocaml/server/c2c_mcp_server.exe"
 SESSION_DISCOVERY_TIMEOUT_SECONDS = 2.0
 SESSION_DISCOVERY_POLL_INTERVAL_SECONDS = 0.05
 
@@ -103,6 +103,29 @@ def default_session_id() -> str:
         time.sleep(SESSION_DISCOVERY_POLL_INTERVAL_SECONDS)
 
 
+def built_server_path() -> Path:
+    return ROOT / "_build" / "default" / "ocaml" / "server" / "c2c_mcp_server.exe"
+
+
+def build_server(env: dict[str, str]) -> None:
+    subprocess.run(
+        [
+            "opam",
+            "exec",
+            f"--switch={SWITCH}",
+            "--",
+            "dune",
+            "build",
+            "--root",
+            str(ROOT),
+            SERVER_BUILD_TARGET,
+        ],
+        cwd=ROOT,
+        env=env,
+        check=True,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     broker_root = Path(os.environ.get("C2C_MCP_BROKER_ROOT") or default_broker_root())
@@ -115,12 +138,10 @@ def main(argv: list[str] | None = None) -> int:
             env["C2C_MCP_SESSION_ID"] = default_session_id()
         except ValueError:
             pass
-    rendered_args = " ".join(shlex.quote(arg) for arg in args)
-    command = (
-        f'eval "$(opam env --switch={shlex.quote(SWITCH)} --set-switch)" '
-        f"&& dune exec --root {shlex.quote(str(ROOT))} ./ocaml/server/c2c_mcp_server.exe -- {rendered_args}"
-    ).strip()
-    return subprocess.run(["bash", "-lc", command], cwd=ROOT, env=env).returncode
+    build_server(env)
+    return subprocess.run(
+        [str(built_server_path()), *args], cwd=ROOT, env=env
+    ).returncode
 
 
 if __name__ == "__main__":

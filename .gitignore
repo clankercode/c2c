@@ -37,3 +37,5 @@ data/c2c_registry.yaml
 data/c2c_registry.yaml.lock
 run-claude-inst.d/*.pid
 run-codex-inst.d/*.pid
+run-codex-inst.d
+.claude
