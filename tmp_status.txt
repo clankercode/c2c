@@ -1,112 +1,41 @@
-Current c2c status for collaboration
+Current c2c status — 2026-04-14
 
-Sessions currently in play:
-- c2c-r2-b1
-- c2c-r2-b2
+## Active Managed Sessions
+- storm-ember (this session, Claude Code under run-claude-inst)
+- opencode-local (OpenCode under run-opencode-inst-outer, pid 3342361)
+- codex (Codex under run-codex-inst-outer)
 
-Important caveat about the current r2 pair:
-- `c2c-r2-b1` and `c2c-r2-b2` were launched without the required Claude development-channel flags.
-- That means this pair is valid for broker/tool-path testing, but not valid evidence for transcript-visible `notifications/claude/channel` delivery.
-- To validate push-style transcript delivery, a fresh pair must be launched with:
+## Proven Delivery Pairs (all cross-client pairs proven)
+- Claude Code ↔ Codex ✓
+- Claude Code ↔ OpenCode ✓
+- Claude Code ↔ Kimi ✓
+- Codex ↔ OpenCode ✓
+- Codex ↔ Codex ✓
+- OpenCode ↔ OpenCode ✓
+- Kimi ↔ Claude/Codex/OpenCode ✓ (all pairs, 2026-04-13)
+- Crush: MCP setup ready, live DM blocked by ANTHROPIC_API_KEY not in Claude shell
 
-  `claude --dangerously-load-development-channels server:c2c`
+## OpenCode Plugin Status
+- CLI drain path: PROVEN (inbox drained in <1s via c2c poll-inbox subprocess, no MCP log)
+- promptAsync end-to-end: NOT YET PROVEN for --fork managed sessions
+- Global plugin installed at ~/.config/opencode/plugins/c2c.ts ✓
+- Sidecar auto-written by run-opencode-inst at each launch ✓
+- opencode_session_id in sidecar enables promptAsync without session.created event ✓
 
-  and likely also:
+## Relay Status (all phases complete)
+- Phases 1-6: InMemoryRelay, HTTP server, connector, rooms, operator setup, hardening ✓
+- SQLite backend: ✓ (c2c relay serve --storage sqlite --db-path relay.db)
+- In-process two-machine roundtrip: proven ✓
+- Live cross-host deployment: not yet attempted (use Tailscale or VPS + relay quickstart)
 
-  `--channels=server:c2c`
+## Test Coverage
+- Python: 644 tests ✓
+- OCaml: 96 tests ✓
 
-Main goal now:
-- Personal goal for this session:
-  - Help the live Claude/Opus sessions collaborate, run, and fix the current local `c2c` implementation until real transcript-visible delivery works.
-- Group goal for the project:
-  - Fully implement `c2c` as a beautiful, full-featured app across coding CLIs including Claude, OpenCode, and Codex.
-  - Support easy local and remote-machine agent communication.
-  - Support 1:1, 1:N, and ideally N:1 / room-style messaging patterns.
-  - Grow toward UX like:
-    - `c2c init`
-    - `c2c join <room-id>`
-- If direct Claude channel delivery remains blocked, file-based coordination between sessions is allowed as an interim collaboration path.
+## Active Social Room
+- swarm-lounge: 5 members (storm-ember, storm-beacon, codex, opencode-local, kimi-nova)
 
-What is already working:
-- Fresh Claude sessions can load the project-local `c2c` MCP server from `.mcp.json`.
-- Fresh PTY-launched sessions can be discovered reliably once auto-primed.
-- The MCP server declares `experimental["claude/channel"]`.
-- `mcp__c2c__list` works in fresh live sessions.
-- `mcp__c2c__whoami` works in fresh live sessions.
-- `mcp__c2c__send` works in fresh live sessions and returns `queued`.
-- Python CLI registration works for live sessions.
-- Broker enqueue works.
-- Broker drain works.
-- `poll_inbox` is implemented in the OCaml MCP path and committed.
-- A polling client can disable automatic post-RPC channel drain with `C2C_MCP_AUTO_DRAIN_CHANNEL=0` and then receive messages explicitly through `poll_inbox` tool output.
-- The Python-side broker registry sync preserves broker-only registrations such as `codex-local` instead of overwriting them.
-- Codex restart/resume launcher support exists via `run-codex-inst` and `run-codex-inst-outer`, with per-instance `C2C_MCP_SESSION_ID` injection.
-- A real Codex participant is currently running as broker session `codex-local` with alias `codex`.
-- Live broker/tool-path proof has now been achieved for the pull route: a live Claude peer sent to alias `codex`, the running Codex participant drained via MCP polling, and the sender side observed the inbox drain/ack cycle.
-- The rebuilt OCaml broker is now live in at least the active storm-echo session; `sweep` was run and cleaned 121 orphan inbox files with zero dropped registrations.
-- MCP initialize response now includes explicit `instructions`.
-- MCP initialize now reports the server-supported protocol version instead of blindly echoing arbitrary client versions.
-- Broker registry mirroring is now atomically written under the registry lock.
-
-What is not yet working:
-- Receiver-side transcript-visible delivery of inbound `notifications/claude/channel` messages is still not working in live Claude sessions.
-- The currently active `r2` pair cannot prove or disprove that path because it was launched without the required development-channel flags.
-- Because of that, real visible two-way autonomous chat between live Claude sessions is not yet proven.
-
-Recent hardening completed:
-- The Python CLI send path now supports broker-only peers like `codex` by falling back to the broker registry when an alias is not present in the YAML/live-Claude registry.
-- Broker-only fallback sends now use the caller's registered alias when available, instead of always stamping `from_alias` as `c2c-send`.
-- Broker-only inbox appends in `c2c_send.py` are now serialized with a per-inbox thread lock plus POSIX `fcntl.lockf` sidecar lock and atomic replace, so concurrent Python sends do not drop messages and Python interlocks with OCaml `Unix.lockf`.
-- Python broker sync now preserves existing liveness metadata for YAML-backed peers, and Python's broker-only CLI fallback now rejects dead peers instead of appending into orphan inboxes.
-- `c2c-poll-inbox` now gives Codex a local recovery path when host MCP tools are absent: it tries direct JSON-RPC polling first, then falls back to draining `<session>.inbox.json` under the OCaml-compatible `<session>.inbox.lock` sidecar if MCP startup fails.
-- The recovery poller is now part of the normal operator surface: `c2c poll-inbox ...` dispatches to it, and `c2c install` installs `c2c-poll-inbox`.
-- `c2c inject` / `c2c-inject` now provides a one-shot PTY injection surface shared by Claude (`--claude-session`), Codex (`--pid`), and OpenCode/generic terminals (`--terminal-pid --pts`), with `--dry-run` + `--json` for safe probing.
-- `c2c deliver-inbox` / `c2c-deliver-inbox` now bridges broker inboxes to live terminals: it peeks safely in `--dry-run`, otherwise drains a session inbox and injects each queued C2C message into Claude/Codex/OpenCode via the shared PTY injector.
-- `c2c deliver-inbox --loop` now provides an always-on broker-to-PTY delivery loop for Claude, Codex, OpenCode, and generic terminals. `--max-iterations` bounds tests/probes, `--interval` controls polling cadence, and `--pidfile` gives operators a concrete process marker.
-- `c2c deliver-inbox --daemon --loop --pidfile ...` now starts that live delivery loop as a managed detached process, reuses an already-running pidfile instead of duplicating loops, and reports the daemon/log paths as JSON or text.
-- `c2c deliver-inbox --loop` now also watches its original target client pid (`--pid`, `--terminal-pid`, or resolved `--claude-session`) and exits cleanly before the next delivery cycle if that target is gone.
-- `restart-codex-self --reason ...` now writes `run-codex-inst.d/<name>.restart.json` before signaling the managed Codex pid, so the resumed turn has local context even if C2C MCP startup failed.
-- `run-codex-inst-rearm` now dry-runs or rearms Codex background support loops (`c2c_deliver_inbox.py --daemon --loop` and `c2c_poker.py`) for a managed `run-codex-inst` instance, and `c2c-codex-b4` calls it from `pre_exec` on each restart.
-- The Python follow-up slice is reverified green, including a launcher dry-run assertion that is now interpreter-path agnostic.
-- The Codex PTY poker loop is running with an orientation heartbeat that polls inbox, reads status/locks when needed, treats empty inbox as not-a-stop-signal, and continues unblocked work.
-- `c2c_poker.py --pid ...` and `--claude-session ...` now watch the original client/session pid after resolving terminal coordinates and exit cleanly if that pid goes away. Poker heartbeat payloads include a fresh `Sent at: ...` timestamp/date on each injection.
-- `c2c poker-sweep` / `c2c-poker-sweep` now lists stale poker processes and can terminate them with `--kill`. It understands both `--pid` and `--claude-session` poker targets and defaults to a no-kill dry run.
-- `c2c_mcp.py` now builds the OCaml server explicitly and launches the built executable directly instead of running through `bash -lc ... dune exec ...`, reducing the documented wrapper-chain leak risk in the MCP launcher path.
-- `c2c watch` / `c2c-watch` now runs a command and forwards each output line to a C2C alias, with optional labels plus `--dry-run`/`--json` for safe monitoring smoke tests.
-- `swarm-lounge` now has live Claude Code + Codex participation: Codex registered as alias `codex`, joined the v0.6.0 N:N room, and sent `codex is here` via the MCP room path. OpenCode is registered as `opencode-local`; Codex injected a native prompt into its live terminal asking it to poll, join, and send from the room.
-- Python registration now threads target client pid metadata through the YAML registry and broker registry, and `c2c_mcp.py` honors `C2C_MCP_AUTO_REGISTER_ALIAS` at startup so OpenCode/Codex-style clients can self-register without manual broker surgery.
-- The three-client room proof is live: `swarm-lounge` has Claude Code, Codex, and OpenCode members, and room history includes an `opencode-local` message. The durable OpenCode registry entry was refreshed to the still-running TUI pid `1337045` after a one-shot `opencode run` proof process exited.
-- Room CLI sender attribution is hardened: `c2c_room.py` now falls back through `c2c_whoami.resolve_identity()` when `C2C_MCP_SESSION_ID`/`C2C_SESSION_ID` are unset, avoiding `from_alias=unknown` for registered Claude-shell sends.
-- PTY-injected envelopes now include provenance attributes across `claude_send_msg.py`, `c2c_inject.py`, and `c2c_poker.py`: `source="pty"` plus a `source_tool` identifying the wrapper that produced the message.
-
-Most likely remaining blocker:
-- For push-style transcript delivery: Claude Code handling of `notifications/claude/channel` for local development servers, plus strict session launch requirements for local experimental channels.
-- For practical collaboration right now: keep broker-only peer support stable across CLI/operator surfaces while continuing to chase transcript-visible Claude channel delivery.
-
-Important config facts:
-- Project-local MCP server definition lives in `/home/xertrov/src/c2c-msg/.mcp.json`.
-- `~/.claude/settings.json` now includes `enabledMcpjsonServers: ["c2c"]`.
-- That helps persistent approval, but does not remove the experimental channel flag requirement.
-- New sessions still need:
-
-  claude --dangerously-load-development-channels server:c2c
-
-- We intentionally did not add a duplicate user-scoped `mcpServers.c2c` entry to `~/.claude.json`; the repo-local `.mcp.json` remains the source of truth.
-
-Useful repo notes:
-- `docs/notes/2026-04-12-c2c-mcp-broker-note.md`
-- `docs/notes/2026-04-13-claude-settings-mcp-channel-note.md`
-- `docs/notes/2026-04-13-collab-protocol.md`
-- `.goal-loops/active-goal.md`
-
-Shared fallback coordination path:
-- `tmp_collab_lock.md` is the primary active coordination/locking file currently in use by the live Opus sessions.
-- `.collab/requests/`
-- `.collab/updates/`
-- `.collab/findings/`
-
-Suggested next debugging direction:
-1. Treat `c2c-r2-b1` and `c2c-r2-b2` as broker/tool-path sessions, not as valid push-channel verification sessions.
-2. Stop spending cycles on Claude 2.1.104 channel-bypass hunting unless a new binary changes the situation; the current accepted receive path is `poll_inbox`.
-3. Continue cross-client parity work: OpenCode/Codex configuration, CLI self-configuration, and product surfaces such as `c2c init`, `c2c join <room-id>`, broadcast, and rooms.
-4. Keep using files plus broker messages for interim coordination while direct transcript-visible delivery remains blocked upstream.
+## Key Architectural Improvements (recent)
+- alias_occupied_guard: OCaml broker prevents one-shot processes from evicting alive same-alias sessions (Kimi registration fix)
+- run-opencode-inst writes .opencode/c2c-plugin.json sidecar at each managed launch
+- run-codex-inst passes C2C_MCP_CLIENT_PID through config overrides for correct liveness
