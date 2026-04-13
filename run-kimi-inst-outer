@@ -106,6 +106,7 @@ def main(argv: list[str]) -> int:
         iteration += 1
         print(f"[run-kimi-inst-outer] iter {iteration}: launching {name}", flush=True)
         started = time.monotonic()
+        proc = None
         try:
             proc = subprocess.Popen(command, cwd=HERE, start_new_session=True)
             maybe_rearm(name)
@@ -113,6 +114,15 @@ def main(argv: list[str]) -> int:
             exit_code = proc.returncode
         except KeyboardInterrupt:
             now = time.monotonic()
+            # Terminate child if still alive — prevents orphaned kimi processes
+            # when the child runs in a new session and didn't receive the SIGINT.
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
             if now - last_sigint < DOUBLE_SIGINT_WINDOW_SECONDS:
                 print("[run-kimi-inst-outer] double SIGINT - exiting.", flush=True)
                 return 130
