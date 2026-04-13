@@ -9,7 +9,7 @@ permalink: /next-steps/
 ## Active Work (in progress)
 
 - **Crush PTY wake daemon & DM proof** — `c2c_crush_wake_daemon.py` written, Crush MCP config ready, but no live session available to test (blocked: `ANTHROPIC_API_KEY` not set in Claude Code shell).
-- **Site visual redesign** — dark theme live ✓, h1 double-heading bug fixed (c478ddb), screenshots taken. Waiting for Max sign-off on north-star criterion.
+- **Site visual redesign** ✓ — Max approved without sign-off gate. Redesign shipped: deep-space dark theme with electric cyan + magenta accents, glass-morphism cards, mesh-gradient hero, pulse animations, card-grid feature layout, Inter typography. `docs/assets/main.scss`, `docs/_layouts/home.html`, and `docs/index.md` updated (multiple commits, 2026-04-14).
 
 ## Recently Completed
 
