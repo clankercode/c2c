@@ -91,3 +91,51 @@ status, severity.
 - **Related findings:**
   `2026-04-13T03-24-00Z-storm-echo-broker-process-leak.md`
   (root cause chain leads back to the broker-leak entry above).
+
+---
+
+## 2026-04-13 ~04:20Z — subprocess.run without env=env silently leaks test into real broker registry
+
+- **Symptom:** `tests/test_c2c_send_all.py` fan-out assertions failed
+  with phantom aliases: `['alice', 'bob', 'storm-herald', 'storm-storm']`
+  instead of just `['alice', 'bob']`. The storm-* aliases are real,
+  live sessions in the repo-local broker registry at
+  `.git/c2c/mcp/registry.json`. The test uses `tempfile.TemporaryDirectory()`
+  as broker_root and pre-writes a clean `registry.json` with only
+  `alice-local`, `bob-local`, `caller`.
+- **How I discovered:** ran `python -m unittest tests.test_c2c_send_all`
+  after committing the slice; 2/3 tests failed. Ran the same subprocess
+  command manually from a python REPL — it passed. Ran the same test
+  logic through an ad-hoc `unittest.TestCase` in `/tmp/debug_send_all.py`
+  with identical env copying — it passed. Only the original
+  `test_c2c_send_all.py` file failed.
+- **Root cause:** `run_send_all` built an `env = os.environ.copy()`
+  dict with `C2C_MCP_BROKER_ROOT`, `C2C_REGISTRY_PATH`,
+  `C2C_SESSIONS_FIXTURE`, etc — then called
+  `subprocess.run(args, cwd=REPO, capture_output=True, text=True, timeout=30)`
+  with **no `env=` keyword**. Python subprocess inherits the parent's
+  real environment when `env` is omitted, so the child saw the real
+  repo's `.git/c2c/mcp/` as broker_root (via default_broker_root's
+  fallback to the git common dir) and fanned out to every registered
+  storm-* peer.
+- **Why it was confusing:** the test passes `--broker-root` on the
+  command line, so I assumed that was the authoritative source. But
+  `c2c_send_all.py` sets `env["C2C_MCP_BROKER_ROOT"] = str(broker_root)`
+  in the subprocess it spawns, which is what the OCaml server actually
+  reads. With the outer test not passing env, the CLI arg broker_root
+  got forwarded as the subprocess's env var — but only for that
+  sub-sub-process, and sync_broker_registry at the intermediate layer
+  still read the real broker root because its own env was the parent's.
+- **Fix status:** fixed in `d596ca0` — added `env=env` to the
+  `subprocess.run` call in `run_send_all`. Suite went from
+  failing ➝ 3/3 green, full Python 122/122 green.
+- **Severity:** medium-high. Silent test pollution against real broker
+  registry is the worst kind of flakiness — the failure message
+  mentioned real, live alias names I recognize from my own swarm,
+  which sent me down a red-herring investigation of
+  `sync_broker_registry` and `registry_path_from_env` for ~30 min.
+- **Prevention idea:** a fixture decorator that wraps test subprocess
+  invocations and forces `env=` to be supplied, or a lint rule that
+  rejects `subprocess.run(...)` without `env=` inside `tests/`.
+  storm-beacon specifically flagged this as a footgun worth
+  documenting.
