@@ -289,6 +289,37 @@ def prune_dead_members(
     }
 
 
+def prune_all_rooms(
+    broker_root: Path | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Run prune_dead_members across every room directory.
+
+    Returns dict with: rooms_processed, total_removed, by_room (list of per-room results).
+    Safe while outer loops are running — never touches registrations or inboxes.
+    """
+    broot = broker_root or default_broker_root()
+    rroot = rooms_root(broot)
+    if not rroot.exists():
+        return {"ok": True, "rooms_processed": 0, "total_removed": 0, "by_room": []}
+    by_room = []
+    total_removed = 0
+    for entry in sorted(rroot.iterdir()):
+        if not entry.is_dir():
+            continue
+        result = prune_dead_members(entry.name, broker_root=broot, dry_run=dry_run)
+        if result.get("ok") and result.get("removed"):
+            total_removed += len(result["removed"])
+        by_room.append(result)
+    return {
+        "ok": True,
+        "rooms_processed": len(by_room),
+        "total_removed": total_removed,
+        "by_room": by_room,
+        "dry_run": dry_run,
+    }
+
+
 def _read_pid_start_time(pid: int) -> int | None:
     try:
         stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
@@ -483,7 +514,8 @@ def main(argv: list[str] | None = None) -> int:
         "prune-dead",
         help="remove members whose alias is no longer in the broker registry (safe during outer loops)",
     )
-    p_prune.add_argument("room_id")
+    p_prune.add_argument("room_id", nargs="?", help="room to prune (omit with --all to prune every room)")
+    p_prune.add_argument("--all", action="store_true", help="prune every room directory")
     p_prune.add_argument("--dry-run", action="store_true", help="report without modifying")
     p_prune.add_argument("--json", action="store_true")
 
@@ -513,7 +545,13 @@ def main(argv: list[str] | None = None) -> int:
     elif args.action == "list":
         result = list_rooms()
     elif args.action == "prune-dead":
-        result = prune_dead_members(args.room_id, dry_run=args.dry_run)
+        if getattr(args, "all", False):
+            result = prune_all_rooms(dry_run=args.dry_run)
+        elif args.room_id:
+            result = prune_dead_members(args.room_id, dry_run=args.dry_run)
+        else:
+            print("error: specify a room_id or pass --all", file=sys.stderr)
+            return 2
     else:
         parser.print_help()
         return 2

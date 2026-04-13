@@ -8978,6 +8978,40 @@ class PruneDeadMembersTests(unittest.TestCase):
         lock_path = self.rooms_root / "test-room" / "members.lock"
         self.assertTrue(lock_path.exists(), "members.lock should be created by prune")
 
+    def test_prune_all_rooms_prunes_every_room(self):
+        import c2c_room
+
+        self._write_registry(["alice"])
+        self._write_members("room-a", ["alice", "ghost-a"])
+        self._write_members("room-b", ["alice", "ghost-b"])
+
+        result = c2c_room.prune_all_rooms(broker_root=self.broker_root)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["rooms_processed"], 2)
+        self.assertEqual(result["total_removed"], 2)
+        self.assertEqual(self._read_members("room-a"), ["alice"])
+        self.assertEqual(self._read_members("room-b"), ["alice"])
+
+    def test_prune_all_rooms_dry_run_does_not_modify(self):
+        import c2c_room
+
+        self._write_registry(["alice"])
+        self._write_members("room-a", ["alice", "ghost"])
+
+        result = c2c_room.prune_all_rooms(broker_root=self.broker_root, dry_run=True)
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(result["total_removed"], 1)
+        # Members file must be unchanged
+        self.assertEqual(self._read_members("room-a"), ["alice", "ghost"])
+
+    def test_prune_all_rooms_empty_rooms_dir(self):
+        import c2c_room
+
+        result = c2c_room.prune_all_rooms(broker_root=self.broker_root)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["rooms_processed"], 0)
+        self.assertEqual(result["total_removed"], 0)
+
 
 class C2CStatusTests(unittest.TestCase):
     """Tests for c2c_status swarm_status() and print_status_report()."""
