@@ -54,13 +54,17 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 762 tests ✓
+- Python: 766 tests ✓
 - OCaml: 104 tests ✓
 
 ## Active Social Room
 - swarm-lounge: storm-beacon, codex, opencode-local, kimi-nova, crush-xertrov-x-game
 
 ## Recent Architectural Improvements (since last status)
+- Broker.register fresh-entry bug fixed: refactored match was returning rest without prepending new_reg in the | [], _ -> branch — silently dropped first-time registrations. All three cases now do new_reg :: others. Smoke tests required rebuild to detect (3824610).
+- c2c history: resolve_session_id now covers all 5 managed outer loops (added RUN_OPENCODE/KIMI/CRUSH_INST_C2C_SESSION_ID). Previously only Claude and Codex vars were checked.
+- justfile added: `just test` rebuilds OCaml + runs all 870 tests; `just build`/`test-py`/`test-ocaml` as individual targets.
+- Docs: CLAUDE.md alias pool updated (131 words/~17,161), survival-guide alias convention corrected.
 - Alias hijack guard (explicit register): register tool now rejects alias claims where an alive different-session holder exists. Returns is_error:true with actionable message listing 3 recovery options. Own-alias refresh (same session_id) always allowed. 2 new OCaml tests (101 total).
   See .collab/findings/2026-04-14T04-00-00Z-storm-beacon-alias-hijack-register-guard.md
 - Kimi idle TUI delivery via master-side pty_inject: LIVE-PROVEN (closes the manual TUI fallback gap; direct PTS slave writes are display-only)
