@@ -723,13 +723,19 @@ module Broker = struct
         ; preserved_messages = !preserved
         })
 
-  (* Scan dead-letter.jsonl for records belonging to [session_id], remove
-     them from the file, and return the embedded messages for redelivery.
+  (* Scan dead-letter.jsonl for records belonging to this session and return
+     them for redelivery, removing matched records from the file.
      Called on re-registration so a session that was swept between outer-loop
      iterations automatically recovers messages that were queued while it was
      offline.  Returns [] when the dead-letter file doesn't exist or has no
-     matching records. *)
-  let drain_dead_letter_for_session t ~session_id =
+     matching records.
+
+     Matching rules (OR):
+     1. from_session_id == session_id   — exact match; covers managed sessions
+        with a stable C2C_MCP_SESSION_ID (kimi-local, opencode-local, codex).
+     2. message.to_alias == alias       — alias match; covers Claude Code which
+        keeps a stable alias but gets a fresh CLAUDE_SESSION_ID on every restart. *)
+  let drain_dead_letter_for_session t ~session_id ~alias =
     let path = dead_letter_path t in
     (* Fast path: no file → nothing to do *)
     let exists = (try ignore (Unix.stat path); true with Unix.Unix_error _ -> false) in
@@ -755,19 +761,29 @@ module Broker = struct
             let keep =
               try
                 let json = Yojson.Safe.from_string trimmed in
+                let msg_json = Yojson.Safe.Util.member "message" json in
                 let sid_json = Yojson.Safe.Util.member "from_session_id" json in
-                (match sid_json with
-                 | `String sid when sid = session_id ->
-                     (try
-                        let msg = message_of_json (Yojson.Safe.Util.member "message" json) in
-                        to_redeliver := msg :: !to_redeliver;
-                        false
-                      with _ ->
-                        (* If a matching record is malformed, keep it in
-                           dead-letter instead of silently dropping content we
-                           failed to redeliver. *)
-                        true)
-                 | _ -> true)
+                let to_alias_json = Yojson.Safe.Util.member "to_alias" msg_json in
+                let matches =
+                  (match sid_json with
+                   | `String sid -> sid = session_id
+                   | _ -> false)
+                  ||
+                  (match to_alias_json with
+                   | `String ta -> ta = alias
+                   | _ -> false)
+                in
+                if matches then
+                  (try
+                     let msg = message_of_json msg_json in
+                     to_redeliver := msg :: !to_redeliver;
+                     false
+                   with _ ->
+                     (* If a matching record is malformed, keep it in
+                        dead-letter instead of silently dropping content we
+                        failed to redeliver. *)
+                     true)
+                else true
               with _ -> true
             in
             if keep then to_keep := line :: !to_keep
@@ -794,8 +810,8 @@ module Broker = struct
           let current = load_inbox t ~session_id in
           save_inbox t ~session_id (current @ messages))
 
-  let redeliver_dead_letter_for_session t ~session_id =
-    let msgs = drain_dead_letter_for_session t ~session_id in
+  let redeliver_dead_letter_for_session t ~session_id ~alias =
+    let msgs = drain_dead_letter_for_session t ~session_id ~alias in
     if msgs <> [] then enqueue_by_session_id t ~session_id ~messages:msgs;
     List.length msgs
 
@@ -1225,7 +1241,7 @@ let auto_register_startup ~broker_root =
         in
         let pid_start_time = Broker.capture_pid_start_time pid in
         Broker.register broker ~session_id ~alias ~pid ~pid_start_time;
-        ignore (Broker.redeliver_dead_letter_for_session broker ~session_id)
+        ignore (Broker.redeliver_dead_letter_for_session broker ~session_id ~alias)
       end
   | _ -> ()
 
@@ -1329,7 +1345,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
          This recovers messages that were swept while the managed harness was
          between outer-loop iterations. *)
       let redelivered =
-        Broker.redeliver_dead_letter_for_session broker ~session_id
+        Broker.redeliver_dead_letter_for_session broker ~session_id ~alias
       in
       let response_content =
         if redelivered > 0 then

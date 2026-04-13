@@ -1903,6 +1903,83 @@ let test_register_redelivers_dead_letter_on_same_session_id () =
             (List.length dead_letter_lines);
           ignore inbox_path))
 
+let test_register_redelivers_dead_letter_by_alias_for_new_session_id () =
+  (* Claude Code gets a fresh CLAUDE_SESSION_ID on every restart but keeps the
+     same C2C_MCP_AUTO_REGISTER_ALIAS. Dead-letter records store the swept
+     session's from_session_id (the OLD id), so a session_id match won't fire.
+     The alias-based fallback (message.to_alias == alias) should recover those
+     messages when the agent re-registers under the same alias. *)
+  with_temp_dir (fun dir ->
+      (* Write dead-letter records addressed to alias "storm-beacon" but from
+         OLD session_id "old-claude-session-uuid". A new session
+         "new-claude-session-uuid" registers as the same alias. *)
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let dead_letter = C2c_mcp.Broker.dead_letter_path broker in
+      let dl_record content =
+        (* from_session_id is the OLD session that was swept *)
+        Printf.sprintf
+          {|{"from_session_id":"old-claude-session-uuid","deleted_at":1712345678.0,"message":{"from_alias":"codex","to_alias":"storm-beacon","content":"%s"}}|}
+          content
+      in
+      write_file dead_letter
+        (dl_record "claude-msg-a" ^ "\n" ^ dl_record "claude-msg-b" ^ "\n");
+      (* Register the NEW session under the same alias *)
+      Unix.putenv "C2C_MCP_SESSION_ID" "new-claude-session-uuid";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 501)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "register")
+                    ; ("arguments",
+                       `Assoc [ ("alias", `String "storm-beacon") ])
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          (match response with
+           | None -> fail "expected register response"
+           | Some _ -> ());
+          (* New session's inbox should contain the redelivered messages *)
+          let broker2 = C2c_mcp.Broker.create ~root:dir in
+          let drained =
+            C2c_mcp.Broker.drain_inbox broker2
+              ~session_id:"new-claude-session-uuid"
+          in
+          check int "two messages recovered via alias match" 2
+            (List.length drained);
+          let contents = List.map (fun m -> m.C2c_mcp.content) drained in
+          check bool "claude-msg-a recovered" true
+            (List.mem "claude-msg-a" contents);
+          check bool "claude-msg-b recovered" true
+            (List.mem "claude-msg-b" contents);
+          (* Dead-letter should be cleared *)
+          let dead_letter_lines =
+            try
+              let ic = open_in dead_letter in
+              Fun.protect
+                ~finally:(fun () -> close_in ic)
+                (fun () ->
+                  let buf = ref [] in
+                  (try
+                     while true do
+                       let l = String.trim (input_line ic) in
+                       if l <> "" then buf := l :: !buf
+                     done
+                   with End_of_file -> ());
+                  !buf)
+            with _ -> []
+          in
+          check int "dead-letter cleared after alias-based redelivery" 0
+            (List.length dead_letter_lines)))
+
 (* ---------- N:N rooms (phase 2) tests ---------- *)
 
 let test_join_room_creates_room_and_adds_member () =
@@ -3077,6 +3154,8 @@ let () =
              test_sweep_empty_orphan_writes_no_dead_letter
          ; test_case "register redelivers dead-letter on same session_id" `Quick
              test_register_redelivers_dead_letter_on_same_session_id
+         ; test_case "register redelivers dead-letter by alias (new session_id)" `Quick
+             test_register_redelivers_dead_letter_by_alias_for_new_session_id
          ; test_case "send_all fans out and skips sender" `Quick
              test_send_all_fans_out_and_skips_sender
          ; test_case "send_all honors exclude_aliases" `Quick
