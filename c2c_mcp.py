@@ -195,6 +195,20 @@ def maybe_auto_register_startup(env: dict[str, str]) -> None:
 
     with with_registry_lock(broker_root):
         registrations = load_broker_registrations(registry_path)
+        hijack_guard = any(
+            existing.get("session_id") == session_id
+            and existing.get("alias") != alias
+            and broker_registration_is_alive(existing)
+            for existing in registrations
+        )
+        alias_occupied_guard = any(
+            existing.get("alias") == alias
+            and existing.get("session_id") != session_id
+            and broker_registration_is_alive(existing)
+            for existing in registrations
+        )
+        if hijack_guard or alias_occupied_guard:
+            return
         for existing in registrations:
             if (
                 existing.get("session_id") == session_id

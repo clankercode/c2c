@@ -2535,6 +2535,30 @@ class C2CRegistryTests(unittest.TestCase):
 
         self.assertEqual(load_registry(self.registry_path), registry)
 
+    def test_seeded_alias_allocation_starts_from_session_specific_offset(self):
+        words = ["aava", "ilma", "kaiku", "sisu"]
+
+        self.assertNotEqual(
+            c2c_registry.allocate_unique_alias(words, set(), seed="alpha"),
+            c2c_registry.allocate_unique_alias(words, set(), seed="beta"),
+        )
+
+    def test_seeded_alias_allocation_wraps_to_available_pair(self):
+        words = ["aava", "ilma"]
+        first = c2c_registry.allocate_unique_alias(words, set(), seed="session-a")
+        existing = {
+            first,
+            "aava-aava",
+            "aava-ilma",
+            "ilma-aava",
+            "ilma-ilma",
+        } - {first}
+
+        self.assertEqual(
+            c2c_registry.allocate_unique_alias(words, existing, seed="session-a"),
+            first,
+        )
+
 
 class C2CRegisterUnitTests(unittest.TestCase):
     def test_register_session_uses_transactional_registry_update(self):

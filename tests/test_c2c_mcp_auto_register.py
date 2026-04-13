@@ -197,6 +197,74 @@ class C2CMcpAutoRegisterTests(unittest.TestCase):
             self.assertEqual(registrations[0]["pid"], 333)
             self.assertEqual(registrations[0]["pid_start_time"], 444)
 
+    def test_maybe_auto_register_startup_skips_when_session_has_live_different_alias(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker_root = Path(tmp) / "mcp-broker"
+            broker_root.mkdir(parents=True)
+            (broker_root / "registry.json").write_text(
+                '[{"session_id":"shared-session","alias":"storm-ember",'
+                '"pid":111,"pid_start_time":222}]',
+                encoding="utf-8",
+            )
+            env = {
+                "C2C_MCP_BROKER_ROOT": str(broker_root),
+                "C2C_MCP_SESSION_ID": "shared-session",
+                "C2C_MCP_CLIENT_PID": "333",
+                "C2C_MCP_AUTO_REGISTER_ALIAS": "kimi-nova",
+            }
+
+            with (
+                mock.patch.dict(os.environ, env, clear=False),
+                mock.patch("c2c_mcp.os.path.exists", return_value=True),
+                mock.patch(
+                    "c2c_mcp.read_pid_start_time",
+                    side_effect=lambda pid: {111: 222, 333: 444}.get(pid),
+                ),
+            ):
+                c2c_mcp.maybe_auto_register_startup(env)
+
+            registrations = c2c_mcp.load_broker_registrations(
+                broker_root / "registry.json"
+            )
+            self.assertEqual(registrations[0]["alias"], "storm-ember")
+            self.assertEqual(registrations[0]["session_id"], "shared-session")
+
+    def test_maybe_auto_register_startup_skips_when_alias_has_live_different_session(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker_root = Path(tmp) / "mcp-broker"
+            broker_root.mkdir(parents=True)
+            (broker_root / "registry.json").write_text(
+                '[{"session_id":"real-owner","alias":"kimi-nova",'
+                '"pid":111,"pid_start_time":222}]',
+                encoding="utf-8",
+            )
+            env = {
+                "C2C_MCP_BROKER_ROOT": str(broker_root),
+                "C2C_MCP_SESSION_ID": "probe-session",
+                "C2C_MCP_CLIENT_PID": "333",
+                "C2C_MCP_AUTO_REGISTER_ALIAS": "kimi-nova",
+            }
+
+            with (
+                mock.patch.dict(os.environ, env, clear=False),
+                mock.patch("c2c_mcp.os.path.exists", return_value=True),
+                mock.patch(
+                    "c2c_mcp.read_pid_start_time",
+                    side_effect=lambda pid: {111: 222, 333: 444}.get(pid),
+                ),
+            ):
+                c2c_mcp.maybe_auto_register_startup(env)
+
+            registrations = c2c_mcp.load_broker_registrations(
+                broker_root / "registry.json"
+            )
+            self.assertEqual(registrations[0]["session_id"], "real-owner")
+            self.assertEqual(registrations[0]["alias"], "kimi-nova")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -115,6 +115,7 @@ def register_session(identifier: str) -> tuple[dict, dict, bool]:
                 registration["alias"]
                 for registration in registry.get("registrations", [])
             },
+            seed=session_id,
         )
         registration = build_registration_record(
             session_id,

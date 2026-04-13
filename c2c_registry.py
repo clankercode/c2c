@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import subprocess
@@ -213,12 +214,28 @@ def load_alias_words(path: Path | None = None) -> list[str]:
     return words
 
 
-def allocate_unique_alias(words: list[str], existing_aliases: set[str]) -> str:
-    for left in words:
-        for right in words:
-            alias = f"{left}-{right}"
-            if alias not in existing_aliases:
-                return alias
+def alias_start_offset(total: int, seed: str | None) -> int:
+    if total <= 0 or not seed:
+        return 0
+    digest = hashlib.blake2b(seed.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big") % total
+
+
+def allocate_unique_alias(
+    words: list[str], existing_aliases: set[str], *, seed: str | None = None
+) -> str:
+    total = len(words) * len(words)
+    if total == 0:
+        raise ValueError("no aliases available")
+
+    start = alias_start_offset(total, seed)
+    for step in range(total):
+        index = (start + step) % total
+        left = words[index // len(words)]
+        right = words[index % len(words)]
+        alias = f"{left}-{right}"
+        if alias not in existing_aliases:
+            return alias
     raise ValueError("no aliases available")
 
 
