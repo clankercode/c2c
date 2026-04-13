@@ -182,6 +182,22 @@ def strip_daemon_args(argv: list[str]) -> list[str]:
     return result
 
 
+def watched_pid_from_args(args: argparse.Namespace) -> int | None:
+    if args.pid is not None:
+        return int(args.pid)
+    if args.terminal_pid is not None:
+        return int(args.terminal_pid)
+    if args.claude_session:
+        session = c2c_poker.find_claude_session(args.claude_session)
+        pid = session.get("pid")
+        return int(pid) if pid is not None else None
+    return None
+
+
+def watched_pid_exited(watched_pid: int | None) -> bool:
+    return watched_pid is not None and not pid_is_alive(watched_pid)
+
+
 def deliver_once(
     *,
     session_id: str,
@@ -231,12 +247,17 @@ def run_loop(
     file_fallback: bool,
     interval: float,
     max_iterations: int | None,
+    watched_pid: int | None,
 ) -> dict[str, Any]:
     iterations = 0
     total_delivered = 0
     last_result: dict[str, Any] | None = None
+    stopped_reason: str | None = None
 
     while max_iterations is None or iterations < max_iterations:
+        if watched_pid_exited(watched_pid):
+            stopped_reason = "watched_pid_exited"
+            break
         iterations += 1
         last_result = deliver_once(
             session_id=session_id,
@@ -253,7 +274,7 @@ def run_loop(
             break
         time.sleep(interval)
 
-    return {
+    result = {
         "ok": True,
         "session_id": session_id,
         "broker_root": str(broker_root),
@@ -265,6 +286,11 @@ def run_loop(
         "dry_run": dry_run,
         "sent_at": time.time(),
     }
+    if watched_pid is not None:
+        result["watched_pid"] = watched_pid
+    if stopped_reason:
+        result["stopped_reason"] = stopped_reason
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -325,6 +351,7 @@ def main(argv: list[str] | None = None) -> int:
     session_id = c2c_poll_inbox.resolve_session_id(args.session_id)
     broker_root = args.broker_root or c2c_poll_inbox.default_broker_root()
     terminal_pid, pts, _transcript = c2c_inject.resolve_target(args)
+    watched_pid = watched_pid_from_args(args)
     if args.pidfile:
         write_pidfile(args.pidfile)
 
@@ -341,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
                 file_fallback=args.file_fallback,
                 interval=args.interval,
                 max_iterations=args.max_iterations,
+                watched_pid=watched_pid,
             )
         else:
             result = deliver_once(

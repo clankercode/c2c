@@ -46,6 +46,7 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
                         },
                     ],
                 ) as deliver_once,
+                mock.patch("c2c_deliver_inbox.pid_is_alive", return_value=True),
                 mock.patch("c2c_deliver_inbox.time.sleep") as sleep,
                 mock.patch("sys.stdout", new_callable=io.StringIO),
             ):
@@ -114,6 +115,38 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
             self.assertEqual(result, 0)
             self.assertTrue(pidfile.exists())
             self.assertRegex(pidfile.read_text(encoding="utf-8"), r"^\d+\n$")
+
+    def test_loop_exits_without_delivering_when_watched_pid_is_dead(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            broker_root = Path(temp_dir) / "mcp-broker"
+            broker_root.mkdir()
+
+            with (
+                mock.patch(
+                    "c2c_deliver_inbox.c2c_inject.resolve_target",
+                    return_value=(33333, "9", None),
+                ),
+                mock.patch("c2c_deliver_inbox.pid_is_alive", return_value=False),
+                mock.patch("c2c_deliver_inbox.deliver_once") as deliver_once,
+                mock.patch("sys.stdout", new_callable=io.StringIO),
+            ):
+                result = c2c_deliver_inbox.main(
+                    [
+                        "--client",
+                        "codex",
+                        "--pid",
+                        "12345",
+                        "--session-id",
+                        "codex-local",
+                        "--broker-root",
+                        str(broker_root),
+                        "--loop",
+                        "--json",
+                    ]
+                )
+
+            self.assertEqual(result, 0)
+            deliver_once.assert_not_called()
 
     def test_daemon_reuses_running_pidfile_without_spawning(self):
         with tempfile.TemporaryDirectory() as temp_dir:
