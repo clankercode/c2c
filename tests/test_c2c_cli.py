@@ -306,6 +306,7 @@ class C2CCLITests(unittest.TestCase):
                 "c2c-verify",
                 "c2c-watch",
                 "c2c-whoami",
+                "restart-opencode-self",
             ],
         )
         self.assertTrue((install_dir / "c2c").exists())
@@ -317,6 +318,7 @@ class C2CCLITests(unittest.TestCase):
         self.assertTrue((install_dir / "c2c-prune").exists())
         self.assertTrue((install_dir / "c2c-register").exists())
         self.assertTrue((install_dir / "c2c-room").exists())
+        self.assertTrue((install_dir / "restart-opencode-self").exists())
         self.assertTrue((install_dir / "c2c-watch").exists())
         self.assertTrue((install_dir / "c2c-whoami").exists())
 
@@ -3532,72 +3534,9 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
             str(REPO / ".git" / "c2c" / "mcp"),
         )
         self.assertEqual(payload["env"]["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
-
-    def test_run_opencode_inst_dry_run_uses_continue_flag_when_configured(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            config_dir = Path(temp_dir) / "run-opencode-inst.d"
-            config_dir.mkdir()
-            (config_dir / "opencode-a.json").write_text(
-                json.dumps(
-                    {
-                        "command": "opencode",
-                        "cwd": str(REPO),
-                        "c2c_session_id": "opencode-a-local",
-                        "c2c_alias": "opencode-a",
-                        "prompt": "Resume and continue.",
-                        "continue_last": True,
-                    }
-                ),
-                encoding="utf-8",
-            )
-            env = {
-                "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir),
-                "RUN_OPENCODE_INST_DRY_RUN": "1",
-            }
-
-            result = run_cli("run-opencode-inst", "opencode-a", env=env)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        payload = json.loads(result.stdout)
         self.assertEqual(
-            payload["env"]["RUN_OPENCODE_INST_C2C_SESSION_ID"], "opencode-a-local"
-        )
-        self.assertEqual(
-            payload["launch"],
-            ["opencode", "run", "--continue", "Resume and continue."],
-        )
-
-    def test_run_opencode_inst_dry_run_uses_explicit_session_selector_when_configured(
-        self,
-    ):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            config_dir = Path(temp_dir) / "run-opencode-inst.d"
-            config_dir.mkdir()
-            (config_dir / "opencode-a.json").write_text(
-                json.dumps(
-                    {
-                        "command": "opencode",
-                        "cwd": str(REPO),
-                        "c2c_session_id": "opencode-a-local",
-                        "c2c_alias": "opencode-a",
-                        "prompt": "Resume exact session.",
-                        "session": "session-123",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            env = {
-                "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir),
-                "RUN_OPENCODE_INST_DRY_RUN": "1",
-            }
-
-            result = run_cli("run-opencode-inst", "opencode-a", env=env)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        payload = json.loads(result.stdout)
-        self.assertEqual(
-            payload["launch"],
-            ["opencode", "run", "--session", "session-123", "Resume exact session."],
+            payload["env"]["RUN_OPENCODE_INST_RESTART_MARKER"],
+            str(REPO / "run-opencode-inst.d" / "c2c-opencode-local.restart.json"),
         )
 
     def test_run_opencode_inst_rearm_dry_run_reports_bg_loop_commands(self):
@@ -3712,89 +3651,6 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
             ],
         )
 
-    def test_restart_opencode_self_dry_run_reads_pid_file_without_signaling(self):
-        config_dir = Path(self.temp_dir.name) / "run-opencode-inst.d"
-        config_dir.mkdir()
-        sleeper = subprocess.Popen(["sleep", "30"])
-        try:
-            (config_dir / "opencode-a.pid").write_text(
-                f"{sleeper.pid}\n", encoding="utf-8"
-            )
-            env = dict(self.env)
-            env["RUN_OPENCODE_INST_CONFIG_DIR"] = str(config_dir)
-            env["RUN_OPENCODE_INST_NAME"] = "opencode-a"
-            env["RUN_OPENCODE_RESTART_SELF_DRY_RUN"] = "1"
-
-            result = run_cli("restart-opencode-self", "--expect-comm", "sleep", env=env)
-
-            self.assertEqual(result_code(result), 0, result.stderr)
-            payload = json.loads(result.stdout)
-            self.assertEqual(payload["name"], "opencode-a")
-            self.assertEqual(payload["pid"], sleeper.pid)
-            self.assertEqual(payload["pid_file"], str(config_dir / "opencode-a.pid"))
-            self.assertEqual(payload["signal"], "SIGTERM")
-            self.assertEqual(payload["comm"], "sleep")
-            self.assertEqual(payload["dry_run"], True)
-            self.assertIsNone(sleeper.poll())
-        finally:
-            sleeper.terminate()
-            try:
-                sleeper.wait(timeout=CLI_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                sleeper.kill()
-                sleeper.wait(timeout=CLI_TIMEOUT_SECONDS)
-
-    def test_restart_opencode_self_writes_reason_marker_before_signaling(self):
-        config_dir = Path(self.temp_dir.name) / "run-opencode-inst.d"
-        config_dir.mkdir()
-        sleeper = subprocess.Popen(["sleep", "30"])
-        try:
-            (config_dir / "opencode-a.pid").write_text(
-                f"{sleeper.pid}\n", encoding="utf-8"
-            )
-            env = dict(self.env)
-            env["RUN_OPENCODE_INST_CONFIG_DIR"] = str(config_dir)
-            env["RUN_OPENCODE_INST_NAME"] = "opencode-a"
-            env["RUN_OPENCODE_RESTART_SELF_DRY_RUN"] = "0"
-
-            result = run_cli(
-                "restart-opencode-self",
-                "--expect-comm",
-                "sleep",
-                "--reason",
-                "disabled snip plugin; restart managed opencode",
-                env=env,
-            )
-
-            self.assertEqual(result_code(result), 0, result.stderr)
-            sleeper.wait(timeout=CLI_TIMEOUT_SECONDS)
-            marker_path = config_dir / "opencode-a.restart.json"
-            marker = json.loads(marker_path.read_text(encoding="utf-8"))
-            self.assertEqual(marker["name"], "opencode-a")
-            self.assertEqual(marker["pid"], sleeper.pid)
-            self.assertEqual(marker["signal"], "SIGTERM")
-            self.assertEqual(
-                marker["reason"], "disabled snip plugin; restart managed opencode"
-            )
-            self.assertFalse(marker["dry_run"])
-        finally:
-            if sleeper.poll() is None:
-                sleeper.terminate()
-                try:
-                    sleeper.wait(timeout=CLI_TIMEOUT_SECONDS)
-                except subprocess.TimeoutExpired:
-                    sleeper.kill()
-                    sleeper.wait(timeout=CLI_TIMEOUT_SECONDS)
-
-    def test_restart_opencode_self_requires_instance_name(self):
-        env = dict(self.env)
-        env["RUN_OPENCODE_INST_NAME"] = ""
-
-        result = run_cli("restart-opencode-self", env=env)
-
-        self.assertEqual(result_code(result), 2)
-        self.assertIn("no instance name", result.stderr)
-
     @unittest.skipUnless(shutil.which("opencode"), "opencode not installed")
     def test_opencode_repo_local_config_lists_c2c_server(self):
         result = subprocess.run(
@@ -3895,6 +3751,98 @@ class C2CConfigureOpencodeTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             config = json.loads(existing.read_text(encoding="utf-8"))
             self.assertIn("c2c", config["mcp"])
+
+
+class RestartOpenCodeSelfTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.env = {}
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_restart_opencode_self_dry_run_reads_pid_file_without_signaling(self):
+        config_dir = Path(self.temp_dir.name) / "run-opencode-inst.d"
+        config_dir.mkdir()
+        sleeper = subprocess.Popen(["sleep", "30"])
+        try:
+            (config_dir / "opencode-a.pid").write_text(
+                f"{sleeper.pid}\n", encoding="utf-8"
+            )
+            env = dict(self.env)
+            env["RUN_OPENCODE_INST_CONFIG_DIR"] = str(config_dir)
+            env["RUN_OPENCODE_INST_NAME"] = "opencode-a"
+            env["RUN_OPENCODE_RESTART_SELF_DRY_RUN"] = "1"
+
+            result = run_cli("restart-opencode-self", "--expect-comm", "sleep", env=env)
+
+            self.assertEqual(result_code(result), 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["name"], "opencode-a")
+            self.assertEqual(payload["pid"], sleeper.pid)
+            self.assertEqual(payload["pid_file"], str(config_dir / "opencode-a.pid"))
+            self.assertEqual(payload["signal"], "SIGTERM")
+            self.assertEqual(payload["comm"], "sleep")
+            self.assertEqual(payload["dry_run"], True)
+            self.assertIsNone(sleeper.poll())
+        finally:
+            sleeper.terminate()
+            try:
+                sleeper.wait(timeout=CLI_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                sleeper.kill()
+                sleeper.wait(timeout=CLI_TIMEOUT_SECONDS)
+
+    def test_restart_opencode_self_writes_reason_marker_before_signaling(self):
+        config_dir = Path(self.temp_dir.name) / "run-opencode-inst.d"
+        config_dir.mkdir()
+        sleeper = subprocess.Popen(["sleep", "30"])
+        try:
+            (config_dir / "opencode-a.pid").write_text(
+                f"{sleeper.pid}\n", encoding="utf-8"
+            )
+            env = dict(self.env)
+            env["RUN_OPENCODE_INST_CONFIG_DIR"] = str(config_dir)
+            env["RUN_OPENCODE_INST_NAME"] = "opencode-a"
+            env["RUN_OPENCODE_RESTART_SELF_DRY_RUN"] = "0"
+
+            result = run_cli(
+                "restart-opencode-self",
+                "--expect-comm",
+                "sleep",
+                "--reason",
+                "disabled snip plugin; restart managed opencode",
+                env=env,
+            )
+
+            self.assertEqual(result_code(result), 0, result.stderr)
+            sleeper.wait(timeout=CLI_TIMEOUT_SECONDS)
+            marker_path = config_dir / "opencode-a.restart.json"
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            self.assertEqual(marker["name"], "opencode-a")
+            self.assertEqual(marker["pid"], sleeper.pid)
+            self.assertEqual(marker["signal"], "SIGTERM")
+            self.assertEqual(
+                marker["reason"], "disabled snip plugin; restart managed opencode"
+            )
+            self.assertFalse(marker["dry_run"])
+        finally:
+            if sleeper.poll() is None:
+                sleeper.terminate()
+                try:
+                    sleeper.wait(timeout=CLI_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    sleeper.kill()
+                    sleeper.wait(timeout=CLI_TIMEOUT_SECONDS)
+
+    def test_restart_opencode_self_requires_instance_name(self):
+        env = dict(self.env)
+        env["RUN_OPENCODE_INST_NAME"] = ""
+
+        result = run_cli("restart-opencode-self", env=env)
+
+        self.assertEqual(result_code(result), 2)
+        self.assertIn("no instance name", result.stderr)
 
 
 class C2CVerifyUnitTests(unittest.TestCase):

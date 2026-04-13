@@ -25,12 +25,21 @@ CONFIG_DIR = HERE / "run-opencode-inst.d"
 FALSE_STRINGS = {"", "0", "false", "no", "off"}
 
 
+def config_dir() -> Path:
+    override = os.environ.get("RUN_OPENCODE_INST_CONFIG_DIR", "").strip()
+    return Path(override) if override else CONFIG_DIR
+
+
 def config_path(name: str) -> Path:
-    return CONFIG_DIR / f"{name}.json"
+    return config_dir() / f"{name}.json"
 
 
 def pid_path(name: str) -> Path:
-    return CONFIG_DIR / f"{name}.pid"
+    return config_dir() / f"{name}.pid"
+
+
+def restart_marker_path(name: str) -> Path:
+    return config_dir() / f"{name}.restart.json"
 
 
 def load_config(name: str) -> dict:
@@ -70,6 +79,20 @@ def dry_run_enabled() -> bool:
     return os.environ.get("RUN_OPENCODE_INST_DRY_RUN", "").strip().lower() not in FALSE_STRINGS
 
 
+def build_resume_args(config: dict) -> list[str]:
+    continue_last = config.get("continue_last") is True
+    session = coerce_string(config.get("session"), "session")
+    if continue_last and session:
+        raise SystemExit(
+            "[run-opencode-inst] configure either continue_last or session, not both"
+        )
+    if continue_last:
+        return ["--continue"]
+    if session:
+        return ["--session", session]
+    return []
+
+
 def build_launch(name: str, config: dict, extra: list[str]) -> tuple[list[str], Path, dict[str, str]]:
     command = coerce_string(config.get("command", "opencode"), "command", required=True)
     cwd = coerce_string(config.get("cwd") or str(HERE), "cwd", required=True)
@@ -84,13 +107,16 @@ def build_launch(name: str, config: dict, extra: list[str]) -> tuple[list[str], 
     c2c_session_id = coerce_string(config.get("c2c_session_id"), "c2c_session_id", required=True)
     prompt = coerce_string(config.get("prompt"), "prompt", required=True)
     flags = coerce_string_list(config.get("flags"), "flags")
+    resume_args = build_resume_args(config)
 
-    launch = [command, *flags, "run", *extra, prompt]
+    launch = [command, *flags, "run", *resume_args, *extra, prompt]
 
     env = os.environ.copy()
     env["RUN_OPENCODE_INST_NAME"] = name
     env["RUN_OPENCODE_INST_C2C_SESSION_ID"] = c2c_session_id
     env["RUN_OPENCODE_INST_CONFIG_PATH"] = config_path_value
+    restart_marker = restart_marker_path(name)
+    env["RUN_OPENCODE_INST_RESTART_MARKER"] = str(restart_marker)
     env["C2C_MCP_SESSION_ID"] = c2c_session_id
     env["C2C_MCP_AUTO_REGISTER_ALIAS"] = c2c_session_id
     env["C2C_MCP_BROKER_ROOT"] = str(cwd_path / ".git" / "c2c" / "mcp")
@@ -121,6 +147,7 @@ def main(argv: list[str]) -> int:
                         "RUN_OPENCODE_INST_NAME": env["RUN_OPENCODE_INST_NAME"],
                         "RUN_OPENCODE_INST_C2C_SESSION_ID": env["RUN_OPENCODE_INST_C2C_SESSION_ID"],
                         "RUN_OPENCODE_INST_CONFIG_PATH": env["RUN_OPENCODE_INST_CONFIG_PATH"],
+                        "RUN_OPENCODE_INST_RESTART_MARKER": env["RUN_OPENCODE_INST_RESTART_MARKER"],
                         "C2C_MCP_SESSION_ID": env["C2C_MCP_SESSION_ID"],
                         "C2C_MCP_AUTO_REGISTER_ALIAS": env["C2C_MCP_AUTO_REGISTER_ALIAS"],
                         "C2C_MCP_BROKER_ROOT": env["C2C_MCP_BROKER_ROOT"],

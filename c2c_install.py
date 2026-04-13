@@ -23,6 +23,7 @@ COMMANDS = [
     "c2c-verify",
     "c2c-watch",
     "c2c-whoami",
+    "restart-opencode-self",
 ]
 
 
