@@ -164,7 +164,7 @@ def _count_archive_lines(path: Path) -> int:
         return 0
 
 
-def verify_progress_broker(broker_root: Path | None = None, alive_only: bool = False) -> dict:
+def verify_progress_broker(broker_root: Path | None = None, alive_only: bool = False, min_messages: int = 0) -> dict:
     """Broker-based verification using archive JSONL files.
 
     Works across all client types (Claude, Codex, OpenCode, Kimi, Crush).
@@ -233,6 +233,8 @@ def verify_progress_broker(broker_root: Path | None = None, alive_only: bool = F
         # received: look for archive by session_id first, then alias (named sessions)
         received = received_by_session.get(session_id, received_by_session.get(alias, 0))
         sent = sent_by_alias.get(alias, 0)
+        if min_messages > 0 and sent + received < min_messages:
+            continue
         participants[alias] = {"sent": sent, "received": received}
 
     goal_met = bool(participants) and all(
