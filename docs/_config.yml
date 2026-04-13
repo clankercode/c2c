@@ -13,6 +13,8 @@ header_pages:
   - overview.md
   - commands.md
   - architecture.md
+  - known-issues.md
+  - next-steps.md
 
 markdown: kramdown
 highlighter: rouge
