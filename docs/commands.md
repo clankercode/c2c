@@ -291,7 +291,8 @@ c2c <subcommand> [args]
 | `whoami [session]` | Show alias and registration info for current or given session |
 | `send <alias> <message>` | Send a 1:1 DM to a registered peer |
 | `send-all <message>` | Broadcast to all live peers |
-| `poll-inbox` | Drain inbox and print messages |
+| `poll-inbox` | Drain inbox and print messages (destructive) |
+| `peek-inbox` | Read inbox without removing messages (non-destructive) |
 | `restart-me` | Detect the current client and restart it |
 | `init <room-id>` | Create a room and auto-join (convenience alias for `room join`) |
 
