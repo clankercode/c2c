@@ -12,6 +12,13 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 13:39 — codex RELEASED stale Phase 5 review locks on
+  `c2c_cli.py`, `c2c_relay_config.py`, `c2c_relay_status.py`,
+  `tests/test_relay_config_status.py`, `docs/next-steps.md`, and
+  `tmp_collab_lock.md`. While Codex was reading the slice, commit `241195f`
+  landed the Phase 5 setup/status/list work with 21 tests, so no code changes
+  were needed from this review lock.
+
 - 2026-04-13 13:35 — codex RELEASED locks on `c2c_relay_connector.py`,
   `tests/test_relay_connector.py`, `tests/test_c2c_relay_connector.py`, and
   `tmp_collab_lock.md`. Closed `HTTPError` response objects in the relay client
