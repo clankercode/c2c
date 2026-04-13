@@ -3100,6 +3100,26 @@ let test_register_rename_fans_out_peer_renamed_notification () =
           in
           check bool "peer_renamed in room history" true found))
 
+let test_join_room_updates_session_id_on_alias_rejoin () =
+  (* When the same alias joins a room twice with different session_ids
+     (e.g. kimi restarts with a new session_id), only one member entry
+     should exist and the session_id should reflect the latest join.
+     This prevents duplicate room fanout messages. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let _m1 =
+        C2c_mcp.Broker.join_room broker ~room_id:"test-room"
+          ~alias:"kimi-nova" ~session_id:"kimi-xertrov-x-game"
+      in
+      let members =
+        C2c_mcp.Broker.join_room broker ~room_id:"test-room"
+          ~alias:"kimi-nova" ~session_id:"kimi-nova"
+      in
+      check int "only one member after alias rejoin" 1 (List.length members);
+      let m = List.hd members in
+      check string "alias preserved" "kimi-nova" m.C2c_mcp.rm_alias;
+      check string "session_id updated to latest" "kimi-nova" m.C2c_mcp.rm_session_id)
+
 let () =
   run "c2c_mcp"
     [ ( "broker",
@@ -3280,4 +3300,6 @@ let () =
              test_room_history_limit_one_returns_last
          ; test_case "register rename fans out peer_renamed notification" `Quick
              test_register_rename_fans_out_peer_renamed_notification
+         ; test_case "join_room updates session_id when alias rejoins with new session" `Quick
+             test_join_room_updates_session_id_on_alias_rejoin
          ] ) ]

@@ -906,16 +906,30 @@ module Broker = struct
       invalid_arg ("invalid room_id: " ^ room_id);
     with_room_members_lock t ~room_id (fun () ->
         let members = load_room_members t ~room_id in
-        let already =
+        (* Exact match: same alias AND same session_id — already a member, no-op *)
+        let exact_match =
           List.exists
             (fun m -> m.rm_alias = alias && m.rm_session_id = session_id)
             members
         in
-        if already then members
+        if exact_match then members
         else begin
+          (* Same alias, different session_id: the session was restarted.
+             Replace the old entry so we don't accumulate duplicates and so
+             evict_dead_from_rooms can evict by the current session_id. *)
+          let has_alias =
+            List.exists (fun m -> m.rm_alias = alias) members
+          in
           let now = Unix.gettimeofday () in
           let member = { rm_alias = alias; rm_session_id = session_id; joined_at = now } in
-          let updated = members @ [ member ] in
+          let updated =
+            if has_alias then
+              List.map
+                (fun m -> if m.rm_alias = alias then member else m)
+                members
+            else
+              members @ [ member ]
+          in
           save_room_members t ~room_id updated;
           updated
         end)
