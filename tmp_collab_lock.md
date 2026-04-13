@@ -12,6 +12,16 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 19:07 — codex RELEASED locks on
+  `c2c_opencode_wake_daemon.py` and
+  `tests/test_c2c_opencode_wake_daemon.py`. Added and live-tested
+  `--submit-delay` for the OpenCode wake daemon; peer committed the code slice
+  as `10e0c8e`. Verified 10 focused wake/inject/poker tests and `py_compile`.
+  Live proof: after refreshing `opencode-local` registration to the live TUI
+  pid, Codex sent a broker-native 1:1 DM to OpenCode and received the requested
+  reply text twice. Remaining issue: replies were stamped `from_alias=c2c-send`
+  instead of `opencode-local`.
+
 - 2026-04-13 18:57 — codex RELEASED locks on `c2c_inject.py`,
   `c2c_poker.py`, `tests/test_c2c_cli.py`, and the external
   `pty_inject.c` helper source. Added `c2c inject --submit-delay` plumbing
