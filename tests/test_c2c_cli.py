@@ -23,6 +23,7 @@ import c2c_inject
 import c2c_mcp
 import c2c_poll_inbox
 import c2c_poker
+import c2c_prune
 import c2c_send
 import c2c_cli
 import c2c_verify
@@ -71,6 +72,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c-configure-opencode",
         "c2c-deliver-inbox",
         "c2c-init",
+        "c2c-prune",
         "c2c-register",
         "c2c-list",
         "c2c-send",
@@ -84,6 +86,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_configure_opencode.py",
         "c2c_init.py",
         "c2c_list.py",
+        "c2c_prune.py",
         "c2c_send.py",
         "c2c_send_all.py",
         "c2c_install.py",
@@ -290,6 +293,7 @@ class C2CCLITests(unittest.TestCase):
                 "c2c-list",
                 "c2c-poker-sweep",
                 "c2c-poll-inbox",
+                "c2c-prune",
                 "c2c-register",
                 "c2c-send",
                 "c2c-send-all",
@@ -303,6 +307,7 @@ class C2CCLITests(unittest.TestCase):
         self.assertTrue((install_dir / "c2c-inject").exists())
         self.assertTrue((install_dir / "c2c-poker-sweep").exists())
         self.assertTrue((install_dir / "c2c-poll-inbox").exists())
+        self.assertTrue((install_dir / "c2c-prune").exists())
         self.assertTrue((install_dir / "c2c-register").exists())
         self.assertTrue((install_dir / "c2c-whoami").exists())
 
@@ -2090,6 +2095,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c-configure-opencode",
                 "c2c-deliver-inbox",
                 "c2c-init",
+                "c2c-prune",
                 "c2c-register",
                 "c2c-list",
                 "c2c-send",
@@ -2103,6 +2109,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c_configure_opencode.py",
                 "c2c_init.py",
                 "c2c_list.py",
+                "c2c_prune.py",
                 "c2c_send.py",
                 "c2c_send_all.py",
                 "c2c_install.py",
@@ -3787,6 +3794,101 @@ class C2CWhoamiUnitTests(unittest.TestCase):
             )
         finally:
             transcript_path.unlink(missing_ok=True)
+
+
+class C2CPruneUnitTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.registry_path = Path(self.temp_dir.name) / "registry.yaml"
+        self.stale_session_id = "dead0000-0000-0000-0000-000000000000"
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _seed_registry(self):
+        """Seed 3 registrations: agent-one, agent-two (live), and one stale."""
+        registry = {
+            "registrations": [
+                {"session_id": AGENT_ONE_SESSION_ID, "alias": "storm-herald"},
+                {"session_id": AGENT_TWO_SESSION_ID, "alias": "ember-crown"},
+                {"session_id": self.stale_session_id, "alias": "silver-banner"},
+            ]
+        }
+        save_registry(registry, self.registry_path)
+        return registry
+
+    def _mock_load_sessions(self):
+        """Return only agent-one as live; agent-two and stale are dead."""
+        return [
+            {"session_id": AGENT_ONE_SESSION_ID, "name": "agent-one"},
+        ]
+
+    def test_prune_removes_stale_entries_from_yaml(self):
+        self._seed_registry()
+
+        with (
+            mock.patch.dict(
+                os.environ, {"C2C_REGISTRY_PATH": str(self.registry_path)}
+            ),
+            mock.patch(
+                "c2c_prune.load_sessions", side_effect=self._mock_load_sessions
+            ),
+        ):
+            rc = c2c_prune.main([])
+
+        self.assertEqual(rc, 0)
+        registry = load_registry(self.registry_path)
+        session_ids = [r["session_id"] for r in registry["registrations"]]
+        self.assertEqual(session_ids, [AGENT_ONE_SESSION_ID])
+
+    def test_prune_dry_run_does_not_mutate(self):
+        self._seed_registry()
+
+        with (
+            mock.patch.dict(
+                os.environ, {"C2C_REGISTRY_PATH": str(self.registry_path)}
+            ),
+            mock.patch(
+                "c2c_prune.load_sessions", side_effect=self._mock_load_sessions
+            ),
+        ):
+            rc = c2c_prune.main(["--dry-run"])
+
+        self.assertEqual(rc, 0)
+        registry = load_registry(self.registry_path)
+        session_ids = [r["session_id"] for r in registry["registrations"]]
+        self.assertEqual(len(session_ids), 3)
+        self.assertIn(AGENT_ONE_SESSION_ID, session_ids)
+        self.assertIn(AGENT_TWO_SESSION_ID, session_ids)
+        self.assertIn(self.stale_session_id, session_ids)
+
+    def test_prune_reports_removed_entries_in_json(self):
+        self._seed_registry()
+
+        with (
+            mock.patch.dict(
+                os.environ, {"C2C_REGISTRY_PATH": str(self.registry_path)}
+            ),
+            mock.patch(
+                "c2c_prune.load_sessions", side_effect=self._mock_load_sessions
+            ),
+            mock.patch("sys.stdout", new_callable=io.StringIO) as mock_stdout,
+        ):
+            rc = c2c_prune.main(["--json"])
+
+        self.assertEqual(rc, 0)
+        payload = json.loads(mock_stdout.getvalue())
+        self.assertEqual(payload["count"], 2)
+        self.assertFalse(payload["dry_run"])
+        removed_aliases = sorted(entry["alias"] for entry in payload["pruned"])
+        self.assertEqual(removed_aliases, ["ember-crown", "silver-banner"])
+        removed_session_ids = sorted(
+            entry["session_id"] for entry in payload["pruned"]
+        )
+        self.assertEqual(
+            removed_session_ids,
+            sorted([AGENT_TWO_SESSION_ID, self.stale_session_id]),
+        )
 
 
 def result_code(result):
