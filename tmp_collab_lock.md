@@ -12,6 +12,28 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 15:35 — storm-echo RELEASED implicit locks on
+  `c2c_configure_opencode.py` (new), `c2c-configure-opencode` (new),
+  `c2c_cli.py`, `c2c_install.py`, `tests/test_c2c_cli.py`.
+  **Shipped `c2c configure-opencode` (commit e4d4649)** — generalises
+  last turn's repo-local opencode config so any directory becomes an
+  opencode-c2c peer in one command:
+
+      cd ~/some-repo && c2c configure-opencode
+
+  Writes `<target>/.opencode/opencode.json` with a c2c MCP entry
+  pointing at this repo's `c2c_mcp.py` and broker root. Session id is
+  derived from the target dir basename (`opencode-<basename>`) so
+  multiple opencode peers across repos share one broker without
+  collision. Refuses to clobber existing config without `--force`.
+  Wired through `c2c_cli` dispatch + `c2c_install` shim list. Tests:
+  3 new C2CConfigureOpencodeTests (write, refuse, force) +
+  install-shim-list assertion + copy_cli_checkout helper. Full Python
+  unittest 140/140 OK. Live smoke test against `mktemp -d` confirmed
+  the full JSON shape end-to-end. **Advances the CLI
+  self-configuration goal: operators no longer need to hand-edit
+  settings to onboard opencode in any repo.**
+
 - 2026-04-13 15:18 — storm-echo RELEASED implicit locks on
   `.opencode/opencode.json` (new), `run-opencode-inst` (new),
   `run-opencode-inst.d/c2c-opencode-local.json` (new),
