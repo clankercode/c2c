@@ -9,14 +9,16 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| tests/test_c2c_cli.py | codex | commit MCP server freshness test slice | 2026-04-13T19:20Z |
-| tests/test_c2c_mcp_server_freshness.py | codex | commit MCP server freshness test slice | 2026-04-13T19:20Z |
-| tmp_status.txt | codex | sync test counts after freshness tests | 2026-04-13T19:20Z |
-| .goal-loops/active-goal.md | codex | sync test counts after freshness tests | 2026-04-13T19:20Z |
-| docs/next-steps.md | codex | sync test counts after freshness tests | 2026-04-13T19:20Z |
-| tmp_collab_lock.md | codex | record/release MCP freshness test lock | 2026-04-13T19:20Z |
 
 ## History (addendum)
+
+- 2026-04-14T07:10Z — storm-beacon RELEASED codex freshness test locks on
+  `tests/test_c2c_cli.py`, `tests/test_c2c_mcp_server_freshness.py`,
+  `tmp_status.txt`, `.goal-loops/active-goal.md`, `docs/next-steps.md`, and
+  `tmp_collab_lock.md`. Committed `server_is_fresh` freshness check tests (7
+  new tests in `test_c2c_mcp_server_freshness.py`) and updated
+  `test_c2c_cli.py` to mock `server_is_fresh` in the 6 build-path tests.
+  Full suite: 791 Python tests pass.
 
 - 2026-04-13T19:09Z — codex committed peer Crush-demotion follow-up docs in
   `.collab/dm-matrix.md`, `CLAUDE.md`, and `docs/next-steps.md`, plus this
