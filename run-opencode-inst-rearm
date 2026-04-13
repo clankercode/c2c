@@ -8,10 +8,12 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
+import c2c_mcp
 import c2c_poker
 
 HERE = Path(__file__).resolve().parent
@@ -129,6 +131,79 @@ def default_alias(name: str, session_id: str) -> str:
     if config_value:
         return config_value
     return session_id
+
+
+def default_broker_root(name: str) -> Path:
+    env_value = os.environ.get("C2C_MCP_BROKER_ROOT", "").strip()
+    if env_value:
+        return Path(env_value)
+    cwd = str(load_config(name).get("cwd", "")).strip()
+    if cwd:
+        return Path(cwd).expanduser() / ".git" / "c2c" / "mcp"
+    return Path(c2c_mcp.default_broker_root())
+
+
+def refresh_broker_registration(
+    name: str, session_id: str, alias: str, target_pid: int
+) -> dict[str, Any]:
+    if not pid_is_alive(target_pid):
+        return {"ok": False, "reason": "target_pid_not_alive", "pid": target_pid}
+
+    broker_root = default_broker_root(name)
+    broker_root.mkdir(parents=True, exist_ok=True)
+    registry_path = broker_root / "registry.json"
+    pid_start_time = c2c_mcp.read_pid_start_time(target_pid)
+    registration: dict[str, Any] = {
+        "session_id": session_id,
+        "alias": alias,
+        "pid": target_pid,
+    }
+    if pid_start_time is not None:
+        registration["pid_start_time"] = pid_start_time
+
+    with c2c_mcp.registry_write_lock(registry_path):
+        registrations = c2c_mcp.load_broker_registrations(registry_path)
+        previous = next(
+            (
+                existing
+                for existing in registrations
+                if existing.get("session_id") == session_id
+                or existing.get("alias") == alias
+            ),
+            None,
+        )
+        registrations = [
+            existing
+            for existing in registrations
+            if existing.get("session_id") != session_id
+            and existing.get("alias") != alias
+        ]
+        registrations.insert(0, registration)
+
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=broker_root,
+            prefix=f".{registry_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            handle.write(json.dumps(registrations))
+            handle.flush()
+            os.fsync(handle.fileno())
+            temp_path = Path(handle.name)
+
+        os.replace(temp_path, registry_path)
+
+    return {
+        "ok": True,
+        "broker_root": str(broker_root),
+        "session_id": session_id,
+        "alias": alias,
+        "pid": target_pid,
+        "pid_start_time": pid_start_time,
+        "previous_pid": previous.get("pid") if previous else None,
+    }
 
 
 def build_commands(
@@ -279,6 +354,10 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"would rearm OpenCode support loops for {args.name} pid={target_pid}")
         return 0
+
+    payload["registration"] = refresh_broker_registration(
+        args.name, session_id, alias, target_pid
+    )
 
     try:
         payload["terminal_target"] = resolve_terminal_target(target_pid)
