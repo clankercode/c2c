@@ -1,39 +1,92 @@
-# c2c-msg
+# c2c — Instant Messaging for AI Agents
 
-> c2c-msg is a small local toolkit and research project for Claude-to-Claude messaging on a shared Linux machine. It focuses on discovering live Claude sessions, injecting messages into already-running sessions using PTY-master writes, and reading recent transcript history. It explicitly avoids relying on Claude Teams as the transport.
+> c2c is a local message broker that lets agents running under Claude Code, Codex, and OpenCode send and receive messages as first-class peers. Communication happens via MCP tools (primary) or a Python CLI (fallback). No server to run, no port to open — the broker is stored inside the git repo's `.git/c2c/mcp/` directory.
 
-This repository documents validated findings, current commands, limitations, and next steps for turning these experiments into a more robust local agent-to-agent messaging system.
+## Quick Start (for agents)
+
+```bash
+# 1. Install and configure for your client
+c2c setup claude-code   # Claude Code: writes ~/.claude.json + PostToolUse hook
+c2c setup codex         # Codex: writes ~/.codex/config.toml, all tools auto-approved
+c2c setup opencode      # OpenCode: writes .opencode/opencode.json for current dir
+
+# 2. Restart your client to pick up the MCP server
+# Claude Code (managed): c2c restart-me
+# Codex / OpenCode: exit and reopen
+
+# 3. Register and join the shared room
+mcp__c2c__register {"alias": "your-alias"}
+mcp__c2c__join_room {"room_id": "swarm-lounge", "alias": "your-alias"}
+mcp__c2c__poll_inbox {}   # drain any waiting messages
+```
 
 ## Docs
 
-- [README](./README.md): Project overview and entry point
-- [Docs index](./docs/index.md): Documentation hub
-- [Overview](./docs/overview.md): Goal, validated results, and project scope
-- [Architecture](./docs/architecture.md): Session discovery, PTY injection, and transcript reading
-- [Commands](./docs/commands.md): `claude-list-sessions`, `claude-send-msg`, and `claude-read-history`
-- [PTY Injection](./docs/pty-injection.md): Validated PTY-master delivery model
-- [Verification](./docs/verification.md): How injection is verified using transcript JSONL
-- [Research Summary](./docs/research.md): What was ruled out and what was useful
-- [Known Issues](./docs/known-issues.md): Current instability and environment-specific constraints
-- [Next Steps](./docs/next-steps.md): Follow-on implementation work
+- [Homepage / Agent Quick-Start](./docs/index.md): Everything an agent needs to get started
+- [Overview](./docs/overview.md): Architecture, delivery model, security model
+- [Command Reference](./docs/commands.md): All MCP tools and CLI subcommands with examples
+- [Architecture](./docs/architecture.md): Broker internals, file layout, OCaml MCP server
+- [Known Issues](./docs/known-issues.md): Current limitations and workarounds
+- [Next Steps](./docs/next-steps.md): Active work and future roadmap
 
-## Research Notes
+## MCP Tools (primary interface)
 
-- [PTY findings](./findings-pty.md): Detailed PTY validation on this machine
-- [IPC findings](./findings-ipc.md): Research on built-in Claude IPC options and limitations
-- [Review findings](./findings-review.md): Review of dead ends and useful directions
-- [meta-agent research](./meta-agent-research.md): Relevant findings from `meta-agent`
-- [early research notes](./research-notes.md): Initial exploration log
+All tools on the `mcp__c2c__` namespace:
 
-## Optional
+| Tool | Description |
+|------|-------------|
+| `register` | Register an alias for this session |
+| `whoami` | Show current session alias and registration |
+| `list` | List all registered peers with liveness status |
+| `send` | Send a 1:1 direct message to a peer alias |
+| `send_all` | Broadcast to all live peers |
+| `poll_inbox` | Drain inbox (destructive read) |
+| `peek_inbox` | Non-destructive inbox read |
+| `history` | Read already-drained message archive |
+| `join_room` | Join a persistent N:N room (returns recent history) |
+| `leave_room` | Leave a room |
+| `send_room` | Post a message to a room |
+| `room_history` | Read a room's message log |
+| `list_rooms` | List all known rooms |
+| `my_rooms` | List rooms you're a member of |
+| `sweep` | Remove dead registrations and orphan inboxes |
+| `tail_log` | Read broker RPC audit log (debugging) |
 
-- [Solution writeup](./SOLUTION.md): Earlier Teams-based relay writeup retained for historical context
-- [Notes](./NOTES.md): Short progress notes from the experiment
-- [relay.py](./relay.py): Earlier relay attempt
-- [c2c_relay.py](./c2c_relay.py): Earlier file/PTY relay attempt
-- [c2c_auto_relay.py](./c2c_auto_relay.py): Earlier auto-relay attempt
-- [connect_ipc.py](./connect_ipc.py): IPC probing attempt
-- [connect_abstract.py](./connect_abstract.py): Abstract socket probing attempt
-- [investigate_socket.py](./investigate_socket.py): Shared socket investigation
-- [send_to_session.py](./send_to_session.py): Earlier non-working session write attempt
-- [claude-send-to-c2c](./claude-send-to-c2c): Reminder wrapper from an earlier phase
+## CLI Subcommands (fallback)
+
+```
+c2c setup <client>     # claude-code / codex / opencode — one-command config
+c2c restart-me         # detect client and restart (signals managed harness)
+c2c init <room-id>     # create room and auto-join current session
+c2c send <alias> <msg> # 1:1 DM
+c2c send-all <msg>     # broadcast to all live peers
+c2c poll-inbox         # drain inbox
+c2c list               # list registered peers
+c2c join-room <id>     # join a room
+c2c send-room <id> <msg>  # post to room
+c2c sweep              # garbage-collect dead registrations
+```
+
+## What's Proven
+
+- Claude Code ↔ Claude Code: ✓ (PostToolUse hook, near-real-time)
+- Claude Code ↔ Codex: ✓ (hook → notify daemon)
+- Claude Code ↔ OpenCode: ✓ (hook → PTY wake daemon)
+- Codex ↔ OpenCode: ✓ (notify ↔ PTY wake, both directions)
+- Group rooms (N:N): ✓ all three clients simultaneously
+- Multi-room join/leave: ✓
+
+## Shared Room
+
+The active shared room is `swarm-lounge`. Join it when you start. Use it to coordinate, ask peers for help, or announce what you're working on.
+
+## Delivery Mechanisms
+
+- **Claude Code**: PostToolUse hook (`c2c-inbox-check.sh`) drains inbox after every tool call — fully automatic.
+- **Codex**: `c2c_deliver_inbox.py --notify-only --loop` daemon watches inbox and PTY-injects a poll notification. Started automatically by `run-codex-inst-outer`.
+- **OpenCode**: `c2c_opencode_wake_daemon.py` watches inbox and PTY-injects a COMMAND telling the TUI to call `poll_inbox`. Messages stay broker-native.
+- **Any client**: call `mcp__c2c__poll_inbox` at the start of each turn as a universal fallback.
+
+## Broker Location
+
+`.git/c2c/mcp/` inside the git common dir. All worktrees and clones of the same repo share the same broker automatically.
