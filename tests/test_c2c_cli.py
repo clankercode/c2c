@@ -2646,7 +2646,9 @@ class C2CSendUnitTests(unittest.TestCase):
 
             with (
                 mock.patch("c2c_send.load_sessions", return_value=[]),
-                mock.patch("c2c_send.resolve_alias", return_value=(session, registration)),
+                mock.patch(
+                    "c2c_send.resolve_alias", return_value=(session, registration)
+                ),
                 mock.patch.dict(
                     os.environ,
                     {
@@ -3970,7 +3972,9 @@ class C2CConfigureOpencodeTests(unittest.TestCase):
             # session_id derived from dir name, alias is the custom value
             self.assertEqual(payload["session_id"], f"opencode-{target.name}")
             self.assertEqual(payload["alias"], "opencode-primary")
-            config = json.loads(Path(payload["config_path"]).read_text(encoding="utf-8"))
+            config = json.loads(
+                Path(payload["config_path"]).read_text(encoding="utf-8")
+            )
             env = config["mcp"]["c2c"]["environment"]
             self.assertEqual(env["C2C_MCP_SESSION_ID"], f"opencode-{target.name}")
             self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "opencode-primary")
@@ -4033,7 +4037,8 @@ class RestartOpenCodeSelfTests(unittest.TestCase):
     def test_restart_opencode_self_dry_run_reads_pid_file_without_signaling(self):
         config_dir = Path(self.temp_dir.name) / "run-opencode-inst.d"
         config_dir.mkdir()
-        sleeper = subprocess.Popen(["sleep", "30"])
+        sleeper = subprocess.Popen(["sleep", "30"], start_new_session=True)
+        sleeper_pgid = os.getpgid(sleeper.pid)
         try:
             (config_dir / "opencode-a.pid").write_text(
                 f"{sleeper.pid}\n", encoding="utf-8"
@@ -4052,6 +4057,7 @@ class RestartOpenCodeSelfTests(unittest.TestCase):
             self.assertEqual(payload["pid_file"], str(config_dir / "opencode-a.pid"))
             self.assertEqual(payload["signal"], "SIGTERM")
             self.assertEqual(payload["comm"], "sleep")
+            self.assertEqual(payload["process_group"], os.getpgid(sleeper.pid))
             self.assertEqual(payload["dry_run"], True)
             self.assertIsNone(sleeper.poll())
         finally:
@@ -4065,7 +4071,8 @@ class RestartOpenCodeSelfTests(unittest.TestCase):
     def test_restart_opencode_self_writes_reason_marker_before_signaling(self):
         config_dir = Path(self.temp_dir.name) / "run-opencode-inst.d"
         config_dir.mkdir()
-        sleeper = subprocess.Popen(["sleep", "30"])
+        sleeper = subprocess.Popen(["sleep", "30"], start_new_session=True)
+        sleeper_pgid = os.getpgid(sleeper.pid)
         try:
             (config_dir / "opencode-a.pid").write_text(
                 f"{sleeper.pid}\n", encoding="utf-8"
@@ -4091,6 +4098,7 @@ class RestartOpenCodeSelfTests(unittest.TestCase):
             self.assertEqual(marker["name"], "opencode-a")
             self.assertEqual(marker["pid"], sleeper.pid)
             self.assertEqual(marker["signal"], "SIGTERM")
+            self.assertEqual(marker["process_group"], sleeper_pgid)
             self.assertEqual(
                 marker["reason"], "disabled snip plugin; restart managed opencode"
             )

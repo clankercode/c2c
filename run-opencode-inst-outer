@@ -91,7 +91,7 @@ def main(argv: list[str]) -> int:
         started = time.monotonic()
         proc = None
         try:
-            proc = subprocess.Popen(command, cwd=HERE)
+            proc = subprocess.Popen(command, cwd=HERE, start_new_session=True)
             time.sleep(0.5)
             maybe_rearm(name)
             exit_code = proc.wait()
