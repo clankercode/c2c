@@ -91,26 +91,29 @@ These are Max's target experiences, verbatim:
   Wire `prompt` delivery, and spool clearing all confirmed working end-to-end
   (see finding 2026-04-14T02-27-00Z-kimi-nova-kimi-wire-bridge-live-proof.md).
   Persistent `--loop` and detached `--daemon` modes are implemented for daemon
-  use. This is Kimi's preferred native path; master-side PTY wake remains the
+  use. `c2c wire-daemon` lifecycle management subcommand added (start/stop/status/
+  restart/list) with standard pidfile support (2026-04-14, storm-ember).
+  This is Kimi's preferred native path; master-side PTY wake remains the
   manual TUI fallback.
+
+### Satisfied (continued)
+
+- **Cross-machine relay live test** ✓: localhost multi-broker test passed
+  2026-04-14 (see finding 2026-04-14T02-06-00Z-kimi-nova-relay-localhost-
+  multi-broker-test.md). Docker cross-machine equivalent test passed 2026-04-14
+  (see finding 2026-04-14T02-16-00Z-kimi-nova-relay-docker-cross-machine-
+  test.md). True two-machine Tailscale test passed 2026-04-14 with `x-game` ↔
+  `xsm` over real network (see finding 2026-04-14T02-37-00Z-kimi-nova-relay-
+  tailscale-two-machine-test.md).
+- **Site visual redesign** ✓: Max approved without sign-off gate. Redesign
+  shipped with deep-space dark theme, electric cyan + magenta accents,
+  glass-morphism cards, mesh-gradient hero, pulse animations, card-grid
+  features, and Inter typography (2026-04-14).
 
 ### Active Work
 
 - **Crush DM proof** — `c2c_crush_wake_daemon.py` written, Crush MCP config
-  ready. Blocked: `ANTHROPIC_API_KEY` not set in Claude Code shell. Will unblock
-  when Max provides the key or launches Crush manually.
-- **Cross-machine relay live test** — relay implementation complete and in-process
-  tested. Localhost multi-broker test (two separate broker roots, DM + rooms)
-  passed 2026-04-14 by `kimi-nova` (see finding
-  2026-04-14T02-06-00Z-kimi-nova-relay-localhost-multi-broker-test.md).
-  **Docker cross-machine equivalent test passed 2026-04-14** by `kimi-nova`
-  (host broker ↔ isolated Docker container with separate Python runtime and
-  filesystem over network loopback; DM + rooms both proven). See finding
-  2026-04-14T02-16-00Z-kimi-nova-relay-docker-cross-machine-test.md.
-  **True two-machine Tailscale test passed 2026-04-14** by `kimi-nova`
-  (two separate Linux hosts on Tailscale: `x-game` ↔ `xsm`; DM + rooms both
-  proven over real network with ~6–21 ms latency). See finding
-  2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md.
+  ready. Max is configuring Crush; will unblock when ready.
 
 ### Remaining Product Polish
 
@@ -118,7 +121,6 @@ These are Max's target experiences, verbatim:
   `[c2c-poll-inbox] N message(s) for <session> (<source>)` before message bodies;
   JSON output gains a top-level `count` field. 3 new tests; 718 Python total
   (a01ce40, 2026-04-14).
-- Site visual redesign — Max approved: go for it, no sign-off needed.
 - Room access control (invite-only, message visibility scopes) — future work.
 - Native MCP push delivery — revisit `notifications/claude/channel` on future
   Claude builds.
