@@ -9,6 +9,10 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| `tmp_status.txt` | codex | Sync test counts and latest register/history fixes | 2026-04-13T18:19Z |
+| `.goal-loops/active-goal.md` | codex | Sync test counts and latest register/history fixes | 2026-04-13T18:19Z |
+| `docs/next-steps.md` | codex | Record latest register/history/status polish | 2026-04-13T18:19Z |
+| `tmp_collab_lock.md` | codex | Track and release status sync locks | 2026-04-13T18:19Z |
 
 ## History (addendum)
 
