@@ -71,6 +71,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
     for relative_path in [
         "c2c",
         "c2c-configure-claude-code",
+        "c2c-configure-codex",
         "c2c-configure-opencode",
         "c2c-deliver-inbox",
         "c2c-init",
@@ -90,6 +91,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_register.py",
         "c2c_room.py",
         "c2c_configure_claude_code.py",
+        "c2c_configure_codex.py",
         "c2c_configure_opencode.py",
         "c2c_init.py",
         "c2c_list.py",
@@ -295,6 +297,7 @@ class C2CCLITests(unittest.TestCase):
             [
                 "c2c",
                 "c2c-configure-claude-code",
+                "c2c-configure-codex",
                 "c2c-configure-opencode",
                 "c2c-deliver-inbox",
                 "c2c-init",
@@ -2254,6 +2257,7 @@ class C2CTestHelpersTests(unittest.TestCase):
             for relative_path in [
                 "c2c",
                 "c2c-configure-claude-code",
+                "c2c-configure-codex",
                 "c2c-configure-opencode",
                 "c2c-deliver-inbox",
                 "c2c-init",
@@ -2273,6 +2277,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c_register.py",
                 "c2c_room.py",
                 "c2c_configure_claude_code.py",
+                "c2c_configure_codex.py",
                 "c2c_configure_opencode.py",
                 "c2c_init.py",
                 "c2c_list.py",

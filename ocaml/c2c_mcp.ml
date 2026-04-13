@@ -884,9 +884,26 @@ module Broker = struct
     ; sr_ts : float
     }
 
+  (* Suppress byte-identical repeat messages from the same sender within this window. *)
+  let room_send_dedup_window_s = 60.0
+
   let send_room t ~from_alias ~room_id ~content =
     if not (valid_room_id room_id) then
       invalid_arg ("invalid room_id: " ^ room_id);
+    (* Dedup: skip if the same sender just sent the same content within the window. *)
+    let now = Unix.gettimeofday () in
+    let recent = read_room_history t ~room_id ~limit:20 in
+    let is_dup =
+      List.exists
+        (fun m ->
+          m.rm_from_alias = from_alias
+          && m.rm_content = content
+          && now -. m.rm_ts < room_send_dedup_window_s)
+        recent
+    in
+    if is_dup then
+      { sr_delivered_to = []; sr_skipped = []; sr_ts = now }
+    else begin
     (* Step 1: append to history (under history lock, released before fan-out) *)
     let ts = append_room_history t ~room_id ~from_alias ~content in
     (* Step 2: load current members snapshot *)
@@ -926,6 +943,7 @@ module Broker = struct
     ; sr_skipped = List.rev !skipped
     ; sr_ts = ts
     }
+    end
 
   type room_info =
     { ri_room_id : string

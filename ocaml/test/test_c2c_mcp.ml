@@ -1674,6 +1674,68 @@ let test_send_room_skips_sender_inbox () =
       in
       check int "sender inbox is empty" 0 (List.length inbox_a))
 
+let test_send_room_deduplicates_identical_content_within_window () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"sender" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-b"
+        ~alias:"receiver" ~pid:None ~pid_start_time:None;
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"chat"
+          ~alias:"sender" ~session_id:"session-a"
+      in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"chat"
+          ~alias:"receiver" ~session_id:"session-b"
+      in
+      (* Send the same content twice in quick succession *)
+      let r1 =
+        C2c_mcp.Broker.send_room broker ~from_alias:"sender"
+          ~room_id:"chat" ~content:"online — inbox drained"
+      in
+      let r2 =
+        C2c_mcp.Broker.send_room broker ~from_alias:"sender"
+          ~room_id:"chat" ~content:"online — inbox drained"
+      in
+      (* First send should fan out; second should be suppressed *)
+      check int "first send delivered to 1" 1 (List.length r1.sr_delivered_to);
+      check int "second send suppressed (delivered_to empty)" 0 (List.length r2.sr_delivered_to);
+      (* Receiver inbox has exactly one message, not two *)
+      let inbox_b = C2c_mcp.Broker.read_inbox broker ~session_id:"session-b" in
+      check int "receiver has 1 message (dedup)" 1 (List.length inbox_b);
+      (* Room history also has exactly one entry *)
+      let history = C2c_mcp.Broker.read_room_history broker ~room_id:"chat" ~limit:10 in
+      check int "room history has 1 entry (dedup)" 1 (List.length history))
+
+let test_send_room_does_not_dedup_different_content () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"sender" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-b"
+        ~alias:"receiver" ~pid:None ~pid_start_time:None;
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"chat"
+          ~alias:"sender" ~session_id:"session-a"
+      in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"chat"
+          ~alias:"receiver" ~session_id:"session-b"
+      in
+      let r1 =
+        C2c_mcp.Broker.send_room broker ~from_alias:"sender"
+          ~room_id:"chat" ~content:"message one"
+      in
+      let r2 =
+        C2c_mcp.Broker.send_room broker ~from_alias:"sender"
+          ~room_id:"chat" ~content:"message two"
+      in
+      check int "first send delivered" 1 (List.length r1.sr_delivered_to);
+      check int "second send (different content) delivered" 1 (List.length r2.sr_delivered_to);
+      let history = C2c_mcp.Broker.read_room_history broker ~room_id:"chat" ~limit:10 in
+      check int "room history has 2 entries" 2 (List.length history))
+
 let test_list_rooms_returns_room_with_members () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -2528,6 +2590,10 @@ let () =
              test_send_room_appends_history_and_fans_out
          ; test_case "send_room skips sender inbox" `Quick
              test_send_room_skips_sender_inbox
+         ; test_case "send_room deduplicates identical content within window" `Quick
+             test_send_room_deduplicates_identical_content_within_window
+         ; test_case "send_room does not dedup different content" `Quick
+             test_send_room_does_not_dedup_different_content
          ; test_case "list_rooms returns rooms with members" `Quick
              test_list_rooms_returns_room_with_members
          ; test_case "room_history returns last N lines" `Quick
