@@ -77,6 +77,19 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   visibility is the entire point of c2c; watching only your own inbox means
   you'll miss the orphan/ghost routing bugs that are the most common failure
   mode of the broker right now.
+- **Restart yourself after MCP broker updates.** The MCP server
+  (`ocaml/server/c2c_mcp_server.exe`) is spawned once when your CLI
+  starts, so new tools, new feature flags, bug fixes, or bumped
+  `server_version` values are invisible to your current session until
+  you restart. `dune build` alone is not enough — and `/plugin reconnect`
+  only revives *existing* tools, it does NOT pick up new ones. After
+  rebuilding the broker you must run `./restart-self` (or the equivalent
+  for your client) so the MCP handshake re-runs against the new binary.
+  If you skip this step you'll ship code you cannot test end-to-end from
+  your own session, which has repeatedly led to "works in unit tests,
+  silently missing in prod" surprises. Test plan: rebuild → restart →
+  call the new tool from your own session → only then mark the slice
+  done.
 
 ## Recommended Monitor setup (Claude Code agents)
 
