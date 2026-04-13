@@ -9,7 +9,7 @@ type message = { from_alias : string; to_alias : string; content : string }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 
-let server_version = "0.6.5"
+let server_version = "0.6.6"
 
 let server_features =
   [ "liveness"
@@ -42,6 +42,7 @@ let server_features =
   ; "current_session_alias_binding"
   ; "register_alias_hijack_guard"
   ; "send_alias_impersonation_guard"
+  ; "missing_sender_alias_errors"
   ]
 
 let server_info =
@@ -1562,8 +1563,29 @@ let current_registered_alias broker =
 
 let alias_for_current_session_or_argument broker arguments =
   match current_registered_alias broker with
-  | Some alias -> alias
-  | None -> string_member_any [ "from_alias"; "alias" ] arguments
+  | Some alias -> Some alias
+  | None ->
+      (match optional_string_member "from_alias" arguments with
+       | Some a -> Some a
+       | None -> optional_string_member "alias" arguments)
+
+let missing_sender_alias_result tool_name =
+  tool_result
+    ~content:
+      (Printf.sprintf
+         "%s: missing sender alias. Register this session first or pass \
+          from_alias explicitly."
+         tool_name)
+    ~is_error:true
+
+let missing_member_alias_result tool_name =
+  tool_result
+    ~content:
+      (Printf.sprintf
+         "%s: missing member alias. Register this session first or pass alias \
+          explicitly."
+         tool_name)
+    ~is_error:true
 
 (* Guard: reject send/send_all/send_room if from_alias is held by an alive
    session with a different session_id. This prevents unregistered callers (or
@@ -1728,84 +1750,89 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       in
       Lwt.return (tool_result ~content ~is_error:false)
   | "send" ->
-      let from_alias = alias_for_current_session_or_argument broker arguments in
       let to_alias = string_member "to_alias" arguments in
       let content = string_member "content" arguments in
-      (match send_alias_impersonation_check broker from_alias with
-       | Some conflict ->
-           Lwt.return
-             (tool_result
-                ~content:
-                  (Printf.sprintf
-                     "send rejected: from_alias '%s' is currently held by \
-                      alive session '%s' — you cannot send as another agent. \
-                      Options: (1) register your own alias first — call \
-                      register with {\"alias\":\"<new-name>\"}, \
-                      (2) call whoami to see your current identity."
-                     from_alias conflict.session_id)
-                ~is_error:true)
+      (match alias_for_current_session_or_argument broker arguments with
        | None ->
-           Broker.enqueue_message broker ~from_alias ~to_alias ~content;
-           let ts = Unix.gettimeofday () in
-           let receipt =
-             `Assoc
-               [ ("queued", `Bool true)
-               ; ("ts", `Float ts)
-               ; ("from_alias", `String from_alias)
-               ; ("to_alias", `String to_alias)
-               ]
-             |> Yojson.Safe.to_string
-           in
-           Lwt.return (tool_result ~content:receipt ~is_error:false))
+           Lwt.return (missing_sender_alias_result "send")
+       | Some from_alias ->
+           (match send_alias_impersonation_check broker from_alias with
+            | Some conflict ->
+                Lwt.return
+                  (tool_result
+                     ~content:
+                       (Printf.sprintf
+                          "send rejected: from_alias '%s' is currently held by \
+                           alive session '%s' — you cannot send as another agent. \
+                           Options: (1) register your own alias first — call \
+                           register with {\"alias\":\"<new-name>\"}, \
+                           (2) call whoami to see your current identity."
+                          from_alias conflict.session_id)
+                     ~is_error:true)
+            | None ->
+                Broker.enqueue_message broker ~from_alias ~to_alias ~content;
+                let ts = Unix.gettimeofday () in
+                let receipt =
+                  `Assoc
+                    [ ("queued", `Bool true)
+                    ; ("ts", `Float ts)
+                    ; ("from_alias", `String from_alias)
+                    ; ("to_alias", `String to_alias)
+                    ]
+                  |> Yojson.Safe.to_string
+                in
+                Lwt.return (tool_result ~content:receipt ~is_error:false)))
   | "send_all" ->
-      let from_alias = alias_for_current_session_or_argument broker arguments in
       let content = string_member "content" arguments in
-      (match send_alias_impersonation_check broker from_alias with
-       | Some conflict ->
-           Lwt.return
-             (tool_result
-                ~content:
-                  (Printf.sprintf
-                     "send_all rejected: from_alias '%s' is currently held by \
-                      alive session '%s' — you cannot broadcast as another agent. \
-                      Options: (1) register your own alias first — call \
-                      register with {\"alias\":\"<new-name>\"}, \
-                      (2) call whoami to see your current identity."
-                     from_alias conflict.session_id)
-                ~is_error:true)
-       | None ->
-           let exclude_aliases =
-             let open Yojson.Safe.Util in
-             try
-               match arguments |> member "exclude_aliases" with
-               | `List items ->
-                   List.filter_map
-                     (fun item ->
-                       match item with `String s -> Some s | _ -> None)
-                     items
-               | _ -> []
-             with _ -> []
-           in
-           let { Broker.sent_to; skipped } =
-             Broker.send_all broker ~from_alias ~content ~exclude_aliases
-           in
-           let result_json =
-             `Assoc
-               [ ( "sent_to",
-                   `List (List.map (fun alias -> `String alias) sent_to) )
-               ; ( "skipped",
-                   `List
-                     (List.map
-                        (fun (alias, reason) ->
-                          `Assoc
-                            [ ("alias", `String alias)
-                            ; ("reason", `String reason)
-                            ])
-                        skipped) )
-               ]
-             |> Yojson.Safe.to_string
-           in
-           Lwt.return (tool_result ~content:result_json ~is_error:false))
+      (match alias_for_current_session_or_argument broker arguments with
+       | None -> Lwt.return (missing_sender_alias_result "send_all")
+       | Some from_alias ->
+           (match send_alias_impersonation_check broker from_alias with
+            | Some conflict ->
+                Lwt.return
+                  (tool_result
+                     ~content:
+                       (Printf.sprintf
+                          "send_all rejected: from_alias '%s' is currently held by \
+                           alive session '%s' — you cannot broadcast as another agent. \
+                           Options: (1) register your own alias first — call \
+                           register with {\"alias\":\"<new-name>\"}, \
+                           (2) call whoami to see your current identity."
+                          from_alias conflict.session_id)
+                     ~is_error:true)
+            | None ->
+                let exclude_aliases =
+                  let open Yojson.Safe.Util in
+                  try
+                    match arguments |> member "exclude_aliases" with
+                    | `List items ->
+                        List.filter_map
+                          (fun item ->
+                            match item with `String s -> Some s | _ -> None)
+                          items
+                    | _ -> []
+                  with _ -> []
+                in
+                let { Broker.sent_to; skipped } =
+                  Broker.send_all broker ~from_alias ~content ~exclude_aliases
+                in
+                let result_json =
+                  `Assoc
+                    [ ( "sent_to",
+                        `List (List.map (fun alias -> `String alias) sent_to) )
+                    ; ( "skipped",
+                        `List
+                          (List.map
+                             (fun (alias, reason) ->
+                               `Assoc
+                                 [ ("alias", `String alias)
+                                 ; ("reason", `String reason)
+                                 ])
+                             skipped) )
+                    ]
+                  |> Yojson.Safe.to_string
+                in
+                Lwt.return (tool_result ~content:result_json ~is_error:false)))
   | "whoami" ->
       let session_id = resolve_session_id arguments in
       let alias =
@@ -1989,90 +2016,96 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       Lwt.return (tool_result ~content ~is_error:false)
   | "join_room" ->
       let room_id = string_member "room_id" arguments in
-      let alias = alias_for_current_session_or_argument broker arguments in
-      let session_id = resolve_session_id arguments in
-      let members = Broker.join_room broker ~room_id ~alias ~session_id in
-      let history_limit =
-        match Broker.int_opt_member "history_limit" arguments with
-        | Some n when n < 0 -> 0
-        | Some n -> min n 200
-        | None -> 20
-      in
-      let history =
-        if history_limit = 0 then []
-        else Broker.read_room_history broker ~room_id ~limit:history_limit
-      in
-      let content =
-        `Assoc
-          [ ("room_id", `String room_id)
-          ; ("members",
-             `List (List.map (fun (m : room_member) ->
-                 `Assoc
-                   [ ("alias", `String m.rm_alias)
-                   ; ("session_id", `String m.rm_session_id)
-                   ; ("joined_at", `Float m.joined_at)
-                   ]) members))
-          ; ("history",
-             `List (List.map (fun (m : room_message) ->
-                 `Assoc
-                   [ ("ts", `Float m.rm_ts)
-                   ; ("from_alias", `String m.rm_from_alias)
-                   ; ("content", `String m.rm_content)
-                   ]) history))
-          ]
-        |> Yojson.Safe.to_string
-      in
-      Lwt.return (tool_result ~content ~is_error:false)
-  | "leave_room" ->
-      let room_id = string_member "room_id" arguments in
-      let alias = alias_for_current_session_or_argument broker arguments in
-      let members = Broker.leave_room broker ~room_id ~alias in
-      let content =
-        `Assoc
-          [ ("room_id", `String room_id)
-          ; ("members",
-             `List (List.map (fun (m : room_member) ->
-                 `Assoc
-                   [ ("alias", `String m.rm_alias)
-                   ; ("session_id", `String m.rm_session_id)
-                   ; ("joined_at", `Float m.joined_at)
-                   ]) members))
-          ]
-        |> Yojson.Safe.to_string
-      in
-      Lwt.return (tool_result ~content ~is_error:false)
-  | "send_room" ->
-      let from_alias = alias_for_current_session_or_argument broker arguments in
-      let room_id = string_member "room_id" arguments in
-      let content = string_member "content" arguments in
-      (match send_alias_impersonation_check broker from_alias with
-       | Some conflict ->
-           Lwt.return
-             (tool_result
-                ~content:
-                  (Printf.sprintf
-                     "send_room rejected: from_alias '%s' is currently held by \
-                      alive session '%s' — you cannot post to a room as another \
-                      agent. Options: (1) register your own alias first — call \
-                      register with {\"alias\":\"<new-name>\"}, \
-                      (2) call whoami to see your current identity."
-                     from_alias conflict.session_id)
-                ~is_error:true)
-       | None ->
-           let { Broker.sr_delivered_to; sr_skipped; sr_ts } =
-             Broker.send_room broker ~from_alias ~room_id ~content
+      (match alias_for_current_session_or_argument broker arguments with
+       | None -> Lwt.return (missing_member_alias_result "join_room")
+       | Some alias ->
+           let session_id = resolve_session_id arguments in
+           let members = Broker.join_room broker ~room_id ~alias ~session_id in
+           let history_limit =
+             match Broker.int_opt_member "history_limit" arguments with
+             | Some n when n < 0 -> 0
+             | Some n -> min n 200
+             | None -> 20
            in
-           let result_json =
+           let history =
+             if history_limit = 0 then []
+             else Broker.read_room_history broker ~room_id ~limit:history_limit
+           in
+           let content =
              `Assoc
-               [ ("delivered_to",
-                  `List (List.map (fun a -> `String a) sr_delivered_to))
-               ; ("skipped",
-                  `List (List.map (fun a -> `String a) sr_skipped))
-               ; ("ts", `Float sr_ts)
+               [ ("room_id", `String room_id)
+               ; ("members",
+                  `List (List.map (fun (m : room_member) ->
+                      `Assoc
+                        [ ("alias", `String m.rm_alias)
+                        ; ("session_id", `String m.rm_session_id)
+                        ; ("joined_at", `Float m.joined_at)
+                        ]) members))
+               ; ("history",
+                  `List (List.map (fun (m : room_message) ->
+                      `Assoc
+                        [ ("ts", `Float m.rm_ts)
+                        ; ("from_alias", `String m.rm_from_alias)
+                        ; ("content", `String m.rm_content)
+                        ]) history))
                ]
              |> Yojson.Safe.to_string
            in
-           Lwt.return (tool_result ~content:result_json ~is_error:false))
+           Lwt.return (tool_result ~content ~is_error:false))
+  | "leave_room" ->
+      let room_id = string_member "room_id" arguments in
+      (match alias_for_current_session_or_argument broker arguments with
+       | None -> Lwt.return (missing_member_alias_result "leave_room")
+       | Some alias ->
+           let members = Broker.leave_room broker ~room_id ~alias in
+           let content =
+             `Assoc
+               [ ("room_id", `String room_id)
+               ; ("members",
+                  `List (List.map (fun (m : room_member) ->
+                      `Assoc
+                        [ ("alias", `String m.rm_alias)
+                        ; ("session_id", `String m.rm_session_id)
+                        ; ("joined_at", `Float m.joined_at)
+                        ]) members))
+               ]
+             |> Yojson.Safe.to_string
+           in
+           Lwt.return (tool_result ~content ~is_error:false))
+  | "send_room" ->
+      let room_id = string_member "room_id" arguments in
+      let content = string_member "content" arguments in
+      (match alias_for_current_session_or_argument broker arguments with
+       | None -> Lwt.return (missing_sender_alias_result "send_room")
+       | Some from_alias ->
+           (match send_alias_impersonation_check broker from_alias with
+            | Some conflict ->
+                Lwt.return
+                  (tool_result
+                     ~content:
+                       (Printf.sprintf
+                          "send_room rejected: from_alias '%s' is currently held by \
+                           alive session '%s' — you cannot post to a room as another \
+                           agent. Options: (1) register your own alias first — call \
+                           register with {\"alias\":\"<new-name>\"}, \
+                           (2) call whoami to see your current identity."
+                          from_alias conflict.session_id)
+                     ~is_error:true)
+            | None ->
+                let { Broker.sr_delivered_to; sr_skipped; sr_ts } =
+                  Broker.send_room broker ~from_alias ~room_id ~content
+                in
+                let result_json =
+                  `Assoc
+                    [ ("delivered_to",
+                       `List (List.map (fun a -> `String a) sr_delivered_to))
+                    ; ("skipped",
+                       `List (List.map (fun a -> `String a) sr_skipped))
+                    ; ("ts", `Float sr_ts)
+                    ]
+                  |> Yojson.Safe.to_string
+                in
+                Lwt.return (tool_result ~content:result_json ~is_error:false)))
   | "list_rooms" ->
       let rooms = Broker.list_rooms broker in
       let content =

@@ -41,9 +41,11 @@ reproduction showed `ModuleNotFoundError: No module named 'c2c_smoke_test'`.
   and exits 2.
 - Fixture copy: fixed by adding `c2c_smoke_test.py` to the copied-checkout
   allowlist and including the peer's smoke-test unit coverage.
-- MCP send_room: documented only. Workaround is to pass `from_alias` explicitly.
-  A follow-up should make omitted `from_alias` either resolve through the current
-  session identity or fail with a structured, actionable error.
+- MCP send_room: fixed in OCaml v0.6.6. `send_room` now accepts an omitted
+  `from_alias` when the current MCP session is registered, and missing sender
+  identity returns a structured `isError:true` message containing "missing
+  sender alias" instead of a raw Yojson exception. The same option-based sender
+  resolution is applied to `send` and `send_all`.
 
 ## Severity
 

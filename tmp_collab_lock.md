@@ -9,6 +9,13 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| ocaml/c2c_mcp.ml | codex | fix send_room missing sender alias error surface | 2026-04-13T19:35Z |
+| ocaml/test/test_c2c_mcp.ml | codex | cover send_room sender alias resolution/errors | 2026-04-13T19:35Z |
+| tmp_status.txt | codex | sync OCaml test counts after send_room fix | 2026-04-13T19:35Z |
+| .goal-loops/active-goal.md | codex | sync OCaml test counts after send_room fix | 2026-04-13T19:35Z |
+| docs/next-steps.md | codex | sync OCaml test counts after send_room fix | 2026-04-13T19:35Z |
+| .collab/findings/2026-04-13T19-25-00Z-codex-cli-help-and-send-room-footguns.md | codex | update send_room fix status | 2026-04-13T19:35Z |
+| tmp_collab_lock.md | codex | record/release send_room alias fix lock | 2026-04-13T19:35Z |
 
 ## History (addendum)
 

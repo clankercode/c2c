@@ -364,6 +364,7 @@ let test_initialize_reports_server_version_and_features () =
             ; "rpc_audit_log"
             ; "tail_log_tool"
             ; "register_alias_hijack_guard"
+            ; "missing_sender_alias_errors"
             ]
           in
           List.iter
@@ -3052,6 +3053,113 @@ let test_tools_call_send_room_accepts_alias_as_from_alias_alias () =
             "storm-sender" msg.from_alias;
           check string "content" "hello via alias fallback" msg.content))
 
+let test_tools_call_send_room_uses_current_session_alias_when_omitted () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-sender-current";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-sender-current"
+            ~alias:"storm-sender" ~pid:None ~pid_start_time:None;
+          C2c_mcp.Broker.register broker ~session_id:"session-recv-current"
+            ~alias:"storm-recv" ~pid:None ~pid_start_time:None;
+          let _ =
+            C2c_mcp.Broker.join_room broker ~room_id:"current-chat"
+              ~alias:"storm-sender" ~session_id:"session-sender-current"
+          in
+          let _ =
+            C2c_mcp.Broker.join_room broker ~room_id:"current-chat"
+              ~alias:"storm-recv" ~session_id:"session-recv-current"
+          in
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 204)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "send_room")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("room_id", `String "current-chat")
+                          ; ("content", `String "hello via current alias")
+                          ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          (match response with
+           | None -> fail "expected send_room response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               let parsed = Yojson.Safe.from_string text in
+               let delivered =
+                 parsed |> member "delivered_to" |> to_list |> List.map to_string
+               in
+               check int "one delivery via current alias" 1
+                 (List.length delivered);
+               check string "delivered to storm-recv" "storm-recv"
+                 (List.hd delivered));
+          let inbox =
+            C2c_mcp.Broker.read_inbox broker ~session_id:"session-recv-current"
+          in
+          check int "recipient inbox has one message" 1 (List.length inbox);
+          let msg = List.hd inbox in
+          check string "from_alias resolved from current session"
+            "storm-sender" msg.from_alias;
+          check string "content" "hello via current alias" msg.content))
+
+let test_tools_call_send_room_missing_sender_alias_is_actionable () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 205)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "send_room")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("from_alias", `Null)
+                          ; ("room_id", `String "current-chat")
+                          ; ("content", `String "hello")
+                          ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected send_room response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let is_error =
+                json |> member "result" |> member "isError" |> to_bool_option
+                |> Option.value ~default:false
+              in
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              check bool "send_room rejected with isError=true" true is_error;
+              check bool "error explains missing sender alias" true
+                (string_contains text "missing sender alias");
+              check bool "error is not raw Yojson internals" false
+                (string_contains text "Yojson")))
+
 (* Gap #8 / tail_log: after a tools/call, tail_log should return the
    log entry that was just appended. *)
 let test_tools_call_tail_log_returns_audit_entries () =
@@ -3762,6 +3870,10 @@ let () =
              test_tools_call_send_room_via_mcp
          ; test_case "tools/call send_room accepts `alias` as from_alias fallback" `Quick
              test_tools_call_send_room_accepts_alias_as_from_alias_alias
+         ; test_case "tools/call send_room uses current session alias when omitted" `Quick
+             test_tools_call_send_room_uses_current_session_alias_when_omitted
+         ; test_case "tools/call send_room missing sender alias is actionable" `Quick
+             test_tools_call_send_room_missing_sender_alias_is_actionable
          ; test_case "tools/call join_room accepts `from_alias` as alias fallback" `Quick
              test_tools_call_join_room_accepts_from_alias_as_alias
          ; test_case "tools/call leave_room accepts `from_alias` as alias fallback" `Quick

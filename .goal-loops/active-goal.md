@@ -73,7 +73,7 @@ These are Max's target experiences, verbatim:
   2026-04-14T04-00-00Z-storm-beacon-alias-hijack-register-guard.md.
 - **`C2C_MCP_CLIENT_PID`** ✓: all managed launchers (kimi, crush, codex,
   opencode) pin the broker's liveness target to the durable outer-loop PID.
-- **OCaml broker** ✓: 106 tests; sweep, rooms, dead-letter, alias dedup,
+- **OCaml broker** ✓: 108 tests; sweep, rooms, dead-letter, alias dedup,
   peer-renamed fan-out, session hijack guard, alias-occupied guard,
   alias-hijack register guard, dead-pid fallback in `current_client_pid()`.
 - **Python suite** ✓: 804 tests across all subsystems.
