@@ -509,6 +509,46 @@ def check_relay(broker_root: Path) -> dict[str, Any]:
     return result
 
 
+def check_tmp_space(tmp_dir: Path = Path("/tmp")) -> dict[str, Any]:
+    """Check /tmp available space and count stale .fea*.so files.
+
+    The .fea*.so files are fonttools temporary native-library extractions that
+    accumulate in /tmp and can exhaust disk quota, breaking all shell commands.
+    """
+    import glob as _glob
+
+    result: dict[str, Any] = {"checked": True, "tmp_dir": str(tmp_dir)}
+    try:
+        st = os.statvfs(tmp_dir)
+        total = st.f_blocks * st.f_frsize
+        free = st.f_bavail * st.f_frsize
+        used = total - free
+        result["total_bytes"] = total
+        result["free_bytes"] = free
+        result["used_bytes"] = used
+        result["free_gb"] = round(free / 1e9, 1)
+        result["used_pct"] = round(used / total * 100, 1) if total > 0 else 0.0
+        result["low"] = free < 2 * 1024 ** 3  # warn below 2 GB
+    except OSError as exc:
+        result["checked"] = False
+        result["error"] = str(exc)
+        return result
+
+    # Count stale .fea*.so files (fonttools temporary shared-object extractions
+    # are the primary source of /tmp quota exhaustion in this repo's environment).
+    try:
+        fea_files = _glob.glob(str(tmp_dir / ".fea*.so"))
+        result["fea_so_count"] = len(fea_files)
+        result["fea_so_bytes"] = sum(
+            Path(f).stat().st_size for f in fea_files if Path(f).exists()
+        )
+    except OSError:
+        result["fea_so_count"] = 0
+        result["fea_so_bytes"] = 0
+
+    return result
+
+
 def run_health_check(broker_root: Path, session_id: str | None = None) -> dict[str, Any]:
     """Run full health check."""
     session = check_session(broker_root, session_id=session_id)
@@ -530,6 +570,7 @@ def run_health_check(broker_root: Path, session_id: str | None = None) -> dict[s
         "wire_daemon": check_wire_daemon(effective_session_id),
         "relay": check_relay(broker_root),
         "broker_binary": check_broker_binary(),
+        "tmp_space": check_tmp_space(),
     }
 
 
@@ -679,6 +720,26 @@ def print_health_report(report: dict[str, Any]) -> None:
         print(f"✓ Inboxes: {total_pending} message(s) queued (<{threshold} each, nominal)")
     else:
         print("✓ Inboxes: all empty")
+
+    # /tmp disk space
+    tmp = report.get("tmp_space", {})
+    if tmp.get("checked"):
+        free_gb = tmp.get("free_gb", 0)
+        used_pct = tmp.get("used_pct", 0)
+        fea_count = tmp.get("fea_so_count", 0)
+        fea_mb = round(tmp.get("fea_so_bytes", 0) / 1e6, 0)
+        if tmp.get("low"):
+            print(f"✗ /tmp: {free_gb}GB free ({used_pct}% used) — LOW DISK SPACE")
+            if fea_count > 0:
+                print(f"    {fea_count} stale .fea*.so file(s) using {fea_mb:.0f}MB — clean up with:")
+                print("    find /tmp -maxdepth 1 -name '.fea*.so' -mmin +5 -delete")
+        elif fea_count > 0:
+            print(f"~ /tmp: {free_gb}GB free ({used_pct}% used) — {fea_count} .fea*.so file(s) ({fea_mb:.0f}MB)")
+            print("    find /tmp -maxdepth 1 -name '.fea*.so' -mmin +5 -delete  to clean")
+        else:
+            print(f"✓ /tmp: {free_gb}GB free ({used_pct}% used)")
+    elif "error" in tmp:
+        print(f"○ /tmp: could not check space ({tmp['error']})")
 
     # Outer loops
     ol = report.get("outer_loops", {})

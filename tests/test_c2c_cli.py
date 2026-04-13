@@ -312,12 +312,16 @@ class C2CCLITests(unittest.TestCase):
 
         # Use a shared temp registry so both checkouts see the same registrations.
         shared_registry = Path(self.temp_dir.name) / "shared-registry.yaml"
+        shared_broker_root = Path(self.temp_dir.name) / "shared-broker"
 
         env = {
             "C2C_REGISTRY_PATH": str(shared_registry),
+            "C2C_MCP_BROKER_ROOT": str(shared_broker_root),
             "C2C_ALIAS_WORDS_PATH": str(self.words_path),
             "C2C_SEND_MESSAGE_FIXTURE": "1",
             "C2C_SESSIONS_FIXTURE": str(REPO / "tests/fixtures/sessions-live.json"),
+            "C2C_MCP_AUTO_REGISTER_ALIAS": "",
+            "C2C_MCP_AUTO_JOIN_ROOMS": "",
         }
 
         first = run_cli_in_root(
@@ -9519,3 +9523,69 @@ class C2CStatusTests(unittest.TestCase):
             rc = c2c_status.main(["--broker-root", str(self.broker_root)])
         self.assertEqual(rc, 0)
         self.assertIn("Swarm Status", buf.getvalue())
+
+
+class HealthCheckTmpSpaceTests(unittest.TestCase):
+    """Tests for c2c_health.check_tmp_space()."""
+
+    def setUp(self):
+        import c2c_health
+        self.c2c_health = c2c_health
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.tmp_dir = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_returns_checked_true_on_success(self):
+        result = self.c2c_health.check_tmp_space(self.tmp_dir)
+        self.assertTrue(result["checked"])
+        self.assertIn("free_bytes", result)
+        self.assertIn("free_gb", result)
+        self.assertIn("used_pct", result)
+        self.assertIn("low", result)
+
+    def test_free_bytes_is_nonnegative(self):
+        result = self.c2c_health.check_tmp_space(self.tmp_dir)
+        self.assertGreaterEqual(result["free_bytes"], 0)
+
+    def test_fea_so_files_counted(self):
+        # Create fake .fea123.so files
+        for i in range(3):
+            (self.tmp_dir / f".fea{i}.so").write_bytes(b"x" * 1024)
+        result = self.c2c_health.check_tmp_space(self.tmp_dir)
+        self.assertEqual(result["fea_so_count"], 3)
+        self.assertGreater(result["fea_so_bytes"], 0)
+
+    def test_no_fea_so_files_returns_zero(self):
+        result = self.c2c_health.check_tmp_space(self.tmp_dir)
+        self.assertEqual(result["fea_so_count"], 0)
+        self.assertEqual(result["fea_so_bytes"], 0)
+
+    def test_low_flag_set_when_free_below_2gb(self):
+        with mock.patch("os.statvfs") as m:
+            st = mock.MagicMock()
+            # 1 GB total, 500 MB free (below 2 GB threshold)
+            st.f_blocks = 256 * 1024  # blocks
+            st.f_frsize = 4096         # 4 KB per block → 1 GB total
+            st.f_bavail = 128 * 1024   # 512 MB free
+            m.return_value = st
+            result = self.c2c_health.check_tmp_space(self.tmp_dir)
+        self.assertTrue(result["low"])
+
+    def test_low_flag_clear_when_free_above_2gb(self):
+        with mock.patch("os.statvfs") as m:
+            st = mock.MagicMock()
+            # 16 GB total, 8 GB free
+            st.f_blocks = 4 * 1024 * 1024  # blocks
+            st.f_frsize = 4096              # 4 KB per block → 16 GB total
+            st.f_bavail = 2 * 1024 * 1024  # 8 GB free
+            m.return_value = st
+            result = self.c2c_health.check_tmp_space(self.tmp_dir)
+        self.assertFalse(result["low"])
+
+    def test_nonexistent_dir_returns_unchecked(self):
+        bad_dir = Path(self.temp_dir.name) / "no-such-dir"
+        result = self.c2c_health.check_tmp_space(bad_dir)
+        self.assertFalse(result["checked"])
+        self.assertIn("error", result)
