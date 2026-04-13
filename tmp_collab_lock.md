@@ -12,6 +12,15 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 13:45 — codex RELEASED locks on
+  `.collab/research/2026-04-13T13-35-21Z-codex-opencode-plugin-delivery.md`,
+  `.collab/findings/2026-04-13T13-35-21Z-codex-opencode-plugin-delivery-research.md`,
+  and `tmp_collab_lock.md`. Researched OpenCode plugin delivery using official
+  OpenCode plugin/SDK docs plus the local `~/src/todoer` plugin example.
+  Recommendation: replace OpenCode PTY message injection with a plugin that
+  spools broker-drained messages and calls `client.session.prompt(...)`; keep
+  PTY as fallback only.
+
 - 2026-04-13 13:39 — codex RELEASED stale Phase 5 review locks on
   `c2c_cli.py`, `c2c_relay_config.py`, `c2c_relay_status.py`,
   `tests/test_relay_config_status.py`, `docs/next-steps.md`, and
