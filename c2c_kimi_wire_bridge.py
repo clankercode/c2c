@@ -26,6 +26,7 @@ import contextlib
 import html
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -35,6 +36,136 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 
 import c2c_poll_inbox
+
+
+# ---------------------------------------------------------------------------
+# Daemon management helpers (mirrors c2c_deliver_inbox.py pattern)
+# ---------------------------------------------------------------------------
+
+def _write_pidfile(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+
+def _read_pidfile(path: Path) -> int | None:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _strip_daemon_args(argv: list[str]) -> list[str]:
+    result: list[str] = []
+    skip_next = False
+    value_options = {"--daemon-log", "--daemon-timeout"}
+    for item in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if item == "--daemon":
+            continue
+        if item in value_options:
+            skip_next = True
+            continue
+        if any(item.startswith(f"{option}=") for option in value_options):
+            continue
+        result.append(item)
+    return result
+
+
+def start_daemon(
+    *,
+    child_argv: list[str],
+    pidfile: Path,
+    log_path: Path,
+    wait_timeout: float,
+) -> dict[str, Any]:
+    """Start the wire bridge as a background daemon; return status dict.
+
+    If a daemon is already running (live pidfile), returns immediately with
+    ``already_running: True``.  Otherwise spawns a new session, waits up to
+    ``wait_timeout`` for the child to write its pidfile, and returns the result.
+    """
+    existing_pid = _read_pidfile(pidfile)
+    if existing_pid is not None and _pid_is_alive(existing_pid):
+        return {
+            "ok": True,
+            "daemon": True,
+            "already_running": True,
+            "pid": existing_pid,
+            "pidfile": str(pidfile),
+            "log_path": str(log_path),
+        }
+    if pidfile.exists():
+        pidfile.unlink()
+
+    pidfile.parent.mkdir(parents=True, exist_ok=True)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [sys.executable, str(Path(__file__).resolve()), *child_argv]
+    with log_path.open("ab") as log:
+        proc = subprocess.Popen(
+            command,
+            cwd=Path(__file__).resolve().parent,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            close_fds=True,
+            start_new_session=True,
+        )
+
+    deadline = time.monotonic() + wait_timeout
+    while time.monotonic() < deadline:
+        written_pid = _read_pidfile(pidfile)
+        if written_pid is not None:
+            return {
+                "ok": True,
+                "daemon": True,
+                "already_running": False,
+                "pid": written_pid,
+                "process_pid": proc.pid,
+                "pidfile": str(pidfile),
+                "log_path": str(log_path),
+            }
+        returncode = proc.poll()
+        if returncode is not None:
+            return {
+                "ok": False,
+                "daemon": True,
+                "already_running": False,
+                "pid": proc.pid,
+                "returncode": returncode,
+                "pidfile": str(pidfile),
+                "log_path": str(log_path),
+                "error": "daemon exited before writing pidfile",
+            }
+        time.sleep(0.1)
+
+    return {
+        "ok": proc.poll() is None,
+        "daemon": True,
+        "already_running": False,
+        "pid": proc.pid,
+        "pidfile": str(pidfile),
+        "log_path": str(log_path),
+        "pidfile_written": False,
+        "warning": "daemon did not write pidfile before timeout",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -414,6 +545,7 @@ def run_loop_live(
 
 
 def run_main(argv: list[str]) -> int:
+    raw_argv = list(argv)
     parser = argparse.ArgumentParser(
         description="Deliver c2c inbox messages through Kimi Wire JSON-RPC."
     )
@@ -440,6 +572,14 @@ def run_main(argv: list[str]) -> int:
     parser.add_argument("--json", action="store_true", help="emit JSON output")
     parser.add_argument("--timeout", type=float, default=5.0,
                         help="inbox poll timeout (seconds)")
+    parser.add_argument("--pidfile", type=Path, default=None,
+                        help="write daemon PID to this file when running --loop")
+    parser.add_argument("--daemon", action="store_true",
+                        help="daemonize: spawn detached --loop child; requires --loop and --pidfile")
+    parser.add_argument("--daemon-log", type=Path, default=None,
+                        help="log file for daemon stdout/stderr (default: <pidfile>.log)")
+    parser.add_argument("--daemon-timeout", type=float, default=5.0,
+                        help="seconds to wait for daemon pidfile after spawn (default: 5)")
     args = parser.parse_args(argv)
 
     broker_root = args.broker_root
@@ -470,6 +610,29 @@ def run_main(argv: list[str]) -> int:
     if args.once and args.loop:
         parser.error("--once and --loop are mutually exclusive")
 
+    if args.daemon:
+        if not args.loop:
+            parser.error("--daemon requires --loop")
+        if not args.pidfile:
+            parser.error("--daemon requires --pidfile")
+        log_path = args.daemon_log or Path(f"{args.pidfile}.log")
+        result = start_daemon(
+            child_argv=_strip_daemon_args(raw_argv),
+            pidfile=args.pidfile,
+            log_path=log_path,
+            wait_timeout=args.daemon_timeout,
+        )
+        if args.json:
+            print(json.dumps(result))
+        else:
+            if result.get("already_running"):
+                print(f"[kimi-wire] daemon already running (pid {result['pid']})")
+            elif result.get("ok"):
+                print(f"[kimi-wire] daemon started (pid {result['pid']})")
+            else:
+                print(f"[kimi-wire] daemon start failed: {result.get('error', result)}", file=sys.stderr)
+        return 0 if result.get("ok") else 1
+
     if args.once:
         result = run_once_live(
             session_id=args.session_id,
@@ -488,6 +651,8 @@ def run_main(argv: list[str]) -> int:
         return 0 if result.get("ok") else 1
 
     if args.loop:
+        if args.pidfile:
+            _write_pidfile(args.pidfile)
         result = run_loop_live(
             session_id=args.session_id,
             alias=alias,

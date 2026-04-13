@@ -1,6 +1,7 @@
 """Tests for the Kimi Wire bridge: WireState, formatting, C2CSpool, WireClient, and CLI."""
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -626,6 +627,179 @@ class RunLoopLiveTests(unittest.TestCase):
                     "--loop",
                 ])
         self.assertEqual(ctx.exception.code, 2)
+
+
+class DaemonManagementTests(unittest.TestCase):
+    """Tests for start_daemon(), pidfile writing, and --daemon CLI flag."""
+
+    def test_start_daemon_returns_already_running_when_pidfile_live(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pidfile = Path(tmp) / "wire.pid"
+            log_path = Path(tmp) / "wire.log"
+            pidfile.write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+            result = bridge.start_daemon(
+                child_argv=["--session-id", "kimi-wire-test", "--loop"],
+                pidfile=pidfile,
+                log_path=log_path,
+                wait_timeout=0.5,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["already_running"])
+        self.assertEqual(result["pid"], os.getpid())
+
+    def test_start_daemon_spawns_child_and_waits_for_pidfile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pidfile = Path(tmp) / "wire.pid"
+            log_path = Path(tmp) / "wire.log"
+            proc = mock.Mock(pid=9191)
+            proc.poll.return_value = None
+
+            def write_pidfile(_seconds):
+                pidfile.write_text("9191\n", encoding="utf-8")
+
+            with (
+                mock.patch("c2c_kimi_wire_bridge.subprocess.Popen", return_value=proc) as popen,
+                mock.patch("c2c_kimi_wire_bridge.time.sleep", side_effect=write_pidfile),
+            ):
+                result = bridge.start_daemon(
+                    child_argv=["--session-id", "kimi-wire-test", "--loop"],
+                    pidfile=pidfile,
+                    log_path=log_path,
+                    wait_timeout=1.0,
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["already_running"])
+        self.assertEqual(result["pid"], 9191)
+        command = popen.call_args.args[0]
+        self.assertIn("--loop", command)
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+
+    def test_start_daemon_fails_when_child_exits_before_pidfile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pidfile = Path(tmp) / "wire.pid"
+            log_path = Path(tmp) / "wire.log"
+            proc = mock.Mock(pid=9292)
+            proc.poll.return_value = 1  # already exited
+
+            with (
+                mock.patch("c2c_kimi_wire_bridge.subprocess.Popen", return_value=proc),
+                mock.patch("c2c_kimi_wire_bridge.time.sleep"),
+            ):
+                result = bridge.start_daemon(
+                    child_argv=["--session-id", "kimi-wire-test", "--loop"],
+                    pidfile=pidfile,
+                    log_path=log_path,
+                    wait_timeout=0.5,
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("error", result)
+
+    def test_loop_writes_pidfile_before_iterating(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker_root = Path(tmp) / "broker"
+            broker_root.mkdir()
+            pidfile = Path(tmp) / "wire.pid"
+
+            with (
+                mock.patch(
+                    "c2c_kimi_wire_bridge._has_pending_messages",
+                    return_value=False,
+                ),
+                mock.patch("c2c_kimi_wire_bridge.time.sleep"),
+                mock.patch("sys.stdout", new_callable=io.StringIO),
+            ):
+                rc = bridge.run_main([
+                    "--session-id", "kimi-wire-test",
+                    "--broker-root", str(broker_root),
+                    "--loop",
+                    "--max-iterations", "1",
+                    "--pidfile", str(pidfile),
+                ])
+
+            self.assertEqual(rc, 0)
+            self.assertTrue(pidfile.exists())
+            self.assertRegex(pidfile.read_text(encoding="utf-8"), r"^\d+\n$")
+
+    def test_daemon_flag_requires_loop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker_root = Path(tmp) / "broker"
+            broker_root.mkdir()
+            pidfile = Path(tmp) / "wire.pid"
+            with self.assertRaises(SystemExit) as ctx:
+                bridge.run_main([
+                    "--session-id", "kimi-wire-test",
+                    "--broker-root", str(broker_root),
+                    "--daemon",
+                    "--pidfile", str(pidfile),
+                ])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_daemon_flag_requires_pidfile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker_root = Path(tmp) / "broker"
+            broker_root.mkdir()
+            with self.assertRaises(SystemExit) as ctx:
+                bridge.run_main([
+                    "--session-id", "kimi-wire-test",
+                    "--broker-root", str(broker_root),
+                    "--daemon",
+                    "--loop",
+                ])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_daemon_flag_spawns_daemon_and_returns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker_root = Path(tmp) / "broker"
+            broker_root.mkdir()
+            pidfile = Path(tmp) / "wire.pid"
+
+            with (
+                mock.patch(
+                    "c2c_kimi_wire_bridge.start_daemon",
+                    return_value={
+                        "ok": True,
+                        "daemon": True,
+                        "already_running": False,
+                        "pid": 7878,
+                    },
+                ) as start_daemon,
+                mock.patch("sys.stdout", new_callable=io.StringIO),
+            ):
+                rc = bridge.run_main([
+                    "--session-id", "kimi-wire-test",
+                    "--broker-root", str(broker_root),
+                    "--loop",
+                    "--daemon",
+                    "--pidfile", str(pidfile),
+                ])
+
+        self.assertEqual(rc, 0)
+        start_daemon.assert_called_once()
+        call_kwargs = start_daemon.call_args.kwargs
+        self.assertEqual(call_kwargs["pidfile"], pidfile)
+
+    def test_strip_daemon_args_removes_daemon_and_log_flags(self):
+        argv = [
+            "--session-id", "kimi-wire-test",
+            "--loop",
+            "--daemon",
+            "--daemon-log", "/tmp/wire.log",
+            "--daemon-timeout", "10",
+            "--pidfile", "/tmp/wire.pid",
+        ]
+        stripped = bridge._strip_daemon_args(argv)
+        self.assertNotIn("--daemon", stripped)
+        self.assertNotIn("--daemon-log", stripped)
+        self.assertNotIn("/tmp/wire.log", stripped)
+        self.assertNotIn("--daemon-timeout", stripped)
+        self.assertNotIn("10", stripped)
+        self.assertIn("--session-id", stripped)
+        self.assertIn("--loop", stripped)
+        self.assertIn("--pidfile", stripped)
 
 
 if __name__ == "__main__":
