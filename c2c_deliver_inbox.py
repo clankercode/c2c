@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -64,6 +65,121 @@ def build_result(
 def write_pidfile(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+
+def read_pidfile(path: Path) -> int | None:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def start_daemon(
+    *,
+    child_argv: list[str],
+    pidfile: Path,
+    log_path: Path,
+    wait_timeout: float,
+) -> dict[str, Any]:
+    existing_pid = read_pidfile(pidfile)
+    if existing_pid is not None and pid_is_alive(existing_pid):
+        return {
+            "ok": True,
+            "daemon": True,
+            "already_running": True,
+            "pid": existing_pid,
+            "pidfile": str(pidfile),
+            "log_path": str(log_path),
+        }
+    if pidfile.exists():
+        pidfile.unlink()
+
+    pidfile.parent.mkdir(parents=True, exist_ok=True)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [sys.executable, str(Path(__file__).resolve()), *child_argv]
+    with log_path.open("ab") as log:
+        proc = subprocess.Popen(
+            command,
+            cwd=Path(__file__).resolve().parent,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            close_fds=True,
+            start_new_session=True,
+        )
+
+    deadline = time.monotonic() + wait_timeout
+    while time.monotonic() < deadline:
+        written_pid = read_pidfile(pidfile)
+        if written_pid is not None:
+            return {
+                "ok": True,
+                "daemon": True,
+                "already_running": False,
+                "pid": written_pid,
+                "process_pid": proc.pid,
+                "pidfile": str(pidfile),
+                "log_path": str(log_path),
+            }
+        returncode = proc.poll()
+        if returncode is not None:
+            return {
+                "ok": False,
+                "daemon": True,
+                "already_running": False,
+                "pid": proc.pid,
+                "returncode": returncode,
+                "pidfile": str(pidfile),
+                "log_path": str(log_path),
+                "error": "daemon exited before writing pidfile",
+            }
+        time.sleep(0.1)
+
+    return {
+        "ok": proc.poll() is None,
+        "daemon": True,
+        "already_running": False,
+        "pid": proc.pid,
+        "pidfile": str(pidfile),
+        "log_path": str(log_path),
+        "pidfile_written": False,
+        "warning": "daemon did not write pidfile before timeout",
+    }
+
+
+def strip_daemon_args(argv: list[str]) -> list[str]:
+    result: list[str] = []
+    skip_next = False
+    value_options = {"--daemon-log", "--daemon-timeout"}
+    for item in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if item == "--daemon":
+            continue
+        if item in value_options:
+            skip_next = True
+            continue
+        if any(item.startswith(f"{option}=") for option in value_options):
+            continue
+        result.append(item)
+    return result
 
 
 def deliver_once(
@@ -152,6 +268,7 @@ def run_loop(
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(
         description="Drain a C2C broker inbox and inject queued messages into a live client terminal."
     )
@@ -168,6 +285,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval", type=float, default=1.0)
     parser.add_argument("--max-iterations", type=int, default=None)
     parser.add_argument("--pidfile", type=Path, default=None)
+    parser.add_argument("--daemon", action="store_true", help="start detached")
+    parser.add_argument("--daemon-log", type=Path, default=None)
+    parser.add_argument("--daemon-timeout", type=float, default=10.0)
     parser.add_argument(
         "--client",
         choices=["claude", "codex", "opencode", "generic"],
@@ -179,10 +299,28 @@ def main(argv: list[str] | None = None) -> int:
         help="peek and render without draining or injecting",
     )
     parser.add_argument("--json", action="store_true")
-    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(raw_argv)
 
     if args.terminal_pid is not None and not args.pts:
         parser.error("--terminal-pid requires --pts")
+    if args.daemon:
+        if not args.loop:
+            parser.error("--daemon requires --loop")
+        if not args.pidfile:
+            parser.error("--daemon requires --pidfile")
+        log_path = args.daemon_log or Path(f"{args.pidfile}.log")
+        result = start_daemon(
+            child_argv=strip_daemon_args(raw_argv),
+            pidfile=args.pidfile,
+            log_path=log_path,
+            wait_timeout=args.daemon_timeout,
+        )
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            state = "already running" if result.get("already_running") else "started"
+            print(f"daemon {state} pid={result.get('pid')} log={result.get('log_path')}")
+        return 0 if result.get("ok") else 1
 
     session_id = c2c_poll_inbox.resolve_session_id(args.session_id)
     broker_root = args.broker_root or c2c_poll_inbox.default_broker_root()
