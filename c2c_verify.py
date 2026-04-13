@@ -308,7 +308,7 @@ def main(argv: list[str] | None = None) -> int:
         if not in_test_mode:
             transcript_count = len(payload["participants"])
             try:
-                broker_payload = verify_progress_broker(alive_only=True)
+                broker_payload = verify_progress_broker(alive_only=True, min_messages=1)
                 broker_count = len(broker_payload["participants"])
             except (OSError, ValueError):
                 broker_payload = None
