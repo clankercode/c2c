@@ -29,25 +29,40 @@ invoking `c2c poll-inbox`:
 await ctx.$.quiet`${args}`;
 ```
 
-## Root Cause
+## Root Causes
 
-The OpenCode plugin context exposes Bun's shell API as `ctx.$`, but the runtime
+1. The OpenCode plugin context exposes Bun's shell API as `ctx.$`, but the runtime
 does not provide a `quiet` tag function at `ctx.$.quiet`. The supported pattern
 is not equivalent to that call. Because `drainInbox()` catches errors and only
 logs them through OpenCode's debug log, this presented as a silent no-drain
 failure in normal agent operation.
 
+2. The managed `opencode run` process did not expose `C2C_MCP_SESSION_ID`,
+`C2C_MCP_BROKER_ROOT`, or `OPENCODE_CONFIG` in `/proc/<pid>/environ` after
+launch, and `run-opencode-inst` did not write the cwd sidecar that the plugin
+uses as its fallback config source. The plugin therefore had no session ID.
+
+3. A no-PTY live test still left the DM queued after adding the sidecar, so the
+plugin now starts its background poll loop during plugin initialization itself
+instead of relying only on the optional `lifecycle.start` hook.
+
 ## Fix Status
 
 The plugin now uses `child_process.spawn()` with an argument vector, no shell,
 and a bounded timeout. It prefers `C2C_CLI_COMMAND`, then `./c2c` from the
-project cwd, then `c2c` from `PATH`. The generated managed plugin copy and the
-global `~/.config/opencode/plugins/c2c.ts` copy were synced.
+project cwd, then `c2c` from `PATH`. `run-opencode-inst` now writes
+`.opencode/c2c-plugin.json` in the managed cwd with `session_id`, `alias`, and
+`broker_root`. The plugin also starts its background loop at initialization,
+with a guard so `lifecycle.start` cannot double-start it if that hook is active
+in another OpenCode mode. The generated managed plugin copy and the global
+`~/.config/opencode/plugins/c2c.ts` copy were synced.
 
 Regression coverage:
 
 - `OpenCodeLocalConfigTests.test_opencode_plugin_uses_supported_process_runner_for_drain`
 - `OpenCodeLocalConfigTests.test_run_opencode_inst_copies_plugin_to_config_dir`
+- `OpenCodeLocalConfigTests.test_run_opencode_inst_writes_plugin_sidecar_in_cwd`
+- `OpenCodeLocalConfigTests.test_opencode_plugin_starts_background_loop_without_lifecycle_hook`
 - `bun build .opencode/plugins/c2c.ts --target bun ...`
 
 ## Follow-Up
