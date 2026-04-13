@@ -1596,8 +1596,8 @@ let auto_join_rooms_startup ~broker_root =
 
 let resolve_session_id arguments =
   match optional_string_member "session_id" arguments with
-  | Some session_id -> session_id
-  | None ->
+  | Some session_id when session_id <> "" -> session_id
+  | _ ->
       (match current_session_id () with
       | Some session_id -> session_id
       | None -> invalid_arg "missing session_id")

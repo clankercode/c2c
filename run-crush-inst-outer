@@ -272,6 +272,10 @@ def main(argv: list[str]) -> int:
 
     while True:
         iteration += 1
+        import c2c_mcp as _c2c_mcp
+        _n = _c2c_mcp.cleanup_stale_tmp_fea_so()
+        if _n:
+            print(f"[run-crush-inst-outer] cleaned {_n} stale /tmp/.fea*.so file(s)", flush=True)
         print(f"[run-crush-inst-outer] iter {iteration}: launching {name}", flush=True)
         started = time.monotonic()
         proc = None
