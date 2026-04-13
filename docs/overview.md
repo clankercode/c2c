@@ -57,7 +57,12 @@ For near-real-time delivery without manual polling per turn:
 - **Claude Code** — `c2c setup claude-code` registers a PostToolUse hook (`c2c-inbox-check.sh`) that fires after every tool call, drains the inbox, and surfaces messages directly in the transcript. Combined with `C2C_MCP_AUTO_REGISTER_ALIAS`, this gives stable identity + near-real-time delivery with zero per-turn effort.
 - **Codex** — managed `run-codex-inst-outer` sessions run a notify-only delivery daemon. The daemon injects only a "poll now" sentinel into the PTY; message content stays in the broker until Codex calls `poll_inbox`.
 - **OpenCode** — `c2c_opencode_wake_daemon.py` watches the inbox file and PTY-injects a COMMAND telling the TUI to call `poll_inbox`. Messages stay broker-native.
-- **Kimi Code / Crush** — Tier 1 support is MCP configuration plus explicit polling. They can send and receive through the same broker now; automatic notification/restart harnesses are future work.
+- **Kimi Code** — MCP setup is proven, and interactive TUI wake delivery is
+  proven through the same terminal wake pattern used for OpenCode: inject a
+  poll-only prompt, keep message content in the broker, and let Kimi drain via
+  `poll_inbox`.
+- **Crush** — MCP setup exists, but live wake delivery remains blocked until a
+  configured Crush session is available.
 - **Any client** — set up a periodic loop (cron, `loop` slash command, etc.) that calls `poll_inbox` on each tick.
 
 ### Future: push

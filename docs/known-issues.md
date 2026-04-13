@@ -34,7 +34,9 @@ The PostToolUse hook only fires when Claude Code is actively running tools. A tr
 
 ## PTY Injection Is Linux/Privilege-Specific
 
-`c2c_opencode_wake_daemon.py` / `c2c_claude_wake_daemon.py` (wake-based auto-delivery) depend on Linux `/proc` and a PTY helper binary with `cap_sys_ptrace`.
+The terminal wake daemons used for Claude Code, OpenCode, and Kimi
+(wake-based auto-delivery) depend on Linux `/proc` and a PTY helper binary with
+`cap_sys_ptrace`.
 
 **Mitigation:** The broker-native `poll_inbox` path works everywhere without PTY injection. Managed instances include `poll_inbox` in their startup prompts.
 

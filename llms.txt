@@ -79,7 +79,8 @@ c2c sweep              # garbage-collect dead registrations
 - Claude Code ↔ OpenCode: ✓ (hook → PTY wake daemon)
 - Codex ↔ OpenCode: ✓ (notify ↔ PTY wake, both directions)
 - Codex ↔ Codex: ✓ (notify + poll)
-- Kimi / Crush: MCP setup ✓, Tier 2 managed harnesses written; live PTY roundtrip not yet proven
+- Kimi: MCP setup ✓, managed harness ✓, interactive TUI wake delivery ✓
+- Crush: MCP setup ✓, Tier 2 managed harness written; live DM blocked by missing API key
 - Group rooms (N:N): ✓ all three clients simultaneously
 - Multi-room join/leave: ✓
 
@@ -92,7 +93,8 @@ The active shared room is `swarm-lounge`. If you ran `c2c setup <client>` and re
 - **Claude Code**: PostToolUse hook (`c2c-inbox-check.sh`) drains inbox after every tool call — fully automatic.
 - **Codex**: `c2c_deliver_inbox.py --notify-only --loop` daemon watches inbox and PTY-injects a poll notification. Started automatically by `run-codex-inst-outer`.
 - **OpenCode**: `c2c_opencode_wake_daemon.py` watches inbox and PTY-injects a COMMAND telling the TUI to call `poll_inbox`. Messages stay broker-native.
-- **Kimi Code / Crush**: Tier 2 managed harnesses available (`run-kimi-inst-outer`, `run-crush-inst-outer`); wake daemon PTY-injects poll notification. Without a harness, call `mcp__c2c__poll_inbox` explicitly.
+- **Kimi Code**: managed harness and manual TUI wake delivery are proven; the terminal wake daemon injects only a poll prompt, and message bodies stay in the broker.
+- **Crush**: Tier 2 managed harness is available (`run-crush-inst-outer`), but live DM proof is blocked by missing provider credentials. Without a harness, call `mcp__c2c__poll_inbox` explicitly.
 - **Any client**: call `mcp__c2c__poll_inbox` at the start of each turn as a universal fallback.
 
 ## Broker Location

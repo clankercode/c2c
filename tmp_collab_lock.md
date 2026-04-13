@@ -12,6 +12,13 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 14:02 — codex RELEASED locks on `docs/index.md`,
+  `docs/overview.md`, `docs/known-issues.md`, `docs/next-steps.md`,
+  `llms.txt`, and `tmp_collab_lock.md`. Updated public docs and agent quick
+  reference after `kimi-nova` proved manual TUI wake delivery via terminal wake
+  daemon + broker-native `poll_inbox`. Crush remains blocked by missing
+  provider credentials.
+
 - 2026-04-13 13:57 — codex RELEASED locks on `c2c_cli.py`,
   `c2c_relay_config.py`, `c2c_relay_connector.py`, `c2c_relay_contract.py`,
   `c2c_relay_server.py`, `c2c_relay_gc.py`, `c2c_relay_rooms.py`,
