@@ -5614,8 +5614,8 @@ class RunKimiInstTests(unittest.TestCase):
 
         self.assertEqual(result_code(result), 0, result.stderr)
         payload = json.loads(result.stdout)
-        self.assertEqual(payload["launch"], ["kimi", "--yolo", "term"])
-        self.assertEqual(payload["prompt_mode"], "interactive-tui")
+        self.assertEqual(payload["launch"], ["kimi", "--yolo"])
+        self.assertEqual(payload["prompt_mode"], "interactive-cli")
         self.assertEqual(payload["env"]["RUN_KIMI_INST_C2C_SESSION_ID"], "kimi-test")
         self.assertEqual(payload["env"]["C2C_MCP_AUTO_REGISTER_ALIAS"], "kimi-test")
 
@@ -5647,11 +5647,10 @@ class RunKimiInstTests(unittest.TestCase):
                 "kimi-cli",
                 "kimi",
                 "--yolo",
-                "term",
             ],
         )
 
-    def test_run_kimi_inst_dry_run_uses_interactive_prompt_when_prompt_configured(self):
+    def test_run_kimi_inst_dry_run_ignores_prompt_in_interactive_mode(self):
         config_dir = Path(self.temp_dir.name) / "run-kimi-inst.d"
         config_dir.mkdir()
         config = {
@@ -5670,13 +5669,12 @@ class RunKimiInstTests(unittest.TestCase):
 
         self.assertEqual(result_code(result), 0, result.stderr)
         payload = json.loads(result.stdout)
-        self.assertEqual(
-            payload["launch"],
-            ["kimi", "--yolo", "--prompt", "poll inbox", "term"],
-        )
+        self.assertEqual(payload["launch"], ["kimi", "--yolo"])
+        self.assertEqual(payload["interactive_prompt"], "not-sent")
+        self.assertNotIn("--prompt", payload["launch"])
         self.assertNotIn("--trust-all-tools", payload["launch"])
         self.assertNotIn("--print", payload["launch"])
-        self.assertEqual(payload["prompt_mode"], "interactive-tui")
+        self.assertEqual(payload["prompt_mode"], "interactive-cli")
 
     def test_run_kimi_inst_dry_run_uses_print_mode_when_explicitly_configured(self):
         config_dir = Path(self.temp_dir.name) / "run-kimi-inst.d"

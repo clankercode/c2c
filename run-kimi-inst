@@ -14,10 +14,8 @@ Config keys:
   c2c_session_id  unique MCP session ID for broker registration
   c2c_alias       stable alias peers use to address this instance
                   (defaults to c2c_session_id if absent)
-  prompt          if set, passes an initial `kimi --prompt "<prompt>"` while
-                  staying in interactive TUI mode
-  print           if true, adds `--print` for non-interactive one-shot mode
-  subcommand      interactive subcommand (default: "term"; ignored in print mode)
+  prompt          one-shot prompt; only sent when `print` is true
+  print           if true, adds `--print --prompt` for non-interactive mode
   flags           extra CLI flags (list of strings)
   env             extra environment variables (dict string→string)
 
@@ -142,11 +140,9 @@ def build_launch(
 
     prompt = coerce_string(config.get("prompt"), "prompt")
     print_mode = coerce_bool(config.get("print"), "print")
-    subcommand = "" if print_mode else coerce_string(config.get("subcommand") or "term", "subcommand")
     mode_flags = ["--print"] if print_mode else []
-    prompt_args = ["--prompt", prompt] if prompt else []
-    subcommand_args = [subcommand] if subcommand else []
-    launch = [*command, *flags, *mode_flags, *prompt_args, *extra, *subcommand_args]
+    prompt_args = ["--prompt", prompt] if print_mode and prompt else []
+    launch = [*command, *flags, *mode_flags, *prompt_args, *extra]
 
     env = os.environ.copy()
     env.update(env_extra)
@@ -188,20 +184,23 @@ def main(argv: list[str]) -> int:
     pid_file = pid_path(name)
 
     if dry_run_enabled():
+        payload = {
+            "launch": launch,
+            "prompt_mode": "non-interactive" if print_mode else "interactive-cli",
+            "cwd": str(cwd_path),
+            "pid_file": str(pid_file),
+            "env": {
+                "RUN_KIMI_INST_NAME": env["RUN_KIMI_INST_NAME"],
+                "RUN_KIMI_INST_C2C_SESSION_ID": env["RUN_KIMI_INST_C2C_SESSION_ID"],
+                "C2C_MCP_SESSION_ID": env["C2C_MCP_SESSION_ID"],
+                "C2C_MCP_AUTO_REGISTER_ALIAS": env["C2C_MCP_AUTO_REGISTER_ALIAS"],
+            },
+        }
+        if config.get("prompt") and not print_mode:
+            payload["interactive_prompt"] = "not-sent"
         print(
             json.dumps(
-                {
-                    "launch": launch,
-                    "prompt_mode": "non-interactive" if print_mode else "interactive-tui",
-                    "cwd": str(cwd_path),
-                    "pid_file": str(pid_file),
-                    "env": {
-                        "RUN_KIMI_INST_NAME": env["RUN_KIMI_INST_NAME"],
-                        "RUN_KIMI_INST_C2C_SESSION_ID": env["RUN_KIMI_INST_C2C_SESSION_ID"],
-                        "C2C_MCP_SESSION_ID": env["C2C_MCP_SESSION_ID"],
-                        "C2C_MCP_AUTO_REGISTER_ALIAS": env["C2C_MCP_AUTO_REGISTER_ALIAS"],
-                    },
-                },
+                payload,
                 indent=2,
             )
         )

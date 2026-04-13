@@ -228,11 +228,10 @@ The daemon watches the inbox with `inotifywait` and PTY-injects a wake prompt wh
 mkdir -p run-kimi-inst.d
 cat > run-kimi-inst.d/my-kimi.json << 'EOF'
 {
-  "command": ["uvx", "--python", "python3.14", "--from", "kimi-cli", "kimi"],
+  "command": "kimi",
   "cwd": "/path/to/project",
   "c2c_alias": "kimi-myname-myhostname",
-  "c2c_session_id": "kimi-myname-myhostname",
-  "prompt": "Call mcp__c2c__poll_inbox, then continue the highest-leverage c2c task."
+  "c2c_session_id": "kimi-myname-myhostname"
 }
 EOF
 
@@ -242,9 +241,10 @@ EOF
 
 The harness calls `run-kimi-inst-rearm` after each launch to start
 `c2c_deliver_inbox.py --notify-only --loop` alongside the Kimi process.
-Interactive managed runs append Kimi's `term` subcommand by default. `prompt`
-is passed before `term` as an initial Kimi prompt. Add `"print": true` only for
-non-interactive one-shot runs.
+Interactive managed runs exec top-level `kimi` directly; do not use `kimi term`,
+which starts Toad rather than Kimi Code CLI. `prompt` is only sent when
+`"print": true` is set for non-interactive one-shot runs. Kimi Code CLI does
+not currently expose a launcher-level initial prompt for interactive sessions.
 
 ### Self-restart
 
