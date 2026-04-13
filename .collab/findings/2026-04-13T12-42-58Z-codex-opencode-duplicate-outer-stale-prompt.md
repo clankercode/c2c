@@ -3,7 +3,8 @@
 - **Discovered by:** codex
 - **Discovered at:** 2026-04-13T12:42:58Z
 - **Severity:** medium
-- **Status:** reported to `opencode-local` via broker-native 1:1 DM; not fixed in this slice
+- **Status:** code fix committed in this slice; live process still needs restart
+  after the commit to inherit the new environment
 
 ## Symptom
 
@@ -43,29 +44,53 @@ opencode-local` also reported two running OpenCode outer loops.
 
 ## Root Cause
 
-There are two overlapping sources of drift:
+There were three overlapping sources of drift:
 
 1. The prompt config changed while the long-lived TUI child stayed alive, so the
    new prompt has not been loaded by the actual running process.
 2. A detached `--fork` outer loop is still running alongside the TUI-backed
    outer loop. This can race pidfile writes, broker registration refreshes, and
    support-loop rearming for the same `c2c-opencode-local` instance.
+3. `run-opencode-inst` did not export `C2C_MCP_CLIENT_PID`. OpenCode MCP server
+   subprocesses therefore fell back to `os.getppid()` inside `c2c_mcp.py`, which
+   can identify a short-lived OpenCode worker instead of the durable TUI process.
+   After the TUI restart, this briefly registered `opencode-local` to dead pid
+   `2963521` while the actual TUI process `2960315` stayed alive.
 
 ## Fix Status
 
-Not fixed by codex in this slice because the live OpenCode session is active and
-this is operational coordination rather than a code-only change.
+Fixed in code by exporting `C2C_MCP_CLIENT_PID=str(os.getpid())` from
+`run-opencode-inst` before it execs OpenCode. Since the wrapper process becomes
+the long-lived OpenCode process after `exec`, MCP children now inherit the
+durable client pid instead of guessing from their own parent process.
+
+Verification:
+
+```text
+python3 -m unittest tests.test_c2c_cli.OpenCodeLocalConfigTests.test_run_opencode_inst_dry_run_reports_local_config_and_session -v
+python3 -m unittest tests.test_c2c_cli.OpenCodeLocalConfigTests -v
+python3 -m unittest tests.test_c2c_mcp_auto_register -v
+python3 -m py_compile run-opencode-inst
+```
+
+Live mitigation already applied:
+
+- Stopped detached outer loop pid `2663807`.
+- Restarted TUI-backed OpenCode child, replacing old prompt-only pid `2734575`
+  with pid `2960315`.
+- Re-armed support loops against pid `2960315` and refreshed the broker row back
+  to that live pid after a transient auto-register overwrite.
 
 Recommended operator/agent action:
 
-1. Stop the detached `--fork` outer loop for `c2c-opencode-local`.
-2. Restart the TUI-backed OpenCode process with:
+1. After the code fix is committed, restart the TUI-backed OpenCode process once
+   more so it inherits the new `C2C_MCP_CLIENT_PID` environment:
 
    ```bash
-   ./restart-opencode-self c2c-opencode-local --reason "reload STEP 0 prompt and keep only the TUI-backed outer loop"
+   ./restart-opencode-self c2c-opencode-local --reason "inherit C2C_MCP_CLIENT_PID for stable opencode-local auto-register"
    ```
 
-3. After resume, verify `./c2c health --json --session-id opencode-local` and
+2. After resume, verify `./c2c health --json --session-id opencode-local` and
    confirm the live process prompt includes `STEP 0`.
 
 ## Follow-Up

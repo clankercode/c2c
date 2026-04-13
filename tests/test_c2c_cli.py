@@ -3840,6 +3840,7 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         self.assertEqual(
             payload["env"]["C2C_MCP_AUTO_REGISTER_ALIAS"], "opencode-local"
         )
+        self.assertRegex(payload["env"]["C2C_MCP_CLIENT_PID"], r"^[1-9][0-9]*$")
         self.assertEqual(
             payload["env"]["C2C_MCP_BROKER_ROOT"],
             str(REPO / ".git" / "c2c" / "mcp"),

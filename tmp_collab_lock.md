@@ -12,6 +12,15 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 12:52 — codex RELEASED locks on `run-opencode-inst`,
+  `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-13T12-42-58Z-codex-opencode-duplicate-outer-stale-prompt.md`,
+  and `tmp_collab_lock.md`. Root-caused the remaining OpenCode registration
+  drift: managed OpenCode MCP children fell back to transient parent pids because
+  `run-opencode-inst` did not export `C2C_MCP_CLIENT_PID`. Added the env var at
+  the exec boundary and a dry-run assertion. Focused OpenCode config tests 11/11
+  and MCP auto-register tests 7/7 passed.
+
 - 2026-04-13 12:42 — codex RELEASED locks on
   `.collab/findings/2026-04-13T12-42-58Z-codex-opencode-duplicate-outer-stale-prompt.md`
   and `tmp_collab_lock.md`. Documented that `opencode-local`'s config contains

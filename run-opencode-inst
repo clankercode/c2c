@@ -148,6 +148,9 @@ def build_launch(name: str, config: dict, extra: list[str]) -> tuple[list[str], 
     restart_marker = restart_marker_path(name)
     env["RUN_OPENCODE_INST_RESTART_MARKER"] = str(restart_marker)
     env["C2C_MCP_SESSION_ID"] = c2c_session_id
+    # This process execs into the durable OpenCode client, so its pid is the
+    # right liveness target for MCP auto-registration children to inherit.
+    env["C2C_MCP_CLIENT_PID"] = str(os.getpid())
     env["C2C_MCP_AUTO_REGISTER_ALIAS"] = c2c_alias
     env["C2C_MCP_BROKER_ROOT"] = str(cwd_path / ".git" / "c2c" / "mcp")
     env["C2C_MCP_AUTO_DRAIN_CHANNEL"] = "0"
@@ -182,6 +185,7 @@ def main(argv: list[str]) -> int:
                         "OPENCODE_CONFIG_CONTENT": env["OPENCODE_CONFIG_CONTENT"],
                         "RUN_OPENCODE_INST_RESTART_MARKER": env["RUN_OPENCODE_INST_RESTART_MARKER"],
                         "C2C_MCP_SESSION_ID": env["C2C_MCP_SESSION_ID"],
+                        "C2C_MCP_CLIENT_PID": env["C2C_MCP_CLIENT_PID"],
                         "C2C_MCP_AUTO_REGISTER_ALIAS": env["C2C_MCP_AUTO_REGISTER_ALIAS"],
                         "C2C_MCP_BROKER_ROOT": env["C2C_MCP_BROKER_ROOT"],
                         "C2C_MCP_AUTO_DRAIN_CHANNEL": env["C2C_MCP_AUTO_DRAIN_CHANNEL"],
