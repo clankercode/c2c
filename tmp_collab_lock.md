@@ -9,11 +9,16 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `.collab/findings/2026-04-13T16-10-03Z-codex-kimi-wire-live-once-proof.md` | codex | Log live Kimi Wire --once proof | 2026-04-13T16:10Z |
-| `tmp_status.txt` | codex | Refresh Kimi Wire live proof status | 2026-04-13T16:10Z |
-| `tmp_collab_lock.md` | codex | Release locks after proof log commit | 2026-04-13T16:10Z |
 
 ## History (addendum)
+
+- 2026-04-13T16:12Z — codex RELEASED locks on
+  `.collab/findings/2026-04-13T16-10-03Z-codex-kimi-wire-live-once-proof.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Live-proved
+  `c2c-kimi-wire-bridge --once` against a real `kimi --wire` subprocess using
+  an isolated temp broker: delivered 1 broker message, received a Kimi
+  acknowledgment, cleared spool, and exited rc=0. Verification:
+  `git diff --check` passed for the docs/status changes.
 
 - 2026-04-13T16:04Z — codex RELEASED locks on
   `docs/superpowers/plans/2026-04-14-kimi-wire-bridge.md`,
