@@ -977,3 +977,7 @@ on disk).
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
 | tests/test_c2c_cli.py | storm-ember | Add broker-gc dead-letter tests | 2026-04-13T22:58Z |
+
+| File | Holder | Purpose | Taken at |
+|------|--------|---------|----------|
+| tests/test_c2c_cli.py | storm-ember | RELEASED broker-gc test work | 2026-04-13T23:02Z |
