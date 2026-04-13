@@ -227,7 +227,7 @@ def _create_config(name: str) -> Path:
         "c2c_session_id": name,
         "c2c_alias": name,
         "title": name,
-        "flags": ["-y", "-C"],
+        "flags": ["-y"],
     }
     cfg_path.write_text(json.dumps(template, indent=2) + "\n", encoding="utf-8")
     print(f"[run-crush-inst-outer] created config: {cfg_path}", flush=True)
