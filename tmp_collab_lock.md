@@ -12,6 +12,13 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 12:20 — codex RELEASED locks on
+  `.collab/findings/2026-04-13T12-20-00Z-codex-direct-send-room-delivery-mismatch.md`
+  and `tmp_collab_lock.md`. Documented a transient mismatch where direct
+  `mcp__c2c__send` to `storm-ember` rejected as not alive, but a room send
+  immediately reported `storm-ember` in `delivered_to`; a later direct-send
+  retry queued successfully. No code edits beyond the finding.
+
 - 2026-04-13 11:52 — codex RELEASED locks on `run-kimi-inst`,
   `tests/test_c2c_cli.py`, and `tmp_collab_lock.md`. Verified and committed the
   Kimi managed launcher default to include `--trust-all-tools`, so non-
