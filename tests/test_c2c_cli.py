@@ -582,6 +582,104 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(notif_json["params"]["meta"]["from_alias"], "storm-ember")
         self.assertEqual(notif_json["params"]["meta"]["to_alias"], "storm-storm")
 
+    def test_c2c_mcp_auto_drain_can_be_disabled_for_polling_clients(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        env = dict(self.env)
+        env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
+        env["C2C_MCP_SESSION_ID"] = AGENT_TWO_SESSION_ID
+        env["C2C_MCP_AUTO_DRAIN_CHANNEL"] = "0"
+
+        broker_root.mkdir(parents=True, exist_ok=True)
+        (broker_root / "registry.json").write_text(
+            json.dumps(
+                [
+                    {"session_id": AGENT_ONE_SESSION_ID, "alias": "storm-ember"},
+                    {"session_id": AGENT_TWO_SESSION_ID, "alias": "storm-storm"},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (broker_root / f"{AGENT_TWO_SESSION_ID}.inbox.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "from_alias": "storm-ember",
+                        "to_alias": "storm-storm",
+                        "content": "poll me",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        process = subprocess.Popen(
+            [str(REPO / "c2c"), "mcp"],
+            cwd=REPO,
+            env={**os.environ, **env},
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert process.stdin is not None
+            assert process.stdout is not None
+            process.stdin.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-11-25",
+                            "capabilities": {},
+                            "clientInfo": {"name": "test", "version": "0"},
+                        },
+                    }
+                )
+                + "\n"
+            )
+            process.stdin.flush()
+            init_payload = json.loads(process.stdout.readline())
+
+            process.stdin.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {"name": "poll_inbox", "arguments": {}},
+                    }
+                )
+                + "\n"
+            )
+            process.stdin.flush()
+            poll_payload = json.loads(process.stdout.readline())
+        finally:
+            if process.stdin is not None:
+                process.stdin.close()
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+            process.terminate()
+            process.wait(timeout=CLI_TIMEOUT_SECONDS)
+
+        self.assertEqual(init_payload["result"]["protocolVersion"], "2024-11-05")
+        self.assertEqual(poll_payload["id"], 2)
+        self.assertEqual(poll_payload["result"]["isError"], False)
+        messages = json.loads(poll_payload["result"]["content"][0]["text"])
+        self.assertEqual(
+            messages,
+            [
+                {
+                    "from_alias": "storm-ember",
+                    "to_alias": "storm-storm",
+                    "content": "poll me",
+                }
+            ],
+        )
+
     def test_c2c_mcp_whoami_uses_current_session_registration(self):
         broker_root = Path(self.temp_dir.name) / "mcp-broker"
         env = dict(self.env)
@@ -800,6 +898,42 @@ class C2CCLITests(unittest.TestCase):
             [{"session_id": AGENT_ONE_SESSION_ID, "alias": "storm-ember"}],
         )
 
+    def test_sync_broker_registry_preserves_broker_only_registrations(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        broker_root.mkdir(parents=True, exist_ok=True)
+        (broker_root / "registry.json").write_text(
+            json.dumps(
+                [
+                    {"session_id": "codex-local", "alias": "codex"},
+                    {"session_id": AGENT_ONE_SESSION_ID, "alias": "old-alias"},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        save_registry(
+            {
+                "registrations": [
+                    {"session_id": AGENT_ONE_SESSION_ID, "alias": "storm-ember"}
+                ]
+            },
+            self.registry_path,
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {"C2C_REGISTRY_PATH": str(self.registry_path)},
+            clear=False,
+        ):
+            c2c_mcp.sync_broker_registry(broker_root)
+
+        self.assertEqual(
+            json.loads((broker_root / "registry.json").read_text(encoding="utf-8")),
+            [
+                {"session_id": AGENT_ONE_SESSION_ID, "alias": "storm-ember"},
+                {"session_id": "codex-local", "alias": "codex"},
+            ],
+        )
+
     def test_install_reports_path_guidance_when_bin_not_on_path(self):
         install_dir = Path(self.temp_dir.name) / "bin"
         env = dict(self.env)
@@ -810,6 +944,156 @@ class C2CCLITests(unittest.TestCase):
 
         self.assertEqual(result_code(result), 0)
         self.assertIn("not currently on PATH", result.stdout)
+
+    def test_run_codex_inst_dry_run_builds_resume_command_with_unique_c2c_id(self):
+        config_dir = Path(self.temp_dir.name) / "run-codex-inst.d"
+        config_dir.mkdir()
+        (config_dir / "codex-a.json").write_text(
+            json.dumps(
+                {
+                    "command": "codex",
+                    "mode": "resume",
+                    "resume": "019d8483-ad93-72f1-85ba-e14f0f7e743d",
+                    "flags": [
+                        "--ask-for-approval",
+                        "never",
+                        "--sandbox",
+                        "danger-full-access",
+                    ],
+                    "cwd": str(REPO),
+                    "prompt": "Poll c2c and continue.",
+                    "title": "codex-a",
+                }
+            ),
+            encoding="utf-8",
+        )
+        env = dict(self.env)
+        env["RUN_CODEX_INST_CONFIG_DIR"] = str(config_dir)
+        env["RUN_CODEX_INST_DRY_RUN"] = "1"
+
+        result = run_cli("run-codex-inst", "codex-a", "--search", env=env)
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["cwd"], str(REPO))
+        self.assertEqual(payload["pid_file"], str(config_dir / "codex-a.pid"))
+        self.assertEqual(payload["env"]["RUN_CODEX_INST_NAME"], "codex-a")
+        self.assertEqual(
+            payload["env"]["RUN_CODEX_INST_C2C_SESSION_ID"], "codex-codex-a"
+        )
+        self.assertEqual(
+            payload["launch"],
+            [
+                "codex",
+                "--ask-for-approval",
+                "never",
+                "--sandbox",
+                "danger-full-access",
+                "--search",
+                "-c",
+                'mcp_servers.c2c.env.C2C_MCP_SESSION_ID="codex-codex-a"',
+                "-c",
+                'mcp_servers.c2c.env.C2C_MCP_AUTO_DRAIN_CHANNEL="0"',
+                "resume",
+                "019d8483-ad93-72f1-85ba-e14f0f7e743d",
+                "Poll c2c and continue.",
+            ],
+        )
+
+    def test_run_codex_inst_allows_explicit_c2c_id_for_multiple_codex_sessions(self):
+        config_dir = Path(self.temp_dir.name) / "run-codex-inst.d"
+        config_dir.mkdir()
+        (config_dir / "reviewer.json").write_text(
+            json.dumps(
+                {
+                    "mode": "exec-resume",
+                    "resume": "test-codex-for-injection",
+                    "c2c_session_id": "codex-reviewer-1",
+                    "cwd": str(REPO),
+                    "prompt": "Poll c2c once.",
+                }
+            ),
+            encoding="utf-8",
+        )
+        env = dict(self.env)
+        env["RUN_CODEX_INST_CONFIG_DIR"] = str(config_dir)
+        env["RUN_CODEX_INST_DRY_RUN"] = "1"
+
+        result = run_cli("run-codex-inst", "reviewer", env=env)
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            payload["env"]["RUN_CODEX_INST_C2C_SESSION_ID"], "codex-reviewer-1"
+        )
+        self.assertEqual(
+            payload["launch"],
+            [
+                "codex",
+                "-c",
+                'mcp_servers.c2c.env.C2C_MCP_SESSION_ID="codex-reviewer-1"',
+                "-c",
+                'mcp_servers.c2c.env.C2C_MCP_AUTO_DRAIN_CHANNEL="0"',
+                "exec",
+                "resume",
+                "test-codex-for-injection",
+                "Poll c2c once.",
+            ],
+        )
+
+    def test_run_codex_inst_outer_dry_run_reports_inner_launch_command(self):
+        env = dict(self.env)
+        env["RUN_CODEX_INST_OUTER_DRY_RUN"] = "1"
+
+        result = run_cli("run-codex-inst-outer", "codex-a", "--search", env=env)
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["inner"][0], sys.executable)
+        self.assertEqual(
+            payload["inner"][1:], [str(REPO / "run-codex-inst"), "codex-a", "--search"]
+        )
+
+    def test_restart_codex_self_dry_run_reads_pid_file_without_signaling(self):
+        config_dir = Path(self.temp_dir.name) / "run-codex-inst.d"
+        config_dir.mkdir()
+        sleeper = subprocess.Popen(["sleep", "30"])
+        try:
+            (config_dir / "codex-a.pid").write_text(
+                f"{sleeper.pid}\n", encoding="utf-8"
+            )
+            env = dict(self.env)
+            env["RUN_CODEX_INST_CONFIG_DIR"] = str(config_dir)
+            env["RUN_CODEX_INST_NAME"] = "codex-a"
+            env["RUN_CODEX_RESTART_SELF_DRY_RUN"] = "1"
+
+            result = run_cli("restart-codex-self", "--expect-comm", "sleep", env=env)
+
+            self.assertEqual(result_code(result), 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["name"], "codex-a")
+            self.assertEqual(payload["pid"], sleeper.pid)
+            self.assertEqual(payload["pid_file"], str(config_dir / "codex-a.pid"))
+            self.assertEqual(payload["signal"], "SIGTERM")
+            self.assertEqual(payload["comm"], "sleep")
+            self.assertEqual(payload["dry_run"], True)
+            self.assertIsNone(sleeper.poll())
+        finally:
+            sleeper.terminate()
+            try:
+                sleeper.wait(timeout=CLI_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                sleeper.kill()
+                sleeper.wait(timeout=CLI_TIMEOUT_SECONDS)
+
+    def test_restart_codex_self_requires_instance_name(self):
+        env = dict(self.env)
+        env["RUN_CODEX_INST_NAME"] = ""
+
+        result = run_cli("restart-codex-self", env=env)
+
+        self.assertEqual(result_code(result), 2)
+        self.assertIn("no instance name", result.stderr)
 
     def test_whoami_json_reports_alias_and_registration_status(self):
         self.invoke_cli("c2c-register", "agent-one", env=self.env)
@@ -953,6 +1237,26 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(result_code(result), 1)
         self.assertIn("unknown alias", result.stderr)
         self.assertIn("unknown-alias", result.stderr)
+
+    def test_send_dry_run_resolves_broker_only_alias(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        broker_root.mkdir(parents=True, exist_ok=True)
+        (broker_root / "registry.json").write_text(
+            json.dumps([{"session_id": "codex-local", "alias": "codex"}]),
+            encoding="utf-8",
+        )
+        env = dict(self.env)
+        env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
+
+        result = self.invoke_cli(
+            "c2c-send", "codex", "hello", "peer", "--dry-run", "--json", env=env
+        )
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["resolved_alias"], "codex")
+        self.assertEqual(payload["to"], "broker:codex-local")
+        self.assertEqual(payload["to_session_id"], "codex-local")
 
     def test_verify_supports_fixture_based_json_output(self):
         save_registry(
@@ -1605,6 +1909,44 @@ class C2CSendUnitTests(unittest.TestCase):
             sender_alias="",
             sessions=sessions,
         )
+
+    def test_send_to_alias_broker_only_peer_appends_to_broker_inbox(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            broker_root = Path(temp_dir) / "mcp-broker"
+            broker_root.mkdir(parents=True, exist_ok=True)
+            (broker_root / "registry.json").write_text(
+                json.dumps([{"session_id": "codex-local", "alias": "codex"}]),
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch("c2c_send.load_sessions", return_value=[]),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "C2C_REGISTRY_PATH": str(Path(temp_dir) / "registry.yaml"),
+                        "C2C_MCP_BROKER_ROOT": str(broker_root),
+                    },
+                    clear=False,
+                ),
+            ):
+                result = c2c_send.send_to_alias("codex", "hello peer", dry_run=False)
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["to"], "broker:codex-local")
+            self.assertEqual(result["session_id"], "codex-local")
+            self.assertEqual(
+                json.loads(
+                    (broker_root / "codex-local.inbox.json").read_text(encoding="utf-8")
+                ),
+                [
+                    {
+                        "from_alias": "c2c-send",
+                        "to_alias": "codex",
+                        "content": "hello peer",
+                    }
+                ],
+            )
 
     def test_main_reports_send_surface_failures_cleanly(self):
         session = {

@@ -4,9 +4,11 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import claude_send_msg
 from claude_list_sessions import find_session, load_sessions
+from c2c_mcp import default_broker_root, load_broker_registrations
 from c2c_registry import load_registration_for_session_id
 from c2c_registry import (
     find_registration_by_alias,
@@ -32,6 +34,42 @@ def resolve_alias(alias: str) -> tuple[dict, dict]:
     if session is None:
         raise ValueError(f"unknown alias: {alias}")
     return session, registration
+
+
+def resolve_broker_only_alias(alias: str) -> dict | None:
+    broker_root = Path(os.environ.get("C2C_MCP_BROKER_ROOT") or default_broker_root())
+    registrations = load_broker_registrations(broker_root / "registry.json")
+    for registration in registrations:
+        if registration.get("alias") == alias:
+            return registration
+    return None
+
+
+def enqueue_broker_message(session_id: str, to_alias: str, message: str) -> dict:
+    broker_root = Path(os.environ.get("C2C_MCP_BROKER_ROOT") or default_broker_root())
+    broker_root.mkdir(parents=True, exist_ok=True)
+    inbox_path = broker_root / f"{session_id}.inbox.json"
+    try:
+        items = json.loads(inbox_path.read_text(encoding="utf-8"))
+        if not isinstance(items, list):
+            items = []
+    except Exception:
+        items = []
+    sender = resolve_sender_metadata([])
+    items.append(
+        {
+            "from_alias": sender["name"],
+            "to_alias": to_alias,
+            "content": message,
+        }
+    )
+    inbox_path.write_text(json.dumps(items), encoding="utf-8")
+    return {
+        "ok": True,
+        "to": f"broker:{session_id}",
+        "session_id": session_id,
+        "sent_at": None,
+    }
 
 
 def delegate_send(session: dict, message: str, sessions: list[dict]) -> dict:
@@ -76,8 +114,23 @@ def resolve_sender_metadata(sessions: list[dict] | None = None) -> dict:
 
 
 def send_to_alias(alias: str, message: str, dry_run: bool) -> dict:
-    sessions = load_sessions()
-    session, registration = resolve_alias(alias)
+    try:
+        sessions = load_sessions()
+        session, registration = resolve_alias(alias)
+    except ValueError:
+        registration = resolve_broker_only_alias(alias)
+        if registration is None:
+            raise
+        if dry_run:
+            return {
+                "dry_run": True,
+                "resolved_alias": registration["alias"],
+                "to": f"broker:{registration['session_id']}",
+                "to_session_id": registration["session_id"],
+                "message": message,
+            }
+        return enqueue_broker_message(registration["session_id"], alias, message)
+
     if dry_run:
         return {
             "dry_run": True,

@@ -8,6 +8,13 @@ let session_id () =
   | Some value when String.trim value <> "" -> Some value
   | _ -> None
 
+let auto_drain_channel_enabled () =
+  match Sys.getenv_opt "C2C_MCP_AUTO_DRAIN_CHANNEL" with
+  | Some value ->
+      let normalized = String.lowercase_ascii (String.trim value) in
+      not (List.mem normalized [ "0"; "false"; "no"; "off" ])
+  | None -> true
+
 let starts_with_ci ~prefix s =
   let p = String.lowercase_ascii prefix in
   let v = String.lowercase_ascii s in
@@ -72,9 +79,10 @@ let rec loop ~broker_root =
           let* response = C2c_mcp.handle_request ~broker_root request in
           let* () = match response with None -> Lwt.return_unit | Some resp -> write_message resp in
           let* () =
-            match session_id () with
-            | None -> Lwt.return_unit
-            | Some session_id ->
+            match (auto_drain_channel_enabled (), session_id ()) with
+            | false, _ -> Lwt.return_unit
+            | true, None -> Lwt.return_unit
+            | true, Some session_id ->
                 let broker = C2c_mcp.Broker.create ~root:broker_root in
                 let queued = C2c_mcp.Broker.drain_inbox broker ~session_id in
                 let rec emit = function

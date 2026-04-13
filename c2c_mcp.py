@@ -28,10 +28,29 @@ def default_broker_root() -> Path:
     return Path(default_registry_path()).parent / "mcp"
 
 
+def load_broker_registrations(path: Path) -> list[dict[str, str]]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    registrations = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        session_id = str(item.get("session_id", "")).strip()
+        alias = str(item.get("alias", "")).strip()
+        if session_id and alias:
+            registrations.append({"session_id": session_id, "alias": alias})
+    return registrations
+
+
 def sync_broker_registry(broker_root: Path) -> None:
     broker_root.mkdir(parents=True, exist_ok=True)
     registry_path = registry_path_from_env()
     with registry_write_lock(registry_path):
+        destination = broker_root / "registry.json"
         registrations = [
             {
                 "session_id": registration["session_id"],
@@ -41,7 +60,15 @@ def sync_broker_registry(broker_root: Path) -> None:
                 "registrations", []
             )
         ]
-        destination = broker_root / "registry.json"
+        known_session_ids = {registration["session_id"] for registration in registrations}
+        known_aliases = {registration["alias"] for registration in registrations}
+        for registration in load_broker_registrations(destination):
+            if registration["session_id"] in known_session_ids:
+                continue
+            if registration["alias"] in known_aliases:
+                continue
+            registrations.append(registration)
+
         with tempfile.NamedTemporaryFile(
             "w",
             encoding="utf-8",
