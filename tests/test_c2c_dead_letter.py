@@ -5,13 +5,12 @@ Verifies that the replay escape hatch:
 2. Filters by to_alias and from_session_id
 3. Calls c2c_send.send_to_alias for each filtered record
 4. Skips records that lack a to_alias with an error
-5. Handles dry-run mode (no sends, just prints)
+5. Handles dry-run mode through c2c_send's dry-run path
 6. Does not modify the dead-letter file
 """
 from __future__ import annotations
 
 import json
-import os
 import sys
 import tempfile
 import unittest
@@ -121,9 +120,7 @@ class ReplayTests(unittest.TestCase):
         filtered = c2c_dead_letter.filter_records(
             records, to_alias="alice", from_sid=None
         )
-        with mock.patch.object(
-            c2c_dead_letter, "send_to_alias", side_effect=self._send_mock
-        ) as send_mock:
+        with mock.patch("c2c_send.send_to_alias", side_effect=self._send_mock) as send_mock:
             summary = c2c_dead_letter.replay_records(
                 filtered, dry_run=False, broker_root=self.broker_root
             )
@@ -140,30 +137,27 @@ class ReplayTests(unittest.TestCase):
         filtered = c2c_dead_letter.filter_records(
             records, to_alias=None, from_sid=None
         )
-        with mock.patch.object(
-            c2c_dead_letter, "send_to_alias", side_effect=self._send_mock
-        ) as send_mock:
+        with mock.patch("c2c_send.send_to_alias", side_effect=self._send_mock) as send_mock:
             summary = c2c_dead_letter.replay_records(
                 filtered, dry_run=False, broker_root=self.broker_root
             )
         # Only the record with to_alias should be sent
         self.assertEqual(send_mock.call_count, 1)
-        self.assertIn("skipped", summary)
+        self.assertEqual(len(summary["failed"]), 1)
+        self.assertEqual(summary["failed"][0]["reason"], "record has no to_alias")
 
-    def test_replay_dry_run_does_not_call_send(self):
+    def test_replay_dry_run_uses_c2c_send_dry_run_path(self):
         records = [_make_entry("alice", "dry-msg")]
         _write_dl(records, self.dl_path)
         filtered = c2c_dead_letter.filter_records(
             records, to_alias=None, from_sid=None
         )
-        with mock.patch.object(
-            c2c_dead_letter, "send_to_alias", side_effect=self._send_mock
-        ) as send_mock:
+        with mock.patch("c2c_send.send_to_alias", side_effect=self._send_mock) as send_mock:
             summary = c2c_dead_letter.replay_records(
                 filtered, dry_run=True, broker_root=self.broker_root
             )
-        send_mock.assert_not_called()
-        self.assertEqual(summary["sent"], 0)
+        send_mock.assert_called_once_with("alice", "dry-msg", dry_run=True)
+        self.assertEqual(summary["sent"], 1)
 
     def test_replay_does_not_modify_dead_letter_file(self):
         records = [_make_entry("alice", "intact-msg")]
@@ -172,9 +166,7 @@ class ReplayTests(unittest.TestCase):
         filtered = c2c_dead_letter.filter_records(
             records, to_alias=None, from_sid=None
         )
-        with mock.patch.object(
-            c2c_dead_letter, "send_to_alias", side_effect=self._send_mock
-        ):
+        with mock.patch("c2c_send.send_to_alias", side_effect=self._send_mock):
             c2c_dead_letter.replay_records(
                 filtered, dry_run=False, broker_root=self.broker_root
             )
@@ -189,9 +181,7 @@ class ReplayTests(unittest.TestCase):
         filtered = c2c_dead_letter.filter_records(
             records, to_alias=None, from_sid=None
         )
-        with mock.patch.object(
-            c2c_dead_letter, "send_to_alias", side_effect=self._send_mock
-        ):
+        with mock.patch("c2c_send.send_to_alias", side_effect=self._send_mock):
             summary = c2c_dead_letter.replay_records(
                 filtered, dry_run=False, broker_root=self.broker_root
             )
@@ -208,9 +198,7 @@ class ReplayTests(unittest.TestCase):
         filtered = c2c_dead_letter.filter_records(
             records, to_alias=None, from_sid=None
         )
-        with mock.patch.object(
-            c2c_dead_letter, "send_to_alias", side_effect=failing_send
-        ):
+        with mock.patch("c2c_send.send_to_alias", side_effect=failing_send):
             summary = c2c_dead_letter.replay_records(
                 filtered, dry_run=False, broker_root=self.broker_root
             )
@@ -240,8 +228,10 @@ class LoadTests(unittest.TestCase):
         result = c2c_dead_letter.load_records(self.dl_path)
         self.assertEqual(len(result), 1)
 
-    def test_load_skips malformed_lines(self):
-        self.dl_path.write_text('{"ok":true}\nnot json\n{"to_alias":"x"}\n', encoding="utf-8")
+    def test_load_skips_malformed_lines(self):
+        self.dl_path.write_text(
+            '{"ok":true}\nnot json\n{"to_alias":"x"}\n', encoding="utf-8"
+        )
         result = c2c_dead_letter.load_records(self.dl_path)
         self.assertEqual(len(result), 2)
 

@@ -12,6 +12,16 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T19:06Z — codex RELEASED locks on
+  `tests/test_c2c_dead_letter.py`, `tmp_status.txt`,
+  `.goal-loops/active-goal.md`, `docs/next-steps.md`, and
+  `tmp_collab_lock.md`. Repaired peer dead-letter replay tests that were
+  committed with a syntax error and stale mock boundary; tests now patch
+  `c2c_send.send_to_alias` and assert the current dry-run behavior. Synced
+  Python count to 784 and aggregate count to 890. Verification:
+  `py_compile`, focused `tests/test_c2c_dead_letter.py` 14/14, full pytest
+  784/784, `just test` 784 pytest + OCaml build/runtest, and `git diff --check`.
+
 - 2026-04-13T19:00Z — codex RELEASED locks on `c2c_dead_letter.py`,
   `tests/test_c2c_cli.py`, `docs/commands.md`, `docs/next-steps.md`,
   `docs/architecture.md`, `CLAUDE.md`/`AGENTS.md`,

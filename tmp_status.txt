@@ -54,7 +54,7 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 770 tests ✓
+- Python: 784 tests ✓
 - OCaml: 106 tests ✓
 
 ## Active Social Room
@@ -71,7 +71,7 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
   describe Crush notify-only PTY wake as live-proven for Codex<->Crush instead
   of written/untested, with `ember-flame` as the current live Crush alias.
 - c2c history: resolve_session_id now covers all 5 managed outer loops (added RUN_OPENCODE/KIMI/CRUSH_INST_C2C_SESSION_ID). Previously only Claude and Codex vars were checked.
-- justfile added: `just test` rebuilds OCaml + runs all 876 tests; `just build`/`test-py`/`test-ocaml` as individual targets.
+- justfile added: `just test` rebuilds OCaml + runs all 890 tests; `just build`/`test-py`/`test-ocaml` as individual targets.
 - Dead-letter replay explicit-root fix: `c2c dead-letter --root X --replay`
   now supplies that same root to `c2c_send`'s broker lookup, and the operator
   docs advertise the replay escape hatch.
