@@ -79,6 +79,7 @@ def check_session(broker_root: Path, session_id: str | None = None) -> dict[str,
         "session_id": None,
         "inbox_exists": False,
         "inbox_writable": False,
+        "inbox_pending": 0,
         "operator_check": session_id is not None,  # True when bypassing identity resolution
     }
 
@@ -116,6 +117,8 @@ def check_session(broker_root: Path, session_id: str | None = None) -> dict[str,
                     current = json.loads(inbox_path.read_text())
                     inbox_path.write_text(json.dumps(current))
                     result["inbox_writable"] = True
+                    if isinstance(current, list):
+                        result["inbox_pending"] = len(current)
                 except Exception:
                     pass
     except Exception:
@@ -364,8 +367,11 @@ def print_health_report(report: dict[str, Any]) -> None:
         if sess["registered"]:
             print(f"✓ Session: {sess['alias']} ({sess['session_id'][:8]}...)")
             inbox_status = "✓" if sess["inbox_writable"] else "✗"
+            pending = sess.get("inbox_pending", 0)
+            pending_str = f" ({pending} pending)" if pending else " (empty)"
             print(
                 f"{inbox_status} Inbox: {'writable' if sess['inbox_writable'] else 'NOT writable'}"
+                + (pending_str if sess["inbox_writable"] else "")
             )
         else:
             if sess.get("operator_check"):

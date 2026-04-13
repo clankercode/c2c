@@ -7123,6 +7123,63 @@ class HealthCheckSwarmLoungeTests(unittest.TestCase):
         self.assertTrue(result["room_exists"])
 
 
+class HealthCheckSessionInboxPendingTests(unittest.TestCase):
+    """Tests for inbox_pending count in c2c_health.check_session()."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.broker_root = Path(self.tmpdir)
+        self.registry_path = self.broker_root / "registry.json"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_registry(self, session_id: str, alias: str) -> None:
+        import os
+        self.registry_path.write_text(
+            json.dumps([{"session_id": session_id, "alias": alias, "pid": os.getpid(), "pid_start_time": 1}]),
+            encoding="utf-8",
+        )
+
+    def test_inbox_pending_is_zero_for_empty_inbox(self):
+        import c2c_health
+
+        self._write_registry("ses-empty", "agent-empty")
+        inbox = self.broker_root / "ses-empty.inbox.json"
+        inbox.write_text("[]", encoding="utf-8")
+
+        result = c2c_health.check_session(self.broker_root, session_id="ses-empty")
+        self.assertTrue(result["registered"])
+        self.assertEqual(result["inbox_pending"], 0)
+
+    def test_inbox_pending_counts_messages(self):
+        import c2c_health
+
+        self._write_registry("ses-msgs", "agent-msgs")
+        msgs = [
+            {"from_alias": "peer-a", "to_alias": "agent-msgs", "content": "hello"},
+            {"from_alias": "peer-b", "to_alias": "agent-msgs", "content": "world"},
+            {"from_alias": "peer-c", "to_alias": "agent-msgs", "content": "sup"},
+        ]
+        inbox = self.broker_root / "ses-msgs.inbox.json"
+        inbox.write_text(json.dumps(msgs), encoding="utf-8")
+
+        result = c2c_health.check_session(self.broker_root, session_id="ses-msgs")
+        self.assertTrue(result["registered"])
+        self.assertEqual(result["inbox_pending"], 3)
+
+    def test_inbox_pending_zero_when_inbox_missing(self):
+        import c2c_health
+
+        self._write_registry("ses-nofile", "agent-nofile")
+        # No inbox file created
+
+        result = c2c_health.check_session(self.broker_root, session_id="ses-nofile")
+        self.assertTrue(result["registered"])
+        self.assertFalse(result["inbox_exists"])
+        self.assertEqual(result["inbox_pending"], 0)
+
+
 class RefreshPeerTests(unittest.TestCase):
     """Tests for c2c_refresh_peer.refresh_peer()."""
 
