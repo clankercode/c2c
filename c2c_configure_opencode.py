@@ -26,6 +26,7 @@ C2C_MCP_PATH = REPO_ROOT / "c2c_mcp.py"
 BROKER_ROOT = REPO_ROOT / ".git" / "c2c" / "mcp"
 PLUGIN_SRC = REPO_ROOT / ".opencode" / "plugins" / "c2c.ts"
 PLUGIN_PACKAGE_JSON = {"dependencies": {"@opencode-ai/plugin": "1.4.3"}}
+GLOBAL_PLUGIN_DIR = Path.home() / ".config" / "opencode" / "plugins"
 
 
 def derive_session_id(target_dir: Path) -> str:
@@ -84,6 +85,23 @@ def install_plugin(config_dir: Path, *, force: bool) -> tuple[bool, str]:
     else:
         pkg_path.write_text(json.dumps(PLUGIN_PACKAGE_JSON, indent=2) + "\n", encoding="utf-8")
 
+    return True, str(dest)
+
+
+def install_plugin_global(*, force: bool) -> tuple[bool, str]:
+    """Install the c2c plugin to ~/.config/opencode/plugins/c2c.ts (global).
+
+    Returns (installed: bool, note: str).
+    """
+    if not PLUGIN_SRC.exists():
+        return False, "plugin source not found (expected .opencode/plugins/c2c.ts in c2c repo)"
+
+    GLOBAL_PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
+    dest = GLOBAL_PLUGIN_DIR / "c2c.ts"
+    if dest.exists() and not force:
+        return False, f"global plugin already exists at {dest} (use --force to overwrite)"
+
+    shutil.copy2(str(PLUGIN_SRC), str(dest))
     return True, str(dest)
 
 
@@ -157,7 +175,20 @@ def main(argv: list[str] | None = None) -> int:
         help="overwrite an existing .opencode/opencode.json",
     )
     parser.add_argument("--json", action="store_true", help="emit JSON result")
+    parser.add_argument(
+        "--install-global-plugin",
+        action="store_true",
+        help=(
+            "also install the plugin to ~/.config/opencode/plugins/c2c.ts "
+            "so it loads for all OpenCode sessions (project sidecar still needed per repo)"
+        ),
+    )
     args = parser.parse_args(argv)
+
+    global_plugin_result: dict = {}
+    if args.install_global_plugin:
+        ok, note = install_plugin_global(force=args.force)
+        global_plugin_result = {"installed": ok, "note": note}
 
     config_path, session_id, resolved_alias, plugin_result = write_config(
         args.target_dir, force=args.force, alias=args.alias,
@@ -169,6 +200,7 @@ def main(argv: list[str] | None = None) -> int:
         "alias": resolved_alias,
         "broker_root": str(BROKER_ROOT),
         "plugin": plugin_result,
+        "global_plugin": global_plugin_result,
     }
     if args.json:
         print(json.dumps(payload, indent=2))
@@ -191,6 +223,10 @@ def main(argv: list[str] | None = None) -> int:
             note = plugin_result.get("note", "")
             if note:
                 print(f"  plugin:     skipped — {note}")
+        if global_plugin_result.get("installed"):
+            print(f"  global plugin: {global_plugin_result['note']}")
+        elif global_plugin_result.get("note"):
+            print(f"  global plugin: skipped — {global_plugin_result['note']}")
         print()
         print(
             "Now run 'cd "

@@ -86,6 +86,7 @@ permalink: /next-steps/
 
 ## Future / Research
 
-- Remote transport: broker relay over TCP or shared NFS mount so cross-machine swarms work
+- ~~Remote transport: broker relay over TCP~~ ✓ complete — `c2c relay serve/connect` with InMemoryRelay + SQLite backend (2026-04-13).
 - Native MCP push delivery: revisit `notifications/claude/channel` on future Claude builds
 - Room access control: invite-only rooms, message visibility scopes
+- Cross-machine swarm: deploy relay to a VPS/Tailscale node so Claude Code + Codex + Kimi agents on different machines can message each other through the relay

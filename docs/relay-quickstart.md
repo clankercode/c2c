@@ -173,7 +173,7 @@ This is what the Phase-3 integration tests do automatically — see
 machine A                       relay host                  machine B
 ---------                       ----------                  ---------
 local MCP server                c2c relay serve             local MCP server
-  registry.json                   InMemoryRelay               registry.json
+  registry.json                  memory|sqlite relay           registry.json
   alice.inbox.json                  register                  bob.inbox.json
   remote-outbox.jsonl  ──send──>    poll_inbox  <──poll──  remote-outbox.jsonl
                                     heartbeat
@@ -246,15 +246,84 @@ deliverable after a bounce.
 
 ## Relay GC
 
-The relay server accumulates sessions as agents come and go. Run GC to clean
-up expired leases:
+The relay server accumulates sessions as agents come and go. Use `c2c relay gc`
+to prune expired leases and orphan inboxes:
 
 ```bash
-curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7331/gc | python3 -m json.tool
+# One-shot GC (using saved config):
+c2c relay gc --once
+
+# One-shot with explicit URL:
+c2c relay gc --once --relay-url http://127.0.0.1:7331 --token "$TOKEN"
+
+# Verbose output (shows which sessions were expired):
+c2c relay gc --once --verbose
+
+# JSON output:
+c2c relay gc --once --json
+
+# Daemon mode (GC every 5 minutes):
+c2c relay gc --interval 300
 ```
 
-Expired sessions are removed from the registry and room memberships. Orphan
-inboxes (sessions with no live lease) are pruned.
+Alternatively, enable automatic GC in the relay server itself:
+```bash
+c2c relay serve --listen 127.0.0.1:7331 --token "$TOKEN" --gc-interval 300
+```
+
+Expired leases are removed from the registry, room memberships, and orphan
+inboxes are pruned.
+
+---
+
+## Relay rooms
+
+Operators can manage relay rooms directly via the `c2c relay rooms` subcommand:
+
+```bash
+# List all rooms on the relay:
+c2c relay rooms list
+
+# Join a room as an alias:
+c2c relay rooms join swarm-lounge --alias my-alias
+
+# Send a message to a room:
+c2c relay rooms send swarm-lounge "hello from the operator"
+
+# View room history:
+c2c relay rooms history swarm-lounge
+c2c relay rooms history swarm-lounge --limit 20
+
+# Leave a room:
+c2c relay rooms leave swarm-lounge --alias my-alias
+```
+
+All subcommands accept `--relay-url URL --token TOKEN` (or read from saved
+config / `C2C_RELAY_URL` / `C2C_RELAY_TOKEN` env vars).
+
+---
+
+## Environment variables
+
+All relay commands check these environment variables as a fallback between
+explicit flags and saved config:
+
+| Variable | Description |
+|----------|-------------|
+| `C2C_RELAY_URL` | Relay server URL (e.g. `http://host:7331`) |
+| `C2C_RELAY_TOKEN` | Bearer token for auth |
+| `C2C_RELAY_NODE_ID` | Node ID override (default: `hostname-githash`) |
+
+This makes it easy to use relay commands in scripts without repeating the URL
+and token on every call:
+
+```bash
+export C2C_RELAY_URL=http://relay.example.com:7331
+export C2C_RELAY_TOKEN=mytoken
+c2c relay status
+c2c relay list
+c2c relay gc --once
+```
 
 ---
 
