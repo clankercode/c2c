@@ -8,10 +8,10 @@ from the broker registry based on configurable TTL thresholds.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import os
-import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -106,6 +106,27 @@ def sweep_dead_registrations(
     }
 
 
+@contextlib.contextmanager
+def with_dead_letter_lock(broker_root: Path):
+    """Exclusive POSIX fcntl lock on dead-letter.jsonl.lock sidecar.
+
+    Uses fcntl.lockf (POSIX), not fcntl.flock (BSD), so it interlocks
+    with OCaml's Unix.lockf on the same sidecar file.
+    """
+    lock_path = broker_root / "dead-letter.jsonl.lock"
+    broker_root.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.lockf(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.lockf(fd, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        os.close(fd)
+
+
 def purge_old_dead_letter(
     broker_root: Path,
     ttl_seconds: float = DEFAULT_DEAD_LETTER_TTL_SECONDS,
@@ -127,36 +148,37 @@ def purge_old_dead_letter(
     kept: list[str] = []
     purged = 0
 
-    try:
-        lines = dl_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return {"ok": False, "before_count": 0, "after_count": 0, "purged_count": 0, "dry_run": dry_run}
-
-    before_count = sum(1 for l in lines if l.strip())
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
+    with with_dead_letter_lock(broker_root):
         try:
-            record = json.loads(stripped)
-            deleted_at = record.get("deleted_at")
-            if isinstance(deleted_at, (int, float)) and deleted_at < cutoff:
-                purged += 1
+            lines = dl_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return {"ok": False, "before_count": 0, "after_count": 0, "purged_count": 0, "dry_run": dry_run}
+
+        before_count = sum(1 for l in lines if l.strip())
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
                 continue
-        except (json.JSONDecodeError, KeyError):
-            pass
-        kept.append(line)
+            try:
+                record = json.loads(stripped)
+                deleted_at = record.get("deleted_at")
+                if isinstance(deleted_at, (int, float)) and deleted_at < cutoff:
+                    purged += 1
+                    continue
+            except (json.JSONDecodeError, KeyError):
+                pass
+            kept.append(line)
 
-    after_count = len(kept)
-    if not dry_run and purged > 0:
-        try:
-            content = "\n".join(kept)
-            if content and not content.endswith("\n"):
-                content += "\n"
-            dl_path.write_text(content, encoding="utf-8")
-        except OSError as exc:
-            return {"ok": False, "error": str(exc), "before_count": before_count,
-                    "after_count": before_count, "purged_count": 0, "dry_run": dry_run}
+        after_count = len(kept)
+        if not dry_run and purged > 0:
+            try:
+                content = "\n".join(kept)
+                if content and not content.endswith("\n"):
+                    content += "\n"
+                dl_path.write_text(content, encoding="utf-8")
+            except OSError as exc:
+                return {"ok": False, "error": str(exc), "before_count": before_count,
+                        "after_count": before_count, "purged_count": 0, "dry_run": dry_run}
 
     return {"ok": True, "before_count": before_count, "after_count": after_count,
             "purged_count": purged, "dry_run": dry_run}
@@ -167,6 +189,7 @@ def run_gc_loop(
     interval_seconds: float,
     dry_run: bool = False,
     once: bool = False,
+    dead_letter_ttl: float = DEFAULT_DEAD_LETTER_TTL_SECONDS,
 ) -> None:
     """Run the GC loop, sweeping dead registrations periodically."""
     print(f"[broker-gc] starting — broker_root={broker_root}", flush=True)
@@ -180,7 +203,7 @@ def run_gc_loop(
         print(f"[broker-gc] iteration {iteration}: sweeping...", flush=True)
 
         result = sweep_dead_registrations(broker_root, dry_run=dry_run)
-        dl_result = purge_old_dead_letter(broker_root, dry_run=dry_run)
+        dl_result = purge_old_dead_letter(broker_root, ttl_seconds=dead_letter_ttl, dry_run=dry_run)
 
         removed_count = result["removed_count"]
         if removed_count > 0:
@@ -242,6 +265,13 @@ def main(argv: list[str] | None = None) -> int:
         help="sweep once and exit (don't loop)",
     )
     parser.add_argument(
+        "--dead-letter-ttl",
+        type=float,
+        default=DEFAULT_DEAD_LETTER_TTL_SECONDS,
+        dest="dead_letter_ttl",
+        help=f"dead-letter TTL in seconds (default: {DEFAULT_DEAD_LETTER_TTL_SECONDS}, i.e. 7 days)",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="emit JSON output",
@@ -265,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
         result = sweep_dead_registrations(broker_root, dry_run=args.dry_run)
         dl_result = purge_old_dead_letter(
             broker_root,
-            ttl_seconds=getattr(args, "dead_letter_ttl", DEFAULT_DEAD_LETTER_TTL_SECONDS),
+            ttl_seconds=args.dead_letter_ttl,
             dry_run=args.dry_run,
         )
         combined = {**result, "dead_letter": dl_result}
@@ -281,11 +311,13 @@ def main(argv: list[str] | None = None) -> int:
                     alias = reg.get("alias", "unknown")
                     print(f"  - {alias}")
             dl_purged = dl_result.get("purged_count", 0)
+            ttl_days = int(args.dead_letter_ttl) // 86400
             if dl_purged > 0:
-                print(f"dead-letter: purged {dl_purged} stale entries (>{DEFAULT_DEAD_LETTER_TTL_SECONDS // 86400}d old)")
+                print(f"dead-letter: purged {dl_purged} stale entries (>{ttl_days}d old)")
             else:
                 print(f"dead-letter: {dl_result.get('before_count', 0)} entries, none expired")
-        return 0 if result["ok"] else 1
+        ok = result["ok"] and dl_result.get("ok", True)
+        return 0 if ok else 1
 
     # Run continuous GC loop
     try:
@@ -294,6 +326,7 @@ def main(argv: list[str] | None = None) -> int:
             interval_seconds=interval_seconds,
             dry_run=args.dry_run,
             once=False,
+            dead_letter_ttl=args.dead_letter_ttl,
         )
     except KeyboardInterrupt:
         print("\n[broker-gc] interrupted, exiting", flush=True)
