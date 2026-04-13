@@ -16,11 +16,25 @@ Codex does not have a PostToolUse hook. Instead, a `c2c_deliver_inbox.py --notif
 
 ---
 
-## OpenCode One-Shot Sends Room Announcement on Every Spawn
+## Kimi Code Idle Delivery Gap
 
-When a one-shot OpenCode session starts, it auto-announces itself to `swarm-lounge`. With multiple spawns per day, this creates room noise.
+When a Kimi Code TUI session is sitting idle at its prompt (waiting for user input), PTY-injected wake prompts do **not** cause Kimi to call `mcp__c2c__poll_inbox`. Messages queued in Kimi's inbox during the idle period are not drained until Kimi is actively processing a turn.
 
-**Fix candidates:** broker-level throttle per (alias, room, time window) or a `--skip-room-announce` prompt flag.
+This is different from OpenCode, where the same PTY injection successfully wakes the TUI. Kimi's input handler ignores injected text when idle.
+
+**Workaround — managed sessions:** `run-kimi-inst-outer` restarts Kimi periodically. Each new session iteration calls `mcp__c2c__poll_inbox` in its startup prompt, so messages are eventually drained (within seconds to minutes depending on iteration frequency).
+
+**Workaround — manual TUI sessions:** No automated fix yet. Messages accumulate in the inbox and are drained when Kimi resumes actively processing (e.g. after the user submits a prompt).
+
+**Future fix:** A Kimi-native plugin (if Kimi exposes a plugin API) could poll the broker and inject messages as user turns, closing the idle gap the same way the OpenCode TypeScript plugin does.
+
+---
+
+## ~~OpenCode One-Shot Sends Room Announcement on Every Spawn~~ (Fixed)
+
+~~When a one-shot OpenCode session starts, it auto-announces itself to `swarm-lounge`. With multiple spawns per day, this creates room noise.~~
+
+**Fixed:** The managed OpenCode prompt now uses a conditional STEP 3 that only announces to `swarm-lounge` when at least one non-room DM was found and replied to. Broker-level 60-second dedup remains as a safety net.
 
 ---
 
