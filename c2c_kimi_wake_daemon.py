@@ -3,12 +3,17 @@
 
 Same pattern as c2c_opencode_wake_daemon.py.  Kimi Code is a terminal-based
 CLI that accepts user prompts and calls MCP tools in each turn.  When a new
-c2c message arrives in the broker inbox, this daemon PTY-injects a short wake
-prompt that tells the Kimi agent to call mcp__c2c__poll_inbox.
+c2c message arrives in the broker inbox, this daemon writes a short wake
+prompt directly to /dev/pts/<N> that tells the Kimi agent to call
+mcp__c2c__poll_inbox.
 
-Status: skeleton — structure is proven (OpenCode), Kimi PTY injection path
-        is not yet live-tested.  Will need terminal_pid and pts for the
-        Kimi TUI session (same as OpenCode).
+Uses c2c_pts_inject.inject() — plain text write to /dev/pts/<N> — NOT the
+pty_inject binary.  The pty_inject binary uses bracketed-paste sequences that
+Kimi's prompt_toolkit shell inserts into the buffer without auto-submitting
+when idle.  Direct PTS write bypasses this and wakes the TUI reliably.
+
+Status: PROVEN live 2026-04-13 (c88ab4c / 5086db4).  Direct PTS write wakes
+        idle Kimi TUI; kimi-nova drained via mcp__c2c__poll_inbox and replied.
 
 Usage (manual, from the repo root):
     python3 c2c_kimi_wake_daemon.py \\
@@ -30,7 +35,6 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-PTY_INJECT = Path("/home/xertrov/src/meta-agent/apps/ma_adapter_claude/priv/pty_inject")
 
 WAKE_PROMPT_TEMPLATE = (
     "You have pending c2c direct messages. "
@@ -75,32 +79,22 @@ def inbox_has_messages(path: Path) -> bool:
         return False
 
 
-def pty_inject(
-    terminal_pid: int,
+def pts_inject(
     pts: int,
     message: str,
     *,
     dry_run: bool,
-    submit_delay: float | None,
 ) -> bool:
+    """Write message directly to /dev/pts/<pts> — bypasses bracketed paste."""
     if dry_run:
-        print(f"[kimi-wake] dry-run: would inject to terminal_pid={terminal_pid} pts={pts}: {message[:80]}...")
+        print(f"[kimi-wake] dry-run: would inject to /dev/pts/{pts}: {message[:80]}...")
         return True
-    if not PTY_INJECT.exists():
-        print(f"[kimi-wake] pty_inject not found: {PTY_INJECT}", file=sys.stderr)
-        return False
     try:
-        command = [str(PTY_INJECT), str(terminal_pid), str(pts), message]
-        if submit_delay is not None:
-            command.append(f"{submit_delay:g}")
-        timeout = 5.0 + (submit_delay or 0.0)
-        result = subprocess.run(command, timeout=timeout, capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"[kimi-wake] pty_inject failed: {result.stderr}", file=sys.stderr)
-            return False
+        import c2c_pts_inject
+        c2c_pts_inject.inject(pts, message)
         return True
     except Exception as exc:
-        print(f"[kimi-wake] pty_inject error: {exc}", file=sys.stderr)
+        print(f"[kimi-wake] pts_inject error: {exc}", file=sys.stderr)
         return False
 
 
@@ -135,7 +129,6 @@ def run(
     broker_root: Path,
     interval: float,
     min_inject_gap: float,
-    submit_delay: float | None,
     dry_run: bool,
     once: bool,
 ) -> None:
@@ -143,7 +136,7 @@ def run(
     last_inject_time = 0.0
     wake_prompt = WAKE_PROMPT_TEMPLATE.format(alias=alias)
 
-    print(f"[kimi-wake] watching {inbox} → PTY terminal_pid={terminal_pid} pts={pts}")
+    print(f"[kimi-wake] watching {inbox} → /dev/pts/{pts} (terminal_pid={terminal_pid})")
     print(f"[kimi-wake] alias={alias} min_inject_gap={min_inject_gap}s interval={interval}s")
 
     while True:
@@ -152,10 +145,7 @@ def run(
             gap = now - last_inject_time
             if gap >= min_inject_gap:
                 print("[kimi-wake] inbox has messages, injecting wake-up")
-                ok = pty_inject(
-                    terminal_pid, pts, wake_prompt,
-                    dry_run=dry_run, submit_delay=submit_delay,
-                )
+                ok = pts_inject(pts, wake_prompt, dry_run=dry_run)
                 if ok:
                     last_inject_time = now
             else:
@@ -175,14 +165,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="PTY-wake daemon for Kimi Code inbox auto-delivery")
     parser.add_argument("--session-id", help="broker session id to watch (default: alias value)")
     parser.add_argument("--alias", default=None, help="Kimi agent alias (default: kimi-user-host)")
-    parser.add_argument("--terminal-pid", type=int, required=True, help="PTY master pid")
-    parser.add_argument("--pts", type=int, required=True, help="pts slave number")
+    parser.add_argument("--terminal-pid", type=int, required=True,
+                        help="Terminal process pid (for logging; injection uses --pts directly)")
+    parser.add_argument("--pts", type=int, required=True, help="pts slave number (writes to /dev/pts/<N>)")
     parser.add_argument("--broker-root", type=Path)
     parser.add_argument("--interval", type=float, default=10.0, help="fallback poll interval (seconds)")
     parser.add_argument("--min-inject-gap", type=float, default=15.0,
                         help="minimum seconds between PTY injections")
-    parser.add_argument("--submit-delay", type=float, default=None,
-                        help="seconds to wait between bracketed paste and Enter")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--once", action="store_true", help="inject once if inbox has messages and exit")
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
@@ -199,7 +188,6 @@ def main(argv: list[str] | None = None) -> int:
         broker_root=broker_root,
         interval=args.interval,
         min_inject_gap=args.min_inject_gap,
-        submit_delay=args.submit_delay,
         dry_run=args.dry_run,
         once=args.once,
     )
