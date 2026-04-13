@@ -10,11 +10,12 @@ permalink: /next-steps/
 
 - **Kimi standalone PTY wake daemon** — `c2c_kimi_wake_daemon.py` written for manual/interactive Kimi TUI sessions (distinct from the managed-harness `c2c_deliver_inbox.py` path). Not yet live-tested. *Note: managed Kimi harness auto-delivery is already proven end-to-end.*
 - **Crush PTY wake daemon & DM proof** — `c2c_crush_wake_daemon.py` written, Crush MCP config ready, but no live session available to test (blocked: `ANTHROPIC_API_KEY` not set in Claude Code shell).
-- **Cross-machine broker Phase 2** — Phase 1 contract + InMemoryRelay landed (6292bce). Next slice: TCP relay server implementing the same `RelayContract` interface, with parity tests reusing the Phase-1 contract mix-in.
+- **Cross-machine broker Phase 3** — Phases 1+2 done. Next slice: `c2c relay connect` — a connector process that bridges a local broker to the remote relay. Prove machine-A→machine-B delivery on localhost with two broker roots.
 - **Site visual redesign** — dark theme live ✓, h1 double-heading bug fixed (c478ddb), screenshots taken. Waiting for Max sign-off on north-star criterion.
 
 ## Recently Completed
 
+- **Cross-machine broker Phase 2** ✓ — `c2c_relay_server.py`: ThreadingHTTPServer wrapping InMemoryRelay; Bearer-token auth; endpoints: register/heartbeat/list/send/poll_inbox/peek_inbox/dead_letter/health; `make_server()` + `start_server_thread()` helpers; CLI `--listen host:port --token`. 24 HTTP parity tests, 437 total (9f716d9, 2026-04-13).
 - **Cross-machine broker Phase 1** ✓ — `c2c_relay_contract.py`: `derive_node_id()` (hostname+git-remote-hash), heartbeat-lease `RegistrationLease`, `InMemoryRelay` (register/heartbeat/list/send/poll/peek/dead-letter). 33 contract tests; same suite can be reused by Phase-2 TCP relay for parity verification. Managed-restart semantics: same-node alias replacement allowed, cross-node conflict raises `ALIAS_CONFLICT` (6292bce, 2026-04-13).
 - **Kimi/Crush/OpenCode wake daemon improvements** ✓ — `watch_with_inotifywait` now uses `-t` timeout arg, returns bool, and falls back to `time.sleep` if no event fires; wrapper scripts `c2c-kimi-wake`, `c2c-opencode-wake`, `c2c-crush-wake` added and wired into `c2c install` (73c7782, 2026-04-13).
 - **POSIX lockf across all Python registry writers** ✓ — all Python code that writes `registry.json` now uses `c2c_broker_gc.with_registry_lock` (POSIX `fcntl.lockf`) instead of BSD `flock`. Fixed in `c2c_broker_gc`, `c2c_refresh_peer`, `c2c_mcp`, and `run-opencode-inst-rearm`. BSD flock does NOT interlock with OCaml's `Unix.lockf` on Linux — silently clobbered registry writes (548deb9, 14f1707, 86be8f4, 2026-04-13).
