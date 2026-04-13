@@ -120,6 +120,9 @@ def main(argv: list[str] | None = None) -> int:
             + str(args.target_dir.resolve())
             + " && opencode mcp list' to verify, or launch opencode from that dir."
         )
+        print()
+        print("For near-real-time auto-delivery in a manual TUI session:")
+        print("  nohup c2c-opencode-wake --terminal-pid <ghostty-pid> --pts <pts> &")
     return 0
 
 
