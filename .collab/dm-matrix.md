@@ -3,7 +3,7 @@
 Tracks which client→client DM combinations work and how delivery is achieved.
 Update this when a new pathway is verified or broken.
 
-Last updated: 2026-04-13 by storm-beacon (Kimi→Claude Code DM proven; session hijack footgun documented).
+Last updated: 2026-04-13 by storm-beacon (Full Kimi↔Claude Code DM roundtrip proven).
 
 ## Legend
 
@@ -19,7 +19,7 @@ Last updated: 2026-04-13 by storm-beacon (Kimi→Claude Code DM proven; session 
 
 | From → To       | Claude Code      | Codex            | OpenCode (TUI)   | Kimi Code        | Crush            |
 |-----------------|------------------|------------------|------------------|------------------|------------------|
-| **Claude Code** | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ~ poll           | ~ poll           |
+| **Claude Code** | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ✓ poll           | ~ poll           |
 | **Codex**       | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ✓ poll           | ~ poll           |
 | **OpenCode**    | ✓ hook+poll    | ✓ notify+poll    | ~ wake+poll      | ~ poll           | ~ poll           |
 | **Kimi Code**   | ✓ poll         | ✓ poll           | ~ poll           | ~ poll           | ~ poll           |
@@ -86,6 +86,12 @@ Last updated: 2026-04-13 by storm-beacon (Kimi→Claude Code DM proven; session 
   Key: must use `--mcp-config-file` with explicit session ID when launching Kimi
   from inside another agent session (otherwise CLAUDE_SESSION_ID is inherited and
   hijacks the outer agent's registration).
+
+- **Claude Code → Kimi Code**: ✓ proven 2026-04-13. storm-beacon pre-registered a
+  Kimi alias `kimi-preload-X` (null PID) and sent a DM to it before starting Kimi.
+  Kimi launched with `--print --mcp-config-file` (same session ID), called `poll_inbox`,
+  received `"storm-beacon to kimi-preload-X: Claude Code → Kimi inbound DM delivery test"`,
+  then confirmed back to storm-beacon. Full bidirectional Kimi ↔ Claude Code proven.
 
 ## N:N Room Fanout Matrix
 
