@@ -93,6 +93,16 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c-verify",
         "c2c-watch",
         "c2c-whoami",
+        "restart-codex-self",
+        "restart-crush-self",
+        "restart-kimi-self",
+        "restart-opencode-self",
+        "run-crush-inst",
+        "run-crush-inst-outer",
+        "run-crush-inst-rearm",
+        "run-kimi-inst",
+        "run-kimi-inst-outer",
+        "run-kimi-inst-rearm",
         "c2c_broker_gc.py",
         "c2c_register.py",
         "c2c_restart_me.py",
@@ -102,6 +112,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_configure_crush.py",
         "c2c_configure_kimi.py",
         "c2c_configure_opencode.py",
+
         "c2c_init.py",
         "c2c_list.py",
         "c2c_prune.py",
@@ -330,7 +341,16 @@ class C2CCLITests(unittest.TestCase):
                 "c2c-verify",
                 "c2c-watch",
                 "c2c-whoami",
+                "restart-codex-self",
+                "restart-crush-self",
+                "restart-kimi-self",
                 "restart-opencode-self",
+                "run-crush-inst",
+                "run-crush-inst-outer",
+                "run-crush-inst-rearm",
+                "run-kimi-inst",
+                "run-kimi-inst-outer",
+                "run-kimi-inst-rearm",
             ],
         )
         self.assertTrue((install_dir / "c2c").exists())
@@ -345,6 +365,8 @@ class C2CCLITests(unittest.TestCase):
         self.assertTrue((install_dir / "c2c-room").exists())
         self.assertTrue((install_dir / "c2c-setup").exists())
         self.assertTrue((install_dir / "restart-opencode-self").exists())
+        self.assertTrue((install_dir / "run-kimi-inst").exists())
+        self.assertTrue((install_dir / "run-crush-inst").exists())
         self.assertTrue((install_dir / "c2c-watch").exists())
         self.assertTrue((install_dir / "c2c-whoami").exists())
 
@@ -2294,6 +2316,16 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c-verify",
                 "c2c-watch",
                 "c2c-whoami",
+                "restart-codex-self",
+                "restart-crush-self",
+                "restart-kimi-self",
+                "restart-opencode-self",
+                "run-crush-inst",
+                "run-crush-inst-outer",
+                "run-crush-inst-rearm",
+                "run-kimi-inst",
+                "run-kimi-inst-outer",
+                "run-kimi-inst-rearm",
                 "c2c_broker_gc.py",
                 "c2c_health.py",
                 "c2c_register.py",
@@ -5311,6 +5343,158 @@ class RestartMeUnitTests(unittest.TestCase):
 
         self.assertIn("claude --resume", output)
         self.assertIn("/exit", output)
+
+
+class RunKimiInstTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.env = {}
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_run_kimi_inst_dry_run_shows_launch_command(self):
+        config_dir = Path(self.temp_dir.name) / "run-kimi-inst.d"
+        config_dir.mkdir()
+        config = {
+            "command": "kimi",
+            "cwd": self.temp_dir.name,
+            "c2c_session_id": "kimi-test",
+            "c2c_alias": "kimi-test",
+        }
+        (config_dir / "kimi-a.json").write_text(json.dumps(config), encoding="utf-8")
+        env = dict(self.env)
+        env["RUN_KIMI_INST_DRY_RUN"] = "1"
+        env["RUN_KIMI_INST_CONFIG_DIR"] = str(config_dir)
+
+        result = run_cli("run-kimi-inst", "kimi-a", env=env)
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["launch"][0], "kimi")
+        self.assertEqual(payload["env"]["RUN_KIMI_INST_C2C_SESSION_ID"], "kimi-test")
+        self.assertEqual(payload["env"]["C2C_MCP_AUTO_REGISTER_ALIAS"], "kimi-test")
+
+    def test_run_kimi_inst_outer_dry_run_reports_inner_and_rearm(self):
+        env = {"RUN_KIMI_INST_OUTER_DRY_RUN": "1"}
+        result = run_cli("run-kimi-inst-outer", "kimi-a", env=env)
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(Path(payload["inner"][0]).name.startswith("python"))
+        self.assertEqual(
+            payload["inner"][1:], [str(REPO / "run-kimi-inst"), "kimi-a"]
+        )
+        self.assertTrue(Path(payload["rearm"][0]).name.startswith("python"))
+        self.assertEqual(
+            payload["rearm"][1:], [str(REPO / "run-kimi-inst-rearm"), "kimi-a"]
+        )
+
+    def test_run_kimi_inst_rearm_dry_run_shows_deliver_command(self):
+        config_dir = Path(self.temp_dir.name) / "run-kimi-inst.d"
+        config_dir.mkdir()
+        (config_dir / "kimi-a.pid").write_text("12345\n", encoding="utf-8")
+        env = dict(self.env)
+        env["RUN_KIMI_INST_CONFIG_DIR"] = str(config_dir)
+
+        result = run_cli(
+            "run-kimi-inst-rearm",
+            "kimi-a",
+            "--session-id",
+            "kimi-a-local",
+            "--dry-run",
+            "--json",
+            env=env,
+        )
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["name"], "kimi-a")
+        self.assertEqual(payload["target_pid"], 12345)
+        self.assertEqual(payload["session_id"], "kimi-a-local")
+        self.assertTrue(payload["dry_run"])
+        joined_commands = " ".join(
+            " ".join(cmd) for cmd in payload["commands"]
+        )
+        self.assertIn("c2c_deliver_inbox.py", joined_commands)
+        self.assertIn("--session-id kimi-a-local", joined_commands)
+        self.assertIn("--notify-only", joined_commands)
+
+
+class RunCrushInstTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.env = {}
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_run_crush_inst_dry_run_shows_launch_command(self):
+        config_dir = Path(self.temp_dir.name) / "run-crush-inst.d"
+        config_dir.mkdir()
+        config = {
+            "command": "crush",
+            "cwd": self.temp_dir.name,
+            "c2c_session_id": "crush-test",
+            "c2c_alias": "crush-test",
+        }
+        (config_dir / "crush-a.json").write_text(json.dumps(config), encoding="utf-8")
+        env = dict(self.env)
+        env["RUN_CRUSH_INST_DRY_RUN"] = "1"
+        env["RUN_CRUSH_INST_CONFIG_DIR"] = str(config_dir)
+
+        result = run_cli("run-crush-inst", "crush-a", env=env)
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["launch"][0], "crush")
+        self.assertEqual(payload["env"]["RUN_CRUSH_INST_C2C_SESSION_ID"], "crush-test")
+        self.assertEqual(payload["env"]["C2C_MCP_AUTO_REGISTER_ALIAS"], "crush-test")
+
+    def test_run_crush_inst_outer_dry_run_reports_inner_and_rearm(self):
+        env = {"RUN_CRUSH_INST_OUTER_DRY_RUN": "1"}
+        result = run_cli("run-crush-inst-outer", "crush-a", env=env)
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(Path(payload["inner"][0]).name.startswith("python"))
+        self.assertEqual(
+            payload["inner"][1:], [str(REPO / "run-crush-inst"), "crush-a"]
+        )
+        self.assertTrue(Path(payload["rearm"][0]).name.startswith("python"))
+        self.assertEqual(
+            payload["rearm"][1:], [str(REPO / "run-crush-inst-rearm"), "crush-a"]
+        )
+
+    def test_run_crush_inst_rearm_dry_run_shows_deliver_command(self):
+        config_dir = Path(self.temp_dir.name) / "run-crush-inst.d"
+        config_dir.mkdir()
+        (config_dir / "crush-a.pid").write_text("54321\n", encoding="utf-8")
+        env = dict(self.env)
+        env["RUN_CRUSH_INST_CONFIG_DIR"] = str(config_dir)
+
+        result = run_cli(
+            "run-crush-inst-rearm",
+            "crush-a",
+            "--session-id",
+            "crush-a-local",
+            "--dry-run",
+            "--json",
+            env=env,
+        )
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["name"], "crush-a")
+        self.assertEqual(payload["target_pid"], 54321)
+        self.assertEqual(payload["session_id"], "crush-a-local")
+        self.assertTrue(payload["dry_run"])
+        joined_commands = " ".join(
+            " ".join(cmd) for cmd in payload["commands"]
+        )
+        self.assertIn("c2c_deliver_inbox.py", joined_commands)
+        self.assertIn("--session-id crush-a-local", joined_commands)
+        self.assertIn("--notify-only", joined_commands)
 
 
 def result_code(result):

@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""Rearm background helpers for a managed run-crush-inst session.
+
+Starts c2c_deliver_inbox.py --notify-only --loop alongside the Crush process
+so messages are delivered near-real-time without manual polling.
+
+Usage: ./run-crush-inst-rearm <instance-name> [--pid PID] [--session-id ID]
+       ./run-crush-inst-rearm <instance-name> --stop
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+HERE = Path(__file__).resolve().parent
+DEFAULT_CONFIG_DIR = HERE / "run-crush-inst.d"
+FALSE_STRINGS = {"", "0", "false", "no", "off"}
+
+
+def config_dir() -> Path:
+    override = os.environ.get("RUN_CRUSH_INST_CONFIG_DIR", "").strip()
+    return Path(override) if override else DEFAULT_CONFIG_DIR
+
+
+def config_path(name: str) -> Path:
+    return config_dir() / f"{name}.json"
+
+
+def pid_path(name: str) -> Path:
+    return config_dir() / f"{name}.pid"
+
+
+def support_pidfile(name: str, kind: str) -> Path:
+    return config_dir() / f"{name}.{kind}.pid"
+
+
+def support_log(name: str, kind: str) -> Path:
+    return config_dir() / f"{name}.{kind}.log"
+
+
+def read_pid(path: Path) -> int | None:
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def proc_cmdline(pid: int) -> str:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    return raw.replace(b"\0", b" ").decode("utf-8", errors="replace").strip()
+
+
+def stop_pidfile(path: Path, expected: str, timeout: float) -> dict[str, Any]:
+    pid = read_pid(path)
+    result: dict[str, Any] = {"pidfile": str(path), "pid": pid, "stopped": False}
+    if pid is None:
+        result["reason"] = "missing_or_invalid_pidfile"
+        return result
+    if not pid_is_alive(pid):
+        result["reason"] = "already_dead"
+        path.unlink(missing_ok=True)
+        return result
+
+    cmdline = proc_cmdline(pid)
+    result["cmdline"] = cmdline
+    if expected not in cmdline:
+        result["reason"] = "unexpected_process"
+        return result
+
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not pid_is_alive(pid):
+            path.unlink(missing_ok=True)
+            result["stopped"] = True
+            result["reason"] = "terminated"
+            return result
+        time.sleep(0.05)
+
+    os.kill(pid, signal.SIGKILL)
+    path.unlink(missing_ok=True)
+    result["stopped"] = True
+    result["reason"] = "killed"
+    return result
+
+
+def load_config(name: str) -> dict[str, Any]:
+    path = config_path(name)
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def default_session_id(name: str) -> str:
+    env_value = os.environ.get("RUN_CRUSH_INST_C2C_SESSION_ID", "").strip()
+    if env_value:
+        return env_value
+    config_value = str(load_config(name).get("c2c_session_id", "")).strip()
+    if config_value:
+        return config_value
+    return f"crush-{name}"
+
+
+def build_deliver_command(
+    name: str, target_pid: int, session_id: str, start_timeout: float
+) -> list[str]:
+    deliver_pidfile = support_pidfile(name, "deliver")
+    return [
+        sys.executable,
+        str(HERE / "c2c_deliver_inbox.py"),
+        "--client",
+        "generic",
+        "--pid",
+        str(target_pid),
+        "--session-id",
+        session_id,
+        "--file-fallback",
+        "--notify-only",
+        "--notify-debounce",
+        "30",
+        "--loop",
+        "--interval",
+        "2",
+        "--pidfile",
+        str(deliver_pidfile),
+        "--daemon",
+        "--daemon-log",
+        str(support_log(name, "deliver")),
+        "--daemon-timeout",
+        f"{start_timeout:g}",
+        "--json",
+    ]
+
+
+def dry_run_enabled(args: argparse.Namespace) -> bool:
+    if args.dry_run:
+        return True
+    return (
+        os.environ.get("RUN_CRUSH_INST_REARM_DRY_RUN", "").strip().lower()
+        not in FALSE_STRINGS
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Restart Crush support loops for a run-crush-inst instance."
+    )
+    parser.add_argument("name")
+    parser.add_argument("--pid", type=int, default=None)
+    parser.add_argument("--session-id", default="")
+    parser.add_argument("--stop", action="store_true", help="stop deliver daemon and exit")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--stop-timeout", type=float, default=2.0)
+    parser.add_argument("--start-timeout", type=float, default=30.0)
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+
+    if args.stop:
+        stopped = [
+            stop_pidfile(
+                support_pidfile(args.name, "deliver"),
+                "c2c_deliver_inbox.py",
+                args.stop_timeout,
+            ),
+        ]
+        if args.json:
+            print(json.dumps({"stopped": stopped}, indent=2))
+        else:
+            print(f"stopped deliver daemon for {args.name}")
+        return 0
+
+    target_pid = args.pid if args.pid is not None else read_pid(pid_path(args.name))
+    if target_pid is None:
+        print(f"[run-crush-inst-rearm] pid file not found: {pid_path(args.name)}", file=sys.stderr)
+        return 2
+
+    session_id = args.session_id or default_session_id(args.name)
+    deliver_command = build_deliver_command(args.name, target_pid, session_id, args.start_timeout)
+
+    payload: dict[str, Any] = {
+        "ok": True,
+        "name": args.name,
+        "target_pid": target_pid,
+        "session_id": session_id,
+        "pidfiles": {"deliver": str(support_pidfile(args.name, "deliver"))},
+        "commands": [deliver_command],
+        "dry_run": dry_run_enabled(args),
+    }
+
+    if payload["dry_run"]:
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            print(f"would rearm Crush deliver daemon for {args.name} pid={target_pid}")
+        return 0
+
+    stopped = [
+        stop_pidfile(
+            support_pidfile(args.name, "deliver"),
+            "c2c_deliver_inbox.py",
+            args.stop_timeout,
+        ),
+    ]
+    deliver = subprocess.run(
+        deliver_command,
+        cwd=HERE,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    payload["stopped"] = stopped
+    payload["started"] = {
+        "deliver": {
+            "ok": deliver.returncode == 0,
+            "returncode": deliver.returncode,
+            "stdout": deliver.stdout.strip(),
+            "stderr": deliver.stderr.strip(),
+        },
+    }
+    payload["ok"] = deliver.returncode == 0
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        state = "rearmed" if payload["ok"] else "failed to rearm"
+        print(f"{state} Crush deliver daemon for {args.name}")
+    return 0 if payload["ok"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

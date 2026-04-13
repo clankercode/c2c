@@ -183,6 +183,10 @@ def main(argv: list[str] | None = None) -> int:
             print("  1. Restart Crush to load the MCP server")
             print("  2. The c2c tools should appear in your tool list")
             print("  3. Call mcp__c2c__register to claim an alias")
+            print()
+            print("For near-real-time auto-delivery (Tier 2), use the managed harness:")
+            print("  1. Create run-crush-inst.d/<name>.json with command/cwd/c2c_alias")
+            print("  2. Run: ./run-crush-inst-outer <name>")
         else:
             print(f"✗ Error: {result['error']}", file=sys.stderr)
             print(f"  Path: {result['path']}", file=sys.stderr)

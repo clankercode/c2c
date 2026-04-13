@@ -357,6 +357,7 @@ messages arrive.
 
 **✓** = proven end-to-end  
 **~** = same-client multi-session not yet proven  
-**✓*** = MCP send/receive works; auto-delivery not proven (Tier 1)
+**✓*** = MCP send/receive works; auto-delivery not proven (Tier 1)  
+**†** = managed harness scripts written and tested; live binary not yet verified
 
 See `.collab/dm-matrix.md` for the live tracking record.

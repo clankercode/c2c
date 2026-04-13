@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+"""
+Self-restart helper for a run-kimi-inst managed session.
+
+Usage: ./restart-kimi-self [instance-name] [--signal SIGNAME] [--reason TEXT]
+
+Reads the pid written by `run-kimi-inst` for the given instance
+(default: $RUN_KIMI_INST_NAME) and sends it a signal (default: SIGTERM).
+When the Kimi process exits, `run-kimi-inst-outer` relaunches it from the
+same config. With a pinned resume id, the new Kimi process returns to the
+same conversation and receives the config's kickoff prompt.
+
+Kimi installations may exec a native `kimi` binary or wrapper processes
+whose /proc comm is `node`, `npm ...`, or `MainThread`, so those are allowed
+by default.
+
+When --reason is provided, this writes
+run-kimi-inst.d/<name>.restart.json before signaling. The resumed Kimi turn
+can read that local marker even when the c2c MCP server failed during startup.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+DEFAULT_CONFIG_DIR = HERE / "run-kimi-inst.d"
+FALSE_STRINGS = {"", "0", "false", "no", "off"}
+
+
+def config_dir() -> Path:
+    override = os.environ.get("RUN_KIMI_INST_CONFIG_DIR", "").strip()
+    if override:
+        return Path(override)
+    return DEFAULT_CONFIG_DIR
+
+
+def pid_path(name: str) -> Path:
+    return config_dir() / f"{name}.pid"
+
+
+def restart_marker_path(name: str) -> Path:
+    return config_dir() / f"{name}.restart.json"
+
+
+def proc_comm(pid: int) -> str | None:
+    try:
+        return Path(f"/proc/{pid}/comm").read_text(encoding="utf-8").strip()
+    except (FileNotFoundError, OSError):
+        return None
+
+
+def dry_run_enabled() -> bool:
+    return (
+        os.environ.get("RUN_KIMI_RESTART_SELF_DRY_RUN", "").strip().lower()
+        not in FALSE_STRINGS
+    )
+
+
+def expected_comm_values(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def comm_matches(comm: str, expected: list[str]) -> bool:
+    return any(needle in comm for needle in expected)
+
+
+def parse_signal(value: str) -> signal.Signals:
+    signal_name = value if value.startswith("SIG") else f"SIG{value}"
+    try:
+        return signal.Signals[signal_name]
+    except KeyError:
+        raise SystemExit(f"[restart-kimi-self] unknown signal: {value}")
+
+
+def write_restart_marker(
+    *,
+    name: str,
+    pid: int,
+    pid_file: Path,
+    sig: signal.Signals,
+    comm: str,
+    reason: str,
+    dry_run: bool,
+) -> Path | None:
+    if not reason:
+        return None
+    marker_path = restart_marker_path(name)
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(
+        json.dumps(
+            {
+                "name": name,
+                "pid": pid,
+                "pid_file": str(pid_file),
+                "signal": sig.name,
+                "comm": comm,
+                "reason": reason,
+                "dry_run": dry_run,
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return marker_path
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        description="Self-restart a run-kimi-inst session."
+    )
+    parser.add_argument(
+        "name",
+        nargs="?",
+        default=os.environ.get("RUN_KIMI_INST_NAME"),
+        help="instance name (default: $RUN_KIMI_INST_NAME)",
+    )
+    parser.add_argument(
+        "--signal",
+        default="SIGTERM",
+        help="signal to send (default: SIGTERM); e.g. SIGINT, SIGHUP, TERM",
+    )
+    parser.add_argument(
+        "--expect-comm",
+        default="kimi,node,npm,MainThread",
+        help=(
+            "comma-separated /proc/<pid>/comm substring allowlist "
+            "(default: kimi,node,npm,MainThread). Use '' to skip the check."
+        ),
+    )
+    parser.add_argument(
+        "--reason",
+        default="",
+        help="optional restart reason to persist for the resumed Kimi turn",
+    )
+    args = parser.parse_args(argv[1:])
+
+    if not args.name:
+        print(
+            "[restart-kimi-self] no instance name; pass as arg or set $RUN_KIMI_INST_NAME",
+            file=sys.stderr,
+        )
+        return 2
+
+    pid_file = pid_path(args.name)
+    if not pid_file.exists():
+        print(f"[restart-kimi-self] pid file not found: {pid_file}", file=sys.stderr)
+        return 2
+
+    try:
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
+    except ValueError:
+        print(
+            f"[restart-kimi-self] pid file is not an integer: {pid_file}",
+            file=sys.stderr,
+        )
+        return 2
+
+    if pid <= 1:
+        print(f"[restart-kimi-self] refusing to signal pid {pid}", file=sys.stderr)
+        return 2
+    if pid == os.getpid():
+        print("[restart-kimi-self] refusing to signal our own pid", file=sys.stderr)
+        return 2
+
+    comm = proc_comm(pid)
+    if comm is None:
+        print(
+            f"[restart-kimi-self] pid {pid} has no /proc entry (already exited?)",
+            file=sys.stderr,
+        )
+        return 3
+
+    expected = expected_comm_values(args.expect_comm)
+    if expected and not comm_matches(comm, expected):
+        print(
+            f"[restart-kimi-self] pid {pid} /proc comm is {comm!r}, expected one of {expected!r} - refusing to signal",
+            file=sys.stderr,
+        )
+        return 4
+
+    sig = parse_signal(args.signal)
+
+    dry_run = dry_run_enabled()
+
+    if dry_run:
+        print(
+            json.dumps(
+                {
+                    "name": args.name,
+                    "pid": pid,
+                    "pid_file": str(pid_file),
+                    "signal": sig.name,
+                    "comm": comm,
+                    "reason": args.reason,
+                    "reason_file": str(restart_marker_path(args.name))
+                    if args.reason
+                    else None,
+                    "dry_run": True,
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    marker_path = write_restart_marker(
+        name=args.name,
+        pid=pid,
+        pid_file=pid_file,
+        sig=sig,
+        comm=comm,
+        reason=args.reason,
+        dry_run=False,
+    )
+
+    print(
+        f"[restart-kimi-self] sending {sig.name} to pid {pid} (comm={comm!r}) - outer loop will relaunch",
+        file=sys.stderr,
+        flush=True,
+    )
+    if marker_path is not None:
+        print(
+            f"[restart-kimi-self] wrote restart marker: {marker_path}",
+            file=sys.stderr,
+            flush=True,
+        )
+    try:
+        os.kill(pid, sig.value)
+    except ProcessLookupError:
+        print(f"[restart-kimi-self] pid {pid} vanished before signal", file=sys.stderr)
+        return 3
+    except PermissionError:
+        print(
+            f"[restart-kimi-self] permission denied signaling pid {pid}",
+            file=sys.stderr,
+        )
+        return 4
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

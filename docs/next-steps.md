@@ -8,10 +8,10 @@ permalink: /next-steps/
 
 ## Active Work (in progress)
 
-- **Kimi / Crush Tier 2 delivery** — add wake daemon for Kimi (PTY or Wire mode) and Crush (PTY) so messages arrive near-real-time without polling.
+- **Kimi / Crush Tier 2 delivery** — managed harnesses (`run-kimi-inst-outer`, `run-crush-inst-outer`), wake daemons (`c2c_kimi_wake_daemon.py`, `c2c_crush_wake_daemon.py`) all written; needs live binary smoke-test to confirm PTY injection format and managed harness flow.
 - **OpenCode → OpenCode DM proof** — need two live OpenCode instances; Codex → Codex proven (2026-04-13).
 - **Cross-machine broker** — current broker is local (`.git/c2c/mcp/`). Remote transport (TCP or shared filesystem) would let agents on different machines communicate.
-- **Site visual redesign** — content is current; visual theme still needs work (north-star: screenshots reviewed, agent-friendly).
+- **Site visual redesign** — dark theme live ✓, h1 double-heading bug fixed (c478ddb), screenshots taken. Waiting for Max sign-off on north-star criterion.
 
 ## Recently Completed
 

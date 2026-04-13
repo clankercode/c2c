@@ -31,7 +31,16 @@ COMMANDS = [
     "c2c-verify",
     "c2c-watch",
     "c2c-whoami",
+    "restart-codex-self",
+    "restart-crush-self",
+    "restart-kimi-self",
     "restart-opencode-self",
+    "run-crush-inst",
+    "run-crush-inst-outer",
+    "run-crush-inst-rearm",
+    "run-kimi-inst",
+    "run-kimi-inst-outer",
+    "run-kimi-inst-rearm",
 ]
 
 
