@@ -44,12 +44,15 @@ These are Max's target experiences, verbatim:
   Fast path ~3ms (bash builtin); stable alias via `C2C_MCP_AUTO_REGISTER_ALIAS`.
 - **Codex**: managed harness (`run-codex-inst-outer`) + `c2c_deliver_inbox --notify-only`
   loop; `c2c setup codex` for one-command onboarding.
-- **OpenCode**: managed harness + notify-only daemon. Native TypeScript plugin
-  (`.opencode/plugins/c2c.ts`) background-polls broker and delivers via
-  `client.session.promptAsync`. Inbox drain proven; full promptAsync round-trip
-  in progress (codex working on prompt target fix).
+- **OpenCode**: native TypeScript plugin (`.opencode/plugins/c2c.ts`) PROVEN
+  end-to-end (59c0909, 2026-04-14). Plugin background-polls broker, delivers via
+  `client.session.promptAsync`. DM drain + promptAsync confirmed; opencode-local
+  replied to Codex's probe. PTY wake daemon is fallback only. Spool file retries
+  failed promptAsync; spool injected into managed restart prompt (9cc5663).
+  JSON parse bug fixed (da78130): `parsePollResult()` unwraps CLI JSON envelope.
 - **Kimi**: managed harness (`run-kimi-inst-outer`) + wake daemon.
-  PTY wake proven; kimi-nova↔opencode-local DM roundtrip proven.
+  PTY wake proven; kimi-nova↔opencode-local DM roundtrip proven. All Kimi↔
+  {Claude, Codex, OpenCode} pairs proven 2026-04-13.
 - **Rooms** ✓: `join_room`, `send_room`, `room_history`, `my_rooms`,
   `list_rooms`, `leave_room`. `swarm-lounge` is active. Sweep evicts dead
   room members.
@@ -67,16 +70,10 @@ These are Max's target experiences, verbatim:
   opencode) pin the broker's liveness target to the durable outer-loop PID.
 - **OCaml broker** ✓: 96 tests; sweep, rooms, dead-letter, alias dedup,
   peer-renamed fan-out, session hijack guard, alias-occupied guard.
-- **Python suite** ✓: 644 tests across all subsystems.
+- **Python suite** ✓: 652 tests across all subsystems.
 
 ### Active Work
 
-- **OpenCode plugin `promptAsync` delivery** — JSON parse bug FIXED (da78130,
-  2026-04-14). Root cause: `drainInbox()` expected bare array but `poll-inbox
-  --json` outputs envelope `{source, messages:[]}`. `parsePollResult()` now
-  unwraps. Also: global plugin auto-synced by `run-opencode-inst` at each
-  managed launch. Managed fork sessions use MCP `poll_inbox` (correct path);
-  `promptAsync` targets long-running TUI sessions (needs manual live test).
 - **Crush DM proof** — `c2c_crush_wake_daemon.py` written, Crush MCP config
   ready. Blocked: `ANTHROPIC_API_KEY` not set in Claude Code shell. Will unblock
   when Max provides the key or launches Crush manually.
