@@ -283,6 +283,40 @@ def check_outer_loops() -> dict[str, Any]:
     return result
 
 
+def check_relay(broker_root: Path) -> dict[str, Any]:
+    """Check relay server connectivity (if configured)."""
+    result: dict[str, Any] = {"configured": False}
+    try:
+        from c2c_relay_config import load_config
+        cfg = load_config(broker_root / "relay.json")
+        if not cfg.get("url"):
+            cfg = load_config()  # fall back to user-level config
+    except Exception:
+        return result
+
+    url = cfg.get("url", "").strip()
+    if not url:
+        return result
+
+    result["configured"] = True
+    result["url"] = url
+
+    try:
+        from c2c_relay_connector import RelayClient
+        token = cfg.get("token") or None
+        client = RelayClient(url, token=token, timeout=3.0)
+        health = client.health()
+        result["reachable"] = bool(health.get("ok"))
+        if result["reachable"]:
+            peers = client.list_peers()
+            result["alive_peers"] = len(peers)
+    except Exception as exc:
+        result["reachable"] = False
+        result["error"] = str(exc)
+
+    return result
+
+
 def run_health_check(broker_root: Path, session_id: str | None = None) -> dict[str, Any]:
     """Run full health check."""
     session = check_session(broker_root, session_id=session_id)
@@ -296,6 +330,7 @@ def run_health_check(broker_root: Path, session_id: str | None = None) -> dict[s
         "swarm_lounge": check_swarm_lounge(broker_root, session.get("alias")),
         "dead_letter": check_dead_letter(broker_root),
         "outer_loops": check_outer_loops(),
+        "relay": check_relay(broker_root),
     }
 
 
@@ -400,6 +435,20 @@ def print_health_report(report: dict[str, Any]) -> None:
         print("    sessions restart between iterations; sweep would drop them.")
     else:
         print("✓ Outer loops: none running (safe to sweep if needed)")
+
+    # Relay
+    relay = report.get("relay", {})
+    if relay.get("configured"):
+        url = relay.get("url", "?")
+        if relay.get("reachable"):
+            n = relay.get("alive_peers", "?")
+            print(f"✓ Relay: {url} ({n} alive peers)")
+        else:
+            err = relay.get("error", "unreachable")
+            print(f"✗ Relay: {url} — {err}")
+            print("    Run: c2c relay status  to diagnose")
+    else:
+        print("○ Relay: not configured (local-only; run 'c2c relay setup' to enable)")
 
     print()
 
