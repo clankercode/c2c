@@ -116,6 +116,18 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   `C2C_MCP_SESSION_ID=kimi-smoke-$(date +%s)` and `--mcp-config-file`
   when launching one-shot Kimi probes. See
   `.collab/findings/2026-04-13T10-50-00Z-storm-beacon-kimi-session-hijack.md`.
+- **Use `c2c start <client>` to launch managed sessions.** This is the preferred
+  way to start any managed client (claude, codex, opencode, kimi, crush). It
+  replaces all 10 `run-*-inst`/`run-*-inst-outer` scripts with a single command
+  that manages the outer restart loop, deliver daemon, and poker:
+  ```bash
+  c2c start claude          # start Claude Code managed session
+  c2c start kimi -n my-kimi # start Kimi with custom name
+  c2c instances             # list running instances + status
+  c2c stop my-kimi          # stop a managed instance
+  ```
+  The old harness scripts (`run-claude-inst-outer`, etc.) still work but are
+  deprecated in favour of `c2c start`.
 - **Never call `mcp__c2c__sweep` during active swarm operation.**
   Managed harness sessions (kimi, codex, opencode, crush) run as short-lived
   child processes under a persistent outer restart loop. Between iterations the
@@ -125,7 +137,7 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   Manual replay is also available with filtered `c2c dead-letter --replay`.
   Before sweeping, verify no outer loops are running:
   ```bash
-  pgrep -a -f "run-(kimi|codex|opencode|crush)-inst-outer"
+  pgrep -a -f "run-(kimi|codex|opencode|crush|claude)-inst-outer"
   ```
   Safe alternatives: `mcp__c2c__list` to check liveness, `mcp__c2c__peek_inbox`
   to inspect without draining. Call sweep only for sessions confirmed dead with
@@ -209,6 +221,7 @@ not a task queue.
 ## Python Scripts
 
 ```
+c2c_start.py <start|stop|restart|instances> [client] [-n NAME] [--json]  # Unified managed-instance launcher. `c2c start <client>` replaces all run-*-inst-outer scripts. Manages outer restart loop, deliver daemon, and poker. State at ~/.local/share/c2c/instances/<name>/. Also accessible as c2c start/stop/restart/instances.
 c2c_cli.py <install|list|mcp|register|send|verify|whoami> [args]  # Main CLI entry point, dispatches to subcommands
 c2c_install.py [--json]                                            # Installs c2c wrapper scripts into ~/.local/bin. Resolves install path via git-common-dir so worktree installs point at main repo.
 c2c_configure_claude_code.py [--broker-root DIR] [--session-id ID] [--alias NAME] [--force] [--json]  # Writes mcpServers.c2c into ~/.claude.json AND registers PostToolUse inbox hook in ~/.claude/settings.json (one-command Claude Code self-config)

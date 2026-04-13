@@ -549,6 +549,22 @@ def check_tmp_space(tmp_dir: Path = Path("/tmp")) -> dict[str, Any]:
     return result
 
 
+def check_instances() -> dict[str, Any]:
+    """Check running c2c managed instances (via c2c_start.list_instances())."""
+    result: dict[str, Any] = {"checked": True, "instances": [], "alive_count": 0}
+    try:
+        import c2c_start
+
+        instances = c2c_start.list_instances()
+        result["instances"] = instances
+        result["alive_count"] = sum(1 for inst in instances if inst.get("outer_alive"))
+        result["total_count"] = len(instances)
+    except Exception as exc:
+        result["checked"] = False
+        result["error"] = str(exc)
+    return result
+
+
 def run_health_check(broker_root: Path, session_id: str | None = None) -> dict[str, Any]:
     """Run full health check."""
     session = check_session(broker_root, session_id=session_id)
@@ -571,6 +587,7 @@ def run_health_check(broker_root: Path, session_id: str | None = None) -> dict[s
         "relay": check_relay(broker_root),
         "broker_binary": check_broker_binary(),
         "tmp_space": check_tmp_space(),
+        "instances": check_instances(),
     }
 
 
@@ -794,6 +811,27 @@ def print_health_report(report: dict[str, Any]) -> None:
             print(f"~ Broker binary: binary is STALE (source is v{src_ver} but binary predates source)")
             print("    Run: opam exec -- dune build ./ocaml/server/c2c_mcp_server.exe")
             print("    Then restart your agent session to pick up the new binary.")
+
+    # Managed instances (c2c start)
+    inst_report = report.get("instances", {})
+    if inst_report.get("checked"):
+        instances = inst_report.get("instances", [])
+        alive_count = inst_report.get("alive_count", 0)
+        total_count = inst_report.get("total_count", 0)
+        if total_count == 0:
+            print("○ Instances: none (use 'c2c start <client>' to launch managed sessions)")
+        elif alive_count == total_count:
+            print(f"✓ Instances: {alive_count}/{total_count} alive")
+            for inst in instances:
+                status = "↑" if inst.get("outer_alive") else "↓"
+                print(f"    {status} {inst['name']} ({inst['client']}) pid={inst.get('outer_pid') or '?'}")
+        else:
+            print(f"~ Instances: {alive_count}/{total_count} alive")
+            for inst in instances:
+                status = "↑" if inst.get("outer_alive") else "↓"
+                print(f"    {status} {inst['name']} ({inst['client']}) pid={inst.get('outer_pid') or '?'}")
+    elif "error" in inst_report:
+        print(f"○ Instances: could not check ({inst_report['error']})")
 
     print()
 
