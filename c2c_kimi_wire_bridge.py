@@ -339,7 +339,8 @@ def _has_pending_messages(broker_root: Path, session_id: str, spool_path: Path) 
         return True
     try:
         return bool(c2c_poll_inbox.file_fallback_peek(broker_root, session_id))
-    except Exception:
+    except Exception as exc:
+        print(f"[kimi-wire] inbox peek error: {exc}", file=sys.stderr, flush=True)
         return False
 
 
@@ -442,6 +443,9 @@ def run_main(argv: list[str]) -> int:
         else:
             print(payload)
         return 0
+
+    if args.once and args.loop:
+        parser.error("--once and --loop are mutually exclusive")
 
     if args.once:
         result = run_once_live(
