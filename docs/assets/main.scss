@@ -438,5 +438,13 @@ h1 code, h2 code, h3 code, h4 code {
 .status-maybe { color: var(--c2c-yellow); }
 .status-no    { color: var(--c2c-magenta); }
 
+/* ---- Section dividers ---- */
+hr {
+  border: none;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--c2c-border-strong), transparent);
+  margin: 3rem 0;
+}
+
 /* ---- Utility ---- */
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
