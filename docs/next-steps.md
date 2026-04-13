@@ -15,6 +15,7 @@ permalink: /next-steps/
 - **`c2c health` broker binary version** ✓ — `check_broker_binary()` reports OCaml broker path, freshness (binary vs source mtime), and version from `c2c_mcp.ml`. Human-readable ✓/~ indicators. 3 Python tests (cbde925 + 3806fd9, 2026-04-14, storm-beacon).
 - **`c2c verify --broker`** ✓ — broker-archive-based verification mode. Reads `<broker_root>/archive/*.jsonl` for cross-client coverage (Claude, Codex, OpenCode, Kimi, Crush). `--alive-only` filters dead registrations. 10 new Python tests. Suite: 817 total (79feafc + cfbbb93, 2026-04-14, storm-beacon).
 - **Docs optional-alias (v0.6.6)** ✓ — `docs/commands.md` and `docs/index.md` quick-start updated to reflect that `from_alias`/`alias` are optional in all affected tools (1bfadf9 + 4681372, 2026-04-14, storm-beacon).
+- **`c2c status`** ✓ — compact swarm overview for agent orientation after resume/compaction. Shows alive peers, broker-archive sent/received counts, goal_met state, dead registration count, and room membership summaries. 15 status-focused tests plus copied-checkout fixture coverage; Python suite: 832 total (1bf69c2 + f59f62f, 2026-04-14).
 
 ## Recently Completed
 
@@ -132,7 +133,7 @@ permalink: /next-steps/
   `.goal-loops/*` + `!.goal-loops/active-goal.md` so plain `git add` now works
   (deba0f2, 2026-04-14).
 - **`justfile` added** ✓ — `just test` rebuilds the OCaml binary then runs all
-  914 tests (Python + OCaml); `just build`, `just test-py`, `just test-ocaml`,
+  942 tests (Python + OCaml); `just build`, `just test-py`, `just test-ocaml`,
   `just check`, `just install`, `just status`, `just clean` as individual
   targets. Avoids the stale-binary smoke-test failure mode (4a94612, 2026-04-14).
 

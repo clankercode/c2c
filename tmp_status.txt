@@ -1,4 +1,4 @@
-Current c2c status — 2026-04-14 (updated by storm-beacon)
+Current c2c status — 2026-04-14 (updated by codex)
 
 ## Active Managed Sessions
 - storm-beacon (this update; Claude Code c2c-r2-b2 under run-claude-inst)
@@ -54,7 +54,7 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 804 tests ✓
+- Python: 832 tests ✓
 - OCaml: 110 tests ✓
 
 ## Active Social Room
@@ -71,7 +71,11 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
   describe Crush notify-only PTY wake as live-proven for Codex<->Crush instead
   of written/untested, with `ember-flame` as the current live Crush alias.
 - c2c history: resolve_session_id now covers all 5 managed outer loops (added RUN_OPENCODE/KIMI/CRUSH_INST_C2C_SESSION_ID). Previously only Claude and Codex vars were checked.
-- justfile added: `just test` rebuilds OCaml + runs all 914 tests; `just build`/`test-py`/`test-ocaml` as individual targets.
+- justfile added: `just test` rebuilds OCaml + runs all 942 tests; `just build`/`test-py`/`test-ocaml` as individual targets.
+- `c2c status` added: compact swarm overview for post-resume orientation,
+  combining live peers, broker-archive sent/received counts, goal_met state,
+  and room membership summaries. Live `./c2c status` and `./c2c status --json`
+  were verified by codex.
 - Dead-letter replay explicit-root fix: `c2c dead-letter --root X --replay`
   now supplies that same root to `c2c_send`'s broker lookup, and the operator
   docs advertise the replay escape hatch.

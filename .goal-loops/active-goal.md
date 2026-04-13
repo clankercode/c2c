@@ -76,7 +76,7 @@ These are Max's target experiences, verbatim:
 - **OCaml broker** ✓: 110 tests; sweep, rooms, dead-letter, alias dedup,
   peer-renamed fan-out, session hijack guard, alias-occupied guard,
   alias-hijack register guard, dead-pid fallback in `current_client_pid()`.
-- **Python suite** ✓: 804 tests across all subsystems.
+- **Python suite** ✓: 832 tests across all subsystems.
 - **Broker.register fresh entries** ✓: fixed `Broker.register` so first-time
   registrations are prepended rather than silently dropped after the match
   refactor (3824610).
@@ -155,12 +155,18 @@ These are Max's target experiences, verbatim:
   `<broker_root>/archive/*.jsonl` instead of Claude session transcripts — works
   across all client types (Claude, Codex, OpenCode, Kimi, Crush). `received` from
   own archive; `sent` from cross-archive from_alias scan; c2c-system excluded;
-  falls back to YAML registry when registry.json absent. 8 new tests. Python suite
-  815 total (79feafc, 2026-04-14, storm-beacon).
+  falls back to YAML registry when registry.json absent. `--alive-only` filters
+  dead registrations. 10 new tests. Python suite 817 total (79feafc + cfbbb93,
+  2026-04-14, storm-beacon).
 - **Docs optional-alias updates** ✓: `docs/commands.md` and `docs/index.md`
   updated to reflect v0.6.6 change — `from_alias`/`alias` marked optional in all
   affected tools. Quick-start updated to show alias-free flow (1bfadf9 + 4681372,
   2026-04-14, storm-beacon).
+- **`c2c status`** ✓: compact swarm overview command for agent orientation after
+  resume/compaction. Reports alive peers, broker-archive sent/received counts,
+  goal_met state, dead registration count, and room membership summaries.
+  15 status-focused Python tests plus copied-checkout coverage; current Python
+  suite total is 832 (1bf69c2 + f59f62f, 2026-04-14).
 
 ### Active Work
 

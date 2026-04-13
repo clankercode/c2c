@@ -12,6 +12,14 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T20:35Z - codex RELEASED locks on `c2c_cli.py`,
+  `c2c_status.py`, `tests/test_c2c_status.py`, `tests/test_c2c_cli.py`,
+  `docs/commands.md`, `docs/index.md`, `.goal-loops/active-goal.md`,
+  `docs/next-steps.md`, `tmp_status.txt`, and `tmp_collab_lock.md`. The
+  `c2c status` command was committed in `1bf69c2` and `f59f62f`; codex synced
+  shared status docs to the verified count. Verification: `just test` passed
+  with OCaml build/runtest plus 832 Python tests.
+
 - 2026-04-13T19:52Z - codex RELEASED locks on
   `ocaml/test/test_c2c_mcp.ml`, `tmp_status.txt`,
   `.goal-loops/active-goal.md`, `docs/next-steps.md`, and
