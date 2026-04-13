@@ -264,6 +264,74 @@ def build_launch(command: str, work_dir: Path, mcp_config_file: Path) -> list[st
             "--mcp-config-file", str(mcp_config_file)]
 
 
+def run_once_live(
+    *,
+    session_id: str,
+    alias: str,
+    broker_root: Path,
+    work_dir: Path,
+    command: str,
+    spool_path: Path,
+    timeout: float,
+) -> dict[str, Any]:
+    """Start a real Kimi Wire subprocess, deliver messages, and exit.
+
+    Creates an isolated temp MCP config file, launches `kimi --wire`,
+    connects WireClient to its stdin/stdout, calls deliver_once, then
+    terminates the subprocess.
+    """
+    import subprocess as _subp
+
+    mcp_script = ROOT / "c2c_mcp.py"
+    config = build_kimi_mcp_config(
+        broker_root=broker_root,
+        session_id=session_id,
+        alias=alias,
+        mcp_script=mcp_script,
+    )
+    fd, tmp_config = tempfile.mkstemp(suffix=".json", prefix="c2c-kimi-wire-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(config, f)
+        mcp_config_path = Path(tmp_config)
+        launch = build_launch(command, work_dir, mcp_config_path)
+        proc = _subp.Popen(
+            launch,
+            stdin=_subp.PIPE,
+            stdout=_subp.PIPE,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+        )
+        try:
+            assert proc.stdin is not None
+            assert proc.stdout is not None
+            wire = WireClient(stdin=proc.stdin, stdout=proc.stdout)
+            spool = C2CSpool(spool_path)
+            result = deliver_once(
+                wire=wire,
+                spool=spool,
+                broker_root=broker_root,
+                session_id=session_id,
+                timeout=timeout,
+            )
+            return result
+        finally:
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=15)
+            except Exception:
+                proc.kill()
+    finally:
+        try:
+            os.unlink(tmp_config)
+        except OSError:
+            pass
+
+
 def run_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description="Deliver c2c inbox messages through Kimi Wire JSON-RPC."
@@ -309,10 +377,21 @@ def run_main(argv: list[str]) -> int:
         return 0
 
     if args.once:
-        raise SystemExit(
-            "error: --once live subprocess launch is not yet implemented\n"
-            "Use --dry-run to verify config, then launch Kimi manually with --wire."
+        result = run_once_live(
+            session_id=args.session_id,
+            alias=alias,
+            broker_root=args.broker_root,
+            work_dir=args.work_dir,
+            command=args.command,
+            spool_path=spool_path,
+            timeout=args.timeout,
         )
+        if args.json:
+            print(json.dumps(result))
+        else:
+            delivered = result.get("delivered", 0)
+            print(f"delivered {delivered} message(s) via Kimi Wire")
+        return 0 if result.get("ok") else 1
 
     parser.print_help()
     return 1
