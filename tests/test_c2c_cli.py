@@ -384,6 +384,31 @@ class C2CCLITests(unittest.TestCase):
         self.assertTrue((install_dir / "c2c-watch").exists())
         self.assertTrue((install_dir / "c2c-whoami").exists())
 
+    def test_install_wrapper_exec_points_to_git_common_root(self):
+        """Wrapper exec path must resolve to the main repo root, not a worktree."""
+        import subprocess as _subprocess
+        install_dir = Path(self.temp_dir.name) / "bin"
+        env = dict(self.env)
+        env["C2C_INSTALL_BIN_DIR"] = str(install_dir)
+
+        result = self.invoke_cli("c2c-install", env=env)
+        self.assertEqual(result_code(result), 0)
+
+        wrapper_content = (install_dir / "c2c").read_text(encoding="utf-8")
+        # Extract the exec path from: exec "/path/to/c2c" "$@"
+        exec_line = next(l for l in wrapper_content.splitlines() if l.startswith("exec "))
+        exec_path = exec_line.split('"')[1]  # e.g. /home/xertrov/src/c2c-msg/c2c
+
+        # The wrapper must point to the git-common-dir parent (main repo), not a worktree.
+        git_common_dir = _subprocess.check_output(
+            ["git", "rev-parse", "--git-common-dir"], text=True
+        ).strip()
+        expected_root = str(Path(git_common_dir).resolve().parent)
+        self.assertTrue(
+            exec_path.startswith(expected_root),
+            f"exec path {exec_path!r} does not start with main repo root {expected_root!r}",
+        )
+
     def test_c2c_list_subcommand_matches_wrapper_json_output(self):
         wrapper = self.invoke_cli("c2c-list", "--all", "--json", env=self.env)
         canonical = self.invoke_cli("c2c", "list", "--all", "--json", env=self.env)

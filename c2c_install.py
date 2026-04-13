@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import subprocess
 from pathlib import Path
 
 
@@ -71,7 +72,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
-    repo_root = Path(__file__).resolve().parent
+    # Resolve the canonical main-worktree root via git-common-dir so that
+    # running `c2c install` from a linked worktree still writes wrappers that
+    # point at the main repo checkout (which persists when worktrees are deleted).
+    script_dir = Path(__file__).resolve().parent
+    try:
+        git_common_dir = subprocess.check_output(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=str(script_dir),
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        common_path = Path(git_common_dir)
+        if not common_path.is_absolute():
+            common_path = (script_dir / common_path).resolve()
+        # common_path is the main .git dir; its parent is the main worktree root.
+        repo_root = common_path.parent
+    except (subprocess.CalledProcessError, OSError):
+        repo_root = script_dir
     target_dir = install_bin_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
 
