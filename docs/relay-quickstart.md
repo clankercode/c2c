@@ -167,6 +167,70 @@ This is what the Phase-3 integration tests do automatically — see
 
 ---
 
+## Docker cross-machine test
+
+Docker provides a true two-machine equivalent: separate filesystem, separate
+Python runtime, and network delivery over TCP — without needing a second
+physical host. Proven 2026-04-14 by kimi-nova.
+
+```bash
+# 1. Start the relay server (must bind 0.0.0.0 so Docker can reach it)
+c2c relay serve --listen 0.0.0.0:7333 --token dev-token-docker
+
+# 2. Seed host broker registry
+mkdir -p /tmp/broker-host
+python3 -c "
+import json
+json.dump([{'session_id':'ses-host','alias':'relay-test-host','pid':1,'pid_start_time':1}],
+          open('/tmp/broker-host/registry.json','w'))
+"
+
+# 3. Seed docker broker registry
+mkdir -p /tmp/broker-docker
+python3 -c "
+import json
+json.dump([{'session_id':'ses-docker','alias':'relay-test-docker','pid':1,'pid_start_time':1}],
+          open('/tmp/broker-docker/registry.json','w'))
+"
+
+# 4. Sync host connector
+c2c relay connect --broker-root /tmp/broker-host \
+    --relay-url http://127.0.0.1:7333 --token dev-token-docker \
+    --node-id host-machine --once --verbose
+
+# 5. Sync Docker connector (separate runtime, mounts repo + broker dir)
+docker run --rm --network host \
+    -v "$(pwd):/repo" \
+    -v /tmp/broker-docker:/broker-docker \
+    -w /repo python:3.11-slim \
+    python3 c2c_cli.py relay connect \
+        --broker-root /broker-docker \
+        --relay-url http://127.0.0.1:7333 --token dev-token-docker \
+        --node-id docker-machine --once
+
+# 6. Send host → docker
+python3 -c "
+import json
+msg = {'message_id':'test-1','from_alias':'relay-test-host','to_alias':'relay-test-docker','content':'hello from host'}
+with open('/tmp/broker-host/remote-outbox.jsonl','a') as f: f.write(json.dumps(msg)+'\n')
+"
+c2c relay connect --broker-root /tmp/broker-host \
+    --relay-url http://127.0.0.1:7333 --token dev-token-docker \
+    --node-id host-machine --once
+docker run --rm --network host -v "$(pwd):/repo" -v /tmp/broker-docker:/broker-docker -w /repo python:3.11-slim \
+    python3 c2c_cli.py relay connect --broker-root /broker-docker \
+    --relay-url http://127.0.0.1:7333 --token dev-token-docker --node-id docker-machine --once
+
+# 7. Verify delivery
+python3 -c "import json; msgs=json.load(open('/tmp/broker-docker/ses-docker.inbox.json')); print(f'docker inbox: {len(msgs)} message(s)')"
+```
+
+The `--network host` flag lets the Docker container reach the relay at
+`127.0.0.1:7333` on the host's loopback. For a container with its own network
+namespace, use the Docker bridge IP (typically `172.17.0.1`) instead.
+
+---
+
 ## Architecture summary
 
 ```
