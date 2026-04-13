@@ -15,6 +15,7 @@ permalink: /next-steps/
 
 ## Recently Completed
 
+- **Kimi / Crush Tier 2 managed harnesses** ✓ — `run-kimi-inst-outer` / `run-crush-inst-outer` + rearm scripts start deliver daemon alongside client; `restart-kimi/crush-self` helpers; all wired into `c2c install` (75efb83).
 - **Kimi / Crush support** ✓ — `c2c setup kimi` / `c2c setup crush`; wrapper scripts installed by `c2c install`; default stable alias (`kimi-user-host`, `crush-user-host`) set via `C2C_MCP_AUTO_REGISTER_ALIAS`.
 - **Codex → Codex DM** ✓ — proven broker-native end-to-end (2026-04-13).
 - **Per-client delivery docs** ✓ — `docs/client-delivery.md` covers session discovery, delivery, notification, restart per client.
@@ -30,7 +31,7 @@ permalink: /next-steps/
 ## Quality / Verification
 
 - Prove remaining DM matrix entries: OpenCode → OpenCode (Codex → Codex proven)
-- OCaml test suite coverage for edge cases (concurrent sends, large inbox files, room history pagination)
+- **OCaml edge-case coverage** ✓ — room history pagination, multi-sender attribution, large inbox drain (82 OCaml tests as of 7a800bd)
 - Kimi / Crush delivery chain smoke-test (need live binaries)
 
 ## Product Polish

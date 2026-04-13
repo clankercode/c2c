@@ -70,6 +70,7 @@ module Broker : sig
   val registration_liveness_state : registration -> liveness_state
   val int_opt_member : string -> Yojson.Safe.t -> int option
 
+  val valid_room_id : string -> bool
   val join_room : t -> room_id:string -> alias:string -> session_id:string -> room_member list
   val leave_room : t -> room_id:string -> alias:string -> room_member list
   val append_room_history : t -> room_id:string -> from_alias:string -> content:string -> float
@@ -95,4 +96,5 @@ end
 
 val channel_notification : message -> Yojson.Safe.t
 val auto_register_startup : broker_root:string -> unit
+val auto_join_rooms_startup : broker_root:string -> unit
 val handle_request : broker_root:string -> Yojson.Safe.t -> Yojson.Safe.t option Lwt.t

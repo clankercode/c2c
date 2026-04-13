@@ -128,4 +128,5 @@ let rec loop ~broker_root ~channel_capable =
 let () =
   let root = broker_root () in
   C2c_mcp.auto_register_startup ~broker_root:root;
+  C2c_mcp.auto_join_rooms_startup ~broker_root:root;
   Lwt_main.run (loop ~broker_root:root ~channel_capable:false)

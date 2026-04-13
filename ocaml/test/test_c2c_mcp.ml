@@ -429,7 +429,7 @@ let test_tools_list_marks_register_and_whoami_session_id_as_optional () =
             item |> member "inputSchema" |> member "required" |> to_list
             |> List.map to_string
           in
-          check (list string) "register required args" [ "alias" ]
+          check (list string) "register required args" []
             (required_names (find_tool "register"));
           check (list string) "whoami required args" []
             (required_names (find_tool "whoami")))
@@ -561,6 +561,36 @@ let test_tools_call_register_prefers_explicit_client_pid_env () =
           check bool "explicit pid start_time absent when proc missing" true
             (reg.pid_start_time = None)))
 
+(* Calling register with no alias argument falls back to C2C_MCP_AUTO_REGISTER_ALIAS *)
+let test_tools_call_register_no_alias_falls_back_to_env () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-noarg";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "kimi-xertrov-x";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 99)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "register")
+                    ; ("arguments", `Assoc [])
+                    ] )
+              ]
+          in
+          let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+          (match response with None -> fail "expected tools/call response" | Some _ -> ());
+          let regs = C2c_mcp.Broker.list_registrations (C2c_mcp.Broker.create ~root:dir) in
+          check int "one registration" 1 (List.length regs);
+          let reg = List.hd regs in
+          check string "alias from env" "kimi-xertrov-x" reg.alias;
+          check string "session from env" "session-noarg" reg.session_id))
+
 let test_server_startup_auto_registers_alias_from_env () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-auto";
@@ -580,6 +610,56 @@ let test_server_startup_auto_registers_alias_from_env () =
           check string "registered session" "session-auto" reg.session_id;
           check string "registered alias" "opencode-local" reg.alias;
           check bool "registered pid" true (reg.pid = Some 4242)))
+
+let test_auto_join_rooms_startup_joins_listed_rooms () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-social";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "social-agent";
+      Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "swarm-lounge,design-review";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+          Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          C2c_mcp.auto_join_rooms_startup ~broker_root:dir;
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          let rooms = C2c_mcp.Broker.list_rooms broker in
+          let room_ids = List.map (fun r -> r.C2c_mcp.Broker.ri_room_id) rooms in
+          check bool "joined swarm-lounge" true (List.mem "swarm-lounge" room_ids);
+          check bool "joined design-review" true (List.mem "design-review" room_ids)))
+
+let test_auto_join_rooms_startup_skips_when_no_alias () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+      Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "swarm-lounge";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "")
+        (fun () ->
+          (* No alias configured: should be a no-op, not an error *)
+          C2c_mcp.auto_join_rooms_startup ~broker_root:dir;
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          let rooms = C2c_mcp.Broker.list_rooms broker in
+          check int "no rooms created when alias absent" 0 (List.length rooms)))
+
+let test_auto_join_rooms_startup_empty_env_is_noop () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-noop";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "noop-agent";
+      Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+          Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          C2c_mcp.auto_join_rooms_startup ~broker_root:dir;
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          let rooms = C2c_mcp.Broker.list_rooms broker in
+          check int "no rooms when env is empty" 0 (List.length rooms)))
 
 let test_tools_call_whoami_uses_current_session_id_when_omitted () =
   with_temp_dir (fun dir ->
@@ -2616,8 +2696,16 @@ let () =
               test_tools_call_register_uses_current_session_id_when_omitted
          ; test_case "tools/call register prefers explicit client pid env" `Quick
              test_tools_call_register_prefers_explicit_client_pid_env
+         ; test_case "tools/call register no alias falls back to env" `Quick
+             test_tools_call_register_no_alias_falls_back_to_env
          ; test_case "server startup auto-registers alias from env" `Quick
              test_server_startup_auto_registers_alias_from_env
+         ; test_case "auto_join_rooms_startup joins listed rooms" `Quick
+             test_auto_join_rooms_startup_joins_listed_rooms
+         ; test_case "auto_join_rooms_startup skips when no alias" `Quick
+             test_auto_join_rooms_startup_skips_when_no_alias
+         ; test_case "auto_join_rooms_startup empty env is noop" `Quick
+             test_auto_join_rooms_startup_empty_env_is_noop
          ; test_case "tools/call whoami uses current session id when omitted" `Quick
               test_tools_call_whoami_uses_current_session_id_when_omitted
          ; test_case "tools/call poll_inbox drains messages as tool result" `Quick

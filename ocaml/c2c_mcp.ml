@@ -1027,7 +1027,7 @@ let channel_notification ({ from_alias; to_alias; content } : message) =
     ]
 
 let tool_definitions =
-  [ tool_definition ~name:"register" ~description:"Register a C2C alias for the current session." ~required:[ "alias" ]
+  [ tool_definition ~name:"register" ~description:"Register a C2C alias for the current session. `alias` is optional: if omitted the server falls back to the C2C_MCP_AUTO_REGISTER_ALIAS environment variable. Calling register with no arguments is a safe way to refresh your registration (e.g. after a process restart that changed your PID)." ~required:[]
   ; tool_definition ~name:"list" ~description:"List registered C2C peers." ~required:[]
   ; tool_definition ~name:"send" ~description:"Send a C2C message to a registered peer alias. Returns JSON {queued:true, ts:<epoch-seconds>, to_alias:<string>} on success. ts is when the message landed in the recipient's inbox; to_alias confirms the resolved recipient." ~required:[ "from_alias"; "to_alias"; "content" ]
   ; tool_definition ~name:"whoami" ~description:"Resolve the current C2C session registration." ~required:[]
@@ -1116,6 +1116,39 @@ let auto_register_startup ~broker_root =
       Broker.register broker ~session_id ~alias ~pid ~pid_start_time
   | _ -> ()
 
+(** Auto-join rooms listed in C2C_MCP_AUTO_JOIN_ROOMS (comma-separated) on
+    server startup. Only runs when auto-registration is also configured (both
+    C2C_MCP_AUTO_REGISTER_ALIAS and C2C_MCP_SESSION_ID must be set). This is
+    the social-layer entry point: operators set
+      C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge
+    in the MCP env so every agent session joins the persistent social channel
+    automatically on first startup. Idempotent — joining the same room twice
+    is a no-op on the broker side. *)
+let auto_join_rooms_startup ~broker_root =
+  match (auto_register_alias (), current_session_id ()) with
+  | Some alias, Some session_id ->
+      let rooms_raw =
+        match Sys.getenv_opt "C2C_MCP_AUTO_JOIN_ROOMS" with
+        | Some v -> String.trim v
+        | None -> ""
+      in
+      if rooms_raw <> "" then begin
+        let rooms =
+          String.split_on_char ',' rooms_raw
+          |> List.map String.trim
+          |> List.filter (fun s -> s <> "")
+        in
+        let broker = Broker.create ~root:broker_root in
+        List.iter
+          (fun room_id ->
+            if Broker.valid_room_id room_id then
+              ignore (Broker.join_room broker ~room_id ~alias ~session_id)
+            (* silently skip invalid room IDs so a misconfiguration doesn't
+               crash the server *))
+          rooms
+      end
+  | _ -> ()
+
 let resolve_session_id arguments =
   match optional_string_member "session_id" arguments with
   | Some session_id -> session_id
@@ -1128,7 +1161,14 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
   match tool_name with
   | "register" ->
       let session_id = resolve_session_id arguments in
-      let alias = string_member "alias" arguments in
+      let alias =
+        match optional_string_member "alias" arguments with
+        | Some a -> a
+        | None ->
+            (match auto_register_alias () with
+             | Some a -> a
+             | None -> invalid_arg "alias is required (pass {\"alias\":\"your-name\"} or set C2C_MCP_AUTO_REGISTER_ALIAS)")
+      in
       let pid =
         match current_client_pid () with
         | Some pid -> Some pid
