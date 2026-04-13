@@ -4187,6 +4187,7 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
                 "config_path": str(opencode_json),
                 "c2c_session_id": "opencode-local",
                 "c2c_alias": "opencode-local",
+                "session": "ses_managed_opencode",
                 "prompt": "test",
             }
             (config_dir / "opencode-local.json").write_text(
@@ -4207,6 +4208,7 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
             )
             self.assertEqual(sidecar["session_id"], "opencode-local")
             self.assertEqual(sidecar["alias"], "opencode-local")
+            self.assertEqual(sidecar["opencode_session_id"], "ses_managed_opencode")
             self.assertEqual(
                 sidecar["broker_root"], str(project / ".git" / "c2c" / "mcp")
             )
@@ -4231,6 +4233,17 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
 
         self.assertIn("function startBackgroundLoop()", plugin_text)
         self.assertIn("startBackgroundLoop();", plugin_text)
+
+    def test_opencode_plugin_prefers_configured_session_target(self):
+        plugin_src = REPO / ".opencode" / "plugins" / "c2c.ts"
+        if not plugin_src.exists():
+            self.skipTest("plugin source not present")
+
+        plugin_text = plugin_src.read_text(encoding="utf-8")
+
+        self.assertIn("sidecar.opencode_session_id", plugin_text)
+        self.assertIn("configuredOpenCodeSessionId", plugin_text)
+        self.assertIn("let activeSessionId: string | null = configuredOpenCodeSessionId", plugin_text)
 
     def test_run_opencode_inst_outer_dry_run_reports_inner_launch_command(self):
         env = {"RUN_OPENCODE_INST_OUTER_DRY_RUN": "1"}

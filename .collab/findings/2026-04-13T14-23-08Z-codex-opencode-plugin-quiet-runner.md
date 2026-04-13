@@ -46,15 +46,30 @@ uses as its fallback config source. The plugin therefore had no session ID.
 plugin now starts its background poll loop during plugin initialization itself
 instead of relying only on the optional `lifecycle.start` hook.
 
+4. After the init-start loop fix, a no-PTY live test drained the broker inbox
+immediately but no reply arrived. The likely cause is prompt target selection:
+the plugin was discovering a root session from `session.list()`, which can pick
+an unrelated OpenCode root session. The managed launcher already knows the
+intended OpenCode session ID from its `session` config, so that ID now travels
+through the sidecar and is preferred for `client.session.promptAsync`.
+
+5. After the configured-session fix, another no-PTY live test again drained the
+direct DM from `opencode-local.inbox.json` immediately, but no direct reply
+arrived after roughly a minute. Native broker draining is now proven; a separate
+gap remains around proving that `client.session.promptAsync` creates a
+model-visible turn in this managed `opencode run --session ... --prompt ...`
+mode.
+
 ## Fix Status
 
 The plugin now uses `child_process.spawn()` with an argument vector, no shell,
 and a bounded timeout. It prefers `C2C_CLI_COMMAND`, then `./c2c` from the
 project cwd, then `c2c` from `PATH`. `run-opencode-inst` now writes
 `.opencode/c2c-plugin.json` in the managed cwd with `session_id`, `alias`, and
-`broker_root`. The plugin also starts its background loop at initialization,
-with a guard so `lifecycle.start` cannot double-start it if that hook is active
-in another OpenCode mode. The generated managed plugin copy and the global
+`broker_root`, plus `opencode_session_id` when the managed config pins a
+session. The plugin also starts its background loop at initialization, with a
+guard so `lifecycle.start` cannot double-start it if that hook is active in
+another OpenCode mode. The generated managed plugin copy and the global
 `~/.config/opencode/plugins/c2c.ts` copy were synced.
 
 Regression coverage:
@@ -63,10 +78,13 @@ Regression coverage:
 - `OpenCodeLocalConfigTests.test_run_opencode_inst_copies_plugin_to_config_dir`
 - `OpenCodeLocalConfigTests.test_run_opencode_inst_writes_plugin_sidecar_in_cwd`
 - `OpenCodeLocalConfigTests.test_opencode_plugin_starts_background_loop_without_lifecycle_hook`
+- `OpenCodeLocalConfigTests.test_opencode_plugin_prefers_configured_session_target`
 - `bun build .opencode/plugins/c2c.ts --target bun ...`
 
 ## Follow-Up
 
-Restart the managed `opencode-local` process so it loads the updated global or
-project plugin, stop the `notify-only` delivery daemon, send a broker-native DM,
-and verify whether OpenCode drains and injects it without PTY content delivery.
+The next slice should instrument or otherwise prove the prompt side of the
+plugin. The broker-drain side is working with the PTY notify daemon stopped; the
+remaining question is whether `client.session.promptAsync` is targeting a live
+model turn in this OpenCode mode or only appending to session state without
+waking the run loop.

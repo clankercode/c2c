@@ -159,19 +159,23 @@ def _ensure_opencode_plugin(config_path: Path, cwd_path: Path) -> None:
 
 
 def _write_plugin_sidecar(
-    cwd_path: Path, c2c_session_id: str, c2c_alias: str, broker_root: Path
+    cwd_path: Path,
+    c2c_session_id: str,
+    c2c_alias: str,
+    broker_root: Path,
+    opencode_session_id: str = "",
 ) -> None:
     sidecar = cwd_path / ".opencode" / "c2c-plugin.json"
     sidecar.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "session_id": c2c_session_id,
+        "alias": c2c_alias,
+        "broker_root": str(broker_root),
+    }
+    if opencode_session_id:
+        payload["opencode_session_id"] = opencode_session_id
     sidecar.write_text(
-        json.dumps(
-            {
-                "session_id": c2c_session_id,
-                "alias": c2c_alias,
-                "broker_root": str(broker_root),
-            },
-            indent=2,
-        )
+        json.dumps(payload, indent=2)
         + "\n",
         encoding="utf-8",
     )
@@ -222,7 +226,10 @@ def build_launch(name: str, config: dict, extra: list[str]) -> tuple[list[str], 
     broker_root = cwd_path / ".git" / "c2c" / "mcp"
     env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
     env["C2C_MCP_AUTO_DRAIN_CHANNEL"] = "0"
-    _write_plugin_sidecar(cwd_path, c2c_session_id, c2c_alias, broker_root)
+    opencode_session_id = coerce_string(config.get("session"), "session")
+    _write_plugin_sidecar(
+        cwd_path, c2c_session_id, c2c_alias, broker_root, opencode_session_id
+    )
     return launch, cwd_path, env
 
 

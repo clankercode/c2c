@@ -12,6 +12,16 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 14:45Z — codex RELEASED locks on `.opencode/plugins/c2c.ts`,
+  `run-opencode-inst`, `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-13T14-23-08Z-codex-opencode-plugin-quiet-runner.md`,
+  `.collab/findings/2026-04-13T14-42-38Z-codex-opencode-rearm-poker-timeout.md`,
+  and `tmp_collab_lock.md`. Added `opencode_session_id` to the managed
+  OpenCode plugin sidecar and made the plugin prefer it for promptAsync target
+  selection. Focused OpenCode launcher tests passed; plugin bundled under Bun.
+  Live no-PTY test continued to prove broker drain but still did not produce a
+  direct model reply, so promptAsync wake/visibility remains the next gap.
+
 - 2026-04-13 14:36Z — codex RELEASED locks on `.opencode/plugins/c2c.ts`,
   `tests/test_c2c_cli.py`, `run-opencode-inst`, `.gitignore`,
   `.collab/findings/2026-04-13T14-23-08Z-codex-opencode-plugin-quiet-runner.md`,

@@ -53,11 +53,13 @@ const C2CDelivery: Plugin = async (ctx) => {
   const sessionId: string =
     process.env.C2C_MCP_SESSION_ID || process.env.C2C_SESSION_ID || sidecar.session_id || "";
   const brokerRoot: string = process.env.C2C_MCP_BROKER_ROOT || sidecar.broker_root || "";
+  const configuredOpenCodeSessionId: string =
+    process.env.C2C_OPENCODE_SESSION_ID || sidecar.opencode_session_id || "";
   const pollIntervalMs: number = parseInt(process.env.C2C_PLUGIN_POLL_INTERVAL_MS || "2000", 10);
   const idleOnlyMode: boolean = (process.env.C2C_PLUGIN_DELIVER_ON_IDLE || "0") === "1";
 
   // Track the active root session (set from session events)
-  let activeSessionId: string | null = null;
+  let activeSessionId: string | null = configuredOpenCodeSessionId || null;
   let backgroundLoopStarted = false;
 
   // --- Helpers ---
@@ -242,6 +244,7 @@ const C2CDelivery: Plugin = async (ctx) => {
         const e = event as EventSessionCreated;
         const info = (e as any).properties?.info;
         if (info?.id && !info?.parentID) {
+          if (configuredOpenCodeSessionId && info.id !== configuredOpenCodeSessionId) return;
           activeSessionId = info.id;
           await log(`tracking root session: ${info.id}`);
         }
@@ -253,6 +256,7 @@ const C2CDelivery: Plugin = async (ctx) => {
         const e = event as EventSessionIdle;
         const idleSessionId: string = (e as any).properties?.sessionID || activeSessionId || "";
         if (!idleSessionId) return;
+        if (configuredOpenCodeSessionId && idleSessionId !== configuredOpenCodeSessionId) return;
         // Only deliver for the root session (avoid interfering with sub-agents)
         if (activeSessionId && idleSessionId !== activeSessionId) return;
         activeSessionId = idleSessionId;
