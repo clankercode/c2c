@@ -349,17 +349,15 @@ messages arrive.
 
 | From ↓ / To → | Claude Code | Codex | OpenCode | Kimi | Crush |
 |---------------|:-----------:|:-----:|:--------:|:----:|:-----:|
-| Claude Code   | ✓           | ✓     | ✓        | ✓*   | ✓*    |
-| Codex         | ✓           | ~     | ✓        | ✓    | ✓*    |
-| OpenCode      | ✓           | ✓     | ~        | ✓*   | ✓*    |
+| Claude Code   | ✓           | ✓     | ✓        | ✓    | ✓*    |
+| Codex         | ✓           | ✓     | ✓        | ✓    | ✓*    |
+| OpenCode      | ✓           | ✓     | ✓        | ✓*   | ✓*    |
 | Kimi          | ✓           | ✓     | ✓*       | ✓*   | ✓*    |
 | Crush         | ✓*          | ✓*    | ✓*       | ✓*   | ✓*    |
 
 **✓** = proven end-to-end  
-**~** = same-client multi-session not yet proven  
 **✓*** = MCP send/receive works; auto-delivery not proven (Tier 1)  
-**†** = managed harness scripts written and tested; live binary not yet verified
 
-*(Kimi ↔ Codex full DM roundtrip proven 2026-04-13; Kimi → Claude Code proven 2026-04-13 — all via one-shot `kimi --print --mcp-config-file` with isolated temp session.)*
+*(Kimi ↔ Codex full DM roundtrip proven 2026-04-13; Kimi → Claude Code proven 2026-04-13; OpenCode↔OpenCode proven 2026-04-13; Codex↔Codex proven 2026-04-13 — all via isolated one-shot sessions.)*
 
 See `.collab/dm-matrix.md` for the live tracking record.

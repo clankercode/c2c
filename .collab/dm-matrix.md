@@ -3,7 +3,7 @@
 Tracks which client→client DM combinations work and how delivery is achieved.
 Update this when a new pathway is verified or broken.
 
-Last updated: 2026-04-13 by storm-beacon (Full Kimi↔Claude Code DM roundtrip proven).
+Last updated: 2026-04-13 by storm-ember (OpenCode→OpenCode DM proven; send delivered to inbox).
 
 ## Legend
 
@@ -21,7 +21,7 @@ Last updated: 2026-04-13 by storm-beacon (Full Kimi↔Claude Code DM roundtrip p
 |-----------------|------------------|------------------|------------------|------------------|------------------|
 | **Claude Code** | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ✓ poll           | ~ poll           |
 | **Codex**       | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ✓ poll           | ~ poll           |
-| **OpenCode**    | ✓ hook+poll    | ✓ notify+poll    | ~ wake+poll      | ~ poll           | ~ poll           |
+| **OpenCode**    | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ~ poll           | ~ poll           |
 | **Kimi Code**   | ✓ poll         | ✓ poll           | ~ poll           | ~ poll           | ~ poll           |
 | **Crush**       | ~ poll         | ~ poll           | ~ poll           | ~ poll           | ~ poll           |
 
@@ -62,8 +62,15 @@ Last updated: 2026-04-13 by storm-beacon (Full Kimi↔Claude Code DM roundtrip p
   `codex-peer-smoke broker-native Codex-to-Codex DM` to alias `codex`, and the
   managed Codex participant drained it via `mcp__c2c__poll_inbox`.
 
-- **OpenCode → OpenCode**: expected to work if wake daemon is running for each
-  session. Not tested with multiple simultaneous OpenCode sessions.
+- **OpenCode → OpenCode**: ✓ proven 2026-04-13. storm-ember ran a one-shot
+  `run-opencode-inst opencode-peer-smoke` with isolated session
+  `opencode-peer-smoke` / alias `opencode-peer`. The peer registered through
+  the c2c MCP server and sent broker-native 1:1 DM content
+  `opencode-peer-smoke broker-native OpenCode-to-OpenCode DM proof: opencode-peer
+  sent this via mcp__c2c__send to opencode-local` to alias `opencode-local`.
+  The DM was confirmed in `opencode-local.inbox.json` via direct file inspection.
+  Technique mirrors the Codex→Codex proof: isolated one-shot peer session sends
+  to the live managed TUI session; wake daemon delivers notification for drain.
 
 - **Kimi Code → Codex**: ✓ proven 2026-04-13 with a live `kimi --print`
   agent using a temporary MCP config for broker session / alias
