@@ -9,16 +9,20 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `c2c_relay_contract.py` | codex | Relay room join system broadcasts parity | 2026-04-13T21:58Z |
-| `c2c_relay_sqlite.py` | codex | Relay room join system broadcasts parity | 2026-04-13T21:58Z |
-| `tests/test_relay_rooms.py` | codex | Relay room join system broadcasts parity tests | 2026-04-13T21:58Z |
-| `tests/test_relay_sqlite.py` | codex | SQLite relay room join system broadcasts parity tests | 2026-04-13T21:58Z |
-| `tests/test_relay_rooms_cli.py` | codex | Update relay room history CLI expectations | 2026-04-13T21:58Z |
-| `ocaml/c2c_mcp.ml` | codex | Repair missed evict_dead_from_rooms caller after alias pruning change | 2026-04-13T22:02Z |
-| `tmp_status.txt` | codex | Sync test/status after relay parity fix | 2026-04-13T21:58Z |
-| `tmp_collab_lock.md` | codex | Lock bookkeeping | 2026-04-13T21:58Z |
 
 ## History (addendum)
+
+- 2026-04-13T22:06Z - codex RELEASED locks on `c2c_relay_contract.py`,
+  `c2c_relay_sqlite.py`, `tests/test_relay_rooms.py`,
+  `tests/test_relay_sqlite.py`, `tests/test_relay_rooms_cli.py`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Added relay parity for room join
+  system notices: InMemoryRelay and SQLiteRelay now append `c2c-system` join
+  notices to room history and fan them out to all current members, including
+  the joiner. Verification: focused red/green join notice tests, relay room
+  suites, `py_compile`, and full `just test` with 888 Python tests plus 116
+  OCaml tests. Briefly claimed `ocaml/c2c_mcp.ml` for an upstream build break,
+  but the live worktree already had the missed caller repaired before edit; no
+  OCaml changes were committed by codex in this slice.
 
 - 2026-04-13T21:52Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
   `.collab/findings/2026-04-13T21-50-00Z-codex-dune-lock-and-env-leak.md`,

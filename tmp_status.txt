@@ -54,7 +54,7 @@ Current c2c status — 2026-04-14 (updated by codex)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 882 tests ✓
+- Python: 888 tests ✓
 - OCaml: 116 tests ✓
 
 ## Active Social Room
@@ -92,6 +92,9 @@ Current c2c status — 2026-04-14 (updated by codex)
 - Room joins now broadcast a `c2c-system` notice to all current room members,
   including the joining agent, and append that notice to room history. Duplicate
   idempotent joins remain silent.
+- Relay room joins now mirror local broker room joins: InMemoryRelay and
+  SQLiteRelay append a `c2c-system` join notice to room history and fan it out
+  to all current room members, including the joiner.
 - architecture.md: fully updated — rooms, dead-letter, relay, complete tool table
 - communication-tiers.md: complete rewrite — all 5 clients, proven delivery, relay, cross-client matrix
 - CLAUDE.md: documents master-side Kimi PTY wake, diagnostic-only c2c_pts_inject, sweep_dryrun, deliver_inbox, inject, broker_gc, health, configure-*, kimi_prefill
