@@ -14,6 +14,8 @@ Config keys:
   c2c_session_id  unique MCP session ID for broker registration
   c2c_alias       stable alias peers use to address this instance
                   (defaults to c2c_session_id if absent)
+  prompt          if set, runs `kimi --print --prompt "<prompt>"` (non-interactive);
+                  omit for interactive TUI mode
   flags           extra CLI flags (list of strings)
   env             extra environment variables (dict string→string)
 
@@ -99,7 +101,7 @@ def default_session_id(name: str) -> str:
 
 def build_launch(
     name: str, config: dict, extra: list[str]
-) -> tuple[list[str], Path, dict[str, str]]:
+) -> tuple[list[str], Path, dict[str, str], bool]:
     command = coerce_string(config.get("command", "kimi"), "command", required=True)
     flags = coerce_string_list(config.get("flags"), "flags")
     env_extra = coerce_string_dict(config.get("env"), "env")
@@ -118,8 +120,15 @@ def build_launch(
         "c2c_alias",
     )
 
-    launch = [command, *flags, *extra]
+    prompt = coerce_string(config.get("prompt"), "prompt")
+    if prompt:
+        # Non-interactive: Kimi takes prompt text via --prompt in print mode.
+        launch = [command, *flags, "--print", "--prompt", prompt, *extra]
+    else:
+        # Interactive TUI mode (no prompt)
+        launch = [command, *flags, *extra]
 
+    has_prompt = bool(prompt)
     env = os.environ.copy()
     env.update(env_extra)
     env["RUN_KIMI_INST_NAME"] = name
@@ -127,7 +136,7 @@ def build_launch(
     env["C2C_MCP_SESSION_ID"] = c2c_session_id
     env["C2C_MCP_AUTO_REGISTER_ALIAS"] = c2c_alias
     env["C2C_MCP_AUTO_DRAIN_CHANNEL"] = "0"
-    return launch, cwd_path, env
+    return launch, cwd_path, env, has_prompt
 
 
 def set_terminal_title(title: str) -> None:
@@ -154,7 +163,7 @@ def main(argv: list[str]) -> int:
     name = argv[1]
     extra = argv[2:]
     config = load_config(name)
-    launch, cwd_path, env = build_launch(name, config, extra)
+    launch, cwd_path, env, has_prompt = build_launch(name, config, extra)
     title = coerce_string(config.get("title") or name, "title")
     pre_exec = coerce_string_list(config.get("pre_exec"), "pre_exec")
     pid_file = pid_path(name)
@@ -164,6 +173,7 @@ def main(argv: list[str]) -> int:
             json.dumps(
                 {
                     "launch": launch,
+                    "prompt_mode": "non-interactive" if has_prompt else "interactive-tui",
                     "cwd": str(cwd_path),
                     "pid_file": str(pid_file),
                     "env": {

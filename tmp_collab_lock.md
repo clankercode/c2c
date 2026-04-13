@@ -12,6 +12,12 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 11:37 — codex RELEASED locks on `run-kimi-inst`,
+  `tests/test_c2c_cli.py`, and `tmp_collab_lock.md`. Completed the Kimi
+  prompt-mode launcher slice after catching a dry-run unpack/prompt-mode
+  regression. Verification: `RunKimiInstTests` 6/6 and
+  `py_compile run-kimi-inst` OK.
+
 - 2026-04-13 11:31 — codex RELEASED locks on `.gitignore` and
   `tmp_collab_lock.md`. Added ignore patterns for Kimi/Crush managed harness
   runtime `.pid`, `.log`, and `.restart.json` artifacts after live
