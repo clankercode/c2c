@@ -11,6 +11,7 @@ Replaces the per-client run-*-inst-outer + run-*-inst harness scripts with a
 single command that manages the outer restart loop, deliver daemon, and poker
 for any client type.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -33,7 +34,7 @@ import c2c_mcp
 CLIENT_CONFIGS: dict[str, dict[str, Any]] = {
     "claude": {
         "binary": "claude",
-        "deliver_client": "claude",
+        "deliver_client": "c2c_claude_wake_daemon",
         "needs_poker": True,
         "poker_event": "heartbeat",
         "poker_from": "claude-poker",
@@ -41,19 +42,19 @@ CLIENT_CONFIGS: dict[str, dict[str, Any]] = {
     },
     "codex": {
         "binary": "codex",
-        "deliver_client": "codex",
+        "deliver_client": "c2c_deliver_inbox",
         "needs_poker": False,
         "extra_env": {},
     },
     "opencode": {
         "binary": "opencode",
-        "deliver_client": "opencode",
+        "deliver_client": "c2c_opencode_wake_daemon",
         "needs_poker": False,
         "extra_env": {},
     },
     "kimi": {
         "binary": "kimi",
-        "deliver_client": "kimi",
+        "deliver_client": "c2c_kimi_wake_daemon",
         "needs_poker": True,
         "poker_event": "heartbeat",
         "poker_from": "kimi-poker",
@@ -61,11 +62,13 @@ CLIENT_CONFIGS: dict[str, dict[str, Any]] = {
     },
     "crush": {
         "binary": "crush",
-        "deliver_client": "crush",
+        "deliver_client": "c2c_crush_wake_daemon",
         "needs_poker": False,
         "extra_env": {},
     },
 }
+
+SUPPORTED_CLIENTS: set[str] = set(CLIENT_CONFIGS.keys())
 
 # ---------------------------------------------------------------------------
 # State directory
@@ -111,6 +114,7 @@ def default_name(client: str) -> str:
 # Instance state helpers
 # ---------------------------------------------------------------------------
 
+
 def _read_pid(path: Path) -> int | None:
     """Read a PID from a pidfile, return None if not found or invalid."""
     try:
@@ -141,6 +145,129 @@ def _remove_pidfile(path: Path) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# Public API (task 1 surface)
+# ---------------------------------------------------------------------------
+
+
+def instances_dir() -> Path:
+    """Return ~/.local/share/c2c/instances, creating it if needed."""
+    INSTANCES_DIR.mkdir(parents=True, exist_ok=True)
+    return INSTANCES_DIR
+
+
+def instance_dir(name: str) -> Path:
+    """Return the state directory for a named instance."""
+    return instances_dir() / name
+
+
+def broker_root() -> Path:
+    """Return the MCP broker root (<git-common-dir>/c2c/mcp).
+
+    Uses ``C2C_MCP_BROKER_ROOT`` env override when set, otherwise shells
+    out to ``git rev-parse --git-common-dir``.
+    """
+    env_override = os.environ.get("C2C_MCP_BROKER_ROOT", "").strip()
+    if env_override:
+        return Path(env_override)
+    result = subprocess.run(
+        ["git", "rev-parse", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+    )
+    return Path(result.stdout.strip()) / "c2c" / "mcp"
+
+
+def build_env(name: str) -> dict[str, str]:
+    """Build environment dict for a managed client subprocess."""
+    env = dict(os.environ)
+    env["C2C_MCP_SESSION_ID"] = name
+    env["C2C_MCP_AUTO_REGISTER_ALIAS"] = name
+    env["C2C_MCP_BROKER_ROOT"] = str(broker_root())
+    env["C2C_MCP_AUTO_JOIN_ROOMS"] = "swarm-lounge"
+    env["C2C_MCP_AUTO_DRAIN_CHANNEL"] = "0"
+    return env
+
+
+def write_config(name: str, client: str, extra_args: list[str] | None = None) -> Path:
+    """Write a JSON config file for a named instance. Returns the path."""
+    cfg = instance_dir(name)
+    cfg.mkdir(parents=True, exist_ok=True)
+    config_path = cfg / "config.json"
+    data = {
+        "client": client,
+        "name": name,
+        "binary": CLIENT_CONFIGS[client]["binary"],
+        "extra_args": list(extra_args) if extra_args else [],
+    }
+    config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return config_path
+
+
+def load_config(name: str) -> dict:
+    """Load instance config.json; raises SystemExit on error."""
+    path = _instance_config_path(name)
+    if not path.exists():
+        raise SystemExit(f"[c2c-start] config not found: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"[c2c-start] invalid JSON in {path}: {exc}")
+    if not isinstance(data, dict):
+        raise SystemExit(f"[c2c-start] config root must be an object: {path}")
+    return data
+
+
+def pid_alive(pid: int) -> bool:
+    """Check whether a process with the given PID is alive."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def read_pid(pidfile: Path) -> int | None:
+    """Read a PID from a pidfile. Returns None if missing or invalid."""
+    try:
+        return int(pidfile.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def write_pid(pidfile: Path, pid: int) -> None:
+    """Write a PID to a pidfile, creating parent dirs as needed."""
+    pidfile.parent.mkdir(parents=True, exist_ok=True)
+    pidfile.write_text(f"{pid}\n", encoding="utf-8")
+
+
+def cleanup_pidfiles(d: Path) -> list[str]:
+    """Remove stale pidfiles in *d* whose processes are no longer alive.
+
+    Returns the list of filenames that were cleaned up.
+    """
+    cleaned: list[str] = []
+    if not d.is_dir():
+        return cleaned
+    for pidfile in d.glob("*.pid"):
+        pid = read_pid(pidfile)
+        if pid is None or not pid_alive(pid):
+            pidfile.unlink(missing_ok=True)
+            cleaned.append(pidfile.name)
+    return cleaned
+
+
+def cleanup_fea_so() -> None:
+    """Remove any ``libfea_inject.so`` leftover in /tmp."""
+    for candidate in [Path("/tmp/libfea_inject.so")]:
+        candidate.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Legacy / internal helpers (kept for backward compat)
+# ---------------------------------------------------------------------------
+
+
 def load_instance_config(name: str) -> dict[str, Any] | None:
     """Load instance config.json; return None if not found."""
     path = _instance_config_path(name)
@@ -159,6 +286,7 @@ def save_instance_config(name: str, cfg: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 # Instance enumeration
 # ---------------------------------------------------------------------------
+
 
 def list_instances() -> list[dict[str, Any]]:
     """Enumerate all known instances under INSTANCES_DIR."""
@@ -193,50 +321,36 @@ def list_instances() -> list[dict[str, Any]]:
                 if created_at is not None:
                     uptime_s = time.time() - created_at
 
-        results.append({
-            "name": name,
-            "client": cfg.get("client", "?"),
-            "session_id": cfg.get("session_id", name),
-            "alias": cfg.get("alias", name),
-            "outer_pid": outer_pid,
-            "outer_alive": outer_alive,
-            "deliver_pid": deliver_pid,
-            "deliver_alive": _pid_alive(deliver_pid),
-            "poker_pid": poker_pid,
-            "poker_alive": _pid_alive(poker_pid),
-            "uptime_s": uptime_s,
-            "created_at": cfg.get("created_at"),
-        })
+        results.append(
+            {
+                "name": name,
+                "client": cfg.get("client", "?"),
+                "session_id": cfg.get("session_id", name),
+                "alias": cfg.get("alias", name),
+                "outer_pid": outer_pid,
+                "outer_alive": outer_alive,
+                "deliver_pid": deliver_pid,
+                "deliver_alive": _pid_alive(deliver_pid),
+                "poker_pid": poker_pid,
+                "poker_alive": _pid_alive(poker_pid),
+                "uptime_s": uptime_s,
+                "created_at": cfg.get("created_at"),
+            }
+        )
     return results
 
 
-# ---------------------------------------------------------------------------
-# Build env for a client subprocess
-# ---------------------------------------------------------------------------
-
-def build_env(name: str, client: str, broker_root: Path) -> dict[str, str]:
-    """Build environment dict for a managed client subprocess."""
-    env = dict(os.environ)
-    env["C2C_MCP_SESSION_ID"] = name
-    env["C2C_MCP_AUTO_REGISTER_ALIAS"] = name
-    env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
-    env["C2C_MCP_AUTO_JOIN_ROOMS"] = "swarm-lounge"
-    env["C2C_MCP_AUTO_DRAIN_CHANNEL"] = "0"
-    # CLIENT_PID is set by the outer loop to its own PID so the broker
-    # tracks the persistent durable outer PID, not the ephemeral child PID.
-    # We set it later after we know the outer loop PID.
-    cfg = CLIENT_CONFIGS.get(client, {})
-    env.update(cfg.get("extra_env", {}))
-    return env
-
+# build_env is defined above in the public API section
 
 # ---------------------------------------------------------------------------
 # Outer loop (foreground)
 # ---------------------------------------------------------------------------
 
+
 def _find_binary(name: str) -> str | None:
     """Find a binary in PATH; return its path or None."""
     import shutil
+
     return shutil.which(name)
 
 
@@ -250,11 +364,14 @@ def _start_deliver_daemon(
     cmd = [
         sys.executable,
         str(deliver_script),
-        "--client", client,
-        "--session-id", name,
+        "--client",
+        client,
+        "--session-id",
+        name,
         "--notify-only",
         "--loop",
-        "--broker-root", str(broker_root),
+        "--broker-root",
+        str(broker_root),
     ]
     try:
         proc = subprocess.Popen(
@@ -279,9 +396,12 @@ def _start_poker(name: str, client: str) -> subprocess.Popen | None:
     cmd = [
         sys.executable,
         str(poker_script),
-        "--claude-session", name,
-        "--interval", "600",
-        "--event", cfg.get("poker_event", "heartbeat"),
+        "--claude-session",
+        name,
+        "--interval",
+        "600",
+        "--event",
+        cfg.get("poker_event", "heartbeat"),
     ]
     try:
         proc = subprocess.Popen(
@@ -341,7 +461,10 @@ def run_outer_loop(
         return code
 
     try:
-        env = build_env(name, client, broker_root)
+        env = build_env(name)
+        # Merge client-specific extra env.
+        cfg_extra = CLIENT_CONFIGS.get(client, {}).get("extra_env", {})
+        env.update(cfg_extra)
         # Pin CLIENT_PID to outer loop's PID so the broker tracks the durable PID.
         env["C2C_MCP_CLIENT_PID"] = str(os.getpid())
 
@@ -351,11 +474,16 @@ def run_outer_loop(
             try:
                 _n = c2c_mcp.cleanup_stale_tmp_fea_so()
                 if _n:
-                    print(f"[c2c-start/{name}] cleaned {_n} stale /tmp/.fea*.so file(s)", flush=True)
+                    print(
+                        f"[c2c-start/{name}] cleaned {_n} stale /tmp/.fea*.so file(s)",
+                        flush=True,
+                    )
             except Exception:
                 pass
 
-            print(f"[c2c-start/{name}] iter {iteration}: launching {client}", flush=True)
+            print(
+                f"[c2c-start/{name}] iter {iteration}: launching {client}", flush=True
+            )
             started = time.monotonic()
             child_proc = None
             try:
@@ -364,7 +492,9 @@ def run_outer_loop(
 
                 # Start deliver daemon and poker on first iteration (or restart if dead).
                 if deliver_proc is None or deliver_proc.poll() is not None:
-                    deliver_proc = _start_deliver_daemon(name, cfg["deliver_client"], broker_root)
+                    deliver_proc = _start_deliver_daemon(
+                        name, cfg["deliver_client"], broker_root
+                    )
                     if deliver_proc is not None:
                         _write_pidfile(_deliver_pid_path(name), deliver_proc.pid)
 
@@ -401,7 +531,10 @@ def run_outer_loop(
             )
 
             if elapsed < MIN_RUN_SECONDS:
-                print(f"[c2c-start/{name}] fast exit — backing off {backoff:.1f}s", flush=True)
+                print(
+                    f"[c2c-start/{name}] fast exit — backing off {backoff:.1f}s",
+                    flush=True,
+                )
                 time.sleep(backoff)
                 backoff = min(backoff * 2.0, MAX_BACKOFF_SECONDS)
             else:
@@ -419,6 +552,7 @@ def run_outer_loop(
 # ---------------------------------------------------------------------------
 # start / stop / restart
 # ---------------------------------------------------------------------------
+
 
 def cmd_start(
     client: str,
@@ -546,19 +680,18 @@ def cmd_instances(json_out: bool = False) -> int:
             if u < 60:
                 uptime = f"{u:.0f}s"
             elif u < 3600:
-                uptime = f"{u/60:.0f}m"
+                uptime = f"{u / 60:.0f}m"
             else:
-                uptime = f"{u/3600:.1f}h"
+                uptime = f"{u / 3600:.1f}h"
         pid = str(inst["outer_pid"] or "?")
-        print(
-            f"{inst['name']:<20} {inst['client']:<10} {status:<8} {uptime:<12} {pid}"
-        )
+        print(f"{inst['name']:<20} {inst['client']:<10} {status:<8} {uptime:<12} {pid}")
     return 0
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(

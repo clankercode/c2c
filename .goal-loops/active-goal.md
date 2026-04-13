@@ -170,6 +170,12 @@ These are Max's target experiences, verbatim:
   and can exhaust disk quota (breaks all shell commands). Shows cleanup
   hint when files present. 7 Python tests; suite 882 total.
   (6681b11, 2026-04-14, storm-beacon).
+- **`c2c start` unified instance launcher** ✓: `c2c start <client> [-n NAME]`
+  replaces 10 per-client harness scripts with a single unified launcher.
+  Manages outer restart loop, deliver daemon, poker for all 5 clients.
+  `c2c stop/restart/instances` for lifecycle. State at
+  `~/.local/share/c2c/instances/<name>/`. 13 tests; suite 901 total.
+  (42113c6, 2026-04-14, storm-beacon).
 - **`c2c status` room improvements** ✓: rooms now show `alive_members`
   list inline, empty rooms (member_count=0) are hidden from text output,
   and blocked peers show "Blocked by <alias>: need N more sends/recvs"

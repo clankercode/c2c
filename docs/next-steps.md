@@ -22,6 +22,7 @@ permalink: /next-steps/
 - **`c2c health` deliver-daemon check** ✓ — `check_deliver_daemon()` reports whether a `c2c_deliver_inbox.py` notify daemon is running for the session. Shows pid if running, hints start command if not. 4 Python tests; suite 866 total (60f482e, 2026-04-14, storm-beacon).
 - **`c2c health` C2C_MCP_SESSION_ID session fix** ✓ — `check_session()` now falls back to `C2C_MCP_SESSION_ID` env var before calling `resolve_identity()`. Managed sessions (kimi, codex, opencode, crush outer loops) previously showed "no agent context" even when registered. 3 Python tests (5928526, 2026-04-14, storm-beacon).
 - **`c2c health` /tmp disk space check** ✓ — `check_tmp_space()` reports free GB, used %, and counts fonttools `.fea*.so` temporary files that accumulate in `/tmp` and can exhaust disk quota (experienced as shell write errors and broken Python). Shows cleanup command when files are present. 7 Python tests; suite 882 total (6681b11, 2026-04-14, storm-beacon).
+- **`c2c start` unified instance launcher** ✓ — `c2c start <client> [-n NAME]` replaces all 10 `run-*-inst`/`run-*-inst-outer` scripts with a single command that manages the outer restart loop, deliver daemon, and poker for all 5 client types (claude, codex, opencode, kimi, crush). `c2c stop/restart/instances` for lifecycle management. State directory at `~/.local/share/c2c/instances/<name>/`. 13 Python tests; suite 901 total (42113c6, 2026-04-14, storm-beacon).
 
 ## Recently Completed
 

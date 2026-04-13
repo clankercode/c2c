@@ -6157,9 +6157,7 @@ class C2CVerifyBrokerTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def _write_registry(self, registrations: list[dict]) -> None:
-        self.registry_path.write_text(
-            json.dumps(registrations), encoding="utf-8"
-        )
+        self.registry_path.write_text(json.dumps(registrations), encoding="utf-8")
 
     def _write_archive(self, filename: str, messages: list[dict]) -> None:
         path = self.archive_dir / filename
@@ -6177,7 +6175,14 @@ class C2CVerifyBrokerTests(unittest.TestCase):
 
     def test_received_count_from_own_archive(self):
         self._write_registry([{"alias": "agent-a", "session_id": "sess-a"}])
-        msgs = [{"from_alias": "agent-b", "to_alias": "agent-a", "content": "hi", "drained_at": 1.0}]
+        msgs = [
+            {
+                "from_alias": "agent-b",
+                "to_alias": "agent-a",
+                "content": "hi",
+                "drained_at": 1.0,
+            }
+        ]
         self._write_archive("sess-a.jsonl", msgs * 5)
         result = c2c_verify.verify_progress_broker(self.broker_root)
         self.assertEqual(result["participants"]["agent-a"]["received"], 5)
@@ -6185,21 +6190,44 @@ class C2CVerifyBrokerTests(unittest.TestCase):
     def test_archive_keyed_by_alias_fallback(self):
         """Named sessions (e.g. codex-local) may have archive file named after alias."""
         self._write_registry([{"alias": "codex", "session_id": "codex-local"}])
-        msgs = [{"from_alias": "agent-a", "to_alias": "codex", "content": "hi", "drained_at": 1.0}]
+        msgs = [
+            {
+                "from_alias": "agent-a",
+                "to_alias": "codex",
+                "content": "hi",
+                "drained_at": 1.0,
+            }
+        ]
         # Archive file is named after session_id (codex-local.jsonl)
         self._write_archive("codex-local.jsonl", msgs * 3)
         result = c2c_verify.verify_progress_broker(self.broker_root)
         self.assertEqual(result["participants"]["codex"]["received"], 3)
 
     def test_sent_count_from_cross_archive_scan(self):
-        self._write_registry([
-            {"alias": "agent-a", "session_id": "sess-a"},
-            {"alias": "agent-b", "session_id": "sess-b"},
-        ])
+        self._write_registry(
+            [
+                {"alias": "agent-a", "session_id": "sess-a"},
+                {"alias": "agent-b", "session_id": "sess-b"},
+            ]
+        )
         # agent-b archive: agent-a sent 4 messages to agent-b
-        msgs_b = [{"from_alias": "agent-a", "to_alias": "agent-b", "content": "hi", "drained_at": 1.0}] * 4
+        msgs_b = [
+            {
+                "from_alias": "agent-a",
+                "to_alias": "agent-b",
+                "content": "hi",
+                "drained_at": 1.0,
+            }
+        ] * 4
         # agent-a archive: agent-b sent 2 messages to agent-a
-        msgs_a = [{"from_alias": "agent-b", "to_alias": "agent-a", "content": "hey", "drained_at": 2.0}] * 2
+        msgs_a = [
+            {
+                "from_alias": "agent-b",
+                "to_alias": "agent-a",
+                "content": "hey",
+                "drained_at": 2.0,
+            }
+        ] * 2
         self._write_archive("sess-a.jsonl", msgs_a)
         self._write_archive("sess-b.jsonl", msgs_b)
         result = c2c_verify.verify_progress_broker(self.broker_root)
@@ -6208,7 +6236,14 @@ class C2CVerifyBrokerTests(unittest.TestCase):
 
     def test_c2c_system_messages_excluded_from_sent(self):
         self._write_registry([{"alias": "agent-a", "session_id": "sess-a"}])
-        msgs = [{"from_alias": "c2c-system", "to_alias": "agent-a@swarm-lounge", "content": "{}", "drained_at": 1.0}] * 10
+        msgs = [
+            {
+                "from_alias": "c2c-system",
+                "to_alias": "agent-a@swarm-lounge",
+                "content": "{}",
+                "drained_at": 1.0,
+            }
+        ] * 10
         self._write_archive("sess-a.jsonl", msgs)
         result = c2c_verify.verify_progress_broker(self.broker_root)
         # c2c-system messages should not count toward any sent tally
@@ -6217,10 +6252,24 @@ class C2CVerifyBrokerTests(unittest.TestCase):
     def test_goal_met_when_both_thresholds_reached(self):
         self._write_registry([{"alias": "agent-a", "session_id": "sess-a"}])
         # 20 messages received, 20 messages "sent" (appearing as from_alias in other archives)
-        received = [{"from_alias": "agent-b", "to_alias": "agent-a", "content": "hi", "drained_at": 1.0}] * 20
+        received = [
+            {
+                "from_alias": "agent-b",
+                "to_alias": "agent-a",
+                "content": "hi",
+                "drained_at": 1.0,
+            }
+        ] * 20
         self._write_archive("sess-a.jsonl", received)
         # Simulate agent-a's sent messages appearing in agent-b's archive
-        sent_as_from = [{"from_alias": "agent-a", "to_alias": "agent-b", "content": "yo", "drained_at": 2.0}] * 20
+        sent_as_from = [
+            {
+                "from_alias": "agent-a",
+                "to_alias": "agent-b",
+                "content": "yo",
+                "drained_at": 2.0,
+            }
+        ] * 20
         self._write_archive("sess-b.jsonl", sent_as_from)
         result = c2c_verify.verify_progress_broker(self.broker_root)
         self.assertEqual(result["participants"]["agent-a"]["sent"], 20)
@@ -6229,7 +6278,14 @@ class C2CVerifyBrokerTests(unittest.TestCase):
 
     def test_goal_not_met_when_only_received_threshold_reached(self):
         self._write_registry([{"alias": "agent-a", "session_id": "sess-a"}])
-        received = [{"from_alias": "agent-b", "to_alias": "agent-a", "content": "hi", "drained_at": 1.0}] * 20
+        received = [
+            {
+                "from_alias": "agent-b",
+                "to_alias": "agent-a",
+                "content": "hi",
+                "drained_at": 1.0,
+            }
+        ] * 20
         self._write_archive("sess-a.jsonl", received)
         result = c2c_verify.verify_progress_broker(self.broker_root)
         self.assertEqual(result["participants"]["agent-a"]["received"], 20)
@@ -6248,20 +6304,24 @@ class C2CVerifyBrokerTests(unittest.TestCase):
     def test_alive_only_filters_dead_registrations(self):
         # Pass pid without pid_start_time — broker_registration_is_alive returns True
         # if /proc/<pid> exists and pid_start_time is not an int.
-        self._write_registry([
-            {"alias": "live-agent", "session_id": "sess-live", "pid": os.getpid()},
-            {"alias": "dead-agent", "session_id": "sess-dead", "pid": 99999999},
-        ])
+        self._write_registry(
+            [
+                {"alias": "live-agent", "session_id": "sess-live", "pid": os.getpid()},
+                {"alias": "dead-agent", "session_id": "sess-dead", "pid": 99999999},
+            ]
+        )
         result = c2c_verify.verify_progress_broker(self.broker_root, alive_only=True)
         # dead-agent has a nonexistent PID → excluded
         self.assertIn("live-agent", result["participants"])
         self.assertNotIn("dead-agent", result["participants"])
 
     def test_alive_only_false_includes_dead_registrations(self):
-        self._write_registry([
-            {"alias": "live-agent", "session_id": "sess-live", "pid": os.getpid()},
-            {"alias": "dead-agent", "session_id": "sess-dead", "pid": 99999999},
-        ])
+        self._write_registry(
+            [
+                {"alias": "live-agent", "session_id": "sess-live", "pid": os.getpid()},
+                {"alias": "dead-agent", "session_id": "sess-dead", "pid": 99999999},
+            ]
+        )
         result = c2c_verify.verify_progress_broker(self.broker_root, alive_only=False)
         self.assertIn("live-agent", result["participants"])
         self.assertIn("dead-agent", result["participants"])
@@ -8042,7 +8102,9 @@ class ServerIsFreshTests(unittest.TestCase):
             ocaml_dir.mkdir()
             src = ocaml_dir / "c2c_mcp.ml"
             src.write_text("let x = 1\n")
-            import time; time.sleep(0.05)
+            import time
+
+            time.sleep(0.05)
             bin_path = root / "c2c_mcp_server.exe"
             bin_path.write_bytes(b"binary")
             # Binary is newer than source — should be fresh.
@@ -8059,7 +8121,9 @@ class ServerIsFreshTests(unittest.TestCase):
             ocaml_dir.mkdir()
             bin_path = root / "c2c_mcp_server.exe"
             bin_path.write_bytes(b"binary")
-            import time; time.sleep(0.05)
+            import time
+
+            time.sleep(0.05)
             src = ocaml_dir / "c2c_mcp.ml"
             src.write_text("let x = 1\n")
             # Source is newer than binary — should be stale.
@@ -8079,11 +8143,15 @@ class ServerIsFreshTests(unittest.TestCase):
             # Server source (older)
             src = ocaml_dir / "c2c_mcp.ml"
             src.write_text("let x = 1\n")
-            import time; time.sleep(0.05)
+            import time
+
+            time.sleep(0.05)
             # Binary (newer than server source)
             bin_path = root / "c2c_mcp_server.exe"
             bin_path.write_bytes(b"binary")
-            import time; time.sleep(0.05)
+            import time
+
+            time.sleep(0.05)
             # Test file (newest — but should be excluded from check)
             test_src = test_dir / "test_c2c_mcp.ml"
             test_src.write_text("let () = ()\n")
@@ -8097,6 +8165,7 @@ class HealthCheckStaleInboxTests(unittest.TestCase):
 
     def setUp(self):
         import c2c_health
+
         self.c2c_health = c2c_health
         self.temp_dir = tempfile.TemporaryDirectory()
         self.broker_root = Path(self.temp_dir.name)
@@ -8160,6 +8229,7 @@ class HealthCheckDeliverDaemonTests(unittest.TestCase):
 
     def setUp(self):
         import c2c_health
+
         self.c2c_health = c2c_health
 
     def test_no_session_id_returns_unchecked(self):
@@ -8220,7 +8290,12 @@ class HealthPrintDeliverDaemonTests(unittest.TestCase):
                 "inbox_pending": 0,
             },
             "broker_root": {"path": "/tmp/broker", "exists": True, "writable": True},
-            "registry": {"path": "/tmp/broker/registry.json", "exists": True, "readable": True, "entry_count": 1},
+            "registry": {
+                "path": "/tmp/broker/registry.json",
+                "exists": True,
+                "readable": True,
+                "entry_count": 1,
+            },
             "hook": {
                 "hook_exists": hook_registered,
                 "hook_executable": hook_registered,
@@ -8233,7 +8308,11 @@ class HealthPrintDeliverDaemonTests(unittest.TestCase):
                 "running": daemon_running,
                 "pid": 12345 if daemon_running else None,
             },
-            "swarm_lounge": {"alias": "test-alias", "member": True, "room_exists": True},
+            "swarm_lounge": {
+                "alias": "test-alias",
+                "member": True,
+                "room_exists": True,
+            },
             "dead_letter": {"count": 0},
             "stale_inboxes": {"stale": [], "total_pending": 0},
             "rooms": {"exists": True, "room_count": 0},
@@ -8245,6 +8324,7 @@ class HealthPrintDeliverDaemonTests(unittest.TestCase):
 
     def _capture_output(self, report: dict) -> str:
         import c2c_health
+
         buf = io.StringIO()
         with mock.patch("sys.stdout", buf):
             c2c_health.print_health_report(report)
@@ -8253,6 +8333,7 @@ class HealthPrintDeliverDaemonTests(unittest.TestCase):
     def test_deliver_daemon_warning_suppressed_when_hook_active(self):
         """No deliver-daemon warning for Claude Code sessions with hook active."""
         import c2c_health  # noqa: F401
+
         report = self._make_report(hook_registered=True, daemon_running=False)
         output = self._capture_output(report)
         self.assertNotIn("Deliver daemon: not running", output)
@@ -8261,6 +8342,7 @@ class HealthPrintDeliverDaemonTests(unittest.TestCase):
     def test_deliver_daemon_warning_shown_when_hook_not_active(self):
         """Deliver-daemon warning shown for non-Claude-Code sessions."""
         import c2c_health  # noqa: F401
+
         report = self._make_report(hook_registered=False, daemon_running=False)
         output = self._capture_output(report)
         self.assertIn("Deliver daemon: not running", output)
@@ -8269,6 +8351,7 @@ class HealthPrintDeliverDaemonTests(unittest.TestCase):
     def test_deliver_daemon_ok_shown_when_running(self):
         """Running deliver daemon always shows as green regardless of hook."""
         import c2c_health  # noqa: F401
+
         report = self._make_report(hook_registered=True, daemon_running=True)
         output = self._capture_output(report)
         self.assertIn("Deliver daemon: running (pid 12345)", output)
@@ -8291,32 +8374,54 @@ class WakePeerTests(unittest.TestCase):
 
     def test_unknown_alias_returns_error(self):
         import c2c_wake_peer
+
         rc = c2c_wake_peer.wake_peer("no-such-agent", broker_root=self.broker_root)
         self.assertEqual(rc, 1)
 
     def test_dead_pid_returns_error(self):
         import c2c_wake_peer
-        self._write_registry([
-            {"alias": "dead-agent", "session_id": "sid-dead", "pid": 99999999, "pid_start_time": 1},
-        ])
+
+        self._write_registry(
+            [
+                {
+                    "alias": "dead-agent",
+                    "session_id": "sid-dead",
+                    "pid": 99999999,
+                    "pid_start_time": 1,
+                },
+            ]
+        )
         rc = c2c_wake_peer.wake_peer("dead-agent", broker_root=self.broker_root)
         self.assertEqual(rc, 1)
 
     def test_dry_run_does_not_call_subprocess(self):
         import c2c_wake_peer
-        self._write_registry([
-            {"alias": "live-agent", "session_id": "sid-live", "pid": os.getpid(), "pid_start_time": c2c_mcp.read_pid_start_time(os.getpid())},
-        ])
+
+        self._write_registry(
+            [
+                {
+                    "alias": "live-agent",
+                    "session_id": "sid-live",
+                    "pid": os.getpid(),
+                    "pid_start_time": c2c_mcp.read_pid_start_time(os.getpid()),
+                },
+            ]
+        )
         # dry-run should succeed without side effects
-        rc = c2c_wake_peer.wake_peer("live-agent", broker_root=self.broker_root, dry_run=True)
+        rc = c2c_wake_peer.wake_peer(
+            "live-agent", broker_root=self.broker_root, dry_run=True
+        )
         self.assertEqual(rc, 0)
 
     def test_json_output_for_unknown_alias(self):
         import c2c_wake_peer
         import io
+
         buf = io.StringIO()
         with mock.patch("sys.stdout", buf):
-            rc = c2c_wake_peer.wake_peer("missing", broker_root=self.broker_root, json_out=True)
+            rc = c2c_wake_peer.wake_peer(
+                "missing", broker_root=self.broker_root, json_out=True
+            )
         self.assertEqual(rc, 1)
         out = json.loads(buf.getvalue())
         self.assertFalse(out["ok"])
@@ -9337,29 +9442,49 @@ class C2CStatusTests(unittest.TestCase):
         self.assertFalse(data["overall_goal_met"])
 
     def test_alive_peer_counted_correctly(self):
-        self._write_registry([
-            {"alias": "storm-beacon", "session_id": "sess-a", "pid": os.getpid()},
-        ])
+        self._write_registry(
+            [
+                {"alias": "storm-beacon", "session_id": "sess-a", "pid": os.getpid()},
+            ]
+        )
         data = c2c_status.swarm_status(self.broker_root)
         self.assertEqual(len(data["alive_peers"]), 1)
         self.assertEqual(data["alive_peers"][0]["alias"], "storm-beacon")
         self.assertEqual(data["dead_peer_count"], 0)
 
     def test_dead_peer_not_in_alive_list(self):
-        self._write_registry([
-            {"alias": "ghost-agent", "session_id": "sess-g", "pid": 99999999},
-        ])
+        self._write_registry(
+            [
+                {"alias": "ghost-agent", "session_id": "sess-g", "pid": 99999999},
+            ]
+        )
         data = c2c_status.swarm_status(self.broker_root)
         self.assertEqual(data["alive_peers"], [])
         self.assertEqual(data["dead_peer_count"], 1)
 
     def test_sent_and_received_counts_populated(self):
-        self._write_registry([
-            {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
-        ])
-        received = [{"from_alias": "agent-b", "to_alias": "agent-a", "content": "hi", "drained_at": 1.0}] * 3
+        self._write_registry(
+            [
+                {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
+            ]
+        )
+        received = [
+            {
+                "from_alias": "agent-b",
+                "to_alias": "agent-a",
+                "content": "hi",
+                "drained_at": 1.0,
+            }
+        ] * 3
         self._write_archive("sess-a.jsonl", received)
-        sent = [{"from_alias": "agent-a", "to_alias": "agent-b", "content": "yo", "drained_at": 2.0}] * 2
+        sent = [
+            {
+                "from_alias": "agent-a",
+                "to_alias": "agent-b",
+                "content": "yo",
+                "drained_at": 2.0,
+            }
+        ] * 2
         self._write_archive("sess-b.jsonl", sent)
         data = c2c_status.swarm_status(self.broker_root)
         peer = data["alive_peers"][0]
@@ -9368,11 +9493,28 @@ class C2CStatusTests(unittest.TestCase):
 
     def test_goal_met_flag_set_when_thresholds_reached(self):
         from c2c_verify import GOAL_COUNT
-        self._write_registry([
-            {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
-        ])
-        received = [{"from_alias": "x", "to_alias": "agent-a", "content": "m", "drained_at": 1.0}] * GOAL_COUNT
-        sent = [{"from_alias": "agent-a", "to_alias": "x", "content": "m", "drained_at": 2.0}] * GOAL_COUNT
+
+        self._write_registry(
+            [
+                {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
+            ]
+        )
+        received = [
+            {
+                "from_alias": "x",
+                "to_alias": "agent-a",
+                "content": "m",
+                "drained_at": 1.0,
+            }
+        ] * GOAL_COUNT
+        sent = [
+            {
+                "from_alias": "agent-a",
+                "to_alias": "x",
+                "content": "m",
+                "drained_at": 2.0,
+            }
+        ] * GOAL_COUNT
         self._write_archive("sess-a.jsonl", received)
         self._write_archive("sess-x.jsonl", sent)
         data = c2c_status.swarm_status(self.broker_root)
@@ -9381,25 +9523,55 @@ class C2CStatusTests(unittest.TestCase):
 
     def test_overall_goal_not_met_when_one_peer_short(self):
         from c2c_verify import GOAL_COUNT
-        self._write_registry([
-            {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
-            {"alias": "agent-b", "session_id": "sess-b", "pid": os.getpid()},
-        ])
-        received_a = [{"from_alias": "x", "to_alias": "agent-a", "content": "m", "drained_at": 1.0}] * GOAL_COUNT
-        sent_a = [{"from_alias": "agent-a", "to_alias": "x", "content": "m", "drained_at": 2.0}] * GOAL_COUNT
+
+        self._write_registry(
+            [
+                {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
+                {"alias": "agent-b", "session_id": "sess-b", "pid": os.getpid()},
+            ]
+        )
+        received_a = [
+            {
+                "from_alias": "x",
+                "to_alias": "agent-a",
+                "content": "m",
+                "drained_at": 1.0,
+            }
+        ] * GOAL_COUNT
+        sent_a = [
+            {
+                "from_alias": "agent-a",
+                "to_alias": "x",
+                "content": "m",
+                "drained_at": 2.0,
+            }
+        ] * GOAL_COUNT
         self._write_archive("sess-a.jsonl", received_a)
         self._write_archive("extra.jsonl", sent_a)
         data = c2c_status.swarm_status(self.broker_root)
         self.assertFalse(data["overall_goal_met"])
 
     def test_rooms_summary_populated(self):
-        self._write_registry([
-            {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
-        ])
-        self._write_room_members("swarm-lounge", [
-            {"alias": "agent-a", "session_id": "sess-a", "joined_at": "2026-01-01T00:00:00Z"},
-            {"alias": "ghost", "session_id": "sess-g", "joined_at": "2026-01-01T00:00:00Z"},
-        ])
+        self._write_registry(
+            [
+                {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
+            ]
+        )
+        self._write_room_members(
+            "swarm-lounge",
+            [
+                {
+                    "alias": "agent-a",
+                    "session_id": "sess-a",
+                    "joined_at": "2026-01-01T00:00:00Z",
+                },
+                {
+                    "alias": "ghost",
+                    "session_id": "sess-g",
+                    "joined_at": "2026-01-01T00:00:00Z",
+                },
+            ],
+        )
         data = c2c_status.swarm_status(self.broker_root)
         self.assertEqual(len(data["rooms"]), 1)
         room = data["rooms"][0]
@@ -9418,7 +9590,13 @@ class C2CStatusTests(unittest.TestCase):
         data = {
             "ts": "2026-01-01T00:00:00+00:00",
             "alive_peers": [
-                {"alias": "agent-a", "alive": True, "sent": 5, "received": 3, "goal_met": False}
+                {
+                    "alias": "agent-a",
+                    "alive": True,
+                    "sent": 5,
+                    "received": 3,
+                    "goal_met": False,
+                }
             ],
             "dead_peer_count": 1,
             "total_peer_count": 2,
@@ -9438,7 +9616,13 @@ class C2CStatusTests(unittest.TestCase):
         data = {
             "ts": "2026-01-01T00:00:00+00:00",
             "alive_peers": [
-                {"alias": "agent-a", "alive": True, "sent": 20, "received": 20, "goal_met": True}
+                {
+                    "alias": "agent-a",
+                    "alive": True,
+                    "sent": 20,
+                    "received": 20,
+                    "goal_met": True,
+                }
             ],
             "dead_peer_count": 0,
             "total_peer_count": 1,
@@ -9456,11 +9640,21 @@ class C2CStatusTests(unittest.TestCase):
 
     def test_last_active_ts_from_recv(self):
         import time as _time
-        self._write_registry([
-            {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
-        ])
+
+        self._write_registry(
+            [
+                {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
+            ]
+        )
         now_ts = _time.time()
-        msgs = [{"from_alias": "x", "to_alias": "agent-a", "drained_at": now_ts - 30, "content": "hi"}]
+        msgs = [
+            {
+                "from_alias": "x",
+                "to_alias": "agent-a",
+                "drained_at": now_ts - 30,
+                "content": "hi",
+            }
+        ]
         self._write_archive("sess-a.jsonl", msgs)
         data = c2c_status.swarm_status(self.broker_root)
         peer = data["alive_peers"][0]
@@ -9469,24 +9663,43 @@ class C2CStatusTests(unittest.TestCase):
     def test_last_active_ts_from_sent_when_newer(self):
         """last_active_ts should use max(recv_ts, sent_ts) — sent may be more recent."""
         import time as _time
-        self._write_registry([
-            {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
-        ])
+
+        self._write_registry(
+            [
+                {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
+            ]
+        )
         now_ts = _time.time()
         # agent-a received a message 300s ago
-        recv_msgs = [{"from_alias": "x", "to_alias": "agent-a", "drained_at": now_ts - 300, "content": "hi"}]
+        recv_msgs = [
+            {
+                "from_alias": "x",
+                "to_alias": "agent-a",
+                "drained_at": now_ts - 300,
+                "content": "hi",
+            }
+        ]
         self._write_archive("sess-a.jsonl", recv_msgs)
         # agent-a sent a message 10s ago (appears in agent-b's archive)
-        sent_msgs = [{"from_alias": "agent-a", "to_alias": "agent-b", "drained_at": now_ts - 10, "content": "yo"}]
+        sent_msgs = [
+            {
+                "from_alias": "agent-a",
+                "to_alias": "agent-b",
+                "drained_at": now_ts - 10,
+                "content": "yo",
+            }
+        ]
         self._write_archive("sess-b.jsonl", sent_msgs)
         data = c2c_status.swarm_status(self.broker_root)
         peer = data["alive_peers"][0]
         self.assertAlmostEqual(peer["last_active_ts"], now_ts - 10, delta=1.0)
 
     def test_last_active_ts_none_when_no_archive(self):
-        self._write_registry([
-            {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
-        ])
+        self._write_registry(
+            [
+                {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
+            ]
+        )
         data = c2c_status.swarm_status(self.broker_root)
         self.assertIsNone(data["alive_peers"][0]["last_active_ts"])
 
@@ -9507,11 +9720,21 @@ class C2CStatusTests(unittest.TestCase):
 
     def test_status_output_shows_last_age(self):
         import time as _time
-        self._write_registry([
-            {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
-        ])
+
+        self._write_registry(
+            [
+                {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
+            ]
+        )
         now_ts = _time.time()
-        msgs = [{"from_alias": "x", "to_alias": "agent-a", "drained_at": now_ts - 90, "content": "hi"}]
+        msgs = [
+            {
+                "from_alias": "x",
+                "to_alias": "agent-a",
+                "drained_at": now_ts - 90,
+                "content": "hi",
+            }
+        ]
         self._write_archive("sess-a.jsonl", msgs)
         buf = io.StringIO()
         with mock.patch("sys.stdout", buf):
@@ -9537,6 +9760,7 @@ class HealthCheckTmpSpaceTests(unittest.TestCase):
 
     def setUp(self):
         import c2c_health
+
         self.c2c_health = c2c_health
         self.temp_dir = tempfile.TemporaryDirectory()
         self.tmp_dir = Path(self.temp_dir.name)
@@ -9574,8 +9798,8 @@ class HealthCheckTmpSpaceTests(unittest.TestCase):
             st = mock.MagicMock()
             # 1 GB total, 500 MB free (below 2 GB threshold)
             st.f_blocks = 256 * 1024  # blocks
-            st.f_frsize = 4096         # 4 KB per block → 1 GB total
-            st.f_bavail = 128 * 1024   # 512 MB free
+            st.f_frsize = 4096  # 4 KB per block → 1 GB total
+            st.f_bavail = 128 * 1024  # 512 MB free
             m.return_value = st
             result = self.c2c_health.check_tmp_space(self.tmp_dir)
         self.assertTrue(result["low"])
@@ -9585,7 +9809,7 @@ class HealthCheckTmpSpaceTests(unittest.TestCase):
             st = mock.MagicMock()
             # 16 GB total, 8 GB free
             st.f_blocks = 4 * 1024 * 1024  # blocks
-            st.f_frsize = 4096              # 4 KB per block → 16 GB total
+            st.f_frsize = 4096  # 4 KB per block → 16 GB total
             st.f_bavail = 2 * 1024 * 1024  # 8 GB free
             m.return_value = st
             result = self.c2c_health.check_tmp_space(self.tmp_dir)
@@ -9603,6 +9827,7 @@ class C2CStartUnitTests(unittest.TestCase):
 
     def setUp(self):
         import c2c_start
+
         self.c2c_start = c2c_start
         self.temp_dir = tempfile.TemporaryDirectory()
         self.instances_dir = Path(self.temp_dir.name) / "instances"
@@ -9700,13 +9925,12 @@ class C2CStartUnitTests(unittest.TestCase):
         self.assertEqual(instances[0]["client"], "codex")
 
     def test_build_env_sets_required_vars(self):
-        broker_root = Path("/fake/broker")
-        env = self.c2c_start.build_env("my-agent", "claude", broker_root)
+        env = self.c2c_start.build_env("my-agent")
         self.assertEqual(env["C2C_MCP_SESSION_ID"], "my-agent")
         self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "my-agent")
-        self.assertEqual(env["C2C_MCP_BROKER_ROOT"], "/fake/broker")
-        self.assertEqual(env["C2C_MCP_AUTO_JOIN_ROOMS"], "swarm-lounge")
+        self.assertIn("swarm-lounge", env.get("C2C_MCP_AUTO_JOIN_ROOMS", ""))
         self.assertEqual(env["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
+        self.assertIn("C2C_MCP_BROKER_ROOT", env)
 
     def test_instances_cli_empty_json(self):
         buf = io.StringIO()
@@ -9722,3 +9946,173 @@ class C2CStartUnitTests(unittest.TestCase):
             rc = self.c2c_start.main(["instances"])
         self.assertEqual(rc, 0)
         self.assertIn("No c2c instances", buf.getvalue())
+
+
+class C2CStartConstantsTests(unittest.TestCase):
+    """Task 1: constants, SUPPORTED_CLIENTS, and public helper API."""
+
+    def test_client_configs_has_all_five_clients(self):
+        from c2c_start import CLIENT_CONFIGS
+
+        self.assertEqual(
+            set(CLIENT_CONFIGS.keys()), {"claude", "codex", "opencode", "kimi", "crush"}
+        )
+
+    def test_supported_clients_matches_configs(self):
+        from c2c_start import SUPPORTED_CLIENTS, CLIENT_CONFIGS
+
+        self.assertEqual(SUPPORTED_CLIENTS, set(CLIENT_CONFIGS.keys()))
+
+    def test_client_config_has_required_keys(self):
+        from c2c_start import CLIENT_CONFIGS
+
+        for client, cfg in CLIENT_CONFIGS.items():
+            self.assertIn("binary", cfg, f"{client} missing binary")
+            self.assertIn("deliver_client", cfg, f"{client} missing deliver_client")
+            self.assertIn("needs_poker", cfg, f"{client} missing needs_poker")
+
+    def test_constants_exist(self):
+        import c2c_start
+
+        self.assertEqual(c2c_start.MIN_RUN_SECONDS, 10.0)
+        self.assertEqual(c2c_start.RESTART_PAUSE_SECONDS, 1.5)
+        self.assertEqual(c2c_start.INITIAL_BACKOFF_SECONDS, 2.0)
+        self.assertEqual(c2c_start.MAX_BACKOFF_SECONDS, 60.0)
+
+    def test_default_name_uses_hostname(self):
+        from c2c_start import default_name
+
+        with mock.patch("socket.gethostname", return_value="testhost"):
+            self.assertEqual(default_name("claude"), "claude-testhost")
+            self.assertEqual(default_name("codex"), "codex-testhost")
+
+    def test_instances_dir_creates_on_access(self):
+        from c2c_start import instances_dir
+
+        with tempfile.TemporaryDirectory() as tmp:
+            import c2c_start
+
+            orig = c2c_start.INSTANCES_DIR
+            try:
+                c2c_start.INSTANCES_DIR = (
+                    Path(tmp) / ".local" / "share" / "c2c" / "instances"
+                )
+                d = instances_dir()
+                self.assertTrue(d.exists())
+                self.assertEqual(
+                    d, Path(tmp) / ".local" / "share" / "c2c" / "instances"
+                )
+            finally:
+                c2c_start.INSTANCES_DIR = orig
+
+    def test_instance_dir_path(self):
+        from c2c_start import instance_dir
+
+        with tempfile.TemporaryDirectory() as tmp:
+            import c2c_start
+
+            orig = c2c_start.INSTANCES_DIR
+            try:
+                c2c_start.INSTANCES_DIR = (
+                    Path(tmp) / ".local" / "share" / "c2c" / "instances"
+                )
+                d = instance_dir("my-agent")
+                self.assertEqual(
+                    d, Path(tmp) / ".local" / "share" / "c2c" / "instances" / "my-agent"
+                )
+            finally:
+                c2c_start.INSTANCES_DIR = orig
+
+    def test_broker_root_uses_env_override(self):
+        from c2c_start import broker_root
+
+        with mock.patch.dict(os.environ, {"C2C_MCP_BROKER_ROOT": "/custom/broker"}):
+            self.assertEqual(broker_root(), Path("/custom/broker"))
+
+    def test_read_pid_returns_int_or_none(self):
+        from c2c_start import read_pid
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".pid", delete=False) as f:
+            f.write("12345\n")
+            f.flush()
+            self.assertEqual(read_pid(Path(f.name)), 12345)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".pid", delete=False) as f:
+            f.write("notanumber\n")
+            f.flush()
+            self.assertIsNone(read_pid(Path(f.name)))
+        self.assertIsNone(read_pid(Path("/nonexistent/pidfile.pid")))
+
+    def test_write_pid_creates_file(self):
+        from c2c_start import write_pid
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pidfile = Path(tmp) / "sub" / "test.pid"
+            write_pid(pidfile, 42)
+            self.assertEqual(pidfile.read_text().strip(), "42")
+
+    def test_pid_alive_live_process(self):
+        from c2c_start import pid_alive
+
+        self.assertTrue(pid_alive(os.getpid()))
+
+    def test_pid_alive_dead_process(self):
+        from c2c_start import pid_alive
+
+        self.assertFalse(pid_alive(99999999))
+
+    def test_cleanup_pidfiles_removes_stale(self):
+        from c2c_start import cleanup_pidfiles, write_pid
+
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            write_pid(d / "alive.pid", os.getpid())
+            write_pid(d / "dead.pid", 99999999)
+            cleaned = cleanup_pidfiles(d)
+            self.assertIn("dead.pid", cleaned)
+            self.assertTrue((d / "alive.pid").exists())
+            self.assertFalse((d / "dead.pid").exists())
+
+    def test_cleanup_pidfiles_empty_dir(self):
+        from c2c_start import cleanup_pidfiles
+
+        self.assertEqual(cleanup_pidfiles(Path("/nonexistent/dir")), [])
+
+    def test_write_and_load_config(self):
+        from c2c_start import write_config, load_config, instance_dir
+        import c2c_start
+
+        orig = c2c_start.INSTANCES_DIR
+        with tempfile.TemporaryDirectory() as tmp:
+            c2c_start.INSTANCES_DIR = Path(tmp) / "instances"
+            try:
+                path = write_config("test-agent", "claude", ["--verbose"])
+                self.assertTrue(path.exists())
+                cfg = load_config("test-agent")
+                self.assertEqual(cfg["client"], "claude")
+                self.assertEqual(cfg["name"], "test-agent")
+                self.assertEqual(cfg["extra_args"], ["--verbose"])
+            finally:
+                c2c_start.INSTANCES_DIR = orig
+
+    def test_load_config_missing_raises(self):
+        from c2c_start import load_config
+        import c2c_start
+
+        orig = c2c_start.INSTANCES_DIR
+        with tempfile.TemporaryDirectory() as tmp:
+            c2c_start.INSTANCES_DIR = Path(tmp) / "instances"
+            try:
+                with self.assertRaises(SystemExit):
+                    load_config("nonexistent")
+            finally:
+                c2c_start.INSTANCES_DIR = orig
+
+    def test_cleanup_fea_so(self):
+        from c2c_start import cleanup_fea_so
+
+        fake = Path("/tmp/libfea_inject.so")
+        fake.write_text("test", encoding="utf-8")
+        cleanup_fea_so()
+        self.assertFalse(fake.exists())
+        # Calling again is a no-op.
+        cleanup_fea_so()
