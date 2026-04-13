@@ -4407,6 +4407,97 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
                 sidecar["broker_root"], str(project / ".git" / "c2c" / "mcp")
             )
 
+    def test_run_opencode_inst_injects_spool_into_prompt(self):
+        """Spooled messages (failed promptAsync) are prepended to the next startup prompt."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project = root / "project"
+            config_dir = root / "run-opencode-inst.d"
+            (project / ".opencode" / "plugins").mkdir(parents=True)
+            config_dir.mkdir()
+            (project / ".opencode" / "plugins" / "c2c.ts").write_text(
+                "export default async function C2C() { return {}; }\n",
+                encoding="utf-8",
+            )
+            opencode_json = config_dir / "spool-test.opencode.json"
+            opencode_json.write_text(json.dumps({"mcp": {}}), encoding="utf-8")
+            managed_config = {
+                "command": sys.executable,
+                "cwd": str(project),
+                "config_path": str(opencode_json),
+                "c2c_session_id": "opencode-spool",
+                "c2c_alias": "opencode-spool",
+                "prompt": "STEP 1: poll inbox",
+                "flags": ["-c", "import sys; sys.exit(0)"],
+            }
+            (config_dir / "spool-test.json").write_text(
+                json.dumps(managed_config), encoding="utf-8"
+            )
+            # Write a spool file simulating a failed promptAsync from last cycle
+            spool = [
+                {"from_alias": "storm-beacon", "to_alias": "opencode-spool", "content": "hi from spool"}
+            ]
+            spool_path = project / ".opencode" / "c2c-plugin-spool.json"
+            spool_path.write_text(json.dumps(spool), encoding="utf-8")
+
+            env = {
+                "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir),
+                "RUN_OPENCODE_INST_DRY_RUN": "1",
+            }
+            result = run_cli("run-opencode-inst", "spool-test", env=env)
+
+            self.assertEqual(result_code(result), 0, result.stderr)
+            payload = json.loads(result.stdout)
+            effective_prompt = payload["env"]["OPENCODE_MCP_PROMPT"]
+            # Spool message must appear before the normal prompt text
+            self.assertIn("hi from spool", effective_prompt)
+            self.assertIn("from=\"storm-beacon\"", effective_prompt)
+            self.assertIn("source=\"spool\"", effective_prompt)
+            self.assertIn("STEP 1: poll inbox", effective_prompt)
+            spool_pos = effective_prompt.index("hi from spool")
+            step_pos = effective_prompt.index("STEP 1: poll inbox")
+            self.assertLess(spool_pos, step_pos, "spool must come before normal prompt")
+            # In dry-run, spool must NOT be cleared
+            self.assertEqual(json.loads(spool_path.read_text(encoding="utf-8")), spool)
+
+    def test_run_opencode_inst_clears_spool_in_live_run(self):
+        """Spool file is cleared after injection (apply_side_effects=True in non-dry-run)."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project = root / "project"
+            config_dir = root / "run-opencode-inst.d"
+            (project / ".opencode" / "plugins").mkdir(parents=True)
+            config_dir.mkdir()
+            (project / ".opencode" / "plugins" / "c2c.ts").write_text(
+                "export default async function C2C() { return {}; }\n",
+                encoding="utf-8",
+            )
+            opencode_json = config_dir / "spool-clear.opencode.json"
+            opencode_json.write_text(json.dumps({"mcp": {}}), encoding="utf-8")
+            managed_config = {
+                "command": sys.executable,
+                "cwd": str(project),
+                "config_path": str(opencode_json),
+                "c2c_session_id": "opencode-spool-clear",
+                "c2c_alias": "opencode-spool-clear",
+                "prompt": "poll inbox",
+                "flags": ["-c", "import sys; sys.exit(0)"],
+            }
+            (config_dir / "spool-clear.json").write_text(
+                json.dumps(managed_config), encoding="utf-8"
+            )
+            spool = [{"from_alias": "codex", "to_alias": "opencode-spool-clear", "content": "clear me"}]
+            spool_path = project / ".opencode" / "c2c-plugin-spool.json"
+            spool_path.write_text(json.dumps(spool), encoding="utf-8")
+
+            env = {"RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir)}
+            result = run_cli("run-opencode-inst", "spool-clear", env=env)
+
+            self.assertEqual(result_code(result), 0, result.stderr)
+            # Spool must be cleared after live run
+            remaining = json.loads(spool_path.read_text(encoding="utf-8"))
+            self.assertEqual(remaining, [], "spool should be empty after live run")
+
     def test_opencode_plugin_uses_supported_process_runner_for_drain(self):
         plugin_src = REPO / ".opencode" / "plugins" / "c2c.ts"
         if not plugin_src.exists():
