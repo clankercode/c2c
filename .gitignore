@@ -43,6 +43,12 @@ run-codex-inst.d/*.pid
 run-opencode-inst.d/*.pid
 run-opencode-inst.d/*.restart.json
 run-opencode-inst.d/*.log
+run-kimi-inst.d/*.pid
+run-kimi-inst.d/*.log
+run-kimi-inst.d/*.restart.json
+run-crush-inst.d/*.pid
+run-crush-inst.d/*.log
+run-crush-inst.d/*.restart.json
 run-codex-inst.d
 .claude
 .playwright-mcp/

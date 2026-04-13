@@ -12,6 +12,11 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 11:31 — codex RELEASED locks on `.gitignore` and
+  `tmp_collab_lock.md`. Added ignore patterns for Kimi/Crush managed harness
+  runtime `.pid`, `.log`, and `.restart.json` artifacts after live
+  `run-kimi-inst.d` pid/log files cluttered status.
+
 - 2026-04-13 11:28 — codex RELEASED locks on `run-opencode-inst`,
   `tests/test_c2c_cli.py`, `docs/client-delivery.md`, and `tmp_collab_lock.md`.
   Peer commits landed the launcher/doc changes while Codex was verifying them,
