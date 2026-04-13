@@ -2,8 +2,8 @@
 """Refresh a stale broker registration to point at a new live PID.
 
 Usage:
-    c2c refresh-peer <alias> --pid <pid>
-    c2c refresh-peer <alias>           # re-register self using current session
+    c2c refresh-peer <alias-or-session-id> --pid <pid>
+    c2c refresh-peer <alias-or-session-id> # re-register self using current session
 
 Problem this solves (from .collab/findings/):
   OpenCode (or any client) can drift to a dead one-shot process PID while a
@@ -54,18 +54,26 @@ def refresh_peer(
 
         # Find the matching registration
         match_idx = None
+        matched_by = "alias"
         for i, reg in enumerate(registrations):
             if str(reg.get("alias", "")) == alias:
                 match_idx = i
                 break
+        if match_idx is None and session_id:
+            for i, reg in enumerate(registrations):
+                if str(reg.get("session_id", "")) == session_id:
+                    match_idx = i
+                    matched_by = "session_id"
+                    break
 
         if match_idx is None:
             raise SystemExit(
-                f"No registration found for alias '{alias}'. "
+                f"No registration found for alias or session_id '{alias}'. "
                 "Use 'c2c list --json' to see registered peers."
             )
 
         old_reg = registrations[match_idx]
+        resolved_alias = str(old_reg.get("alias", alias))
         old_pid = old_reg.get("pid")
         old_start_time = old_reg.get("pid_start_time")
 
@@ -73,7 +81,8 @@ def refresh_peer(
             # No PID given: check if the current registration is already alive
             if c2c_mcp.broker_registration_is_alive(old_reg):
                 result = {
-                    "alias": alias,
+                    "alias": resolved_alias,
+                    "matched_by": matched_by,
                     "status": "already_alive",
                     "pid": old_pid,
                     "pid_start_time": old_start_time,
@@ -82,12 +91,12 @@ def refresh_peer(
                     print(json.dumps(result, indent=2))
                 else:
                     print(
-                        f"Registration for '{alias}' is already alive "
+                        f"Registration for '{resolved_alias}' is already alive "
                         f"(pid={old_pid}). No change needed."
                     )
                 return result
             raise SystemExit(
-                f"Registration for '{alias}' has dead PID {old_pid}. "
+                f"Registration for '{resolved_alias}' has dead PID {old_pid}. "
                 "Provide --pid <live-pid> to refresh it."
             )
 
@@ -96,7 +105,8 @@ def refresh_peer(
 
         if dry_run:
             result: dict = {
-                "alias": alias,
+                "alias": resolved_alias,
+                "matched_by": matched_by,
                 "status": "dry_run",
                 "old_pid": old_pid,
                 "new_pid": pid,
@@ -114,7 +124,7 @@ def refresh_peer(
                     else ""
                 )
                 print(
-                    f"[dry-run] Would update '{alias}': "
+                    f"[dry-run] Would update '{resolved_alias}': "
                     f"pid {old_pid} -> {pid} "
                     f"(start_time={start_time})"
                     f"{session_note}"
@@ -135,7 +145,8 @@ def refresh_peer(
         c2c_broker_gc.save_broker_registrations(broker_root, registrations)
 
     result = {
-        "alias": alias,
+        "alias": resolved_alias,
+        "matched_by": matched_by,
         "status": "updated",
         "old_pid": old_pid,
         "new_pid": pid,
@@ -153,7 +164,7 @@ def refresh_peer(
             else ""
         )
         print(
-            f"Updated '{alias}': pid {old_pid} -> {pid} "
+            f"Updated '{resolved_alias}': pid {old_pid} -> {pid} "
             f"(start_time={start_time})"
             f"{session_note}"
         )
@@ -173,7 +184,12 @@ def main(argv: list[str] | None = None) -> int:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("alias", help="alias of the peer whose registration to refresh")
+    parser.add_argument(
+        "alias",
+        metavar="alias",
+        help="alias of the peer whose registration to refresh; if --session-id "
+        "is provided and the alias is stale, that session_id is also accepted",
+    )
     parser.add_argument(
         "--pid",
         type=int,

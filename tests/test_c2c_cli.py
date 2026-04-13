@@ -2602,6 +2602,85 @@ class C2CRegistryTests(unittest.TestCase):
         )
 
 
+class RegistryJsonFallbackTests(unittest.TestCase):
+    """Tests for load_registry() falling back to broker JSON registry.
+
+    When registry.yaml doesn't exist (typical in modern setups where the OCaml
+    broker uses registry.json), load_registry() should transparently read the
+    JSON registry and return data in the same dict format.
+    """
+
+    def setUp(self):
+        import c2c_registry as _c2c_registry
+
+        self.c2c_registry = _c2c_registry
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.td = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _write_json_registry(self, registrations: list) -> Path:
+        json_path = self.td / "registry.json"
+        json_path.write_text(json.dumps(registrations), encoding="utf-8")
+        return json_path
+
+    def test_fallback_to_json_when_yaml_missing(self):
+        """load_registry() returns JSON entries when registry.yaml doesn't exist."""
+        regs = [{"session_id": "s-abc", "alias": "test-peer", "pid": 1234}]
+        json_path = self._write_json_registry(regs)
+        yaml_path = self.td / "registry.yaml"
+        # yaml_path intentionally not created
+
+        with mock.patch.object(self.c2c_registry, "default_broker_registry_path", return_value=json_path):
+            with mock.patch.object(self.c2c_registry, "registry_path_from_env", return_value=yaml_path):
+                result = self.c2c_registry.load_registry()
+
+        self.assertEqual(len(result["registrations"]), 1)
+        self.assertEqual(result["registrations"][0]["alias"], "test-peer")
+
+    def test_yaml_takes_precedence_when_both_exist(self):
+        """When registry.yaml exists, it is used even if JSON also exists."""
+        yaml_path = self.td / "registry.yaml"
+        yaml_path.write_text(
+            "registrations:\n  - session_id: yaml-sid\n    alias: yaml-peer\n",
+            encoding="utf-8",
+        )
+        json_path = self._write_json_registry([{"session_id": "json-sid", "alias": "json-peer"}])
+
+        with mock.patch.object(self.c2c_registry, "default_broker_registry_path", return_value=json_path):
+            result = self.c2c_registry.load_registry(yaml_path)
+
+        # Explicit path → YAML is used
+        self.assertEqual(result["registrations"][0]["alias"], "yaml-peer")
+
+    def test_returns_empty_when_neither_exists(self):
+        """Returns empty registry when neither YAML nor JSON exists."""
+        yaml_path = self.td / "registry.yaml"
+        json_path = self.td / "registry.json"
+
+        with mock.patch.object(self.c2c_registry, "default_broker_registry_path", return_value=json_path):
+            with mock.patch.object(self.c2c_registry, "registry_path_from_env", return_value=yaml_path):
+                result = self.c2c_registry.load_registry()
+
+        self.assertEqual(result, {"registrations": []})
+
+    def test_load_broker_json_as_registry_handles_list(self):
+        """_load_broker_json_as_registry converts a JSON array to registry format."""
+        regs = [{"session_id": "s1", "alias": "a1"}, {"session_id": "s2", "alias": "a2"}]
+        json_path = self._write_json_registry(regs)
+        result = self.c2c_registry._load_broker_json_as_registry(json_path)
+        self.assertEqual(len(result["registrations"]), 2)
+        self.assertEqual(result["registrations"][1]["alias"], "a2")
+
+    def test_load_broker_json_as_registry_handles_corrupt_file(self):
+        """_load_broker_json_as_registry returns empty on corrupt JSON."""
+        bad_path = self.td / "bad.json"
+        bad_path.write_text("not json", encoding="utf-8")
+        result = self.c2c_registry._load_broker_json_as_registry(bad_path)
+        self.assertEqual(result, {"registrations": []})
+
+
 class C2CRegisterUnitTests(unittest.TestCase):
     def test_register_session_uses_transactional_registry_update(self):
         session = {
@@ -8449,6 +8528,33 @@ class RefreshPeerTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             c2c_refresh_peer.refresh_peer("missing-alias", None, self.broker_root)
 
+    def test_refresh_peer_accepts_session_id_when_alias_drifted(self):
+        """refresh_peer can recover a row when alias drifted from session_id."""
+        import c2c_refresh_peer
+
+        new_pid = os.getpid()
+        self._write_registry(
+            [
+                {
+                    "session_id": "kimi-nova",
+                    "alias": "kimi-nova-2",
+                    "pid": 99999,
+                }
+            ]
+        )
+
+        result = c2c_refresh_peer.refresh_peer(
+            "kimi-nova", new_pid, self.broker_root, session_id="kimi-nova"
+        )
+
+        self.assertEqual(result["status"], "updated")
+        self.assertEqual(result["alias"], "kimi-nova-2")
+        self.assertEqual(result["matched_by"], "session_id")
+        regs = self._read_registry()
+        self.assertEqual(regs[0]["alias"], "kimi-nova-2")
+        self.assertEqual(regs[0]["session_id"], "kimi-nova")
+        self.assertEqual(regs[0]["pid"], new_pid)
+
     def test_refresh_peer_alive_registration_returns_no_change(self):
         """When current registration is already alive, no-arg refresh says so."""
         import c2c_refresh_peer
@@ -10183,4 +10289,3 @@ class C2CStartConstantsTests(unittest.TestCase):
         self.assertFalse(fake.exists())
         # Calling again is a no-op.
         cleanup_fea_so()
-

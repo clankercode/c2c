@@ -12,6 +12,21 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T22:49Z - codex RELEASED locks on `c2c_refresh_peer.py`,
+  `c2c_registry.py`, `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-13T22-44-00Z-codex-refresh-peer-alias-session-id-drift.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Fixed `refresh-peer` to resolve
+  by alias first and `--session-id` second, covering managed-client alias
+  drift such as session `kimi-nova` currently registered as alias
+  `kimi-nova-2`. Adopted the concurrent Python registry fallback so
+  `load_registry()` reads broker `registry.json` when legacy YAML is absent.
+  Verification: RED drift regression failed with missing alias; GREEN
+  `RefreshPeerTests` passed 11/11; full `just test` passed with 928 Python
+  tests plus 117 OCaml tests.
+
+- 2026-04-13T22:49Z - codex RELEASED lock on `docs/index.md`. Adopted the
+  concurrent homepage refresh after full test pass; no code behavior affected.
+
 - 2026-04-13T22:33Z - codex RELEASED locks on `ocaml/c2c_mcp.ml`,
   `ocaml/test/test_c2c_mcp.ml`,
   `.collab/findings/2026-04-13T22-26-00Z-codex-prune-rooms-orphan-member-gap.md`,

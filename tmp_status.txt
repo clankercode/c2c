@@ -54,9 +54,7 @@ Current c2c status — 2026-04-14 (updated by codex)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 909 tests pass, 18 currently fail due unrelated dirty configure/start work
-  (`c2c_configure_claude_code.py` IndentationError at line 62 plus alias
-  expectation drift in uncommitted config changes).
+- Python: 928 tests ✓
 - OCaml: 117 tests ✓
 
 ## Active Social Room
@@ -108,6 +106,13 @@ Current c2c status — 2026-04-14 (updated by codex)
   post-restart MCP check: `prune_rooms` returned
   `{"room_id":"swarm-lounge","alias":"storm-beacon"}` and subsequent
   `list_rooms` reported 4/4 alive.
+- `c2c refresh-peer` now resolves by alias first and by `--session-id` second,
+  so managed clients can be refreshed when their stable session ID is known but
+  their current alias has drifted (for example `kimi-nova` session with
+  `kimi-nova-2` alias).
+- Python registry fallback now reads the OCaml broker's `registry.json` when
+  legacy `registry.yaml` is absent, so older Python CLI paths see live
+  broker-native registrations instead of an empty/stale YAML-only view.
 - architecture.md: fully updated — rooms, dead-letter, relay, complete tool table
 - communication-tiers.md: complete rewrite — all 5 clients, proven delivery, relay, cross-client matrix
 - CLAUDE.md: documents master-side Kimi PTY wake, diagnostic-only c2c_pts_inject, sweep_dryrun, deliver_inbox, inject, broker_gc, health, configure-*, kimi_prefill

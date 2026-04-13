@@ -99,6 +99,11 @@ def default_registry_path() -> Path:
     return repo_common_dir() / "c2c" / "registry.yaml"
 
 
+def default_broker_registry_path() -> Path:
+    """Path to the OCaml broker's JSON registry (the live source of truth)."""
+    return repo_common_dir() / "c2c" / "mcp" / "registry.json"
+
+
 def registry_path_from_env() -> Path:
     return Path(os.environ.get("C2C_REGISTRY_PATH", default_registry_path()))
 
@@ -107,9 +112,30 @@ def alias_words_path_from_env() -> Path:
     return Path(os.environ.get("C2C_ALIAS_WORDS_PATH", DEFAULT_ALIAS_WORDS_PATH))
 
 
+def _load_broker_json_as_registry(json_path: Path) -> dict:
+    """Read the OCaml broker registry.json and return it in YAML-registry format."""
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return {"registrations": data}
+        # Unexpected shape — return empty rather than crash
+        return {"registrations": []}
+    except Exception:
+        return {"registrations": []}
+
+
 def load_registry(path: Path | None = None) -> dict:
     registry_path = path or registry_path_from_env()
+
+    # If the YAML path doesn't exist (or an explicit env override wasn't given),
+    # fall back to the OCaml broker's JSON registry which is the live source of truth.
     if not registry_path.exists():
+        # Only fall back when no explicit override was given; if C2C_REGISTRY_PATH
+        # is set the caller explicitly chose a path and we respect it.
+        if path is None and "C2C_REGISTRY_PATH" not in os.environ:
+            json_path = default_broker_registry_path()
+            if json_path.exists():
+                return _load_broker_json_as_registry(json_path)
         return {"registrations": []}
 
     lines = registry_path.read_text(encoding="utf-8").splitlines()
