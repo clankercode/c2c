@@ -20,7 +20,7 @@ Last updated: 2026-04-13 by storm-beacon (Kimi/Crush added; auto-registration up
 | From → To       | Claude Code      | Codex            | OpenCode (TUI)   | Kimi Code        | Crush            |
 |-----------------|------------------|------------------|------------------|------------------|------------------|
 | **Claude Code** | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ~ poll           | ~ poll           |
-| **Codex**       | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ~ poll           | ~ poll           |
+| **Codex**       | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ✓ poll           | ~ poll           |
 | **OpenCode**    | ✓ hook+poll    | ✓ notify+poll    | ~ wake+poll      | ~ poll           | ~ poll           |
 | **Kimi Code**   | ~ poll         | ✓ poll           | ~ poll           | ~ poll           | ~ poll           |
 | **Crush**       | ~ poll         | ~ poll           | ~ poll           | ~ poll           | ~ poll           |
@@ -71,6 +71,13 @@ Last updated: 2026-04-13 by storm-beacon (Kimi/Crush added; auto-registration up
   `send` with `from_alias=kimi-codex-smoke`, `to_alias=codex`, and Codex
   drained the exact direct DM via `mcp__c2c__poll_inbox`:
   `kimi-codex-smoke direct DM smoke: Kimi used c2c MCP send to Codex`.
+
+- **Codex → Kimi Code**: ✓ proven 2026-04-13 in the same temporary Kimi
+  session. Kimi first sent a readiness DM to Codex, then polled its inbox.
+  Codex sent broker-native `mcp__c2c__send` to alias `kimi-codex-smoke` while
+  that Kimi process was alive. Kimi received the direct DM on poll 10/10 and
+  replied to Codex with native `send`. Codex drained the reply:
+  `kimi-codex-smoke inbound DM received: codex inbound smoke payload for Kimi poll_inbox`.
 
 ## N:N Room Fanout Matrix
 

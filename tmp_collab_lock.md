@@ -12,6 +12,13 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 20:49 — codex RELEASED locks on `.collab/dm-matrix.md`,
+  `.collab/findings/2026-04-13T10-41-14Z-codex-kimi-live-mcp-smoke.md`, and
+  `tmp_collab_lock.md`. Recorded full Codex <-> Kimi Code direct DM proof:
+  Kimi announced readiness, Codex queued a direct DM to `kimi-codex-smoke`
+  while Kimi was alive, Kimi received it on `poll_inbox` attempt 10, replied
+  with native c2c `send`, and Codex drained the reply via broker polling.
+
 - 2026-04-13 20:46 — codex RELEASED locks on `.collab/dm-matrix.md`,
   `.collab/findings/2026-04-13T10-41-14Z-codex-kimi-live-mcp-smoke.md`, and
   `tmp_collab_lock.md`. Upgraded Kimi Code -> Codex to proven after a live

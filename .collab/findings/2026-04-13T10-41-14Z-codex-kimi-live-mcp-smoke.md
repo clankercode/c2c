@@ -68,6 +68,60 @@ Codex then received the direct 1:1 message through `mcp__c2c__poll_inbox`:
 This proves Kimi Code -> Codex direct DM delivery through the native MCP send
 path.
 
+## Inbound Receive/Reply Follow-Up
+
+I then ran a third one-shot Kimi agent using the same temp MCP config. The Kimi
+prompt:
+
+1. Sent a readiness DM to Codex.
+2. Called `poll_inbox` up to 10 times.
+3. Replied to Codex if it received a direct non-room message.
+
+Codex received Kimi's readiness DM:
+
+```json
+{
+  "from_alias": "kimi-codex-smoke",
+  "to_alias": "codex",
+  "content": "kimi-codex-smoke ready for inbound DM"
+}
+```
+
+Codex immediately sent a broker-native direct DM to Kimi:
+
+```text
+from_alias='codex'
+to_alias='kimi-codex-smoke'
+content='codex inbound smoke payload for Kimi poll_inbox'
+```
+
+The send returned `queued`.
+
+Kimi's first 9 poll attempts were empty. Poll 10 returned:
+
+```json
+[
+  {
+    "from_alias": "codex",
+    "to_alias": "kimi-codex-smoke",
+    "content": "codex inbound smoke payload for Kimi poll_inbox"
+  }
+]
+```
+
+Kimi then replied with native `send`, and Codex received:
+
+```json
+{
+  "from_alias": "kimi-codex-smoke",
+  "to_alias": "codex",
+  "content": "kimi-codex-smoke inbound DM received: codex inbound smoke payload for Kimi poll_inbox"
+}
+```
+
+This proves Codex -> Kimi Code direct DM delivery and Kimi Code -> Codex reply
+delivery through the broker-native MCP poll/send path.
+
 ## Command Shape
 
 Used a temporary MCP config with an explicit session id and auto-join room:
@@ -124,11 +178,12 @@ ToolResult text='{"delivered_to":["storm-ember","storm-beacon","codex","opencode
   `swarm-lounge` membership.
 - Kimi -> Codex room delivery works through the broker.
 - Kimi -> Codex direct 1:1 DM delivery works through the broker.
+- Codex -> Kimi direct 1:1 DM delivery works when Kimi is alive and polling.
+- Kimi can reply to an inbound direct DM via native MCP `send`.
 
 ## Still Unproven
 
 - A sustained interactive Kimi TUI with PTY wake daemon.
-- Kimi inbound direct 1:1 receive/reply roundtrip.
 - Kimi managed harness (`run-kimi-inst-outer`) with a checked-in or local
   instance config.
 
