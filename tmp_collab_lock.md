@@ -12,6 +12,16 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 13:35 — codex RELEASED locks on `c2c_relay_connector.py`,
+  `tests/test_relay_connector.py`, `tests/test_c2c_relay_connector.py`, and
+  `tmp_collab_lock.md`. Closed `HTTPError` response objects in the relay client
+  after reading error payloads, joined the connector test server thread, and
+  cleaned `TemporaryDirectory` fixtures through their cleanup API. Verification:
+  `PYTHONWARNINGS=error::ResourceWarning python3 -m unittest
+  tests.test_relay_connector -v` passed 16 tests; the richer
+  `tests.test_c2c_relay_connector` suite passed 27 tests under the same warning
+  setting; `py_compile` and `git diff --check` passed for touched files.
+
 - 2026-04-13 13:26 — codex RELEASED locks on `tests/test_relay_rooms.py`
   and `tmp_collab_lock.md`. Committed the missing Phase 4 room/broadcast relay
   tests after the code landed in `34600a2`/`e83e474`. Verification:

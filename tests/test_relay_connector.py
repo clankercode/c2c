@@ -86,14 +86,15 @@ class TwoBrokerTestCase(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.server.shutdown()
+        cls.thread.join(timeout=2)
 
     def setUp(self):
         self._dirs = []
 
     def tearDown(self):
         for d in self._dirs:
-            import shutil
-            shutil.rmtree(d.name, ignore_errors=True)
+            d.cleanup()
+        self._dirs = []
 
     def _broker_root(self) -> Path:
         d = tempfile.TemporaryDirectory()

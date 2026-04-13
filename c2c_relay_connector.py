@@ -73,7 +73,10 @@ class RelayClient:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as exc:
-            return json.loads(exc.read())
+            try:
+                return json.loads(exc.read())
+            finally:
+                exc.close()
         except (urllib.error.URLError, OSError) as exc:
             return {"ok": False, "error_code": "connection_error", "error": str(exc)}
 
