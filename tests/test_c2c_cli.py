@@ -3170,6 +3170,30 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         )
         self.assertTrue(c2c.get("enabled", True))
 
+    def test_run_opencode_inst_dry_run_reports_local_config_and_session(self):
+        env = {"RUN_OPENCODE_INST_DRY_RUN": "1"}
+        result = run_cli("run-opencode-inst", "c2c-opencode-local", env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            payload["env"]["RUN_OPENCODE_INST_C2C_SESSION_ID"], "opencode-local"
+        )
+        self.assertEqual(
+            payload["env"]["RUN_OPENCODE_INST_CONFIG_PATH"],
+            str(REPO / ".opencode" / "opencode.json"),
+        )
+        self.assertEqual(payload["cwd"], str(REPO))
+        self.assertIn("opencode", payload["launch"][0])
+        self.assertIn("run", payload["launch"])
+        self.assertEqual(
+            payload["env"]["C2C_MCP_SESSION_ID"], "opencode-local"
+        )
+        self.assertEqual(
+            payload["env"]["C2C_MCP_BROKER_ROOT"],
+            str(REPO / ".git" / "c2c" / "mcp"),
+        )
+        self.assertEqual(payload["env"]["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
+
 
 class C2CVerifyUnitTests(unittest.TestCase):
     def test_resolve_transcript_path_prefers_sessions_fixture_directory(self):

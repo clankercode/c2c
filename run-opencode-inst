@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""Inner launcher for a named OpenCode instance pinned to repo-local c2c.
+
+Usage: ./run-opencode-inst <instance-name> [extra opencode args...]
+
+Reads config from ./run-opencode-inst.d/<name>.json, sets the c2c env
+vars expected by the repo-local `.opencode/opencode.json` MCP entry,
+and execs `opencode run <prompt>` with cwd pointed at this repo so
+opencode auto-discovers the local config.
+
+Set RUN_OPENCODE_INST_DRY_RUN=1 to print the resolved launch command,
+cwd, and env keys as JSON instead of execing.
+"""
+from __future__ import annotations
+
+import json
+import os
+import shlex
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+CONFIG_DIR = HERE / "run-opencode-inst.d"
+FALSE_STRINGS = {"", "0", "false", "no", "off"}
+
+
+def config_path(name: str) -> Path:
+    return CONFIG_DIR / f"{name}.json"
+
+
+def pid_path(name: str) -> Path:
+    return CONFIG_DIR / f"{name}.pid"
+
+
+def load_config(name: str) -> dict:
+    path = config_path(name)
+    if not path.exists():
+        raise SystemExit(f"[run-opencode-inst] config not found: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"[run-opencode-inst] invalid JSON in {path}: {exc}")
+    if not isinstance(data, dict):
+        raise SystemExit(f"[run-opencode-inst] config root must be an object: {path}")
+    return data
+
+
+def coerce_string(value, field: str, *, required: bool = False) -> str:
+    if value is None:
+        if required:
+            raise SystemExit(f"[run-opencode-inst] {field} is required")
+        return ""
+    if not isinstance(value, str):
+        raise SystemExit(f"[run-opencode-inst] {field} must be a string")
+    if required and not value:
+        raise SystemExit(f"[run-opencode-inst] {field} must not be empty")
+    return value
+
+
+def coerce_string_list(value, field: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise SystemExit(f"[run-opencode-inst] {field} must be list of strings")
+    return list(value)
+
+
+def dry_run_enabled() -> bool:
+    return os.environ.get("RUN_OPENCODE_INST_DRY_RUN", "").strip().lower() not in FALSE_STRINGS
+
+
+def build_launch(name: str, config: dict, extra: list[str]) -> tuple[list[str], Path, dict[str, str]]:
+    command = coerce_string(config.get("command", "opencode"), "command", required=True)
+    cwd = coerce_string(config.get("cwd") or str(HERE), "cwd", required=True)
+    cwd_path = Path(cwd).expanduser()
+    if not cwd_path.exists():
+        raise SystemExit(f"[run-opencode-inst] cwd does not exist: {cwd_path}")
+    config_path_value = coerce_string(
+        config.get("config_path") or str(cwd_path / ".opencode" / "opencode.json"),
+        "config_path",
+        required=True,
+    )
+    c2c_session_id = coerce_string(config.get("c2c_session_id"), "c2c_session_id", required=True)
+    prompt = coerce_string(config.get("prompt"), "prompt", required=True)
+    flags = coerce_string_list(config.get("flags"), "flags")
+
+    launch = [command, *flags, "run", *extra, prompt]
+
+    env = os.environ.copy()
+    env["RUN_OPENCODE_INST_NAME"] = name
+    env["RUN_OPENCODE_INST_C2C_SESSION_ID"] = c2c_session_id
+    env["RUN_OPENCODE_INST_CONFIG_PATH"] = config_path_value
+    env["C2C_MCP_SESSION_ID"] = c2c_session_id
+    env["C2C_MCP_BROKER_ROOT"] = str(cwd_path / ".git" / "c2c" / "mcp")
+    env["C2C_MCP_AUTO_DRAIN_CHANNEL"] = "0"
+    return launch, cwd_path, env
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2:
+        print(f"usage: {argv[0]} <instance-name> [extra opencode args...]", file=sys.stderr)
+        return 2
+
+    name = argv[1]
+    extra = argv[2:]
+    config = load_config(name)
+    launch, cwd_path, env = build_launch(name, config, extra)
+
+    if dry_run_enabled():
+        print(
+            json.dumps(
+                {
+                    "launch": launch,
+                    "cwd": str(cwd_path),
+                    "pid_file": str(pid_path(name)),
+                    "env": {
+                        "RUN_OPENCODE_INST_NAME": env["RUN_OPENCODE_INST_NAME"],
+                        "RUN_OPENCODE_INST_C2C_SESSION_ID": env["RUN_OPENCODE_INST_C2C_SESSION_ID"],
+                        "RUN_OPENCODE_INST_CONFIG_PATH": env["RUN_OPENCODE_INST_CONFIG_PATH"],
+                        "C2C_MCP_SESSION_ID": env["C2C_MCP_SESSION_ID"],
+                        "C2C_MCP_BROKER_ROOT": env["C2C_MCP_BROKER_ROOT"],
+                        "C2C_MCP_AUTO_DRAIN_CHANNEL": env["C2C_MCP_AUTO_DRAIN_CHANNEL"],
+                    },
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    pid_file = pid_path(name)
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+    print(f"[run-opencode-inst] exec {shlex.join(launch)} (cwd={cwd_path})", file=sys.stderr)
+    os.chdir(str(cwd_path))
+    try:
+        os.execvpe(launch[0], launch, env)
+    except FileNotFoundError as exc:
+        raise SystemExit(f"[run-opencode-inst] command not found: {launch[0]} ({exc})")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

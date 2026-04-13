@@ -1,0 +1,8 @@
+{
+  "command": "opencode",
+  "cwd": "/home/xertrov/src/c2c-msg",
+  "config_path": "/home/xertrov/src/c2c-msg/.opencode/opencode.json",
+  "c2c_session_id": "opencode-local",
+  "prompt": "Session resumed as the OpenCode C2C participant for c2c-msg. First inspect tmp_status.txt and tmp_collab_lock.md. Then register or confirm your c2c identity, call mcp__c2c__poll_inbox if the tool exists, otherwise run ./c2c-poll-inbox --session-id opencode-local --json, and continue on the highest-leverage unblocked work.",
+  "flags": []
+}
