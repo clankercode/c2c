@@ -151,40 +151,51 @@ pre code {
 }
 
 /* ---- Tables ---- */
+/* Use !important throughout to beat minima/_base.scss's th/tr:nth-child rules */
 table {
-  width: 100%;
-  border-collapse: collapse;
+  width: 100% !important;
+  border-collapse: collapse !important;
   font-size: 0.9em;
   margin: 1.5em 0;
-  background-color: var(--c2c-surface);
+  background-color: var(--c2c-surface) !important;
   border-radius: 6px;
   overflow: hidden;
-  border: 1px solid var(--c2c-border);
+  border: 1px solid var(--c2c-border) !important;
+  color: var(--c2c-text) !important;
 }
 
-thead {
-  background-color: var(--c2c-surface2);
+thead, thead tr {
+  background-color: var(--c2c-surface2) !important;
 }
 
 th {
-  color: var(--c2c-green);
+  /* Override minima's lighten($grey-color-light, 3%) header background */
+  background-color: var(--c2c-surface2) !important;
+  color: var(--c2c-green) !important;
   font-weight: 600;
   text-align: left;
   padding: 0.65em 1em;
-  border-bottom: 1px solid var(--c2c-green-dim);
+  border: none !important;
+  border-bottom: 1px solid var(--c2c-green-dim) !important;
   white-space: nowrap;
+}
+
+/* Override minima's tr:nth-child(even) light striping */
+tr, tr:nth-child(even) {
+  background-color: transparent !important;
 }
 
 td {
   padding: 0.5em 1em;
-  border-bottom: 1px solid var(--c2c-border);
-  color: var(--c2c-text);
+  border: none !important;
+  border-bottom: 1px solid var(--c2c-border) !important;
+  color: var(--c2c-text) !important;
   vertical-align: top;
 }
 
-tr:last-child td { border-bottom: none; }
+tr:last-child td { border-bottom: none !important; }
 
-tr:hover td { background-color: var(--c2c-surface2); }
+tbody tr:hover td { background-color: var(--c2c-surface2) !important; }
 
 /* ---- Blockquotes — agent callout boxes ---- */
 blockquote {
