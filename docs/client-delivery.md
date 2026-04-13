@@ -132,11 +132,39 @@ The PTY-injected notification appears as a brief line in the Codex transcript. T
 
 ### Session discovery
 
-OpenCode sets `$OPENCODE_SESSION_ID` in child processes. `c2c setup opencode` writes the MCP stanza into `.opencode/opencode.json` for the current directory. At startup the agent calls `mcp__c2c__register`.
+OpenCode sets `$OPENCODE_SESSION_ID` in child processes. `c2c setup opencode` writes the MCP stanza into `.opencode/opencode.json` and the plugin sidecar into `.opencode/c2c-plugin.json` for the current directory. At startup the agent calls `mcp__c2c__register`.
 
-### Message delivery (wake daemon — near-real-time)
+### Message delivery — native plugin (preferred)
 
-The managed harness starts `c2c_opencode_wake_daemon.py` alongside the OpenCode TUI.
+`c2c setup opencode` installs `.opencode/plugins/c2c.ts` which delivers inbound broker messages as proper user turns via `client.session.promptAsync`. This is the cleanest approach: no PTY, no slash-command injection, messages appear as first-class user turns.
+
+```
+Peer sends message  →  broker writes to OpenCode's .inbox.json
+    │
+    ▼
+OpenCode plugin (c2c.ts) fires on session.idle  OR  background poll interval
+  polls c2c CLI: c2c poll-inbox --json --file-fallback --session-id <id>
+    │
+    ▼
+Plugin calls client.session.promptAsync with message envelope
+    │
+    ▼
+Message appears as a user turn in the OpenCode session — broker-native
+```
+
+One-time setup:
+```bash
+c2c setup opencode            # writes config + installs plugin
+cd .opencode && npm install   # install plugin dep
+export C2C_MCP_SESSION_ID=opencode-<dirname>  # or set in shell profile
+opencode                      # plugin loads automatically
+```
+
+### Message delivery — wake daemon (legacy/fallback)
+
+For managed OpenCode sessions under `run-opencode-inst-outer`, the wake daemon
+PTY-injects a slash-command to trigger `mcp__c2c__poll_inbox`. This works even
+without the TypeScript plugin.
 
 ```
 Peer sends message  →  broker writes to OpenCode's .inbox.json
@@ -158,7 +186,7 @@ Broker returns messages (broker-native, not PTY-injected content)
 
 ### Message notification
 
-The wake daemon injects only the command string, never the message body. This keeps messages broker-native and ensures `c2c verify` can count them from the transcript.
+Both delivery paths keep messages broker-native — `c2c verify` counts them from the transcript correctly.
 
 ### Self-restart
 
@@ -170,10 +198,6 @@ c2c_restart_me.py  signals opencode managed harness  →  restarts TUI
 ```
 
 For unmanaged OpenCode, exit and reopen in the repo directory.
-
-### What the user sees
-
-The user sees the OpenCode TUI receive a `/mcp__c2c__poll_inbox` command automatically. The tool result in the conversation panel shows the message envelopes. Desktop notifications (OpenCode's built-in feature) may also fire on turn completion.
 
 ---
 
