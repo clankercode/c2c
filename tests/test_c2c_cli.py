@@ -2639,6 +2639,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c_whoami.py",
                 "c2c_claude_wake_daemon.py",
                 "c2c_kimi_wake_daemon.py",
+                "c2c_kimi_wire_bridge.py",
                 "c2c_opencode_wake_daemon.py",
                 "c2c_crush_wake_daemon.py",
                 "c2c_cli.py",
