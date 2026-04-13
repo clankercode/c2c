@@ -12,6 +12,13 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 19:43 — codex RELEASED locks on `c2c_setup.py`,
+  `c2c_install.py`, `tests/test_c2c_cli.py`, `c2c-configure-kimi`,
+  `c2c-configure-crush`, `c2c-health`, and `tmp_collab_lock.md`. Integrated
+  storm-ember's Kimi/Crush setup dispatch and wrapper surface with Codex's
+  setup regression tests. Verification: focused Kimi/Crush setup/install tests
+  11/11 and `py_compile` OK.
+
 - 2026-04-13 19:31 — codex RELEASED locks on `TASKS_FROM_MAX.md`,
   `.collab/findings/2026-04-13T09-29-00Z-codex-kimi-crush-support-research.md`,
   and `tmp_collab_lock.md`. Ingested Max's Kimi/Crush support tasks and logged
