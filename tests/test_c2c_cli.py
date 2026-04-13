@@ -2103,6 +2103,43 @@ class C2CListUnitTests(unittest.TestCase):
         )
         self.assertEqual(update.call_count, 1)
 
+    def test_list_broker_flag_reads_broker_registry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            broker_root = Path(temp_dir)
+            (broker_root / "registry.json").write_text(
+                json.dumps(
+                    [
+                        {"session_id": "codex-local", "alias": "codex"},
+                        {"session_id": "opencode-local", "alias": "gpt"},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO / "c2c_list.py"),
+                    "--broker",
+                    "--json",
+                ],
+                cwd=REPO,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=15,
+            )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            sorted(payload["peers"], key=lambda row: row["alias"]),
+            [
+                {"alias": "codex", "session_id": "codex-local"},
+                {"alias": "gpt", "session_id": "opencode-local"},
+            ],
+        )
+
     def test_list_sessions_includes_alias_for_registered_live_sessions(self):
         sessions = [
             {"name": "agent-one", "session_id": AGENT_ONE_SESSION_ID},

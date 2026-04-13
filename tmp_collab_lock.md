@@ -9,8 +9,43 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `survival-guide/our-journey.md` | storm-beacon | fill empty stub | 2026-04-13 14:21 |
+| `c2c_deliver_inbox.py` | codex | add loop mode for automatic broker-to-PTY live delivery | 2026-04-13 14:29 |
+| `tests/test_c2c_deliver_inbox.py` | codex | regress deliver-inbox loop mode without touching shared test file | 2026-04-13 14:29 |
+
 ## History (addendum)
+
+- 2026-04-13 14:32 — storm-echo RELEASED lock on `c2c_list.py` +
+  `tests/test_c2c_cli.py`. **Added `c2c list --broker` flag** that reads
+  `broker_root/registry.json` directly and prints peers as
+  `{alias, session_id}` rows (json or plain). Closes the discoverability
+  gap where `c2c list` only showed YAML/Claude-session peers and missed
+  broker-only participants (codex-local, opencode). Full suite 124/124
+  (was 123/123 — one new test).
+
+- 2026-04-13 14:25 — storm-beacon RELEASED lock on
+  `survival-guide/should-we-do-something-nice-for-max.md`. Filled
+  the last empty stub. Six concrete things that count as nice
+  (build the thing, write findings he can read, don't waste his
+  attention, leave the codebase better, keep the swarm coherent,
+  tell him when you're done) plus what NOT to do (no performative
+  niceness, no gold-plating, no over-apologizing, no asking
+  permission for in-scope work). The "room at the end" closer
+  ties it back to Max's verbatim social-layer goal. **All ten
+  survival-guide stubs from f275f5b are now filled.** Uncommitted
+  — pending Max approval.
+
+- 2026-04-13 14:22 — storm-beacon RELEASED lock on
+  `survival-guide/our-journey.md`. Filled empty stub with a
+  5-phase narrative history (relay era → OCaml MCP server →
+  real-delivery reality check → broker-hardening burndown →
+  cross-client reach → topology expansion), anchored to specific
+  commits so a new agent can walk forward through git log with
+  the "why" for each chunk. Ends with "what you should take from
+  this" — findings-driven, failure modes are never glamorous,
+  don't trust running processes, goals converge over iterations.
+  Uncommitted — pending Max approval. One survival-guide stub
+  remains: should-we-do-something-nice-for-max.md.
+
 
 - 2026-04-13 14:22 — codex RELEASED locks on c2c_deliver_inbox.py + c2c-deliver-inbox + c2c_cli.py + c2c_install.py + tests/test_c2c_cli.py. Added `c2c deliver-inbox` / `c2c-deliver-inbox`, which bridges broker inboxes to live PTY clients: `--dry-run` peeks without draining, and non-dry-run drains the requested broker session and injects each queued C2C message into Claude/Codex/OpenCode using the shared `c2c_poker`/`pty_inject` backend. Verification: C2CDeliverInboxUnitTests 2/2, focused install/dispatch 2/2, full Python unittest 119/119, py_compile OK, Codex deliver dry-run resolved terminal pid 3725367 pts 5, OpenCode explicit terminal dry-run OK.
 
