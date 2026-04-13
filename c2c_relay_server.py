@@ -295,7 +295,7 @@ def make_server(
     relay: Optional[InMemoryRelay] = None,
     *,
     verbose: bool = False,
-    gc_interval: float = 300.0,
+    gc_interval: float = 0.0,
 ) -> ThreadingHTTPServer:
     """Create (but do not start) a relay server.
 
@@ -317,7 +317,7 @@ def start_server_thread(
     relay: Optional[InMemoryRelay] = None,
     *,
     verbose: bool = False,
-    gc_interval: float = 300.0,
+    gc_interval: float = 0.0,
 ) -> tuple[ThreadingHTTPServer, threading.Thread]:
     """Start a relay server in a background thread. Returns (server, thread).
 

@@ -9,10 +9,12 @@ import sys
 import time
 import unittest
 from io import StringIO
+from unittest import mock
 
 sys.path.insert(0, ".")
 
 from c2c_relay_contract import InMemoryRelay
+import c2c_relay_server
 from c2c_relay_server import start_server_thread
 import c2c_relay_gc as gc_cli
 
@@ -124,6 +126,26 @@ class TestRelayGcNoConfig(unittest.TestCase):
                 if v is not None:
                     os.environ[k] = v
         self.assertEqual(rc, 1)
+
+
+class TestRelayGcThreadDefaults(unittest.TestCase):
+    def test_make_server_does_not_start_gc_thread_by_default(self):
+        with mock.patch("c2c_relay_server._start_gc_thread") as start_gc:
+            server = c2c_relay_server.make_server("127.0.0.1", 0, token="x")
+            try:
+                start_gc.assert_not_called()
+            finally:
+                server.server_close()
+
+    def test_make_server_starts_gc_thread_when_interval_is_positive(self):
+        with mock.patch("c2c_relay_server._start_gc_thread") as start_gc:
+            server = c2c_relay_server.make_server(
+                "127.0.0.1", 0, token="x", gc_interval=10
+            )
+            try:
+                start_gc.assert_called_once()
+            finally:
+                server.server_close()
 
 
 if __name__ == "__main__":

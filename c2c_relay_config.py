@@ -64,15 +64,22 @@ def resolve_relay_params(
     node_id: Optional[str] = None,
     config_path: Optional[Path] = None,
 ) -> dict:
-    """Merge CLI args with saved config. CLI args take precedence.
+    """Merge CLI args, environment, and saved config.
+
+    Precedence: explicit args, C2C_RELAY_* environment variables, saved config.
 
     Returns dict with keys: url, token, node_id (any may be None/empty).
     """
     cfg = load_config(config_path)
     return {
-        "url": url or cfg.get("url") or "",
-        "token": token or cfg.get("token") or "",
-        "node_id": node_id or cfg.get("node_id") or "",
+        "url": url or os.environ.get("C2C_RELAY_URL") or cfg.get("url") or "",
+        "token": token or os.environ.get("C2C_RELAY_TOKEN") or cfg.get("token") or "",
+        "node_id": (
+            node_id
+            or os.environ.get("C2C_RELAY_NODE_ID")
+            or cfg.get("node_id")
+            or ""
+        ),
     }
 
 
