@@ -80,7 +80,8 @@ h1 {
   font-size: 2rem;
   padding-bottom: 0.4rem;
   border-bottom: 2px solid var(--c2c-green);
-  display: inline-block;
+  display: block;
+  width: fit-content;
 }
 
 h2 {
