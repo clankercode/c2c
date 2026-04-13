@@ -12,6 +12,15 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 20:43 — codex RELEASED locks on
+  `.collab/findings/2026-04-13T10-41-14Z-codex-kimi-live-mcp-smoke.md`
+  and `tmp_collab_lock.md`. Recorded a live Kimi Code MCP proof using a
+  temporary MCP config with `C2C_MCP_SESSION_ID=kimi-codex-smoke`,
+  `C2C_MCP_AUTO_REGISTER_ALIAS=kimi-codex-smoke`, and
+  `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge`: Kimi loaded all 16 tools, called
+  `whoami`, called `send_room`, and Codex received the room fanout via broker
+  polling.
+
 - 2026-04-13 20:36 — codex RELEASED locks on `run-kimi-inst`,
   `run-kimi-inst-outer`, `run-crush-inst`, `run-crush-inst-outer`,
   `tests/test_c2c_cli.py`,
