@@ -2407,13 +2407,15 @@ class C2CListUnitTests(unittest.TestCase):
             )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         payload = json.loads(result.stdout)
-        self.assertEqual(
-            sorted(payload["peers"], key=lambda row: row["alias"]),
-            [
-                {"alias": "codex", "session_id": "codex-local"},
-                {"alias": "gpt", "session_id": "opencode-local"},
-            ],
-        )
+        peers_by_alias = {p["alias"]: p for p in payload["peers"]}
+        self.assertIn("codex", peers_by_alias)
+        self.assertIn("gpt", peers_by_alias)
+        # New fields: alive (None when no pid) and rooms (empty list)
+        self.assertIsNone(peers_by_alias["codex"]["alive"])
+        self.assertEqual(peers_by_alias["codex"]["rooms"], [])
+        self.assertEqual(peers_by_alias["codex"]["session_id"], "codex-local")
+        self.assertIsNone(peers_by_alias["gpt"]["alive"])
+        self.assertEqual(peers_by_alias["gpt"]["session_id"], "opencode-local")
 
     def test_list_sessions_includes_alias_for_registered_live_sessions(self):
         sessions = [
@@ -4970,6 +4972,106 @@ class C2CConfigureCrushTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             payload = json.loads(result.stdout)
             self.assertTrue(payload["ok"])
+
+    def test_writes_default_alias_when_no_alias_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "crush.json"
+            broker_root = Path(tmp) / "broker"
+            result = subprocess.run(
+                [
+                    str(REPO / "c2c"),
+                    "configure-crush",
+                    "--config-path",
+                    str(config_path),
+                    "--broker-root",
+                    str(broker_root),
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            env = config["mcp"]["c2c"]["env"]
+            # Default alias should be set (crush-user-host pattern)
+            self.assertIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
+            self.assertRegex(env["C2C_MCP_AUTO_REGISTER_ALIAS"], r"^crush-.+-.+$")
+
+    def test_no_alias_flag_suppresses_auto_register(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "crush.json"
+            broker_root = Path(tmp) / "broker"
+            result = subprocess.run(
+                [
+                    str(REPO / "c2c"),
+                    "configure-crush",
+                    "--config-path",
+                    str(config_path),
+                    "--broker-root",
+                    str(broker_root),
+                    "--no-alias",
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            env = config["mcp"]["c2c"]["env"]
+            self.assertNotIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
+
+
+class C2CConfigureKimiDefaultAliasTests(unittest.TestCase):
+    def test_writes_default_alias_when_no_alias_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mcp_path = Path(tmp) / "mcp.json"
+            broker_root = Path(tmp) / "broker"
+            result = subprocess.run(
+                [
+                    str(REPO / "c2c"),
+                    "configure-kimi",
+                    "--mcp-path",
+                    str(mcp_path),
+                    "--broker-root",
+                    str(broker_root),
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            config = json.loads(mcp_path.read_text(encoding="utf-8"))
+            env = config["mcpServers"]["c2c"]["env"]
+            # Default alias should be set (kimi-user-host pattern)
+            self.assertIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
+            self.assertRegex(env["C2C_MCP_AUTO_REGISTER_ALIAS"], r"^kimi-.+-.+$")
+
+    def test_no_alias_flag_suppresses_auto_register(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mcp_path = Path(tmp) / "mcp.json"
+            broker_root = Path(tmp) / "broker"
+            result = subprocess.run(
+                [
+                    str(REPO / "c2c"),
+                    "configure-kimi",
+                    "--mcp-path",
+                    str(mcp_path),
+                    "--broker-root",
+                    str(broker_root),
+                    "--no-alias",
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            config = json.loads(mcp_path.read_text(encoding="utf-8"))
+            env = config["mcpServers"]["c2c"]["env"]
+            self.assertNotIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
 
 
 def result_code(result):

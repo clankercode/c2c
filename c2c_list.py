@@ -68,6 +68,47 @@ def list_sessions(include_all: bool = False) -> list[dict]:
     return rows
 
 
+def _pid_alive(pid: int, pid_start_time: int | None) -> bool | None:
+    """Check if a pid is alive using /proc. Returns None if no pid."""
+    if not pid:
+        return None
+    proc_path = Path(f"/proc/{pid}")
+    if not proc_path.exists():
+        return False
+    if pid_start_time:
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+            fields = stat.split()
+            if len(fields) > 21:
+                start = int(fields[21])
+                if start != pid_start_time:
+                    return False  # pid reused
+        except (OSError, ValueError):
+            pass
+    return True
+
+
+def _peer_rooms(broker_root: Path, alias: str) -> list[str]:
+    """Return room IDs the peer is currently a member of."""
+    rooms_dir = broker_root / "rooms"
+    if not rooms_dir.exists():
+        return []
+    result = []
+    for room_dir in sorted(rooms_dir.iterdir()):
+        if not room_dir.is_dir():
+            continue
+        members_file = room_dir / "members.json"
+        if not members_file.exists():
+            continue
+        try:
+            members = json.loads(members_file.read_text(encoding="utf-8"))
+            if any(m.get("alias") == alias for m in members):
+                result.append(room_dir.name)
+        except (OSError, json.JSONDecodeError):
+            pass
+    return result
+
+
 def list_broker_peers() -> list[dict]:
     """Return every registration currently in the broker registry.
 
@@ -75,16 +116,31 @@ def list_broker_peers() -> list[dict]:
     OCaml side, but callable from the plain CLI so operators can see the
     cross-client peer set (broker-only peers like codex-local and opencode
     participants never show up in YAML-based `c2c list`).
+
+    Includes `alive` (bool or null) and `rooms` (list of room IDs).
     """
     from c2c_mcp import default_broker_root, load_broker_registrations
 
     broker_root = Path(os.environ.get("C2C_MCP_BROKER_ROOT") or default_broker_root())
     rows = []
     for registration in load_broker_registrations(broker_root / "registry.json"):
+        alias = str(registration.get("alias", ""))
+        try:
+            pid = int(str(registration.get("pid") or 0))
+        except (ValueError, TypeError):
+            pid = 0
+        try:
+            pst_raw = registration.get("pid_start_time")
+            pid_start_time: int | None = int(str(pst_raw)) if pst_raw is not None else None
+        except (ValueError, TypeError):
+            pid_start_time = None
         rows.append(
             {
-                "alias": str(registration.get("alias", "")),
+                "alias": alias,
                 "session_id": str(registration.get("session_id", "")),
+                "pid": pid or None,
+                "alive": _pid_alive(pid, pid_start_time),
+                "rooms": _peer_rooms(broker_root, alias),
             }
         )
     return rows
@@ -111,7 +167,10 @@ def main(argv: list[str] | None = None) -> int:
             print("No broker peers. Is the MCP server running?")
             return 0
         for peer in peers:
-            print(f"{peer['alias']}\t{peer['session_id']}")
+            alive = peer.get("alive")
+            status = "alive" if alive is True else ("dead" if alive is False else "?")
+            rooms = ", ".join(peer.get("rooms") or []) or "-"
+            print(f"{peer['alias']}\t[{status}]\t{rooms}\t{peer['session_id']}")
         return 0
 
     rows = list_sessions(include_all=args.all)

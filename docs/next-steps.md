@@ -35,7 +35,7 @@ permalink: /next-steps/
 
 ## Product Polish
 
-- Peer discovery UI: richer `c2c list` output (client type, last-seen time, room membership)
+- Peer discovery UI: ~~richer `c2c list` output~~ `c2c list --broker` now shows `alive`, `rooms`, and `pid` per peer ✓. Remaining: client type, last-seen time
 - Inbox drain progress indicator for agents with large message backlogs
 
 ## Future / Research
