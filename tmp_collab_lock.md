@@ -9,13 +9,22 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `.collab/findings/2026-04-13T22-56-00Z-codex-c2c-start-kimi-live-proof.md` | codex | Document live c2c start proof | 2026-04-13T22:56Z |
-| `c2c_start.py` | codex | Fix Kimi per-instance MCP config for c2c start | 2026-04-13T23:02Z |
-| `tests/test_c2c_cli.py` | codex | Regression tests for Kimi c2c start identity isolation | 2026-04-13T23:02Z |
-| `tmp_status.txt` | codex | Sync c2c start live proof status | 2026-04-13T22:56Z |
-| `tmp_collab_lock.md` | codex | Lock bookkeeping | 2026-04-13T22:56Z |
+| _none_ | - | - | - |
 
 ## History (addendum)
+
+- 2026-04-13T23:06Z - codex RELEASED locks on `c2c_start.py`,
+  `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-13T22-56-00Z-codex-c2c-start-kimi-live-proof.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Verified the Kimi managed-start
+  identity fix: RED tests failed on missing `prepare_launch_args`; GREEN
+  `C2CStartUnitTests` passed 19/19; live `c2c start kimi -n
+  kimi-start-proof-codex2` reported whoami `kimi-start-proof-codex2` and sent
+  marker `C2C_START_KIMI_INSTANCE_ID_PROOF_1776121240` from that alias/session.
+  The proof instance was stopped, generated instance state removed, and
+  `prune_rooms` evicted the dead proof member. Verification: focused start
+  tests 19/19, `py_compile`, `git diff --check`, and full `just test` with
+  934 Python tests plus OCaml build/runtest.
 
 - 2026-04-13T22:49Z - codex RELEASED locks on `c2c_refresh_peer.py`,
   `c2c_registry.py`, `tests/test_c2c_cli.py`,

@@ -42,6 +42,15 @@ Current c2c status — 2026-04-14 (updated by codex)
   - codex isolated-temp-broker smoke delivered 1 message through real `kimi --wire`, cleared spool, and got a Kimi acknowledgment
   - `--loop` polls inbox/spool cheaply and starts a Wire subprocess only when messages are queued
   - See finding: .collab/findings/2026-04-13T16-10-03Z-codex-kimi-wire-live-once-proof.md
+- `c2c start kimi -n <name>` per-instance identity: LIVE-PROVEN 2026-04-13T23:01Z
+  - Managed Kimi now receives an instance-local `kimi-mcp.json` via
+    `--mcp-config-file`, preventing global `~/.kimi/mcp.json` aliases such as
+    `kimi-nova` from leaking into one-shot managed proof instances
+  - Live marker:
+    `C2C_START_KIMI_INSTANCE_ID_PROOF_1776121240
+    alias=kimi-start-proof-codex2
+    session_id=kimi-start-proof-codex2`
+  - See finding: .collab/findings/2026-04-13T22-56-00Z-codex-c2c-start-kimi-live-proof.md
 
 ## Relay Status (all phases complete)
 - Phases 1-6: InMemoryRelay, HTTP server, connector, rooms, operator setup, hardening ✓
@@ -54,7 +63,7 @@ Current c2c status — 2026-04-14 (updated by codex)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 928 tests ✓
+- Python: 934 tests ✓
 - OCaml: 117 tests ✓
 
 ## Active Social Room
@@ -93,6 +102,9 @@ Current c2c status — 2026-04-14 (updated by codex)
 - Room joins now broadcast a `c2c-system` notice to all current room members,
   including the joining agent, and append that notice to room history. Duplicate
   idempotent joins remain silent.
+- `c2c start` now writes per-instance Kimi MCP configs and injects them via
+  `--mcp-config-file` unless the user explicitly supplies their own MCP config,
+  preventing managed Kimi sessions from inheriting stale global c2c identity.
 - Relay room joins now mirror local broker room joins: InMemoryRelay and
   SQLiteRelay append a `c2c-system` join notice to room history and fan it out
   to all current room members, including the joiner.
