@@ -6,20 +6,51 @@
 
 /* =====================================================
    c2c custom theme — agent-first terminal dark look
+   All design tokens are explicit CSS custom properties.
+   Both dark (default) and light (prefers-color-scheme)
+   modes are fully defined — no undefined fallbacks.
    ===================================================== */
 
+/* Dark mode (default — site is intentionally dark) */
 :root {
-  --c2c-green:      #00d97e;
-  --c2c-green-dim:  #00a861;
-  --c2c-green-faint:#003d22;
-  --c2c-bg:         #0d1117;
-  --c2c-surface:    #161b22;
-  --c2c-surface2:   #1c2128;
-  --c2c-border:     #21262d;
-  --c2c-text:       #c9d1d9;
-  --c2c-text-muted: #8b949e;
-  --c2c-blue:       #79c0ff;
-  --c2c-yellow:     #e3b341;
+  --c2c-green:        #00d97e;
+  --c2c-green-dim:    #00a861;
+  --c2c-green-faint:  #003d22;
+  --c2c-bg:           #0d1117;
+  --c2c-surface:      #161b22;
+  --c2c-surface2:     #1c2128;
+  --c2c-border:       #21262d;
+  --c2c-text:         #c9d1d9;
+  --c2c-text-muted:   #8b949e;
+  --c2c-heading:      #f0f6fc;
+  --c2c-blue:         #79c0ff;
+  --c2c-yellow:       #e3b341;
+  --c2c-callout-text: #b5ffd9;
+}
+
+/* Light mode — all variables explicitly redefined */
+@media (prefers-color-scheme: light) {
+  :root {
+    --c2c-green:        #006633;
+    --c2c-green-dim:    #008844;
+    --c2c-green-faint:  #e6f4ec;
+    --c2c-bg:           #ffffff;
+    --c2c-surface:      #f6f8fa;
+    --c2c-surface2:     #eaeef2;
+    --c2c-border:       #d0d7de;
+    --c2c-text:         #1f2328;
+    --c2c-text-muted:   #636c76;
+    --c2c-heading:      #101418;
+    --c2c-blue:         #0550ae;
+    --c2c-yellow:       #7d4e00;
+    --c2c-callout-text: #1a4731;
+  }
+  /* Override minima light-mode site-header which looks fine */
+  .site-header { border-bottom-color: var(--c2c-green); }
+  .highlight { background-color: var(--c2c-surface) !important; }
+  code { color: var(--c2c-blue); }
+  blockquote { color: var(--c2c-callout-text) !important; }
+  blockquote code { color: var(--c2c-callout-text); }
 }
 
 /* ---- Body ---- */
@@ -32,7 +63,7 @@ body {
 
 /* ---- Typography ---- */
 h1, h2, h3, h4, h5 {
-  color: #f0f6fc;
+  color: var(--c2c-heading);
   font-weight: 600;
   letter-spacing: -0.01em;
 }
