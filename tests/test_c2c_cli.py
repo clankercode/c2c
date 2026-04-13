@@ -3554,6 +3554,16 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
             payload["env"]["OPENCODE_CONFIG"],
             str(REPO / "run-opencode-inst.d" / "c2c-opencode-local.opencode.json"),
         )
+        # Verify the dedicated managed config has the right c2c session ID
+        managed_config = json.loads(
+            (REPO / "run-opencode-inst.d" / "c2c-opencode-local.opencode.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            managed_config["mcp"]["c2c"]["environment"]["C2C_MCP_SESSION_ID"],
+            "opencode-local",
+        )
         self.assertEqual(payload["cwd"], str(REPO))
         self.assertIn("opencode", payload["launch"][0])
         self.assertIn("run", payload["launch"])
@@ -3688,9 +3698,7 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
                 json.dumps({"mcp": {}}), encoding="utf-8"
             )
             # Point at our temp config dir so we don't need a real opencode binary
-            managed_config["config_path"] = str(
-                config_dir / "special.opencode.json"
-            )
+            managed_config["config_path"] = str(config_dir / "special.opencode.json")
             (config_dir / "special.json").write_text(
                 json.dumps(managed_config), encoding="utf-8"
             )
@@ -3706,7 +3714,9 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         # SESSION_ID stays as the internal session identifier
         self.assertEqual(payload["env"]["C2C_MCP_SESSION_ID"], "ses-internal-abc123")
         # AUTO_REGISTER_ALIAS must be the c2c_alias, not the session_id
-        self.assertEqual(payload["env"]["C2C_MCP_AUTO_REGISTER_ALIAS"], "opencode-special")
+        self.assertEqual(
+            payload["env"]["C2C_MCP_AUTO_REGISTER_ALIAS"], "opencode-special"
+        )
 
     def test_run_opencode_inst_outer_dry_run_reports_inner_launch_command(self):
         env = {"RUN_OPENCODE_INST_OUTER_DRY_RUN": "1"}
