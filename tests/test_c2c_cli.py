@@ -3668,6 +3668,46 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         )
         self.assertNotIn("pre_exec", config)
 
+    def test_run_opencode_inst_uses_c2c_alias_not_session_id_for_auto_register(self):
+        """When c2c_alias differs from c2c_session_id, AUTO_REGISTER_ALIAS must
+        use the alias so peers can address the managed instance by its stable name."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir) / "run-opencode-inst.d"
+            config_dir.mkdir()
+            managed_config = {
+                "command": "opencode",
+                "cwd": str(REPO),
+                "c2c_session_id": "ses-internal-abc123",
+                "c2c_alias": "opencode-special",
+                "prompt": "test prompt",
+            }
+            (config_dir / "special.json").write_text(
+                json.dumps(managed_config), encoding="utf-8"
+            )
+            (config_dir / "special.opencode.json").write_text(
+                json.dumps({"mcp": {}}), encoding="utf-8"
+            )
+            # Point at our temp config dir so we don't need a real opencode binary
+            managed_config["config_path"] = str(
+                config_dir / "special.opencode.json"
+            )
+            (config_dir / "special.json").write_text(
+                json.dumps(managed_config), encoding="utf-8"
+            )
+
+            env = {
+                "RUN_OPENCODE_INST_DRY_RUN": "1",
+                "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir),
+            }
+            result = run_cli("run-opencode-inst", "special", env=env)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        # SESSION_ID stays as the internal session identifier
+        self.assertEqual(payload["env"]["C2C_MCP_SESSION_ID"], "ses-internal-abc123")
+        # AUTO_REGISTER_ALIAS must be the c2c_alias, not the session_id
+        self.assertEqual(payload["env"]["C2C_MCP_AUTO_REGISTER_ALIAS"], "opencode-special")
+
     def test_run_opencode_inst_outer_dry_run_reports_inner_launch_command(self):
         env = {"RUN_OPENCODE_INST_OUTER_DRY_RUN": "1"}
         result = run_cli("run-opencode-inst-outer", "c2c-opencode-local", env=env)

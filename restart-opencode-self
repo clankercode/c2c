@@ -46,10 +46,13 @@ def proc_comm(pid: int) -> str | None:
 
 
 def dry_run_enabled() -> bool:
-    return (
-        os.environ.get("RUN_OPENCODE_RESTART_SELF_DRY_RUN", "").strip().lower()
-        not in FALSE_STRINGS
-    )
+    # Accept both the canonical name and the shorter variant to avoid footguns
+    # where agents set the wrong env var name and accidentally signal the process.
+    for var in ("RUN_OPENCODE_RESTART_SELF_DRY_RUN", "RUN_OPENCODE_INST_RESTART_SELF_DRY_RUN"):
+        val = os.environ.get(var, "").strip().lower()
+        if val and val not in FALSE_STRINGS:
+            return True
+    return False
 
 
 def expected_comm_values(value: str) -> list[str]:

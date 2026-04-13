@@ -41,6 +41,7 @@ data/c2c_registry.yaml.lock
 run-claude-inst.d/*.pid
 run-codex-inst.d/*.pid
 run-opencode-inst.d/*.pid
+run-opencode-inst.d/*.restart.json
 run-opencode-inst.d/*.log
 run-codex-inst.d
 .claude

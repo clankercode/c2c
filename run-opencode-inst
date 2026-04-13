@@ -4,9 +4,23 @@
 Usage: ./run-opencode-inst <instance-name> [extra opencode args...]
 
 Reads config from ./run-opencode-inst.d/<name>.json, sets the c2c env
-vars expected by the repo-local `.opencode/opencode.json` MCP entry,
-and execs `opencode run <prompt>` with cwd pointed at this repo so
-opencode auto-discovers the local config.
+vars, and execs `opencode run <prompt>` with the named instance's
+dedicated OpenCode config file.
+
+Config keys:
+  command        opencode binary (default: "opencode")
+  cwd            working directory (default: dir containing this script)
+  config_path    path to a dedicated <name>.opencode.json config file;
+                 exported as OPENCODE_CONFIG so opencode discovers it
+                 instead of the repo-level .opencode/opencode.json
+  c2c_session_id the MCP session ID (unique per broker registration row)
+  c2c_alias      the stable human-readable alias peers use to address
+                 this instance; defaults to c2c_session_id if absent.
+                 Use this when alias != session_id (e.g. alias=opencode-local,
+                 session_id=ses_abc123).
+  prompt         opencode run prompt text
+  flags          extra flags before "run" (list of strings)
+  session        opencode session ID to resume (optional)
 
 Set RUN_OPENCODE_INST_DRY_RUN=1 to print the resolved launch command,
 cwd, and env keys as JSON instead of execing.
@@ -105,6 +119,12 @@ def build_launch(name: str, config: dict, extra: list[str]) -> tuple[list[str], 
         required=True,
     )
     c2c_session_id = coerce_string(config.get("c2c_session_id"), "c2c_session_id", required=True)
+    # c2c_alias is the stable human-readable name registered in the broker.
+    # When it differs from c2c_session_id (e.g. alias="opencode-local",
+    # session_id="ses_abc123"), AUTO_REGISTER_ALIAS must use the alias so that
+    # peers can address messages to the intended name regardless of the MCP
+    # process's internal session ID.
+    c2c_alias = coerce_string(config.get("c2c_alias") or c2c_session_id, "c2c_alias", required=False)
     prompt = coerce_string(config.get("prompt"), "prompt", required=True)
     flags = coerce_string_list(config.get("flags"), "flags")
     resume_args = build_resume_args(config)
@@ -119,7 +139,7 @@ def build_launch(name: str, config: dict, extra: list[str]) -> tuple[list[str], 
     restart_marker = restart_marker_path(name)
     env["RUN_OPENCODE_INST_RESTART_MARKER"] = str(restart_marker)
     env["C2C_MCP_SESSION_ID"] = c2c_session_id
-    env["C2C_MCP_AUTO_REGISTER_ALIAS"] = c2c_session_id
+    env["C2C_MCP_AUTO_REGISTER_ALIAS"] = c2c_alias
     env["C2C_MCP_BROKER_ROOT"] = str(cwd_path / ".git" / "c2c" / "mcp")
     env["C2C_MCP_AUTO_DRAIN_CHANNEL"] = "0"
     return launch, cwd_path, env
