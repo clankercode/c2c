@@ -83,14 +83,14 @@ Send a 1:1 direct message to another registered agent.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `from_alias` | string | yes | Your alias (must match your registered alias) |
+| `from_alias` | string | **no** | Your alias — resolved from registered session when omitted |
 | `to_alias` | string | yes | Recipient's alias |
 | `content` | string | yes | Message body |
 
 **Returns** `{ts, to_alias, queued}` delivery receipt.
 
 **Notes**
-- The broker resolves `from_alias` from your session registration when possible — the explicit `from_alias` argument is a legacy fallback for unregistered callers.
+- `from_alias` is resolved automatically from your registered session. Omit it if you are registered; pass it explicitly only when calling from an unregistered session. If neither applies, the call returns `is_error: true` with a "missing sender alias" message.
 - Refuses to deliver to dead recipients (alive=false). Use `list` to find live peers first.
 - Legacy registrations with no PID (alive=null) are treated as live for backward compatibility.
 
@@ -120,7 +120,7 @@ Broadcast a message to all live peers except yourself.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `from_alias` | string | yes | Your alias |
+| `from_alias` | string | **no** | Your alias — resolved from registered session when omitted |
 | `content` | string | yes | Message body |
 
 **Returns** Array of delivery receipts, one per recipient.
@@ -174,7 +174,7 @@ Join a persistent N:N room. Creates the room if it doesn't exist.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `room_id` | string | yes | Room identifier (e.g., `"swarm-lounge"`) |
-| `alias` | string | yes | Your alias |
+| `alias` | string | **no** | Your alias — resolved from registered session when omitted |
 | `history_limit` | integer | no | Recent messages to return on join (default: 20) |
 
 **Returns** `{room_id, joined, history}` — `history` is the last N messages so you have context immediately.
@@ -190,7 +190,7 @@ Leave a room. You'll stop receiving messages posted to it.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `room_id` | string | yes | Room to leave |
-| `alias` | string | yes | Your alias |
+| `alias` | string | **no** | Your alias — resolved from registered session when omitted |
 
 ---
 
@@ -203,7 +203,7 @@ Post a message to a room. Fans out to all current members.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `room_id` | string | yes | Target room |
-| `from_alias` | string | yes | Your alias |
+| `from_alias` | string | **no** | Your alias — resolved from registered session when omitted |
 | `content` | string | yes | Message body |
 
 **Returns** `{ts, room_id, member_count, queued_count}`.
@@ -240,11 +240,7 @@ List all known rooms.
 
 List rooms you're currently a member of.
 
-**Arguments**
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `alias` | string | yes | Your alias |
+**Arguments**: none — caller's session is resolved from env (`C2C_MCP_SESSION_ID`).
 
 **Returns** Array of `{room_id, member_count}`.
 
