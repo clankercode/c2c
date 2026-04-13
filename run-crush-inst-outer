@@ -205,10 +205,56 @@ def kill_orphan_mcp_brokers(session_id: str) -> int:
     return killed
 
 
-def maybe_rearm(name: str) -> None:
+def _broker_session_id_for_pid(pid: int) -> str | None:
+    """Look up session_id for a PID from the broker registry (same logic as rearm)."""
+    try:
+        import json as _json
+        common_dir_result = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True, timeout=5, cwd=HERE,
+        )
+        if common_dir_result.returncode != 0:
+            return None
+        common_dir = Path(common_dir_result.stdout.strip())
+        if not common_dir.is_absolute():
+            common_dir = (HERE / common_dir).resolve()
+        reg_path = common_dir / "c2c" / "mcp" / "registry.json"
+        if not reg_path.exists():
+            return None
+        regs = _json.loads(reg_path.read_text(encoding="utf-8"))
+        if not isinstance(regs, list):
+            return None
+        for reg in regs:
+            if reg.get("pid") == pid:
+                return reg.get("session_id") or None
+    except Exception:
+        pass
+    return None
+
+
+def maybe_rearm(name: str, crush_pid: int | None = None) -> None:
     if not rearm_enabled() or not REARM.exists():
         return
-    completed = subprocess.run(rearm_command(name), cwd=HERE, check=False)
+    cmd = rearm_command(name)
+    # If the crush PID is known, poll the broker briefly to get the actual registered
+    # session_id (crush clients often ignore C2C_MCP_SESSION_ID and use their own
+    # internal session identifier). This avoids the deliver daemon watching the wrong inbox.
+    if crush_pid is not None:
+        sid = None
+        for _attempt in range(8):  # poll up to ~4s for crush to register
+            sid = _broker_session_id_for_pid(crush_pid)
+            if sid:
+                break
+            time.sleep(0.5)
+        if sid:
+            cmd = cmd + ["--pid", str(crush_pid), "--session-id", sid]
+            print(
+                f"[run-crush-inst-outer] rearm: detected session_id={sid} for pid={crush_pid}",
+                flush=True,
+            )
+        else:
+            cmd = cmd + ["--pid", str(crush_pid)]
+    completed = subprocess.run(cmd, cwd=HERE, check=False)
     if completed.returncode != 0:
         print(
             f"[run-crush-inst-outer] warning: rearm exited code={completed.returncode}",
@@ -285,7 +331,7 @@ def main(argv: list[str]) -> int:
         try:
             proc = subprocess.Popen(command, cwd=HERE, start_new_session=True)
             maybe_refresh_peer(name, proc.pid)
-            maybe_rearm(name)
+            maybe_rearm(name, crush_pid=proc.pid)
             threading.Thread(
                 target=_capture_crush_session_id,
                 args=(name,),
