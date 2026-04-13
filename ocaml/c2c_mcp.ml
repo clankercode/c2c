@@ -33,6 +33,7 @@ let server_features =
   ; "join_room_history_backfill"
   ; "my_rooms_tool"
   ; "peek_inbox_tool"
+  ; "join_leave_from_alias_fallback"
   ]
 
 let server_info =
@@ -1013,8 +1014,8 @@ let tool_definitions =
   ; tool_definition ~name:"peek_inbox" ~description:"Non-draining inbox check for the current session. Returns the same JSON array as `poll_inbox` but leaves the messages in the inbox so a subsequent `poll_inbox` still sees them. Useful for 'any mail?' checks without losing messages on error paths. Caller's session_id is always resolved from the MCP env (C2C_MCP_SESSION_ID); passing a session_id argument is ignored for isolation." ~required:[]
   ; tool_definition ~name:"sweep" ~description:"Remove dead registrations (whose parent process has exited) and delete orphan inbox files that belong to no current registration. Any non-empty orphan inbox content is appended to dead-letter.jsonl inside the broker directory before the inbox file is deleted, so cleanup is non-destructive to operator signal. Returns JSON {dropped_regs:[{session_id,alias}], deleted_inboxes:[session_id], preserved_messages: int}." ~required:[]
   ; tool_definition ~name:"send_all" ~description:"Fan out a message to every currently-registered peer except the sender (and any alias in the optional `exclude_aliases` array). Non-live recipients are skipped with reason \"not_alive\" rather than raising, so partial failure does not abort the broadcast. Per-recipient enqueue takes the same per-inbox lock used by `send`. Returns JSON {sent_to:[alias], skipped:[{alias, reason}]}." ~required:[ "from_alias"; "content" ]
-  ; tool_definition ~name:"join_room" ~description:"Join a persistent N:N room. Creates the room if it does not exist. Idempotent per (alias, session_id). Room IDs must be alphanumeric + hyphens + underscores. Returns JSON {room_id, members, history} where `history` is the most recent messages from the room's append-only log so a newly-joined member can catch up on context without a separate `room_history` call. Optional `history_limit` (default 20, max 200) controls how many history entries to include; pass 0 to skip history backfill." ~required:[ "room_id"; "alias" ]
-  ; tool_definition ~name:"leave_room" ~description:"Leave a persistent N:N room. Returns the member list after leave." ~required:[ "room_id"; "alias" ]
+  ; tool_definition ~name:"join_room" ~description:"Join a persistent N:N room. Creates the room if it does not exist. Idempotent per (alias, session_id). Room IDs must be alphanumeric + hyphens + underscores. Returns JSON {room_id, members, history} where `history` is the most recent messages from the room's append-only log so a newly-joined member can catch up on context without a separate `room_history` call. Optional `history_limit` (default 20, max 200) controls how many history entries to include; pass 0 to skip history backfill. Accepts `from_alias` as a synonym for `alias` to match the send-side schema; either works." ~required:[ "room_id"; "alias" ]
+  ; tool_definition ~name:"leave_room" ~description:"Leave a persistent N:N room. Returns the member list after leave. Accepts `from_alias` as a synonym for `alias` to match the send-side schema; either works." ~required:[ "room_id"; "alias" ]
   ; tool_definition ~name:"send_room" ~description:"Send a message to a persistent N:N room. Appends to room history and fans out to every member's inbox except the sender, with to_alias tagged as '<alias>@<room_id>'. Returns JSON {delivered_to, skipped, ts}." ~required:[ "from_alias"; "room_id"; "content" ]
   ; tool_definition ~name:"list_rooms" ~description:"List all persistent rooms with member counts and member aliases. Returns a JSON array of {room_id, member_count, members}." ~required:[]
   ; tool_definition ~name:"my_rooms" ~description:"List rooms where your current session is a member. Caller's session_id is always resolved from the MCP env (C2C_MCP_SESSION_ID); passing a session_id argument is ignored for isolation — you can only see your own memberships. Same row shape as list_rooms: JSON array of {room_id, member_count, members}." ~required:[]
@@ -1304,7 +1305,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       Lwt.return (tool_result ~content ~is_error:false)
   | "join_room" ->
       let room_id = string_member "room_id" arguments in
-      let alias = string_member "alias" arguments in
+      let alias = string_member_any [ "alias"; "from_alias" ] arguments in
       let session_id = resolve_session_id arguments in
       let members = Broker.join_room broker ~room_id ~alias ~session_id in
       let history_limit =
@@ -1340,7 +1341,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       Lwt.return (tool_result ~content ~is_error:false)
   | "leave_room" ->
       let room_id = string_member "room_id" arguments in
-      let alias = string_member "alias" arguments in
+      let alias = string_member_any [ "alias"; "from_alias" ] arguments in
       let members = Broker.leave_room broker ~room_id ~alias in
       let content =
         `Assoc

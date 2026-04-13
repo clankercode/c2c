@@ -343,6 +343,7 @@ let test_initialize_reports_server_version_and_features () =
             ; "registry_locked_enqueue"
             ; "startup_auto_register"
             ; "send_room_alias_fallback"
+            ; "join_leave_from_alias_fallback"
             ; "inbox_archive_on_drain"
             ; "history_tool"
             ; "join_room_history_backfill"
@@ -2182,6 +2183,108 @@ let test_tools_call_send_room_accepts_alias_as_from_alias_alias () =
             "storm-sender" msg.from_alias;
           check string "content" "hello via alias fallback" msg.content))
 
+(* Regression for gap #2: join_room should accept `from_alias` as a
+   synonym for `alias`, mirroring the send-side fallback. Models that
+   already standardized on `from_alias` for send/send_room shouldn't
+   re-learn a different key when they also want to join. *)
+let test_tools_call_join_room_accepts_from_alias_as_alias () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-join-from_alias";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-join-from_alias"
+            ~alias:"storm-joiner" ~pid:None ~pid_start_time:None;
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 301)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "join_room")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("room_id", `String "from-alias-chat")
+                          ; (* Note: `from_alias` not `alias`. *)
+                            ("from_alias", `String "storm-joiner")
+                          ; ("history_limit", `Int 0)
+                          ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          (match response with
+           | None -> fail "expected join_room response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               let parsed = Yojson.Safe.from_string text in
+               let members =
+                 parsed |> member "members" |> to_list
+               in
+               check int "one member" 1 (List.length members);
+               let first = List.hd members in
+               check string "alias resolved from from_alias fallback"
+                 "storm-joiner" (first |> member "alias" |> to_string))))
+
+(* Regression for gap #2: leave_room should accept `from_alias` too.
+   Join + leave must use the same schema. *)
+let test_tools_call_leave_room_accepts_from_alias_as_alias () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-leave-from_alias";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-leave-from_alias"
+            ~alias:"storm-leaver" ~pid:None ~pid_start_time:None;
+          let _ =
+            C2c_mcp.Broker.join_room broker ~room_id:"from-alias-leave"
+              ~alias:"storm-leaver"
+              ~session_id:"session-leave-from_alias"
+          in
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 302)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "leave_room")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("room_id", `String "from-alias-leave")
+                          ; (* Note: `from_alias` not `alias`. *)
+                            ("from_alias", `String "storm-leaver")
+                          ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          (match response with
+           | None -> fail "expected leave_room response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               let parsed = Yojson.Safe.from_string text in
+               let members =
+                 parsed |> member "members" |> to_list
+               in
+               check int "zero members after leave" 0
+                 (List.length members))))
+
 let () =
   run "c2c_mcp"
     [ ( "broker",
@@ -2317,4 +2420,8 @@ let () =
              test_tools_call_send_room_via_mcp
          ; test_case "tools/call send_room accepts `alias` as from_alias fallback" `Quick
              test_tools_call_send_room_accepts_alias_as_from_alias_alias
+         ; test_case "tools/call join_room accepts `from_alias` as alias fallback" `Quick
+             test_tools_call_join_room_accepts_from_alias_as_alias
+         ; test_case "tools/call leave_room accepts `from_alias` as alias fallback" `Quick
+             test_tools_call_leave_room_accepts_from_alias_as_alias
          ] ) ]
