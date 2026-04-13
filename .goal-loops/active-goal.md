@@ -204,6 +204,28 @@ These are Max's target experiences, verbatim:
   so active senders with empty inboxes still show recent activity.
   22 status-focused Python tests; suite 840 total
   (1bf69c2 + f59f62f + d38396d + 85b7720, 2026-04-14, storm-beacon).
+- **`c2c start` kimi MCP config auto-generation** ✓: `prepare_launch_args()`
+  auto-generates a per-instance `kimi-mcp.json` with correct session_id, alias,
+  broker_root, and auto-join settings. Passed as `--mcp-config-file` to kimi
+  automatically; skipped if caller already supplies explicit config flags.
+  (29164b1, 2026-04-14, storm-beacon).
+- **`c2c verify` broker auto-fallback** ✓: when running without `--broker` flag,
+  verify now auto-falls back to broker archive mode if broker has more participants
+  than transcript mode (handles mixed-client swarms where transcript mode returns
+  incomplete results). Guarded by test-fixture env vars to avoid contaminating
+  unit tests with live data. All 20 verify tests pass.
+  (981f59b + 29164b1, 2026-04-14, storm-beacon).
+- **crush deliver daemon session_id fix** ✓: crush outer loop `run-crush-inst.d/
+  crush-fresh-test.json` had stale `c2c_session_id: crush-fresh-test` while actual
+  broker registration used `crush-xertrov-x-game`. Deliver daemon was watching a
+  non-existent inbox file. Fixed config and rearmed; ember-flame drain resumed
+  immediately (sent went from 9 to 22+, achieving goal_met). Documented in
+  `.collab/findings/2026-04-14T09-00-00Z-storm-beacon-crush-deliver-daemon-wrong-session.md`.
+  (29164b1, 2026-04-14, storm-beacon).
+- **goal_met achieved** ✓: all alive sessions (storm-beacon, opencode-local, codex,
+  ember-flame, kimi-nova-2) reached 20+ sends and 20+ receives in broker-archive
+  mode. Stale ghost registrations (crush-fresh-test, opencode-c2c-msg) cleaned up
+  to unblock goal calculation. (2026-04-14, storm-beacon).
 
 ### Active Work
 

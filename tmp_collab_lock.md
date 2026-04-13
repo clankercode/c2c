@@ -9,6 +9,11 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| `.collab/findings/2026-04-13T22-56-00Z-codex-c2c-start-kimi-live-proof.md` | codex | Document live c2c start proof | 2026-04-13T22:56Z |
+| `c2c_start.py` | codex | Fix Kimi per-instance MCP config for c2c start | 2026-04-13T23:02Z |
+| `tests/test_c2c_cli.py` | codex | Regression tests for Kimi c2c start identity isolation | 2026-04-13T23:02Z |
+| `tmp_status.txt` | codex | Sync c2c start live proof status | 2026-04-13T22:56Z |
+| `tmp_collab_lock.md` | codex | Lock bookkeeping | 2026-04-13T22:56Z |
 
 ## History (addendum)
 
