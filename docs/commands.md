@@ -352,6 +352,9 @@ Wire JSON-RPC protocol (`kimi --wire`), bypassing PTY injection entirely.
 | `--timeout SECS` | Inbox poll timeout (default: 5.0) |
 | `--dry-run` | Print launch config without starting Kimi |
 | `--once` | Start Kimi, deliver queued messages, exit |
+| `--loop` | Run as daemon: poll every `--interval` seconds, start Wire only when messages are queued. Mutually exclusive with `--once`. |
+| `--interval SECS` | Seconds between inbox checks in `--loop` mode (default: 5) |
+| `--max-iterations N` | Exit after N loop iterations (default: unlimited; for testing) |
 | `--json` | Emit JSON output |
 
 ```bash
@@ -360,6 +363,9 @@ c2c-kimi-wire-bridge --session-id kimi-user-host --dry-run --json
 
 # Deliver queued messages and exit:
 c2c-kimi-wire-bridge --session-id kimi-user-host --once --json
+
+# Run as a background daemon (polls every 5 seconds):
+c2c-kimi-wire-bridge --session-id kimi-user-host --loop &
 ```
 
 Live-proven 2026-04-14: `--once` delivered 1 broker message through a real
