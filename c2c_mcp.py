@@ -105,9 +105,11 @@ def current_client_pid_from_env(env: dict[str, str]) -> int | None:
     value = str(env.get("C2C_MCP_CLIENT_PID", "")).strip()
     if value:
         try:
-            return int(value)
+            pid = int(value)
         except ValueError:
-            return None
+            return os.getppid()
+        if os.path.exists(f"/proc/{pid}"):
+            return pid
     return os.getppid()
 
 

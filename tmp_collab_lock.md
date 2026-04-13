@@ -12,6 +12,15 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 15:41Z — codex RELEASED locks on `c2c_mcp.py`,
+  `run-kimi-inst`, `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-13T15-41-00Z-codex-kimi-mcp-stale-client-pid.md`,
+  and `tmp_collab_lock.md`. Fixed Kimi MCP auto-register stale client PID
+  fallback: dead `C2C_MCP_CLIENT_PID` values now fall back to the live parent
+  process, and Kimi managed launches now set `KIMI_CLI_C2C_STEER_STREAMING=1`
+  for c2c PTY-wake prompts. Verification: focused `tests/test_c2c_cli.py`
+  selections for MCP auto-register/Kimi paths passed.
+
 - 2026-04-13 15:30Z — codex RELEASED locks on `tmp_status.txt`,
   `.collab/findings/2026-04-13T15-19-25Z-codex-kimi-rearm-stale-pidfile.md`,
   and `tmp_collab_lock.md`. `kimi-nova` is live again via a pts/0

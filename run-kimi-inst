@@ -179,6 +179,9 @@ def build_launch(
     env["C2C_MCP_SESSION_ID"] = c2c_session_id
     env["C2C_MCP_AUTO_REGISTER_ALIAS"] = c2c_alias
     env["C2C_MCP_AUTO_DRAIN_CHANNEL"] = "0"
+    # Steer streaming inputs immediately instead of queueing for end-of-turn.
+    # This lets c2c PTY-wake prompts interrupt the current turn at end-of-step.
+    env["KIMI_CLI_C2C_STEER_STREAMING"] = "1"
     # Set C2C_MCP_CLIENT_PID so the MCP broker registers against the durable
     # Kimi process PID (this process) rather than os.getppid() inside the
     # MCP server child. Without this, the registered PID is correct at startup
@@ -236,6 +239,7 @@ def main(argv: list[str]) -> int:
                 "C2C_MCP_SESSION_ID": env["C2C_MCP_SESSION_ID"],
                 "C2C_MCP_AUTO_REGISTER_ALIAS": env["C2C_MCP_AUTO_REGISTER_ALIAS"],
                 "C2C_MCP_CLIENT_PID": env["C2C_MCP_CLIENT_PID"],
+                "KIMI_CLI_C2C_STEER_STREAMING": env["KIMI_CLI_C2C_STEER_STREAMING"],
                 "KIMI_CLI_NO_AUTO_UPDATE": env["KIMI_CLI_NO_AUTO_UPDATE"],
             },
         }

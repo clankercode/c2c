@@ -131,6 +131,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_poker.py",
         "c2c_poker_sweep.py",
         "c2c_poll_inbox.py",
+        "c2c_pts_inject.py",
         "c2c_verify.py",
         "c2c_watch.py",
         "c2c_whoami.py",
@@ -661,6 +662,33 @@ class C2CCLITests(unittest.TestCase):
         env = run_mock.call_args_list[1].kwargs["env"]
         self.assertEqual(env["C2C_MCP_SESSION_ID"], AGENT_ONE_SESSION_ID)
         self.assertEqual(env["C2C_MCP_CLIENT_PID"], "424242")
+
+    def test_c2c_mcp_auto_register_ignores_dead_client_pid_env(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        live_parent_pid = os.getpid()
+        env = {
+            "C2C_MCP_BROKER_ROOT": str(broker_root),
+            "C2C_MCP_SESSION_ID": "kimi-nova",
+            "C2C_MCP_AUTO_REGISTER_ALIAS": "kimi-nova",
+            "C2C_MCP_CLIENT_PID": "11111",
+        }
+
+        with (
+            mock.patch("c2c_mcp._session_pid_from_proc", return_value=None),
+            mock.patch("c2c_mcp.os.getppid", return_value=live_parent_pid),
+        ):
+            c2c_mcp.maybe_auto_register_startup(env)
+
+        registrations = c2c_mcp.load_broker_registrations(
+            broker_root / "registry.json"
+        )
+        self.assertEqual(len(registrations), 1)
+        self.assertEqual(registrations[0]["alias"], "kimi-nova")
+        self.assertEqual(registrations[0]["pid"], live_parent_pid)
+        self.assertEqual(
+            registrations[0]["pid_start_time"],
+            c2c_mcp.read_pid_start_time(live_parent_pid),
+        )
 
     def test_c2c_mcp_stdio_initialize_smoke(self):
         broker_root = Path(self.temp_dir.name) / "mcp-broker"
