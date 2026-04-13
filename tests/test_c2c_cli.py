@@ -6180,6 +6180,132 @@ class PurgeOldDeadLetterTests(unittest.TestCase):
         self.assertIn("not-valid-json", remaining[0])
 
 
+class PurgeOrphanDeadLetterTests(unittest.TestCase):
+    """Tests for c2c_broker_gc.purge_orphan_dead_letter()."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.broker_root = Path(self.tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_registry(self, registrations):
+        reg_path = self.broker_root / "registry.json"
+        reg_path.write_text(json.dumps(registrations), encoding="utf-8")
+
+    def _write_dead_letter(self, records):
+        dl_path = self.broker_root / "dead-letter.jsonl"
+        lines = [json.dumps(r) for r in records]
+        dl_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return dl_path
+
+    def test_no_file_returns_empty_ok(self):
+        """Returns ok with zero counts when dead-letter.jsonl does not exist."""
+        import c2c_broker_gc
+
+        result = c2c_broker_gc.purge_orphan_dead_letter(self.broker_root)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["before_count"], 0)
+        self.assertEqual(result["purged_count"], 0)
+
+    def test_purges_entry_when_alias_unregistered(self):
+        """Entry is purged when to_alias is not in registry and older than TTL."""
+        import c2c_broker_gc
+
+        now = time.time()
+        self._write_registry([{"alias": "live-alice", "session_id": "s1", "pid": 99999999}])
+        records = [
+            {"deleted_at": now - 7200, "from_session_id": "s2",
+             "message": {"from_alias": "live-alice", "to_alias": "gone-bob", "content": "hi"}},
+        ]
+        dl_path = self._write_dead_letter(records)
+
+        result = c2c_broker_gc.purge_orphan_dead_letter(self.broker_root, ttl_seconds=3600)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["purged_count"], 1)
+        self.assertEqual(result["after_count"], 0)
+        remaining = [l for l in dl_path.read_text().splitlines() if l.strip()]
+        self.assertEqual(len(remaining), 0)
+
+    def test_keeps_entry_when_alias_registered(self):
+        """Entry is kept when to_alias IS in the registry (will redeliver on re-register)."""
+        import c2c_broker_gc
+
+        now = time.time()
+        self._write_registry([{"alias": "live-alice", "session_id": "s1", "pid": 99999999}])
+        records = [
+            {"deleted_at": now - 7200, "from_session_id": "s2",
+             "message": {"from_alias": "sender", "to_alias": "live-alice", "content": "hi"}},
+        ]
+        dl_path = self._write_dead_letter(records)
+
+        result = c2c_broker_gc.purge_orphan_dead_letter(self.broker_root, ttl_seconds=3600)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["purged_count"], 0)
+        self.assertEqual(result["after_count"], 1)
+
+    def test_strips_room_suffix_for_matching(self):
+        """Room fan-out messages (to_alias='alice@room') match if base alias 'alice' is registered."""
+        import c2c_broker_gc
+
+        now = time.time()
+        self._write_registry([{"alias": "live-alice", "session_id": "s1", "pid": 99999999}])
+        records = [
+            # alice@swarm-lounge → base alias live-alice IS registered → keep
+            {"deleted_at": now - 7200, "from_session_id": "s2",
+             "message": {"from_alias": "sender", "to_alias": "live-alice@swarm-lounge", "content": "room msg"}},
+            # gone-bob@swarm-lounge → base alias gone-bob NOT registered → purge
+            {"deleted_at": now - 7200, "from_session_id": "s3",
+             "message": {"from_alias": "sender", "to_alias": "gone-bob@swarm-lounge", "content": "room msg"}},
+        ]
+        dl_path = self._write_dead_letter(records)
+
+        result = c2c_broker_gc.purge_orphan_dead_letter(self.broker_root, ttl_seconds=3600)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["purged_count"], 1)
+        self.assertEqual(result["after_count"], 1)
+        remaining = [json.loads(l) for l in dl_path.read_text().splitlines() if l.strip()]
+        self.assertEqual(remaining[0]["message"]["to_alias"], "live-alice@swarm-lounge")
+
+    def test_keeps_entry_within_ttl(self):
+        """Recent entries are kept even if the alias is not registered."""
+        import c2c_broker_gc
+
+        now = time.time()
+        self._write_registry([])
+        records = [
+            {"deleted_at": now - 30, "from_session_id": "s1",
+             "message": {"from_alias": "x", "to_alias": "gone-bob", "content": "recent"}},
+        ]
+        dl_path = self._write_dead_letter(records)
+
+        result = c2c_broker_gc.purge_orphan_dead_letter(self.broker_root, ttl_seconds=3600)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["purged_count"], 0)
+        self.assertEqual(result["after_count"], 1)
+
+    def test_dry_run_does_not_modify_file(self):
+        """dry_run=True reports would-purge count without touching the file."""
+        import c2c_broker_gc
+
+        now = time.time()
+        self._write_registry([])
+        records = [
+            {"deleted_at": now - 7200, "from_session_id": "s1",
+             "message": {"from_alias": "x", "to_alias": "gone-alias", "content": "old"}},
+        ]
+        dl_path = self._write_dead_letter(records)
+        original = dl_path.read_text()
+
+        result = c2c_broker_gc.purge_orphan_dead_letter(
+            self.broker_root, ttl_seconds=3600, dry_run=True
+        )
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(result["purged_count"], 1)
+        self.assertEqual(dl_path.read_text(), original)
+
+
 def result_code(result):
     return result.returncode
 
