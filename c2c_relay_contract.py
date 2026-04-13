@@ -141,7 +141,14 @@ class InMemoryRelay:
       - alias-conflict detection
     """
 
-    def __init__(self) -> None:
+    def __init__(self, dedup_window: int = 10000) -> None:
+        """Create an InMemoryRelay.
+
+        Args:
+            dedup_window: number of recently-seen message_ids to keep for
+                          exactly-once delivery deduplication. Older IDs are
+                          evicted in FIFO order.
+        """
         self._lock = threading.Lock()
         # alias → RegistrationLease (one live registration per alias)
         self._leases: dict[str, RegistrationLease] = {}
@@ -153,6 +160,9 @@ class InMemoryRelay:
         self._rooms: dict[str, list[str]] = {}
         # room_id → list of message history records
         self._room_history: dict[str, list[dict]] = {}
+        # exactly-once dedup: set of recently-seen message_ids (FIFO window)
+        self._seen_ids: dict[str, bool] = {}   # ordered dict used as ordered set
+        self._dedup_window = dedup_window
 
     # --- registration ---
 
@@ -268,6 +278,13 @@ class InMemoryRelay:
                     RELAY_ERR_RECIPIENT_DEAD,
                     f"alias {to_alias!r} is registered but lease has expired",
                 )
+            # Exactly-once: only record ID after recipient is confirmed alive;
+            # failed sends (unknown alias, dead recipient) don't consume the ID
+            # so retries can succeed after the recipient registers/recovers.
+            if not self._record_message_id(msg_id):
+                return {"ok": True, "ts": ts, "to_alias": to_alias,
+                        "message_id": msg_id, "duplicate": True}
+
             key = (recipient.node_id, recipient.session_id)
             msg = {
                 "message_id": msg_id,
@@ -419,7 +436,50 @@ class InMemoryRelay:
             return {"ok": True, "delivered_to": delivered_to, "skipped": skipped,
                     "ts": ts}
 
+    # --- GC ---
+
+    def gc(self) -> dict:
+        """Garbage-collect expired leases and empty inboxes for dead sessions.
+
+        Returns a summary of what was removed:
+          {"expired_leases": [alias, ...], "pruned_inboxes": N}
+        """
+        with self._lock:
+            now = time.time()
+            expired = [alias for alias, lease in self._leases.items()
+                       if not lease.is_alive(now)]
+            for alias in expired:
+                del self._leases[alias]
+                # Remove from all rooms
+                for members in self._rooms.values():
+                    if alias in members:
+                        members.remove(alias)
+
+            # Prune inboxes for sessions with no matching live lease
+            live_keys = {
+                (lease.node_id, lease.session_id)
+                for lease in self._leases.values()
+            }
+            stale_keys = [k for k in self._inboxes if k not in live_keys]
+            pruned = len(stale_keys)
+            for k in stale_keys:
+                del self._inboxes[k]
+
+            return {"ok": True, "expired_leases": expired, "pruned_inboxes": pruned}
+
     # --- helpers for tests ---
+
+    def _record_message_id(self, msg_id: str) -> bool:
+        """Record a message ID. Returns True if it's new (not a duplicate)."""
+        # Must be called while holding self._lock
+        if msg_id in self._seen_ids:
+            return False
+        self._seen_ids[msg_id] = True
+        # Evict oldest entries when window is full
+        if len(self._seen_ids) > self._dedup_window:
+            oldest = next(iter(self._seen_ids))
+            del self._seen_ids[oldest]
+        return True
 
     def _tick_lease(self, alias: str, seconds: float) -> None:
         """Advance last_seen backward by `seconds` to simulate lease expiry."""

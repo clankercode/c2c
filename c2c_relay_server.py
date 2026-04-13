@@ -120,6 +120,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._ok({"ok": True, "dead_letter": self.server.relay.dead_letter()})
         elif self.path == "/list_rooms":
             self._ok({"ok": True, "rooms": self.server.relay.list_rooms()})
+        elif self.path == "/gc":
+            self._ok(self.server.relay.gc())
         else:
             self._err(404, "not_found", f"unknown endpoint: {self.path}")
 
