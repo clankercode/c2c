@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
@@ -180,6 +181,30 @@ class RoomFilePermissionTests(unittest.TestCase):
             history_mode = os.stat(rdir / "history.jsonl").st_mode & 0o777
             self.assertEqual(members_mode, 0o600)
             self.assertEqual(history_mode, 0o600)
+
+
+class RoomIdentityResolutionTests(unittest.TestCase):
+    def test_resolve_self_alias_uses_whoami_fallback_without_env_session(self):
+        with mock.patch.dict(
+            os.environ,
+            {"C2C_MCP_SESSION_ID": "", "C2C_SESSION_ID": ""},
+            clear=False,
+        ), mock.patch(
+            "c2c_whoami.resolve_identity",
+            return_value=({"session_id": "sid-1"}, {"alias": "storm-ember"}),
+        ):
+            self.assertEqual(c2c_room.resolve_self_alias(), "storm-ember")
+
+    def test_resolve_self_session_id_uses_whoami_fallback_without_env_session(self):
+        with mock.patch.dict(
+            os.environ,
+            {"C2C_MCP_SESSION_ID": "", "C2C_SESSION_ID": ""},
+            clear=False,
+        ), mock.patch(
+            "c2c_whoami.resolve_identity",
+            return_value=({"session_id": "sid-1"}, {"alias": "storm-ember"}),
+        ):
+            self.assertEqual(c2c_room.resolve_self_session_id(), "sid-1")
 
 
 if __name__ == "__main__":

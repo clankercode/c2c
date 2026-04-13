@@ -270,27 +270,60 @@ def room_history(
 # --- CLI dispatch ---
 
 
+def _broker_lookup(session_id: str) -> str | None:
+    broot = default_broker_root()
+    for reg in load_json_list(broot / "registry.json"):
+        if reg.get("session_id") == session_id:
+            alias = reg.get("alias")
+            if isinstance(alias, str) and alias:
+                return alias
+    return None
+
+
 def resolve_self_alias() -> str:
-    """Best-effort alias resolution for the current session."""
-    session_id = os.environ.get("C2C_MCP_SESSION_ID", "").strip() or os.environ.get(
+    """Best-effort alias resolution for the current session.
+
+    Order: explicit env (C2C_MCP_SESSION_ID / C2C_SESSION_ID) → broker
+    registry JSON → YAML registry via session discovery (walks /proc to
+    find the parent Claude/Codex/OpenCode session and looks it up in
+    the registry). Returns "unknown" only if all paths fail.
+    """
+    env_sid = os.environ.get("C2C_MCP_SESSION_ID", "").strip() or os.environ.get(
         "C2C_SESSION_ID", ""
     ).strip()
-    if not session_id:
-        return "unknown"
-    broot = default_broker_root()
-    registry_path = broot / "registry.json"
-    for reg in load_json_list(registry_path):
-        if reg.get("session_id") == session_id:
-            return reg.get("alias", "unknown")
+    if env_sid:
+        alias = _broker_lookup(env_sid)
+        if alias:
+            return alias
+
+    try:
+        import c2c_whoami  # local import to avoid cycles at module load
+        _session, registration = c2c_whoami.resolve_identity(None)
+        if registration is not None:
+            alias = registration.get("alias")
+            if isinstance(alias, str) and alias:
+                return alias
+    except Exception:
+        pass
+
     return "unknown"
 
 
 def resolve_self_session_id() -> str:
-    return (
-        os.environ.get("C2C_MCP_SESSION_ID", "").strip()
-        or os.environ.get("C2C_SESSION_ID", "").strip()
-        or ""
-    )
+    env_sid = os.environ.get("C2C_MCP_SESSION_ID", "").strip() or os.environ.get(
+        "C2C_SESSION_ID", ""
+    ).strip()
+    if env_sid:
+        return env_sid
+    try:
+        import c2c_whoami
+        session, _registration = c2c_whoami.resolve_identity(None)
+        sid = session.get("session_id")
+        if isinstance(sid, str) and sid:
+            return sid
+    except Exception:
+        pass
+    return ""
 
 
 def main(argv: list[str] | None = None) -> int:
