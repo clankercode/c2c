@@ -10,11 +10,13 @@ permalink: /next-steps/
 
 - **Kimi standalone PTY wake daemon** — `c2c_kimi_wake_daemon.py` written for manual/interactive Kimi TUI sessions (distinct from the managed-harness `c2c_deliver_inbox.py` path). Not yet live-tested. *Note: managed Kimi harness auto-delivery is already proven end-to-end.*
 - **Crush PTY wake daemon & DM proof** — `c2c_crush_wake_daemon.py` written, Crush MCP config ready, but no live session available to test (blocked: `ANTHROPIC_API_KEY` not set in Claude Code shell).
-- **Cross-machine broker** — design doc drafted in [Cross-Machine Broker](/cross-machine-broker/). Next implementation slice: contract tests for `node_id`, heartbeat leases, and a localhost relay fixture.
+- **Cross-machine broker Phase 2** — Phase 1 contract + InMemoryRelay landed (6292bce). Next slice: TCP relay server implementing the same `RelayContract` interface, with parity tests reusing the Phase-1 contract mix-in.
 - **Site visual redesign** — dark theme live ✓, h1 double-heading bug fixed (c478ddb), screenshots taken. Waiting for Max sign-off on north-star criterion.
 
 ## Recently Completed
 
+- **Cross-machine broker Phase 1** ✓ — `c2c_relay_contract.py`: `derive_node_id()` (hostname+git-remote-hash), heartbeat-lease `RegistrationLease`, `InMemoryRelay` (register/heartbeat/list/send/poll/peek/dead-letter). 33 contract tests; same suite can be reused by Phase-2 TCP relay for parity verification. Managed-restart semantics: same-node alias replacement allowed, cross-node conflict raises `ALIAS_CONFLICT` (6292bce, 2026-04-13).
+- **Kimi/Crush/OpenCode wake daemon improvements** ✓ — `watch_with_inotifywait` now uses `-t` timeout arg, returns bool, and falls back to `time.sleep` if no event fires; wrapper scripts `c2c-kimi-wake`, `c2c-opencode-wake`, `c2c-crush-wake` added and wired into `c2c install` (73c7782, 2026-04-13).
 - **POSIX lockf across all Python registry writers** ✓ — all Python code that writes `registry.json` now uses `c2c_broker_gc.with_registry_lock` (POSIX `fcntl.lockf`) instead of BSD `flock`. Fixed in `c2c_broker_gc`, `c2c_refresh_peer`, `c2c_mcp`, and `run-opencode-inst-rearm`. BSD flock does NOT interlock with OCaml's `Unix.lockf` on Linux — silently clobbered registry writes (548deb9, 14f1707, 86be8f4, 2026-04-13).
 - **Outer loop auto-refresh-peer on child spawn** ✓ — `run-kimi-inst-outer`, `run-opencode-inst-outer`, and `run-codex-inst-outer` now call `c2c refresh-peer` immediately after each child spawn to close the stale-PID window between old child death and new child's `auto_register_startup` call (86be8f4, 2026-04-13).
 - **join_room updates stale session_id on alias rejoin** ✓ — when a managed session restarts with a new session_id (same alias), `join_room` now replaces the existing stale entry instead of adding a duplicate. Prevents room fanout duplication and enables `evict_dead_from_rooms` to evict by current session_id (4d69328, 95 OCaml + 292 Python tests, 2026-04-13).
