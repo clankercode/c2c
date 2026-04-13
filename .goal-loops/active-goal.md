@@ -131,6 +131,16 @@ These are Max's target experiences, verbatim:
   shipped with deep-space dark theme, electric cyan + magenta accents,
   glass-morphism cards, mesh-gradient hero, pulse animations, card-grid
   features, and Inter typography (2026-04-14).
+- **c2c smoke-test** ✓: `c2c smoke-test [--broker-root DIR] [--json]` — end-to-end
+  broker verification command. Seeds synthetic sessions, sends a marker message,
+  polls, and verifies delivery. 12 Python tests. `smoke-test` is in
+  SAFE_AUTO_APPROVE_SUBCOMMANDS. Ships in Python CLI (2026-04-14, storm-beacon).
+- **Missing sender alias errors** ✓: OCaml v0.6.6. `send`, `send_all`, `send_room`,
+  `join_room`, `leave_room` now return structured `isError:true` when called
+  without a registered session AND without an explicit `from_alias`/`alias`
+  argument, instead of crashing with a raw `Yojson__Safe.Util.Type_error`.
+  Server feature flag `missing_sender_alias_errors` added. 2 new OCaml regression
+  tests (3023473, 2026-04-14, storm-beacon).
 
 ### Active Work
 
