@@ -202,9 +202,17 @@ not a task queue.
 
 ```
 c2c_cli.py <install|list|mcp|register|send|verify|whoami> [args]  # Main CLI entry point, dispatches to subcommands
-c2c_install.py [--json]                                            # Installs c2c wrapper scripts into ~/.local/bin
+c2c_install.py [--json]                                            # Installs c2c wrapper scripts into ~/.local/bin. Resolves install path via git-common-dir so worktree installs point at main repo.
 c2c_configure_claude_code.py [--broker-root DIR] [--session-id ID] [--alias NAME] [--force] [--json]  # Writes mcpServers.c2c into ~/.claude.json AND registers PostToolUse inbox hook in ~/.claude/settings.json (one-command Claude Code self-config)
 c2c_configure_codex.py [--broker-root DIR] [--alias NAME] [--force] [--json]  # Appends/replaces [mcp_servers.c2c] in ~/.codex/config.toml with all tools auto-approved
+c2c_configure_opencode.py [--target-dir DIR] [--alias NAME] [--install-global-plugin] [--json]  # Writes .opencode/opencode.json + installs c2c TypeScript delivery plugin. --install-global-plugin also copies to ~/.config/opencode/plugins/.
+c2c_configure_kimi.py [--alias NAME] [--no-alias] [--json]        # Writes ~/.kimi/mcp.json for Kimi Code MCP setup.
+c2c_configure_crush.py [--alias NAME] [--no-alias] [--json]       # Writes ~/.config/crush/crush.json (respects XDG_CONFIG_HOME) for Crush MCP setup.
+c2c_deliver_inbox.py (--notify-only | --full) [--loop] [--client CLIENT] [--session-id S] [--pts N] [--terminal-pid P] [--min-inject-gap N]  # Delivery daemon: watches inbox via inotifywait, delivers messages. --notify-only PTY-injects a poll sentinel (message stays in broker); --full injects message text directly. --client kimi routes through c2c_pts_inject (direct PTS write). --loop runs continuously. Used by managed harnesses (run-codex-inst-outer, run-kimi-inst-outer).
+c2c_inject.py --pts N [--client CLIENT] [--message MSG] [--session-id S]  # One-shot PTY injection. --client kimi routes through c2c_pts_inject.inject() (direct /dev/pts write). Other clients use pty_inject binary (master fd + bracketed paste).
+c2c_broker_gc.py [--once] [--interval N] [--ttl N] [--dead-letter-ttl N]  # GC daemon: sweeps dead registrations, prunes dead-letter entries. DO NOT run during active swarm — check for outer loops first.
+c2c_health.py [--json] [--session-id S]                           # Diagnostic: checks broker root, registry, rooms, PostToolUse hook, outer loops, relay. Also accessible via c2c health.
+c2c_kimi_prefill.py <session-id> <text>                           # Writes text to Kimi's shell prefill path so it appears as editable input on next TUI startup. Used by run-kimi-inst to inject the startup prompt.
 c2c_register.py <session> [--json]                                 # Registers a Claude session for c2c messaging, assigns an alias
 c2c_send.py <alias> <message...> [--dry-run] [--json]             # Sends a c2c message to an opted-in session by alias
 c2c_list.py [--all] [--json]                                       # Lists opted-in c2c sessions (--all includes unregistered)
