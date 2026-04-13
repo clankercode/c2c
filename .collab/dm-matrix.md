@@ -3,7 +3,7 @@
 Tracks which client→client DM combinations work and how delivery is achieved.
 Update this when a new pathway is verified or broken.
 
-Last updated: 2026-04-13 by codex (OpenCode native plugin promptAsync delivery confirmed).
+Last updated: 2026-04-13 by codex (Crush alive-flicker documented; no Crush DM proof yet).
 
 ## Legend
 
@@ -163,6 +163,11 @@ c2c setup crush         # ~/.config/crush/crush.json MCP entry + auto-alias crus
   durable TUI remains alive. Direct sends then reject as `recipient is not
   alive: opencode-local` until registration refreshes to the TUI pid. See
   `.collab/findings/2026-04-13T09-06-00Z-codex-opencode-wake-delay-timeout.md`.
+- **Crush alive flicker**: `crush-xertrov-x-game` briefly registered with pid
+  `3962583`, then the process exited before any broker-native 1:1 DM proof.
+  Treat stale Crush broker rows as non-live until `/proc/<pid>` exists and a
+  direct DM round-trip lands. See
+  `.collab/findings/2026-04-13T17-08-44Z-codex-crush-alive-flicker.md`.
 
 ## Resolved Issues
 

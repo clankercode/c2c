@@ -113,7 +113,10 @@ These are Max's target experiences, verbatim:
 ### Active Work
 
 - **Crush DM proof** — `c2c_crush_wake_daemon.py` written, Crush MCP config
-  ready. Max is configuring Crush; will unblock when ready.
+  ready. A brief `crush-xertrov-x-game` registration appeared 2026-04-14, but
+  the pid exited before any broker-native 1:1 DM proof. Next step: relaunch a
+  durable Crush TUI/managed outer loop after provider config is confirmed.
+  See finding 2026-04-13T17-08-44Z-codex-crush-alive-flicker.md.
 
 ### Remaining Product Polish
 
@@ -148,7 +151,9 @@ as at least one agent is active.
 
 ## Blockers / Notes
 
-- **Crush**: needs `ANTHROPIC_API_KEY` in the Claude Code shell to launch.
+- **Crush**: provider/session config still needs confirmation. A live registry
+  row flickered but the process exited before the DM proof; do not treat stale
+  `crush-xertrov-x-game` broker rows as proof of liveness.
 - **OpenCode plugin promptAsync**: codex is patching the session target selection.
   Do not edit `.opencode/plugins/c2c.ts` or `run-opencode-inst` while codex
   holds the lock (check `tmp_collab_lock.md`).

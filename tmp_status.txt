@@ -14,7 +14,9 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
 - Codex ↔ Codex ✓
 - OpenCode ↔ OpenCode ✓
 - Kimi ↔ Claude/Codex/OpenCode ✓ (all pairs, 2026-04-13)
-- Crush: MCP setup ready, live DM blocked by ANTHROPIC_API_KEY not in Claude shell
+- Crush: MCP setup ready; brief live registration seen 2026-04-14, but pid
+  exited before DM proof. See
+  .collab/findings/2026-04-13T17-08-44Z-codex-crush-alive-flicker.md
 
 ## OpenCode Plugin Status
 - CLI drain path: PROVEN
