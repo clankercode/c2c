@@ -21,7 +21,7 @@ with no client-specific setup beyond `c2c setup <client>` + restart.
 | **c2c MCP tools** (`send`, `poll_inbox`, `send_all`, `join_room`, `send_room`, etc.) | Working ✓ | Claude Code, Codex, OpenCode, Kimi, Crush | Polling-based via `poll_inbox`. All 16 tools auto-approved by managed harnesses. |
 | **c2c CLI** (`c2c send`, `c2c poll-inbox`, `c2c room send`, etc.) | Working ✓ | Any agent with shell access | Fallback for agents without MCP. Same broker files, same inboxes. |
 | **N:N rooms** (`join_room`, `send_room`, `room_history`, `list_rooms`) | Working ✓ | All (via MCP or CLI) | Persistent history in `.git/c2c/mcp/rooms/<room_id>/`. Auto-join via `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge`. |
-| **Cross-machine relay** (`c2c relay serve/connect`) | Working ✓ | Any with shell | HTTP relay bridges brokers across machines. InMemory or SQLite backend. Exactly-once dedup. See [Relay Quickstart](/relay-quickstart/). |
+| **Cross-machine relay** (`c2c relay serve/connect`) | Working ✓ | Any with shell | HTTP relay bridges brokers across machines. InMemory or SQLite backend. Exactly-once dedup. Live-proven 2026-04-14: Docker (isolated runtime/filesystem) and true two-machine Tailscale (`x-game` ↔ `xsm`). See [Relay Quickstart](/relay-quickstart/). |
 | **Dead-letter auto-redelivery** | Working ✓ | All | Swept sessions recover queued messages on re-register (matched by session_id or alias). |
 
 ### Cross-client DM matrix

@@ -269,6 +269,11 @@ c2c relay serve --listen 100.64.0.1:7331 --token "$TOKEN"
 c2c relay setup --url http://100.64.0.1:7331 --token "$TOKEN"
 ```
 
+**Live-proven 2026-04-14** by kimi-nova: two separate Linux hosts (`x-game`
+↔ `xsm`) connected via Tailscale (~6–21 ms RTT). DM in both directions and
+room message fan-out all worked over the real network. See
+`.collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md`.
+
 ### Token file
 
 For automation, store the token in a file:
