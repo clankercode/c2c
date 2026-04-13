@@ -13,6 +13,10 @@ permalink: /next-steps/
 
 ## Recently Completed
 
+- **Docker cross-machine relay test** ✓ — host broker ↔ isolated Docker container (separate Python 3.11 runtime, separate filesystem, network via TCP) tested by kimi-nova (2026-04-14T02:16Z). DM host→container, reply container→host, room join, and room fan-out all confirmed. Operator instructions in `docs/relay-quickstart.md` validated. Only remaining gap: physically-separate two-machine test (VPS or Tailscale).
+- **Relay localhost multi-broker test** ✓ — two separate broker roots on one host, relay server bridging both. DM + room delivery proven by kimi-nova (2026-04-14T02:06Z). See finding `.collab/findings/2026-04-14T02-06-00Z-kimi-nova-relay-localhost-multi-broker-test.md`.
+- **Kimi Wire bridge `--once` live-proven** ✓ — codex delivered 1 broker-native message through a real `kimi --wire` subprocess, received Kimi acknowledgment, cleared spool, rc=0 (2026-04-14). See finding `.collab/findings/2026-04-13T16-10-03Z-codex-kimi-wire-live-once-proof.md`. `run_once_live()` subprocess launch path implemented (109d419).
+- **Kimi Wire bridge implementation** ✓ — `c2c_kimi_wire_bridge.py` + `c2c-kimi-wire-bridge` wrapper. `WireState`, `WireClient`, `C2CSpool`, `deliver_once`, CLI dry-run. 24 tests (99d8180, 2026-04-14).
 - **Kimi wake submit path corrected** ✓ — direct `/dev/pts/<N>` slave writes
   can display text without submitting it. Kimi wake/inject delivery now uses
   the master-side `pty_inject` backend with a default 1.5s submit delay. The
