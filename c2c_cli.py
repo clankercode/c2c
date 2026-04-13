@@ -44,6 +44,7 @@ SAFE_AUTO_APPROVE_SUBCOMMANDS = {
     "health",
     "history",
     "smoke-test",
+    "wake-peer",
 }
 
 USAGE = (
@@ -52,7 +53,7 @@ USAGE = (
     "configure-kimi|configure-opencode|dead-letter|deliver-inbox|health|"
     "history|init|inject|install|list|mcp|peek-inbox|poker-sweep|poll-inbox|"
     "prune|refresh-peer|register|restart-me|room|send|send-all|setup|"
-    "smoke-test|status|sweep|verify|watch|whoami|wire-daemon> [...args]"
+    "smoke-test|status|sweep|verify|wake-peer|watch|whoami|wire-daemon> [...args]"
 )
 
 
@@ -184,6 +185,9 @@ def main(argv: list[str] | None = None) -> int:
         return c2c_status.main(remainder)
     if subcommand == "verify":
         return c2c_verify.main(remainder)
+    if subcommand == "wake-peer":
+        import c2c_wake_peer
+        return c2c_wake_peer.main(remainder)
     if subcommand == "watch":
         return c2c_watch.main(remainder)
     if subcommand == "whoami":

@@ -379,6 +379,7 @@ class C2CCLITests(unittest.TestCase):
                 "c2c-send-all",
                 "c2c-setup",
                 "c2c-verify",
+                "c2c-wake-peer",
                 "c2c-watch",
                 "c2c-whoami",
                 "restart-codex-self",
