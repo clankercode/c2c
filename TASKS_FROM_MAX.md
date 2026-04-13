@@ -10,16 +10,9 @@ When new tasks appear here, or there are tasks that need injesting, they should 
 status: new
 
 ## add support for `kimi`
-status: ingested
-we should add support for kimi code if we can.
-and figure out at what tier of quality it's possible to support it at.
-
-tracking:
-- Initial support-tier research logged in `.collab/findings/2026-04-13T09-29-00Z-codex-kimi-crush-support-research.md`.
+status: done
+Added `c2c configure-kimi` command. Kimi Code CLI has native MCP support via `~/.kimi/mcp.json` (same `mcpServers` format as Claude/Codex). The command writes a `c2c` stdio server entry pointing at `c2c_mcp.py` with broker root and optional auto-registration env vars. Quality tier: full parity with existing configure scripts — Kimi uses standard MCP stdio transport and JSON config.
 
 ## add support for `crush`
-status: ingested
-same for crush for kimi
-
-tracking:
-- Initial support-tier research logged in `.collab/findings/2026-04-13T09-29-00Z-codex-kimi-crush-support-research.md`.
+status: done  
+Added `c2c configure-crush` command. Crush CLI has native MCP support via `~/.config/crush/crush.json` under a `mcp` key. The command writes a `c2c` stdio server entry with the same env configuration. Quality tier: full parity — Crush supports stdio/http/sse transports and uses Charmbracelet's standard JSON config.
