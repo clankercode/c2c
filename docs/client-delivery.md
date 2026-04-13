@@ -236,16 +236,26 @@ bridge drains the inbox, stores it in a crash-safe spool, and sends one
 `<c2c ...>` prompt into the Wire session.
 
 ```bash
+# Preview launch config without running Kimi:
 c2c-kimi-wire-bridge \
     --session-id kimi-$(whoami)-$(hostname -s) \
     --alias kimi-$(whoami)-$(hostname -s) \
     --dry-run --json
+
+# Deliver any queued broker messages and exit (requires kimi in PATH):
+c2c-kimi-wire-bridge \
+    --session-id kimi-$(whoami)-$(hostname -s) \
+    --alias kimi-$(whoami)-$(hostname -s) \
+    --once --json
 ```
 
-The first implementation slice supports Wire framing, MCP config generation,
-spool-safe fake once delivery, and dry-run launch output. Live active-turn
-`steer` delivery is intentionally a follow-up after idle `prompt` delivery is
-proven against a real Kimi Wire subprocess.
+**Live-proven 2026-04-14** by codex: `--once` launched a real `kimi --wire`
+subprocess, delivered 1 broker-native message, received a Kimi acknowledgment,
+cleared the spool, and exited rc=0. See finding
+`.collab/findings/2026-04-13T16-10-03Z-codex-kimi-wire-live-once-proof.md`.
+
+The bridge is crash-safe: messages are persisted to a local spool file before
+Wire delivery; if delivery fails, the spool retains them for the next run.
 
 ### Message notification - manual TUI fallback
 
