@@ -80,8 +80,6 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_whoami.py",
         "c2c_cli.py",
         "c2c_mcp.py",
-        "c2c_poll_inbox.py",
-        "c2c-poll-inbox",
         "c2c_registry.py",
         "claude_send_msg.py",
         "claude_list_sessions.py",
@@ -1049,6 +1047,52 @@ class C2CCLITests(unittest.TestCase):
             ],
         )
 
+    def test_sync_broker_registry_preserves_liveness_metadata_for_yaml_backed_peer(
+        self,
+    ):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        broker_root.mkdir(parents=True, exist_ok=True)
+        (broker_root / "registry.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "session_id": AGENT_ONE_SESSION_ID,
+                        "alias": "storm-ember",
+                        "pid": 4242,
+                        "pid_start_time": 9999,
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        save_registry(
+            {
+                "registrations": [
+                    {"session_id": AGENT_ONE_SESSION_ID, "alias": "storm-ember"}
+                ]
+            },
+            self.registry_path,
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {"C2C_REGISTRY_PATH": str(self.registry_path)},
+            clear=False,
+        ):
+            c2c_mcp.sync_broker_registry(broker_root)
+
+        self.assertEqual(
+            json.loads((broker_root / "registry.json").read_text(encoding="utf-8")),
+            [
+                {
+                    "session_id": AGENT_ONE_SESSION_ID,
+                    "alias": "storm-ember",
+                    "pid": 4242,
+                    "pid_start_time": 9999,
+                }
+            ],
+        )
+
     def test_sync_broker_registry_preserves_broker_only_liveness_metadata(self):
         broker_root = Path(self.temp_dir.name) / "mcp-broker"
         broker_root.mkdir(parents=True, exist_ok=True)
@@ -1207,12 +1251,10 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(json.loads(inbox_path.read_text(encoding="utf-8")), [])
 
     def test_c2c_poll_inbox_defaults_session_from_run_codex_env(self):
-        env = dict(self.env)
-        env["RUN_CODEX_INST_C2C_SESSION_ID"] = "codex-from-env"
-
-        self.assertEqual(
-            c2c_poll_inbox.resolve_session_id(None), "codex-from-env"
-        )
+        with mock.patch.dict(
+            os.environ, {"RUN_CODEX_INST_C2C_SESSION_ID": "codex-from-env"}
+        ):
+            self.assertEqual(c2c_poll_inbox.resolve_session_id(None), "codex-from-env")
 
     def test_run_codex_inst_allows_explicit_c2c_id_for_multiple_codex_sessions(self):
         config_dir = Path(self.temp_dir.name) / "run-codex-inst.d"
@@ -1329,9 +1371,7 @@ class C2CCLITests(unittest.TestCase):
             self.assertEqual(marker["name"], "codex-a")
             self.assertEqual(marker["pid"], sleeper.pid)
             self.assertEqual(marker["signal"], "SIGTERM")
-            self.assertEqual(
-                marker["reason"], "rebuilt c2c mcp after startup failure"
-            )
+            self.assertEqual(marker["reason"], "rebuilt c2c mcp after startup failure")
             self.assertFalse(marker["dry_run"])
         finally:
             if sleeper.poll() is None:
@@ -2259,6 +2299,43 @@ class C2CSendUnitTests(unittest.TestCase):
                 ],
             )
 
+    def test_send_to_alias_rejects_dead_broker_only_peer(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            broker_root = Path(temp_dir) / "mcp-broker"
+            broker_root.mkdir(parents=True, exist_ok=True)
+            (broker_root / "registry.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "session_id": "codex-local",
+                            "alias": "codex",
+                            "pid": 4242,
+                            "pid_start_time": 9999,
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch("c2c_send.load_sessions", return_value=[]),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "C2C_REGISTRY_PATH": str(Path(temp_dir) / "registry.yaml"),
+                        "C2C_MCP_BROKER_ROOT": str(broker_root),
+                    },
+                    clear=False,
+                ),
+                mock.patch("c2c_send.os.path.exists", return_value=False),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "recipient is not alive: codex"
+                ):
+                    c2c_send.send_to_alias("codex", "hello peer", dry_run=False)
+
+            self.assertFalse((broker_root / "codex-local.inbox.json").exists())
+
     def test_send_to_alias_broker_only_peer_concurrent_appends_preserve_all_messages(
         self,
     ):
@@ -2335,6 +2412,16 @@ class C2CSendUnitTests(unittest.TestCase):
 
             self.assertEqual(lockf.call_args_list[0].args[1], c2c_send.fcntl.LOCK_EX)
             self.assertEqual(lockf.call_args_list[1].args[1], c2c_send.fcntl.LOCK_UN)
+
+    def test_broker_inbox_write_lock_uses_ocaml_sidecar_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            inbox_path = Path(temp_dir) / "codex-local.inbox.json"
+
+            with c2c_send.broker_inbox_write_lock(inbox_path):
+                self.assertTrue((Path(temp_dir) / "codex-local.inbox.lock").exists())
+                self.assertFalse(
+                    (Path(temp_dir) / "codex-local.inbox.json.lock").exists()
+                )
 
     def test_main_reports_send_surface_failures_cleanly(self):
         session = {

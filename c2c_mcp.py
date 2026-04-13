@@ -54,11 +54,14 @@ def sync_broker_registry(broker_root: Path) -> None:
     registry_path = registry_path_from_env()
     with registry_write_lock(registry_path):
         destination = broker_root / "registry.json"
+        existing_by_session_id = {
+            registration["session_id"]: registration
+            for registration in load_broker_registrations(destination)
+        }
         registrations = [
-            {
-                "session_id": registration["session_id"],
-                "alias": registration["alias"],
-            }
+            merge_broker_registration(
+                existing_by_session_id.get(registration["session_id"]), registration
+            )
             for registration in load_registry_unlocked(registry_path).get(
                 "registrations", []
             )
@@ -67,7 +70,7 @@ def sync_broker_registry(broker_root: Path) -> None:
             registration["session_id"] for registration in registrations
         }
         known_aliases = {registration["alias"] for registration in registrations}
-        for registration in load_broker_registrations(destination):
+        for registration in existing_by_session_id.values():
             if registration["session_id"] in known_session_ids:
                 continue
             if registration["alias"] in known_aliases:
@@ -88,6 +91,15 @@ def sync_broker_registry(broker_root: Path) -> None:
             temp_path = Path(handle.name)
 
         os.replace(temp_path, destination)
+
+
+def merge_broker_registration(
+    existing: dict[str, object] | None, registration: dict
+) -> dict:
+    merged = dict(existing or {})
+    merged["session_id"] = registration["session_id"]
+    merged["alias"] = registration["alias"]
+    return merged
 
 
 def default_session_id() -> str:

@@ -48,9 +48,17 @@ def resolve_broker_only_alias(alias: str) -> dict | None:
     broker_root = Path(os.environ.get("C2C_MCP_BROKER_ROOT") or default_broker_root())
     registrations = load_broker_registrations(broker_root / "registry.json")
     for registration in registrations:
-        if registration.get("alias") == alias:
+        if registration.get("alias") == alias and broker_registration_is_alive(
+            registration
+        ):
             return registration
     return None
+
+
+def broker_alias_exists(alias: str) -> bool:
+    broker_root = Path(os.environ.get("C2C_MCP_BROKER_ROOT") or default_broker_root())
+    registrations = load_broker_registrations(broker_root / "registry.json")
+    return any(registration.get("alias") == alias for registration in registrations)
 
 
 def enqueue_broker_message(session_id: str, to_alias: str, message: str) -> dict:
@@ -146,7 +154,7 @@ def resolve_sender_broker_alias(sessions: list[dict] | None = None) -> str:
 @contextlib.contextmanager
 def broker_inbox_write_lock(inbox_path: Path):
     thread_lock = broker_inbox_thread_lock(inbox_path)
-    lock_path = inbox_path.with_suffix(f"{inbox_path.suffix}.lock")
+    lock_path = broker_inbox_lock_path(inbox_path)
     with thread_lock:
         with open(lock_path, "w", encoding="utf-8") as handle:
             fcntl.lockf(handle, fcntl.LOCK_EX)
@@ -154,6 +162,14 @@ def broker_inbox_write_lock(inbox_path: Path):
                 yield
             finally:
                 fcntl.lockf(handle, fcntl.LOCK_UN)
+
+
+def broker_inbox_lock_path(inbox_path: Path) -> Path:
+    name = inbox_path.name
+    suffix = ".inbox.json"
+    if name.endswith(suffix):
+        return inbox_path.with_name(name[: -len(suffix)] + ".inbox.lock")
+    return inbox_path.with_suffix(f"{inbox_path.suffix}.lock")
 
 
 def broker_inbox_thread_lock(inbox_path: Path) -> threading.Lock:
@@ -183,6 +199,35 @@ def write_broker_inbox(inbox_path: Path, items: list[dict]) -> None:
     os.replace(temp_path, inbox_path)
 
 
+def broker_registration_is_alive(registration: dict) -> bool:
+    pid = registration.get("pid")
+    if not isinstance(pid, int):
+        return True
+    if not os.path.exists(f"/proc/{pid}"):
+        return False
+    stored_start_time = registration.get("pid_start_time")
+    if not isinstance(stored_start_time, int):
+        return True
+    return read_pid_start_time(pid) == stored_start_time
+
+
+def read_pid_start_time(pid: int) -> int | None:
+    try:
+        line = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    tail_start = line.rfind(")")
+    if tail_start == -1 or tail_start + 2 >= len(line):
+        return None
+    parts = line[tail_start + 2 :].split()
+    if len(parts) <= 19:
+        return None
+    try:
+        return int(parts[19])
+    except ValueError:
+        return None
+
+
 def send_to_alias(alias: str, message: str, dry_run: bool) -> dict:
     try:
         sessions = load_sessions()
@@ -190,7 +235,9 @@ def send_to_alias(alias: str, message: str, dry_run: bool) -> dict:
     except ValueError:
         registration = resolve_broker_only_alias(alias)
         if registration is None:
-            raise
+            if broker_alias_exists(alias):
+                raise ValueError(f"recipient is not alive: {alias}")
+            raise ValueError(f"unknown alias: {alias}")
         if dry_run:
             return {
                 "dry_run": True,

@@ -57,6 +57,7 @@ Recent hardening completed:
 - The Python CLI send path now supports broker-only peers like `codex` by falling back to the broker registry when an alias is not present in the YAML/live-Claude registry.
 - Broker-only fallback sends now use the caller's registered alias when available, instead of always stamping `from_alias` as `c2c-send`.
 - Broker-only inbox appends in `c2c_send.py` are now serialized with a per-inbox thread lock plus POSIX `fcntl.lockf` sidecar lock and atomic replace, so concurrent Python sends do not drop messages and Python interlocks with OCaml `Unix.lockf`.
+- Python broker sync now preserves existing liveness metadata for YAML-backed peers, and Python's broker-only CLI fallback now rejects dead peers instead of appending into orphan inboxes.
 - The Python follow-up slice is reverified green, including a launcher dry-run assertion that is now interpreter-path agnostic.
 - The Codex PTY poker loop is running with an orientation heartbeat that polls inbox, reads status/locks when needed, treats empty inbox as not-a-stop-signal, and continues unblocked work.
 - `c2c_mcp.py` now builds the OCaml server explicitly and launches the built executable directly instead of running through `bash -lc ... dune exec ...`, reducing the documented wrapper-chain leak risk in the MCP launcher path.
