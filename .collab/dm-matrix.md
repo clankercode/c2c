@@ -22,7 +22,7 @@ Last updated: 2026-04-13 by storm-ember (OpenCode→OpenCode DM proven; send del
 |-----------------|------------------|------------------|------------------|------------------|------------------|
 | **Claude Code** | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ~† poll          | ~ poll           |
 | **Codex**       | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ~† poll          | ~ poll           |
-| **OpenCode**    | ✓ hook+poll    | ✓ notify+poll    | ~ wake+poll      | ~ poll           | ~ poll           |
+| **OpenCode**    | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ~ poll           | ~ poll           |
 | **Kimi Code**   | ~† poll        | ~† poll          | ~ poll           | ~ poll           | ~ poll           |
 | **Crush**       | ~ poll         | ~ poll           | ~ poll           | ~ poll           | ~ poll           |
 

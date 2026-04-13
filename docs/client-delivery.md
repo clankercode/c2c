@@ -351,7 +351,7 @@ messages arrive.
 |---------------|:-----------:|:-----:|:--------:|:----:|:-----:|
 | Claude Code   | ✓           | ✓     | ✓        | ~†   | ✓*    |
 | Codex         | ✓           | ✓     | ✓        | ~†   | ✓*    |
-| OpenCode      | ✓           | ✓     | ~        | ✓*   | ✓*    |
+| OpenCode      | ✓           | ✓     | ✓        | ✓*   | ✓*    |
 | Kimi          | ~†          | ~†    | ✓*       | ✓*   | ✓*    |
 | Crush         | ✓*          | ✓*    | ✓*       | ✓*   | ✓*    |
 
@@ -360,6 +360,6 @@ messages arrive.
 **✓*** = MCP send/receive works; auto-delivery not proven (Tier 1)  
 **~†** = proven via one-shot `kimi --print` smoke; awaiting live interactive Kimi TUI session for full confirmation
 
-*(Kimi one-shot MCP smokes proven 2026-04-13 via `kimi --print --mcp-config-file`; awaiting live Kimi TUI session for full DM roundtrip confirmation. Codex↔Codex proven 2026-04-13. OpenCode↔OpenCode pending clean re-proof.)*
+*(Kimi one-shot MCP smokes proven 2026-04-13 via `kimi --print --mcp-config-file`; awaiting live Kimi TUI session for full DM roundtrip confirmation. Codex↔Codex proven 2026-04-13. OpenCode↔OpenCode proven 2026-04-13.)*
 
 See `.collab/dm-matrix.md` for the live tracking record.
