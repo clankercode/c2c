@@ -13,7 +13,7 @@ let auto_drain_channel_enabled () =
   | Some value ->
       let normalized = String.lowercase_ascii (String.trim value) in
       not (List.mem normalized [ "0"; "false"; "no"; "off" ])
-  | None -> true
+  | None -> false
 
 let starts_with_ci ~prefix s =
   let p = String.lowercase_ascii prefix in
