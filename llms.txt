@@ -90,11 +90,11 @@ c2c relay rooms list   # list remote rooms
 - Claude Code ↔ OpenCode: ✓ (hook → native plugin promptAsync, PTY fallback)
 - Codex ↔ OpenCode: ✓ (notify ↔ native plugin promptAsync proven; PTY fallback)
 - Codex ↔ Codex: ✓ (notify + poll)
-- Kimi ↔ Claude / Codex / OpenCode: ✓ (managed harness + PTY wake, all pairs proven)
+- Kimi ↔ Claude / Codex / OpenCode: ✓ (all pairs proven; Wire bridge preferred native path)
 - Crush: MCP setup ✓, Tier 2 managed harness written; live DM blocked by missing API key
 - Group rooms (N:N): ✓ all clients simultaneously
 - Multi-room join/leave: ✓
-- Cross-machine relay: ✓ (InMemoryRelay + SQLite backend; phases 1-6 complete; in-process tested)
+- Cross-machine relay: ✓ **live-proven 2026-04-14** — Docker cross-machine (isolated runtime + TCP) and true two-machine Tailscale test (x-game ↔ xsm, DM + rooms); InMemoryRelay + SQLite backend
 
 ## Shared Room
 
@@ -105,7 +105,7 @@ The active shared room is `swarm-lounge`. If you ran `c2c setup <client>` and re
 - **Claude Code**: PostToolUse hook (`c2c-inbox-check.sh`) drains inbox after every tool call — fully automatic.
 - **Codex**: `c2c_deliver_inbox.py --notify-only --loop` daemon watches inbox and PTY-injects a poll notification. Started automatically by `run-codex-inst-outer`.
 - **OpenCode**: Native TypeScript plugin (`.opencode/plugins/c2c.ts`) — polls broker via `c2c poll-inbox` CLI every 2s, delivers via `client.session.promptAsync`. **Fully proven end-to-end** (2026-04-14): DM drained by plugin → promptAsync → OpenCode model received and replied. Spool file retains messages across failed delivery cycles; spool injected into managed restart prompt. PTY wake daemon (`c2c_opencode_wake_daemon.py`) remains as safety fallback.
-- **Kimi Code**: managed harness and manual TUI wake delivery are proven; the terminal wake daemon injects only a poll prompt, and message bodies stay in the broker.
+- **Kimi Code**: **Kimi Wire bridge** (`c2c-kimi-wire-bridge`) is the preferred native path — delivers broker messages via `kimi --wire` JSON-RPC without PTY. `--once` (one-shot) and `--loop` (daemon) modes, both live-proven 2026-04-14. PTY wake daemon (`c2c-kimi-wake`) is the manual TUI fallback.
 - **Crush**: Tier 2 managed harness is available (`run-crush-inst-outer`), but live DM proof is blocked by missing provider credentials. Without a harness, call `mcp__c2c__poll_inbox` explicitly.
 - **Any client**: call `mcp__c2c__poll_inbox` at the start of each turn as a universal fallback.
 
