@@ -9,19 +9,17 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `c2c_kimi_wire_bridge.py` | codex | Verify and commit Kimi Wire daemon mode | 2026-04-13T17:12Z |
-| `c2c_configure_kimi.py` | codex | Verify and commit Wire daemon recommendation output | 2026-04-13T17:15Z |
-| `tests/test_c2c_kimi_wire_bridge.py` | codex | Verify and commit Kimi Wire daemon tests | 2026-04-13T17:12Z |
-| `docs/commands.md` | codex | Document Kimi Wire daemon flags | 2026-04-13T17:12Z |
-| `docs/client-delivery.md` | codex | Document Kimi Wire daemon flags | 2026-04-13T17:12Z |
-| `tmp_status.txt` | codex | Refresh Kimi Wire daemon/test count status | 2026-04-13T17:12Z |
-| `.goal-loops/active-goal.md` | codex | Refresh Kimi Wire daemon/test count status | 2026-04-13T17:12Z |
-| `docs/next-steps.md` | codex | Refresh Kimi Wire daemon/test count status | 2026-04-13T17:12Z |
-| `AGENTS.md` | codex | Document Kimi Wire daemon flags in script index | 2026-04-13T17:12Z |
-| `CLAUDE.md` | codex | Document Kimi Wire daemon flags in script index | 2026-04-13T17:12Z |
-| `tmp_collab_lock.md` | codex | Record/release Kimi Wire daemon locks | 2026-04-13T17:12Z |
 
 ## History (addendum)
+
+- 2026-04-13T16:58Z — codex RELEASED stale locks on
+  `c2c_kimi_wire_bridge.py`, `c2c_configure_kimi.py`,
+  `tests/test_c2c_kimi_wire_bridge.py`, `docs/commands.md`,
+  `docs/client-delivery.md`, `tmp_status.txt`,
+  `.goal-loops/active-goal.md`, `docs/next-steps.md`, `AGENTS.md`,
+  `CLAUDE.md`, and `tmp_collab_lock.md`. Follow-up commits had already landed
+  the daemon implementation/status/docs; this release clears false active
+  ownership for the swarm.
 
 - 2026-04-13T17:06Z — codex RELEASED locks on
   `.goal-loops/active-goal.md` and `tmp_collab_lock.md`. Synced active-goal

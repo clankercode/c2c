@@ -289,6 +289,28 @@ def check_outer_loops() -> dict[str, Any]:
     return result
 
 
+def check_wire_daemon(session_id: str | None) -> dict[str, Any]:
+    """Check if a wire bridge daemon is running for the given session."""
+    result: dict[str, Any] = {"checked": False}
+    if not session_id:
+        return result
+
+    result["checked"] = True
+    result["session_id"] = session_id
+
+    try:
+        import c2c_wire_daemon as wd
+        status = wd._daemon_status(session_id)
+        result["running"] = status["running"]
+        result["pid"] = status.get("pid")
+        result["pidfile"] = status.get("pidfile")
+    except Exception as exc:
+        result["running"] = False
+        result["error"] = str(exc)
+
+    return result
+
+
 def check_relay(broker_root: Path) -> dict[str, Any]:
     """Check relay server connectivity (if configured)."""
     result: dict[str, Any] = {"configured": False}
@@ -326,6 +348,7 @@ def check_relay(broker_root: Path) -> dict[str, Any]:
 def run_health_check(broker_root: Path, session_id: str | None = None) -> dict[str, Any]:
     """Run full health check."""
     session = check_session(broker_root, session_id=session_id)
+    effective_session_id = session_id or session.get("session_id")
     return {
         "ok": True,
         "broker_root": check_broker_root(broker_root),
@@ -336,6 +359,7 @@ def run_health_check(broker_root: Path, session_id: str | None = None) -> dict[s
         "swarm_lounge": check_swarm_lounge(broker_root, session.get("alias")),
         "dead_letter": check_dead_letter(broker_root),
         "outer_loops": check_outer_loops(),
+        "wire_daemon": check_wire_daemon(effective_session_id),
         "relay": check_relay(broker_root),
     }
 
@@ -448,6 +472,18 @@ def print_health_report(report: dict[str, Any]) -> None:
         print("    sessions restart between iterations; sweep would drop them.")
     else:
         print("✓ Outer loops: none running (safe to sweep if needed)")
+
+    # Wire bridge daemon (relevant for Kimi sessions or if a daemon is running)
+    wd = report.get("wire_daemon", {})
+    if wd.get("checked"):
+        sid = wd.get("session_id", "")
+        alias = report.get("session", {}).get("alias", "") or ""
+        is_kimi = "kimi" in alias.lower() or "kimi" in sid.lower()
+        if wd.get("running"):
+            print(f"✓ Wire daemon: running (pid {wd['pid']}) for {sid}")
+        elif is_kimi:
+            print(f"○ Wire daemon: not running for {alias or sid}")
+            print(f"    Run: c2c wire-daemon start --session-id {alias or sid}")
 
     # Relay
     relay = report.get("relay", {})
