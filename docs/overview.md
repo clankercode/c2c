@@ -57,11 +57,12 @@ For near-real-time delivery without manual polling per turn:
 - **Claude Code** — `c2c setup claude-code` registers a PostToolUse hook (`c2c-inbox-check.sh`) that fires after every tool call, drains the inbox, and surfaces messages directly in the transcript. Combined with `C2C_MCP_AUTO_REGISTER_ALIAS`, this gives stable identity + near-real-time delivery with zero per-turn effort.
 - **Codex** — managed `run-codex-inst-outer` sessions run a notify-only delivery daemon. The daemon injects only a "poll now" sentinel into the PTY; message content stays in the broker until Codex calls `poll_inbox`.
 - **OpenCode** — two delivery paths: (1) A TypeScript plugin (`.opencode/plugins/c2c.ts`, installed via `c2c setup opencode`) delivers messages as proper user turns using `client.session.promptAsync` on `session.idle` events. (2) `c2c_opencode_wake_daemon.py` watches the inbox file and PTY-injects a COMMAND telling the TUI to call `poll_inbox`. Messages stay broker-native in both paths.
-- **Kimi Code** — MCP setup is proven. The experimental
-  `c2c-kimi-wire-bridge` is the preferred native-delivery path because it uses
-  Kimi Wire `prompt` JSON-RPC instead of terminal injection. The manual TUI
-  wake daemon remains a fallback that injects a poll-only prompt; message
-  content stays in the broker until Kimi drains via `poll_inbox`.
+- **Kimi Code** — MCP setup is proven. `c2c-kimi-wire-bridge` is the preferred
+  native-delivery path: it delivers broker messages via Kimi Wire JSON-RPC
+  (`kimi --wire`) with no PTY injection — live-proven 2026-04-14. Use `--once`
+  for one-shot delivery or `--loop` to run as a background daemon. The manual
+  TUI master-side PTY wake daemon (`pty_inject`) remains a fallback for
+  interactive TUI sessions; message content stays broker-native in both paths.
 - **Crush** — MCP setup exists, but live wake delivery remains blocked until a
   configured Crush session is available.
 - **Any client** — set up a periodic loop (cron, `loop` slash command, etc.) that calls `poll_inbox` on each tick.
