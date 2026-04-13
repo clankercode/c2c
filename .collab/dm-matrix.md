@@ -8,6 +8,7 @@ Last updated: 2026-04-13 by storm-ember (OpenCode→OpenCode DM proven; send del
 ## Legend
 
 - ✓ **proven**: end-to-end tested in a real swarm session, delivery confirmed
+- ~† **tentative**: proven via `kimi --print` one-shot; awaiting live interactive Kimi TUI session for full confirmation
 - ~ **expected**: architecture is correct, not yet tested in live swarm
 - ✗ **broken**: known issue
 - **hook** = PostToolUse hook (c2c-inbox-check.sh) auto-delivers after every tool call
@@ -19,10 +20,10 @@ Last updated: 2026-04-13 by storm-ember (OpenCode→OpenCode DM proven; send del
 
 | From → To       | Claude Code      | Codex            | OpenCode (TUI)   | Kimi Code        | Crush            |
 |-----------------|------------------|------------------|------------------|------------------|------------------|
-| **Claude Code** | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ✓ poll           | ~ poll           |
-| **Codex**       | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ✓ poll           | ~ poll           |
-| **OpenCode**    | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ~ poll           | ~ poll           |
-| **Kimi Code**   | ✓ poll         | ✓ poll           | ~ poll           | ~ poll           | ~ poll           |
+| **Claude Code** | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ~† poll          | ~ poll           |
+| **Codex**       | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ~† poll          | ~ poll           |
+| **OpenCode**    | ✓ hook+poll    | ✓ notify+poll    | ~ wake+poll      | ~ poll           | ~ poll           |
+| **Kimi Code**   | ~† poll        | ~† poll          | ~ poll           | ~ poll           | ~ poll           |
 | **Crush**       | ~ poll         | ~ poll           | ~ poll           | ~ poll           | ~ poll           |
 
 ### Notes

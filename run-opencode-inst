@@ -18,7 +18,8 @@ Config keys:
                  this instance; defaults to c2c_session_id if absent.
                  Use this when alias != session_id (e.g. alias=opencode-local,
                  session_id=ses_abc123).
-  prompt         opencode run prompt text
+  prompt         opencode run prompt text; also exported as
+                 OPENCODE_MCP_PROMPT for MCP/plugin startup context
   flags          extra flags before "run" (list of strings)
   session        opencode session ID to resume (optional)
 
@@ -93,6 +94,10 @@ def dry_run_enabled() -> bool:
     return os.environ.get("RUN_OPENCODE_INST_DRY_RUN", "").strip().lower() not in FALSE_STRINGS
 
 
+def silent_enabled() -> bool:
+    return os.environ.get("RUN_OPENCODE_INST_SILENT", "").strip().lower() not in FALSE_STRINGS
+
+
 def build_resume_args(config: dict) -> list[str]:
     continue_last = config.get("continue_last") is True
     session = coerce_string(config.get("session"), "session")
@@ -135,6 +140,7 @@ def build_launch(name: str, config: dict, extra: list[str]) -> tuple[list[str], 
     env["RUN_OPENCODE_INST_NAME"] = name
     env["RUN_OPENCODE_INST_C2C_SESSION_ID"] = c2c_session_id
     env["RUN_OPENCODE_INST_CONFIG_PATH"] = config_path_value
+    env["OPENCODE_MCP_PROMPT"] = prompt
     # OPENCODE_CONFIG: the path opencode reads to discover its config file.
     # OPENCODE_CONFIG_CONTENT: the file content for debugging / dry-run inspection.
     env["OPENCODE_CONFIG"] = config_path_value
@@ -171,6 +177,7 @@ def main(argv: list[str]) -> int:
                         "RUN_OPENCODE_INST_NAME": env["RUN_OPENCODE_INST_NAME"],
                         "RUN_OPENCODE_INST_C2C_SESSION_ID": env["RUN_OPENCODE_INST_C2C_SESSION_ID"],
                         "RUN_OPENCODE_INST_CONFIG_PATH": env["RUN_OPENCODE_INST_CONFIG_PATH"],
+                        "OPENCODE_MCP_PROMPT": env["OPENCODE_MCP_PROMPT"],
                         "OPENCODE_CONFIG": env["OPENCODE_CONFIG"],
                         "OPENCODE_CONFIG_CONTENT": env["OPENCODE_CONFIG_CONTENT"],
                         "RUN_OPENCODE_INST_RESTART_MARKER": env["RUN_OPENCODE_INST_RESTART_MARKER"],
@@ -189,10 +196,12 @@ def main(argv: list[str]) -> int:
     pid_file.parent.mkdir(parents=True, exist_ok=True)
     pid_file.write_text(f"{os.getpid()}\n", encoding="utf-8")
     if pre_exec:
-        print(f"[run-opencode-inst] pre_exec: {shlex.join(pre_exec)}", file=sys.stderr)
+        if not silent_enabled():
+            print(f"[run-opencode-inst] pre_exec: {shlex.join(pre_exec)}", file=sys.stderr)
         subprocess.run(pre_exec, cwd=str(cwd_path), env=env, check=False)
 
-    print(f"[run-opencode-inst] exec {shlex.join(launch)} (cwd={cwd_path})", file=sys.stderr)
+    if not silent_enabled():
+        print(f"[run-opencode-inst] exec {shlex.join(launch)} (cwd={cwd_path})", file=sys.stderr)
     os.chdir(str(cwd_path))
     try:
         os.execvpe(launch[0], launch, env)

@@ -92,7 +92,7 @@ def main(argv: list[str]) -> int:
         started = time.monotonic()
         proc = None
         try:
-            proc = subprocess.Popen(command, cwd=HERE, start_new_session=True)
+            proc = subprocess.Popen(command, cwd=HERE, start_new_session=True, env={**os.environ, "RUN_OPENCODE_INST_SILENT": "1"})
             time.sleep(0.5)
             maybe_rearm(name)
             exit_code = proc.wait()

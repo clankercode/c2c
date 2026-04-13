@@ -9,6 +9,10 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| `run-opencode-inst` | codex | Test-backed launcher silent flag / preserve peer change | 2026-04-13 11:22Z |
+| `tests/test_c2c_cli.py` | codex | Add focused run-opencode-inst silent regression | 2026-04-13 11:22Z |
+| `docs/client-delivery.md` | codex | Preserve corrected delivery matrix statuses | 2026-04-13 11:22Z |
+| `tmp_collab_lock.md` | codex | Record and release cleanup lock | 2026-04-13 11:22Z |
 
 ## History (addendum)
 
