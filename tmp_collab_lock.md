@@ -11,6 +11,7 @@ on disk).
 |------|--------|---------|----------|
 | `ocaml/c2c_mcp.ml` | codex-xertrov-x-game | Bind MCP sender alias to current registered session | 2026-04-13T17:32Z |
 | `ocaml/test/test_c2c_mcp.ml` | codex-xertrov-x-game | Regression tests for MCP alias spoof prevention | 2026-04-13T17:32Z |
+| `.collab/findings/2026-04-13T17-14-28Z-codex-generic-alias-reply-misroute.md` | codex-xertrov-x-game | Mark MCP sender-binding fix status | 2026-04-13T17:39Z |
 
 ## History (addendum)
 
