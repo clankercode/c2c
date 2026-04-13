@@ -255,8 +255,31 @@ const C2CDelivery: Plugin = async (ctx) => {
     const tick = async () => {
       await tryDeliver();
     };
-    setTimeout(tick, 2000);
-    setInterval(tick, pollIntervalMs);
+
+    // Use fs.watch on the broker directory for cross-platform file change detection.
+    // Watch the directory (not the file) because atomic writes (temp + os.replace)
+    // change the inode — fs.watch on a replaced file path can miss events.
+    if (brokerRoot) {
+      try {
+        const inboxName = `${sessionId}.inbox.json`;
+        fs.watch(brokerRoot, { persistent: false }, (_eventType, filename) => {
+          if (filename === inboxName) {
+            tick().catch(() => {});
+          }
+        });
+        await log(`watching ${brokerRoot} for ${inboxName} changes`);
+      } catch (err) {
+        await log(`fs.watch failed (${err}), falling back to poll every ${pollIntervalMs}ms`);
+        setInterval(tick, pollIntervalMs);
+      }
+    } else {
+      // No broker root — fall back to polling
+      setInterval(tick, pollIntervalMs);
+    }
+
+    // Safety net: poll once on startup and every 30s in case fs.watch misses events
+    setTimeout(tick, 1000);
+    setInterval(tick, 30_000);
   }
 
   // --- Guard: no delivery without session ID ---
