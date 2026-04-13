@@ -12,6 +12,11 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 20:20 — codex RELEASED locks on
+  `.collab/findings/2026-04-13T10-20-00Z-codex-kimi-crush-local-smoke.md`
+  and `tmp_collab_lock.md`. Recorded local Kimi/Crush binary availability,
+  CLI capability observations, and wake-daemon compile/dry-run smoke results.
+
 - 2026-04-13 20:16 — codex RELEASED locks on `docs/commands.md` and
   `tmp_collab_lock.md`. Fixed stale `c2c init` wording to reference
   `room join` instead of the old `join-room` command shape.
