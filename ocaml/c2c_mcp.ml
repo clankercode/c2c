@@ -5,8 +5,10 @@ type registration =
   ; pid_start_time : int option
   }
 type message = { from_alias : string; to_alias : string; content : string }
+type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
+type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 
-let server_version = "0.5.0"
+let server_version = "0.6.0"
 
 let server_features =
   [ "liveness"
@@ -23,6 +25,7 @@ let server_features =
   ; "list_alive_tristate"
   ; "atomic_write"
   ; "broker_files_mode_0600"
+  ; "rooms"
   ]
 
 let server_info =
@@ -542,6 +545,261 @@ module Broker = struct
         ; deleted_inboxes = deleted
         ; preserved_messages = !preserved
         })
+
+  (* ---------- N:N rooms (phase 2) ---------- *)
+
+  let valid_room_id room_id =
+    room_id <> ""
+    && String.for_all
+         (fun c ->
+           (c >= 'a' && c <= 'z')
+           || (c >= 'A' && c <= 'Z')
+           || (c >= '0' && c <= '9')
+           || c = '-' || c = '_')
+         room_id
+
+  let rooms_dir t = Filename.concat t.root "rooms"
+
+  let room_dir t ~room_id = Filename.concat (rooms_dir t) room_id
+
+  let room_members_path t ~room_id =
+    Filename.concat (room_dir t ~room_id) "members.json"
+
+  let room_history_path t ~room_id =
+    Filename.concat (room_dir t ~room_id) "history.jsonl"
+
+  let room_members_lock_path t ~room_id =
+    Filename.concat (room_dir t ~room_id) "members.lock"
+
+  let room_history_lock_path t ~room_id =
+    Filename.concat (room_dir t ~room_id) "history.lock"
+
+  let ensure_room_dir t ~room_id =
+    ensure_root t;
+    let rd = rooms_dir t in
+    if not (Sys.file_exists rd) then Unix.mkdir rd 0o755;
+    let d = room_dir t ~room_id in
+    if not (Sys.file_exists d) then Unix.mkdir d 0o755
+
+  let with_room_members_lock t ~room_id f =
+    ensure_room_dir t ~room_id;
+    let fd =
+      Unix.openfile (room_members_lock_path t ~room_id) [ O_RDWR; O_CREAT ] 0o644
+    in
+    Fun.protect
+      ~finally:(fun () ->
+        (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+        (try Unix.close fd with _ -> ()))
+      (fun () ->
+        Unix.lockf fd Unix.F_LOCK 0;
+        f ())
+
+  let with_room_history_lock t ~room_id f =
+    ensure_room_dir t ~room_id;
+    let fd =
+      Unix.openfile (room_history_lock_path t ~room_id) [ O_RDWR; O_CREAT ] 0o644
+    in
+    Fun.protect
+      ~finally:(fun () ->
+        (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+        (try Unix.close fd with _ -> ()))
+      (fun () ->
+        Unix.lockf fd Unix.F_LOCK 0;
+        f ())
+
+  let room_member_to_json { rm_alias; rm_session_id; joined_at } =
+    `Assoc
+      [ ("alias", `String rm_alias)
+      ; ("session_id", `String rm_session_id)
+      ; ("joined_at", `Float joined_at)
+      ]
+
+  let room_member_of_json json =
+    let open Yojson.Safe.Util in
+    { rm_alias = json |> member "alias" |> to_string
+    ; rm_session_id = json |> member "session_id" |> to_string
+    ; joined_at = json |> member "joined_at" |> to_number
+    }
+
+  let load_room_members t ~room_id =
+    ensure_room_dir t ~room_id;
+    match read_json_file (room_members_path t ~room_id) ~default:(`List []) with
+    | `List items -> List.map room_member_of_json items
+    | _ -> []
+
+  let save_room_members t ~room_id members =
+    ensure_room_dir t ~room_id;
+    write_json_file (room_members_path t ~room_id)
+      (`List (List.map room_member_to_json members))
+
+  let join_room t ~room_id ~alias ~session_id =
+    if not (valid_room_id room_id) then
+      invalid_arg ("invalid room_id: " ^ room_id);
+    with_room_members_lock t ~room_id (fun () ->
+        let members = load_room_members t ~room_id in
+        let already =
+          List.exists
+            (fun m -> m.rm_alias = alias && m.rm_session_id = session_id)
+            members
+        in
+        if already then members
+        else begin
+          let now = Unix.gettimeofday () in
+          let member = { rm_alias = alias; rm_session_id = session_id; joined_at = now } in
+          let updated = members @ [ member ] in
+          save_room_members t ~room_id updated;
+          updated
+        end)
+
+  let leave_room t ~room_id ~alias =
+    if not (valid_room_id room_id) then
+      invalid_arg ("invalid room_id: " ^ room_id);
+    with_room_members_lock t ~room_id (fun () ->
+        let members = load_room_members t ~room_id in
+        let updated = List.filter (fun m -> m.rm_alias <> alias) members in
+        save_room_members t ~room_id updated;
+        updated)
+
+  let append_room_history t ~room_id ~from_alias ~content =
+    if not (valid_room_id room_id) then
+      invalid_arg ("invalid room_id: " ^ room_id);
+    let ts = Unix.gettimeofday () in
+    with_room_history_lock t ~room_id (fun () ->
+        let oc =
+          open_out_gen
+            [ Open_wronly; Open_append; Open_creat ]
+            0o600 (room_history_path t ~room_id)
+        in
+        Fun.protect
+          ~finally:(fun () -> try close_out oc with _ -> ())
+          (fun () ->
+            let record =
+              `Assoc
+                [ ("ts", `Float ts)
+                ; ("from_alias", `String from_alias)
+                ; ("content", `String content)
+                ]
+            in
+            output_string oc (Yojson.Safe.to_string record);
+            output_char oc '\n'));
+    ts
+
+  let read_room_history t ~room_id ~limit =
+    if not (valid_room_id room_id) then
+      invalid_arg ("invalid room_id: " ^ room_id);
+    let path = room_history_path t ~room_id in
+    if not (Sys.file_exists path) then []
+    else begin
+      let ic = open_in path in
+      Fun.protect
+        ~finally:(fun () -> try close_in ic with _ -> ())
+        (fun () ->
+          let lines = ref [] in
+          (try
+             while true do
+               let line = input_line ic in
+               if line <> "" then
+                 lines := line :: !lines
+             done
+           with End_of_file -> ());
+          let all = List.rev !lines in
+          let n = List.length all in
+          let to_take = if limit <= 0 then n else min limit n in
+          let start = n - to_take in
+          let taken =
+            List.filteri (fun i _ -> i >= start) all
+          in
+          List.map
+            (fun line ->
+              let json = Yojson.Safe.from_string line in
+              let open Yojson.Safe.Util in
+              { rm_from_alias = json |> member "from_alias" |> to_string
+              ; rm_room_id = room_id
+              ; rm_content = json |> member "content" |> to_string
+              ; rm_ts = json |> member "ts" |> to_number
+              })
+            taken)
+    end
+
+  type send_room_result =
+    { sr_delivered_to : string list
+    ; sr_skipped : string list
+    ; sr_ts : float
+    }
+
+  let send_room t ~from_alias ~room_id ~content =
+    if not (valid_room_id room_id) then
+      invalid_arg ("invalid room_id: " ^ room_id);
+    (* Step 1: append to history (under history lock, released before fan-out) *)
+    let ts = append_room_history t ~room_id ~from_alias ~content in
+    (* Step 2: load current members snapshot *)
+    let members =
+      with_room_members_lock t ~room_id (fun () ->
+          load_room_members t ~room_id)
+    in
+    (* Step 3: fan out to each member except sender. For each recipient,
+       take registry_lock -> inbox_lock (existing lock order) and enqueue
+       with to_alias tagged as "<alias>@<room_id>" so the recipient can
+       distinguish room messages from direct messages. *)
+    let delivered = ref [] in
+    let skipped = ref [] in
+    List.iter
+      (fun m ->
+        if m.rm_alias = from_alias then ()
+        else begin
+          let tagged_to = m.rm_alias ^ "@" ^ room_id in
+          try
+            with_registry_lock t (fun () ->
+                match resolve_live_session_id_by_alias t m.rm_alias with
+                | Resolved session_id ->
+                    with_inbox_lock t ~session_id (fun () ->
+                        let current = load_inbox t ~session_id in
+                        let next =
+                          current @ [ { from_alias; to_alias = tagged_to; content } ]
+                        in
+                        save_inbox t ~session_id next);
+                    delivered := m.rm_alias :: !delivered
+                | All_recipients_dead | Unknown_alias ->
+                    skipped := m.rm_alias :: !skipped)
+          with _ ->
+            skipped := m.rm_alias :: !skipped
+        end)
+      members;
+    { sr_delivered_to = List.rev !delivered
+    ; sr_skipped = List.rev !skipped
+    ; sr_ts = ts
+    }
+
+  type room_info =
+    { ri_room_id : string
+    ; ri_member_count : int
+    ; ri_members : string list
+    }
+
+  let list_rooms t =
+    let rd = rooms_dir t in
+    if not (Sys.file_exists rd) then []
+    else begin
+      let entries =
+        try Sys.readdir rd with Sys_error _ -> [||]
+      in
+      Array.fold_left
+        (fun acc name ->
+          let dir_path = Filename.concat rd name in
+          if Sys.is_directory dir_path then begin
+            let members =
+              try load_room_members t ~room_id:name
+              with _ -> []
+            in
+            { ri_room_id = name
+            ; ri_member_count = List.length members
+            ; ri_members = List.map (fun m -> m.rm_alias) members
+            } :: acc
+          end else acc)
+        []
+        entries
+      |> List.rev
+    end
 end
 
 let channel_notification ({ from_alias; to_alias; content } : message) =
@@ -567,6 +825,11 @@ let tool_definitions =
   ; tool_definition ~name:"poll_inbox" ~description:"Drain queued C2C messages for the current session. Returns a JSON array of {from_alias,to_alias,content} objects; call this at the start of each turn and after each send to reliably receive messages regardless of whether the client surfaces notifications/claude/channel." ~required:[]
   ; tool_definition ~name:"sweep" ~description:"Remove dead registrations (whose parent process has exited) and delete orphan inbox files that belong to no current registration. Any non-empty orphan inbox content is appended to dead-letter.jsonl inside the broker directory before the inbox file is deleted, so cleanup is non-destructive to operator signal. Returns JSON {dropped_regs:[{session_id,alias}], deleted_inboxes:[session_id], preserved_messages: int}." ~required:[]
   ; tool_definition ~name:"send_all" ~description:"Fan out a message to every currently-registered peer except the sender (and any alias in the optional `exclude_aliases` array). Non-live recipients are skipped with reason \"not_alive\" rather than raising, so partial failure does not abort the broadcast. Per-recipient enqueue takes the same per-inbox lock used by `send`. Returns JSON {sent_to:[alias], skipped:[{alias, reason}]}." ~required:[ "from_alias"; "content" ]
+  ; tool_definition ~name:"join_room" ~description:"Join a persistent N:N room. Creates the room if it does not exist. Idempotent per (alias, session_id). Room IDs must be alphanumeric + hyphens + underscores. Returns the member list after join." ~required:[ "room_id"; "alias" ]
+  ; tool_definition ~name:"leave_room" ~description:"Leave a persistent N:N room. Returns the member list after leave." ~required:[ "room_id"; "alias" ]
+  ; tool_definition ~name:"send_room" ~description:"Send a message to a persistent N:N room. Appends to room history and fans out to every member's inbox except the sender, with to_alias tagged as '<alias>@<room_id>'. Returns JSON {delivered_to, skipped, ts}." ~required:[ "from_alias"; "room_id"; "content" ]
+  ; tool_definition ~name:"list_rooms" ~description:"List all persistent rooms with member counts and member aliases. Returns a JSON array of {room_id, member_count, members}." ~required:[]
+  ; tool_definition ~name:"room_history" ~description:"Return the last `limit` (default 50) messages from a room's append-only history. Read-only." ~required:[ "room_id" ]
   ]
 
 let string_member name json =
@@ -734,6 +997,98 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
               `List (List.map (fun sid -> `String sid) deleted_inboxes) )
           ; ("preserved_messages", `Int preserved_messages)
           ]
+        |> Yojson.Safe.to_string
+      in
+      Lwt.return (tool_result ~content ~is_error:false)
+  | "join_room" ->
+      let room_id = string_member "room_id" arguments in
+      let alias = string_member "alias" arguments in
+      let session_id = resolve_session_id arguments in
+      let members = Broker.join_room broker ~room_id ~alias ~session_id in
+      let content =
+        `Assoc
+          [ ("room_id", `String room_id)
+          ; ("members",
+             `List (List.map (fun (m : room_member) ->
+                 `Assoc
+                   [ ("alias", `String m.rm_alias)
+                   ; ("session_id", `String m.rm_session_id)
+                   ; ("joined_at", `Float m.joined_at)
+                   ]) members))
+          ]
+        |> Yojson.Safe.to_string
+      in
+      Lwt.return (tool_result ~content ~is_error:false)
+  | "leave_room" ->
+      let room_id = string_member "room_id" arguments in
+      let alias = string_member "alias" arguments in
+      let members = Broker.leave_room broker ~room_id ~alias in
+      let content =
+        `Assoc
+          [ ("room_id", `String room_id)
+          ; ("members",
+             `List (List.map (fun (m : room_member) ->
+                 `Assoc
+                   [ ("alias", `String m.rm_alias)
+                   ; ("session_id", `String m.rm_session_id)
+                   ; ("joined_at", `Float m.joined_at)
+                   ]) members))
+          ]
+        |> Yojson.Safe.to_string
+      in
+      Lwt.return (tool_result ~content ~is_error:false)
+  | "send_room" ->
+      let from_alias = string_member "from_alias" arguments in
+      let room_id = string_member "room_id" arguments in
+      let content = string_member "content" arguments in
+      let { Broker.sr_delivered_to; sr_skipped; sr_ts } =
+        Broker.send_room broker ~from_alias ~room_id ~content
+      in
+      let result_json =
+        `Assoc
+          [ ("delivered_to",
+             `List (List.map (fun a -> `String a) sr_delivered_to))
+          ; ("skipped",
+             `List (List.map (fun a -> `String a) sr_skipped))
+          ; ("ts", `Float sr_ts)
+          ]
+        |> Yojson.Safe.to_string
+      in
+      Lwt.return (tool_result ~content:result_json ~is_error:false)
+  | "list_rooms" ->
+      let rooms = Broker.list_rooms broker in
+      let content =
+        `List
+          (List.map
+             (fun (r : Broker.room_info) ->
+               `Assoc
+                 [ ("room_id", `String r.ri_room_id)
+                 ; ("member_count", `Int r.ri_member_count)
+                 ; ("members",
+                    `List (List.map (fun a -> `String a) r.ri_members))
+                 ])
+             rooms)
+        |> Yojson.Safe.to_string
+      in
+      Lwt.return (tool_result ~content ~is_error:false)
+  | "room_history" ->
+      let room_id = string_member "room_id" arguments in
+      let limit =
+        match Broker.int_opt_member "limit" arguments with
+        | Some n -> n
+        | None -> 50
+      in
+      let history = Broker.read_room_history broker ~room_id ~limit in
+      let content =
+        `List
+          (List.map
+             (fun (m : room_message) ->
+               `Assoc
+                 [ ("ts", `Float m.rm_ts)
+                 ; ("from_alias", `String m.rm_from_alias)
+                 ; ("content", `String m.rm_content)
+                 ])
+             history)
         |> Yojson.Safe.to_string
       in
       Lwt.return (tool_result ~content ~is_error:false)

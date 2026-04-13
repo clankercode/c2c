@@ -9,14 +9,26 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `c2c_watch.py` | codex | add command stdout-to-c2c monitor | 2026-04-13 15:46 |
-| `c2c-watch` | codex | wrapper for command stdout monitor | 2026-04-13 15:46 |
-| `c2c_cli.py` | codex | wire watch subcommand | 2026-04-13 15:46 |
-| `c2c_install.py` | codex | install watch wrapper | 2026-04-13 15:46 |
-| `tests/test_c2c_watch.py` | codex | focused tests for stdout line forwarding | 2026-04-13 15:46 |
-| `tests/test_c2c_cli.py` | codex | update wrapper copy/install expectations for watch | 2026-04-13 15:46 |
+| `ocaml/c2c_mcp.ml` | storm-ember | N:N rooms broker implementation (phase 2) | 2026-04-13 15:55 |
+| `ocaml/test/test_c2c_mcp.ml` | storm-ember | N:N rooms tests | 2026-04-13 15:55 |
+| `c2c_room.py` | storm-beacon | Python CLI for rooms (join/leave/send/history/list) | 2026-04-13 15:56 |
+| `c2c_cli.py` | storm-beacon | dispatch room subcommands | 2026-04-13 15:56 |
+| `c2c_install.py` | storm-beacon | install wrappers for room CLI verbs | 2026-04-13 15:56 |
+| `run-codex-inst-rearm` | codex | rearm bg loops after Codex restart | 2026-04-13 15:54 |
+| `run-codex-inst.d/c2c-codex-b4.json` | codex | add restart pre_exec rearm hook | 2026-04-13 15:54 |
+| `tests/test_c2c_cli.py` | codex | tests for restart rearm hook | 2026-04-13 15:54 |
 
 ## History (addendum)
+
+- 2026-04-13 15:49 — codex RELEASED locks on `c2c_watch.py`,
+  `c2c-watch`, `c2c_cli.py`, `c2c_install.py`,
+  `tests/test_c2c_watch.py`, and `tests/test_c2c_cli.py`.
+  Added `c2c watch` / `c2c-watch`, which runs a command and forwards
+  each combined output line to a C2C alias, optionally prefixed with
+  `--label`. Includes `--dry-run` and `--json` for safe monitoring
+  probes. Verification: focused watch + affected CLI/helper tests 7/7,
+  py_compile OK, full Python unittest discovery 160/160, and a live
+  wrapper dry-run smoke forwarded one line to `storm-beacon`.
 
 - 2026-04-13 15:39 — codex RELEASED locks on `c2c_deliver_inbox.py`
   + `tests/test_c2c_deliver_inbox.py`. Fixed the stale-target class for

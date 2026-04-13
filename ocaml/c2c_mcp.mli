@@ -5,6 +5,8 @@ type registration =
   ; pid_start_time : int option
   }
 type message = { from_alias : string; to_alias : string; content : string }
+type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
+type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 
 module Broker : sig
   type t
@@ -47,6 +49,33 @@ module Broker : sig
 
   val sweep : t -> sweep_result
   val dead_letter_path : t -> string
+
+  (** {2 N:N rooms (phase 2)} *)
+
+  type liveness_state = Alive | Dead | Unknown
+  val registration_liveness_state : registration -> liveness_state
+  val int_opt_member : string -> Yojson.Safe.t -> int option
+
+  val join_room : t -> room_id:string -> alias:string -> session_id:string -> room_member list
+  val leave_room : t -> room_id:string -> alias:string -> room_member list
+  val append_room_history : t -> room_id:string -> from_alias:string -> content:string -> float
+  val read_room_history : t -> room_id:string -> limit:int -> room_message list
+
+  type send_room_result =
+    { sr_delivered_to : string list
+    ; sr_skipped : string list
+    ; sr_ts : float
+    }
+
+  val send_room : t -> from_alias:string -> room_id:string -> content:string -> send_room_result
+
+  type room_info =
+    { ri_room_id : string
+    ; ri_member_count : int
+    ; ri_members : string list
+    }
+
+  val list_rooms : t -> room_info list
 end
 
 val channel_notification : message -> Yojson.Safe.t

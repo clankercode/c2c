@@ -1313,6 +1313,302 @@ let test_sweep_empty_orphan_writes_no_dead_letter () =
       check bool "no dead-letter noise for empty orphan" false
         (Sys.file_exists dead_letter))
 
+(* ---------- N:N rooms (phase 2) tests ---------- *)
+
+let test_join_room_creates_room_and_adds_member () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let members =
+        C2c_mcp.Broker.join_room broker ~room_id:"lobby"
+          ~alias:"storm-ember" ~session_id:"session-a"
+      in
+      check int "one member after join" 1 (List.length members);
+      let m = List.hd members in
+      check string "member alias" "storm-ember" m.rm_alias;
+      check string "member session_id" "session-a" m.rm_session_id;
+      check bool "joined_at is positive" true (m.joined_at > 0.0);
+      (* Verify the room dir and members.json were created on disk. *)
+      let members_path =
+        Filename.concat (Filename.concat (Filename.concat dir "rooms") "lobby") "members.json"
+      in
+      check bool "members.json exists" true (Sys.file_exists members_path))
+
+let test_join_room_is_idempotent () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"lobby"
+          ~alias:"storm-ember" ~session_id:"session-a"
+      in
+      let members =
+        C2c_mcp.Broker.join_room broker ~room_id:"lobby"
+          ~alias:"storm-ember" ~session_id:"session-a"
+      in
+      check int "still one member after duplicate join" 1 (List.length members);
+      check string "alias unchanged" "storm-ember" (List.hd members).rm_alias)
+
+let test_leave_room_removes_member () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"lobby"
+          ~alias:"storm-ember" ~session_id:"session-a"
+      in
+      let members =
+        C2c_mcp.Broker.leave_room broker ~room_id:"lobby" ~alias:"storm-ember"
+      in
+      check int "empty after leave" 0 (List.length members))
+
+let test_send_room_appends_history_and_fans_out () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Register both aliases so they have live inboxes. *)
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"storm-ember" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-b"
+        ~alias:"storm-storm" ~pid:None ~pid_start_time:None;
+      (* Both join the room. *)
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"chat"
+          ~alias:"storm-ember" ~session_id:"session-a"
+      in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"chat"
+          ~alias:"storm-storm" ~session_id:"session-b"
+      in
+      (* storm-ember sends a message. *)
+      let result =
+        C2c_mcp.Broker.send_room broker ~from_alias:"storm-ember"
+          ~room_id:"chat" ~content:"hello room"
+      in
+      check int "delivered to one peer" 1
+        (List.length result.sr_delivered_to);
+      check string "delivered to storm-storm" "storm-storm"
+        (List.hd result.sr_delivered_to);
+      check bool "ts is positive" true (result.sr_ts > 0.0);
+      (* Verify history.jsonl *)
+      let history =
+        C2c_mcp.Broker.read_room_history broker ~room_id:"chat" ~limit:50
+      in
+      check int "one history entry" 1 (List.length history);
+      let h = List.hd history in
+      check string "history from_alias" "storm-ember" h.rm_from_alias;
+      check string "history content" "hello room" h.rm_content;
+      (* Verify the fan-out inbox message *)
+      let inbox_b =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"session-b"
+      in
+      check int "one inbox message for storm-storm" 1 (List.length inbox_b);
+      let msg = List.hd inbox_b in
+      check string "inbox from_alias" "storm-ember" msg.from_alias;
+      check string "inbox to_alias tagged" "storm-storm@chat" msg.to_alias;
+      check string "inbox content" "hello room" msg.content)
+
+let test_send_room_skips_sender_inbox () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"storm-ember" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-b"
+        ~alias:"storm-storm" ~pid:None ~pid_start_time:None;
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"chat"
+          ~alias:"storm-ember" ~session_id:"session-a"
+      in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"chat"
+          ~alias:"storm-storm" ~session_id:"session-b"
+      in
+      let _ =
+        C2c_mcp.Broker.send_room broker ~from_alias:"storm-ember"
+          ~room_id:"chat" ~content:"echo test"
+      in
+      let inbox_a =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"session-a"
+      in
+      check int "sender inbox is empty" 0 (List.length inbox_a))
+
+let test_list_rooms_returns_room_with_members () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"room-alpha"
+          ~alias:"alice" ~session_id:"s-alice"
+      in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"room-alpha"
+          ~alias:"bob" ~session_id:"s-bob"
+      in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"room-beta"
+          ~alias:"carol" ~session_id:"s-carol"
+      in
+      let rooms = C2c_mcp.Broker.list_rooms broker in
+      check int "two rooms" 2 (List.length rooms);
+      let find_room rid =
+        List.find (fun (r : C2c_mcp.Broker.room_info) -> r.ri_room_id = rid) rooms
+      in
+      let alpha = find_room "room-alpha" in
+      let beta = find_room "room-beta" in
+      check int "room-alpha has 2 members" 2 alpha.ri_member_count;
+      check bool "room-alpha contains alice" true
+        (List.mem "alice" alpha.ri_members);
+      check bool "room-alpha contains bob" true
+        (List.mem "bob" alpha.ri_members);
+      check int "room-beta has 1 member" 1 beta.ri_member_count;
+      check bool "room-beta contains carol" true
+        (List.mem "carol" beta.ri_members))
+
+let test_room_history_returns_last_n_lines () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* We need the room dir to exist for append_room_history. *)
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"chat"
+          ~alias:"sender" ~session_id:"s"
+      in
+      for i = 1 to 10 do
+        ignore
+          (C2c_mcp.Broker.append_room_history broker ~room_id:"chat"
+             ~from_alias:"sender"
+             ~content:(Printf.sprintf "msg-%d" i))
+      done;
+      let history =
+        C2c_mcp.Broker.read_room_history broker ~room_id:"chat" ~limit:3
+      in
+      check int "limit 3 returns 3" 3 (List.length history);
+      (* Should be the last 3: msg-8, msg-9, msg-10 *)
+      check string "first of last 3" "msg-8"
+        (List.nth history 0).rm_content;
+      check string "second of last 3" "msg-9"
+        (List.nth history 1).rm_content;
+      check string "third of last 3" "msg-10"
+        (List.nth history 2).rm_content)
+
+let test_room_history_empty_room () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"empty-chat"
+          ~alias:"someone" ~session_id:"s"
+      in
+      let history =
+        C2c_mcp.Broker.read_room_history broker ~room_id:"empty-chat" ~limit:50
+      in
+      check int "empty room has no history" 0 (List.length history))
+
+let test_tools_call_join_room_via_mcp () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-mcp-room";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 100)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "join_room")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("room_id", `String "mcp-lobby")
+                          ; ("alias", `String "storm-mcp")
+                          ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected join_room response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              let parsed = Yojson.Safe.from_string text in
+              check string "room_id in response" "mcp-lobby"
+                (parsed |> member "room_id" |> to_string);
+              let members = parsed |> member "members" |> to_list in
+              check int "one member" 1 (List.length members);
+              check string "member alias" "storm-mcp"
+                (List.hd members |> member "alias" |> to_string);
+              check string "member session_id" "session-mcp-room"
+                (List.hd members |> member "session_id" |> to_string)))
+
+let test_tools_call_send_room_via_mcp () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-sender-room";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          (* Register two aliases. *)
+          C2c_mcp.Broker.register broker ~session_id:"session-sender-room"
+            ~alias:"storm-sender" ~pid:None ~pid_start_time:None;
+          C2c_mcp.Broker.register broker ~session_id:"session-recv-room"
+            ~alias:"storm-recv" ~pid:None ~pid_start_time:None;
+          (* Both join the room. *)
+          let _ =
+            C2c_mcp.Broker.join_room broker ~room_id:"mcp-chat"
+              ~alias:"storm-sender" ~session_id:"session-sender-room"
+          in
+          let _ =
+            C2c_mcp.Broker.join_room broker ~room_id:"mcp-chat"
+              ~alias:"storm-recv" ~session_id:"session-recv-room"
+          in
+          (* Send via MCP tools/call. *)
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 101)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "send_room")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("from_alias", `String "storm-sender")
+                          ; ("room_id", `String "mcp-chat")
+                          ; ("content", `String "hello via mcp room")
+                          ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          (match response with
+           | None -> fail "expected send_room response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               let parsed = Yojson.Safe.from_string text in
+               let delivered =
+                 parsed |> member "delivered_to" |> to_list |> List.map to_string
+               in
+               check int "one delivery" 1 (List.length delivered);
+               check string "delivered to storm-recv" "storm-recv"
+                 (List.hd delivered);
+               check bool "ts is positive" true
+                 (parsed |> member "ts" |> to_number > 0.0));
+          (* Verify the recipient's inbox got the tagged message. *)
+          let inbox =
+            C2c_mcp.Broker.read_inbox broker ~session_id:"session-recv-room"
+          in
+          check int "recipient inbox has one message" 1 (List.length inbox);
+          let msg = List.hd inbox in
+          check string "from_alias" "storm-sender" msg.from_alias;
+          check string "to_alias tagged" "storm-recv@mcp-chat" msg.to_alias;
+          check string "content" "hello via mcp room" msg.content))
+
 let () =
   run "c2c_mcp"
     [ ( "broker",
@@ -1400,4 +1696,24 @@ let () =
              test_start_time_match_is_alive
          ; test_case "start_time none falls back to /proc exists" `Quick
              test_start_time_none_falls_back_to_proc_exists
+         ; test_case "join_room creates room and adds member" `Quick
+             test_join_room_creates_room_and_adds_member
+         ; test_case "join_room is idempotent" `Quick
+             test_join_room_is_idempotent
+         ; test_case "leave_room removes member" `Quick
+             test_leave_room_removes_member
+         ; test_case "send_room appends history and fans out" `Quick
+             test_send_room_appends_history_and_fans_out
+         ; test_case "send_room skips sender inbox" `Quick
+             test_send_room_skips_sender_inbox
+         ; test_case "list_rooms returns rooms with members" `Quick
+             test_list_rooms_returns_room_with_members
+         ; test_case "room_history returns last N lines" `Quick
+             test_room_history_returns_last_n_lines
+         ; test_case "room_history empty room returns empty" `Quick
+             test_room_history_empty_room
+         ; test_case "tools/call join_room via MCP" `Quick
+             test_tools_call_join_room_via_mcp
+         ; test_case "tools/call send_room via MCP" `Quick
+             test_tools_call_send_room_via_mcp
          ] ) ]
