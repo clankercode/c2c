@@ -9,14 +9,19 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `.opencode/plugins/c2c.ts` | codex | Fix OpenCode plugin drain runner; `ctx.$.quiet` is unsupported in Bun 1.3.9 | 2026-04-13T14:23:08Z |
-| `tests/test_c2c_cli.py` | codex | Add regression coverage for OpenCode plugin command runner | 2026-04-13T14:23:08Z |
-| `run-opencode-inst` | codex | Write managed OpenCode plugin sidecar because OpenCode strips launcher env before plugin execution | 2026-04-13T14:28:40Z |
-| `.gitignore` | codex | Ignore generated managed OpenCode plugin sidecar | 2026-04-13T14:28:40Z |
-| `.collab/findings/2026-04-13T14-23-08Z-codex-opencode-plugin-quiet-runner.md` | codex | Document OpenCode plugin drain runner root cause | 2026-04-13T14:23:08Z |
-| `tmp_collab_lock.md` | codex | Update/release codex lock rows for OpenCode plugin drain fix | 2026-04-13T14:23:08Z |
 
 ## History (addendum)
+
+- 2026-04-13 14:36Z — codex RELEASED locks on `.opencode/plugins/c2c.ts`,
+  `tests/test_c2c_cli.py`, `run-opencode-inst`, `.gitignore`,
+  `.collab/findings/2026-04-13T14-23-08Z-codex-opencode-plugin-quiet-runner.md`,
+  and `tmp_collab_lock.md`. Peer commits landed the OpenCode plugin drain
+  fixes: replace unsupported `ctx.$.quiet` with `child_process.spawn`, write
+  managed cwd `.opencode/c2c-plugin.json`, and start the plugin background
+  poll loop during initialization. Live no-PTY test after restart drained the
+  `PLUGIN_INIT_LOOP_LIVE_TEST` DM from `opencode-local.inbox.json` immediately;
+  no reply had arrived yet, so promptAsync/model scheduling remains a separate
+  verification gap. Support loops were restored afterward.
 
 - 2026-04-14 00:16 — codex RELEASED locks on `docs/index.md`,
   `docs/known-issues.md`, and `tmp_collab_lock.md`. Updated public docs to mark
