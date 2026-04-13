@@ -35,6 +35,7 @@ def refresh_peer(
     pid: int | None,
     broker_root: Path,
     *,
+    session_id: str | None = None,
     dry_run: bool = False,
     json_out: bool = False,
 ) -> dict:
@@ -90,21 +91,33 @@ def refresh_peer(
                 "Provide --pid <live-pid> to refresh it."
             )
 
+        old_session_id = old_reg.get("session_id")
+        session_id_changed = session_id is not None and session_id != old_session_id
+
         if dry_run:
-            result = {
+            result: dict = {
                 "alias": alias,
                 "status": "dry_run",
                 "old_pid": old_pid,
                 "new_pid": pid,
                 "new_pid_start_time": start_time,
             }
+            if session_id_changed:
+                result["old_session_id"] = old_session_id
+                result["new_session_id"] = session_id
             if json_out:
                 print(json.dumps(result, indent=2))
             else:
+                session_note = (
+                    f", session_id {old_session_id!r} → {session_id!r}"
+                    if session_id_changed
+                    else ""
+                )
                 print(
                     f"[dry-run] Would update '{alias}': "
                     f"pid {old_pid} → {pid} "
                     f"(start_time={start_time})"
+                    f"{session_note}"
                 )
             return result
 
@@ -115,6 +128,8 @@ def refresh_peer(
             new_reg["pid_start_time"] = start_time
         else:
             new_reg.pop("pid_start_time", None)
+        if session_id_changed:
+            new_reg["session_id"] = session_id
         registrations[match_idx] = new_reg
 
         c2c_broker_gc.save_broker_registrations(broker_root, registrations)
@@ -126,12 +141,21 @@ def refresh_peer(
         "new_pid": pid,
         "new_pid_start_time": start_time,
     }
+    if session_id_changed:
+        result["old_session_id"] = old_session_id
+        result["new_session_id"] = session_id
     if json_out:
         print(json.dumps(result, indent=2))
     else:
+        session_note = (
+            f", session_id {old_session_id!r} → {session_id!r}"
+            if session_id_changed
+            else ""
+        )
         print(
             f"Updated '{alias}': pid {old_pid} → {pid} "
             f"(start_time={start_time})"
+            f"{session_note}"
         )
     return result
 
@@ -143,7 +167,9 @@ def main(argv: list[str] | None = None) -> int:
             "Example: c2c refresh-peer opencode-local --pid $(pgrep -n opencode)\n"
             "\nThis is an operator escape hatch for when a managed client's\n"
             "registration drifted to a dead one-shot process PID while the\n"
-            "durable TUI session remains alive."
+            "durable TUI session remains alive.\n"
+            "\nUse --session-id to also correct a wrong session_id in the registry,\n"
+            "e.g. when a previous session's entry was left behind with the same alias."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -153,6 +179,11 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=None,
         help="new live PID to point the registration at (required if current PID is dead)",
+    )
+    parser.add_argument(
+        "--session-id",
+        default=None,
+        help="correct session_id to write into the registry (fixes session_id drift)",
     )
     parser.add_argument(
         "--broker-root",
@@ -179,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
             args.alias,
             args.pid,
             broker_root,
+            session_id=args.session_id,
             dry_run=args.dry_run,
             json_out=args.json,
         )

@@ -2001,8 +2001,9 @@ class C2CCLITests(unittest.TestCase):
         root = Path(self.temp_dir.name)
         cfg_dir = root / "run-claude-inst.d"
         cfg_dir.mkdir()
+        # Config with top-level c2c_session_id → refresh-peer gets --session-id
         (cfg_dir / "claude-a.json").write_text(
-            json.dumps({"c2c_alias": "storm-beacon", "c2c_session_id": "ignored"}),
+            json.dumps({"c2c_alias": "storm-beacon", "c2c_session_id": "sid-abc"}),
             encoding="utf-8",
         )
         refresh = root / "c2c_refresh_peer.py"
@@ -2029,12 +2030,71 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(
             calls[0]["command"],
-            [sys.executable, str(refresh), "storm-beacon", "--pid", "12345"],
+            [sys.executable, str(refresh), "storm-beacon", "--pid", "12345",
+             "--session-id", "sid-abc"],
         )
         self.assertEqual(calls[0]["cwd"], root)
         self.assertTrue(calls[0]["capture_output"])
         self.assertTrue(calls[0]["text"])
         self.assertEqual(calls[0]["timeout"], 5.0)
+
+    def test_run_claude_inst_outer_refresh_peer_passes_env_session_id(self):
+        """Claude instances store session_id in env.C2C_MCP_SESSION_ID; outer loop passes it."""
+        namespace = runpy.run_path(str(REPO / "run-claude-inst-outer"))
+        root = Path(self.temp_dir.name)
+        cfg_dir = root / "run-claude-inst.d"
+        cfg_dir.mkdir()
+        # Claude format: session_id is in env dict, not top-level
+        (cfg_dir / "claude-b.json").write_text(
+            json.dumps({
+                "c2c_alias": "storm-beacon",
+                "env": {"C2C_MCP_SESSION_ID": "d16034fc-5526-414b-a88e-709d1a93e345"},
+            }),
+            encoding="utf-8",
+        )
+        refresh = root / "c2c_refresh_peer.py"
+        refresh.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        namespace["maybe_refresh_peer"].__globals__["HERE"] = root
+
+        calls = []
+
+        def fake_run(command, *, cwd, capture_output, text, timeout):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            namespace["maybe_refresh_peer"]("claude-b", 12345)
+
+        self.assertEqual(len(calls), 1)
+        self.assertIn("--session-id", calls[0])
+        idx = calls[0].index("--session-id")
+        self.assertEqual(calls[0][idx + 1], "d16034fc-5526-414b-a88e-709d1a93e345")
+
+    def test_run_claude_inst_outer_refresh_peer_no_session_id_in_config(self):
+        """When config has no session_id, --session-id is not passed."""
+        namespace = runpy.run_path(str(REPO / "run-claude-inst-outer"))
+        root = Path(self.temp_dir.name)
+        cfg_dir = root / "run-claude-inst.d"
+        cfg_dir.mkdir()
+        (cfg_dir / "claude-c.json").write_text(
+            json.dumps({"c2c_alias": "storm-beacon"}),
+            encoding="utf-8",
+        )
+        refresh = root / "c2c_refresh_peer.py"
+        refresh.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        namespace["maybe_refresh_peer"].__globals__["HERE"] = root
+
+        calls = []
+
+        def fake_run(command, *, cwd, capture_output, text, timeout):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            namespace["maybe_refresh_peer"]("claude-c", 12345)
+
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("--session-id", calls[0])
 
     def test_run_codex_inst_rearm_dry_run_reports_bg_loop_commands(self):
         config_dir = Path(self.temp_dir.name) / "run-codex-inst.d"
@@ -2972,6 +3032,42 @@ class C2CListUnitTests(unittest.TestCase):
         self.assertIn("outer loops running", output)
         self.assertIn("codex", output)
         self.assertNotIn("run `c2c sweep`", output)
+
+    def test_pid_alive_handles_spaces_in_process_name(self):
+        """_pid_alive must parse /proc/pid/stat correctly when comm contains spaces.
+
+        Without the fix, stat.split() misaligns the starttime field for names
+        like 'Kimi Code', causing a matching PID to appear dead.
+
+        After last ')': parts[0]=state, parts[1..18]=ppid..itrealvalue, parts[19]=starttime.
+        """
+        import c2c_list
+        fake_pid = os.getpid()
+        starttime = 30294636
+        # 18 filler fields (1-18) after state so parts[19] == starttime
+        fake_stat = (
+            f"{fake_pid} (Kimi Code) S 1 2 3 4 5 6 "
+            f"7 8 9 10 11 12 13 14 15 16 17 18 {starttime} 21 22\n"
+        )
+        with mock.patch("pathlib.Path.read_text", return_value=fake_stat), \
+             mock.patch("pathlib.Path.exists", return_value=True):
+            result = c2c_list._pid_alive(fake_pid, starttime)
+        self.assertTrue(result, "should be alive when starttime matches")
+
+    def test_pid_alive_detects_pid_reuse_with_spaces_in_process_name(self):
+        """_pid_alive returns False when starttime mismatches (PID reused), even for spaced names."""
+        import c2c_list
+        fake_pid = os.getpid()
+        starttime = 30294636
+        fake_stat = (
+            f"{fake_pid} (Kimi Code) S 1 2 3 4 5 6 "
+            f"7 8 9 10 11 12 13 14 15 16 17 18 {starttime} 21 22\n"
+        )
+        wrong_starttime = 12345
+        with mock.patch("pathlib.Path.read_text", return_value=fake_stat), \
+             mock.patch("pathlib.Path.exists", return_value=True):
+            result = c2c_list._pid_alive(fake_pid, wrong_starttime)
+        self.assertFalse(result, "should be dead when starttime mismatches")
 
     def test_list_sessions_includes_alias_for_registered_live_sessions(self):
         sessions = [
@@ -7387,6 +7483,67 @@ class RefreshPeerTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("alias", result.stdout)
+
+    def test_refresh_peer_updates_session_id(self):
+        """refresh_peer with session_id corrects a stale session_id in the registry."""
+        import c2c_refresh_peer
+
+        new_pid = os.getpid()
+        old_session_id = "opencode-c2c-msg"
+        new_session_id = "d16034fc-5526-414b-a88e-709d1a93e345"
+        self._write_registry(
+            [{"session_id": old_session_id, "alias": "storm-beacon", "pid": 99999}]
+        )
+        result = c2c_refresh_peer.refresh_peer(
+            "storm-beacon", new_pid, self.broker_root, session_id=new_session_id
+        )
+        self.assertEqual(result["status"], "updated")
+        self.assertEqual(result.get("old_session_id"), old_session_id)
+        self.assertEqual(result.get("new_session_id"), new_session_id)
+
+        regs = self._read_registry()
+        self.assertEqual(regs[0]["session_id"], new_session_id)
+        self.assertEqual(regs[0]["pid"], new_pid)
+
+    def test_refresh_peer_session_id_unchanged_not_reported(self):
+        """When session_id matches, no old/new_session_id keys appear in result."""
+        import c2c_refresh_peer
+
+        new_pid = os.getpid()
+        session_id = "d16034fc-5526-414b-a88e-709d1a93e345"
+        self._write_registry(
+            [{"session_id": session_id, "alias": "storm-beacon", "pid": 99999}]
+        )
+        result = c2c_refresh_peer.refresh_peer(
+            "storm-beacon", new_pid, self.broker_root, session_id=session_id
+        )
+        self.assertEqual(result["status"], "updated")
+        self.assertNotIn("old_session_id", result)
+        self.assertNotIn("new_session_id", result)
+
+    def test_refresh_peer_dry_run_reports_session_id_change(self):
+        """dry_run with session_id reports the intended change without writing."""
+        import c2c_refresh_peer
+
+        new_pid = os.getpid()
+        old_session_id = "opencode-c2c-msg"
+        new_session_id = "d16034fc-5526-414b-a88e-709d1a93e345"
+        original = [{"session_id": old_session_id, "alias": "storm-beacon", "pid": 99999}]
+        self._write_registry(original)
+        result = c2c_refresh_peer.refresh_peer(
+            "storm-beacon",
+            new_pid,
+            self.broker_root,
+            session_id=new_session_id,
+            dry_run=True,
+        )
+        self.assertEqual(result["status"], "dry_run")
+        self.assertEqual(result.get("old_session_id"), old_session_id)
+        self.assertEqual(result.get("new_session_id"), new_session_id)
+        # Registry must be unchanged
+        regs = self._read_registry()
+        self.assertEqual(regs[0]["session_id"], old_session_id)
+        self.assertEqual(regs[0]["pid"], 99999)
 
 
 class PurgeOldDeadLetterTests(unittest.TestCase):
