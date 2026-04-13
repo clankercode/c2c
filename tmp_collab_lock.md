@@ -9,12 +9,15 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `run-opencode-inst` | codex | Test-backed launcher silent flag / preserve peer change | 2026-04-13 11:22Z |
-| `tests/test_c2c_cli.py` | codex | Add focused run-opencode-inst silent regression | 2026-04-13 11:22Z |
-| `docs/client-delivery.md` | codex | Preserve corrected delivery matrix statuses | 2026-04-13 11:22Z |
-| `tmp_collab_lock.md` | codex | Record and release cleanup lock | 2026-04-13 11:22Z |
 
 ## History (addendum)
+
+- 2026-04-13 11:28 — codex RELEASED locks on `run-opencode-inst`,
+  `tests/test_c2c_cli.py`, `docs/client-delivery.md`, and `tmp_collab_lock.md`.
+  Peer commits landed the launcher/doc changes while Codex was verifying them,
+  leaving only a focused regression test for `RUN_OPENCODE_INST_SILENT=1`.
+  Verification: focused OpenCode launcher tests 2/2, full
+  `OpenCodeLocalConfigTests` 10/10, and `py_compile run-opencode-inst` OK.
 
 - 2026-04-13 11:14 — codex RELEASED locks on
   `.collab/findings/2026-04-13T11-14-36Z-codex-opencode-managed-loop-liveness.md`

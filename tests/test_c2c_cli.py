@@ -3810,6 +3810,39 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
             str(REPO / "run-opencode-inst.d" / "c2c-opencode-local.restart.json"),
         )
 
+    def test_run_opencode_inst_silent_suppresses_wrapper_stderr(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir) / "run-opencode-inst.d"
+            config_dir.mkdir()
+            opencode_config = config_dir / "opencode-a.opencode.json"
+            opencode_config.write_text(json.dumps({"mcp": {}}), encoding="utf-8")
+            (config_dir / "opencode-a.json").write_text(
+                json.dumps(
+                    {
+                        "command": sys.executable,
+                        "cwd": str(REPO),
+                        "config_path": str(opencode_config),
+                        "c2c_session_id": "opencode-a-local",
+                        "c2c_alias": "opencode-a",
+                        "prompt": "poll inbox",
+                        "flags": ["-c", "import sys; sys.exit(0)"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = run_cli(
+                "run-opencode-inst",
+                "opencode-a",
+                env={
+                    "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir),
+                    "RUN_OPENCODE_INST_SILENT": "1",
+                },
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+
     def test_run_opencode_inst_rearm_dry_run_reports_bg_loop_commands(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_dir = Path(temp_dir) / "run-opencode-inst.d"
