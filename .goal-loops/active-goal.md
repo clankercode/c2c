@@ -151,6 +151,18 @@ These are Max's target experiences, verbatim:
   `ocaml/c2c_mcp.ml`. Human-readable output with stale/fresh indicator. 3 Python
   tests. `c2c health` now shows `✓ Broker binary: v0.6.6 (binary is up-to-date)`
   (cbde925 + 3806fd9, 2026-04-14, storm-beacon).
+- **`prune_rooms` MCP tool** ✓: OCaml broker v0.6.7. Evicts dead members
+  from all room member lists without touching registrations or inboxes. Safe
+  to call while outer loops are running (unlike `sweep`). Feature flag
+  `prune_rooms_tool`. 3 OCaml tests (113 total). Also fixed `server_is_fresh`
+  to exclude `ocaml/test/` from mtime scan (test files only affect test binary,
+  not server). 3 new Python freshness tests; suite 856 total.
+  (b201988, 2026-04-14, storm-beacon).
+- **`c2c status` room improvements** ✓: rooms now show `alive_members`
+  list inline, empty rooms (member_count=0) are hidden from text output,
+  and blocked peers show "Blocked by <alias>: need N more sends/recvs"
+  detail on the goal line. 6 new status tests; suite 853→856 total.
+  (b00ca66 + bd6bb4e, 2026-04-14, storm-beacon).
 - **`c2c health` stale-inbox check** ✓: `check_stale_inboxes()` scans all
   `*.inbox.json` files and reports sessions with ≥5 pending messages that aren't
   draining. Shows alias, count, and "not draining inbox" hint. Total pending
