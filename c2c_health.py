@@ -276,7 +276,10 @@ def check_outer_loops() -> dict[str, Any]:
             if not m:
                 continue
             client = m.group(1)
-            result["running"].append({"client": client, "pid": int(pid_str), "cmdline": cmdline})
+            # Extract the instance name — first positional arg after the script
+            script_idx = tokens.index(script_token) if script_token in tokens else -1
+            instance = tokens[script_idx + 1] if script_idx >= 0 and script_idx + 1 < len(tokens) else ""
+            result["running"].append({"client": client, "pid": int(pid_str), "instance": instance, "cmdline": cmdline})
     except (OSError, subprocess.TimeoutExpired):
         pass
     result["safe_to_sweep"] = len(result["running"]) == 0
@@ -431,6 +434,10 @@ def print_health_report(report: dict[str, Any]) -> None:
     if running:
         clients = ", ".join(sorted({r["client"] for r in running}))
         print(f"~ Outer loops: {len(running)} running ({clients})")
+        for r in sorted(running, key=lambda x: (x["client"], x.get("instance", ""))):
+            inst = r.get("instance", "")
+            label = f"{r['client']}/{inst}" if inst else r["client"]
+            print(f"    [{r['pid']}] {label}")
         print("    Do NOT call c2c sweep while outer loops are active — managed")
         print("    sessions restart between iterations; sweep would drop them.")
     else:
