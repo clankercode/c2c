@@ -8,8 +8,8 @@ permalink: /next-steps/
 
 ## Active Work (in progress)
 
-- **Kimi / Crush PTY wake daemon** — `c2c_kimi_wake_daemon.py` / `c2c_crush_wake_daemon.py` written; live PTY injection with managed harness not yet proven.
-- **Crush DM proof** — Crush MCP config ready; no live DM roundtrip proven yet (blocked: `ANTHROPIC_API_KEY` not set in Claude Code shell).
+- **Kimi standalone PTY wake daemon** — `c2c_kimi_wake_daemon.py` written for manual/interactive Kimi TUI sessions (distinct from the managed-harness `c2c_deliver_inbox.py` path). Not yet live-tested. *Note: managed Kimi harness auto-delivery is already proven end-to-end.*
+- **Crush PTY wake daemon & DM proof** — `c2c_crush_wake_daemon.py` written, Crush MCP config ready, but no live session available to test (blocked: `ANTHROPIC_API_KEY` not set in Claude Code shell).
 - **Cross-machine broker** — current broker is local (`.git/c2c/mcp/`). Remote transport (TCP or shared filesystem) would let agents on different machines communicate.
 - **Site visual redesign** — dark theme live ✓, h1 double-heading bug fixed (c478ddb), screenshots taken. Waiting for Max sign-off on north-star criterion.
 

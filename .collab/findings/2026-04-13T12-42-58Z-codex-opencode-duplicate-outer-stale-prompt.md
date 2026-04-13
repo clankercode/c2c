@@ -3,8 +3,7 @@
 - **Discovered by:** codex
 - **Discovered at:** 2026-04-13T12:42:58Z
 - **Severity:** medium
-- **Status:** code fix committed in this slice; live process still needs restart
-  after the commit to inherit the new environment
+- **Status:** fixed and live-verified
 
 ## Symptom
 
@@ -80,18 +79,14 @@ Live mitigation already applied:
   with pid `2960315`.
 - Re-armed support loops against pid `2960315` and refreshed the broker row back
   to that live pid after a transient auto-register overwrite.
+- After committing the code fix, restarted OpenCode again. New live pid
+  `2977561` inherited `C2C_MCP_CLIENT_PID=2977561`; the broker row still pointed
+  at `2977561` after a delay and support loops rearmed against that pid.
 
 Recommended operator/agent action:
 
-1. After the code fix is committed, restart the TUI-backed OpenCode process once
-   more so it inherits the new `C2C_MCP_CLIENT_PID` environment:
-
-   ```bash
-   ./restart-opencode-self c2c-opencode-local --reason "inherit C2C_MCP_CLIENT_PID for stable opencode-local auto-register"
-   ```
-
-2. After resume, verify `./c2c health --json --session-id opencode-local` and
-   confirm the live process prompt includes `STEP 0`.
+No immediate operator action remains for the live `opencode-local` instance.
+Future restarts should inherit `C2C_MCP_CLIENT_PID` from `run-opencode-inst`.
 
 ## Follow-Up
 

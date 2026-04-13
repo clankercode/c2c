@@ -12,6 +12,7 @@ import contextlib
 import fcntl
 import json
 import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -36,15 +37,52 @@ def load_broker_registrations(broker_root: Path) -> list[dict[str, Any]]:
         return []
 
 
+@contextlib.contextmanager
+def with_registry_lock(broker_root: Path):
+    """Exclusive POSIX fcntl lock on registry.json.lock sidecar.
+
+    Uses fcntl.lockf (POSIX), not fcntl.flock (BSD), so it interlocks
+    with OCaml's Unix.lockf on the same sidecar file.
+    Caller must hold this lock for any read-modify-write on registry.json.
+    """
+    lock_path = broker_root / "registry.json.lock"
+    broker_root.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.lockf(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.lockf(fd, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        os.close(fd)
+
+
 def save_broker_registrations(
     broker_root: Path, registrations: list[dict[str, Any]]
 ) -> bool:
+    """Atomically write registrations to registry.json.
+
+    Caller is responsible for holding with_registry_lock before calling this
+    so the read-modify-write cycle is protected against concurrent OCaml writes.
+    """
     registry_path = broker_root / "registry.json"
     try:
-        registry_path.write_text(
-            json.dumps(registrations, indent=2, ensure_ascii=False),
+        content = json.dumps(registrations, indent=2, ensure_ascii=False)
+        with tempfile.NamedTemporaryFile(
+            "w",
             encoding="utf-8",
-        )
+            dir=broker_root,
+            prefix=f".{registry_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temp_path = Path(handle.name)
+        os.replace(temp_path, registry_path)
         return True
     except OSError:
         return False
@@ -74,28 +112,33 @@ def sweep_dead_registrations(
 ) -> dict[str, Any]:
     """Sweep dead registrations from the broker registry.
 
+    Holds with_registry_lock (POSIX fcntl.lockf on registry.json.lock) for the
+    entire read-decide-write cycle so this cannot race with the OCaml MCP server
+    (which also uses Unix.lockf on the same sidecar).
+
     Returns dict with sweep results:
     - before_count: registrations before sweep
     - after_count: registrations after sweep
     - removed: list of removed registrations
     - dry_run: whether this was a dry run
     """
-    registrations = load_broker_registrations(broker_root)
-    before_count = len(registrations)
+    with with_registry_lock(broker_root):
+        registrations = load_broker_registrations(broker_root)
+        before_count = len(registrations)
 
-    kept: list[dict[str, Any]] = []
-    removed: list[dict[str, Any]] = []
+        kept: list[dict[str, Any]] = []
+        removed: list[dict[str, Any]] = []
 
-    for reg in registrations:
-        if registration_is_alive(reg):
-            kept.append(reg)
-        else:
-            removed.append(reg)
+        for reg in registrations:
+            if registration_is_alive(reg):
+                kept.append(reg)
+            else:
+                removed.append(reg)
 
-    after_count = len(kept)
+        after_count = len(kept)
 
-    if not dry_run and removed:
-        save_broker_registrations(broker_root, kept)
+        if not dry_run and removed:
+            save_broker_registrations(broker_root, kept)
 
     return {
         "ok": True,

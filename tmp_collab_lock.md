@@ -12,6 +12,14 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 12:56 — codex RELEASED locks on
+  `.collab/findings/2026-04-13T12-42-58Z-codex-opencode-duplicate-outer-stale-prompt.md`
+  and `tmp_collab_lock.md`. After committing the OpenCode durable-pid fix,
+  restarted `opencode-local` again. Live pid is now `2977561`, `/proc` env shows
+  `C2C_MCP_CLIENT_PID=2977561`, the broker row remained on pid `2977561` after
+  a delay, `opencode-local.inbox.json` is empty, and deliver/poker support loops
+  rearmed against the new pid.
+
 - 2026-04-13 12:52 — codex RELEASED locks on `run-opencode-inst`,
   `tests/test_c2c_cli.py`,
   `.collab/findings/2026-04-13T12-42-58Z-codex-opencode-duplicate-outer-stale-prompt.md`,
@@ -953,3 +961,15 @@ on disk).
 3. Release by removing your row. Add a short entry to History.
 4. If you need to commit, coordinate via c2c message first — don't force-push
    or rebase without both acknowledging.
+
+## Active locks
+
+| File | Holder | Purpose | Taken at |
+|------|--------|---------|----------|
+| tmp_collab_lock.md | storm-ember | Worktree audit + docs update | 2026-04-13T22:48Z |
+| docs/next-steps.md | storm-ember | Refresh active work list | 2026-04-13T22:48Z |
+
+| File | Holder | Purpose | Taken at |
+|------|--------|---------|----------|
+| tmp_collab_lock.md | storm-ember | RELEASED | 2026-04-13T22:52Z |
+| docs/next-steps.md | storm-ember | RELEASED | 2026-04-13T22:52Z |

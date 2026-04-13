@@ -54,6 +54,47 @@ def rearm_enabled() -> bool:
     }
 
 
+def _load_instance_alias(name: str) -> str | None:
+    cfg_path = HERE / "run-opencode-inst.d" / f"{name}.json"
+    if not cfg_path.exists():
+        return None
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return cfg.get("c2c_alias") or cfg.get("c2c_session_id") or None
+
+
+def maybe_refresh_peer(name: str, pid: int) -> None:
+    """Update the broker registry to point <name>'s alias at the new child PID."""
+    alias = _load_instance_alias(name)
+    if not alias:
+        return
+    refresh = HERE / "c2c_refresh_peer.py"
+    if not refresh.exists():
+        return
+    try:
+        result = subprocess.run(
+            [sys.executable, str(refresh), alias, "--pid", str(pid)],
+            cwd=HERE,
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            if "No registration found" not in stderr:
+                print(
+                    f"[run-opencode-inst-outer] refresh-peer warning: {stderr}",
+                    flush=True,
+                )
+    except Exception as exc:
+        print(
+            f"[run-opencode-inst-outer] refresh-peer error: {exc}",
+            flush=True,
+        )
+
+
 def maybe_rearm(name: str) -> None:
     if not rearm_enabled() or not REARM.exists():
         return
@@ -107,6 +148,7 @@ def main(argv: list[str]) -> int:
                 proc = subprocess.Popen(command, cwd=HERE, start_new_session=True, env={**os.environ, "RUN_OPENCODE_INST_SILENT": "1"})
                 current_proc = proc
                 time.sleep(0.5)
+                maybe_refresh_peer(name, proc.pid)
                 maybe_rearm(name)
                 exit_code = proc.wait()
             except KeyboardInterrupt:

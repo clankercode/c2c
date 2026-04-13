@@ -105,6 +105,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "run-kimi-inst",
         "run-kimi-inst-outer",
         "run-kimi-inst-rearm",
+        "c2c_kimi_prefill.py",
         "c2c_broker_gc.py",
         "c2c_dead_letter.py",
         "c2c_register.py",
@@ -2368,6 +2369,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "run-kimi-inst",
                 "run-kimi-inst-outer",
                 "run-kimi-inst-rearm",
+                "c2c_kimi_prefill.py",
                 "c2c_broker_gc.py",
                 "c2c_dead_letter.py",
                 "c2c_health.py",
@@ -5657,9 +5659,17 @@ class RunKimiInstTests(unittest.TestCase):
             ],
         )
 
-    def test_run_kimi_inst_dry_run_ignores_prompt_in_interactive_mode(self):
+    def test_run_kimi_inst_dry_run_prefills_prompt_in_interactive_mode(self):
         config_dir = Path(self.temp_dir.name) / "run-kimi-inst.d"
         config_dir.mkdir()
+        bin_dir = Path(self.temp_dir.name) / "bin"
+        bin_dir.mkdir()
+        kimi_python = Path(self.temp_dir.name) / "kimi-python"
+        kimi_python.write_text("#!/bin/sh\n", encoding="utf-8")
+        kimi_python.chmod(0o755)
+        kimi = bin_dir / "kimi"
+        kimi.write_text(f"#!{kimi_python}\n", encoding="utf-8")
+        kimi.chmod(0o755)
         config = {
             "command": "kimi",
             "cwd": self.temp_dir.name,
@@ -5671,17 +5681,26 @@ class RunKimiInstTests(unittest.TestCase):
         env = dict(self.env)
         env["RUN_KIMI_INST_DRY_RUN"] = "1"
         env["RUN_KIMI_INST_CONFIG_DIR"] = str(config_dir)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
 
         result = run_cli("run-kimi-inst", "kimi-a", env=env)
 
         self.assertEqual(result_code(result), 0, result.stderr)
         payload = json.loads(result.stdout)
-        self.assertEqual(payload["launch"], ["kimi", "--yolo"])
-        self.assertEqual(payload["interactive_prompt"], "not-sent")
-        self.assertNotIn("--prompt", payload["launch"])
+        self.assertEqual(
+            payload["launch"],
+            [
+                str(kimi_python),
+                str(REPO / "c2c_kimi_prefill.py"),
+                "--yolo",
+                "--prompt",
+                "poll inbox",
+            ],
+        )
+        self.assertEqual(payload["interactive_prompt"], "prefill")
         self.assertNotIn("--trust-all-tools", payload["launch"])
         self.assertNotIn("--print", payload["launch"])
-        self.assertEqual(payload["prompt_mode"], "interactive-cli")
+        self.assertEqual(payload["prompt_mode"], "interactive-prefill")
 
     def test_run_kimi_inst_dry_run_uses_print_mode_when_explicitly_configured(self):
         config_dir = Path(self.temp_dir.name) / "run-kimi-inst.d"

@@ -60,6 +60,58 @@ def rearm_log(name: str) -> Path:
     return HERE / "run-kimi-inst.d" / f"{name}.outer.log"
 
 
+def _load_instance_alias(name: str) -> str | None:
+    """Return the c2c alias for a named kimi instance, or None if unresolvable."""
+    cfg_path = HERE / "run-kimi-inst.d" / f"{name}.json"
+    if not cfg_path.exists():
+        return None
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return cfg.get("c2c_alias") or cfg.get("c2c_session_id") or None
+
+
+def maybe_refresh_peer(name: str, pid: int) -> None:
+    """Update the broker registry to point <name>'s alias at the new child PID.
+
+    This closes the stale-PID window between the old child dying and the new
+    child calling auto_register_startup via MCP.  Called immediately after
+    subprocess.Popen so the PID is guaranteed alive (execvpe preserves it).
+    Silently skips if the registration doesn't exist yet (first launch) or
+    if the alias is unresolvable.
+    """
+    alias = _load_instance_alias(name)
+    if not alias:
+        return
+    refresh = HERE / "c2c_refresh_peer.py"
+    if not refresh.exists():
+        return
+    try:
+        result = subprocess.run(
+            [sys.executable, str(refresh), alias, "--pid", str(pid)],
+            cwd=HERE,
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+        if result.returncode != 0:
+            # "No registration found" on first launch is expected — not a warning.
+            stderr = result.stderr.strip()
+            if "No registration found" not in stderr:
+                print(
+                    f"[run-kimi-inst-outer] refresh-peer warning: {stderr}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+    except Exception as exc:
+        print(
+            f"[run-kimi-inst-outer] refresh-peer error: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 def maybe_rearm(name: str) -> None:
     if not rearm_enabled() or not REARM.exists():
         return
@@ -119,6 +171,7 @@ def main(argv: list[str]) -> int:
         proc = None
         try:
             proc = subprocess.Popen(command, cwd=HERE, start_new_session=START_NEW_SESSION)
+            maybe_refresh_peer(name, proc.pid)
             maybe_rearm(name)
             proc.wait()
             exit_code = proc.returncode

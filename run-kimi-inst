@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import shlex
 import subprocess
 import sys
@@ -34,6 +35,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_CONFIG_DIR = HERE / "run-kimi-inst.d"
+PREFILL_SHIM = HERE / "c2c_kimi_prefill.py"
 FALSE_STRINGS = {"0", "false", "no", "off"}
 HELP_FLAGS = {"-h", "--help"}
 
@@ -110,6 +112,23 @@ def coerce_bool(value, field: str) -> bool:
     raise SystemExit(f"[run-kimi-inst] {field} must be a boolean")
 
 
+def kimi_prefill_runner(command: list[str]) -> list[str] | None:
+    if len(command) != 1 or not PREFILL_SHIM.exists():
+        return None
+    executable = shutil.which(command[0]) or command[0]
+    try:
+        with open(executable, "rb") as stream:
+            first_line = stream.readline(512).decode("utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    if not first_line.startswith("#!"):
+        return None
+    parts = shlex.split(first_line[2:].strip())
+    if not parts:
+        return None
+    return [*parts, str(PREFILL_SHIM)]
+
+
 def default_session_id(name: str) -> str:
     normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", name.strip()).strip("-")
     return "kimi-" + (normalized or "instance")
@@ -117,7 +136,7 @@ def default_session_id(name: str) -> str:
 
 def build_launch(
     name: str, config: dict, extra: list[str]
-) -> tuple[list[str], Path, dict[str, str], bool]:
+) -> tuple[list[str], Path, dict[str, str], bool, str]:
     command = coerce_command(config.get("command", "kimi"), "command")
     flags = coerce_string_list(config.get("flags"), "flags")
     if "--yolo" not in flags and "--yes" not in flags and "-y" not in flags:
@@ -140,9 +159,18 @@ def build_launch(
 
     prompt = coerce_string(config.get("prompt"), "prompt")
     print_mode = coerce_bool(config.get("print"), "print")
-    mode_flags = ["--print"] if print_mode else []
-    prompt_args = ["--prompt", prompt] if print_mode and prompt else []
-    launch = [*command, *flags, *mode_flags, *prompt_args, *extra]
+    interactive_prompt = ""
+    if print_mode:
+        mode_flags = ["--print"]
+        prompt_args = ["--prompt", prompt] if prompt else []
+        launch = [*command, *flags, *mode_flags, *prompt_args, *extra]
+    elif prompt and (runner := kimi_prefill_runner(command)) is not None:
+        launch = [*runner, *flags, "--prompt", prompt, *extra]
+        interactive_prompt = "prefill"
+    else:
+        launch = [*command, *flags, *extra]
+        if prompt:
+            interactive_prompt = "not-sent"
 
     env = os.environ.copy()
     env.update(env_extra)
@@ -151,7 +179,8 @@ def build_launch(
     env["C2C_MCP_SESSION_ID"] = c2c_session_id
     env["C2C_MCP_AUTO_REGISTER_ALIAS"] = c2c_alias
     env["C2C_MCP_AUTO_DRAIN_CHANNEL"] = "0"
-    return launch, cwd_path, env, print_mode
+    env.setdefault("KIMI_CLI_NO_AUTO_UPDATE", "1")
+    return launch, cwd_path, env, print_mode, interactive_prompt
 
 
 def set_terminal_title(title: str) -> None:
@@ -178,7 +207,7 @@ def main(argv: list[str]) -> int:
     name = argv[1]
     extra = argv[2:]
     config = load_config(name)
-    launch, cwd_path, env, print_mode = build_launch(name, config, extra)
+    launch, cwd_path, env, print_mode, interactive_prompt = build_launch(name, config, extra)
     title = coerce_string(config.get("title") or name, "title")
     pre_exec = coerce_string_list(config.get("pre_exec"), "pre_exec")
     pid_file = pid_path(name)
@@ -186,7 +215,13 @@ def main(argv: list[str]) -> int:
     if dry_run_enabled():
         payload = {
             "launch": launch,
-            "prompt_mode": "non-interactive" if print_mode else "interactive-cli",
+            "prompt_mode": (
+                "non-interactive"
+                if print_mode
+                else "interactive-prefill"
+                if interactive_prompt == "prefill"
+                else "interactive-cli"
+            ),
             "cwd": str(cwd_path),
             "pid_file": str(pid_file),
             "env": {
@@ -194,10 +229,11 @@ def main(argv: list[str]) -> int:
                 "RUN_KIMI_INST_C2C_SESSION_ID": env["RUN_KIMI_INST_C2C_SESSION_ID"],
                 "C2C_MCP_SESSION_ID": env["C2C_MCP_SESSION_ID"],
                 "C2C_MCP_AUTO_REGISTER_ALIAS": env["C2C_MCP_AUTO_REGISTER_ALIAS"],
+                "KIMI_CLI_NO_AUTO_UPDATE": env["KIMI_CLI_NO_AUTO_UPDATE"],
             },
         }
-        if config.get("prompt") and not print_mode:
-            payload["interactive_prompt"] = "not-sent"
+        if interactive_prompt:
+            payload["interactive_prompt"] = interactive_prompt
         print(
             json.dumps(
                 payload,
