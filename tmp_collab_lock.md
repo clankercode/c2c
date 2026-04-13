@@ -12,6 +12,11 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 19:50 — codex RELEASED locks on `.collab/dm-matrix.md` and
+  `tmp_collab_lock.md`. Recorded Codex→Codex broker-native DM proof using a
+  temporary `codex exec` peer registered as alias `codex-peer`; managed Codex
+  received the exact smoke message via `mcp__c2c__poll_inbox`.
+
 - 2026-04-13 19:43 — codex RELEASED locks on `c2c_setup.py`,
   `c2c_install.py`, `tests/test_c2c_cli.py`, `c2c-configure-kimi`,
   `c2c-configure-crush`, `c2c-health`, and `tmp_collab_lock.md`. Integrated

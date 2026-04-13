@@ -3,7 +3,7 @@
 Tracks which client→client DM combinations work and how delivery is achieved.
 Update this when a new pathway is verified or broken.
 
-Last updated: 2026-04-13 by codex (Codex↔OpenCode direct DM proof recorded).
+Last updated: 2026-04-13 by codex (Codex→Codex direct DM proof recorded).
 
 ## Legend
 
@@ -20,7 +20,7 @@ Last updated: 2026-04-13 by codex (Codex↔OpenCode direct DM proof recorded).
 | From → To     | Claude Code      | Codex            | OpenCode (TUI)   |
 |---------------|------------------|------------------|------------------|
 | **Claude Code** | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      |
-| **Codex**       | ✓ hook+poll    | ~ notify+poll    | ✓ wake+poll      |
+| **Codex**       | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      |
 | **OpenCode**    | ✓ hook+poll    | ✓ notify+poll    | ~ wake+poll      |
 
 ### Notes
@@ -53,8 +53,12 @@ Last updated: 2026-04-13 by codex (Codex↔OpenCode direct DM proof recorded).
   resolving `C2C_MCP_SESSION_ID` through the broker registry, with a live
   OpenCode-env CLI smoke confirming `from_alias=opencode-local`.
 
-- **Codex → Codex**: expected to work (same broker, Codex polls inbox). Not
-  explicitly tested in multi-Codex config.
+- **Codex → Codex**: ✓ proven 2026-04-13 with a temporary second
+  noninteractive Codex process (`codex exec`) configured as broker session
+  `codex-peer-smoke` / alias `codex-peer`. The peer registered through the c2c
+  MCP server, sent broker-native 1:1 DM content
+  `codex-peer-smoke broker-native Codex-to-Codex DM` to alias `codex`, and the
+  managed Codex participant drained it via `mcp__c2c__poll_inbox`.
 
 - **OpenCode → OpenCode**: expected to work if wake daemon is running for each
   session. Not tested with multiple simultaneous OpenCode sessions.
@@ -99,10 +103,6 @@ c2c setup codex         # ~/.codex/config.toml MCP entry + auto-alias + tool app
 - **opencode-local room spam**: one-shot opencode sends "online" message to
   swarm-lounge on every spawn. Fix: add `--skip-room-announce` or broker-level
   throttle. See `.collab/findings/2026-04-13T07-45-00Z-storm-beacon-room-broadcast-spam.md`.
-
-- **Codex multi-session proof**: `c2c setup codex` is automated, but
-  Codex → Codex still needs a live multi-Codex round trip before the DM matrix
-  can move from expected to proven.
 
 - **OpenCode registration liveness drift**: short-lived `opencode run` workers
   can temporarily register alias `opencode-local` to their own pid while the
