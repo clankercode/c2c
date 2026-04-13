@@ -285,6 +285,53 @@ def check_dead_letter(broker_root: Path) -> dict[str, Any]:
     return result
 
 
+def check_stale_inboxes(broker_root: Path, threshold: int = 5) -> dict[str, Any]:
+    """Scan *.inbox.json files and report sessions with queued messages.
+
+    Returns a list of {session_id, alias, count} for any inbox with
+    >= threshold messages pending (i.e. delivered but not yet drained).
+    """
+    mcp_dir = broker_root
+    stale: list[dict] = []
+    total_pending = 0
+
+    # Build alias lookup from registry for friendlier output
+    alias_by_sid: dict[str, str] = {}
+    registry_path = broker_root / "registry.json"
+    if registry_path.exists():
+        try:
+            regs = json.loads(registry_path.read_text(encoding="utf-8"))
+            for reg in regs if isinstance(regs, list) else []:
+                sid = reg.get("session_id") or ""
+                alias = reg.get("alias") or ""
+                if sid and alias:
+                    alias_by_sid[sid] = alias
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    for inbox_path in sorted(mcp_dir.glob("*.inbox.json")):
+        # Strip ".inbox" from "session_id.inbox.json" → session_id
+        name = inbox_path.name  # e.g. "abc.inbox.json"
+        if name.endswith(".inbox.json"):
+            session_id = name[: -len(".inbox.json")]
+        else:
+            session_id = inbox_path.stem
+        try:
+            msgs = json.loads(inbox_path.read_text(encoding="utf-8"))
+            count = len(msgs) if isinstance(msgs, list) else 0
+        except (json.JSONDecodeError, OSError):
+            count = 0
+        total_pending += count
+        if count >= threshold:
+            stale.append({
+                "session_id": session_id,
+                "alias": alias_by_sid.get(session_id, session_id),
+                "count": count,
+            })
+
+    return {"stale": stale, "total_pending": total_pending, "threshold": threshold}
+
+
 def check_outer_loops() -> dict[str, Any]:
     """Check which managed-harness outer restart loops are running.
 
@@ -438,6 +485,7 @@ def run_health_check(broker_root: Path, session_id: str | None = None) -> dict[s
         "claude_wake_daemon": check_claude_wake_daemon(effective_session_id),
         "swarm_lounge": check_swarm_lounge(broker_root, session.get("alias")),
         "dead_letter": check_dead_letter(broker_root),
+        "stale_inboxes": check_stale_inboxes(broker_root),
         "outer_loops": check_outer_loops(),
         "wire_daemon": check_wire_daemon(effective_session_id),
         "relay": check_relay(broker_root),
@@ -559,6 +607,20 @@ def print_health_report(report: dict[str, Any]) -> None:
             print(f"    Sessions with queued messages: {sessions_str}")
         print("    Messages auto-redeliver when the session re-registers.")
         print("    To inspect: cat .git/c2c/mcp/dead-letter.jsonl")
+
+    # Stale inboxes
+    si = report.get("stale_inboxes", {})
+    stale = si.get("stale", [])
+    total_pending = si.get("total_pending", 0)
+    threshold = si.get("threshold", 5)
+    if stale:
+        print(f"~ Stale inboxes: {len(stale)} session(s) with >={threshold} messages pending (total {total_pending})")
+        for entry in stale:
+            print(f"    {entry['alias']}: {entry['count']} pending (not draining inbox)")
+    elif total_pending > 0:
+        print(f"✓ Inboxes: {total_pending} message(s) queued (<{threshold} each, nominal)")
+    else:
+        print("✓ Inboxes: all empty")
 
     # Outer loops
     ol = report.get("outer_loops", {})

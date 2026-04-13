@@ -7026,7 +7026,8 @@ class RunKimiInstTests(unittest.TestCase):
 
         self.assertEqual(result_code(result), 0, result.stderr)
         payload = json.loads(result.stdout)
-        self.assertEqual(payload["launch"], ["kimi", "--yolo"])
+        # In interactive (non-print) mode, --continue is added for session resumption
+        self.assertEqual(payload["launch"], ["kimi", "--yolo", "--continue"])
         self.assertEqual(payload["prompt_mode"], "interactive-cli")
         self.assertEqual(payload["env"]["RUN_KIMI_INST_C2C_SESSION_ID"], "kimi-test")
         self.assertEqual(payload["env"]["C2C_MCP_AUTO_REGISTER_ALIAS"], "kimi-test")
@@ -7051,6 +7052,7 @@ class RunKimiInstTests(unittest.TestCase):
 
         self.assertEqual(result_code(result), 0, result.stderr)
         payload = json.loads(result.stdout)
+        # In interactive (non-print) mode, --continue is added for session resumption
         self.assertEqual(
             payload["launch"],
             [
@@ -7061,6 +7063,7 @@ class RunKimiInstTests(unittest.TestCase):
                 "kimi-cli",
                 "kimi",
                 "--yolo",
+                "--continue",
             ],
         )
 
@@ -7098,6 +7101,7 @@ class RunKimiInstTests(unittest.TestCase):
                 str(kimi_python),
                 str(REPO / "c2c_kimi_prefill.py"),
                 "--yolo",
+                "--continue",
                 "--prompt",
                 "poll inbox",
             ],
@@ -7839,6 +7843,7 @@ class HealthCheckWireDaemonTests(unittest.TestCase):
             mock.patch("c2c_health.check_hook", return_value={}),
             mock.patch("c2c_health.check_swarm_lounge", return_value={}),
             mock.patch("c2c_health.check_dead_letter", return_value={}),
+            mock.patch("c2c_health.check_stale_inboxes", return_value={}),
             mock.patch("c2c_health.check_outer_loops", return_value={}),
             mock.patch("c2c_health.check_relay", return_value={}),
             mock.patch("c2c_health.check_broker_binary", return_value={}),
@@ -7906,6 +7911,69 @@ class HealthCheckBrokerBinaryTests(unittest.TestCase):
 
         self.assertTrue(result["exists"])
         self.assertFalse(result["fresh"])
+
+
+class HealthCheckStaleInboxTests(unittest.TestCase):
+    """Tests for c2c_health.check_stale_inboxes()."""
+
+    def setUp(self):
+        import c2c_health
+        self.c2c_health = c2c_health
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.broker_root = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _write_inbox(self, session_id: str, messages: list) -> None:
+        path = self.broker_root / f"{session_id}.inbox.json"
+        path.write_text(json.dumps(messages), encoding="utf-8")
+
+    def _write_registry(self, registrations: list[dict]) -> None:
+        (self.broker_root / "registry.json").write_text(
+            json.dumps(registrations), encoding="utf-8"
+        )
+
+    def test_empty_broker_dir_returns_no_stale(self):
+        result = self.c2c_health.check_stale_inboxes(self.broker_root)
+        self.assertEqual(result["stale"], [])
+        self.assertEqual(result["total_pending"], 0)
+
+    def test_empty_inbox_not_reported(self):
+        self._write_inbox("sess-a", [])
+        result = self.c2c_health.check_stale_inboxes(self.broker_root)
+        self.assertEqual(result["stale"], [])
+
+    def test_inbox_below_threshold_not_reported(self):
+        self._write_inbox("sess-a", [{"content": "m"}] * 3)
+        result = self.c2c_health.check_stale_inboxes(self.broker_root, threshold=5)
+        self.assertEqual(result["stale"], [])
+        self.assertEqual(result["total_pending"], 3)
+
+    def test_inbox_at_threshold_reported(self):
+        self._write_inbox("sess-a", [{"content": "m"}] * 5)
+        result = self.c2c_health.check_stale_inboxes(self.broker_root, threshold=5)
+        self.assertEqual(len(result["stale"]), 1)
+        self.assertEqual(result["stale"][0]["session_id"], "sess-a")
+        self.assertEqual(result["stale"][0]["count"], 5)
+
+    def test_alias_resolved_from_registry(self):
+        self._write_registry([{"session_id": "sess-a", "alias": "nice-agent"}])
+        self._write_inbox("sess-a", [{"content": "m"}] * 10)
+        result = self.c2c_health.check_stale_inboxes(self.broker_root, threshold=5)
+        self.assertEqual(result["stale"][0]["alias"], "nice-agent")
+
+    def test_session_id_used_as_alias_when_not_in_registry(self):
+        self._write_inbox("unknown-sess", [{"content": "m"}] * 10)
+        result = self.c2c_health.check_stale_inboxes(self.broker_root, threshold=5)
+        self.assertEqual(result["stale"][0]["alias"], "unknown-sess")
+
+    def test_total_pending_counts_all_inboxes(self):
+        self._write_inbox("sess-a", [{"content": "m"}] * 2)
+        self._write_inbox("sess-b", [{"content": "m"}] * 8)
+        result = self.c2c_health.check_stale_inboxes(self.broker_root, threshold=5)
+        self.assertEqual(result["total_pending"], 10)
+        self.assertEqual(len(result["stale"]), 1)  # only sess-b >= threshold
 
 
 class RefreshPeerTests(unittest.TestCase):
