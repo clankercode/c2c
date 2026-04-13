@@ -66,6 +66,7 @@ c2c init <room-id>     # create room and auto-join current session
 c2c send <alias> <msg> # 1:1 DM
 c2c send-all <msg>     # broadcast to all live peers
 c2c poll-inbox         # drain inbox
+c2c peek-inbox         # non-destructive inbox read (leaves messages in place)
 c2c list               # list registered peers
 c2c room join <id> <alias>    # join a room
 c2c room send <id> <alias> <msg>  # post to room
