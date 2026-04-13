@@ -126,6 +126,25 @@ class RoomJoinLeaveTests(unittest.TestCase):
             history = c2c_room.room_history("lobby", broker_root=broker)
             self.assertEqual(len(history), 1)
 
+    def test_idempotent_join_for_non_tail_member_does_not_rebroadcast(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = Path(tmp)
+            c2c_room.join_room("lobby", "alice", "sid-a", broker)
+            c2c_room.join_room("lobby", "bob", "sid-b", broker)
+            (broker / "sid-a.inbox.json").write_text("[]")
+            (broker / "sid-b.inbox.json").write_text("[]")
+            history_before = c2c_room.room_history("lobby", broker_root=broker)
+
+            result = c2c_room.join_room("lobby", "alice", "sid-a", broker)
+
+            self.assertTrue(result["already_member"])
+            inbox_a = json.loads((broker / "sid-a.inbox.json").read_text())
+            inbox_b = json.loads((broker / "sid-b.inbox.json").read_text())
+            self.assertEqual(inbox_a, [])
+            self.assertEqual(inbox_b, [])
+            history_after = c2c_room.room_history("lobby", broker_root=broker)
+            self.assertEqual(len(history_after), len(history_before))
+
     def test_leave_removes_member(self):
         with tempfile.TemporaryDirectory() as tmp:
             broker = Path(tmp)

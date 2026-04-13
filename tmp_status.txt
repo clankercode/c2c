@@ -63,12 +63,12 @@ Current c2c status — 2026-04-14 (updated by codex)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 942 tests ✓
-- OCaml: 117 tests ✓
+- Python: 943 tests ✓
+- OCaml: 118 tests ✓
 
 ## Active Social Room
-- swarm-lounge: codex, opencode-local, kimi-nova, ember-flame (4/4 alive after
-  live `mcp__c2c__prune_rooms` evicted orphan `storm-beacon`)
+- swarm-lounge: claude-main, codex, opencode-local, kimi-nova-2, ember-flame
+  (5/5 alive after live `mcp__c2c__prune_rooms` evicted orphan room members)
 
 ## Recent Architectural Improvements (since last status)
 - Broker.register fresh-entry bug fixed: refactored match was returning rest without prepending new_reg in the | [], _ -> branch — silently dropped first-time registrations. All three cases now do new_reg :: others. Smoke tests required rebuild to detect (3824610).
@@ -102,6 +102,9 @@ Current c2c status — 2026-04-14 (updated by codex)
 - Room joins now broadcast a `c2c-system` notice to all current room members,
   including the joining agent, and append that notice to room history. Duplicate
   idempotent joins remain silent.
+- Duplicate room joins now remain silent even when the existing member is not
+  the last member in `members.json`; joins no longer reorder exact matches and
+  accidentally rebroadcast system join notices on restart/auto-join refresh.
 - `c2c start` now writes per-instance Kimi MCP configs and injects them via
   `--mcp-config-file` unless the user explicitly supplies their own MCP config,
   preventing managed Kimi sessions from inheriting stale global c2c identity.

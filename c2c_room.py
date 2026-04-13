@@ -154,12 +154,20 @@ def join_room(
             "session_id": session_id,
             "joined_at": joined_at,
         }
-        updated = [
-            m
-            for m in members
-            if m.get("alias") != alias and m.get("session_id") != session_id
-        ]
-        updated.append(member)
+        if already:
+            updated = members
+        else:
+            updated = []
+            inserted = False
+            for m in members:
+                matches = m.get("alias") == alias or m.get("session_id") == session_id
+                if matches and not inserted:
+                    updated.append(member)
+                    inserted = True
+                elif not matches:
+                    updated.append(m)
+            if not inserted:
+                updated.append(member)
         if updated != members:
             write_json_atomic(members_path, updated)
             changed = True

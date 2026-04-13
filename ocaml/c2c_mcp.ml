@@ -1026,20 +1026,31 @@ module Broker = struct
             (fun m -> m.rm_alias = alias || m.rm_session_id = session_id)
             members
         in
+        let exact_existing =
+          match existing with
+          | Some m when m.rm_alias = alias && m.rm_session_id = session_id ->
+              true
+          | _ -> false
+        in
         let joined_at =
           match existing with
           | Some m -> m.joined_at
           | None -> Unix.gettimeofday ()
         in
         let member = { rm_alias = alias; rm_session_id = session_id; joined_at } in
-        let kept =
-          List.filter
-            (fun m -> m.rm_alias <> alias && m.rm_session_id <> session_id)
-            members
-        in
-        let updated = kept @ [ member ] in
-        if updated <> members then save_room_members t ~room_id updated;
-        (updated, updated <> members))
+        if exact_existing then (members, false)
+        else
+          let rec replace inserted = function
+            | [] -> if inserted then [] else [ member ]
+            | m :: rest
+              when m.rm_alias = alias || m.rm_session_id = session_id ->
+                if inserted then replace true rest
+                else member :: replace true rest
+            | m :: rest -> m :: replace inserted rest
+          in
+          let updated = replace false members in
+          if updated <> members then save_room_members t ~room_id updated;
+          (updated, updated <> members))
     in
     if should_broadcast then broadcast_room_join t ~room_id ~alias;
     updated

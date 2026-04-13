@@ -2590,6 +2590,52 @@ let test_join_room_idempotent_does_not_rebroadcast () =
       check int "duplicate join does not append another history entry" 1
         (List.length history))
 
+let test_join_room_idempotent_non_tail_member_does_not_rebroadcast () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"alice" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-b"
+        ~alias:"bob" ~pid:None ~pid_start_time:None;
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"lobby"
+          ~alias:"alice" ~session_id:"session-a"
+      in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"lobby"
+          ~alias:"bob" ~session_id:"session-b"
+      in
+      let _ =
+        C2c_mcp.Broker.drain_inbox broker ~session_id:"session-a"
+      in
+      let _ =
+        C2c_mcp.Broker.drain_inbox broker ~session_id:"session-b"
+      in
+      let before =
+        C2c_mcp.Broker.read_room_history broker ~room_id:"lobby" ~limit:10
+      in
+      let members =
+        C2c_mcp.Broker.join_room broker ~room_id:"lobby"
+          ~alias:"alice" ~session_id:"session-a"
+      in
+      check int "same members after duplicate non-tail join" 2
+        (List.length members);
+      let inbox_a =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"session-a"
+      in
+      let inbox_b =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"session-b"
+      in
+      check int "non-tail duplicate does not notify rejoining member" 0
+        (List.length inbox_a);
+      check int "non-tail duplicate does not notify other member" 0
+        (List.length inbox_b);
+      let after =
+        C2c_mcp.Broker.read_room_history broker ~room_id:"lobby" ~limit:10
+      in
+      check int "non-tail duplicate does not append history"
+        (List.length before) (List.length after))
+
 let test_leave_room_removes_member () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -4219,6 +4265,8 @@ let () =
              test_join_room_broadcasts_system_message_to_all_members
          ; test_case "join_room idempotent does not rebroadcast" `Quick
              test_join_room_idempotent_does_not_rebroadcast
+         ; test_case "join_room idempotent non-tail member does not rebroadcast" `Quick
+             test_join_room_idempotent_non_tail_member_does_not_rebroadcast
          ; test_case "leave_room removes member" `Quick
              test_leave_room_removes_member
          ; test_case "send_room appends history and fans out" `Quick

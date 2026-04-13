@@ -13,6 +13,17 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T23:29Z - codex RELEASED locks on `ocaml/c2c_mcp.ml`,
+  `ocaml/test/test_c2c_mcp.ml`, `c2c_room.py`, `tests/test_c2c_room.py`,
+  `.collab/findings/2026-04-13T23-24-00Z-codex-room-join-rebroadcast-noise.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Fixed duplicate room join
+  rebroadcast noise for exact existing members that were not the last entry in
+  `members.json`; exact duplicate joins now short-circuit, while real
+  alias/session updates replace in place. Verification: RED OCaml regression
+  failed on extra system message; GREEN OCaml `dune runtest` 118 tests and
+  Python room tests 21/21; full `just test` passed with 943 Python tests plus
+  OCaml build/runtest.
+
 - 2026-04-13T23:16Z - codex RELEASED locks on `c2c_start.py`,
   `run-crush-inst-outer`, `tests/test_c2c_cli.py`, `tmp_status.txt`, and
   `tmp_collab_lock.md`. Adopted the committed deliver-client enum fix and
