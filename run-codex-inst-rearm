@@ -124,7 +124,9 @@ def default_session_id(name: str) -> str:
     return f"codex-{name}"
 
 
-def build_commands(name: str, target_pid: int, session_id: str) -> dict[str, list[str]]:
+def build_commands(
+    name: str, target_pid: int, session_id: str, start_timeout: float
+) -> dict[str, list[str]]:
     poker_pidfile = support_pidfile(name, "poker")
     deliver_pidfile = support_pidfile(name, "deliver")
     return {
@@ -149,6 +151,8 @@ def build_commands(name: str, target_pid: int, session_id: str) -> dict[str, lis
             "--daemon",
             "--daemon-log",
             str(support_log(name, "deliver")),
+            "--daemon-timeout",
+            f"{start_timeout:g}",
             "--json",
         ],
         "poker": [
@@ -225,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--stop-timeout", type=float, default=2.0)
-    parser.add_argument("--start-timeout", type=float, default=5.0)
+    parser.add_argument("--start-timeout", type=float, default=30.0)
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     target_pid = args.pid if args.pid is not None else read_pid(pid_path(args.name))
@@ -234,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     session_id = args.session_id or default_session_id(args.name)
-    commands = build_commands(args.name, target_pid, session_id)
+    commands = build_commands(args.name, target_pid, session_id, args.start_timeout)
     pidfiles = {
         "poker": str(support_pidfile(args.name, "poker")),
         "deliver": str(support_pidfile(args.name, "deliver")),

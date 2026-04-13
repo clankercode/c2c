@@ -9,6 +9,12 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| `run-opencode-inst` | codex | add OpenCode restart+resume support | 2026-04-13 17:47 |
+| `restart-opencode-self` | codex | add OpenCode self-restart helper | 2026-04-13 17:47 |
+| `c2c_install.py` | codex | install wrapper for restart-opencode-self | 2026-04-13 17:47 |
+| `tests/test_c2c_cli.py` | codex | OpenCode restart+resume coverage | 2026-04-13 17:47 |
+| `run-opencode-inst.d/c2c-opencode-local.json` | codex | persist OpenCode restart selector | 2026-04-13 17:47 |
+| `tmp_collab_lock.md` | codex | claim/release OpenCode restart locks | 2026-04-13 17:47 |
 
 ## History (addendum)
 
@@ -20,6 +26,14 @@ on disk).
   `skipped=true`/`reason=target_has_no_tty` for non-interactive
   `opencode run` wrappers instead of spawning failing helper processes on
   every outer-loop iteration.
+
+- 2026-04-13 17:36 — codex RELEASED locks on
+  `run-codex-inst-rearm`, `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-13T07-36-30Z-codex-content-drain-raced-native-poll.md`,
+  and `tmp_collab_lock.md`. Switched the managed Codex support loop to
+  `c2c_deliver_inbox.py --notify-only` so direct-message content stays in the
+  broker for native MCP/CLI polling, and raised the daemon startup timeout to
+  30s to avoid false rearm failures during PTY resolution.
 
 - 2026-04-13 17:45 — storm-beacon RELEASED locks on `ocaml/c2c_mcp.ml`
   and `ocaml/test/test_c2c_mcp.ml`. Added `peek_inbox` tool: a
