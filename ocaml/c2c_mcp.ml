@@ -35,6 +35,7 @@ let server_features =
   ; "peek_inbox_tool"
   ; "join_leave_from_alias_fallback"
   ; "rpc_audit_log"
+  ; "tail_log_tool"
   ]
 
 let server_info =
@@ -186,6 +187,7 @@ module Broker = struct
     write_json_file (registry_path t) (`List (List.map registration_to_json regs))
 
   let create ~root = { root }
+  let root t = t.root
 
   let registry_lock_path t = Filename.concat t.root "registry.json.lock"
 
@@ -1022,6 +1024,7 @@ let tool_definitions =
   ; tool_definition ~name:"my_rooms" ~description:"List rooms where your current session is a member. Caller's session_id is always resolved from the MCP env (C2C_MCP_SESSION_ID); passing a session_id argument is ignored for isolation — you can only see your own memberships. Same row shape as list_rooms: JSON array of {room_id, member_count, members}." ~required:[]
   ; tool_definition ~name:"room_history" ~description:"Return the last `limit` (default 50) messages from a room's append-only history. Read-only." ~required:[ "room_id" ]
   ; tool_definition ~name:"history" ~description:"Return your own archived inbox messages, newest first. Every message drained via poll_inbox is archived to a per-session append-only log before the live inbox is cleared, so this tool gives you a durable record of everything you've ever received. Caller's session_id is always resolved from the MCP env (C2C_MCP_SESSION_ID); passing a session_id argument is ignored for isolation — you can only read your own history. Optional `limit` (default 50). Returns a JSON array of {drained_at, from_alias, to_alias, content} objects." ~required:[]
+  ; tool_definition ~name:"tail_log" ~description:"Return the last N lines from the broker RPC audit log (broker.log). Each line is a JSON object {ts, tool, ok}. Useful for verifying that your sends and polls actually reached the broker, without needing to read the file directly. Content fields are not logged — only tool names and success/fail status. Optional `limit` (default 50, max 500). Returns a JSON array of log entries, oldest first." ~required:[]
   ]
 
 let string_member name json =
@@ -1291,6 +1294,54 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
              |> Yojson.Safe.to_string
            in
            Lwt.return (tool_result ~content ~is_error:false))
+  | "tail_log" ->
+      let limit =
+        match Broker.int_opt_member "limit" arguments with
+        | Some n when n < 1 -> 1
+        | Some n -> min n 500
+        | None -> 50
+      in
+      let log_path = Filename.concat (Broker.root broker) "broker.log" in
+      let content =
+        if not (Sys.file_exists log_path) then "[]"
+        else begin
+          (* Read all lines, take last `limit`, parse each as JSON *)
+          let lines =
+            let ic = open_in log_path in
+            Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+              let buf = Buffer.create 4096 in
+              (try while true do
+                   let line = String.trim (input_line ic) in
+                   if line <> "" then begin
+                     Buffer.add_string buf line;
+                     Buffer.add_char buf '\n'
+                   end
+                 done with End_of_file -> ());
+              String.split_on_char '\n' (Buffer.contents buf)
+              |> List.filter (fun s -> String.trim s <> ""))
+          in
+          let n = List.length lines in
+          let tail = if n <= limit then lines
+                     else
+                       let drop = n - limit in
+                       let rec skip i = function
+                         | [] -> []
+                         | _ :: rest when i > 0 -> skip (i - 1) rest
+                         | lst -> lst
+                       in
+                       skip drop lines
+          in
+          let parsed =
+            List.filter_map
+              (fun line ->
+                try Some (Yojson.Safe.from_string line)
+                with _ -> None)
+              tail
+          in
+          `List parsed |> Yojson.Safe.to_string
+        end
+      in
+      Lwt.return (tool_result ~content ~is_error:false)
   | "sweep" ->
       let { Broker.dropped_regs; deleted_inboxes; preserved_messages } =
         Broker.sweep broker

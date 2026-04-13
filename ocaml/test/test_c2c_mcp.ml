@@ -350,6 +350,7 @@ let test_initialize_reports_server_version_and_features () =
             ; "my_rooms_tool"
             ; "peek_inbox_tool"
             ; "rpc_audit_log"
+            ; "tail_log_tool"
             ]
           in
           List.iter
@@ -2222,6 +2223,64 @@ let test_tools_call_send_room_accepts_alias_as_from_alias_alias () =
             "storm-sender" msg.from_alias;
           check string "content" "hello via alias fallback" msg.content))
 
+(* Gap #8 / tail_log: after a tools/call, tail_log should return the
+   log entry that was just appended. *)
+let test_tools_call_tail_log_returns_audit_entries () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-tail-test";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          (* Call `list` to generate an audit entry. *)
+          let _list_resp =
+            Lwt_main.run
+              (C2c_mcp.handle_request ~broker_root:dir
+                 (`Assoc
+                    [ ("jsonrpc", `String "2.0")
+                    ; ("id", `Int 910)
+                    ; ("method", `String "tools/call")
+                    ; ("params",
+                       `Assoc
+                         [ ("name", `String "list")
+                         ; ("arguments", `Assoc [])
+                         ])
+                    ]))
+          in
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 911)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "tail_log")
+                    ; ("arguments", `Assoc [])
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          (match response with
+           | None -> fail "expected tail_log response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               let entries = Yojson.Safe.from_string text |> to_list in
+               (* `tail_log` reads the log before its own entry is appended,
+                  so we see exactly the `list` entry from the prior call. *)
+               check int "exactly one entry (list call)" 1 (List.length entries);
+               let first = List.hd entries in
+               check string "first tool is list" "list"
+                 (first |> member "tool" |> to_string);
+               check bool "first ok=true" true
+                 (first |> member "ok" |> to_bool);
+               check bool "ts is positive" true
+                 (first |> member "ts" |> to_number > 0.0))))
+
 (* Gap #8: every tools/call should append one line to broker.log. *)
 let test_tools_call_appends_to_broker_log () =
   with_temp_dir (fun dir ->
@@ -2489,6 +2548,8 @@ let () =
              test_my_rooms_returns_only_sessions_memberships
          ; test_case "tools/call my_rooms uses env session_id, ignores args" `Quick
              test_tools_call_my_rooms_uses_env_session_id
+         ; test_case "tools/call tail_log returns audit entries" `Quick
+             test_tools_call_tail_log_returns_audit_entries
          ; test_case "tools/call appends to broker.log" `Quick
              test_tools_call_appends_to_broker_log
          ; test_case "tools/call send_room via MCP" `Quick

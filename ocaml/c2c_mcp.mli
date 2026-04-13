@@ -12,6 +12,7 @@ module Broker : sig
   type t
 
   val create : root:string -> t
+  val root : t -> string
   val register :
     t
     -> session_id:string
