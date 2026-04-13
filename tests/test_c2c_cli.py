@@ -6390,7 +6390,8 @@ class RunKimiInstTests(unittest.TestCase):
     def test_run_kimi_inst_rearm_dry_run_shows_deliver_command(self):
         config_dir = Path(self.temp_dir.name) / "run-kimi-inst.d"
         config_dir.mkdir()
-        (config_dir / "kimi-a.pid").write_text("12345\n", encoding="utf-8")
+        live_pid = os.getpid()
+        (config_dir / "kimi-a.pid").write_text(f"{live_pid}\n", encoding="utf-8")
         env = dict(self.env)
         env["RUN_KIMI_INST_CONFIG_DIR"] = str(config_dir)
 
@@ -6407,13 +6408,61 @@ class RunKimiInstTests(unittest.TestCase):
         self.assertEqual(result_code(result), 0, result.stderr)
         payload = json.loads(result.stdout)
         self.assertEqual(payload["name"], "kimi-a")
-        self.assertEqual(payload["target_pid"], 12345)
+        self.assertEqual(payload["target_pid"], live_pid)
+        self.assertEqual(payload["target_source"], "pidfile")
         self.assertEqual(payload["session_id"], "kimi-a-local")
         self.assertTrue(payload["dry_run"])
         joined_commands = " ".join(" ".join(cmd) for cmd in payload["commands"])
         self.assertIn("c2c_deliver_inbox.py", joined_commands)
         self.assertIn("--session-id kimi-a-local", joined_commands)
         self.assertIn("--notify-only", joined_commands)
+
+    def test_run_kimi_inst_rearm_uses_live_broker_pid_when_pidfile_stale(self):
+        config_dir = Path(self.temp_dir.name) / "run-kimi-inst.d"
+        broker_root = Path(self.temp_dir.name) / "broker"
+        config_dir.mkdir()
+        broker_root.mkdir()
+        (config_dir / "kimi-nova.pid").write_text("11111\n", encoding="utf-8")
+        config = {
+            "c2c_session_id": "kimi-nova",
+            "c2c_alias": "kimi-nova",
+        }
+        (config_dir / "kimi-nova.json").write_text(
+            json.dumps(config), encoding="utf-8"
+        )
+        live_pid = os.getpid()
+        (broker_root / "registry.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "session_id": "kimi-nova",
+                        "alias": "kimi-nova",
+                        "pid": live_pid,
+                        "pid_start_time": c2c_mcp.read_pid_start_time(live_pid),
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        env = dict(self.env)
+        env["RUN_KIMI_INST_CONFIG_DIR"] = str(config_dir)
+        env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
+
+        result = run_cli(
+            "run-kimi-inst-rearm",
+            "kimi-nova",
+            "--dry-run",
+            "--json",
+            env=env,
+        )
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["target_pid"], live_pid)
+        self.assertEqual(payload["target_source"], "broker")
+        self.assertEqual(payload["pidfile_pid"], 11111)
+        joined_commands = " ".join(" ".join(cmd) for cmd in payload["commands"])
+        self.assertIn(f"--pid {live_pid}", joined_commands)
 
 
 class RunCrushInstTests(unittest.TestCase):

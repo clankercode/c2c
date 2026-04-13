@@ -19,6 +19,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import c2c_mcp
+
 HERE = Path(__file__).resolve().parent
 DEFAULT_CONFIG_DIR = HERE / "run-kimi-inst.d"
 FALSE_STRINGS = {"", "0", "false", "no", "off"}
@@ -114,6 +116,11 @@ def load_config(name: str) -> dict[str, Any]:
         return {}
 
 
+def broker_root() -> Path:
+    override = os.environ.get("C2C_MCP_BROKER_ROOT", "").strip()
+    return Path(override) if override else c2c_mcp.default_broker_root()
+
+
 def default_session_id(name: str) -> str:
     env_value = os.environ.get("RUN_KIMI_INST_C2C_SESSION_ID", "").strip()
     if env_value:
@@ -122,6 +129,79 @@ def default_session_id(name: str) -> str:
     if config_value:
         return config_value
     return f"kimi-{name}"
+
+
+def default_alias(name: str, session_id: str) -> str:
+    env_value = os.environ.get("RUN_KIMI_INST_C2C_ALIAS", "").strip()
+    if env_value:
+        return env_value
+    config_value = str(load_config(name).get("c2c_alias", "")).strip()
+    if config_value:
+        return config_value
+    return session_id or f"kimi-{name}"
+
+
+def live_broker_pid(session_id: str, alias: str) -> int | None:
+    registry_path = broker_root() / "registry.json"
+    for registration in c2c_mcp.load_broker_registrations(registry_path):
+        if (
+            registration.get("session_id") != session_id
+            and registration.get("alias") != alias
+        ):
+            continue
+        if not c2c_mcp.broker_registration_is_alive(registration):
+            continue
+        pid = registration.get("pid")
+        if isinstance(pid, int) and not isinstance(pid, bool):
+            return pid
+    return None
+
+
+def resolve_target_pid(
+    name: str, explicit_pid: int | None, session_id: str, alias: str
+) -> dict[str, Any]:
+    pidfile_pid = read_pid(pid_path(name))
+    if explicit_pid is not None:
+        if pid_is_alive(explicit_pid):
+            return {
+                "ok": True,
+                "target_pid": explicit_pid,
+                "target_source": "argument",
+                "pidfile_pid": pidfile_pid,
+            }
+        return {
+            "ok": False,
+            "reason": "explicit_pid_not_alive",
+            "target_pid": explicit_pid,
+            "target_source": "argument",
+            "pidfile_pid": pidfile_pid,
+        }
+
+    if pidfile_pid is not None and pid_is_alive(pidfile_pid):
+        return {
+            "ok": True,
+            "target_pid": pidfile_pid,
+            "target_source": "pidfile",
+            "pidfile_pid": pidfile_pid,
+        }
+
+    broker_pid = live_broker_pid(session_id, alias)
+    if broker_pid is not None:
+        return {
+            "ok": True,
+            "target_pid": broker_pid,
+            "target_source": "broker",
+            "pidfile_pid": pidfile_pid,
+        }
+
+    reason = "pidfile_pid_not_alive" if pidfile_pid is not None else "pidfile_missing"
+    return {
+        "ok": False,
+        "reason": reason,
+        "target_pid": pidfile_pid,
+        "target_source": "pidfile",
+        "pidfile_pid": pidfile_pid,
+    }
 
 
 def build_deliver_command(
@@ -192,19 +272,42 @@ def main(argv: list[str] | None = None) -> int:
             print(f"stopped deliver daemon for {args.name}")
         return 0
 
-    target_pid = args.pid if args.pid is not None else read_pid(pid_path(args.name))
-    if target_pid is None:
-        print(f"[run-kimi-inst-rearm] pid file not found: {pid_path(args.name)}", file=sys.stderr)
+    session_id = args.session_id or default_session_id(args.name)
+    alias = default_alias(args.name, session_id)
+    resolved = resolve_target_pid(args.name, args.pid, session_id, alias)
+    if not resolved["ok"]:
+        print(
+            "[run-kimi-inst-rearm] no live target pid found "
+            f"for {args.name}: {resolved['reason']} "
+            f"(pidfile={pid_path(args.name)})",
+            file=sys.stderr,
+        )
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "name": args.name,
+                        "session_id": session_id,
+                        "alias": alias,
+                        **resolved,
+                    },
+                    indent=2,
+                )
+            )
         return 2
 
-    session_id = args.session_id or default_session_id(args.name)
+    target_pid = int(resolved["target_pid"])
     deliver_command = build_deliver_command(args.name, target_pid, session_id, args.start_timeout)
 
     payload: dict[str, Any] = {
         "ok": True,
         "name": args.name,
         "target_pid": target_pid,
+        "target_source": resolved["target_source"],
+        "pidfile_pid": resolved["pidfile_pid"],
         "session_id": session_id,
+        "alias": alias,
         "pidfiles": {"deliver": str(support_pidfile(args.name, "deliver"))},
         "commands": [deliver_command],
         "dry_run": dry_run_enabled(args),

@@ -12,6 +12,17 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 15:27Z — codex RELEASED locks on `run-kimi-inst-rearm`,
+  `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-13T15-19-25Z-codex-kimi-rearm-stale-pidfile.md`,
+  and `tmp_collab_lock.md`. Fixed Kimi rearm stale-pidfile handling: rearm now
+  validates the pidfile target, falls back to a live broker registration for
+  the same session or alias, and refuses to start if no live target exists.
+  Live `kimi-nova` rearm selected broker pid `2959892` over dead pidfile pid
+  `2981321` and started notify daemon pid `3580740` against the live process.
+  Verification: focused `RunKimiInstTests` 10/10, `py_compile`, and
+  `git diff --check` passed.
+
 - 2026-04-13 15:10Z — codex RELEASED locks on `tmp_status.txt`,
   `docs/known-issues.md`, and `tmp_collab_lock.md`. Refreshed shared status
   after the OpenCode native plugin proof: `opencode-local` pid `3523962`,
