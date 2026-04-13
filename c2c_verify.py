@@ -164,7 +164,7 @@ def _count_archive_lines(path: Path) -> int:
         return 0
 
 
-def verify_progress_broker(broker_root: Path | None = None) -> dict:
+def verify_progress_broker(broker_root: Path | None = None, alive_only: bool = False) -> dict:
     """Broker-based verification using archive JSONL files.
 
     Works across all client types (Claude, Codex, OpenCode, Kimi, Crush).
@@ -226,6 +226,10 @@ def verify_progress_broker(broker_root: Path | None = None) -> dict:
         session_id = reg.get("session_id") or ""
         if not alias:
             continue
+        if alive_only:
+            import c2c_mcp as _mcp
+            if not _mcp.broker_registration_is_alive(reg):
+                continue
         # received: look for archive by session_id first, then alias (named sessions)
         received = received_by_session.get(session_id, received_by_session.get(alias, 0))
         sent = sent_by_alias.get(alias, 0)
@@ -256,12 +260,21 @@ def main(argv: list[str] | None = None) -> int:
         metavar="DIR",
         help="Override broker root directory (default: auto-detected via git).",
     )
+    parser.add_argument(
+        "--alive-only",
+        action="store_true",
+        help=(
+            "In --broker mode: exclude dead registrations from results "
+            "so ghost/test entries don't skew the goal_met calculation."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.broker or args.broker_root:
         broker_root = Path(args.broker_root) if args.broker_root else None
+        alive_only = getattr(args, "alive_only", False)
         try:
-            payload = verify_progress_broker(broker_root)
+            payload = verify_progress_broker(broker_root, alive_only=alive_only)
         except (OSError, ValueError) as error:
             print(str(error), file=sys.stderr)
             return 1

@@ -6220,6 +6220,27 @@ class C2CVerifyBrokerTests(unittest.TestCase):
             result = c2c_verify.verify_progress_broker(self.broker_root)
         self.assertIn("agent-z", result["participants"])
 
+    def test_alive_only_filters_dead_registrations(self):
+        # Pass pid without pid_start_time — broker_registration_is_alive returns True
+        # if /proc/<pid> exists and pid_start_time is not an int.
+        self._write_registry([
+            {"alias": "live-agent", "session_id": "sess-live", "pid": os.getpid()},
+            {"alias": "dead-agent", "session_id": "sess-dead", "pid": 99999999},
+        ])
+        result = c2c_verify.verify_progress_broker(self.broker_root, alive_only=True)
+        # dead-agent has a nonexistent PID → excluded
+        self.assertIn("live-agent", result["participants"])
+        self.assertNotIn("dead-agent", result["participants"])
+
+    def test_alive_only_false_includes_dead_registrations(self):
+        self._write_registry([
+            {"alias": "live-agent", "session_id": "sess-live", "pid": os.getpid()},
+            {"alias": "dead-agent", "session_id": "sess-dead", "pid": 99999999},
+        ])
+        result = c2c_verify.verify_progress_broker(self.broker_root, alive_only=False)
+        self.assertIn("live-agent", result["participants"])
+        self.assertIn("dead-agent", result["participants"])
+
 
 class C2CPruneUnitTests(unittest.TestCase):
     def setUp(self):
