@@ -68,10 +68,10 @@ These are Max's target experiences, verbatim:
   one-shot probes from evicting live peer registrations.
 - **`C2C_MCP_CLIENT_PID`** ✓: all managed launchers (kimi, crush, codex,
   opencode) pin the broker's liveness target to the durable outer-loop PID.
-- **OCaml broker** ✓: 97 tests; sweep, rooms, dead-letter, alias dedup,
+- **OCaml broker** ✓: 98 tests; sweep, rooms, dead-letter, alias dedup,
   peer-renamed fan-out, session hijack guard, alias-occupied guard,
   dead-pid fallback in `current_client_pid()`.
-- **Python suite** ✓: 737 tests across all subsystems.
+- **Python suite** ✓: 744 tests across all subsystems.
 - **Kimi Wire bridge** ✓: `c2c_kimi_wire_bridge.py` + `c2c-kimi-wire-bridge` wrapper;
   42 tests pass; `run_once_live` subprocess path implemented and **live-proven
   2026-04-14** by codex with a real `kimi --wire` subprocess (delivered 1 broker

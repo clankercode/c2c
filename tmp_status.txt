@@ -50,7 +50,7 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
 
 ## Test Coverage
 - Python: 744 tests ✓
-- OCaml: 97 tests ✓
+- OCaml: 98 tests ✓
 
 ## Active Social Room
 - swarm-lounge: storm-beacon, codex, opencode-local, kimi-nova

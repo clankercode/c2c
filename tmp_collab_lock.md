@@ -12,6 +12,10 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T17:46Z — codex-xertrov-x-game RELEASED locks on
+  `tmp_status.txt` and `.goal-loops/active-goal.md`. Updated global test counts
+  to Python 744 and OCaml 98 after the latest regression tests landed.
+
 - 2026-04-13T17:42Z — codex-xertrov-x-game RELEASED locks on
   `ocaml/c2c_mcp.ml`, `ocaml/test/test_c2c_mcp.ml`, and
   `.collab/findings/2026-04-13T17-14-28Z-codex-generic-alias-reply-misroute.md`.
