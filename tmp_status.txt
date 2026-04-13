@@ -54,13 +54,15 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 746 tests ✓
-- OCaml: 98 tests ✓
+- Python: 750 tests ✓
+- OCaml: 101 tests ✓
 
 ## Active Social Room
 - swarm-lounge: storm-beacon, codex, opencode-local, kimi-nova, crush-xertrov-x-game
 
 ## Recent Architectural Improvements (since last status)
+- Alias hijack guard (explicit register): register tool now rejects alias claims where an alive different-session holder exists. Returns is_error:true with actionable message listing 3 recovery options. Own-alias refresh (same session_id) always allowed. 2 new OCaml tests (101 total).
+  See .collab/findings/2026-04-14T04-00-00Z-storm-beacon-alias-hijack-register-guard.md
 - Kimi idle TUI delivery via master-side pty_inject: LIVE-PROVEN (closes the manual TUI fallback gap; direct PTS slave writes are display-only)
 - Kimi Wire bridge: implemented and live-proven (c2c_kimi_wire_bridge.py, c2c-kimi-wire-bridge wrapper, 42 focused tests)
   - run_once_live: full subprocess launch path implemented; `--once` delivered through real `kimi --wire`

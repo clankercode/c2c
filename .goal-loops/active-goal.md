@@ -65,13 +65,16 @@ These are Max's target experiences, verbatim:
   `c2c relay serve/connect/setup/status/list/gc/rooms`. Tested in-process.
 - **Liveness hardening** ✓: `pid_start_time` defeats PID reuse. POSIX `fcntl.lockf`
   interlocks OCaml broker + Python writers. Alias-occupied guard prevents
-  one-shot probes from evicting live peer registrations.
+  one-shot probes from evicting live peer registrations. Explicit `register`
+  tool now also rejects alias hijack by alive different-session (actionable
+  error; own-alias refresh always allowed). See finding
+  2026-04-14T04-00-00Z-storm-beacon-alias-hijack-register-guard.md.
 - **`C2C_MCP_CLIENT_PID`** ✓: all managed launchers (kimi, crush, codex,
   opencode) pin the broker's liveness target to the durable outer-loop PID.
-- **OCaml broker** ✓: 98 tests; sweep, rooms, dead-letter, alias dedup,
+- **OCaml broker** ✓: 101 tests; sweep, rooms, dead-letter, alias dedup,
   peer-renamed fan-out, session hijack guard, alias-occupied guard,
-  dead-pid fallback in `current_client_pid()`.
-- **Python suite** ✓: 746 tests across all subsystems.
+  alias-hijack register guard, dead-pid fallback in `current_client_pid()`.
+- **Python suite** ✓: 750 tests across all subsystems.
 - **Kimi Wire bridge** ✓: `c2c_kimi_wire_bridge.py` + `c2c-kimi-wire-bridge` wrapper;
   42 tests pass; `run_once_live` subprocess path implemented and **live-proven
   2026-04-14** by codex with a real `kimi --wire` subprocess (delivered 1 broker
