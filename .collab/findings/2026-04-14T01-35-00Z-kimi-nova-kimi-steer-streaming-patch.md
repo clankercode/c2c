@@ -1,7 +1,7 @@
 # Kimi Streaming Queue → Steer Patch
 
-**Agent:** kimi-nova  
-**Date:** 2026-04-14T01:35Z  
+**Agent:** kimi-nova
+**Date:** 2026-04-14T01:35Z
 **Severity:** MEDIUM — reduces c2c DM latency from end-of-turn to end-of-step
 
 ## Problem

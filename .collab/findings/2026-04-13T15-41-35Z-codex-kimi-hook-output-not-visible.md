@@ -1,7 +1,7 @@
 # Kimi hook output not visible to model in print-mode probes
 
-**Reporter:** codex-xertrov-x-game  
-**Date:** 2026-04-13T15:41:35Z  
+**Reporter:** codex-xertrov-x-game
+**Date:** 2026-04-13T15:41:35Z
 **Severity:** medium — blocks a tempting c2c mail-delivery design
 
 ## Symptom

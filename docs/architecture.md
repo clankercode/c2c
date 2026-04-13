@@ -14,48 +14,83 @@ fixtures but are no longer the primary delivery surface.
 ## High-level model
 
 ```
- agent A (Claude Code / Codex / OpenCode)          agent B
-        |                                             |
-        | MCP stdio JSON-RPC                          |
-        v                                             v
-  +---------------------------------------------------+
-  |             OCaml broker (c2c_mcp.ml)             |
-  |  register / send / poll_inbox / send_all / list   |
-  |  sweep / dead_letter                              |
-  +---------------------------------------------------+
+ agent A (Claude Code / Codex / OpenCode / Kimi / Crush)    agent B
+        |                                                      |
+        | MCP stdio JSON-RPC                                   |
+        v                                                      v
+  +------------------------------------------------------------+
+  |                OCaml broker (c2c_mcp.ml)                  |
+  |  register / send / poll_inbox / send_all / list           |
+  |  join_room / send_room / room_history / my_rooms          |
+  |  sweep / peek_inbox / dead_letter / tail_log              |
+  +------------------------------------------------------------+
                            |
                            v
-         .git/c2c/mcp/     (broker root, per-repo)
+         .git/c2c/mcp/     (broker root, inside git-common-dir)
            registry.json
+           registry.json.lock            (fcntl POSIX lockf sidecar)
            <session_id>.inbox.json       (per-session JSON queue)
            <session_id>.inbox.lock       (fcntl POSIX lockf sidecar)
-           registry.json.lock            (fcntl POSIX lockf sidecar)
-           dead-letter.jsonl             (sweep records)
+           <session_id>.inbox.archive    (drained-message log)
+           dead-letter.jsonl             (swept/orphan messages)
+           dead-letter.jsonl.lock        (fcntl POSIX lockf sidecar)
+           rooms/
+             <room_id>/
+               history.jsonl             (append-only message log)
+               members.json              (current member list)
 ```
 
 The broker is a stdio JSON-RPC server. Each agent's host client
-(Claude Code, OpenCode, Codex) launches it as an MCP server via
-`c2c_mcp.py`, which builds the OCaml binary with
+(Claude Code, OpenCode, Codex, Kimi, Crush) launches it as an MCP
+server via `c2c_mcp.py`, which builds the OCaml binary with
 `opam exec -- dune build` and execs
 `_build/default/ocaml/server/c2c_mcp_server.exe` directly.
 
-There is no network transport today. Reach is bounded to the local
-machine, and the broker state lives inside the shared git-common dir
-so every worktree / clone points at the same inboxes. Future remote
-transport must not change the MCP tool surface — it only replaces the
-file-based store. The proposed remote shape is documented in
-[Cross-Machine Broker](/cross-machine-broker/).
+The broker root is the **git common dir** (`git rev-parse --git-common-dir`),
+so all worktrees and clones of the same repo share the same inboxes
+automatically. No separate daemon or port to configure.
+
+For agents on different machines, `c2c relay serve/connect` bridges
+local brokers via an HTTP relay server. See [Relay Quickstart](/relay-quickstart/)
+and [Cross-Machine Broker](/cross-machine-broker/) for the design.
 
 ## Tools on the MCP surface
 
+### Identity & discovery
+
 | Tool          | Purpose                                                        |
 |---------------|----------------------------------------------------------------|
-| `register`    | Claim an alias for the current session (captures pid + start_time) |
-| `send`        | 1:1 message to an alias                                        |
+| `register`    | Claim an alias for the current session (captures pid + pid_start_time for liveness) |
+| `whoami`      | Show the current alias and session ID                          |
+| `list`        | List registrations with alive tristate (Alive / Dead / Unknown) and room memberships |
+| `sweep`       | Drop dead registrations, delete their inboxes, evict them from rooms, rescue orphan messages into `dead-letter.jsonl` |
+
+### Messaging
+
+| Tool          | Purpose                                                        |
+|---------------|----------------------------------------------------------------|
+| `send`        | 1:1 message to an alias (refuses dead recipients)             |
 | `send_all`    | 1:N broadcast to every live peer except sender                 |
-| `poll_inbox`  | Drain pending messages for the caller's session (pull-based)   |
-| `list`        | List registrations with alive tristate (Alive / Dead / Unknown)|
-| `sweep`       | Drop dead regs, delete their inboxes, rescue orphan inbox contents into `dead-letter.jsonl` |
+| `poll_inbox`  | Drain pending messages for the caller's session (returns and removes) |
+| `peek_inbox`  | Read pending messages without draining (non-destructive)       |
+
+### Rooms
+
+| Tool           | Purpose                                                       |
+|----------------|---------------------------------------------------------------|
+| `join_room`    | Join a persistent N:N room; returns recent history (late joiners get context) |
+| `leave_room`   | Leave a room                                                  |
+| `send_room`    | Broadcast to all room members; appends to room history        |
+| `room_history` | Fetch the last N messages from a room's history               |
+| `my_rooms`     | List rooms this session belongs to                            |
+| `list_rooms`   | List all rooms with member counts                             |
+
+### Diagnostics
+
+| Tool          | Purpose                                                        |
+|---------------|----------------------------------------------------------------|
+| `dead_letter` | Inspect messages orphaned by sweep                             |
+| `tail_log`    | Tail the broker debug log                                      |
 
 `initialize` advertises `serverInfo.features` so callers can detect
 capabilities before relying on a contract (e.g. `pid_start_time`,
@@ -118,6 +153,46 @@ go through `write_json_file` / append-with-O_APPEND using:
 
 Empirical fork tests (12 writers × 20 messages) prove zero message
 loss under concurrent enqueue.
+
+## Rooms
+
+Rooms are persistent N:N message channels stored in
+`rooms/<room_id>/` under the broker root. Any session can create a
+room by calling `join_room` with a new room ID.
+
+Key behaviours:
+
+- **History on join** — `join_room` returns recent history so late
+  joiners are not context-blind.
+- **Fan-out** — `send_room` delivers to every member's inbox and
+  appends to `history.jsonl`. The `to_alias` field is tagged as
+  `<alias>@<room_id>` so recipients know the room origin.
+- **Sweep eviction** — sweep removes dead sessions from all room
+  member lists (`evict_dead_from_rooms`).
+- **Restart identity** — when a managed session re-registers with a
+  new session_id but the same alias, `join_room` replaces the stale
+  entry rather than adding a duplicate. Prevents fan-out duplication
+  after client restarts.
+- **Peer-renamed fan-out** — when a session re-registers with a
+  different alias, the broker fans out a `{"type":"peer_renamed", ...}`
+  system message to every room the session belongs to.
+- **Auto-join** — `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge` (written by
+  `c2c setup <client>`) makes every agent auto-join the social room
+  on startup without calling `join_room` manually.
+
+## Dead-letter & auto-redelivery
+
+When `sweep` drops a dead registration, any messages already queued in
+that session's inbox are moved to `dead-letter.jsonl` rather than
+discarded. If the session later re-registers (same `session_id` or
+same alias), `drain_dead_letter_for_session` re-delivers those queued
+messages into the fresh inbox.
+
+This means managed sessions that restart between outer-loop iterations
+do not lose messages sent during the gap. Dead-letter entries older
+than the configurable TTL are pruned by `c2c_broker_gc.py` to prevent
+unbounded growth. Use `c2c dead-letter` (CLI) to inspect or purge the
+queue manually.
 
 ## Delivery surfaces
 

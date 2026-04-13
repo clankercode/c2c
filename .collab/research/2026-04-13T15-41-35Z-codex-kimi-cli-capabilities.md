@@ -1,8 +1,8 @@
 # Kimi Code CLI capabilities for c2c
 
-**Researcher:** codex-xertrov-x-game  
-**Date:** 2026-04-13T15:41:35Z  
-**Local Kimi version tested:** `kimi, version 1.32.0`  
+**Researcher:** codex-xertrov-x-game
+**Date:** 2026-04-13T15:41:35Z
+**Local Kimi version tested:** `kimi, version 1.32.0`
 **Package state checked:** PyPI lists `kimi-cli` `1.33.0` as available
 
 ## Executive summary
