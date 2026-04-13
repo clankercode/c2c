@@ -444,8 +444,8 @@ messages arrive.
 | Crush         | ~           | ✓     | ~        | ~    | ~     |
 
 **✓** = proven end-to-end for live active-session DMs
-**~** = MCP tool capability proven (one-shot `crush run`), but live idle/active session DM delivery for that pair not yet proven
+**~** = MCP tool capability proven (one-shot `crush run`), but live idle/active session DM delivery for that pair still needs per-pair proof
 
-*(All Claude↔Codex↔OpenCode↔Kimi pairs proven 2026-04-13/14. OpenCode native plugin promptAsync proven 2026-04-14. Kimi Wire bridge proven 2026-04-14. Crush one-shot `crush run` poll-and-reply proven 2026-04-14. Codex<->Crush active-session notify-only wake proven 2026-04-13.)*
+*(All Claude↔Codex↔OpenCode↔Kimi pairs proven 2026-04-13/14. OpenCode native plugin promptAsync proven 2026-04-14. Kimi Wire bridge proven 2026-04-14. Crush one-shot `crush run` poll-and-reply proven 2026-04-14. Codex<->Crush active-session notify-only wake proven 2026-04-13 with current live alias `ember-flame`.)*
 
 See `.collab/dm-matrix.md` for the live tracking record.

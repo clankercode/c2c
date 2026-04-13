@@ -12,6 +12,13 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T18:45Z — codex RELEASED locks on `docs/overview.md`,
+  `docs/communication-tiers.md`, `docs/client-delivery.md`, `tmp_status.txt`,
+  and `tmp_collab_lock.md`. Updated stale Crush docs from written/untested to
+  live-proven for Codex<->Crush notify-only PTY wake, kept other Crush live
+  pairs marked as requiring per-pair proof, and named `ember-flame` as current
+  live Crush alias.
+
 - 2026-04-13T18:39Z — codex RELEASED locks on `tmp_status.txt` and
   `tmp_collab_lock.md`. Synced the `just test` aggregate count from stale 870
   to current Python 768 + OCaml 106 = 874.

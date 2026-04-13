@@ -67,6 +67,9 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
   and session_id, and startup auto-join prefers the current registered alias
   over stale env aliases. Live `swarm-lounge` membership was repaired from
   `crush-xertrov-x-game` to `ember-flame`.
+- Docs consistency pass: overview, communication tiers, and client-delivery now
+  describe Crush notify-only PTY wake as live-proven for Codex<->Crush instead
+  of written/untested, with `ember-flame` as the current live Crush alias.
 - c2c history: resolve_session_id now covers all 5 managed outer loops (added RUN_OPENCODE/KIMI/CRUSH_INST_C2C_SESSION_ID). Previously only Claude and Codex vars were checked.
 - justfile added: `just test` rebuilds OCaml + runs all 874 tests; `just build`/`test-py`/`test-ocaml` as individual targets.
 - Docs: CLAUDE.md alias pool updated (131 words/~17,161), survival-guide alias convention corrected.

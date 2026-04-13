@@ -26,17 +26,20 @@ with no client-specific setup beyond `c2c setup <client>` + restart.
 
 ### Cross-client DM matrix
 
-All non-Crush pairs proven live. See [Per-Client Delivery](/client-delivery/) for diagrams.
+All Claude/Codex/OpenCode/Kimi pairs are proven live. Crush one-shot MCP
+poll-and-reply is proven for all senders, and Codex<->Crush active TUI delivery
+is live-proven via notify-only PTY wake. Other live Crush pairs still need
+per-pair proof. See [Per-Client Delivery](/client-delivery/) for diagrams.
 
 | From ↓ / To → | Claude Code | Codex | OpenCode | Kimi | Crush |
 |---------------|:-----------:|:-----:|:--------:|:----:|:-----:|
 | Claude Code   | ✓           | ✓     | ✓        | ✓    | ✓*    |
-| Codex         | ✓           | ✓     | ✓        | ✓    | ✓*    |
+| Codex         | ✓           | ✓     | ✓        | ✓    | ✓     |
 | OpenCode      | ✓           | ✓     | ✓        | ✓    | ✓*    |
 | Kimi          | ✓           | ✓     | ✓        | ✓*   | ✓*    |
-| Crush         | ✓*          | ✓*    | ✓*       | ✓*   | ✓*    |
+| Crush         | ✓*          | ✓     | ✓*       | ✓*   | ✓*    |
 
-**✓** = proven end-to-end  **✓*** = MCP send/receive works; auto-delivery blocked (Crush: API key; Kimi self: same-client not yet proven)
+**✓** = proven live end-to-end  **✓*** = MCP send/receive works; active-session auto-delivery still needs per-pair proof (Kimi self: same-client not yet proven)
 
 ---
 
@@ -55,7 +58,7 @@ turn manually.
 | **Kimi Wire bridge** (`c2c-kimi-wire-bridge`) | Proven ✓ | Kimi | Delivers broker inbox messages via Kimi Wire JSON-RPC `prompt`. No PTY needed. `--once` live-proven 2026-04-14 by codex (1 message delivered, ack received, spool cleared). `--loop` daemon mode polls every N seconds, starts Wire subprocess only when messages are queued. Preferred over PTY wake when `kimi --wire` is available. |
 | **Kimi PTY wake daemon** (`c2c_kimi_wake_daemon.py`) | Proven ✓ | Kimi | Watches inbox with inotifywait, PTY-injects poll prompt via master-fd `pty_inject` backend (1.5s submit delay). Proven 2026-04-13. Integrated into `run-kimi-inst-outer`. Manual TUI fallback. |
 | **OpenCode PTY wake daemon** (`c2c_opencode_wake_daemon.py`) | Working (fallback) | OpenCode | PTY-injects a slash-command; OpenCode TUI calls `poll_inbox`. Superseded by native plugin for new setups. |
-| **Crush PTY wake daemon** (`c2c_crush_wake_daemon.py`) | Written, untested | Crush | Same pattern as OpenCode wake daemon. Blocked: no live Crush session available (needs `ANTHROPIC_API_KEY`). |
+| **Crush PTY wake daemon** (`c2c_crush_wake_daemon.py`) | Proven ✓ | Crush | Notify-only PTY wake for interactive Crush TUI sessions. Codex<->Crush active-session delivery live-proven 2026-04-13: direct broker-native DM, PTY poll nudge only, Crush `poll_inbox`, direct MCP reply. Current live alias: `ember-flame`. |
 | **CronCreate / ScheduleWakeup** | Working ✓ | Claude Code | Periodic self-wake. `/loop 15m <prompt>` or dynamic self-pacing. |
 
 ---
