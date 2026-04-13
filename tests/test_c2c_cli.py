@@ -308,6 +308,7 @@ class C2CCLITests(unittest.TestCase):
                 "c2c-poll-inbox",
                 "c2c-prune",
                 "c2c-register",
+                "c2c-restart-me",
                 "c2c-room",
                 "c2c-send",
                 "c2c-send-all",
@@ -2263,6 +2264,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c-init",
                 "c2c-prune",
                 "c2c-register",
+                "c2c-restart-me",
                 "c2c-room",
                 "c2c-list",
                 "c2c-send",
@@ -3821,6 +3823,34 @@ class C2CConfigureOpencodeTests(unittest.TestCase):
             self.assertEqual(c2c["environment"]["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
             self.assertTrue(c2c["enabled"])
             self.assertEqual(payload["session_id"], f"opencode-{target.name}")
+            self.assertEqual(payload["alias"], f"opencode-{target.name}")
+
+    def test_writes_opencode_config_with_custom_alias(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            result = subprocess.run(
+                [
+                    str(REPO / "c2c"),
+                    "configure-opencode",
+                    "--target-dir",
+                    str(target),
+                    "--alias",
+                    "opencode-primary",
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            # session_id derived from dir name, alias is the custom value
+            self.assertEqual(payload["session_id"], f"opencode-{target.name}")
+            self.assertEqual(payload["alias"], "opencode-primary")
+            config = json.loads(Path(payload["config_path"]).read_text(encoding="utf-8"))
+            env = config["mcp"]["c2c"]["environment"]
+            self.assertEqual(env["C2C_MCP_SESSION_ID"], f"opencode-{target.name}")
+            self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "opencode-primary")
 
     def test_refuses_to_overwrite_existing_config_without_force(self):
         with tempfile.TemporaryDirectory() as tmp:
