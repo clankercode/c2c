@@ -46,7 +46,7 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 718 tests ✓
+- Python: 721 tests ✓
 - OCaml: 97 tests ✓
 
 ## Active Social Room
