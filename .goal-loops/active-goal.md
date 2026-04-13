@@ -105,8 +105,10 @@ These are Max's target experiences, verbatim:
   (host broker ↔ isolated Docker container with separate Python runtime and
   filesystem over network loopback; DM + rooms both proven). See finding
   2026-04-14T02-16-00Z-kimi-nova-relay-docker-cross-machine-test.md.
-  True physically-separate two-machine test (VPS or Tailscale node) remains
-  as final production validation.
+  **True two-machine Tailscale test passed 2026-04-14** by `kimi-nova`
+  (two separate Linux hosts on Tailscale: `x-game` ↔ `xsm`; DM + rooms both
+  proven over real network with ~6–21 ms latency). See finding
+  2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md.
 
 ### Remaining Product Polish
 

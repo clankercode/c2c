@@ -12,6 +12,12 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T17:03Z — codex RELEASED locks on `tmp_status.txt`,
+  `.goal-loops/active-goal.md`, `docs/next-steps.md`, and
+  `tmp_collab_lock.md`. Marked Kimi's true two-machine Tailscale relay proof
+  complete across shared status docs: x-game ↔ xsm, broker-native DMs in both
+  directions, room join, and room fan-out over the real network.
+
 - 2026-04-13T16:58Z — codex RELEASED locks on `run-claude-inst-outer`,
   `tests/test_c2c_cli.py`, `docs/next-steps.md`,
   `.collab/findings/2026-04-13T16-36-36Z-codex-claude-outer-refresh-peer-gap.md`,

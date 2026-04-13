@@ -40,7 +40,10 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
 - SQLite backend: ✓ (c2c relay serve --storage sqlite --db-path relay.db)
 - Localhost multi-broker roundtrip: LIVE-PROVEN 2026-04-14T02:06Z (kimi-nova; DM + rooms)
   - See finding: .collab/findings/2026-04-14T02-06-00Z-kimi-nova-relay-localhost-multi-broker-test.md
-- True cross-host deployment: not yet attempted (needs VPN/Tailscale or VPS)
+- Docker cross-machine equivalent: LIVE-PROVEN 2026-04-14T02:16Z (kimi-nova; DM + rooms across isolated container filesystem/runtime)
+  - See finding: .collab/findings/2026-04-14T02-16-00Z-kimi-nova-relay-docker-cross-machine-test.md
+- True two-machine Tailscale deployment: LIVE-PROVEN 2026-04-14T02:37Z (kimi-nova; x-game ↔ xsm, DM + rooms over real network)
+  - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
 - Python: 707 tests ✓
@@ -54,7 +57,7 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
 - Kimi Wire bridge: implemented and live-proven (c2c_kimi_wire_bridge.py, c2c-kimi-wire-bridge wrapper, 31 tests)
   - run_once_live: full subprocess launch path implemented; `--once` delivered through real `kimi --wire`
   - run_loop_live: persistent daemon mode implemented; starts Wire only when inbox/spool work exists
-- Relay localhost multi-broker test: CLI surface (serve/connect/rooms) validated end-to-end
+- Relay localhost, Docker cross-machine equivalent, and true two-machine Tailscale tests: CLI surface (serve/connect/rooms) validated end-to-end
 - OCaml current_client_pid: now validates C2C_MCP_CLIENT_PID against /proc before trusting it
 - c2c install: wrappers now resolve path via git-common-dir (worktree path bug fixed)
 - architecture.md: fully updated — rooms, dead-letter, relay, complete tool table
