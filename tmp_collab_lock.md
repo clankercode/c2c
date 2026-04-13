@@ -12,6 +12,13 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 14:12 — codex RELEASED locks on `c2c_relay_sqlite.py`,
+  `tests/test_relay_sqlite.py`, and `tmp_collab_lock.md`. Verified the
+  untracked SQLite relay persistence slice after a transient GC accounting
+  failure was fixed in the shared worktree. Focused
+  `python3 -m unittest tests.test_relay_sqlite -v`, `py_compile`, and
+  `git diff --check` passed.
+
 - 2026-04-13 14:02 — codex RELEASED locks on `docs/index.md`,
   `docs/overview.md`, `docs/known-issues.md`, `docs/next-steps.md`,
   `llms.txt`, and `tmp_collab_lock.md`. Updated public docs and agent quick
