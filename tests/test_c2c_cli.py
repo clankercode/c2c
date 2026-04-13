@@ -4551,7 +4551,10 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         self.assertEqual(c2c["type"], "local")
         self.assertEqual(c2c["command"][:2], ["python3", str(REPO / "c2c_mcp.py")])
         self.assertEqual(c2c["environment"]["C2C_MCP_SESSION_ID"], "opencode-c2c-msg")
-        self.assertNotIn("C2C_MCP_AUTO_REGISTER_ALIAS", c2c["environment"])
+        self.assertEqual(
+            c2c["environment"]["C2C_MCP_AUTO_REGISTER_ALIAS"],
+            "opencode-c2c-msg",
+        )
         self.assertEqual(c2c["environment"]["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
         self.assertTrue(c2c.get("enabled", True))
 

@@ -95,6 +95,10 @@ Current c2c status — 2026-04-14 (updated by codex)
 - Relay room joins now mirror local broker room joins: InMemoryRelay and
   SQLiteRelay append a `c2c-system` join notice to room history and fan it out
   to all current room members, including the joiner.
+- Repo-local OpenCode MCP config now pins
+  `C2C_MCP_AUTO_REGISTER_ALIAS=opencode-c2c-msg`, preventing parent managed
+  agent aliases (for example Kimi's `kimi-nova`) from leaking into OpenCode
+  registrations when OpenCode is launched from another agent process.
 - architecture.md: fully updated — rooms, dead-letter, relay, complete tool table
 - communication-tiers.md: complete rewrite — all 5 clients, proven delivery, relay, cross-client matrix
 - CLAUDE.md: documents master-side Kimi PTY wake, diagnostic-only c2c_pts_inject, sweep_dryrun, deliver_inbox, inject, broker_gc, health, configure-*, kimi_prefill

@@ -12,6 +12,17 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T22:16Z - codex RELEASED locks on `.opencode/opencode.json`,
+  `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-13T22-13-00Z-codex-opencode-config-inherits-parent-alias.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Pinned the repo-local OpenCode
+  MCP config to `C2C_MCP_AUTO_REGISTER_ALIAS=opencode-c2c-msg`, closing the
+  alias-drift path where OpenCode launched from Kimi inherited `kimi-nova` as
+  its auto-register alias and registered `opencode-c2c-msg` under Kimi's live
+  PID. Verification: red/green repo-config regression, configure-opencode
+  focused tests, `py_compile`, and full `just test` with 901 Python tests plus
+  116 OCaml tests.
+
 - 2026-04-13T22:06Z - codex RELEASED locks on `c2c_relay_contract.py`,
   `c2c_relay_sqlite.py`, `tests/test_relay_rooms.py`,
   `tests/test_relay_sqlite.py`, `tests/test_relay_rooms_cli.py`,
