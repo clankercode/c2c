@@ -15,6 +15,9 @@ permalink: /next-steps/
 
 ## Recently Completed
 
+- **`c2c health` shows outer-loop status** ✓ — health check now reports which managed-harness outer loops are running and warns agents NOT to call sweep while they are active (sweep footgun guard). Also shows `safe_to_sweep: false` in JSON output (930d424, 2026-04-13).
+- **broker-gc dead-letter locking + `--dead-letter-ttl` / `--orphan-dead-letter-ttl` args** ✓ — `purge_old_dead_letter` and `purge_orphan_dead_letter` now hold POSIX fcntl.lockf on `dead-letter.jsonl.lock` sidecar (interlocks with OCaml); both TTLs configurable via CLI (407578a, 2026-04-13).
+- **`c2c dead-letter` CLI subcommand** ✓ — new `c2c dead-letter [--purge-orphans] [--purge-all] [--dry-run]` for operator inspection and cleanup of the dead-letter queue (fdf2265, 2026-04-13).
 - **`c2c health` no-agent-context fix** ✓ — CLI health check no longer reports ISSUES DETECTED when run outside an agent shell. Shows `○ Session: no agent context` and exits 0 when broker is reachable. New `--session-id` operator flag checks a specific session's registration without needing agent env vars (3b42722, 2026-04-13).
 - **Sweep evicts dead members from rooms** ✓ — `mcp__c2c__sweep` now calls `evict_dead_from_rooms` after dropping dead registrations; stale entries are removed from all room member lists. Response includes `evicted_room_members:[{room_id,alias}]`. OCaml test added (3a2ab9a, 2026-04-13).
 - **broker-gc orphan dead-letter pruning** ✓ — GC purges dead-letter entries where `to_alias` is no longer registered and the entry is >1h old (configurable via `--orphan-dead-letter-ttl`). Strips `@room_id` suffix for room fan-out messages. Reduced a 95-entry backlog to 2 on first run (dc63932, 2026-04-13).
