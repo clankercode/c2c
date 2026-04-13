@@ -214,6 +214,7 @@ c2c_broker_gc.py [--once] [--interval N] [--ttl N] [--dead-letter-ttl N]  # GC d
 c2c_health.py [--json] [--session-id S]                           # Diagnostic: checks broker root, registry, rooms, PostToolUse hook, outer loops, relay. Also accessible via c2c health.
 c2c_kimi_prefill.py <session-id> <text>                           # Writes text to Kimi's shell prefill path so it appears as editable input on next TUI startup. Used by run-kimi-inst to inject the startup prompt.
 c2c_kimi_wire_bridge.py --session-id S [--alias A] [--once|--loop] [--daemon --pidfile P] [--interval N] [--max-iterations N] [--json]  # Native Kimi delivery via `kimi --wire`: drains broker inbox into a crash-safe spool, delivers through Wire `prompt`, and can run persistently with --loop or detached --daemon. Preferred over PTY wake when Wire is available.
+c2c_wire_daemon.py <start|stop|status|restart|list> [--session-id S] [--alias A] [--interval N] [--json]  # Lifecycle manager for c2c Kimi Wire bridge background daemons. Standard state dir: ~/.local/share/c2c/wire-daemons/<session-id>.pid. Also accessible via `c2c wire-daemon`.
 c2c_register.py <session> [--json]                                 # Registers a Claude session for c2c messaging, assigns an alias
 c2c_send.py <alias> <message...> [--dry-run] [--json]             # Sends a c2c message to an opted-in session by alias
 c2c_list.py [--all] [--json]                                       # Lists opted-in c2c sessions (--all includes unregistered)
