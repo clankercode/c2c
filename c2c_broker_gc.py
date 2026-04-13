@@ -423,6 +423,7 @@ def main(argv: list[str] | None = None) -> int:
         if env_root:
             broker_root = Path(env_root)
         else:
+            import c2c_mcp  # lazy: c2c_mcp imports from us, avoid module-level cycle
             broker_root = Path(c2c_mcp.default_broker_root())
 
     # Enforce minimum interval
