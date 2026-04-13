@@ -1,0 +1,217 @@
+/**
+ * c2c OpenCode Plugin — automatic broker message delivery.
+ *
+ * Watches the local c2c broker inbox and delivers inbound messages to the
+ * active OpenCode session via client.session.promptAsync so they appear as
+ * proper user turns (not pasted into the prompt buffer via PTY).
+ *
+ * Config (all optional, with sensible defaults):
+ *   C2C_MCP_SESSION_ID      — broker session ID to poll (required for delivery)
+ *   C2C_MCP_BROKER_ROOT     — broker root dir (default: auto-detect)
+ *   C2C_PLUGIN_POLL_INTERVAL_MS — poll interval in ms (default: 2000)
+ *   C2C_PLUGIN_DELIVER_ON_IDLE  — "1" = only deliver on session.idle (default: "0")
+ *
+ * Delivery strategy:
+ *   - Primary: poll on session.idle events (agent is between tool calls)
+ *   - Secondary: background interval poll so messages arrive even between idles
+ *
+ * The c2c CLI is used to drain inbox atomically (respects POSIX lockf).
+ *
+ * Installation: place in .opencode/plugins/c2c.ts (project-level) or
+ *   ~/.config/opencode/plugins/c2c.ts (global).
+ * Also run: c2c setup opencode  (writes env vars needed by the broker MCP tool)
+ */
+
+import type { Plugin } from "@opencode-ai/plugin";
+import type { Event, EventSessionIdle, EventSessionCreated } from "@opencode-ai/sdk";
+import * as fs from "fs";
+import * as path from "path";
+
+// ---------------------------------------------------------------------------
+// Sidecar config loader
+// ---------------------------------------------------------------------------
+
+/** Read .opencode/c2c-plugin.json relative to the CWD, returning {} on miss. */
+function loadSidecarConfig(): Record<string, string> {
+  try {
+    const sidecar = path.join(process.cwd(), ".opencode", "c2c-plugin.json");
+    const raw = fs.readFileSync(sidecar, "utf-8");
+    return JSON.parse(raw) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin definition
+// ---------------------------------------------------------------------------
+
+const C2CDelivery: Plugin = async (ctx) => {
+  // --- Config (env vars > sidecar .opencode/c2c-plugin.json) ---
+  const sidecar = loadSidecarConfig();
+  const sessionId: string =
+    process.env.C2C_MCP_SESSION_ID || process.env.C2C_SESSION_ID || sidecar.session_id || "";
+  const brokerRoot: string = process.env.C2C_MCP_BROKER_ROOT || sidecar.broker_root || "";
+  const pollIntervalMs: number = parseInt(process.env.C2C_PLUGIN_POLL_INTERVAL_MS || "2000", 10);
+  const idleOnlyMode: boolean = (process.env.C2C_PLUGIN_DELIVER_ON_IDLE || "0") === "1";
+
+  // Track the active root session (set from session events)
+  let activeSessionId: string | null = null;
+
+  // --- Helpers ---
+
+  async function log(msg: string): Promise<void> {
+    try {
+      await ctx.client.app.log({
+        body: { service: "c2c", level: "debug", message: `c2c: ${msg}` },
+        url: "/log",
+      } as any);
+    } catch {
+      // logging failure is non-fatal
+    }
+  }
+
+  async function toast(msg: string, variant: "info" | "warning" | "error" = "info"): Promise<void> {
+    try {
+      await ctx.client.tui.showToast({
+        url: "/tui/show-toast",
+        body: { title: "c2c", message: msg, variant, duration: 3000 },
+      } as any);
+    } catch {
+      // toast failure is non-fatal
+    }
+  }
+
+  /** Drain inbox using the c2c CLI and return parsed messages. */
+  async function drainInbox(): Promise<Array<{ from_alias: string; to_alias: string; content: string }>> {
+    if (!sessionId) return [];
+    try {
+      const args: string[] = ["c2c", "poll-inbox", "--json", "--file-fallback"];
+      if (sessionId) args.push("--session-id", sessionId);
+      if (brokerRoot) args.push("--broker-root", brokerRoot);
+      const result = await ctx.$.quiet`${args}`;
+      const stdout = result.stdout.toString().trim();
+      if (!stdout) return [];
+      const parsed = JSON.parse(stdout);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+      await log(`drainInbox error: ${err}`);
+      return [];
+    }
+  }
+
+  /** Format a single broker message as a c2c envelope for injection. */
+  function formatEnvelope(msg: { from_alias: string; to_alias: string; content: string }): string {
+    const from = msg.from_alias || "unknown";
+    const to = msg.to_alias || sessionId;
+    return `<c2c event="message" from="${from}" alias="${to}" source="broker" action_after="continue">\n${msg.content}\n</c2c>`;
+  }
+
+  /** Deliver drained messages to the active session via promptAsync. */
+  async function deliverMessages(targetSessionId: string): Promise<void> {
+    const messages = await drainInbox();
+    if (messages.length === 0) return;
+
+    await log(`delivering ${messages.length} message(s) to session ${targetSessionId}`);
+
+    for (const msg of messages) {
+      const envelope = formatEnvelope(msg);
+      try {
+        await ctx.client.session.promptAsync({
+          path: { id: targetSessionId },
+          body: { parts: [{ type: "text", text: envelope }] },
+          url: "/session/{id}/prompt_async",
+        } as any);
+        await log(`delivered from ${msg.from_alias}`);
+      } catch (err) {
+        await log(`promptAsync error: ${err}`);
+        // Message was already drained — best-effort delivery; no retry here.
+        // Future: write to a spool file and retry on next idle.
+        await toast(`c2c: delivery error from ${msg.from_alias}`, "error");
+      }
+    }
+  }
+
+  /** Try to deliver to the best-known session ID. */
+  async function tryDeliver(): Promise<void> {
+    const sid = activeSessionId;
+    if (!sid) {
+      // No session yet — try to discover the current session from the API
+      try {
+        const sessions = await ctx.client.session.list();
+        if (sessions?.data?.length) {
+          const root = sessions.data.find((s: any) => !s.parentID) || sessions.data[0];
+          if (root?.id) {
+            activeSessionId = root.id;
+            await deliverMessages(root.id);
+          }
+        }
+      } catch {
+        // Not available yet
+      }
+      return;
+    }
+    await deliverMessages(sid);
+  }
+
+  // --- Guard: no delivery without session ID ---
+  if (!sessionId) {
+    return {
+      lifecycle: {
+        start: async () => {
+          await log("C2C_MCP_SESSION_ID not set — message delivery disabled");
+          await toast("c2c plugin: set C2C_MCP_SESSION_ID to enable delivery", "warning");
+        },
+      },
+    };
+  }
+
+  await log(`plugin loaded (session=${sessionId}, interval=${pollIntervalMs}ms, idleOnly=${idleOnlyMode})`);
+
+  // --- Return hooks ---
+  return {
+    lifecycle: {
+      start: async () => {
+        await log("starting delivery loop");
+        await toast(`c2c: delivery active (session=${sessionId})`);
+
+        // Deliver any messages that arrived before the session was established
+        if (!idleOnlyMode) {
+          const tick = async () => {
+            await tryDeliver();
+          };
+          // Initial drain after short delay to let the session register
+          setTimeout(tick, 2000);
+          // Recurring background poll
+          setInterval(tick, pollIntervalMs);
+        }
+      },
+    },
+
+    event: async ({ event }: { event: Event }) => {
+      // Track root session ID from creation events
+      if (event.type === "session.created") {
+        const e = event as EventSessionCreated;
+        const info = (e as any).properties?.info;
+        if (info?.id && !info?.parentID) {
+          activeSessionId = info.id;
+          await log(`tracking root session: ${info.id}`);
+        }
+        return;
+      }
+
+      // Deliver on session.idle — agent has just finished a turn and is ready
+      if (event.type === "session.idle") {
+        const e = event as EventSessionIdle;
+        const idleSessionId: string = (e as any).properties?.sessionID || activeSessionId || "";
+        if (!idleSessionId) return;
+        // Only deliver for the root session (avoid interfering with sub-agents)
+        if (activeSessionId && idleSessionId !== activeSessionId) return;
+        activeSessionId = idleSessionId;
+        await deliverMessages(idleSessionId);
+      }
+    },
+  };
+};
+
+export default C2CDelivery;

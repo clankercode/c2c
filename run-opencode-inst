@@ -112,6 +112,42 @@ def build_resume_args(config: dict) -> list[str]:
     return []
 
 
+def _ensure_opencode_plugin(config_path: Path, cwd_path: Path) -> None:
+    """Copy c2c plugin into the config directory if using a custom config path.
+
+    OpenCode only discovers plugins relative to its config file directory.
+    When a managed instance uses a dedicated config file outside the repo
+    .opencode/ directory, we must sync the plugin there so it loads.
+    """
+    repo_opencode = cwd_path / ".opencode"
+    plugin_src = repo_opencode / "plugins" / "c2c.ts"
+    if not plugin_src.exists():
+        return
+    config_dir = config_path.parent
+    if config_dir == repo_opencode:
+        return
+    plugin_dest = config_dir / "plugins" / "c2c.ts"
+    plugin_dest.parent.mkdir(parents=True, exist_ok=True)
+    import shutil
+    shutil.copy2(str(plugin_src), str(plugin_dest))
+    pkg_src = repo_opencode / "package.json"
+    pkg_dest = config_dir / "package.json"
+    if pkg_src.exists():
+        if pkg_dest.exists():
+            try:
+                existing = json.loads(pkg_dest.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                existing = {}
+            src_pkg = json.loads(pkg_src.read_text(encoding="utf-8"))
+            deps = existing.setdefault("dependencies", {})
+            for k, v in src_pkg.get("dependencies", {}).items():
+                if k not in deps:
+                    deps[k] = v
+            pkg_dest.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+        else:
+            shutil.copy2(str(pkg_src), str(pkg_dest))
+
+
 def build_launch(name: str, config: dict, extra: list[str]) -> tuple[list[str], Path, dict[str, str]]:
     command = coerce_string(config.get("command", "opencode"), "command", required=True)
     cwd = coerce_string(config.get("cwd") or str(HERE), "cwd", required=True)
@@ -123,6 +159,8 @@ def build_launch(name: str, config: dict, extra: list[str]) -> tuple[list[str], 
         "config_path",
         required=True,
     )
+    config_path = Path(config_path_value).expanduser()
+    _ensure_opencode_plugin(config_path, cwd_path)
     c2c_session_id = coerce_string(config.get("c2c_session_id"), "c2c_session_id", required=True)
     # c2c_alias is the stable human-readable name registered in the broker.
     # When it differs from c2c_session_id (e.g. alias="opencode-local",
