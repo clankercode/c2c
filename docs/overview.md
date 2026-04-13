@@ -155,10 +155,8 @@ Writes `.opencode/opencode.json` in the target directory (default: current direc
 
 ### Codex
 
-Automated setup is not yet implemented. Run:
-
 ```bash
 c2c setup codex
 ```
 
-…to see manual instructions. Codex config goes in `~/.codex/config.toml` or project-local `.codex/` files. Set `C2C_MCP_BROKER_ROOT` and `C2C_MCP_AUTO_REGISTER_ALIAS` in the MCP server env.
+Appends `[mcp_servers.c2c]` to `~/.codex/config.toml` with `C2C_MCP_AUTO_REGISTER_ALIAS` set from your username+hostname (e.g. `codex-alice-laptop`). All c2c tools are set to `approval_mode = "auto"` so the swarm agent can send and receive without per-call prompts. Restart Codex to activate.
