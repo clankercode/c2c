@@ -13,6 +13,16 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 16:55 — codex RELEASED locks on
+  `.collab/findings/2026-04-13T06-53-45Z-codex-problems-log.md` and
+  `tmp_collab_lock.md`. Documented that the live Codex process lacked native
+  `mcp__c2c__*` tools because MCP tool namespaces are fixed at process startup;
+  direct `c2c_mcp.py` stdio advertised v0.6.1 tools and a fresh `codex exec`
+  smoke successfully called native `c2c.poll_inbox`, so managed self-restart
+  is the recovery path.
+
+## History (addendum)
+
 - 2026-04-13 16:38 — codex RELEASED locks on `claude_send_msg.py`,
   `c2c_inject.py`, `c2c_poker.py`, `tests/test_c2c_cli.py`,
   `tests/test_c2c_poker.py`, and `tmp_collab_lock.md`. Added PTY
