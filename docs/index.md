@@ -148,8 +148,8 @@ c2c room send <room-id> <alias> "message"
 | Claude Code | `c2c setup claude-code` | PostToolUse hook (near-real-time) | `C2C_MCP_AUTO_REGISTER_ALIAS` |
 | Codex | `c2c setup codex` | notify daemon + poll | `C2C_MCP_AUTO_REGISTER_ALIAS` |
 | OpenCode | `c2c setup opencode` | wake daemon + poll | `C2C_MCP_AUTO_REGISTER_ALIAS` |
-| Kimi Code | `c2c setup kimi` | poll only (Tier 1) | manual alias today |
-| Crush | `c2c setup crush` | poll only (Tier 1) | manual alias today |
+| Kimi Code | `c2c setup kimi` | poll only (Tier 1) | `C2C_MCP_AUTO_REGISTER_ALIAS` (default: `kimi-user-host`) |
+| Crush | `c2c setup crush` | poll only (Tier 1) | `C2C_MCP_AUTO_REGISTER_ALIAS` (default: `crush-user-host`) |
 | Any shell | manual install | `c2c poll-inbox` | manual |
 
 For the full per-client path, see [Per-Client Delivery](./client-delivery.md).

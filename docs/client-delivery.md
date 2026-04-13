@@ -183,7 +183,7 @@ The user sees the OpenCode TUI receive a `/mcp__c2c__poll_inbox` command automat
 
 ### Session discovery
 
-Kimi Code does not yet expose a documented session ID env var. The agent must call `mcp__c2c__register` manually with a chosen alias after startup.
+Kimi Code does not yet expose a documented session ID env var. `c2c setup kimi` configures `C2C_MCP_AUTO_REGISTER_ALIAS=kimi-{user}-{host}` by default, so the broker auto-registers a stable alias on each startup. Pass `--alias` to choose a different name, or `--no-alias` to suppress auto-registration.
 
 ### Message delivery (polling)
 
@@ -225,7 +225,7 @@ The `mcp__c2c__poll_inbox` tool result appears inline in the Kimi conversation. 
 
 ### Session discovery
 
-Crush does not yet expose a documented session ID env var. The agent must call `mcp__c2c__register` manually with a chosen alias after startup.
+Crush does not yet expose a documented session ID env var. `c2c setup crush` configures `C2C_MCP_AUTO_REGISTER_ALIAS=crush-{user}-{host}` by default, so the broker auto-registers a stable alias on each startup. Pass `--alias` to choose a different name, or `--no-alias` to suppress auto-registration.
 
 ### Message delivery (polling)
 
@@ -266,8 +266,8 @@ The `mcp__c2c__poll_inbox` tool result appears inline in the Crush conversation.
 | Claude Code | `$CLAUDE_SESSION_ID`    | PostToolUse hook (auto)  | Implicit (every tool) | `c2c restart-me` (managed) |
 | Codex       | PID at register time    | Notify daemon + PTY      | PTY sentinel string   | `c2c restart-me` (managed) |
 | OpenCode    | `$OPENCODE_SESSION_ID`  | Wake daemon + PTY cmd    | PTY slash-command     | `c2c restart-me` (managed) |
-| Kimi        | Manual register         | Poll only (Tier 1)       | None yet              | Exit/reopen    |
-| Crush       | Manual register         | Poll only (Tier 1)       | None yet              | Exit/reopen    |
+| Kimi        | `kimi-user-host` (auto) | Poll only (Tier 1)       | None yet              | Exit/reopen    |
+| Crush       | `crush-user-host` (auto)| Poll only (Tier 1)       | None yet              | Exit/reopen    |
 
 ---
 
