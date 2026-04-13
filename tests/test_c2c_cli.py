@@ -80,6 +80,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c-list",
         "c2c-send",
         "c2c-send-all",
+        "c2c-setup",
         "c2c-install",
         "c2c-inject",
         "c2c-poker-sweep",
@@ -95,6 +96,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_prune.py",
         "c2c_send.py",
         "c2c_send_all.py",
+        "c2c_setup.py",
         "c2c_install.py",
         "c2c_deliver_inbox.py",
         "c2c_inject.py",
@@ -306,6 +308,7 @@ class C2CCLITests(unittest.TestCase):
                 "c2c-room",
                 "c2c-send",
                 "c2c-send-all",
+                "c2c-setup",
                 "c2c-verify",
                 "c2c-watch",
                 "c2c-whoami",
@@ -322,6 +325,7 @@ class C2CCLITests(unittest.TestCase):
         self.assertTrue((install_dir / "c2c-prune").exists())
         self.assertTrue((install_dir / "c2c-register").exists())
         self.assertTrue((install_dir / "c2c-room").exists())
+        self.assertTrue((install_dir / "c2c-setup").exists())
         self.assertTrue((install_dir / "restart-opencode-self").exists())
         self.assertTrue((install_dir / "c2c-watch").exists())
         self.assertTrue((install_dir / "c2c-whoami").exists())
@@ -2246,6 +2250,7 @@ class C2CTestHelpersTests(unittest.TestCase):
 
             for relative_path in [
                 "c2c",
+                "c2c-configure-claude-code",
                 "c2c-configure-opencode",
                 "c2c-deliver-inbox",
                 "c2c-init",
@@ -2255,6 +2260,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c-list",
                 "c2c-send",
                 "c2c-send-all",
+                "c2c-setup",
                 "c2c-install",
                 "c2c-inject",
                 "c2c-poker-sweep",
@@ -2263,12 +2269,14 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c-whoami",
                 "c2c_register.py",
                 "c2c_room.py",
+                "c2c_configure_claude_code.py",
                 "c2c_configure_opencode.py",
                 "c2c_init.py",
                 "c2c_list.py",
                 "c2c_prune.py",
                 "c2c_send.py",
                 "c2c_send_all.py",
+                "c2c_setup.py",
                 "c2c_install.py",
                 "c2c_deliver_inbox.py",
                 "c2c_inject.py",

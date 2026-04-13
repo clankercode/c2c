@@ -42,13 +42,22 @@ def resolve_broker_root(override: Path | None) -> Path:
     return DEFAULT_BROKER_ROOT
 
 
-def build_mcp_entry(broker_root: Path, session_id: str | None) -> dict:
+def default_alias() -> str:
+    import getpass
+    import socket
+    user = getpass.getuser()
+    host = socket.gethostname().split(".")[0]
+    return f"claude-{user}-{host}"
+
+
+def build_mcp_entry(broker_root: Path, session_id: str | None, alias: str | None) -> dict:
     env: dict[str, str] = {
         "C2C_MCP_BROKER_ROOT": str(broker_root),
     }
     if session_id:
         env["C2C_MCP_SESSION_ID"] = session_id
-        env["C2C_MCP_AUTO_REGISTER_ALIAS"] = session_id
+    if alias:
+        env["C2C_MCP_AUTO_REGISTER_ALIAS"] = alias
     return {
         "type": "stdio",
         "command": "python3",
@@ -84,7 +93,9 @@ def _load_json(path: Path) -> dict:
         raise SystemExit(f"cannot parse {path}: {e}") from e
 
 
-def configure_mcp(broker_root: Path, session_id: str | None, *, force: bool) -> dict:
+def configure_mcp(
+    broker_root: Path, session_id: str | None, alias: str | None, *, force: bool
+) -> dict:
     data = _load_json(CLAUDE_JSON_PATH)
     mcp_servers = data.setdefault("mcpServers", {})
 
@@ -94,7 +105,7 @@ def configure_mcp(broker_root: Path, session_id: str | None, *, force: bool) -> 
             f"(re-run with --force to replace)"
         )
 
-    mcp_servers["c2c"] = build_mcp_entry(broker_root, session_id)
+    mcp_servers["c2c"] = build_mcp_entry(broker_root, session_id, alias)
     _atomic_write(CLAUDE_JSON_PATH, data)
     return mcp_servers["c2c"]
 
@@ -164,6 +175,19 @@ def main(argv: list[str] | None = None) -> int:
         help="fixed MCP session ID (optional; omit for auto-resolution)",
     )
     parser.add_argument(
+        "--alias",
+        default=None,
+        help=(
+            "stable alias for auto-registration on every restart "
+            f"(default: {default_alias()})"
+        ),
+    )
+    parser.add_argument(
+        "--no-alias",
+        action="store_true",
+        help="do not configure an auto-register alias",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="overwrite existing mcpServers.c2c and hook entries",
@@ -172,7 +196,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     broker_root = resolve_broker_root(args.broker_root)
-    mcp_entry = configure_mcp(broker_root, args.session_id, force=args.force)
+    alias = None if args.no_alias else (args.alias or default_alias())
+    mcp_entry = configure_mcp(broker_root, args.session_id, alias, force=args.force)
     hook_status = configure_hook(force=args.force)
 
     result = {
@@ -180,6 +205,7 @@ def main(argv: list[str] | None = None) -> int:
         "settings_json": str(SETTINGS_JSON_PATH),
         "broker_root": str(broker_root),
         "session_id": args.session_id,
+        "alias": alias,
         "mcp_entry": mcp_entry,
         "hook_status": hook_status,
     }
@@ -189,6 +215,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"wrote mcpServers.c2c to {result['claude_json']}")
         print(f"  broker_root: {result['broker_root']}")
+        if result["alias"]:
+            print(f"  alias:       {result['alias']} (auto-registers on every restart)")
         if result["session_id"]:
             print(f"  session_id:  {result['session_id']}")
         if hook_status == "registered":
