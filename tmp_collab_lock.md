@@ -12,6 +12,15 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 12:31 — codex RELEASED locks on
+  `run-opencode-inst.d/c2c-opencode-local.json`,
+  `.collab/findings/2026-04-13T12-30-48Z-codex-opencode-managed-config-invalid-json.md`,
+  and `tmp_collab_lock.md`. Fixed the managed OpenCode config after a prompt
+  edit left literal unescaped newlines inside the JSON string. Kept the new
+  `STEP 0` `mcp__c2c__whoami` identity check and re-encoded the prompt as valid
+  JSON. Verification: `python3 -m json.tool`, full
+  `OpenCodeLocalConfigTests` 11/11, and focused no-TTY rearm test passed.
+
 - 2026-04-13 12:20 — codex RELEASED locks on
   `.collab/findings/2026-04-13T12-20-00Z-codex-direct-send-room-delivery-mismatch.md`
   and `tmp_collab_lock.md`. Documented a transient mismatch where direct
