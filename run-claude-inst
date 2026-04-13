@@ -5,8 +5,11 @@ Inner launcher for a named Claude Code instance.
 Usage: ./run-claude-inst <instance-name> [extra claude args...]
 
 Reads config from ./run-claude-inst.d/<name>.json, builds the `claude`
-launch command, sets the terminal title, and execs claude. Never loops —
-the outer script is responsible for looping.
+launch command, sets the terminal title, writes its own pid to
+./run-claude-inst.d/<name>.pid (which after execvpe is the claude
+process's pid — used by the companion `restart-self` helper), and
+execs claude. Never loops — the outer script is responsible for
+looping.
 
 The model controlling this instance can edit its own config file
 (./run-claude-inst.d/<name>.json) to adjust launch flags, env vars, cwd,
@@ -44,6 +47,10 @@ CONFIG_DIR = HERE / "run-claude-inst.d"
 
 def config_path(name: str) -> Path:
     return CONFIG_DIR / f"{name}.json"
+
+
+def pid_path(name: str) -> Path:
+    return CONFIG_DIR / f"{name}.pid"
 
 
 def load_config(name: str) -> dict:
@@ -115,6 +122,15 @@ def main(argv: list[str]) -> int:
     env = os.environ.copy()
     env.update(env_extra)
     env.setdefault("RUN_CLAUDE_INST_NAME", name)
+
+    # Write our own pid to <name>.pid BEFORE execvpe. os.execvpe preserves
+    # the pid, so after exec this file points at the claude process. A
+    # companion `restart-self` helper reads it and signals the process,
+    # which lets a model self-restart its own claude from inside a tool
+    # call without the outer loop needing to know anything.
+    pid_file = pid_path(name)
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(f"{os.getpid()}\n", encoding="utf-8")
 
     set_terminal_title(title)
 

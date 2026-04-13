@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""
+Self-restart helper for a run-claude-inst managed session.
+
+Usage: ./restart-self [instance-name] [--signal SIGNAME]
+
+Reads the pid written by `run-claude-inst` for the given instance
+(default: $RUN_CLAUDE_INST_NAME) and sends it a signal (default:
+SIGTERM). When the claude process exits, the outer loop
+(`run-claude-inst-outer`) relaunches it according to the config —
+which, with a pinned `--resume <uuid>` flag, puts you back in the
+same conversation.
+
+This lets a model edit its own `run-claude-inst.d/<name>.json`
+(to change flags, add a new kickoff prompt, swap models, etc.) and
+then reload itself without human intervention.
+
+Safety:
+- Refuses to signal a pid whose /proc/<pid>/comm does not match
+  `claude` — prevents collateral damage if the pid file is stale and
+  the pid was recycled by some unrelated process.
+- Refuses to signal pid 1 or our own pid.
+- Exits non-zero if the pid file is missing.
+
+The outer loop's fast-exit backoff only triggers if claude exits
+within MIN_RUN_SECONDS. A SIGTERM after minutes of normal use will
+hit the normal RESTART_PAUSE_SECONDS path instead (1.5s).
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import signal
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+CONFIG_DIR = HERE / "run-claude-inst.d"
+
+
+def pid_path(name: str) -> Path:
+    return CONFIG_DIR / f"{name}.pid"
+
+
+def proc_comm(pid: int) -> str | None:
+    try:
+        return Path(f"/proc/{pid}/comm").read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="Self-restart a run-claude-inst session.")
+    parser.add_argument(
+        "name",
+        nargs="?",
+        default=os.environ.get("RUN_CLAUDE_INST_NAME"),
+        help="instance name (default: $RUN_CLAUDE_INST_NAME)",
+    )
+    parser.add_argument(
+        "--signal",
+        default="SIGTERM",
+        help="signal to send (default: SIGTERM); e.g. SIGINT, SIGHUP",
+    )
+    parser.add_argument(
+        "--expect-comm",
+        default="claude",
+        help="required /proc/<pid>/comm substring match (default: claude). Use '' to skip the check.",
+    )
+    args = parser.parse_args(argv[1:])
+
+    if not args.name:
+        print(
+            "[restart-self] no instance name; pass as arg or set $RUN_CLAUDE_INST_NAME",
+            file=sys.stderr,
+        )
+        return 2
+
+    pid_file = pid_path(args.name)
+    if not pid_file.exists():
+        print(f"[restart-self] pid file not found: {pid_file}", file=sys.stderr)
+        return 2
+
+    try:
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
+    except ValueError:
+        print(f"[restart-self] pid file is not an integer: {pid_file}", file=sys.stderr)
+        return 2
+
+    if pid <= 1:
+        print(f"[restart-self] refusing to signal pid {pid}", file=sys.stderr)
+        return 2
+    if pid == os.getpid():
+        print("[restart-self] refusing to signal our own pid", file=sys.stderr)
+        return 2
+
+    comm = proc_comm(pid)
+    if comm is None:
+        print(
+            f"[restart-self] pid {pid} has no /proc entry (already exited?)",
+            file=sys.stderr,
+        )
+        return 3
+
+    if args.expect_comm and args.expect_comm not in comm:
+        print(
+            f"[restart-self] pid {pid} /proc comm is {comm!r}, expected substring {args.expect_comm!r} — refusing to signal",
+            file=sys.stderr,
+        )
+        return 4
+
+    try:
+        sig = signal.Signals[args.signal]
+    except KeyError:
+        print(f"[restart-self] unknown signal: {args.signal}", file=sys.stderr)
+        return 2
+
+    print(
+        f"[restart-self] sending {sig.name} to pid {pid} (comm={comm!r}) — outer loop will relaunch",
+        file=sys.stderr,
+        flush=True,
+    )
+    try:
+        os.kill(pid, sig.value)
+    except ProcessLookupError:
+        print(f"[restart-self] pid {pid} vanished before signal", file=sys.stderr)
+        return 3
+    except PermissionError:
+        print(f"[restart-self] permission denied signaling pid {pid}", file=sys.stderr)
+        return 4
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

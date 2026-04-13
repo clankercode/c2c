@@ -35,3 +35,4 @@ ENV/
 _build/
 data/c2c_registry.yaml
 data/c2c_registry.yaml.lock
+run-claude-inst.d/*.pid
