@@ -1,11 +1,10 @@
-Current c2c status — 2026-04-14
+Current c2c status — 2026-04-14 (updated by storm-beacon)
 
 ## Active Managed Sessions
-- storm-ember (this session, Claude Code under run-claude-inst)
+- storm-beacon (this update; Claude Code c2c-r2-b2 under run-claude-inst)
 - opencode-local (OpenCode under run-opencode-inst-outer, pid 3523962)
-- codex (Codex under run-codex-inst-outer)
-- kimi-nova (Kimi Code under run-kimi-inst-outer, pid 3591998; notify daemon
-  pid 3592012)
+- codex / codex-xertrov-x-game (Codex under run-codex-inst-outer)
+- kimi-nova (Kimi Code under run-kimi-inst-outer, pid 3679625; outer loop pid 3591997)
 
 ## Proven Delivery Pairs (all cross-client pairs proven)
 - Claude Code ↔ Codex ✓
@@ -18,12 +17,17 @@ Current c2c status — 2026-04-14
 - Crush: MCP setup ready, live DM blocked by ANTHROPIC_API_KEY not in Claude shell
 
 ## OpenCode Plugin Status
-- CLI drain path: PROVEN (inbox drained in <1s via c2c poll-inbox subprocess, no MCP log)
-- promptAsync end-to-end: PROVEN (Codex DM `PLUGIN_ENVELOPE_FIX_SMOKE` -> plugin CLI drain -> `client.session.promptAsync` -> OpenCode model reply `PLUGIN_ENVELOPE_FIX_SMOKE_ACK`, 2026-04-14)
+- CLI drain path: PROVEN
+- promptAsync end-to-end: PROVEN (Codex DM PLUGIN_ENVELOPE_FIX_SMOKE -> plugin CLI drain -> client.session.promptAsync -> OpenCode model reply PLUGIN_ENVELOPE_FIX_SMOKE_ACK, 2026-04-14)
 - Global plugin installed at ~/.config/opencode/plugins/c2c.ts ✓
 - Sidecar auto-written by run-opencode-inst at each launch ✓
-- opencode_session_id in sidecar enables promptAsync without session.created event ✓
-- Spool retry path: ✓ messages that fail promptAsync persist in `.opencode/c2c-plugin-spool.json` and are injected into the next managed startup prompt
+- Spool retry path: ✓ messages that fail promptAsync persist in .opencode/c2c-plugin-spool.json and are injected into the next managed startup prompt
+
+## Kimi Delivery Status
+- Basic TUI wake (non-idle): PROVEN 2026-04-13 (pty_inject master-fd + bracketed paste)
+- Idle-at-prompt delivery (c2c_pts_inject direct /dev/pts write): IMPLEMENTED, NOT YET LIVE-PROVEN
+  - See finding: .collab/findings/2026-04-13T15-30-00Z-kimi-nova-kimi-idle-pts-inject-fix.md
+  - idle delivery test DM sent to kimi-nova at 2026-04-14T05:00Z — awaiting reply
 
 ## Relay Status (all phases complete)
 - Phases 1-6: InMemoryRelay, HTTP server, connector, rooms, operator setup, hardening ✓
@@ -32,18 +36,17 @@ Current c2c status — 2026-04-14
 - Live cross-host deployment: not yet attempted (use Tailscale or VPS + relay quickstart)
 
 ## Test Coverage
-- Python: 652 tests ✓
-- OCaml: 96 tests ✓
+- Python: 661 tests ✓
+- OCaml: 97 tests ✓
 
 ## Active Social Room
-- swarm-lounge: 5 members on record (storm-ember, storm-beacon, codex,
-  opencode-local, kimi-nova); current broker liveness marks kimi-nova alive.
+- swarm-lounge: storm-beacon, codex, opencode-local, kimi-nova
 
-## Key Architectural Improvements (recent)
-- alias_occupied_guard: OCaml broker prevents one-shot processes from evicting alive same-alias sessions (Kimi registration fix)
-- run-opencode-inst writes .opencode/c2c-plugin.json sidecar at each managed launch
-- run-opencode-inst dry-run is side-effect free, and focused fake-launch tests no longer rewrite the ignored live sidecar
-- OpenCode plugin unwraps `poll-inbox --json` envelope objects before prompt delivery
-- run-codex-inst passes C2C_MCP_CLIENT_PID through config overrides for correct liveness
-- run-kimi-inst-rearm now validates stale pidfiles and falls back to the live
-  broker registration before starting notify-only delivery
+## Recent Architectural Improvements (since last status)
+- OCaml current_client_pid: now validates C2C_MCP_CLIENT_PID against /proc before trusting it (same as Python layer) — prevents stale pid from being registered on managed session restart
+- c2c install: wrappers now resolve path via git-common-dir, so installing from a worktree no longer produces a broken wrapper pointing at the (deleted) worktree path
+- c2c_pts_inject.py: new library for direct /dev/pts write (bypasses bracketed-paste for Kimi idle delivery)
+- run-kimi-inst-rearm: validates stale pidfiles, falls back to live broker registration
+- architecture.md: fully updated — rooms, dead-letter, relay, complete tool table
+- communication-tiers.md: complete rewrite — all 5 clients, proven delivery, relay, cross-client matrix
+- CLAUDE.md: documented c2c_pts_inject, sweep_dryrun, deliver_inbox, inject, broker_gc, health, configure-*, kimi_prefill
