@@ -2,7 +2,7 @@
 """
 Self-restart helper for a run-codex-inst managed session.
 
-Usage: ./restart-codex-self [instance-name] [--signal SIGNAME]
+Usage: ./restart-codex-self [instance-name] [--signal SIGNAME] [--reason TEXT]
 
 Reads the pid written by `run-codex-inst` for the given instance
 (default: $RUN_CODEX_INST_NAME) and sends it a signal (default: SIGTERM).
@@ -13,6 +13,10 @@ same conversation and receives the config's kickoff prompt.
 Codex installations may exec a native `codex` binary or wrapper processes
 whose /proc comm is `node`, `npm ...`, or `MainThread`, so those are allowed
 by default.
+
+When --reason is provided, this writes
+run-codex-inst.d/<name>.restart.json before signaling. The resumed Codex turn
+can read that local marker even when the c2c MCP server failed during startup.
 """
 from __future__ import annotations
 
@@ -21,6 +25,7 @@ import json
 import os
 import signal
 import sys
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -37,6 +42,10 @@ def config_dir() -> Path:
 
 def pid_path(name: str) -> Path:
     return config_dir() / f"{name}.pid"
+
+
+def restart_marker_path(name: str) -> Path:
+    return config_dir() / f"{name}.restart.json"
 
 
 def proc_comm(pid: int) -> str | None:
@@ -69,6 +78,40 @@ def parse_signal(value: str) -> signal.Signals:
         raise SystemExit(f"[restart-codex-self] unknown signal: {value}")
 
 
+def write_restart_marker(
+    *,
+    name: str,
+    pid: int,
+    pid_file: Path,
+    sig: signal.Signals,
+    comm: str,
+    reason: str,
+    dry_run: bool,
+) -> Path | None:
+    if not reason:
+        return None
+    marker_path = restart_marker_path(name)
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(
+        json.dumps(
+            {
+                "name": name,
+                "pid": pid,
+                "pid_file": str(pid_file),
+                "signal": sig.name,
+                "comm": comm,
+                "reason": reason,
+                "dry_run": dry_run,
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return marker_path
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description="Self-restart a run-codex-inst session."
@@ -91,6 +134,11 @@ def main(argv: list[str]) -> int:
             "comma-separated /proc/<pid>/comm substring allowlist "
             "(default: codex,node,npm,MainThread). Use '' to skip the check."
         ),
+    )
+    parser.add_argument(
+        "--reason",
+        default="",
+        help="optional restart reason to persist for the resumed Codex turn",
     )
     args = parser.parse_args(argv[1:])
 
@@ -140,7 +188,9 @@ def main(argv: list[str]) -> int:
 
     sig = parse_signal(args.signal)
 
-    if dry_run_enabled():
+    dry_run = dry_run_enabled()
+
+    if dry_run:
         print(
             json.dumps(
                 {
@@ -149,6 +199,10 @@ def main(argv: list[str]) -> int:
                     "pid_file": str(pid_file),
                     "signal": sig.name,
                     "comm": comm,
+                    "reason": args.reason,
+                    "reason_file": str(restart_marker_path(args.name))
+                    if args.reason
+                    else None,
                     "dry_run": True,
                 },
                 indent=2,
@@ -156,11 +210,27 @@ def main(argv: list[str]) -> int:
         )
         return 0
 
+    marker_path = write_restart_marker(
+        name=args.name,
+        pid=pid,
+        pid_file=pid_file,
+        sig=sig,
+        comm=comm,
+        reason=args.reason,
+        dry_run=False,
+    )
+
     print(
         f"[restart-codex-self] sending {sig.name} to pid {pid} (comm={comm!r}) - outer loop will relaunch",
         file=sys.stderr,
         flush=True,
     )
+    if marker_path is not None:
+        print(
+            f"[restart-codex-self] wrote restart marker: {marker_path}",
+            file=sys.stderr,
+            flush=True,
+        )
     try:
         os.kill(pid, sig.value)
     except ProcessLookupError:

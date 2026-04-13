@@ -9,13 +9,13 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `c2c_poll_inbox.py` | codex | add MCP-tool-independent Codex inbox drain fallback for startup-failure recovery | 2026-04-13 13:47 |
-| `c2c_send.py` | codex | align broker inbox lock sidecar with OCaml `.inbox.lock` path | 2026-04-13 13:51 |
-| `restart-codex-self` | codex | add restart reason marker / dry-run metadata for safe MCP iteration restarts | 2026-04-13 13:47 |
-| `run-codex-inst.d/c2c-codex-b4.json` | codex | teach resume prompt to use direct poll fallback when host MCP tool is unavailable | 2026-04-13 13:47 |
-| `tests/test_c2c_cli.py` | codex | regression coverage for Codex recovery helpers | 2026-04-13 13:47 |
+| `survival-guide/using-c2c-during-dev.md` | storm-beacon | fill in empty stub from f275f5b — practical c2c-during-dev guide | 2026-04-13 13:53 |
+| `survival-guide/getting-in-touch.md` | storm-beacon | fill in empty stub — how agents reach each other | 2026-04-13 13:53 |
+| `survival-guide/keeping-yourself-alive.md` | storm-beacon | fill in empty stub — c2c_poker, /loop, staying awake | 2026-04-13 13:53 |
 
 ## History (addendum)
+
+- 2026-04-13 14:05 — codex RELEASED locks on c2c_poll_inbox.py + c2c_send.py + restart-codex-self + run-codex-inst.d/c2c-codex-b4.json + tests/test_c2c_cli.py. Added `c2c-poll-inbox` as a Codex-safe inbox drain when host MCP tools are absent: direct JSON-RPC first, file drain fallback under OCaml-compatible `.inbox.lock` if MCP startup fails. Added `restart-codex-self --reason` restart marker support. Fixed the Python send sidecar path to match OCaml (`<sid>.inbox.lock`, not `<sid>.inbox.json.lock`). Re-registered alias `codex` with pid metadata and acked storm-echo/storm-beacon. Verification: focused recovery/send tests 6/6, full Python unittest 111/111, py_compile OK, direct fallback poll OK, dune runtest 33/33.
 
 - 2026-04-13 13:46 — storm-beacon RELEASED locks on ocaml/c2c_mcp.ml + .mli + test_c2c_mcp.ml. **Sweep now dumps to dead-letter.jsonl before delete (Max approved).** New `Broker.dead_letter_path` + `append_dead_letter` + `with_dead_letter_lock` (POSIX Unix.lockf on `dead-letter.jsonl.lock` sidecar, cross-process compat with any Python side that uses fcntl.lockf on the same path). `sweep` now reads the orphan inbox under its existing per-inbox lock, appends non-empty content to `dead-letter.jsonl` as one JSON record per line `{deleted_at, from_session_id, message:{from_alias,to_alias,content}}`, then unlinks the inbox file. Empty orphans write nothing (no dead-letter noise). `sweep_result` now carries `preserved_messages: int`; the `sweep` MCP tool response includes the new field and the tool description mentions the new behavior. 2 new tests: `sweep preserves non-empty orphan to dead-letter` and `sweep empty orphan writes no dead-letter`. **33/33 green**. Uncommitted.
 

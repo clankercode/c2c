@@ -1256,6 +1256,39 @@ class C2CCLITests(unittest.TestCase):
         ):
             self.assertEqual(c2c_poll_inbox.resolve_session_id(None), "codex-from-env")
 
+    def test_c2c_poll_inbox_falls_back_to_file_when_direct_mcp_fails(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        broker_root.mkdir()
+        inbox_path = broker_root / "codex-local.inbox.json"
+        inbox_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "from_alias": "storm-beacon",
+                        "to_alias": "codex",
+                        "content": "mcp failed but file worked",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        with mock.patch(
+            "c2c_poll_inbox.call_mcp_tool",
+            side_effect=RuntimeError("mcp startup failed"),
+        ):
+            source, messages = c2c_poll_inbox.poll_inbox(
+                broker_root=broker_root,
+                session_id="codex-local",
+                timeout=0.1,
+                force_file=False,
+                allow_file_fallback=True,
+            )
+
+        self.assertEqual(source, "file")
+        self.assertEqual(messages[0]["content"], "mcp failed but file worked")
+        self.assertEqual(json.loads(inbox_path.read_text(encoding="utf-8")), [])
+
     def test_run_codex_inst_allows_explicit_c2c_id_for_multiple_codex_sessions(self):
         config_dir = Path(self.temp_dir.name) / "run-codex-inst.d"
         config_dir.mkdir()
