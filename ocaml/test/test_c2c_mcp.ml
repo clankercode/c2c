@@ -530,8 +530,9 @@ let test_tools_call_register_uses_current_session_id_when_omitted () =
 
 let test_tools_call_register_prefers_explicit_client_pid_env () =
   with_temp_dir (fun dir ->
+      let live_pid = Unix.getpid () in
       Unix.putenv "C2C_MCP_SESSION_ID" "session-live";
-      Unix.putenv "C2C_MCP_CLIENT_PID" "4242";
+      Unix.putenv "C2C_MCP_CLIENT_PID" (string_of_int live_pid);
       Fun.protect
         ~finally:(fun () ->
           Unix.putenv "C2C_MCP_SESSION_ID" "";
@@ -558,9 +559,9 @@ let test_tools_call_register_prefers_explicit_client_pid_env () =
           in
           check int "one registration" 1 (List.length regs);
           let reg = List.hd regs in
-          check bool "registered pid uses explicit client pid" true (reg.pid = Some 4242);
-          check bool "explicit pid start_time absent when proc missing" true
-            (reg.pid_start_time = None)))
+          check bool "registered pid uses explicit client pid" true (reg.pid = Some live_pid);
+          check bool "explicit pid start_time present for live proc" true
+            (reg.pid_start_time <> None)))
 
 (* Calling register with no alias argument falls back to C2C_MCP_AUTO_REGISTER_ALIAS *)
 let test_tools_call_register_no_alias_falls_back_to_env () =
@@ -655,7 +656,7 @@ let test_server_startup_auto_registers_alias_from_env () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-auto";
       Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "opencode-local";
-      Unix.putenv "C2C_MCP_CLIENT_PID" "4242";
+      Unix.putenv "C2C_MCP_CLIENT_PID" (string_of_int (Unix.getpid ()));
       Fun.protect
         ~finally:(fun () ->
           Unix.putenv "C2C_MCP_SESSION_ID" "";
@@ -669,7 +670,27 @@ let test_server_startup_auto_registers_alias_from_env () =
           let reg = List.hd regs in
           check string "registered session" "session-auto" reg.session_id;
           check string "registered alias" "opencode-local" reg.alias;
-          check bool "registered pid" true (reg.pid = Some 4242)))
+          check bool "registered pid" true (reg.pid = Some (Unix.getpid ()))))
+
+let test_server_startup_auto_register_ignores_dead_client_pid_env () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-auto";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "kimi-nova";
+      Unix.putenv "C2C_MCP_CLIENT_PID" "999999999";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+          Unix.putenv "C2C_MCP_CLIENT_PID" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          check int "one registration" 1 (List.length regs);
+          let reg = List.hd regs in
+          check string "registered session" "session-auto" reg.session_id;
+          check string "registered alias" "kimi-nova" reg.alias;
+          check bool "dead env pid ignored" true (reg.pid = Some (Unix.getppid ()))))
 
 let test_auto_register_startup_skips_when_alive_session_has_different_alias () =
   (* Regression: kimi -p inherits CLAUDE_SESSION_ID and should NOT evict the
@@ -3193,6 +3214,8 @@ let () =
              test_tools_call_register_alias_rename_notifies_rooms
          ; test_case "server startup auto-registers alias from env" `Quick
              test_server_startup_auto_registers_alias_from_env
+         ; test_case "server startup ignores dead client pid env" `Quick
+             test_server_startup_auto_register_ignores_dead_client_pid_env
          ; test_case "server startup auto-register redelivers dead-letter messages" `Quick
              test_auto_register_startup_redelivers_dead_letter_messages
          ; test_case "auto_register_startup skips when alive session has different alias" `Quick
