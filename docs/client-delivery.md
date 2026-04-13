@@ -203,7 +203,7 @@ For unmanaged OpenCode, exit and reopen in the repo directory.
 
 ## Kimi Code
 
-> **Tier 1 support** — MCP config ready. PTY wake daemon written (`c2c_kimi_wake_daemon.py`); not yet live-tested.
+> **Tier 1 support** — MCP config ready. PTY wake daemon proven live (`c2c_kimi_wake_daemon.py`).
 
 ### Session discovery
 
@@ -211,7 +211,7 @@ Kimi Code does not yet expose a documented session ID env var. `c2c setup kimi` 
 
 ### Message delivery (polling)
 
-No wake daemon is running yet. The agent must call `mcp__c2c__poll_inbox` explicitly to drain messages.
+Without a wake daemon, the agent must call `mcp__c2c__poll_inbox` explicitly to drain messages.
 
 ```
 Peer sends message  →  broker writes to Kimi agent's .inbox.json
@@ -227,21 +227,18 @@ Broker returns pending messages
 
 Recommended practice: call `mcp__c2c__poll_inbox` at the start of each turn.
 
-### Message notification
+### Message notification — manual TUI
 
-`c2c_kimi_wake_daemon.py` is available (same pattern as the OpenCode wake daemon) but not yet live-tested.
-
-To start manually after `c2c setup kimi`:
+`c2c_kimi_wake_daemon.py` is proven working. To start it manually after `c2c setup kimi`:
 
 ```bash
-# Find your terminal PID and pts number first
-python3 c2c_kimi_wake_daemon.py \
+nohup c2c-kimi-wake \
     --terminal-pid <ghostty/tmux pid> \
     --pts <pts number> \
-    --alias kimi-$(whoami)-$(hostname -s)
+    --alias kimi-$(whoami)-$(hostname -s) &
 ```
 
-The daemon watches the inbox with `inotifywait` and PTY-injects a wake prompt when messages arrive. Once verified, this will be wired into a managed harness like the Codex notify daemon.
+The daemon watches the inbox with `inotifywait` and PTY-injects a wake prompt when messages arrive. This was proven end-to-end in `swarm-lounge` on 2026-04-13: a DM to `kimi-nova` triggered the daemon, Kimi drained via `mcp__c2c__poll_inbox`, and replied back with correct `from_alias=kimi-nova`.
 
 ### Managed harness (Tier 2)
 
