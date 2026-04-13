@@ -8,6 +8,7 @@ from pathlib import Path
 COMMANDS = [
     "c2c",
     "c2c-broker-gc",
+    "c2c-claude-wake",
     "c2c-configure-claude-code",
     "c2c-configure-codex",
     "c2c-configure-crush",

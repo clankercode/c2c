@@ -71,6 +71,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
     for relative_path in [
         "c2c",
         "c2c-broker-gc",
+        "c2c-claude-wake",
         "c2c-configure-claude-code",
         "c2c-configure-codex",
         "c2c-configure-crush",
@@ -112,7 +113,6 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_configure_crush.py",
         "c2c_configure_kimi.py",
         "c2c_configure_opencode.py",
-
         "c2c_init.py",
         "c2c_list.py",
         "c2c_prune.py",
@@ -129,6 +129,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_watch.py",
         "c2c_whoami.py",
         "c2c_health.py",
+        "c2c_claude_wake_daemon.py",
         "c2c_cli.py",
         "c2c_mcp.py",
         "c2c_registry.py",
@@ -318,6 +319,7 @@ class C2CCLITests(unittest.TestCase):
             [
                 "c2c",
                 "c2c-broker-gc",
+                "c2c-claude-wake",
                 "c2c-configure-claude-code",
                 "c2c-configure-codex",
                 "c2c-configure-crush",
@@ -2294,6 +2296,7 @@ class C2CTestHelpersTests(unittest.TestCase):
             for relative_path in [
                 "c2c",
                 "c2c-broker-gc",
+                "c2c-claude-wake",
                 "c2c-configure-claude-code",
                 "c2c-configure-codex",
                 "c2c-configure-crush",
@@ -2351,6 +2354,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c_verify.py",
                 "c2c_watch.py",
                 "c2c_whoami.py",
+                "c2c_claude_wake_daemon.py",
                 "c2c_cli.py",
                 "c2c_mcp.py",
                 "c2c_registry.py",
@@ -2413,14 +2417,30 @@ class C2CListUnitTests(unittest.TestCase):
     def test_infer_client_type_from_session_id_and_alias(self):
         from c2c_list import _infer_client_type
 
-        self.assertEqual(_infer_client_type("storm-beacon", "d16034fc-5526-414b-a88e-709d1a93e345"), "claude-code")
-        self.assertEqual(_infer_client_type("claude-bob-local", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"), "claude-code")
+        self.assertEqual(
+            _infer_client_type("storm-beacon", "d16034fc-5526-414b-a88e-709d1a93e345"),
+            "claude-code",
+        )
+        self.assertEqual(
+            _infer_client_type(
+                "claude-bob-local", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+            ),
+            "claude-code",
+        )
         self.assertEqual(_infer_client_type("codex", "codex-local"), "codex")
-        self.assertEqual(_infer_client_type("codex-worker", "codex-worker-session"), "codex")
-        self.assertEqual(_infer_client_type("opencode-local", "opencode-local"), "opencode")
+        self.assertEqual(
+            _infer_client_type("codex-worker", "codex-worker-session"), "codex"
+        )
+        self.assertEqual(
+            _infer_client_type("opencode-local", "opencode-local"), "opencode"
+        )
         self.assertEqual(_infer_client_type("opencode-x", "opencode-x"), "opencode")
-        self.assertEqual(_infer_client_type("kimi-alice-host", "kimi-alice-host"), "kimi")
-        self.assertEqual(_infer_client_type("crush-bob-host", "crush-bob-host"), "crush")
+        self.assertEqual(
+            _infer_client_type("kimi-alice-host", "kimi-alice-host"), "kimi"
+        )
+        self.assertEqual(
+            _infer_client_type("crush-bob-host", "crush-bob-host"), "crush"
+        )
         self.assertEqual(_infer_client_type("mystery", "mystery-session"), "?")
 
     def test_list_broker_flag_reads_broker_registry(self):
@@ -3775,7 +3795,7 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         )
         self.assertEqual(payload["cwd"], str(REPO))
         self.assertIn("opencode", payload["launch"][0])
-        self.assertIn("run", payload["launch"])
+        self.assertIn("OPENCODE_MCP_PROMPT", payload["env"])
         self.assertEqual(payload["env"]["C2C_MCP_SESSION_ID"], "opencode-local")
         self.assertEqual(
             payload["env"]["C2C_MCP_AUTO_REGISTER_ALIAS"], "opencode-local"
@@ -5173,7 +5193,9 @@ class C2CConfigureCrushTests(unittest.TestCase):
             self.assertIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
             self.assertRegex(env["C2C_MCP_AUTO_REGISTER_ALIAS"], r"^crush-.+-.+$")
             # Session ID should equal alias so auto_register_startup works
-            self.assertEqual(env.get("C2C_MCP_SESSION_ID"), env["C2C_MCP_AUTO_REGISTER_ALIAS"])
+            self.assertEqual(
+                env.get("C2C_MCP_SESSION_ID"), env["C2C_MCP_AUTO_REGISTER_ALIAS"]
+            )
 
     def test_alias_is_used_as_session_id_when_no_explicit_session(self):
         """When --alias is given but no --session-id, session ID defaults to alias."""
@@ -5255,7 +5277,9 @@ class C2CConfigureKimiDefaultAliasTests(unittest.TestCase):
             self.assertIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
             self.assertRegex(env["C2C_MCP_AUTO_REGISTER_ALIAS"], r"^kimi-.+-.+$")
             # Session ID should equal alias so auto_register_startup works
-            self.assertEqual(env.get("C2C_MCP_SESSION_ID"), env["C2C_MCP_AUTO_REGISTER_ALIAS"])
+            self.assertEqual(
+                env.get("C2C_MCP_SESSION_ID"), env["C2C_MCP_AUTO_REGISTER_ALIAS"]
+            )
 
     def test_alias_is_used_as_session_id_when_no_explicit_session(self):
         """When --alias is given but no --session-id, session ID defaults to alias."""
@@ -5468,9 +5492,7 @@ class RunKimiInstTests(unittest.TestCase):
         self.assertEqual(result_code(result), 0, result.stderr)
         payload = json.loads(result.stdout)
         self.assertTrue(Path(payload["inner"][0]).name.startswith("python"))
-        self.assertEqual(
-            payload["inner"][1:], [str(REPO / "run-kimi-inst"), "kimi-a"]
-        )
+        self.assertEqual(payload["inner"][1:], [str(REPO / "run-kimi-inst"), "kimi-a"])
         self.assertTrue(Path(payload["rearm"][0]).name.startswith("python"))
         self.assertEqual(
             payload["rearm"][1:], [str(REPO / "run-kimi-inst-rearm"), "kimi-a"]
@@ -5506,9 +5528,7 @@ class RunKimiInstTests(unittest.TestCase):
         self.assertEqual(payload["target_pid"], 12345)
         self.assertEqual(payload["session_id"], "kimi-a-local")
         self.assertTrue(payload["dry_run"])
-        joined_commands = " ".join(
-            " ".join(cmd) for cmd in payload["commands"]
-        )
+        joined_commands = " ".join(" ".join(cmd) for cmd in payload["commands"])
         self.assertIn("c2c_deliver_inbox.py", joined_commands)
         self.assertIn("--session-id kimi-a-local", joined_commands)
         self.assertIn("--notify-only", joined_commands)
@@ -5595,9 +5615,7 @@ class RunCrushInstTests(unittest.TestCase):
         self.assertEqual(payload["target_pid"], 54321)
         self.assertEqual(payload["session_id"], "crush-a-local")
         self.assertTrue(payload["dry_run"])
-        joined_commands = " ".join(
-            " ".join(cmd) for cmd in payload["commands"]
-        )
+        joined_commands = " ".join(" ".join(cmd) for cmd in payload["commands"])
         self.assertIn("c2c_deliver_inbox.py", joined_commands)
         self.assertIn("--session-id crush-a-local", joined_commands)
         self.assertIn("--notify-only", joined_commands)
@@ -5630,19 +5648,35 @@ class HealthCheckHookTests(unittest.TestCase):
         settings = self._settings_path()
         settings.parent.mkdir(parents=True, exist_ok=True)
         if has_c2c:
-            payload = {"hooks": {"PostToolUse": [{"matcher": ".*", "hooks": [{"type": "command", "command": "/home/user/.claude/hooks/c2c-inbox-check.sh"}]}]}}
+            payload = {
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": ".*",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "/home/user/.claude/hooks/c2c-inbox-check.sh",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
         else:
             payload = {"hooks": {"PostToolUse": []}}
         settings.write_text(json.dumps(payload), encoding="utf-8")
 
     def test_no_hook_file_returns_not_ok(self):
         import c2c_health
+
         result = c2c_health.check_hook(self.home)
         self.assertFalse(result["hook_exists"])
         self.assertFalse(result["ok"])
 
     def test_hook_exists_but_not_in_settings_returns_partial(self):
         import c2c_health
+
         self._write_hook()
         self._write_settings(has_c2c=False)
         result = c2c_health.check_hook(self.home)
@@ -5653,6 +5687,7 @@ class HealthCheckHookTests(unittest.TestCase):
 
     def test_hook_and_settings_both_present_returns_ok(self):
         import c2c_health
+
         self._write_hook()
         self._write_settings(has_c2c=True)
         result = c2c_health.check_hook(self.home)
@@ -5663,6 +5698,7 @@ class HealthCheckHookTests(unittest.TestCase):
 
     def test_non_executable_hook_returns_not_ok(self):
         import c2c_health
+
         self._write_hook(executable=False)
         self._write_settings(has_c2c=True)
         result = c2c_health.check_hook(self.home)
@@ -5683,18 +5719,21 @@ class HealthCheckSwarmLoungeTests(unittest.TestCase):
 
     def test_no_alias_returns_not_member(self):
         import c2c_health
+
         result = c2c_health.check_swarm_lounge(self.broker_root, None)
         self.assertFalse(result["member"])
         self.assertFalse(result["room_exists"])
 
     def test_room_missing_returns_not_member(self):
         import c2c_health
+
         result = c2c_health.check_swarm_lounge(self.broker_root, "my-alias")
         self.assertFalse(result["member"])
         self.assertFalse(result["room_exists"])
 
     def test_alias_in_members_returns_member(self):
         import c2c_health
+
         lounge = self.broker_root / "rooms" / "swarm-lounge"
         lounge.mkdir(parents=True)
         (lounge / "members.json").write_text(
@@ -5707,6 +5746,7 @@ class HealthCheckSwarmLoungeTests(unittest.TestCase):
 
     def test_alias_not_in_members_returns_not_member(self):
         import c2c_health
+
         lounge = self.broker_root / "rooms" / "swarm-lounge"
         lounge.mkdir(parents=True)
         (lounge / "members.json").write_text(
@@ -5738,21 +5778,19 @@ class RefreshPeerTests(unittest.TestCase):
     def test_refresh_peer_unknown_alias_raises(self):
         """refresh_peer exits with error for unknown alias."""
         import c2c_refresh_peer
-        self._write_registry([
-            {"session_id": "s1", "alias": "other-agent", "pid": 99999}
-        ])
+
+        self._write_registry(
+            [{"session_id": "s1", "alias": "other-agent", "pid": 99999}]
+        )
         with self.assertRaises(SystemExit):
-            c2c_refresh_peer.refresh_peer(
-                "missing-alias", None, self.broker_root
-            )
+            c2c_refresh_peer.refresh_peer("missing-alias", None, self.broker_root)
 
     def test_refresh_peer_alive_registration_returns_no_change(self):
         """When current registration is already alive, no-arg refresh says so."""
         import c2c_refresh_peer
+
         live_pid = os.getpid()
-        self._write_registry([
-            {"session_id": "s1", "alias": "me", "pid": live_pid}
-        ])
+        self._write_registry([{"session_id": "s1", "alias": "me", "pid": live_pid}])
         result = c2c_refresh_peer.refresh_peer("me", None, self.broker_root)
         self.assertEqual(result["status"], "already_alive")
         self.assertEqual(result["pid"], live_pid)
@@ -5760,20 +5798,22 @@ class RefreshPeerTests(unittest.TestCase):
     def test_refresh_peer_dead_pid_no_arg_raises(self):
         """When registration has dead PID and no new PID given, raises."""
         import c2c_refresh_peer
-        self._write_registry([
-            {"session_id": "s1", "alias": "stale-agent", "pid": 11111}
-        ])
+
+        self._write_registry(
+            [{"session_id": "s1", "alias": "stale-agent", "pid": 11111}]
+        )
         with self.assertRaises(SystemExit):
             c2c_refresh_peer.refresh_peer("stale-agent", None, self.broker_root)
 
     def test_refresh_peer_updates_pid(self):
         """refresh_peer with explicit live PID updates the registry row."""
         import c2c_refresh_peer
+
         old_pid = 11111  # dead
         new_pid = os.getpid()  # definitely alive
-        self._write_registry([
-            {"session_id": "s1", "alias": "opencode-local", "pid": old_pid}
-        ])
+        self._write_registry(
+            [{"session_id": "s1", "alias": "opencode-local", "pid": old_pid}]
+        )
         result = c2c_refresh_peer.refresh_peer(
             "opencode-local", new_pid, self.broker_root
         )
@@ -5788,17 +5828,17 @@ class RefreshPeerTests(unittest.TestCase):
     def test_refresh_peer_refuses_dead_new_pid(self):
         """refresh_peer refuses to update to a PID that is not in /proc."""
         import c2c_refresh_peer
-        self._write_registry([
-            {"session_id": "s1", "alias": "opencode-local", "pid": 11111}
-        ])
+
+        self._write_registry(
+            [{"session_id": "s1", "alias": "opencode-local", "pid": 11111}]
+        )
         with self.assertRaises(SystemExit):
-            c2c_refresh_peer.refresh_peer(
-                "opencode-local", 11111, self.broker_root
-            )
+            c2c_refresh_peer.refresh_peer("opencode-local", 11111, self.broker_root)
 
     def test_refresh_peer_dry_run_does_not_write(self):
         """--dry-run reports intended change but does not modify registry."""
         import c2c_refresh_peer
+
         new_pid = os.getpid()
         original = [{"session_id": "s1", "alias": "opencode-local", "pid": 99999}]
         self._write_registry(original)

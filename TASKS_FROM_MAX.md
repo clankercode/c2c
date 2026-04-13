@@ -9,10 +9,15 @@ When new tasks appear here, or there are tasks that need injesting, they should 
 ## template
 status: new
 
+## post tool hook speed
+status: new
+the post tool hook call must be super fast, always. it can never hold an agent up
+
 ## quality check: msg delivery to claude
-status new
+status: new
 what happens if claude doesn't run tools? mail is not able to wake it up. or, rather, 
 if msgs are only delivered via tool call post hook or when manually called, that is not great because it can't wake the agent up. and c2c should be able to wake agents. 
+we need to research such a thing and implement it if possible. contact max via attn if we find it's not possible. 
 
 ## add support for `kimi`
 status: done
