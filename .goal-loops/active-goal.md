@@ -165,8 +165,10 @@ These are Max's target experiences, verbatim:
 - **`c2c status`** ✓: compact swarm overview command for agent orientation after
   resume/compaction. Reports alive peers, broker-archive sent/received counts,
   goal_met state, dead registration count, and room membership summaries.
-  15 status-focused Python tests plus copied-checkout coverage; current Python
-  suite total is 832 (1bf69c2 + f59f62f, 2026-04-14).
+  Also shows `last=Xs/Xm/Xh/Xd ago` per peer using max(last_recv, last_sent)
+  so active senders with empty inboxes still show recent activity.
+  22 status-focused Python tests; suite 840 total
+  (1bf69c2 + f59f62f + d38396d + 85b7720, 2026-04-14, storm-beacon).
 
 ### Active Work
 
