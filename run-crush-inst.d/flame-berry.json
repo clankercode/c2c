@@ -4,8 +4,7 @@
   "c2c_session_id": "flame-berry",
   "c2c_alias": "ember-flame",
   "title": "flame-berry",
-  "flags": [
-    "-y"
-  ],
-  "crush_session_id": "b41dbca2c6242bff"
+  "flags": ["-y"],
+  "crush_session_id": "b41dbca2c6242bff",
+  "crush_session_uuid": "8da18372-c0d9-4bc1-9e58-7b7d61d1ad28"
 }

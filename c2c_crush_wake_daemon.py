@@ -33,11 +33,8 @@ ROOT = Path(__file__).resolve().parent
 PTY_INJECT = Path("/home/xertrov/src/meta-agent/apps/ma_adapter_claude/priv/pty_inject")
 
 WAKE_PROMPT_TEMPLATE = (
-    "You have pending c2c direct messages. "
-    "Please call mcp__c2c__poll_inbox right now (no arguments). "
-    "For EACH message in the result, call mcp__c2c__send with "
-    "from_alias='{alias}', to_alias=<the from_alias field of that message>, "
-    "content=<your reply>. Do this before doing anything else."
+    "You have c2c messages waiting. "
+    "Call mcp__c2c__poll_inbox and reply via mcp__c2c__send now."
 )
 
 
@@ -125,6 +122,20 @@ def watch_with_inotifywait(inbox: Path, timeout: float = 30.0) -> bool:
         return False
 
 
+def heartbeat_loop(
+    terminal_pid: int,
+    pts: int,
+    alias: str,
+    interval: float,
+    dry_run: bool,
+) -> None:
+    msg = f"c2c heartbeat for {alias} — poll your inbox if idle."
+    print(f"[crush-wake] heartbeat every {interval}s")
+    while True:
+        time.sleep(interval)
+        pty_inject(terminal_pid, pts, msg, dry_run=dry_run, submit_delay=None)
+
+
 def run(
     *,
     session_id: str,
@@ -137,6 +148,7 @@ def run(
     submit_delay: float | None,
     dry_run: bool,
     once: bool,
+    heartbeat_interval: float | None,
 ) -> None:
     inbox = inbox_path(broker_root, session_id)
     last_inject_time = 0.0
@@ -144,6 +156,14 @@ def run(
 
     print(f"[crush-wake] watching {inbox} → PTY terminal_pid={terminal_pid} pts={pts}")
     print(f"[crush-wake] alias={alias} min_inject_gap={min_inject_gap}s interval={interval}s")
+
+    if heartbeat_interval:
+        import threading
+        threading.Thread(
+            target=heartbeat_loop,
+            args=(terminal_pid, pts, alias, heartbeat_interval, dry_run),
+            daemon=True,
+        ).start()
 
     while True:
         if inbox_has_messages(inbox):
@@ -182,6 +202,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="minimum seconds between PTY injections")
     parser.add_argument("--submit-delay", type=float, default=None,
                         help="seconds to wait between bracketed paste and Enter")
+    parser.add_argument("--heartbeat-interval", type=float, default=None,
+                        help="optional seconds between keepalive heartbeats")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--once", action="store_true", help="inject once if inbox has messages and exit")
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
@@ -201,6 +223,7 @@ def main(argv: list[str] | None = None) -> int:
         submit_delay=args.submit_delay,
         dry_run=args.dry_run,
         once=args.once,
+        heartbeat_interval=args.heartbeat_interval,
     )
     return 0
 

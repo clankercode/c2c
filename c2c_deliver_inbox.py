@@ -47,18 +47,27 @@ def message_payload(message: dict[str, Any]) -> str:
     )
 
 
-def notify_payload(*, session_id: str, count: int) -> str:
+def notify_payload(*, session_id: str, count: int, client: str = "generic") -> str:
     noun = "message" if count == 1 else "messages"
-    return c2c_poker.render_payload(
-        (
+    if client == "crush":
+        message = (
+            f"You have {count} c2c {noun}. "
+            "Call mcp__c2c__poll_inbox and reply via mcp__c2c__send now."
+        )
+        raw = True
+    else:
+        message = (
             f"{count} broker-native C2C {noun} queued for session {session_id}. "
             "Call mcp__c2c__poll_inbox now to read the content from the broker. "
             "This PTY nudge intentionally does not contain the message body."
-        ),
+        )
+        raw = False
+    return c2c_poker.render_payload(
+        message,
         event="notify",
         sender="c2c-deliver-inbox",
         alias=session_id,
-        raw=False,
+        raw=raw,
         source="broker-notify",
         source_tool="c2c_deliver_inbox",
     )
@@ -278,7 +287,7 @@ def deliver_once(
         messages = peek_inbox(broker_root, session_id)
         delivered = 0
         if notify_only and messages and not dry_run and not suppress_notify:
-            payload = notify_payload(session_id=session_id, count=len(messages))
+            payload = notify_payload(session_id=session_id, count=len(messages), client=client)
             inject_payload(
                 client=client,
                 terminal_pid=terminal_pid,
@@ -442,7 +451,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--daemon-timeout", type=float, default=10.0)
     parser.add_argument(
         "--client",
-        choices=["claude", "codex", "opencode", "kimi", "generic"],
+        choices=["claude", "codex", "opencode", "kimi", "crush", "generic"],
         default="generic",
     )
     parser.add_argument(

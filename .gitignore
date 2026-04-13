@@ -34,7 +34,7 @@ docs/vendor/
 *.swo
 *~
 .worktrees/
-.goal-loops/
+.goal-loops/*
 !.goal-loops/active-goal.md
 _build/
 data/c2c_registry.yaml

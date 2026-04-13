@@ -131,27 +131,37 @@ def build_deliver_command(
     return [
         sys.executable,
         str(HERE / "c2c_deliver_inbox.py"),
-        "--client",
-        "generic",
-        "--pid",
-        str(target_pid),
-        "--session-id",
-        session_id,
+        "--client", "crush",
+        "--pid", str(target_pid),
+        "--session-id", session_id,
         "--file-fallback",
         "--notify-only",
-        "--notify-debounce",
-        "30",
+        "--notify-debounce", "30",
         "--loop",
-        "--interval",
-        "2",
-        "--pidfile",
-        str(deliver_pidfile),
+        "--interval", "2",
+        "--pidfile", str(deliver_pidfile),
         "--daemon",
-        "--daemon-log",
-        str(support_log(name, "deliver")),
-        "--daemon-timeout",
-        f"{start_timeout:g}",
+        "--daemon-log", str(support_log(name, "deliver")),
+        "--daemon-timeout", f"{start_timeout:g}",
         "--json",
+    ]
+
+
+def build_poker_command(
+    name: str, target_pid: int, session_id: str
+) -> list[str]:
+    poker_pidfile = support_pidfile(name, "poker")
+    return [
+        sys.executable,
+        str(HERE / "c2c_poker.py"),
+        "--pid", str(target_pid),
+        "--interval", "300",
+        "--message",
+        "c2c heartbeat — poll your inbox if you have pending messages.",
+        "--event", "heartbeat",
+        "--from", "c2c-poker",
+        "--alias", session_id,
+        "--pidfile", str(poker_pidfile),
     ]
 
 
@@ -172,11 +182,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pid", type=int, default=None)
     parser.add_argument("--session-id", default="")
     parser.add_argument("--stop", action="store_true", help="stop deliver daemon and exit")
+    parser.add_argument("--poker", action="store_true", default=None,
+                        help="start PTY heartbeat poker alongside deliver daemon")
+    parser.add_argument("--no-poker", action="store_true",
+                        help="do not start PTY heartbeat poker")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--stop-timeout", type=float, default=2.0)
     parser.add_argument("--start-timeout", type=float, default=30.0)
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+
+    poker_default = (
+        os.environ.get("RUN_CRUSH_INST_REARM_POKER", "").strip().lower()
+        not in {"", "0", "false", "no", "off"}
+    )
+    enable_poker = args.poker if args.poker is not None else poker_default
+    if args.no_poker:
+        enable_poker = False
 
     if args.stop:
         stopped = [
@@ -186,6 +208,14 @@ def main(argv: list[str] | None = None) -> int:
                 args.stop_timeout,
             ),
         ]
+        if enable_poker:
+            stopped.append(
+                stop_pidfile(
+                    support_pidfile(args.name, "poker"),
+                    "c2c_poker.py",
+                    args.stop_timeout,
+                )
+            )
         if args.json:
             print(json.dumps({"stopped": stopped}, indent=2))
         else:
@@ -199,14 +229,22 @@ def main(argv: list[str] | None = None) -> int:
 
     session_id = args.session_id or default_session_id(args.name)
     deliver_command = build_deliver_command(args.name, target_pid, session_id, args.start_timeout)
+    poker_command = build_poker_command(args.name, target_pid, session_id)
+
+    pidfiles: dict[str, str] = {"deliver": str(support_pidfile(args.name, "deliver"))}
+    commands: list[list[str]] = [deliver_command]
+    if enable_poker:
+        pidfiles["poker"] = str(support_pidfile(args.name, "poker"))
+        commands.append(poker_command)
 
     payload: dict[str, Any] = {
         "ok": True,
         "name": args.name,
         "target_pid": target_pid,
         "session_id": session_id,
-        "pidfiles": {"deliver": str(support_pidfile(args.name, "deliver"))},
-        "commands": [deliver_command],
+        "pidfiles": pidfiles,
+        "commands": commands,
+        "poker": enable_poker,
         "dry_run": dry_run_enabled(args),
     }
 
@@ -224,6 +262,15 @@ def main(argv: list[str] | None = None) -> int:
             args.stop_timeout,
         ),
     ]
+    if enable_poker:
+        stopped.append(
+            stop_pidfile(
+                support_pidfile(args.name, "poker"),
+                "c2c_poker.py",
+                args.stop_timeout,
+            )
+        )
+
     deliver = subprocess.run(
         deliver_command,
         cwd=HERE,
@@ -241,6 +288,21 @@ def main(argv: list[str] | None = None) -> int:
         },
     }
     payload["ok"] = deliver.returncode == 0
+
+    if enable_poker and payload["ok"]:
+        poker = subprocess.run(
+            poker_command,
+            cwd=HERE,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        payload["started"]["poker"] = {
+            "ok": poker.returncode == 0,
+            "returncode": poker.returncode,
+            "stdout": poker.stdout.strip(),
+            "stderr": poker.stderr.strip(),
+        }
     if args.json:
         print(json.dumps(payload, indent=2))
     else:
