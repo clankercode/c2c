@@ -23,6 +23,11 @@ on disk).
   dirty configure/start work (`c2c_configure_claude_code.py` indentation error
   and alias expectation drift).
 
+- 2026-04-13T22:36Z - codex RELEASED locks on `tmp_status.txt` and
+  `tmp_collab_lock.md`. After self-restart, live MCP `prune_rooms` evicted
+  orphan `storm-beacon` from `swarm-lounge`; follow-up `list_rooms` reported
+  4/4 alive room members.
+
 - 2026-04-13T22:16Z - codex RELEASED locks on `.opencode/opencode.json`,
   `tests/test_c2c_cli.py`,
   `.collab/findings/2026-04-13T22-13-00Z-codex-opencode-config-inherits-parent-alias.md`,

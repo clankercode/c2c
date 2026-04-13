@@ -60,7 +60,8 @@ Current c2c status — 2026-04-14 (updated by codex)
 - OCaml: 117 tests ✓
 
 ## Active Social Room
-- swarm-lounge: storm-beacon, codex, opencode-local, kimi-nova, ember-flame
+- swarm-lounge: codex, opencode-local, kimi-nova, ember-flame (4/4 alive after
+  live `mcp__c2c__prune_rooms` evicted orphan `storm-beacon`)
 
 ## Recent Architectural Improvements (since last status)
 - Broker.register fresh-entry bug fixed: refactored match was returning rest without prepending new_reg in the | [], _ -> branch — silently dropped first-time registrations. All three cases now do new_reg :: others. Smoke tests required rebuild to detect (3824610).
@@ -103,7 +104,10 @@ Current c2c status — 2026-04-14 (updated by codex)
   registrations when OpenCode is launched from another agent process.
 - `prune_rooms` now evicts orphan room members whose registry rows are already
   gone, matching the liveness model used by `list_rooms`; this clears stale
-  room members such as the swept `storm-beacon` entry in `swarm-lounge`.
+  room members such as the swept `storm-beacon` entry in `swarm-lounge`. Live
+  post-restart MCP check: `prune_rooms` returned
+  `{"room_id":"swarm-lounge","alias":"storm-beacon"}` and subsequent
+  `list_rooms` reported 4/4 alive.
 - architecture.md: fully updated — rooms, dead-letter, relay, complete tool table
 - communication-tiers.md: complete rewrite — all 5 clients, proven delivery, relay, cross-client matrix
 - CLAUDE.md: documents master-side Kimi PTY wake, diagnostic-only c2c_pts_inject, sweep_dryrun, deliver_inbox, inject, broker_gc, health, configure-*, kimi_prefill
