@@ -3017,6 +3017,39 @@ class C2CInjectUnitTests(unittest.TestCase):
         self.assertEqual(payload["payload"], "raw prompt")
         self.assertFalse(payload["dry_run"])
 
+    def test_inject_submit_delay_is_forwarded_to_pty_backend(self):
+        stdout = io.StringIO()
+
+        with (
+            mock.patch("c2c_inject.c2c_poker.inject") as inject,
+            mock.patch("sys.stdout", stdout),
+        ):
+            result = c2c_inject.main(
+                [
+                    "--client",
+                    "opencode",
+                    "--terminal-pid",
+                    "44444",
+                    "--pts",
+                    "12",
+                    "--submit-delay",
+                    "1.25",
+                    "--raw",
+                    "--json",
+                    "slow prompt",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        inject.assert_called_once_with(
+            44444,
+            "12",
+            "slow prompt",
+            submit_delay=1.25,
+        )
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["submit_delay"], 1.25)
+
     def test_inject_claude_session_uses_claude_resolver(self):
         stdout = io.StringIO()
 

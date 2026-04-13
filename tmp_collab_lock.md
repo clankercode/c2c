@@ -9,6 +9,10 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| `c2c_inject.py` | codex | Add configurable PTY paste-to-enter delay for reliable OpenCode nudges | 2026-04-13 18:47 AEST |
+| `c2c_poker.py` | codex | Thread optional PTY submit delay to shared injector backend | 2026-04-13 18:47 AEST |
+| `tests/test_c2c_cli.py` | codex | Regression coverage for `c2c inject --submit-delay` | 2026-04-13 18:47 AEST |
+| `/home/xertrov/src/meta-agent/apps/ma_adapter_claude/priv/pty_inject.c` | codex | Allow optional native paste-to-enter delay argument | 2026-04-13 18:47 AEST |
 
 ## History (addendum)
 
