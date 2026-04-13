@@ -12,6 +12,13 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 20:26 — codex RELEASED locks on
+  `.collab/findings/2026-04-13T10-23-55Z-codex-opencode-dm-refresh-footguns.md`
+  and `tmp_collab_lock.md`. Documented two DM handoff footguns found while
+  sending OpenCode the restart-report summary: no-arg `mcp__c2c__register`
+  schema/runtime mismatch and stale `opencode-local` liveness blocking direct
+  sends until the durable TUI pid was manually re-registered.
+
 - 2026-04-13 20:20 — codex RELEASED locks on
   `.collab/findings/2026-04-13T10-20-00Z-codex-kimi-crush-local-smoke.md`
   and `tmp_collab_lock.md`. Recorded local Kimi/Crush binary availability,
