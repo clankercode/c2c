@@ -1465,6 +1465,11 @@ let send_alias_impersonation_check broker from_alias =
         (fun reg ->
           reg.alias = from_alias
           && reg.session_id <> current_sid
+          (* Require a real pid that /proc confirms is running. Pidless
+             registrations are legacy/ambiguous — we do not block on them
+             to avoid false positives in CLI tests and operator tooling
+             that writes registry entries without pids. *)
+          && reg.pid <> None
           && Broker.registration_is_alive reg)
         (Broker.list_registrations broker)
 
