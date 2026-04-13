@@ -139,6 +139,19 @@ def read_pid_start_time(pid: int) -> int | None:
         return None
 
 
+def _session_pid_from_proc(session_id: str) -> int | None:
+    """Scan /proc for a live process whose session matches session_id."""
+    try:
+        from claude_list_sessions import iter_live_claude_processes
+
+        for pid, sid, _cwd in iter_live_claude_processes():
+            if sid == session_id:
+                return pid
+    except Exception:
+        pass
+    return None
+
+
 def maybe_auto_register_startup(env: dict[str, str]) -> None:
     alias = auto_register_alias_from_env(env)
     session_id = str(env.get("C2C_MCP_SESSION_ID", "")).strip()
@@ -148,7 +161,10 @@ def maybe_auto_register_startup(env: dict[str, str]) -> None:
     broker_root = Path(env.get("C2C_MCP_BROKER_ROOT") or default_broker_root())
     broker_root.mkdir(parents=True, exist_ok=True)
     registry_path = broker_root / "registry.json"
-    pid = current_client_pid_from_env(env)
+    # Prefer /proc-discovered pid over the inherited C2C_MCP_CLIENT_PID env var,
+    # which can be stale after a session restart (the env var captures the pid at
+    # MCP server first-launch time and doesn't update on subsequent restarts).
+    pid = _session_pid_from_proc(session_id) or current_client_pid_from_env(env)
     pid_start_time = read_pid_start_time(pid) if pid is not None else None
     registration = build_registration_record(
         session_id,
