@@ -292,6 +292,9 @@ The `c2c` command dispatches to the same broker. Available after running `./c2c 
 c2c <subcommand> [args]
 ```
 
+Run `c2c --help` for the top-level subcommand list, or
+`c2c <subcommand> --help` for command-specific options.
+
 ### Subcommands
 
 #### Setup & Configuration

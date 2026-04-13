@@ -26,6 +26,7 @@ import c2c_restart_me
 import c2c_room
 import c2c_send
 import c2c_send_all
+import c2c_smoke_test
 import c2c_verify
 import c2c_watch
 import c2c_whoami
@@ -41,6 +42,15 @@ SAFE_AUTO_APPROVE_SUBCOMMANDS = {
     "health",
     "history",
 }
+
+USAGE = (
+    "usage: c2c "
+    "<broker-gc|configure-claude-code|configure-codex|configure-crush|"
+    "configure-kimi|configure-opencode|dead-letter|deliver-inbox|health|"
+    "history|init|inject|install|list|mcp|peek-inbox|poker-sweep|poll-inbox|"
+    "prune|refresh-peer|register|restart-me|room|send|send-all|setup|sweep|"
+    "verify|watch|whoami|wire-daemon> [...args]"
+)
 
 
 def auto_approve_enabled() -> bool:
@@ -64,13 +74,14 @@ def is_safe_auto_approve_command(command: str) -> bool:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
-        print(
-            "usage: c2c <broker-gc|configure-claude-code|configure-codex|configure-crush|configure-kimi|configure-opencode|dead-letter|deliver-inbox|health|history|init|inject|install|list|mcp|peek-inbox|poker-sweep|poll-inbox|prune|refresh-peer|register|restart-me|room|send|send-all|setup|sweep|verify|watch|whoami|wire-daemon> [...args]",
-            file=sys.stderr,
-        )
+        print(USAGE, file=sys.stderr)
         return 2
 
     subcommand, remainder = argv[0], argv[1:]
+
+    if subcommand in ("-h", "--help"):
+        print(USAGE)
+        return 0
 
     if subcommand == "broker-gc":
         return c2c_broker_gc.main(remainder)

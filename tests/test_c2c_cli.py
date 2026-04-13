@@ -458,6 +458,19 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(result, 0)
         mcp_main.assert_called_once_with(["--help"])
 
+    def test_c2c_top_level_help_prints_usage(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch("sys.stdout", new=stdout), mock.patch(
+            "sys.stderr", new=stderr
+        ):
+            result = c2c_cli.main(["--help"])
+
+        self.assertEqual(result, 0)
+        self.assertIn("usage: c2c <", stdout.getvalue())
+        self.assertIn("setup", stdout.getvalue())
+        self.assertEqual(stderr.getvalue(), "")
+
     def test_c2c_inject_subcommand_dispatches_to_cross_client_injector(self):
         with mock.patch("c2c_cli.c2c_inject.main", return_value=0) as inject_main:
             result = c2c_cli.main(["inject", "--pid", "123", "hello"])

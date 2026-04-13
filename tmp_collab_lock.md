@@ -9,6 +9,11 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| c2c_cli.py | codex | top-level help regression fix | 2026-04-13T19:25Z |
+| tests/test_c2c_cli.py | codex | top-level help regression coverage | 2026-04-13T19:25Z |
+| docs/commands.md | codex | document top-level help behavior if needed | 2026-04-13T19:25Z |
+| .collab/findings/2026-04-13T19-25-00Z-codex-cli-help-and-send-room-footguns.md | codex | document setup audit footguns | 2026-04-13T19:25Z |
+| tmp_collab_lock.md | codex | record/release CLI help lock | 2026-04-13T19:25Z |
 
 ## History (addendum)
 

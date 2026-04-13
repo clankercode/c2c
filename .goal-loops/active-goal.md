@@ -76,7 +76,7 @@ These are Max's target experiences, verbatim:
 - **OCaml broker** ✓: 106 tests; sweep, rooms, dead-letter, alias dedup,
   peer-renamed fan-out, session hijack guard, alias-occupied guard,
   alias-hijack register guard, dead-pid fallback in `current_client_pid()`.
-- **Python suite** ✓: 791 tests across all subsystems.
+- **Python suite** ✓: 792 tests across all subsystems.
 - **Broker.register fresh entries** ✓: fixed `Broker.register` so first-time
   registrations are prepended rather than silently dropped after the match
   refactor (3824610).
@@ -143,7 +143,7 @@ These are Max's target experiences, verbatim:
 - **Inbox drain progress indicator** ✓ — `c2c poll-inbox` text mode now prints
   `[c2c-poll-inbox] N message(s) for <session> (<source>)` before message bodies;
   JSON output gains a top-level `count` field. 3 new tests; current Python
-  suite total is 791 (a01ce40 plus follow-up slices, 2026-04-14).
+  suite total is 792 (a01ce40 plus follow-up slices, 2026-04-14).
 - **Room member liveness summaries** ✓ — `list_rooms` / `my_rooms` and
   `c2c room list --json` now include `alive_member_count`,
   `dead_member_count`, `unknown_member_count`, and `member_details` so stale
