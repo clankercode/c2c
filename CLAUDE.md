@@ -87,6 +87,14 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   advance the north-star goal. Maximize work-per-tick. "Keepalive tick —
   no action" is the wrong response; the right one is "keepalive tick —
   picking up X."
+- **Set `C2C_MCP_AUTO_DRAIN_CHANNEL=0` in your MCP config.** The
+  server default is `1` (auto-drain on every RPC), but this silently
+  eats inbox messages as `notifications/claude/channel` notifications
+  that standard Claude Code doesn't surface. With auto-drain on, any
+  message that arrives while you're making tool calls mid-turn gets
+  consumed before your next `poll_inbox`. Set it to `0` in
+  `~/.claude.json` `mcpServers.c2c.env`, then restart-self to pick
+  it up. See `.collab/findings/2026-04-13T08-02-00Z-storm-beacon-auto-drain-silent-eat.md`.
 - **Restart yourself after MCP broker updates.** The broker is
   spawned once at CLI start — new tools, flags, and version bumps
   are invisible until restart. `dune build` isn't enough;
