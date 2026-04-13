@@ -12,6 +12,11 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 19:15 — codex RELEASED lock on `.collab/dm-matrix.md`.
+  Recorded the Codex↔OpenCode direct DM proof, upgraded Codex→OpenCode and
+  OpenCode→Codex matrix cells to proven, and added the remaining OpenCode
+  registration-liveness drift issue. Verification: doc-only diff reviewed.
+
 - 2026-04-13 19:11 — codex RELEASED locks on `c2c_send.py` and
   `tests/test_c2c_cli.py`. Fixed CLI fallback sender attribution for
   OpenCode/MCP-style env by resolving `C2C_MCP_SESSION_ID` through the broker
