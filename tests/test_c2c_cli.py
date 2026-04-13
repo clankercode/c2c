@@ -5614,10 +5614,42 @@ class RunKimiInstTests(unittest.TestCase):
 
         self.assertEqual(result_code(result), 0, result.stderr)
         payload = json.loads(result.stdout)
-        self.assertEqual(payload["launch"][0], "kimi")
+        self.assertEqual(payload["launch"], ["kimi", "--yolo", "term"])
         self.assertEqual(payload["prompt_mode"], "interactive-tui")
         self.assertEqual(payload["env"]["RUN_KIMI_INST_C2C_SESSION_ID"], "kimi-test")
         self.assertEqual(payload["env"]["C2C_MCP_AUTO_REGISTER_ALIAS"], "kimi-test")
+
+    def test_run_kimi_inst_dry_run_supports_command_array(self):
+        config_dir = Path(self.temp_dir.name) / "run-kimi-inst.d"
+        config_dir.mkdir()
+        config = {
+            "command": ["uvx", "--python", "python3.14", "--from", "kimi-cli", "kimi"],
+            "cwd": self.temp_dir.name,
+            "c2c_session_id": "kimi-test",
+            "c2c_alias": "kimi-test",
+        }
+        (config_dir / "kimi-a.json").write_text(json.dumps(config), encoding="utf-8")
+        env = dict(self.env)
+        env["RUN_KIMI_INST_DRY_RUN"] = "1"
+        env["RUN_KIMI_INST_CONFIG_DIR"] = str(config_dir)
+
+        result = run_cli("run-kimi-inst", "kimi-a", env=env)
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            payload["launch"],
+            [
+                "uvx",
+                "--python",
+                "python3.14",
+                "--from",
+                "kimi-cli",
+                "kimi",
+                "--yolo",
+                "term",
+            ],
+        )
 
     def test_run_kimi_inst_dry_run_uses_interactive_prompt_when_prompt_configured(self):
         config_dir = Path(self.temp_dir.name) / "run-kimi-inst.d"
@@ -5639,8 +5671,8 @@ class RunKimiInstTests(unittest.TestCase):
         self.assertEqual(result_code(result), 0, result.stderr)
         payload = json.loads(result.stdout)
         self.assertEqual(
-            payload["launch"][:4],
-            ["kimi", "--yolo", "--prompt", "poll inbox"],
+            payload["launch"],
+            ["kimi", "--yolo", "--prompt", "poll inbox", "term"],
         )
         self.assertNotIn("--trust-all-tools", payload["launch"])
         self.assertNotIn("--print", payload["launch"])
