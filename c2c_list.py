@@ -123,12 +123,23 @@ def main(argv: list[str] | None = None) -> int:
     if not rows:
         if args.all:
             print("No live Claude sessions found.")
-            return 0
-        print("No opted-in sessions. Use c2c-register to add one.")
-        return 0
+        else:
+            print("No opted-in sessions. Use c2c-register to add one.")
+    else:
+        for row in rows:
+            print(f"{row['alias']}\t{row['name']}\t{row['session_id']}")
 
-    for row in rows:
-        print(f"{row['alias']}\t{row['name']}\t{row['session_id']}")
+    if not args.all and not args.json:
+        try:
+            broker_count = len(list_broker_peers())
+        except Exception:
+            broker_count = 0
+        if broker_count > len(rows):
+            extra = broker_count - len(rows)
+            print(
+                f"\n({extra} more peer{'s' if extra != 1 else ''} in broker"
+                " registry — use --broker to see all)"
+            )
     return 0
 
 
