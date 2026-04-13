@@ -37,10 +37,11 @@ class C2CMcpAutoRegisterTests(unittest.TestCase):
     def test_maybe_auto_register_startup_registers_current_session_and_client_pid(self):
         with tempfile.TemporaryDirectory() as tmp:
             broker_root = Path(tmp) / "mcp-broker"
+            live_pid = os.getpid()
             env = {
                 "C2C_MCP_BROKER_ROOT": str(broker_root),
                 "C2C_MCP_SESSION_ID": AGENT_ONE_SESSION_ID,
-                "C2C_MCP_CLIENT_PID": "424242",
+                "C2C_MCP_CLIENT_PID": str(live_pid),
                 "C2C_MCP_AUTO_REGISTER_ALIAS": "opencode-local",
             }
 
@@ -59,7 +60,7 @@ class C2CMcpAutoRegisterTests(unittest.TestCase):
                     {
                         "session_id": AGENT_ONE_SESSION_ID,
                         "alias": "opencode-local",
-                        "pid": 424242,
+                        "pid": live_pid,
                         "pid_start_time": 777,
                     }
                 ],
