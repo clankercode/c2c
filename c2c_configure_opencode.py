@@ -29,7 +29,7 @@ def derive_session_id(target_dir: Path) -> str:
     return f"opencode-{target_dir.name}"
 
 
-def build_config(session_id: str) -> dict:
+def build_config(session_id: str, alias: str) -> dict:
     return {
         "$schema": "https://opencode.ai/config.json",
         "mcp": {
@@ -39,7 +39,7 @@ def build_config(session_id: str) -> dict:
                 "environment": {
                     "C2C_MCP_BROKER_ROOT": str(BROKER_ROOT),
                     "C2C_MCP_SESSION_ID": session_id,
-                    "C2C_MCP_AUTO_REGISTER_ALIAS": session_id,
+                    "C2C_MCP_AUTO_REGISTER_ALIAS": alias,
                     "C2C_MCP_AUTO_DRAIN_CHANNEL": "0",
                 },
                 "enabled": True,
@@ -48,7 +48,9 @@ def build_config(session_id: str) -> dict:
     }
 
 
-def write_config(target_dir: Path, *, force: bool) -> tuple[Path, str]:
+def write_config(
+    target_dir: Path, *, force: bool, alias: str | None = None
+) -> tuple[Path, str, str]:
     target_dir = target_dir.resolve()
     if not target_dir.exists():
         raise SystemExit(f"target dir does not exist: {target_dir}")
@@ -61,11 +63,12 @@ def write_config(target_dir: Path, *, force: bool) -> tuple[Path, str]:
         )
     config_dir.mkdir(parents=True, exist_ok=True)
     session_id = derive_session_id(target_dir)
+    resolved_alias = alias if alias else session_id
     config_path.write_text(
-        json.dumps(build_config(session_id), indent=2) + "\n",
+        json.dumps(build_config(session_id, resolved_alias), indent=2) + "\n",
         encoding="utf-8",
     )
-    return config_path, session_id
+    return config_path, session_id, resolved_alias
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -79,6 +82,14 @@ def main(argv: list[str] | None = None) -> int:
         help="directory to write .opencode/opencode.json into (default: cwd)",
     )
     parser.add_argument(
+        "--alias",
+        default=None,
+        help=(
+            "stable broker alias (default: same as session id, i.e. opencode-<dir-name>). "
+            "Use this when you want a custom name peers use to address this instance."
+        ),
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="overwrite an existing .opencode/opencode.json",
@@ -86,11 +97,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="emit JSON result")
     args = parser.parse_args(argv)
 
-    config_path, session_id = write_config(args.target_dir, force=args.force)
+    config_path, session_id, resolved_alias = write_config(
+        args.target_dir, force=args.force, alias=args.alias
+    )
     payload = {
         "config_path": str(config_path),
         "target_dir": str(args.target_dir.resolve()),
         "session_id": session_id,
+        "alias": resolved_alias,
         "broker_root": str(BROKER_ROOT),
     }
     if args.json:
@@ -98,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"wrote {config_path}")
         print(f"  session id: {session_id}")
+        print(f"  alias:      {resolved_alias}")
         print(f"  broker root: {BROKER_ROOT}")
         print(
             "Now run 'cd "

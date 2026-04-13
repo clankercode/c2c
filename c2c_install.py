@@ -20,6 +20,7 @@ COMMANDS = [
     "c2c-poker-sweep",
     "c2c-prune",
     "c2c-register",
+    "c2c-restart-me",
     "c2c-room",
     "c2c-send",
     "c2c-send-all",
