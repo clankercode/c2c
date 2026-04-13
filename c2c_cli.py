@@ -135,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
             return c2c_relay_gc.main(remainder[1:])
         print(
             "usage: c2c relay <subcommand> ...\n"
-            "  serve    --listen HOST:PORT [--token TOKEN] [--token-file PATH] [--verbose]\n"
+            "  serve    --listen HOST:PORT [--token TOKEN] [--token-file PATH] [--storage memory|sqlite] [--db-path PATH] [--verbose]\n"
             "  connect  --relay-url URL [--token TOKEN] [--node-id ID] [--broker-root DIR] [--interval N] [--once]\n"
             "  setup    --url URL [--token TOKEN] [--node-id ID] [--show]\n"
             "  status   [--relay-url URL] [--token TOKEN] [--json]\n"

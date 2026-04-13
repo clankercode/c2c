@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from c2c_relay_contract import (  # noqa: E402
     RelayError,
 )
 from c2c_relay_sqlite import SQLiteRelay  # noqa: E402
+import c2c_relay_server  # noqa: E402
 
 
 class SQLiteRelayContractTests(unittest.TestCase):
@@ -244,6 +246,76 @@ class SQLiteRelayContractTests(unittest.TestCase):
         self.assertEqual(len(peers), 1)
         msgs = relay2.poll_inbox("node-a", "sess-1")
         self.assertEqual(msgs[0]["content"], "self-msg")
+
+
+class SQLiteRelayServerUnitTests(unittest.TestCase):
+    def test_make_server_can_use_sqlite_relay(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "relay.db"
+            relay = SQLiteRelay(db_path)
+            server = c2c_relay_server.make_server("127.0.0.1", 0, relay=relay)
+            try:
+                self.assertIs(server.relay, relay)
+                server.relay.register("node-a", "sess-1", alias="codex")
+                server.relay.send("codex", "codex", "persisted")
+            finally:
+                server.server_close()
+
+            relay2 = SQLiteRelay(db_path)
+            self.assertEqual(
+                relay2.poll_inbox("node-a", "sess-1")[0]["content"],
+                "persisted",
+            )
+
+    def test_sqlite_storage_requires_db_path(self):
+        rc = c2c_relay_server.main(["--storage", "sqlite", "--listen", "127.0.0.1:0"])
+        self.assertEqual(rc, 1)
+
+class SQLiteRelayServerHTTPTests(unittest.TestCase):
+    """Verify SQLiteRelay works inside c2c_relay_server.make_server."""
+
+    def test_server_with_sqlite_relay_serves_http(self):
+        import urllib.request
+        import json
+        from c2c_relay_server import make_server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "relay.db"
+            relay = SQLiteRelay(db_path)
+            server = make_server("127.0.0.1", 0, token="test", relay=relay)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                host, port = server.server_address
+                url = f"http://{host}:{port}/health"
+                with urllib.request.urlopen(url, timeout=5) as resp:
+                    self.assertEqual(resp.status, 200)
+                    data = json.loads(resp.read())
+                    self.assertTrue(data["ok"])
+
+                # Register via HTTP
+                req = urllib.request.Request(
+                    f"http://{host}:{port}/register",
+                    data=json.dumps({
+                        "node_id": "n1",
+                        "session_id": "s1",
+                        "alias": "codex",
+                    }).encode(),
+                    headers={
+                        "Authorization": "Bearer test",
+                        "Content-Type": "application/json",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    self.assertEqual(resp.status, 200)
+
+                # Verify persistence across a new relay instance using same DB
+                relay2 = SQLiteRelay(db_path)
+                peers = relay2.list_peers()
+                self.assertEqual(len(peers), 1)
+                self.assertEqual(peers[0]["alias"], "codex")
+            finally:
+                server.shutdown()
 
 
 if __name__ == "__main__":

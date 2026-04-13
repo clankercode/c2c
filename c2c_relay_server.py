@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """c2c relay server — Phase 2 of the cross-machine broker.
 
-Runs a small HTTP relay that wraps InMemoryRelay with Bearer-token auth.
+Runs a small HTTP relay that wraps a relay backend with Bearer-token auth.
 Agents on different machines connect via ``c2c relay connect`` (Phase 3).
 
 Usage:
@@ -37,6 +37,11 @@ from typing import Any, Optional
 
 from c2c_relay_contract import InMemoryRelay, RelayError
 
+try:
+    from c2c_relay_sqlite import SQLiteRelay
+except Exception:  # pragma: no cover
+    SQLiteRelay = None  # type: ignore[misc,assignment]
+
 
 # ---------------------------------------------------------------------------
 # Threaded HTTP server
@@ -63,7 +68,7 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 class RelayHandler(BaseHTTPRequestHandler):
     """Minimal HTTP handler for the c2c relay.
 
-    ``server.relay``:  InMemoryRelay instance
+    ``server.relay``:  relay backend instance (InMemoryRelay or SQLiteRelay)
     ``server.token``:  str — Bearer token; None means auth disabled
     """
 
@@ -273,7 +278,7 @@ class RelayHandler(BaseHTTPRequestHandler):
 # Server lifecycle helpers
 # ---------------------------------------------------------------------------
 
-def _start_gc_thread(relay: InMemoryRelay, gc_interval: float) -> threading.Thread:
+def _start_gc_thread(relay, gc_interval: float) -> threading.Thread:
     """Start a daemon GC thread that calls relay.gc() every gc_interval seconds."""
     def _loop() -> None:
         while True:
@@ -292,7 +297,7 @@ def make_server(
     host: str,
     port: int,
     token: Optional[str] = None,
-    relay: Optional[InMemoryRelay] = None,
+    relay = None,
     *,
     verbose: bool = False,
     gc_interval: float = 0.0,
@@ -302,7 +307,7 @@ def make_server(
     gc_interval: seconds between automatic GC runs. 0 disables the GC thread.
     """
     server = ThreadingHTTPServer((host, port), RelayHandler)
-    server.relay = relay or InMemoryRelay()  # type: ignore[attr-defined]
+    server.relay = relay if relay is not None else InMemoryRelay()  # type: ignore[attr-defined]
     server.token = token  # type: ignore[attr-defined]
     server.verbose = verbose  # type: ignore[attr-defined]
     if gc_interval > 0:
@@ -314,7 +319,7 @@ def start_server_thread(
     host: str = "127.0.0.1",
     port: int = 0,
     token: Optional[str] = None,
-    relay: Optional[InMemoryRelay] = None,
+    relay = None,
     *,
     verbose: bool = False,
     gc_interval: float = 0.0,
@@ -357,6 +362,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--gc-interval", type=float, default=300.0,
         help="Seconds between automatic GC runs (default: 300; 0 disables GC)",
     )
+    parser.add_argument(
+        "--storage",
+        choices=["memory", "sqlite"],
+        default="memory",
+        help="Relay storage backend (default: memory)",
+    )
+    parser.add_argument(
+        "--db-path",
+        default="",
+        help="SQLite database path (required when --storage=sqlite)",
+    )
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     token = load_token(args.token or None, args.token_file or None)
@@ -370,10 +386,23 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"relay: invalid --listen value: {args.listen!r}", file=sys.stderr)
         return 1
 
-    server = make_server(host, port, token=token, verbose=args.verbose,
+    relay = None
+    if args.storage == "sqlite":
+        if not args.db_path:
+            print("relay: --db-path is required when --storage=sqlite", file=sys.stderr)
+            return 1
+        if SQLiteRelay is None:
+            print("relay: SQLite support is unavailable", file=sys.stderr)
+            return 1
+        relay = SQLiteRelay(args.db_path)
+
+    server = make_server(host, port, token=token, relay=relay, verbose=args.verbose,
                          gc_interval=args.gc_interval)
     actual_host, actual_port = server.server_address
     print(f"c2c relay serving on http://{actual_host}:{actual_port}", flush=True)
+    print(f"storage: {args.storage}", flush=True)
+    if args.storage == "sqlite":
+        print(f"db: {args.db_path}", flush=True)
     if token:
         print("auth: Bearer token required", flush=True)
     else:

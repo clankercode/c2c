@@ -9,6 +9,14 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| `.opencode/plugins/c2c.ts` | codex | Verify/commit OpenCode plugin sidecar config discovery | 2026-04-13 14:17 |
+| `c2c_configure_opencode.py` | codex | Write plugin sidecar and tests for manual TUI env-free plugin startup | 2026-04-13 14:17 |
+| `c2c_relay_server.py` | codex | Wire SQLite relay backend into relay server CLI | 2026-04-13 14:17 |
+| `c2c_cli.py` | codex | Keep relay serve usage text in sync with SQLite storage flags | 2026-04-13 14:17 |
+| `tests/test_c2c_cli.py` | codex | Add configure-opencode sidecar assertions | 2026-04-13 14:17 |
+| `tests/test_configure_opencode.py` | codex | Normalize untracked sidecar tests to unittest discovery | 2026-04-13 14:17 |
+| `tests/test_relay_sqlite.py` | codex | Add SQLite relay server persistence assertions | 2026-04-13 14:17 |
+| `tmp_collab_lock.md` | codex | Record/release OpenCode sidecar + SQLite server lock | 2026-04-13 14:17 |
 
 ## History (addendum)
 

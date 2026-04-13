@@ -24,15 +24,34 @@
 
 import type { Plugin } from "@opencode-ai/plugin";
 import type { Event, EventSessionIdle, EventSessionCreated } from "@opencode-ai/sdk";
+import * as fs from "fs";
+import * as path from "path";
+
+// ---------------------------------------------------------------------------
+// Sidecar config loader
+// ---------------------------------------------------------------------------
+
+/** Read .opencode/c2c-plugin.json relative to the CWD, returning {} on miss. */
+function loadSidecarConfig(): Record<string, string> {
+  try {
+    const sidecar = path.join(process.cwd(), ".opencode", "c2c-plugin.json");
+    const raw = fs.readFileSync(sidecar, "utf-8");
+    return JSON.parse(raw) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Plugin definition
 // ---------------------------------------------------------------------------
 
 const C2CDelivery: Plugin = async (ctx) => {
-  // --- Config ---
-  const sessionId: string = process.env.C2C_MCP_SESSION_ID || process.env.C2C_SESSION_ID || "";
-  const brokerRoot: string = process.env.C2C_MCP_BROKER_ROOT || "";
+  // --- Config (env vars > sidecar .opencode/c2c-plugin.json) ---
+  const sidecar = loadSidecarConfig();
+  const sessionId: string =
+    process.env.C2C_MCP_SESSION_ID || process.env.C2C_SESSION_ID || sidecar.session_id || "";
+  const brokerRoot: string = process.env.C2C_MCP_BROKER_ROOT || sidecar.broker_root || "";
   const pollIntervalMs: number = parseInt(process.env.C2C_PLUGIN_POLL_INTERVAL_MS || "2000", 10);
   const idleOnlyMode: boolean = (process.env.C2C_PLUGIN_DELIVER_ON_IDLE || "0") === "1";
 

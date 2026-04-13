@@ -87,6 +87,23 @@ def install_plugin(config_dir: Path, *, force: bool) -> tuple[bool, str]:
     return True, str(dest)
 
 
+def write_plugin_sidecar(config_dir: Path, session_id: str, alias: str) -> Path:
+    """Write .opencode/c2c-plugin.json so the plugin can discover config without env vars."""
+    sidecar = config_dir / "c2c-plugin.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "session_id": session_id,
+                "alias": alias,
+                "broker_root": str(BROKER_ROOT),
+            },
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    return sidecar
+
+
 def write_config(
     target_dir: Path, *, force: bool, alias: str | None = None,
     install_plugin_flag: bool = True,
@@ -108,6 +125,7 @@ def write_config(
         json.dumps(build_config(session_id, resolved_alias), indent=2) + "\n",
         encoding="utf-8",
     )
+    write_plugin_sidecar(config_dir, session_id, resolved_alias)
     plugin_result: dict = {}
     if install_plugin_flag:
         ok, note = install_plugin(config_dir, force=force)

@@ -4248,6 +4248,17 @@ class C2CConfigureOpencodeTests(unittest.TestCase):
             self.assertTrue(c2c["enabled"])
             self.assertEqual(payload["session_id"], f"opencode-{target.name}")
             self.assertEqual(payload["alias"], f"opencode-{target.name}")
+            sidecar_path = target / ".opencode" / "c2c-plugin.json"
+            self.assertTrue(sidecar_path.exists())
+            sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            self.assertEqual(sidecar["session_id"], f"opencode-{target.name}")
+            self.assertEqual(sidecar["alias"], f"opencode-{target.name}")
+            self.assertEqual(sidecar["broker_root"], str(REPO / ".git" / "c2c" / "mcp"))
+            self.assertTrue((target / ".opencode" / "plugins" / "c2c.ts").exists())
+            package_json = json.loads(
+                (target / ".opencode" / "package.json").read_text(encoding="utf-8")
+            )
+            self.assertIn("@opencode-ai/plugin", package_json["dependencies"])
 
     def test_writes_opencode_config_with_custom_alias(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4277,6 +4288,11 @@ class C2CConfigureOpencodeTests(unittest.TestCase):
             env = config["mcp"]["c2c"]["environment"]
             self.assertEqual(env["C2C_MCP_SESSION_ID"], f"opencode-{target.name}")
             self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "opencode-primary")
+            sidecar = json.loads(
+                (target / ".opencode" / "c2c-plugin.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(sidecar["session_id"], f"opencode-{target.name}")
+            self.assertEqual(sidecar["alias"], "opencode-primary")
 
     def test_refuses_to_overwrite_existing_config_without_force(self):
         with tempfile.TemporaryDirectory() as tmp:
