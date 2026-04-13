@@ -3194,6 +3194,17 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         )
         self.assertEqual(payload["env"]["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
 
+    def test_run_opencode_inst_outer_dry_run_reports_inner_launch_command(self):
+        env = {"RUN_OPENCODE_INST_OUTER_DRY_RUN": "1"}
+        result = run_cli("run-opencode-inst-outer", "c2c-opencode-local", env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(Path(payload["inner"][0]).name.startswith("python"))
+        self.assertEqual(
+            payload["inner"][1:],
+            [str(REPO / "run-opencode-inst"), "c2c-opencode-local"],
+        )
+
 
 class C2CVerifyUnitTests(unittest.TestCase):
     def test_resolve_transcript_path_prefers_sessions_fixture_directory(self):
