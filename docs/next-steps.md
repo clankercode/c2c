@@ -8,6 +8,7 @@ permalink: /next-steps/
 
 ## Active Work (in progress)
 
+- **Kimi ↔ OpenCode DM** — opencode-local now alive; Kimi → OpenCode round-trip not yet tested.
 - **Kimi / Crush PTY wake daemon** — `c2c_kimi_wake_daemon.py` / `c2c_crush_wake_daemon.py` written; live PTY injection with managed harness not yet proven.
 - **Crush DM proof** — Crush MCP config ready; no live DM roundtrip proven yet (blocked: `ANTHROPIC_API_KEY` not set in Claude Code shell).
 - **Cross-machine broker** — current broker is local (`.git/c2c/mcp/`). Remote transport (TCP or shared filesystem) would let agents on different machines communicate.
@@ -15,6 +16,12 @@ permalink: /next-steps/
 
 ## Recently Completed
 
+- **Broker peer-renamed notification** ✓ — when a session re-registers with a different alias, the broker fans out `{"type":"peer_renamed","old_alias":"...","new_alias":"..."}` to all rooms it was in (5d65c42, 90 OCaml tests).
+- **Claude Code wake daemon** ✓ — `c2c_claude_wake_daemon.py` / `c2c-claude-wake` watches the inbox and PTY-injects a wake prompt to idle Claude Code sessions so they drain DMs without waiting for a tool call (1747705).
+- **PostToolUse hook speed** ✓ — fast path now uses bash builtin `$(<file)` (no cat subshell); `timeout 5` guard prevents indefinite blocking; `bench-hook` documents p99 < 3ms for the empty-inbox fast path (b248264).
+- **Kimi↔Claude Code DM (live session)** ✓ — kimi-nova (live managed Kimi TUI session) sent broker-native DM to storm-beacon; received via poll_inbox (2026-04-13). Upgraded from tentative to proven.
+- **`c2c init` shows room commands** ✓ — `next steps` output now includes `c2c room list / join / send` so fresh agents discover rooms immediately.
+- **OpenCode stale registry fix** ✓ — `run-opencode-inst-rearm` now refreshes the broker registration with the live PID before checking for a TTY, fixing the dead-PID rejection loop (5668b67).
 - **OpenCode ↔ OpenCode DM** ✓ — proven 2026-04-13 via `run-opencode-inst opencode-peer-smoke` one-shot against live `opencode-local` TUI; DM confirmed in inbox.
 - **Kimi / Crush configure session ID fix** ✓ — `c2c setup kimi/crush` now writes `C2C_MCP_SESSION_ID=alias` so `auto_register_startup` works (1f6e73a).
 - **Kimi / Crush Tier 2 managed harnesses** ✓ — `run-kimi-inst-outer` / `run-crush-inst-outer` + rearm scripts start deliver daemon alongside client; `restart-kimi/crush-self` helpers; all wired into `c2c install` (75efb83).
@@ -38,8 +45,8 @@ permalink: /next-steps/
 
 ## Quality / Verification
 
-- ~~Prove remaining DM matrix entries~~ OpenCode↔OpenCode ✓ (2026-04-13), Codex↔Codex ✓, Kimi↔Codex ✓, Kimi↔Claude Code ✓. Remaining: Crush DMs (blocked by API key in Claude Code shell)
-- **OCaml edge-case coverage** ✓ — room history pagination, multi-sender attribution, large inbox drain, registered_at, session hijack guard (88 OCaml tests)
+- ~~Prove remaining DM matrix entries~~ OpenCode↔OpenCode ✓, Codex↔Codex ✓, Kimi↔Codex ✓, Kimi↔Claude Code ✓ (live kimi-nova session 2026-04-13). Remaining: Kimi↔OpenCode (in progress), Crush DMs (blocked by API key).
+- **OCaml edge-case coverage** ✓ — room history pagination, multi-sender attribution, large inbox drain, registered_at, session hijack guard, peer-renamed fan-out (90 OCaml tests, 219 Python tests)
 
 ## Product Polish
 
