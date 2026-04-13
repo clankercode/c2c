@@ -430,12 +430,12 @@ def main(argv: list[str] | None = None) -> int:
 
     session_id = c2c_poll_inbox.resolve_session_id(args.session_id)
     broker_root = args.broker_root or c2c_poll_inbox.default_broker_root()
-    terminal_pid, pts, _transcript = c2c_inject.resolve_target(args)
     watched_pid = watched_pid_from_args(args)
     if args.pidfile:
         write_pidfile(args.pidfile)
 
     try:
+        terminal_pid, pts, _transcript = c2c_inject.resolve_target(args)
         if args.loop:
             result = run_loop(
                 session_id=session_id,
