@@ -22,6 +22,7 @@ INITIAL_BACKOFF_SECONDS = 2.0
 MAX_BACKOFF_SECONDS = 60.0
 DOUBLE_SIGINT_WINDOW_SECONDS = 2.0
 HELP_FLAGS = {"-h", "--help"}
+START_NEW_SESSION = False
 
 HERE = Path(__file__).resolve().parent
 INNER = HERE / "run-kimi-inst"
@@ -95,7 +96,16 @@ def main(argv: list[str]) -> int:
 
     command = inner_command(name, extra)
     if dry_run_enabled():
-        print(json.dumps({"inner": command, "rearm": rearm_command(name)}, indent=2))
+        print(
+            json.dumps(
+                {
+                    "inner": command,
+                    "rearm": rearm_command(name),
+                    "start_new_session": START_NEW_SESSION,
+                },
+                indent=2,
+            )
+        )
         return 0
 
     backoff = INITIAL_BACKOFF_SECONDS
@@ -108,7 +118,7 @@ def main(argv: list[str]) -> int:
         started = time.monotonic()
         proc = None
         try:
-            proc = subprocess.Popen(command, cwd=HERE, start_new_session=True)
+            proc = subprocess.Popen(command, cwd=HERE, start_new_session=START_NEW_SESSION)
             maybe_rearm(name)
             proc.wait()
             exit_code = proc.returncode
