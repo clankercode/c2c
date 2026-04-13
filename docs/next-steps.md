@@ -9,11 +9,16 @@ permalink: /next-steps/
 ## Active Work (in progress)
 
 - **Crush PTY wake daemon & DM proof** — `c2c_crush_wake_daemon.py` written, Crush MCP config ready, but no live session available to test (blocked: `ANTHROPIC_API_KEY` not set in Claude Code shell).
-- **Remote relay hardening** — relay GC daemon ✓, `c2c relay rooms` CLI ✓. Remaining: persistent storage backend (SQLite swap for InMemoryRelay — relay loses all state on server restart).
+- **Remote relay hardening** — relay GC daemon ✓, `c2c relay rooms` CLI ✓, in-server GC thread ✓, relay config env vars ✓. Remaining: persistent storage backend (SQLite swap for InMemoryRelay — relay loses all state on server restart).
+- **OpenCode native plugin delivery** — `.opencode/plugins/c2c.ts` written (39a4c85, 2026-04-13). Uses `client.session.promptAsync` to inject inbound broker messages as proper user turns; delivers on `session.idle` + background poll. No live end-to-end test yet (needs a manual OpenCode TUI session with plugin loaded).
 - **Site visual redesign** — dark theme live ✓, h1 double-heading bug fixed (c478ddb), screenshots taken. Waiting for Max sign-off on north-star criterion.
 
 ## Recently Completed
 
+- **`c2c relay rooms` CLI** ✓ — `c2c relay rooms list/join/leave/send/history` wraps relay HTTP API for remote room ops (83494fb, 2026-04-13). 14 tests.
+- **`c2c relay gc` daemon** ✓ — `c2c relay gc [--once] [--interval N]` calls `GET /gc` on the relay to prune expired leases and orphan inboxes (83494fb, 2026-04-13). 7 tests.
+- **Relay in-server GC thread** ✓ — `c2c relay serve` now runs a background GC every `--gc-interval` seconds (default: off; set `--gc-interval 300` to enable). `c2c relay gc` remains available as an operator tool (83275ec, 2026-04-13).
+- **Relay config env vars** ✓ — `resolve_relay_params` now checks `C2C_RELAY_URL`, `C2C_RELAY_TOKEN`, `C2C_RELAY_NODE_ID` between explicit args and saved config (83275ec, 2026-04-13).
 - **Kimi manual TUI wake delivery** ✓ — opencode-local sent a DM to
   `kimi-nova`; the terminal wake daemon PTY-injected a poll prompt into Kimi's
   Ghostty PTY, Kimi drained via `mcp__c2c__poll_inbox`, replied with
