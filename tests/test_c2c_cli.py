@@ -106,6 +106,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "run-kimi-inst-outer",
         "run-kimi-inst-rearm",
         "c2c_broker_gc.py",
+        "c2c_dead_letter.py",
         "c2c_register.py",
         "c2c_restart_me.py",
         "c2c_room.py",
@@ -841,7 +842,9 @@ class C2CCLITests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(run_mock.call_count, 2)
-        self.assertEqual(run_mock.call_args_list[1].args[0], [str(built_server), "--help"])
+        self.assertEqual(
+            run_mock.call_args_list[1].args[0], [str(built_server), "--help"]
+        )
         self.assertIn("build failed but existing binary found", stderr.getvalue())
         self.assertIn(str(built_server), stderr.getvalue())
 
@@ -2366,6 +2369,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "run-kimi-inst-outer",
                 "run-kimi-inst-rearm",
                 "c2c_broker_gc.py",
+                "c2c_dead_letter.py",
                 "c2c_health.py",
                 "c2c_register.py",
                 "c2c_restart_me.py",
@@ -3962,7 +3966,9 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         self.assertEqual(payload["reason"], "target_has_no_tty")
         self.assertIn("no /dev/pts", payload["error"])
 
-    def test_run_opencode_inst_rearm_refreshes_broker_registration_before_tty_skip(self):
+    def test_run_opencode_inst_rearm_refreshes_broker_registration_before_tty_skip(
+        self,
+    ):
         sleeper = subprocess.Popen(
             ["sleep", "60"],
             stdin=subprocess.DEVNULL,
@@ -5743,9 +5749,11 @@ class RunKimiInstTests(unittest.TestCase):
             stderr.write("rearm stderr\n")
             return subprocess.CompletedProcess(command, 9)
 
-        with mock.patch.dict(os.environ, {"RUN_KIMI_INST_REARM": "1"}), mock.patch(
-            "subprocess.run", side_effect=fake_run
-        ), mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+        with (
+            mock.patch.dict(os.environ, {"RUN_KIMI_INST_REARM": "1"}),
+            mock.patch("subprocess.run", side_effect=fake_run),
+            mock.patch("sys.stderr", new_callable=io.StringIO) as stderr,
+        ):
             namespace["maybe_rearm"]("kimi-a")
 
         log_path = root / "run-kimi-inst.d" / "kimi-a.outer.log"
@@ -6145,8 +6153,16 @@ class PurgeOldDeadLetterTests(unittest.TestCase):
         old_ts = now - 200
         new_ts = now - 10
         records = [
-            {"deleted_at": old_ts, "from_session_id": "s1", "message": {"content": "old"}},
-            {"deleted_at": new_ts, "from_session_id": "s2", "message": {"content": "new"}},
+            {
+                "deleted_at": old_ts,
+                "from_session_id": "s1",
+                "message": {"content": "old"},
+            },
+            {
+                "deleted_at": new_ts,
+                "from_session_id": "s2",
+                "message": {"content": "new"},
+            },
         ]
         dl_path = self._write_dead_letter(records)
 
@@ -6156,7 +6172,9 @@ class PurgeOldDeadLetterTests(unittest.TestCase):
         self.assertEqual(result["after_count"], 1)
         self.assertEqual(result["purged_count"], 1)
 
-        remaining = [json.loads(l) for l in dl_path.read_text().splitlines() if l.strip()]
+        remaining = [
+            json.loads(l) for l in dl_path.read_text().splitlines() if l.strip()
+        ]
         self.assertEqual(len(remaining), 1)
         self.assertEqual(remaining[0]["from_session_id"], "s2")
 
@@ -6200,7 +6218,10 @@ class PurgeOldDeadLetterTests(unittest.TestCase):
         import c2c_broker_gc
 
         dl_path = self.broker_root / "dead-letter.jsonl"
-        dl_path.write_text('not-valid-json\n{"deleted_at": 1, "from_session_id": "s"}\n', encoding="utf-8")
+        dl_path.write_text(
+            'not-valid-json\n{"deleted_at": 1, "from_session_id": "s"}\n',
+            encoding="utf-8",
+        )
 
         result = c2c_broker_gc.purge_old_dead_letter(self.broker_root, ttl_seconds=60)
         self.assertTrue(result["ok"])
@@ -6244,14 +6265,25 @@ class PurgeOrphanDeadLetterTests(unittest.TestCase):
         import c2c_broker_gc
 
         now = time.time()
-        self._write_registry([{"alias": "live-alice", "session_id": "s1", "pid": 99999999}])
+        self._write_registry(
+            [{"alias": "live-alice", "session_id": "s1", "pid": 99999999}]
+        )
         records = [
-            {"deleted_at": now - 7200, "from_session_id": "s2",
-             "message": {"from_alias": "live-alice", "to_alias": "gone-bob", "content": "hi"}},
+            {
+                "deleted_at": now - 7200,
+                "from_session_id": "s2",
+                "message": {
+                    "from_alias": "live-alice",
+                    "to_alias": "gone-bob",
+                    "content": "hi",
+                },
+            },
         ]
         dl_path = self._write_dead_letter(records)
 
-        result = c2c_broker_gc.purge_orphan_dead_letter(self.broker_root, ttl_seconds=3600)
+        result = c2c_broker_gc.purge_orphan_dead_letter(
+            self.broker_root, ttl_seconds=3600
+        )
         self.assertTrue(result["ok"])
         self.assertEqual(result["purged_count"], 1)
         self.assertEqual(result["after_count"], 0)
@@ -6263,14 +6295,25 @@ class PurgeOrphanDeadLetterTests(unittest.TestCase):
         import c2c_broker_gc
 
         now = time.time()
-        self._write_registry([{"alias": "live-alice", "session_id": "s1", "pid": 99999999}])
+        self._write_registry(
+            [{"alias": "live-alice", "session_id": "s1", "pid": 99999999}]
+        )
         records = [
-            {"deleted_at": now - 7200, "from_session_id": "s2",
-             "message": {"from_alias": "sender", "to_alias": "live-alice", "content": "hi"}},
+            {
+                "deleted_at": now - 7200,
+                "from_session_id": "s2",
+                "message": {
+                    "from_alias": "sender",
+                    "to_alias": "live-alice",
+                    "content": "hi",
+                },
+            },
         ]
         dl_path = self._write_dead_letter(records)
 
-        result = c2c_broker_gc.purge_orphan_dead_letter(self.broker_root, ttl_seconds=3600)
+        result = c2c_broker_gc.purge_orphan_dead_letter(
+            self.broker_root, ttl_seconds=3600
+        )
         self.assertTrue(result["ok"])
         self.assertEqual(result["purged_count"], 0)
         self.assertEqual(result["after_count"], 1)
@@ -6280,22 +6323,42 @@ class PurgeOrphanDeadLetterTests(unittest.TestCase):
         import c2c_broker_gc
 
         now = time.time()
-        self._write_registry([{"alias": "live-alice", "session_id": "s1", "pid": 99999999}])
+        self._write_registry(
+            [{"alias": "live-alice", "session_id": "s1", "pid": 99999999}]
+        )
         records = [
             # alice@swarm-lounge → base alias live-alice IS registered → keep
-            {"deleted_at": now - 7200, "from_session_id": "s2",
-             "message": {"from_alias": "sender", "to_alias": "live-alice@swarm-lounge", "content": "room msg"}},
+            {
+                "deleted_at": now - 7200,
+                "from_session_id": "s2",
+                "message": {
+                    "from_alias": "sender",
+                    "to_alias": "live-alice@swarm-lounge",
+                    "content": "room msg",
+                },
+            },
             # gone-bob@swarm-lounge → base alias gone-bob NOT registered → purge
-            {"deleted_at": now - 7200, "from_session_id": "s3",
-             "message": {"from_alias": "sender", "to_alias": "gone-bob@swarm-lounge", "content": "room msg"}},
+            {
+                "deleted_at": now - 7200,
+                "from_session_id": "s3",
+                "message": {
+                    "from_alias": "sender",
+                    "to_alias": "gone-bob@swarm-lounge",
+                    "content": "room msg",
+                },
+            },
         ]
         dl_path = self._write_dead_letter(records)
 
-        result = c2c_broker_gc.purge_orphan_dead_letter(self.broker_root, ttl_seconds=3600)
+        result = c2c_broker_gc.purge_orphan_dead_letter(
+            self.broker_root, ttl_seconds=3600
+        )
         self.assertTrue(result["ok"])
         self.assertEqual(result["purged_count"], 1)
         self.assertEqual(result["after_count"], 1)
-        remaining = [json.loads(l) for l in dl_path.read_text().splitlines() if l.strip()]
+        remaining = [
+            json.loads(l) for l in dl_path.read_text().splitlines() if l.strip()
+        ]
         self.assertEqual(remaining[0]["message"]["to_alias"], "live-alice@swarm-lounge")
 
     def test_keeps_entry_within_ttl(self):
@@ -6305,12 +6368,21 @@ class PurgeOrphanDeadLetterTests(unittest.TestCase):
         now = time.time()
         self._write_registry([])
         records = [
-            {"deleted_at": now - 30, "from_session_id": "s1",
-             "message": {"from_alias": "x", "to_alias": "gone-bob", "content": "recent"}},
+            {
+                "deleted_at": now - 30,
+                "from_session_id": "s1",
+                "message": {
+                    "from_alias": "x",
+                    "to_alias": "gone-bob",
+                    "content": "recent",
+                },
+            },
         ]
         dl_path = self._write_dead_letter(records)
 
-        result = c2c_broker_gc.purge_orphan_dead_letter(self.broker_root, ttl_seconds=3600)
+        result = c2c_broker_gc.purge_orphan_dead_letter(
+            self.broker_root, ttl_seconds=3600
+        )
         self.assertTrue(result["ok"])
         self.assertEqual(result["purged_count"], 0)
         self.assertEqual(result["after_count"], 1)
@@ -6322,8 +6394,15 @@ class PurgeOrphanDeadLetterTests(unittest.TestCase):
         now = time.time()
         self._write_registry([])
         records = [
-            {"deleted_at": now - 7200, "from_session_id": "s1",
-             "message": {"from_alias": "x", "to_alias": "gone-alias", "content": "old"}},
+            {
+                "deleted_at": now - 7200,
+                "from_session_id": "s1",
+                "message": {
+                    "from_alias": "x",
+                    "to_alias": "gone-alias",
+                    "content": "old",
+                },
+            },
         ]
         dl_path = self._write_dead_letter(records)
         original = dl_path.read_text()
@@ -6334,6 +6413,77 @@ class PurgeOrphanDeadLetterTests(unittest.TestCase):
         self.assertTrue(result["dry_run"])
         self.assertEqual(result["purged_count"], 1)
         self.assertEqual(dl_path.read_text(), original)
+
+
+class SweepDeadRegistrationsTests(unittest.TestCase):
+    """Tests for c2c_broker_gc.sweep_dead_registrations()."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.broker_root = Path(self.tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_registry(self, registrations):
+        reg_path = self.broker_root / "registry.json"
+        reg_path.write_text(json.dumps(registrations), encoding="utf-8")
+
+    def _read_registry(self):
+        reg_path = self.broker_root / "registry.json"
+        return json.loads(reg_path.read_text(encoding="utf-8"))
+
+    def test_no_registry_returns_empty_ok(self):
+        import c2c_broker_gc
+
+        result = c2c_broker_gc.sweep_dead_registrations(self.broker_root)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["before_count"], 0)
+        self.assertEqual(result["removed_count"], 0)
+
+    def test_keeps_live_pid(self):
+        import c2c_broker_gc
+
+        self._write_registry(
+            [{"alias": "alive", "session_id": "s1", "pid": os.getpid()}]
+        )
+        result = c2c_broker_gc.sweep_dead_registrations(self.broker_root)
+        self.assertEqual(result["removed_count"], 0)
+        self.assertEqual(result["after_count"], 1)
+
+    def _dead_pid(self) -> int:
+        """Return a PID that is guaranteed to be dead."""
+        p = subprocess.Popen(["true"])
+        p.wait()
+        return p.pid
+
+    def test_sweeps_dead_pid(self):
+        import c2c_broker_gc
+
+        dead_pid = self._dead_pid()
+        self._write_registry([{"alias": "dead", "session_id": "s2", "pid": dead_pid}])
+        result = c2c_broker_gc.sweep_dead_registrations(self.broker_root)
+        self.assertEqual(result["removed_count"], 1)
+        self.assertEqual(result["after_count"], 0)
+
+    def test_keeps_pidless_registration(self):
+        import c2c_broker_gc
+
+        self._write_registry([{"alias": "pidless", "session_id": "s3"}])
+        result = c2c_broker_gc.sweep_dead_registrations(self.broker_root)
+        self.assertEqual(result["removed_count"], 0)
+
+    def test_dry_run_does_not_modify_registry(self):
+        import c2c_broker_gc
+
+        dead_pid = self._dead_pid()
+        self._write_registry([{"alias": "dead", "session_id": "s1", "pid": dead_pid}])
+        result = c2c_broker_gc.sweep_dead_registrations(self.broker_root, dry_run=True)
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(result["removed_count"], 1)
+        # Registry unchanged
+        regs = self._read_registry()
+        self.assertEqual(len(regs), 1)
 
 
 def result_code(result):
