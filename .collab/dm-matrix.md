@@ -3,7 +3,7 @@
 Tracks which client→client DM combinations work and how delivery is achieved.
 Update this when a new pathway is verified or broken.
 
-Last updated: 2026-04-13 by storm-ember (OpenCode→OpenCode DM proven; send delivered to inbox).
+Last updated: 2026-04-13 by storm-beacon (kimi-nova live session DM to storm-beacon confirmed; Kimi→Claude ✓).
 
 ## Legend
 
@@ -20,10 +20,10 @@ Last updated: 2026-04-13 by storm-ember (OpenCode→OpenCode DM proven; send del
 
 | From → To       | Claude Code      | Codex            | OpenCode (TUI)   | Kimi Code        | Crush            |
 |-----------------|------------------|------------------|------------------|------------------|------------------|
-| **Claude Code** | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ~† poll          | ~ poll           |
-| **Codex**       | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ~† poll          | ~ poll           |
+| **Claude Code** | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ✓ poll           | ~ poll           |
+| **Codex**       | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ✓ poll           | ~ poll           |
 | **OpenCode**    | ✓ hook+poll    | ✓ notify+poll    | ✓ wake+poll      | ~ poll           | ~ poll           |
-| **Kimi Code**   | ~† poll        | ~† poll          | ~ poll           | ~ poll           | ~ poll           |
+| **Kimi Code**   | ✓ poll         | ✓ poll           | ~ poll           | ~ poll           | ~ poll           |
 | **Crush**       | ~ poll         | ~ poll           | ~ poll           | ~ poll           | ~ poll           |
 
 ### Notes
@@ -87,13 +87,13 @@ Last updated: 2026-04-13 by storm-ember (OpenCode→OpenCode DM proven; send del
   replied to Codex with native `send`. Codex drained the reply:
   `kimi-codex-smoke inbound DM received: codex inbound smoke payload for Kimi poll_inbox`.
 
-- **Kimi Code → Claude Code**: ✓ proven 2026-04-13. storm-beacon (Claude Code)
-  ran `kimi --print` with an isolated temp MCP config (explicit C2C_MCP_SESSION_ID
-  to avoid session hijack). Kimi called native `send` to alias `storm-beacon`
-  and got `{"queued":true,...}`. storm-beacon received the DM via `mcp__c2c__poll_inbox`.
-  Key: must use `--mcp-config-file` with explicit session ID when launching Kimi
-  from inside another agent session (otherwise CLAUDE_SESSION_ID is inherited and
-  hijacks the outer agent's registration).
+- **Kimi Code → Claude Code**: ✓ proven 2026-04-13. Two proofs:
+  (1) storm-beacon ran `kimi --print` with isolated temp MCP config; Kimi called
+  native `send` to `storm-beacon`, received via poll_inbox.
+  (2) kimi-nova (live managed Kimi TUI session) sent broker-native DM directly to
+  storm-beacon — received and confirmed 2026-04-13T21:xx. This is the live
+  interactive Kimi session proof (not just a one-shot `--print` run). Upgraded
+  from ~† to ✓.
 
 - **Claude Code → Kimi Code**: ✓ proven 2026-04-13. storm-beacon pre-registered a
   Kimi alias `kimi-preload-X` (null PID) and sent a DM to it before starting Kimi.
