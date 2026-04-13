@@ -13,6 +13,18 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T23:34Z - codex RELEASED locks on `c2c_status.py`,
+  `tests/test_c2c_status.py`, `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-13T23-31-43Z-codex-status-zero-activity-ghost.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Verified the requested room join
+  `c2c-system` broadcast behavior was already present in OCaml, Python CLI
+  fallback, and relay paths, then fixed compact status to default-filter
+  zero-activity live ghost registrations while preserving `--min-messages 0`
+  for debugging. Verification: status RED tests failed for missing filter/flag;
+  focused status tests 32/32, room/relay join-notice tests 83/83, live
+  `./c2c status --json`, `py_compile`, `git diff --check`, OCaml runtest, and
+  full `just test` with 946 Python tests plus OCaml build/runtest.
+
 - 2026-04-13T23:29Z - codex RELEASED locks on `ocaml/c2c_mcp.ml`,
   `ocaml/test/test_c2c_mcp.ml`, `c2c_room.py`, `tests/test_c2c_room.py`,
   `.collab/findings/2026-04-13T23-24-00Z-codex-room-join-rebroadcast-noise.md`,

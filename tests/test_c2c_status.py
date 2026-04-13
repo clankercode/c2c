@@ -89,6 +89,81 @@ class C2CStatusTests(unittest.TestCase):
         self.assertEqual(room["alive_count"], 1)
         self.assertEqual(room["alive_members"], ["codex"])
 
+    def test_swarm_status_filters_zero_activity_alive_peers_by_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            broker_root = Path(temp_dir)
+            (broker_root / "registry.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "session_id": "codex-local",
+                            "alias": "codex",
+                            "pid": 111,
+                            "pid_start_time": 222,
+                        },
+                        {
+                            "session_id": "ghost-local",
+                            "alias": "opencode-ghost",
+                            "pid": 333,
+                            "pid_start_time": 444,
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            write_jsonl(
+                broker_root / "archive" / "codex-local.jsonl",
+                [{"from_alias": "codex", "content": f"msg {i}"} for i in range(20)],
+            )
+
+            with mock.patch("c2c_mcp.broker_registration_is_alive", return_value=True):
+                status = c2c_status.swarm_status(broker_root)
+
+        self.assertEqual([p["alias"] for p in status["alive_peers"]], ["codex"])
+        self.assertEqual(status["filtered_peer_count"], 1)
+        self.assertEqual(status["min_messages"], 1)
+        self.assertEqual(status["goal_total"], 1)
+        self.assertTrue(status["overall_goal_met"])
+
+    def test_swarm_status_min_messages_zero_includes_zero_activity_alive_peers(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            broker_root = Path(temp_dir)
+            (broker_root / "registry.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "session_id": "codex-local",
+                            "alias": "codex",
+                            "pid": 111,
+                            "pid_start_time": 222,
+                        },
+                        {
+                            "session_id": "ghost-local",
+                            "alias": "opencode-ghost",
+                            "pid": 333,
+                            "pid_start_time": 444,
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            write_jsonl(
+                broker_root / "archive" / "codex-local.jsonl",
+                [{"from_alias": "codex", "content": f"msg {i}"} for i in range(20)],
+            )
+
+            with mock.patch("c2c_mcp.broker_registration_is_alive", return_value=True):
+                status = c2c_status.swarm_status(broker_root, min_messages=0)
+
+        self.assertEqual(
+            [p["alias"] for p in status["alive_peers"]],
+            ["codex", "opencode-ghost"],
+        )
+        self.assertEqual(status["filtered_peer_count"], 0)
+        self.assertEqual(status["min_messages"], 0)
+        self.assertEqual(status["goal_total"], 2)
+        self.assertFalse(status["overall_goal_met"])
+
     def test_main_json_prints_status_payload(self):
         payload = {
             "ts": "2026-04-13T20:25:00+00:00",
@@ -110,6 +185,26 @@ class C2CStatusTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(stdout.getvalue()), payload)
+
+    def test_main_passes_min_messages_to_status(self):
+        payload = {
+            "ts": "2026-04-13T20:25:00+00:00",
+            "alive_peers": [],
+            "dead_peer_count": 0,
+            "total_peer_count": 0,
+            "rooms": [],
+            "goal_met_count": 0,
+            "goal_total": 0,
+            "overall_goal_met": False,
+            "filtered_peer_count": 0,
+            "min_messages": 0,
+        }
+
+        with mock.patch("c2c_status.swarm_status", return_value=payload) as status_mock:
+            rc = c2c_status.main(["--json", "--min-messages", "0"])
+
+        self.assertEqual(rc, 0)
+        status_mock.assert_called_once_with(None, min_messages=0)
 
     def test_main_text_output_is_ascii_and_shows_goal_thresholds(self):
         payload = {

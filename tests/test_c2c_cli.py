@@ -9548,7 +9548,7 @@ class C2CStatusTests(unittest.TestCase):
 
     def test_empty_broker_returns_zero_counts(self):
         self._write_registry([])
-        data = c2c_status.swarm_status(self.broker_root)
+        data = c2c_status.swarm_status(self.broker_root, min_messages=0)
         self.assertEqual(data["alive_peers"], [])
         self.assertEqual(data["dead_peer_count"], 0)
         self.assertEqual(data["total_peer_count"], 0)
@@ -9560,7 +9560,7 @@ class C2CStatusTests(unittest.TestCase):
                 {"alias": "storm-beacon", "session_id": "sess-a", "pid": os.getpid()},
             ]
         )
-        data = c2c_status.swarm_status(self.broker_root)
+        data = c2c_status.swarm_status(self.broker_root, min_messages=0)
         self.assertEqual(len(data["alive_peers"]), 1)
         self.assertEqual(data["alive_peers"][0]["alias"], "storm-beacon")
         self.assertEqual(data["dead_peer_count"], 0)
@@ -9661,6 +9661,17 @@ class C2CStatusTests(unittest.TestCase):
         ] * GOAL_COUNT
         self._write_archive("sess-a.jsonl", received_a)
         self._write_archive("extra.jsonl", sent_a)
+        self._write_archive(
+            "sess-b.jsonl",
+            [
+                {
+                    "from_alias": "agent-a",
+                    "to_alias": "agent-b",
+                    "content": "still short",
+                    "drained_at": 3.0,
+                }
+            ],
+        )
         data = c2c_status.swarm_status(self.broker_root)
         self.assertFalse(data["overall_goal_met"])
 
@@ -9813,7 +9824,7 @@ class C2CStatusTests(unittest.TestCase):
                 {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
             ]
         )
-        data = c2c_status.swarm_status(self.broker_root)
+        data = c2c_status.swarm_status(self.broker_root, min_messages=0)
         self.assertIsNone(data["alive_peers"][0]["last_active_ts"])
 
     def test_fmt_age_seconds(self):

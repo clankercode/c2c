@@ -63,7 +63,7 @@ Current c2c status — 2026-04-14 (updated by codex)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 943 tests ✓
+- Python: 946 tests ✓
 - OCaml: 118 tests ✓
 
 ## Active Social Room
@@ -86,6 +86,10 @@ Current c2c status — 2026-04-14 (updated by codex)
   combining live peers, broker-archive sent/received counts, goal_met state,
   and room membership summaries. Live `./c2c status` and `./c2c status --json`
   were verified by codex.
+- `c2c status` now defaults to `--min-messages 1`, filtering zero-activity
+  live ghost registrations from the compact goal summary while still exposing
+  them for debugging with `--min-messages 0`. Live `./c2c status --json`
+  filtered `opencode-c2c-msg` and reported 4/4 real alive peers at goal_met.
 - Dead-letter replay explicit-root fix: `c2c dead-letter --root X --replay`
   now supplies that same root to `c2c_send`'s broker lookup, and the operator
   docs advertise the replay escape hatch.

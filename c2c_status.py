@@ -6,7 +6,7 @@ membership in a single glance.  Useful for agent orientation after a
 context-compaction restart.
 
 Usage:
-    c2c status [--json] [--broker-root DIR]
+    c2c status [--json] [--broker-root DIR] [--min-messages N]
 """
 from __future__ import annotations
 
@@ -154,18 +154,19 @@ def _load_room_summary(broker_root: Path, registry: list[dict]) -> list[dict]:
     return summaries
 
 
-def swarm_status(broker_root: Path | None = None) -> dict:
+def swarm_status(broker_root: Path | None = None, min_messages: int = 1) -> dict:
     if broker_root is None:
         broker_root = c2c_mcp.default_broker_root()
 
     registrations = _load_broker_registry(broker_root)
-    verify = verify_progress_broker(broker_root)
+    verify = verify_progress_broker(broker_root, min_messages=min_messages)
     participants = verify.get("participants", {})
     archive_dir = broker_root / "archive"
     last_sent_map = _last_sent_ts_by_alias(archive_dir)
 
     alive_peers = []
     dead_peers = []
+    filtered_peer_count = 0
     for reg in registrations:
         alias = reg.get("alias") or ""
         if not alias:
@@ -173,6 +174,9 @@ def swarm_status(broker_root: Path | None = None) -> dict:
         session_id = reg.get("session_id") or ""
         alive = c2c_mcp.broker_registration_is_alive(reg)
         counts = participants.get(alias, {"sent": 0, "received": 0})
+        if alive and min_messages > 0 and counts["sent"] + counts["received"] < min_messages:
+            filtered_peer_count += 1
+            continue
         recv_ts = _last_recv_ts(archive_dir, session_id, alias)
         sent_ts = last_sent_map.get(alias)
         # last_active_ts is the most recent of last-received and last-sent
@@ -203,6 +207,8 @@ def swarm_status(broker_root: Path | None = None) -> dict:
         "alive_peers": alive_peers,
         "dead_peer_count": len(dead_peers),
         "total_peer_count": len(registrations),
+        "filtered_peer_count": filtered_peer_count,
+        "min_messages": min_messages,
         "rooms": rooms,
         "goal_met_count": goal_met_count,
         "goal_total": len(alive_peers),
@@ -215,6 +221,7 @@ def print_status_report(data: dict) -> None:
     alive_peers = data["alive_peers"]
     dead_count = data["dead_peer_count"]
     total = data["total_peer_count"]
+    filtered_count = data.get("filtered_peer_count", 0)
     rooms = data["rooms"]
     goal_met_count = data["goal_met_count"]
     goal_total = data["goal_total"]
@@ -224,7 +231,15 @@ def print_status_report(data: dict) -> None:
     print(f"c2c Swarm Status  {ts}")
     print("=" * 50)
     print()
-    print(f"Active Peers  ({len(alive_peers)} alive / {total} total, {dead_count} dead)")
+    filtered_detail = (
+        f", {filtered_count} filtered <{data.get('min_messages', 1)} msgs"
+        if filtered_count
+        else ""
+    )
+    print(
+        f"Active Peers  ({len(alive_peers)} alive / {total} total, "
+        f"{dead_count} dead{filtered_detail})"
+    )
     if alive_peers:
         alias_w = max(len(e["alias"]) for e in alive_peers)
         for e in alive_peers:
@@ -276,10 +291,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--broker-root", metavar="DIR")
+    parser.add_argument(
+        "--min-messages",
+        type=int,
+        default=1,
+        help=(
+            "Minimum total sent+received messages required for an alive peer "
+            "to appear in compact status; use 0 to include zero-activity peers."
+        ),
+    )
     args = parser.parse_args(argv)
 
     broker_root = Path(args.broker_root) if args.broker_root else None
-    data = swarm_status(broker_root)
+    data = swarm_status(broker_root, min_messages=args.min_messages)
 
     if args.json:
         print(json.dumps(data, indent=2))
