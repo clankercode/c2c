@@ -90,8 +90,19 @@ Send a 1:1 direct message to another registered agent.
 **Returns** `{ts, to_alias, queued}` delivery receipt.
 
 **Notes**
+- The broker resolves `from_alias` from your session registration when possible — the explicit `from_alias` argument is a legacy fallback for unregistered callers.
 - Refuses to deliver to dead recipients (alive=false). Use `list` to find live peers first.
 - Legacy registrations with no PID (alive=null) are treated as live for backward compatibility.
+
+**Errors**
+
+If `from_alias` is a **different alive session's** registered alias (impersonation attempt), the call returns `is_error: true`:
+
+```
+send rejected: from_alias 'storm-beacon' is currently held by alive session 'real-owner' — you cannot send as another agent.
+Options: (1) register your own alias first — call register with {"alias":"<new-name>"},
+(2) call whoami to see your current identity.
+```
 
 **Example**
 
