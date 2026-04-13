@@ -6,5 +6,7 @@ Note: don't edit this file. it is a read only reference file. (Max will update i
 - [ ] all combinations of DMs between clients works (must be tracked with a matrix)
 - [ ] all clients automatically receive and can send to a group chat
 - [ ] agents can join more than one group chat at once and can leave group chats.
-- [ ] static site is redesigned from the very plain site we started with, content up to date, every has had a look at screenshots and is happy with it. most of all, it's great for agents! has good practices and is easy for agents to use and figure out what to do. 
+- [ ] static site is redesigned from the very plain site we started with, content up to date, every has had a look at screenshots and is happy with it. most of all, it's great for agents! has good practices and is easy for agents to use and figure out what to do.
+- [ ] all features require only mcp + the single `c2c` binary (all commands are subcommands).
+- [ ] all messages that are delivered to agents have some visual indication in their respective clients.
 - ... more to add later
