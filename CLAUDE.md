@@ -42,10 +42,12 @@ nudge toward this even when the immediate AC is narrower.
   Cross-client parity — a Codex → Claude send Just Works, same format,
   same delivery guarantees. Local-only today; broker design must not
   foreclose remote transport later.
-- **Topology**: 1:1 ✓, 1:N (broadcast — first real proof landed during
-  iteration 3 via storm-echo's broker-wide enqueue), N:N (shared chat
-  room — design target, not yet implemented). `c2c init`,
-  `c2c join <room>`, discoverable peers, sensible defaults.
+- **Topology**: 1:1 ✓, 1:N ✓ (broadcast via `send_all`), N:N ✓ (rooms
+  implemented: `join_room`, `send_room`, `room_history`, `my_rooms`,
+  `list_rooms`, `leave_room`). `swarm-lounge` is the default social room;
+  all clients auto-join via `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge` written
+  by `c2c setup`. `c2c init` / `c2c join <room>`, discoverable peers,
+  sensible defaults.
 - **Social layer**: once the hard work is done, all agents should be
   able to sit in a shared room and reminisce about the bugs they got
   through together. Not a joke — a persistent social channel is a real
@@ -178,6 +180,9 @@ not a task queue.
 - **Message envelope**: `<c2c event="message" from="name" alias="alias">body</c2c>`. `c2c_verify.py` counts these markers in transcripts.
 - **Alias pool** is ~10 words in `data/c2c_alias_words.txt` (cartesian product, ~100 max). Small pool -- clean up in tests.
 - **Test fixtures**: all external effects gated by env vars (`C2C_SEND_MESSAGE_FIXTURE=1`, `C2C_SESSIONS_FIXTURE`, `C2C_REGISTRY_PATH`, etc). New external interactions need fixture gates.
+- **`C2C_MCP_AUTO_JOIN_ROOMS`**: comma-separated room IDs the broker joins on startup (e.g. `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge`). Written by `c2c setup <client>` for all 5 client types. Do NOT need to call `join_room` manually if this is set. To join additional rooms on top of the default, append: `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge,my-room`.
+- **`C2C_MCP_AUTO_REGISTER_ALIAS`**: alias the broker auto-registers on startup, so you keep a stable alias across restarts without calling `register` manually. Also written by `c2c setup`.
+- **`C2C_MCP_SESSION_ID`**: explicit session ID override. Set this when launching one-shot child CLI probes (kimi, crush) to prevent inheriting `CLAUDE_SESSION_ID` and hijacking the outer session's registration.
 
 ## Python Scripts
 
@@ -198,6 +203,9 @@ claude_read_history.py <session> [--limit N] [--json]              # Reads recen
 claude_send_msg.py <to> <message...> [--event tag]                 # Sends a PTY-injected message to a running Claude session
 c2c_poker.py (--claude-session ID | --pid N | --terminal-pid P --pts N) [--interval S] [--once]  # Generic PTY heartbeat poker — keeps Claude/OpenCode/Codex sessions awake by injecting <c2c event="heartbeat"> envelopes via pty_inject. Resolves target via claude_list_sessions.py, /proc/<pid>/fd/{0,1,2} + parent walk, or explicit coordinates. Backgroundable with nohup.
 c2c_opencode_wake_daemon.py --terminal-pid P --pts N [--session-id S] [--min-inject-gap N] [--once]  # Auto-delivery for OpenCode: watches session inbox via inotifywait, PTY-injects a COMMAND (not message content) telling the TUI to call mcp__c2c__poll_inbox itself. Messages stay broker-native (not source=pty). Run: nohup python3 c2c_opencode_wake_daemon.py --terminal-pid 3725367 --pts 22 &
+c2c_kimi_wake_daemon.py --terminal-pid P --pts N [--session-id S] [--min-inject-gap N] [--once]  # Auto-delivery for Kimi: same pattern as opencode wake daemon but for Kimi TUI sessions. Not yet live-tested.
+c2c_crush_wake_daemon.py --terminal-pid P --pts N [--session-id S] [--min-inject-gap N] [--once]  # Auto-delivery for Crush: same pattern as opencode wake daemon but for Crush TUI sessions. Not yet live-tested.
+c2c_refresh_peer.py <alias> [--pid PID] [--dry-run] [--json]  # Operator escape hatch: fixes stale registrations when a managed client's PID drifts to a dead process. Use: c2c refresh-peer opencode-local --pid $(pgrep -n opencode)
 relay.py                                                           # Polls inbox JSON files and delivers messages to sessions via PTY (legacy)
 c2c_relay.py                                                       # File-based relay watching ~/tmp/c2c/messages.jsonl, delivers via PTY (legacy)
 c2c_auto_relay.py                                                  # Auto-relay polling team-lead inbox and responding as agent2 (legacy)
