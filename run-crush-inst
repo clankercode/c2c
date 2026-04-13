@@ -127,6 +127,9 @@ def build_launch(
     env["C2C_MCP_SESSION_ID"] = c2c_session_id
     env["C2C_MCP_AUTO_REGISTER_ALIAS"] = c2c_alias
     env["C2C_MCP_AUTO_DRAIN_CHANNEL"] = "0"
+    # Explicitly pin broker liveness to this process's PID so MCP child
+    # processes inherit the correct C2C_MCP_CLIENT_PID.
+    env["C2C_MCP_CLIENT_PID"] = str(os.getpid())
     return launch, cwd_path, env
 
 
@@ -171,6 +174,7 @@ def main(argv: list[str]) -> int:
                         "RUN_CRUSH_INST_C2C_SESSION_ID": env["RUN_CRUSH_INST_C2C_SESSION_ID"],
                         "C2C_MCP_SESSION_ID": env["C2C_MCP_SESSION_ID"],
                         "C2C_MCP_AUTO_REGISTER_ALIAS": env["C2C_MCP_AUTO_REGISTER_ALIAS"],
+                        "C2C_MCP_CLIENT_PID": env["C2C_MCP_CLIENT_PID"],
                     },
                 },
                 indent=2,

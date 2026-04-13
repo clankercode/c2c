@@ -5860,6 +5860,8 @@ class RunKimiInstTests(unittest.TestCase):
         self.assertEqual(payload["prompt_mode"], "interactive-cli")
         self.assertEqual(payload["env"]["RUN_KIMI_INST_C2C_SESSION_ID"], "kimi-test")
         self.assertEqual(payload["env"]["C2C_MCP_AUTO_REGISTER_ALIAS"], "kimi-test")
+        # C2C_MCP_CLIENT_PID must be set so broker registers against durable Kimi PID
+        self.assertRegex(payload["env"]["C2C_MCP_CLIENT_PID"], r"^[1-9][0-9]*$")
 
     def test_run_kimi_inst_dry_run_supports_command_array(self):
         config_dir = Path(self.temp_dir.name) / "run-kimi-inst.d"
