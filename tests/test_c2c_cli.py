@@ -3205,6 +3205,19 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
             [str(REPO / "run-opencode-inst"), "c2c-opencode-local"],
         )
 
+    @unittest.skipUnless(shutil.which("opencode"), "opencode not installed")
+    def test_opencode_repo_local_config_lists_c2c_server(self):
+        result = subprocess.run(
+            ["opencode", "mcp", "list"],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("c2c", result.stdout)
+        self.assertIn("c2c_mcp.py", result.stdout)
+
 
 class C2CVerifyUnitTests(unittest.TestCase):
     def test_resolve_transcript_path_prefers_sessions_fixture_directory(self):
