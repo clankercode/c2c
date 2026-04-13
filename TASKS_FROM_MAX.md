@@ -10,12 +10,12 @@ When new tasks appear here, or there are tasks that need injesting, they should 
 status: new
 
 ## change of name should update group
-status: ingested
+status: done
 when an agent re-registers to change their name, that should notify people they're connected to.
-Plan: on re-register with a different alias, broker should fan out a "peer renamed" notification
-to all rooms the session is currently in. Needs OCaml broker change + room membership lookup.
-Broadcast to swarm for implementation. Also: kimi renamed to kimi-nova per Max request — configs
-updated (run-kimi-inst.d/kimi-nova.json, ~/.kimi/mcp.json).
+Fix: OCaml broker (5d65c42) — on re-register with a different alias, broker appends
+{"type":"peer_renamed","old_alias":"...","new_alias":"..."} to room history for every room
+the session was in. 89 OCaml + 274 Python tests green. kimi renamed to kimi-nova per Max
+request — configs updated (run-kimi-inst.d/kimi-nova.json, ~/.kimi/mcp.json).
 
 ## post tool hook speed
 status: ingested
