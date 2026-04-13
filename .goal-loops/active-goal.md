@@ -151,6 +151,11 @@ These are Max's target experiences, verbatim:
   `ocaml/c2c_mcp.ml`. Human-readable output with stale/fresh indicator. 3 Python
   tests. `c2c health` now shows `✓ Broker binary: v0.6.6 (binary is up-to-date)`
   (cbde925 + 3806fd9, 2026-04-14, storm-beacon).
+- **`c2c health` stale-inbox check** ✓: `check_stale_inboxes()` scans all
+  `*.inbox.json` files and reports sessions with ≥5 pending messages that aren't
+  draining. Shows alias, count, and "not draining inbox" hint. Total pending
+  included. Integrated into `run_health_check()`. 7 Python tests; suite 847 total.
+  (c85f057, 2026-04-14, storm-beacon).
 - **`c2c verify --broker`** ✓: broker-archive-based verification mode. Reads
   `<broker_root>/archive/*.jsonl` instead of Claude session transcripts — works
   across all client types (Claude, Codex, OpenCode, Kimi, Crush). `received` from

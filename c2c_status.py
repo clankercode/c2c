@@ -109,7 +109,7 @@ def _load_broker_registry(broker_root: Path) -> list[dict]:
 
 
 def _load_room_summary(broker_root: Path, registry: list[dict]) -> list[dict]:
-    """Return a list of {room_id, alive_count, member_count} for each room.
+    """Return a list of {room_id, alive_count, member_count, alive_members} for each room.
 
     Room member entries only have (alias, session_id) - no PID. Cross-reference
     with the broker registry to determine liveness.
@@ -137,14 +137,18 @@ def _load_room_summary(broker_root: Path, registry: list[dict]) -> list[dict]:
         except (json.JSONDecodeError, OSError):
             members = []
         member_count = len(members)
-        alive_count = sum(
-            1 for m in members if m.get("alias") in alive_aliases
+        alive_members = sorted(
+            m.get("alias", "")
+            for m in members
+            if m.get("alias") in alive_aliases
         )
+        alive_count = len(alive_members)
         summaries.append(
             {
                 "room_id": room_dir.name,
                 "member_count": member_count,
                 "alive_count": alive_count,
+                "alive_members": alive_members,
             }
         )
     return summaries
@@ -235,12 +239,16 @@ def print_status_report(data: dict) -> None:
         print("  (no alive peers)")
     print()
 
-    if rooms:
+    active_rooms = [r for r in rooms if r["member_count"] > 0]
+    if active_rooms:
         print("Rooms")
-        room_id_w = max(len(r["room_id"]) for r in rooms)
-        for r in rooms:
+        room_id_w = max(len(r["room_id"]) for r in active_rooms)
+        for r in active_rooms:
+            member_detail = ""
+            if r.get("alive_members"):
+                member_detail = "  [" + ", ".join(r["alive_members"]) + "]"
             print(
-                f"  {r['room_id']:<{room_id_w}}  {r['alive_count']} alive / {r['member_count']} members"
+                f"  {r['room_id']:<{room_id_w}}  {r['alive_count']} alive / {r['member_count']} members{member_detail}"
             )
         print()
 
