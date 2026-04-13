@@ -10058,6 +10058,27 @@ class C2CStartUnitTests(unittest.TestCase):
         self.assertEqual(cfg["alias"], "my-agent")
         self.assertEqual(cfg["extra_args"], ["--arg"])
 
+    def test_config_json_includes_binary_override(self):
+        broker_root = Path(self.temp_dir.name) / "broker"
+        with mock.patch.object(self.c2c_start, "run_outer_loop", return_value=0):
+            rc = self.c2c_start.cmd_start(
+                "claude", "my-agent", [], broker_root, binary_override="cc-zai"
+            )
+        self.assertEqual(rc, 0)
+        cfg = self.c2c_start.load_instance_config("my-agent")
+        self.assertEqual(cfg.get("binary_override"), "cc-zai")
+
+    def test_custom_binary_override_used_by_run_outer_loop(self):
+        broker_root = Path(self.temp_dir.name) / "broker"
+        with mock.patch.object(
+            self.c2c_start, "run_outer_loop", return_value=0
+        ) as mock_loop:
+            self.c2c_start.cmd_start(
+                "claude", "my-agent", [], broker_root, binary_override="cc-zai"
+            )
+        mock_loop.assert_called_once()
+        self.assertEqual(mock_loop.call_args.kwargs.get("binary_override"), "cc-zai")
+
     def test_duplicate_name_rejected(self):
         broker_root = Path(self.temp_dir.name) / "broker"
         # Write a fake pidfile with the current process PID (alive).
@@ -10119,6 +10140,31 @@ class C2CStartUnitTests(unittest.TestCase):
             rc = self.c2c_start.main(["instances"])
         self.assertEqual(rc, 0)
         self.assertIn("No c2c instances", buf.getvalue())
+
+    def test_start_cli_bin_flag_passed_to_cmd_start(self):
+        broker_root = Path(self.temp_dir.name) / "broker"
+        with mock.patch.object(
+            self.c2c_start, "cmd_start", return_value=0
+        ) as mock_cmd:
+            rc = self.c2c_start.main(
+                [
+                    "--broker-root",
+                    str(broker_root),
+                    "start",
+                    "claude",
+                    "-n",
+                    "zai",
+                    "--bin",
+                    "cc-zai",
+                    "--",
+                    "--dangerously-skip-permissions",
+                ]
+            )
+        self.assertEqual(rc, 0)
+        mock_cmd.assert_called_once()
+        args, kwargs = mock_cmd.call_args
+        self.assertEqual(args, ("claude", "zai", ["--dangerously-skip-permissions"], broker_root))
+        self.assertEqual(kwargs.get("binary_override"), "cc-zai")
 
 
 class C2CStartConstantsTests(unittest.TestCase):

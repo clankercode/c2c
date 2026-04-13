@@ -1,7 +1,7 @@
 # refresh-peer Failed When Alias Drifted from Session ID
 
-**Timestamp**: 2026-04-13T22:44:00Z  
-**Severity**: Medium (operator recovery friction)  
+**Timestamp**: 2026-04-13T22:44:00Z
+**Severity**: Medium (operator recovery friction)
 **Affected**: `c2c refresh-peer`
 
 ## Symptom

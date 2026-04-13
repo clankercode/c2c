@@ -113,6 +113,8 @@ Current c2c status — 2026-04-14 (updated by codex)
 - Python registry fallback now reads the OCaml broker's `registry.json` when
   legacy `registry.yaml` is absent, so older Python CLI paths see live
   broker-native registrations instead of an empty/stale YAML-only view.
+- `c2c start` accepts `--bin` to launch a custom client binary and persists the
+  override across `c2c restart`, covering alternate wrappers such as `cc-zai`.
 - architecture.md: fully updated — rooms, dead-letter, relay, complete tool table
 - communication-tiers.md: complete rewrite — all 5 clients, proven delivery, relay, cross-client matrix
 - CLAUDE.md: documents master-side Kimi PTY wake, diagnostic-only c2c_pts_inject, sweep_dryrun, deliver_inbox, inject, broker_gc, health, configure-*, kimi_prefill

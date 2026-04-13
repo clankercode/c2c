@@ -420,10 +420,11 @@ def run_outer_loop(
     client: str,
     extra_args: list[str],
     broker_root: Path,
+    binary_override: str | None = None,
 ) -> int:
     """Run the outer restart loop for the given instance (blocking)."""
     cfg = CLIENT_CONFIGS[client]
-    binary = cfg["binary"]
+    binary = binary_override or cfg["binary"]
     binary_path = _find_binary(binary)
     if binary_path is None:
         print(f"c2c start: '{binary}' not found in PATH", file=sys.stderr)
@@ -560,6 +561,7 @@ def cmd_start(
     extra_args: list[str],
     broker_root: Path,
     json_out: bool = False,
+    binary_override: str | None = None,
 ) -> int:
     if client not in CLIENT_CONFIGS:
         msg = f"unknown client: {client!r}. Choose from: {', '.join(sorted(CLIENT_CONFIGS))}"
@@ -583,7 +585,7 @@ def cmd_start(
     _remove_pidfile(_outer_pid_path(name))
 
     # Write instance config.
-    cfg = {
+    cfg: dict[str, Any] = {
         "name": name,
         "client": client,
         "session_id": name,
@@ -593,12 +595,14 @@ def cmd_start(
         "broker_root": str(broker_root),
         "auto_join_rooms": "swarm-lounge",
     }
+    if binary_override:
+        cfg["binary_override"] = binary_override
     save_instance_config(name, cfg)
 
     if json_out:
         print(json.dumps({"ok": True, "name": name, "client": client}))
 
-    return run_outer_loop(name, client, extra_args, broker_root)
+    return run_outer_loop(name, client, extra_args, broker_root, binary_override=binary_override)
 
 
 def cmd_stop(name: str, json_out: bool = False) -> int:
@@ -657,6 +661,7 @@ def cmd_restart(name: str, json_out: bool = False) -> int:
         cfg.get("extra_args", []),
         broker_root,
         json_out=json_out,
+        binary_override=cfg.get("binary_override"),
     )
 
 
@@ -742,12 +747,13 @@ subcommands:
     sub = argparse.ArgumentParser(prog="c2c start")
     sub.add_argument("client", choices=list(CLIENT_CONFIGS))
     sub.add_argument("-n", "--name", default=None)
+    sub.add_argument("--bin", default=None, help="custom binary path or name to launch")
     parsed, remainder = sub.parse_known_args(args.args)
     # strip leading '--' separator if present
     if remainder and remainder[0] == "--":
         remainder = remainder[1:]
     name = parsed.name or default_name(parsed.client)
-    return cmd_start(parsed.client, name, remainder, broker_root, json_out=json_out)
+    return cmd_start(parsed.client, name, remainder, broker_root, json_out=json_out, binary_override=parsed.bin)
 
 
 if __name__ == "__main__":

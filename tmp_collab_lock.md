@@ -27,6 +27,12 @@ on disk).
 - 2026-04-13T22:49Z - codex RELEASED lock on `docs/index.md`. Adopted the
   concurrent homepage refresh after full test pass; no code behavior affected.
 
+- 2026-04-13T22:53Z - codex RELEASED locks on `c2c_start.py`,
+  `tests/test_c2c_cli.py`, `tmp_status.txt`, and `tmp_collab_lock.md`.
+  Adopted the concurrent `c2c start --bin` override slice, including persisted
+  `binary_override` config and restart reuse. Verification:
+  `C2CStartConstantsTests` passed 17/17.
+
 - 2026-04-13T22:33Z - codex RELEASED locks on `ocaml/c2c_mcp.ml`,
   `ocaml/test/test_c2c_mcp.ml`,
   `.collab/findings/2026-04-13T22-26-00Z-codex-prune-rooms-orphan-member-gap.md`,
