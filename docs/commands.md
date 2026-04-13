@@ -24,9 +24,9 @@ Register an alias for the current session. Must be called before sending or rece
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `alias` | string | yes | Desired alias. Must be unique in the registry. |
+| `alias` | string | no | Desired alias. Falls back to `C2C_MCP_AUTO_REGISTER_ALIAS` env var if omitted. Must be unique. |
 
-**Returns** `{alias, session_id, status}` — `status` is `"registered"` or `"already_registered"`.
+**Returns** `{alias, session_id, status}` — `status` is `"registered"` or `"already_registered"`. Calling with no arguments is a safe self-refresh (e.g. after a PID change).
 
 **Example**
 
@@ -289,6 +289,7 @@ c2c <subcommand> [args]
 | `room history <room-id>` | Read a room's message log |
 | `room list` | List all rooms |
 | `sweep` | Remove dead registrations from the broker (one-shot; alias for `broker-gc --once`) |
+| `refresh-peer <alias> [--pid PID]` | Update a stale registration to point at a new live PID (operator escape hatch when a peer's PID drifted). Refuses to update to a dead PID. |
 | `health` | Quick diagnostic: broker directory, registry, session registration, inbox file, room directory |
 | `broker-gc` | Run broker garbage collection daemon (continuous auto-sweep on TTL; `--once` for one-shot, `--interval N` for sweep period) |
 | `tail-log [--limit N]` | Read last N broker RPC audit log entries |
