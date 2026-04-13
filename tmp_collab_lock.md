@@ -12,6 +12,11 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T16:34Z — codex RELEASED locks on `c2c_kimi_wire_bridge.py`
+  and `tmp_collab_lock.md`. Committed the Kimi Wire bridge module docstring
+  clarification: Wire avoids PTY/PTS hacks, master-side PTY wake remains the
+  manual TUI fallback, and `/dev/pts/<N>` slave writes are display-only.
+
 - 2026-04-13T16:28Z — codex RELEASED locks on `tmp_status.txt`,
   `.goal-loops/active-goal.md`,
   `.collab/findings/2026-04-14T01-58-00Z-kimi-nova-kimi-idle-pts-inject-live-proof.md`,
