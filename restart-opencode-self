@@ -45,6 +45,51 @@ def proc_comm(pid: int) -> str | None:
         return None
 
 
+def proc_group_id(pid: int) -> int | None:
+    try:
+        return os.getpgid(pid)
+    except ProcessLookupError:
+        return None
+
+
+def collect_descendants(pid: int) -> list[int]:
+    """Return all descendant pids of pid using /proc/<pid>/task/*/children."""
+    result: list[int] = []
+    try:
+        task_dir = Path(f"/proc/{pid}/task")
+        for tid_dir in task_dir.iterdir():
+            children_file = tid_dir / "children"
+            try:
+                child_pids = [
+                    int(x)
+                    for x in children_file.read_text(encoding="utf-8").split()
+                ]
+                for child in child_pids:
+                    result.append(child)
+                    result.extend(collect_descendants(child))
+            except (FileNotFoundError, ValueError, OSError):
+                pass
+    except (FileNotFoundError, OSError):
+        pass
+    return result
+
+
+def kill_survivors(root_pid: int, sig: signal.Signals) -> list[int]:
+    """Kill all surviving descendants of root_pid. Returns list of pids signaled."""
+    killed: list[int] = []
+    for pid in collect_descendants(root_pid):
+        if pid <= 1 or pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, sig.value)
+            killed.append(pid)
+        except ProcessLookupError:
+            pass  # already gone
+        except PermissionError:
+            pass  # not ours to kill
+    return killed
+
+
 def dry_run_enabled() -> bool:
     # Accept both the canonical name and the shorter variant to avoid footguns
     # where agents set the wrong env var name and accidentally signal the process.
@@ -80,6 +125,7 @@ def write_restart_marker(
     comm: str,
     reason: str,
     dry_run: bool,
+    process_group: int | None,
 ) -> Path | None:
     if not reason:
         return None
@@ -93,6 +139,7 @@ def write_restart_marker(
                 "pid_file": str(pid_file),
                 "signal": sig.name,
                 "comm": comm,
+                "process_group": process_group,
                 "reason": reason,
                 "dry_run": dry_run,
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -181,6 +228,7 @@ def main(argv: list[str]) -> int:
 
     sig = parse_signal(args.signal)
     dry_run = dry_run_enabled()
+    process_group = proc_group_id(pid)
 
     if dry_run:
         print(
@@ -191,6 +239,7 @@ def main(argv: list[str]) -> int:
                     "pid_file": str(pid_file),
                     "signal": sig.name,
                     "comm": comm,
+                    "process_group": process_group,
                     "reason": args.reason,
                     "reason_file": str(restart_marker_path(args.name)) if args.reason else None,
                     "dry_run": True,
@@ -208,10 +257,12 @@ def main(argv: list[str]) -> int:
         comm=comm,
         reason=args.reason,
         dry_run=False,
+        process_group=process_group,
     )
 
+    target_desc = f"process-group {process_group}" if process_group and process_group > 1 else f"pid {pid}"
     print(
-        f"[restart-opencode-self] sending {sig.name} to pid {pid} (comm={comm!r}) - outer loop will relaunch",
+        f"[restart-opencode-self] sending {sig.name} to {target_desc} (pid={pid}, comm={comm!r}) - outer loop will relaunch",
         file=sys.stderr,
         flush=True,
     )
@@ -221,17 +272,40 @@ def main(argv: list[str]) -> int:
             file=sys.stderr,
             flush=True,
         )
+    # Detach from the target process group before signaling so that a killpg
+    # call does not also kill this process. restart-opencode-self may be a
+    # grandchild of opencode and would otherwise receive SIGTERM itself.
     try:
-        os.kill(pid, sig.value)
+        os.setpgrp()
+    except OSError:
+        pass  # fine if we're already a group leader
+
+    try:
+        if process_group and process_group > 1:
+            os.killpg(process_group, sig.value)
+        else:
+            os.kill(pid, sig.value)
     except ProcessLookupError:
-        print(f"[restart-opencode-self] pid {pid} vanished before signal", file=sys.stderr)
+        print(f"[restart-opencode-self] target vanished before signal (pid={pid}, pgid={process_group})", file=sys.stderr)
         return 3
     except PermissionError:
         print(
-            f"[restart-opencode-self] permission denied signaling pid {pid}",
+            f"[restart-opencode-self] permission denied signaling target (pid={pid}, pgid={process_group})",
             file=sys.stderr,
         )
         return 4
+
+    # After the initial signal, wait briefly then kill any surviving descendants
+    # that created their own process groups (OpenCode workers can do this).
+    # This prevents orphaned workers from sharing the session with the relaunched instance.
+    time.sleep(1.5)
+    survivors = kill_survivors(pid, signal.SIGKILL)
+    if survivors:
+        print(
+            f"[restart-opencode-self] sent SIGKILL to {len(survivors)} surviving descendant(s): {survivors}",
+            file=sys.stderr,
+            flush=True,
+        )
     return 0
 
 
