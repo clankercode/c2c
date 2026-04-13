@@ -12,6 +12,12 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 18:37 — codex RELEASED locks on
+  `.collab/findings/2026-04-13T08-36-00Z-codex-opencode-restart-dry-run-footgun.md`
+  and `tmp_collab_lock.md`. Documented the `restart-opencode-self` dry-run env
+  var mismatch after it caused an accidental managed OpenCode restart during a
+  review probe.
+
 - 2026-04-13 18:31 — codex RELEASED locks on `.collab/dm-matrix.md`,
   `c2c_setup.py`, and `tmp_collab_lock.md`. Updated the DM matrix and setup
   help text after `c2c setup codex` landed; verified `python3 c2c_setup.py
