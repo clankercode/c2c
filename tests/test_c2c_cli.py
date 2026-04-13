@@ -9005,7 +9005,7 @@ class C2CStatusTests(unittest.TestCase):
         self.assertIn("[goal_met]", output)
         self.assertIn("ALL", output)
 
-    def test_last_active_ts_in_peer_entry(self):
+    def test_last_active_ts_from_recv(self):
         import time as _time
         self._write_registry([
             {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
@@ -9016,6 +9016,23 @@ class C2CStatusTests(unittest.TestCase):
         data = c2c_status.swarm_status(self.broker_root)
         peer = data["alive_peers"][0]
         self.assertAlmostEqual(peer["last_active_ts"], now_ts - 30, delta=1.0)
+
+    def test_last_active_ts_from_sent_when_newer(self):
+        """last_active_ts should use max(recv_ts, sent_ts) — sent may be more recent."""
+        import time as _time
+        self._write_registry([
+            {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
+        ])
+        now_ts = _time.time()
+        # agent-a received a message 300s ago
+        recv_msgs = [{"from_alias": "x", "to_alias": "agent-a", "drained_at": now_ts - 300, "content": "hi"}]
+        self._write_archive("sess-a.jsonl", recv_msgs)
+        # agent-a sent a message 10s ago (appears in agent-b's archive)
+        sent_msgs = [{"from_alias": "agent-a", "to_alias": "agent-b", "drained_at": now_ts - 10, "content": "yo"}]
+        self._write_archive("sess-b.jsonl", sent_msgs)
+        data = c2c_status.swarm_status(self.broker_root)
+        peer = data["alive_peers"][0]
+        self.assertAlmostEqual(peer["last_active_ts"], now_ts - 10, delta=1.0)
 
     def test_last_active_ts_none_when_no_archive(self):
         self._write_registry([

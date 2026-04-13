@@ -20,8 +20,8 @@ import c2c_mcp
 from c2c_verify import GOAL_COUNT, verify_progress_broker
 
 
-def _last_archive_ts(archive_dir: Path, session_id: str, alias: str) -> float | None:
-    """Return the drained_at timestamp of the last archived message for a peer.
+def _last_recv_ts(archive_dir: Path, session_id: str, alias: str) -> float | None:
+    """Return the drained_at timestamp of the last message drained by a peer.
 
     Checks <session_id>.jsonl first, then <alias>.jsonl (named sessions).
     Returns None if no archive file exists or it has no parseable entries.
@@ -46,6 +46,39 @@ def _last_archive_ts(archive_dir: Path, session_id: str, alias: str) -> float | 
             except json.JSONDecodeError:
                 continue
     return None
+
+
+def _last_sent_ts_by_alias(archive_dir: Path) -> dict[str, float]:
+    """Scan all archive files and return the most recent drained_at per from_alias.
+
+    This is the last time each peer's message appeared drained in any inbox —
+    i.e. the last time they sent something that was subsequently received.
+    """
+    latest: dict[str, float] = {}
+    if not archive_dir.exists():
+        return latest
+    for archive_file in archive_dir.glob("*.jsonl"):
+        try:
+            lines = archive_file.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for raw in lines:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                entry = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            from_alias = entry.get("from_alias") or ""
+            if not from_alias or from_alias == "c2c-system":
+                continue
+            ts = entry.get("drained_at")
+            if isinstance(ts, (int, float)):
+                ts = float(ts)
+                if ts > latest.get(from_alias, 0.0):
+                    latest[from_alias] = ts
+    return latest
 
 
 def _fmt_age(ts: float | None, now: float) -> str:
@@ -125,6 +158,7 @@ def swarm_status(broker_root: Path | None = None) -> dict:
     verify = verify_progress_broker(broker_root)
     participants = verify.get("participants", {})
     archive_dir = broker_root / "archive"
+    last_sent_map = _last_sent_ts_by_alias(archive_dir)
 
     alive_peers = []
     dead_peers = []
@@ -135,7 +169,11 @@ def swarm_status(broker_root: Path | None = None) -> dict:
         session_id = reg.get("session_id") or ""
         alive = c2c_mcp.broker_registration_is_alive(reg)
         counts = participants.get(alias, {"sent": 0, "received": 0})
-        last_ts = _last_archive_ts(archive_dir, session_id, alias)
+        recv_ts = _last_recv_ts(archive_dir, session_id, alias)
+        sent_ts = last_sent_map.get(alias)
+        # last_active_ts is the most recent of last-received and last-sent
+        candidates = [t for t in (recv_ts, sent_ts) if t is not None]
+        last_ts = max(candidates) if candidates else None
         entry = {
             "alias": alias,
             "alive": alive,
