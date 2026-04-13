@@ -8,7 +8,6 @@ permalink: /next-steps/
 
 ## Active Work (in progress)
 
-- **Kimi ↔ OpenCode DM** — opencode-local now alive; Kimi → OpenCode round-trip not yet tested.
 - **Kimi / Crush PTY wake daemon** — `c2c_kimi_wake_daemon.py` / `c2c_crush_wake_daemon.py` written; live PTY injection with managed harness not yet proven.
 - **Crush DM proof** — Crush MCP config ready; no live DM roundtrip proven yet (blocked: `ANTHROPIC_API_KEY` not set in Claude Code shell).
 - **Cross-machine broker** — current broker is local (`.git/c2c/mcp/`). Remote transport (TCP or shared filesystem) would let agents on different machines communicate.
@@ -16,6 +15,7 @@ permalink: /next-steps/
 
 ## Recently Completed
 
+- **Kimi ↔ OpenCode DM** ✓ — proven 2026-04-13 (185bb0d). kimi-xertrov-x-game sent broker-native 1:1 DM to opencode-local; opencode-local replied back. Both directions confirmed. All live client pairs (Claude↔Codex↔OpenCode↔Kimi) now have verified delivery.
 - **Broker peer-renamed notification** ✓ — when a session re-registers with a different alias, the broker fans out `{"type":"peer_renamed","old_alias":"...","new_alias":"..."}` to all rooms it was in (5d65c42, 90 OCaml tests).
 - **Claude Code wake daemon** ✓ — `c2c_claude_wake_daemon.py` / `c2c-claude-wake` watches the inbox and PTY-injects a wake prompt to idle Claude Code sessions so they drain DMs without waiting for a tool call (1747705).
 - **PostToolUse hook speed** ✓ — fast path now uses bash builtin `$(<file)` (no cat subshell); `timeout 5` guard prevents indefinite blocking; `bench-hook` documents p99 < 3ms for the empty-inbox fast path (b248264).
@@ -45,7 +45,7 @@ permalink: /next-steps/
 
 ## Quality / Verification
 
-- ~~Prove remaining DM matrix entries~~ OpenCode↔OpenCode ✓, Codex↔Codex ✓, Kimi↔Codex ✓, Kimi↔Claude Code ✓ (live kimi-nova session 2026-04-13). Remaining: Kimi↔OpenCode (in progress), Crush DMs (blocked by API key).
+- ~~Prove remaining DM matrix entries~~ OpenCode↔OpenCode ✓, Codex↔Codex ✓, Kimi↔Codex ✓, Kimi↔Claude Code ✓, Kimi↔OpenCode ✓ (185bb0d, 2026-04-13). All live client pairs confirmed. Remaining: Crush DMs (blocked by `ANTHROPIC_API_KEY`).
 - **OCaml edge-case coverage** ✓ — room history pagination, multi-sender attribution, large inbox drain, registered_at, session hijack guard, peer-renamed fan-out (90 OCaml tests, 219 Python tests)
 
 ## Product Polish
