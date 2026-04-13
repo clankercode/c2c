@@ -4068,6 +4068,74 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         self.assertEqual(registrations[0]["pid"], sleeper.pid)
         self.assertIsInstance(registrations[0]["pid_start_time"], int)
 
+    def test_run_opencode_inst_rearm_refreshes_plugin_sidecar_before_tty_skip(self):
+        sleeper = subprocess.Popen(
+            ["sleep", "60"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                project = root / "project"
+                config_dir = root / "run-opencode-inst.d"
+                broker_root = root / "mcp-broker"
+                (project / ".opencode").mkdir(parents=True)
+                config_dir.mkdir()
+                broker_root.mkdir()
+                sidecar_path = project / ".opencode" / "c2c-plugin.json"
+                sidecar_path.write_text(
+                    json.dumps(
+                        {
+                            "session_id": "stale-session",
+                            "alias": "stale-alias",
+                            "broker_root": "/stale/broker",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (config_dir / "opencode-a.json").write_text(
+                    json.dumps(
+                        {
+                            "cwd": str(project),
+                            "session": "ses_managed_opencode",
+                            "c2c_session_id": "opencode-a-local",
+                            "c2c_alias": "opencode-a",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                env = {
+                    "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir),
+                    "C2C_MCP_BROKER_ROOT": str(broker_root),
+                }
+
+                result = run_cli(
+                    "run-opencode-inst-rearm",
+                    "opencode-a",
+                    "--pid",
+                    str(sleeper.pid),
+                    "--start-timeout",
+                    "0.1",
+                    "--json",
+                    env=env,
+                )
+                sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        finally:
+            sleeper.terminate()
+            try:
+                sleeper.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                sleeper.kill()
+                sleeper.wait(timeout=1)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sidecar["session_id"], "opencode-a-local")
+        self.assertEqual(sidecar["alias"], "opencode-a")
+        self.assertEqual(sidecar["broker_root"], str(broker_root))
+        self.assertEqual(sidecar["opencode_session_id"], "ses_managed_opencode")
+
     def test_opencode_local_config_sets_stable_c2c_alias(self):
         config = json.loads(
             (REPO / "run-opencode-inst.d" / "c2c-opencode-local.json").read_text(
@@ -4122,6 +4190,49 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
             payload["env"]["C2C_MCP_AUTO_REGISTER_ALIAS"], "opencode-special"
         )
 
+    def test_run_opencode_inst_dry_run_does_not_overwrite_plugin_sidecar(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project = root / "project"
+            config_dir = root / "run-opencode-inst.d"
+            (project / ".opencode").mkdir(parents=True)
+            config_dir.mkdir()
+            existing_sidecar = {
+                "session_id": "live-session",
+                "alias": "live-alias",
+                "broker_root": "/live/broker",
+            }
+            sidecar_path = project / ".opencode" / "c2c-plugin.json"
+            sidecar_path.write_text(
+                json.dumps(existing_sidecar, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            opencode_json = config_dir / "dry-run.opencode.json"
+            opencode_json.write_text(json.dumps({"mcp": {}}), encoding="utf-8")
+            managed_config = {
+                "command": "opencode",
+                "cwd": str(project),
+                "config_path": str(opencode_json),
+                "c2c_session_id": "dry-run-session",
+                "c2c_alias": "dry-run-alias",
+                "prompt": "test prompt",
+            }
+            (config_dir / "dry-run.json").write_text(
+                json.dumps(managed_config), encoding="utf-8"
+            )
+
+            env = {
+                "RUN_OPENCODE_INST_DRY_RUN": "1",
+                "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir),
+            }
+            result = run_cli("run-opencode-inst", "dry-run", env=env)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                json.loads(sidecar_path.read_text(encoding="utf-8")),
+                existing_sidecar,
+            )
+
     def test_run_opencode_inst_copies_plugin_to_config_dir(self):
         """_ensure_opencode_plugin copies plugin + package.json when config is outside .opencode/."""
         plugin_src = REPO / ".opencode" / "plugins" / "c2c.ts"
@@ -4133,18 +4244,18 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
             opencode_json = config_dir / "test-inst.opencode.json"
             opencode_json.write_text(json.dumps({"mcp": {}}), encoding="utf-8")
             managed_config = {
-                "command": "opencode",
+                "command": sys.executable,
                 "cwd": str(REPO),
                 "config_path": str(opencode_json),
                 "c2c_session_id": "test-inst",
                 "c2c_alias": "test-inst",
                 "prompt": "test",
+                "flags": ["-c", "import sys; sys.exit(0)"],
             }
             (config_dir / "test-inst.json").write_text(
                 json.dumps(managed_config), encoding="utf-8"
             )
             env = {
-                "RUN_OPENCODE_INST_DRY_RUN": "1",
                 "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir),
             }
             result = run_cli("run-opencode-inst", "test-inst", env=env)
@@ -4182,20 +4293,20 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
             opencode_json = config_dir / "opencode-local.opencode.json"
             opencode_json.write_text(json.dumps({"mcp": {}}), encoding="utf-8")
             managed_config = {
-                "command": "opencode",
+                "command": sys.executable,
                 "cwd": str(project),
                 "config_path": str(opencode_json),
                 "c2c_session_id": "opencode-local",
                 "c2c_alias": "opencode-local",
                 "session": "ses_managed_opencode",
                 "prompt": "test",
+                "flags": ["-c", "import sys; sys.exit(0)"],
             }
             (config_dir / "opencode-local.json").write_text(
                 json.dumps(managed_config), encoding="utf-8"
             )
 
             env = {
-                "RUN_OPENCODE_INST_DRY_RUN": "1",
                 "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir),
             }
             result = run_cli("run-opencode-inst", "opencode-local", env=env)
@@ -4381,7 +4492,7 @@ class RunOpenCodeInstPluginTests(unittest.TestCase):
 
             result = subprocess.run(
                 [str(REPO / "run-opencode-inst"), "test"],
-                env={**os.environ, "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir), "RUN_OPENCODE_INST_DRY_RUN": "1"},
+                env={**os.environ, "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir)},
                 capture_output=True,
                 text=True,
                 timeout=CLI_TIMEOUT_SECONDS,
@@ -4420,7 +4531,7 @@ class RunOpenCodeInstPluginTests(unittest.TestCase):
 
             result = subprocess.run(
                 [str(REPO / "run-opencode-inst"), "test"],
-                env={**os.environ, "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir), "RUN_OPENCODE_INST_DRY_RUN": "1"},
+                env={**os.environ, "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir)},
                 capture_output=True,
                 text=True,
                 timeout=CLI_TIMEOUT_SECONDS,
@@ -4456,7 +4567,7 @@ class RunOpenCodeInstPluginTests(unittest.TestCase):
 
             result = subprocess.run(
                 [str(REPO / "run-opencode-inst"), "test"],
-                env={**os.environ, "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir), "RUN_OPENCODE_INST_DRY_RUN": "1"},
+                env={**os.environ, "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir)},
                 capture_output=True,
                 text=True,
                 timeout=CLI_TIMEOUT_SECONDS,
@@ -4484,7 +4595,7 @@ class RunOpenCodeInstPluginTests(unittest.TestCase):
 
             result = subprocess.run(
                 [str(REPO / "run-opencode-inst"), "test"],
-                env={**os.environ, "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir), "RUN_OPENCODE_INST_DRY_RUN": "1"},
+                env={**os.environ, "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir)},
                 capture_output=True,
                 text=True,
                 timeout=CLI_TIMEOUT_SECONDS,

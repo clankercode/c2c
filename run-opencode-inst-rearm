@@ -143,6 +143,28 @@ def default_broker_root(name: str) -> Path:
     return Path(c2c_mcp.default_broker_root())
 
 
+def refresh_plugin_sidecar(name: str, session_id: str, alias: str) -> dict[str, Any]:
+    config = load_config(name)
+    cwd = str(config.get("cwd", "")).strip()
+    if not cwd:
+        return {"ok": False, "reason": "missing_cwd"}
+
+    sidecar = Path(cwd).expanduser() / ".opencode" / "c2c-plugin.json"
+    broker_root = default_broker_root(name)
+    payload: dict[str, Any] = {
+        "session_id": session_id,
+        "alias": alias,
+        "broker_root": str(broker_root),
+    }
+    opencode_session_id = str(config.get("session", "")).strip()
+    if opencode_session_id:
+        payload["opencode_session_id"] = opencode_session_id
+
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    sidecar.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return {"ok": True, "path": str(sidecar), "payload": payload}
+
+
 def refresh_broker_registration(
     name: str, session_id: str, alias: str, target_pid: int
 ) -> dict[str, Any]:
@@ -344,6 +366,7 @@ def main(argv: list[str] | None = None) -> int:
     payload["registration"] = refresh_broker_registration(
         args.name, session_id, alias, target_pid
     )
+    payload["plugin_sidecar"] = refresh_plugin_sidecar(args.name, session_id, alias)
 
     try:
         payload["terminal_target"] = resolve_terminal_target(target_pid)

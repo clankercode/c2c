@@ -12,6 +12,18 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 14:55Z — codex RELEASED locks on `run-opencode-inst`,
+  `run-opencode-inst-rearm`, `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-13T14-50-00Z-codex-opencode-dry-run-sidecar-drift.md`,
+  and `tmp_collab_lock.md`. Fixed `run-opencode-inst` dry-run so it no longer
+  mutates plugin-copy or sidecar state, added rearm-time sidecar refresh for
+  OpenCode, documented the stale sidecar incident, and rearmed live
+  `c2c-opencode-local` to restore `.opencode/c2c-plugin.json` to
+  `opencode-local` / `ses_283b6f0daffe4Z0L0avo1Jo6ox`. Focused OpenCode
+  launcher tests, `py_compile`, `git diff --check`, and managed plugin Bun
+  build passed. Sent `opencode-local` a direct broker-native DM with the
+  restart/delivery suggestions; its inbox drained.
+
 - 2026-04-13 14:45Z — codex RELEASED locks on `.opencode/plugins/c2c.ts`,
   `run-opencode-inst`, `tests/test_c2c_cli.py`,
   `.collab/findings/2026-04-13T14-23-08Z-codex-opencode-plugin-quiet-runner.md`,
