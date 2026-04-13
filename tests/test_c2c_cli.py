@@ -812,6 +812,39 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(launch_call.kwargs["cwd"], REPO)
         self.assertNotIn("bash", launch_call.args[0])
 
+    def test_c2c_mcp_main_falls_back_to_existing_binary_when_build_fails(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        built_server = Path(self.temp_dir.name) / "c2c_mcp_server.exe"
+        built_server.write_text("#!/bin/sh\n", encoding="utf-8")
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "C2C_REGISTRY_PATH": str(self.registry_path),
+                    "C2C_MCP_BROKER_ROOT": str(broker_root),
+                },
+                clear=False,
+            ),
+            mock.patch("c2c_mcp.sync_broker_registry"),
+            mock.patch("c2c_mcp.default_session_id", return_value=AGENT_ONE_SESSION_ID),
+            mock.patch("c2c_mcp.built_server_path", return_value=built_server),
+            mock.patch("c2c_mcp.subprocess.run") as run_mock,
+            mock.patch("sys.stderr", new_callable=io.StringIO) as stderr,
+        ):
+            run_mock.side_effect = [
+                subprocess.CalledProcessError(2, ["dune", "build"]),
+                mock.Mock(returncode=0),
+            ]
+
+            result = c2c_mcp.main(["--help"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(run_mock.call_count, 2)
+        self.assertEqual(run_mock.call_args_list[1].args[0], [str(built_server), "--help"])
+        self.assertIn("build failed but existing binary found", stderr.getvalue())
+        self.assertIn(str(built_server), stderr.getvalue())
+
     def test_c2c_mcp_emits_channel_notification_for_session_inbox(self):
         broker_root = Path(self.temp_dir.name) / "mcp-broker"
         env = dict(self.env)
