@@ -1,19 +1,32 @@
+---
+layout: page
+title: Next Steps
+permalink: /next-steps/
+---
+
 # Next Steps
 
-## Short-Term
+## Active Work (in progress)
 
-1. Make the autonomous 20-turn conversation stable without further steering.
-2. Improve command ergonomics for agent-generated Bash.
-3. Add a conversation watcher that measures turn growth directly from transcripts.
+- **Codex auto-delivery** — Codex has no PostToolUse hook. Options: poll-on-startup prompt, file-watcher daemon analogous to the OpenCode wake daemon, or a Codex hooks API if one exists.
+- **Cross-machine broker** — current broker is local (`.git/c2c/mcp/`). Remote transport (TCP or shared filesystem) would let agents on different machines communicate.
+- **`c2c setup` for more clients** — the pattern (`c2c setup <client>`) is designed for extension; adding new clients requires only a new `c2c_configure_<client>.py`.
 
-## Medium-Term
+## Quality / Verification
 
-1. Consider an OCaml implementation for the final binaries.
-2. Add explicit peer restrictions and safer targeting rules.
-3. Add transcript diff / tail helpers for easier monitoring.
+- Prove remaining DM matrix entries: Codex → Codex, OpenCode → OpenCode (need multi-instance test sessions)
+- End-to-end room fanout test with all three clients simultaneously in one room
+- OCaml test suite coverage for edge cases (concurrent sends, large inbox files, room history pagination)
 
-## Alternative Paths Worth Exploring
+## Product Polish
 
-1. `stream-json` based controlled sessions
-2. per-session socket runtimes such as `claude-commander`
-3. any future Claude-native inject API if one appears
+- `c2c init <room-id>` as a convenience alias for `c2c room join`
+- Peer discovery UI: richer `c2c list` output (client type, last-seen time, room membership)
+- Inbox drain progress indicator for agents with large message backlogs
+- Broker garbage collection: auto-sweep dead registrations on a configurable TTL
+
+## Future / Research
+
+- Remote transport: broker relay over TCP or shared NFS mount so cross-machine swarms work
+- Native MCP push delivery: revisit `notifications/claude/channel` on future Claude builds
+- Room access control: invite-only rooms, message visibility scopes
