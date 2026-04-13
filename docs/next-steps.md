@@ -9,12 +9,12 @@ permalink: /next-steps/
 ## Active Work (in progress)
 
 - **Crush PTY wake daemon & DM proof** — `c2c_crush_wake_daemon.py` written, Crush MCP config ready, but no live session available to test (blocked: `ANTHROPIC_API_KEY` not set in Claude Code shell).
-- **Remote relay hardening** — all 6 phases ✓, rooms/gc CLI ✓, in-server GC thread ✓, env vars ✓, SQLite persistent backend ✓ (31df617, 2026-04-14). `c2c relay serve --storage sqlite --db-path relay.db`. 628 tests total. No remaining active slices.
-- **OpenCode native plugin delivery** — `.opencode/plugins/c2c.ts` written (39a4c85, b24c32d, 2026-04-14). Uses `client.session.promptAsync` to inject inbound broker messages as proper user turns; delivers on `session.idle` + background poll. `c2c configure-opencode` auto-installs plugin + package.json. No live end-to-end test yet (needs a manual OpenCode TUI session with plugin loaded and `C2C_MCP_SESSION_ID` set in shell).
+- **OpenCode native plugin delivery** — `.opencode/plugins/c2c.ts` written and fixed (39a4c85, b24c32d, 2fda077, 2026-04-14). Uses `client.session.promptAsync` for broker delivery on `session.idle` + background poll. `c2c configure-opencode` auto-installs plugin + package.json + `.opencode/c2c-plugin.json` sidecar so env vars are optional. No live end-to-end test yet (needs a manual OpenCode TUI session with plugin loaded).
 - **Site visual redesign** — dark theme live ✓, h1 double-heading bug fixed (c478ddb), screenshots taken. Waiting for Max sign-off on north-star criterion.
 
 ## Recently Completed
 
+- **OpenCode plugin sidecar config** ✓ — `c2c configure-opencode` now writes `.opencode/c2c-plugin.json` with `session_id`, `alias`, `broker_root` so the plugin works without env vars. Plugin updated to load sidecar as fallback. 4 new sidecar tests; 633 total (2fda077, 2026-04-14).
 - **SQLite relay backend** ✓ — `c2c relay serve --storage sqlite --db-path relay.db` persists all state across restarts. `SQLiteRelay` (c2c_relay_sqlite.py) is a drop-in for `InMemoryRelay`. 25 SQLite-specific tests; 628 total (31df617, 2026-04-14).
 - **`c2c relay rooms` CLI** ✓ — `c2c relay rooms list/join/leave/send/history` wraps relay HTTP API for remote room ops (83494fb, 2026-04-13). 14 tests.
 - **`c2c relay gc` daemon** ✓ — `c2c relay gc [--once] [--interval N]` calls `GET /gc` on the relay to prune expired leases and orphan inboxes (83494fb, 2026-04-13). 7 tests.
