@@ -10,11 +10,12 @@ permalink: /next-steps/
 
 - **Kimi standalone PTY wake daemon** — `c2c_kimi_wake_daemon.py` written for manual/interactive Kimi TUI sessions (distinct from the managed-harness `c2c_deliver_inbox.py` path). Not yet live-tested. *Note: managed Kimi harness auto-delivery is already proven end-to-end.*
 - **Crush PTY wake daemon & DM proof** — `c2c_crush_wake_daemon.py` written, Crush MCP config ready, but no live session available to test (blocked: `ANTHROPIC_API_KEY` not set in Claude Code shell).
-- **Remote relay hardening** — Phases 1–6 + docs complete. Remaining open areas: persistent storage backend for relay (SQLite swap instead of in-memory), relay GC daemon (periodic background sweep), `c2c relay rooms` CLI for remote room management.
+- **Remote relay hardening** — relay GC daemon ✓, `c2c relay rooms` CLI ✓. Remaining: persistent storage backend (SQLite swap for InMemoryRelay — relay loses all state on server restart).
 - **Site visual redesign** — dark theme live ✓, h1 double-heading bug fixed (c478ddb), screenshots taken. Waiting for Max sign-off on north-star criterion.
 
 ## Recently Completed
 
+- **Relay GC daemon + rooms CLI** ✓ — `c2c relay gc` daemon calls `GET /gc` on the relay on a configurable interval; `c2c relay rooms list/join/leave/send/history` operator subcommands for remote room management. `c2c relay serve --gc-interval N` starts an auto-GC background thread. `join_room` now returns `already_member: bool`, `leave_room` returns `removed: bool`. 23 new tests, 598 total (2026-04-13).
 - **Cross-machine relay docs** ✓ — `docs/relay-quickstart.md`: full operator quickstart covering serve → setup → connect → status/list/health. SSH tunnel + Tailscale deployment notes, GC usage, troubleshooting table (7fd88e3, 2026-04-13). `c2c health` now shows relay status (c5a6acb).
 - **Cross-machine broker Phase 6** ✓ — hardening: exactly-once dedup (msg_id FIFO window; ID recorded only on successful delivery so retries succeed after recipient registers; `duplicate: true` response on replay), `InMemoryRelay.gc()` (removes expired leases, prunes room memberships + orphan inboxes; `GET /gc` relay endpoint), connector retry correctness (duplicate msg_ids in outbox deliver once) (a4d83a8, 2026-04-13). 10 tests, 575 total.
 - **Cross-machine broker Phase 5** ✓ — operator setup: `c2c_relay_config.py` (save/load relay URL+token, config search order: env → broker-root → ~/.config/c2c/relay.json), `c2c relay setup/status/list` CLI commands, `--json` output. 21 tests, 565 total (241195f, 2026-04-13).

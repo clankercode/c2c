@@ -112,6 +112,32 @@ class RelayClient:
                           {"node_id": node_id, "session_id": session_id})
         return r.get("messages", [])
 
+    def list_rooms(self) -> list[dict]:
+        r = self._request("GET", "/list_rooms")
+        return r.get("rooms", [])
+
+    def room_history(self, room_id: str, limit: int = 50) -> list[dict]:
+        r = self._request("POST", "/room_history", {"room_id": room_id, "limit": limit})
+        return r.get("history", [])
+
+    def join_room(self, alias: str, room_id: str) -> dict:
+        return self._request("POST", "/join_room", {"alias": alias, "room_id": room_id})
+
+    def leave_room(self, alias: str, room_id: str) -> dict:
+        return self._request("POST", "/leave_room", {"alias": alias, "room_id": room_id})
+
+    def send_room(self, from_alias: str, room_id: str, content: str,
+                  message_id: Optional[str] = None) -> dict:
+        body: dict[str, Any] = {
+            "from_alias": from_alias, "room_id": room_id, "content": content,
+        }
+        if message_id:
+            body["message_id"] = message_id
+        return self._request("POST", "/send_room", body)
+
+    def gc(self) -> dict:
+        return self._request("GET", "/gc")
+
 
 # ---------------------------------------------------------------------------
 # Local broker helpers

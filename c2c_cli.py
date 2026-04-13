@@ -127,13 +127,21 @@ def main(argv: list[str] | None = None) -> int:
         if remainder and remainder[0] in ("status", "list"):
             import c2c_relay_status
             return c2c_relay_status.main(remainder)
+        if remainder and remainder[0] == "rooms":
+            import c2c_relay_rooms
+            return c2c_relay_rooms.main(remainder[1:])
+        if remainder and remainder[0] == "gc":
+            import c2c_relay_gc
+            return c2c_relay_gc.main(remainder[1:])
         print(
             "usage: c2c relay <subcommand> ...\n"
             "  serve    --listen HOST:PORT [--token TOKEN] [--token-file PATH] [--verbose]\n"
             "  connect  --relay-url URL [--token TOKEN] [--node-id ID] [--broker-root DIR] [--interval N] [--once]\n"
             "  setup    --url URL [--token TOKEN] [--node-id ID] [--show]\n"
             "  status   [--relay-url URL] [--token TOKEN] [--json]\n"
-            "  list     [--relay-url URL] [--token TOKEN] [--dead] [--json]",
+            "  list     [--relay-url URL] [--token TOKEN] [--dead] [--json]\n"
+            "  rooms    <list|join|leave|send|history> [--relay-url URL] [--json]\n"
+            "  gc       [--relay-url URL] [--token TOKEN] [--interval N] [--once] [--json]",
             file=sys.stderr,
         )
         return 2

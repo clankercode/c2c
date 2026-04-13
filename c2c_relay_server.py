@@ -29,6 +29,7 @@ import argparse
 import json
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from socketserver import ThreadingMixIn
@@ -272,6 +273,21 @@ class RelayHandler(BaseHTTPRequestHandler):
 # Server lifecycle helpers
 # ---------------------------------------------------------------------------
 
+def _start_gc_thread(relay: InMemoryRelay, gc_interval: float) -> threading.Thread:
+    """Start a daemon GC thread that calls relay.gc() every gc_interval seconds."""
+    def _loop() -> None:
+        while True:
+            time.sleep(gc_interval)
+            try:
+                relay.gc()
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_loop, daemon=True, name="relay-gc")
+    t.start()
+    return t
+
+
 def make_server(
     host: str,
     port: int,
@@ -279,12 +295,18 @@ def make_server(
     relay: Optional[InMemoryRelay] = None,
     *,
     verbose: bool = False,
+    gc_interval: float = 300.0,
 ) -> ThreadingHTTPServer:
-    """Create (but do not start) a relay server."""
+    """Create (but do not start) a relay server.
+
+    gc_interval: seconds between automatic GC runs. 0 disables the GC thread.
+    """
     server = ThreadingHTTPServer((host, port), RelayHandler)
     server.relay = relay or InMemoryRelay()  # type: ignore[attr-defined]
     server.token = token  # type: ignore[attr-defined]
     server.verbose = verbose  # type: ignore[attr-defined]
+    if gc_interval > 0:
+        _start_gc_thread(server.relay, gc_interval)  # type: ignore[arg-type]
     return server
 
 
@@ -295,13 +317,15 @@ def start_server_thread(
     relay: Optional[InMemoryRelay] = None,
     *,
     verbose: bool = False,
+    gc_interval: float = 300.0,
 ) -> tuple[ThreadingHTTPServer, threading.Thread]:
     """Start a relay server in a background thread. Returns (server, thread).
 
     Pass port=0 to let the OS pick a free port; read it back from
     server.server_address[1].
     """
-    server = make_server(host, port, token=token, relay=relay, verbose=verbose)
+    server = make_server(host, port, token=token, relay=relay, verbose=verbose,
+                         gc_interval=gc_interval)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread
@@ -329,6 +353,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--token", default="", help="Bearer token for auth")
     parser.add_argument("--token-file", default="", help="File containing Bearer token")
     parser.add_argument("--verbose", action="store_true", help="Log requests to stderr")
+    parser.add_argument(
+        "--gc-interval", type=float, default=300.0,
+        help="Seconds between automatic GC runs (default: 300; 0 disables GC)",
+    )
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     token = load_token(args.token or None, args.token_file or None)
@@ -342,13 +370,19 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"relay: invalid --listen value: {args.listen!r}", file=sys.stderr)
         return 1
 
-    server = make_server(host, port, token=token, verbose=args.verbose)
+    server = make_server(host, port, token=token, verbose=args.verbose,
+                         gc_interval=args.gc_interval)
     actual_host, actual_port = server.server_address
     print(f"c2c relay serving on http://{actual_host}:{actual_port}", flush=True)
     if token:
         print("auth: Bearer token required", flush=True)
     else:
         print("auth: DISABLED (no token set — do not expose publicly)", flush=True)
+    gc_interval = args.gc_interval
+    if gc_interval > 0:
+        print(f"gc: running every {gc_interval:.0f}s", flush=True)
+    else:
+        print("gc: disabled (--gc-interval 0)", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -328,21 +328,23 @@ class InMemoryRelay:
                 raise RelayError(RELAY_ERR_UNKNOWN_ALIAS,
                                  f"alias {alias!r} is not registered")
             members = self._rooms.setdefault(room_id, [])
-            if alias not in members:
+            already_member = alias in members
+            if not already_member:
                 members.append(alias)
             if room_id not in self._room_history:
                 self._room_history[room_id] = []
             return {"ok": True, "room_id": room_id, "alias": alias,
-                    "member_count": len(members)}
+                    "member_count": len(members), "already_member": already_member}
 
     def leave_room(self, alias: str, room_id: str) -> dict:
         """Remove alias from a room. No-op if not a member."""
         with self._lock:
             members = self._rooms.get(room_id, [])
-            if alias in members:
+            removed = alias in members
+            if removed:
                 members.remove(alias)
             return {"ok": True, "room_id": room_id, "alias": alias,
-                    "member_count": len(members)}
+                    "member_count": len(members), "removed": removed}
 
     def send_room(self, from_alias: str, room_id: str, content: str,
                   message_id: Optional[str] = None) -> dict:
