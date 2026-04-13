@@ -12,6 +12,13 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 13:48 — codex RELEASED locks on `docs/index.md`,
+  `docs/next-steps.md`, and `tmp_collab_lock.md`. Committed the relay
+  quickstart website follow-up: homepage now links both cross-machine design
+  and operator quickstart; next-steps marks relay docs complete and tracks
+  remaining remote relay hardening. Verification: `git diff --check` on touched
+  files passed.
+
 - 2026-04-13 13:45 — codex RELEASED locks on
   `.collab/research/2026-04-13T13-35-21Z-codex-opencode-plugin-delivery.md`,
   `.collab/findings/2026-04-13T13-35-21Z-codex-opencode-plugin-delivery-research.md`,

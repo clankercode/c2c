@@ -10,11 +10,12 @@ permalink: /next-steps/
 
 - **Kimi standalone PTY wake daemon** — `c2c_kimi_wake_daemon.py` written for manual/interactive Kimi TUI sessions (distinct from the managed-harness `c2c_deliver_inbox.py` path). Not yet live-tested. *Note: managed Kimi harness auto-delivery is already proven end-to-end.*
 - **Crush PTY wake daemon & DM proof** — `c2c_crush_wake_daemon.py` written, Crush MCP config ready, but no live session available to test (blocked: `ANTHROPIC_API_KEY` not set in Claude Code shell).
-- **Cross-machine broker — relay docs + quickstart** — Phases 1–6 complete. Remaining: operator quickstart page on website (`c2c relay serve` + `c2c relay setup` + `c2c relay connect`), SSH/Tailscale setup notes, and health-check integration in `c2c health`.
+- **Remote relay hardening** — Phases 1–6 + docs complete. Remaining open areas: persistent storage backend for relay (SQLite swap instead of in-memory), relay GC daemon (periodic background sweep), `c2c relay rooms` CLI for remote room management.
 - **Site visual redesign** — dark theme live ✓, h1 double-heading bug fixed (c478ddb), screenshots taken. Waiting for Max sign-off on north-star criterion.
 
 ## Recently Completed
 
+- **Cross-machine relay docs** ✓ — `docs/relay-quickstart.md`: full operator quickstart covering serve → setup → connect → status/list/health. SSH tunnel + Tailscale deployment notes, GC usage, troubleshooting table (7fd88e3, 2026-04-13). `c2c health` now shows relay status (c5a6acb).
 - **Cross-machine broker Phase 6** ✓ — hardening: exactly-once dedup (msg_id FIFO window; ID recorded only on successful delivery so retries succeed after recipient registers; `duplicate: true` response on replay), `InMemoryRelay.gc()` (removes expired leases, prunes room memberships + orphan inboxes; `GET /gc` relay endpoint), connector retry correctness (duplicate msg_ids in outbox deliver once) (a4d83a8, 2026-04-13). 10 tests, 575 total.
 - **Cross-machine broker Phase 5** ✓ — operator setup: `c2c_relay_config.py` (save/load relay URL+token, config search order: env → broker-root → ~/.config/c2c/relay.json), `c2c relay setup/status/list` CLI commands, `--json` output. 21 tests, 565 total (241195f, 2026-04-13).
 - **Cross-machine broker Phase 4** ✓ — rooms+broadcast: `InMemoryRelay.{join_room,leave_room,send_room,room_history,list_rooms,send_all}`; relay server endpoints `/join_room /leave_room /send_room /room_history /list_rooms /send_all`; 28 room/broadcast tests (e83e474+4e088ec, 2026-04-13). `c2c relay serve` + `c2c relay connect` wired into main CLI (0040c8d, 2026-04-13). 544 tests total.
