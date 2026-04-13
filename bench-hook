@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""Benchmark the PostToolUse c2c-inbox-check.sh hook.
+
+Measures wall-clock time for the hook across four scenarios:
+  not-configured  : required env vars absent — hook should exit immediately
+  absent          : inbox file doesn't exist — hook exits at first file check
+  empty           : inbox is "[]" — fast-path bash string compare, no Python
+  one-message     : inbox has 1 message — triggers Python drain
+  five-messages   : inbox has 5 messages — triggers Python drain (larger payload)
+
+Usage:
+  ./bench-hook [--iterations N] [--hook PATH] [--no-slow]
+
+Output: p50 / p95 / p99 / max per scenario, in milliseconds.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from statistics import median, quantiles
+
+ROOT = Path(__file__).resolve().parent
+DEFAULT_HOOK = Path.home() / ".claude" / "hooks" / "c2c-inbox-check.sh"
+SESSION_ID = "bench-hook-test-session"
+
+# Minimal message envelope — real content from c2c_cli.py poll-inbox
+MESSAGE_TEMPLATE = {
+    "from_alias": "bench-sender",
+    "to_alias": "bench-target",
+    "content": "<c2c event=\"message\" from=\"bench-sender\">hello from bench</c2c>",
+    "ts": 1776000000.0,
+}
+
+
+def make_env(broker_root: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env["C2C_MCP_SESSION_ID"] = SESSION_ID
+    env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
+    env["C2C_ROOT"] = str(ROOT)
+    return env
+
+
+def run_hook(hook: Path, env: dict[str, str]) -> float:
+    """Run the hook once, return elapsed seconds."""
+    t0 = time.perf_counter()
+    subprocess.run(
+        ["bash", str(hook)],
+        env=env,
+        capture_output=True,
+        timeout=10,
+    )
+    return time.perf_counter() - t0
+
+
+def stats(times_s: list[float]) -> dict[str, float]:
+    ms = [t * 1000 for t in times_s]
+    qs = quantiles(ms, n=100)
+    return {
+        "p50": qs[49],
+        "p95": qs[94],
+        "p99": qs[98],
+        "max": max(ms),
+        "min": min(ms),
+    }
+
+
+def print_row(label: str, s: dict[str, float]) -> None:
+    print(
+        f"  {label:<18}  "
+        f"p50={s['p50']:6.1f}ms  "
+        f"p95={s['p95']:6.1f}ms  "
+        f"p99={s['p99']:6.1f}ms  "
+        f"max={s['max']:6.1f}ms  "
+        f"min={s['min']:6.1f}ms"
+    )
+
+
+def warmup(hook: Path, env: dict[str, str], n: int = 3) -> None:
+    for _ in range(n):
+        subprocess.run(["bash", str(hook)], env=env, capture_output=True, timeout=10)
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description="Benchmark c2c-inbox-check.sh hook")
+    p.add_argument("--iterations", "-n", type=int, default=100,
+                   help="Number of iterations per scenario (default: 100)")
+    p.add_argument("--hook", default=str(DEFAULT_HOOK),
+                   help=f"Path to hook script (default: {DEFAULT_HOOK})")
+    p.add_argument("--no-slow", action="store_true",
+                   help="Skip scenarios that invoke Python (one-message, five-messages)")
+    args = p.parse_args(argv)
+
+    hook = Path(args.hook)
+    if not hook.exists():
+        print(f"ERROR: hook not found: {hook}", file=sys.stderr)
+        return 2
+
+    n = args.iterations
+    print(f"Benchmarking {hook}")
+    print(f"  iterations: {n} per scenario")
+    print(f"  repo root:  {ROOT}")
+    print()
+
+    with tempfile.TemporaryDirectory(prefix="c2c-bench-") as tmp:
+        broker_root = Path(tmp) / "broker"
+        broker_root.mkdir()
+        inbox = broker_root / f"{SESSION_ID}.inbox.json"
+
+        env = make_env(broker_root)
+        env_no_config = os.environ.copy()  # no c2c vars
+
+        results: list[tuple[str, list[float]]] = []
+
+        # Scenario 1: not configured
+        print("  scenario: not-configured ... ", end="", flush=True)
+        warmup(hook, env_no_config)
+        times = [run_hook(hook, env_no_config) for _ in range(n)]
+        results.append(("not-configured", times))
+        print("done")
+
+        # Scenario 2: inbox absent
+        print("  scenario: absent         ... ", end="", flush=True)
+        if inbox.exists():
+            inbox.unlink()
+        warmup(hook, env)
+        times = [run_hook(hook, env) for _ in range(n)]
+        results.append(("absent", times))
+        print("done")
+
+        # Scenario 3: empty inbox
+        print("  scenario: empty          ... ", end="", flush=True)
+        inbox.write_text("[]", encoding="utf-8")
+        warmup(hook, env)
+        times = [run_hook(hook, env) for _ in range(n)]
+        results.append(("empty", times))
+        print("done")
+
+        if not args.no_slow:
+            # Scenario 4: one message
+            print("  scenario: one-message    ... ", end="", flush=True)
+            inbox.write_text(json.dumps([MESSAGE_TEMPLATE]), encoding="utf-8")
+            warmup(hook, env, n=2)
+            times = []
+            for _ in range(n):
+                # Refill inbox after each drain so the hook always sees a message
+                inbox.write_text(json.dumps([MESSAGE_TEMPLATE]), encoding="utf-8")
+                times.append(run_hook(hook, env))
+            results.append(("one-message", times))
+            print("done")
+
+            # Scenario 5: five messages
+            print("  scenario: five-messages  ... ", end="", flush=True)
+            five = [MESSAGE_TEMPLATE] * 5
+            inbox.write_text(json.dumps(five), encoding="utf-8")
+            warmup(hook, env, n=2)
+            times = []
+            for _ in range(n):
+                inbox.write_text(json.dumps(five), encoding="utf-8")
+                times.append(run_hook(hook, env))
+            results.append(("five-messages", times))
+            print("done")
+
+    print()
+    print(f"Results ({n} iterations each):")
+    for label, times in results:
+        print_row(label, stats(times))
+
+    print()
+    # Highlight the fast-path threshold: target < 10ms for not-configured / absent / empty
+    fast_labels = {"not-configured", "absent", "empty"}
+    print("Fast-path target: p99 < 10ms")
+    for label, times in results:
+        if label in fast_labels:
+            s = stats(times)
+            flag = "OK" if s["p99"] < 10 else "SLOW"
+            print(f"  {label}: p99={s['p99']:.1f}ms [{flag}]")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
