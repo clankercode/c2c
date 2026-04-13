@@ -82,5 +82,15 @@ This would make the default safe for all clients without any config.
 
 ## Status
 
-Documented. Fix applied to `~/.claude.json` (see this session).
-Takes effect on next MCP server restart.
+**Fixed (server commit 00a7a84 + hook update).** Two layers of protection now in place:
+
+1. **Server default changed to `false`** — `C2C_MCP_AUTO_DRAIN_CHANNEL` now defaults to `0`
+   (disabled). No config change needed for new agents.
+
+2. **Client-capability gate** — even when `C2C_MCP_AUTO_DRAIN_CHANNEL=1`, auto-drain
+   only fires if the client declared `experimental.claude/channel = true` in the
+   `initialize` handshake. Standard Claude Code does not declare this, so the
+   guard is always off for current Claude Code sessions regardless of the env var.
+
+Old agents that had `C2C_MCP_AUTO_DRAIN_CHANNEL=0` in `~/.claude.json` are still safe
+(double-protected). New agents need no config at all.

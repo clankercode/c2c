@@ -54,10 +54,14 @@ def _rpc(proc: subprocess.Popen, request: dict, timeout: float = 5.0) -> dict:
     raise TimeoutError(f"no response for id={request.get('id')} within {timeout}s")
 
 
-def _spawn_server(broker_root: Path, session_id: str) -> subprocess.Popen:
+def _spawn_server(
+    broker_root: Path, session_id: str, extra_env: dict[str, str] | None = None
+) -> subprocess.Popen:
     env = os.environ.copy()
     env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
     env["C2C_MCP_SESSION_ID"] = session_id
+    if extra_env:
+        env.update(extra_env)
     return subprocess.Popen(
         [str(SERVER)],
         cwd=REPO,
@@ -69,7 +73,9 @@ def _spawn_server(broker_root: Path, session_id: str) -> subprocess.Popen:
     )
 
 
-def _initialize(proc: subprocess.Popen, req_id: int) -> dict:
+def _initialize(
+    proc: subprocess.Popen, req_id: int, capabilities: dict | None = None
+) -> dict:
     return _rpc(
         proc,
         {
@@ -78,7 +84,7 @@ def _initialize(proc: subprocess.Popen, req_id: int) -> dict:
             "method": "initialize",
             "params": {
                 "protocolVersion": "2025-11-25",
-                "capabilities": {},
+                "capabilities": capabilities if capabilities is not None else {},
                 "clientInfo": {"name": "onboarding-smoke", "version": "0"},
             },
         },
@@ -128,6 +134,10 @@ class OnboardingSmokeTest(unittest.TestCase):
             except Exception:
                 p.kill()
                 p.wait()
+            finally:
+                for stream in (p.stdout, p.stderr):
+                    if stream is not None and not stream.closed:
+                        stream.close()
 
     def test_two_peer_send_and_reply_roundtrip(self) -> None:
         start = time.monotonic()
@@ -235,6 +245,76 @@ class OnboardingSmokeTest(unittest.TestCase):
             self.assertEqual(messages[0]["from_alias"], "alice-room")
             self.assertEqual(messages[0]["content"], "room hello")
             self.assertEqual(messages[0]["to_alias"], "bob-room@smoke")
+        finally:
+            self._shutdown(alice, bob)
+
+    def test_non_channel_client_tool_calls_do_not_auto_drain_inbox(self) -> None:
+        """A polling client must not lose mail to unsupported channel pushes."""
+        alice = _spawn_server(self.broker_root, "alice-no-channel")
+        bob = _spawn_server(
+            self.broker_root,
+            "bob-no-channel",
+            {"C2C_MCP_AUTO_DRAIN_CHANNEL": "1"},
+        )
+        try:
+            _initialize(alice, 1)
+            _initialize(bob, 1, capabilities={})
+            _tool_call(alice, 2, "register", {"alias": "alice-no-channel"})
+            _tool_call(bob, 2, "register", {"alias": "bob-no-channel"})
+
+            _tool_call(
+                alice,
+                3,
+                "send",
+                {
+                    "from_alias": "alice-no-channel",
+                    "to_alias": "bob-no-channel",
+                    "content": "do not auto drain me",
+                },
+            )
+
+            _tool_call(bob, 3, "list", {})
+            poll_resp = _tool_call(bob, 4, "poll_inbox", {})
+            messages = json.loads(_tool_text(poll_resp))
+            self.assertEqual(len(messages), 1)
+            self.assertEqual(messages[0]["from_alias"], "alice-no-channel")
+            self.assertEqual(messages[0]["content"], "do not auto drain me")
+        finally:
+            self._shutdown(alice, bob)
+
+    def test_channel_client_tool_calls_auto_drain_inbox(self) -> None:
+        """A channel-capable client may receive mail through channel pushes."""
+        alice = _spawn_server(self.broker_root, "alice-channel")
+        bob = _spawn_server(
+            self.broker_root,
+            "bob-channel",
+            {"C2C_MCP_AUTO_DRAIN_CHANNEL": "1"},
+        )
+        try:
+            _initialize(alice, 1)
+            _initialize(
+                bob,
+                1,
+                capabilities={"experimental": {"claude/channel": {}}},
+            )
+            _tool_call(alice, 2, "register", {"alias": "alice-channel"})
+            _tool_call(bob, 2, "register", {"alias": "bob-channel"})
+
+            _tool_call(
+                alice,
+                3,
+                "send",
+                {
+                    "from_alias": "alice-channel",
+                    "to_alias": "bob-channel",
+                    "content": "auto drain me",
+                },
+            )
+
+            _tool_call(bob, 3, "list", {})
+            poll_resp = _tool_call(bob, 4, "poll_inbox", {})
+            messages = json.loads(_tool_text(poll_resp))
+            self.assertEqual(messages, [])
         finally:
             self._shutdown(alice, bob)
 

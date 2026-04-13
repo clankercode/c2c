@@ -15,6 +15,34 @@ let auto_drain_channel_enabled () =
       not (List.mem normalized [ "0"; "false"; "no"; "off" ])
   | None -> false
 
+let assoc_opt name = function
+  | `Assoc fields -> List.assoc_opt name fields
+  | _ -> None
+
+let string_field name json =
+  match assoc_opt name json with Some (`String value) -> Some value | _ -> None
+
+let client_supports_claude_channel request =
+  let channel_capability =
+    match assoc_opt "params" request with
+    | None -> None
+    | Some params -> (
+        match assoc_opt "capabilities" params with
+        | None -> None
+        | Some capabilities -> (
+            match assoc_opt "experimental" capabilities with
+            | None -> None
+            | Some experimental -> assoc_opt "claude/channel" experimental))
+  in
+  match channel_capability with
+  | Some (`Bool false) | Some `Null | None -> false
+  | Some _ -> true
+
+let next_channel_capability ~current request =
+  match string_field "method" request with
+  | Some "initialize" -> client_supports_claude_channel request
+  | _ -> current
+
 let starts_with_ci ~prefix s =
   let p = String.lowercase_ascii prefix in
   let v = String.lowercase_ascii s in
@@ -64,7 +92,7 @@ let jsonrpc_error ~id ~code ~message =
     ; ("error", `Assoc [ ("code", `Int code); ("message", `String message) ])
     ]
 
-let rec loop ~broker_root =
+let rec loop ~broker_root ~channel_capable =
   let open Lwt.Syntax in
   let* msg = read_message () in
   match msg with
@@ -74,15 +102,17 @@ let rec loop ~broker_root =
       match json with
       | Error () ->
           let* () = write_message (jsonrpc_error ~id:`Null ~code:(-32700) ~message:"Parse error") in
-          loop ~broker_root
+          loop ~broker_root ~channel_capable
       | Ok request ->
+          let channel_capable = next_channel_capability ~current:channel_capable request in
           let* response = C2c_mcp.handle_request ~broker_root request in
           let* () = match response with None -> Lwt.return_unit | Some resp -> write_message resp in
           let* () =
-            match (auto_drain_channel_enabled (), session_id ()) with
-            | false, _ -> Lwt.return_unit
-            | true, None -> Lwt.return_unit
-            | true, Some session_id ->
+            match (auto_drain_channel_enabled (), channel_capable, session_id ()) with
+            | false, _, _ -> Lwt.return_unit
+            | true, false, _ -> Lwt.return_unit
+            | true, true, None -> Lwt.return_unit
+            | true, true, Some session_id ->
                 let broker = C2c_mcp.Broker.create ~root:broker_root in
                 let queued = C2c_mcp.Broker.drain_inbox broker ~session_id in
                 let rec emit = function
@@ -93,9 +123,9 @@ let rec loop ~broker_root =
                 in
                 emit queued
           in
-          loop ~broker_root)
+          loop ~broker_root ~channel_capable)
 
 let () =
   let root = broker_root () in
   C2c_mcp.auto_register_startup ~broker_root:root;
-  Lwt_main.run (loop ~broker_root:root)
+  Lwt_main.run (loop ~broker_root:root ~channel_capable:false)

@@ -87,14 +87,12 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   advance the north-star goal. Maximize work-per-tick. "Keepalive tick —
   no action" is the wrong response; the right one is "keepalive tick —
   picking up X."
-- **Set `C2C_MCP_AUTO_DRAIN_CHANNEL=0` in your MCP config.** The
-  server default is `1` (auto-drain on every RPC), but this silently
-  eats inbox messages as `notifications/claude/channel` notifications
-  that standard Claude Code doesn't surface. With auto-drain on, any
-  message that arrives while you're making tool calls mid-turn gets
-  consumed before your next `poll_inbox`. Set it to `0` in
-  `~/.claude.json` `mcpServers.c2c.env`, then restart-self to pick
-  it up. See `.collab/findings/2026-04-13T08-02-00Z-storm-beacon-auto-drain-silent-eat.md`.
+- **Do not set `C2C_MCP_AUTO_DRAIN_CHANNEL=1`.** The server now
+  defaults to `0` (safe). Even if set to `1`, auto-drain only fires
+  when the client declares `experimental.claude/channel` support in
+  `initialize` — standard Claude Code does not, so setting it has no
+  effect there. The old footgun (silent inbox drain, messages lost) is
+  fixed. See `.collab/findings/2026-04-13T08-02-00Z-storm-beacon-auto-drain-silent-eat.md`.
 - **Restart yourself after MCP broker updates.** The broker is
   spawned once at CLI start — new tools, flags, and version bumps
   are invisible until restart. `dune build` isn't enough;
@@ -178,6 +176,7 @@ not a task queue.
 ```
 c2c_cli.py <install|list|mcp|register|send|verify|whoami> [args]  # Main CLI entry point, dispatches to subcommands
 c2c_install.py [--json]                                            # Installs c2c wrapper scripts into ~/.local/bin
+c2c_configure_claude_code.py [--broker-root DIR] [--session-id ID] [--force] [--json]  # Writes mcpServers.c2c into ~/.claude.json (Claude Code self-config, no hand-editing needed)
 c2c_register.py <session> [--json]                                 # Registers a Claude session for c2c messaging, assigns an alias
 c2c_send.py <alias> <message...> [--dry-run] [--json]             # Sends a c2c message to an opted-in session by alias
 c2c_list.py [--all] [--json]                                       # Lists opted-in c2c sessions (--all includes unregistered)
