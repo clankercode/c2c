@@ -131,6 +131,21 @@ def _infer_client_type(alias: str, session_id: str) -> str:
     return "?"
 
 
+def _registered_ago(registered_at: float | None) -> str | None:
+    if registered_at is None:
+        return None
+    try:
+        age_s = time.time() - registered_at
+        if age_s < 60:
+            return f"{int(age_s)}s ago"
+        elif age_s < 3600:
+            return f"{int(age_s / 60)}m ago"
+        else:
+            return f"{int(age_s / 3600)}h ago"
+    except (ValueError, OverflowError):
+        return None
+
+
 def _last_seen_str(broker_root: Path, session_id: str) -> str | None:
     inbox_path = broker_root / f"{session_id}.inbox.json"
     if not inbox_path.exists():
@@ -172,7 +187,14 @@ def list_broker_peers() -> list[dict]:
             pid_start_time: int | None = int(str(pst_raw)) if pst_raw is not None else None
         except (ValueError, TypeError):
             pid_start_time = None
+        try:
+            ra_raw = registration.get("registered_at")
+            registered_at: float | None = float(str(ra_raw)) if ra_raw is not None else None
+        except (ValueError, TypeError):
+            registered_at = None
         session_id = str(registration.get("session_id", ""))
+        # Prefer registered_at for last_seen; fall back to inbox mtime
+        last_seen = _registered_ago(registered_at) or _last_seen_str(broker_root, session_id)
         rows.append(
             {
                 "alias": alias,
@@ -181,7 +203,8 @@ def list_broker_peers() -> list[dict]:
                 "alive": _pid_alive(pid, pid_start_time),
                 "rooms": _peer_rooms(broker_root, alias),
                 "client_type": _infer_client_type(alias, session_id),
-                "last_seen": _last_seen_str(broker_root, session_id),
+                "last_seen": last_seen,
+                "registered_at": registered_at,
             }
         )
     return rows
