@@ -3,14 +3,15 @@
   "flags": [
     "--resume",
     "c78d64e9-1c7d-413f-8440-6ab33e0bf8fe",
-    "--dangerously-skip-permissions",
-    "--channels",
-    "server:c2c"
+    "--dangerously-skip-permissions"
+  ],
+  "positional": [
+    "Session resumed by run-claude-inst-outer. Call mcp__c2c__poll_inbox (as storm-echo / c2c-r2-b1), handle any queued messages, then continue your in-progress work. If there is nothing queued and nothing in flight, say so briefly and stop."
   ],
   "cwd": "/home/xertrov/src/c2c-msg",
   "title": "c2c-r2-b1",
   "env": {
     "RUN_CLAUDE_INST_ALIAS_HINT": "c2c-r2-b1"
   },
-  "notes": "storm-echo lineage: poll_inbox author. Channel flag enabled so notifications/claude/channel is surfaced when client supports it; poll_inbox is the flag-independent fallback."
+  "notes": "storm-echo lineage: poll_inbox author. NOTE: no --channels / --dangerously-load-development-channels flag. c2c is not on the approved channels allowlist and the dangerous variant prompts interactively on startup, which blocks unattended relaunches. poll_inbox is the flag-independent receive path — kickoff prompt above tells the model to call it on each resume."
 }
