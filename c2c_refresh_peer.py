@@ -20,9 +20,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import tempfile
 from pathlib import Path
 
+import c2c_broker_gc
 import c2c_mcp  # noqa: F401 (runtime-only module with no stub)
 
 
@@ -38,8 +38,6 @@ def refresh_peer(
     dry_run: bool = False,
     json_out: bool = False,
 ) -> dict:
-    registry_path = broker_root / "registry.json"
-
     # Validate the PID is actually alive before touching the registry
     start_time: int | None = None
     if pid is not None:
@@ -50,8 +48,8 @@ def refresh_peer(
             )
         start_time = c2c_mcp.read_pid_start_time(pid)
 
-    with c2c_mcp.registry_write_lock(registry_path):
-        registrations = c2c_mcp.load_broker_registrations(registry_path)
+    with c2c_broker_gc.with_registry_lock(broker_root):
+        registrations = c2c_broker_gc.load_broker_registrations(broker_root)
 
         # Find the matching registration
         match_idx = None
@@ -119,20 +117,7 @@ def refresh_peer(
             new_reg.pop("pid_start_time", None)
         registrations[match_idx] = new_reg
 
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=broker_root,
-            prefix=f".{registry_path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            handle.write(json.dumps(registrations))
-            handle.flush()
-            os.fsync(handle.fileno())
-            temp_path = Path(handle.name)
-
-        os.replace(temp_path, registry_path)
+        c2c_broker_gc.save_broker_registrations(broker_root, registrations)
 
     result = {
         "alias": alias,
