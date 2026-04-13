@@ -9,7 +9,7 @@ type message = { from_alias : string; to_alias : string; content : string }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 
-let server_version = "0.6.7"
+let server_version = "0.6.8"
 
 let server_features =
   [ "liveness"
@@ -1045,9 +1045,17 @@ module Broker = struct
   let prune_rooms t =
     with_registry_lock t (fun () ->
       let regs = load_registrations t in
+      (* Use tristate liveness: treat Unknown (pid=None, no /proc check possible)
+         the same as Dead for eviction purposes.  registration_is_alive collapses
+         Unknown→Alive for backward-compat with sweep/enqueue, but in prune_rooms
+         we want to clear out pidless zombie room members too — they cannot be
+         verified alive and their inboxes accumulate dead fan-out messages. *)
       let dead_sids =
         regs
-        |> List.filter (fun r -> not (registration_is_alive r))
+        |> List.filter (fun r ->
+               match registration_liveness_state r with
+               | Alive -> false
+               | Dead | Unknown -> true)
         |> List.map (fun r -> r.session_id)
       in
       evict_dead_from_rooms t ~dead_session_ids:dead_sids)
@@ -1498,21 +1506,24 @@ let auto_register_startup ~broker_root =
          with a DIFFERENT session_id, skip — prevents a one-shot or probe
          process from evicting an active peer that owns this alias. A new
          session is allowed to claim the alias once the existing holder dies
-         (its PID check will return false, making this guard inactive). *)
+         (its PID check will return false, making this guard inactive).
+         The SAME pid is always allowed to re-register so session-id drift
+         (e.g. after refresh-peer or outer-loop env changes) self-heals. *)
+      let pid =
+        match current_client_pid () with
+        | Some pid -> Some pid
+        | None -> Some (Unix.getppid ())
+      in
       let alias_occupied_guard =
         List.exists
           (fun reg ->
             reg.alias = alias
             && reg.session_id <> session_id
-            && Broker.registration_is_alive reg)
+            && Broker.registration_is_alive reg
+            && reg.pid <> pid)
           existing
       in
       if not hijack_guard && not alias_occupied_guard then begin
-        let pid =
-          match current_client_pid () with
-          | Some pid -> Some pid
-          | None -> Some (Unix.getppid ())
-        in
         let pid_start_time = Broker.capture_pid_start_time pid in
         Broker.register broker ~session_id ~alias ~pid ~pid_start_time;
         ignore (Broker.redeliver_dead_letter_for_session broker ~session_id ~alias)

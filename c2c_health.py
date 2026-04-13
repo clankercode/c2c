@@ -225,6 +225,33 @@ def check_claude_wake_daemon(session_id: str | None) -> dict[str, Any]:
     return result
 
 
+def check_deliver_daemon(session_id: str | None) -> dict[str, Any]:
+    """Check whether a c2c_deliver_inbox.py notify daemon is running for the session."""
+    result: dict[str, Any] = {"checked": False, "running": False, "pid": None}
+    if not session_id:
+        return result
+    result["checked"] = True
+    try:
+        proc = subprocess.run(
+            ["pgrep", "-a", "-f", r"c2c_deliver_inbox.py"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        for line in proc.stdout.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) < 2:
+                continue
+            pid_str, cmdline = parts
+            if session_id in cmdline:
+                result["running"] = True
+                result["pid"] = int(pid_str)
+                break
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return result
+
+
 def check_hook(home: Path | None = None) -> dict[str, Any]:
     """Check whether the Claude Code PostToolUse inbox hook is installed."""
     home = home or Path.home()
@@ -495,6 +522,7 @@ def run_health_check(broker_root: Path, session_id: str | None = None) -> dict[s
         "hook": check_hook(),
         "claude_mcp": check_claude_mcp(),
         "claude_wake_daemon": check_claude_wake_daemon(effective_session_id),
+        "deliver_daemon": check_deliver_daemon(effective_session_id),
         "swarm_lounge": check_swarm_lounge(broker_root, session.get("alias")),
         "dead_letter": check_dead_letter(broker_root),
         "stale_inboxes": check_stale_inboxes(broker_root),
@@ -604,6 +632,19 @@ def print_health_report(report: dict[str, Any]) -> None:
             sid = report.get("session", {}).get("session_id", "")
             print("~ Claude wake daemon: not running")
             print(f"    Run: nohup c2c-claude-wake --claude-session {sid} &")
+
+    # Deliver daemon (Kimi / OpenCode / Codex / Crush auto-delivery)
+    dd = report.get("deliver_daemon", {})
+    if dd.get("checked"):
+        if dd.get("running"):
+            print(f"✓ Deliver daemon: running (pid {dd['pid']})")
+        else:
+            sid = report.get("session", {}).get("session_id", "")
+            alias = report.get("session", {}).get("alias", "")
+            print("~ Deliver daemon: not running")
+            print(f"    Run: python3 c2c_deliver_inbox.py --client <client> --session-id {sid} --notify-only --loop &")
+            if alias:
+                print(f"    Or rearm via your outer-loop helper (e.g. run-kimi-inst-rearm {alias})")
 
     # Dead-letter
     dl = report.get("dead_letter", {})

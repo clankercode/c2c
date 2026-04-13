@@ -2252,6 +2252,42 @@ let test_tools_call_prune_rooms_via_mcp () =
            in
            check int "one eviction via MCP prune_rooms" 1 (List.length evicted)))
 
+let test_prune_rooms_evicts_pidless_zombie_members () =
+  (* prune_rooms must treat pid=None registrations (Unknown liveness) as
+     evictable.  registration_is_alive returns true for pid=None for backward-
+     compat, but these pidless rows cannot be verified alive and their inboxes
+     accumulate dead fan-out messages — they should be removed from rooms. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Alive member: current pid, no pid_start_time *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"s-alive" ~alias:"alive-peer"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+      (* Pidless zombie: no pid at all — legacy registration *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"s-zombie" ~alias:"zombie-peer"
+        ~pid:None ~pid_start_time:None;
+      ignore
+        (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
+           ~alias:"alive-peer" ~session_id:"s-alive");
+      ignore
+        (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
+           ~alias:"zombie-peer" ~session_id:"s-zombie");
+      let evicted = C2c_mcp.Broker.prune_rooms broker in
+      check int "pidless zombie evicted from room" 1 (List.length evicted);
+      let (evicted_room, evicted_alias) = List.hd evicted in
+      check string "evicted from swarm-lounge" "swarm-lounge" evicted_room;
+      check string "evicted zombie-peer alias" "zombie-peer" evicted_alias;
+      (* Both registrations still present — prune_rooms only touches room membership *)
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      check int "both registrations still present" 2 (List.length regs);
+      let members =
+        C2c_mcp.Broker.read_room_members broker ~room_id:"swarm-lounge"
+      in
+      check int "one room member remaining" 1 (List.length members);
+      check string "remaining member is alive-peer" "alive-peer"
+        (List.hd members).C2c_mcp.rm_alias)
+
 let test_register_redelivers_dead_letter_on_same_session_id () =
   (* Scenario: a managed session (e.g. kimi-local) is swept while the outer
      loop is between iterations — PID dead, no live process. Messages queued to
@@ -2442,6 +2478,82 @@ let test_join_room_is_idempotent () =
       check int "still one member after duplicate join" 1 (List.length members);
       check string "alias unchanged" "storm-ember" (List.hd members).rm_alias)
 
+let test_join_room_broadcasts_system_message_to_all_members () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"alice" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-b"
+        ~alias:"bob" ~pid:None ~pid_start_time:None;
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"lobby"
+          ~alias:"alice" ~session_id:"session-a"
+      in
+      let _ =
+        C2c_mcp.Broker.drain_inbox broker ~session_id:"session-a"
+      in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"lobby"
+          ~alias:"bob" ~session_id:"session-b"
+      in
+      let inbox_a =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"session-a"
+      in
+      let inbox_b =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"session-b"
+      in
+      check int "existing member receives join broadcast" 1 (List.length inbox_a);
+      check int "joining member receives join broadcast" 1 (List.length inbox_b);
+      let msg_a = List.hd inbox_a in
+      let msg_b = List.hd inbox_b in
+      check string "system sender to existing member" "c2c-system"
+        msg_a.from_alias;
+      check string "system sender to joining member" "c2c-system"
+        msg_b.from_alias;
+      check string "existing member tagged to room" "alice@lobby"
+        msg_a.to_alias;
+      check string "joining member tagged to room" "bob@lobby"
+        msg_b.to_alias;
+      check string "join broadcast content" "bob joined room lobby"
+        msg_a.content;
+      check string "same join content to joining member" msg_a.content
+        msg_b.content;
+      let history =
+        C2c_mcp.Broker.read_room_history broker ~room_id:"lobby" ~limit:10
+      in
+      check int "two join events in history" 2 (List.length history);
+      let last = List.hd (List.rev history) in
+      check string "history system sender" "c2c-system" last.rm_from_alias;
+      check string "history join content" "bob joined room lobby"
+        last.rm_content)
+
+let test_join_room_idempotent_does_not_rebroadcast () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"alice" ~pid:None ~pid_start_time:None;
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"lobby"
+          ~alias:"alice" ~session_id:"session-a"
+      in
+      let _ =
+        C2c_mcp.Broker.drain_inbox broker ~session_id:"session-a"
+      in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"lobby"
+          ~alias:"alice" ~session_id:"session-a"
+      in
+      let inbox =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"session-a"
+      in
+      check int "duplicate join does not enqueue another system message" 0
+        (List.length inbox);
+      let history =
+        C2c_mcp.Broker.read_room_history broker ~room_id:"lobby" ~limit:10
+      in
+      check int "duplicate join does not append another history entry" 1
+        (List.length history))
+
 let test_leave_room_removes_member () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -2470,6 +2582,12 @@ let test_send_room_appends_history_and_fans_out () =
       let _ =
         C2c_mcp.Broker.join_room broker ~room_id:"chat"
           ~alias:"storm-storm" ~session_id:"session-b"
+      in
+      let _ =
+        C2c_mcp.Broker.drain_inbox broker ~session_id:"session-a"
+      in
+      let _ =
+        C2c_mcp.Broker.drain_inbox broker ~session_id:"session-b"
       in
       (* storm-ember sends a message. *)
       let result =
@@ -2515,6 +2633,12 @@ let test_send_room_skips_sender_inbox () =
           ~alias:"storm-storm" ~session_id:"session-b"
       in
       let _ =
+        C2c_mcp.Broker.drain_inbox broker ~session_id:"session-a"
+      in
+      let _ =
+        C2c_mcp.Broker.drain_inbox broker ~session_id:"session-b"
+      in
+      let _ =
         C2c_mcp.Broker.send_room broker ~from_alias:"storm-ember"
           ~room_id:"chat" ~content:"echo test"
       in
@@ -2537,6 +2661,12 @@ let test_send_room_deduplicates_identical_content_within_window () =
       let _ =
         C2c_mcp.Broker.join_room broker ~room_id:"chat"
           ~alias:"receiver" ~session_id:"session-b"
+      in
+      let _ =
+        C2c_mcp.Broker.drain_inbox broker ~session_id:"session-a"
+      in
+      let _ =
+        C2c_mcp.Broker.drain_inbox broker ~session_id:"session-b"
       in
       (* Send the same content twice in quick succession *)
       let r1 =
@@ -2571,6 +2701,12 @@ let test_send_room_does_not_dedup_different_content () =
       let _ =
         C2c_mcp.Broker.join_room broker ~room_id:"chat"
           ~alias:"receiver" ~session_id:"session-b"
+      in
+      let _ =
+        C2c_mcp.Broker.drain_inbox broker ~session_id:"session-a"
+      in
+      let _ =
+        C2c_mcp.Broker.drain_inbox broker ~session_id:"session-b"
       in
       let r1 =
         C2c_mcp.Broker.send_room broker ~from_alias:"sender"
@@ -3989,6 +4125,8 @@ let () =
              test_prune_rooms_noop_when_all_members_alive
          ; test_case "tools/call prune_rooms evicts dead members via MCP" `Quick
              test_tools_call_prune_rooms_via_mcp
+         ; test_case "prune_rooms evicts pidless zombie members (Unknown liveness)" `Quick
+             test_prune_rooms_evicts_pidless_zombie_members
          ; test_case "register redelivers dead-letter on same session_id" `Quick
              test_register_redelivers_dead_letter_on_same_session_id
          ; test_case "register redelivers dead-letter by alias (new session_id)" `Quick
@@ -4017,6 +4155,10 @@ let () =
              test_join_room_creates_room_and_adds_member
          ; test_case "join_room is idempotent" `Quick
              test_join_room_is_idempotent
+         ; test_case "join_room broadcasts system message to all members" `Quick
+             test_join_room_broadcasts_system_message_to_all_members
+         ; test_case "join_room idempotent does not rebroadcast" `Quick
+             test_join_room_idempotent_does_not_rebroadcast
          ; test_case "leave_room removes member" `Quick
              test_leave_room_removes_member
          ; test_case "send_room appends history and fans out" `Quick

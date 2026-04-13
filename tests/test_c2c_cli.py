@@ -8133,6 +8133,54 @@ class HealthCheckStaleInboxTests(unittest.TestCase):
         self.assertEqual(len(result["stale"]), 1)  # only sess-b >= threshold
 
 
+class HealthCheckDeliverDaemonTests(unittest.TestCase):
+    """Tests for c2c_health.check_deliver_daemon()."""
+
+    def setUp(self):
+        import c2c_health
+        self.c2c_health = c2c_health
+
+    def test_no_session_id_returns_unchecked(self):
+        result = self.c2c_health.check_deliver_daemon(None)
+        self.assertFalse(result["checked"])
+        self.assertFalse(result["running"])
+
+    def test_running_when_session_id_in_pgrep_output(self):
+        fake_stdout = (
+            "338330 python3 c2c_deliver_inbox.py --client codex --session-id codex-local\n"
+            "3771272 python3 c2c_deliver_inbox.py --client kimi --session-id kimi-nova\n"
+        )
+        with mock.patch(
+            "subprocess.run",
+            return_value=mock.Mock(stdout=fake_stdout, stderr=""),
+        ) as mock_run:
+            result = self.c2c_health.check_deliver_daemon("kimi-nova")
+            mock_run.assert_called_once()
+            self.assertTrue(result["checked"])
+            self.assertTrue(result["running"])
+            self.assertEqual(result["pid"], 3771272)
+
+    def test_not_running_when_session_id_missing(self):
+        fake_stdout = "338330 python3 c2c_deliver_inbox.py --client codex --session-id codex-local\n"
+        with mock.patch(
+            "subprocess.run",
+            return_value=mock.Mock(stdout=fake_stdout, stderr=""),
+        ):
+            result = self.c2c_health.check_deliver_daemon("opencode-local")
+            self.assertTrue(result["checked"])
+            self.assertFalse(result["running"])
+            self.assertIsNone(result["pid"])
+
+    def test_pgrep_error_returns_not_running(self):
+        with mock.patch(
+            "subprocess.run",
+            side_effect=OSError("pgrep not found"),
+        ):
+            result = self.c2c_health.check_deliver_daemon("kimi-nova")
+            self.assertTrue(result["checked"])
+            self.assertFalse(result["running"])
+
+
 class RefreshPeerTests(unittest.TestCase):
     """Tests for c2c_refresh_peer.refresh_peer()."""
 
