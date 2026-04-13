@@ -76,6 +76,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_list.py",
         "c2c_send.py",
         "c2c_install.py",
+        "c2c_poll_inbox.py",
         "c2c_verify.py",
         "c2c_whoami.py",
         "c2c_cli.py",
@@ -268,6 +269,7 @@ class C2CCLITests(unittest.TestCase):
                 "c2c",
                 "c2c-install",
                 "c2c-list",
+                "c2c-poll-inbox",
                 "c2c-register",
                 "c2c-send",
                 "c2c-verify",
@@ -275,6 +277,7 @@ class C2CCLITests(unittest.TestCase):
             ],
         )
         self.assertTrue((install_dir / "c2c").exists())
+        self.assertTrue((install_dir / "c2c-poll-inbox").exists())
         self.assertTrue((install_dir / "c2c-register").exists())
         self.assertTrue((install_dir / "c2c-whoami").exists())
 
@@ -310,6 +313,13 @@ class C2CCLITests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         mcp_main.assert_called_once_with(["--help"])
+
+    def test_c2c_poll_inbox_subcommand_dispatches_to_recovery_poller(self):
+        with mock.patch("c2c_cli.c2c_poll_inbox.main", return_value=0) as poll_main:
+            result = c2c_cli.main(["poll-inbox", "--json"])
+
+        self.assertEqual(result, 0)
+        poll_main.assert_called_once_with(["--json"])
 
     def test_c2c_mcp_defaults_broker_root_to_shared_git_c2c_dir(self):
         expected = REPO / ".git" / "c2c" / "mcp"
@@ -1985,6 +1995,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c_list.py",
                 "c2c_send.py",
                 "c2c_install.py",
+                "c2c_poll_inbox.py",
                 "c2c_verify.py",
                 "c2c_whoami.py",
                 "c2c_cli.py",

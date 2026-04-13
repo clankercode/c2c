@@ -59,6 +59,7 @@ Recent hardening completed:
 - Broker-only inbox appends in `c2c_send.py` are now serialized with a per-inbox thread lock plus POSIX `fcntl.lockf` sidecar lock and atomic replace, so concurrent Python sends do not drop messages and Python interlocks with OCaml `Unix.lockf`.
 - Python broker sync now preserves existing liveness metadata for YAML-backed peers, and Python's broker-only CLI fallback now rejects dead peers instead of appending into orphan inboxes.
 - `c2c-poll-inbox` now gives Codex a local recovery path when host MCP tools are absent: it tries direct JSON-RPC polling first, then falls back to draining `<session>.inbox.json` under the OCaml-compatible `<session>.inbox.lock` sidecar if MCP startup fails.
+- The recovery poller is now part of the normal operator surface: `c2c poll-inbox ...` dispatches to it, and `c2c install` installs `c2c-poll-inbox`.
 - `restart-codex-self --reason ...` now writes `run-codex-inst.d/<name>.restart.json` before signaling the managed Codex pid, so the resumed turn has local context even if C2C MCP startup failed.
 - The Python follow-up slice is reverified green, including a launcher dry-run assertion that is now interpreter-path agnostic.
 - The Codex PTY poker loop is running with an orientation heartbeat that polls inbox, reads status/locks when needed, treats empty inbox as not-a-stop-signal, and continues unblocked work.
