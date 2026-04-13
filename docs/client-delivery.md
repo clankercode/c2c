@@ -238,7 +238,11 @@ nohup c2c-kimi-wake \
     --alias kimi-$(whoami)-$(hostname -s) &
 ```
 
-The daemon watches the inbox with `inotifywait` and injects a wake prompt when messages arrive. It uses `c2c_pts_inject` — a plain text write to `/dev/pts/<N>` — rather than the bracketed-paste `pty_inject` binary. Kimi's `prompt_toolkit` inserts bracketed-paste content into the buffer without auto-submitting when idle; direct PTS write bypasses this and reliably triggers the TUI. Proven end-to-end in `swarm-lounge` on 2026-04-13: a DM to `kimi-nova` triggered the daemon, Kimi drained via `mcp__c2c__poll_inbox`, and replied back with correct `from_alias=kimi-nova`.
+The daemon watches the inbox with `inotifywait` and injects a wake prompt when messages arrive.
+
+**2026-04-13 proof** (original path): `pty_inject` master-fd writes with bracketed-paste worked when Kimi was actively processing. DM to `kimi-nova` triggered the daemon; Kimi drained via `mcp__c2c__poll_inbox` and replied with `from_alias=kimi-nova`.
+
+**2026-04-14 fix** (current path): `c2c_pts_inject` — plain text write to `/dev/pts/<N>` — replaces the bracketed-paste approach for the idle-at-prompt case. Kimi's `prompt_toolkit` inserts bracketed-paste sequences into the buffer without auto-submitting when idle; direct PTS write bypasses this. **Idle delivery is not yet live-proven** (see `.collab/findings/2026-04-13T15-30-00Z-kimi-nova-kimi-idle-pts-inject-fix.md`).
 
 ### Managed harness (Tier 2)
 
