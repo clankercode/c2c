@@ -29,6 +29,7 @@ time; aliases that ARE registered are always preserved for redelivery.
 """
 import argparse
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -129,41 +130,41 @@ def print_list(records: list[dict]) -> None:
         )
 
 
-def replay_records(records: list[dict], dry_run: bool) -> dict:
+def replay_records(records: list[dict], dry_run: bool, broker_root: Path) -> dict:
     """Re-send each record via c2c_send.send_to_alias.
 
     The dead-letter file itself is never modified — replay is idempotent
     and safe to retry on transient failures. Returns a summary dict.
     """
-    import importlib.util
-
-    here = Path(__file__).resolve().parent
-    spec = importlib.util.spec_from_file_location("c2c_send", here / "c2c_send.py")
-    if spec is None or spec.loader is None:
-        sys.exit("fatal: cannot load c2c_send.py for replay")
-    c2c_send = importlib.util.module_from_spec(spec)
-    sys.modules["c2c_send"] = c2c_send
-    spec.loader.exec_module(c2c_send)
+    import c2c_send
 
     sent = 0
     failed = []
-    for i, rec in enumerate(records, start=1):
-        msg = rec.get("message") or {}
-        to_alias = msg.get("to_alias", "")
-        content = msg.get("content", "")
-        if not to_alias:
-            failed.append({"index": i, "reason": "record has no to_alias"})
-            continue
-        try:
-            result = c2c_send.send_to_alias(to_alias, content, dry_run=dry_run)
-            sent += 1
-            if dry_run:
-                print(f"  [DRY] {i}. -> {to_alias}: {result.get('to', '?')}")
-            else:
-                print(f"  sent {i}. -> {to_alias}")
-        except Exception as exc:
-            failed.append({"index": i, "to_alias": to_alias, "error": str(exc)})
-            print(f"  FAIL {i}. -> {to_alias}: {exc}", file=sys.stderr)
+    old_broker_root = os.environ.get("C2C_MCP_BROKER_ROOT")
+    os.environ["C2C_MCP_BROKER_ROOT"] = str(broker_root)
+    try:
+        for i, rec in enumerate(records, start=1):
+            msg = rec.get("message") or {}
+            to_alias = msg.get("to_alias", "")
+            content = msg.get("content", "")
+            if not to_alias:
+                failed.append({"index": i, "reason": "record has no to_alias"})
+                continue
+            try:
+                result = c2c_send.send_to_alias(to_alias, content, dry_run=dry_run)
+                sent += 1
+                if dry_run:
+                    print(f"  [DRY] {i}. -> {to_alias}: {result.get('to', '?')}")
+                else:
+                    print(f"  sent {i}. -> {to_alias}")
+            except Exception as exc:
+                failed.append({"index": i, "to_alias": to_alias, "error": str(exc)})
+                print(f"  FAIL {i}. -> {to_alias}: {exc}", file=sys.stderr)
+    finally:
+        if old_broker_root is None:
+            os.environ.pop("C2C_MCP_BROKER_ROOT", None)
+        else:
+            os.environ["C2C_MCP_BROKER_ROOT"] = old_broker_root
     return {
         "replay_mode": "dry-run" if dry_run else "live",
         "total_considered": len(records),
@@ -306,7 +307,7 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        result = replay_records(filtered, dry_run=args.dry_run)
+        result = replay_records(filtered, dry_run=args.dry_run, broker_root=root)
         print()
         print(f"replay result: {result['sent']}/{result['total_considered']} sent, {len(result['failed'])} failed")
         return 0 if not result["failed"] else 1

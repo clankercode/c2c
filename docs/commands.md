@@ -340,7 +340,7 @@ c2c <subcommand> [args]
 | `refresh-peer <alias> [--pid PID]` | Update a stale registration to a new live PID |
 | `health` | Quick diagnostic: broker, registry, session, inbox, relay |
 | `broker-gc [--once] [--interval N]` | Broker GC daemon: sweeps dead sessions, prunes dead-letter |
-| `dead-letter [--purge-orphans] [--purge-all] [--dry-run]` | Inspect and purge the dead-letter queue |
+| `dead-letter [--to ALIAS] [--from-sid SID] [--replay] [--purge-orphans] [--purge-all] [--dry-run]` | Inspect, replay, and purge the dead-letter queue |
 | `wire-daemon <start|stop|status|restart|list>` | Manage Kimi Wire bridge background daemons |
 | `deliver-inbox [--session-id S] [--notify-only] [--once] [--loop]` | Delivery daemon: watches inbox and PTY-injects wake prompts; used by managed harnesses |
 | `inject [--client kimi\|opencode\|claude] --pts N --terminal-pid P` | PTY inject a wake prompt into a TUI session |

@@ -62,7 +62,7 @@ permalink: /next-steps/
 - **join_room updates stale session_id on alias rejoin** ✓ — when a managed session restarts with a new session_id (same alias), `join_room` now replaces the existing stale entry instead of adding a duplicate. Prevents room fanout duplication and enables `evict_dead_from_rooms` to evict by current session_id (4d69328, 95 OCaml + 292 Python tests, 2026-04-13).
 - **`c2c health` shows outer-loop status** ✓ — health check now reports which managed-harness outer loops are running and warns agents NOT to call sweep while they are active (sweep footgun guard). Also shows `safe_to_sweep: false` in JSON output (930d424, 2026-04-13).
 - **broker-gc dead-letter locking + `--dead-letter-ttl` / `--orphan-dead-letter-ttl` args** ✓ — `purge_old_dead_letter` and `purge_orphan_dead_letter` now hold POSIX fcntl.lockf on `dead-letter.jsonl.lock` sidecar (interlocks with OCaml); both TTLs configurable via CLI (407578a, 2026-04-13).
-- **`c2c dead-letter` CLI subcommand** ✓ — new `c2c dead-letter [--purge-orphans] [--purge-all] [--dry-run]` for operator inspection and cleanup of the dead-letter queue (fdf2265, 2026-04-13).
+- **`c2c dead-letter` CLI subcommand** ✓ — `c2c dead-letter [--to ALIAS] [--from-sid SID] [--replay] [--purge-orphans] [--purge-all] [--dry-run]` supports operator inspection, manual replay via the normal broker send path, and cleanup of the dead-letter queue. Explicit `--root` replay now supplies that same root to `c2c_send`'s broker lookup (fdf2265 + codex follow-up, 2026-04-13).
 - **`c2c health` no-agent-context fix** ✓ — CLI health check no longer reports ISSUES DETECTED when run outside an agent shell. Shows `○ Session: no agent context` and exits 0 when broker is reachable. New `--session-id` operator flag checks a specific session's registration without needing agent env vars (3b42722, 2026-04-13).
 - **Sweep evicts dead members from rooms** ✓ — `mcp__c2c__sweep` now calls `evict_dead_from_rooms` after dropping dead registrations; stale entries are removed from all room member lists. Response includes `evicted_room_members:[{room_id,alias}]`. OCaml test added (3a2ab9a, 2026-04-13).
 - **broker-gc orphan dead-letter pruning** ✓ — GC purges dead-letter entries where `to_alias` is no longer registered and the entry is >1h old (configurable via `--orphan-dead-letter-ttl`). Strips `@room_id` suffix for room fan-out messages. Reduced a 95-entry backlog to 2 on first run (dc63932, 2026-04-13).
@@ -120,14 +120,14 @@ permalink: /next-steps/
   memberships; CLI/MCP `join_room` deduplicates by both alias and session_id;
   auto-join prefers the current registered alias over stale env aliases. Fixes
   ghost entries when managed sessions rename (e.g., crush-xertrov-x-game →
-  ember-flame). 768 Python + 106 OCaml tests (1fb4b6c, 2026-04-14).
+  ember-flame). 770 Python + 106 OCaml tests (1fb4b6c + replay follow-up, 2026-04-14).
 - **`.goal-loops/active-goal.md` gitignore footgun fixed** ✓ — `.goal-loops/`
   was excluded in both `.gitignore` and `.git/info/exclude`, forcing agents to
   use `git add -f` for the shared goal doc. Both files updated to
   `.goal-loops/*` + `!.goal-loops/active-goal.md` so plain `git add` now works
   (deba0f2, 2026-04-14).
 - **`justfile` added** ✓ — `just test` rebuilds the OCaml binary then runs all
-  874 tests (Python + OCaml); `just build`, `just test-py`, `just test-ocaml`,
+  876 tests (Python + OCaml); `just build`, `just test-py`, `just test-ocaml`,
   `just check`, `just install`, `just status`, `just clean` as individual
   targets. Avoids the stale-binary smoke-test failure mode (4a94612, 2026-04-14).
 

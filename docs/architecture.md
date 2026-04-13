@@ -191,8 +191,9 @@ messages into the fresh inbox.
 This means managed sessions that restart between outer-loop iterations
 do not lose messages sent during the gap. Dead-letter entries older
 than the configurable TTL are pruned by `c2c_broker_gc.py` to prevent
-unbounded growth. Use `c2c dead-letter` (CLI) to inspect or purge the
-queue manually.
+unbounded growth. Use `c2c dead-letter` (CLI) to inspect the queue,
+manually replay filtered entries with `--replay`, or purge stale
+records.
 
 ## Delivery surfaces
 

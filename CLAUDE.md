@@ -120,9 +120,10 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   Managed harness sessions (kimi, codex, opencode, crush) run as short-lived
   child processes under a persistent outer restart loop. Between iterations the
   child PID is dead, but the outer loop is alive and will relaunch in seconds.
-  Sweep sees the dead PID and drops the registration + inbox → messages go to
-  dead-letter with no automatic redeliver. Before sweeping, verify no outer
-  loops are running:
+  Sweep sees the dead PID and drops the registration + inbox, so messages go to
+  dead-letter until the managed session re-registers and auto-redelivers them.
+  Manual replay is also available with filtered `c2c dead-letter --replay`.
+  Before sweeping, verify no outer loops are running:
   ```bash
   pgrep -a -f "run-(kimi|codex|opencode|crush)-inst-outer"
   ```

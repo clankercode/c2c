@@ -9,13 +9,21 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `tests/test_c2c_cli.py` | codex | Add focused dead-letter replay regression | 2026-04-13T18:51Z |
-| `docs/commands.md` | codex | Advertise dead-letter replay escape hatch | 2026-04-13T18:51Z |
-| `docs/next-steps.md` | codex | Sync dead-letter replay status | 2026-04-13T18:51Z |
-| `tmp_status.txt` | codex | Sync current status after replay docs/tests | 2026-04-13T18:51Z |
-| `tmp_collab_lock.md` | codex | Record/release codex locks | 2026-04-13T18:51Z |
 
 ## History (addendum)
+
+- 2026-04-13T19:00Z — codex RELEASED locks on `c2c_dead_letter.py`,
+  `tests/test_c2c_cli.py`, `docs/commands.md`, `docs/next-steps.md`,
+  `docs/architecture.md`, `CLAUDE.md`/`AGENTS.md`,
+  `.goal-loops/active-goal.md`, `tmp_status.txt`,
+  `.collab/findings/2026-04-13T18-52-33Z-codex-dead-letter-replay-root-drift.md`,
+  and `tmp_collab_lock.md`. Fixed `c2c dead-letter --root X --replay`
+  broker-root drift by binding `C2C_MCP_BROKER_ROOT` during replay, replaced
+  the manual `c2c_send` module reload with a normal import, added two replay
+  regressions, and documented the operator replay path. Verification:
+  `py_compile`, focused replay tests 2/2, previously failing registry-read test
+  1/1, full Python unittest discovery 770/770, `just test` 770 pytest + OCaml
+  build/runtest, and `git diff --check`.
 
 - 2026-04-13T18:45Z — codex RELEASED locks on `docs/overview.md`,
   `docs/communication-tiers.md`, `docs/client-delivery.md`, `tmp_status.txt`,

@@ -27,6 +27,7 @@ import c2c_poll_inbox
 import c2c_poker
 import c2c_prune
 import c2c_send
+import c2c_dead_letter
 import c2c_cli
 import c2c_verify
 import c2c_whoami
@@ -7862,6 +7863,82 @@ class RefreshPeerTests(unittest.TestCase):
         regs = self._read_registry()
         self.assertEqual(regs[0]["session_id"], old_session_id)
         self.assertEqual(regs[0]["pid"], 99999)
+
+
+class DeadLetterReplayTests(unittest.TestCase):
+    """Tests for c2c_dead_letter replay behavior."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.broker_root = Path(self.tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_registry(self, registrations):
+        (self.broker_root / "registry.json").write_text(
+            json.dumps(registrations), encoding="utf-8"
+        )
+
+    def _write_dead_letter(self, records):
+        dl_path = self.broker_root / "dead-letter.jsonl"
+        dl_path.write_text(
+            "\n".join(json.dumps(record) for record in records) + "\n",
+            encoding="utf-8",
+        )
+        return dl_path
+
+    def test_replay_dry_run_uses_explicit_root_for_broker_resolution(self):
+        self._write_registry([{"alias": "target", "session_id": "target-session"}])
+        dl_path = self._write_dead_letter(
+            [
+                {
+                    "deleted_at": time.time(),
+                    "from_session_id": "orphan-session",
+                    "message": {
+                        "from_alias": "sender",
+                        "to_alias": "target",
+                        "content": "recover me",
+                    },
+                },
+            ]
+        )
+        original_content = dl_path.read_text(encoding="utf-8")
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, {"C2C_MCP_BROKER_ROOT": ""}, clear=False):
+            with mock.patch("sys.stdout", new=stdout), mock.patch(
+                "sys.stderr", new=stderr
+            ):
+                result = c2c_dead_letter.main(
+                    [
+                        "--root",
+                        str(self.broker_root),
+                        "--replay",
+                        "--to",
+                        "target",
+                        "--dry-run",
+                    ]
+                )
+
+        self.assertEqual(result, 0, stderr.getvalue())
+        self.assertIn("[DRY] 1. -> target: broker:target-session", stdout.getvalue())
+        self.assertIn("replay result: 1/1 sent, 0 failed", stdout.getvalue())
+        self.assertEqual(dl_path.read_text(encoding="utf-8"), original_content)
+
+    def test_replay_does_not_replace_loaded_c2c_send_module(self):
+        loaded_module = sys.modules["c2c_send"]
+
+        stdout = io.StringIO()
+        with mock.patch("sys.stdout", new=stdout):
+            result = c2c_dead_letter.replay_records(
+                [], dry_run=True, broker_root=self.broker_root
+            )
+
+        self.assertIs(sys.modules["c2c_send"], loaded_module)
+        self.assertEqual(result["sent"], 0)
+        self.assertEqual(result["failed"], [])
 
 
 class PurgeOldDeadLetterTests(unittest.TestCase):
