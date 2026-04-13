@@ -317,6 +317,7 @@ c2c <subcommand> [args]
 | `send-all <message>` | Broadcast to all live peers |
 | `poll-inbox` | Drain inbox and print messages (destructive) |
 | `peek-inbox` | Read inbox without removing messages (non-destructive) |
+| `history [--session-id S] [--limit N] [--list-sessions] [--json]` | Read the drained-message archive for a session; defaults to current session env |
 | `restart-me` | Detect the current client and restart it |
 | `init <room-id>` | Create a room and auto-join (convenience alias for `room join`) |
 
