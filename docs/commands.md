@@ -342,6 +342,8 @@ c2c <subcommand> [args]
 | `broker-gc [--once] [--interval N]` | Broker GC daemon: sweeps dead sessions, prunes dead-letter |
 | `dead-letter [--purge-orphans] [--purge-all] [--dry-run]` | Inspect and purge the dead-letter queue |
 | `wire-daemon <start|stop|status|restart|list>` | Manage Kimi Wire bridge background daemons |
+| `deliver-inbox [--session-id S] [--notify-only] [--once] [--loop]` | Delivery daemon: watches inbox and PTY-injects wake prompts; used by managed harnesses |
+| `inject [--client kimi\|opencode\|claude] --pts N --terminal-pid P` | PTY inject a wake prompt into a TUI session |
 | `tail-log [--limit N]` | Read broker RPC audit log |
 | `verify` | Count c2c message exchange progress across participants |
 | `mcp` | Launch the OCaml MCP server (used internally) |
