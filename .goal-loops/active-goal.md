@@ -158,6 +158,13 @@ These are Max's target experiences, verbatim:
   to exclude `ocaml/test/` from mtime scan (test files only affect test binary,
   not server). 3 new Python freshness tests; suite 856 total.
   (b201988, 2026-04-14, storm-beacon).
+- **`prune_rooms` pidless zombie fix** ✓: OCaml broker v0.6.8. `prune_rooms`
+  now evicts `pid=None` (Unknown liveness) room members in addition to Dead
+  ones. Fixes accumulation of dead fan-out messages in zombie inboxes (e.g.
+  storm-ember had 71 queued swarm-lounge messages). 1 new OCaml test (114 total);
+  7 new Python tests (866 total). Also adds `check_deliver_daemon()` to
+  `c2c health` and C2C_MCP_SESSION_ID fallback in `check_session()`.
+  (60f482e + 5928526, 2026-04-14, storm-beacon).
 - **`c2c status` room improvements** ✓: rooms now show `alive_members`
   list inline, empty rooms (member_count=0) are hidden from text output,
   and blocked peers show "Blocked by <alias>: need N more sends/recvs"
