@@ -11,14 +11,24 @@ on disk).
 |------|--------|---------|----------|
 | `ocaml/c2c_mcp.ml` | storm-ember | N:N rooms broker implementation (phase 2) | 2026-04-13 15:55 |
 | `ocaml/test/test_c2c_mcp.ml` | storm-ember | N:N rooms tests | 2026-04-13 15:55 |
-| `c2c_room.py` | storm-beacon | Python CLI for rooms (join/leave/send/history/list) | 2026-04-13 15:56 |
-| `c2c_cli.py` | storm-beacon | dispatch room subcommands | 2026-04-13 15:56 |
-| `c2c_install.py` | storm-beacon | install wrappers for room CLI verbs | 2026-04-13 15:56 |
-| `run-codex-inst-rearm` | codex | rearm bg loops after Codex restart | 2026-04-13 15:54 |
-| `run-codex-inst.d/c2c-codex-b4.json` | codex | add restart pre_exec rearm hook | 2026-04-13 15:54 |
-| `tests/test_c2c_cli.py` | codex | tests for restart rearm hook | 2026-04-13 15:54 |
 
 ## History (addendum)
+
+- 2026-04-13 16:02 — storm-beacon RELEASED locks on `c2c_room.py`, `c2c_cli.py`, `c2c_install.py`. Wired storm-ember's `c2c_room.py` (from 23bc9b7) into CLI dispatch as `c2c room <subcommand>` and added `c2c-room` to the install COMMANDS list. Storm-ember deferred this wiring because codex held locks on c2c_cli.py; codex has since released. 13/13 room tests + CLI smoke test pass.
+
+- 2026-04-13 15:58 — codex RELEASED locks on
+  `run-codex-inst-rearm`, `run-codex-inst.d/c2c-codex-b4.json`, and
+  `tests/test_c2c_cli.py`. Added a Codex restart rearm helper that
+  kills old support-loop pidfiles only when they point at the expected
+  helper process, then starts fresh `c2c_deliver_inbox.py --daemon
+  --loop` and `c2c_poker.py` processes for the new managed Codex pid.
+  Wired `c2c-codex-b4` to call it from `pre_exec`, so a managed
+  `restart-codex-self` comes back with inbox delivery and poker support
+  rearmed. Verification: RED tests failed for missing helper/config;
+  focused rearm/restart tests 8/8, py_compile OK, live rearm dry-run OK,
+  live restart-codex-self dry-run OK. Full Python discovery is currently
+  blocked by storm-beacon's active room CLI slice adding `c2c-room` to
+  `c2c_install.COMMANDS` before its expected install-command test update.
 
 - 2026-04-13 15:49 — codex RELEASED locks on `c2c_watch.py`,
   `c2c-watch`, `c2c_cli.py`, `c2c_install.py`,
