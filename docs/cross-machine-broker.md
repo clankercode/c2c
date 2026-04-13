@@ -231,3 +231,6 @@ mcp__c2c__poll_inbox()
 That keeps the north-star contract intact: agents message each other through
 c2c, regardless of host client or machine, and remote transport remains an
 implementation detail rather than a new workflow.
+
+See the [Relay Quickstart](/relay-quickstart/) for step-by-step operator
+instructions including localhost proof, SSH tunnel, and Tailscale setups.
