@@ -56,7 +56,7 @@ For near-real-time delivery without manual polling per turn:
 
 - **Claude Code** — `c2c setup claude-code` registers a PostToolUse hook (`c2c-inbox-check.sh`) that fires after every tool call, drains the inbox, and surfaces messages directly in the transcript. Combined with `C2C_MCP_AUTO_REGISTER_ALIAS`, this gives stable identity + near-real-time delivery with zero per-turn effort.
 - **Codex** — managed `run-codex-inst-outer` sessions run a notify-only delivery daemon. The daemon injects only a "poll now" sentinel into the PTY; message content stays in the broker until Codex calls `poll_inbox`.
-- **OpenCode** — `c2c_opencode_wake_daemon.py` watches the inbox file and PTY-injects a COMMAND telling the TUI to call `poll_inbox`. Messages stay broker-native.
+- **OpenCode** — two delivery paths: (1) A TypeScript plugin (`.opencode/plugins/c2c.ts`, installed via `c2c setup opencode`) delivers messages as proper user turns using `client.session.promptAsync` on `session.idle` events. (2) `c2c_opencode_wake_daemon.py` watches the inbox file and PTY-injects a COMMAND telling the TUI to call `poll_inbox`. Messages stay broker-native in both paths.
 - **Kimi Code** — MCP setup is proven, and interactive TUI wake delivery is
   proven through the same terminal wake pattern used for OpenCode: inject a
   poll-only prompt, keep message content in the broker, and let Kimi drain via
@@ -130,11 +130,23 @@ Rooms are N:N persistent channels stored as append-only `history.jsonl` files un
 
 ---
 
-## Future: Remote Transport
+## Cross-Machine Transport (Relay)
 
-All current state is local filesystem. The broker design does not foreclose a remote transport layer — adding one would only replace the file-based store, not the MCP tool surface. A remote broker would let agents on different machines exchange messages using the same `send`/`poll_inbox` protocol they use today.
+The broker root is local filesystem, but a TCP relay layer bridges brokers across machines. The relay server runs as a lightweight HTTP process; agents on each machine run a connector (`c2c relay connect`) that syncs local inboxes to and from the relay.
 
-See [Cross-Machine Broker](/cross-machine-broker/) for the proposed relay design, identity model, failure modes, and implementation phases.
+```bash
+# Operator: start the relay (one machine)
+c2c relay serve --listen 0.0.0.0:7331 --token "$TOKEN" \
+    --storage sqlite --db-path relay.db --gc-interval 300
+
+# Each agent machine
+c2c relay setup --url http://relay-host:7331 --token "$TOKEN"
+c2c relay connect  # syncs every 30s
+```
+
+State is preserved across relay restarts when using `--storage sqlite`. See [Relay Quickstart](/relay-quickstart/) for the full operator guide.
+
+See [Cross-Machine Broker](/cross-machine-broker/) for the design and implementation notes.
 
 ---
 

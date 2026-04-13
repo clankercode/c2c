@@ -43,6 +43,9 @@ run-codex-inst.d/*.pid
 run-opencode-inst.d/*.pid
 run-opencode-inst.d/*.restart.json
 run-opencode-inst.d/*.log
+run-opencode-inst.d/node_modules
+run-opencode-inst.d/plugins/
+run-opencode-inst.d/package.json
 run-kimi-inst.d/*.pid
 run-kimi-inst.d/*.log
 run-kimi-inst.d/*.restart.json

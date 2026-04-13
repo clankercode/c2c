@@ -118,6 +118,10 @@ def _ensure_opencode_plugin(config_path: Path, cwd_path: Path) -> None:
     OpenCode only discovers plugins relative to its config file directory.
     When a managed instance uses a dedicated config file outside the repo
     .opencode/ directory, we must sync the plugin there so it loads.
+
+    Also ensures node_modules is accessible by symlinking from config_dir to
+    the installed .opencode/node_modules — otherwise Bun can't resolve
+    @opencode-ai/plugin when loading the plugin from the config dir.
     """
     repo_opencode = cwd_path / ".opencode"
     plugin_src = repo_opencode / "plugins" / "c2c.ts"
@@ -146,6 +150,12 @@ def _ensure_opencode_plugin(config_path: Path, cwd_path: Path) -> None:
             pkg_dest.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         else:
             shutil.copy2(str(pkg_src), str(pkg_dest))
+    # Symlink node_modules so Bun can resolve @opencode-ai/plugin when running
+    # the plugin from the dedicated config directory.
+    nm_src = repo_opencode / "node_modules"
+    nm_dest = config_dir / "node_modules"
+    if nm_src.exists() and not nm_dest.exists():
+        os.symlink(str(nm_src), str(nm_dest))
 
 
 def build_launch(name: str, config: dict, extra: list[str]) -> tuple[list[str], Path, dict[str, str]]:
