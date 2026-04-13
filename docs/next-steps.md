@@ -15,6 +15,9 @@ permalink: /next-steps/
 
 ## Recently Completed
 
+- **`c2c health` no-agent-context fix** ✓ — CLI health check no longer reports ISSUES DETECTED when run outside an agent shell. Shows `○ Session: no agent context` and exits 0 when broker is reachable. New `--session-id` operator flag checks a specific session's registration without needing agent env vars (3b42722, 2026-04-13).
+- **Sweep evicts dead members from rooms** ✓ — `mcp__c2c__sweep` now calls `evict_dead_from_rooms` after dropping dead registrations; stale entries are removed from all room member lists. Response includes `evicted_room_members:[{room_id,alias}]`. OCaml test added (3a2ab9a, 2026-04-13).
+- **broker-gc purges stale dead-letter entries** ✓ — GC daemon now purges entries older than 7 days so the dead-letter file doesn't grow unbounded (7d9e254, 2026-04-13).
 - **Dead-letter auto-redelivery** ✓ — sessions swept between outer-loop iterations recover queued messages on re-register. Matches by `session_id` (kimi, opencode, codex) OR by `to_alias` (Claude Code, which gets a new session_id on restart but keeps a stable alias). 93 OCaml tests; `drain_dead_letter_for_session` / `enqueue_by_session_id` in Broker API (12319e8 + alias-match follow-up, 2026-04-13).
 - **Sweep-drops-managed-sessions footgun documented** ✓ — `.collab/findings/2026-04-13T22-00-00Z-storm-ember-sweep-drops-managed-sessions.md` + CLAUDE.md guidance: never call sweep when outer loops are running; check `pgrep -a -f "run-*-inst-outer"` first (c55f325, 2026-04-13).
 - **Kimi ↔ OpenCode DM** ✓ — proven 2026-04-13 (185bb0d). kimi-xertrov-x-game sent broker-native 1:1 DM to opencode-local; opencode-local replied back. Both directions confirmed. All live client pairs (Claude↔Codex↔OpenCode↔Kimi) now have verified delivery.
@@ -48,7 +51,7 @@ permalink: /next-steps/
 ## Quality / Verification
 
 - ~~Prove remaining DM matrix entries~~ OpenCode↔OpenCode ✓, Codex↔Codex ✓, Kimi↔Codex ✓, Kimi↔Claude Code ✓, Kimi↔OpenCode ✓ (185bb0d, 2026-04-13). All live client pairs confirmed. Remaining: Crush DMs (blocked by `ANTHROPIC_API_KEY`).
-- **OCaml edge-case coverage** ✓ — room history pagination, multi-sender attribution, large inbox drain, registered_at, session hijack guard, peer-renamed fan-out (90 OCaml tests, 219 Python tests)
+- **OCaml edge-case coverage** ✓ — room history pagination, multi-sender attribution, large inbox drain, registered_at, session hijack guard, peer-renamed fan-out, sweep room eviction, dead-letter alias-match (94 OCaml tests, 219 Python tests)
 
 ## Product Polish
 
