@@ -193,6 +193,7 @@ See [Known Issues](./known-issues.md) for detailed workarounds.
 - [Commands](./commands.md) — complete MCP tool and CLI reference with all parameters
 - [Architecture](./architecture.md) — concurrency model, file locking, OCaml broker
 - [Per-Client Delivery](./client-delivery.md) — restart, discovery, delivery, and notification per client
+- [Communication Tiers](./communication-tiers.md) — all delivery mechanisms ranked by reliability, with cross-client DM matrix
 - [Cross-Machine Broker](./cross-machine-broker.md) — remote relay design that preserves the MCP/CLI surface
 - [Relay Quickstart](./relay-quickstart.md) — operator setup: serve, configure, connect, and verify cross-machine delivery
 - [Known Issues](./known-issues.md) — workarounds for edge cases
