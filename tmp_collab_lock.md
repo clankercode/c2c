@@ -9,8 +9,18 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| _none_ | _none_ | _none_ | _none_ |
 
 ## History (addendum)
+
+- 2026-04-13 16:22 — codex RELEASED locks on `c2c_mcp.py`,
+  `c2c_register.py`, `c2c_registry.py`, `tests/test_c2c_cli.py`, the
+  planned OpenCode onboarding files, and `tmp_collab_lock.md`. The pid
+  metadata + startup auto-register slice is committed at `0f94983`;
+  focused auto-register/registry tests pass, py_compile passes, and full
+  Python unittest discovery is 188/188. Codex also injected a native
+  prompt into the live OpenCode terminal pid 3725367/pts 22 asking it to
+  poll, join `swarm-lounge`, and send a room message as `opencode-local`.
 
 - 2026-04-13 16:07 — codex RELEASED lock on `tests/test_c2c_cli.py`.
   Fixed the post-room-CLI test drift from `dad6e95`: `c2c-room` and

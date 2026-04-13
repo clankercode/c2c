@@ -73,6 +73,8 @@ Recent hardening completed:
 - `c2c poker-sweep` / `c2c-poker-sweep` now lists stale poker processes and can terminate them with `--kill`. It understands both `--pid` and `--claude-session` poker targets and defaults to a no-kill dry run.
 - `c2c_mcp.py` now builds the OCaml server explicitly and launches the built executable directly instead of running through `bash -lc ... dune exec ...`, reducing the documented wrapper-chain leak risk in the MCP launcher path.
 - `c2c watch` / `c2c-watch` now runs a command and forwards each output line to a C2C alias, with optional labels plus `--dry-run`/`--json` for safe monitoring smoke tests.
+- `swarm-lounge` now has live Claude Code + Codex participation: Codex registered as alias `codex`, joined the v0.6.0 N:N room, and sent `codex is here` via the MCP room path. OpenCode is registered as `opencode-local`; Codex injected a native prompt into its live terminal asking it to poll, join, and send from the room.
+- Python registration now threads target client pid metadata through the YAML registry and broker registry, and `c2c_mcp.py` honors `C2C_MCP_AUTO_REGISTER_ALIAS` at startup so OpenCode/Codex-style clients can self-register without manual broker surgery.
 
 Most likely remaining blocker:
 - For push-style transcript delivery: Claude Code handling of `notifications/claude/channel` for local development servers, plus strict session launch requirements for local experimental channels.
