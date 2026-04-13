@@ -7913,6 +7913,69 @@ class HealthCheckBrokerBinaryTests(unittest.TestCase):
         self.assertFalse(result["fresh"])
 
 
+class ServerIsFreshTests(unittest.TestCase):
+    """Tests for c2c_mcp.server_is_fresh() — freshness check excludes test/ dir."""
+
+    def test_fresh_when_binary_newer_than_sources(self):
+        import c2c_mcp
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ocaml_dir = root / "ocaml"
+            ocaml_dir.mkdir()
+            src = ocaml_dir / "c2c_mcp.ml"
+            src.write_text("let x = 1\n")
+            import time; time.sleep(0.05)
+            bin_path = root / "c2c_mcp_server.exe"
+            bin_path.write_bytes(b"binary")
+            # Binary is newer than source — should be fresh.
+            with mock.patch("c2c_mcp.ROOT", root):
+                self.assertTrue(c2c_mcp.server_is_fresh(bin_path))
+
+    def test_stale_when_source_newer_than_binary(self):
+        import c2c_mcp
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ocaml_dir = root / "ocaml"
+            ocaml_dir.mkdir()
+            bin_path = root / "c2c_mcp_server.exe"
+            bin_path.write_bytes(b"binary")
+            import time; time.sleep(0.05)
+            src = ocaml_dir / "c2c_mcp.ml"
+            src.write_text("let x = 1\n")
+            # Source is newer than binary — should be stale.
+            with mock.patch("c2c_mcp.ROOT", root):
+                self.assertFalse(c2c_mcp.server_is_fresh(bin_path))
+
+    def test_test_dir_sources_excluded_from_freshness_check(self):
+        """Test files under ocaml/test/ must not trigger stale when newer than binary."""
+        import c2c_mcp
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ocaml_dir = root / "ocaml"
+            test_dir = ocaml_dir / "test"
+            test_dir.mkdir(parents=True)
+            # Server source (older)
+            src = ocaml_dir / "c2c_mcp.ml"
+            src.write_text("let x = 1\n")
+            import time; time.sleep(0.05)
+            # Binary (newer than server source)
+            bin_path = root / "c2c_mcp_server.exe"
+            bin_path.write_bytes(b"binary")
+            import time; time.sleep(0.05)
+            # Test file (newest — but should be excluded from check)
+            test_src = test_dir / "test_c2c_mcp.ml"
+            test_src.write_text("let () = ()\n")
+            # Despite test file being newer than binary, should still be fresh.
+            with mock.patch("c2c_mcp.ROOT", root):
+                self.assertTrue(c2c_mcp.server_is_fresh(bin_path))
+
+
 class HealthCheckStaleInboxTests(unittest.TestCase):
     """Tests for c2c_health.check_stale_inboxes()."""
 

@@ -9,7 +9,7 @@ type message = { from_alias : string; to_alias : string; content : string }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 
-let server_version = "0.6.6"
+let server_version = "0.6.7"
 
 let server_features =
   [ "liveness"
@@ -43,6 +43,7 @@ let server_features =
   ; "register_alias_hijack_guard"
   ; "send_alias_impersonation_guard"
   ; "missing_sender_alias_errors"
+  ; "prune_rooms_tool"
   ]
 
 let server_info =
@@ -1039,6 +1040,18 @@ module Broker = struct
       end
     end
 
+  (* Evict dead members from rooms without touching registrations or inboxes.
+     Safe to call while outer loops are running (unlike sweep). *)
+  let prune_rooms t =
+    with_registry_lock t (fun () ->
+      let regs = load_registrations t in
+      let dead_sids =
+        regs
+        |> List.filter (fun r -> not (registration_is_alive r))
+        |> List.map (fun r -> r.session_id)
+      in
+      evict_dead_from_rooms t ~dead_session_ids:dead_sids)
+
   (* Public alias for tests and external callers. *)
   let read_room_members = load_room_members
 
@@ -1389,6 +1402,10 @@ let tool_definitions =
       ~description:"Return the last N lines from the broker RPC audit log (broker.log). Each line is a JSON object {ts, tool, ok}. Useful for verifying that your sends and polls actually reached the broker, without needing to read the file directly. Content fields are not logged — only tool names and success/fail status. Optional `limit` (default 50, max 500). Returns a JSON array of log entries, oldest first."
       ~required:[]
       ~properties:[ int_prop "limit" "Max log entries (default 50, max 500)." ]
+  ; tool_definition ~name:"prune_rooms"
+      ~description:"Evict dead members from all room member lists without touching registrations or inboxes. Safe to call while outer loops are running (unlike `sweep`, which also drops registrations and deletes inboxes). Returns JSON {evicted_room_members:[{room_id,alias}]}."
+      ~required:[]
+      ~properties:[]
   ]
 
 let string_member name json =
@@ -2010,6 +2027,23 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                        ; ("alias", `String alias)
                        ])
                    evicted_room_members) )
+          ]
+        |> Yojson.Safe.to_string
+      in
+      Lwt.return (tool_result ~content ~is_error:false)
+  | "prune_rooms" ->
+      let evicted = Broker.prune_rooms broker in
+      let content =
+        `Assoc
+          [ ( "evicted_room_members",
+              `List
+                (List.map
+                   (fun (room_id, alias) ->
+                     `Assoc
+                       [ ("room_id", `String room_id)
+                       ; ("alias", `String alias)
+                       ])
+                   evicted) )
           ]
         |> Yojson.Safe.to_string
       in

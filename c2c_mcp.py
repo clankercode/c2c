@@ -261,8 +261,15 @@ def server_is_fresh(server_path: Path) -> bool:
     except OSError:
         return False
     ocaml_dir = ROOT / "ocaml"
+    test_dir = ocaml_dir / "test"
     for pattern in ("*.ml", "*.mli", "dune", "dune-project"):
         for src in ocaml_dir.rglob(pattern):
+            # Skip test-only sources — they affect the test binary, not the server.
+            try:
+                src.relative_to(test_dir)
+                continue
+            except ValueError:
+                pass
             try:
                 if src.stat().st_mtime > server_mtime:
                     return False

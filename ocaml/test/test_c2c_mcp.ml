@@ -2161,6 +2161,97 @@ let test_sweep_evicts_dead_members_from_rooms () =
       check string "remaining member is alive" "storm-alive"
         (List.hd members_after).C2c_mcp.rm_alias)
 
+let test_prune_rooms_evicts_dead_members_without_touching_registrations () =
+  (* prune_rooms should evict dead room members but NOT drop registrations or
+     touch inboxes. Unlike sweep, safe to call while outer loops run. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"s-alive" ~alias:"alive-peer"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+      C2c_mcp.Broker.register broker
+        ~session_id:"s-dead" ~alias:"dead-peer"
+        ~pid:(Some 999999999) ~pid_start_time:None;
+      ignore
+        (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
+           ~alias:"alive-peer" ~session_id:"s-alive");
+      ignore
+        (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
+           ~alias:"dead-peer" ~session_id:"s-dead");
+      let evicted = C2c_mcp.Broker.prune_rooms broker in
+      check int "one member evicted" 1 (List.length evicted);
+      let (evicted_room, evicted_alias) = List.hd evicted in
+      check string "evicted from swarm-lounge" "swarm-lounge" evicted_room;
+      check string "evicted dead-peer alias" "dead-peer" evicted_alias;
+      (* Both registrations must still be present — prune_rooms must not drop them *)
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      check int "both registrations still present" 2 (List.length regs);
+      let members =
+        C2c_mcp.Broker.read_room_members broker ~room_id:"swarm-lounge"
+      in
+      check int "one room member remaining" 1 (List.length members);
+      check string "remaining is alive-peer" "alive-peer"
+        (List.hd members).C2c_mcp.rm_alias)
+
+let test_prune_rooms_noop_when_all_members_alive () =
+  (* When all registered members are alive, prune_rooms returns an empty list. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"s-alive" ~alias:"alive-peer"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+      ignore
+        (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
+           ~alias:"alive-peer" ~session_id:"s-alive");
+      let evicted = C2c_mcp.Broker.prune_rooms broker in
+      check int "no members evicted when all alive" 0 (List.length evicted))
+
+let test_tools_call_prune_rooms_via_mcp () =
+  (* End-to-end: prune_rooms MCP tool evicts dead room members and returns them. *)
+  with_temp_dir (fun dir ->
+      let broker_root = dir in
+      let broker = C2c_mcp.Broker.create ~root:broker_root in
+      C2c_mcp.Broker.register broker
+        ~session_id:"s-alive" ~alias:"alive-peer"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+      C2c_mcp.Broker.register broker
+        ~session_id:"s-dead" ~alias:"dead-peer"
+        ~pid:(Some 999999999) ~pid_start_time:None;
+      ignore
+        (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
+           ~alias:"alive-peer" ~session_id:"s-alive");
+      ignore
+        (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
+           ~alias:"dead-peer" ~session_id:"s-dead");
+      let request =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 1)
+          ; ("method", `String "tools/call")
+          ; ( "params",
+              `Assoc
+                [ ("name", `String "prune_rooms")
+                ; ("arguments", `Assoc [])
+                ] )
+          ]
+      in
+      let resp_opt =
+        Lwt_main.run (C2c_mcp.handle_request ~broker_root request)
+      in
+      (match resp_opt with
+       | None -> check bool "expected a response" true false
+       | Some resp ->
+           let open Yojson.Safe.Util in
+           let result_text =
+             resp |> member "result" |> member "content"
+             |> index 0 |> member "text" |> to_string
+           in
+           let result = Yojson.Safe.from_string result_text in
+           let evicted =
+             result |> member "evicted_room_members" |> to_list
+           in
+           check int "one eviction via MCP prune_rooms" 1 (List.length evicted)))
+
 let test_register_redelivers_dead_letter_on_same_session_id () =
   (* Scenario: a managed session (e.g. kimi-local) is swept while the outer
      loop is between iterations — PID dead, no live process. Messages queued to
@@ -3892,6 +3983,12 @@ let () =
              test_sweep_empty_orphan_writes_no_dead_letter
          ; test_case "sweep evicts dead members from rooms" `Quick
              test_sweep_evicts_dead_members_from_rooms
+         ; test_case "prune_rooms evicts dead members without touching registrations" `Quick
+             test_prune_rooms_evicts_dead_members_without_touching_registrations
+         ; test_case "prune_rooms noop when all members alive" `Quick
+             test_prune_rooms_noop_when_all_members_alive
+         ; test_case "tools/call prune_rooms evicts dead members via MCP" `Quick
+             test_tools_call_prune_rooms_via_mcp
          ; test_case "register redelivers dead-letter on same session_id" `Quick
              test_register_redelivers_dead_letter_on_same_session_id
          ; test_case "register redelivers dead-letter by alias (new session_id)" `Quick
