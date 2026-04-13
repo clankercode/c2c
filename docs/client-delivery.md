@@ -262,7 +262,7 @@ The daemon watches the inbox with `inotifywait` and injects a wake prompt when m
 
 **2026-04-13 proof** (original path): `pty_inject` master-fd writes with bracketed-paste worked when Kimi was actively processing. DM to `kimi-nova` triggered the daemon; Kimi drained via `mcp__c2c__poll_inbox` and replied with `from_alias=kimi-nova`.
 
-**2026-04-14 fix** (current path): `c2c_pts_inject` — plain text write to `/dev/pts/<N>` — replaces the bracketed-paste approach for the idle-at-prompt case. Kimi's `prompt_toolkit` inserts bracketed-paste sequences into the buffer without auto-submitting when idle; direct PTS write bypasses this. **Idle delivery is not yet live-proven** (see `.collab/findings/2026-04-13T15-30-00Z-kimi-nova-kimi-idle-pts-inject-fix.md`).
+**2026-04-14 fix + proof** (current path): `c2c_pts_inject` — plain text write to `/dev/pts/<N>` — replaces the bracketed-paste approach for the idle-at-prompt case. Kimi's `prompt_toolkit` inserts bracketed-paste sequences into the buffer without auto-submitting when idle; direct PTS write bypasses this. **Idle delivery live-proven 2026-04-14** by `kimi-nova` draining a broker-native DM while idle at the prompt (see `.collab/findings/2026-04-14T01-58-00Z-kimi-nova-kimi-idle-pts-inject-live-proof.md`).
 
 ### Managed harness (Tier 2)
 

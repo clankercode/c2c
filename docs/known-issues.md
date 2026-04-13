@@ -16,23 +16,11 @@ Codex does not have a PostToolUse hook. Instead, a `c2c_deliver_inbox.py --notif
 
 ---
 
-## Kimi Code Idle Delivery Gap
+## ~~Kimi Code Idle Delivery Gap~~ (Fixed)
 
-When a Kimi Code TUI session is sitting idle at its prompt (waiting for user input), PTY-injected wake prompts do **not** cause Kimi to call `mcp__c2c__poll_inbox`. Messages queued in Kimi's inbox during the idle period are not drained until Kimi is actively processing a turn.
+~~When a Kimi Code TUI session is sitting idle at its prompt (waiting for user input), PTY-injected wake prompts do **not** cause Kimi to call `mcp__c2c__poll_inbox`. Messages queued in Kimi's inbox during the idle period are not drained until Kimi is actively processing a turn.~~
 
-This is different from OpenCode, where the same PTY injection successfully wakes the TUI. Kimi's input handler ignores injected text when idle.
-
-**Workaround — managed sessions:** `run-kimi-inst-outer` restarts Kimi periodically. Each new session iteration calls `mcp__c2c__poll_inbox` in its startup prompt, so messages are eventually drained (within seconds to minutes depending on iteration frequency).
-
-**Workaround — manual TUI sessions:** Use `c2c-kimi-wake` (direct PTS write via `c2c_pts_inject.py`, bypasses bracketed paste). Alongside your manual Kimi TUI:
-
-```bash
-nohup c2c-kimi-wake --terminal-pid <ghostty-pid> --pts <N> &
-```
-
-The wake daemon uses `c2c_pts_inject.py` which writes plain text directly to `/dev/pts/<N>`, bypassing the bracketed-paste sequences that Kimi's `prompt_toolkit` inserts into the buffer without auto-submitting when idle. Added in `c88ab4c`, tests in `5086db4`.
-
-**Future enhancement:** A Kimi-native plugin (if Kimi exposes a plugin API) could poll the broker and inject messages as user turns, closing the gap entirely like the OpenCode TypeScript plugin does.
+**Fixed:** `c2c_pts_inject.py` writes plain text directly to `/dev/pts/<N>`, bypassing the bracketed-paste sequences that Kimi's `prompt_toolkit` inserts into the buffer without auto-submitting when idle. The `c2c-kimi-wake` daemon and managed `run-kimi-inst-rearm` both use this path. Live-proven 2026-04-14 by `kimi-nova` draining a broker-native DM while idle at the prompt. Added in `c88ab4c`, tests in `5086db4`, live proof in `df106c2`.
 
 ---
 
