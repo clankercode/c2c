@@ -13,10 +13,55 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import time
 from pathlib import Path
 
 import c2c_mcp
 from c2c_verify import GOAL_COUNT, verify_progress_broker
+
+
+def _last_archive_ts(archive_dir: Path, session_id: str, alias: str) -> float | None:
+    """Return the drained_at timestamp of the last archived message for a peer.
+
+    Checks <session_id>.jsonl first, then <alias>.jsonl (named sessions).
+    Returns None if no archive file exists or it has no parseable entries.
+    """
+    for stem in (session_id, alias):
+        path = archive_dir / f"{stem}.jsonl"
+        if not path.exists():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for raw in reversed(lines):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                entry = json.loads(raw)
+                ts = entry.get("drained_at")
+                if isinstance(ts, (int, float)):
+                    return float(ts)
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
+def _fmt_age(ts: float | None, now: float) -> str:
+    """Format a Unix timestamp as a human-readable age relative to now."""
+    if ts is None:
+        return "never"
+    age = now - ts
+    if age < 0:
+        return "just now"
+    if age < 60:
+        return f"{int(age)}s ago"
+    if age < 3600:
+        return f"{int(age / 60)}m ago"
+    if age < 86400:
+        return f"{int(age / 3600)}h ago"
+    return f"{int(age / 86400)}d ago"
 
 
 def _load_broker_registry(broker_root: Path) -> list[dict]:
@@ -79,6 +124,7 @@ def swarm_status(broker_root: Path | None = None) -> dict:
     registrations = _load_broker_registry(broker_root)
     verify = verify_progress_broker(broker_root)
     participants = verify.get("participants", {})
+    archive_dir = broker_root / "archive"
 
     alive_peers = []
     dead_peers = []
@@ -86,14 +132,17 @@ def swarm_status(broker_root: Path | None = None) -> dict:
         alias = reg.get("alias") or ""
         if not alias:
             continue
+        session_id = reg.get("session_id") or ""
         alive = c2c_mcp.broker_registration_is_alive(reg)
         counts = participants.get(alias, {"sent": 0, "received": 0})
+        last_ts = _last_archive_ts(archive_dir, session_id, alias)
         entry = {
             "alias": alias,
             "alive": alive,
             "sent": counts["sent"],
             "received": counts["received"],
             "goal_met": counts["sent"] >= GOAL_COUNT and counts["received"] >= GOAL_COUNT,
+            "last_active_ts": last_ts,
         }
         if alive:
             alive_peers.append(entry)
@@ -129,6 +178,7 @@ def print_status_report(data: dict) -> None:
     goal_total = data["goal_total"]
     overall = data["overall_goal_met"]
 
+    now = time.time()
     print(f"c2c Swarm Status  {ts}")
     print("=" * 50)
     print()
@@ -137,9 +187,11 @@ def print_status_report(data: dict) -> None:
         alias_w = max(len(e["alias"]) for e in alive_peers)
         for e in alive_peers:
             goal_tag = "  [goal_met]" if e["goal_met"] else ""
+            age = _fmt_age(e.get("last_active_ts"), now)
             print(
                 f"  {e['alias']:<{alias_w}}  alive"
-                f"  sent={e['sent']:<5} recv={e['received']:<5}{goal_tag}"
+                f"  sent={e['sent']:<5} recv={e['received']:<5}"
+                f"  last={age}{goal_tag}"
             )
     else:
         print("  (no alive peers)")

@@ -9005,6 +9005,53 @@ class C2CStatusTests(unittest.TestCase):
         self.assertIn("[goal_met]", output)
         self.assertIn("ALL", output)
 
+    def test_last_active_ts_in_peer_entry(self):
+        import time as _time
+        self._write_registry([
+            {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
+        ])
+        now_ts = _time.time()
+        msgs = [{"from_alias": "x", "to_alias": "agent-a", "drained_at": now_ts - 30, "content": "hi"}]
+        self._write_archive("sess-a.jsonl", msgs)
+        data = c2c_status.swarm_status(self.broker_root)
+        peer = data["alive_peers"][0]
+        self.assertAlmostEqual(peer["last_active_ts"], now_ts - 30, delta=1.0)
+
+    def test_last_active_ts_none_when_no_archive(self):
+        self._write_registry([
+            {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
+        ])
+        data = c2c_status.swarm_status(self.broker_root)
+        self.assertIsNone(data["alive_peers"][0]["last_active_ts"])
+
+    def test_fmt_age_seconds(self):
+        now = 1000.0
+        self.assertEqual(c2c_status._fmt_age(955.0, now), "45s ago")
+
+    def test_fmt_age_minutes(self):
+        now = 1000.0
+        self.assertEqual(c2c_status._fmt_age(400.0, now), "10m ago")
+
+    def test_fmt_age_hours(self):
+        now = 10000.0
+        self.assertEqual(c2c_status._fmt_age(3400.0, now), "1h ago")
+
+    def test_fmt_age_none_returns_never(self):
+        self.assertEqual(c2c_status._fmt_age(None, 1000.0), "never")
+
+    def test_status_output_shows_last_age(self):
+        import time as _time
+        self._write_registry([
+            {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
+        ])
+        now_ts = _time.time()
+        msgs = [{"from_alias": "x", "to_alias": "agent-a", "drained_at": now_ts - 90, "content": "hi"}]
+        self._write_archive("sess-a.jsonl", msgs)
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            c2c_status.main(["--broker-root", str(self.broker_root)])
+        self.assertIn("last=", buf.getvalue())
+
     def test_cli_json_output(self):
         self._write_registry([])
         rc = c2c_status.main(["--json", "--broker-root", str(self.broker_root)])

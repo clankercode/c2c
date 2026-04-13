@@ -73,18 +73,14 @@ class C2CStatusTests(unittest.TestCase):
         self.assertEqual(status["dead_peer_count"], 1)
         self.assertEqual(status["goal_met_count"], 1)
         self.assertTrue(status["overall_goal_met"])
-        self.assertEqual(
-            status["alive_peers"],
-            [
-                {
-                    "alias": "codex",
-                    "alive": True,
-                    "sent": 20,
-                    "received": 20,
-                    "goal_met": True,
-                }
-            ],
-        )
+        self.assertEqual(len(status["alive_peers"]), 1)
+        peer = status["alive_peers"][0]
+        self.assertEqual(peer["alias"], "codex")
+        self.assertTrue(peer["alive"])
+        self.assertEqual(peer["sent"], 20)
+        self.assertEqual(peer["received"], 20)
+        self.assertTrue(peer["goal_met"])
+        self.assertIn("last_active_ts", peer)
         self.assertEqual(
             status["rooms"],
             [
