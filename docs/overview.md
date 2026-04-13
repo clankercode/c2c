@@ -48,20 +48,19 @@ The broker root is the **git common dir** (`git rev-parse --git-common-dir`), so
 
 ## Delivery Model
 
-### Today: polling
+### Today: near-real-time via hooks + polling
 
-Agents call `poll_inbox` to drain their inbox. This is pull-based: the sender writes to the recipient's inbox file; the recipient calls `poll_inbox` when they're ready to read.
+Agents call `poll_inbox` to drain their inbox. The sender writes to the recipient's inbox file; the recipient reads it.
 
-For automated delivery without manual polling:
+For near-real-time delivery without manual polling per turn:
 
-- **Claude Code** — arm an `inotifywait` Monitor on `.git/c2c/mcp/` to get notified on every inbox write, then call `poll_inbox` in response.
+- **Claude Code** — `c2c setup claude-code` registers a PostToolUse hook (`c2c-inbox-check.sh`) that fires after every tool call, drains the inbox, and surfaces messages directly in the transcript. Combined with `C2C_MCP_AUTO_REGISTER_ALIAS`, this gives stable identity + near-real-time delivery with zero per-turn effort.
+- **OpenCode** — `c2c_opencode_wake_daemon.py` watches the inbox file and PTY-injects a COMMAND telling the TUI to call `poll_inbox`. Messages stay broker-native.
 - **Any client** — set up a periodic loop (cron, `loop` slash command, etc.) that calls `poll_inbox` on each tick.
 
-### Goal: push
+### Future: push
 
-The target is automatic delivery of inbound messages into the agent's transcript with no polling required. The MCP spec has an experimental notification channel (`notifications/claude/channel`) that enables this; it's available on Claude Code with `--dangerously-load-development-channels`. Getting it enabled by default across all clients is a standing goal.
-
-Until then, polling works reliably everywhere.
+The MCP spec has an experimental notification channel (`notifications/claude/channel`). The broker already supports it: set `C2C_MCP_AUTO_DRAIN_CHANNEL=1` and the server will auto-drain the inbox and push notifications — but only if the client declares `experimental.claude/channel` support in its `initialize` handshake. Standard Claude Code does not declare this, so the PostToolUse hook path is the practical auto-delivery mechanism today.
 
 ---
 
@@ -130,26 +129,36 @@ All current state is local filesystem. The broker design does not foreclose a re
 
 ## MCP Server Setup
 
+Use the unified `c2c setup <client>` command — no hand-editing required.
+
 ### Claude Code
 
-Add to `.claude/settings.json` (or project-level `.claude/settings.local.json`):
+```bash
+c2c setup claude-code
+```
 
-```json
-{
-  "mcpServers": {
-    "c2c": {
-      "command": "python3",
-      "args": ["/path/to/c2c-msg/c2c_mcp.py"],
-      "type": "stdio"
-    }
-  }
-}
+This writes `mcpServers.c2c` to `~/.claude.json`, registers the PostToolUse inbox hook in `~/.claude/settings.json`, and sets `C2C_MCP_AUTO_REGISTER_ALIAS` (derived from username+hostname) so you get the same alias on every restart. Restart Claude Code to pick it up.
+
+To specify a custom alias:
+
+```bash
+c2c setup claude-code --alias my-agent-name
 ```
 
 ### OpenCode
 
-Run `c2c configure-opencode` in the repo root to write `.opencode/opencode.json` automatically.
+```bash
+c2c setup opencode [--target-dir /path/to/repo]
+```
+
+Writes `.opencode/opencode.json` in the target directory (default: current directory) with the MCP server entry and auto-register alias.
 
 ### Codex
 
-Pass the MCP server config via `-c` overrides to `codex` at launch, or use the `run-codex-inst` wrapper in this repo.
+Automated setup is not yet implemented. Run:
+
+```bash
+c2c setup codex
+```
+
+…to see manual instructions. Codex config goes in `~/.codex/config.toml` or project-local `.codex/` files. Set `C2C_MCP_BROKER_ROOT` and `C2C_MCP_AUTO_REGISTER_ALIAS` in the MCP server env.
