@@ -3355,6 +3355,36 @@ class C2CInjectUnitTests(unittest.TestCase):
         self.assertEqual(payload["payload"], "raw prompt")
         self.assertFalse(payload["dry_run"])
 
+    def test_inject_kimi_client_uses_pts_inject_not_pty_inject(self):
+        stdout = io.StringIO()
+
+        with (
+            mock.patch("c2c_inject.c2c_pts_inject.inject") as pts_inject,
+            mock.patch("c2c_inject.c2c_poker.inject") as pty_inject,
+            mock.patch("sys.stdout", stdout),
+        ):
+            result = c2c_inject.main(
+                [
+                    "--client",
+                    "kimi",
+                    "--terminal-pid",
+                    "44444",
+                    "--pts",
+                    "12",
+                    "--raw",
+                    "--json",
+                    "wake prompt",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        pty_inject.assert_not_called()
+        pts_inject.assert_called_once_with("12", "wake prompt")
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["client"], "kimi")
+        self.assertEqual(payload["payload"], "wake prompt")
+        self.assertFalse(payload["dry_run"])
+
     def test_inject_submit_delay_is_forwarded_to_pty_backend(self):
         stdout = io.StringIO()
 
@@ -3593,6 +3623,58 @@ class C2CDeliverInboxUnitTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["delivered"], 0)
         self.assertTrue(payload["notified"])
+
+    def test_deliver_inbox_kimi_notify_only_uses_pts_inject(self):
+        broker_root = Path(self.temp_dir.name) / "mcp-broker"
+        broker_root.mkdir()
+        inbox_path = broker_root / "kimi-nova.inbox.json"
+        inbox_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "from_alias": "codex",
+                        "to_alias": "kimi-nova",
+                        "content": "secret content",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        stdout = io.StringIO()
+
+        with (
+            mock.patch("c2c_deliver_inbox.c2c_pts_inject.inject") as pts_inject,
+            mock.patch("c2c_deliver_inbox.c2c_poker.inject") as pty_inject,
+            mock.patch("sys.stdout", stdout),
+        ):
+            result = c2c_deliver_inbox.main(
+                [
+                    "--client",
+                    "kimi",
+                    "--terminal-pid",
+                    "44444",
+                    "--pts",
+                    "12",
+                    "--session-id",
+                    "kimi-nova",
+                    "--broker-root",
+                    str(broker_root),
+                    "--notify-only",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        pty_inject.assert_not_called()
+        pts_inject.assert_called_once()
+        payload_text = pts_inject.call_args.args[1]
+        self.assertIn("mcp__c2c__poll_inbox", payload_text)
+        self.assertIn('source="broker-notify"', payload_text)
+        self.assertNotIn("secret content", payload_text)
+        self.assertEqual(
+            json.loads(inbox_path.read_text(encoding="utf-8"))[0]["content"],
+            "secret content",
+        )
 
 
 class ClaudeListSessionsUnitTests(unittest.TestCase):
