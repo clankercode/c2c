@@ -132,8 +132,37 @@ const C2CDelivery: Plugin = async (ctx) => {
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // Spool file — survives promptAsync failures so messages are not lost
+  // ---------------------------------------------------------------------------
+
+  type Msg = { from_alias: string; to_alias: string; content: string };
+  const spoolPath = path.join(process.cwd(), ".opencode", "c2c-plugin-spool.json");
+
+  function readSpool(): Msg[] {
+    try {
+      const raw = fs.readFileSync(spoolPath, "utf-8").trim();
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function writeSpool(msgs: Msg[]): void {
+    try {
+      if (msgs.length === 0) {
+        fs.unlinkSync(spoolPath);
+      } else {
+        fs.writeFileSync(spoolPath, JSON.stringify(msgs), "utf-8");
+      }
+    } catch {
+      // Spool write failure is non-fatal — best-effort persistence.
+    }
+  }
+
   /** Drain inbox using the c2c CLI and return parsed messages. */
-  async function drainInbox(): Promise<Array<{ from_alias: string; to_alias: string; content: string }>> {
+  async function drainInbox(): Promise<Msg[]> {
     if (!sessionId) return [];
     try {
       const args: string[] = ["poll-inbox", "--json", "--file-fallback"];
@@ -150,7 +179,7 @@ const C2CDelivery: Plugin = async (ctx) => {
   }
 
   /** Format a single broker message as a c2c envelope for injection. */
-  function formatEnvelope(msg: { from_alias: string; to_alias: string; content: string }): string {
+  function formatEnvelope(msg: Msg): string {
     const from = msg.from_alias || "unknown";
     const to = msg.to_alias || sessionId;
     return `<c2c event="message" from="${from}" alias="${to}" source="broker" action_after="continue">\n${msg.content}\n</c2c>`;
@@ -158,11 +187,18 @@ const C2CDelivery: Plugin = async (ctx) => {
 
   /** Deliver drained messages to the active session via promptAsync. */
   async function deliverMessages(targetSessionId: string): Promise<void> {
-    const messages = await drainInbox();
+    // Drain spool first (messages from failed previous delivery cycle).
+    const spooled = readSpool();
+    const fresh = await drainInbox();
+    const messages = [...spooled, ...fresh];
     if (messages.length === 0) return;
 
-    await log(`delivering ${messages.length} message(s) to session ${targetSessionId}`);
+    // Persist combined set before delivery so nothing is lost on failure.
+    writeSpool(messages);
 
+    await log(`delivering ${messages.length} message(s) to session ${targetSessionId}${spooled.length ? ` (${spooled.length} from spool)` : ""}`);
+
+    const failed: Msg[] = [];
     for (const msg of messages) {
       const envelope = formatEnvelope(msg);
       try {
@@ -174,11 +210,13 @@ const C2CDelivery: Plugin = async (ctx) => {
         await log(`delivered from ${msg.from_alias}`);
       } catch (err) {
         await log(`promptAsync error: ${err}`);
-        // Message was already drained — best-effort delivery; no retry here.
-        // Future: write to a spool file and retry on next idle.
+        // Keep in spool — will be retried on next delivery cycle.
+        failed.push(msg);
         await toast(`c2c: delivery error from ${msg.from_alias}`, "error");
       }
     }
+    // Update spool: clear if all delivered, write failures if any.
+    writeSpool(failed);
   }
 
   /** Try to deliver to the best-known session ID. */
