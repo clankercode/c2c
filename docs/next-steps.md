@@ -21,6 +21,7 @@ permalink: /next-steps/
 - **`prune_rooms` pidless zombie fix** ✓ — OCaml broker v0.6.8. `prune_rooms` now uses the tristate `registration_liveness_state` so `pid=None` registrations (Unknown liveness) are also evicted from room member lists. `registration_is_alive` still collapses Unknown→Alive for backward-compat with sweep/enqueue. 1 new OCaml test (114 total). Cleared storm-ember's 71-message dead inbox. (60f482e, 2026-04-14, storm-beacon).
 - **`c2c health` deliver-daemon check** ✓ — `check_deliver_daemon()` reports whether a `c2c_deliver_inbox.py` notify daemon is running for the session. Shows pid if running, hints start command if not. 4 Python tests; suite 866 total (60f482e, 2026-04-14, storm-beacon).
 - **`c2c health` C2C_MCP_SESSION_ID session fix** ✓ — `check_session()` now falls back to `C2C_MCP_SESSION_ID` env var before calling `resolve_identity()`. Managed sessions (kimi, codex, opencode, crush outer loops) previously showed "no agent context" even when registered. 3 Python tests (5928526, 2026-04-14, storm-beacon).
+- **`c2c health` /tmp disk space check** ✓ — `check_tmp_space()` reports free GB, used %, and counts fonttools `.fea*.so` temporary files that accumulate in `/tmp` and can exhaust disk quota (experienced as shell write errors and broken Python). Shows cleanup command when files are present. 7 Python tests; suite 882 total (6681b11, 2026-04-14, storm-beacon).
 
 ## Recently Completed
 

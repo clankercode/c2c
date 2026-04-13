@@ -165,6 +165,11 @@ These are Max's target experiences, verbatim:
   7 new Python tests (866 total). Also adds `check_deliver_daemon()` to
   `c2c health` and C2C_MCP_SESSION_ID fallback in `check_session()`.
   (60f482e + 5928526, 2026-04-14, storm-beacon).
+- **`c2c health` /tmp disk space check** ✓: `check_tmp_space()` reports
+  free GB, used %, and counts fonttools `.fea*.so` files that accumulate
+  and can exhaust disk quota (breaks all shell commands). Shows cleanup
+  hint when files present. 7 Python tests; suite 882 total.
+  (6681b11, 2026-04-14, storm-beacon).
 - **`c2c status` room improvements** ✓: rooms now show `alive_members`
   list inline, empty rooms (member_count=0) are hidden from text output,
   and blocked peers show "Blocked by <alias>: need N more sends/recvs"
