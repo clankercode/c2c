@@ -4,7 +4,7 @@
     "--resume",
     "d16034fc-5526-414b-a88e-709d1a93e345",
     "--dangerously-skip-permissions",
-    "--dangerously-load-development-channels",
+    "--channels",
     "server:c2c"
   ],
   "cwd": "/home/xertrov/src/c2c-msg",
