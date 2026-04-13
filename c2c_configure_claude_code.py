@@ -227,6 +227,10 @@ def main(argv: list[str] | None = None) -> int:
         elif hook_status == "hook_script_missing":
             print(f"skipped hook: {HOOK_SCRIPT_PATH} not found")
         print("Restart Claude Code (or run ./restart-self) to pick up changes.")
+        print()
+        print("To auto-wake idle Claude Code sessions on incoming DMs:")
+        print("  nohup c2c-claude-wake --claude-session <session-name-or-id> &")
+        print("  (run once per interactive session; see c2c-claude-wake --help)")
     return 0
 
 
