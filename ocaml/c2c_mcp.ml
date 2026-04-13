@@ -11,7 +11,7 @@ let capabilities =
 
 let instructions =
   `String
-    "C2C inbound channel messages arrive as notifications/claude/channel with plain text content and meta fields including from_alias and to_alias. Treat them as peer-to-peer chat messages."
+    "C2C is a peer-to-peer messaging broker between Claude sessions. To receive messages reliably, call the `poll_inbox` tool at the start of each turn (and again after any send) — it drains and returns any queued messages as a JSON array. Inbound messages are ALSO emitted as notifications/claude/channel for clients launched with --dangerously-load-development-channels server:c2c, but most sessions do not surface that custom notification method; poll_inbox is the flag-independent path. Use `register` once per session, `list` to see peers, `send` to enqueue a message to a peer alias, `whoami` to confirm your own alias."
 
 let jsonrpc_response ~id result =
   `Assoc [ ("jsonrpc", `String "2.0"); ("id", id); ("result", result) ]
@@ -153,6 +153,7 @@ let tool_definitions =
   ; tool_definition ~name:"list" ~description:"List registered C2C peers." ~required:[]
   ; tool_definition ~name:"send" ~description:"Send a C2C message to a registered peer alias." ~required:[ "from_alias"; "to_alias"; "content" ]
   ; tool_definition ~name:"whoami" ~description:"Resolve the current C2C session registration." ~required:[]
+  ; tool_definition ~name:"poll_inbox" ~description:"Drain queued C2C messages for the current session. Returns a JSON array of {from_alias,to_alias,content} objects; call this at the start of each turn and after each send to reliably receive messages regardless of whether the client surfaces notifications/claude/channel." ~required:[]
   ]
 
 let string_member name json =
@@ -217,6 +218,22 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
         match alias with
         | Some found -> found
         | None -> ""
+      in
+      Lwt.return (tool_result ~content ~is_error:false)
+  | "poll_inbox" ->
+      let session_id = resolve_session_id arguments in
+      let messages = Broker.drain_inbox broker ~session_id in
+      let content =
+        `List
+          (List.map
+             (fun ({ from_alias; to_alias; content } : message) ->
+               `Assoc
+                 [ ("from_alias", `String from_alias)
+                 ; ("to_alias", `String to_alias)
+                 ; ("content", `String content)
+                 ])
+             messages)
+        |> Yojson.Safe.to_string
       in
       Lwt.return (tool_result ~content ~is_error:false)
   | _ -> Lwt.return (tool_result ~content:("unknown tool: " ^ tool_name) ~is_error:true)

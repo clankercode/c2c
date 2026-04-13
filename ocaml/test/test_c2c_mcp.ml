@@ -131,7 +131,7 @@ let test_tools_list_includes_register_list_send_and_whoami () =
           in
           List.iter
             (fun expected -> check bool expected true (List.mem expected names))
-            [ "register"; "list"; "send"; "whoami" ])
+            [ "register"; "list"; "send"; "whoami"; "poll_inbox" ])
 
 let test_tools_list_marks_register_and_whoami_session_id_as_optional () =
   with_temp_dir (fun dir ->
@@ -240,6 +240,76 @@ let test_tools_call_whoami_uses_current_session_id_when_omitted () =
               check string "whoami alias" "storm-live"
                 (json |> member "result" |> member "content" |> index 0 |> member "text" |> to_string)))
 
+let test_tools_call_poll_inbox_drains_messages_as_tool_result () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-poll";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-from" ~alias:"storm-from";
+          C2c_mcp.Broker.register broker ~session_id:"session-poll" ~alias:"storm-poll";
+          C2c_mcp.Broker.enqueue_message broker ~from_alias:"storm-from" ~to_alias:"storm-poll" ~content:"hello-one";
+          C2c_mcp.Broker.enqueue_message broker ~from_alias:"storm-from" ~to_alias:"storm-poll" ~content:"hello-two";
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 6)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "poll_inbox")
+                    ; ("arguments", `Assoc [])
+                    ] )
+              ]
+          in
+          let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+          match response with
+          | None -> fail "expected tools/call response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              check bool "not an error" false
+                (json |> member "result" |> member "isError" |> to_bool);
+              let text =
+                json |> member "result" |> member "content" |> index 0 |> member "text" |> to_string
+              in
+              let items = Yojson.Safe.from_string text |> to_list in
+              check int "two messages returned" 2 (List.length items);
+              let first = List.nth items 0 in
+              check string "first from_alias" "storm-from" (first |> member "from_alias" |> to_string);
+              check string "first to_alias" "storm-poll" (first |> member "to_alias" |> to_string);
+              check string "first content" "hello-one" (first |> member "content" |> to_string);
+              let second = List.nth items 1 in
+              check string "second content" "hello-two" (second |> member "content" |> to_string);
+              let remaining = C2c_mcp.Broker.read_inbox broker ~session_id:"session-poll" in
+              check int "inbox drained to zero" 0 (List.length remaining)))
+
+let test_tools_call_poll_inbox_empty_inbox_returns_empty_json_array () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-empty";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-empty" ~alias:"storm-empty";
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 7)
+              ; ("method", `String "tools/call")
+              ; ("params", `Assoc [ ("name", `String "poll_inbox"); ("arguments", `Assoc []) ])
+              ]
+          in
+          let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+          match response with
+          | None -> fail "expected tools/call response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let text =
+                json |> member "result" |> member "content" |> index 0 |> member "text" |> to_string
+              in
+              check string "empty array text" "[]" text))
+
 let () =
   run "c2c_mcp"
     [ ( "broker",
@@ -249,8 +319,8 @@ let () =
         ; test_case "blank inbox file treated as empty" `Quick test_blank_inbox_file_is_treated_as_empty
         ; test_case "channel notification shape" `Quick test_channel_notification_matches_claude_channel_shape
         ; test_case "initialize returns capabilities" `Quick test_initialize_returns_mcp_capabilities
-         ; test_case "initialize echoes requested protocol version" `Quick
-             test_initialize_echoes_requested_protocol_version
+         ; test_case "initialize reports supported protocol version" `Quick
+             test_initialize_reports_supported_protocol_version
          ; test_case "tools/list exposes core tools" `Quick test_tools_list_includes_register_list_send_and_whoami
          ; test_case "tools/list makes current-session args optional" `Quick
              test_tools_list_marks_register_and_whoami_session_id_as_optional
@@ -259,4 +329,8 @@ let () =
              test_tools_call_register_uses_current_session_id_when_omitted
          ; test_case "tools/call whoami uses current session id when omitted" `Quick
              test_tools_call_whoami_uses_current_session_id_when_omitted
+         ; test_case "tools/call poll_inbox drains messages as tool result" `Quick
+             test_tools_call_poll_inbox_drains_messages_as_tool_result
+         ; test_case "tools/call poll_inbox empty inbox returns empty json array" `Quick
+             test_tools_call_poll_inbox_empty_inbox_returns_empty_json_array
          ] ) ]
