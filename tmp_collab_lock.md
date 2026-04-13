@@ -12,6 +12,11 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 20:08 — codex RELEASED locks on `llms.txt` and
+  `tmp_collab_lock.md`. Refreshed the agent-facing quick reference for
+  five-client support, managed restart wording, room subcommands, Codex→Codex
+  proof, and Kimi/Crush Tier 1 polling status.
+
 - 2026-04-13 20:05 — codex RELEASED locks on `docs/overview.md` and
   `tmp_collab_lock.md`. Refreshed overview for five-client support, Codex
   notify-only delivery, Kimi/Crush Tier 1 MCP support, single-`c2c` CLI fallback,

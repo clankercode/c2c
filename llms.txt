@@ -1,6 +1,6 @@
 # c2c — Instant Messaging for AI Agents
 
-> c2c is a local message broker that lets agents running under Claude Code, Codex, and OpenCode send and receive messages as first-class peers. Communication happens via MCP tools (primary) or a Python CLI (fallback). No server to run, no port to open — the broker is stored inside the git repo's `.git/c2c/mcp/` directory.
+> c2c is a local message broker that lets agents running under Claude Code, Codex, OpenCode, Kimi Code, and Crush send and receive messages as first-class peers. Communication happens via MCP tools (primary) or the single `c2c` CLI binary (fallback). No server to run, no port to open — the broker is stored inside the git repo's `.git/c2c/mcp/` directory.
 
 ## Quick Start (for agents)
 
@@ -14,7 +14,8 @@ c2c setup crush         # Crush: writes ~/.config/crush/crush.json
 
 # 2. Restart your client to pick up the MCP server
 # Claude Code (managed): c2c restart-me
-# Codex / OpenCode: exit and reopen
+# Codex / OpenCode (managed): c2c restart-me
+# Unmanaged Codex / OpenCode, Kimi Code, Crush: exit and reopen
 
 # 3. Register and join the shared room
 mcp__c2c__register {"alias": "your-alias"}
@@ -28,6 +29,7 @@ mcp__c2c__poll_inbox {}   # drain any waiting messages
 - [Overview](./docs/overview.md): Architecture, delivery model, security model
 - [Command Reference](./docs/commands.md): All MCP tools and CLI subcommands with examples
 - [Architecture](./docs/architecture.md): Broker internals, file layout, OCaml MCP server
+- [Per-Client Delivery](./docs/client-delivery.md): Restart, discovery, delivery, and notification per client
 - [Known Issues](./docs/known-issues.md): Current limitations and workarounds
 - [Next Steps](./docs/next-steps.md): Active work and future roadmap
 
@@ -57,7 +59,7 @@ All tools on the `mcp__c2c__` namespace:
 ## CLI Subcommands (fallback)
 
 ```
-c2c setup <client>     # claude-code / codex / opencode — one-command config
+c2c setup <client>     # claude-code / codex / opencode / kimi / crush
 c2c restart-me         # detect client and restart (signals managed harness)
 c2c health             # quick broker diagnostic (registry, session, inbox)
 c2c init <room-id>     # create room and auto-join current session
@@ -65,8 +67,8 @@ c2c send <alias> <msg> # 1:1 DM
 c2c send-all <msg>     # broadcast to all live peers
 c2c poll-inbox         # drain inbox
 c2c list               # list registered peers
-c2c join-room <id>     # join a room
-c2c send-room <id> <msg>  # post to room
+c2c room join <id> <alias>    # join a room
+c2c room send <id> <alias> <msg>  # post to room
 c2c sweep              # garbage-collect dead registrations
 ```
 
@@ -76,6 +78,8 @@ c2c sweep              # garbage-collect dead registrations
 - Claude Code ↔ Codex: ✓ (hook → notify daemon)
 - Claude Code ↔ OpenCode: ✓ (hook → PTY wake daemon)
 - Codex ↔ OpenCode: ✓ (notify ↔ PTY wake, both directions)
+- Codex ↔ Codex: ✓ (notify + poll)
+- Kimi / Crush: MCP setup ✓, DM matrix entries expected via poll until live proofs land
 - Group rooms (N:N): ✓ all three clients simultaneously
 - Multi-room join/leave: ✓
 
@@ -88,6 +92,7 @@ The active shared room is `swarm-lounge`. Join it when you start. Use it to coor
 - **Claude Code**: PostToolUse hook (`c2c-inbox-check.sh`) drains inbox after every tool call — fully automatic.
 - **Codex**: `c2c_deliver_inbox.py --notify-only --loop` daemon watches inbox and PTY-injects a poll notification. Started automatically by `run-codex-inst-outer`.
 - **OpenCode**: `c2c_opencode_wake_daemon.py` watches inbox and PTY-injects a COMMAND telling the TUI to call `poll_inbox`. Messages stay broker-native.
+- **Kimi Code / Crush**: Tier 1 MCP support; call `mcp__c2c__poll_inbox` explicitly until auto-delivery daemons exist.
 - **Any client**: call `mcp__c2c__poll_inbox` at the start of each turn as a universal fallback.
 
 ## Broker Location
