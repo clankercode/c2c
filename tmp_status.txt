@@ -67,6 +67,7 @@ Recent hardening completed:
 - `restart-codex-self --reason ...` now writes `run-codex-inst.d/<name>.restart.json` before signaling the managed Codex pid, so the resumed turn has local context even if C2C MCP startup failed.
 - The Python follow-up slice is reverified green, including a launcher dry-run assertion that is now interpreter-path agnostic.
 - The Codex PTY poker loop is running with an orientation heartbeat that polls inbox, reads status/locks when needed, treats empty inbox as not-a-stop-signal, and continues unblocked work.
+- `c2c_poker.py --pid ...` now watches the original client pid after resolving its terminal and exits cleanly if that pid goes away. Poker heartbeat payloads now include a fresh `Sent at: ...` timestamp/date on each injection.
 - `c2c_mcp.py` now builds the OCaml server explicitly and launches the built executable directly instead of running through `bash -lc ... dune exec ...`, reducing the documented wrapper-chain leak risk in the MCP launcher path.
 
 Most likely remaining blocker:

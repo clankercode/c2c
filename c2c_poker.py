@@ -134,6 +134,26 @@ def render_payload(message: str, event: str, sender: str, alias: str, raw: bool)
     return f"<c2c {' '.join(attrs)}>\n{message}\n</c2c>"
 
 
+def current_send_date() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def message_with_send_date(message: str) -> str:
+    return f"{message}\n\nSent at: {current_send_date()}"
+
+
+def pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def inject(terminal_pid: int, pts_num: str, payload: str) -> None:
     subprocess.run(
         [str(PTY_INJECT), str(terminal_pid), str(pts_num), payload],
@@ -193,19 +213,17 @@ def main() -> int:
         parser.error("--terminal-pid requires --pts")
 
     transcript: str | None = None
+    watched_pid: int | None = None
     if args.claude_session:
         terminal_pid, pts_num, transcript = resolve_claude_session(args.claude_session)
     elif args.pid is not None:
+        watched_pid = args.pid
         terminal_pid, pts_num, transcript = resolve_pid(args.pid)
     else:
         terminal_pid, pts_num = args.terminal_pid, args.pts
 
     if args.pidfile:
         write_pidfile(args.pidfile)
-
-    payload = render_payload(
-        args.message, args.event, args.sender, args.alias, args.raw
-    )
 
     log(f"target pid={terminal_pid} pts={pts_num} interval={args.interval}s")
 
@@ -222,7 +240,17 @@ def main() -> int:
     if args.initial_delay > 0:
         time.sleep(args.initial_delay)
 
+    def watched_pid_has_exited() -> bool:
+        if watched_pid is None:
+            return False
+        if pid_is_alive(watched_pid):
+            return False
+        log(f"watched pid {watched_pid} exited; stopping")
+        return True
+
     while not stop:
+        if watched_pid_has_exited():
+            return 0
         if args.only_if_idle_for > 0 and not transcript_is_idle(
             transcript, args.only_if_idle_for
         ):
@@ -232,6 +260,13 @@ def main() -> int:
             if args.once:
                 return 0
         else:
+            payload = render_payload(
+                message_with_send_date(args.message),
+                args.event,
+                args.sender,
+                args.alias,
+                args.raw,
+            )
             try:
                 inject(terminal_pid, pts_num, payload)
                 log("injected")
@@ -243,6 +278,8 @@ def main() -> int:
         # sleep in short chunks so signal handling is responsive
         end = time.monotonic() + args.interval
         while not stop and time.monotonic() < end:
+            if watched_pid_has_exited():
+                return 0
             time.sleep(min(1.0, end - time.monotonic()))
 
     return 0
