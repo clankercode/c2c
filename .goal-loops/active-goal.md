@@ -80,6 +80,9 @@ These are Max's target experiences, verbatim:
   refactor (3824610).
 - **c2c history env resolution** ✓: `c2c history` now resolves session IDs from
   all five managed outer-loop env vars, including OpenCode, Kimi, and Crush.
+- **Room rename alias drift** ✓: register renames propagate to room memberships;
+  `join_room` deduplicates by both alias and session_id; auto-join prefers the
+  current registered alias over stale env aliases (1fb4b6c, 2026-04-14).
 - **Kimi Wire bridge** ✓: `c2c_kimi_wire_bridge.py` + `c2c-kimi-wire-bridge` wrapper;
   42 tests pass; `run_once_live` subprocess path implemented and **live-proven
   2026-04-14** by codex with a real `kimi --wire` subprocess (delivered 1 broker
