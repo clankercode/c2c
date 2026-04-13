@@ -338,6 +338,7 @@ Run `c2c --help` for the top-level subcommand list, or
 | `sweep` | Remove dead registrations (one-shot; alias for `broker-gc --once`) |
 | `refresh-peer <alias> [--pid PID]` | Update a stale registration to a new live PID |
 | `health` | Quick diagnostic: broker, registry, session, inbox, relay |
+| `status [--json]` | Compact swarm overview: alive peers, broker-archive sent/received counts, and room membership counts |
 | `smoke-test [--json]` | Isolated end-to-end broker send/poll smoke test |
 | `broker-gc [--once] [--interval N]` | Broker GC daemon: sweeps dead sessions, prunes dead-letter |
 | `dead-letter [--to ALIAS] [--from-sid SID] [--replay] [--purge-orphans] [--purge-all] [--dry-run]` | Inspect, replay, and purge the dead-letter queue |
@@ -345,7 +346,7 @@ Run `c2c --help` for the top-level subcommand list, or
 | `deliver-inbox [--session-id S] [--notify-only] [--once] [--loop]` | Delivery daemon: watches inbox and PTY-injects wake prompts; used by managed harnesses |
 | `inject [--client kimi\|opencode\|claude] --pts N --terminal-pid P` | PTY inject a wake prompt into a TUI session |
 | `tail-log [--limit N]` | Read broker RPC audit log |
-| `verify [--broker] [--broker-root DIR]` | Count c2c message exchange progress. Default: scans Claude transcripts. `--broker`: uses broker archive JSONL — works across all client types (Claude, Codex, OpenCode, Kimi, Crush). |
+| `verify [--broker] [--broker-root DIR]` | Count c2c message exchange progress. Default: scans Claude transcripts. `--broker`: uses broker archive JSONL - works across all client types (Claude, Codex, OpenCode, Kimi, Crush). |
 | `mcp` | Launch the OCaml MCP server (used internally) |
 
 #### Cross-Machine Relay
