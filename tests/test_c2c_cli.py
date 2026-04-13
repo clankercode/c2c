@@ -658,6 +658,7 @@ class C2CCLITests(unittest.TestCase):
                     "could not resolve current session uniquely; use a session ID or PID"
                 ),
             ),
+            mock.patch("c2c_mcp.server_is_fresh", return_value=False),
             mock.patch("c2c_mcp.subprocess.run") as run_mock,
             mock.patch("sys.stderr", stderr),
         ):
@@ -691,6 +692,7 @@ class C2CCLITests(unittest.TestCase):
             ),
             mock.patch("c2c_mcp.sync_broker_registry"),
             mock.patch("c2c_mcp.default_session_id", return_value=AGENT_ONE_SESSION_ID),
+            mock.patch("c2c_mcp.server_is_fresh", return_value=False),
             mock.patch("c2c_mcp.os.getppid", return_value=424242),
             mock.patch("c2c_mcp.subprocess.run") as run_mock,
         ):
@@ -816,6 +818,7 @@ class C2CCLITests(unittest.TestCase):
             ),
             mock.patch("c2c_mcp.sync_broker_registry") as sync_registry,
             mock.patch("c2c_mcp.default_session_id", return_value=AGENT_ONE_SESSION_ID),
+            mock.patch("c2c_mcp.server_is_fresh", return_value=False),
             mock.patch("c2c_mcp.subprocess.run") as run_mock,
         ):
             run_mock.return_value.returncode = 0
@@ -848,6 +851,7 @@ class C2CCLITests(unittest.TestCase):
             ),
             mock.patch("c2c_mcp.sync_broker_registry"),
             mock.patch("c2c_mcp.default_session_id", return_value=AGENT_ONE_SESSION_ID),
+            mock.patch("c2c_mcp.server_is_fresh", return_value=False),
             mock.patch(
                 "c2c_mcp.built_server_path",
                 return_value=REPO
@@ -900,6 +904,7 @@ class C2CCLITests(unittest.TestCase):
             ),
             mock.patch("c2c_mcp.sync_broker_registry"),
             mock.patch("c2c_mcp.default_session_id", return_value=AGENT_ONE_SESSION_ID),
+            mock.patch("c2c_mcp.server_is_fresh", return_value=False),
             mock.patch("c2c_mcp.built_server_path", return_value=built_server),
             mock.patch("c2c_mcp.subprocess.run") as run_mock,
         ):
@@ -933,6 +938,7 @@ class C2CCLITests(unittest.TestCase):
             ),
             mock.patch("c2c_mcp.sync_broker_registry"),
             mock.patch("c2c_mcp.default_session_id", return_value=AGENT_ONE_SESSION_ID),
+            mock.patch("c2c_mcp.server_is_fresh", return_value=False),
             mock.patch("c2c_mcp.built_server_path", return_value=built_server),
             mock.patch("c2c_mcp.subprocess.run") as run_mock,
             mock.patch("sys.stderr", new_callable=io.StringIO) as stderr,
@@ -968,6 +974,7 @@ class C2CCLITests(unittest.TestCase):
             ),
             mock.patch("c2c_mcp.sync_broker_registry"),
             mock.patch("c2c_mcp.default_session_id", return_value=AGENT_ONE_SESSION_ID),
+            mock.patch("c2c_mcp.server_is_fresh", return_value=False),
             mock.patch("c2c_mcp.built_server_path", return_value=built_server),
             mock.patch("c2c_mcp.BUILD_SERVER_TIMEOUT_SECONDS", 0.01),
             mock.patch("c2c_mcp.subprocess.run") as run_mock,
@@ -7908,8 +7915,9 @@ class DeadLetterReplayTests(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         with mock.patch.dict(os.environ, {"C2C_MCP_BROKER_ROOT": ""}, clear=False):
-            with mock.patch("sys.stdout", new=stdout), mock.patch(
-                "sys.stderr", new=stderr
+            with (
+                mock.patch("sys.stdout", new=stdout),
+                mock.patch("sys.stderr", new=stderr),
             ):
                 result = c2c_dead_letter.main(
                     [
