@@ -16,6 +16,7 @@ Usage:
     --broker-root    broker directory
     --interval       poll interval in seconds when inotifywait unavailable
     --min-inject-gap minimum seconds between PTY injections (default: 15)
+    --submit-delay   seconds to wait between bracketed paste and Enter
     --dry-run        print what would be injected, don't actually inject
     --once           drain once and exit
 """
@@ -67,7 +68,14 @@ def inbox_has_messages(path: Path) -> bool:
         return False
 
 
-def pty_inject(terminal_pid: int, pts: int, message: str, *, dry_run: bool) -> bool:
+def pty_inject(
+    terminal_pid: int,
+    pts: int,
+    message: str,
+    *,
+    dry_run: bool,
+    submit_delay: float | None,
+) -> bool:
     if dry_run:
         print(f"[dry-run] would inject to terminal_pid={terminal_pid} pts={pts}: {message[:80]}...")
         return True
@@ -75,9 +83,15 @@ def pty_inject(terminal_pid: int, pts: int, message: str, *, dry_run: bool) -> b
         print(f"[wake-daemon] pty_inject not found: {PTY_INJECT}", file=sys.stderr)
         return False
     try:
+        command = [str(PTY_INJECT), str(terminal_pid), str(pts), message]
+        if submit_delay is not None:
+            command.append(f"{submit_delay:g}")
+        timeout = 5.0
+        if submit_delay is not None:
+            timeout += submit_delay
         result = subprocess.run(
-            [str(PTY_INJECT), str(terminal_pid), str(pts), message],
-            timeout=5.0,
+            command,
+            timeout=timeout,
             capture_output=True,
             text=True,
         )
@@ -110,6 +124,7 @@ def run(
     broker_root: Path,
     interval: float,
     min_inject_gap: float,
+    submit_delay: float | None,
     dry_run: bool,
     once: bool,
 ) -> None:
@@ -125,7 +140,13 @@ def run(
             gap = now - last_inject_time
             if gap >= min_inject_gap:
                 print(f"[wake-daemon] inbox has messages, injecting wake-up")
-                ok = pty_inject(terminal_pid, pts, WAKE_PROMPT, dry_run=dry_run)
+                ok = pty_inject(
+                    terminal_pid,
+                    pts,
+                    WAKE_PROMPT,
+                    dry_run=dry_run,
+                    submit_delay=submit_delay,
+                )
                 if ok:
                     last_inject_time = now
             else:
@@ -151,6 +172,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval", type=float, default=10.0, help="poll interval in seconds")
     parser.add_argument("--min-inject-gap", type=float, default=15.0,
                         help="minimum seconds between PTY injections")
+    parser.add_argument(
+        "--submit-delay",
+        type=float,
+        default=None,
+        help="seconds to wait between bracketed paste and Enter",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--once", action="store_true", help="inject once if inbox has messages and exit")
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
@@ -164,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         broker_root=broker_root,
         interval=args.interval,
         min_inject_gap=args.min_inject_gap,
+        submit_delay=args.submit_delay,
         dry_run=args.dry_run,
         once=args.once,
     )

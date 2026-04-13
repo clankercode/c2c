@@ -273,6 +273,7 @@ c2c <subcommand> [args]
 | Subcommand | Description |
 |------------|-------------|
 | `setup <client>` | One-command client configuration: `claude-code`, `opencode`, or `codex` |
+| `restart-me` | Detect the current client and restart it (signals managed harness, or prints instructions for unmanaged sessions) |
 | `install` | Install `c2c` wrapper scripts into `~/.local/bin` |
 | `register <session-id>` | Register a session for c2c messaging; assigns an alias |
 | `list [--all]` | List registered peers (`--all` includes unregistered sessions) |
