@@ -9,11 +9,16 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `run-claude-inst-outer` | codex | Add refresh-peer on child spawn | 2026-04-13T16:52Z |
-| `tests/test_c2c_cli.py` | codex | Regression tests for Claude outer refresh-peer | 2026-04-13T16:52Z |
-| `tmp_collab_lock.md` | codex | Record/release Claude outer refresh locks | 2026-04-13T16:52Z |
 
 ## History (addendum)
+
+- 2026-04-13T16:58Z — codex RELEASED locks on `run-claude-inst-outer`,
+  `tests/test_c2c_cli.py`, `docs/next-steps.md`,
+  `.collab/findings/2026-04-13T16-36-36Z-codex-claude-outer-refresh-peer-gap.md`,
+  and `tmp_collab_lock.md`. Added immediate `c2c_refresh_peer.py` refresh to
+  Claude's outer loop after child spawn, matching Codex/OpenCode/Kimi behavior.
+  Regression tests cover the post-spawn refresh and config alias lookup.
+  Verification: focused Claude outer tests 2/2 and `py_compile` passed.
 
 - 2026-04-13T16:47Z — codex RELEASED locks on `docs/client-delivery.md`,
   `docs/communication-tiers.md`, `tmp_status.txt`,

@@ -20,6 +20,7 @@ Loop semantics:
 """
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -35,6 +36,49 @@ DOUBLE_SIGINT_WINDOW_SECONDS = 2.0
 
 HERE = Path(__file__).resolve().parent
 INNER = HERE / "run-claude-inst"
+
+
+def _load_instance_alias(name: str) -> str | None:
+    cfg_path = HERE / "run-claude-inst.d" / f"{name}.json"
+    if not cfg_path.exists():
+        return None
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return cfg.get("c2c_alias") or cfg.get("c2c_session_id") or None
+
+
+def maybe_refresh_peer(name: str, pid: int) -> None:
+    """Update the broker registry to point <name>'s alias at the new child PID."""
+    alias = _load_instance_alias(name)
+    if not alias:
+        return
+    refresh = HERE / "c2c_refresh_peer.py"
+    if not refresh.exists():
+        return
+    try:
+        result = subprocess.run(
+            [sys.executable, str(refresh), alias, "--pid", str(pid)],
+            cwd=HERE,
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            if "No registration found" not in stderr:
+                print(
+                    f"[run-claude-inst-outer] refresh-peer warning: {stderr}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+    except Exception as exc:
+        print(
+            f"[run-claude-inst-outer] refresh-peer error: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def main(argv: list[str]) -> int:
@@ -56,14 +100,19 @@ def main(argv: list[str]) -> int:
         iteration += 1
         print(f"[run-claude-inst-outer] iter {iteration}: launching {name}", flush=True)
         started = time.monotonic()
+        proc = None
         try:
-            completed = subprocess.run(
-                [sys.executable, str(INNER), name, *extra],
-                cwd=HERE,
-                check=False,
-            )
-            exit_code = completed.returncode
+            proc = subprocess.Popen([sys.executable, str(INNER), name, *extra], cwd=HERE)
+            maybe_refresh_peer(name, proc.pid)
+            exit_code = proc.wait()
         except KeyboardInterrupt:
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
             now = time.monotonic()
             if now - last_sigint < DOUBLE_SIGINT_WINDOW_SECONDS:
                 print("[run-claude-inst-outer] double SIGINT — exiting.", flush=True)

@@ -1888,6 +1888,76 @@ class C2CCLITests(unittest.TestCase):
             payload["inner"][1:], [str(REPO / "run-codex-inst"), "codex-a", "--search"]
         )
 
+    def test_run_claude_inst_outer_refreshes_peer_after_child_spawn(self):
+        namespace = runpy.run_path(str(REPO / "run-claude-inst-outer"))
+        root = Path(self.temp_dir.name)
+        inner = root / "run-claude-inst"
+        inner.write_text("#!/bin/sh\n", encoding="utf-8")
+        namespace["main"].__globals__["HERE"] = root
+        namespace["main"].__globals__["INNER"] = inner
+
+        refresh_calls = []
+
+        class FakeProcess:
+            pid = 43210
+
+            def wait(self):
+                return 0
+
+        namespace["main"].__globals__["maybe_refresh_peer"] = (
+            lambda name, pid: refresh_calls.append((name, pid))
+        )
+
+        with (
+            mock.patch("subprocess.Popen", return_value=FakeProcess()),
+            mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0)),
+            mock.patch("time.sleep", side_effect=KeyboardInterrupt),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                namespace["main"](["run-claude-inst-outer", "claude-a"])
+
+        self.assertEqual(refresh_calls, [("claude-a", 43210)])
+
+    def test_run_claude_inst_outer_refresh_peer_uses_config_alias(self):
+        namespace = runpy.run_path(str(REPO / "run-claude-inst-outer"))
+        root = Path(self.temp_dir.name)
+        cfg_dir = root / "run-claude-inst.d"
+        cfg_dir.mkdir()
+        (cfg_dir / "claude-a.json").write_text(
+            json.dumps({"c2c_alias": "storm-beacon", "c2c_session_id": "ignored"}),
+            encoding="utf-8",
+        )
+        refresh = root / "c2c_refresh_peer.py"
+        refresh.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        namespace["maybe_refresh_peer"].__globals__["HERE"] = root
+
+        calls = []
+
+        def fake_run(command, *, cwd, capture_output, text, timeout):
+            calls.append(
+                {
+                    "command": command,
+                    "cwd": cwd,
+                    "capture_output": capture_output,
+                    "text": text,
+                    "timeout": timeout,
+                }
+            )
+            return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            namespace["maybe_refresh_peer"]("claude-a", 12345)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            calls[0]["command"],
+            [sys.executable, str(refresh), "storm-beacon", "--pid", "12345"],
+        )
+        self.assertEqual(calls[0]["cwd"], root)
+        self.assertTrue(calls[0]["capture_output"])
+        self.assertTrue(calls[0]["text"])
+        self.assertEqual(calls[0]["timeout"], 5.0)
+
     def test_run_codex_inst_rearm_dry_run_reports_bg_loop_commands(self):
         config_dir = Path(self.temp_dir.name) / "run-codex-inst.d"
         config_dir.mkdir()
