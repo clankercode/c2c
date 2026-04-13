@@ -56,6 +56,17 @@ def broker_alias_exists(alias: str) -> bool:
     return any(registration.get("alias") == alias for registration in registrations)
 
 
+def broker_alias_for_session_id(session_id: str) -> str:
+    if not session_id:
+        return ""
+    broker_root = Path(os.environ.get("C2C_MCP_BROKER_ROOT") or default_broker_root())
+    registrations = load_broker_registrations(broker_root / "registry.json")
+    for registration in registrations:
+        if registration.get("session_id") == session_id:
+            return str(registration.get("alias", "")).strip()
+    return ""
+
+
 def enqueue_broker_message(session_id: str, to_alias: str, message: str) -> dict:
     broker_root = Path(os.environ.get("C2C_MCP_BROKER_ROOT") or default_broker_root())
     broker_root.mkdir(parents=True, exist_ok=True)
@@ -100,6 +111,12 @@ def resolve_sender_metadata(sessions: list[dict] | None = None) -> dict:
     if sessions is None:
         sessions = load_sessions()
 
+    mcp_session_id = os.environ.get("C2C_MCP_SESSION_ID", "").strip()
+    if mcp_session_id:
+        alias = broker_alias_for_session_id(mcp_session_id)
+        if alias:
+            return {"name": alias, "alias": ""}
+
     session_id = os.environ.get("C2C_SESSION_ID", "").strip()
     if session_id:
         registration = load_registration_for_session_id(session_id)
@@ -128,6 +145,12 @@ def resolve_sender_metadata(sessions: list[dict] | None = None) -> dict:
 def resolve_sender_broker_alias(sessions: list[dict] | None = None) -> str:
     if sessions is None:
         sessions = load_sessions()
+
+    mcp_session_id = os.environ.get("C2C_MCP_SESSION_ID", "").strip()
+    if mcp_session_id:
+        alias = broker_alias_for_session_id(mcp_session_id)
+        if alias:
+            return alias
 
     session_id = os.environ.get("C2C_SESSION_ID", "").strip()
     if session_id:

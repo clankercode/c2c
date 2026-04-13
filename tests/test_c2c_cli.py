@@ -2600,6 +2600,57 @@ class C2CSendUnitTests(unittest.TestCase):
             sessions=mock.ANY,
         )
 
+    def test_send_to_alias_passes_mcp_env_sender_metadata_to_pty_delegate(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            broker_root = Path(temp_dir) / "mcp-broker"
+            broker_root.mkdir(parents=True, exist_ok=True)
+            (broker_root / "registry.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "session_id": "opencode-local",
+                            "alias": "opencode-local",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            session = {
+                "name": "agent-two",
+                "pid": 11112,
+                "session_id": AGENT_TWO_SESSION_ID,
+            }
+            registration = {"session_id": AGENT_TWO_SESSION_ID, "alias": "ember-crown"}
+
+            with (
+                mock.patch("c2c_send.load_sessions", return_value=[]),
+                mock.patch("c2c_send.resolve_alias", return_value=(session, registration)),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "C2C_SESSION_ID": "",
+                        "C2C_SESSION_PID": "",
+                        "C2C_MCP_SESSION_ID": "opencode-local",
+                        "C2C_MCP_BROKER_ROOT": str(broker_root),
+                    },
+                    clear=False,
+                ),
+                mock.patch(
+                    "c2c_send.claude_send_msg.send_message_to_session",
+                    return_value={"ok": True},
+                ) as delegate,
+            ):
+                c2c_send.send_to_alias("ember-crown", "hello peer", dry_run=False)
+
+        delegate.assert_called_once_with(
+            session,
+            "hello peer",
+            event="message",
+            sender_name="opencode-local",
+            sender_alias="",
+            sessions=mock.ANY,
+        )
+
     def test_send_to_alias_uses_minimal_sender_fallback_when_current_session_unknown(
         self,
     ):
@@ -2779,6 +2830,53 @@ class C2CSendUnitTests(unittest.TestCase):
                 [
                     {
                         "from_alias": "storm-herald",
+                        "to_alias": "codex",
+                        "content": "hello peer",
+                    }
+                ],
+            )
+
+    def test_send_to_alias_broker_only_peer_uses_mcp_env_sender_alias(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            broker_root = Path(temp_dir) / "mcp-broker"
+            broker_root.mkdir(parents=True, exist_ok=True)
+            (broker_root / "registry.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "session_id": "opencode-local",
+                            "alias": "opencode-local",
+                        },
+                        {"session_id": "codex-local", "alias": "codex"},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch("c2c_send.load_sessions", return_value=[]),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "C2C_SESSION_ID": "",
+                        "C2C_SESSION_PID": "",
+                        "C2C_MCP_SESSION_ID": "opencode-local",
+                        "C2C_MCP_AUTO_REGISTER_ALIAS": "opencode-local",
+                        "C2C_REGISTRY_PATH": str(Path(temp_dir) / "registry.yaml"),
+                        "C2C_MCP_BROKER_ROOT": str(broker_root),
+                    },
+                    clear=False,
+                ),
+            ):
+                c2c_send.send_to_alias("codex", "hello peer", dry_run=False)
+
+            self.assertEqual(
+                json.loads(
+                    (broker_root / "codex-local.inbox.json").read_text(encoding="utf-8")
+                ),
+                [
+                    {
+                        "from_alias": "opencode-local",
                         "to_alias": "codex",
                         "content": "hello peer",
                     }
