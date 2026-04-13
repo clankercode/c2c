@@ -7231,6 +7231,61 @@ class HealthCheckSessionInboxPendingTests(unittest.TestCase):
         self.assertEqual(result["inbox_pending"], 0)
 
 
+class HealthCheckWireDaemonTests(unittest.TestCase):
+    """Tests for c2c_health.check_wire_daemon()."""
+
+    def test_no_session_id_skips_wire_daemon_check(self):
+        import c2c_health
+
+        result = c2c_health.check_wire_daemon(None)
+
+        self.assertFalse(result["checked"])
+
+    def test_wire_daemon_status_is_reported_for_session_id(self):
+        import c2c_health
+
+        status = {
+            "running": True,
+            "pid": 12345,
+            "pidfile": "/tmp/kimi-test.pid",
+        }
+        with mock.patch("c2c_wire_daemon._daemon_status", return_value=status):
+            result = c2c_health.check_wire_daemon("kimi-test")
+
+        self.assertTrue(result["checked"])
+        self.assertTrue(result["running"])
+        self.assertEqual(result["pid"], 12345)
+        self.assertEqual(result["pidfile"], "/tmp/kimi-test.pid")
+
+    def test_run_health_check_uses_resolved_session_for_wire_daemon_check(self):
+        import c2c_health
+
+        session = {
+            "resolved": True,
+            "registered": True,
+            "alias": "kimi-agent",
+            "session_id": "kimi-agent",
+            "inbox_exists": True,
+            "inbox_writable": True,
+            "operator_check": False,
+        }
+        with (
+            mock.patch("c2c_health.check_session", return_value=session),
+            mock.patch("c2c_health.check_broker_root", return_value={}),
+            mock.patch("c2c_health.check_registry", return_value={}),
+            mock.patch("c2c_health.check_rooms", return_value={}),
+            mock.patch("c2c_health.check_hook", return_value={}),
+            mock.patch("c2c_health.check_swarm_lounge", return_value={}),
+            mock.patch("c2c_health.check_dead_letter", return_value={}),
+            mock.patch("c2c_health.check_outer_loops", return_value={}),
+            mock.patch("c2c_health.check_relay", return_value={}),
+            mock.patch("c2c_health.check_wire_daemon") as check_wire,
+        ):
+            c2c_health.run_health_check(Path("/tmp/broker"))
+
+        check_wire.assert_called_once_with("kimi-agent")
+
+
 class RefreshPeerTests(unittest.TestCase):
     """Tests for c2c_refresh_peer.refresh_peer()."""
 
