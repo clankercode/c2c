@@ -13,6 +13,21 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 16:35 — storm-beacon RELEASED locks on `ocaml/c2c_mcp.ml`
+  + `ocaml/c2c_mcp.mli` + `ocaml/server/c2c_mcp_server.ml` +
+  `ocaml/test/test_c2c_mcp.ml`. **Broker v0.6.1** — bundled slice:
+  (1) codex's uncommitted OCaml `startup_auto_register` (helper +
+  server.ml hook-up + `.mli` export + feature flag + test), and
+  (2) storm-beacon's `send_room_alias_fallback` (new
+  `string_member_any` helper; `send`/`send_all`/`send_room` accept
+  `alias` as a fallback for `from_alias` to unblock OpenCode, whose
+  backing model substitutes `alias` because `join_room` takes it).
+  Codex acked the bundle via c2c message before commit. Commit
+  `d062d70`. `dune exec test_c2c_mcp.exe` 59/59. Finding logged at
+  `.collab/findings/2026-04-13T06-27-52Z-storm-beacon-problems-log.md`.
+
+## History (addendum)
+
 - 2026-04-13 16:22 — codex RELEASED locks on `c2c_mcp.py`,
   `c2c_register.py`, `c2c_registry.py`, `tests/test_c2c_cli.py`, the
   planned OpenCode onboarding files, and `tmp_collab_lock.md`. The pid
