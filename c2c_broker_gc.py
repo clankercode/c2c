@@ -342,9 +342,9 @@ def run_gc_loop(
 
         if _outer_loops_running():
             # Skip registry sweep to avoid the managed-session sweep footgun.
-            # Dead-letter cleanup is safe regardless — it never touches registrations.
+            # Dead-letter cleanup is safe regardless; it never touches registrations.
             print(
-                "[broker-gc] outer loops active — skipping registry sweep "
+                "[broker-gc] outer loops active - skipping registry sweep "
                 "(safe_to_sweep=False); dead-letter cleanup will still run.",
                 flush=True,
             )
