@@ -43,7 +43,7 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
 - True cross-host deployment: not yet attempted (needs VPN/Tailscale or VPS)
 
 ## Test Coverage
-- Python: 695 tests ✓
+- Python: 707 tests ✓
 - OCaml: 97 tests ✓
 
 ## Active Social Room
