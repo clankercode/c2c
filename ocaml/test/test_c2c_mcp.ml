@@ -515,6 +515,49 @@ let test_tools_call_send_uses_current_registered_alias () =
           check string "content delivered" "identity should be bound"
             msg.content))
 
+let test_tools_call_send_uses_current_alias_even_if_pid_stale () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-a";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-a"
+            ~alias:"storm-ember" ~pid:(Some 999_999_999)
+            ~pid_start_time:None;
+          C2c_mcp.Broker.register broker ~session_id:"session-b"
+            ~alias:"storm-storm" ~pid:None ~pid_start_time:None;
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 32)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "send")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("from_alias", `String "codex")
+                          ; ("to_alias", `String "storm-storm")
+                          ; ("content", `String "stale pid should not unbind")
+                          ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          (match response with
+           | None -> fail "expected tools/call response"
+           | Some _ -> ());
+          let inbox =
+            C2c_mcp.Broker.read_inbox broker ~session_id:"session-b"
+          in
+          check int "one inbox message" 1 (List.length inbox);
+          let msg = List.hd inbox in
+          check string "stale self pid still binds by session_id"
+            "storm-ember" msg.from_alias))
+
 let test_tools_call_send_returns_receipt_json () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -3256,6 +3299,8 @@ let () =
          ; test_case "tools/call send routes through broker" `Quick test_tools_call_send_routes_message_through_broker
          ; test_case "tools/call send binds sender to current registration" `Quick
              test_tools_call_send_uses_current_registered_alias
+         ; test_case "tools/call send binds sender even if own pid is stale" `Quick
+             test_tools_call_send_uses_current_alias_even_if_pid_stale
          ; test_case "tools/call send returns receipt JSON" `Quick test_tools_call_send_returns_receipt_json
          ; test_case "tools/call register uses current session id when omitted" `Quick
               test_tools_call_register_uses_current_session_id_when_omitted

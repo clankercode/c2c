@@ -1371,8 +1371,7 @@ let current_registered_alias broker =
   | Some session_id ->
       Broker.list_registrations broker
       |> List.find_opt
-           (fun reg ->
-             reg.session_id = session_id && Broker.registration_is_alive reg)
+           (fun reg -> reg.session_id = session_id)
       |> Option.map (fun reg -> reg.alias)
 
 let alias_for_current_session_or_argument broker arguments =
