@@ -12,6 +12,17 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T22:33Z - codex RELEASED locks on `ocaml/c2c_mcp.ml`,
+  `ocaml/test/test_c2c_mcp.ml`,
+  `.collab/findings/2026-04-13T22-26-00Z-codex-prune-rooms-orphan-member-gap.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Fixed `prune_rooms` so it
+  evicts room members whose registry rows are already gone, matching
+  `list_rooms` dead-member reporting for orphan memberships. Verification:
+  RED orphan-member regression failed with 0 evictions, GREEN OCaml
+  `dune runtest` passed 117/117. Full `just test` is blocked by unrelated
+  dirty configure/start work (`c2c_configure_claude_code.py` indentation error
+  and alias expectation drift).
+
 - 2026-04-13T22:16Z - codex RELEASED locks on `.opencode/opencode.json`,
   `tests/test_c2c_cli.py`,
   `.collab/findings/2026-04-13T22-13-00Z-codex-opencode-config-inherits-parent-alias.md`,

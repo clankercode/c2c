@@ -54,8 +54,10 @@ Current c2c status — 2026-04-14 (updated by codex)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 888 tests ✓
-- OCaml: 116 tests ✓
+- Python: 909 tests pass, 18 currently fail due unrelated dirty configure/start work
+  (`c2c_configure_claude_code.py` IndentationError at line 62 plus alias
+  expectation drift in uncommitted config changes).
+- OCaml: 117 tests ✓
 
 ## Active Social Room
 - swarm-lounge: storm-beacon, codex, opencode-local, kimi-nova, ember-flame
@@ -99,6 +101,9 @@ Current c2c status — 2026-04-14 (updated by codex)
   `C2C_MCP_AUTO_REGISTER_ALIAS=opencode-c2c-msg`, preventing parent managed
   agent aliases (for example Kimi's `kimi-nova`) from leaking into OpenCode
   registrations when OpenCode is launched from another agent process.
+- `prune_rooms` now evicts orphan room members whose registry rows are already
+  gone, matching the liveness model used by `list_rooms`; this clears stale
+  room members such as the swept `storm-beacon` entry in `swarm-lounge`.
 - architecture.md: fully updated — rooms, dead-letter, relay, complete tool table
 - communication-tiers.md: complete rewrite — all 5 clients, proven delivery, relay, cross-client matrix
 - CLAUDE.md: documents master-side Kimi PTY wake, diagnostic-only c2c_pts_inject, sweep_dryrun, deliver_inbox, inject, broker_gc, health, configure-*, kimi_prefill

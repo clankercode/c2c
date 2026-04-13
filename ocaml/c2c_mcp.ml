@@ -1115,6 +1115,28 @@ module Broker = struct
       end
     end
 
+  let orphan_room_members t regs =
+    let has_registration member =
+      List.exists
+        (fun reg ->
+          reg.session_id = member.rm_session_id || reg.alias = member.rm_alias)
+        regs
+    in
+    let rd = rooms_dir t in
+    if not (Sys.file_exists rd) then []
+    else
+      let room_names =
+        try
+          Array.to_list (Sys.readdir rd)
+          |> List.filter (fun name ->
+                 Sys.is_directory (Filename.concat rd name))
+        with _ -> []
+      in
+      room_names
+      |> List.concat_map (fun room_id ->
+             load_room_members t ~room_id
+             |> List.filter (fun member -> not (has_registration member)))
+
   (* Evict dead members from rooms without touching registrations or inboxes.
      Safe to call while outer loops are running (unlike sweep). *)
   let prune_rooms t =
@@ -1132,8 +1154,15 @@ module Broker = struct
                | Alive -> false
                | Dead | Unknown -> true)
       in
-      let dead_sids = List.map (fun r -> r.session_id) dead_regs in
-      let dead_aliases = List.map (fun r -> r.alias) dead_regs in
+      let orphan_members = orphan_room_members t regs in
+      let dead_sids =
+        List.map (fun r -> r.session_id) dead_regs
+        @ List.map (fun m -> m.rm_session_id) orphan_members
+      in
+      let dead_aliases =
+        List.map (fun r -> r.alias) dead_regs
+        @ List.map (fun m -> m.rm_alias) orphan_members
+      in
       evict_dead_from_rooms t ~dead_session_ids:dead_sids ~dead_aliases)
 
   (* Public alias for tests and external callers. *)

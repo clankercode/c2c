@@ -2295,6 +2295,35 @@ let test_prune_rooms_evicts_pidless_zombie_members () =
       check string "remaining member is alive-peer" "alive-peer"
         (List.hd members).C2c_mcp.rm_alias)
 
+let test_prune_rooms_evicts_orphan_room_members () =
+  (* prune_rooms should also evict room members whose registration row is
+     already gone.  list_rooms reports these as dead, so prune_rooms must not
+     depend only on the current registry's dead aliases/session IDs. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"s-alive" ~alias:"alive-peer"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+      ignore
+        (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
+           ~alias:"alive-peer" ~session_id:"s-alive");
+      ignore
+        (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
+           ~alias:"orphan-peer" ~session_id:"s-orphan");
+      let evicted = C2c_mcp.Broker.prune_rooms broker in
+      check int "orphan member evicted from room" 1 (List.length evicted);
+      let (evicted_room, evicted_alias) = List.hd evicted in
+      check string "evicted from swarm-lounge" "swarm-lounge" evicted_room;
+      check string "evicted orphan-peer alias" "orphan-peer" evicted_alias;
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      check int "live registration still present" 1 (List.length regs);
+      let members =
+        C2c_mcp.Broker.read_room_members broker ~room_id:"swarm-lounge"
+      in
+      check int "one room member remaining" 1 (List.length members);
+      check string "remaining member is alive-peer" "alive-peer"
+        (List.hd members).C2c_mcp.rm_alias)
+
 let test_register_redelivers_dead_letter_on_same_session_id () =
   (* Scenario: a managed session (e.g. kimi-local) is swept while the outer
      loop is between iterations — PID dead, no live process. Messages queued to
@@ -4156,6 +4185,8 @@ let () =
              test_tools_call_prune_rooms_via_mcp
          ; test_case "prune_rooms evicts pidless zombie members (Unknown liveness)" `Quick
              test_prune_rooms_evicts_pidless_zombie_members
+         ; test_case "prune_rooms evicts orphan room members" `Quick
+             test_prune_rooms_evicts_orphan_room_members
          ; test_case "register redelivers dead-letter on same session_id" `Quick
              test_register_redelivers_dead_letter_on_same_session_id
          ; test_case "register redelivers dead-letter by alias (new session_id)" `Quick
