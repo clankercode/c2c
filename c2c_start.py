@@ -34,7 +34,7 @@ import c2c_mcp
 CLIENT_CONFIGS: dict[str, dict[str, Any]] = {
     "claude": {
         "binary": "claude",
-        "deliver_client": "c2c_claude_wake_daemon",
+        "deliver_client": "claude",
         "needs_poker": True,
         "poker_event": "heartbeat",
         "poker_from": "claude-poker",
@@ -42,19 +42,19 @@ CLIENT_CONFIGS: dict[str, dict[str, Any]] = {
     },
     "codex": {
         "binary": "codex",
-        "deliver_client": "c2c_deliver_inbox",
+        "deliver_client": "codex",
         "needs_poker": False,
         "extra_env": {},
     },
     "opencode": {
         "binary": "opencode",
-        "deliver_client": "c2c_opencode_wake_daemon",
+        "deliver_client": "opencode",
         "needs_poker": False,
         "extra_env": {},
     },
     "kimi": {
         "binary": "kimi",
-        "deliver_client": "c2c_kimi_wake_daemon",
+        "deliver_client": "kimi",
         "needs_poker": True,
         "poker_event": "heartbeat",
         "poker_from": "kimi-poker",
@@ -62,7 +62,7 @@ CLIENT_CONFIGS: dict[str, dict[str, Any]] = {
     },
     "crush": {
         "binary": "crush",
-        "deliver_client": "c2c_crush_wake_daemon",
+        "deliver_client": "crush",
         "needs_poker": False,
         "extra_env": {},
     },

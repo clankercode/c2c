@@ -268,6 +268,17 @@ def main(argv: list[str] | None = None) -> int:
             "so ghost/test entries don't skew the goal_met calculation."
         ),
     )
+    parser.add_argument(
+        "--min-messages",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "Exclude participants with fewer than N total messages (sent + received) "
+            "from the goal_met calculation. Useful for filtering out freshly-registered "
+            "ghost/test sessions that haven't participated yet. Default: 0 (include all)."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.broker or args.broker_root:
@@ -305,6 +316,28 @@ def main(argv: list[str] | None = None) -> int:
                 if not args.json:
                     reason = "no Claude transcripts found" if transcript_count == 0 else f"broker has more participants ({broker_count} vs {transcript_count})"
                     print(f"(broker mode — {reason})", file=sys.stderr)
+
+    # Apply --min-messages filter: exclude participants with too little activity.
+    min_messages = args.min_messages
+    if min_messages > 0:
+        filtered_participants = {
+            name: counts
+            for name, counts in payload["participants"].items()
+            if counts["sent"] + counts["received"] >= min_messages
+        }
+        if filtered_participants != payload["participants"]:
+            excluded = set(payload["participants"]) - set(filtered_participants)
+            goal_met = bool(filtered_participants) and all(
+                counts["sent"] >= GOAL_COUNT and counts["received"] >= GOAL_COUNT
+                for counts in filtered_participants.values()
+            )
+            payload = {**payload, "participants": filtered_participants, "goal_met": goal_met}
+            if not args.json:
+                print(
+                    f"(excluded {len(excluded)} session(s) with <{min_messages} total messages: "
+                    + ", ".join(sorted(excluded)) + ")",
+                    file=sys.stderr,
+                )
 
     if args.json:
         print(json.dumps(payload, indent=2))

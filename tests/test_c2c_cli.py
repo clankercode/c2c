@@ -7663,6 +7663,9 @@ class RunCrushInstTests(unittest.TestCase):
             pid = 43210
             returncode = 0
 
+            def poll(self):
+                return self.returncode
+
             def wait(self):
                 return 0
 
@@ -10211,6 +10214,196 @@ class C2CStartUnitTests(unittest.TestCase):
         self.assertEqual(kwargs.get("binary_override"), "cc-zai")
 
 
+class C2CStartDeliverDaemonTests(unittest.TestCase):
+    """Tests for _start_deliver_daemon client-specific command construction."""
+
+    def setUp(self):
+        import c2c_start
+        self.c2c_start = c2c_start
+
+    def test_deliver_daemon_uses_correct_client_flag_per_type(self):
+        broker_root = Path("/tmp/broker")
+        for client in ("claude", "codex", "opencode", "kimi", "crush"):
+            with mock.patch("subprocess.Popen") as mock_popen:
+                mock_popen.return_value.poll.return_value = None
+                self.c2c_start._start_deliver_daemon("test-inst", client, broker_root)
+            mock_popen.assert_called_once()
+            cmd = mock_popen.call_args[0][0]
+            self.assertIn("--client", cmd)
+            client_idx = cmd.index("--client")
+            self.assertEqual(cmd[client_idx + 1], client, f"wrong --client for {client}")
+            self.assertIn("--session-id", cmd)
+            sid_idx = cmd.index("--session-id")
+            self.assertEqual(cmd[sid_idx + 1], "test-inst")
+            self.assertIn(str(broker_root), cmd)
+
+    def test_deliver_daemon_returns_none_when_script_missing(self):
+        with mock.patch.object(self.c2c_start, "HERE", Path("/nonexistent")):
+            result = self.c2c_start._start_deliver_daemon("x", "codex", Path("/tmp"))
+        self.assertIsNone(result)
+
+    def test_poker_starts_only_for_clients_that_need_it(self):
+        for client, needs in (
+            ("claude", True),
+            ("codex", False),
+            ("opencode", False),
+            ("kimi", True),
+            ("crush", False),
+        ):
+            with mock.patch("subprocess.Popen") as mock_popen:
+                mock_popen.return_value.poll.return_value = None
+                result = self.c2c_start._start_poker("test-inst", client)
+            if needs:
+                self.assertIsNotNone(result, f"{client} should start poker")
+                mock_popen.assert_called_once()
+                cmd = mock_popen.call_args[0][0]
+                self.assertIn("--claude-session", cmd)
+            else:
+                self.assertIsNone(result, f"{client} should not start poker")
+                mock_popen.assert_not_called()
+
+
+class C2CStartOuterLoopBehaviorTests(unittest.TestCase):
+    """Tests for run_outer_loop edge cases: SIGINT and backoff."""
+
+    def setUp(self):
+        import c2c_start
+        self.c2c_start = c2c_start
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.instances_dir = Path(self.temp_dir.name) / "instances"
+        self._orig_instances_dir = c2c_start.INSTANCES_DIR
+        c2c_start.INSTANCES_DIR = self.instances_dir
+
+    def tearDown(self):
+        self.c2c_start.INSTANCES_DIR = self._orig_instances_dir
+        self.temp_dir.cleanup()
+
+    def test_run_outer_loop_exponential_backoff_on_fast_exit(self):
+        """Fast exits trigger exponential backoff sleep."""
+        sleeps = []
+        call_count = 0
+
+        def fake_wait():
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 3:
+                raise RuntimeError("stop loop")
+            return 1  # fast exit (< MIN_RUN_SECONDS)
+
+        mock_child = mock.Mock()
+        mock_child.poll.return_value = None
+        mock_child.wait.side_effect = fake_wait
+        mock_child.terminate.return_value = None
+        mock_child.kill.return_value = None
+
+        with (
+            mock.patch("subprocess.Popen", return_value=mock_child),
+            mock.patch("shutil.which", return_value="/fake/binary"),
+            mock.patch("time.sleep", side_effect=sleeps.append),
+            mock.patch("time.monotonic", side_effect=[0, 1, 2, 3, 4]),
+        ):
+            with self.assertRaises(RuntimeError):
+                self.c2c_start.run_outer_loop(
+                    "backoff-test", "codex", [], Path("/tmp/broker")
+                )
+
+        # After first fast exit: INITIAL_BACKOFF_SECONDS (2.0)
+        # After second fast exit: doubled to 4.0
+        self.assertEqual(sleeps, [2.0, 4.0])
+
+    def test_run_outer_loop_resets_backoff_after_slow_exit(self):
+        """Slow exits reset backoff to the initial value."""
+        sleeps = []
+        call_count = 0
+
+        def fake_wait():
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 3:
+                raise RuntimeError("stop loop")
+            return 15.0  # slow exit (>= MIN_RUN_SECONDS)
+
+        mock_child = mock.Mock()
+        mock_child.poll.return_value = None
+        mock_child.wait.side_effect = fake_wait
+        mock_child.terminate.return_value = None
+        mock_child.kill.return_value = None
+
+        with (
+            mock.patch("subprocess.Popen", return_value=mock_child),
+            mock.patch("shutil.which", return_value="/fake/binary"),
+            mock.patch("time.sleep", side_effect=sleeps.append),
+            mock.patch("time.monotonic", side_effect=[0, 15, 16, 31, 32]),
+        ):
+            with self.assertRaises(RuntimeError):
+                self.c2c_start.run_outer_loop(
+                    "backoff-test", "codex", [], Path("/tmp/broker")
+                )
+
+        # Both sleeps should be RESTART_PAUSE_SECONDS (1.5)
+        self.assertEqual(sleeps, [1.5, 1.5])
+
+    def test_run_outer_loop_first_sigint_warns_and_continues(self):
+        """First SIGINT prints warning and continues the loop."""
+        call_count = 0
+
+        def fake_wait():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise KeyboardInterrupt()
+            if call_count >= 2:
+                raise RuntimeError("stop loop")
+            return 0
+
+        mock_child = mock.Mock()
+        mock_child.poll.return_value = None
+        mock_child.wait.side_effect = fake_wait
+        mock_child.terminate.return_value = None
+        mock_child.kill.return_value = None
+
+        with (
+            mock.patch("subprocess.Popen", return_value=mock_child),
+            mock.patch("shutil.which", return_value="/fake/binary"),
+            mock.patch("time.sleep"),
+            mock.patch("time.monotonic", return_value=0),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                self.c2c_start.run_outer_loop(
+                    "sigint-test", "codex", [], Path("/tmp/broker")
+                )
+        self.assertIn("stop loop", str(ctx.exception))
+        mock_child.terminate.assert_called_once()
+
+    def test_run_outer_loop_double_sigint_exits_cleanly(self):
+        """Two SIGINTs within window exit with code 130."""
+        call_count = 0
+
+        def fake_wait():
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                raise KeyboardInterrupt()
+            return 0
+
+        mock_child = mock.Mock()
+        mock_child.poll.return_value = None
+        mock_child.wait.side_effect = fake_wait
+        mock_child.terminate.return_value = None
+        mock_child.kill.return_value = None
+
+        with (
+            mock.patch("subprocess.Popen", return_value=mock_child),
+            mock.patch("shutil.which", return_value="/fake/binary"),
+            mock.patch("time.sleep"),
+            mock.patch("time.monotonic", side_effect=[0, 0.5, 0.5]),
+        ):
+            rc = self.c2c_start.run_outer_loop(
+                "sigint-test", "codex", [], Path("/tmp/broker")
+            )
+        self.assertEqual(rc, 130)
+
+
 class C2CStartConstantsTests(unittest.TestCase):
     """Task 1: constants, SUPPORTED_CLIENTS, and public helper API."""
 
@@ -10233,6 +10426,17 @@ class C2CStartConstantsTests(unittest.TestCase):
             self.assertIn("binary", cfg, f"{client} missing binary")
             self.assertIn("deliver_client", cfg, f"{client} missing deliver_client")
             self.assertIn("needs_poker", cfg, f"{client} missing needs_poker")
+
+    def test_deliver_client_values_match_deliver_inbox_choices(self):
+        from c2c_start import CLIENT_CONFIGS
+
+        valid_deliver_clients = {"claude", "codex", "opencode", "kimi", "crush"}
+        for client, cfg in CLIENT_CONFIGS.items():
+            self.assertIn(
+                cfg["deliver_client"],
+                valid_deliver_clients,
+                f"{client} deliver_client must be a c2c_deliver_inbox --client value",
+            )
 
     def test_constants_exist(self):
         import c2c_start
