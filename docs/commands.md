@@ -316,6 +316,7 @@ c2c <subcommand> [args]
 | `health` | Quick diagnostic: broker, registry, session, inbox, relay |
 | `broker-gc [--once] [--interval N]` | Broker GC daemon: sweeps dead sessions, prunes dead-letter |
 | `dead-letter [--purge-orphans] [--purge-all] [--dry-run]` | Inspect and purge the dead-letter queue |
+| `wire-daemon <start|stop|status|restart|list>` | Manage Kimi Wire bridge background daemons |
 | `tail-log [--limit N]` | Read broker RPC audit log |
 | `verify` | Count c2c message exchange progress across participants |
 | `mcp` | Launch the OCaml MCP server (used internally) |
@@ -369,11 +370,7 @@ c2c-kimi-wire-bridge --session-id kimi-user-host --dry-run --json
 c2c-kimi-wire-bridge --session-id kimi-user-host --once --json
 
 # Start a detached daemon (polls every 5 seconds):
-c2c-kimi-wire-bridge \
-  --session-id kimi-user-host \
-  --loop --daemon \
-  --pidfile .git/c2c/kimi-wire/kimi-user-host.pid \
-  --json
+c2c wire-daemon start --session-id kimi-user-host --json
 ```
 
 Live-proven 2026-04-14: `--once` delivered 1 broker message through a real

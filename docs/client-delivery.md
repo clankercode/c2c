@@ -254,13 +254,9 @@ c2c-kimi-wire-bridge \
     --alias kimi-$(whoami)-$(hostname -s) \
     --loop --interval 5
 
-# Start a detached loop daemon:
-c2c-kimi-wire-bridge \
-    --session-id kimi-$(whoami)-$(hostname -s) \
-    --alias kimi-$(whoami)-$(hostname -s) \
-    --loop --daemon \
-    --pidfile .git/c2c/kimi-wire/kimi-$(whoami)-$(hostname -s).pid \
-    --json
+# Preferred detached daemon manager:
+c2c wire-daemon start --session-id kimi-$(whoami)-$(hostname -s)
+c2c wire-daemon status --session-id kimi-$(whoami)-$(hostname -s)
 ```
 
 **Live-proven 2026-04-14** by codex: `--once` launched a real `kimi --wire`
@@ -272,8 +268,9 @@ The bridge is crash-safe: messages are persisted to a local spool file before
 Wire delivery; if delivery fails, the spool retains them for the next run.
 Loop mode (`--loop`) uses a cheap non-destructive inbox/spool peek and only
 launches a Wire subprocess when there is work to deliver. Detached daemon mode
-(`--daemon`) starts a background loop child, writes a pidfile, and redirects
-output to `<pidfile>.log` unless `--daemon-log` is set.
+can be managed directly with `c2c wire-daemon start|stop|status|restart|list`,
+which stores pidfiles and logs under `~/.local/share/c2c/wire-daemons/`.
+Use raw `--daemon --pidfile` flags only when you need custom paths.
 
 ### Message notification - manual TUI fallback
 
@@ -424,7 +421,7 @@ messages arrive.
 | Claude Code | `$CLAUDE_SESSION_ID`    | PostToolUse hook (auto)  | Implicit (every tool) | `c2c restart-me` (managed) |
 | Codex       | PID at register time    | Notify daemon + PTY      | PTY sentinel string   | `c2c restart-me` (managed) |
 | OpenCode    | `$OPENCODE_SESSION_ID`  | Native TS plugin + promptAsync ✓ | Plugin background poll | `c2c restart-me` (managed) |
-| Kimi        | `kimi-user-host` (auto) | Notify daemon (Tier 2†) | PTY sentinel          | `restart-kimi-self` (managed†) |
+| Kimi        | `kimi-user-host` (auto) | Wire bridge preferred; notify daemon fallback | Wire prompt / PTY sentinel | `restart-kimi-self` (managed†) |
 | Crush       | `crush-user-host` (auto)| Notify daemon (Tier 2†) | PTY sentinel          | `restart-crush-self` (managed†) |
 
 ---
