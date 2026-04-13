@@ -5690,6 +5690,7 @@ class RunKimiInstTests(unittest.TestCase):
         self.assertEqual(
             payload["rearm"][1:], [str(REPO / "run-kimi-inst-rearm"), "kimi-a"]
         )
+        self.assertFalse(payload["start_new_session"])
 
     def test_run_kimi_inst_outer_help_exits_without_looping(self):
         result = run_cli("run-kimi-inst-outer", "--help")
@@ -6078,6 +6079,105 @@ class RefreshPeerTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("alias", result.stdout)
+
+
+class PurgeOldDeadLetterTests(unittest.TestCase):
+    """Tests for c2c_broker_gc.purge_old_dead_letter()."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.broker_root = Path(self.tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_dead_letter(self, records):
+        dl_path = self.broker_root / "dead-letter.jsonl"
+        lines = [json.dumps(r) for r in records]
+        dl_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return dl_path
+
+    def test_no_file_returns_empty_ok(self):
+        """Returns ok with zero counts when dead-letter.jsonl does not exist."""
+        import c2c_broker_gc
+
+        result = c2c_broker_gc.purge_old_dead_letter(self.broker_root)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["before_count"], 0)
+        self.assertEqual(result["after_count"], 0)
+        self.assertEqual(result["purged_count"], 0)
+
+    def test_purges_expired_entries(self):
+        """Entries older than TTL are removed; recent entries are kept."""
+        import c2c_broker_gc
+
+        now = time.time()
+        old_ts = now - 200
+        new_ts = now - 10
+        records = [
+            {"deleted_at": old_ts, "from_session_id": "s1", "message": {"content": "old"}},
+            {"deleted_at": new_ts, "from_session_id": "s2", "message": {"content": "new"}},
+        ]
+        dl_path = self._write_dead_letter(records)
+
+        result = c2c_broker_gc.purge_old_dead_letter(self.broker_root, ttl_seconds=100)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["before_count"], 2)
+        self.assertEqual(result["after_count"], 1)
+        self.assertEqual(result["purged_count"], 1)
+
+        remaining = [json.loads(l) for l in dl_path.read_text().splitlines() if l.strip()]
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0]["from_session_id"], "s2")
+
+    def test_dry_run_does_not_modify_file(self):
+        """dry_run=True reports would-purge count but does not touch the file."""
+        import c2c_broker_gc
+
+        now = time.time()
+        records = [
+            {"deleted_at": now - 200, "from_session_id": "s1", "message": {}},
+        ]
+        dl_path = self._write_dead_letter(records)
+        original_content = dl_path.read_text()
+
+        result = c2c_broker_gc.purge_old_dead_letter(
+            self.broker_root, ttl_seconds=100, dry_run=True
+        )
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(result["purged_count"], 1)
+        self.assertEqual(dl_path.read_text(), original_content)
+
+    def test_keeps_all_when_nothing_expired(self):
+        """No entries are purged when all are within TTL."""
+        import c2c_broker_gc
+
+        now = time.time()
+        records = [
+            {"deleted_at": now - 10, "from_session_id": "s1", "message": {}},
+            {"deleted_at": now - 20, "from_session_id": "s2", "message": {}},
+        ]
+        self._write_dead_letter(records)
+
+        result = c2c_broker_gc.purge_old_dead_letter(self.broker_root, ttl_seconds=3600)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["before_count"], 2)
+        self.assertEqual(result["after_count"], 2)
+        self.assertEqual(result["purged_count"], 0)
+
+    def test_malformed_lines_kept(self):
+        """Lines that cannot be parsed as JSON are kept (safe default)."""
+        import c2c_broker_gc
+
+        dl_path = self.broker_root / "dead-letter.jsonl"
+        dl_path.write_text('not-valid-json\n{"deleted_at": 1, "from_session_id": "s"}\n', encoding="utf-8")
+
+        result = c2c_broker_gc.purge_old_dead_letter(self.broker_root, ttl_seconds=60)
+        self.assertTrue(result["ok"])
+        # The valid record (ts=1) is very old and should be purged; the malformed line stays
+        remaining = [l for l in dl_path.read_text().splitlines() if l.strip()]
+        self.assertEqual(len(remaining), 1)
+        self.assertIn("not-valid-json", remaining[0])
 
 
 def result_code(result):
