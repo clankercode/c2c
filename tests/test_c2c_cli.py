@@ -68,7 +68,17 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
     source_git_path = source_root / ".git"
     target_git_path = target_root / ".git"
     if source_git_path.is_dir():
-        shutil.copytree(source_git_path, target_git_path)
+        # Exclude large subdirs that tests don't need:
+        #   c2c/    — live broker data (tests use C2C_REGISTRY_PATH instead)
+        #   objects/ — git object pack (only HEAD/config/refs needed for rev-parse)
+        #   logs/    — reflog not needed
+        # Copying the full .git (30+ MB objects + broker archives) exhausts /tmp
+        # per-user disk quota on CI machines.
+        shutil.copytree(
+            source_git_path,
+            target_git_path,
+            ignore=shutil.ignore_patterns("c2c", "objects", "logs", "rr-cache"),
+        )
     else:
         shutil.copy2(source_git_path, target_git_path)
     for relative_path in [
