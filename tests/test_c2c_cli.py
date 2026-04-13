@@ -3962,6 +3962,76 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         self.assertEqual(payload["reason"], "target_has_no_tty")
         self.assertIn("no /dev/pts", payload["error"])
 
+    def test_run_opencode_inst_rearm_refreshes_broker_registration_before_tty_skip(self):
+        sleeper = subprocess.Popen(
+            ["sleep", "60"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                config_dir = root / "run-opencode-inst.d"
+                config_dir.mkdir()
+                broker_root = root / "mcp-broker"
+                broker_root.mkdir()
+                (broker_root / "registry.json").write_text(
+                    json.dumps(
+                        [
+                            {
+                                "session_id": "opencode-a-local",
+                                "alias": "opencode-a",
+                                "pid": 99999999,
+                            }
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                (config_dir / "opencode-a.json").write_text(
+                    json.dumps(
+                        {
+                            "c2c_session_id": "opencode-a-local",
+                            "c2c_alias": "opencode-a",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                env = {
+                    "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir),
+                    "C2C_MCP_BROKER_ROOT": str(broker_root),
+                }
+
+                result = run_cli(
+                    "run-opencode-inst-rearm",
+                    "opencode-a",
+                    "--pid",
+                    str(sleeper.pid),
+                    "--start-timeout",
+                    "0.1",
+                    "--json",
+                    env=env,
+                )
+                registrations = json.loads(
+                    (broker_root / "registry.json").read_text(encoding="utf-8")
+                )
+        finally:
+            sleeper.terminate()
+            try:
+                sleeper.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                sleeper.kill()
+                sleeper.wait(timeout=1)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["registration"]["ok"])
+        self.assertEqual(payload["registration"]["pid"], sleeper.pid)
+        self.assertEqual(registrations[0]["alias"], "opencode-a")
+        self.assertEqual(registrations[0]["session_id"], "opencode-a-local")
+        self.assertEqual(registrations[0]["pid"], sleeper.pid)
+        self.assertIsInstance(registrations[0]["pid_start_time"], int)
+
     def test_opencode_local_config_sets_stable_c2c_alias(self):
         config = json.loads(
             (REPO / "run-opencode-inst.d" / "c2c-opencode-local.json").read_text(
