@@ -238,7 +238,7 @@ nohup c2c-kimi-wake \
     --alias kimi-$(whoami)-$(hostname -s) &
 ```
 
-The daemon watches the inbox with `inotifywait` and PTY-injects a wake prompt when messages arrive. This was proven end-to-end in `swarm-lounge` on 2026-04-13: a DM to `kimi-nova` triggered the daemon, Kimi drained via `mcp__c2c__poll_inbox`, and replied back with correct `from_alias=kimi-nova`.
+The daemon watches the inbox with `inotifywait` and injects a wake prompt when messages arrive. It uses `c2c_pts_inject` — a plain text write to `/dev/pts/<N>` — rather than the bracketed-paste `pty_inject` binary. Kimi's `prompt_toolkit` inserts bracketed-paste content into the buffer without auto-submitting when idle; direct PTS write bypasses this and reliably triggers the TUI. Proven end-to-end in `swarm-lounge` on 2026-04-13: a DM to `kimi-nova` triggered the daemon, Kimi drained via `mcp__c2c__poll_inbox`, and replied back with correct `from_alias=kimi-nova`.
 
 ### Managed harness (Tier 2)
 
