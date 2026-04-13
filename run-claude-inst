@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""
+Inner launcher for a named Claude Code instance.
+
+Usage: ./run-claude-inst <instance-name> [extra claude args...]
+
+Reads config from ./run-claude-inst.d/<name>.json, builds the `claude`
+launch command, sets the terminal title, and execs claude. Never loops —
+the outer script is responsible for looping.
+
+The model controlling this instance can edit its own config file
+(./run-claude-inst.d/<name>.json) to adjust launch flags, env vars, cwd,
+or session title. The next iteration of the outer loop will pick up the
+new values.
+
+Config schema (all fields optional):
+
+    {
+      "command": "claude",                  // binary to exec; default "claude"
+      "flags": ["--foo", "--bar=baz"],      // launch flags (list of strings)
+      "positional": ["arg1", "arg2"],       // positional args after flags
+      "env": {"KEY": "value"},              // merged onto os.environ
+      "cwd": "/path/to/dir",                // working dir; default: script dir
+      "title": "my-instance",               // terminal title; default: name
+      "pre_exec": ["echo", "hello"],        // optional one-shot cmd before exec
+      "notes": "free-form human notes"      // ignored by launcher
+    }
+
+An invalid JSON or missing config is a hard error with a non-zero exit so
+the outer loop backs off.
+"""
+from __future__ import annotations
+
+import json
+import os
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+CONFIG_DIR = HERE / "run-claude-inst.d"
+
+
+def config_path(name: str) -> Path:
+    return CONFIG_DIR / f"{name}.json"
+
+
+def load_config(name: str) -> dict:
+    path = config_path(name)
+    if not path.exists():
+        raise SystemExit(f"[run-claude-inst] config not found: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"[run-claude-inst] invalid JSON in {path}: {exc}")
+    if not isinstance(data, dict):
+        raise SystemExit(f"[run-claude-inst] config root must be an object: {path}")
+    return data
+
+
+def coerce_string_list(value, field: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise SystemExit(f"[run-claude-inst] {field} must be list of strings")
+    return list(value)
+
+
+def coerce_string_dict(value, field: str) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in value.items()
+    ):
+        raise SystemExit(f"[run-claude-inst] {field} must be dict of string to string")
+    return dict(value)
+
+
+def set_terminal_title(title: str) -> None:
+    if not sys.stdout.isatty():
+        return
+    sys.stdout.write(f"\033]0;{title}\007")
+    sys.stdout.flush()
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2:
+        print(f"usage: {argv[0]} <instance-name> [extra claude args...]", file=sys.stderr)
+        return 2
+
+    name = argv[1]
+    extra = argv[2:]
+    config = load_config(name)
+
+    command = config.get("command", "claude")
+    if not isinstance(command, str) or not command:
+        raise SystemExit("[run-claude-inst] command must be a non-empty string")
+
+    flags = coerce_string_list(config.get("flags"), "flags")
+    positional = coerce_string_list(config.get("positional"), "positional")
+    env_extra = coerce_string_dict(config.get("env"), "env")
+    cwd = config.get("cwd") or str(HERE)
+    if not isinstance(cwd, str):
+        raise SystemExit("[run-claude-inst] cwd must be a string")
+    title = config.get("title") or name
+    if not isinstance(title, str):
+        raise SystemExit("[run-claude-inst] title must be a string")
+    pre_exec = coerce_string_list(config.get("pre_exec"), "pre_exec")
+
+    cwd_path = Path(cwd).expanduser()
+    if not cwd_path.exists():
+        raise SystemExit(f"[run-claude-inst] cwd does not exist: {cwd_path}")
+
+    env = os.environ.copy()
+    env.update(env_extra)
+    env.setdefault("RUN_CLAUDE_INST_NAME", name)
+
+    set_terminal_title(title)
+
+    if pre_exec:
+        print(
+            f"[run-claude-inst] pre_exec: {shlex.join(pre_exec)}",
+            file=sys.stderr,
+            flush=True,
+        )
+        subprocess.run(pre_exec, cwd=str(cwd_path), env=env, check=False)
+
+    launch = [command, *flags, *positional, *extra]
+    print(
+        f"[run-claude-inst] exec {shlex.join(launch)} (cwd={cwd_path})",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    os.chdir(str(cwd_path))
+    try:
+        os.execvpe(launch[0], launch, env)
+    except FileNotFoundError as exc:
+        raise SystemExit(f"[run-claude-inst] command not found: {launch[0]} ({exc})")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

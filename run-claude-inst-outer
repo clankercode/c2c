@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""
+Outer loop for run-claude-inst.
+
+Usage: ./run-claude-inst-outer <instance-name>
+
+Runs ./run-claude-inst <instance-name> in a loop so the model (or a human)
+can edit the inner script or its config between iterations to change its
+own launch flags. Python is used rather than bash so that in-flight edits
+to the inner script are safe: subprocess.run loads the script fresh each
+iteration.
+
+Loop semantics:
+- Wait for the inner to exit.
+- If it exited within < MIN_RUN_SECONDS, count it as a crash and apply
+  exponential backoff up to MAX_BACKOFF_SECONDS to avoid tight crash loops.
+- Otherwise reset backoff and re-launch after RESTART_PAUSE_SECONDS so
+  the user has a chance to Ctrl-C the outer.
+- SIGINT in the outer (double Ctrl-C in quick succession) exits the loop.
+"""
+from __future__ import annotations
+
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+MIN_RUN_SECONDS = 10.0
+RESTART_PAUSE_SECONDS = 1.5
+INITIAL_BACKOFF_SECONDS = 2.0
+MAX_BACKOFF_SECONDS = 60.0
+DOUBLE_SIGINT_WINDOW_SECONDS = 2.0
+
+HERE = Path(__file__).resolve().parent
+INNER = HERE / "run-claude-inst"
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2:
+        print(f"usage: {argv[0]} <instance-name>", file=sys.stderr)
+        return 2
+    name = argv[1]
+    extra = argv[2:]
+
+    if not INNER.exists():
+        print(f"inner script not found: {INNER}", file=sys.stderr)
+        return 2
+
+    backoff = INITIAL_BACKOFF_SECONDS
+    last_sigint = 0.0
+    iteration = 0
+
+    while True:
+        iteration += 1
+        print(f"[run-claude-inst-outer] iter {iteration}: launching {name}", flush=True)
+        started = time.monotonic()
+        try:
+            completed = subprocess.run(
+                [sys.executable, str(INNER), name, *extra],
+                cwd=HERE,
+                check=False,
+            )
+            exit_code = completed.returncode
+        except KeyboardInterrupt:
+            now = time.monotonic()
+            if now - last_sigint < DOUBLE_SIGINT_WINDOW_SECONDS:
+                print("[run-claude-inst-outer] double SIGINT — exiting.", flush=True)
+                return 130
+            last_sigint = now
+            print(
+                "[run-claude-inst-outer] SIGINT received. Send again within "
+                f"{DOUBLE_SIGINT_WINDOW_SECONDS:.1f}s to exit the loop.",
+                flush=True,
+            )
+            exit_code = 130
+        except FileNotFoundError as exc:
+            print(f"[run-claude-inst-outer] failed to launch: {exc}", file=sys.stderr, flush=True)
+            return 2
+
+        elapsed = time.monotonic() - started
+        print(
+            f"[run-claude-inst-outer] inner exited code={exit_code} after {elapsed:.1f}s",
+            flush=True,
+        )
+
+        if elapsed < MIN_RUN_SECONDS:
+            print(
+                f"[run-claude-inst-outer] fast exit — backing off {backoff:.1f}s",
+                flush=True,
+            )
+            time.sleep(backoff)
+            backoff = min(backoff * 2.0, MAX_BACKOFF_SECONDS)
+        else:
+            backoff = INITIAL_BACKOFF_SECONDS
+            time.sleep(RESTART_PAUSE_SECONDS)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv))
+    except KeyboardInterrupt:
+        raise SystemExit(130)

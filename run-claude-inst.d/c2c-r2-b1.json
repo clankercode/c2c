@@ -1,0 +1,14 @@
+{
+  "command": "claude",
+  "flags": [
+    "--dangerously-skip-permissions",
+    "--dangerously-load-development-channels",
+    "server:c2c"
+  ],
+  "cwd": "/home/xertrov/src/c2c-msg",
+  "title": "c2c-r2-b1",
+  "env": {
+    "RUN_CLAUDE_INST_ALIAS_HINT": "c2c-r2-b1"
+  },
+  "notes": "storm-echo lineage: poll_inbox author. Channel flag enabled so notifications/claude/channel is surfaced when client supports it; poll_inbox is the flag-independent fallback."
+}
