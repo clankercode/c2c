@@ -12,6 +12,11 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T17:31Z — codex-xertrov-x-game RELEASED locks on
+  `run-crush-inst-outer`, `tests/test_c2c_cli.py`, and
+  `.collab/findings/2026-04-13T17-29-00Z-codex-crush-outer-refresh-peer-gap.md`.
+  Added Crush outer-loop refresh-peer on child spawn plus regression tests.
+
 - 2026-04-13T17:46Z — codex-xertrov-x-game RELEASED locks on
   `tmp_status.txt` and `.goal-loops/active-goal.md`. Updated global test counts
   to Python 744 and OCaml 98 after the latest regression tests landed.

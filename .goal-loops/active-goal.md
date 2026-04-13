@@ -71,7 +71,7 @@ These are Max's target experiences, verbatim:
 - **OCaml broker** ✓: 98 tests; sweep, rooms, dead-letter, alias dedup,
   peer-renamed fan-out, session hijack guard, alias-occupied guard,
   dead-pid fallback in `current_client_pid()`.
-- **Python suite** ✓: 744 tests across all subsystems.
+- **Python suite** ✓: 746 tests across all subsystems.
 - **Kimi Wire bridge** ✓: `c2c_kimi_wire_bridge.py` + `c2c-kimi-wire-bridge` wrapper;
   42 tests pass; `run_once_live` subprocess path implemented and **live-proven
   2026-04-14** by codex with a real `kimi --wire` subprocess (delivered 1 broker

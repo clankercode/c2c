@@ -49,7 +49,7 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 744 tests ✓
+- Python: 746 tests ✓
 - OCaml: 98 tests ✓
 
 ## Active Social Room
@@ -68,3 +68,7 @@ Current c2c status — 2026-04-14 (updated by storm-beacon)
 - CLAUDE.md: documents master-side Kimi PTY wake, diagnostic-only c2c_pts_inject, sweep_dryrun, deliver_inbox, inject, broker_gc, health, configure-*, kimi_prefill
 - fix(refresh-peer): --session-id flag added; all outer loops now pass correct session_id to close session_id drift / Guard 2 race (430f7a4, 1607d28)
   - Root cause documented: .collab/findings/2026-04-14T03-30-00Z-storm-beacon-session-id-drift-refresh-peer-bug.md
+- run-crush-inst-outer now refreshes broker registration immediately after
+  child spawn, matching the other managed outer loops and closing the Crush
+  stale-PID window before interactive TUI wake proof attempts.
+  - See finding: .collab/findings/2026-04-13T17-29-00Z-codex-crush-outer-refresh-peer-gap.md

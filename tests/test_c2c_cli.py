@@ -7172,6 +7172,78 @@ class RunCrushInstTests(unittest.TestCase):
         self.assertIn("Usage: ./run-crush-inst-outer", result.stdout)
         self.assertNotIn("iter 1", result.stdout)
 
+    def test_run_crush_inst_outer_refreshes_peer_after_child_spawn(self):
+        namespace = runpy.run_path(str(REPO / "run-crush-inst-outer"))
+        root = Path(self.temp_dir.name)
+        inner = root / "run-crush-inst"
+        inner.write_text("#!/bin/sh\n", encoding="utf-8")
+        namespace["main"].__globals__["HERE"] = root
+        namespace["main"].__globals__["INNER"] = inner
+
+        refresh_calls = []
+
+        class FakeProcess:
+            pid = 43210
+            returncode = 0
+
+            def wait(self):
+                return 0
+
+        namespace["main"].__globals__["maybe_refresh_peer"] = (
+            lambda name, pid: refresh_calls.append((name, pid))
+        )
+
+        with (
+            mock.patch("subprocess.Popen", return_value=FakeProcess()),
+            mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0)),
+            mock.patch("time.sleep", side_effect=KeyboardInterrupt),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                namespace["main"](["run-crush-inst-outer", "crush-a"])
+
+        self.assertEqual(refresh_calls, [("crush-a", 43210)])
+
+    def test_run_crush_inst_outer_refresh_peer_passes_session_id(self):
+        namespace = runpy.run_path(str(REPO / "run-crush-inst-outer"))
+        root = Path(self.temp_dir.name)
+        cfg_dir = root / "run-crush-inst.d"
+        cfg_dir.mkdir()
+        (cfg_dir / "crush-a.json").write_text(
+            json.dumps(
+                {
+                    "c2c_alias": "crush-primary",
+                    "c2c_session_id": "crush-session",
+                }
+            ),
+            encoding="utf-8",
+        )
+        refresh = root / "c2c_refresh_peer.py"
+        refresh.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        namespace["maybe_refresh_peer"].__globals__["HERE"] = root
+
+        calls = []
+
+        def fake_run(command, *, cwd, capture_output, text, timeout):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            namespace["maybe_refresh_peer"]("crush-a", 12345)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            calls[0],
+            [
+                sys.executable,
+                str(refresh),
+                "crush-primary",
+                "--pid",
+                "12345",
+                "--session-id",
+                "crush-session",
+            ],
+        )
+
     def test_run_crush_inst_rearm_dry_run_shows_deliver_command(self):
         config_dir = Path(self.temp_dir.name) / "run-crush-inst.d"
         config_dir.mkdir()
