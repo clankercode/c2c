@@ -6,7 +6,32 @@ type registration =
   }
 type message = { from_alias : string; to_alias : string; content : string }
 
-let server_info = `Assoc [ ("name", `String "c2c"); ("version", `String "0.1.0") ]
+let server_version = "0.5.0"
+
+let server_features =
+  [ "liveness"
+  ; "pid_start_time"
+  ; "registry_lock"
+  ; "inbox_lock"
+  ; "alias_dedupe"
+  ; "sweep"
+  ; "dead_letter"
+  ; "poll_inbox"
+  ; "send_all"
+  ; "inbox_migration_on_register"
+  ; "registry_locked_enqueue"
+  ; "list_alive_tristate"
+  ; "atomic_write"
+  ; "broker_files_mode_0600"
+  ]
+
+let server_info =
+  `Assoc
+    [ ("name", `String "c2c")
+    ; ("version", `String server_version)
+    ; ("features", `List (List.map (fun f -> `String f) server_features))
+    ]
+
 let supported_protocol_version = "2024-11-05"
 let capabilities =
   `Assoc
@@ -61,7 +86,35 @@ module Broker = struct
     else default
 
   let write_json_file path json =
-    Yojson.Safe.to_file path json
+    (* Atomic write via temp+rename. A truncate-in-place writer that
+       gets SIGKILLed (OOM, parent process exit, kill -9) between
+       truncate and full write leaves a partial JSON file that the
+       next reader will fail to parse. Writing to a per-pid sidecar
+       and then Unix.rename'ing into place gives readers an
+       all-or-nothing view: they always see either the old content
+       or the new content, never partial. The rename is atomic on
+       POSIX as long as src and dst are on the same filesystem,
+       which they are by construction (sidecar lives next to the
+       target). The 0o600 mode policy is preserved on the temp file,
+       which becomes the destination inode after rename. *)
+    let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+    let oc =
+      open_out_gen
+        [ Open_wronly; Open_creat; Open_trunc; Open_text ]
+        0o600 tmp
+    in
+    let cleanup_tmp () = try Unix.unlink tmp with _ -> () in
+    (try
+       Fun.protect
+         ~finally:(fun () -> try close_out oc with _ -> ())
+         (fun () -> Yojson.Safe.to_channel oc json)
+     with e ->
+       cleanup_tmp ();
+       raise e);
+    try Unix.rename tmp path
+    with e ->
+      cleanup_tmp ();
+      raise e
 
   let registration_to_json { session_id; alias; pid; pid_start_time } =
     let base =
@@ -137,23 +190,6 @@ module Broker = struct
         Unix.lockf fd Unix.F_LOCK 0;
         f ())
 
-  let register t ~session_id ~alias ~pid ~pid_start_time =
-    with_registry_lock t (fun () ->
-        let regs = load_registrations t in
-        (* Dedupe by BOTH session_id and alias. Evicting prior regs for the
-           same alias matters when a session is re-launched: without this, a
-           legacy pid-less row lingers at the head of the registry forever
-           (because registration_is_alive treats pid=None as alive for
-           backwards compatibility), and enqueue_message's first-live-match
-           rule routes every new message to the dead twin's inbox. *)
-        let regs =
-          List.filter
-            (fun reg -> reg.session_id <> session_id && reg.alias <> alias)
-            regs
-        in
-        save_registrations t
-          ({ session_id; alias; pid; pid_start_time } :: regs))
-
   let list_registrations t = load_registrations t
 
   (* /proc/<pid>/stat line layout: "<pid> (<comm>) <state> <ppid> ... <starttime> ..."
@@ -196,6 +232,28 @@ module Broker = struct
                (match read_pid_start_time pid with
                 | Some current -> current = stored
                 | None -> false))
+
+  (* Tristate liveness for the list tool: distinguishes "we cannot
+     tell" (legacy pidless row) from "we checked and the kernel says
+     alive" / "we checked and the pid is dead or pid-reused". The
+     legacy `registration_is_alive` collapses Unknown into Alive for
+     backward-compat with sweep / enqueue, but operators consuming
+     the list tool benefit from seeing the unknown case explicitly so
+     they can identify pidless zombie rows. *)
+  type liveness_state = Alive | Dead | Unknown
+
+  let registration_liveness_state reg =
+    match reg.pid with
+    | None -> Unknown
+    | Some pid ->
+        if not (Sys.file_exists ("/proc/" ^ string_of_int pid)) then Dead
+        else
+          (match reg.pid_start_time with
+           | None -> Alive
+           | Some stored ->
+               (match read_pid_start_time pid with
+                | Some current -> if current = stored then Alive else Dead
+                | None -> Dead))
 
   type resolve_result =
     | Resolved of string
@@ -245,16 +303,63 @@ module Broker = struct
         Unix.lockf fd Unix.F_LOCK 0;
         f ())
 
+  (* register, enqueue_message, and send_all all take the registry lock
+     before touching inbox state. Lock order is consistently
+     registry → inbox (matches sweep). Without this, a sender that resolved
+     the registry snapshot before a re-register can write to a now-orphan
+     inbox file because resolution is unsynchronized with eviction. *)
+
+  let register t ~session_id ~alias ~pid ~pid_start_time =
+    with_registry_lock t (fun () ->
+        let regs = load_registrations t in
+        let evicted_regs, kept =
+          List.partition
+            (fun reg -> reg.session_id = session_id || reg.alias = alias)
+            regs
+        in
+        save_registrations t
+          ({ session_id; alias; pid; pid_start_time } :: kept);
+        (* Migrate undrained inbox messages from any evicted reg whose
+           session_id differs from the new one. Done WHILE holding the
+           registry lock so a concurrent enqueue cannot resolve the alias
+           to the stale session_id and write to the about-to-be-deleted
+           inbox file. Inbox locks are taken sequentially under the
+           registry lock — never nested — and always old-then-new, so two
+           concurrent re-registers serialize cleanly through the registry
+           mutex. *)
+        List.iter
+          (fun reg ->
+            if reg.session_id <> session_id then begin
+              let migrated =
+                with_inbox_lock t ~session_id:reg.session_id (fun () ->
+                    let msgs = load_inbox t ~session_id:reg.session_id in
+                    if msgs <> [] then
+                      save_inbox t ~session_id:reg.session_id [];
+                    (try Unix.unlink
+                           (inbox_path t ~session_id:reg.session_id)
+                     with Unix.Unix_error _ -> ());
+                    msgs)
+              in
+              if migrated <> [] then
+                with_inbox_lock t ~session_id (fun () ->
+                    let current = load_inbox t ~session_id in
+                    save_inbox t ~session_id (current @ migrated))
+            end)
+          evicted_regs)
+
   let enqueue_message t ~from_alias ~to_alias ~content =
-    match resolve_live_session_id_by_alias t to_alias with
-    | Unknown_alias -> invalid_arg ("unknown alias: " ^ to_alias)
-    | All_recipients_dead ->
-        invalid_arg ("recipient is not alive: " ^ to_alias)
-    | Resolved session_id ->
-        with_inbox_lock t ~session_id (fun () ->
-            let current = load_inbox t ~session_id in
-            let next = current @ [ { from_alias; to_alias; content } ] in
-            save_inbox t ~session_id next)
+    with_registry_lock t (fun () ->
+        match resolve_live_session_id_by_alias t to_alias with
+        | Unknown_alias -> invalid_arg ("unknown alias: " ^ to_alias)
+        | All_recipients_dead ->
+            invalid_arg ("recipient is not alive: " ^ to_alias)
+        | Resolved session_id ->
+            with_inbox_lock t ~session_id (fun () ->
+                let current = load_inbox t ~session_id in
+                let next =
+                  current @ [ { from_alias; to_alias; content } ]
+                in
+                save_inbox t ~session_id next))
 
   type send_all_result =
     { sent_to : string list
@@ -268,41 +373,49 @@ module Broker = struct
      for broadcast. Per-recipient enqueue reuses [with_inbox_lock] so this
      interlocks with concurrent 1:1 sends on the same inbox. *)
   let send_all t ~from_alias ~content ~exclude_aliases =
-    let regs = load_registrations t in
-    let seen : (string, unit) Hashtbl.t = Hashtbl.create 16 in
-    let sent = ref [] in
-    let skipped = ref [] in
-    List.iter
-      (fun reg ->
-        if Hashtbl.mem seen reg.alias then ()
-        else begin
-          Hashtbl.add seen reg.alias ();
-          if reg.alias = from_alias then ()
-          else if List.mem reg.alias exclude_aliases then ()
-          else
-            match resolve_live_session_id_by_alias t reg.alias with
-            | Resolved session_id ->
-                with_inbox_lock t ~session_id (fun () ->
-                    let current = load_inbox t ~session_id in
-                    let next =
-                      current
-                      @ [ { from_alias; to_alias = reg.alias; content } ]
-                    in
-                    save_inbox t ~session_id next);
-                sent := reg.alias :: !sent
-            | All_recipients_dead ->
-                skipped := (reg.alias, "not_alive") :: !skipped
-            | Unknown_alias -> ()
-        end)
-      regs;
-    { sent_to = List.rev !sent; skipped = List.rev !skipped }
+    with_registry_lock t (fun () ->
+        let regs = load_registrations t in
+        let seen : (string, unit) Hashtbl.t = Hashtbl.create 16 in
+        let sent = ref [] in
+        let skipped = ref [] in
+        List.iter
+          (fun reg ->
+            if Hashtbl.mem seen reg.alias then ()
+            else begin
+              Hashtbl.add seen reg.alias ();
+              if reg.alias = from_alias then ()
+              else if List.mem reg.alias exclude_aliases then ()
+              else
+                match resolve_live_session_id_by_alias t reg.alias with
+                | Resolved session_id ->
+                    with_inbox_lock t ~session_id (fun () ->
+                        let current = load_inbox t ~session_id in
+                        let next =
+                          current
+                          @ [ { from_alias; to_alias = reg.alias; content } ]
+                        in
+                        save_inbox t ~session_id next);
+                    sent := reg.alias :: !sent
+                | All_recipients_dead ->
+                    skipped := (reg.alias, "not_alive") :: !skipped
+                | Unknown_alias -> ()
+            end)
+          regs;
+        { sent_to = List.rev !sent; skipped = List.rev !skipped })
 
   let read_inbox t ~session_id = load_inbox t ~session_id
 
+  (* Skip the file write when the inbox is already empty. This keeps
+     close_write events out of inotify streams — every tool call that
+     auto-drains would otherwise fire a noisy event on an idle inbox,
+     swamping agent-visibility monitors with meaningless drain churn.
+     Semantic is unchanged: callers still get [] for an empty inbox. *)
   let drain_inbox t ~session_id =
     with_inbox_lock t ~session_id (fun () ->
         let messages = load_inbox t ~session_id in
-        save_inbox t ~session_id [];
+        (match messages with
+         | [] -> ()
+         | _ -> save_inbox t ~session_id []);
         messages)
 
   type sweep_result =
@@ -339,10 +452,13 @@ module Broker = struct
     | [] -> ()
     | _ ->
         with_dead_letter_lock t (fun () ->
+            (* Mode 0o600: dead-letter records carry the same envelope
+               content as live inbox files (which Python writers create
+               at 0o600), so this file must not be world-readable. *)
             let oc =
               open_out_gen
                 [ Open_wronly; Open_append; Open_creat ]
-                0o644 (dead_letter_path t)
+                0o600 (dead_letter_path t)
             in
             Fun.protect
               ~finally:(fun () -> try close_out oc with _ -> ())
@@ -505,16 +621,26 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       let content =
         `List
           (List.map
-             (fun { session_id; alias; pid; pid_start_time = _ } ->
+             (fun reg ->
+               let { session_id; alias; pid; pid_start_time = _ } = reg in
                let base =
                  [ ("session_id", `String session_id); ("alias", `String alias) ]
                in
-               let fields =
+               let with_pid =
                  match pid with
                  | Some n -> base @ [ ("pid", `Int n) ]
                  | None -> base
                in
-               `Assoc fields)
+               (* Tristate `alive`: Bool true / Bool false / Null for
+                  legacy pidless rows. Operators can filter on this
+                  to identify zombie peers before broadcasting. *)
+               let alive_field =
+                 match Broker.registration_liveness_state reg with
+                 | Broker.Alive -> `Bool true
+                 | Broker.Dead -> `Bool false
+                 | Broker.Unknown -> `Null
+               in
+               `Assoc (with_pid @ [ ("alive", alive_field) ]))
              registrations)
         |> Yojson.Safe.to_string
       in

@@ -12,6 +12,79 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 15:39 — codex RELEASED locks on `c2c_deliver_inbox.py`
+  + `tests/test_c2c_deliver_inbox.py`. Fixed the stale-target class for
+  live delivery loops: `c2c deliver-inbox --loop` now watches its
+  original target client pid (`--pid`, explicit `--terminal-pid`, or
+  resolved Claude session pid) and exits cleanly before the next delivery
+  cycle if that target is gone. This prevents a stale broker-to-PTY
+  bridge from continuing to inject into an old terminal after the client
+  it was meant to serve has exited. Verification: focused deliver-inbox
+  tests 6/6, full Python unittest discovery 155/155, py_compile OK.
+
+- 2026-04-13 15:37 — storm-beacon RELEASED lock on `docs/architecture.md`. Rewrote the architecture doc from the deprecated PTY-injection description to the current OCaml MCP broker model: high-level box diagram, tool surface table (register/send/send_all/poll_inbox/list/sweep), liveness tristate, registry→inbox lock order, atomic-write + 0o600 policy, delivery surfaces (MCP primary, CLI fallback, PTY legacy), and a short historical-artifacts section pointing at `c2c_cli.py` as the canonical CLI entrypoint. Doc-only change; no code touched. Independent of the slice-1..12 pile so it can be committed separately when Max reviews.
+
+- 2026-04-13 15:28 — codex RELEASED locks on `c2c_poker_sweep.py`,
+  `c2c-poker-sweep`, `c2c_cli.py`, `c2c_install.py`,
+  `tests/test_c2c_poker_sweep.py`, and `tests/test_c2c_cli.py`.
+  Added `c2c poker-sweep` / `c2c-poker-sweep`, a no-kill-by-default
+  stale poker inspection tool with `--json` and `--kill`. It parses
+  running `c2c_poker.py` processes, understands both `--pid` and
+  `--claude-session` targets, reports live/stale reasons, and only
+  terminates stale processes when explicitly asked. Verification:
+  focused sweep tests 7/7, affected CLI/helper tests 9/9, full Python
+  unittest discovery 151/151, py_compile OK, wrapper live smoke saw
+  2 live pokers, 0 stale, 0 killed.
+
+- 2026-04-13 15:27 — storm-beacon RELEASED locks on `ocaml/c2c_mcp.ml`
+  and `ocaml/test/test_c2c_mcp.ml`. **Slice 12 — `tools/call list`
+  reports per-peer `alive` tristate** + version/features bump
+  (0.4.0 → 0.5.0). Each list response entry now has an `alive`
+  field: `Bool true` (verified live), `Bool false` (verified dead
+  pid or pid-reuse), `Null` (legacy pidless row, can't tell). The
+  legacy `registration_is_alive` collapses Unknown → Alive for
+  sweep/enqueue compat (unchanged, sweep semantics preserved); the
+  list tool surface gets the more honest tristate so operators can
+  identify zombie peers before broadcasting. New
+  `Broker.registration_liveness_state : registration ->
+  liveness_state` exposes the tristate as `Alive | Dead | Unknown`.
+  Three new server features advertised: `list_alive_tristate`,
+  `atomic_write` (slice 11), `broker_files_mode_0600` (slices 8+9).
+  New test `tools/call list reports alive tristate per peer` sets
+  up live/dead/legacy registrations and asserts each entry's alive
+  field. **47/47 ocaml tests green** (was 46). Direct response to
+  the pidless-zombie-registry finding I just wrote — gives clients
+  a way to filter zombies even before storm-ember's Python-side
+  fix lands.
+
+- 2026-04-13 15:18 — storm-beacon RELEASED locks on `ocaml/c2c_mcp.ml`
+  and `ocaml/test/test_c2c_mcp.ml`. **Slice 11 — write_json_file
+  atomic temp+rename.** Truncate-in-place writers (the previous
+  shape) leave a partial JSON file on disk if SIGKILL/OOM fires
+  between truncate and full write — the next reader fails to parse
+  registry.json or inbox.json. Switched to: write to per-pid sidecar
+  `<path>.tmp.<pid>` next to the target, `Unix.rename` into place
+  (atomic on POSIX same-fs by construction). Errors anywhere in the
+  write/close/rename chain trigger sidecar cleanup so failed writes
+  don't leak. Centralized at write_json_file so registry, inbox, and
+  any future broker JSON file get the property for free. New test
+  `write_json_file leaves no tmp sidecars` exercises register +
+  enqueue cycle and asserts `Sys.readdir` of the broker dir contains
+  zero `*.tmp.<digits>` entries. **46/46 ocaml tests green** (was
+  45). Pairs naturally with slice 9 which set the temp file mode at
+  0o600 — slice 11's rename preserves that mode on the destination
+  inode.
+
+- 2026-04-13 15:15 — storm-beacon RELEASED implicit lock on
+  `ocaml/test/test_c2c_mcp.ml`. **Slice 10 — serverInfo features
+  regression coverage.** `test_initialize_reports_server_version_and_features`
+  asserted CONTAINS against 5 load-bearing flags; extended the
+  required list to 7 by adding `inbox_migration_on_register` and
+  `registry_locked_enqueue` (the slice 7 behavioral contracts). A
+  silent refactor that drops either flag from server_features will
+  now fail the test deterministically across hosts. Test-only — no
+  production change. Full ocaml suite **45/45 green** post-edit.
+
 - 2026-04-13 15:55 — storm-ember RELEASED locks on `c2c_list.py`,
   `c2c_send.py`, `c2c_verify.py`, `tests/test_c2c_cli.py`.
   **Fix alias-churn on restart** — high-severity bug discovered

@@ -40,6 +40,47 @@ let test_drain_inbox_returns_and_clears_messages () =
        check int "drained one message" 1 (List.length drained);
        check int "inbox now empty" 0 (List.length (C2c_mcp.Broker.read_inbox broker ~session_id:"session-b")))
 
+let test_drain_inbox_empty_does_not_touch_inbox_file () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let path = Filename.concat dir "session-empty.inbox.json" in
+      (* Sanity: file does not exist yet. *)
+      check bool "inbox file absent before drain" false (Sys.file_exists path);
+      let drained =
+        C2c_mcp.Broker.drain_inbox broker ~session_id:"session-empty"
+      in
+      check int "empty drain returns no messages" 0 (List.length drained);
+      (* Optimization: drain of an empty inbox must NOT create the
+         file, because every such write fires a close_write inotify
+         event and swamps agent-visibility monitors. *)
+      check bool "inbox file still absent after empty drain" false
+        (Sys.file_exists path))
+
+let test_drain_inbox_empty_does_not_rewrite_existing_empty_file () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let path = Filename.concat dir "session-idle.inbox.json" in
+      (* Enqueue then drain so the file exists and is already `[]`. *)
+      C2c_mcp.Broker.register broker ~session_id:"session-sender"
+        ~alias:"sender" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-idle" ~alias:"idle"
+        ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
+        ~to_alias:"idle" ~content:"one";
+      let _ = C2c_mcp.Broker.drain_inbox broker ~session_id:"session-idle" in
+      check bool "inbox file exists after first drain" true
+        (Sys.file_exists path);
+      let before = (Unix.stat path).st_mtime in
+      (* Force a second of wall time so mtime granularity captures any
+         rewrite. 1s is coarse but the Linux ext4 default is 1s. *)
+      Unix.sleep 1;
+      let drained2 =
+        C2c_mcp.Broker.drain_inbox broker ~session_id:"session-idle"
+      in
+      check int "second drain returns 0" 0 (List.length drained2);
+      let after = (Unix.stat path).st_mtime in
+      check bool "mtime unchanged on no-op drain" true (before = after))
+
 let test_blank_inbox_file_is_treated_as_empty () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -85,6 +126,50 @@ let test_initialize_returns_mcp_capabilities () =
               (json |> member "result" |> member "instructions" <> `Null);
             ignore
               (json |> member "result" |> member "capabilities" |> member "experimental" |> member "claude/channel"))
+
+let test_initialize_reports_server_version_and_features () =
+  with_temp_dir (fun dir ->
+      let request =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 12)
+          ; ("method", `String "initialize")
+          ; ("params", `Assoc [])
+          ]
+      in
+      let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+      match response with
+      | None -> fail "expected initialize response"
+      | Some json ->
+          let open Yojson.Safe.Util in
+          let server_info = json |> member "result" |> member "serverInfo" in
+          check string "server name" "c2c" (server_info |> member "name" |> to_string);
+          let version = server_info |> member "version" |> to_string in
+          check bool "version is not legacy 0.1.0" true (version <> "0.1.0");
+          let features =
+            server_info |> member "features" |> to_list |> List.map to_string
+          in
+          check bool "features is non-empty" true (features <> []);
+          (* Includes the slice 1 load-bearing flags plus the slice 7
+             behavioral contracts. A future refactor that drops any of
+             these names from server_features must either keep the flag
+             or update this list — silent removal is what we're
+             guarding against, since clients probe these names. *)
+          let required =
+            [ "liveness"
+            ; "sweep"
+            ; "dead_letter"
+            ; "poll_inbox"
+            ; "send_all"
+            ; "inbox_migration_on_register"
+            ; "registry_locked_enqueue"
+            ]
+          in
+          List.iter
+            (fun f ->
+              check bool (Printf.sprintf "features contains %s" f) true
+                (List.mem f features))
+            required)
 
 let test_initialize_reports_supported_protocol_version () =
   with_temp_dir (fun dir ->
@@ -411,6 +496,147 @@ let test_registration_persists_pid () =
       in
       check bool "pid persisted" true (reg.pid = Some 42))
 
+(* Slice 9: registry.json and *.inbox.json carry agent identity and
+   message envelopes respectively, so they must not land at 0o644
+   when the broker creates them from scratch. write_json_file uses
+   explicit 0o600; the umask only ever removes bits, so a request for
+   0o600 yields exactly 0o600. *)
+let test_register_writes_registry_at_0o600 () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"s" ~alias:"a" ~pid:None ~pid_start_time:None;
+      let st = Unix.stat (Filename.concat dir "registry.json") in
+      let mode = st.Unix.st_perm land 0o777 in
+      check int "registry.json mode is 0o600" 0o600 mode)
+
+let test_enqueue_writes_inbox_at_0o600 () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"recv-sid" ~alias:"recv"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+      C2c_mcp.Broker.enqueue_message broker
+        ~from_alias:"sender" ~to_alias:"recv" ~content:"hello";
+      let st = Unix.stat (Filename.concat dir "recv-sid.inbox.json") in
+      let mode = st.Unix.st_perm land 0o777 in
+      check int "inbox file mode is 0o600" 0o600 mode)
+
+(* Slice 12: tools/call list reports per-peer alive as a tristate —
+   true (verified live), false (verified dead pid or pid reuse),
+   null (legacy pidless row, can't tell). Operators consuming the
+   list response use this to identify zombie peers before
+   broadcasting. The legacy registration_is_alive collapses Unknown
+   into Alive for sweep/enqueue compat; this test pins down the
+   tristate behavior on the list tool surface specifically. *)
+let test_tools_call_list_reports_alive_tristate () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Live: real pid (this test process) with start_time captured *)
+      let live_pid = Unix.getpid () in
+      let live_start = C2c_mcp.Broker.read_pid_start_time live_pid in
+      C2c_mcp.Broker.register broker
+        ~session_id:"live-sid" ~alias:"live"
+        ~pid:(Some live_pid) ~pid_start_time:live_start;
+      (* Dead: pid we know doesn't exist. Picking pid 1 with a
+         deliberately wrong start_time forces the start_time mismatch
+         path even on the off-chance pid 1 exists. *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"dead-sid" ~alias:"dead"
+        ~pid:(Some 999_999_999) ~pid_start_time:(Some 1);
+      (* Pidless legacy row *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"legacy-sid" ~alias:"legacy"
+        ~pid:None ~pid_start_time:None;
+      let request =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 88)
+          ; ("method", `String "tools/call")
+          ; ( "params",
+              `Assoc
+                [ ("name", `String "list"); ("arguments", `Assoc []) ] )
+          ]
+      in
+      let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+      match response with
+      | None -> fail "expected list response"
+      | Some json ->
+          let open Yojson.Safe.Util in
+          let content_text =
+            json |> member "result" |> member "content" |> to_list |> List.hd
+            |> member "text" |> to_string
+          in
+          let entries = Yojson.Safe.from_string content_text |> to_list in
+          let lookup alias =
+            List.find
+              (fun e -> (e |> member "alias" |> to_string) = alias)
+              entries
+          in
+          let live = lookup "live" in
+          let dead = lookup "dead" in
+          let legacy = lookup "legacy" in
+          (* live row: alive Bool true *)
+          (match live |> member "alive" with
+           | `Bool true -> ()
+           | other ->
+               fail
+                 (Printf.sprintf "live alive should be Bool true, got %s"
+                    (Yojson.Safe.to_string other)));
+          (* dead row: alive Bool false *)
+          (match dead |> member "alive" with
+           | `Bool false -> ()
+           | other ->
+               fail
+                 (Printf.sprintf "dead alive should be Bool false, got %s"
+                    (Yojson.Safe.to_string other)));
+          (* legacy row: alive Null *)
+          (match legacy |> member "alive" with
+           | `Null -> ()
+           | other ->
+               fail
+                 (Printf.sprintf "legacy alive should be Null, got %s"
+                    (Yojson.Safe.to_string other)));
+          check int "three entries returned" 3 (List.length entries))
+
+(* Slice 11: write_json_file uses temp+rename atomicity. After any
+   write completes the per-pid `.tmp.<pid>` sidecar must be gone.
+   A leftover sidecar means either the rename failed silently or
+   the cleanup path leaks state that would accumulate over time. *)
+let test_write_json_file_leaves_no_tmp_sidecars () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"recv-sid" ~alias:"recv"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+      C2c_mcp.Broker.register broker
+        ~session_id:"send-sid" ~alias:"send"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+      C2c_mcp.Broker.enqueue_message broker
+        ~from_alias:"send" ~to_alias:"recv" ~content:"hello";
+      C2c_mcp.Broker.enqueue_message broker
+        ~from_alias:"send" ~to_alias:"recv" ~content:"world";
+      let entries = Sys.readdir dir |> Array.to_list in
+      let tmp_sidecars =
+        List.filter
+          (fun name ->
+            (* match `<anything>.tmp.<digits>` — the per-pid suffix *)
+            try
+              let i = String.rindex name '.' in
+              let suffix_after = String.sub name (i + 1) (String.length name - i - 1) in
+              let prefix = String.sub name 0 i in
+              let is_digits = String.for_all (fun c -> c >= '0' && c <= '9') suffix_after in
+              is_digits
+              && suffix_after <> ""
+              && (try String.length prefix >= 4
+                      && String.sub prefix (String.length prefix - 4) 4 = ".tmp"
+                  with _ -> false)
+            with Not_found -> false)
+          entries
+      in
+      check int "no tmp sidecars left in broker dir" 0
+        (List.length tmp_sidecars))
+
 let test_read_pid_start_time_for_self_is_some () =
   (* /proc/self/stat field 22 should be readable for the current process. *)
   let me = Unix.getpid () in
@@ -556,6 +782,103 @@ let test_register_evicts_prior_reg_with_same_alias () =
       check bool "old session inbox untouched"
         false
         (Sys.file_exists old_inbox_path))
+
+let test_register_migrates_undrained_inbox_on_alias_re_register () =
+  (* Bug: when a session re-registers under the same alias with a fresh
+     session_id, any messages already queued on the old session's inbox file
+     get stranded. Sweep eventually preserves them to dead-letter, but the
+     re-launched session — the same logical agent — never sees them. The
+     register call should migrate undrained messages to the new inbox. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"old-session" ~alias:"storm-recv"
+        ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.enqueue_message broker
+        ~from_alias:"sender" ~to_alias:"storm-recv"
+        ~content:"queued before re-register";
+      C2c_mcp.Broker.enqueue_message broker
+        ~from_alias:"sender" ~to_alias:"storm-recv"
+        ~content:"second queued message";
+      (* Re-register same alias with a new session_id. *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"new-session" ~alias:"storm-recv"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+      let drained =
+        C2c_mcp.Broker.drain_inbox broker ~session_id:"new-session"
+      in
+      check int "migrated message count" 2 (List.length drained);
+      check string "first migrated content" "queued before re-register"
+        (List.nth drained 0).C2c_mcp.content;
+      check string "second migrated content" "second queued message"
+        (List.nth drained 1).C2c_mcp.content;
+      let old_inbox_path =
+        Filename.concat dir "old-session.inbox.json"
+      in
+      check bool "old session inbox file removed" false
+        (Sys.file_exists old_inbox_path))
+
+let test_register_serializes_with_concurrent_enqueue () =
+  (* Regression for the concurrent register-vs-send race. Without the
+     registry lock around enqueue_message, a sender that resolved the
+     alias to a session_id can race a re-register that just evicted that
+     session, write to the about-to-be-deleted inbox file, and have its
+     message stranded. With the lock, enqueue and register serialize on
+     the registry mutex and every successfully-enqueued message lands on
+     the currently-winning session's inbox. *)
+  with_temp_dir (fun dir ->
+      let _ = C2c_mcp.Broker.create ~root:dir in
+      let parent_pid = Unix.getpid () in
+      C2c_mcp.Broker.register (C2c_mcp.Broker.create ~root:dir)
+        ~session_id:"target-s0" ~alias:"target"
+        ~pid:(Some parent_pid) ~pid_start_time:None;
+      let n_msgs = 60 in
+      let sender =
+        match Unix.fork () with
+        | 0 ->
+            let broker = C2c_mcp.Broker.create ~root:dir in
+            for i = 0 to n_msgs - 1 do
+              (try
+                 C2c_mcp.Broker.enqueue_message broker
+                   ~from_alias:"sender" ~to_alias:"target"
+                   ~content:(Printf.sprintf "msg-%d" i)
+               with _ -> ())
+            done;
+            exit 0
+        | child -> child
+      in
+      (* Parent: while the child is sending, churn through several
+         re-registers so the race window is repeatedly opened. *)
+      for k = 1 to 8 do
+        C2c_mcp.Broker.register (C2c_mcp.Broker.create ~root:dir)
+          ~session_id:(Printf.sprintf "target-s%d" k)
+          ~alias:"target"
+          ~pid:(Some parent_pid)
+          ~pid_start_time:None
+      done;
+      let rec waitpid_eintr child =
+        try ignore (Unix.waitpid [] child)
+        with Unix.Unix_error (Unix.EINTR, _, _) -> waitpid_eintr child
+      in
+      waitpid_eintr sender;
+      (* Final winner is target-s8. All earlier session inbox files must
+         have been migrated and removed. *)
+      let final_drain =
+        C2c_mcp.Broker.drain_inbox
+          (C2c_mcp.Broker.create ~root:dir)
+          ~session_id:"target-s8"
+      in
+      check int "all sender messages reached current owner" n_msgs
+        (List.length final_drain);
+      for k = 0 to 7 do
+        let stale =
+          Filename.concat dir
+            (Printf.sprintf "target-s%d.inbox.json" k)
+        in
+        check bool
+          (Printf.sprintf "stale inbox target-s%d.inbox.json removed" k)
+          false (Sys.file_exists stale)
+      done)
 
 let test_concurrent_enqueue_does_not_lose_messages () =
   with_temp_dir (fun dir ->
@@ -717,7 +1040,42 @@ let test_sweep_preserves_nonempty_orphan_to_dead_letter () =
             with _ -> false)
           lines
       in
-      check bool "alpha message with session id preserved" true has_alpha)
+      check bool "alpha message with session id preserved" true has_alpha;
+      (* Every dead-letter record must have a non-empty deleted_at
+         timestamp and a well-formed message object with the three
+         envelope fields. Operators use deleted_at to correlate sweeps
+         with broker logs; silent loss of this field would make
+         dead-letter.jsonl much less useful for triage. *)
+      let records_are_well_formed =
+        List.for_all
+          (fun line ->
+            try
+              let json = Yojson.Safe.from_string line in
+              let open Yojson.Safe.Util in
+              let deleted_at = json |> member "deleted_at" |> to_number in
+              let sid = json |> member "from_session_id" |> to_string in
+              let msg = json |> member "message" in
+              let from_alias = msg |> member "from_alias" |> to_string in
+              let to_alias = msg |> member "to_alias" |> to_string in
+              let content = msg |> member "content" |> to_string in
+              deleted_at > 0.0
+              && sid = "ghost-sid"
+              && from_alias <> ""
+              && to_alias <> ""
+              && content <> ""
+            with _ -> false)
+          lines
+      in
+      check bool "every record well-formed with deleted_at + envelope"
+        true records_are_well_formed;
+      (* Dead-letter records carry the same envelope content as live
+         inbox files, so the file must not be world-readable. The
+         broker creates it with explicit 0o600; on any sane umask the
+         resulting on-disk mode must mask to 0o600 (umask only ever
+         removes bits, never adds them). *)
+      let st = Unix.stat dead_letter in
+      let mode = st.Unix.st_perm land 0o777 in
+      check int "dead-letter file mode is 0o600" 0o600 mode)
 
 let test_tools_call_send_all_routes_through_broker_and_returns_result () =
   with_temp_dir (fun dir ->
@@ -915,6 +1273,32 @@ let test_send_all_skips_dead_recipients_with_reason () =
       in
       check int "dead inbox untouched" 0 (List.length inbox_dead))
 
+let test_send_all_sender_only_registry_returns_empty_result () =
+  (* Edge case: the sender is the only registered peer. send_all
+     should return sent_to=[], skipped=[] without error and without
+     writing to any inbox file. Guards against a regression where the
+     "skip sender" branch might instead fall through to the Unknown
+     or Dead path. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-alone" ~alias:"solo"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+      let result =
+        C2c_mcp.Broker.send_all broker
+          ~from_alias:"solo"
+          ~content:"hello to no one"
+          ~exclude_aliases:[]
+      in
+      check int "no recipients" 0 (List.length result.sent_to);
+      check int "no skipped" 0 (List.length result.skipped);
+      let own_inbox =
+        try C2c_mcp.Broker.read_inbox broker ~session_id:"session-alone"
+        with _ -> []
+      in
+      check int "sender did not receive own broadcast" 0
+        (List.length own_inbox))
+
 let test_sweep_empty_orphan_writes_no_dead_letter () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -935,9 +1319,15 @@ let () =
         [ test_case "register and list" `Quick test_register_and_list
         ; test_case "send enqueues target message" `Quick test_send_enqueues_message_for_target_alias
         ; test_case "drain inbox clears messages" `Quick test_drain_inbox_returns_and_clears_messages
+        ; test_case "empty drain does not create inbox file" `Quick
+            test_drain_inbox_empty_does_not_touch_inbox_file
+        ; test_case "empty drain does not rewrite existing empty inbox file" `Quick
+            test_drain_inbox_empty_does_not_rewrite_existing_empty_file
         ; test_case "blank inbox file treated as empty" `Quick test_blank_inbox_file_is_treated_as_empty
         ; test_case "channel notification shape" `Quick test_channel_notification_matches_claude_channel_shape
         ; test_case "initialize returns capabilities" `Quick test_initialize_returns_mcp_capabilities
+         ; test_case "initialize reports server version and features" `Quick
+             test_initialize_reports_server_version_and_features
          ; test_case "initialize reports supported protocol version" `Quick
              test_initialize_reports_supported_protocol_version
          ; test_case "tools/list exposes core tools" `Quick test_tools_list_includes_register_list_send_and_whoami
@@ -960,10 +1350,22 @@ let () =
          ; test_case "registration without pid field is treated as alive" `Quick
              test_registration_without_pid_loads_as_alive
          ; test_case "registration persists pid" `Quick test_registration_persists_pid
+         ; test_case "register writes registry.json at mode 0o600" `Quick
+             test_register_writes_registry_at_0o600
+         ; test_case "enqueue writes inbox file at mode 0o600" `Quick
+             test_enqueue_writes_inbox_at_0o600
+         ; test_case "write_json_file leaves no tmp sidecars" `Quick
+             test_write_json_file_leaves_no_tmp_sidecars
+         ; test_case "tools/call list reports alive tristate per peer" `Quick
+             test_tools_call_list_reports_alive_tristate
          ; test_case "concurrent register does not lose entries" `Quick
              test_concurrent_register_does_not_lose_entries
          ; test_case "register evicts prior reg with same alias" `Quick
              test_register_evicts_prior_reg_with_same_alias
+         ; test_case "register migrates undrained inbox on alias re-register"
+             `Quick test_register_migrates_undrained_inbox_on_alias_re_register
+         ; test_case "register serializes with concurrent enqueue" `Quick
+             test_register_serializes_with_concurrent_enqueue
          ; test_case "concurrent enqueue does not lose messages" `Quick
              test_concurrent_enqueue_does_not_lose_messages
          ; test_case "sweep drops dead reg and its inbox" `Quick
@@ -984,6 +1386,8 @@ let () =
              test_send_all_honors_exclude_aliases
          ; test_case "send_all skips dead recipients with reason" `Quick
              test_send_all_skips_dead_recipients_with_reason
+         ; test_case "send_all sender-only registry returns empty result"
+             `Quick test_send_all_sender_only_registry_returns_empty_result
          ; test_case "tools/call send_all routes through broker and returns result" `Quick
              test_tools_call_send_all_routes_through_broker_and_returns_result
          ; test_case "read_pid_start_time self is Some" `Quick
