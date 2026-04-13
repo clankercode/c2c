@@ -7397,6 +7397,33 @@ class RunKimiInstTests(unittest.TestCase):
         idx = calls[0].index("--session-id")
         self.assertEqual(calls[0][idx + 1], "kimi-env-session")
 
+    def test_run_kimi_inst_outer_refresh_peer_prefers_wire_daemon_pid(self):
+        namespace = runpy.run_path(str(REPO / "run-kimi-inst-outer"))
+        root = Path(self.temp_dir.name)
+        cfg_dir = root / "run-kimi-inst.d"
+        cfg_dir.mkdir()
+        (cfg_dir / "kimi-c.json").write_text(
+            json.dumps({"c2c_alias": "kimi-nova-2", "c2c_session_id": "kimi-nova"}),
+            encoding="utf-8",
+        )
+        refresh = root / "c2c_refresh_peer.py"
+        refresh.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        globals_for_outer = namespace["maybe_refresh_peer"].__globals__
+        globals_for_outer["HERE"] = root
+        globals_for_outer["_running_wire_daemon_pid"] = lambda session_id: 54321
+
+        calls = []
+
+        def fake_run(command, *, cwd, capture_output, text, timeout):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            namespace["maybe_refresh_peer"]("kimi-c", 12345)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][calls[0].index("--pid") + 1], "54321")
+
     def test_run_kimi_inst_outer_logs_rearm_output(self):
         namespace = runpy.run_path(str(REPO / "run-kimi-inst-outer"))
         root = Path(self.temp_dir.name)
@@ -8114,6 +8141,47 @@ class HealthCheckWireDaemonTests(unittest.TestCase):
             c2c_health.run_health_check(Path("/tmp/broker"))
 
         check_wire.assert_called_once_with("kimi-agent")
+
+
+class WireDaemonLifecycleTests(unittest.TestCase):
+    """Tests for c2c_wire_daemon lifecycle behavior."""
+
+    def test_start_refreshes_broker_registration_to_daemon_pid(self):
+        import argparse
+        import c2c_wire_daemon
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "state"
+            broker_root = Path(temp_dir) / "broker"
+            broker_root.mkdir()
+            args = argparse.Namespace(
+                session_id="kimi-nova",
+                alias="kimi-nova-2",
+                broker_root=str(broker_root),
+                interval=5.0,
+                command=None,
+                timeout=5.0,
+                json=True,
+            )
+
+            with (
+                mock.patch("c2c_wire_daemon._state_dir", return_value=state_dir),
+                mock.patch(
+                    "c2c_kimi_wire_bridge.start_daemon",
+                    return_value={"ok": True, "pid": 12345},
+                ),
+                mock.patch("c2c_refresh_peer.refresh_peer", return_value={}) as refresh,
+                mock.patch("sys.stdout", io.StringIO()),
+            ):
+                rc = c2c_wire_daemon.cmd_start(args)
+
+        self.assertEqual(rc, 0)
+        refresh.assert_called_once_with(
+            "kimi-nova-2",
+            12345,
+            broker_root,
+            session_id="kimi-nova",
+        )
 
 
 class HealthCheckBrokerBinaryTests(unittest.TestCase):

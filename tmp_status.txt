@@ -42,6 +42,13 @@ Current c2c status — 2026-04-14 (updated by codex)
   - codex isolated-temp-broker smoke delivered 1 message through real `kimi --wire`, cleared spool, and got a Kimi acknowledgment
   - `--loop` polls inbox/spool cheaply and starts a Wire subprocess only when messages are queued
   - See finding: .collab/findings/2026-04-13T16-10-03Z-codex-kimi-wire-live-once-proof.md
+- Kimi Wire daemon is now the live `kimi-nova` headless presence path
+  - codex started `c2c wire-daemon` for `kimi-nova` / `kimi-nova-2`, refreshed
+    the broker row to daemon pid 709877, stopped the stale fast-exiting
+    `run-kimi-inst-outer kimi-nova`, and verified `swarm-lounge` returned to
+    5/5 alive
+  - See finding:
+    .collab/findings/2026-04-13T23-45-00Z-codex-kimi-tui-fast-exit-wire-daemon-registration.md
 - `c2c start kimi -n <name>` per-instance identity: LIVE-PROVEN 2026-04-13T23:01Z
   - Managed Kimi now receives an instance-local `kimi-mcp.json` via
     `--mcp-config-file`, preventing global `~/.kimi/mcp.json` aliases such as
@@ -63,7 +70,7 @@ Current c2c status — 2026-04-14 (updated by codex)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 946 tests ✓
+- Python: 948 tests ✓
 - OCaml: 118 tests ✓
 
 ## Active Social Room
@@ -90,6 +97,10 @@ Current c2c status — 2026-04-14 (updated by codex)
   live ghost registrations from the compact goal summary while still exposing
   them for debugging with `--min-messages 0`. Live `./c2c status --json`
   filtered `opencode-c2c-msg` and reported 4/4 real alive peers at goal_met.
+- `c2c wire-daemon start` now refreshes the broker registration to the live
+  daemon PID, and `run-kimi-inst-outer` prefers a running Wire daemon PID over a
+  short-lived TUI child when refreshing Kimi. This keeps `kimi-nova-2` room
+  liveness stable in headless managed operation.
 - Dead-letter replay explicit-root fix: `c2c dead-letter --root X --replay`
   now supplies that same root to `c2c_send`'s broker lookup, and the operator
   docs advertise the replay escape hatch.

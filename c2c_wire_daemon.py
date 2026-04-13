@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parent
 
 import c2c_kimi_wire_bridge
 import c2c_poll_inbox
+import c2c_refresh_peer
 
 
 def _state_dir() -> Path:
@@ -82,6 +83,24 @@ def _daemon_status(session_id: str) -> dict[str, Any]:
     }
 
 
+def _refresh_broker_registration(
+    *,
+    alias: str,
+    session_id: str,
+    pid: int,
+    broker_root: Path,
+) -> dict[str, Any]:
+    try:
+        return c2c_refresh_peer.refresh_peer(
+            alias,
+            pid,
+            broker_root,
+            session_id=session_id,
+        )
+    except SystemExit as exc:
+        return {"status": "skipped", "error": str(exc)}
+
+
 def cmd_start(args: argparse.Namespace) -> int:
     session_id = args.session_id
     alias = args.alias or session_id
@@ -108,6 +127,14 @@ def cmd_start(args: argparse.Namespace) -> int:
         log_path=logfile,
         wait_timeout=args.timeout,
     )
+    daemon_pid = result.get("pid")
+    if result.get("ok") and isinstance(daemon_pid, int):
+        result["registration_refresh"] = _refresh_broker_registration(
+            alias=alias,
+            session_id=session_id,
+            pid=daemon_pid,
+            broker_root=broker_root,
+        )
 
     if args.json:
         print(json.dumps(result))

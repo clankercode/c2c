@@ -86,6 +86,21 @@ def _load_instance_session_id(name: str) -> str | None:
     )
 
 
+def _running_wire_daemon_pid(session_id: str | None) -> int | None:
+    if not session_id:
+        return None
+    try:
+        import c2c_wire_daemon
+
+        status = c2c_wire_daemon._daemon_status(session_id)
+        pid = status.get("pid")
+        if status.get("running") and isinstance(pid, int) and pid > 0:
+            return pid
+    except Exception:
+        return None
+    return None
+
+
 def maybe_sanitize_kimi_mcp_config() -> None:
     """Remove stale C2C_MCP_CLIENT_PID from ~/.kimi/mcp.json.
 
@@ -133,8 +148,9 @@ def maybe_refresh_peer(name: str, pid: int) -> None:
     refresh = HERE / "c2c_refresh_peer.py"
     if not refresh.exists():
         return
-    cmd = [sys.executable, str(refresh), alias, "--pid", str(pid)]
     session_id = _load_instance_session_id(name)
+    target_pid = _running_wire_daemon_pid(session_id) or pid
+    cmd = [sys.executable, str(refresh), alias, "--pid", str(target_pid)]
     if session_id:
         cmd += ["--session-id", session_id]
     try:

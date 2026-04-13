@@ -13,6 +13,20 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T23:53Z - codex RELEASED locks on `c2c_wire_daemon.py`,
+  `run-kimi-inst-outer`, `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-13T23-45-00Z-codex-kimi-tui-fast-exit-wire-daemon-registration.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Diagnosed Kimi room liveness
+  dropping to 4/5: the legacy TUI inner process was fast-exiting in a headless
+  context and repeatedly refreshing the broker to dead child PIDs. Fixed
+  `c2c wire-daemon start` to refresh broker registration to the live daemon PID
+  and changed `run-kimi-inst-outer` to prefer an active Wire daemon PID over a
+  short-lived TUI child. Live mitigation: started `kimi-nova` Wire daemon as
+  `kimi-nova-2`, stopped stale `run-kimi-inst-outer kimi-nova`, refreshed the
+  broker row to pid 709877, and verified `swarm-lounge` 5/5 alive. Verification:
+  focused Kimi/Wire tests 14/14, `py_compile`, `git diff --check`, and full
+  `just test` with 948 Python tests plus OCaml build/runtest.
+
 - 2026-04-13T23:34Z - codex RELEASED locks on `c2c_status.py`,
   `tests/test_c2c_status.py`, `tests/test_c2c_cli.py`,
   `.collab/findings/2026-04-13T23-31-43Z-codex-status-zero-activity-ghost.md`,
