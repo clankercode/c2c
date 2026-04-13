@@ -1586,6 +1586,7 @@ class C2CCLITests(unittest.TestCase):
         self.assertIn("c2c_poker.py", joined_commands)
         self.assertIn("c2c_deliver_inbox.py", joined_commands)
         self.assertIn("--session-id codex-a-local", joined_commands)
+        self.assertIn("--notify-only", joined_commands)
 
     def test_codex_b4_config_rearms_bg_loops_before_resume(self):
         config = json.loads(
