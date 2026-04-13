@@ -12,6 +12,15 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T21:52Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-13T21-50-00Z-codex-dune-lock-and-env-leak.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Fixed the copied-checkout
+  register/list test to use an explicit temp `C2C_MCP_BROKER_ROOT` and blank
+  managed auto-register env vars, documented the Dune empty lock and env leak
+  failures, and synced the Python test count to 882. Verification: focused
+  copied-checkout test and full `just test` with OCaml build/runtest plus 882
+  Python tests.
+
 - 2026-04-13T21:28Z - codex RELEASED locks on `ocaml/c2c_mcp.ml`,
   `ocaml/c2c_mcp.mli`, `ocaml/test/test_c2c_mcp.ml`, `c2c_room.py`,
   `tests/test_c2c_room.py`, `tests/test_c2c_onboarding_smoke.py`,
