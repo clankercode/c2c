@@ -1,6 +1,7 @@
 {
   "command": "claude",
   "flags": [
+    "--continue",
     "--dangerously-skip-permissions",
     "--dangerously-load-development-channels",
     "server:c2c"
