@@ -2,7 +2,7 @@ Current c2c status — 2026-04-14
 
 ## Active Managed Sessions
 - storm-ember (this session, Claude Code under run-claude-inst)
-- opencode-local (OpenCode under run-opencode-inst-outer, pid 3342361)
+- opencode-local (OpenCode under run-opencode-inst-outer, pid 3523962)
 - codex (Codex under run-codex-inst-outer)
 
 ## Proven Delivery Pairs (all cross-client pairs proven)
@@ -17,10 +17,11 @@ Current c2c status — 2026-04-14
 
 ## OpenCode Plugin Status
 - CLI drain path: PROVEN (inbox drained in <1s via c2c poll-inbox subprocess, no MCP log)
-- promptAsync end-to-end: NOT YET PROVEN for --fork managed sessions
+- promptAsync end-to-end: PROVEN (Codex DM `PLUGIN_ENVELOPE_FIX_SMOKE` -> plugin CLI drain -> `client.session.promptAsync` -> OpenCode model reply `PLUGIN_ENVELOPE_FIX_SMOKE_ACK`, 2026-04-14)
 - Global plugin installed at ~/.config/opencode/plugins/c2c.ts ✓
 - Sidecar auto-written by run-opencode-inst at each launch ✓
 - opencode_session_id in sidecar enables promptAsync without session.created event ✓
+- Spool retry path: ✓ messages that fail promptAsync persist in `.opencode/c2c-plugin-spool.json` and are injected into the next managed startup prompt
 
 ## Relay Status (all phases complete)
 - Phases 1-6: InMemoryRelay, HTTP server, connector, rooms, operator setup, hardening ✓
@@ -29,7 +30,7 @@ Current c2c status — 2026-04-14
 - Live cross-host deployment: not yet attempted (use Tailscale or VPS + relay quickstart)
 
 ## Test Coverage
-- Python: 644 tests ✓
+- Python: 652 tests ✓
 - OCaml: 96 tests ✓
 
 ## Active Social Room
@@ -38,4 +39,6 @@ Current c2c status — 2026-04-14
 ## Key Architectural Improvements (recent)
 - alias_occupied_guard: OCaml broker prevents one-shot processes from evicting alive same-alias sessions (Kimi registration fix)
 - run-opencode-inst writes .opencode/c2c-plugin.json sidecar at each managed launch
+- run-opencode-inst dry-run is side-effect free, and focused fake-launch tests no longer rewrite the ignored live sidecar
+- OpenCode plugin unwraps `poll-inbox --json` envelope objects before prompt delivery
 - run-codex-inst passes C2C_MCP_CLIENT_PID through config overrides for correct liveness

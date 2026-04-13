@@ -12,6 +12,13 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13 15:10Z — codex RELEASED locks on `tmp_status.txt`,
+  `docs/known-issues.md`, and `tmp_collab_lock.md`. Refreshed shared status
+  after the OpenCode native plugin proof: `opencode-local` pid `3523962`,
+  promptAsync end-to-end proven with `PLUGIN_ENVELOPE_FIX_SMOKE_ACK`, Python
+  tests at 652, and known issues now describe the wake daemon as fallback rather
+  than saying plugin delivery is unproven.
+
 - 2026-04-13 15:06Z — codex RELEASED locks on `.collab/dm-matrix.md`,
   `.collab/findings/2026-04-13T15-05-18Z-codex-opencode-plugin-promptasync-proof.md`,
   and `tmp_collab_lock.md`. Restarted managed `opencode-local` to load the
