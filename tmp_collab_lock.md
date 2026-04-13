@@ -13,6 +13,17 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-13T23:16Z - codex RELEASED locks on `c2c_start.py`,
+  `run-crush-inst-outer`, `tests/test_c2c_cli.py`, `tmp_status.txt`, and
+  `tmp_collab_lock.md`. Adopted the committed deliver-client enum fix and
+  repaired harness tests exposed by full-suite verification: isolated
+  `run_outer_loop` tests from broker-root subprocess discovery, stale tmp
+  cleanup, and sidecar process mocks; updated SIGINT/backoff expectations to
+  match the current fatal-return behavior; and isolated the OpenCode no-TTY
+  rearm test from the live broker root. Verification: focused harness tests
+  43/43, `py_compile`, `git diff --check`, and full `just test` with
+  942 Python tests plus OCaml build/runtest.
+
 - 2026-04-13T23:06Z - codex RELEASED locks on `c2c_start.py`,
   `tests/test_c2c_cli.py`,
   `.collab/findings/2026-04-13T22-56-00Z-codex-c2c-start-kimi-live-proof.md`,

@@ -4762,8 +4762,11 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         )
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
-                config_dir = Path(temp_dir) / "run-opencode-inst.d"
+                root = Path(temp_dir)
+                config_dir = root / "run-opencode-inst.d"
                 config_dir.mkdir()
+                broker_root = root / "mcp-broker"
+                broker_root.mkdir()
                 (config_dir / "opencode-a.json").write_text(
                     json.dumps(
                         {
@@ -4773,7 +4776,10 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
-                env = {"RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir)}
+                env = {
+                    "RUN_OPENCODE_INST_CONFIG_DIR": str(config_dir),
+                    "C2C_MCP_BROKER_ROOT": str(broker_root),
+                }
 
                 result = run_cli(
                     "run-opencode-inst-rearm",
@@ -10283,7 +10289,7 @@ class C2CStartOuterLoopBehaviorTests(unittest.TestCase):
         sleeps = []
         call_count = 0
 
-        def fake_wait():
+        def fake_wait(timeout=None):
             nonlocal call_count
             call_count += 1
             if call_count >= 3:
@@ -10297,18 +10303,22 @@ class C2CStartOuterLoopBehaviorTests(unittest.TestCase):
         mock_child.kill.return_value = None
 
         with (
+            mock.patch.object(self.c2c_start, "broker_root", return_value=Path("/tmp/broker")),
+            mock.patch.object(self.c2c_start.c2c_mcp, "cleanup_stale_tmp_fea_so", return_value=0),
+            mock.patch.object(self.c2c_start, "_start_deliver_daemon", return_value=None),
+            mock.patch.object(self.c2c_start, "_start_poker", return_value=None),
             mock.patch("subprocess.Popen", return_value=mock_child),
             mock.patch("shutil.which", return_value="/fake/binary"),
             mock.patch("time.sleep", side_effect=sleeps.append),
             mock.patch("time.monotonic", side_effect=[0, 1, 2, 3, 4]),
         ):
-            with self.assertRaises(RuntimeError):
-                self.c2c_start.run_outer_loop(
-                    "backoff-test", "codex", [], Path("/tmp/broker")
-                )
+            rc = self.c2c_start.run_outer_loop(
+                "backoff-test", "codex", [], Path("/tmp/broker")
+            )
 
         # After first fast exit: INITIAL_BACKOFF_SECONDS (2.0)
         # After second fast exit: doubled to 4.0
+        self.assertEqual(rc, 1)
         self.assertEqual(sleeps, [2.0, 4.0])
 
     def test_run_outer_loop_resets_backoff_after_slow_exit(self):
@@ -10316,7 +10326,7 @@ class C2CStartOuterLoopBehaviorTests(unittest.TestCase):
         sleeps = []
         call_count = 0
 
-        def fake_wait():
+        def fake_wait(timeout=None):
             nonlocal call_count
             call_count += 1
             if call_count >= 3:
@@ -10330,25 +10340,31 @@ class C2CStartOuterLoopBehaviorTests(unittest.TestCase):
         mock_child.kill.return_value = None
 
         with (
+            mock.patch.object(self.c2c_start, "broker_root", return_value=Path("/tmp/broker")),
+            mock.patch.object(self.c2c_start.c2c_mcp, "cleanup_stale_tmp_fea_so", return_value=0),
+            mock.patch.object(self.c2c_start, "_start_deliver_daemon", return_value=None),
+            mock.patch.object(self.c2c_start, "_start_poker", return_value=None),
             mock.patch("subprocess.Popen", return_value=mock_child),
             mock.patch("shutil.which", return_value="/fake/binary"),
             mock.patch("time.sleep", side_effect=sleeps.append),
             mock.patch("time.monotonic", side_effect=[0, 15, 16, 31, 32]),
         ):
-            with self.assertRaises(RuntimeError):
-                self.c2c_start.run_outer_loop(
-                    "backoff-test", "codex", [], Path("/tmp/broker")
-                )
+            rc = self.c2c_start.run_outer_loop(
+                "backoff-test", "codex", [], Path("/tmp/broker")
+            )
 
         # Both sleeps should be RESTART_PAUSE_SECONDS (1.5)
+        self.assertEqual(rc, 1)
         self.assertEqual(sleeps, [1.5, 1.5])
 
     def test_run_outer_loop_first_sigint_warns_and_continues(self):
         """First SIGINT prints warning and continues the loop."""
         call_count = 0
 
-        def fake_wait():
+        def fake_wait(timeout=None):
             nonlocal call_count
+            if timeout is not None:
+                return 0
             call_count += 1
             if call_count == 1:
                 raise KeyboardInterrupt()
@@ -10363,24 +10379,29 @@ class C2CStartOuterLoopBehaviorTests(unittest.TestCase):
         mock_child.kill.return_value = None
 
         with (
+            mock.patch.object(self.c2c_start, "broker_root", return_value=Path("/tmp/broker")),
+            mock.patch.object(self.c2c_start.c2c_mcp, "cleanup_stale_tmp_fea_so", return_value=0),
+            mock.patch.object(self.c2c_start, "_start_deliver_daemon", return_value=None),
+            mock.patch.object(self.c2c_start, "_start_poker", return_value=None),
             mock.patch("subprocess.Popen", return_value=mock_child),
             mock.patch("shutil.which", return_value="/fake/binary"),
             mock.patch("time.sleep"),
-            mock.patch("time.monotonic", return_value=0),
+            mock.patch("time.monotonic", side_effect=[0, 10, 11]),
         ):
-            with self.assertRaises(RuntimeError) as ctx:
-                self.c2c_start.run_outer_loop(
-                    "sigint-test", "codex", [], Path("/tmp/broker")
-                )
-        self.assertIn("stop loop", str(ctx.exception))
+            rc = self.c2c_start.run_outer_loop(
+                "sigint-test", "codex", [], Path("/tmp/broker")
+            )
+        self.assertEqual(rc, 1)
         mock_child.terminate.assert_called_once()
 
     def test_run_outer_loop_double_sigint_exits_cleanly(self):
         """Two SIGINTs within window exit with code 130."""
         call_count = 0
 
-        def fake_wait():
+        def fake_wait(timeout=None):
             nonlocal call_count
+            if timeout is not None:
+                return 0
             call_count += 1
             if call_count <= 2:
                 raise KeyboardInterrupt()
@@ -10393,10 +10414,14 @@ class C2CStartOuterLoopBehaviorTests(unittest.TestCase):
         mock_child.kill.return_value = None
 
         with (
+            mock.patch.object(self.c2c_start, "broker_root", return_value=Path("/tmp/broker")),
+            mock.patch.object(self.c2c_start.c2c_mcp, "cleanup_stale_tmp_fea_so", return_value=0),
+            mock.patch.object(self.c2c_start, "_start_deliver_daemon", return_value=None),
+            mock.patch.object(self.c2c_start, "_start_poker", return_value=None),
             mock.patch("subprocess.Popen", return_value=mock_child),
             mock.patch("shutil.which", return_value="/fake/binary"),
             mock.patch("time.sleep"),
-            mock.patch("time.monotonic", side_effect=[0, 0.5, 0.5]),
+            mock.patch("time.monotonic", side_effect=[0, 0.5, 0.5, 0.75]),
         ):
             rc = self.c2c_start.run_outer_loop(
                 "sigint-test", "codex", [], Path("/tmp/broker")
