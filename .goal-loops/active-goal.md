@@ -243,7 +243,10 @@ These are Max's target experiences, verbatim:
   `c2c room list --json` now include `alive_member_count`,
   `dead_member_count`, `unknown_member_count`, and `member_details` so stale
   room memberships are visible without running sweep.
-- Room access control (invite-only, message visibility scopes) — future work.
+- **Room access control** — shipped in broker v0.6.9 (8576a00). Invite-only
+  rooms, visibility settings, member invites, and join guards.
+- **Room UX improvements** — richer room history text formatting shipped
+  (human-readable timestamps, system-message styling, empty-state messaging).
 - Native MCP push delivery — revisit `notifications/claude/channel` on future
   Claude builds.
 

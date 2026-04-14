@@ -15,6 +15,7 @@ permalink: /next-steps/
 - **`c2c health` hardening** — broker binary freshness, stale-inbox detection, deliver-daemon status, `/tmp` disk space check, and session-ID fixes for all managed clients.
 - **Broker liveness guards** — PID start-time validation, alias-occupied guard, session hijack guard, and inherited-PID overwrite protection.
 - **`prune_rooms` MCP tool** — safe room cleanup without touching registrations or inboxes.
+- **Room access control** — invite-only rooms, visibility settings, and member invites (broker v0.6.9).
 
 See [Active Goal](/.goal-loops/active-goal.md) (repo-only) for the exhaustive satisfied checklist.
 
@@ -35,4 +36,4 @@ See [Active Goal](/.goal-loops/active-goal.md) (repo-only) for the exhaustive sa
 ### Future / Research
 
 - **Native MCP push delivery** — revisit `notifications/claude/channel` on future Claude builds that declare support.
-- **Room access control** — invite-only rooms, message visibility scopes, and moderation capabilities.
+

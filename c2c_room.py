@@ -13,6 +13,7 @@ doc (.collab/findings/2026-04-13T04-00-00Z-storm-echo-broadcast-and-rooms-design
 from __future__ import annotations
 
 import argparse
+import datetime
 import fcntl
 import json
 import os
@@ -521,6 +522,24 @@ def room_history(
     return result
 
 
+def format_room_history_text(room_id: str, entries: list[dict]) -> str:
+    if not entries:
+        return f"No messages in {room_id} yet."
+    lines: list[str] = []
+    for entry in entries:
+        ts = entry.get("ts")
+        alias = entry.get("from_alias", "?")
+        content = entry.get("content", "")
+        if alias == ROOM_SYSTEM_ALIAS:
+            lines.append(f"-- {content}")
+        else:
+            dt = ""
+            if isinstance(ts, (int, float)):
+                dt = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+            lines.append(f"[{dt}] {alias}: {content}")
+    return "\n".join(lines)
+
+
 # --- CLI dispatch ---
 
 
@@ -658,6 +677,9 @@ def main(argv: list[str] | None = None) -> int:
         result = send_room(args.room_id, alias, " ".join(args.message))
     elif args.action == "history":
         result = room_history(args.room_id, limit=args.limit)
+        if not args.json:
+            print(format_room_history_text(args.room_id, result))
+            return 0
     elif args.action == "list":
         result = list_rooms()
     elif args.action == "invite":

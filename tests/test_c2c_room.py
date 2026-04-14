@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import tempfile
@@ -275,6 +276,59 @@ class RoomHistoryTests(unittest.TestCase):
             self.assertEqual(
                 c2c_room.room_history("missing", broker_root=Path(tmp)), []
             )
+
+
+class RoomHistoryFormatTests(unittest.TestCase):
+    def test_format_empty_history(self):
+        text = c2c_room.format_room_history_text("lobby", [])
+        self.assertEqual(text, "No messages in lobby yet.")
+
+    def test_format_normal_message(self):
+        entries = [{"ts": 1776134059.0, "from_alias": "alice", "content": "hello"}]
+        text = c2c_room.format_room_history_text("lobby", entries)
+        self.assertIn("[2026-04-14 12:34:19] alice: hello", text)
+
+    def test_format_system_message(self):
+        entries = [{"ts": 1776134059.0, "from_alias": "c2c-system", "content": "bob joined room lobby"}]
+        text = c2c_room.format_room_history_text("lobby", entries)
+        self.assertIn("-- bob joined room lobby", text)
+
+    def test_format_multiline_content(self):
+        entries = [{"ts": 1776134059.0, "from_alias": "alice", "content": "line one\nline two"}]
+        text = c2c_room.format_room_history_text("lobby", entries)
+        self.assertIn("line one\nline two", text)
+
+    def test_cli_history_text_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = Path(tmp)
+            c2c_room.join_room("lobby", "alice", "sid-a", broker)
+            (broker / "sid-a.inbox.json").write_text("[]")
+            c2c_room.send_room("lobby", "alice", "hello text", broker)
+            stdout = io.StringIO()
+            with mock.patch.dict(
+                os.environ, {"C2C_MCP_BROKER_ROOT": str(broker)}
+            ), mock.patch("sys.stdout", new=stdout):
+                rc = c2c_room.main(["history", "lobby", "--limit", "10"])
+            self.assertEqual(rc, 0)
+            output = stdout.getvalue()
+            self.assertIn("alice: hello text", output)
+            self.assertNotIn('"from_alias"', output)
+
+    def test_cli_history_json_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = Path(tmp)
+            c2c_room.join_room("lobby", "alice", "sid-a", broker)
+            (broker / "sid-a.inbox.json").write_text("[]")
+            c2c_room.send_room("lobby", "alice", "hello json", broker)
+            stdout = io.StringIO()
+            with mock.patch.dict(
+                os.environ, {"C2C_MCP_BROKER_ROOT": str(broker)}
+            ), mock.patch("sys.stdout", new=stdout):
+                rc = c2c_room.main(["history", "lobby", "--limit", "10", "--json"])
+            self.assertEqual(rc, 0)
+            output = stdout.getvalue()
+            self.assertIn('"from_alias": "alice"', output)
+            self.assertIn('"content": "hello json"', output)
 
 
 class RoomFilePermissionTests(unittest.TestCase):

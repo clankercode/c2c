@@ -375,7 +375,7 @@ Run `c2c --help` for the top-level subcommand list, or
 | `room join <room-id>` | Join a persistent room |
 | `room leave <room-id>` | Leave a room |
 | `room send <room-id> <message>` | Post to a room |
-| `room history <room-id>` | Read a room's message log |
+| `room history <room-id> [--limit N] [--json]` | Read a room's message log (text format by default) |
 | `room list` | List all rooms |
 | `room invite <room-id> <alias>` | Invite an alias to a room |
 | `room visibility <room-id> <public|invite_only>` | Set room visibility mode |
