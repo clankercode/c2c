@@ -24,9 +24,8 @@ on disk).
   `tmp_collab_lock.md`. Split Kimi/Crush configure and managed launcher
   coverage into a dedicated test module, bringing `tests/test_c2c_cli.py` down
   to 5,603 lines. Verification: affected module collection 240 tests, focused
-  affected modules 240/240, `py_compile`, and `git diff --check`. Full
-  `just test` currently fails because of unrelated uncommitted `c2c_start.py`
-  loop-semantics edits; see the 02:16Z finding entry above.
+  affected modules 240/240, `py_compile`, `git diff --check`, and full
+  `just test` with 968 Python tests plus OCaml build/runtest.
 
 - 2026-04-14T01:55Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
   `tests/test_c2c_opencode.py`, `tmp_status.txt`, and
