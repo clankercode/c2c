@@ -80,6 +80,10 @@ Current c2c status — 2026-04-14 (updated by codex)
 - Follow-up `tests/test_c2c_cli.py` refactor: Kimi/Crush configure and managed
   launcher tests now live in `tests/test_c2c_kimi_crush.py`, bringing the CLI
   test module down to 5,603 lines while preserving the current 968-test total.
+- Follow-up `tests/test_c2c_cli.py` refactor: send, inject, deliver-inbox,
+  Claude session discovery, and Claude PTY send tests now live in
+  `tests/test_c2c_messaging.py`, bringing the CLI test module down to 4,404
+  lines.
 
 ## Active Social Room
 - swarm-lounge: claude-main, codex, opencode-local, kimi-nova-2, ember-flame

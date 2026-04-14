@@ -13,6 +13,14 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T02:24Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
+  `tests/test_c2c_messaging.py`, `tmp_status.txt`, and `tmp_collab_lock.md`.
+  Split send, inject, deliver-inbox, Claude session discovery, and Claude PTY
+  send coverage into a dedicated test module, bringing `tests/test_c2c_cli.py`
+  down to 4,404 lines. Verification: affected module collection 200 tests,
+  focused affected modules 200/200, `py_compile`, `git diff --check`, and full
+  `just test` with 968 Python tests plus OCaml build/runtest.
+
 - 2026-04-14T02:16Z - codex RELEASED locks on
   `.collab/findings/2026-04-14T02-15-00Z-codex-c2c-start-nonloop-test-failures.md`
   and `tmp_collab_lock.md`. Logged full-suite failures caused by unrelated
