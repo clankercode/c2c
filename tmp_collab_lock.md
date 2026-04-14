@@ -13,6 +13,15 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T01:31Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
+  `tests/test_c2c_health.py`, `tests/test_c2c_status.py`, `tmp_status.txt`,
+  and `tmp_collab_lock.md`. Split the oversized CLI test module by moving
+  health-specific coverage into `tests/test_c2c_health.py` and older status
+  coverage into `tests/test_c2c_status.py` as `C2CStatusLegacyTests`.
+  Verification: affected module collection 469 tests, focused affected modules
+  469/469, `py_compile`, `git diff --check`, and full `just test` with 969
+  Python tests plus OCaml build/runtest.
+
 - 2026-04-14T01:28Z - codex RELEASED locks on `c2c_health.py`,
   `tests/test_c2c_cli.py`,
   `.collab/findings/2026-04-14T01-24-00Z-codex-health-sweep-warning-no-safe-preview.md`,

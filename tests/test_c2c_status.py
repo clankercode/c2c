@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -390,6 +391,370 @@ class C2CStatusTests(unittest.TestCase):
         self.assertEqual(room["member_count"], 0)
         self.assertEqual(room["alive_count"], 0)
         self.assertEqual(room["alive_members"], [])
+
+
+class C2CStatusLegacyTests(unittest.TestCase):
+    """Tests for c2c_status swarm_status() and print_status_report()."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.broker_root = Path(self.temp_dir.name) / "broker"
+        self.broker_root.mkdir(parents=True)
+        self.registry_path = self.broker_root / "registry.json"
+        self.archive_dir = self.broker_root / "archive"
+        self.archive_dir.mkdir()
+        self.rooms_dir = self.broker_root / "rooms"
+        self.rooms_dir.mkdir()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _write_registry(self, registrations: list[dict]) -> None:
+        self.registry_path.write_text(json.dumps(registrations), encoding="utf-8")
+
+    def _write_archive(self, filename: str, messages: list[dict]) -> None:
+        path = self.archive_dir / filename
+        path.write_text(
+            "\n".join(json.dumps(m) for m in messages) + "\n",
+            encoding="utf-8",
+        )
+
+    def _write_room_members(self, room_id: str, members: list[dict]) -> None:
+        room_dir = self.rooms_dir / room_id
+        room_dir.mkdir(exist_ok=True)
+        (room_dir / "members.json").write_text(json.dumps(members), encoding="utf-8")
+
+    def test_empty_broker_returns_zero_counts(self):
+        self._write_registry([])
+        data = c2c_status.swarm_status(self.broker_root, min_messages=0)
+        self.assertEqual(data["alive_peers"], [])
+        self.assertEqual(data["dead_peer_count"], 0)
+        self.assertEqual(data["total_peer_count"], 0)
+        self.assertFalse(data["overall_goal_met"])
+
+    def test_alive_peer_counted_correctly(self):
+        self._write_registry(
+            [
+                {"alias": "storm-beacon", "session_id": "sess-a", "pid": os.getpid()},
+            ]
+        )
+        data = c2c_status.swarm_status(self.broker_root, min_messages=0)
+        self.assertEqual(len(data["alive_peers"]), 1)
+        self.assertEqual(data["alive_peers"][0]["alias"], "storm-beacon")
+        self.assertEqual(data["dead_peer_count"], 0)
+
+    def test_dead_peer_not_in_alive_list(self):
+        self._write_registry(
+            [
+                {"alias": "ghost-agent", "session_id": "sess-g", "pid": 99999999},
+            ]
+        )
+        data = c2c_status.swarm_status(self.broker_root)
+        self.assertEqual(data["alive_peers"], [])
+        self.assertEqual(data["dead_peer_count"], 1)
+
+    def test_sent_and_received_counts_populated(self):
+        self._write_registry(
+            [
+                {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
+            ]
+        )
+        received = [
+            {
+                "from_alias": "agent-b",
+                "to_alias": "agent-a",
+                "content": "hi",
+                "drained_at": 1.0,
+            }
+        ] * 3
+        self._write_archive("sess-a.jsonl", received)
+        sent = [
+            {
+                "from_alias": "agent-a",
+                "to_alias": "agent-b",
+                "content": "yo",
+                "drained_at": 2.0,
+            }
+        ] * 2
+        self._write_archive("sess-b.jsonl", sent)
+        data = c2c_status.swarm_status(self.broker_root)
+        peer = data["alive_peers"][0]
+        self.assertEqual(peer["received"], 3)
+        self.assertEqual(peer["sent"], 2)
+
+    def test_goal_met_flag_set_when_thresholds_reached(self):
+        from c2c_verify import GOAL_COUNT
+
+        self._write_registry(
+            [
+                {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
+            ]
+        )
+        received = [
+            {
+                "from_alias": "x",
+                "to_alias": "agent-a",
+                "content": "m",
+                "drained_at": 1.0,
+            }
+        ] * GOAL_COUNT
+        sent = [
+            {
+                "from_alias": "agent-a",
+                "to_alias": "x",
+                "content": "m",
+                "drained_at": 2.0,
+            }
+        ] * GOAL_COUNT
+        self._write_archive("sess-a.jsonl", received)
+        self._write_archive("sess-x.jsonl", sent)
+        data = c2c_status.swarm_status(self.broker_root)
+        self.assertTrue(data["alive_peers"][0]["goal_met"])
+        self.assertTrue(data["overall_goal_met"])
+
+    def test_overall_goal_not_met_when_one_peer_short(self):
+        from c2c_verify import GOAL_COUNT
+
+        self._write_registry(
+            [
+                {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
+                {"alias": "agent-b", "session_id": "sess-b", "pid": os.getpid()},
+            ]
+        )
+        received_a = [
+            {
+                "from_alias": "x",
+                "to_alias": "agent-a",
+                "content": "m",
+                "drained_at": 1.0,
+            }
+        ] * GOAL_COUNT
+        sent_a = [
+            {
+                "from_alias": "agent-a",
+                "to_alias": "x",
+                "content": "m",
+                "drained_at": 2.0,
+            }
+        ] * GOAL_COUNT
+        self._write_archive("sess-a.jsonl", received_a)
+        self._write_archive("extra.jsonl", sent_a)
+        self._write_archive(
+            "sess-b.jsonl",
+            [
+                {
+                    "from_alias": "agent-a",
+                    "to_alias": "agent-b",
+                    "content": "still short",
+                    "drained_at": 3.0,
+                }
+            ],
+        )
+        data = c2c_status.swarm_status(self.broker_root)
+        self.assertFalse(data["overall_goal_met"])
+
+    def test_rooms_summary_populated(self):
+        self._write_registry(
+            [
+                {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
+            ]
+        )
+        self._write_room_members(
+            "swarm-lounge",
+            [
+                {
+                    "alias": "agent-a",
+                    "session_id": "sess-a",
+                    "joined_at": "2026-01-01T00:00:00Z",
+                },
+                {
+                    "alias": "ghost",
+                    "session_id": "sess-g",
+                    "joined_at": "2026-01-01T00:00:00Z",
+                },
+            ],
+        )
+        data = c2c_status.swarm_status(self.broker_root)
+        self.assertEqual(len(data["rooms"]), 1)
+        room = data["rooms"][0]
+        self.assertEqual(room["room_id"], "swarm-lounge")
+        self.assertEqual(room["member_count"], 2)
+        self.assertEqual(room["alive_count"], 1)
+
+    def test_rooms_empty_when_no_rooms_dir(self):
+        self.rooms_dir.rmdir()
+        self._write_registry([])
+        data = c2c_status.swarm_status(self.broker_root)
+        self.assertEqual(data["rooms"], [])
+
+    def test_print_status_report_no_crash(self):
+        """print_status_report should not raise on well-formed data."""
+        data = {
+            "ts": "2026-01-01T00:00:00+00:00",
+            "alive_peers": [
+                {
+                    "alias": "agent-a",
+                    "alive": True,
+                    "sent": 5,
+                    "received": 3,
+                    "goal_met": False,
+                }
+            ],
+            "dead_peer_count": 1,
+            "total_peer_count": 2,
+            "rooms": [{"room_id": "swarm-lounge", "member_count": 2, "alive_count": 1}],
+            "goal_met_count": 0,
+            "goal_total": 1,
+            "overall_goal_met": False,
+        }
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            c2c_status.print_status_report(data)
+        output = buf.getvalue()
+        self.assertIn("agent-a", output)
+        self.assertIn("swarm-lounge", output)
+
+    def test_print_status_report_goal_met_shown(self):
+        data = {
+            "ts": "2026-01-01T00:00:00+00:00",
+            "alive_peers": [
+                {
+                    "alias": "agent-a",
+                    "alive": True,
+                    "sent": 20,
+                    "received": 20,
+                    "goal_met": True,
+                }
+            ],
+            "dead_peer_count": 0,
+            "total_peer_count": 1,
+            "rooms": [],
+            "goal_met_count": 1,
+            "goal_total": 1,
+            "overall_goal_met": True,
+        }
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            c2c_status.print_status_report(data)
+        output = buf.getvalue()
+        self.assertIn("[goal_met]", output)
+        self.assertIn("ALL", output)
+
+    def test_last_active_ts_from_recv(self):
+        import time as _time
+
+        self._write_registry(
+            [
+                {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
+            ]
+        )
+        now_ts = _time.time()
+        msgs = [
+            {
+                "from_alias": "x",
+                "to_alias": "agent-a",
+                "drained_at": now_ts - 30,
+                "content": "hi",
+            }
+        ]
+        self._write_archive("sess-a.jsonl", msgs)
+        data = c2c_status.swarm_status(self.broker_root)
+        peer = data["alive_peers"][0]
+        self.assertAlmostEqual(peer["last_active_ts"], now_ts - 30, delta=1.0)
+
+    def test_last_active_ts_from_sent_when_newer(self):
+        """last_active_ts should use max(recv_ts, sent_ts) — sent may be more recent."""
+        import time as _time
+
+        self._write_registry(
+            [
+                {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
+            ]
+        )
+        now_ts = _time.time()
+        # agent-a received a message 300s ago
+        recv_msgs = [
+            {
+                "from_alias": "x",
+                "to_alias": "agent-a",
+                "drained_at": now_ts - 300,
+                "content": "hi",
+            }
+        ]
+        self._write_archive("sess-a.jsonl", recv_msgs)
+        # agent-a sent a message 10s ago (appears in agent-b's archive)
+        sent_msgs = [
+            {
+                "from_alias": "agent-a",
+                "to_alias": "agent-b",
+                "drained_at": now_ts - 10,
+                "content": "yo",
+            }
+        ]
+        self._write_archive("sess-b.jsonl", sent_msgs)
+        data = c2c_status.swarm_status(self.broker_root)
+        peer = data["alive_peers"][0]
+        self.assertAlmostEqual(peer["last_active_ts"], now_ts - 10, delta=1.0)
+
+    def test_last_active_ts_none_when_no_archive(self):
+        self._write_registry(
+            [
+                {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
+            ]
+        )
+        data = c2c_status.swarm_status(self.broker_root, min_messages=0)
+        self.assertIsNone(data["alive_peers"][0]["last_active_ts"])
+
+    def test_fmt_age_seconds(self):
+        now = 1000.0
+        self.assertEqual(c2c_status._fmt_age(955.0, now), "45s ago")
+
+    def test_fmt_age_minutes(self):
+        now = 1000.0
+        self.assertEqual(c2c_status._fmt_age(400.0, now), "10m ago")
+
+    def test_fmt_age_hours(self):
+        now = 10000.0
+        self.assertEqual(c2c_status._fmt_age(3400.0, now), "1h ago")
+
+    def test_fmt_age_none_returns_never(self):
+        self.assertEqual(c2c_status._fmt_age(None, 1000.0), "never")
+
+    def test_status_output_shows_last_age(self):
+        import time as _time
+
+        self._write_registry(
+            [
+                {"alias": "agent-a", "session_id": "sess-a", "pid": os.getpid()},
+            ]
+        )
+        now_ts = _time.time()
+        msgs = [
+            {
+                "from_alias": "x",
+                "to_alias": "agent-a",
+                "drained_at": now_ts - 90,
+                "content": "hi",
+            }
+        ]
+        self._write_archive("sess-a.jsonl", msgs)
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            c2c_status.main(["--broker-root", str(self.broker_root)])
+        self.assertIn("last=", buf.getvalue())
+
+    def test_cli_json_output(self):
+        self._write_registry([])
+        rc = c2c_status.main(["--json", "--broker-root", str(self.broker_root)])
+        self.assertEqual(rc, 0)
+
+    def test_cli_text_output(self):
+        self._write_registry([])
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = c2c_status.main(["--broker-root", str(self.broker_root)])
+        self.assertEqual(rc, 0)
+        self.assertIn("Swarm Status", buf.getvalue())
 
 
 if __name__ == "__main__":
