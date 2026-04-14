@@ -25,6 +25,8 @@ module Broker : sig
     -> unit
 
   val list_registrations : t -> registration list
+  val save_registrations : t -> registration list -> unit
+  val with_registry_lock : t -> (unit -> 'a) -> 'a
   val registration_is_alive : registration -> bool
   val read_pid_start_time : int -> int option
   val capture_pid_start_time : int option -> int option
