@@ -8,6 +8,13 @@ default:
 build:
     opam exec -- dune build ./ocaml/server/c2c_mcp_server.exe
 
+# Build the OCaml CLI binary
+build-cli:
+    opam exec -- dune build ./ocaml/cli/c2c_cli.exe
+
+# Build both MCP server and CLI
+build-all: build build-cli
+
 # Run Python tests only
 test-py:
     python3 -m pytest tests/ -q --tb=short

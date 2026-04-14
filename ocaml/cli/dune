@@ -1,0 +1,4 @@
+(executable
+ (name c2c_cli)
+ (modules c2c_cli)
+ (libraries c2c_mcp cmdliner yojson logs unix))
