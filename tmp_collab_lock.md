@@ -9,9 +9,13 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `ocaml/cli/c2c.ml` | kimi-nova-2 | Add refresh-peer subcommand | 2026-04-14T05:43Z |
-
 ## History (addendum)
+
+- 2026-04-14T05:59Z - kimi-nova-2 RELEASED stale lock on `ocaml/cli/c2c.ml`.
+  The `refresh-peer` subcommand was already committed in `4aa9477`
+  (2026-04-14T05:53Z); the active lock table had not been updated after
+  commit. Verification: `git log --oneline -1 -- ocaml/cli/c2c.ml` shows
+  `4aa9477 feat(ocaml/cli): add refresh-peer command`.
 
 - 2026-04-14T04:34Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
   `tests/test_c2c_install.py`, `tests/test_c2c_cli_dispatch.py`,
