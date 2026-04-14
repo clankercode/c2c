@@ -7788,6 +7788,79 @@ class RunCrushInstTests(unittest.TestCase):
         self.assertIn("--notify-only", joined_commands)
 
 
+class HealthCheckRegistryTests(unittest.TestCase):
+    """Tests for c2c_health.check_registry()."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.broker_root = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_no_registry_returns_exists_false(self):
+        import c2c_health
+
+        result = c2c_health.check_registry(self.broker_root)
+        self.assertFalse(result["exists"])
+        self.assertEqual(result["entry_count"], 0)
+        self.assertEqual(result["duplicate_pids"], [])
+
+    def test_empty_registry_has_no_duplicates(self):
+        import c2c_health
+
+        (self.broker_root / "registry.json").write_text("[]", encoding="utf-8")
+        result = c2c_health.check_registry(self.broker_root)
+        self.assertTrue(result["exists"])
+        self.assertEqual(result["entry_count"], 0)
+        self.assertEqual(result["duplicate_pids"], [])
+
+    def test_unique_pids_have_no_duplicates(self):
+        import c2c_health
+
+        regs = [
+            {"session_id": "s1", "alias": "a1", "pid": 100},
+            {"session_id": "s2", "alias": "a2", "pid": 200},
+        ]
+        (self.broker_root / "registry.json").write_text(
+            json.dumps(regs), encoding="utf-8"
+        )
+        result = c2c_health.check_registry(self.broker_root)
+        self.assertEqual(result["entry_count"], 2)
+        self.assertEqual(result["duplicate_pids"], [])
+
+    def test_duplicate_pids_are_reported(self):
+        import c2c_health
+
+        regs = [
+            {"session_id": "s1", "alias": "a1", "pid": 100},
+            {"session_id": "s2", "alias": "a2", "pid": 100},
+            {"session_id": "s3", "alias": "a3", "pid": 200},
+        ]
+        (self.broker_root / "registry.json").write_text(
+            json.dumps(regs), encoding="utf-8"
+        )
+        result = c2c_health.check_registry(self.broker_root)
+        self.assertEqual(result["entry_count"], 3)
+        self.assertEqual(len(result["duplicate_pids"]), 1)
+        self.assertEqual(result["duplicate_pids"][0]["pid"], 100)
+        self.assertEqual(sorted(result["duplicate_pids"][0]["aliases"]), ["a1", "a2"])
+
+    def test_entries_without_pid_are_ignored_for_duplicate_check(self):
+        import c2c_health
+
+        regs = [
+            {"session_id": "s1", "alias": "a1"},
+            {"session_id": "s2", "alias": "a2"},
+        ]
+        (self.broker_root / "registry.json").write_text(
+            json.dumps(regs), encoding="utf-8"
+        )
+        result = c2c_health.check_registry(self.broker_root)
+        self.assertEqual(result["entry_count"], 2)
+        self.assertEqual(result["duplicate_pids"], [])
+
+
 class HealthCheckHookTests(unittest.TestCase):
     """Tests for c2c_health.check_hook()."""
 
@@ -8488,6 +8561,7 @@ class HealthPrintDeliverDaemonTests(unittest.TestCase):
                 "exists": True,
                 "readable": True,
                 "entry_count": 1,
+                "duplicate_pids": [],
             },
             "hook": {
                 "hook_exists": hook_registered,
@@ -8548,6 +8622,20 @@ class HealthPrintDeliverDaemonTests(unittest.TestCase):
         report = self._make_report(hook_registered=True, daemon_running=True)
         output = self._capture_output(report)
         self.assertIn("Deliver daemon: running (pid 12345)", output)
+
+    def test_duplicate_pid_registry_warning_shown(self):
+        report = self._make_report(hook_registered=True, daemon_running=True)
+        report["registry"]["duplicate_pids"] = [
+            {"pid": 12345, "aliases": ["codex", "opencode-c2c-msg"]}
+        ]
+
+        output = self._capture_output(report)
+
+        self.assertIn(
+            "Duplicate PID 12345: codex, opencode-c2c-msg share the same process",
+            output,
+        )
+        self.assertIn("stale ghost registration", output)
 
     def test_inactive_stale_inboxes_not_reported_as_nominal(self):
         report = self._make_report(hook_registered=True, daemon_running=True)

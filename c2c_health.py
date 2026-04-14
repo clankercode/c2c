@@ -52,6 +52,7 @@ def check_registry(broker_root: Path) -> dict[str, Any]:
         "exists": registry_path.exists(),
         "readable": False,
         "entry_count": 0,
+        "duplicate_pids": [],
     }
 
     if registry_path.exists():
@@ -59,6 +60,16 @@ def check_registry(broker_root: Path) -> dict[str, Any]:
             registrations = c2c_mcp.load_broker_registrations(registry_path)
             result["readable"] = True
             result["entry_count"] = len(registrations)
+            pid_map: dict[int, list[str]] = {}
+            for reg in registrations:
+                pid = reg.get("pid")
+                if isinstance(pid, int):
+                    pid_map.setdefault(pid, []).append(str(reg.get("alias", "")))
+            result["duplicate_pids"] = [
+                {"pid": pid, "aliases": aliases}
+                for pid, aliases in pid_map.items()
+                if len(aliases) > 1
+            ]
         except Exception:
             pass
 
@@ -634,6 +645,12 @@ def print_health_report(report: dict[str, Any]) -> None:
     print(f"{status} Registry: {reg['entry_count']} peers registered")
     if not reg["exists"]:
         print("    Registry does not exist (will be created on first register)")
+    for dup in reg.get("duplicate_pids", []):
+        aliases_str = ", ".join(dup["aliases"])
+        print(
+            f"~ Duplicate PID {dup['pid']}: {aliases_str} share the same process. "
+            "One may be a stale ghost registration."
+        )
 
     # Session
     sess = report["session"]

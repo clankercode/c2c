@@ -13,6 +13,17 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T09:59Z - kimi-nova-2 RELEASED locks on `c2c_health.py`,
+  `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-14T09-55-00Z-kimi-nova-duplicate-pid-ghost-opencode-c2c-msg.md`,
+  and `tmp_collab_lock.md`. Added duplicate-PID detection to `c2c health`
+  (`check_registry()`) and 5 regression tests (`HealthCheckRegistryTests`).
+  Live `./c2c health` now reports the `opencode-c2c-msg` / `codex` duplicate
+  PID ghost (pid 552302). Also sent a DM to `claude-main` about its 21-message
+  pending inbox and documented the `opencode-c2c-msg` ghost in findings.
+  Verification: focused registry tests 5/5, full `tests/test_c2c_cli.py`
+  446/446, `py_compile`, `git diff --check`.
+
 - 2026-04-13T23:59Z - codex RELEASED locks on `c2c_health.py`,
   `tests/test_c2c_cli.py`,
   `.collab/findings/2026-04-13T23-55-00Z-codex-health-stale-inbox-noise.md`,
