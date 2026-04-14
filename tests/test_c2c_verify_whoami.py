@@ -22,6 +22,23 @@ AGENT_TWO_SESSION_ID = "fa68bd5b-0529-4292-bc27-d617f6840ce7"
 
 
 class C2CVerifyUnitTests(unittest.TestCase):
+    def test_main_passes_min_messages_to_explicit_broker_verify(self):
+        payload = {"participants": {}, "goal_met": False, "source": "broker"}
+        stdout = io.StringIO()
+        with (
+            mock.patch(
+                "c2c_verify.verify_progress_broker", return_value=payload
+            ) as verify_mock,
+            mock.patch("sys.stdout", stdout),
+        ):
+            rc = c2c_verify.main(["--broker", "--min-messages", "3", "--json"])
+
+        self.assertEqual(rc, 0)
+        verify_mock.assert_called_once_with(
+            None, alive_only=False, min_messages=3
+        )
+        self.assertEqual(json.loads(stdout.getvalue()), payload)
+
     def test_resolve_transcript_path_prefers_sessions_fixture_directory(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             fixture_path = Path(temp_dir) / "fixtures" / "sessions-live.json"

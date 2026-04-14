@@ -13,6 +13,14 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T03:15Z - codex RELEASED locks on `c2c_verify.py`,
+  `tests/test_c2c_verify_whoami.py`, `tmp_status.txt`, and
+  `tmp_collab_lock.md`. Added explicit CLI coverage that
+  `c2c verify --broker --min-messages N` forwards the threshold into broker
+  verification, and kept the forwarding fix in `c2c_verify.py`. Verification
+  focused verify/whoami module 27/27, `py_compile`, `git diff --check`, and
+  full `just test` with 989 Python tests plus OCaml build/runtest.
+
 - 2026-04-14T03:05Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
   `tests/test_c2c_mcp_wrapper.py`, `tmp_status.txt`, and
   `tmp_collab_lock.md`. Split MCP wrapper and server-launch coverage into a
