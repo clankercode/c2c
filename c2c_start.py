@@ -25,6 +25,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -224,11 +225,22 @@ def _build_kimi_mcp_config(name: str, broker_root: Path, alias_override: str | N
 
 
 def prepare_launch_args(
-    name: str, client: str, extra_args: list[str], broker_root: Path, alias_override: str | None = None
+    name: str, client: str, extra_args: list[str], broker_root: Path, alias_override: str | None = None, *, resume_session_id: str | None = None
 ) -> list[str]:
     """Return client args, adding managed per-instance config where needed."""
+    args: list[str] = []
+
+    # Pin a stable --session-id so we can --resume by it later.
+    # Only clients that support these flags get them.
+    if client == "claude" and resume_session_id:
+        args.extend(["--session-id", resume_session_id, "--resume", resume_session_id])
+    elif client == "opencode" and resume_session_id:
+        args.extend(["--session", resume_session_id])
+    elif client == "codex" and resume_session_id:
+        args.extend(["resume", "--last"])
+
     if client != "kimi" or _has_explicit_kimi_mcp_config(extra_args):
-        return list(extra_args)
+        return args + list(extra_args)
 
     mcp_config_path = _kimi_mcp_config_path(name)
     mcp_config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -486,6 +498,7 @@ def run_outer_loop(
     broker_root: Path,
     binary_override: str | None = None,
     alias_override: str | None = None,
+    resume_session_id: str | None = None,
 ) -> int:
     """Run the outer restart loop for the given instance (blocking)."""
     cfg = CLIENT_CONFIGS[client]
@@ -556,7 +569,7 @@ def run_outer_loop(
             started = time.monotonic()
             child_proc = None
             try:
-                launch_args = prepare_launch_args(name, client, extra_args, broker_root, alias_override)
+                launch_args = prepare_launch_args(name, client, extra_args, broker_root, alias_override, resume_session_id=resume_session_id)
                 cmd = [binary_path, *launch_args]
                 child_proc = subprocess.Popen(cmd, env=env)
 
@@ -601,10 +614,10 @@ def run_outer_loop(
             )
 
             # Child exited — clean up and print resume command.
-            resume = f"c2c start {client} -n {name}"
+            resume_cmd = f"c2c start {client} -n {name}"
             if binary_override:
-                resume += f" --bin {binary_override}"
-            print(f"\n  {resume}", flush=True)
+                resume_cmd += f" --bin {binary_override}"
+            print(f"\n  {resume_cmd}", flush=True)
             return _cleanup_and_exit(exit_code)
     except Exception as exc:
         print(f"[c2c-start/{name}] fatal error: {exc}", file=sys.stderr, flush=True)
@@ -673,11 +686,19 @@ def cmd_start(
         if saved_root:
             broker_root = Path(saved_root).resolve()
 
+    # Stable session UUID: generated once on first start, reused on resume
+    # so the client can --resume by it. Only used by clients that support
+    # session resumption (claude, codex, opencode).
+    resume_session_id = existing.get("resume_session_id") if existing else None
+    if resume_session_id is None:
+        resume_session_id = str(uuid.uuid4())
+
     # Write instance config.
     cfg: dict[str, Any] = {
         "name": name,
         "client": client,
         "session_id": name,
+        "resume_session_id": resume_session_id,
         "alias": alias_override or name,
         "extra_args": extra_args,
         "created_at": existing.get("created_at", time.time()) if existing else time.time(),
@@ -691,7 +712,12 @@ def cmd_start(
     if json_out:
         print(json.dumps({"ok": True, "name": name, "client": client}))
 
-    return run_outer_loop(name, client, extra_args, broker_root, binary_override=binary_override, alias_override=alias_override)
+    return run_outer_loop(
+        name, client, extra_args, broker_root,
+        binary_override=binary_override,
+        alias_override=alias_override,
+        resume_session_id=resume_session_id,
+    )
 
 
 def cmd_stop(name: str, json_out: bool = False) -> int:
