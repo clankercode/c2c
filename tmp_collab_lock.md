@@ -13,6 +13,16 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T03:37Z - codex RELEASED locks on `c2c_start.py`,
+  `tests/test_c2c_start.py`,
+  `.collab/findings/2026-04-14T03-35-00Z-storm-beacon-c2c-start-zombie-deliver-daemon.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. `c2c start` now waits for the
+  main client in bounded intervals and polls deliver/poker sidecars during
+  those waits so exited helpers are reaped before becoming long-lived zombies.
+  Verification: focused `tests/test_c2c_start.py` 47/47, `py_compile`,
+  `git diff --check`, and full `just test` with 990 Python tests plus OCaml
+  build/runtest.
+
 - 2026-04-14T03:24Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
   `tests/test_c2c_poll_inbox.py`, `tmp_status.txt`, and
   `tmp_collab_lock.md`. Split poll/peek inbox recovery coverage into a

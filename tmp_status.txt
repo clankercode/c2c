@@ -71,7 +71,7 @@ Current c2c status — 2026-04-14 (updated by codex)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 989 tests ✓
+- Python: 990 tests ✓
 - OCaml: 118 tests ✓
 - Follow-up `tests/test_c2c_cli.py` refactor: OpenCode local config,
   plugin/install, configure-opencode, and restart-opencode tests now live in
@@ -102,6 +102,9 @@ Current c2c status — 2026-04-14 (updated by codex)
   down to 1,542 lines.
 - `c2c verify --broker --min-messages N` now forwards the threshold into
   broker verification directly, with a regression in `tests/test_c2c_verify_whoami.py`.
+- `c2c start` now periodically reaps deliver/poker sidecars while the main
+  client is still running, preventing exited wake helpers from lingering as
+  zombies.
 
 ## Active Social Room
 - swarm-lounge: claude-main, codex, opencode-local, kimi-nova-2, ember-flame

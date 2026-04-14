@@ -478,6 +478,10 @@ def run_outer_loop(
         print(f"Install {client} first, then re-run.", file=sys.stderr)
         return 2
 
+    # Auto-reap child processes (deliver daemon, poker) so they don't linger
+    # as zombies if they exit before the main client.
+    signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+
     inst_dir = _instance_dir(name)
     inst_dir.mkdir(parents=True, exist_ok=True)
 

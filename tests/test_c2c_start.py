@@ -358,13 +358,45 @@ class C2CStartOuterLoopBehaviorTests(unittest.TestCase):
         output = buf.getvalue()
         self.assertIn("c2c start claude -n my-instance", output)
 
+    def test_run_outer_loop_ignores_sigchld_to_reap_sidecars(self):
+        """SIGCHLD is ignored so dead deliver/poker processes are auto-reaped."""
+        mock_child = mock.Mock()
+        mock_child.wait.return_value = 0
+        mock_deliver = mock.Mock()
+        mock_poker = mock.Mock()
+
+        with (
+            mock.patch.object(
+                self.c2c_start, "broker_root", return_value=Path("/tmp/broker")
+            ),
+            mock.patch.object(
+                self.c2c_start.c2c_mcp, "cleanup_stale_tmp_fea_so", return_value=0
+            ),
+            mock.patch.object(
+                self.c2c_start, "_start_deliver_daemon", return_value=mock_deliver
+            ),
+            mock.patch.object(self.c2c_start, "_start_poker", return_value=mock_poker),
+            mock.patch("subprocess.Popen", return_value=mock_child),
+            mock.patch("shutil.which", return_value="/fake/binary"),
+            mock.patch("time.monotonic", side_effect=[0, 5]),
+            mock.patch("signal.signal") as mock_signal,
+        ):
+            rc = self.c2c_start.run_outer_loop(
+                "my-instance", "claude", [], Path("/tmp/broker")
+            )
+
+        self.assertEqual(rc, 0)
+        mock_signal.assert_any_call(
+            self.c2c_start.signal.SIGCHLD, self.c2c_start.signal.SIG_IGN
+        )
+
     def test_run_outer_loop_sigint_exits_with_130(self):
         """SIGINT terminates child and exits with code 130 (no loop)."""
         call_count = 0
 
         def fake_wait(timeout=None):
             nonlocal call_count
-            if timeout is not None:
+            if timeout == 2.0:
                 return 0
             call_count += 1
             raise KeyboardInterrupt()
@@ -397,7 +429,7 @@ class C2CStartOuterLoopBehaviorTests(unittest.TestCase):
 
         def fake_wait(timeout=None):
             nonlocal call_count
-            if timeout is not None:
+            if timeout == 2.0:
                 return 0
             call_count += 1
             if call_count <= 2:
