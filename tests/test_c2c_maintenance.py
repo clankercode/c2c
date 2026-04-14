@@ -1130,5 +1130,366 @@ class PruneDeadMembersTests(unittest.TestCase):
         self.assertEqual(result["total_removed"], 0)
 
 
+class SweepDryrunTests(unittest.TestCase):
+    """Unit tests for c2c_sweep_dryrun pure functions."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.broker_root = Path(self.tmpdir) / "broker"
+        self.broker_root.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    # --- load_registry ---
+
+    def test_load_registry_empty_list(self):
+        import c2c_sweep_dryrun
+
+        (self.broker_root / "registry.json").write_text("[]", encoding="utf-8")
+        self.assertEqual(c2c_sweep_dryrun.load_registry(self.broker_root), [])
+
+    def test_load_registry_missing_file(self):
+        import c2c_sweep_dryrun
+
+        self.assertEqual(c2c_sweep_dryrun.load_registry(self.broker_root), [])
+
+    def test_load_registry_valid_entries(self):
+        import c2c_sweep_dryrun
+
+        regs = [{"session_id": "s1", "alias": "a1", "pid": 1234}]
+        (self.broker_root / "registry.json").write_text(
+            json.dumps(regs), encoding="utf-8"
+        )
+        result = c2c_sweep_dryrun.load_registry(self.broker_root)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["alias"], "a1")
+
+    def test_load_registry_invalid_json_exits(self):
+        import c2c_sweep_dryrun
+
+        (self.broker_root / "registry.json").write_text("not json", encoding="utf-8")
+        with self.assertRaises(SystemExit):
+            c2c_sweep_dryrun.load_registry(self.broker_root)
+
+    def test_load_registry_non_list_exits(self):
+        import c2c_sweep_dryrun
+
+        (self.broker_root / "registry.json").write_text(
+            '{"not": "a list"}', encoding="utf-8"
+        )
+        with self.assertRaises(SystemExit):
+            c2c_sweep_dryrun.load_registry(self.broker_root)
+
+    # --- pid_is_alive ---
+
+    def test_pid_is_alive_none_pid(self):
+        import c2c_sweep_dryrun
+
+        self.assertTrue(c2c_sweep_dryrun.pid_is_alive(None, None))
+
+    def test_pid_is_alive_current_process(self):
+        import c2c_sweep_dryrun
+
+        self.assertTrue(c2c_sweep_dryrun.pid_is_alive(os.getpid(), None))
+
+    def test_pid_is_alive_dead_pid(self):
+        import c2c_sweep_dryrun
+
+        self.assertFalse(c2c_sweep_dryrun.pid_is_alive(999999999, None))
+
+    def test_pid_is_alive_mismatched_start_time(self):
+        import c2c_sweep_dryrun
+
+        # Use a start_time of 0 which won't match any real process
+        self.assertFalse(c2c_sweep_dryrun.pid_is_alive(os.getpid(), 0))
+
+    def test_pid_is_alive_matching_start_time(self):
+        import c2c_sweep_dryrun
+
+        # Read the actual starttime from /proc to verify match
+        stat_path = Path(f"/proc/{os.getpid()}/stat")
+        raw = stat_path.read_text()
+        tail = raw[raw.rindex(")") + 2 :]
+        fields = tail.split()
+        real_start_time = int(fields[19])
+        self.assertTrue(
+            c2c_sweep_dryrun.pid_is_alive(os.getpid(), real_start_time)
+        )
+
+    # --- collect_inboxes ---
+
+    def test_collect_inboxes_empty(self):
+        import c2c_sweep_dryrun
+
+        self.assertEqual(c2c_sweep_dryrun.collect_inboxes(self.broker_root), {})
+
+    def test_collect_inboxes_finds_inbox_files(self):
+        import c2c_sweep_dryrun
+
+        (self.broker_root / "s1.inbox.json").write_text("[]", encoding="utf-8")
+        (self.broker_root / "s2.inbox.json").write_text('[{"a":1}]', encoding="utf-8")
+        # Non-inbox file should be ignored
+        (self.broker_root / "registry.json").write_text("[]", encoding="utf-8")
+
+        result = c2c_sweep_dryrun.collect_inboxes(self.broker_root)
+        self.assertIn("s1", result)
+        self.assertIn("s2", result)
+        self.assertNotIn("registry", result)
+
+    def test_collect_inboxes_missing_dir(self):
+        import c2c_sweep_dryrun
+
+        self.assertEqual(
+            c2c_sweep_dryrun.collect_inboxes(Path("/nonexistent/path")), {}
+        )
+
+    # --- inbox_message_count ---
+
+    def test_inbox_message_count_valid(self):
+        import c2c_sweep_dryrun
+
+        p = self.broker_root / "test.inbox.json"
+        p.write_text('[{"a":1}, {"b":2}]', encoding="utf-8")
+        self.assertEqual(c2c_sweep_dryrun.inbox_message_count(p), 2)
+
+    def test_inbox_message_count_empty(self):
+        import c2c_sweep_dryrun
+
+        p = self.broker_root / "test.inbox.json"
+        p.write_text("[]", encoding="utf-8")
+        self.assertEqual(c2c_sweep_dryrun.inbox_message_count(p), 0)
+
+    def test_inbox_message_count_missing_file(self):
+        import c2c_sweep_dryrun
+
+        p = self.broker_root / "nonexistent.inbox.json"
+        self.assertIsNone(c2c_sweep_dryrun.inbox_message_count(p))
+
+    def test_inbox_message_count_invalid_json(self):
+        import c2c_sweep_dryrun
+
+        p = self.broker_root / "test.inbox.json"
+        p.write_text("not json", encoding="utf-8")
+        self.assertIsNone(c2c_sweep_dryrun.inbox_message_count(p))
+
+    def test_inbox_message_count_non_list(self):
+        import c2c_sweep_dryrun
+
+        p = self.broker_root / "test.inbox.json"
+        p.write_text('{"not": "a list"}', encoding="utf-8")
+        self.assertIsNone(c2c_sweep_dryrun.inbox_message_count(p))
+
+    # --- archive_activity_counts ---
+
+    def test_archive_activity_counts_empty(self):
+        import c2c_sweep_dryrun
+
+        self.assertEqual(c2c_sweep_dryrun.archive_activity_counts(self.broker_root), {})
+
+    def test_archive_activity_counts_counts_from_and_to(self):
+        import c2c_sweep_dryrun
+
+        archive_dir = self.broker_root / "archive"
+        archive_dir.mkdir()
+        entry = {"from_alias": "alice", "to_alias": "bob", "content": "hi"}
+        (archive_dir / "s1.jsonl").write_text(
+            json.dumps(entry) + "\n" + json.dumps(entry) + "\n",
+            encoding="utf-8",
+        )
+        counts = c2c_sweep_dryrun.archive_activity_counts(self.broker_root)
+        # s1 gets 2 (file lines), alice gets 2 (from_alias), bob gets 2 (to_alias)
+        self.assertEqual(counts["s1"], 2)
+        self.assertEqual(counts["alice"], 2)
+        self.assertEqual(counts["bob"], 2)
+
+    def test_archive_activity_counts_skips_blank_lines(self):
+        import c2c_sweep_dryrun
+
+        archive_dir = self.broker_root / "archive"
+        archive_dir.mkdir()
+        (archive_dir / "s1.jsonl").write_text(
+            json.dumps({"from_alias": "a"}) + "\n\n\n",
+            encoding="utf-8",
+        )
+        counts = c2c_sweep_dryrun.archive_activity_counts(self.broker_root)
+        self.assertEqual(counts["s1"], 1)
+        self.assertEqual(counts["a"], 1)
+
+    def test_archive_activity_counts_skips_bad_json(self):
+        import c2c_sweep_dryrun
+
+        archive_dir = self.broker_root / "archive"
+        archive_dir.mkdir()
+        (archive_dir / "s1.jsonl").write_text(
+            "bad json\n" + json.dumps({"from_alias": "a"}) + "\n",
+            encoding="utf-8",
+        )
+        counts = c2c_sweep_dryrun.archive_activity_counts(self.broker_root)
+        # bad json line still counts as a file line for s1
+        self.assertEqual(counts["s1"], 2)
+        self.assertEqual(counts["a"], 1)
+
+    # --- registration_activity ---
+
+    def test_registration_activity_no_activity(self):
+        import c2c_sweep_dryrun
+
+        reg = {"session_id": "s1", "alias": "a1"}
+        self.assertEqual(c2c_sweep_dryrun.registration_activity(reg, {}), 0)
+
+    def test_registration_activity_matches_session_id(self):
+        import c2c_sweep_dryrun
+
+        reg = {"session_id": "s1", "alias": "a1"}
+        self.assertEqual(
+            c2c_sweep_dryrun.registration_activity(reg, {"s1": 5}), 5
+        )
+
+    def test_registration_activity_matches_alias(self):
+        import c2c_sweep_dryrun
+
+        reg = {"session_id": "s1", "alias": "a1"}
+        self.assertEqual(
+            c2c_sweep_dryrun.registration_activity(reg, {"a1": 3}), 3
+        )
+
+    def test_registration_activity_sums_both(self):
+        import c2c_sweep_dryrun
+
+        reg = {"session_id": "s1", "alias": "a1"}
+        self.assertEqual(
+            c2c_sweep_dryrun.registration_activity(reg, {"s1": 2, "a1": 3}), 5
+        )
+
+    # --- analyze ---
+
+    def test_analyze_empty_registry(self):
+        import c2c_sweep_dryrun
+
+        (self.broker_root / "registry.json").write_text("[]", encoding="utf-8")
+        report = c2c_sweep_dryrun.analyze(self.broker_root)
+        self.assertEqual(report["totals"]["registrations"], 0)
+        self.assertEqual(report["totals"]["live"], 0)
+        self.assertEqual(report["totals"]["dead"], 0)
+
+    def test_analyze_detects_dead_registration(self):
+        import c2c_sweep_dryrun
+
+        (self.broker_root / "registry.json").write_text(
+            json.dumps(
+                [{"session_id": "dead-sess", "alias": "dead-alias", "pid": 999999999}]
+            ),
+            encoding="utf-8",
+        )
+        report = c2c_sweep_dryrun.analyze(self.broker_root)
+        self.assertEqual(report["totals"]["dead"], 1)
+        self.assertEqual(report["dead_regs"][0]["alias"], "dead-alias")
+
+    def test_analyze_detects_live_registration(self):
+        import c2c_sweep_dryrun
+
+        (self.broker_root / "registry.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "session_id": "live-sess",
+                        "alias": "live-alias",
+                        "pid": os.getpid(),
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        report = c2c_sweep_dryrun.analyze(self.broker_root)
+        self.assertEqual(report["totals"]["live"], 1)
+
+    def test_analyze_detects_orphan_inbox(self):
+        import c2c_sweep_dryrun
+
+        (self.broker_root / "registry.json").write_text("[]", encoding="utf-8")
+        (self.broker_root / "orphan.inbox.json").write_text(
+            '[{"msg": 1}]', encoding="utf-8"
+        )
+        report = c2c_sweep_dryrun.analyze(self.broker_root)
+        self.assertEqual(report["totals"]["orphan_inboxes"], 1)
+        self.assertEqual(report["orphan_inboxes"][0]["session_id"], "orphan")
+
+    def test_analyze_duplicate_pids_with_activity(self):
+        import c2c_sweep_dryrun
+
+        (self.broker_root / "registry.json").write_text(
+            json.dumps(
+                [
+                    {"session_id": "active", "alias": "active", "pid": os.getpid()},
+                    {"session_id": "ghost", "alias": "ghost", "pid": os.getpid()},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        archive_dir = self.broker_root / "archive"
+        archive_dir.mkdir()
+        (archive_dir / "active.jsonl").write_text(
+            json.dumps({"from_alias": "active"}) + "\n", encoding="utf-8"
+        )
+        report = c2c_sweep_dryrun.analyze(self.broker_root)
+        self.assertEqual(len(report["duplicate_pids"]), 1)
+        self.assertEqual(report["duplicate_pids"][0]["likely_stale_aliases"], ["ghost"])
+
+    def test_analyze_nonempty_content_at_risk(self):
+        import c2c_sweep_dryrun
+
+        (self.broker_root / "registry.json").write_text(
+            json.dumps(
+                [{"session_id": "dead-sess", "alias": "dead", "pid": 999999999}]
+            ),
+            encoding="utf-8",
+        )
+        (self.broker_root / "dead-sess.inbox.json").write_text(
+            '[{"msg": 1}, {"msg": 2}]', encoding="utf-8"
+        )
+        report = c2c_sweep_dryrun.analyze(self.broker_root)
+        self.assertEqual(report["totals"]["nonempty_content_at_risk"], 1)
+        self.assertEqual(len(report["nonempty_content_at_risk"]), 1)
+
+    # --- print_report ---
+
+    def test_print_report_runs_without_error(self):
+        import c2c_sweep_dryrun
+
+        (self.broker_root / "registry.json").write_text("[]", encoding="utf-8")
+        report = c2c_sweep_dryrun.analyze(self.broker_root)
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            c2c_sweep_dryrun.print_report(report)
+        output = buf.getvalue()
+        self.assertIn("broker root:", output)
+        self.assertIn("registrations", output)
+
+    # --- main ---
+
+    def test_main_json_output(self):
+        import c2c_sweep_dryrun
+
+        (self.broker_root / "registry.json").write_text("[]", encoding="utf-8")
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            result = c2c_sweep_dryrun.main(["--root", str(self.broker_root), "--json"])
+        self.assertEqual(result, 0)
+        parsed = json.loads(buf.getvalue())
+        self.assertIn("totals", parsed)
+
+    def test_main_text_output(self):
+        import c2c_sweep_dryrun
+
+        (self.broker_root / "registry.json").write_text("[]", encoding="utf-8")
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            result = c2c_sweep_dryrun.main(["--root", str(self.broker_root)])
+        self.assertEqual(result, 0)
+        output = buf.getvalue()
+        self.assertIn("broker root:", output)
+
+
 if __name__ == "__main__":
     unittest.main()
