@@ -100,6 +100,9 @@ Current c2c status — 2026-04-14 (updated by codex)
 - Follow-up `tests/test_c2c_cli.py` refactor: poll/peek inbox recovery tests
   now live in `tests/test_c2c_poll_inbox.py`, bringing the CLI test module
   down to 1,542 lines.
+- Follow-up `tests/test_c2c_cli.py` refactor: legacy managed-runner tests now
+  live in `tests/test_c2c_legacy_managed.py`, bringing the CLI test module
+  down to 1,100 lines.
 - `c2c verify --broker --min-messages N` now forwards the threshold into
   broker verification directly, with a regression in `tests/test_c2c_verify_whoami.py`.
 - `c2c start` now periodically reaps deliver/poker sidecars while the main
