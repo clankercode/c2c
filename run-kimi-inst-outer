@@ -61,6 +61,10 @@ def rearm_log(name: str) -> Path:
     return HERE / "run-kimi-inst.d" / f"{name}.outer.log"
 
 
+def session_state_path(name: str) -> Path:
+    return HERE / "run-kimi-inst.d" / f"{name}.session.json"
+
+
 def _load_instance_config(name: str) -> dict:
     cfg_path = HERE / "run-kimi-inst.d" / f"{name}.json"
     if not cfg_path.exists():
@@ -178,13 +182,23 @@ def maybe_refresh_peer(name: str, pid: int) -> None:
         )
 
 
+def _load_captured_kimi_session_id(name: str) -> str | None:
+    try:
+        data = json.loads(session_state_path(name).read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    value = data.get("kimi_session_id")
+    return value if isinstance(value, str) and value else None
+
+
 def _capture_kimi_session(name: str) -> None:
     """Poll ~/.kimi/kimi.json and store the last session id for this cwd.
 
     Kimi does not expose a CLI to list sessions, but it tracks
     last_session_id per work_dir in kimi.json. We read that file after
-    giving the Kimi process time to initialize, then persist the id in
-    the instance config so the next restart can use --session <id>.
+    giving the Kimi process time to initialize, then persist the id in an
+    ignored runtime sidecar so the next restart can use --session <id>
+    without dirtying tracked instance config.
     """
     cfg_path = HERE / "run-kimi-inst.d" / f"{name}.json"
     if not cfg_path.exists():
@@ -214,9 +228,12 @@ def _capture_kimi_session(name: str) -> None:
             state = json.load(fh)
         if state.get("archived"):
             return
-        if cfg.get("kimi_session_id") != last_session_id:
-            cfg["kimi_session_id"] = last_session_id
-            cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+        if _load_captured_kimi_session_id(name) != last_session_id:
+            state_path = session_state_path(name)
+            state_path.write_text(
+                json.dumps({"kimi_session_id": last_session_id}, indent=2) + "\n",
+                encoding="utf-8",
+            )
             print(
                 f"[run-kimi-inst-outer] captured kimi session: {last_session_id}",
                 flush=True,

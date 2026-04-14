@@ -51,6 +51,10 @@ def config_path(name: str) -> Path:
     return config_dir() / f"{name}.json"
 
 
+def session_state_path(name: str) -> Path:
+    return config_dir() / f"{name}.session.json"
+
+
 def pid_path(name: str) -> Path:
     return config_dir() / f"{name}.pid"
 
@@ -66,6 +70,18 @@ def load_config(name: str) -> dict:
     if not isinstance(data, dict):
         raise SystemExit(f"[run-kimi-inst] config root must be an object: {path}")
     return data
+
+
+def load_captured_kimi_session_id(name: str) -> str:
+    path = session_state_path(name)
+    if not path.exists():
+        return ""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return ""
+    value = data.get("kimi_session_id")
+    return value if isinstance(value, str) else ""
 
 
 def coerce_string_list(value, field: str) -> list[str]:
@@ -164,7 +180,10 @@ def build_launch(
     # Session resumption: prefer explicit --session <id> if captured,
     # otherwise fall back to --continue for the cwd's last session.
     session_flags: list[str] = []
-    kimi_session_id = coerce_string(config.get("kimi_session_id"), "kimi_session_id")
+    kimi_session_id = coerce_string(
+        config.get("kimi_session_id") or load_captured_kimi_session_id(name),
+        "kimi_session_id",
+    )
     if not print_mode:
         filtered_flags = [f for f in flags if f not in ("--continue", "-C", "--session", "-S", "-r")]
         if kimi_session_id:

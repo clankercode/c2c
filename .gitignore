@@ -52,6 +52,7 @@ run-opencode-inst.d/package.json
 run-kimi-inst.d/*.pid
 run-kimi-inst.d/*.log
 run-kimi-inst.d/*.restart.json
+run-kimi-inst.d/*.session.json
 run-crush-inst.d/*.pid
 run-crush-inst.d/*.log
 run-crush-inst.d/*.restart.json

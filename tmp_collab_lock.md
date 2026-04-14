@@ -9,16 +9,22 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| `run-kimi-inst` | codex | Keep captured Kimi session IDs out of tracked config | 2026-04-14T04:05:00Z |
-| `run-kimi-inst-outer` | codex | Store captured Kimi session IDs in ignored sidecar state | 2026-04-14T04:05:00Z |
-| `tests/test_c2c_kimi_crush.py` | codex | Regression coverage for Kimi session sidecar state | 2026-04-14T04:05:00Z |
-| `.gitignore` | codex | Ignore Kimi captured-session sidecar files | 2026-04-14T04:05:00Z |
-| `.collab/findings/2026-04-14T04-05-00Z-codex-kimi-session-id-tracked-config-churn.md` | codex | Document tracked Kimi runtime-state churn | 2026-04-14T04:05:00Z |
-| `run-kimi-inst.d/kimi-nova.json` | codex | Remove runtime session_id from tracked instance config | 2026-04-14T04:05:00Z |
-| `tmp_status.txt` | codex | Record Kimi session-state fix | 2026-04-14T04:05:00Z |
-| `tmp_collab_lock.md` | codex | Lock bookkeeping | 2026-04-14T04:05:00Z |
 
 ## History (addendum)
+
+- 2026-04-14T04:06Z - codex RELEASED locks on `run-kimi-inst`,
+  `run-kimi-inst-outer`, `tests/test_c2c_kimi_crush.py`, `.gitignore`,
+  `run-kimi-inst.d/kimi-nova.json`,
+  `.collab/findings/2026-04-14T04-05-00Z-codex-kimi-session-id-tracked-config-churn.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Kimi session capture now writes
+  runtime resume state to ignored `run-kimi-inst.d/*.session.json` sidecars
+  instead of mutating tracked instance configs. Also stopped the live legacy
+  `run-kimi-inst-outer kimi-nova` process after confirming `kimi-nova-2`
+  remained alive through the Wire daemon. Verification: RED regressions failed
+  on missing sidecar read/write, focused regressions 2/2, full
+  `tests/test_c2c_kimi_crush.py` 42/42, `py_compile`, `git diff --check`, live
+  `./c2c status --json`, and full `just test` with 992 Python tests plus OCaml
+  build/runtest.
 
 - 2026-04-14T03:50Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
   `tests/test_c2c_cli_identity.py`, `tmp_status.txt`, and

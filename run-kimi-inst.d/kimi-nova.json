@@ -8,6 +8,5 @@
   "flags": [
     "--max-steps-per-turn",
     "999"
-  ],
-  "kimi_session_id": "7a0e572d-b156-4b79-af9d-ef2dd99494ff"
+  ]
 }

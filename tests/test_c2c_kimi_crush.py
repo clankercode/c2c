@@ -539,6 +539,33 @@ class RunKimiInstTests(unittest.TestCase):
             ],
         )
 
+    def test_run_kimi_inst_dry_run_uses_captured_session_sidecar(self):
+        config_dir = Path(self.temp_dir.name) / "run-kimi-inst.d"
+        config_dir.mkdir()
+        config = {
+            "command": "kimi",
+            "cwd": self.temp_dir.name,
+            "c2c_session_id": "kimi-test",
+            "c2c_alias": "kimi-test",
+        }
+        (config_dir / "kimi-a.json").write_text(json.dumps(config), encoding="utf-8")
+        (config_dir / "kimi-a.session.json").write_text(
+            json.dumps({"kimi_session_id": "captured-kimi-session"}),
+            encoding="utf-8",
+        )
+        env = dict(self.env)
+        env["RUN_KIMI_INST_DRY_RUN"] = "1"
+        env["RUN_KIMI_INST_CONFIG_DIR"] = str(config_dir)
+
+        result = run_cli("run-kimi-inst", "kimi-a", env=env)
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            payload["launch"],
+            ["kimi", "--yolo", "--session", "captured-kimi-session"],
+        )
+
     def test_run_kimi_inst_dry_run_prefills_prompt_in_interactive_mode(self):
         config_dir = Path(self.temp_dir.name) / "run-kimi-inst.d"
         config_dir.mkdir()
@@ -730,6 +757,48 @@ class RunKimiInstTests(unittest.TestCase):
 
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][calls[0].index("--pid") + 1], "54321")
+
+    def test_run_kimi_inst_outer_captures_session_to_ignored_sidecar(self):
+        namespace = runpy.run_path(str(REPO / "run-kimi-inst-outer"))
+        root = Path(self.temp_dir.name) / "repo"
+        cfg_dir = root / "run-kimi-inst.d"
+        cfg_dir.mkdir(parents=True)
+        work_dir = Path(self.temp_dir.name) / "work"
+        work_dir.mkdir()
+        cfg_path = cfg_dir / "kimi-a.json"
+        cfg_path.write_text(json.dumps({"cwd": str(work_dir)}), encoding="utf-8")
+        home = Path(self.temp_dir.name) / "home"
+        session_state = home / ".kimi" / "sessions" / "captured-session" / "state.json"
+        session_state.parent.mkdir(parents=True)
+        session_state.write_text(json.dumps({"archived": False}), encoding="utf-8")
+        kimi_json = home / ".kimi" / "kimi.json"
+        kimi_json.write_text(
+            json.dumps(
+                {
+                    "work_dirs": [
+                        {
+                            "path": str(work_dir),
+                            "last_session_id": "captured-session",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        globals_for_outer = namespace["_capture_kimi_session"].__globals__
+        globals_for_outer["HERE"] = root
+
+        with (
+            mock.patch.dict(os.environ, {"HOME": str(home)}),
+            mock.patch.object(globals_for_outer["time"], "sleep", lambda _seconds: None),
+        ):
+            namespace["_capture_kimi_session"]("kimi-a")
+
+        self.assertEqual(json.loads(cfg_path.read_text(encoding="utf-8")), {"cwd": str(work_dir)})
+        self.assertEqual(
+            json.loads((cfg_dir / "kimi-a.session.json").read_text(encoding="utf-8")),
+            {"kimi_session_id": "captured-session"},
+        )
 
     def test_run_kimi_inst_outer_logs_rearm_output(self):
         namespace = runpy.run_path(str(REPO / "run-kimi-inst-outer"))
