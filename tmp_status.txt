@@ -71,7 +71,7 @@ Current c2c status — 2026-04-14 (updated by codex)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 952 tests ✓
+- Python: 958 tests ✓
 - OCaml: 118 tests ✓
 
 ## Active Social Room
@@ -105,6 +105,9 @@ Current c2c status — 2026-04-14 (updated by codex)
 - `c2c health` stale-inbox reporting now separates live actionable stale
   inboxes from inactive dead/unregistered inbox artifacts. Retained artifacts
   still count toward total pending, but no longer look like wake targets.
+- `c2c health` registry reporting now warns when multiple aliases share the
+  same PID, making stale ghost registrations such as `opencode-c2c-msg`
+  visible without running an unsafe sweep during active swarm operation.
 - Dead-letter replay explicit-root fix: `c2c dead-letter --root X --replay`
   now supplies that same root to `c2c_send`'s broker lookup, and the operator
   docs advertise the replay escape hatch.

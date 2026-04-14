@@ -13,6 +13,14 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T00:08Z - codex RELEASED locks on `c2c_health.py`,
+  `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-14T09-55-00Z-kimi-nova-duplicate-pid-ghost-opencode-c2c-msg.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Kimi had already committed the
+  duplicate-PID health slice as `fbc7dfc`; codex adopted the result, confirmed
+  the focused registry/print tests, and synced shared status docs to the new
+  958-test count and duplicate-PID health warning.
+
 - 2026-04-14T09:59Z - kimi-nova-2 RELEASED locks on `c2c_health.py`,
   `tests/test_c2c_cli.py`,
   `.collab/findings/2026-04-14T09-55-00Z-kimi-nova-duplicate-pid-ghost-opencode-c2c-msg.md`,
