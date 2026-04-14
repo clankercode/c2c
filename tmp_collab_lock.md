@@ -12,6 +12,11 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T04:32Z - codex RELEASED locks on `tmp_status.txt` and
+  `tmp_collab_lock.md`. Synced shared status to Kimi's `6b5dd47` health
+  fallback commit, the 993-test count, and Kimi's MCP broker death / CLI
+  fallback finding. Verification: `git diff --check` passed.
+
 - 2026-04-14T04:25Z - codex RELEASED locks on
   `.collab/findings/2026-04-14T04-15-00Z-codex-mcp-transport-closed-cli-fallback.md`,
   `tmp_status.txt`, and `tmp_collab_lock.md`. Added diagnostics showing a
