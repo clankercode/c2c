@@ -145,7 +145,11 @@ class C2CMCPWrapperTests(unittest.TestCase):
     ):
         stderr = io.StringIO()
         with (
-            mock.patch.dict(os.environ, {"C2C_MCP_SESSION_ID": ""}, clear=False),
+            mock.patch.dict(
+                os.environ,
+                {"C2C_MCP_SESSION_ID": "", "C2C_MCP_BROKER_ROOT": ""},
+                clear=False,
+            ),
             mock.patch(
                 "c2c_mcp.default_broker_root",
                 return_value=REPO / ".git" / "c2c" / "mcp",

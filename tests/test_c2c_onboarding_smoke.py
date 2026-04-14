@@ -60,6 +60,10 @@ def _spawn_server(
     env = os.environ.copy()
     env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
     env["C2C_MCP_SESSION_ID"] = session_id
+    # Isolate test servers from parent process env — these would cause
+    # auto-join and auto-register side-effects that pollute test isolation.
+    env.pop("C2C_MCP_AUTO_JOIN_ROOMS", None)
+    env.pop("C2C_MCP_AUTO_REGISTER_ALIAS", None)
     if extra_env:
         env.update(extra_env)
     return subprocess.Popen(
