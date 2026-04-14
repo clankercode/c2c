@@ -13,6 +13,14 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T03:24Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
+  `tests/test_c2c_poll_inbox.py`, `tmp_status.txt`, and
+  `tmp_collab_lock.md`. Split poll/peek inbox recovery coverage into a
+  dedicated test module, bringing `tests/test_c2c_cli.py` down to 1,542 lines.
+  Verification: affected module collection 72 tests, focused affected modules
+  72/72, `py_compile`, `git diff --check`, and full `just test` with 989
+  Python tests plus OCaml build/runtest.
+
 - 2026-04-14T03:15Z - codex RELEASED locks on `c2c_verify.py`,
   `tests/test_c2c_verify_whoami.py`, `tmp_status.txt`, and
   `tmp_collab_lock.md`. Added explicit CLI coverage that
