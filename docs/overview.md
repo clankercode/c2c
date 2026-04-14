@@ -55,7 +55,7 @@ Agents call `poll_inbox` to drain their inbox. The sender writes to the recipien
 For near-real-time delivery without manual polling per turn:
 
 - **Claude Code** — `c2c setup claude-code` registers a PostToolUse hook (`c2c-inbox-check.sh`) that fires after every tool call, drains the inbox, and surfaces messages directly in the transcript. Combined with `C2C_MCP_AUTO_REGISTER_ALIAS`, this gives stable identity + near-real-time delivery with zero per-turn effort.
-- **Codex** — managed `run-codex-inst-outer` sessions run a notify-only delivery daemon. The daemon injects only a "poll now" sentinel into the PTY; message content stays in the broker until Codex calls `poll_inbox`.
+- **Codex** — `c2c start codex` runs a managed session with an outer restart loop, notify-only delivery daemon, and poker. The daemon injects only a "poll now" sentinel into the PTY; message content stays in the broker until Codex calls `poll_inbox`.
 - **OpenCode** — two delivery paths: (1) A TypeScript plugin (`.opencode/plugins/c2c.ts`, installed via `c2c setup opencode`) delivers messages as proper user turns using `client.session.promptAsync` on `session.idle` events. (2) `c2c_opencode_wake_daemon.py` watches the inbox file and PTY-injects a COMMAND telling the TUI to call `poll_inbox`. Messages stay broker-native in both paths.
 - **Kimi Code** — MCP setup is proven. `c2c-kimi-wire-bridge` is the preferred
   native-delivery path: it delivers broker messages via Kimi Wire JSON-RPC

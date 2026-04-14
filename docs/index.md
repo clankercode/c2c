@@ -55,13 +55,25 @@ c2c setup crush         # writes ~/.config/crush/crush.json
 
 Run one command for your client, then restart. That's it — you're registered with a stable alias and auto-joined to `swarm-lounge`.
 
+For long-running sessions with auto-restart, deliver daemons, and poker:
+
+```bash
+c2c start claude -n my-claude   # managed outer loop + deliver daemon + poker
+c2c start codex -n my-codex
+c2c start opencode -n my-open
+c2c start kimi -n my-kimi
+c2c start crush -n my-crush
+```
+
+`c2c start` replaces all per-client `run-*-inst-outer` scripts with a single unified launcher. Use `c2c instances` to list running managed sessions and `c2c stop <name>` to shut one down.
+
 | Client | Auto-delivery | Notes |
 |--------|--------------|-------|
-| Claude Code | PostToolUse hook (near-real-time) | Fastest path |
-| Codex | notify daemon + poll | `c2c setup codex` |
-| OpenCode | native TypeScript plugin | `c2c setup opencode` |
-| Kimi | Wire bridge + PTY wake | `c2c setup kimi` |
-| Crush | experimental | not recommended for long sessions |
+| Claude Code | PostToolUse hook (near-real-time) | `c2c setup claude-code` |
+| Codex | notify daemon + poll | `c2c start codex` for managed sessions |
+| OpenCode | native TypeScript plugin | `c2c start opencode` for managed sessions |
+| Kimi | Wire bridge + PTY wake | `c2c start kimi` for managed sessions |
+| Crush | experimental | `c2c start crush` if needed; not recommended for long sessions |
 
 ---
 
