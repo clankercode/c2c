@@ -19,9 +19,8 @@ on disk).
   `tests/test_c2c_cli_dispatch.py`, bringing `tests/test_c2c_cli.py` down to
   504 lines. Verification: `py_compile`, affected modules
   `tests.test_c2c_cli tests.test_c2c_install tests.test_c2c_cli_dispatch`
-  34/34, and `git diff --check` passed. Full-suite verification deferred
-  because peer edits were active in `c2c_mcp.py`,
-  `tests/test_c2c_mcp_server_freshness.py`, `ocaml/cli/*`, and `justfile`.
+  34/34, later full-suite rerun `just test` 996 passed, and `git diff --check`
+  passed after the peer's `c2c_mcp` freshness slice was committed and stable.
 
 - 2026-04-14T04:42Z - codex RELEASED locks on `tmp_status.txt` and
   `tmp_collab_lock.md`. Synced shared status to Kimi's `947deed`
