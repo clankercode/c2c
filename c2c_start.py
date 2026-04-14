@@ -174,11 +174,11 @@ def broker_root() -> Path:
     return Path(result.stdout.strip()) / "c2c" / "mcp"
 
 
-def build_env(name: str) -> dict[str, str]:
+def build_env(name: str, alias_override: str | None = None) -> dict[str, str]:
     """Build environment dict for a managed client subprocess."""
     env = dict(os.environ)
     env["C2C_MCP_SESSION_ID"] = name
-    env["C2C_MCP_AUTO_REGISTER_ALIAS"] = name
+    env["C2C_MCP_AUTO_REGISTER_ALIAS"] = alias_override or name
     env["C2C_MCP_BROKER_ROOT"] = str(broker_root())
     env["C2C_MCP_AUTO_JOIN_ROOMS"] = "swarm-lounge"
     env["C2C_MCP_AUTO_DRAIN_CHANNEL"] = "0"
@@ -199,7 +199,8 @@ def _has_explicit_kimi_mcp_config(extra_args: list[str]) -> bool:
     return False
 
 
-def _build_kimi_mcp_config(name: str, broker_root: Path) -> dict[str, Any]:
+def _build_kimi_mcp_config(name: str, broker_root: Path, alias_override: str | None = None) -> dict[str, Any]:
+    alias = alias_override or name
     return {
         "mcpServers": {
             "c2c": {
@@ -209,7 +210,7 @@ def _build_kimi_mcp_config(name: str, broker_root: Path) -> dict[str, Any]:
                 "env": {
                     "C2C_MCP_BROKER_ROOT": str(broker_root),
                     "C2C_MCP_SESSION_ID": name,
-                    "C2C_MCP_AUTO_REGISTER_ALIAS": name,
+                    "C2C_MCP_AUTO_REGISTER_ALIAS": alias,
                     "C2C_MCP_AUTO_JOIN_ROOMS": "swarm-lounge",
                     "C2C_MCP_AUTO_DRAIN_CHANNEL": "0",
                 },
@@ -219,7 +220,7 @@ def _build_kimi_mcp_config(name: str, broker_root: Path) -> dict[str, Any]:
 
 
 def prepare_launch_args(
-    name: str, client: str, extra_args: list[str], broker_root: Path
+    name: str, client: str, extra_args: list[str], broker_root: Path, alias_override: str | None = None
 ) -> list[str]:
     """Return client args, adding managed per-instance config where needed."""
     if client != "kimi" or _has_explicit_kimi_mcp_config(extra_args):
@@ -228,7 +229,7 @@ def prepare_launch_args(
     mcp_config_path = _kimi_mcp_config_path(name)
     mcp_config_path.parent.mkdir(parents=True, exist_ok=True)
     mcp_config_path.write_text(
-        json.dumps(_build_kimi_mcp_config(name, broker_root), indent=2) + "\n",
+        json.dumps(_build_kimi_mcp_config(name, broker_root, alias_override), indent=2) + "\n",
         encoding="utf-8",
     )
     return ["--mcp-config-file", str(mcp_config_path), *extra_args]
@@ -466,6 +467,7 @@ def run_outer_loop(
     extra_args: list[str],
     broker_root: Path,
     binary_override: str | None = None,
+    alias_override: str | None = None,
 ) -> int:
     """Run the outer restart loop for the given instance (blocking)."""
     cfg = CLIENT_CONFIGS[client]
@@ -506,7 +508,7 @@ def run_outer_loop(
         return code
 
     try:
-        env = build_env(name)
+        env = build_env(name, alias_override)
         # Merge client-specific extra env.
         cfg_extra = CLIENT_CONFIGS.get(client, {}).get("extra_env", {})
         env.update(cfg_extra)
@@ -532,7 +534,7 @@ def run_outer_loop(
             started = time.monotonic()
             child_proc = None
             try:
-                launch_args = prepare_launch_args(name, client, extra_args, broker_root)
+                launch_args = prepare_launch_args(name, client, extra_args, broker_root, alias_override)
                 cmd = [binary_path, *launch_args]
                 child_proc = subprocess.Popen(cmd, env=env)
 
@@ -599,6 +601,7 @@ def cmd_start(
     broker_root: Path,
     json_out: bool = False,
     binary_override: str | None = None,
+    alias_override: str | None = None,
 ) -> int:
     if client not in CLIENT_CONFIGS:
         msg = f"unknown client: {client!r}. Choose from: {', '.join(sorted(CLIENT_CONFIGS))}"
@@ -626,7 +629,7 @@ def cmd_start(
         "name": name,
         "client": client,
         "session_id": name,
-        "alias": name,
+        "alias": alias_override or name,
         "extra_args": extra_args,
         "created_at": time.time(),
         "broker_root": str(broker_root),
@@ -639,7 +642,7 @@ def cmd_start(
     if json_out:
         print(json.dumps({"ok": True, "name": name, "client": client}))
 
-    return run_outer_loop(name, client, extra_args, broker_root, binary_override=binary_override)
+    return run_outer_loop(name, client, extra_args, broker_root, binary_override=binary_override, alias_override=alias_override)
 
 
 def cmd_stop(name: str, json_out: bool = False) -> int:
@@ -699,6 +702,7 @@ def cmd_restart(name: str, json_out: bool = False) -> int:
         broker_root,
         json_out=json_out,
         binary_override=cfg.get("binary_override"),
+        alias_override=cfg.get("alias"),
     )
 
 
@@ -785,12 +789,13 @@ subcommands:
     sub.add_argument("client", choices=list(CLIENT_CONFIGS))
     sub.add_argument("-n", "--name", default=None)
     sub.add_argument("--bin", default=None, help="custom binary path or name to launch")
+    sub.add_argument("--alias", default=None, help="custom alias (defaults to instance name)")
     parsed, remainder = sub.parse_known_args(args.args)
     # strip leading '--' separator if present
     if remainder and remainder[0] == "--":
         remainder = remainder[1:]
     name = parsed.name or default_name(parsed.client)
-    return cmd_start(parsed.client, name, remainder, broker_root, json_out=json_out, binary_override=parsed.bin)
+    return cmd_start(parsed.client, name, remainder, broker_root, json_out=json_out, binary_override=parsed.bin, alias_override=parsed.alias)
 
 
 if __name__ == "__main__":

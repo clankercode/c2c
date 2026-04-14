@@ -143,6 +143,12 @@ class C2CStartUnitTests(unittest.TestCase):
         self.assertEqual(env["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
         self.assertIn("C2C_MCP_BROKER_ROOT", env)
 
+    def test_build_env_alias_override(self):
+        env = self.c2c_start.build_env("my-agent", alias_override="storm-beacon")
+        self.assertEqual(env["C2C_MCP_SESSION_ID"], "my-agent")
+        self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "storm-beacon")
+        self.assertIn("swarm-lounge", env.get("C2C_MCP_AUTO_JOIN_ROOMS", ""))
+
     def test_kimi_launch_args_write_instance_mcp_config(self):
         broker_root = Path(self.temp_dir.name) / "broker"
 
@@ -160,6 +166,19 @@ class C2CStartUnitTests(unittest.TestCase):
         self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "kimi-proof")
         self.assertEqual(env["C2C_MCP_AUTO_JOIN_ROOMS"], "swarm-lounge")
         self.assertEqual(env["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
+
+    def test_kimi_launch_args_respect_alias_override(self):
+        broker_root = Path(self.temp_dir.name) / "broker"
+
+        args = self.c2c_start.prepare_launch_args(
+            "kimi-proof", "kimi", ["--print"], broker_root, alias_override="storm-beacon"
+        )
+
+        mcp_config = self.instances_dir / "kimi-proof" / "kimi-mcp.json"
+        config = json.loads(mcp_config.read_text(encoding="utf-8"))
+        env = config["mcpServers"]["c2c"]["env"]
+        self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "storm-beacon")
+        self.assertEqual(env["C2C_MCP_SESSION_ID"], "kimi-proof")
 
     def test_kimi_launch_args_respect_explicit_mcp_config(self):
         broker_root = Path(self.temp_dir.name) / "broker"
@@ -222,6 +241,29 @@ class C2CStartUnitTests(unittest.TestCase):
         args, kwargs = mock_cmd.call_args
         self.assertEqual(args, ("claude", "zai", ["--dangerously-skip-permissions"], broker_root))
         self.assertEqual(kwargs.get("binary_override"), "cc-zai")
+
+    def test_start_cli_alias_flag_passed_to_cmd_start(self):
+        broker_root = Path(self.temp_dir.name) / "broker"
+        with mock.patch.object(
+            self.c2c_start, "cmd_start", return_value=0
+        ) as mock_cmd:
+            rc = self.c2c_start.main(
+                [
+                    "--broker-root",
+                    str(broker_root),
+                    "start",
+                    "claude",
+                    "-n",
+                    "c2c-r2-b2",
+                    "--alias",
+                    "storm-beacon",
+                ]
+            )
+        self.assertEqual(rc, 0)
+        mock_cmd.assert_called_once()
+        args, kwargs = mock_cmd.call_args
+        self.assertEqual(args, ("claude", "c2c-r2-b2", [], broker_root))
+        self.assertEqual(kwargs.get("alias_override"), "storm-beacon")
 
 
 class C2CStartDeliverDaemonTests(unittest.TestCase):
