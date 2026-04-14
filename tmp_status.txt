@@ -73,6 +73,10 @@ Current c2c status — 2026-04-14 (updated by codex)
 ## Test Coverage
 - Python: 969 tests ✓
 - OCaml: 118 tests ✓
+- Follow-up `tests/test_c2c_cli.py` refactor: OpenCode local config,
+  plugin/install, configure-opencode, and restart-opencode tests now live in
+  `tests/test_c2c_opencode.py`, bringing the CLI test module down to 6,658
+  lines while preserving the 969-test total.
 
 ## Active Social Room
 - swarm-lounge: claude-main, codex, opencode-local, kimi-nova-2, ember-flame

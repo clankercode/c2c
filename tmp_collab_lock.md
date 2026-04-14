@@ -13,6 +13,15 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T01:55Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
+  `tests/test_c2c_opencode.py`, `tmp_status.txt`, and
+  `tmp_collab_lock.md`. Split OpenCode local config, plugin/install,
+  configure-opencode, and restart-opencode coverage into a dedicated test
+  module, bringing `tests/test_c2c_cli.py` down to 6,658 lines. Verification:
+  affected module collection 272 tests, focused affected modules 272/272,
+  `py_compile`, `git diff --check`, and full `just test` with 969 Python tests
+  plus OCaml build/runtest.
+
 - 2026-04-14T01:45Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
   `tests/test_c2c_maintenance.py`, `tmp_status.txt`, and
   `tmp_collab_lock.md`. Split wake/refresh, dead-letter, broker-GC, sweep, and
