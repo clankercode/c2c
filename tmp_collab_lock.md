@@ -13,6 +13,14 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T03:05Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
+  `tests/test_c2c_mcp_wrapper.py`, `tmp_status.txt`, and
+  `tmp_collab_lock.md`. Split MCP wrapper and server-launch coverage into a
+  dedicated test module, bringing `tests/test_c2c_cli.py` down to 1,842 lines.
+  Verification: affected module collection 91 tests, focused affected modules
+  91/91, `py_compile`, `git diff --check`, and full `just test` with 985
+  Python tests plus OCaml build/runtest.
+
 - 2026-04-14T02:54Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
   `tests/test_c2c_cli_support.py`, `tmp_status.txt`, and
   `tmp_collab_lock.md`. Split registry-sync and restart helper coverage into a
