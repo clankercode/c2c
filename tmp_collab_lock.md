@@ -13,6 +13,18 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T00:27Z - codex RELEASED locks on `c2c_health.py`,
+  `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-14T00-23-00Z-codex-duplicate-pid-stale-inbox-actionability.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Health stale-inbox reporting now
+  treats duplicate-PID, zero-archive-activity aliases as inactive artifacts
+  when a sibling alias with the same PID has real archive activity. Live health
+  moved `opencode-c2c-msg` from actionable stale to inactive stale while
+  leaving `claude-main` as the only actionable stale inbox. Verification:
+  focused stale-inbox tests 11/11, `py_compile`, `git diff --check`, full
+  `just test` with 959 Python tests plus OCaml build/runtest, live
+  `./c2c health --json`, and live `./c2c status` showing `swarm-lounge` 5/5.
+
 - 2026-04-14T00:17Z - codex RELEASED locks on `c2c_kimi_wire_bridge.py`,
   `tests/test_c2c_kimi_wire_bridge.py`,
   `.collab/findings/2026-04-14T00-13-00Z-codex-kimi-wire-child-pid-clobber.md`,

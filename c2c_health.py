@@ -76,6 +76,34 @@ def check_registry(broker_root: Path) -> dict[str, Any]:
     return result
 
 
+def _archive_activity_counts(broker_root: Path) -> dict[str, int]:
+    """Return rough broker archive activity counts keyed by alias/session id."""
+    counts: dict[str, int] = {}
+    archive_dir = broker_root / "archive"
+    if not archive_dir.exists():
+        return counts
+    for archive_file in archive_dir.glob("*.jsonl"):
+        stem = archive_file.stem
+        try:
+            lines = archive_file.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for raw in lines:
+            raw = raw.strip()
+            if not raw:
+                continue
+            counts[stem] = counts.get(stem, 0) + 1
+            try:
+                entry = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            for key in ("from_alias", "to_alias"):
+                value = str(entry.get(key) or "").split("@", 1)[0]
+                if value and value != "c2c-system":
+                    counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
 def check_session(broker_root: Path, session_id: str | None = None) -> dict[str, Any]:
     """Check current session registration and inbox.
 
@@ -352,17 +380,27 @@ def check_stale_inboxes(broker_root: Path, threshold: int = 5) -> dict[str, Any]
     # Build alias lookup from registry for friendlier output
     alias_by_sid: dict[str, str] = {}
     alive_by_sid: dict[str, bool | None] = {}
+    duplicate_group_by_sid: dict[str, set[str]] = {}
+    activity_counts = _archive_activity_counts(broker_root)
     registry_path = broker_root / "registry.json"
     registry_exists = registry_path.exists()
     if registry_exists:
         try:
             regs = json.loads(registry_path.read_text(encoding="utf-8"))
+            pid_to_sids: dict[int, set[str]] = {}
             for reg in regs if isinstance(regs, list) else []:
                 sid = reg.get("session_id") or ""
                 alias = reg.get("alias") or ""
                 if sid and alias:
                     alias_by_sid[sid] = alias
                     alive_by_sid[sid] = c2c_mcp.broker_registration_is_alive(reg)
+                    pid = reg.get("pid")
+                    if isinstance(pid, int):
+                        pid_to_sids.setdefault(pid, set()).add(sid)
+            for group in pid_to_sids.values():
+                if len(group) > 1:
+                    for sid in group:
+                        duplicate_group_by_sid[sid] = group
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -386,11 +424,31 @@ def check_stale_inboxes(broker_root: Path, threshold: int = 5) -> dict[str, Any]
                 "count": count,
                 "alive": alive_by_sid.get(session_id),
             }
+            duplicate_group = duplicate_group_by_sid.get(session_id, set())
+            entry_activity = (
+                activity_counts.get(session_id, 0)
+                + activity_counts.get(entry["alias"], 0)
+            )
+            sibling_has_activity = any(
+                activity_counts.get(sid, 0)
+                + activity_counts.get(alias_by_sid.get(sid, sid), 0)
+                > 0
+                for sid in duplicate_group
+                if sid != session_id
+            )
+            duplicate_zero_activity_ghost = (
+                bool(duplicate_group)
+                and entry_activity == 0
+                and sibling_has_activity
+            )
             # Isolated/legacy broker roots may have no registry file at all. In
             # that case preserve the old behavior and surface thresholded
             # inboxes as actionable stale work; once a registry exists, absent
             # or dead rows are inactive artifacts rather than wake targets.
-            if entry["alive"] is True or (entry["alive"] is None and not registry_exists):
+            if (
+                not duplicate_zero_activity_ghost
+                and (entry["alive"] is True or (entry["alive"] is None and not registry_exists))
+            ):
                 stale.append(entry)
             else:
                 inactive_stale.append(entry)

@@ -8409,6 +8409,12 @@ class HealthCheckStaleInboxTests(unittest.TestCase):
             json.dumps(registrations), encoding="utf-8"
         )
 
+    def _write_archive_entry(self, session_id: str, entry: dict) -> None:
+        archive_dir = self.broker_root / "archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        path = archive_dir / f"{session_id}.jsonl"
+        path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+
     def test_empty_broker_dir_returns_no_stale(self):
         result = self.c2c_health.check_stale_inboxes(self.broker_root)
         self.assertEqual(result["stale"], [])
@@ -8468,6 +8474,33 @@ class HealthCheckStaleInboxTests(unittest.TestCase):
         self.assertEqual(
             [entry["alias"] for entry in result["inactive_stale"]],
             ["dead-agent"],
+        )
+        self.assertEqual(result["inactive_pending"], 7)
+
+    def test_duplicate_pid_zero_activity_inbox_reported_as_inactive_artifact(self):
+        pid = os.getpid()
+        self._write_registry(
+            [
+                {"session_id": "codex-local", "alias": "codex", "pid": pid},
+                {
+                    "session_id": "opencode-c2c-msg",
+                    "alias": "opencode-c2c-msg",
+                    "pid": pid,
+                },
+            ]
+        )
+        self._write_archive_entry(
+            "codex-local",
+            {"drained_at": 123.0, "from_alias": "codex", "to_alias": "peer"},
+        )
+        self._write_inbox("opencode-c2c-msg", [{"content": "m"}] * 7)
+
+        result = self.c2c_health.check_stale_inboxes(self.broker_root, threshold=5)
+
+        self.assertEqual(result["stale"], [])
+        self.assertEqual(
+            [entry["alias"] for entry in result["inactive_stale"]],
+            ["opencode-c2c-msg"],
         )
         self.assertEqual(result["inactive_pending"], 7)
 

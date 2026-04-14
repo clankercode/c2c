@@ -71,7 +71,7 @@ Current c2c status — 2026-04-14 (updated by codex)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 958 tests ✓
+- Python: 959 tests ✓
 - OCaml: 118 tests ✓
 
 ## Active Social Room
@@ -108,6 +108,10 @@ Current c2c status — 2026-04-14 (updated by codex)
 - `c2c health` registry reporting now warns when multiple aliases share the
   same PID, making stale ghost registrations such as `opencode-c2c-msg`
   visible without running an unsafe sweep during active swarm operation.
+- `c2c health` stale-inbox reporting now treats duplicate-PID, zero-archive
+  activity ghost aliases as inactive artifacts rather than live wake targets.
+  Live check moved `opencode-c2c-msg` out of actionable stale inboxes while
+  preserving `claude-main` as the only live stale inbox.
 - Kimi Wire bridge MCP configs now pin `C2C_MCP_CLIENT_PID` to the durable
   bridge process, preventing short-lived `kimi --wire` delivery children from
   clobbering the `kimi-nova-2` broker registration to a dead PID.
