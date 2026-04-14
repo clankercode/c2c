@@ -13,6 +13,14 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T01:35Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
+  `tests/test_c2c_start.py`, `tmp_status.txt`, and `tmp_collab_lock.md`.
+  Split managed-instance `c2c start` coverage into a dedicated test module,
+  bringing `tests/test_c2c_cli.py` down to 9,000 lines. Verification: affected
+  module collection 373 tests, focused affected modules 373/373,
+  `py_compile`, `git diff --check`, and full `just test` with 969 Python tests
+  plus OCaml build/runtest.
+
 - 2026-04-14T01:31Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
   `tests/test_c2c_health.py`, `tests/test_c2c_status.py`, `tmp_status.txt`,
   and `tmp_collab_lock.md`. Split the oversized CLI test module by moving
