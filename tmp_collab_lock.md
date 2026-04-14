@@ -9,6 +9,7 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| `ocaml/cli/c2c.ml` | kimi-nova-2 | Add refresh-peer subcommand | 2026-04-14T05:43Z |
 
 ## History (addendum)
 

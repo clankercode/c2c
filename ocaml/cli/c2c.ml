@@ -44,6 +44,13 @@ let git_repo_toplevel () =
       in
       if line <> "" && Sys.is_directory line then Some line else None
 
+let find_python_script script =
+  match git_repo_toplevel () with
+  | Some dir ->
+      let path = dir // script in
+      if Sys.file_exists path then Some path else None
+  | None -> None
+
 let resolve_broker_root () =
   let abs_path p =
     if Filename.is_relative p then Sys.getcwd () // p else p
@@ -381,12 +388,10 @@ let sweep_cmd =
 
 (* --- subcommand: sweep-dryrun --------------------------------------------- *)
 
-let sweep_dryrun_cmd =
-  let+ json = json_flag in
+let sweep_dryrun_run json =
   let root = resolve_broker_root () in
   let broker = C2c_mcp.Broker.create ~root in
   let regs = C2c_mcp.Broker.list_registrations broker in
-  (* Classify registrations *)
   let reg_by_sid = Hashtbl.create 16 in
   let alias_rows = Hashtbl.create 16 in
   let live_regs = ref [] in
@@ -401,7 +406,6 @@ let sweep_dryrun_cmd =
     | C2c_mcp.Broker.Dead -> dead_regs := r :: !dead_regs
     | C2c_mcp.Broker.Unknown -> legacy_regs := r :: !legacy_regs
   ) regs;
-  (* Scan inbox files on disk for orphans *)
   let inbox_count sid =
     try
       let msgs = C2c_mcp.Broker.read_inbox broker ~session_id:sid in
@@ -409,23 +413,23 @@ let sweep_dryrun_cmd =
     with _ -> None
   in
   let orphan_inboxes = ref [] in
+  let inbox_file_count = ref 0 in
   (try
      let files = Sys.readdir root in
      Array.iter (fun fname ->
        if Filename.check_suffix fname ".inbox.json" then begin
+         incr inbox_file_count;
          let sid = String.sub fname 0 (String.length fname - String.length ".inbox.json") in
          if not (Hashtbl.mem reg_by_sid sid) then
            orphan_inboxes := (sid, inbox_count sid) :: !orphan_inboxes
        end
      ) files
    with Sys_error _ -> ());
-  (* Duplicate alias detection *)
   let duplicate_aliases = Hashtbl.fold (fun alias rows acc ->
     if List.length rows > 1 then
       (alias, List.map (fun (r : C2c_mcp.registration) -> r.session_id) rows) :: acc
     else acc
-  ) alias_rows [];
-  (* Duplicate PID detection *)
+  ) alias_rows [] in
   let pid_map = Hashtbl.create 8 in
   List.iter (fun (r : C2c_mcp.registration) ->
     match r.pid with
@@ -439,8 +443,7 @@ let sweep_dryrun_cmd =
       let aliases = List.map (fun (r : C2c_mcp.registration) -> r.alias) rows in
       (pid, aliases) :: acc
     else acc
-  ) pid_map [];
-  (* Non-empty content at risk *)
+  ) pid_map [] in
   let nonempty_dead = List.filter_map (fun (r : C2c_mcp.registration) ->
     match inbox_count r.session_id with
     | Some n when n > 0 -> Some (r.session_id, r.alias, n)
@@ -451,8 +454,8 @@ let sweep_dryrun_cmd =
     | Some n when n > 0 -> Some (sid, n)
     | _ -> None
   ) !orphan_inboxes in
-  let output_mode = if json then Json else Human in
   let risk = List.length nonempty_dead + List.length nonempty_orphans in
+  let output_mode = if json then Json else Human in
   match output_mode with
   | Json ->
       let json_reg (r : C2c_mcp.registration) =
@@ -470,9 +473,10 @@ let sweep_dryrun_cmd =
             ; ("live", `Int (List.length !live_regs))
             ; ("legacy_pidless", `Int (List.length !legacy_regs))
             ; ("dead", `Int (List.length !dead_regs))
+            ; ("inbox_files_on_disk", `Int !inbox_file_count)
             ; ("orphan_inboxes", `Int (List.length !orphan_inboxes))
             ; ("would_drop_if_swept", `Int (List.length !dead_regs + List.length !orphan_inboxes))
-            ; ("nonempty_content_at_risk", `Int (List.length nonempty_dead + List.length nonempty_orphans))
+            ; ("nonempty_content_at_risk", `Int risk)
             ])
         ; ("live_regs", `List (List.map json_reg !live_regs))
         ; ("legacy_pidless_regs", `List (List.map json_reg !legacy_regs))
@@ -494,6 +498,7 @@ let sweep_dryrun_cmd =
       Printf.printf "    live                 %d\n" (List.length !live_regs);
       Printf.printf "    legacy (pid=None)    %d\n" (List.length !legacy_regs);
       Printf.printf "    dead                 %d\n" (List.length !dead_regs);
+      Printf.printf "  inbox files on disk    %d\n" !inbox_file_count;
       Printf.printf "  orphan inboxes         %d\n" (List.length !orphan_inboxes);
       Printf.printf "  would drop if swept    %d\n" (List.length !dead_regs + List.length !orphan_inboxes);
       if risk > 0 then
@@ -531,8 +536,11 @@ let sweep_dryrun_cmd =
           Printf.printf "  %s  (%d msgs)\n" sid n
         ) nonempty_orphans;
         Printf.printf "  -> consider draining these before running sweep.\n"
-      end;
-      ()
+      end
+
+let sweep_dryrun_cmd =
+  let+ json = json_flag in
+  sweep_dryrun_run json
 
 let sweep_dryrun =
   Cmdliner.Cmd.v
@@ -715,7 +723,7 @@ let status_cmd =
   let alive_peers =
     List.filter_map
       (fun (r : C2c_mcp.registration) ->
-         if C2c_mcp.Broker.registration_is_alive r then (
+         if C2c_mcp.Broker.registration_liveness_state r = C2c_mcp.Broker.Alive then (
            let sent =
              try Hashtbl.find sent_by_alias r.alias with Not_found -> 0
            in
@@ -892,7 +900,7 @@ let verify_cmd =
   let participants =
     List.filter_map
       (fun (r : C2c_mcp.registration) ->
-         if alive_only && not (C2c_mcp.Broker.registration_is_alive r) then
+         if alive_only && not (C2c_mcp.Broker.registration_liveness_state r = C2c_mcp.Broker.Alive) then
            None
          else (
            let sent =
@@ -2245,13 +2253,6 @@ let instances = Cmdliner.Cmd.v (Cmdliner.Cmd.info "instances" ~doc:"List managed
 
 (* --- subcommand: start ---------------------------------------------------- *)
 
-let find_python_script script =
-  match git_repo_toplevel () with
-  | Some dir ->
-      let path = dir // script in
-      if Sys.file_exists path then Some path else None
-  | None -> None
-
 let start_cmd =
   let client =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"CLIENT" ~doc:"Client to start (claude, codex, kimi, opencode, crush).")
@@ -2280,8 +2281,7 @@ let start_cmd =
       let args = match alias_opt with None -> args | Some a -> args @ [ "--alias"; a ] in
       let args = match bin_opt with None -> args | Some b -> args @ [ "--bin"; b ] in
       let args = if json then args @ [ "--json" ] else args in
-      let argv = Array.of_list args in
-      Unix.execvp "python3" argv
+      Unix.execvp "python3" (Array.of_list args)
 
 let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Start a managed c2c instance (delegates to c2c_start.py).") start_cmd
 
@@ -2350,8 +2350,7 @@ let restart_cmd =
   | Some script ->
       let args = [ "python3"; script; "restart"; name ] in
       let args = if json then args @ [ "--json" ] else args in
-      let argv = Array.of_list args in
-      Unix.execvp "python3" argv
+      Unix.execvp "python3" (Array.of_list args)
 
 let restart = Cmdliner.Cmd.v (Cmdliner.Cmd.info "restart" ~doc:"Restart a managed c2c instance (delegates to c2c_start.py).") restart_cmd
 
@@ -2380,7 +2379,7 @@ let () =
                     $(b,restart), $(b,instances)"
                ; `P "$(b,rooms) — manage N:N chat rooms"
                ])
-          [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep; sweep_dryrun
-          ; history; health; status; verify; register; tail_log; my_rooms
-          ; dead_letter; prune_rooms; smoke_test; install; setup; serve; start
-          ; stop; restart; instances; rooms_group ]))
+          [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
+          ; sweep_dryrun; history; health; status; verify; register; tail_log
+          ; my_rooms; dead_letter; prune_rooms; smoke_test; install; setup
+          ; serve; start; stop; restart; instances; rooms_group ]))
