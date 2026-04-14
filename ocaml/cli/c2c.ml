@@ -1696,6 +1696,9 @@ let init_cmd =
   let root = resolve_broker_root () in
   let broker = C2c_mcp.Broker.create ~root in
   let regs = C2c_mcp.Broker.list_registrations broker in
+  let alive_count =
+    List.filter C2c_mcp.Broker.registration_is_alive regs |> List.length
+  in
   let output_mode = if json then Json else Human in
   (match output_mode with
    | Json ->
@@ -1704,11 +1707,12 @@ let init_cmd =
          [ ("broker_root", `String root)
          ; ("broker_root_exists", `Bool (Sys.file_exists root && Sys.is_directory root))
          ; ("peer_count", `Int (List.length regs))
+         ; ("alive_count", `Int alive_count)
          ; ("peers", `List (List.map (fun a -> `String a) peer_aliases))
          ])
    | Human ->
        Printf.printf "broker root: %s\n" root;
-       Printf.printf "peer count:  %d\n" (List.length regs);
+       Printf.printf "peer count:  %d (%d alive)\n" (List.length regs) alive_count;
        if regs <> [] then (
          let aliases = List.sort String.compare (List.map (fun r -> r.C2c_mcp.alias) regs) in
          Printf.printf "peers:       %s\n" (String.concat ", " aliases);
