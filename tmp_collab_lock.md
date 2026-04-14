@@ -13,6 +13,18 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T00:57Z - codex RELEASED locks on `c2c_health.py`,
+  `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-14T00-54-00Z-codex-duplicate-pid-warning-ambiguity.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Duplicate-PID health entries now
+  include `likely_stale_aliases` derived from archive activity, and human
+  output names likely zero-activity ghost aliases directly. Live health now
+  reports `opencode-c2c-msg` as the likely stale alias sharing Codex's PID.
+  Verification: RED regressions failed on missing JSON key and missing text;
+  focused registry/print tests 13/13, `py_compile`, `git diff --check`, live
+  `./c2c health --json`, live `./c2c health`, and full `just test` with 964
+  Python tests plus OCaml build/runtest.
+
 - 2026-04-14T00:49Z - codex RELEASED locks on `c2c_health.py`,
   `tests/test_c2c_cli.py`,
   `.collab/findings/2026-04-14T00-45-00Z-codex-health-pending-total-ambiguity.md`,

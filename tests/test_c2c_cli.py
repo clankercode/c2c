@@ -7845,6 +7845,39 @@ class HealthCheckRegistryTests(unittest.TestCase):
         self.assertEqual(len(result["duplicate_pids"]), 1)
         self.assertEqual(result["duplicate_pids"][0]["pid"], 100)
         self.assertEqual(sorted(result["duplicate_pids"][0]["aliases"]), ["a1", "a2"])
+        self.assertEqual(result["duplicate_pids"][0]["likely_stale_aliases"], [])
+
+    def test_duplicate_pids_identify_zero_activity_alias_as_likely_stale(self):
+        import c2c_health
+
+        regs = [
+            {"session_id": "codex-local", "alias": "codex", "pid": 100},
+            {
+                "session_id": "opencode-c2c-msg",
+                "alias": "opencode-c2c-msg",
+                "pid": 100,
+            },
+        ]
+        (self.broker_root / "registry.json").write_text(
+            json.dumps(regs), encoding="utf-8"
+        )
+        archive_dir = self.broker_root / "archive"
+        archive_dir.mkdir()
+        (archive_dir / "codex-local.jsonl").write_text(
+            json.dumps(
+                {
+                    "from_alias": "codex",
+                    "to_alias": "peer",
+                    "content": "activity",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = c2c_health.check_registry(self.broker_root)
+
+        self.assertEqual(result["duplicate_pids"][0]["likely_stale_aliases"], ["opencode-c2c-msg"])
 
     def test_entries_without_pid_are_ignored_for_duplicate_check(self):
         import c2c_health
@@ -8671,6 +8704,20 @@ class HealthPrintDeliverDaemonTests(unittest.TestCase):
             output,
         )
         self.assertIn("stale ghost registration", output)
+
+    def test_duplicate_pid_registry_warning_names_likely_stale_aliases(self):
+        report = self._make_report(hook_registered=True, daemon_running=True)
+        report["registry"]["duplicate_pids"] = [
+            {
+                "pid": 12345,
+                "aliases": ["codex", "opencode-c2c-msg"],
+                "likely_stale_aliases": ["opencode-c2c-msg"],
+            }
+        ]
+
+        output = self._capture_output(report)
+
+        self.assertIn("Likely stale: opencode-c2c-msg", output)
 
     def test_inactive_stale_inboxes_not_reported_as_nominal(self):
         report = self._make_report(hook_registered=True, daemon_running=True)

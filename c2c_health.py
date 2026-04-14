@@ -60,20 +60,50 @@ def check_registry(broker_root: Path) -> dict[str, Any]:
             registrations = c2c_mcp.load_broker_registrations(registry_path)
             result["readable"] = True
             result["entry_count"] = len(registrations)
-            pid_map: dict[int, list[str]] = {}
+            activity_counts = _archive_activity_counts(broker_root)
+            pid_map: dict[int, list[dict[str, Any]]] = {}
             for reg in registrations:
                 pid = reg.get("pid")
                 if isinstance(pid, int):
-                    pid_map.setdefault(pid, []).append(str(reg.get("alias", "")))
+                    pid_map.setdefault(pid, []).append(reg)
             result["duplicate_pids"] = [
-                {"pid": pid, "aliases": aliases}
-                for pid, aliases in pid_map.items()
-                if len(aliases) > 1
+                _duplicate_pid_entry(pid, regs, activity_counts)
+                for pid, regs in pid_map.items()
+                if len(regs) > 1
             ]
         except Exception:
             pass
 
     return result
+
+
+def _registration_activity(reg: dict[str, Any], activity_counts: dict[str, int]) -> int:
+    session_id = str(reg.get("session_id") or "")
+    alias = str(reg.get("alias") or "")
+    return activity_counts.get(session_id, 0) + activity_counts.get(alias, 0)
+
+
+def _duplicate_pid_entry(
+    pid: int,
+    registrations: list[dict[str, Any]],
+    activity_counts: dict[str, int],
+) -> dict[str, Any]:
+    aliases = [str(reg.get("alias", "")) for reg in registrations]
+    activity_by_alias = {
+        str(reg.get("alias", "")): _registration_activity(reg, activity_counts)
+        for reg in registrations
+    }
+    sibling_has_activity = any(count > 0 for count in activity_by_alias.values())
+    likely_stale_aliases = [
+        alias
+        for alias, count in activity_by_alias.items()
+        if sibling_has_activity and count == 0
+    ]
+    return {
+        "pid": pid,
+        "aliases": aliases,
+        "likely_stale_aliases": likely_stale_aliases,
+    }
 
 
 def _archive_activity_counts(broker_root: Path) -> dict[str, int]:
@@ -712,10 +742,13 @@ def print_health_report(report: dict[str, Any]) -> None:
         print("    Registry does not exist (will be created on first register)")
     for dup in reg.get("duplicate_pids", []):
         aliases_str = ", ".join(dup["aliases"])
-        print(
-            f"~ Duplicate PID {dup['pid']}: {aliases_str} share the same process. "
-            "One may be a stale ghost registration."
+        likely_stale = dup.get("likely_stale_aliases", [])
+        suffix = (
+            f" Likely stale: {', '.join(likely_stale)}."
+            if likely_stale
+            else " One may be a stale ghost registration."
         )
+        print(f"~ Duplicate PID {dup['pid']}: {aliases_str} share the same process.{suffix}")
 
     # Session
     sess = report["session"]

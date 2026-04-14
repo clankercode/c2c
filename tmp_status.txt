@@ -71,7 +71,7 @@ Current c2c status — 2026-04-14 (updated by codex)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 962 tests ✓
+- Python: 964 tests ✓
 - OCaml: 118 tests ✓
 
 ## Active Social Room
@@ -120,6 +120,9 @@ Current c2c status — 2026-04-14 (updated by codex)
   messages separately from thresholded stale/inactive inboxes, so summaries like
   `inactive total 14, total 28` include an explicit remainder line instead of
   requiring arithmetic.
+- `c2c health` duplicate-PID reporting now uses broker archive activity to
+  identify likely zero-activity ghost aliases. Live check now reports
+  `opencode-c2c-msg` as the likely stale alias sharing Codex's PID.
 - Kimi Wire bridge MCP configs now pin `C2C_MCP_CLIENT_PID` to the durable
   bridge process, preventing short-lived `kimi --wire` delivery children from
   clobbering the `kimi-nova-2` broker registration to a dead PID.
