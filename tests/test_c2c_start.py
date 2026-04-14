@@ -462,6 +462,133 @@ class C2CStartOuterLoopBehaviorTests(unittest.TestCase):
             )
         self.assertEqual(rc, 130)
 
+    def test_resume_command_includes_bin_flag(self):
+        """Resume command includes --bin when a custom binary was used."""
+        import io
+        from contextlib import redirect_stdout
+
+        mock_child = mock.Mock()
+        mock_child.poll.return_value = None
+        mock_child.wait.return_value = 0
+
+        buf = io.StringIO()
+        with (
+            mock.patch.object(self.c2c_start, "broker_root", return_value=Path("/tmp/broker")),
+            mock.patch.object(self.c2c_start.c2c_mcp, "cleanup_stale_tmp_fea_so", return_value=0),
+            mock.patch.object(self.c2c_start, "_start_deliver_daemon", return_value=None),
+            mock.patch.object(self.c2c_start, "_start_poker", return_value=None),
+            mock.patch("subprocess.Popen", return_value=mock_child),
+            mock.patch("shutil.which", return_value="/fake/custom-binary"),
+            mock.patch("time.monotonic", side_effect=[0, 5]),
+            redirect_stdout(buf),
+        ):
+            rc = self.c2c_start.run_outer_loop(
+                "my-instance", "claude", [], Path("/tmp/broker"),
+                binary_override="/usr/local/bin/cc-zai",
+            )
+
+        self.assertEqual(rc, 0)
+        output = buf.getvalue()
+        self.assertIn("--bin /usr/local/bin/cc-zai", output)
+        self.assertIn("c2c start claude -n my-instance", output)
+
+    def test_resume_command_without_bin(self):
+        """Resume command does not include --bin when no custom binary."""
+        import io
+        from contextlib import redirect_stdout
+
+        mock_child = mock.Mock()
+        mock_child.poll.return_value = None
+        mock_child.wait.return_value = 0
+
+        buf = io.StringIO()
+        with (
+            mock.patch.object(self.c2c_start, "broker_root", return_value=Path("/tmp/broker")),
+            mock.patch.object(self.c2c_start.c2c_mcp, "cleanup_stale_tmp_fea_so", return_value=0),
+            mock.patch.object(self.c2c_start, "_start_deliver_daemon", return_value=None),
+            mock.patch.object(self.c2c_start, "_start_poker", return_value=None),
+            mock.patch("subprocess.Popen", return_value=mock_child),
+            mock.patch("shutil.which", return_value="/fake/binary"),
+            mock.patch("time.monotonic", side_effect=[0, 5]),
+            redirect_stdout(buf),
+        ):
+            rc = self.c2c_start.run_outer_loop(
+                "my-instance", "claude", [], Path("/tmp/broker"),
+            )
+
+        self.assertEqual(rc, 0)
+        output = buf.getvalue()
+        self.assertNotIn("--bin", output)
+
+    def test_cmd_start_resumes_existing_instance_config(self):
+        """cmd_start loads saved config when resuming an existing instance."""
+        inst_dir = self.instances_dir / "resume-test"
+        inst_dir.mkdir(parents=True, exist_ok=True)
+        config = {
+            "name": "resume-test",
+            "client": "claude",
+            "session_id": "resume-test",
+            "alias": "custom-alias",
+            "binary_override": "/custom/binary",
+            "extra_args": ["--dangerously-skip-permissions"],
+            "broker_root": "/custom/broker",
+            "created_at": 1000.0,
+        }
+        (inst_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
+
+        with (
+            mock.patch.object(self.c2c_start, "run_outer_loop", return_value=0) as mock_loop,
+            mock.patch("shutil.which", return_value="/fake/binary"),
+        ):
+            rc = self.c2c_start.cmd_start(
+                "claude", "resume-test", [], Path("/tmp/default")
+            )
+
+        self.assertEqual(rc, 0)
+        call_args, call_kwargs = mock_loop.call_args
+        self.assertEqual(call_kwargs["binary_override"], "/custom/binary")
+        self.assertEqual(call_kwargs["alias_override"], "custom-alias")
+        self.assertEqual(call_args[2], ["--dangerously-skip-permissions"])
+
+    def test_cmd_start_rejects_client_type_mismatch(self):
+        """cmd_start refuses to resume if client type changed."""
+        inst_dir = self.instances_dir / "type-mismatch"
+        inst_dir.mkdir(parents=True, exist_ok=True)
+        config = {
+            "name": "type-mismatch",
+            "client": "kimi",
+            "session_id": "type-mismatch",
+        }
+        (inst_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
+
+        import io
+        from contextlib import redirect_stderr
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            rc = self.c2c_start.cmd_start(
+                "claude", "type-mismatch", [], Path("/tmp/broker")
+            )
+
+        self.assertEqual(rc, 1)
+        self.assertIn("kimi", buf.getvalue())
+
+    def test_cmd_start_generates_stable_resume_session_id(self):
+        """Resume session UUID is generated once and reused on subsequent starts."""
+        with (
+            mock.patch.object(self.c2c_start, "run_outer_loop", return_value=0) as mock_loop,
+            mock.patch("shutil.which", return_value="/fake/binary"),
+        ):
+            self.c2c_start.cmd_start("claude", "uuid-test", [], Path("/tmp/broker"))
+            first_call = mock_loop.call_args[1]
+            first_uuid = first_call["resume_session_id"]
+            self.assertIsNotNone(first_uuid)
+
+            mock_loop.reset_mock()
+            self.c2c_start.cmd_start("claude", "uuid-test", [], Path("/tmp/broker"))
+            second_call = mock_loop.call_args[1]
+            second_uuid = second_call["resume_session_id"]
+            self.assertEqual(first_uuid, second_uuid)
+
 
 class C2CStartConstantsTests(unittest.TestCase):
     """Task 1: constants, SUPPORTED_CLIENTS, and public helper API."""
@@ -639,6 +766,29 @@ class C2CStartConstantsTests(unittest.TestCase):
         self.assertFalse(fake.exists())
         # Calling again is a no-op.
         cleanup_fea_so()
+
+    def test_prepare_launch_args_includes_resume_flags_for_claude(self):
+        """Claude gets --session-id and --resume when resume_session_id is set."""
+        from c2c_start import prepare_launch_args
+
+        args = prepare_launch_args(
+            "test-inst", "claude", [], Path("/tmp/broker"),
+            resume_session_id="test-uuid-1234",
+        )
+        self.assertIn("--session-id", args)
+        self.assertIn("test-uuid-1234", args)
+        self.assertIn("--resume", args)
+
+    def test_prepare_launch_args_no_resume_when_session_id_none(self):
+        """No resume flags when resume_session_id is None."""
+        from c2c_start import prepare_launch_args
+
+        args = prepare_launch_args(
+            "test-inst", "claude", [], Path("/tmp/broker"),
+            resume_session_id=None,
+        )
+        self.assertNotIn("--resume", args)
+        self.assertNotIn("--session-id", args)
 
 
 if __name__ == "__main__":
