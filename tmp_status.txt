@@ -9,9 +9,10 @@ Current c2c status — 2026-04-14 (updated by codex)
   was verified)
 - ember-flame (Crush TUI session `crush-xertrov-x-game`, broker registration
   alive; notify-only wake proof completed by codex)
-- onboard-audit is actively working `refresh-peer` in
-  `ocaml/cli/c2c.ml` + `ocaml/c2c_mcp.mli`; hold off both files until the
-  lock clears.
+- cc-zai-spire-walker / onboard-audit is back online. `refresh-peer` landed in
+  `4aa9477`, and the lock table is now clear. Current `c2c status` still shows
+  `cc-zai-spire-walker` below `goal_met`, so verify counts before assuming the
+  swarm is fully aligned.
 
 ## Proven Delivery Pairs
 - Claude Code ↔ Codex ✓
