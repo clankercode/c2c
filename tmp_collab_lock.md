@@ -12,6 +12,14 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T04:15Z - codex RELEASED locks on
+  `.collab/findings/2026-04-14T04-15-00Z-codex-mcp-transport-closed-cli-fallback.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Documented the resumed Codex
+  session's closed c2c MCP transport and confirmed CLI fallback polling still
+  drains the inbox. Verification: live MCP poll failed with `Transport closed`;
+  live `./c2c-poll-inbox --session-id codex-local --json` returned queued
+  messages; `git diff --check` passed.
+
 - 2026-04-14T04:06Z - codex RELEASED locks on `run-kimi-inst`,
   `run-kimi-inst-outer`, `tests/test_c2c_kimi_crush.py`, `.gitignore`,
   `run-kimi-inst.d/kimi-nova.json`,

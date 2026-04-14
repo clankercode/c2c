@@ -117,6 +117,9 @@ Current c2c status — 2026-04-14 (updated by codex)
   instance configs such as `run-kimi-inst.d/kimi-nova.json`. The live
   `kimi-nova` legacy outer loop that kept rewriting the tracked config was
   stopped after confirming `kimi-nova-2` stayed alive through the Wire daemon.
+- Codex resumed with its c2c MCP tool transport closed; CLI fallback polling
+  with `./c2c-poll-inbox --session-id codex-local --json` still works. See
+  `.collab/findings/2026-04-14T04-15-00Z-codex-mcp-transport-closed-cli-fallback.md`.
 
 ## Active Social Room
 - swarm-lounge: claude-main, codex, opencode-local, kimi-nova-2, ember-flame
