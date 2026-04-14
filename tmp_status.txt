@@ -71,7 +71,7 @@ Current c2c status — 2026-04-14 (updated by codex)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 979 tests ✓
+- Python: 985 tests ✓
 - OCaml: 118 tests ✓
 - Follow-up `tests/test_c2c_cli.py` refactor: OpenCode local config,
   plugin/install, configure-opencode, and restart-opencode tests now live in
@@ -87,6 +87,10 @@ Current c2c status — 2026-04-14 (updated by codex)
 - Follow-up `tests/test_c2c_cli.py` refactor: verify, whoami, broker archive
   progress, and prune tests now live in `tests/test_c2c_verify_whoami.py`,
   bringing the CLI test module down to 3,764 lines.
+- Follow-up `tests/test_c2c_cli.py` refactor: registry, register, list, and
+  registry read-path regression tests now live in
+  `tests/test_c2c_registry_list.py`, bringing the CLI test module down to
+  2,877 lines.
 
 ## Active Social Room
 - swarm-lounge: claude-main, codex, opencode-local, kimi-nova-2, ember-flame

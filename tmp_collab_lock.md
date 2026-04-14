@@ -13,6 +13,15 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T02:44Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
+  `tests/test_c2c_registry_list.py`, `tmp_status.txt`, and
+  `tmp_collab_lock.md`. Split registry, register, list, and registry read-path
+  regression coverage into a dedicated test module, bringing
+  `tests/test_c2c_cli.py` down to 2,877 lines. Verification: affected module
+  collection 141 tests, focused affected modules 141/141, `py_compile`,
+  `git diff --check`, and full `just test` with 985 Python tests plus OCaml
+  build/runtest.
+
 - 2026-04-14T02:33Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
   `tests/test_c2c_verify_whoami.py`, `tmp_status.txt`, and
   `tmp_collab_lock.md`. Split verify, whoami, broker archive progress, and
