@@ -541,6 +541,30 @@ class WireDaemonLifecycleTests(unittest.TestCase):
             session_id="kimi-nova",
         )
 
+    def test_list_includes_running_processes_without_pidfile(self):
+        import argparse
+        import c2c_wire_daemon
+
+        pgrep_output = (
+            "748416 python3 /path/c2c_kimi_wire_bridge.py --session-id kimi-nova --alias kimi-nova-2 --loop\n"
+        )
+        with (
+            mock.patch("c2c_wire_daemon._state_dir", return_value=Path("/nonexistent")),
+            mock.patch(
+                "subprocess.run",
+                return_value=mock.Mock(stdout=pgrep_output, stderr=""),
+            ),
+            mock.patch("sys.stdout", io.StringIO()) as buf,
+        ):
+            args = argparse.Namespace(json=False)
+            rc = c2c_wire_daemon.cmd_list(args)
+
+        self.assertEqual(rc, 0)
+        output = buf.getvalue()
+        self.assertIn("kimi-nova", output)
+        self.assertIn("kimi-nova-2", output)
+        self.assertIn("pid 748416", output)
+
 
 class HealthCheckBrokerBinaryTests(unittest.TestCase):
     """Tests for c2c_health.check_broker_binary()."""

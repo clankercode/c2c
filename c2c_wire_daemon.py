@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -209,19 +210,67 @@ def cmd_restart(args: argparse.Namespace) -> int:
     return cmd_start(args)
 
 
+def _running_wire_bridge_sessions() -> dict[str, dict[str, Any]]:
+    """Scan running processes for wire bridge daemons.
+
+    Returns a mapping of session_id -> status dict for any running
+    c2c_kimi_wire_bridge.py processes found via pgrep.
+    """
+    found: dict[str, dict[str, Any]] = {}
+    try:
+        proc = subprocess.run(
+            ["pgrep", "-a", "-f", r"c2c_kimi_wire_bridge.py"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        for line in proc.stdout.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) < 2:
+                continue
+            pid_str, cmdline = parts
+            session_match = None
+            alias_match = None
+            for token in cmdline.split():
+                if token.startswith("--session-id="):
+                    session_match = token.split("=", 1)[1]
+                elif token.startswith("--alias="):
+                    alias_match = token.split("=", 1)[1]
+            # Also support "--session-id X" (space separated)
+            tokens = cmdline.split()
+            for i, token in enumerate(tokens):
+                if token == "--session-id" and i + 1 < len(tokens):
+                    session_match = tokens[i + 1]
+                if token == "--alias" and i + 1 < len(tokens):
+                    alias_match = tokens[i + 1]
+            if session_match:
+                found[session_match] = {
+                    "session_id": session_match,
+                    "running": True,
+                    "pid": int(pid_str),
+                    "alias": alias_match,
+                    "fallback": "pgrep",
+                }
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return found
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     state_dir = _state_dir()
-    if not state_dir.exists():
-        if args.json:
-            print(json.dumps([]))
-        else:
-            print("[wire-daemon] no daemons found (state dir does not exist)")
-        return 0
+    seen: set[str] = set()
+    statuses: list[dict[str, Any]] = []
 
-    statuses = []
-    for pidfile in sorted(state_dir.glob("*.pid")):
-        session_id = pidfile.stem
-        statuses.append(_daemon_status(session_id))
+    if state_dir.exists():
+        for pidfile in sorted(state_dir.glob("*.pid")):
+            session_id = pidfile.stem
+            seen.add(session_id)
+            statuses.append(_daemon_status(session_id))
+
+    # Also include running processes that lack a matching pidfile
+    for session_id, status in _running_wire_bridge_sessions().items():
+        if session_id not in seen:
+            statuses.append(status)
 
     if args.json:
         print(json.dumps(statuses))
@@ -229,10 +278,14 @@ def cmd_list(args: argparse.Namespace) -> int:
         if not statuses:
             print("[wire-daemon] no daemons found")
         else:
-            for s in statuses:
+            for s in sorted(statuses, key=lambda x: x["session_id"]):
                 mark = "●" if s["running"] else "○"
                 pid_str = f"pid {s['pid']}" if s["pid"] else "no pid"
-                print(f"  {mark} {s['session_id']}  ({pid_str})")
+                alias = s.get("alias")
+                alias_str = f" alias={alias}" if alias else ""
+                fb = s.get("fallback")
+                fb_str = f" ({fb})" if fb else ""
+                print(f"  {mark} {s['session_id']}{alias_str}  ({pid_str}){fb_str}")
     return 0
 
 
