@@ -569,6 +569,30 @@ def check_wire_daemon(session_id: str | None) -> dict[str, Any]:
         result["running"] = False
         result["error"] = str(exc)
 
+    # Fallback: scan running processes for a wire bridge with this session_id
+    # in its command line. This catches daemons started with legacy or
+    # mismatched pidfile names (e.g. alias drift after a rename).
+    if not result.get("running"):
+        try:
+            proc = subprocess.run(
+                ["pgrep", "-a", "-f", r"c2c_kimi_wire_bridge.py"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            for line in proc.stdout.splitlines():
+                parts = line.split(None, 1)
+                if len(parts) < 2:
+                    continue
+                pid_str, cmdline = parts
+                if f"--session-id {session_id}" in cmdline:
+                    result["running"] = True
+                    result["pid"] = int(pid_str)
+                    result["fallback"] = "pgrep"
+                    break
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
     return result
 
 

@@ -444,6 +444,32 @@ class HealthCheckWireDaemonTests(unittest.TestCase):
         self.assertEqual(result["pid"], 12345)
         self.assertEqual(result["pidfile"], "/tmp/kimi-test.pid")
 
+    def test_wire_daemon_falls_back_to_pgrep_when_pidfile_is_stale(self):
+        import c2c_health
+
+        status = {
+            "running": False,
+            "pid": 99999,
+            "pidfile": "/tmp/kimi-test.pid",
+        }
+        pgrep_output = "12345 python3 /path/c2c_kimi_wire_bridge.py --session-id kimi-test --alias kimi-test-2\n"
+        with (
+            mock.patch("c2c_wire_daemon._daemon_status", return_value=status),
+            mock.patch(
+                "subprocess.run",
+                return_value=mock.Mock(stdout=pgrep_output, stderr=""),
+            ) as run_mock,
+        ):
+            result = c2c_health.check_wire_daemon("kimi-test")
+
+        self.assertTrue(result["checked"])
+        self.assertTrue(result["running"])
+        self.assertEqual(result["pid"], 12345)
+        self.assertEqual(result["fallback"], "pgrep")
+        run_mock.assert_called_once()
+        args, _ = run_mock.call_args
+        self.assertEqual(args[0][0], "pgrep")
+
     def test_run_health_check_uses_resolved_session_for_wire_daemon_check(self):
         import c2c_health
 
