@@ -17,6 +17,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import select
+import shlex
+import shutil
 import signal
 import socket
 import subprocess
@@ -38,6 +41,7 @@ CLIENT_CONFIGS: dict[str, dict[str, Any]] = {
         "needs_poker": True,
         "poker_event": "heartbeat",
         "poker_from": "claude-poker",
+        "needs_pty": True,
         "extra_env": {},
     },
     "codex": {
@@ -597,10 +601,10 @@ def run_outer_loop(
             )
 
             # Child exited — clean up and print resume command.
-            print(
-                f"\n  c2c start {client} -n {name}",
-                flush=True,
-            )
+            resume = f"c2c start {client} -n {name}"
+            if binary_override:
+                resume += f" --bin {binary_override}"
+            print(f"\n  {resume}", flush=True)
             return _cleanup_and_exit(exit_code)
     except Exception as exc:
         print(f"[c2c-start/{name}] fatal error: {exc}", file=sys.stderr, flush=True)
@@ -642,6 +646,33 @@ def cmd_start(
     # Stale pidfile cleanup.
     _remove_pidfile(_outer_pid_path(name))
 
+    # Resume: if an existing config exists, inherit its saved settings
+    # unless explicitly overridden on the command line.
+    existing = load_instance_config(name)
+    if existing is not None:
+        saved_client = existing.get("client", client)
+        if saved_client != client:
+            msg = (
+                f"instance {name!r} was previously a {saved_client} instance. "
+                f"Cannot resume as {client}. Use 'c2c stop {name}' first or pass "
+                f"a different name."
+            )
+            if json_out:
+                print(json.dumps({"ok": False, "error": msg}))
+            else:
+                print(f"error: {msg}", file=sys.stderr)
+            return 1
+        # Inherit saved settings where no explicit CLI override was given.
+        if binary_override is None:
+            binary_override = existing.get("binary_override")
+        if alias_override is None:
+            alias_override = existing.get("alias", name)
+        if not extra_args:
+            extra_args = existing.get("extra_args", [])
+        saved_root = existing.get("broker_root")
+        if saved_root:
+            broker_root = Path(saved_root).resolve()
+
     # Write instance config.
     cfg: dict[str, Any] = {
         "name": name,
@@ -649,7 +680,7 @@ def cmd_start(
         "session_id": name,
         "alias": alias_override or name,
         "extra_args": extra_args,
-        "created_at": time.time(),
+        "created_at": existing.get("created_at", time.time()) if existing else time.time(),
         "broker_root": str(broker_root),
         "auto_join_rooms": "swarm-lounge",
     }
