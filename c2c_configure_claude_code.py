@@ -26,6 +26,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
 C2C_MCP_PATH = REPO_ROOT / "c2c_mcp.py"
+OCAML_MCP_EXE = (
+    REPO_ROOT / "_build" / "default" / "ocaml" / "server" / "c2c_mcp_server.exe"
+)
 DEFAULT_BROKER_ROOT = REPO_ROOT / ".git" / "c2c" / "mcp"
 
 CLAUDE_JSON_PATH = Path.home() / ".claude.json"
@@ -78,8 +81,8 @@ def resolve_broker_root(override: Path | None) -> Path:
         return override.resolve()
     env_val = os.environ.get("C2C_MCP_BROKER_ROOT")
     if env_val:
-        return Path(env_val)
-    return DEFAULT_BROKER_ROOT
+        return Path(env_val).resolve()
+    return DEFAULT_BROKER_ROOT.resolve()
 
 
 def default_alias() -> str:
@@ -90,13 +93,34 @@ def default_alias() -> str:
     return f"claude-{user}-{host}"
 
 
-def build_mcp_entry(broker_root: Path, session_id: str | None, alias: str | None) -> dict:
+def build_mcp_entry(
+    broker_root: Path,
+    session_id: str | None,
+    alias: str | None,
+    *,
+    ocaml: bool = False,
+) -> dict:
     env: dict[str, str] = {
         "C2C_MCP_BROKER_ROOT": str(broker_root),
     }
     if session_id:
         env["C2C_MCP_SESSION_ID"] = session_id
+    if alias:
+        env["C2C_MCP_AUTO_REGISTER_ALIAS"] = alias
     env["C2C_MCP_AUTO_JOIN_ROOMS"] = "swarm-lounge"
+
+    if ocaml:
+        if not OCAML_MCP_EXE.exists():
+            raise SystemExit(
+                f"OCaml MCP server not built: {OCAML_MCP_EXE}\n"
+                "Run 'opam exec -- dune build ocaml/server' first."
+            )
+        return {
+            "type": "stdio",
+            "command": "opam",
+            "args": ["exec", "--", str(OCAML_MCP_EXE)],
+            "env": env,
+        }
     return {
         "type": "stdio",
         "command": "python3",
@@ -133,7 +157,12 @@ def _load_json(path: Path) -> dict:
 
 
 def configure_mcp(
-    broker_root: Path, session_id: str | None, alias: str | None, *, force: bool
+    broker_root: Path,
+    session_id: str | None,
+    alias: str | None,
+    *,
+    force: bool,
+    ocaml: bool = False,
 ) -> dict:
     data = _load_json(CLAUDE_JSON_PATH)
     mcp_servers = data.setdefault("mcpServers", {})
@@ -144,7 +173,9 @@ def configure_mcp(
             f"(re-run with --force to replace)"
         )
 
-    mcp_servers["c2c"] = build_mcp_entry(broker_root, session_id, alias)
+    mcp_servers["c2c"] = build_mcp_entry(
+        broker_root, session_id, alias, ocaml=ocaml
+    )
     _atomic_write(CLAUDE_JSON_PATH, data)
     return mcp_servers["c2c"]
 
@@ -246,11 +277,21 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="start the idle wake daemon for the current Claude Code session",
     )
+    parser.add_argument(
+        "--ocaml",
+        action="store_true",
+        help=(
+            "use the compiled OCaml MCP server instead of the Python wrapper. "
+            "Requires the server to be built ('opam exec -- dune build ocaml/server')."
+        ),
+    )
     args = parser.parse_args(argv)
 
     broker_root = resolve_broker_root(args.broker_root)
     alias = None if args.no_alias else (args.alias or default_alias())
-    mcp_entry = configure_mcp(broker_root, args.session_id, alias, force=args.force)
+    mcp_entry = configure_mcp(
+        broker_root, args.session_id, alias, force=args.force, ocaml=args.ocaml
+    )
     hook_status = configure_hook(force=args.force)
 
     wake_daemon_pid: int | None = None
