@@ -9,6 +9,7 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
+| ocaml/cli/c2c.ml | cc-zai-spire-walker | Adding sweep-dryrun, start delegation, restart subcommands | 2026-04-14T15:30Z |
 
 ## History (addendum)
 

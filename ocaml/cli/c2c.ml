@@ -28,6 +28,29 @@ let git_common_dir () =
       in
       if line <> "" && Sys.is_directory line then Some line else None
 
+let git_repo_toplevel () =
+  match
+    Unix.open_process_in "git rev-parse --show-toplevel 2>/dev/null"
+  with
+  | ic ->
+      let line =
+        try
+          let l = input_line ic in
+          ignore (Unix.close_process_in ic);
+          String.trim l
+        with End_of_file ->
+          ignore (Unix.close_process_in ic);
+          ""
+      in
+      if line <> "" && Sys.is_directory line then Some line else None
+
+let find_python_script script =
+  match git_repo_toplevel () with
+  | Some dir ->
+      let path = dir // script in
+      if Sys.file_exists path then Some path else None
+  | None -> None
+
 let resolve_broker_root () =
   let abs_path p =
     if Filename.is_relative p then Sys.getcwd () // p else p
@@ -363,6 +386,167 @@ let sweep_cmd =
         (fun (r : C2c_mcp.registration) -> Printf.printf "  dropped: %s (%s)\n" r.alias r.session_id)
         result.dropped_regs
 
+(* --- subcommand: sweep-dryrun --------------------------------------------- *)
+
+let sweep_dryrun_run json =
+  let root = resolve_broker_root () in
+  let broker = C2c_mcp.Broker.create ~root in
+  let regs = C2c_mcp.Broker.list_registrations broker in
+  let reg_by_sid = Hashtbl.create 16 in
+  let alias_rows = Hashtbl.create 16 in
+  let live_regs = ref [] in
+  let dead_regs = ref [] in
+  let legacy_regs = ref [] in
+  List.iter (fun (r : C2c_mcp.registration) ->
+    Hashtbl.replace reg_by_sid r.session_id r;
+    let rows = try Hashtbl.find alias_rows r.alias with Not_found -> [] in
+    Hashtbl.replace alias_rows r.alias (r :: rows);
+    match C2c_mcp.Broker.registration_liveness_state r with
+    | C2c_mcp.Broker.Alive -> live_regs := r :: !live_regs
+    | C2c_mcp.Broker.Dead -> dead_regs := r :: !dead_regs
+    | C2c_mcp.Broker.Unknown -> legacy_regs := r :: !legacy_regs
+  ) regs;
+  let inbox_count sid =
+    try
+      let msgs = C2c_mcp.Broker.read_inbox broker ~session_id:sid in
+      Some (List.length msgs)
+    with _ -> None
+  in
+  let orphan_inboxes = ref [] in
+  let inbox_file_count = ref 0 in
+  (try
+     let files = Sys.readdir root in
+     Array.iter (fun fname ->
+       if Filename.check_suffix fname ".inbox.json" then begin
+         incr inbox_file_count;
+         let sid = String.sub fname 0 (String.length fname - String.length ".inbox.json") in
+         if not (Hashtbl.mem reg_by_sid sid) then
+           orphan_inboxes := (sid, inbox_count sid) :: !orphan_inboxes
+       end
+     ) files
+   with Sys_error _ -> ());
+  let duplicate_aliases = Hashtbl.fold (fun alias rows acc ->
+    if List.length rows > 1 then
+      (alias, List.map (fun (r : C2c_mcp.registration) -> r.session_id) rows) :: acc
+    else acc
+  ) alias_rows [] in
+  let pid_map = Hashtbl.create 8 in
+  List.iter (fun (r : C2c_mcp.registration) ->
+    match r.pid with
+    | Some pid ->
+        let rows = try Hashtbl.find pid_map pid with Not_found -> [] in
+        Hashtbl.replace pid_map pid (r :: rows)
+    | None -> ()
+  ) regs;
+  let duplicate_pids = Hashtbl.fold (fun pid rows acc ->
+    if List.length rows >= 2 then
+      let aliases = List.map (fun (r : C2c_mcp.registration) -> r.alias) rows in
+      (pid, aliases) :: acc
+    else acc
+  ) pid_map [] in
+  let nonempty_dead = List.filter_map (fun (r : C2c_mcp.registration) ->
+    match inbox_count r.session_id with
+    | Some n when n > 0 -> Some (r.session_id, r.alias, n)
+    | _ -> None
+  ) !dead_regs in
+  let nonempty_orphans = List.filter_map (fun (sid, count) ->
+    match count with
+    | Some n when n > 0 -> Some (sid, n)
+    | _ -> None
+  ) !orphan_inboxes in
+  let risk = List.length nonempty_dead + List.length nonempty_orphans in
+  let output_mode = if json then Json else Human in
+  match output_mode with
+  | Json ->
+      let json_reg (r : C2c_mcp.registration) =
+        `Assoc
+          [ ("session_id", `String r.session_id)
+          ; ("alias", `String r.alias)
+          ; ("pid", match r.pid with None -> `Null | Some p -> `Int p)
+          ; ("inbox_messages", match inbox_count r.session_id with None -> `Null | Some n -> `Int n)
+          ]
+      in
+      print_json (`Assoc
+        [ ("root", `String root)
+        ; ("totals", `Assoc
+            [ ("registrations", `Int (List.length regs))
+            ; ("live", `Int (List.length !live_regs))
+            ; ("legacy_pidless", `Int (List.length !legacy_regs))
+            ; ("dead", `Int (List.length !dead_regs))
+            ; ("inbox_files_on_disk", `Int !inbox_file_count)
+            ; ("orphan_inboxes", `Int (List.length !orphan_inboxes))
+            ; ("would_drop_if_swept", `Int (List.length !dead_regs + List.length !orphan_inboxes))
+            ; ("nonempty_content_at_risk", `Int risk)
+            ])
+        ; ("live_regs", `List (List.map json_reg !live_regs))
+        ; ("legacy_pidless_regs", `List (List.map json_reg !legacy_regs))
+        ; ("dead_regs", `List (List.map json_reg !dead_regs))
+        ; ("orphan_inboxes", `List (List.map (fun (sid, count) ->
+              `Assoc [ ("session_id", `String sid); ("messages", match count with None -> `Null | Some n -> `Int n) ]
+            ) !orphan_inboxes))
+        ; ("duplicate_aliases", `Assoc (List.map (fun (alias, sids) ->
+              (alias, `List (List.map (fun s -> `String s) sids))
+            ) duplicate_aliases))
+        ; ("duplicate_pids", `List (List.map (fun (pid, aliases) ->
+              `Assoc [ ("pid", `Int pid); ("aliases", `List (List.map (fun a -> `String a) aliases)) ]
+            ) duplicate_pids))
+        ])
+  | Human ->
+      Printf.printf "broker root: %s\n\n" root;
+      Printf.printf "totals:\n";
+      Printf.printf "  registrations          %d\n" (List.length regs);
+      Printf.printf "    live                 %d\n" (List.length !live_regs);
+      Printf.printf "    legacy (pid=None)    %d\n" (List.length !legacy_regs);
+      Printf.printf "    dead                 %d\n" (List.length !dead_regs);
+      Printf.printf "  inbox files on disk    %d\n" !inbox_file_count;
+      Printf.printf "  orphan inboxes         %d\n" (List.length !orphan_inboxes);
+      Printf.printf "  would drop if swept    %d\n" (List.length !dead_regs + List.length !orphan_inboxes);
+      if risk > 0 then
+        Printf.printf "  NON-EMPTY content risk %d\n" risk;
+      if duplicate_aliases <> [] then begin
+        Printf.printf "\nduplicate aliases (routing black-hole risk):\n";
+        List.iter (fun (alias, sids) ->
+          Printf.printf "  %s: %s\n" alias (String.concat ", " sids)
+        ) duplicate_aliases
+      end;
+      if duplicate_pids <> [] then begin
+        Printf.printf "\nduplicate PIDs (likely ghost registrations):\n";
+        List.iter (fun (pid, aliases) ->
+          Printf.printf "  pid=%d: %s\n" pid (String.concat ", " aliases)
+        ) duplicate_pids
+      end;
+      if !dead_regs <> [] then begin
+        Printf.printf "\ndead registrations (would be dropped):\n";
+        List.iter (fun (r : C2c_mcp.registration) ->
+          let suffix = match inbox_count r.session_id with
+            | Some n when n > 0 -> Printf.sprintf "  [%d pending msgs]" n
+            | _ -> ""
+          in
+          Printf.printf "  %-20s %s  pid=%s%s\n" r.alias r.session_id
+            (match r.pid with None -> "None" | Some p -> string_of_int p)
+            suffix
+        ) !dead_regs
+      end;
+      if nonempty_dead <> [] || nonempty_orphans <> [] then begin
+        Printf.printf "\nNON-EMPTY content that sweep would delete:\n";
+        List.iter (fun (sid, alias, n) ->
+          Printf.printf "  %s (%s)  (%d msgs)\n" sid alias n
+        ) nonempty_dead;
+        List.iter (fun (sid, n) ->
+          Printf.printf "  %s  (%d msgs)\n" sid n
+        ) nonempty_orphans;
+        Printf.printf "  -> consider draining these before running sweep.\n"
+      end
+
+let sweep_dryrun_cmd =
+  let+ json = json_flag in
+  sweep_dryrun_run json
+
+let sweep_dryrun =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "sweep-dryrun" ~doc:"Read-only preview of what sweep would drop (safe during active swarm).")
+    sweep_dryrun_cmd
+
 (* --- subcommand: history -------------------------------------------------- *)
 
 let history_cmd =
@@ -539,7 +723,7 @@ let status_cmd =
   let alive_peers =
     List.filter_map
       (fun (r : C2c_mcp.registration) ->
-         if C2c_mcp.Broker.registration_is_alive r then (
+         if C2c_mcp.Broker.registration_liveness_state r = C2c_mcp.Broker.Alive then (
            let sent =
              try Hashtbl.find sent_by_alias r.alias with Not_found -> 0
            in
@@ -642,6 +826,133 @@ let status =
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "status" ~doc:"Show compact swarm overview.")
     status_cmd
+
+(* --- subcommand: verify --------------------------------------------------- *)
+
+let verify_cmd =
+  let alive_only =
+    Cmdliner.Arg.(
+      value & flag
+      & info [ "alive-only" ] ~doc:"Exclude dead registrations from results.")
+  in
+  let min_messages =
+    Cmdliner.Arg.(
+      value
+      & opt int 0
+      & info [ "min-messages" ] ~docv:"N"
+          ~doc:"Minimum total messages (sent+received) to include a peer.")
+  in
+  let+ json = json_flag
+  and+ alive_only = alive_only
+  and+ min_messages = min_messages in
+  let root = resolve_broker_root () in
+  let broker = C2c_mcp.Broker.create ~root in
+  let archive_dir = root // "archive" in
+  let sent_by_alias = Hashtbl.create 16 in
+  let received_by_sid = Hashtbl.create 16 in
+  if Sys.is_directory archive_dir then
+    let entries =
+      try Array.to_list (Sys.readdir archive_dir)
+      with Sys_error _ -> []
+    in
+    List.iter
+      (fun fname ->
+         if Filename.check_suffix fname ".jsonl" then (
+           let session_id = Filename.chop_extension fname in
+           let path = archive_dir // fname in
+           try
+             let ic = open_in path in
+             Fun.protect
+               ~finally:(fun () -> close_in_noerr ic)
+               (fun () ->
+                  let rec loop recv_count =
+                    match input_line ic with
+                    | exception End_of_file -> recv_count
+                    | line ->
+                        let line = String.trim line in
+                        if line <> "" then (
+                          try
+                            let json = Yojson.Safe.from_string line in
+                            let open Yojson.Safe.Util in
+                            let from_alias =
+                              try json |> member "from_alias" |> to_string
+                              with _ -> ""
+                            in
+                            if from_alias <> "" && from_alias <> "c2c-system"
+                            then (
+                              let prev =
+                                try Hashtbl.find sent_by_alias from_alias
+                                with Not_found -> 0
+                              in
+                              Hashtbl.replace sent_by_alias from_alias
+                                (prev + 1)
+                            );
+                            loop (recv_count + 1)
+                          with _ -> loop recv_count
+                        ) else loop recv_count
+                  in
+                  let recv_count = loop 0 in
+                  Hashtbl.replace received_by_sid session_id recv_count)
+           with Sys_error _ -> ()))
+      entries;
+  let goal_count = 20 in
+  let regs = C2c_mcp.Broker.list_registrations broker in
+  let participants =
+    List.filter_map
+      (fun (r : C2c_mcp.registration) ->
+         if alive_only && not (C2c_mcp.Broker.registration_is_alive r) then
+           None
+         else (
+           let sent =
+             try Hashtbl.find sent_by_alias r.alias with Not_found -> 0
+           in
+           let received =
+             try Hashtbl.find received_by_sid r.session_id with Not_found ->
+               try Hashtbl.find received_by_sid r.alias with Not_found -> 0
+           in
+           if sent + received >= min_messages then
+             Some (r.alias, sent, received)
+           else None))
+      regs
+  in
+  let goal_met =
+    participants <> []
+    && List.for_all
+         (fun (_, s, r) -> s >= goal_count && r >= goal_count)
+         participants
+  in
+  if json then
+    print_json
+      (`Assoc
+         [ ( "participants"
+           , `List
+               (List.map
+                  (fun (alias, sent, received) ->
+                     `Assoc
+                       [ ("alias", `String alias)
+                       ; ("sent", `Int sent)
+                       ; ("received", `Int received)
+                       ])
+                  participants) )
+         ; ("goal_met", `Bool goal_met)
+         ; ("source", `String "broker")
+         ])
+  else (
+    List.iter
+      (fun (alias, sent, received) ->
+         let status =
+           if sent >= goal_count && received >= goal_count then "goal_met"
+           else "in_progress"
+         in
+         Printf.printf "%s: sent=%d received=%d status=%s\n" alias sent
+           received status)
+      participants;
+    Printf.printf "goal_met: %s\n" (if goal_met then "yes" else "no"))
+
+let verify =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "verify" ~doc:"Verify c2c message exchange progress.")
+    verify_cmd
 
 (* --- subcommand: register ------------------------------------------------- *)
 
@@ -1949,53 +2260,30 @@ let start_cmd =
   let name =
     Cmdliner.Arg.(value & opt (some string) None & info [ "name"; "n" ] ~docv:"NAME" ~doc:"Instance name (default: auto-generated).")
   in
+  let alias =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Custom alias (defaults to instance name).")
+  in
+  let bin =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "bin" ] ~docv:"PATH" ~doc:"Custom binary path or name to launch.")
+  in
   let+ json = json_flag
   and+ client = client
-  and+ name_opt = name in
-  let output_mode = if json then Json else Human in
-  let root = resolve_broker_root () in
-  let inst_dir = instances_dir () in
-  (try Unix.mkdir inst_dir 0o755 with Unix.Unix_error _ -> ());
-  let inst_name = match name_opt with
-    | Some n -> n
-    | None -> Printf.sprintf "%s-%d" client (Random.int 10000)
-  in
-  let inst_path = inst_dir // inst_name in
-  if Sys.file_exists inst_path then begin
-    (match output_mode with
-     | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String (Printf.sprintf "instance '%s' already exists" inst_name)) ])
-     | Human -> Printf.eprintf "error: instance '%s' already exists. Use 'c2c stop %s' first.\n%!" inst_name inst_name);
-    exit 1
-  end;
-  Unix.mkdir inst_path 0o755;
-  let alias = default_alias_for_client client in
-  let config =
-    `Assoc
-      [ ("client", `String client)
-      ; ("name", `String inst_name)
-      ; ("alias", `String alias)
-      ; ("broker_root", `String root)
-      ]
-  in
-  json_write_file (inst_path // "config.json") config;
-  match output_mode with
-  | Json ->
-      print_json (`Assoc
-        [ ("ok", `Bool true)
-        ; ("name", `String inst_name)
-        ; ("client", `String client)
-        ; ("alias", `String alias)
-        ; ("dir", `String inst_path)
-        ])
-  | Human ->
-      Printf.printf "Instance '%s' registered.\n" inst_name;
-      Printf.printf "  client: %s\n" client;
-      Printf.printf "  alias:  %s\n" alias;
-      Printf.printf "  dir:    %s\n" inst_path;
-      Printf.printf "\nFull lifecycle management coming soon.\n";
-      Printf.printf "For now use: python3 c2c_start.py start %s -n %s\n" client inst_name
+  and+ name_opt = name
+  and+ alias_opt = alias
+  and+ bin_opt = bin in
+  match find_python_script "c2c_start.py" with
+  | None ->
+      Printf.eprintf "error: cannot find c2c_start.py. Run from inside the c2c git repo.\n%!";
+      exit 1
+  | Some script ->
+      let args = [ "python3"; script; "start"; client ] in
+      let args = match name_opt with None -> args | Some n -> args @ [ "-n"; n ] in
+      let args = match alias_opt with None -> args | Some a -> args @ [ "--alias"; a ] in
+      let args = match bin_opt with None -> args | Some b -> args @ [ "--bin"; b ] in
+      let args = if json then args @ [ "--json" ] else args in
+      Unix.execvp "python3" (Array.of_list args)
 
-let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Register a managed c2c instance.") start_cmd
+let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Start a managed c2c instance (delegates to c2c_start.py).") start_cmd
 
 (* --- subcommand: stop ----------------------------------------------------- *)
 
@@ -2047,6 +2335,25 @@ let stop_cmd =
 
 let stop = Cmdliner.Cmd.v (Cmdliner.Cmd.info "stop" ~doc:"Stop a managed c2c instance.") stop_cmd
 
+(* --- subcommand: restart -------------------------------------------------- *)
+
+let restart_cmd =
+  let name =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME" ~doc:"Instance name to restart.")
+  in
+  let+ json = json_flag
+  and+ name = name in
+  match find_python_script "c2c_start.py" with
+  | None ->
+      Printf.eprintf "error: cannot find c2c_start.py. Run from inside the c2c git repo.\n%!";
+      exit 1
+  | Some script ->
+      let args = [ "python3"; script; "restart"; name ] in
+      let args = if json then args @ [ "--json" ] else args in
+      Unix.execvp "python3" (Array.of_list args)
+
+let restart = Cmdliner.Cmd.v (Cmdliner.Cmd.info "restart" ~doc:"Restart a managed c2c instance (delegates to c2c_start.py).") restart_cmd
+
 (* --- main entry point ----------------------------------------------------- *)
 
 let () =
@@ -2064,13 +2371,15 @@ let () =
                ; `S "COMMANDS"
                ; `P
                    "$(b,send), $(b,list), $(b,whoami), $(b,poll-inbox), \
-                    $(b,send-all), $(b,sweep), $(b,history), $(b,health), \
-                    $(b,status), $(b,register), $(b,tail-log), $(b,my-rooms), \
-                    $(b,dead-letter), $(b,prune-rooms), $(b,smoke-test), \
-                    $(b,install), $(b,setup), $(b,serve), $(b,start), \
-                    $(b,stop), $(b,instances)"
+                    $(b,send-all), $(b,sweep), $(b,sweep-dryrun), $(b,history), \
+                    $(b,health), $(b,status), $(b,verify), $(b,register), \
+                    $(b,tail-log), $(b,my-rooms), $(b,dead-letter), \
+                    $(b,prune-rooms), $(b,smoke-test), $(b,install), \
+                    $(b,setup), $(b,serve), $(b,start), $(b,stop), \
+                    $(b,restart), $(b,instances)"
                ; `P "$(b,rooms) — manage N:N chat rooms"
                ])
-          [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep; history
-          ; health; status; register; tail_log; my_rooms; dead_letter; prune_rooms
-          ; smoke_test; install; setup; serve; start; stop; instances; rooms_group ]))
+          [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
+          ; sweep_dryrun; history; health; status; verify; register; tail_log
+          ; my_rooms; dead_letter; prune_rooms; smoke_test; install; setup
+          ; serve; start; stop; restart; instances; rooms_group ]))
