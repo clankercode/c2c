@@ -139,6 +139,10 @@ Current c2c status — 2026-04-14 (updated by codex)
 - Follow-up `tests/test_c2c_cli.py` refactor: managed-instance `c2c start`
   tests now live in `tests/test_c2c_start.py`, bringing the CLI test module
   down to 9,000 lines while preserving the 969-test total.
+- Follow-up `tests/test_c2c_cli.py` refactor: wake/refresh, dead-letter,
+  broker-GC, sweep, and room-prune maintenance tests now live in
+  `tests/test_c2c_maintenance.py`, bringing the CLI test module down to 7,887
+  lines while preserving the 969-test total.
 - Kimi Wire bridge MCP configs now pin `C2C_MCP_CLIENT_PID` to the durable
   bridge process, preventing short-lived `kimi --wire` delivery children from
   clobbering the `kimi-nova-2` broker registration to a dead PID.
