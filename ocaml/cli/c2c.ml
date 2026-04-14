@@ -1012,6 +1012,54 @@ let my_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "my-rooms" ~doc:"List rooms you
 let dead_letter = Cmdliner.Cmd.v (Cmdliner.Cmd.info "dead-letter" ~doc:"Show dead-letter entries.") dead_letter_cmd
 let prune_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "prune-rooms" ~doc:"Evict dead members from all rooms.") prune_rooms_cmd
 
+(* --- subcommand: smoke-test ----------------------------------------------- *)
+
+let smoke_test_cmd =
+  let+ json = json_flag in
+  let tmp_dir = Filename.temp_file "c2c-smoke-" "" in
+  Sys.remove tmp_dir;
+  Unix.mkdir tmp_dir 0o755;
+  let broker_root = tmp_dir // "broker" in
+  Unix.mkdir broker_root 0o755;
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  let session_a = "smoke-session-a" in
+  let session_b = "smoke-session-b" in
+  let alias_a = "smoke-a" in
+  let alias_b = "smoke-b" in
+  let pid = Some (Unix.getpid ()) in
+  let pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid in
+  C2c_mcp.Broker.register broker ~session_id:session_a ~alias:alias_a ~pid ~pid_start_time;
+  C2c_mcp.Broker.register broker ~session_id:session_b ~alias:alias_b ~pid ~pid_start_time;
+  let marker =
+    Printf.sprintf "c2c-smoke-%d-%d"
+      (Unix.gettimeofday () |> int_of_float)
+      (Random.int 100000)
+  in
+  C2c_mcp.Broker.enqueue_message broker ~from_alias:alias_a ~to_alias:alias_b ~content:marker;
+  let messages = C2c_mcp.Broker.drain_inbox broker ~session_id:session_b in
+  let ok = List.exists (fun (m : C2c_mcp.message) -> m.content = marker) messages in
+  let rec rm_rf path =
+    if Sys.is_directory path then (
+      let entries = Sys.readdir path in
+      Array.iter (fun e -> rm_rf (path // e)) entries;
+      Unix.rmdir path)
+    else Sys.remove path
+  in
+  rm_rf tmp_dir;
+  let output_mode = if json then Json else Human in
+  match output_mode with
+  | Json ->
+      print_json
+        (`Assoc [ ("ok", `Bool ok); ("marker", `String marker) ])
+  | Human ->
+      if ok then
+        Printf.printf "smoke-test passed (marker: %s)\n" marker
+      else (
+        Printf.eprintf "smoke-test failed: marker not received (marker: %s)\n%!" marker;
+        exit 1)
+
+let smoke_test = Cmdliner.Cmd.v (Cmdliner.Cmd.info "smoke-test" ~doc:"Run an end-to-end broker smoke test.") smoke_test_cmd
+
 let () =
   exit
     (Cmdliner.Cmd.eval
@@ -1029,7 +1077,7 @@ let () =
                    "$(b,send), $(b,list), $(b,whoami), $(b,poll-inbox), \
                     $(b,send-all), $(b,sweep), $(b,history), $(b,health), \
                     $(b,register), $(b,tail-log), $(b,my-rooms), \
-                    $(b,dead-letter), $(b,prune-rooms)"
+                    $(b,dead-letter), $(b,prune-rooms), $(b,smoke-test)"
                ; `P "$(b,rooms) — manage N:N chat rooms"
                ])
-          [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep; history; health; register; tail_log; my_rooms; dead_letter; prune_rooms; rooms_group ]))
+          [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep; history; health; register; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; rooms_group ]))
