@@ -1069,11 +1069,20 @@ let my_rooms_cmd =
         (`List
           (List.map
              (fun (r : C2c_mcp.Broker.room_info) ->
+               let alive_members =
+                 List.filter_map
+                   (fun (m : C2c_mcp.Broker.room_member_info) ->
+                      if m.rmi_alive <> Some false then Some (`String m.rmi_alias)
+                      else None)
+                   r.ri_member_details
+               in
                `Assoc
                  [ ("room_id", `String r.ri_room_id)
                  ; ("member_count", `Int r.ri_member_count)
+                 ; ("alive_count", `Int r.ri_alive_member_count)
                  ; ("members",
                      `List (List.map (fun a -> `String a) r.ri_members))
+                 ; ("alive_members", `List alive_members)
                  ; ( "visibility",
                      `String
                        (match r.ri_visibility with
@@ -1087,7 +1096,10 @@ let my_rooms_cmd =
       else
         List.iter
           (fun (r : C2c_mcp.Broker.room_info) ->
-            Printf.printf "%s (%d members)\n" r.ri_room_id r.ri_member_count)
+            let alive = if r.ri_alive_member_count > 0 then
+              Printf.sprintf ", %d alive" r.ri_alive_member_count
+            else "" in
+            Printf.printf "%s (%d members%s)\n" r.ri_room_id r.ri_member_count alive)
           rooms
 
 (* --- subcommand: dead-letter ---------------------------------------------- *)
@@ -1296,11 +1308,20 @@ let rooms_list_cmd =
         (`List
           (List.map
              (fun (r : C2c_mcp.Broker.room_info) ->
+               let alive_members =
+                 List.filter_map
+                   (fun (m : C2c_mcp.Broker.room_member_info) ->
+                      if m.rmi_alive <> Some false then Some (`String m.rmi_alias)
+                      else None)
+                   r.ri_member_details
+               in
                `Assoc
                  [ ("room_id", `String r.ri_room_id)
                  ; ("member_count", `Int r.ri_member_count)
+                 ; ("alive_count", `Int r.ri_alive_member_count)
                  ; ("members",
                      `List (List.map (fun a -> `String a) r.ri_members))
+                 ; ("alive_members", `List alive_members)
                  ; ( "visibility",
                      `String
                        (match r.ri_visibility with
@@ -1319,8 +1340,11 @@ let rooms_list_cmd =
               | C2c_mcp.Public -> ""
               | C2c_mcp.Invite_only -> " [invite-only]"
             in
-            Printf.printf "%s (%d members)%s\n" r.ri_room_id
-              r.ri_member_count vis)
+            let alive = if r.ri_alive_member_count > 0 then
+              Printf.sprintf ", %d alive" r.ri_alive_member_count
+            else "" in
+            Printf.printf "%s (%d members%s)%s\n" r.ri_room_id
+              r.ri_member_count alive vis)
           rooms
 
 let rooms_history_cmd =
@@ -1498,6 +1522,12 @@ let rooms_group =
   Cmdliner.Cmd.group
     ~default:rooms_list_cmd
     (Cmdliner.Cmd.info "rooms" ~doc:"Manage persistent N:N rooms.")
+    [ rooms_list; rooms_join; rooms_leave; rooms_send; rooms_history; rooms_invite; rooms_members; rooms_visibility ]
+
+let room_group =
+  Cmdliner.Cmd.group
+    ~default:rooms_list_cmd
+    (Cmdliner.Cmd.info "room" ~doc:"Alias for rooms.")
     [ rooms_list; rooms_join; rooms_leave; rooms_send; rooms_history; rooms_invite; rooms_members; rooms_visibility ]
 
 (* --- main entry point ----------------------------------------------------- *)
@@ -1819,7 +1849,7 @@ let setup_codex ~output_mode ~root ~alias_val ~server_path =
   let buf = Buffer.create 1024 in
   Buffer.add_string buf "\n[mcp_servers.c2c]\n";
   Buffer.add_string buf "command = \"opam\"\n";
-  Buffer.add_string buf (Printf.sprintf "args = [\"exec\", \"--\", \"dune\", \"run\", \"%s\"]\n" server_path);
+  Buffer.add_string buf (Printf.sprintf "args = [\"exec\", \"--\", \"%s\"]\n" server_path);
   Buffer.add_string buf "\n[mcp_servers.c2c.env]\n";
   Buffer.add_string buf (Printf.sprintf "C2C_MCP_BROKER_ROOT = \"%s\"\n" root);
   Buffer.add_string buf (Printf.sprintf "C2C_MCP_SESSION_ID = \"%s\"\n" alias_val);
@@ -1864,7 +1894,7 @@ let setup_kimi ~output_mode ~root ~alias_val ~server_path =
     `Assoc
       [ ("type", `String "stdio")
       ; ("command", `String "opam")
-      ; ("args", `List [ `String "exec"; `String "--"; `String "dune"; `String "run"; `String server_path ])
+      ; ("args", `List [ `String "exec"; `String "--"; `String server_path ])
       ; ("env", `Assoc
           [ ("C2C_MCP_BROKER_ROOT", `String root)
           ; ("C2C_MCP_SESSION_ID", `String alias_val)
@@ -1923,7 +1953,7 @@ let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt =
       ; ("mcp", `Assoc
           [ ("c2c", `Assoc
               [ ("type", `String "local")
-              ; ("command", `List [ `String "opam"; `String "exec"; `String "--"; `String "dune"; `String "run"; `String server_path ])
+              ; ("command", `List [ `String "opam"; `String "exec"; `String "--"; `String server_path ])
               ; ("environment", `Assoc
                   [ ("C2C_MCP_BROKER_ROOT", `String root)
                   ; ("C2C_MCP_SESSION_ID", `String session_id)
@@ -2713,4 +2743,4 @@ let () =
           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
           ; sweep_dryrun; history; health; status; verify; register; refresh_peer
           ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install; setup
-          ; serve; start; stop; restart; instances; rooms_group ]))
+          ; serve; start; stop; restart; instances; rooms_group; room_group ]))
