@@ -4138,6 +4138,230 @@ let test_tools_call_send_room_rejects_impersonation () =
               in
               check bool "send_room rejected with isError=true" true is_error))
 
+let test_send_room_invite_adds_to_invite_list () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"alice" ~pid:None ~pid_start_time:None;
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
+                ~alias:"alice" ~session_id:"session-a");
+      C2c_mcp.Broker.send_room_invite broker ~room_id:"secret-club"
+        ~from_alias:"alice" ~invitee_alias:"bob";
+      let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"secret-club" in
+      check string "visibility" "public"
+        (match meta.visibility with Public -> "public" | Invite_only -> "invite_only");
+      check (list string) "invited_members" ["bob"] meta.invited_members)
+
+let test_send_room_invite_only_member_can_invite () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"alice" ~pid:None ~pid_start_time:None;
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
+                ~alias:"alice" ~session_id:"session-a");
+      check_raises "non-member cannot invite"
+        (Invalid_argument "send_room_invite rejected: only room members can invite")
+        (fun () ->
+           C2c_mcp.Broker.send_room_invite broker ~room_id:"secret-club"
+             ~from_alias:"bob" ~invitee_alias:"carol"))
+
+let test_join_room_invite_only_rejects_uninvited () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"alice" ~pid:None ~pid_start_time:None;
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
+                ~alias:"alice" ~session_id:"session-a");
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret-club"
+        ~from_alias:"alice" ~visibility:C2c_mcp.Invite_only;
+      check_raises "uninvited rejected"
+        (Invalid_argument "join_room rejected: room 'secret-club' is invite-only and 'bob' is not on the invite list")
+        (fun () ->
+           ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
+             ~alias:"bob" ~session_id:"session-b")))
+
+let test_join_room_invite_only_accepts_invited () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"alice" ~pid:None ~pid_start_time:None;
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
+                ~alias:"alice" ~session_id:"session-a");
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret-club"
+        ~from_alias:"alice" ~visibility:C2c_mcp.Invite_only;
+      C2c_mcp.Broker.send_room_invite broker ~room_id:"secret-club"
+        ~from_alias:"alice" ~invitee_alias:"bob";
+      let members =
+        C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
+          ~alias:"bob" ~session_id:"session-b"
+      in
+      check int "bob can join after invite" 2 (List.length members))
+
+let test_set_room_visibility_changes_mode () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
+                ~alias:"alice" ~session_id:"session-a");
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret-club"
+        ~from_alias:"alice" ~visibility:C2c_mcp.Invite_only;
+      let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"secret-club" in
+      check bool "visibility is invite_only" true
+        (match meta.visibility with Invite_only -> true | Public -> false))
+
+let test_set_room_visibility_only_member_can_change () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
+                ~alias:"alice" ~session_id:"session-a");
+      check_raises "non-member cannot change visibility"
+        (Invalid_argument "set_room_visibility rejected: only room members can change visibility")
+        (fun () ->
+           C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret-club"
+             ~from_alias:"bob" ~visibility:C2c_mcp.Invite_only))
+
+let test_list_rooms_includes_visibility_and_invited_members () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
+                ~alias:"alice" ~session_id:"session-a");
+      C2c_mcp.Broker.send_room_invite broker ~room_id:"secret-club"
+        ~from_alias:"alice" ~invitee_alias:"bob";
+      let rooms = C2c_mcp.Broker.list_rooms broker in
+      check int "one room" 1 (List.length rooms);
+      let room = List.hd rooms in
+      check string "visibility public" "public"
+        (match room.ri_visibility with Public -> "public" | Invite_only -> "invite_only");
+      check (list string) "invited_members" ["bob"] room.ri_invited_members)
+
+let test_tools_call_send_room_invite_via_mcp () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"alice" ~pid:None ~pid_start_time:None;
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
+                ~alias:"alice" ~session_id:"session-a");
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-a";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let request =
+             `Assoc
+               [ ("jsonrpc", `String "2.0")
+               ; ("id", `Int 301)
+               ; ("method", `String "tools/call")
+               ; ( "params",
+                   `Assoc
+                     [ ("name", `String "send_room_invite")
+                     ; ( "arguments",
+                         `Assoc
+                           [ ("room_id", `String "secret-club")
+                           ; ("invitee_alias", `String "bob")
+                           ] )
+                     ] )
+               ]
+           in
+           let response =
+             Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+           in
+           match response with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let is_error =
+                 json |> member "result" |> member "isError" |> to_bool_option
+                 |> Option.value ~default:false
+               in
+               check bool "send_room_invite success" false is_error;
+               let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"secret-club" in
+               check (list string) "invited via MCP" ["bob"] meta.invited_members))
+
+let test_tools_call_set_room_visibility_via_mcp () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"alice" ~pid:None ~pid_start_time:None;
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
+                ~alias:"alice" ~session_id:"session-a");
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-a";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let request =
+             `Assoc
+               [ ("jsonrpc", `String "2.0")
+               ; ("id", `Int 302)
+               ; ("method", `String "tools/call")
+               ; ( "params",
+                   `Assoc
+                     [ ("name", `String "set_room_visibility")
+                     ; ( "arguments",
+                         `Assoc
+                           [ ("room_id", `String "secret-club")
+                           ; ("visibility", `String "invite_only")
+                           ] )
+                     ] )
+               ]
+           in
+           let response =
+             Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+           in
+           match response with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let is_error =
+                 json |> member "result" |> member "isError" |> to_bool_option
+                 |> Option.value ~default:false
+               in
+               check bool "set_room_visibility success" false is_error;
+               let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"secret-club" in
+               check bool "visibility is invite_only" true
+                 (match meta.visibility with Invite_only -> true | Public -> false)))
+
+let test_join_room_invite_only_rejects_uninvited_via_mcp () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"alice" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-b"
+        ~alias:"bob" ~pid:None ~pid_start_time:None;
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
+                ~alias:"alice" ~session_id:"session-a");
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret-club"
+        ~from_alias:"alice" ~visibility:C2c_mcp.Invite_only;
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-b";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let request =
+             `Assoc
+               [ ("jsonrpc", `String "2.0")
+               ; ("id", `Int 303)
+               ; ("method", `String "tools/call")
+               ; ( "params",
+                   `Assoc
+                     [ ("name", `String "join_room")
+                     ; ( "arguments",
+                         `Assoc
+                           [ ("room_id", `String "secret-club")
+                           ; ("alias", `String "bob")
+                           ] )
+                     ] )
+               ]
+           in
+           let response =
+             Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+           in
+           match response with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let is_error =
+                 json |> member "result" |> member "isError" |> to_bool_option
+                 |> Option.value ~default:false
+               in
+               check bool "join_room rejected with isError=true" true is_error))
+
 let () =
   run "c2c_mcp"
     [ ( "broker",
@@ -4368,4 +4592,24 @@ let () =
              test_tools_call_send_all_rejects_impersonation
          ; test_case "tools/call send_room rejects impersonation of alive alias" `Quick
              test_tools_call_send_room_rejects_impersonation
+         ; test_case "send_room_invite adds to invite list" `Quick
+             test_send_room_invite_adds_to_invite_list
+         ; test_case "send_room_invite only member can invite" `Quick
+             test_send_room_invite_only_member_can_invite
+         ; test_case "join_room invite_only rejects uninvited" `Quick
+             test_join_room_invite_only_rejects_uninvited
+         ; test_case "join_room invite_only accepts invited" `Quick
+             test_join_room_invite_only_accepts_invited
+         ; test_case "set_room_visibility changes mode" `Quick
+             test_set_room_visibility_changes_mode
+         ; test_case "set_room_visibility only member can change" `Quick
+             test_set_room_visibility_only_member_can_change
+         ; test_case "list_rooms includes visibility and invited_members" `Quick
+             test_list_rooms_includes_visibility_and_invited_members
+         ; test_case "tools/call send_room_invite via MCP" `Quick
+             test_tools_call_send_room_invite_via_mcp
+         ; test_case "tools/call set_room_visibility via MCP" `Quick
+             test_tools_call_set_room_visibility_via_mcp
+         ; test_case "join_room invite_only rejects uninvited via MCP" `Quick
+             test_join_room_invite_only_rejects_uninvited_via_mcp
          ] ) ]

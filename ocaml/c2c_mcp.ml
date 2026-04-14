@@ -8,8 +8,10 @@ type registration =
 type message = { from_alias : string; to_alias : string; content : string }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
+type room_visibility = Public | Invite_only
+type room_meta = { visibility : room_visibility; invited_members : string list }
 
-let server_version = "0.6.8"
+let server_version = "0.6.9"
 
 let server_features =
   [ "liveness"
@@ -45,6 +47,8 @@ let server_features =
   ; "missing_sender_alias_errors"
   ; "prune_rooms_tool"
   ; "room_join_system_broadcast"
+  ; "room_invite"
+  ; "room_visibility"
   ]
 
 let server_info =
@@ -950,6 +954,49 @@ module Broker = struct
     write_json_file (room_members_path t ~room_id)
       (`List (List.map room_member_to_json members))
 
+  let room_meta_path t ~room_id =
+    Filename.concat (room_dir t ~room_id) "meta.json"
+
+  let room_visibility_to_json = function
+    | Public -> `String "public"
+    | Invite_only -> `String "invite_only"
+
+  let room_visibility_of_json json =
+    match json with
+    | `String "invite_only" -> Invite_only
+    | _ -> Public
+
+  let room_meta_to_json { visibility; invited_members } =
+    `Assoc
+      [ ("visibility", room_visibility_to_json visibility)
+      ; ("invited_members", `List (List.map (fun s -> `String s) invited_members))
+      ]
+
+  let room_meta_of_json json =
+    let open Yojson.Safe.Util in
+    { visibility =
+        (try room_visibility_of_json (member "visibility" json) with _ -> Public)
+    ; invited_members =
+        (try
+           match member "invited_members" json with
+           | `List items ->
+               List.filter_map
+                 (function `String s -> Some s | _ -> None)
+                 items
+           | _ -> []
+         with _ -> [])
+    }
+
+  let load_room_meta t ~room_id =
+    ensure_room_dir t ~room_id;
+    match read_json_file (room_meta_path t ~room_id) ~default:(`Assoc []) with
+    | `Assoc _ as json -> room_meta_of_json json
+    | _ -> { visibility = Public; invited_members = [] }
+
+  let save_room_meta t ~room_id meta =
+    ensure_room_dir t ~room_id;
+    write_json_file (room_meta_path t ~room_id) (room_meta_to_json meta)
+
   let room_system_alias = "c2c-system"
 
   let room_join_content ~alias ~room_id = alias ^ " joined room " ^ room_id
@@ -1015,6 +1062,17 @@ module Broker = struct
   let join_room t ~room_id ~alias ~session_id =
     if not (valid_room_id room_id) then
       invalid_arg ("invalid room_id: " ^ room_id);
+    let meta = load_room_meta t ~room_id in
+    let current_members = load_room_members t ~room_id in
+    let already_member =
+      List.exists
+        (fun m -> m.rm_alias = alias || m.rm_session_id = session_id)
+        current_members
+    in
+    if meta.visibility = Invite_only && not already_member then
+      if not (List.mem alias meta.invited_members) then
+        invalid_arg
+          ("join_room rejected: room '" ^ room_id ^ "' is invite-only and '" ^ alias ^ "' is not on the invite list");
     let updated, should_broadcast =
       with_room_members_lock t ~room_id (fun () ->
         let members = load_room_members t ~room_id in
@@ -1063,6 +1121,28 @@ module Broker = struct
         let updated = List.filter (fun m -> m.rm_alias <> alias) members in
         save_room_members t ~room_id updated;
         updated)
+
+  let send_room_invite t ~room_id ~from_alias ~invitee_alias =
+    if not (valid_room_id room_id) then
+      invalid_arg ("invalid room_id: " ^ room_id);
+    let members = load_room_members t ~room_id in
+    let is_member = List.exists (fun m -> m.rm_alias = from_alias) members in
+    if not is_member then
+      invalid_arg ("send_room_invite rejected: only room members can invite");
+    let meta = load_room_meta t ~room_id in
+    if not (List.mem invitee_alias meta.invited_members) then
+      save_room_meta t ~room_id
+        { meta with invited_members = meta.invited_members @ [ invitee_alias ] }
+
+  let set_room_visibility t ~room_id ~from_alias ~visibility =
+    if not (valid_room_id room_id) then
+      invalid_arg ("invalid room_id: " ^ room_id);
+    let members = load_room_members t ~room_id in
+    let is_member = List.exists (fun m -> m.rm_alias = from_alias) members in
+    if not is_member then
+      invalid_arg ("set_room_visibility rejected: only room members can change visibility");
+    let meta = load_room_meta t ~room_id in
+    save_room_meta t ~room_id { meta with visibility }
 
   let rename_room_member_alias t ~room_id ~session_id ~new_alias =
     if not (valid_room_id room_id) then
@@ -1270,6 +1350,8 @@ module Broker = struct
     ; ri_dead_member_count : int
     ; ri_unknown_member_count : int
     ; ri_member_details : room_member_info list
+    ; ri_visibility : room_visibility
+    ; ri_invited_members : string list
     }
   and room_member_info =
     { rmi_alias : string
@@ -1305,6 +1387,7 @@ module Broker = struct
       members
 
   let room_info_of_members t ~room_id members =
+    let meta = load_room_meta t ~room_id in
     let details = room_member_liveness t members in
     let count_by predicate =
       List.fold_left
@@ -1318,6 +1401,8 @@ module Broker = struct
     ; ri_dead_member_count = count_by (( = ) (Some false))
     ; ri_unknown_member_count = count_by (( = ) None)
     ; ri_member_details = details
+    ; ri_visibility = meta.visibility
+    ; ri_invited_members = meta.invited_members
     }
 
   let list_rooms t =
@@ -1408,6 +1493,11 @@ let room_info_json (r : Broker.room_info) =
     ; ("dead_member_count", `Int r.ri_dead_member_count)
     ; ("unknown_member_count", `Int r.ri_unknown_member_count)
     ; ("member_details", `List (List.map room_member_detail_json r.ri_member_details))
+    ; ("visibility",
+        match r.ri_visibility with
+        | Public -> `String "public"
+        | Invite_only -> `String "invite_only")
+    ; ("invited_members", `List (List.map (fun a -> `String a) r.ri_invited_members))
     ]
 
 let tool_definitions =
@@ -1485,6 +1575,14 @@ let tool_definitions =
       ~description:"Evict dead members from all room member lists without touching registrations or inboxes. Safe to call while outer loops are running (unlike `sweep`, which also drops registrations and deletes inboxes). Returns JSON {evicted_room_members:[{room_id,alias}]}."
       ~required:[]
       ~properties:[]
+  ; tool_definition ~name:"send_room_invite"
+      ~description:"Invite an alias to a room. Only existing room members can send invites. For invite-only rooms, the invitee will be allowed to join."
+      ~required:["room_id"; "invitee_alias"]
+      ~properties:[ prop "room_id" "Room to invite to."; prop "invitee_alias" "Alias to invite."; prop "alias" "Legacy fallback sender alias (deprecated)." ]
+  ; tool_definition ~name:"set_room_visibility"
+      ~description:"Change a room's visibility mode. public = anyone can join; invite_only = only invited aliases can join. Only existing room members can change visibility."
+      ~required:["room_id"; "visibility"]
+      ~properties:[ prop "room_id" "Room to modify."; prop "visibility" "Either 'public' or 'invite_only'."; prop "alias" "Legacy fallback sender alias (deprecated)." ]
   ]
 
 let string_member name json =
@@ -2290,6 +2388,68 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
         |> Yojson.Safe.to_string
       in
       Lwt.return (tool_result ~content ~is_error:false)
+  | "send_room_invite" ->
+      let room_id = string_member "room_id" arguments in
+      let invitee_alias = string_member "invitee_alias" arguments in
+      (match alias_for_current_session_or_argument broker arguments with
+       | None -> Lwt.return (missing_sender_alias_result "send_room_invite")
+       | Some from_alias ->
+           (match send_alias_impersonation_check broker from_alias with
+            | Some conflict ->
+                Lwt.return
+                  (tool_result
+                     ~content:
+                       (Printf.sprintf
+                          "send_room_invite rejected: from_alias '%s' is currently held by \
+                           alive session '%s' — you cannot invite as another agent."
+                          from_alias conflict.session_id)
+                     ~is_error:true)
+            | None ->
+                Broker.send_room_invite broker ~room_id ~from_alias ~invitee_alias;
+                let content =
+                  `Assoc
+                    [ ("ok", `Bool true)
+                    ; ("room_id", `String room_id)
+                    ; ("invitee_alias", `String invitee_alias)
+                    ]
+                  |> Yojson.Safe.to_string
+                in
+                Lwt.return (tool_result ~content ~is_error:false)))
+  | "set_room_visibility" ->
+      let room_id = string_member "room_id" arguments in
+      let visibility_str = string_member "visibility" arguments in
+      let visibility =
+        match visibility_str with
+        | "invite_only" -> Invite_only
+        | _ -> Public
+      in
+      (match alias_for_current_session_or_argument broker arguments with
+       | None -> Lwt.return (missing_sender_alias_result "set_room_visibility")
+       | Some from_alias ->
+           (match send_alias_impersonation_check broker from_alias with
+            | Some conflict ->
+                Lwt.return
+                  (tool_result
+                     ~content:
+                       (Printf.sprintf
+                          "set_room_visibility rejected: from_alias '%s' is currently held by \
+                           alive session '%s' — you cannot change visibility as another agent."
+                          from_alias conflict.session_id)
+                     ~is_error:true)
+            | None ->
+                Broker.set_room_visibility broker ~room_id ~from_alias ~visibility;
+                let content =
+                  `Assoc
+                    [ ("ok", `Bool true)
+                    ; ("room_id", `String room_id)
+                    ; ("visibility",
+                        match visibility with
+                        | Public -> `String "public"
+                        | Invite_only -> `String "invite_only")
+                    ]
+                  |> Yojson.Safe.to_string
+                in
+                Lwt.return (tool_result ~content ~is_error:false)))
   | _ -> Lwt.return (tool_result ~content:("unknown tool: " ^ tool_name) ~is_error:true)
 
 (* Append one structured line to <broker_root>/broker.log for every

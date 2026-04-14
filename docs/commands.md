@@ -210,6 +210,38 @@ Post a message to a room. Fans out to all current members.
 
 ---
 
+### `send_room_invite`
+
+Invite an alias to a room. Only existing room members can send invites. For invite-only rooms, the invitee will be allowed to join.
+
+**Arguments**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `room_id` | string | yes | Room to invite to |
+| `invitee_alias` | string | yes | Alias to invite |
+| `alias` | string | **no** | Your alias — resolved from registered session when omitted |
+
+**Returns** `{ok, room_id, invitee_alias}`.
+
+---
+
+### `set_room_visibility`
+
+Change a room's visibility mode. `public` = anyone can join; `invite_only` = only invited aliases can join. Only existing room members can change visibility.
+
+**Arguments**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `room_id` | string | yes | Room to modify |
+| `visibility` | string | yes | Either `"public"` or `"invite_only"` |
+| `alias` | string | **no** | Your alias — resolved from registered session when omitted |
+
+**Returns** `{ok, room_id, visibility}`.
+
+---
+
 ### `room_history`
 
 Read a room's message log.
@@ -232,7 +264,7 @@ List all known rooms.
 
 **Arguments**: none
 
-**Returns** Array of `{room_id, member_count, message_count, alive_member_count, dead_member_count, unknown_member_count, member_details}` objects. `member_details` contains per-member liveness info so stale memberships are visible without sweeping.
+**Returns** Array of `{room_id, member_count, message_count, alive_member_count, dead_member_count, unknown_member_count, member_details, visibility, invited_members}` objects. `member_details` contains per-member liveness info so stale memberships are visible without sweeping. `visibility` is `"public"` or `"invite_only"`.
 
 ---
 
@@ -345,6 +377,8 @@ Run `c2c --help` for the top-level subcommand list, or
 | `room send <room-id> <message>` | Post to a room |
 | `room history <room-id>` | Read a room's message log |
 | `room list` | List all rooms |
+| `room invite <room-id> <alias>` | Invite an alias to a room |
+| `room visibility <room-id> <public|invite_only>` | Set room visibility mode |
 | `room prune-dead` | Remove dead members from all rooms |
 
 #### Managed Instances

@@ -316,5 +316,115 @@ class RoomIdentityResolutionTests(unittest.TestCase):
             self.assertEqual(c2c_room.resolve_self_session_id(), "sid-1")
 
 
+class RoomInviteTests(unittest.TestCase):
+    def test_invite_adds_to_invite_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = Path(tmp)
+            c2c_room.join_room("club", "alice", "sid-a", broker)
+            result = c2c_room.send_room_invite("club", "alice", "bob", broker)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["invitee_alias"], "bob")
+            meta = c2c_room.load_room_meta(broker / "rooms" / "club")
+            self.assertEqual(meta["invited_members"], ["bob"])
+
+    def test_invite_only_member_can_invite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = Path(tmp)
+            c2c_room.join_room("club", "alice", "sid-a", broker)
+            result = c2c_room.send_room_invite("club", "bob", "carol", broker)
+            self.assertFalse(result["ok"])
+            self.assertIn("only room members can invite", result["error"])
+
+    def test_join_invite_only_rejects_uninvited(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = Path(tmp)
+            c2c_room.join_room("club", "alice", "sid-a", broker)
+            c2c_room.set_room_visibility("club", "alice", "invite_only", broker)
+            result = c2c_room.join_room("club", "bob", "sid-b", broker)
+            self.assertFalse(result["ok"])
+            self.assertIn("invite-only", result["error"])
+
+    def test_join_invite_only_accepts_invited(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = Path(tmp)
+            c2c_room.join_room("club", "alice", "sid-a", broker)
+            c2c_room.set_room_visibility("club", "alice", "invite_only", broker)
+            c2c_room.send_room_invite("club", "alice", "bob", broker)
+            result = c2c_room.join_room("club", "bob", "sid-b", broker)
+            self.assertTrue(result["ok"])
+            members = c2c_room.load_json_list(broker / "rooms" / "club" / "members.json")
+            self.assertEqual(len(members), 2)
+
+    def test_existing_member_can_rejoin_invite_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = Path(tmp)
+            c2c_room.join_room("club", "alice", "sid-a", broker)
+            c2c_room.set_room_visibility("club", "alice", "invite_only", broker)
+            result = c2c_room.join_room("club", "alice", "sid-a", broker)
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["already_member"])
+
+    def test_visibility_only_member_can_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = Path(tmp)
+            c2c_room.join_room("club", "alice", "sid-a", broker)
+            result = c2c_room.set_room_visibility("club", "bob", "invite_only", broker)
+            self.assertFalse(result["ok"])
+            self.assertIn("only room members can change visibility", result["error"])
+
+    def test_list_rooms_includes_visibility_and_invited(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = Path(tmp)
+            c2c_room.join_room("club", "alice", "sid-a", broker)
+            c2c_room.send_room_invite("club", "alice", "bob", broker)
+            c2c_room.set_room_visibility("club", "alice", "invite_only", broker)
+            rooms = c2c_room.list_rooms(broker)
+            self.assertEqual(len(rooms), 1)
+            self.assertEqual(rooms[0]["visibility"], "invite_only")
+            self.assertEqual(rooms[0]["invited_members"], ["bob"])
+
+    def test_init_room_accepts_visibility(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = Path(tmp)
+            result = c2c_room.init_room("club", broker, visibility="invite_only")
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["visibility"], "invite_only")
+            meta = c2c_room.load_room_meta(broker / "rooms" / "club")
+            self.assertEqual(meta["visibility"], "invite_only")
+
+
+class RoomCliTests(unittest.TestCase):
+    def test_cli_invite_subcommand(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = Path(tmp)
+            c2c_room.init_room("club", broker)
+            c2c_room.join_room("club", "alice", "sid-a", broker)
+            with mock.patch("c2c_room.default_broker_root", return_value=broker):
+                rc = c2c_room.main(["invite", "club", "bob", "--alias", "alice"])
+            self.assertEqual(rc, 0)
+            meta = c2c_room.load_room_meta(broker / "rooms" / "club")
+            self.assertEqual(meta["invited_members"], ["bob"])
+
+    def test_cli_visibility_subcommand(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = Path(tmp)
+            c2c_room.init_room("club", broker)
+            c2c_room.join_room("club", "alice", "sid-a", broker)
+            with mock.patch("c2c_room.default_broker_root", return_value=broker):
+                rc = c2c_room.main(["visibility", "club", "invite_only", "--alias", "alice"])
+            self.assertEqual(rc, 0)
+            meta = c2c_room.load_room_meta(broker / "rooms" / "club")
+            self.assertEqual(meta["visibility"], "invite_only")
+
+    def test_cli_init_with_visibility(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = Path(tmp)
+            with mock.patch("c2c_room.default_broker_root", return_value=broker):
+                rc = c2c_room.main(["init", "club", "--visibility", "invite_only"])
+            self.assertEqual(rc, 0)
+            meta = c2c_room.load_room_meta(broker / "rooms" / "club")
+            self.assertEqual(meta["visibility"], "invite_only")
+
+
 if __name__ == "__main__":
     unittest.main()

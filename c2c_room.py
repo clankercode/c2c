@@ -108,16 +108,41 @@ def room_join_content(alias: str, room_id: str) -> str:
     return f"{alias} joined room {room_id}"
 
 
-def init_room(room_id: str, broker_root: Path | None = None) -> dict:
+def load_room_meta(rdir: Path) -> dict:
+    meta_path = rdir / "meta.json"
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"visibility": "public", "invited_members": []}
+    if not isinstance(data, dict):
+        return {"visibility": "public", "invited_members": []}
+    return {
+        "visibility": data.get("visibility", "public") if isinstance(data.get("visibility"), str) else "public",
+        "invited_members": [
+            s for s in data.get("invited_members", []) if isinstance(s, str)
+        ],
+    }
+
+
+def save_room_meta(rdir: Path, meta: dict) -> None:
+    write_json_atomic(rdir / "meta.json", meta)
+
+
+def init_room(room_id: str, broker_root: Path | None = None, visibility: str = "public") -> dict:
     rdir = room_dir(room_id, broker_root)
     rdir.mkdir(parents=True, exist_ok=True)
     members_path = rdir / "members.json"
     history_path = rdir / "history.jsonl"
+    created = False
     if not members_path.exists():
         write_json_atomic(members_path, [])
+        created = True
     if not history_path.exists():
         history_path.touch(mode=0o600)
-    return {"ok": True, "room_id": room_id, "path": str(rdir)}
+    meta_path = rdir / "meta.json"
+    if not meta_path.exists():
+        save_room_meta(rdir, {"visibility": visibility, "invited_members": []})
+    return {"ok": True, "room_id": room_id, "path": str(rdir), "visibility": visibility}
 
 
 def join_room(
@@ -129,13 +154,19 @@ def join_room(
     rdir = room_dir(room_id, broker_root)
     init_room(room_id, broker_root)
     members_path = rdir / "members.json"
-    changed = False
+    meta = load_room_meta(rdir)
     with members_lock(rdir):
         members = load_json_list(members_path)
         already = any(
             m.get("alias") == alias and m.get("session_id") == session_id
             for m in members
         )
+        if meta.get("visibility") == "invite_only" and not already:
+            if alias not in meta.get("invited_members", []):
+                return {
+                    "ok": False,
+                    "error": f"join_room rejected: room '{room_id}' is invite-only and '{alias}' is not on the invite list",
+                }
         existing = next(
             (
                 m
@@ -156,6 +187,7 @@ def join_room(
         }
         if already:
             updated = members
+            changed = False
         else:
             updated = []
             inserted = False
@@ -168,9 +200,9 @@ def join_room(
                     updated.append(m)
             if not inserted:
                 updated.append(member)
-        if updated != members:
+            changed = updated != members
+        if changed:
             write_json_atomic(members_path, updated)
-            changed = True
     if changed:
         send_room(
             room_id,
@@ -200,6 +232,51 @@ def leave_room(
         write_json_atomic(members_path, members)
     removed = before - len(members)
     return {"ok": True, "room_id": room_id, "alias": alias, "removed": removed}
+
+
+def send_room_invite(
+    room_id: str,
+    from_alias: str,
+    invitee_alias: str,
+    broker_root: Path | None = None,
+) -> dict:
+    broot = broker_root or default_broker_root()
+    rdir = room_dir(room_id, broot)
+    members_path = rdir / "members.json"
+    if not members_path.exists():
+        return {"ok": False, "error": f"room not found: {room_id}"}
+    with members_lock(rdir):
+        members = load_json_list(members_path)
+        is_member = any(m.get("alias") == from_alias for m in members)
+    if not is_member:
+        return {"ok": False, "error": "send_room_invite rejected: only room members can invite"}
+    meta = load_room_meta(rdir)
+    if invitee_alias not in meta.get("invited_members", []):
+        meta["invited_members"].append(invitee_alias)
+        save_room_meta(rdir, meta)
+    return {"ok": True, "room_id": room_id, "invitee_alias": invitee_alias}
+
+
+def set_room_visibility(
+    room_id: str,
+    from_alias: str,
+    visibility: str,
+    broker_root: Path | None = None,
+) -> dict:
+    broot = broker_root or default_broker_root()
+    rdir = room_dir(room_id, broot)
+    members_path = rdir / "members.json"
+    if not members_path.exists():
+        return {"ok": False, "error": f"room not found: {room_id}"}
+    with members_lock(rdir):
+        members = load_json_list(members_path)
+        is_member = any(m.get("alias") == from_alias for m in members)
+    if not is_member:
+        return {"ok": False, "error": "set_room_visibility rejected: only room members can change visibility"}
+    meta = load_room_meta(rdir)
+    meta["visibility"] = visibility
+    save_room_meta(rdir, meta)
+    return {"ok": True, "room_id": room_id, "visibility": visibility}
 
 
 def send_room(
@@ -408,6 +485,7 @@ def list_rooms(broker_root: Path | None = None) -> list[dict]:
         alive_count = sum(1 for m in member_details if m["alive"] is True)
         dead_count = sum(1 for m in member_details if m["alive"] is False)
         unknown_count = sum(1 for m in member_details if m["alive"] is None)
+        meta = load_room_meta(entry)
         result.append(
             {
                 "room_id": entry.name,
@@ -417,6 +495,8 @@ def list_rooms(broker_root: Path | None = None) -> list[dict]:
                 "dead_member_count": dead_count,
                 "unknown_member_count": unknown_count,
                 "member_details": member_details,
+                "visibility": meta.get("visibility", "public"),
+                "invited_members": meta.get("invited_members", []),
             }
         )
     return result
@@ -506,6 +586,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_init = sub.add_parser("init", help="create a room")
     p_init.add_argument("room_id")
+    p_init.add_argument("--visibility", default="public", choices=["public", "invite_only"])
     p_init.add_argument("--json", action="store_true")
 
     p_join = sub.add_parser("join", help="join a room")
@@ -533,6 +614,18 @@ def main(argv: list[str] | None = None) -> int:
     p_list = sub.add_parser("list", help="list rooms")
     p_list.add_argument("--json", action="store_true")
 
+    p_invite = sub.add_parser("invite", help="invite an alias to a room")
+    p_invite.add_argument("room_id")
+    p_invite.add_argument("invitee_alias")
+    p_invite.add_argument("--alias", default=None)
+    p_invite.add_argument("--json", action="store_true")
+
+    p_visibility = sub.add_parser("visibility", help="set room visibility")
+    p_visibility.add_argument("room_id")
+    p_visibility.add_argument("mode", choices=["public", "invite_only"])
+    p_visibility.add_argument("--alias", default=None)
+    p_visibility.add_argument("--json", action="store_true")
+
     p_prune = sub.add_parser(
         "prune-dead",
         help="remove members whose alias is no longer in the broker registry (safe during outer loops)",
@@ -549,7 +642,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.action == "init":
-        result = init_room(args.room_id)
+        result = init_room(args.room_id, visibility=args.visibility)
     elif args.action == "join":
         alias = args.alias or resolve_self_alias()
         session_id = args.session_id or resolve_self_session_id()
@@ -567,6 +660,12 @@ def main(argv: list[str] | None = None) -> int:
         result = room_history(args.room_id, limit=args.limit)
     elif args.action == "list":
         result = list_rooms()
+    elif args.action == "invite":
+        alias = args.alias or resolve_self_alias()
+        result = send_room_invite(args.room_id, alias, args.invitee_alias)
+    elif args.action == "visibility":
+        alias = args.alias or resolve_self_alias()
+        result = set_room_visibility(args.room_id, alias, args.mode)
     elif args.action == "prune-dead":
         if getattr(args, "all", False):
             result = prune_all_rooms(dry_run=args.dry_run)

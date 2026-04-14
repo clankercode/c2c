@@ -8,6 +8,8 @@ type registration =
 type message = { from_alias : string; to_alias : string; content : string }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
+type room_visibility = Public | Invite_only
+type room_meta = { visibility : room_visibility; invited_members : string list }
 
 module Broker : sig
   type t
@@ -72,6 +74,10 @@ module Broker : sig
   val int_opt_member : string -> Yojson.Safe.t -> int option
 
   val valid_room_id : string -> bool
+  val load_room_meta : t -> room_id:string -> room_meta
+  val save_room_meta : t -> room_id:string -> room_meta -> unit
+  val send_room_invite : t -> room_id:string -> from_alias:string -> invitee_alias:string -> unit
+  val set_room_visibility : t -> room_id:string -> from_alias:string -> visibility:room_visibility -> unit
   val join_room : t -> room_id:string -> alias:string -> session_id:string -> room_member list
   val leave_room : t -> room_id:string -> alias:string -> room_member list
   val append_room_history : t -> room_id:string -> from_alias:string -> content:string -> float
@@ -93,6 +99,8 @@ module Broker : sig
     ; ri_dead_member_count : int
     ; ri_unknown_member_count : int
     ; ri_member_details : room_member_info list
+    ; ri_visibility : room_visibility
+    ; ri_invited_members : string list
     }
   and room_member_info =
     { rmi_alias : string
