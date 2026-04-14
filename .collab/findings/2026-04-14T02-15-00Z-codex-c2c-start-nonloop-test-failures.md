@@ -37,13 +37,13 @@ constants such as `MIN_RUN_SECONDS`.
 
 ## Fix Status
 
-Unresolved in this slice. I did not revert or commit the unrelated
-`c2c_start.py` / `CLAUDE.md` edits because they were not made as part of the
-test-module refactor and may be active work from another agent.
+Resolved after the related `tests/test_c2c_start.py` edits landed in the
+worktree. A focused rerun of `tests/test_c2c_start.py` passed 43/43, and a full
+`just test` rerun passed 968 Python tests plus OCaml build/runtest.
 
 ## Severity
 
-Medium-high: the suite is red while these edits are present, and the behavior
-change is operator-visible. Either the implementation needs to restore the
-documented loop semantics or the tests/docs need to be intentionally updated
-together by the owner of that change.
+Medium while it was red: the behavior change was operator-visible and initially
+left the suite inconsistent. With implementation, docs, and tests aligned, the
+remaining note is procedural: behavior changes this central should land with
+their tests in the same commit when possible.
