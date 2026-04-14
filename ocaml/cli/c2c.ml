@@ -29,12 +29,16 @@ let git_common_dir () =
       if line <> "" && Sys.is_directory line then Some line else None
 
 let resolve_broker_root () =
+  let abs_path p =
+    if Filename.is_relative p then Sys.getcwd () // p else p
+  in
   match broker_root_from_env () with
-  | Some dir -> dir
+  | Some dir -> abs_path dir
   | None -> (
       match git_common_dir () with
       | Some git_dir ->
-          let dir = git_dir // "c2c" // "mcp" in
+          let abs_git = abs_path git_dir in
+          let dir = abs_git // "c2c" // "mcp" in
           if Sys.is_directory dir then dir
           else (
             (try
@@ -435,6 +439,209 @@ let health_cmd =
       Printf.printf "registrations:  %d (%d alive)\n"
         (List.length regs) alive_count;
       Printf.printf "rooms:          %d\n" (List.length rooms)
+
+(* --- subcommand: status --------------------------------------------------- *)
+
+let status_cmd =
+  let min_messages =
+    Cmdliner.Arg.(
+      value
+      & opt int 1
+      & info [ "min-messages" ] ~docv:"N"
+          ~doc:"Minimum total messages (sent+received) to include a peer.")
+  in
+  let+ json = json_flag
+  and+ min_messages = min_messages in
+  let root = resolve_broker_root () in
+  let broker = C2c_mcp.Broker.create ~root in
+  let now = Unix.gettimeofday () in
+  let archive_dir = root // "archive" in
+
+  let sent_by_alias = Hashtbl.create 16 in
+  let received_by_sid = Hashtbl.create 16 in
+  let last_sent_by_alias = Hashtbl.create 16 in
+  let last_recv_by_sid = Hashtbl.create 16 in
+
+  if Sys.is_directory archive_dir then
+    let entries =
+      try Array.to_list (Sys.readdir archive_dir)
+      with Sys_error _ -> []
+    in
+    List.iter
+      (fun fname ->
+         if Filename.check_suffix fname ".jsonl" then (
+           let session_id = Filename.chop_extension fname in
+           let path = archive_dir // fname in
+           try
+             let ic = open_in path in
+             Fun.protect
+               ~finally:(fun () -> close_in_noerr ic)
+               (fun () ->
+                  let rec loop () =
+                    match input_line ic with
+                    | exception End_of_file -> ()
+                    | line ->
+                        let line = String.trim line in
+                        if line <> "" then (
+                          try
+                            let json = Yojson.Safe.from_string line in
+                            let open Yojson.Safe.Util in
+                            let from_alias =
+                              try json |> member "from_alias" |> to_string
+                              with _ -> ""
+                            in
+                            let drained_at =
+                              match json |> member "drained_at" with
+                              | `Float f -> f
+                              | `Int i -> float_of_int i
+                              | _ -> 0.0
+                            in
+                            if from_alias <> "" && from_alias <> "c2c-system"
+                            then (
+                              let prev =
+                                try Hashtbl.find sent_by_alias from_alias
+                                with Not_found -> 0
+                              in
+                              Hashtbl.replace sent_by_alias from_alias
+                                (prev + 1);
+                              let prev_ts =
+                                try Hashtbl.find last_sent_by_alias from_alias
+                                with Not_found -> 0.0
+                              in
+                              if drained_at > prev_ts then
+                                Hashtbl.replace last_sent_by_alias from_alias
+                                  drained_at
+                            );
+                            let prev_recv =
+                              try Hashtbl.find last_recv_by_sid session_id
+                              with Not_found -> 0.0
+                            in
+                            if drained_at > prev_recv then
+                              Hashtbl.replace last_recv_by_sid session_id
+                                drained_at;
+                            let prev_recv_count =
+                              try Hashtbl.find received_by_sid session_id
+                              with Not_found -> 0
+                            in
+                            Hashtbl.replace received_by_sid session_id
+                              (prev_recv_count + 1)
+                          with _ -> ());
+                        loop ()
+                  in
+                  loop ())
+           with Sys_error _ -> ()))
+      entries;
+
+  let goal_count = 20 in
+  let regs = C2c_mcp.Broker.list_registrations broker in
+  let rooms = C2c_mcp.Broker.list_rooms broker in
+
+  let alive_peers =
+    List.filter_map
+      (fun (r : C2c_mcp.registration) ->
+         if C2c_mcp.Broker.registration_is_alive r then (
+           let sent =
+             try Hashtbl.find sent_by_alias r.alias with Not_found -> 0
+           in
+           let received =
+             try Hashtbl.find received_by_sid r.session_id with Not_found ->
+               try Hashtbl.find received_by_sid r.alias with Not_found -> 0
+           in
+           if sent + received >= min_messages then
+             let last_sent =
+               try Hashtbl.find last_sent_by_alias r.alias
+               with Not_found -> 0.0
+             in
+             let last_recv =
+               try Hashtbl.find last_recv_by_sid r.session_id with Not_found ->
+                 try Hashtbl.find last_recv_by_sid r.alias
+                 with Not_found -> 0.0
+             in
+             let last_active = max last_sent last_recv in
+             let goal_met = sent >= goal_count && received >= goal_count in
+             Some (r.alias, sent, received, goal_met, last_active)
+           else None)
+         else None)
+      regs
+  in
+
+  let dead_peer_count = List.length regs - List.length alive_peers in
+  let overall_goal_met =
+    alive_peers <> []
+    && List.for_all (fun (_, _, _, gm, _) -> gm) alive_peers
+  in
+
+  let output_mode = if json then Json else Human in
+  match output_mode with
+  | Json ->
+      let peer_json (alias, sent, received, goal_met, last_active) =
+        `Assoc
+          [ ("alias", `String alias)
+          ; ("sent", `Int sent)
+          ; ("received", `Int received)
+          ; ("goal_met", `Bool goal_met)
+          ; ("last_active_ts", `Float last_active)
+          ]
+      in
+      let room_json (r : C2c_mcp.Broker.room_info) =
+        let alive_members =
+          List.filter_map
+            (fun (m : C2c_mcp.Broker.room_member_info) ->
+               if m.rmi_alive <> Some false then Some (`String m.rmi_alias)
+               else None)
+            r.ri_member_details
+        in
+        `Assoc
+          [ ("room_id", `String r.ri_room_id)
+          ; ("member_count", `Int r.ri_member_count)
+          ; ("alive_count", `Int r.ri_alive_member_count)
+          ; ("alive_members", `List alive_members)
+          ]
+      in
+      print_json
+        (`Assoc
+           [ ("alive_peers", `List (List.map peer_json alive_peers))
+           ; ("dead_peer_count", `Int dead_peer_count)
+           ; ("total_peer_count", `Int (List.length regs))
+           ; ("rooms", `List (List.map room_json rooms))
+           ; ("overall_goal_met", `Bool overall_goal_met)
+           ])
+  | Human ->
+      Printf.printf "c2c Status\n";
+      Printf.printf "==================================================\n\n";
+      Printf.printf "Alive peers (%d/%d):\n" (List.length alive_peers)
+        (List.length regs);
+      List.iter
+        (fun (alias, sent, received, goal_met, last_active) ->
+           let age =
+             let delta = now -. last_active in
+             if delta < 0.0 then "just now"
+             else if delta < 60.0 then Printf.sprintf "%.0fs ago" delta
+             else if delta < 3600.0 then
+               Printf.sprintf "%.0fm ago" (delta /. 60.0)
+             else if delta < 86400.0 then
+               Printf.sprintf "%.0fh ago" (delta /. 3600.0)
+             else Printf.sprintf "%.0fd ago" (delta /. 86400.0)
+           in
+           let status = if goal_met then "goal_met" else "pending" in
+           Printf.printf "  %-20s sent=%3d recv=%3d  %-8s  last=%s\n" alias
+             sent received status age)
+        alive_peers;
+      if alive_peers = [] then Printf.printf "  (none)\n";
+      Printf.printf "\nRooms:\n";
+      List.iter
+        (fun (r : C2c_mcp.Broker.room_info) ->
+           Printf.printf "  %-20s %d member(s), %d alive\n" r.ri_room_id
+             r.ri_member_count r.ri_alive_member_count)
+        rooms;
+      if rooms = [] then Printf.printf "  (none)\n";
+      Printf.printf "\nOverall goal_met: %s\n"
+        (if overall_goal_met then "YES" else "NO")
+
+let status =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "status" ~doc:"Show compact swarm overview.")
+    status_cmd
 
 (* --- subcommand: register ------------------------------------------------- *)
 
@@ -1190,20 +1397,252 @@ let json_write_file path json =
     Yojson.Safe.pretty_to_channel oc json);
   Unix.rename tmp path
 
+let default_alias_for_client client =
+  let user = try Sys.getenv "USER" with Not_found -> "user" in
+  let host =
+    try
+      let h = Sys.getenv "HOSTNAME" in
+      try String.sub h 0 (String.index h '.') with Not_found -> h
+    with Not_found ->
+      try
+        let h = Unix.gethostname () in
+        try String.sub h 0 (String.index h '.') with Not_found -> h
+      with _ -> "localhost"
+  in
+  Printf.sprintf "%s-%s-%s" client user host
+
+(* --- setup: Codex (TOML) --- *)
+
+let c2c_tools_list = [
+  "register"; "whoami"; "list";
+  "send"; "send_all";
+  "poll_inbox"; "peek_inbox"; "history";
+  "join_room"; "leave_room"; "send_room"; "list_rooms"; "my_rooms"; "room_history";
+  "sweep"; "tail_log";
+]
+
+let setup_codex ~output_mode ~root ~alias_val ~server_path =
+  let config_path = Filename.concat (Sys.getenv "HOME") (".codex" // "config.toml") in
+  let existing =
+    if Sys.file_exists config_path then
+      let ic = open_in config_path in
+      Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+        let n = in_channel_length ic in
+        let s = really_input_string ic n in
+        s)
+    else ""
+  in
+  let lines = String.split_on_char '\n' existing in
+  let stripped =
+    let buf = Buffer.create (String.length existing) in
+    let in_c2c = ref false in
+    List.iter (fun line ->
+      let trimmed = String.trim line in
+      if String.length trimmed > 0 && trimmed.[0] = '[' then begin
+        in_c2c :=
+          (try
+             let sec = String.sub trimmed 1 (String.length trimmed - 2) in
+             String.length sec >= String.length "mcp_servers.c2c"
+             && String.sub sec 0 (String.length "mcp_servers.c2c") = "mcp_servers.c2c"
+           with _ -> false)
+      end;
+      if not !in_c2c then Buffer.add_string buf line;
+      Buffer.add_char buf '\n'
+    ) lines;
+    Buffer.contents buf
+  in
+  let buf = Buffer.create 1024 in
+  Buffer.add_string buf "\n[mcp_servers.c2c]\n";
+  Buffer.add_string buf "command = \"opam\"\n";
+  Buffer.add_string buf (Printf.sprintf "args = [\"exec\", \"--\", \"dune\", \"run\", \"%s\"]\n" server_path);
+  Buffer.add_string buf "\n[mcp_servers.c2c.env]\n";
+  Buffer.add_string buf (Printf.sprintf "C2C_MCP_BROKER_ROOT = \"%s\"\n" root);
+  Buffer.add_string buf (Printf.sprintf "C2C_MCP_SESSION_ID = \"%s\"\n" alias_val);
+  Buffer.add_string buf "C2C_MCP_AUTO_JOIN_ROOMS = \"swarm-lounge\"\n";
+  List.iter (fun tool ->
+    Buffer.add_string buf (Printf.sprintf "\n[mcp_servers.c2c.tools.%s]\n" tool);
+    Buffer.add_string buf "approval_mode = \"auto\"\n"
+  ) c2c_tools_list;
+  let new_content = stripped ^ Buffer.contents buf in
+  (try Unix.mkdir (Filename.dirname config_path) 0o755 with Unix.Unix_error _ -> ());
+  let tmp = config_path ^ ".tmp" in
+  let oc = open_out tmp in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc new_content);
+  Unix.rename tmp config_path;
+  match output_mode with
+  | Json ->
+      print_json (`Assoc
+        [ ("ok", `Bool true)
+        ; ("client", `String "codex")
+        ; ("alias", `String alias_val)
+        ; ("broker_root", `String root)
+        ; ("config", `String config_path)
+        ])
+  | Human ->
+      Printf.printf "Configured Codex for c2c.\n";
+      Printf.printf "  alias:       %s\n" alias_val;
+      Printf.printf "  broker root: %s\n" root;
+      Printf.printf "  config:      %s\n" config_path;
+      Printf.printf "  server:      %s\n" server_path;
+      Printf.printf "\nRestart Codex to pick up the new MCP server.\n"
+
+(* --- setup: Kimi (JSON) --- *)
+
+let setup_kimi ~output_mode ~root ~alias_val ~server_path =
+  let config_path = Filename.concat (Sys.getenv "HOME") (".kimi" // "mcp.json") in
+  let existing =
+    if Sys.file_exists config_path then json_read_file config_path
+    else `Assoc []
+  in
+  let c2c_entry =
+    `Assoc
+      [ ("type", `String "stdio")
+      ; ("command", `String "opam")
+      ; ("args", `List [ `String "exec"; `String "--"; `String "dune"; `String "run"; `String server_path ])
+      ; ("env", `Assoc
+          [ ("C2C_MCP_BROKER_ROOT", `String root)
+          ; ("C2C_MCP_SESSION_ID", `String alias_val)
+          ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+          ])
+      ]
+  in
+  let config = match existing with
+    | `Assoc fields ->
+        let existing_mcp = match List.assoc_opt "mcpServers" fields with
+          | Some (`Assoc m) -> List.filter (fun (k, _) -> k <> "c2c") m
+          | _ -> []
+        in
+        `Assoc (List.filter (fun (k, _) -> k <> "mcpServers") fields
+                @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", c2c_entry) ])) ])
+    | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", c2c_entry) ]) ]
+  in
+  (try Unix.mkdir (Filename.dirname config_path) 0o755 with Unix.Unix_error _ -> ());
+  json_write_file config_path config;
+  match output_mode with
+  | Json ->
+      print_json (`Assoc
+        [ ("ok", `Bool true)
+        ; ("client", `String "kimi")
+        ; ("alias", `String alias_val)
+        ; ("broker_root", `String root)
+        ; ("config", `String config_path)
+        ])
+  | Human ->
+      Printf.printf "Configured Kimi for c2c.\n";
+      Printf.printf "  alias:       %s\n" alias_val;
+      Printf.printf "  broker root: %s\n" root;
+      Printf.printf "  config:      %s\n" config_path;
+      Printf.printf "  server:      %s\n" server_path;
+      Printf.printf "\nRestart Kimi to pick up the new MCP server.\n"
+
+(* --- setup: OpenCode (JSON + plugin) --- *)
+
+let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt =
+  let target_dir = match target_dir_opt with
+    | Some d -> d
+    | None -> Sys.getcwd ()
+  in
+  if not (Sys.is_directory target_dir) then begin
+    Printf.eprintf "error: target directory does not exist: %s\n%!" target_dir;
+    exit 1
+  end;
+  let config_dir = target_dir // ".opencode" in
+  let config_path = config_dir // "opencode.json" in
+  let dir_name = Filename.basename (Filename.chop_suffix target_dir "/") in
+  let session_id = Printf.sprintf "opencode-%s" dir_name in
+  (try Unix.mkdir config_dir 0o755 with Unix.Unix_error _ -> ());
+  let config =
+    `Assoc
+      [ ("$schema", `String "https://opencode.ai/config.json")
+      ; ("mcp", `Assoc
+          [ ("c2c", `Assoc
+              [ ("type", `String "local")
+              ; ("command", `List [ `String "opam"; `String "exec"; `String "--"; `String "dune"; `String "run"; `String server_path ])
+              ; ("environment", `Assoc
+                  [ ("C2C_MCP_BROKER_ROOT", `String root)
+                  ; ("C2C_MCP_SESSION_ID", `String session_id)
+                  ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
+                  ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+                  ])
+              ; ("enabled", `Bool true)
+              ])
+          ])
+      ]
+  in
+  json_write_file config_path config;
+  let sidecar = config_dir // "c2c-plugin.json" in
+  let sidecar_json =
+    `Assoc
+      [ ("session_id", `String session_id)
+      ; ("alias", `String alias_val)
+      ; ("broker_root", `String root)
+      ]
+  in
+  json_write_file sidecar sidecar_json;
+  let plugin_src = ".opencode/plugins/c2c.ts" in
+  let plugin_note =
+    if Sys.file_exists plugin_src then begin
+      let plugins_dir = config_dir // "plugins" in
+      (try Unix.mkdir plugins_dir 0o755 with Unix.Unix_error _ -> ());
+      let dest = plugins_dir // "c2c.ts" in
+      (try
+         let ic = open_in_bin plugin_src in
+         let oc = open_out_bin (dest ^ ".tmp") in
+         Fun.protect ~finally:(fun () -> close_in ic; close_out oc) (fun () ->
+           let buf = Bytes.create 65536 in
+           let rec copy () =
+             let n = input ic buf 0 (Bytes.length buf) in
+             if n > 0 then (output oc buf 0 n; copy ())
+           in
+           copy ());
+         Unix.rename (dest ^ ".tmp") dest;
+         Printf.sprintf "plugin installed to %s" dest
+       with _ -> "plugin copy failed")
+    end else "plugin source not found (expected .opencode/plugins/c2c.ts in c2c repo)"
+  in
+  match output_mode with
+  | Json ->
+      print_json (`Assoc
+        [ ("ok", `Bool true)
+        ; ("client", `String "opencode")
+        ; ("session_id", `String session_id)
+        ; ("alias", `String alias_val)
+        ; ("broker_root", `String root)
+        ; ("config", `String config_path)
+        ; ("plugin", `String plugin_note)
+        ])
+  | Human ->
+      Printf.printf "Configured OpenCode for c2c.\n";
+      Printf.printf "  session id:  %s\n" session_id;
+      Printf.printf "  alias:       %s\n" alias_val;
+      Printf.printf "  broker root: %s\n" root;
+      Printf.printf "  config:      %s\n" config_path;
+      Printf.printf "  plugin:      %s\n" plugin_note;
+      Printf.printf "\nRun 'opencode mcp list' from %s to verify.\n" target_dir
+
 let setup_cmd =
   let client =
     Cmdliner.Arg.(value & opt (some string) None & info [ "client"; "c" ] ~docv:"CLIENT" ~doc:"Client type: claude, codex, kimi, opencode (default: claude).")
   in
   let alias =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS" ~doc:"Alias to use (default: auto-generated).")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS" ~doc:"Alias to use (default: auto-generated per client).")
   in
   let broker_root =
     Cmdliner.Arg.(value & opt (some string) None & info [ "broker-root"; "b" ] ~docv:"DIR" ~doc:"Broker root directory (default: auto-detected).")
   in
+  let target_dir =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "target-dir"; "t" ] ~docv:"DIR" ~doc:"Target directory for opencode config (default: cwd).")
+  in
+  let force =
+    Cmdliner.Arg.(value & flag & info [ "force"; "f" ] ~doc:"Overwrite existing configuration.")
+  in
   let+ json = json_flag
   and+ client_opt = client
   and+ alias_opt = alias
-  and+ broker_root_opt = broker_root in
+  and+ broker_root_opt = broker_root
+  and+ target_dir_opt = target_dir
+  and+ _force = force in
   let output_mode = if json then Json else Human in
   let client = Option.value client_opt ~default:"claude" in
   let root =
@@ -1214,9 +1653,8 @@ let setup_cmd =
   let alias_val =
     match alias_opt with
     | Some a -> a
-    | None -> generate_alias ()
+    | None -> default_alias_for_client client
   in
-  let session_id = generate_session_id () in
   let server_path =
     match find_ocaml_server_path () with
     | Some p -> p
@@ -1267,7 +1705,6 @@ let setup_cmd =
               [ ("ok", `Bool true)
               ; ("client", `String "claude")
               ; ("alias", `String alias_val)
-              ; ("session_id", `String session_id)
               ; ("broker_root", `String root)
               ; ("config", `String claude_json)
               ])
@@ -1278,13 +1715,9 @@ let setup_cmd =
             Printf.printf "  config:      %s\n" claude_json;
             Printf.printf "  server:      %s\n" server_path;
             Printf.printf "\nRestart Claude Code to pick up the new MCP server.\n")
-   | "codex" | "kimi" | "opencode" ->
-       (match output_mode with
-        | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String (Printf.sprintf "client '%s' not yet implemented in OCaml CLI" client)) ])
-        | Human ->
-            Printf.printf "Setup for %s is not yet implemented in the OCaml CLI.\n" client;
-            Printf.printf "Use: python3 c2c_configure_%s.py --alias %s\n" client alias_val;
-            exit 1)
+   | "codex" -> setup_codex ~output_mode ~root ~alias_val ~server_path
+   | "kimi" -> setup_kimi ~output_mode ~root ~alias_val ~server_path
+   | "opencode" -> setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt
    | _ ->
        (match output_mode with
         | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String (Printf.sprintf "unknown client '%s'. Use: claude, codex, kimi, opencode" client)) ])
@@ -1294,12 +1727,334 @@ let setup_cmd =
 
 let setup = Cmdliner.Cmd.v (Cmdliner.Cmd.info "setup" ~doc:"Configure a client for c2c messaging.") setup_cmd
 
+(* --- subcommand: serve (MCP server mode) ---------------------------------- *)
+
+let serve_cmd =
+  let open Cmdliner.Term in
+  let+ () = const () in
+  let root =
+    match broker_root_from_env () with
+    | Some r -> r
+    | None -> resolve_broker_root ()
+  in
+  C2c_mcp.auto_register_startup ~broker_root:root;
+  C2c_mcp.auto_join_rooms_startup ~broker_root:root;
+  let open Lwt.Syntax in
+  let auto_drain =
+    match Sys.getenv_opt "C2C_MCP_AUTO_DRAIN_CHANNEL" with
+    | Some v ->
+        let n = String.lowercase_ascii (String.trim v) in
+        not (List.mem n [ "0"; "false"; "no"; "off" ])
+    | None -> false
+  in
+  let session_id =
+    match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+    | Some v when String.trim v <> "" -> Some (String.trim v)
+    | _ -> None
+  in
+  let assoc_opt name json =
+    match json with `Assoc fields -> List.assoc_opt name fields | _ -> None
+  in
+  let string_field name json =
+    match assoc_opt name json with Some (`String v) -> Some v | _ -> None
+  in
+  let client_supports_channel request =
+    let cap =
+      let params = assoc_opt "params" request in
+      let caps = Option.bind params (assoc_opt "capabilities") in
+      let exp = Option.bind caps (assoc_opt "experimental") in
+      Option.bind exp (assoc_opt "claude/channel")
+    in
+    match cap with
+    | Some (`Bool false) | Some `Null | None -> false
+    | Some _ -> true
+  in
+  let next_channel_cap ~current request =
+    match string_field "method" request with
+    | Some "initialize" -> client_supports_channel request
+    | _ -> current
+  in
+  let starts_with_ci ~prefix s =
+    let p = String.lowercase_ascii prefix in
+    let v = String.lowercase_ascii s in
+    String.length v >= String.length p && String.sub v 0 (String.length p) = p
+  in
+  let parse_content_length line =
+    match String.index_opt line ':' with
+    | None -> None
+    | Some i ->
+        let n = String.trim (String.sub line (i + 1) (String.length line - i - 1)) in
+        int_of_string_opt n
+  in
+  let rec read_until_blank () =
+    let* line = Lwt_io.read_line_opt Lwt_io.stdin in
+    match line with
+    | None -> Lwt.return_unit
+    | Some l -> if String.trim l = "" then Lwt.return_unit else read_until_blank ()
+  in
+  let rec read_message () =
+    let* first = Lwt_io.read_line_opt Lwt_io.stdin in
+    match first with
+    | None -> Lwt.return_none
+    | Some line ->
+        let trimmed = String.trim line in
+        if trimmed = "" then read_message ()
+        else if starts_with_ci ~prefix:"Content-Length:" trimmed then
+          match parse_content_length trimmed with
+          | None -> Lwt.return_none
+          | Some len ->
+              let* () = read_until_blank () in
+              let* body = Lwt_io.read ~count:len Lwt_io.stdin in
+              if String.length body = len then Lwt.return_some body else Lwt.return_none
+        else Lwt.return_some line
+  in
+  let write_message json =
+    let body = Yojson.Safe.to_string json in
+    let* () = Lwt_io.write_line Lwt_io.stdout body in
+    Lwt_io.flush Lwt_io.stdout
+  in
+  let jsonrpc_error ~id ~code ~message =
+    `Assoc
+      [ ("jsonrpc", `String "2.0")
+      ; ("id", id)
+      ; ("error", `Assoc [ ("code", `Int code); ("message", `String message) ])
+      ]
+  in
+  let rec loop ~channel_capable =
+    let* msg = read_message () in
+    match msg with
+    | None -> Lwt.return_unit
+    | Some line ->
+        let json = try Ok (Yojson.Safe.from_string line) with _ -> Error () in
+        match json with
+        | Error () ->
+            let* () = write_message (jsonrpc_error ~id:`Null ~code:(-32700) ~message:"Parse error") in
+            loop ~channel_capable
+        | Ok request ->
+            let channel_capable = next_channel_cap ~current:channel_capable request in
+            let* response = C2c_mcp.handle_request ~broker_root:root request in
+            let* () = match response with None -> Lwt.return_unit | Some resp -> write_message resp in
+            let* () =
+              match (auto_drain, channel_capable, session_id) with
+              | false, _, _ -> Lwt.return_unit
+              | true, false, _ -> Lwt.return_unit
+              | true, true, None -> Lwt.return_unit
+              | true, true, Some sid ->
+                  let broker = C2c_mcp.Broker.create ~root in
+                  let queued = C2c_mcp.Broker.drain_inbox broker ~session_id:sid in
+                  let rec emit = function
+                    | [] -> Lwt.return_unit
+                    | m :: rest ->
+                        let* () = write_message (C2c_mcp.channel_notification m) in
+                        emit rest
+                  in
+                  emit queued
+            in
+            loop ~channel_capable
+  in
+  Lwt_main.run (loop ~channel_capable:false)
+
+let serve = Cmdliner.Cmd.v (Cmdliner.Cmd.info "serve" ~doc:"Run the MCP server (JSON-RPC over stdio).") serve_cmd
+
+(* --- subcommand: instances ------------------------------------------------ *)
+
+let instances_dir () =
+  Filename.concat (Sys.getenv "HOME") (".local" // "share" // "c2c" // "instances")
+
+let list_instance_dirs () =
+  let base = instances_dir () in
+  if not (Sys.file_exists base) then []
+  else begin
+    let dirs = Sys.readdir base in
+    Array.fold_left (fun acc name ->
+      let full = base // name in
+      if Sys.is_directory full && Sys.file_exists (full // "config.json") then
+        full :: acc
+      else acc
+    ) [] dirs
+  end
+
+let instances_cmd =
+  let+ json = json_flag in
+  let output_mode = if json then Json else Human in
+  let dirs = list_instance_dirs () in
+  if dirs = [] then begin
+    match output_mode with
+    | Json -> print_json (`List [])
+    | Human -> Printf.printf "No managed instances.\n"
+  end else begin
+    let instances =
+      List.sort String.compare dirs |> List.map (fun dir ->
+        let name = Filename.basename dir in
+        let config_path = dir // "config.json" in
+        let config =
+          try Some (json_read_file config_path) with _ -> None
+        in
+        let client = match config with
+          | Some (`Assoc fields) -> (match List.assoc_opt "client" fields with Some (`String c) -> c | _ -> "?")
+          | _ -> "?"
+        in
+        let status, pid =
+          let outer_pid_path = dir // "outer.pid" in
+          if Sys.file_exists outer_pid_path then begin
+            let pid_s =
+              let ic = open_in outer_pid_path in
+              Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+                let s = input_line ic in String.trim s)
+            in
+            match int_of_string_opt pid_s with
+            | Some pid ->
+                (try
+                   ignore (Unix.kill pid 0);
+                   ("running", Some pid)
+                 with Unix.Unix_error _ -> ("stopped", Some pid))
+            | None -> ("unknown", None)
+          end else ("stopped", None)
+        in
+        let fields : (string * Yojson.Safe.t) list =
+          [ ("name", `String name)
+          ; ("client", `String client)
+          ; ("status", `String status)
+          ]
+        in
+        let fields = match pid with
+          | Some p -> fields @ [ ("pid", `Int p) ]
+          | None -> fields
+        in
+        `Assoc fields)
+    in
+    match output_mode with
+    | Json -> print_json (`List instances)
+    | Human ->
+        List.iter (fun (inst : Yojson.Safe.t) ->
+          match inst with
+          | `Assoc fields ->
+              let name = match List.assoc_opt "name" fields with Some (`String s) -> s | _ -> "?" in
+              let client = match List.assoc_opt "client" fields with Some (`String s) -> s | _ -> "?" in
+              let status = match List.assoc_opt "status" fields with Some (`String s) -> s | _ -> "?" in
+              let pid_str = match List.assoc_opt "pid" fields with Some (`Int n) -> Printf.sprintf " (pid %d)" n | _ -> "" in
+              Printf.printf "  %-20s %-10s %s%s\n" name client status pid_str
+          | _ -> ()
+        ) instances
+  end
+
+let instances = Cmdliner.Cmd.v (Cmdliner.Cmd.info "instances" ~doc:"List managed c2c instances.") instances_cmd
+
+(* --- subcommand: start ---------------------------------------------------- *)
+
+let start_cmd =
+  let client =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"CLIENT" ~doc:"Client to start (claude, codex, kimi, opencode, crush).")
+  in
+  let name =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "name"; "n" ] ~docv:"NAME" ~doc:"Instance name (default: auto-generated).")
+  in
+  let+ json = json_flag
+  and+ client = client
+  and+ name_opt = name in
+  let output_mode = if json then Json else Human in
+  let root = resolve_broker_root () in
+  let inst_dir = instances_dir () in
+  (try Unix.mkdir inst_dir 0o755 with Unix.Unix_error _ -> ());
+  let inst_name = match name_opt with
+    | Some n -> n
+    | None -> Printf.sprintf "%s-%d" client (Random.int 10000)
+  in
+  let inst_path = inst_dir // inst_name in
+  if Sys.file_exists inst_path then begin
+    (match output_mode with
+     | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String (Printf.sprintf "instance '%s' already exists" inst_name)) ])
+     | Human -> Printf.eprintf "error: instance '%s' already exists. Use 'c2c stop %s' first.\n%!" inst_name inst_name);
+    exit 1
+  end;
+  Unix.mkdir inst_path 0o755;
+  let alias = default_alias_for_client client in
+  let config =
+    `Assoc
+      [ ("client", `String client)
+      ; ("name", `String inst_name)
+      ; ("alias", `String alias)
+      ; ("broker_root", `String root)
+      ]
+  in
+  json_write_file (inst_path // "config.json") config;
+  match output_mode with
+  | Json ->
+      print_json (`Assoc
+        [ ("ok", `Bool true)
+        ; ("name", `String inst_name)
+        ; ("client", `String client)
+        ; ("alias", `String alias)
+        ; ("dir", `String inst_path)
+        ])
+  | Human ->
+      Printf.printf "Instance '%s' registered.\n" inst_name;
+      Printf.printf "  client: %s\n" client;
+      Printf.printf "  alias:  %s\n" alias;
+      Printf.printf "  dir:    %s\n" inst_path;
+      Printf.printf "\nFull lifecycle management coming soon.\n";
+      Printf.printf "For now use: python3 c2c_start.py start %s -n %s\n" client inst_name
+
+let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Register a managed c2c instance.") start_cmd
+
+(* --- subcommand: stop ----------------------------------------------------- *)
+
+let stop_cmd =
+  let name =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME" ~doc:"Instance name to stop.")
+  in
+  let+ json = json_flag
+  and+ name = name in
+  let output_mode = if json then Json else Human in
+  let inst_path = instances_dir () // name in
+  if not (Sys.file_exists inst_path) then begin
+    (match output_mode with
+     | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String (Printf.sprintf "instance '%s' not found" name)) ])
+     | Human -> Printf.eprintf "error: instance '%s' not found.\n%!" name);
+    exit 1
+  end;
+  let outer_pid_path = inst_path // "outer.pid" in
+  let result =
+    if Sys.file_exists outer_pid_path then begin
+      let pid_s =
+        let ic = open_in outer_pid_path in
+        Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+          let s = input_line ic in String.trim s)
+      in
+      match int_of_string_opt pid_s with
+      | Some pid ->
+          (try
+             Unix.kill pid Sys.sigterm;
+             let stopped = ref false in
+             for _ = 1 to 10 do
+               if not !stopped then begin
+                 (try ignore (Unix.kill pid 0) with Unix.Unix_error _ -> stopped := true);
+                 if not !stopped then Unix.sleepf 0.5
+               end
+             done;
+             if not !stopped then
+               (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ());
+             "stopped"
+           with Unix.Unix_error _ -> "stopped")
+      | None -> "no pid found"
+    end else "no outer.pid"
+  in
+  match output_mode with
+  | Json ->
+      print_json (`Assoc [ ("ok", `Bool true); ("name", `String name); ("status", `String result) ])
+  | Human ->
+      Printf.printf "Instance '%s': %s\n" name result
+
+let stop = Cmdliner.Cmd.v (Cmdliner.Cmd.info "stop" ~doc:"Stop a managed c2c instance.") stop_cmd
+
+(* --- main entry point ----------------------------------------------------- *)
+
 let () =
   exit
     (Cmdliner.Cmd.eval
        (Cmdliner.Cmd.group
           (Cmdliner.Cmd.info "c2c"
-             ~version:"0.7.0"
+             ~version:"0.8.0"
              ~doc:"c2c — peer-to-peer messaging for AI agents"
              ~man:
                [ `S "DESCRIPTION"
@@ -1310,9 +2065,12 @@ let () =
                ; `P
                    "$(b,send), $(b,list), $(b,whoami), $(b,poll-inbox), \
                     $(b,send-all), $(b,sweep), $(b,history), $(b,health), \
-                    $(b,register), $(b,tail-log), $(b,my-rooms), \
+                    $(b,status), $(b,register), $(b,tail-log), $(b,my-rooms), \
                     $(b,dead-letter), $(b,prune-rooms), $(b,smoke-test), \
-                    $(b,install), $(b,setup)"
+                    $(b,install), $(b,setup), $(b,serve), $(b,start), \
+                    $(b,stop), $(b,instances)"
                ; `P "$(b,rooms) — manage N:N chat rooms"
                ])
-          [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep; history; health; register; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; install; setup; rooms_group ]))
+          [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep; history
+          ; health; status; register; tail_log; my_rooms; dead_letter; prune_rooms
+          ; smoke_test; install; setup; serve; start; stop; instances; rooms_group ]))

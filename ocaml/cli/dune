@@ -1,3 +1,3 @@
 (executable
  (name c2c)
- (libraries c2c_mcp cmdliner yojson logs unix))
+ (libraries c2c_mcp cmdliner yojson logs unix lwt.unix))
