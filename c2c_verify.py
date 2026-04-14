@@ -287,7 +287,7 @@ def main(argv: list[str] | None = None) -> int:
         broker_root = Path(args.broker_root) if args.broker_root else None
         alive_only = getattr(args, "alive_only", False)
         try:
-            payload = verify_progress_broker(broker_root, alive_only=alive_only)
+            payload = verify_progress_broker(broker_root, alive_only=alive_only, min_messages=args.min_messages)
         except (OSError, ValueError) as error:
             print(str(error), file=sys.stderr)
             return 1
