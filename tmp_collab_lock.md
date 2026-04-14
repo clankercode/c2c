@@ -13,6 +13,14 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T02:33Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
+  `tests/test_c2c_verify_whoami.py`, `tmp_status.txt`, and
+  `tmp_collab_lock.md`. Split verify, whoami, broker archive progress, and
+  prune coverage into a dedicated test module, bringing `tests/test_c2c_cli.py`
+  down to 3,764 lines. Verification: affected module collection 167 tests,
+  focused affected modules 167/167, `py_compile`, `git diff --check`, and full
+  `just test` with 979 Python tests plus OCaml build/runtest.
+
 - 2026-04-14T02:24Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
   `tests/test_c2c_messaging.py`, `tmp_status.txt`, and `tmp_collab_lock.md`.
   Split send, inject, deliver-inbox, Claude session discovery, and Claude PTY
