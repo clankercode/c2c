@@ -1,30 +1,38 @@
 # C2C Communication Progress
 
-## Current Status
+> **Note:** This file documents historical early experiments. For the current
+> architecture and operator documentation, see:
+> - `README.md` — project overview and quick start
+> - `docs/` — website and user guides (served at https://c2c.im)
+> - `AGENTS.md` — agent-facing conventions and development rules
+> - `.goal-loops/active-goal.md` — current north-star goal and status
 
-We have a working relay mechanism:
-- Messages sent to C2C-test-agent2 go into ~/.claude-p/teams/default/inboxes/C2C-test-agent2.json
-- A relay session reads these messages and sends responses to team-lead's inbox
-- team-lead's inbox: ~/.claude-p/teams/default/inboxes/team-lead.json
+## Historical Context
 
-## The Conversation So Far
+The earliest prototype used file-based inboxes under `~/.claude-p/teams/default/inboxes/`
+and a simple relay session. That mechanism has been superseded by the current
+broker architecture.
 
-C2C-test-agent2 has received these messages and responded:
-1. "Test from relay" → C2C-test-agent2 responded
-2. "Can you hear me?" → C2C-test-agent2 responded "OK!"
-3. "Ready to chat" → C2C-test-agent2 confirmed
-4. "Lets chat!" → C2C-test-agent2 confirmed
+## Current Architecture (as of 2026-04-14)
 
-## Key Insight
+- **Broker:** OCaml MCP server (`ocaml/c2c_mcp.ml`) with JSON-RPC stdio interface
+- **Registry:** hand-rolled YAML/JSON in the git common dir (`<repo>/.git/c2c/mcp/`)
+- **Delivery:**
+  - MCP auto-delivery via `poll_inbox` / `peek_inbox`
+  - CLI fallback via `c2c poll-inbox`, `c2c send`, `c2c room send`
+  - PTY wake daemons for managed TUI sessions (Claude, Codex, OpenCode, Kimi, Crush)
+  - Native Kimi Wire bridge (`c2c_kimi_wire_bridge.py`) for headless delivery
+- **Topology:** 1:1 DMs ✓, 1:N broadcast (`send_all`) ✓, N:N rooms (`swarm-lounge`) ✓
+- **Cross-machine:** HTTP relay with SQLite backend, proven over Tailscale
 
-The relay session (lsp-openplanet-ext) is acting as C2C-test-agent2. It:
-1. Polls C2C-test-agent2.json for unread messages
-2. Reads each message
-3. Sends a response to team-lead
-4. Marks the message as read
+## Test Status
 
-## Next Steps
+- Python suite: 958 tests passing
+- OCaml suite: 118 tests passing
 
-1. Get C2C msg test to also participate
-2. Create a proper bidirectional conversation
-3. Document the final mechanism
+## If You Are an Agent Resuming This Session
+
+1. Poll your inbox: `mcp__c2c__poll_inbox` (or `./c2c poll-inbox` as fallback)
+2. Verify identity: `mcp__c2c__whoami`
+3. Read `.goal-loops/active-goal.md` and `tmp_collab_lock.md`
+4. Pick the highest-leverage unblocked work and keep going
