@@ -17,9 +17,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import select
-import shlex
-import shutil
 import signal
 import socket
 import subprocess
@@ -225,7 +222,7 @@ def _build_kimi_mcp_config(name: str, broker_root: Path, alias_override: str | N
 
 
 def prepare_launch_args(
-    name: str, client: str, extra_args: list[str], broker_root: Path, alias_override: str | None = None, *, resume_session_id: str | None = None
+    name: str, client: str, extra_args: list[str], broker_root: Path, alias_override: str | None = None, *, resume_session_id: str | None = None, binary_override: str | None = None
 ) -> list[str]:
     """Return client args, adding managed per-instance config where needed."""
     args: list[str] = []
@@ -233,7 +230,12 @@ def prepare_launch_args(
     # Pin a stable --session-id so we can --resume by it later.
     # Only clients that support these flags get them.
     if client == "claude" and resume_session_id:
-        args.extend(["--session-id", resume_session_id, "--resume", resume_session_id])
+        args.extend(["--session-id", resume_session_id])
+        # Custom binaries (--bin) may not support --session-id without --fork-session.
+        if binary_override:
+            args.append("--fork-session")
+        else:
+            args.extend(["--resume", resume_session_id])
     elif client == "opencode" and resume_session_id:
         args.extend(["--session", resume_session_id])
     elif client == "codex" and resume_session_id:
@@ -569,7 +571,7 @@ def run_outer_loop(
             started = time.monotonic()
             child_proc = None
             try:
-                launch_args = prepare_launch_args(name, client, extra_args, broker_root, alias_override, resume_session_id=resume_session_id)
+                launch_args = prepare_launch_args(name, client, extra_args, broker_root, alias_override, resume_session_id=resume_session_id, binary_override=binary_override)
                 cmd = [binary_path, *launch_args]
                 child_proc = subprocess.Popen(cmd, env=env)
 

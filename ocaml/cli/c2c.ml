@@ -2419,6 +2419,8 @@ let serve_cmd =
 
 let serve = Cmdliner.Cmd.v (Cmdliner.Cmd.info "serve" ~doc:"Run the MCP server (JSON-RPC over stdio).") serve_cmd
 
+let mcp = Cmdliner.Cmd.v (Cmdliner.Cmd.info "mcp" ~doc:"Alias for serve (runs the MCP server).") serve_cmd
+
 (* --- subcommand: refresh-peer ---------------------------------------------- *)
 
 let refresh_peer_run json target pid_opt session_id_opt dry_run =
@@ -2736,11 +2738,11 @@ let () =
                     $(b,health), $(b,status), $(b,verify), $(b,register), \
                     $(b,refresh-peer), $(b,tail-log), $(b,my-rooms), $(b,dead-letter), \
                     $(b,prune-rooms), $(b,smoke-test), $(b,init), $(b,install), \
-                    $(b,setup), $(b,serve), $(b,start), $(b,stop), \
+                    $(b,setup), $(b,serve), $(b,mcp), $(b,start), $(b,stop), \
                     $(b,restart), $(b,instances)"
                ; `P "$(b,rooms) — manage N:N chat rooms"
                ])
           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
           ; sweep_dryrun; history; health; status; verify; register; refresh_peer
           ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install; setup
-          ; serve; start; stop; restart; instances; rooms_group; room_group ]))
+          ; serve; mcp; start; stop; restart; instances; rooms_group; room_group ]))
