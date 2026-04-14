@@ -13,6 +13,18 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T00:39Z - codex RELEASED locks on `c2c_deliver_inbox.py`,
+  `c2c_wake_peer.py`, `tests/test_c2c_cli.py`,
+  `tests/test_c2c_deliver_inbox.py`,
+  `.collab/findings/2026-04-14T00-33-00Z-codex-wake-peer-json-message-body-leak.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Notify-only JSON output now
+  redacts broker message bodies at both `c2c_deliver_inbox.py --notify-only
+  --json` and `c2c wake-peer --json`, preserving `message_count` and
+  `messages_redacted` metadata while keeping raw messages internal for debounce
+  signatures. Verification: RED regressions failed on leaked sentinel bodies;
+  focused deliver/wake tests 14/14, `py_compile`, `git diff --check`, and full
+  `just test` with 961 Python tests plus OCaml build/runtest.
+
 - 2026-04-14T00:27Z - codex RELEASED locks on `c2c_health.py`,
   `tests/test_c2c_cli.py`,
   `.collab/findings/2026-04-14T00-23-00Z-codex-duplicate-pid-stale-inbox-actionability.md`,

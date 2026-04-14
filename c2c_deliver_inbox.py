@@ -101,6 +101,31 @@ def build_result(
     }
 
 
+def public_result(result: dict[str, Any], *, redact_messages: bool) -> dict[str, Any]:
+    """Return a JSON-safe result for operator output.
+
+    Notify-only mode intentionally leaves messages in the broker. Its public
+    JSON should prove a nudge happened without echoing broker message bodies.
+    """
+    if not redact_messages:
+        return result
+
+    def sanitize(value: Any) -> Any:
+        if isinstance(value, dict):
+            sanitized = {key: sanitize(item) for key, item in value.items()}
+            messages = value.get("messages")
+            if isinstance(messages, list):
+                sanitized["message_count"] = len(messages)
+                sanitized["messages"] = []
+                sanitized["messages_redacted"] = True
+            return sanitized
+        if isinstance(value, list):
+            return [sanitize(item) for item in value]
+        return value
+
+    return sanitize(result)
+
+
 def write_pidfile(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"{os.getpid()}\n", encoding="utf-8")
@@ -525,7 +550,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[c2c-deliver-inbox] {exc}", file=sys.stderr)
         return 1
     if args.json:
-        print(json.dumps(result, indent=2))
+        print(
+            json.dumps(
+                public_result(result, redact_messages=args.notify_only),
+                indent=2,
+            )
+        )
     else:
         action = "would deliver" if args.dry_run else "delivered"
         print(f"{action} {result['delivered']} message(s) to {args.client}")

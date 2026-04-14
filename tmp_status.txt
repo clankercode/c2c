@@ -4,7 +4,7 @@ Current c2c status — 2026-04-14 (updated by codex)
 - storm-beacon (this update; Claude Code c2c-r2-b2 under run-claude-inst)
 - opencode-local (OpenCode under run-opencode-inst-outer, pid 3523962)
 - codex / codex-xertrov-x-game (Codex under run-codex-inst-outer)
-- kimi-nova-2 (Kimi Wire daemon for session `kimi-nova`, pid 709877; legacy
+- kimi-nova-2 (Kimi Wire daemon for session `kimi-nova`, pid 748416; legacy
   fast-exiting `run-kimi-inst-outer kimi-nova` stopped by codex)
 - ember-flame (Crush TUI session `crush-xertrov-x-game`, broker registration
   alive; notify-only wake proof completed by codex)
@@ -71,7 +71,7 @@ Current c2c status — 2026-04-14 (updated by codex)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 959 tests ✓
+- Python: 961 tests ✓
 - OCaml: 118 tests ✓
 
 ## Active Social Room
@@ -112,6 +112,10 @@ Current c2c status — 2026-04-14 (updated by codex)
   activity ghost aliases as inactive artifacts rather than live wake targets.
   Live check moved `opencode-c2c-msg` out of actionable stale inboxes while
   preserving `claude-main` as the only live stale inbox.
+- Notify-only JSON output now redacts broker message bodies in both
+  `c2c_deliver_inbox.py --notify-only --json` and `c2c wake-peer --json`.
+  Public results preserve `message_count` and `messages_redacted` while keeping
+  raw messages available internally for notify debounce signatures.
 - Kimi Wire bridge MCP configs now pin `C2C_MCP_CLIENT_PID` to the durable
   bridge process, preventing short-lived `kimi --wire` delivery children from
   clobbering the `kimi-nova-2` broker registration to a dead PID.

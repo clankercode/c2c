@@ -316,6 +316,59 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
             self.assertEqual(result["iterations"], 2)
             self.assertEqual(inject.call_count, 2)
 
+    def test_notify_only_json_redacts_queued_message_bodies(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            broker_root = Path(temp_dir) / "mcp-broker"
+            broker_root.mkdir()
+            inbox_path = broker_root / "codex-local.inbox.json"
+            inbox_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "from_alias": "storm-echo",
+                            "to_alias": "codex",
+                            "content": "SECRET_NOTIFY_BODY",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch(
+                    "c2c_deliver_inbox.c2c_inject.resolve_target",
+                    return_value=(33333, "9", None),
+                ),
+                mock.patch("c2c_deliver_inbox.c2c_poker.inject"),
+                mock.patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
+                result = c2c_deliver_inbox.main(
+                    [
+                        "--client",
+                        "codex",
+                        "--pid",
+                        "12345",
+                        "--session-id",
+                        "codex-local",
+                        "--broker-root",
+                        str(broker_root),
+                        "--notify-only",
+                        "--json",
+                    ]
+                )
+
+            self.assertEqual(result, 0)
+            raw_output = stdout.getvalue()
+            self.assertNotIn("SECRET_NOTIFY_BODY", raw_output)
+            payload = json.loads(raw_output)
+            self.assertEqual(payload["message_count"], 1)
+            self.assertEqual(payload["messages"], [])
+            self.assertTrue(payload["messages_redacted"])
+            self.assertEqual(
+                json.loads(inbox_path.read_text(encoding="utf-8"))[0]["content"],
+                "SECRET_NOTIFY_BODY",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

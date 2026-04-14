@@ -23,6 +23,23 @@ from pathlib import Path
 import c2c_mcp
 
 
+def redact_deliver_result(result: dict) -> dict:
+    def sanitize(value):
+        if isinstance(value, dict):
+            sanitized = {key: sanitize(item) for key, item in value.items()}
+            messages = value.get("messages")
+            if isinstance(messages, list):
+                sanitized["message_count"] = len(messages)
+                sanitized["messages"] = []
+                sanitized["messages_redacted"] = True
+            return sanitized
+        if isinstance(value, list):
+            return [sanitize(item) for item in value]
+        return value
+
+    return sanitize(result)
+
+
 def default_broker_root() -> Path:
     return Path(c2c_mcp.default_broker_root())
 
@@ -109,7 +126,9 @@ def wake_peer(
         }
         if result.stdout.strip():
             try:
-                output["deliver_result"] = json.loads(result.stdout)
+                output["deliver_result"] = redact_deliver_result(
+                    json.loads(result.stdout)
+                )
             except json.JSONDecodeError:
                 output["deliver_stdout"] = result.stdout.strip()
         if result.stderr.strip():

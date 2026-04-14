@@ -8764,6 +8764,55 @@ class WakePeerTests(unittest.TestCase):
         self.assertFalse(out["ok"])
         self.assertIn("not found", out["error"])
 
+    def test_json_output_redacts_embedded_deliver_messages(self):
+        import c2c_wake_peer
+        import io
+
+        self._write_registry(
+            [
+                {
+                    "alias": "live-agent",
+                    "session_id": "sid-live",
+                    "pid": os.getpid(),
+                    "pid_start_time": c2c_mcp.read_pid_start_time(os.getpid()),
+                },
+            ]
+        )
+        deliver_stdout = json.dumps(
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "from_alias": "storm-echo",
+                        "to_alias": "live-agent",
+                        "content": "SECRET_WAKE_BODY",
+                    }
+                ],
+                "delivered": 0,
+                "notified": True,
+            }
+        )
+
+        buf = io.StringIO()
+        with (
+            mock.patch(
+                "c2c_wake_peer.subprocess.run",
+                return_value=mock.Mock(returncode=0, stdout=deliver_stdout, stderr=""),
+            ),
+            mock.patch("sys.stdout", buf),
+        ):
+            rc = c2c_wake_peer.wake_peer(
+                "live-agent", broker_root=self.broker_root, json_out=True
+            )
+
+        self.assertEqual(rc, 0)
+        raw_output = buf.getvalue()
+        self.assertNotIn("SECRET_WAKE_BODY", raw_output)
+        out = json.loads(raw_output)
+        self.assertEqual(out["deliver_result"]["message_count"], 1)
+        self.assertEqual(out["deliver_result"]["messages"], [])
+        self.assertTrue(out["deliver_result"]["messages_redacted"])
+
 
 class RefreshPeerTests(unittest.TestCase):
     """Tests for c2c_refresh_peer.refresh_peer()."""
