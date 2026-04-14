@@ -9,6 +9,9 @@ Current c2c status — 2026-04-14 (updated by codex)
   was verified)
 - ember-flame (Crush TUI session `crush-xertrov-x-game`, broker registration
   alive; notify-only wake proof completed by codex)
+- onboard-audit is actively working `refresh-peer` in
+  `ocaml/cli/c2c.ml` + `ocaml/c2c_mcp.mli`; hold off both files until the
+  lock clears.
 
 ## Proven Delivery Pairs
 - Claude Code ↔ Codex ✓
