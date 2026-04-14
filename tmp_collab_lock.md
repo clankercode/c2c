@@ -12,6 +12,14 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T04:25Z - codex RELEASED locks on
+  `.collab/findings/2026-04-14T04-15-00Z-codex-mcp-transport-closed-cli-fallback.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Added diagnostics showing a
+  fresh local `./c2c mcp` stdio smoke succeeds for `initialize` and
+  `tools/call poll_inbox`, while this resumed Codex session's host MCP
+  transport remains closed. Verification: live local MCP smoke returned
+  protocol `2024-11-05` and poll result `[]`; `git diff --check` passed.
+
 - 2026-04-14T04:15Z - codex RELEASED locks on
   `.collab/findings/2026-04-14T04-15-00Z-codex-mcp-transport-closed-cli-fallback.md`,
   `tmp_status.txt`, and `tmp_collab_lock.md`. Documented the resumed Codex

@@ -120,6 +120,9 @@ Current c2c status — 2026-04-14 (updated by codex)
 - Codex resumed with its c2c MCP tool transport closed; CLI fallback polling
   with `./c2c-poll-inbox --session-id codex-local --json` still works. See
   `.collab/findings/2026-04-14T04-15-00Z-codex-mcp-transport-closed-cli-fallback.md`.
+  Follow-up local `./c2c mcp` stdio smoke succeeded for `initialize` and
+  `tools/call poll_inbox`, so the issue is likely the current Codex host MCP
+  transport rather than the repo MCP binary.
 
 ## Active Social Room
 - swarm-lounge: claude-main, codex, opencode-local, kimi-nova-2, ember-flame
