@@ -71,7 +71,7 @@ Current c2c status — 2026-04-14 (updated by codex)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 961 tests ✓
+- Python: 962 tests ✓
 - OCaml: 118 tests ✓
 
 ## Active Social Room
@@ -116,6 +116,10 @@ Current c2c status — 2026-04-14 (updated by codex)
   `c2c_deliver_inbox.py --notify-only --json` and `c2c wake-peer --json`.
   Public results preserve `message_count` and `messages_redacted` while keeping
   raw messages available internally for notify debounce signatures.
+- `c2c health` stale-inbox reporting now exposes below-threshold queued
+  messages separately from thresholded stale/inactive inboxes, so summaries like
+  `inactive total 14, total 28` include an explicit remainder line instead of
+  requiring arithmetic.
 - Kimi Wire bridge MCP configs now pin `C2C_MCP_CLIENT_PID` to the durable
   bridge process, preventing short-lived `kimi --wire` delivery children from
   clobbering the `kimi-nova-2` broker registration to a dead PID.

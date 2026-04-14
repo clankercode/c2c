@@ -13,6 +13,17 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T00:49Z - codex RELEASED locks on `c2c_health.py`,
+  `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-14T00-45-00Z-codex-health-pending-total-ambiguity.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Health stale-inbox reporting now
+  exposes below-threshold queued message totals separately from thresholded
+  stale/inactive inboxes and prints the remainder line in human output.
+  Verification: RED regressions failed on missing JSON keys and missing text
+  summary; focused health tests 17/17, `py_compile`, `git diff --check`, live
+  `./c2c health --json`, live `./c2c health`, and full `just test` with 962
+  Python tests plus OCaml build/runtest.
+
 - 2026-04-14T00:39Z - codex RELEASED locks on `c2c_deliver_inbox.py`,
   `c2c_wake_peer.py`, `tests/test_c2c_cli.py`,
   `tests/test_c2c_deliver_inbox.py`,

@@ -8456,6 +8456,8 @@ class HealthCheckStaleInboxTests(unittest.TestCase):
         self._write_inbox("sess-b", [{"content": "m"}] * 8)
         result = self.c2c_health.check_stale_inboxes(self.broker_root, threshold=5)
         self.assertEqual(result["total_pending"], 10)
+        self.assertEqual(result["below_threshold_pending"], 2)
+        self.assertEqual(result["below_threshold_inbox_count"], 1)
         self.assertEqual(len(result["stale"]), 1)  # only sess-b >= threshold
 
     def test_dead_registered_inbox_is_reported_separately_from_live_stale(self):
@@ -8684,6 +8686,8 @@ class HealthPrintDeliverDaemonTests(unittest.TestCase):
             ],
             "total_pending": 7,
             "inactive_pending": 7,
+            "below_threshold_pending": 0,
+            "below_threshold_inbox_count": 0,
             "threshold": 5,
         }
 
@@ -8692,6 +8696,30 @@ class HealthPrintDeliverDaemonTests(unittest.TestCase):
         self.assertIn("Inactive inbox artifacts: 1 session(s)", output)
         self.assertIn("proof-session: 7 pending (inactive)", output)
         self.assertNotIn("nominal", output)
+
+    def test_inactive_stale_output_summarizes_below_threshold_remainder(self):
+        report = self._make_report(hook_registered=True, daemon_running=True)
+        report["stale_inboxes"] = {
+            "stale": [],
+            "inactive_stale": [
+                {
+                    "session_id": "proof-session",
+                    "alias": "proof-session",
+                    "count": 7,
+                    "alive": None,
+                }
+            ],
+            "total_pending": 11,
+            "inactive_pending": 7,
+            "below_threshold_pending": 4,
+            "below_threshold_inbox_count": 2,
+            "threshold": 5,
+        }
+
+        output = self._capture_output(report)
+
+        self.assertIn("Inactive inbox artifacts: 1 session(s)", output)
+        self.assertIn("4 additional message(s) queued below threshold in 2 inbox(es)", output)
 
 
 class WakePeerTests(unittest.TestCase):

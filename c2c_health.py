@@ -376,6 +376,8 @@ def check_stale_inboxes(broker_root: Path, threshold: int = 5) -> dict[str, Any]
     inactive_stale: list[dict] = []
     total_pending = 0
     inactive_pending = 0
+    below_threshold_pending = 0
+    below_threshold_inbox_count = 0
 
     # Build alias lookup from registry for friendlier output
     alias_by_sid: dict[str, str] = {}
@@ -417,7 +419,10 @@ def check_stale_inboxes(broker_root: Path, threshold: int = 5) -> dict[str, Any]
         except (json.JSONDecodeError, OSError):
             count = 0
         total_pending += count
-        if count >= threshold:
+        if 0 < count < threshold:
+            below_threshold_pending += count
+            below_threshold_inbox_count += 1
+        elif count >= threshold:
             entry = {
                 "session_id": session_id,
                 "alias": alias_by_sid.get(session_id, session_id),
@@ -459,6 +464,8 @@ def check_stale_inboxes(broker_root: Path, threshold: int = 5) -> dict[str, Any]
         "inactive_stale": inactive_stale,
         "total_pending": total_pending,
         "inactive_pending": inactive_pending,
+        "below_threshold_pending": below_threshold_pending,
+        "below_threshold_inbox_count": below_threshold_inbox_count,
         "threshold": threshold,
     }
 
@@ -828,11 +835,23 @@ def print_health_report(report: dict[str, Any]) -> None:
     inactive_stale = si.get("inactive_stale", [])
     total_pending = si.get("total_pending", 0)
     inactive_pending = si.get("inactive_pending", 0)
+    below_threshold_pending = si.get("below_threshold_pending", 0)
+    below_threshold_inbox_count = si.get("below_threshold_inbox_count", 0)
     threshold = si.get("threshold", 5)
+
+    def print_below_threshold_summary() -> None:
+        if below_threshold_pending > 0:
+            print(
+                f"    {below_threshold_pending} additional message(s) queued "
+                f"below threshold in {below_threshold_inbox_count} inbox(es)"
+            )
+
     if stale:
         print(f"~ Stale inboxes: {len(stale)} session(s) with >={threshold} messages pending (total {total_pending})")
         for entry in stale:
             print(f"    {entry['alias']}: {entry['count']} pending (not draining inbox)")
+        if not inactive_stale:
+            print_below_threshold_summary()
         if inactive_stale:
             print(
                 f"~ Inactive inbox artifacts: {len(inactive_stale)} session(s) "
@@ -840,6 +859,7 @@ def print_health_report(report: dict[str, Any]) -> None:
             )
             for entry in inactive_stale:
                 print(f"    {entry['alias']}: {entry['count']} pending (inactive)")
+            print_below_threshold_summary()
     elif inactive_stale:
         print(
             f"~ Inactive inbox artifacts: {len(inactive_stale)} session(s) "
@@ -847,6 +867,7 @@ def print_health_report(report: dict[str, Any]) -> None:
         )
         for entry in inactive_stale:
             print(f"    {entry['alias']}: {entry['count']} pending (inactive)")
+        print_below_threshold_summary()
     elif total_pending > 0:
         print(f"✓ Inboxes: {total_pending} message(s) queued (<{threshold} each, nominal)")
     else:
