@@ -1450,7 +1450,10 @@ let rooms_members_cmd =
          else
            List.iter
              (fun (m : C2c_mcp.room_member) ->
-               Printf.printf "  %s (%s)\n" m.rm_alias m.rm_session_id)
+               if m.rm_alias = m.rm_session_id then
+                 Printf.printf "  %s\n" m.rm_alias
+               else
+                 Printf.printf "  %s (%s)\n" m.rm_alias m.rm_session_id)
              members
    with Invalid_argument msg ->
      Printf.eprintf "error: %s\n%!" msg;
