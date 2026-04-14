@@ -664,6 +664,9 @@ def main(argv: list[str] | None = None) -> int:
         result = init_room(args.room_id, visibility=args.visibility)
     elif args.action == "join":
         alias = args.alias or resolve_self_alias()
+        if alias == "unknown":
+            print("cannot resolve alias; pass --alias or set C2C_MCP_SESSION_ID", file=sys.stderr)
+            return 1
         session_id = args.session_id or resolve_self_session_id()
         if not session_id:
             print("cannot resolve session_id; pass --session-id or set C2C_SESSION_ID", file=sys.stderr)
@@ -671,9 +674,15 @@ def main(argv: list[str] | None = None) -> int:
         result = join_room(args.room_id, alias, session_id)
     elif args.action == "leave":
         alias = args.alias or resolve_self_alias()
+        if alias == "unknown":
+            print("cannot resolve alias; pass --alias or set C2C_MCP_SESSION_ID", file=sys.stderr)
+            return 1
         result = leave_room(args.room_id, alias)
     elif args.action == "send":
         alias = args.alias or resolve_self_alias()
+        if alias == "unknown":
+            print("cannot resolve alias; pass --alias or set C2C_MCP_SESSION_ID", file=sys.stderr)
+            return 1
         result = send_room(args.room_id, alias, " ".join(args.message))
     elif args.action == "history":
         result = room_history(args.room_id, limit=args.limit)
@@ -684,9 +693,15 @@ def main(argv: list[str] | None = None) -> int:
         result = list_rooms()
     elif args.action == "invite":
         alias = args.alias or resolve_self_alias()
+        if alias == "unknown":
+            print("cannot resolve alias; pass --alias or set C2C_MCP_SESSION_ID", file=sys.stderr)
+            return 1
         result = send_room_invite(args.room_id, alias, args.invitee_alias)
     elif args.action == "visibility":
         alias = args.alias or resolve_self_alias()
+        if alias == "unknown":
+            print("cannot resolve alias; pass --alias or set C2C_MCP_SESSION_ID", file=sys.stderr)
+            return 1
         result = set_room_visibility(args.room_id, alias, args.mode)
     elif args.action == "prune-dead":
         if getattr(args, "all", False):
