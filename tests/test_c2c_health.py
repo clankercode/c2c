@@ -565,6 +565,38 @@ class WireDaemonLifecycleTests(unittest.TestCase):
         self.assertIn("kimi-nova-2", output)
         self.assertIn("pid 748416", output)
 
+    def test_list_enriches_pidfile_status_with_alias_from_pgrep(self):
+        import argparse
+        import c2c_wire_daemon
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "state"
+            state_dir.mkdir()
+            (state_dir / "kimi-nova.pid").write_text("748416")
+
+            pgrep_output = (
+                "748416 python3 /path/c2c_kimi_wire_bridge.py --session-id kimi-nova --alias kimi-nova-2 --loop\n"
+            )
+            with (
+                mock.patch("c2c_wire_daemon._state_dir", return_value=state_dir),
+                mock.patch(
+                    "subprocess.run",
+                    return_value=mock.Mock(stdout=pgrep_output, stderr=""),
+                ),
+                mock.patch("c2c_wire_daemon._pid_is_alive", return_value=True),
+                mock.patch("sys.stdout", io.StringIO()) as buf,
+            ):
+                args = argparse.Namespace(json=False)
+                rc = c2c_wire_daemon.cmd_list(args)
+
+        self.assertEqual(rc, 0)
+        output = buf.getvalue()
+        self.assertIn("kimi-nova", output)
+        self.assertIn("alias=kimi-nova-2", output)
+        self.assertIn("pid 748416", output)
+        # Should NOT show (pgrep) because pidfile existed
+        self.assertNotIn("(pgrep)", output)
+
 
 class HealthCheckBrokerBinaryTests(unittest.TestCase):
     """Tests for c2c_health.check_broker_binary()."""

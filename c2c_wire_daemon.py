@@ -260,15 +260,22 @@ def cmd_list(args: argparse.Namespace) -> int:
     state_dir = _state_dir()
     seen: set[str] = set()
     statuses: list[dict[str, Any]] = []
+    pgrep_info = _running_wire_bridge_sessions()
 
     if state_dir.exists():
         for pidfile in sorted(state_dir.glob("*.pid")):
             session_id = pidfile.stem
             seen.add(session_id)
-            statuses.append(_daemon_status(session_id))
+            status = _daemon_status(session_id)
+            # Enrich pidfile-based status with alias from running process
+            if session_id in pgrep_info:
+                alias = pgrep_info[session_id].get("alias")
+                if alias:
+                    status["alias"] = alias
+            statuses.append(status)
 
     # Also include running processes that lack a matching pidfile
-    for session_id, status in _running_wire_bridge_sessions().items():
+    for session_id, status in pgrep_info.items():
         if session_id not in seen:
             statuses.append(status)
 
