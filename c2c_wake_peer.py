@@ -29,7 +29,8 @@ def redact_deliver_result(result: dict) -> dict:
             sanitized = {key: sanitize(item) for key, item in value.items()}
             messages = value.get("messages")
             if isinstance(messages, list):
-                sanitized["message_count"] = len(messages)
+                if "message_count" not in value:
+                    sanitized["message_count"] = len(messages)
                 sanitized["messages"] = []
                 sanitized["messages_redacted"] = True
             return sanitized

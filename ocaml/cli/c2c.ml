@@ -1655,6 +1655,60 @@ let install_cmd =
 
 let install = Cmdliner.Cmd.v (Cmdliner.Cmd.info "install" ~doc:"Install c2c binary to ~/.local/bin.") install_cmd
 
+(* --- subcommand: init ---------------------------------------------------- *)
+
+let init_cmd =
+  let room_id =
+    Cmdliner.Arg.(value & pos ~rev:true 0 (some string) None & info [] ~docv:"ROOM" ~doc:"Optional room to create/join.")
+  in
+  let+ json = json_flag
+  and+ room_id_opt = room_id in
+  let root = resolve_broker_root () in
+  let broker = C2c_mcp.Broker.create ~root in
+  let regs = C2c_mcp.Broker.list_registrations broker in
+  let output_mode = if json then Json else Human in
+  (match output_mode with
+   | Json ->
+       let peer_aliases = List.sort String.compare (List.map (fun r -> r.C2c_mcp.alias) regs) in
+       print_json (`Assoc
+         [ ("broker_root", `String root)
+         ; ("broker_root_exists", `Bool (Sys.file_exists root && Sys.is_directory root))
+         ; ("peer_count", `Int (List.length regs))
+         ; ("peers", `List (List.map (fun a -> `String a) peer_aliases))
+         ])
+   | Human ->
+       Printf.printf "broker root: %s\n" root;
+       Printf.printf "peer count:  %d\n" (List.length regs);
+       if regs <> [] then (
+         let aliases = List.sort String.compare (List.map (fun r -> r.C2c_mcp.alias) regs) in
+         Printf.printf "peers:       %s\n" (String.concat ", " aliases);
+       ) else
+         Printf.printf "peers:       (none)\n";
+       Printf.printf "\nNext steps:\n";
+       Printf.printf "  c2c register          — register as a peer\n";
+       Printf.printf "  c2c send ALIAS MSG    — send a message\n";
+       Printf.printf "  c2c poll-inbox        — check your inbox\n";
+       Printf.printf "  c2c send-all MSG       — broadcast to all peers\n";
+       Printf.printf "  c2c rooms join ROOM    — join a chat room\n";
+       ());
+  (* Optionally join a room *)
+  match room_id_opt with
+  | None -> ()
+  | Some room ->
+      let session_id = resolve_session_id () in
+      let alias = resolve_alias broker in
+      (try
+         let (_ : C2c_mcp.room_member list) = C2c_mcp.Broker.join_room broker ~session_id ~alias ~room_id:room in
+         match output_mode with
+         | Json -> print_json (`Assoc [ ("joined_room", `String room) ])
+         | Human -> Printf.printf "joined room: %s\n" room
+       with Invalid_argument msg ->
+         match output_mode with
+         | Json -> print_json (`Assoc [ ("error", `String msg) ])
+         | Human -> Printf.eprintf "error: %s\n%!" msg)
+
+let init = Cmdliner.Cmd.v (Cmdliner.Cmd.info "init" ~doc:"Bootstrap the c2c broker and print status.") init_cmd
+
 (* --- subcommand: setup --------------------------------------------------- *)
 
 let alias_words = [| "amber"; "ash"; "azure"; "birch"; "blade"; "blaze"; "bloom"; "brass"; "brick"; "bright"; "bronze"; "brook"; "cedar"; "chalk"; "charm"; "clay"; "copper"; "coral"; "creek"; "crimson"; "crown"; "crystal"; "dawn"; "dusk"; "ember"; "fern"; "flame"; "flint"; "frost"; "gale"; "glow"; "granite"; "gravel"; "haze"; "hazel"; "iron"; "ivory"; "jade"; "lake"; "lava"; "leaf"; "limestone"; "lime"; "marble"; "mist"; "moss"; "mountain"; "onyx"; "opal"; "pine"; "quartz"; "reef"; "ridge"; "river"; "ruby"; "rust"; "sage"; "sand"; "shadow"; "silver"; "slate"; "smoke"; "snow"; "spark"; "steel"; "stone"; "storm"; "summit"; "thorn"; "tide"; "timber"; "vale"; "vine"; "wave"; "weld"; "willow" |]
@@ -2483,12 +2537,12 @@ let () =
                     $(b,send-all), $(b,sweep), $(b,sweep-dryrun), $(b,history), \
                     $(b,health), $(b,status), $(b,verify), $(b,register), \
                     $(b,refresh-peer), $(b,tail-log), $(b,my-rooms), $(b,dead-letter), \
-                    $(b,prune-rooms), $(b,smoke-test), $(b,install), \
+                    $(b,prune-rooms), $(b,smoke-test), $(b,init), $(b,install), \
                     $(b,setup), $(b,serve), $(b,start), $(b,stop), \
                     $(b,restart), $(b,instances)"
                ; `P "$(b,rooms) — manage N:N chat rooms"
                ])
           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
           ; sweep_dryrun; history; health; status; verify; register; refresh_peer
-          ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; install; setup
+          ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install; setup
           ; serve; start; stop; restart; instances; rooms_group ]))
