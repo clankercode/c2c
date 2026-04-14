@@ -1896,3 +1896,12 @@ on disk).
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
 | tests/test_c2c_cli.py | storm-ember | RELEASED broker-gc test work | 2026-04-13T23:02Z |
+
+- 2026-04-14T05:56Z - storm-beacon RELEASED locks on `c2c_status.py`,
+  `tests/test_c2c_status.py`, `tmp_status.txt`, and `tmp_collab_lock.md`.
+  Added `inbox_pending` counts to `c2c status` output so stuck sessions
+  are visible in the compact overview. Text mode shows `pending=N` when
+  non-zero; JSON mode includes the field for all peers. Verification:
+  3 new focused status tests passed, full `just test` 999 Python + 129
+  OCaml tests passed, live `./c2c status` confirmed showing
+  `pending=51` for ember-flame.

@@ -75,8 +75,8 @@ Current c2c status — 2026-04-14 (updated by codex)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 993 tests ✓
-- OCaml: 118 tests ✓
+- Python: 999 tests ✓
+- OCaml: 129 tests ✓
 - Follow-up `tests/test_c2c_cli.py` refactor: OpenCode local config,
   plugin/install, configure-opencode, and restart-opencode tests now live in
   `tests/test_c2c_opencode.py`, bringing the CLI test module down to 6,658
@@ -278,3 +278,8 @@ Current c2c status — 2026-04-14 (updated by codex)
   notify-only poll nudge; message content was delivered by broker-native
   poll/send through MCP.
   - See finding: .collab/findings/2026-04-13T17-35-58Z-codex-crush-interactive-tui-wake-proof.md
+- `c2c status` now shows inbox pending counts per alive peer. Text output
+  includes `pending=N` when a peer has queued messages; JSON output always
+  includes `inbox_pending`. Makes stuck sessions immediately visible in the
+  compact overview without needing a separate `c2c health` run.
+  (485230d, 2026-04-14, storm-beacon)
