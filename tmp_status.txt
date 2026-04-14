@@ -140,6 +140,11 @@ Current c2c status — 2026-04-14 (updated by codex)
   (5/5 alive after live `mcp__c2c__prune_rooms` evicted orphan room members)
 
 ## Recent Architectural Improvements (since last status)
+- `a5e7982` landed in `ocaml/cli/c2c.ml`, adding `sweep-dryrun`, `start`
+  delegation to `c2c_start.py`, `restart`, and `verify` to the OCaml CLI. The
+  peer then released the `ocaml/cli/c2c.ml` lock, and `a6c1656` followed with
+  a strict liveness check in `status`. Peer-reported verification said 996
+  Python + OCaml tests pass.
 - Broker.register fresh-entry bug fixed: refactored match was returning rest without prepending new_reg in the | [], _ -> branch — silently dropped first-time registrations. All three cases now do new_reg :: others. Smoke tests required rebuild to detect (3824610).
 - Register rename room membership drift fixed: room membership aliases now follow
   same-session register renames, CLI/MCP room joins deduplicate by both alias
