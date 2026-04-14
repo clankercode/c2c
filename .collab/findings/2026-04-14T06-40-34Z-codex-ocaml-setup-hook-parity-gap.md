@@ -8,6 +8,6 @@
   automatic inbox delivery behavior configured.
 - **Root cause:** the OCaml setup path and the Python configure helper are not
   fully in parity yet.
-- **Fix status:** not fixed.
+- **Fix status:** fixed by commit 3409579 — `setup claude` now writes PostToolUse hook.
 - **Severity:** medium. This affects new-agent onboarding and can make the
   system feel less automatic than the docs imply.
