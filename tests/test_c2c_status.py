@@ -82,6 +82,7 @@ class C2CStatusTests(unittest.TestCase):
         self.assertEqual(peer["received"], 20)
         self.assertTrue(peer["goal_met"])
         self.assertIn("last_active_ts", peer)
+        self.assertEqual(peer["inbox_pending"], 0)
         rooms = status["rooms"]
         self.assertEqual(len(rooms), 1)
         room = rooms[0]
@@ -393,6 +394,39 @@ class C2CStatusTests(unittest.TestCase):
         self.assertEqual(room["alive_members"], [])
 
 
+    def test_swarm_status_includes_inbox_pending(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            broker_root = Path(temp_dir)
+            (broker_root / "registry.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "session_id": "agent-local",
+                            "alias": "agent-a",
+                            "pid": 111,
+                            "pid_start_time": 222,
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (broker_root / "agent-local.inbox.json").write_text(
+                json.dumps([{"from_alias": "x", "content": "hi"}] * 7),
+                encoding="utf-8",
+            )
+            write_jsonl(
+                broker_root / "archive" / "agent-local.jsonl",
+                [{"from_alias": "agent-a", "content": f"msg {i}"} for i in range(20)],
+            )
+
+            with mock.patch("c2c_mcp.broker_registration_is_alive", return_value=True):
+                status = c2c_status.swarm_status(broker_root)
+
+        self.assertEqual(len(status["alive_peers"]), 1)
+        peer = status["alive_peers"][0]
+        self.assertEqual(peer["inbox_pending"], 7)
+
+
 class C2CStatusLegacyTests(unittest.TestCase):
     """Tests for c2c_status swarm_status() and print_status_report()."""
 
@@ -613,6 +647,58 @@ class C2CStatusLegacyTests(unittest.TestCase):
         output = buf.getvalue()
         self.assertIn("agent-a", output)
         self.assertIn("swarm-lounge", output)
+
+    def test_print_status_report_shows_inbox_pending(self):
+        data = {
+            "ts": "2026-01-01T00:00:00+00:00",
+            "alive_peers": [
+                {
+                    "alias": "agent-a",
+                    "alive": True,
+                    "sent": 5,
+                    "received": 3,
+                    "goal_met": False,
+                    "inbox_pending": 12,
+                }
+            ],
+            "dead_peer_count": 0,
+            "total_peer_count": 1,
+            "rooms": [],
+            "goal_met_count": 0,
+            "goal_total": 1,
+            "overall_goal_met": False,
+        }
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            c2c_status.print_status_report(data)
+        output = buf.getvalue()
+        self.assertIn("pending=12", output)
+
+    def test_print_status_report_hides_zero_inbox_pending(self):
+        data = {
+            "ts": "2026-01-01T00:00:00+00:00",
+            "alive_peers": [
+                {
+                    "alias": "agent-a",
+                    "alive": True,
+                    "sent": 20,
+                    "received": 20,
+                    "goal_met": True,
+                    "inbox_pending": 0,
+                }
+            ],
+            "dead_peer_count": 0,
+            "total_peer_count": 1,
+            "rooms": [],
+            "goal_met_count": 1,
+            "goal_total": 1,
+            "overall_goal_met": True,
+        }
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            c2c_status.print_status_report(data)
+        output = buf.getvalue()
+        self.assertNotIn("pending", output)
 
     def test_print_status_report_goal_met_shown(self):
         data = {

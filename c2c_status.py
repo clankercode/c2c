@@ -108,6 +108,22 @@ def _load_broker_registry(broker_root: Path) -> list[dict]:
         return []
 
 
+def _load_inbox_pending(broker_root: Path) -> dict[str, int]:
+    """Return a map of session_id -> pending message count for all inboxes."""
+    pending: dict[str, int] = {}
+    if not broker_root.exists():
+        return pending
+    for path in broker_root.glob("*.inbox.json"):
+        session_id = path.stem.replace(".inbox", "")
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                pending[session_id] = len(data)
+        except (json.JSONDecodeError, OSError):
+            continue
+    return pending
+
+
 def _load_room_summary(broker_root: Path, registry: list[dict]) -> list[dict]:
     """Return a list of {room_id, alive_count, member_count, alive_members} for each room.
 
@@ -164,6 +180,7 @@ def swarm_status(broker_root: Path | None = None, min_messages: int = 1) -> dict
     archive_dir = broker_root / "archive"
     last_sent_map = _last_sent_ts_by_alias(archive_dir)
 
+    inbox_pending = _load_inbox_pending(broker_root)
     alive_peers = []
     dead_peers = []
     filtered_peer_count = 0
@@ -182,6 +199,7 @@ def swarm_status(broker_root: Path | None = None, min_messages: int = 1) -> dict
         # last_active_ts is the most recent of last-received and last-sent
         candidates = [t for t in (recv_ts, sent_ts) if t is not None]
         last_ts = max(candidates) if candidates else None
+        pending = inbox_pending.get(session_id, 0)
         entry = {
             "alias": alias,
             "alive": alive,
@@ -189,6 +207,7 @@ def swarm_status(broker_root: Path | None = None, min_messages: int = 1) -> dict
             "received": counts["received"],
             "goal_met": counts["sent"] >= GOAL_COUNT and counts["received"] >= GOAL_COUNT,
             "last_active_ts": last_ts,
+            "inbox_pending": pending,
         }
         if alive:
             alive_peers.append(entry)
@@ -245,10 +264,13 @@ def print_status_report(data: dict) -> None:
         for e in alive_peers:
             goal_tag = "  [goal_met]" if e["goal_met"] else ""
             age = _fmt_age(e.get("last_active_ts"), now)
+            pending_tag = ""
+            if e.get("inbox_pending", 0) > 0:
+                pending_tag = f"  pending={e['inbox_pending']}"
             print(
                 f"  {e['alias']:<{alias_w}}  alive"
                 f"  sent={e['sent']:<5} recv={e['received']:<5}"
-                f"  last={age}{goal_tag}"
+                f"  last={age}{pending_tag}{goal_tag}"
             )
     else:
         print("  (no alive peers)")
