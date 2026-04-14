@@ -938,6 +938,7 @@ def print_health_report(report: dict[str, Any]) -> None:
             print(f"    [{r['pid']}] {label}")
         print("    Do NOT call c2c sweep while outer loops are active — managed")
         print("    sessions restart between iterations; sweep would drop them.")
+        print("    Use c2c sweep-dryrun for a read-only cleanup preview.")
     else:
         print("✓ Outer loops: none running (safe to sweep if needed)")
 

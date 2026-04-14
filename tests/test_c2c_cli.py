@@ -8859,6 +8859,24 @@ class HealthPrintDeliverDaemonTests(unittest.TestCase):
         self.assertIn("Inactive inbox artifacts: 1 session(s)", output)
         self.assertIn("4 additional message(s) queued below threshold in 2 inbox(es)", output)
 
+    def test_outer_loop_warning_points_to_sweep_dryrun_safe_preview(self):
+        report = self._make_report(hook_registered=True, daemon_running=True)
+        report["outer_loops"] = {
+            "running": [
+                {
+                    "client": "codex",
+                    "pid": 12345,
+                    "instance": "codex-local",
+                }
+            ],
+            "safe_to_sweep": False,
+        }
+
+        output = self._capture_output(report)
+
+        self.assertIn("Do NOT call c2c sweep", output)
+        self.assertIn("c2c sweep-dryrun", output)
+
 
 class WakePeerTests(unittest.TestCase):
     """Tests for c2c_wake_peer.wake_peer()."""

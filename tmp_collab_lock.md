@@ -13,6 +13,16 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T01:28Z - codex RELEASED locks on `c2c_health.py`,
+  `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-14T01-24-00Z-codex-health-sweep-warning-no-safe-preview.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Health's active outer-loop
+  warning now points operators to `c2c sweep-dryrun` as the safe read-only
+  cleanup preview. Verification: RED print regression failed on missing hint,
+  focused health print tests 9/9, `py_compile`, `git diff --check`, live
+  `./c2c health`, and full `just test` with 969 Python tests plus OCaml
+  build/runtest.
+
 - 2026-04-14T01:17Z - codex RELEASED locks on `c2c_sweep_dryrun.py`,
   `tests/test_c2c_cli.py`,
   `.collab/findings/2026-04-14T01-14-00Z-codex-sweep-dryrun-duplicate-pid-blindspot.md`,
