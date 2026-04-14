@@ -401,7 +401,7 @@ def _find_binary(name: str) -> str | None:
 
 
 def _start_deliver_daemon(
-    name: str, client: str, broker_root: Path
+    name: str, client: str, broker_root: Path, child_pid: int | None = None
 ) -> subprocess.Popen | None:
     """Start deliver daemon in the background, return Popen or None."""
     deliver_script = HERE / "c2c_deliver_inbox.py"
@@ -419,6 +419,8 @@ def _start_deliver_daemon(
         "--broker-root",
         str(broker_root),
     ]
+    if child_pid is not None:
+        cmd.extend(["--pid", str(child_pid)])
     try:
         proc = subprocess.Popen(
             cmd,
@@ -431,7 +433,7 @@ def _start_deliver_daemon(
         return None
 
 
-def _start_poker(name: str, client: str) -> subprocess.Popen | None:
+def _start_poker(name: str, client: str, child_pid: int | None = None) -> subprocess.Popen | None:
     """Start poker in the background for clients that need it."""
     cfg = CLIENT_CONFIGS.get(client, {})
     if not cfg.get("needs_poker"):
@@ -439,16 +441,28 @@ def _start_poker(name: str, client: str) -> subprocess.Popen | None:
     poker_script = HERE / "c2c_poker.py"
     if not poker_script.exists():
         return None
-    cmd = [
-        sys.executable,
-        str(poker_script),
-        "--claude-session",
-        name,
-        "--interval",
-        "600",
-        "--event",
-        cfg.get("poker_event", "heartbeat"),
-    ]
+    if child_pid is not None:
+        cmd = [
+            sys.executable,
+            str(poker_script),
+            "--pid",
+            str(child_pid),
+            "--interval",
+            "600",
+            "--event",
+            cfg.get("poker_event", "heartbeat"),
+        ]
+    else:
+        cmd = [
+            sys.executable,
+            str(poker_script),
+            "--claude-session",
+            name,
+            "--interval",
+            "600",
+            "--event",
+            cfg.get("poker_event", "heartbeat"),
+        ]
     try:
         proc = subprocess.Popen(
             cmd,
@@ -545,13 +559,13 @@ def run_outer_loop(
                 # Start deliver daemon and poker on first iteration (or restart if dead).
                 if deliver_proc is None or deliver_proc.poll() is not None:
                     deliver_proc = _start_deliver_daemon(
-                        name, cfg["deliver_client"], broker_root
+                        name, cfg["deliver_client"], broker_root, child_proc.pid
                     )
                     if deliver_proc is not None:
                         _write_pidfile(_deliver_pid_path(name), deliver_proc.pid)
 
                 if poker_proc is None or poker_proc.poll() is not None:
-                    poker_proc = _start_poker(name, client)
+                    poker_proc = _start_poker(name, client, child_proc.pid)
                     if poker_proc is not None:
                         _write_pidfile(_poker_pid_path(name), poker_proc.pid)
 

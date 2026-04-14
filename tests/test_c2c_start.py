@@ -278,7 +278,7 @@ class C2CStartDeliverDaemonTests(unittest.TestCase):
         for client in ("claude", "codex", "opencode", "kimi", "crush"):
             with mock.patch("subprocess.Popen") as mock_popen:
                 mock_popen.return_value.poll.return_value = None
-                self.c2c_start._start_deliver_daemon("test-inst", client, broker_root)
+                self.c2c_start._start_deliver_daemon("test-inst", client, broker_root, child_pid=12345)
             mock_popen.assert_called_once()
             cmd = mock_popen.call_args[0][0]
             self.assertIn("--client", cmd)
@@ -288,6 +288,9 @@ class C2CStartDeliverDaemonTests(unittest.TestCase):
             sid_idx = cmd.index("--session-id")
             self.assertEqual(cmd[sid_idx + 1], "test-inst")
             self.assertIn(str(broker_root), cmd)
+            self.assertIn("--pid", cmd)
+            pid_idx = cmd.index("--pid")
+            self.assertEqual(cmd[pid_idx + 1], "12345")
 
     def test_deliver_daemon_returns_none_when_script_missing(self):
         with mock.patch.object(self.c2c_start, "HERE", Path("/nonexistent")):
@@ -304,12 +307,14 @@ class C2CStartDeliverDaemonTests(unittest.TestCase):
         ):
             with mock.patch("subprocess.Popen") as mock_popen:
                 mock_popen.return_value.poll.return_value = None
-                result = self.c2c_start._start_poker("test-inst", client)
+                result = self.c2c_start._start_poker("test-inst", client, child_pid=12345)
             if needs:
                 self.assertIsNotNone(result, f"{client} should start poker")
                 mock_popen.assert_called_once()
                 cmd = mock_popen.call_args[0][0]
-                self.assertIn("--claude-session", cmd)
+                self.assertIn("--pid", cmd)
+                pid_idx = cmd.index("--pid")
+                self.assertEqual(cmd[pid_idx + 1], "12345")
             else:
                 self.assertIsNone(result, f"{client} should not start poker")
                 mock_popen.assert_not_called()
