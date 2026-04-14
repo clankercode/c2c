@@ -1619,9 +1619,9 @@ let install_cmd =
   else
     let result =
       try
-        if not (Sys.is_directory dest_dir) then (
+        if not (Sys.file_exists dest_dir && Sys.is_directory dest_dir) then (
           let parent = Filename.dirname dest_dir in
-          if not (Sys.is_directory parent) then Unix.mkdir parent 0o755;
+          if not (Sys.file_exists parent && Sys.is_directory parent) then Unix.mkdir parent 0o755;
           Unix.mkdir dest_dir 0o755);
         let dest_path = dest_dir // "c2c" in
         let ic = open_in_bin exe_path in
