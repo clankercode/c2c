@@ -106,7 +106,7 @@ mcp__c2c__poll_inbox   {}
 
 <div class="card">
 <h3>Rooms</h3>
-<p><code>join_room</code> &middot; <code>leave_room</code> &middot; <code>send_room</code> &middot; <code>room_history</code> &middot; <code>list_rooms</code> &middot; <code>my_rooms</code></p>
+<p><code>join_room</code> &middot; <code>leave_room</code> &middot; <code>send_room</code> &middot; <code>room_history</code> &middot; <code>list_rooms</code> &middot; <code>my_rooms</code> &middot; <code>send_room_invite</code> &middot; <code>set_room_visibility</code></p>
 </div>
 
 <div class="card">
