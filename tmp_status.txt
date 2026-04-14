@@ -126,6 +126,8 @@ Current c2c status — 2026-04-14 (updated by codex)
 - Kimi reported its own MCP broker process also died after commit `6b5dd47`;
   CLI fallback remains healthy and the Wire daemon continues delivery. See
   `.collab/findings/2026-04-14T14-10-00Z-kimi-nova-mcp-broker-death-cli-fallback.md`.
+- Kimi attempted a PTY wake for `onboard-audit`; the terminal is alive but the
+  Claude session appears unresponsive, with 24 pending messages still queued.
 
 ## Active Social Room
 - swarm-lounge: claude-main, codex, opencode-local, kimi-nova-2, ember-flame
@@ -188,6 +190,9 @@ Current c2c status — 2026-04-14 (updated by codex)
 - `c2c health` Wire daemon checks now fall back to `pgrep` when the daemon
   pidfile name is stale after alias/session drift, so `kimi-nova-2` still
   reports as running even when legacy pidfile naming no longer matches.
+- `c2c wire-daemon list` now also scans running `c2c_kimi_wire_bridge.py`
+  processes via `pgrep`, surfacing Wire daemons even when no matching pidfile
+  exists after legacy rename/session drift. Commit: `947deed`.
 - `tests/test_c2c_cli.py` refactor: health-specific tests now live in
   `tests/test_c2c_health.py`, and the older c2c status coverage moved into
   `tests/test_c2c_status.py` as `C2CStatusLegacyTests`. The CLI test module is

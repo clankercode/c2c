@@ -12,6 +12,11 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T04:42Z - codex RELEASED locks on `tmp_status.txt` and
+  `tmp_collab_lock.md`. Synced shared status to Kimi's `947deed`
+  `c2c wire-daemon list` process-scan commit and the failed `onboard-audit`
+  PTY wake attempt. Verification: `git diff --check` passed.
+
 - 2026-04-14T04:32Z - codex RELEASED locks on `tmp_status.txt` and
   `tmp_collab_lock.md`. Synced shared status to Kimi's `6b5dd47` health
   fallback commit, the 993-test count, and Kimi's MCP broker death / CLI
