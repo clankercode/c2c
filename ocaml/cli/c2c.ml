@@ -144,10 +144,11 @@ let send_cmd =
 (* --- subcommand: list ----------------------------------------------------- *)
 
 let list_cmd =
-  let _all =
-    Cmdliner.Arg.(value & flag & info [ "all"; "a" ] ~doc:"Show all info.")
+  let all =
+    Cmdliner.Arg.(value & flag & info [ "all"; "a" ] ~doc:"Show extended info (session ID, registered time).")
   in
-  let+ json = json_flag in
+  let+ json = json_flag
+  and+ all = all in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let regs = C2c_mcp.Broker.list_registrations broker in
   let output_mode = if json then Json else Human in
@@ -189,11 +190,9 @@ let list_cmd =
         print_json (`List json_regs)
     | Human ->
         List.iter
-          (fun r ->
+          (fun (r : C2c_mcp.registration) ->
             let alive_str =
-              match
-                C2c_mcp.Broker.registration_liveness_state r
-              with
+              match C2c_mcp.Broker.registration_liveness_state r with
               | C2c_mcp.Broker.Alive -> "alive"
               | C2c_mcp.Broker.Dead -> "dead "
               | C2c_mcp.Broker.Unknown -> "???  "
@@ -203,7 +202,22 @@ let list_cmd =
               | Some p -> Printf.sprintf " pid=%d" p
               | None -> ""
             in
-            Printf.printf "  %-20s %s%s\n" r.alias alive_str pid_str)
+            if all then
+              let session_short =
+                let s = r.session_id in
+                if String.length s > 12 then String.sub s 0 12 ^ "..." else s
+              in
+              let time_str =
+                match r.registered_at with
+                | None -> ""
+                | Some ts ->
+                    let t = Unix.gmtime ts in
+                    Printf.sprintf " %04d-%02d-%02d %02d:%02d"
+                      (1900 + t.tm_year) (1 + t.tm_mon) t.tm_mday t.tm_hour t.tm_min
+              in
+              Printf.printf "  %-20s %s%s  %s%s\n" r.alias alive_str pid_str session_short time_str
+            else
+              Printf.printf "  %-20s %s%s\n" r.alias alive_str pid_str)
           regs
 
 (* --- subcommand: whoami --------------------------------------------------- *)
@@ -1060,6 +1074,226 @@ let smoke_test_cmd =
 
 let smoke_test = Cmdliner.Cmd.v (Cmdliner.Cmd.info "smoke-test" ~doc:"Run an end-to-end broker smoke test.") smoke_test_cmd
 
+(* --- subcommand: install -------------------------------------------------- *)
+
+let install_cmd =
+  let dest =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "dest"; "d" ] ~docv:"DIR" ~doc:"Install destination (default: ~/.local/bin).")
+  in
+  let+ json = json_flag
+  and+ dest_opt = dest in
+  let dest_dir =
+    match dest_opt with
+    | Some d -> d
+    | None ->
+        let home = Sys.getenv "HOME" in
+        home // ".local" // "bin"
+  in
+  let output_mode = if json then Json else Human in
+  (* Determine path of the running executable *)
+  let exe_path = Sys.executable_name in
+  if not (Sys.file_exists exe_path) then (
+    match output_mode with
+    | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String "cannot determine executable path") ])
+    | Human ->
+        Printf.eprintf "error: cannot find executable at %s\n%!" exe_path;
+        exit 1)
+  else
+    let result =
+      try
+        if not (Sys.is_directory dest_dir) then (
+          let parent = Filename.dirname dest_dir in
+          if not (Sys.is_directory parent) then Unix.mkdir parent 0o755;
+          Unix.mkdir dest_dir 0o755);
+        let dest_path = dest_dir // "c2c" in
+        let ic = open_in_bin exe_path in
+        let oc = open_out_bin (dest_path ^ ".tmp") in
+        Fun.protect ~finally:(fun () -> close_in ic; close_out oc) (fun () ->
+          let buf = Bytes.create 65536 in
+          let rec copy () =
+            let n = input ic buf 0 (Bytes.length buf) in
+            if n > 0 then (output oc buf 0 n; copy ())
+          in
+          copy ());
+        Unix.chmod (dest_path ^ ".tmp") 0o755;
+        Unix.rename (dest_path ^ ".tmp") dest_path;
+        Ok dest_path
+      with
+      | Unix.Unix_error (code, func, _arg) ->
+          Error (Printf.sprintf "%s: %s" func (Unix.error_message code))
+      | Sys_error msg -> Error msg
+    in
+    (match result with
+     | Ok dest_path ->
+         (match output_mode with
+          | Json -> print_json (`Assoc [ ("ok", `Bool true); ("installed", `String dest_path) ])
+          | Human -> Printf.printf "installed c2c to %s\n" dest_path)
+     | Error msg ->
+         (match output_mode with
+          | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
+          | Human ->
+              Printf.eprintf "error: %s\n%!" msg;
+              exit 1))
+
+let install = Cmdliner.Cmd.v (Cmdliner.Cmd.info "install" ~doc:"Install c2c binary to ~/.local/bin.") install_cmd
+
+(* --- subcommand: setup --------------------------------------------------- *)
+
+let alias_words = [| "amber"; "ash"; "azure"; "birch"; "blade"; "blaze"; "bloom"; "brass"; "brick"; "bright"; "bronze"; "brook"; "cedar"; "chalk"; "charm"; "clay"; "copper"; "coral"; "creek"; "crimson"; "crown"; "crystal"; "dawn"; "dusk"; "ember"; "fern"; "flame"; "flint"; "frost"; "gale"; "glow"; "granite"; "gravel"; "haze"; "hazel"; "iron"; "ivory"; "jade"; "lake"; "lava"; "leaf"; "limestone"; "lime"; "marble"; "mist"; "moss"; "mountain"; "onyx"; "opal"; "pine"; "quartz"; "reef"; "ridge"; "river"; "ruby"; "rust"; "sage"; "sand"; "shadow"; "silver"; "slate"; "smoke"; "snow"; "spark"; "steel"; "stone"; "storm"; "summit"; "thorn"; "tide"; "timber"; "vale"; "vine"; "wave"; "weld"; "willow" |]
+
+let generate_alias () =
+  let n = Array.length alias_words in
+  let w1 = alias_words.(Random.int n) in
+  let w2 = alias_words.(Random.int n) in
+  Printf.sprintf "%s-%s" w1 w2
+
+let generate_session_id () =
+  let buf = Buffer.create 36 in
+  for _ = 1 to 8 do
+    Buffer.add_string buf (string_of_int (Random.int 16))
+  done;
+  Buffer.add_char buf '-';
+  for _ = 1 to 4 do
+    Buffer.add_string buf (string_of_int (Random.int 16))
+  done;
+  Buffer.add_char buf '-';
+  for _ = 1 to 4 do
+    Buffer.add_string buf (string_of_int (Random.int 16))
+  done;
+  Buffer.contents buf
+
+let find_ocaml_server_path () =
+  (* Look for c2c_mcp_server.exe in _build, then try opam *)
+  let candidates = [
+    "_build/default/ocaml/server/c2c_mcp_server.exe";
+    "_build/ocaml/server/c2c_mcp_server.exe";
+  ] in
+  let extra_candidates =
+    try
+      let switch = Sys.getenv "OPAM_SWITCH_PREFIX" in
+      [ switch // "bin/c2c_mcp_server" ]
+    with Not_found -> []
+  in
+  let all = candidates @ extra_candidates in
+  List.find_opt Sys.file_exists all
+
+let json_read_file path =
+  let ic = open_in path in
+  Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+    let s = really_input_string ic (in_channel_length ic) in
+    Yojson.Safe.from_string s)
+
+let json_write_file path json =
+  let tmp = path ^ ".tmp" in
+  let oc = open_out tmp in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    Yojson.Safe.pretty_to_channel oc json);
+  Unix.rename tmp path
+
+let setup_cmd =
+  let client =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "client"; "c" ] ~docv:"CLIENT" ~doc:"Client type: claude, codex, kimi, opencode (default: claude).")
+  in
+  let alias =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS" ~doc:"Alias to use (default: auto-generated).")
+  in
+  let broker_root =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "broker-root"; "b" ] ~docv:"DIR" ~doc:"Broker root directory (default: auto-detected).")
+  in
+  let+ json = json_flag
+  and+ client_opt = client
+  and+ alias_opt = alias
+  and+ broker_root_opt = broker_root in
+  let output_mode = if json then Json else Human in
+  let client = Option.value client_opt ~default:"claude" in
+  let root =
+    match broker_root_opt with
+    | Some r -> r
+    | None -> resolve_broker_root ()
+  in
+  let alias_val =
+    match alias_opt with
+    | Some a -> a
+    | None -> generate_alias ()
+  in
+  let session_id = generate_session_id () in
+  let server_path =
+    match find_ocaml_server_path () with
+    | Some p -> p
+    | None ->
+        (match output_mode with
+         | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String "cannot find c2c_mcp_server binary") ])
+         | Human ->
+             Printf.eprintf "error: cannot find c2c_mcp_server binary. Build with: just build\n%!");
+        exit 1
+  in
+  let server_path =
+    if Filename.is_relative server_path then
+      Sys.getcwd () // server_path
+    else server_path
+  in
+  (match String.lowercase_ascii client with
+   | "claude" ->
+       let claude_json = Filename.concat (Sys.getenv "HOME") ".claude.json" in
+       let config =
+         if Sys.file_exists claude_json then json_read_file claude_json
+         else `Assoc []
+       in
+       let mcp_entry =
+         `Assoc
+           [ ("command", `String "opam")
+           ; ("args", `List [ `String "exec"; `String "--"; `String "dune"; `String "run"; `String server_path ])
+           ; ("env", `Assoc
+               [ ("C2C_MCP_BROKER_ROOT", `String root)
+               ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
+               ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+               ])
+           ]
+       in
+       let config = match config with
+         | `Assoc fields ->
+             let filtered = List.filter (fun (k, _) -> k <> "mcpServers") fields in
+             let existing_mcp = match List.assoc_opt "mcpServers" fields with
+               | Some (`Assoc m) -> List.filter (fun (k, _) -> k <> "c2c") m
+               | _ -> []
+             in
+             `Assoc (filtered @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", mcp_entry) ])) ])
+         | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", mcp_entry) ]) ]
+       in
+       json_write_file claude_json config;
+       (match output_mode with
+        | Json ->
+            print_json (`Assoc
+              [ ("ok", `Bool true)
+              ; ("client", `String "claude")
+              ; ("alias", `String alias_val)
+              ; ("session_id", `String session_id)
+              ; ("broker_root", `String root)
+              ; ("config", `String claude_json)
+              ])
+        | Human ->
+            Printf.printf "Configured Claude Code for c2c.\n";
+            Printf.printf "  alias:       %s\n" alias_val;
+            Printf.printf "  broker root: %s\n" root;
+            Printf.printf "  config:      %s\n" claude_json;
+            Printf.printf "  server:      %s\n" server_path;
+            Printf.printf "\nRestart Claude Code to pick up the new MCP server.\n")
+   | "codex" | "kimi" | "opencode" ->
+       (match output_mode with
+        | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String (Printf.sprintf "client '%s' not yet implemented in OCaml CLI" client)) ])
+        | Human ->
+            Printf.printf "Setup for %s is not yet implemented in the OCaml CLI.\n" client;
+            Printf.printf "Use: python3 c2c_configure_%s.py --alias %s\n" client alias_val;
+            exit 1)
+   | _ ->
+       (match output_mode with
+        | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String (Printf.sprintf "unknown client '%s'. Use: claude, codex, kimi, opencode" client)) ])
+        | Human ->
+            Printf.eprintf "error: unknown client '%s'. Use: claude, codex, kimi, opencode\n%!" client;
+            exit 1))
+
+let setup = Cmdliner.Cmd.v (Cmdliner.Cmd.info "setup" ~doc:"Configure a client for c2c messaging.") setup_cmd
+
 let () =
   exit
     (Cmdliner.Cmd.eval
@@ -1077,7 +1311,8 @@ let () =
                    "$(b,send), $(b,list), $(b,whoami), $(b,poll-inbox), \
                     $(b,send-all), $(b,sweep), $(b,history), $(b,health), \
                     $(b,register), $(b,tail-log), $(b,my-rooms), \
-                    $(b,dead-letter), $(b,prune-rooms), $(b,smoke-test)"
+                    $(b,dead-letter), $(b,prune-rooms), $(b,smoke-test), \
+                    $(b,install), $(b,setup)"
                ; `P "$(b,rooms) — manage N:N chat rooms"
                ])
-          [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep; history; health; register; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; rooms_group ]))
+          [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep; history; health; register; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; install; setup; rooms_group ]))
