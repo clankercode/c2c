@@ -114,7 +114,7 @@ let send_cmd =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ALIAS" ~doc:"Recipient alias.")
   in
   let message =
-    Cmdliner.Arg.(non_empty & pos_right 1 string [] & info [] ~docv:"MSG" ~doc:"Message body (remaining args joined with spaces).")
+    Cmdliner.Arg.(non_empty & pos_right 0 string [] & info [] ~docv:"MSG" ~doc:"Message body (remaining args joined with spaces).")
   in
   let+ json = json_flag
   and+ to_alias = to_alias
@@ -276,7 +276,7 @@ let poll_inbox_cmd =
 
 let send_all_cmd =
   let message =
-    Cmdliner.Arg.(non_empty & pos_right 0 string [] & info [] ~docv:"MSG" ~doc:"Message body.")
+    Cmdliner.Arg.(non_empty & pos_all string [] & info [] ~docv:"MSG" ~doc:"Message body.")
   in
   let exclude =
     Cmdliner.Arg.(value & opt (list string) [] & info [ "exclude"; "x" ] ~docv:"ALIAS" ~doc:"Aliases to skip.")
@@ -422,6 +422,142 @@ let health_cmd =
         (List.length regs) alive_count;
       Printf.printf "rooms:          %d\n" (List.length rooms)
 
+(* --- subcommand: register ------------------------------------------------- *)
+
+let register_cmd =
+  let alias =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS" ~doc:"Alias to register (default: C2C_MCP_AUTO_REGISTER_ALIAS).")
+  in
+  let session_id_opt =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "session-id"; "s" ] ~docv:"ID" ~doc:"Session ID (default: C2C_MCP_SESSION_ID).")
+  in
+  let+ json = json_flag
+  and+ alias_opt = alias
+  and+ session_id_opt = session_id_opt in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  let alias =
+    match alias_opt with
+    | Some a -> a
+    | None -> (
+        match env_auto_alias () with
+        | Some a -> a
+        | None ->
+            Printf.eprintf "error: no alias specified and C2C_MCP_AUTO_REGISTER_ALIAS not set.\n%!";
+            exit 1)
+  in
+  let session_id =
+    match session_id_opt with
+    | Some s -> s
+    | None -> (
+        match env_session_id () with
+        | Some s -> s
+        | None ->
+            Printf.eprintf "error: no session ID specified and C2C_MCP_SESSION_ID not set.\n%!";
+            exit 1)
+  in
+  let pid = Some (Unix.getppid ()) in
+  let pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid in
+  C2c_mcp.Broker.register broker ~session_id ~alias ~pid ~pid_start_time;
+  let output_mode = if json then Json else Human in
+  match output_mode with
+  | Json ->
+      print_json
+        (`Assoc
+          [ ("alias", `String alias)
+          ; ("session_id", `String session_id)
+          ])
+  | Human ->
+      Printf.printf "registered %s (session %s)\n" alias session_id
+
+(* --- subcommand: tail-log ------------------------------------------------ *)
+
+let tail_log_cmd =
+  let limit =
+    Cmdliner.Arg.(value & opt int 50 & info [ "limit"; "l" ] ~docv:"N" ~doc:"Max log entries (default 50, max 500).")
+  in
+  let+ json = json_flag
+  and+ limit = limit in
+  let limit = min (max limit 1) 500 in
+  let root = resolve_broker_root () in
+  let log_path = root // "broker.log" in
+  let output_mode = if json then Json else Human in
+  if not (Sys.file_exists log_path) then (
+    match output_mode with
+    | Json -> print_json (`List [])
+    | Human -> Printf.printf "(no log)\n")
+  else
+    let lines =
+      let ic = open_in log_path in
+      Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+        let buf = Buffer.create 4096 in
+        (try while true do
+             let line = String.trim (input_line ic) in
+             if line <> "" then begin
+               Buffer.add_string buf line;
+               Buffer.add_char buf '\n'
+             end
+           done with End_of_file -> ());
+        String.split_on_char '\n' (Buffer.contents buf)
+        |> List.filter (fun s -> String.trim s <> ""))
+    in
+    let n = List.length lines in
+    let tail =
+      if n <= limit then lines
+      else
+        let drop = n - limit in
+        let rec skip i = function
+          | [] -> []
+          | _ :: rest when i > 0 -> skip (i - 1) rest
+          | lst -> lst
+        in
+        skip drop lines
+    in
+    let parsed =
+      List.filter_map
+        (fun line ->
+          try Some (Yojson.Safe.from_string line)
+          with _ -> None)
+        tail
+    in
+    match output_mode with
+    | Json -> print_json (`List parsed)
+    | Human -> List.iter (fun line -> print_endline line) tail
+
+(* --- subcommand: my-rooms ---------------------------------------------- *)
+
+let my_rooms_cmd =
+  let+ json = json_flag in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  let session_id = resolve_session_id () in
+  let rooms = C2c_mcp.Broker.my_rooms broker ~session_id in
+  let output_mode = if json then Json else Human in
+  match output_mode with
+  | Json ->
+      print_json
+        (`List
+          (List.map
+             (fun (r : C2c_mcp.Broker.room_info) ->
+               `Assoc
+                 [ ("room_id", `String r.ri_room_id)
+                 ; ("member_count", `Int r.ri_member_count)
+                 ; ("members",
+                     `List (List.map (fun a -> `String a) r.ri_members))
+                 ; ( "visibility",
+                     `String
+                       (match r.ri_visibility with
+                       | C2c_mcp.Public -> "public"
+                       | C2c_mcp.Invite_only -> "invite_only"))
+                 ])
+             rooms))
+  | Human ->
+      if rooms = [] then
+        Printf.printf "Not in any rooms.\n"
+      else
+        List.iter
+          (fun (r : C2c_mcp.Broker.room_info) ->
+            Printf.printf "%s (%d members)\n" r.ri_room_id r.ri_member_count)
+          rooms
+
 (* --- rooms subcommands ---------------------------------------------------- *)
 
 let rooms_send_cmd =
@@ -429,7 +565,7 @@ let rooms_send_cmd =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOM" ~doc:"Room ID.")
   in
   let message =
-    Cmdliner.Arg.(non_empty & pos_right 1 string [] & info [] ~docv:"MSG" ~doc:"Message body.")
+    Cmdliner.Arg.(non_empty & pos_right 0 string [] & info [] ~docv:"MSG" ~doc:"Message body (remaining args joined with spaces).")
   in
   let+ json = json_flag
   and+ room_id = room_id
@@ -667,10 +803,41 @@ let send = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send" ~doc:"Send a message to a re
 let list = Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List registered C2C peers.") list_cmd
 let whoami = Cmdliner.Cmd.v (Cmdliner.Cmd.info "whoami" ~doc:"Show current c2c identity.") whoami_cmd
 let poll_inbox = Cmdliner.Cmd.v (Cmdliner.Cmd.info "poll-inbox" ~doc:"Drain (or peek at) your inbox.") poll_inbox_cmd
+(* peek-inbox is an alias for poll-inbox --peek *)
+let peek_inbox_cmd =
+  let+ json = json_flag in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  let session_id = resolve_session_id () in
+  let messages = C2c_mcp.Broker.read_inbox broker ~session_id in
+  let output_mode = if json then Json else Human in
+  match output_mode with
+  | Json ->
+      print_json
+        (`List
+          (List.map
+             (fun (m : C2c_mcp.message) ->
+               `Assoc
+                 [ ("from_alias", `String m.from_alias)
+                 ; ("to_alias", `String m.to_alias)
+                 ; ("content", `String m.content)
+                 ])
+             messages))
+  | Human ->
+      if messages = [] then
+        Printf.printf "(no messages)\n"
+      else
+        List.iter
+          (fun (m : C2c_mcp.message) -> Printf.printf "[%s] %s\n" m.from_alias m.content)
+          messages
+
+let peek_inbox = Cmdliner.Cmd.v (Cmdliner.Cmd.info "peek-inbox" ~doc:"Peek at your inbox without draining.") peek_inbox_cmd
 let send_all = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send-all" ~doc:"Broadcast a message to all peers.") send_all_cmd
 let sweep = Cmdliner.Cmd.v (Cmdliner.Cmd.info "sweep" ~doc:"Remove dead registrations and orphan inboxes.") sweep_cmd
 let history = Cmdliner.Cmd.v (Cmdliner.Cmd.info "history" ~doc:"Show archived inbox messages.") history_cmd
 let health = Cmdliner.Cmd.v (Cmdliner.Cmd.info "health" ~doc:"Show broker health diagnostics.") health_cmd
+let register = Cmdliner.Cmd.v (Cmdliner.Cmd.info "register" ~doc:"Register an alias for the current session.") register_cmd
+let tail_log = Cmdliner.Cmd.v (Cmdliner.Cmd.info "tail-log" ~doc:"Show recent broker RPC log entries.") tail_log_cmd
+let my_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "my-rooms" ~doc:"List rooms you are a member of.") my_rooms_cmd
 
 let () =
   exit
@@ -687,7 +854,8 @@ let () =
                ; `S "COMMANDS"
                ; `P
                    "$(b,send), $(b,list), $(b,whoami), $(b,poll-inbox), \
-                    $(b,send-all), $(b,sweep), $(b,history), $(b,health)"
+                    $(b,send-all), $(b,sweep), $(b,history), $(b,health), \
+                    $(b,register), $(b,tail-log), $(b,my-rooms)"
                ; `P "$(b,rooms) — manage N:N chat rooms"
                ])
-          [ send; list; whoami; poll_inbox; send_all; sweep; history; health; rooms_group ]))
+          [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep; history; health; register; tail_log; my_rooms; rooms_group ]))

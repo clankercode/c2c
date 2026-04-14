@@ -10,7 +10,7 @@ build:
 
 # Build the OCaml CLI binary
 build-cli:
-    opam exec -- dune build ./ocaml/cli/c2c_cli.exe
+    opam exec -- dune build ./ocaml/cli/c2c.exe
 
 # Build both MCP server and CLI
 build-all: build build-cli
