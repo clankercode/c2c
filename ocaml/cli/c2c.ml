@@ -1986,6 +1986,93 @@ let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt =
       Printf.printf "  plugin:      %s\n" plugin_note;
       Printf.printf "\nRun 'opencode mcp list' from %s to verify.\n" target_dir
 
+(* --- setup: Claude PostToolUse hook -------------------------------------- *)
+
+let claude_hook_script = {|
+#!/bin/bash
+# c2c-inbox-check.sh — PostToolUse hook for c2c auto-delivery in Claude Code
+#
+# Fires after every tool call. If the session's c2c inbox is non-empty,
+# drains it and outputs messages so Claude Code surfaces them as inline context.
+#
+# Required env vars (set by c2c start or the MCP server entry):
+#   C2C_MCP_SESSION_ID   — broker session id
+#   C2C_MCP_BROKER_ROOT  — absolute path to broker root dir
+#
+# Exits silently (0) when not configured, so unmanaged sessions are unaffected.
+
+SESSION_ID="${C2C_MCP_SESSION_ID:-}"
+BROKER_ROOT="${C2C_MCP_BROKER_ROOT:-}"
+
+[ -z "$SESSION_ID" ]   && exit 0
+[ -z "$BROKER_ROOT" ]  && exit 0
+
+INBOX="$BROKER_ROOT/$SESSION_ID.inbox.json"
+[ -f "$INBOX" ] || exit 0
+
+CONTENT=$(<"$INBOX")
+TRIMMED="${CONTENT//[[:space:]]/}"
+[ "$TRIMMED" = "[]" ] || [ -z "$TRIMMED" ] && exit 0
+
+exec timeout 5 c2c poll-inbox --json
+|}
+
+let configure_claude_hook () =
+  let home = Sys.getenv "HOME" in
+  let hooks_dir = home // ".claude" // "hooks" in
+  let script_path = hooks_dir // "c2c-inbox-check.sh" in
+  let settings_path = home // ".claude" // "settings.json" in
+  (try Unix.mkdir hooks_dir 0o755 with Unix.Unix_error _ -> ());
+  let oc = open_out script_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc claude_hook_script);
+  Unix.chmod script_path 0o755;
+  let settings =
+    if Sys.file_exists settings_path then json_read_file settings_path
+    else `Assoc []
+  in
+  let hook_entry =
+    `Assoc [ ("type", `String "command"); ("command", `String script_path) ]
+  in
+  let settings = match settings with
+    | `Assoc fields ->
+        let hooks = match List.assoc_opt "hooks" fields with
+          | Some (`Assoc h) -> h
+          | _ -> []
+        in
+        let post_tool_use = match List.assoc_opt "PostToolUse" hooks with
+          | Some (`List g) -> g
+          | _ -> []
+        in
+        let target_group, other_groups =
+          List.partition (fun g -> match g with
+            | `Assoc m -> (match List.assoc_opt "matcher" m with Some (`String ".*") -> true | _ -> false)
+            | _ -> false) post_tool_use
+        in
+        let target_group = match target_group with
+          | (`Assoc m) :: _ ->
+              let existing_hooks = match List.assoc_opt "hooks" m with
+                | Some (`List h) -> h
+                | _ -> []
+              in
+              let has_hook = List.exists (fun h -> match h with
+                | `Assoc n -> (match List.assoc_opt "command" n with Some (`String p) -> p = script_path | _ -> false)
+                | _ -> false) existing_hooks
+              in
+              if has_hook then `Assoc m
+              else `Assoc (m @ [ ("hooks", `List (existing_hooks @ [ hook_entry ])) ])
+          | _ ->
+              `Assoc [ ("matcher", `String ".*"); ("hooks", `List [ hook_entry ]) ]
+        in
+        let hooks = List.filter (fun (k, _) -> k <> "PostToolUse") hooks in
+        let hooks = hooks @ [ ("PostToolUse", `List (other_groups @ [ target_group ])) ] in
+        let fields = List.filter (fun (k, _) -> k <> "hooks") fields in
+        `Assoc (fields @ [ ("hooks", `Assoc hooks) ])
+    | _ ->
+        `Assoc [ ("hooks", `Assoc [ ("PostToolUse", `List [ `Assoc [ ("matcher", `String ".*"); ("hooks", `List [ hook_entry ]) ] ]) ]) ]
+  in
+  json_write_file settings_path settings
+
 let setup_cmd =
   let client =
     Cmdliner.Arg.(value & opt (some string) None & info [ "client"; "c" ] ~docv:"CLIENT" ~doc:"Client type: claude, codex, kimi, opencode (default: claude).")
@@ -2045,7 +2132,7 @@ let setup_cmd =
        let mcp_entry =
          `Assoc
            [ ("command", `String "opam")
-           ; ("args", `List [ `String "exec"; `String "--"; `String "dune"; `String "run"; `String server_path ])
+           ; ("args", `List [ `String "exec"; `String "--"; `String server_path ])
            ; ("env", `Assoc
                [ ("C2C_MCP_BROKER_ROOT", `String root)
                ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
@@ -2064,6 +2151,85 @@ let setup_cmd =
          | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", mcp_entry) ]) ]
        in
        json_write_file claude_json config;
+       (* Write PostToolUse inbox hook to ~/.claude/settings.json *)
+       let settings_path = Filename.concat (Sys.getenv "HOME") ".claude" // "settings.json" in
+       let hook_script = Filename.concat (Sys.getenv "HOME") ".claude" // "hooks" // "c2c-inbox-check.sh" in
+       (* Ensure hook script exists *)
+       (try
+          let dir = Filename.dirname hook_script in
+          if not (Sys.file_exists dir) then begin
+            let rec mkdir_p d =
+              if Sys.file_exists d then () else begin
+                mkdir_p (Filename.dirname d);
+                Unix.mkdir d 0o755
+              end
+            in
+            mkdir_p dir
+          end;
+          let hook_content =
+            "#!/bin/bash\n\
+             # c2c-inbox-check.sh — PostToolUse hook for c2c auto-delivery in Claude Code\n\
+             SESSION_ID=\"${C2C_MCP_SESSION_ID:-}\"\n\
+             BROKER_ROOT=\"${C2C_MCP_BROKER_ROOT:-}\"\n\
+             [ -z \"$SESSION_ID\" ] && exit 0\n\
+             [ -z \"$BROKER_ROOT\" ] && exit 0\n\
+             INBOX=\"$BROKER_ROOT/$SESSION_ID.inbox.json\"\n\
+             [ -f \"$INBOX\" ] || exit 0\n\
+             CONTENT=$(<\"$INBOX\")\n\
+             TRIMMED=\"${CONTENT//[[:space:]]/}\"\n\
+             [ \"$TRIMMED\" = \"[]\" ] || [ -z \"$TRIMMED\" ] && exit 0\n\
+             exec timeout 5 c2c-poll-inbox --file-fallback --session-id \"$SESSION_ID\" --broker-root \"$BROKER_ROOT\"\n"
+          in
+          let oc = open_out hook_script in
+          output_string oc hook_content;
+          close_out oc;
+          Unix.chmod hook_script 0o755
+        with Unix.Unix_error _ -> ());
+       (* Add PostToolUse hook entry to settings.json *)
+       let hook_registered = ref false in
+       let settings =
+         if Sys.file_exists settings_path then json_read_file settings_path
+         else `Assoc []
+       in
+       let settings = match settings with
+         | `Assoc fields ->
+             let hooks = match List.assoc_opt "hooks" fields with
+               | Some (`Assoc h) -> h
+               | _ -> []
+             in
+             let post_tool_use = match List.assoc_opt "PostToolUse" hooks with
+               | Some (`List entries) -> entries
+               | _ -> []
+             in
+             (* Check if our hook is already registered *)
+             let already = List.exists (fun entry ->
+               match entry with
+               | `Assoc e ->
+                   (match List.assoc_opt "hooks" e with
+                    | Some (`List hs) ->
+                        List.exists (fun h ->
+                          match h with
+                          | `Assoc h_fields ->
+                              (match List.assoc_opt "command" h_fields with
+                               | Some (`String cmd) -> cmd = hook_script
+                               | _ -> false)
+                          | _ -> false) hs
+                    | _ -> false)
+               | _ -> false
+             ) post_tool_use in
+             hook_registered := already;
+             if not already then begin
+               let new_entry = `Assoc [ ("matcher", `String ".*"); ("hooks", `List [ `Assoc [ ("type", `String "command"); ("command", `String hook_script) ] ]) ] in
+               let new_post = post_tool_use @ [ new_entry ] in
+               let new_hooks = List.filter (fun (k, _) -> k <> "PostToolUse") hooks @ [ ("PostToolUse", `List new_post) ] in
+               let new_fields = List.filter (fun (k, _) -> k <> "hooks") fields @ [ ("hooks", `Assoc new_hooks) ] in
+               `Assoc new_fields
+             end else
+               `Assoc fields
+         | _ -> `Assoc []
+       in
+       if not !hook_registered then json_write_file settings_path settings;
+       let hook_status = if !hook_registered then "already registered" else "registered" in
        (match output_mode with
         | Json ->
             print_json (`Assoc
@@ -2072,12 +2238,14 @@ let setup_cmd =
               ; ("alias", `String alias_val)
               ; ("broker_root", `String root)
               ; ("config", `String claude_json)
+              ; ("hook_status", `String hook_status)
               ])
         | Human ->
             Printf.printf "Configured Claude Code for c2c.\n";
             Printf.printf "  alias:       %s\n" alias_val;
             Printf.printf "  broker root: %s\n" root;
             Printf.printf "  config:      %s\n" claude_json;
+            Printf.printf "  hook:        %s\n" hook_status;
             Printf.printf "  server:      %s\n" server_path;
             Printf.printf "\nRestart Claude Code to pick up the new MCP server.\n")
    | "codex" -> setup_codex ~output_mode ~root ~alias_val ~server_path
