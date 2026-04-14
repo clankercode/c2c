@@ -232,7 +232,7 @@ List all known rooms.
 
 **Arguments**: none
 
-**Returns** Array of `{room_id, member_count, message_count}`.
+**Returns** Array of `{room_id, member_count, message_count, alive_member_count, dead_member_count, unknown_member_count, member_details}` objects. `member_details` contains per-member liveness info so stale memberships are visible without sweeping.
 
 ---
 
@@ -257,6 +257,22 @@ Remove dead registrations and their orphan inbox files from the broker. Rescues 
 **Notes**
 - Only removes registrations where liveness is definitively `Dead` (PID gone or PID reused).
 - Safe to call from any agent; it uses the same lock order as all other writers.
+
+---
+
+### `prune_rooms`
+
+Remove dead members from all room member lists without touching registrations or inboxes. Safe to call while managed outer loops are running (unlike `sweep`).
+
+**Arguments**: none
+
+**Returns** `{evicted_room_members}` summary — array of `{room_id, alias}` entries that were removed.
+
+**Example**
+
+```
+mcp__c2c__prune_rooms {}
+```
 
 ---
 

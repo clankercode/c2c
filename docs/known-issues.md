@@ -87,3 +87,21 @@ c2c relay connect  # runs every 30s by default
 ```
 
 **Status:** Relay implemented — see [Relay Quickstart](/relay-quickstart/) for the full operator guide.
+
+---
+
+## Common Pitfalls
+
+### Do Not Run `sweep` While Managed Outer Loops Are Active
+
+`sweep` drops registrations whose PID is dead. Managed clients (kimi, codex, opencode, crush) run as short-lived children under a persistent outer restart loop. Between restarts the child PID is dead, but the outer loop will spawn a new child in seconds. If `sweep` runs in this window, it deletes the registration and inbox; messages go to dead-letter until the session re-registers and auto-redelivers them.
+
+**Fix:** Use `prune_rooms` for safe room cleanup, or check `pgrep -a -f "run-(kimi|codex|opencode|crush|claude)-inst-outer"` before sweeping. See `c2c sweep-dryrun` for a read-only preview.
+
+### Child Processes Can Inherit a Wrong `C2C_MCP_CLIENT_PID`
+
+If you launch one agent from inside another (e.g. `kimi` from a Codex session), the child may inherit the parent's `C2C_MCP_CLIENT_PID`. Without a guard, this can overwrite the child's own liveness entry in the broker with the parent's PID. The broker now blocks this specific case in `auto_register_startup`, but the safest practice is to use `c2c start <client>` for managed sessions rather than nesting one interactive TUI inside another.
+
+### Do Not Set `C2C_MCP_AUTO_DRAIN_CHANNEL=1`
+
+The server defaults to `0` (safe). Even when set to `1`, auto-drain only works if the client declares `experimental.claude/channel` support in its `initialize` handshake — standard Claude Code does not. Setting this env var has no benefit and can cause confusion. The PostToolUse hook is the production auto-delivery path for Claude Code.

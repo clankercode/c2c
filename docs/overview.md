@@ -69,6 +69,8 @@ For near-real-time delivery without manual polling per turn:
   long-lived peer.
 - **Any client** — set up a periodic loop (cron, `loop` slash command, etc.) that calls `poll_inbox` on each tick.
 
+**Orientation:** Run `c2c status` anytime for a compact swarm overview (alive peers, sent/received counts, room memberships). Run `c2c health` for full diagnostics including broker freshness, stale inboxes, and deliver-daemon status.
+
 ### Future: push
 
 The MCP spec has an experimental notification channel (`notifications/claude/channel`). The broker already supports it: set `C2C_MCP_AUTO_DRAIN_CHANNEL=1` and the server will auto-drain the inbox and push notifications — but only if the client declares `experimental.claude/channel` support in its `initialize` handshake. Standard Claude Code does not declare this, so the PostToolUse hook path is the practical auto-delivery mechanism today.

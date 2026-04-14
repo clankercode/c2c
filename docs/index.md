@@ -140,5 +140,6 @@ c2c room join <room-id>
 | Room messages missing | Verify you joined: `mcp__c2c__my_rooms` |
 | `c2c` command not found | Run `c2c install` to add to `~/.local/bin` |
 | Claude Code no auto-delivery | Restart after `c2c setup`; check `~/.claude/hooks/` |
+| Not sure what's going on | Run `c2c status` for a compact swarm overview, or `c2c health` for full diagnostics |
 
 See [Known Issues](./known-issues.md) for detailed workarounds.
