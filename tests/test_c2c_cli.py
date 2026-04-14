@@ -534,6 +534,72 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(json.loads(stdout.getvalue())["root"], str(broker_root))
 
+    def test_sweep_dryrun_reports_likely_stale_duplicate_pid_aliases(self):
+        import c2c_sweep_dryrun
+
+        broker_root = Path(self.temp_dir.name) / "broker"
+        broker_root.mkdir()
+        (broker_root / "registry.json").write_text(
+            json.dumps(
+                [
+                    {"session_id": "codex-local", "alias": "codex", "pid": os.getpid()},
+                    {
+                        "session_id": "opencode-c2c-msg",
+                        "alias": "opencode-c2c-msg",
+                        "pid": os.getpid(),
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+        archive_dir = broker_root / "archive"
+        archive_dir.mkdir()
+        (archive_dir / "codex-local.jsonl").write_text(
+            json.dumps({"from_alias": "codex", "to_alias": "peer"}) + "\n",
+            encoding="utf-8",
+        )
+
+        report = c2c_sweep_dryrun.analyze(broker_root)
+
+        self.assertEqual(
+            report["duplicate_pids"][0]["likely_stale_aliases"],
+            ["opencode-c2c-msg"],
+        )
+
+    def test_sweep_dryrun_text_reports_likely_stale_duplicate_pid_aliases(self):
+        import c2c_sweep_dryrun
+
+        report = {
+            "root": "/tmp/broker",
+            "totals": {
+                "registrations": 2,
+                "inbox_files": 0,
+                "live": 2,
+                "legacy_pidless": 0,
+                "dead": 0,
+                "orphan_inboxes": 0,
+                "dropped_if_swept": 0,
+                "nonempty_content_at_risk": 0,
+            },
+            "duplicate_pids": [
+                {
+                    "pid": 12345,
+                    "aliases": ["codex", "opencode-c2c-msg"],
+                    "likely_stale_aliases": ["opencode-c2c-msg"],
+                }
+            ],
+            "duplicate_aliases": {},
+            "dead_regs": [],
+            "nonempty_content_at_risk": [],
+        }
+
+        stdout = io.StringIO()
+        with mock.patch("sys.stdout", stdout):
+            c2c_sweep_dryrun.print_report(report)
+
+        self.assertIn("duplicate PIDs", stdout.getvalue())
+        self.assertIn("likely stale: opencode-c2c-msg", stdout.getvalue())
+
     def test_c2c_poll_inbox_subcommand_dispatches_to_recovery_poller(self):
         with mock.patch("c2c_cli.c2c_poll_inbox.main", return_value=0) as poll_main:
             result = c2c_cli.main(["poll-inbox", "--json"])

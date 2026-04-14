@@ -93,6 +93,72 @@ def inbox_message_count(path: Path) -> int | None:
     return len(data) if isinstance(data, list) else None
 
 
+def archive_activity_counts(root: Path) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    archive_dir = root / "archive"
+    if not archive_dir.exists():
+        return counts
+    for archive_file in archive_dir.glob("*.jsonl"):
+        stem = archive_file.stem
+        try:
+            lines = archive_file.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for raw in lines:
+            raw = raw.strip()
+            if not raw:
+                continue
+            counts[stem] = counts.get(stem, 0) + 1
+            try:
+                entry = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            for key in ("from_alias", "to_alias"):
+                value = entry.get(key)
+                if isinstance(value, str) and value:
+                    counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+def registration_activity(reg: dict, activity_counts: dict[str, int]) -> int:
+    session_id = str(reg.get("session_id") or "")
+    alias = str(reg.get("alias") or "")
+    return activity_counts.get(session_id, 0) + activity_counts.get(alias, 0)
+
+
+def duplicate_pid_entries(registrations: list[dict], root: Path) -> list[dict]:
+    activity_counts = archive_activity_counts(root)
+    pid_map: dict[int, list[dict]] = {}
+    for reg in registrations:
+        pid = reg.get("pid")
+        if isinstance(pid, int):
+            pid_map.setdefault(pid, []).append(reg)
+
+    entries = []
+    for pid, rows in sorted(pid_map.items()):
+        if len(rows) < 2:
+            continue
+        aliases = [str(row.get("alias", "")) for row in rows]
+        activity_by_alias = {
+            str(row.get("alias", "")): registration_activity(row, activity_counts)
+            for row in rows
+        }
+        sibling_has_activity = any(count > 0 for count in activity_by_alias.values())
+        likely_stale_aliases = [
+            alias
+            for alias, count in activity_by_alias.items()
+            if sibling_has_activity and count == 0
+        ]
+        entries.append(
+            {
+                "pid": pid,
+                "aliases": aliases,
+                "likely_stale_aliases": likely_stale_aliases,
+            }
+        )
+    return entries
+
+
 def analyze(root: Path) -> dict:
     regs = load_registry(root)
     inboxes = collect_inboxes(root)
@@ -166,6 +232,7 @@ def analyze(root: Path) -> dict:
         "legacy_pidless_regs": legacy_regs,
         "dead_regs": dead_regs,
         "orphan_inboxes": orphan_inboxes,
+        "duplicate_pids": duplicate_pid_entries(regs, root),
         "duplicate_aliases": duplicate_aliases,
         "nonempty_content_at_risk": nonempty_drops,
     }
@@ -190,6 +257,15 @@ def print_report(report: dict) -> None:
         print("duplicate aliases (routing black-hole risk):")
         for alias, sids in report["duplicate_aliases"].items():
             print(f"  {alias}: {', '.join(sids)}")
+
+    if report.get("duplicate_pids"):
+        print()
+        print("duplicate PIDs (likely ghost registrations):")
+        for entry in report["duplicate_pids"]:
+            aliases = ", ".join(entry["aliases"])
+            likely = entry.get("likely_stale_aliases") or []
+            suffix = f"  likely stale: {', '.join(likely)}" if likely else ""
+            print(f"  pid={entry['pid']}: {aliases}{suffix}")
 
     if report["dead_regs"]:
         print()

@@ -13,6 +13,17 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T01:17Z - codex RELEASED locks on `c2c_sweep_dryrun.py`,
+  `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-14T01-14-00Z-codex-sweep-dryrun-duplicate-pid-blindspot.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Safe sweep preview now reports
+  duplicate PID groups and likely zero-activity ghost aliases using broker
+  archive activity. Live `./c2c sweep-dryrun --json` and text output identify
+  `opencode-c2c-msg` as the likely stale duplicate-PID alias while remaining
+  read-only. Verification: RED regressions failed on missing JSON/text section,
+  focused tests 2/2, `py_compile`, `git diff --check`, live command checks,
+  and full `just test` with 968 Python tests plus OCaml build/runtest.
+
 - 2026-04-14T01:08Z - codex RELEASED locks on `c2c_cli.py`,
   `c2c_sweep_dryrun.py`, `tests/test_c2c_cli.py`,
   `.collab/findings/2026-04-14T01-05-00Z-codex-sweep-dryrun-dispatch-gap.md`,
