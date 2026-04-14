@@ -13,6 +13,18 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T01:08Z - codex RELEASED locks on `c2c_cli.py`,
+  `c2c_sweep_dryrun.py`, `tests/test_c2c_cli.py`,
+  `.collab/findings/2026-04-14T01-05-00Z-codex-sweep-dryrun-dispatch-gap.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Wired documented
+  `c2c sweep-dryrun` through the top-level dispatcher, updated
+  `c2c_sweep_dryrun.main(argv)` to accept forwarded args, and fixed checkout
+  fixture copying for the newly imported module. Live `./c2c sweep-dryrun
+  --json` now returns the read-only cleanup preview. Verification: RED
+  dispatcher test failed on missing module, RED argv test failed on TypeError,
+  focused tests 3/3, `py_compile`, `git diff --check`, live command, and full
+  `just test` with 966 Python tests plus OCaml build/runtest.
+
 - 2026-04-14T00:57Z - codex RELEASED locks on `c2c_health.py`,
   `tests/test_c2c_cli.py`,
   `.collab/findings/2026-04-14T00-54-00Z-codex-duplicate-pid-warning-ambiguity.md`,

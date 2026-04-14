@@ -28,6 +28,7 @@ import c2c_send
 import c2c_send_all
 import c2c_smoke_test
 import c2c_status
+import c2c_sweep_dryrun
 import c2c_verify
 import c2c_watch
 import c2c_whoami
@@ -44,6 +45,7 @@ SAFE_AUTO_APPROVE_SUBCOMMANDS = {
     "health",
     "history",
     "smoke-test",
+    "sweep-dryrun",
     "wake-peer",
     "instances",
 }
@@ -54,8 +56,8 @@ USAGE = (
     "configure-kimi|configure-opencode|dead-letter|deliver-inbox|health|"
     "history|init|inject|install|instances|list|mcp|peek-inbox|poker-sweep|"
     "poll-inbox|prune|refresh-peer|register|restart|restart-me|room|send|"
-    "send-all|setup|smoke-test|start|status|stop|sweep|verify|wake-peer|"
-    "watch|whoami|wire-daemon> [...args]"
+    "send-all|setup|smoke-test|start|status|stop|sweep|sweep-dryrun|verify|"
+    "wake-peer|watch|whoami|wire-daemon> [...args]"
 )
 
 
@@ -183,6 +185,8 @@ def main(argv: list[str] | None = None) -> int:
     if subcommand == "sweep":
         # alias for broker-gc --once
         return c2c_broker_gc.main(["--once"] + remainder)
+    if subcommand == "sweep-dryrun":
+        return c2c_sweep_dryrun.main(remainder)
     if subcommand == "status":
         return c2c_status.main(remainder)
     if subcommand == "verify":

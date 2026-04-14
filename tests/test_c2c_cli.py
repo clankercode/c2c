@@ -159,6 +159,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_history.py",
         "c2c_status.py",
         "c2c_smoke_test.py",
+        "c2c_sweep_dryrun.py",
         "c2c_mcp.py",
         "c2c_registry.py",
         "claude_send_msg.py",
@@ -509,6 +510,29 @@ class C2CCLITests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         deliver_main.assert_called_once_with(["--pid", "123", "--session-id", "s"])
+
+    def test_c2c_sweep_dryrun_subcommand_dispatches_to_safe_preview(self):
+        with mock.patch("c2c_cli.c2c_sweep_dryrun.main", return_value=0) as dryrun_main:
+            result = c2c_cli.main(["sweep-dryrun", "--json"])
+
+        self.assertEqual(result, 0)
+        dryrun_main.assert_called_once_with(["--json"])
+
+    def test_sweep_dryrun_main_accepts_argv_from_dispatcher(self):
+        import c2c_sweep_dryrun
+
+        broker_root = Path(self.temp_dir.name) / "broker"
+        broker_root.mkdir()
+        (broker_root / "registry.json").write_text("[]", encoding="utf-8")
+
+        stdout = io.StringIO()
+        with mock.patch("sys.stdout", stdout):
+            result = c2c_sweep_dryrun.main(
+                ["--root", str(broker_root), "--json"]
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(json.loads(stdout.getvalue())["root"], str(broker_root))
 
     def test_c2c_poll_inbox_subcommand_dispatches_to_recovery_poller(self):
         with mock.patch("c2c_cli.c2c_poll_inbox.main", return_value=0) as poll_main:
@@ -3034,6 +3058,7 @@ class C2CTestHelpersTests(unittest.TestCase):
                 "c2c_history.py",
                 "c2c_status.py",
                 "c2c_smoke_test.py",
+                "c2c_sweep_dryrun.py",
                 "c2c_mcp.py",
                 "c2c_registry.py",
                 "claude_send_msg.py",

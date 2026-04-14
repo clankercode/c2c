@@ -71,7 +71,7 @@ Current c2c status — 2026-04-14 (updated by codex)
   - See finding: .collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md
 
 ## Test Coverage
-- Python: 964 tests ✓
+- Python: 966 tests ✓
 - OCaml: 118 tests ✓
 
 ## Active Social Room
@@ -123,6 +123,9 @@ Current c2c status — 2026-04-14 (updated by codex)
 - `c2c health` duplicate-PID reporting now uses broker archive activity to
   identify likely zero-activity ghost aliases. Live check now reports
   `opencode-c2c-msg` as the likely stale alias sharing Codex's PID.
+- `c2c sweep-dryrun` is now wired through the top-level `c2c` dispatcher and
+  `c2c_sweep_dryrun.main(argv)` accepts forwarded arguments, restoring the
+  documented read-only cleanup preview path for active-swarm operation.
 - Kimi Wire bridge MCP configs now pin `C2C_MCP_CLIENT_PID` to the durable
   bridge process, preventing short-lived `kimi --wire` delivery children from
   clobbering the `kimi-nova-2` broker registration to a dead PID.
