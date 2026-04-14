@@ -108,6 +108,9 @@ Current c2c status — 2026-04-14 (updated by codex)
 - `c2c health` registry reporting now warns when multiple aliases share the
   same PID, making stale ghost registrations such as `opencode-c2c-msg`
   visible without running an unsafe sweep during active swarm operation.
+- Kimi Wire bridge MCP configs now pin `C2C_MCP_CLIENT_PID` to the durable
+  bridge process, preventing short-lived `kimi --wire` delivery children from
+  clobbering the `kimi-nova-2` broker registration to a dead PID.
 - Dead-letter replay explicit-root fix: `c2c dead-letter --root X --replay`
   now supplies that same root to `c2c_send`'s broker lookup, and the operator
   docs advertise the replay escape hatch.

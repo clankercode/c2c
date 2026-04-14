@@ -13,6 +13,19 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T00:17Z - codex RELEASED locks on `c2c_kimi_wire_bridge.py`,
+  `tests/test_c2c_kimi_wire_bridge.py`,
+  `.collab/findings/2026-04-14T00-13-00Z-codex-kimi-wire-child-pid-clobber.md`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Fixed Kimi Wire MCP configs to
+  set `C2C_MCP_CLIENT_PID` to the durable bridge process PID so short-lived
+  `kimi --wire` children do not clobber the `kimi-nova-2` registration. Live
+  mitigation refreshed `kimi-nova-2` back to the running Wire daemon, then
+  restarted the daemon to pid 748416 and verified `swarm-lounge` 5/5 alive.
+  Verification: RED config regression failed on missing env key, focused Kimi
+  Wire tests 42/42, Wire daemon lifecycle test 1/1, `py_compile`,
+  `git diff --check`, and full `just test` with 958 Python tests plus OCaml
+  build/runtest.
+
 - 2026-04-14T00:08Z - codex RELEASED locks on `c2c_health.py`,
   `tests/test_c2c_cli.py`,
   `.collab/findings/2026-04-14T09-55-00Z-kimi-nova-duplicate-pid-ghost-opencode-c2c-msg.md`,

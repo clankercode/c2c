@@ -112,17 +112,19 @@ class SpoolTests(unittest.TestCase):
 
 class ConfigTests(unittest.TestCase):
     def test_build_kimi_mcp_config_has_explicit_c2c_env(self):
-        cfg = bridge.build_kimi_mcp_config(
-            broker_root=Path("/broker"),
-            session_id="kimi-wire",
-            alias="kimi-wire",
-            mcp_script=Path("/repo/c2c_mcp.py"),
-        )
+        with mock.patch("c2c_kimi_wire_bridge.os.getpid", return_value=424242):
+            cfg = bridge.build_kimi_mcp_config(
+                broker_root=Path("/broker"),
+                session_id="kimi-wire",
+                alias="kimi-wire",
+                mcp_script=Path("/repo/c2c_mcp.py"),
+            )
 
         env = cfg["mcpServers"]["c2c"]["env"]
         self.assertEqual(env["C2C_MCP_BROKER_ROOT"], "/broker")
         self.assertEqual(env["C2C_MCP_SESSION_ID"], "kimi-wire")
         self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "kimi-wire")
+        self.assertEqual(env["C2C_MCP_CLIENT_PID"], "424242")
         self.assertEqual(env["C2C_MCP_AUTO_JOIN_ROOMS"], "swarm-lounge")
         self.assertEqual(env["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
 
