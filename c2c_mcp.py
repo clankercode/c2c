@@ -262,11 +262,18 @@ def server_is_fresh(server_path: Path) -> bool:
         return False
     ocaml_dir = ROOT / "ocaml"
     test_dir = ocaml_dir / "test"
+    cli_dir = ocaml_dir / "cli"
     for pattern in ("*.ml", "*.mli", "dune", "dune-project"):
         for src in ocaml_dir.rglob(pattern):
             # Skip test-only sources — they affect the test binary, not the server.
             try:
                 src.relative_to(test_dir)
+                continue
+            except ValueError:
+                pass
+            # Skip CLI sources — they affect the CLI binary, not the server.
+            try:
+                src.relative_to(cli_dir)
                 continue
             except ValueError:
                 pass

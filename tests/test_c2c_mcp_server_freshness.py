@@ -105,3 +105,21 @@ class TestServerIsFresh:
         binary.write_bytes(b"fresh binary")
 
         assert server_is_fresh(binary)
+
+    def test_ignores_ocaml_cli_sources(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A newer ocaml/cli source does not make the server binary appear stale."""
+        monkeypatch.setattr(c2c_mcp, "ROOT", tmp_path)
+        ocaml_dir = tmp_path / "ocaml"
+        ocaml_dir.mkdir()
+        cli_dir = ocaml_dir / "cli"
+        cli_dir.mkdir()
+        binary = tmp_path / "server.exe"
+        binary.write_bytes(b"old binary")
+        old_time = time.time() - 100
+        os.utime(binary, (old_time, old_time))
+        cli_src = cli_dir / "c2c_cli.ml"
+        cli_src.write_text("let () = ()")
+
+        assert server_is_fresh(binary)
