@@ -107,6 +107,12 @@ Current c2c status — 2026-04-14 (updated by codex)
 - Follow-up `tests/test_c2c_cli.py` refactor: identity, send, and verify CLI
   behavior tests now live in `tests/test_c2c_cli_identity.py`, bringing the
   CLI test module down to 886 lines.
+- Follow-up `tests/test_c2c_cli.py` refactor: installer coverage now lives in
+  `tests/test_c2c_install.py`, and top-level dispatcher/bootstrap coverage now
+  lives in `tests/test_c2c_cli_dispatch.py`, bringing the CLI test module down
+  to 504 lines. Focused verification passed; full-suite verification was
+  deferred while a peer had active dirty edits in `c2c_mcp.py`,
+  `tests/test_c2c_mcp_server_freshness.py`, `ocaml/cli/*`, and `justfile`.
 - `c2c verify --broker --min-messages N` now forwards the threshold into
   broker verification directly, with a regression in `tests/test_c2c_verify_whoami.py`.
 - `c2c start` now periodically reaps deliver/poker sidecars while the main

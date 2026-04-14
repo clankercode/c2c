@@ -558,6 +558,87 @@ let my_rooms_cmd =
             Printf.printf "%s (%d members)\n" r.ri_room_id r.ri_member_count)
           rooms
 
+(* --- subcommand: dead-letter ---------------------------------------------- *)
+
+let dead_letter_cmd =
+  let limit =
+    Cmdliner.Arg.(value & opt int 50 & info [ "limit"; "l" ] ~docv:"N" ~doc:"Max entries to return.")
+  in
+  let+ json = json_flag
+  and+ limit = limit in
+  let root = resolve_broker_root () in
+  let broker = C2c_mcp.Broker.create ~root in
+  let path = C2c_mcp.Broker.dead_letter_path broker in
+  let output_mode = if json then Json else Human in
+  if not (Sys.file_exists path) then (
+    match output_mode with
+    | Json -> print_json (`List [])
+    | Human -> Printf.printf "(no dead-letter file)\n")
+  else
+    let ic = open_in path in
+    let entries =
+      Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+        let buf = Buffer.create 4096 in
+        (try while true do
+             let line = input_line ic in
+             Buffer.add_string buf line;
+             Buffer.add_char buf '\n'
+           done with End_of_file -> ());
+        let content = Buffer.contents buf in
+        if String.trim content = "" then []
+        else
+          String.split_on_char '\n' content
+          |> List.filter (fun s -> String.trim s <> "")
+          |> List.filter_map
+               (fun line ->
+                 try Some (Yojson.Safe.from_string line)
+                 with _ -> None))
+    in
+    let n = List.length entries in
+    let entries =
+      if n <= limit then entries
+      else
+        let drop = n - limit in
+        let rec skip i = function
+          | [] -> []
+          | _ :: rest when i > 0 -> skip (i - 1) rest
+          | lst -> lst
+        in
+        skip drop entries
+    in
+    match output_mode with
+    | Json -> print_json (`List entries)
+    | Human ->
+        if entries = [] then
+          Printf.printf "(empty)\n"
+        else
+          List.iter (fun j -> print_endline (Yojson.Safe.pretty_to_string j)) entries
+
+(* --- subcommand: prune-rooms ---------------------------------------------- *)
+
+let prune_rooms_cmd =
+  let+ json = json_flag in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  let evicted = C2c_mcp.Broker.prune_rooms broker in
+  let output_mode = if json then Json else Human in
+  match output_mode with
+  | Json ->
+      print_json
+        (`List
+          (List.map
+             (fun (room_id, alias) ->
+               `Assoc [ ("room_id", `String room_id); ("alias", `String alias) ])
+             evicted))
+  | Human ->
+      if evicted = [] then
+        Printf.printf "No dead members to evict.\n"
+      else
+        (Printf.printf "Evicted %d dead members:\n" (List.length evicted);
+         List.iter
+           (fun (room_id, alias) ->
+             Printf.printf "  %s from %s\n" alias room_id)
+           evicted)
+
 (* --- rooms subcommands ---------------------------------------------------- *)
 
 let rooms_send_cmd =
@@ -785,17 +866,107 @@ let rooms_invite_cmd =
      Printf.eprintf "error: %s\n%!" msg;
      exit 1)
 
+let rooms_members_cmd =
+  let room_id =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOM" ~doc:"Room ID.")
+  in
+  let+ json = json_flag
+  and+ room_id = room_id in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  let output_mode = if json then Json else Human in
+  (try
+     let members = C2c_mcp.Broker.read_room_members broker ~room_id in
+     match output_mode with
+     | Json ->
+         print_json
+           (`List
+             (List.map
+                (fun (m : C2c_mcp.room_member) ->
+                  `Assoc
+                    [ ("alias", `String m.rm_alias)
+                    ; ("session_id", `String m.rm_session_id)
+                    ; ("joined_at", `Float m.joined_at)
+                    ])
+                members))
+     | Human ->
+         if members = [] then
+           Printf.printf "No members in room %s.\n" room_id
+         else
+           List.iter
+             (fun (m : C2c_mcp.room_member) ->
+               Printf.printf "  %s (%s)\n" m.rm_alias m.rm_session_id)
+             members
+   with Invalid_argument msg ->
+     Printf.eprintf "error: %s\n%!" msg;
+     exit 1)
+
+let rooms_visibility_cmd =
+  let room_id =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOM" ~doc:"Room ID.")
+  in
+  let visibility =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "set"; "s" ] ~docv:"VIS" ~doc:"Visibility: public or invite_only.")
+  in
+  let+ json = json_flag
+  and+ room_id = room_id
+  and+ vis_opt = visibility in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  let from_alias = resolve_alias broker in
+  let output_mode = if json then Json else Human in
+  (try
+     (match vis_opt with
+      | Some vis_str ->
+          let vis =
+            match String.lowercase_ascii vis_str with
+            | "public" -> C2c_mcp.Public
+            | "invite_only" | "invite-only" -> C2c_mcp.Invite_only
+            | _ ->
+                Printf.eprintf "error: unknown visibility '%s'. Use 'public' or 'invite_only'.\n%!" vis_str;
+                exit 1
+          in
+          C2c_mcp.Broker.set_room_visibility broker ~room_id ~from_alias ~visibility:vis;
+          (match output_mode with
+           | Json -> print_json (`Assoc [ ("ok", `Bool true); ("visibility", `String vis_str) ])
+           | Human -> Printf.printf "Room %s visibility set to %s\n" room_id vis_str)
+      | None ->
+          let meta = C2c_mcp.Broker.load_room_meta broker ~room_id in
+          let vis_str =
+            match meta.visibility with
+            | C2c_mcp.Public -> "public"
+            | C2c_mcp.Invite_only -> "invite_only"
+          in
+          (match output_mode with
+           | Json ->
+               print_json
+                 (`Assoc
+                   [ ("room_id", `String room_id)
+                   ; ("visibility", `String vis_str)
+                   ; ( "invited_members",
+                       `List (List.map (fun a -> `String a) meta.invited_members))
+                   ])
+           | Human ->
+               Printf.printf "Room %s: %s\n" room_id vis_str;
+               if meta.invited_members <> [] then
+                 Printf.printf "  invited: %s\n"
+                   (String.concat ", " meta.invited_members)))
+   with Invalid_argument msg ->
+     Printf.eprintf "error: %s\n%!" msg;
+     exit 1)
+
 let rooms_list = Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List all rooms.") rooms_list_cmd
 let rooms_join = Cmdliner.Cmd.v (Cmdliner.Cmd.info "join" ~doc:"Join a room.") rooms_join_cmd
 let rooms_leave = Cmdliner.Cmd.v (Cmdliner.Cmd.info "leave" ~doc:"Leave a room.") rooms_leave_cmd
 let rooms_send = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send" ~doc:"Send a message to a room.") rooms_send_cmd
 let rooms_history = Cmdliner.Cmd.v (Cmdliner.Cmd.info "history" ~doc:"Show room message history.") rooms_history_cmd
 let rooms_invite = Cmdliner.Cmd.v (Cmdliner.Cmd.info "invite" ~doc:"Invite an alias to a room.") rooms_invite_cmd
+let rooms_members = Cmdliner.Cmd.v (Cmdliner.Cmd.info "members" ~doc:"List room members.") rooms_members_cmd
+let rooms_visibility = Cmdliner.Cmd.v (Cmdliner.Cmd.info "visibility" ~doc:"Get or set room visibility.") rooms_visibility_cmd
 
 let rooms_group =
   Cmdliner.Cmd.group
+    ~default:rooms_list_cmd
     (Cmdliner.Cmd.info "rooms" ~doc:"Manage persistent N:N rooms.")
-    [ rooms_list; rooms_join; rooms_leave; rooms_send; rooms_history; rooms_invite ]
+    [ rooms_list; rooms_join; rooms_leave; rooms_send; rooms_history; rooms_invite; rooms_members; rooms_visibility ]
 
 (* --- main entry point ----------------------------------------------------- *)
 
@@ -838,6 +1009,8 @@ let health = Cmdliner.Cmd.v (Cmdliner.Cmd.info "health" ~doc:"Show broker health
 let register = Cmdliner.Cmd.v (Cmdliner.Cmd.info "register" ~doc:"Register an alias for the current session.") register_cmd
 let tail_log = Cmdliner.Cmd.v (Cmdliner.Cmd.info "tail-log" ~doc:"Show recent broker RPC log entries.") tail_log_cmd
 let my_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "my-rooms" ~doc:"List rooms you are a member of.") my_rooms_cmd
+let dead_letter = Cmdliner.Cmd.v (Cmdliner.Cmd.info "dead-letter" ~doc:"Show dead-letter entries.") dead_letter_cmd
+let prune_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "prune-rooms" ~doc:"Evict dead members from all rooms.") prune_rooms_cmd
 
 let () =
   exit
@@ -855,7 +1028,8 @@ let () =
                ; `P
                    "$(b,send), $(b,list), $(b,whoami), $(b,poll-inbox), \
                     $(b,send-all), $(b,sweep), $(b,history), $(b,health), \
-                    $(b,register), $(b,tail-log), $(b,my-rooms)"
+                    $(b,register), $(b,tail-log), $(b,my-rooms), \
+                    $(b,dead-letter), $(b,prune-rooms)"
                ; `P "$(b,rooms) — manage N:N chat rooms"
                ])
-          [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep; history; health; register; tail_log; my_rooms; rooms_group ]))
+          [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep; history; health; register; tail_log; my_rooms; dead_letter; prune_rooms; rooms_group ]))

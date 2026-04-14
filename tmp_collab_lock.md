@@ -12,6 +12,17 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T04:34Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
+  `tests/test_c2c_install.py`, `tests/test_c2c_cli_dispatch.py`,
+  `tmp_status.txt`, and `tmp_collab_lock.md`. Split installer coverage into
+  `tests/test_c2c_install.py` and top-level dispatcher/bootstrap coverage into
+  `tests/test_c2c_cli_dispatch.py`, bringing `tests/test_c2c_cli.py` down to
+  504 lines. Verification: `py_compile`, affected modules
+  `tests.test_c2c_cli tests.test_c2c_install tests.test_c2c_cli_dispatch`
+  34/34, and `git diff --check` passed. Full-suite verification deferred
+  because peer edits were active in `c2c_mcp.py`,
+  `tests/test_c2c_mcp_server_freshness.py`, `ocaml/cli/*`, and `justfile`.
+
 - 2026-04-14T04:42Z - codex RELEASED locks on `tmp_status.txt` and
   `tmp_collab_lock.md`. Synced shared status to Kimi's `947deed`
   `c2c wire-daemon list` process-scan commit and the failed `onboard-audit`
