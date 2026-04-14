@@ -10,7 +10,7 @@ Writes two config targets:
 
   2. A PostToolUse hook entry in ~/.claude/settings.json that auto-delivers
      inbox messages after every tool call (file-fallback path, no dev channels
-     required). Only added when ~/.claude/hooks/c2c-inbox-check.sh exists.
+     required). Installs ~/.claude/hooks/c2c-inbox-check.sh if missing.
 
 Both writes are idempotent. Use --force to overwrite existing entries.
 """
@@ -33,6 +33,44 @@ SETTINGS_JSON_PATH = Path.home() / ".claude" / "settings.json"
 HOOK_SCRIPT_PATH = Path.home() / ".claude" / "hooks" / "c2c-inbox-check.sh"
 
 HOOK_MATCHER = ".*"
+
+HOOK_SCRIPT_CONTENT = r"""#!/bin/bash
+# c2c-inbox-check.sh — PostToolUse hook for c2c auto-delivery in Claude Code
+#
+# Fires after every tool call. If the session's c2c inbox is non-empty,
+# drains it and outputs messages in <c2c event="message"> envelope format
+# so Claude Code surfaces them as inline context (near-real-time delivery).
+#
+# Required env vars (set by c2c start or the MCP server entry):
+#   C2C_MCP_SESSION_ID   — broker session id
+#   C2C_MCP_BROKER_ROOT  — absolute path to broker root dir
+#
+# Requires `c2c-poll-inbox` on PATH (installed by `c2c install`).
+# Works with both the Python wrapper and the compiled binary.
+#
+# Exits silently (0) when not configured, so unmanaged sessions are unaffected.
+
+SESSION_ID="${C2C_MCP_SESSION_ID:-}"
+BROKER_ROOT="${C2C_MCP_BROKER_ROOT:-}"
+
+[ -z "$SESSION_ID" ]   && exit 0
+[ -z "$BROKER_ROOT" ]  && exit 0
+
+INBOX="$BROKER_ROOT/$SESSION_ID.inbox.json"
+[ -f "$INBOX" ] || exit 0
+
+# Ultra-fast empty check: bash builtin read (no cat subshell), strip whitespace.
+CONTENT=$(<"$INBOX")
+TRIMMED="${CONTENT//[[:space:]]/}"
+[ "$TRIMMED" = "[]" ] || [ -z "$TRIMMED" ] && exit 0
+
+# Non-empty inbox: drain it and print via file-fallback.
+# timeout 5 ensures the hook NEVER blocks the agent indefinitely.
+exec timeout 5 c2c-poll-inbox \
+  --file-fallback \
+  --session-id "$SESSION_ID" \
+  --broker-root "$BROKER_ROOT"
+"""
 
 
 def resolve_broker_root(override: Path | None) -> Path:
@@ -124,10 +162,19 @@ def _hook_already_registered(settings: dict) -> bool:
     return False
 
 
+def install_hook_script(*, force: bool) -> str:
+    """Write the hook script to ~/.claude/hooks/. Returns status string."""
+    if HOOK_SCRIPT_PATH.exists() and not force:
+        return "already_exists"
+    HOOK_SCRIPT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    HOOK_SCRIPT_PATH.write_text(HOOK_SCRIPT_CONTENT, encoding="utf-8")
+    HOOK_SCRIPT_PATH.chmod(0o755)
+    return "installed"
+
+
 def configure_hook(*, force: bool) -> str | None:
-    """Register the PostToolUse hook in settings.json. Returns status string."""
-    if not HOOK_SCRIPT_PATH.exists():
-        return "hook_script_missing"
+    """Install hook script if missing, then register it in settings.json."""
+    install_hook_script(force=force)
 
     settings = _load_json(SETTINGS_JSON_PATH)
 
@@ -260,8 +307,6 @@ def main(argv: list[str] | None = None) -> int:
             print(f"registered PostToolUse hook: {HOOK_SCRIPT_PATH}")
         elif hook_status == "already_registered":
             print(f"PostToolUse hook already registered (use --force to re-add)")
-        elif hook_status == "hook_script_missing":
-            print(f"skipped hook: {HOOK_SCRIPT_PATH} not found")
         print()
         print("⚠️  Restart this Claude Code session to load the c2c MCP server.")
         print("   New Claude sessions opened after setup will already have it.")

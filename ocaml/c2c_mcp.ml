@@ -1594,7 +1594,22 @@ let auto_register_startup ~broker_root =
             && reg.pid <> pid)
           existing
       in
-      if not hijack_guard && not alias_occupied_guard then begin
+      (* Guard 3: if an alive registration already exists for this exact
+         session_id + alias with a DIFFERENT pid, skip — prevents a child
+         process (e.g. kimi launched from codex) from inheriting a wrong
+         C2C_MCP_CLIENT_PID and clobbering the correct liveness entry.
+         Legitimate restarts are still allowed because the old PID will be
+         dead by the time the new process starts. *)
+      let same_session_alive_different_pid =
+        List.exists
+          (fun reg ->
+             reg.session_id = session_id
+             && reg.alias = alias
+             && Broker.registration_is_alive reg
+             && reg.pid <> pid)
+          existing
+      in
+      if not hijack_guard && not alias_occupied_guard && not same_session_alive_different_pid then begin
         let pid_start_time = Broker.capture_pid_start_time pid in
         Broker.register broker ~session_id ~alias ~pid ~pid_start_time;
         ignore (Broker.redeliver_dead_letter_for_session broker ~session_id ~alias)

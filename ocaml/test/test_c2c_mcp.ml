@@ -971,6 +971,35 @@ let test_auto_register_startup_skips_when_alive_session_owns_alias () =
           check string "session_id preserved" "kimi-real-session" reg.session_id;
           check string "alias preserved" "kimi-nova" reg.alias))
 
+let test_auto_register_startup_skips_when_alive_same_session_different_pid () =
+  (* Regression: child process launched from another agent inherits a wrong
+     C2C_MCP_CLIENT_PID and must NOT overwrite the existing alive registration
+     for the same session_id + alias. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let real_pid = Unix.getpid () in
+      let real_start = C2c_mcp.Broker.read_pid_start_time real_pid in
+      (* Pre-register an alive session with pid=real_pid *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"kimi-nova" ~alias:"kimi-nova-2"
+        ~pid:(Some real_pid) ~pid_start_time:real_start;
+      (* Simulate child process with inherited wrong C2C_MCP_CLIENT_PID *)
+      let fake_pid = 111111 in
+      Unix.putenv "C2C_MCP_SESSION_ID" "kimi-nova";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "kimi-nova-2";
+      Unix.putenv "C2C_MCP_CLIENT_PID" (string_of_int fake_pid);
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+          Unix.putenv "C2C_MCP_CLIENT_PID" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          check int "one registration (same-session diff-pid blocked)" 1 (List.length regs);
+          let reg = List.hd regs in
+          check int "original pid preserved" real_pid (Option.get reg.pid)))
+
 let test_auto_join_rooms_startup_joins_listed_rooms () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-social";
@@ -4169,6 +4198,8 @@ let () =
              test_auto_register_startup_skips_when_alive_session_has_different_alias
          ; test_case "auto_register_startup skips when alive session already owns alias" `Quick
              test_auto_register_startup_skips_when_alive_session_owns_alias
+         ; test_case "auto_register_startup skips when alive same session has different pid" `Quick
+             test_auto_register_startup_skips_when_alive_same_session_different_pid
          ; test_case "auto_join_rooms_startup joins listed rooms" `Quick
              test_auto_join_rooms_startup_joins_listed_rooms
          ; test_case "auto_join_rooms_startup prefers current registered alias" `Quick
