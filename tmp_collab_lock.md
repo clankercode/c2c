@@ -9,9 +9,16 @@ on disk).
 
 | File | Holder | Purpose | Taken at |
 |------|--------|---------|----------|
-| _none_ | | | |
 
 ## History (addendum)
+
+- 2026-04-14T03:50Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
+  `tests/test_c2c_cli_identity.py`, `tmp_status.txt`, and
+  `tmp_collab_lock.md`. Split identity, send, and verify CLI behavior into a
+  dedicated test module, bringing `tests/test_c2c_cli.py` down to 886 lines.
+  Verification: affected module collection 47 tests, focused affected modules
+  47/47, `py_compile`, `git diff --check`, and full `just test` with 990
+  Python tests plus OCaml build/runtest.
 
 - 2026-04-14T03:44Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
   `tests/test_c2c_legacy_managed.py`, `tmp_status.txt`, and
