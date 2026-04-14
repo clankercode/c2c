@@ -7,9 +7,9 @@ Usage:
     c2c restart <NAME>
     c2c instances [--json]
 
-Replaces the per-client run-*-inst-outer + run-*-inst harness scripts with a
-single command that manages the outer restart loop, deliver daemon, and poker
-for any client type.
+Launches a client with c2c env vars, deliver daemon, and poker.
+When the client exits, prints a resume command and exits.
+Does NOT loop — use the printed command to relaunch.
 """
 
 from __future__ import annotations
@@ -75,10 +75,6 @@ SUPPORTED_CLIENTS: set[str] = set(CLIENT_CONFIGS.keys())
 # ---------------------------------------------------------------------------
 
 INSTANCES_DIR = Path.home() / ".local" / "share" / "c2c" / "instances"
-MIN_RUN_SECONDS = 10.0
-RESTART_PAUSE_SECONDS = 1.5
-INITIAL_BACKOFF_SECONDS = 2.0
-MAX_BACKOFF_SECONDS = 60.0
 DOUBLE_SIGINT_WINDOW_SECONDS = 2.0
 
 HERE = Path(__file__).resolve().parent
@@ -486,7 +482,6 @@ def run_outer_loop(
     # Write outer loop PID so c2c stop can find us.
     _write_pidfile(_outer_pid_path(name), os.getpid())
 
-    backoff = INITIAL_BACKOFF_SECONDS
     last_sigint = 0.0
     iteration = 0
     child_proc: subprocess.Popen | None = None
@@ -581,20 +576,12 @@ def run_outer_loop(
                 flush=True,
             )
 
-            if elapsed < MIN_RUN_SECONDS:
-                print(
-                    f"[c2c-start/{name}] fast exit — backing off {backoff:.1f}s",
-                    flush=True,
-                )
-                time.sleep(backoff)
-                backoff = min(backoff * 2.0, MAX_BACKOFF_SECONDS)
-            else:
-                backoff = INITIAL_BACKOFF_SECONDS
-                print(
-                    f"[c2c-start/{name}] restarting in {RESTART_PAUSE_SECONDS:.1f}s",
-                    flush=True,
-                )
-                time.sleep(RESTART_PAUSE_SECONDS)
+            # Child exited — clean up and print resume command.
+            print(
+                f"\n  c2c start {client} -n {name}",
+                flush=True,
+            )
+            return _cleanup_and_exit(exit_code)
     except Exception as exc:
         print(f"[c2c-start/{name}] fatal error: {exc}", file=sys.stderr, flush=True)
         return _cleanup_and_exit(1)

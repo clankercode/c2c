@@ -13,6 +13,21 @@ on disk).
 
 ## History (addendum)
 
+- 2026-04-14T02:16Z - codex RELEASED locks on
+  `.collab/findings/2026-04-14T02-15-00Z-codex-c2c-start-nonloop-test-failures.md`
+  and `tmp_collab_lock.md`. Logged full-suite failures caused by unrelated
+  uncommitted `c2c_start.py` / `CLAUDE.md` edits that change `c2c start` loop
+  semantics without updating `tests/test_c2c_start.py`.
+
+- 2026-04-14T02:14Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
+  `tests/test_c2c_kimi_crush.py`, `tmp_status.txt`, and
+  `tmp_collab_lock.md`. Split Kimi/Crush configure and managed launcher
+  coverage into a dedicated test module, bringing `tests/test_c2c_cli.py` down
+  to 5,603 lines. Verification: affected module collection 240 tests, focused
+  affected modules 240/240, `py_compile`, and `git diff --check`. Full
+  `just test` currently fails because of unrelated uncommitted `c2c_start.py`
+  loop-semantics edits; see the 02:16Z finding entry above.
+
 - 2026-04-14T01:55Z - codex RELEASED locks on `tests/test_c2c_cli.py`,
   `tests/test_c2c_opencode.py`, `tmp_status.txt`, and
   `tmp_collab_lock.md`. Split OpenCode local config, plugin/install,

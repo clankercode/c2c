@@ -288,24 +288,16 @@ class C2CStartOuterLoopBehaviorTests(unittest.TestCase):
         self.c2c_start.INSTANCES_DIR = self._orig_instances_dir
         self.temp_dir.cleanup()
 
-    def test_run_outer_loop_exponential_backoff_on_fast_exit(self):
-        """Fast exits trigger exponential backoff sleep."""
-        sleeps = []
-        call_count = 0
-
-        def fake_wait(timeout=None):
-            nonlocal call_count
-            call_count += 1
-            if call_count >= 3:
-                raise RuntimeError("stop loop")
-            return 1  # fast exit (< MIN_RUN_SECONDS)
+    def test_run_outer_loop_prints_resume_command_on_exit(self):
+        """After child exits, the outer loop prints a resume command."""
+        import io
+        from contextlib import redirect_stdout
 
         mock_child = mock.Mock()
         mock_child.poll.return_value = None
-        mock_child.wait.side_effect = fake_wait
-        mock_child.terminate.return_value = None
-        mock_child.kill.return_value = None
+        mock_child.wait.return_value = 0
 
+        buf = io.StringIO()
         with (
             mock.patch.object(self.c2c_start, "broker_root", return_value=Path("/tmp/broker")),
             mock.patch.object(self.c2c_start.c2c_mcp, "cleanup_stale_tmp_fea_so", return_value=0),
@@ -313,56 +305,19 @@ class C2CStartOuterLoopBehaviorTests(unittest.TestCase):
             mock.patch.object(self.c2c_start, "_start_poker", return_value=None),
             mock.patch("subprocess.Popen", return_value=mock_child),
             mock.patch("shutil.which", return_value="/fake/binary"),
-            mock.patch("time.sleep", side_effect=sleeps.append),
-            mock.patch("time.monotonic", side_effect=[0, 1, 2, 3, 4]),
+            mock.patch("time.monotonic", side_effect=[0, 5]),
+            redirect_stdout(buf),
         ):
             rc = self.c2c_start.run_outer_loop(
-                "backoff-test", "codex", [], Path("/tmp/broker")
+                "my-instance", "claude", [], Path("/tmp/broker")
             )
 
-        # After first fast exit: INITIAL_BACKOFF_SECONDS (2.0)
-        # After second fast exit: doubled to 4.0
-        self.assertEqual(rc, 1)
-        self.assertEqual(sleeps, [2.0, 4.0])
+        self.assertEqual(rc, 0)
+        output = buf.getvalue()
+        self.assertIn("c2c start claude -n my-instance", output)
 
-    def test_run_outer_loop_resets_backoff_after_slow_exit(self):
-        """Slow exits reset backoff to the initial value."""
-        sleeps = []
-        call_count = 0
-
-        def fake_wait(timeout=None):
-            nonlocal call_count
-            call_count += 1
-            if call_count >= 3:
-                raise RuntimeError("stop loop")
-            return 15.0  # slow exit (>= MIN_RUN_SECONDS)
-
-        mock_child = mock.Mock()
-        mock_child.poll.return_value = None
-        mock_child.wait.side_effect = fake_wait
-        mock_child.terminate.return_value = None
-        mock_child.kill.return_value = None
-
-        with (
-            mock.patch.object(self.c2c_start, "broker_root", return_value=Path("/tmp/broker")),
-            mock.patch.object(self.c2c_start.c2c_mcp, "cleanup_stale_tmp_fea_so", return_value=0),
-            mock.patch.object(self.c2c_start, "_start_deliver_daemon", return_value=None),
-            mock.patch.object(self.c2c_start, "_start_poker", return_value=None),
-            mock.patch("subprocess.Popen", return_value=mock_child),
-            mock.patch("shutil.which", return_value="/fake/binary"),
-            mock.patch("time.sleep", side_effect=sleeps.append),
-            mock.patch("time.monotonic", side_effect=[0, 15, 16, 31, 32]),
-        ):
-            rc = self.c2c_start.run_outer_loop(
-                "backoff-test", "codex", [], Path("/tmp/broker")
-            )
-
-        # Both sleeps should be RESTART_PAUSE_SECONDS (1.5)
-        self.assertEqual(rc, 1)
-        self.assertEqual(sleeps, [1.5, 1.5])
-
-    def test_run_outer_loop_first_sigint_warns_and_continues(self):
-        """First SIGINT prints warning and continues the loop."""
+    def test_run_outer_loop_sigint_exits_with_130(self):
+        """SIGINT terminates child and exits with code 130 (no loop)."""
         call_count = 0
 
         def fake_wait(timeout=None):
@@ -370,11 +325,7 @@ class C2CStartOuterLoopBehaviorTests(unittest.TestCase):
             if timeout is not None:
                 return 0
             call_count += 1
-            if call_count == 1:
-                raise KeyboardInterrupt()
-            if call_count >= 2:
-                raise RuntimeError("stop loop")
-            return 0
+            raise KeyboardInterrupt()
 
         mock_child = mock.Mock()
         mock_child.poll.return_value = None
@@ -390,12 +341,12 @@ class C2CStartOuterLoopBehaviorTests(unittest.TestCase):
             mock.patch("subprocess.Popen", return_value=mock_child),
             mock.patch("shutil.which", return_value="/fake/binary"),
             mock.patch("time.sleep"),
-            mock.patch("time.monotonic", side_effect=[0, 10, 11]),
+            mock.patch("time.monotonic", side_effect=[0, 0.5, 0.5]),
         ):
             rc = self.c2c_start.run_outer_loop(
                 "sigint-test", "codex", [], Path("/tmp/broker")
             )
-        self.assertEqual(rc, 1)
+        self.assertEqual(rc, 130)
         mock_child.terminate.assert_called_once()
 
     def test_run_outer_loop_double_sigint_exits_cleanly(self):
@@ -470,10 +421,7 @@ class C2CStartConstantsTests(unittest.TestCase):
     def test_constants_exist(self):
         import c2c_start
 
-        self.assertEqual(c2c_start.MIN_RUN_SECONDS, 10.0)
-        self.assertEqual(c2c_start.RESTART_PAUSE_SECONDS, 1.5)
-        self.assertEqual(c2c_start.INITIAL_BACKOFF_SECONDS, 2.0)
-        self.assertEqual(c2c_start.MAX_BACKOFF_SECONDS, 60.0)
+        self.assertEqual(c2c_start.DOUBLE_SIGINT_WINDOW_SECONDS, 2.0)
 
     def test_default_name_uses_hostname(self):
         from c2c_start import default_name
