@@ -267,9 +267,9 @@ const C2CDelivery: Plugin = async (ctx) => {
             tick().catch(() => {});
           }
         });
-        await log(`watching ${brokerRoot} for ${inboxName} changes`);
+        void log(`watching ${brokerRoot} for ${inboxName} changes`);
       } catch (err) {
-        await log(`fs.watch failed (${err}), falling back to poll every ${pollIntervalMs}ms`);
+        void log(`fs.watch failed (${err}), falling back to poll every ${pollIntervalMs}ms`);
         setInterval(tick, pollIntervalMs);
       }
     } else {

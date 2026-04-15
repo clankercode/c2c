@@ -56,6 +56,10 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
             "opencode-c2c-msg",
         )
         self.assertEqual(c2c["environment"]["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
+        self.assertEqual(
+            c2c["environment"]["C2C_MCP_AUTO_JOIN_ROOMS"],
+            "swarm-lounge",
+        )
         self.assertTrue(c2c.get("enabled", True))
 
     def test_run_opencode_inst_dry_run_reports_local_config_and_session(self):
@@ -1019,6 +1023,14 @@ class C2CConfigureOpencodeTests(unittest.TestCase):
                 f"opencode-{target.name}",
             )
             self.assertEqual(c2c["environment"]["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
+            self.assertEqual(
+                c2c["environment"]["C2C_MCP_AUTO_REGISTER_ALIAS"],
+                f"opencode-{target.name}",
+            )
+            self.assertEqual(
+                c2c["environment"]["C2C_MCP_AUTO_JOIN_ROOMS"],
+                "swarm-lounge",
+            )
             self.assertTrue(c2c["enabled"])
             self.assertEqual(payload["session_id"], f"opencode-{target.name}")
             self.assertEqual(payload["alias"], f"opencode-{target.name}")
@@ -1061,7 +1073,7 @@ class C2CConfigureOpencodeTests(unittest.TestCase):
             )
             env = config["mcp"]["c2c"]["environment"]
             self.assertEqual(env["C2C_MCP_SESSION_ID"], f"opencode-{target.name}")
-            self.assertNotIn("C2C_MCP_AUTO_REGISTER_ALIAS", env)
+            self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "opencode-primary")
             sidecar = json.loads(
                 (target / ".opencode" / "c2c-plugin.json").read_text(encoding="utf-8")
             )

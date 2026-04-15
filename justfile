@@ -23,8 +23,17 @@ test-py:
 test-ocaml:
     opam exec -- dune runtest ocaml/
 
-# Run all tests (Python + OCaml). Always rebuilds OCaml first to avoid stale binary.
-test: build test-ocaml test-py
+# Run TypeScript (vitest) unit tests for the .opencode plugin
+# Installs devDependencies on demand (idempotent if already installed).
+test-ts:
+    cd .opencode && npm install --no-audit --no-fund --silent && npx vitest run tests/
+
+# Run the OpenCode plugin Python integration test (harness-driven)
+test-ts-integration:
+    python3 -m pytest tests/test_c2c_opencode_plugin_integration.py -v
+
+# Run all tests (Python + OCaml + TS). Always rebuilds OCaml first to avoid stale binary.
+test: build test-ocaml test-py test-ts
 
 # Run a specific Python test file or pattern
 # Usage: just test-one tests/test_c2c_history.py

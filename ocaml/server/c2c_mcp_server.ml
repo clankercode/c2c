@@ -22,6 +22,14 @@ let auto_drain_channel_enabled () =
       not (List.mem normalized [ "0"; "false"; "no"; "off" ])
   | None -> channel_delivery_enabled ()
 
+let inbox_watcher_delay_seconds () =
+  match Sys.getenv_opt "C2C_MCP_INBOX_WATCHER_DELAY" with
+  | Some value -> (
+      match float_of_string_opt (String.trim value) with
+      | Some n -> n
+      | None -> 30.0)
+  | None -> 30.0
+
 let assoc_opt name = function
   | `Assoc fields -> List.assoc_opt name fields
   | _ -> None
@@ -107,13 +115,18 @@ let start_inbox_watcher ~broker_root ~session_id ~emit_notification =
   let stat_size () =
     try (Unix.stat inbox_path).Unix.st_size with Unix.Unix_error _ -> 0
   in
+  let delay = inbox_watcher_delay_seconds () in
   let rec loop last_size =
     let* () = Lwt_unix.sleep 1.0 in
     Lwt.catch
       (fun () ->
         let current_size = stat_size () in
         if current_size > last_size then
-          (* New content available — drain and emit *)
+          (* New content detected. Sleep before draining so preferred delivery
+             paths (e.g. PostToolUse hook on Claude Code) can drain first.
+             If the hook already drained, drain_inbox returns [] and we emit
+             nothing. *)
+          let* () = if delay > 0.0 then Lwt_unix.sleep delay else Lwt.return_unit in
           let broker = C2c_mcp.Broker.create ~root:broker_root in
           let messages = C2c_mcp.Broker.drain_inbox broker ~session_id in
           let rec emit_all = function

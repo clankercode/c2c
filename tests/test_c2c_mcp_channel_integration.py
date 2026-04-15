@@ -71,6 +71,7 @@ def start_server(
     auto_drain: bool = False,
     auto_register_alias: str = "",
     auto_join_rooms: str = "",
+    watcher_delay: str = "0",
 ) -> subprocess.Popen:
     """Start the MCP server as a subprocess."""
     env = {
@@ -81,6 +82,7 @@ def start_server(
         "C2C_MCP_AUTO_DRAIN_CHANNEL": "1" if auto_drain else "0",
         "C2C_MCP_AUTO_REGISTER_ALIAS": auto_register_alias,
         "C2C_MCP_AUTO_JOIN_ROOMS": auto_join_rooms,
+        "C2C_MCP_INBOX_WATCHER_DELAY": watcher_delay,
     }
     proc = subprocess.Popen(
         [str(MCP_SERVER_EXE)],
@@ -526,6 +528,102 @@ class TestChannelNotificationDelivery:
             # Message should still be in inbox (not drained)
             inbox_content = json.loads(inbox_path.read_text())
             assert len(inbox_content) == 1
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
+
+class TestWatcherDrainDelay:
+    """Verify C2C_MCP_INBOX_WATCHER_DELAY delays the watcher's drain."""
+
+    def test_watcher_respects_drain_delay(self, broker_dir: Path) -> None:
+        """With a non-zero delay, no notification should arrive before the
+        delay elapses; after the delay, the message should be delivered."""
+        session_id = "session-delay"
+        proc = start_server(
+            str(broker_dir), session_id,
+            channel_delivery=True,
+            auto_drain=False,
+            watcher_delay="1.2",
+        )
+        try:
+            initialize_server(proc)
+
+            # Write a message immediately
+            inbox_path = broker_dir / f"{session_id}.inbox.json"
+            msg = {
+                "from_alias": "sender",
+                "to_alias": "delayed",
+                "content": "delayed delivery",
+            }
+            inbox_path.write_text(json.dumps([msg]))
+
+            # Watcher ticks every ~1s, then sleeps delay=1.2s before
+            # draining. So at t < ~1s nothing should be emitted yet.
+            early = read_all_jsonrpc(proc, timeout=0.6)
+            early_notifs = [
+                n for n in early
+                if n.get("method") == "notifications/claude/channel"
+            ]
+            assert early_notifs == [], (
+                f"Expected no notifications before delay elapsed, "
+                f"got: {early_notifs}"
+            )
+
+            # Wait longer for the watcher to fire after the delay elapses.
+            # Total bound: 1s tick + 1.2s delay + slack = <=4s
+            late = read_all_jsonrpc(proc, timeout=4.0)
+            late_notifs = [
+                n for n in late
+                if n.get("method") == "notifications/claude/channel"
+            ]
+            assert len(late_notifs) >= 1, (
+                f"Expected notification after delay elapsed, got: {late}"
+            )
+            assert late_notifs[0]["params"]["content"] == "delayed delivery"
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
+    def test_watcher_skips_emit_when_hook_drains_first(
+        self, broker_dir: Path
+    ) -> None:
+        """If something (hook) drains the inbox during the delay window,
+        the watcher should drain, see an empty list, and emit nothing."""
+        session_id = "session-hook-wins"
+        proc = start_server(
+            str(broker_dir), session_id,
+            channel_delivery=True,
+            auto_drain=False,
+            watcher_delay="1.5",
+        )
+        try:
+            initialize_server(proc)
+
+            inbox_path = broker_dir / f"{session_id}.inbox.json"
+            msg = {
+                "from_alias": "sender",
+                "to_alias": "raced",
+                "content": "hook got here first",
+            }
+            inbox_path.write_text(json.dumps([msg]))
+
+            # Simulate hook draining the inbox before the watcher wakes.
+            # Give the watcher ~0.3s to notice the size increase, then drain.
+            time.sleep(0.5)
+            inbox_path.write_text("[]")
+
+            # Watcher's delay is 1.5s, so watcher finishes after ~1s + 1.5s
+            # = 2.5s. Wait longer, then assert no notification was emitted.
+            notifs = read_all_jsonrpc(proc, timeout=3.5)
+            channel_notifs = [
+                n for n in notifs
+                if n.get("method") == "notifications/claude/channel"
+            ]
+            assert channel_notifs == [], (
+                f"Expected no channel notification when hook drained "
+                f"inbox first, got: {channel_notifs}"
+            )
         finally:
             proc.terminate()
             proc.wait(timeout=5)
