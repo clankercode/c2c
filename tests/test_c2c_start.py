@@ -589,6 +589,66 @@ class C2CStartOuterLoopBehaviorTests(unittest.TestCase):
             second_uuid = second_call["resume_session_id"]
             self.assertEqual(first_uuid, second_uuid)
 
+    def test_cmd_start_session_id_override_is_passed_through(self):
+        """CLI --session-id is passed through to run_outer_loop as resume_session_id."""
+        with (
+            mock.patch.object(self.c2c_start, "run_outer_loop", return_value=0) as mock_loop,
+            mock.patch("shutil.which", return_value="/fake/binary"),
+        ):
+            self.c2c_start.cmd_start(
+                "claude", "sid-test", [], Path("/tmp/broker"),
+                session_id_override="550e8400-e29b-41d4-a716-446655440000",
+            )
+        call_kwargs = mock_loop.call_args[1]
+        self.assertEqual(call_kwargs["resume_session_id"], "550e8400-e29b-41d4-a716-446655440000")
+
+    def test_cmd_start_bad_session_id_rejected_before_state(self):
+        """Invalid --session-id exits with an error before creating any state."""
+        import uuid as _uuid
+        # Confirm the input is actually invalid so this test doesn't false-pass.
+        with self.assertRaises(ValueError):
+            _uuid.UUID("not-a-uuid")
+
+        inst_dir = self.instances_dir / "bad-sid"
+        inst_dir.mkdir(parents=True, exist_ok=True)
+
+        import io
+        from contextlib import redirect_stderr
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            rc = self.c2c_start.cmd_start(
+                "claude", "bad-sid", [], Path("/tmp/broker"),
+                session_id_override="not-a-uuid",
+            )
+        self.assertEqual(rc, 1)
+        self.assertIn("550e8400-e29b-41d4-a716-446655440000", buf.getvalue())
+        # State dir should NOT have been created (validation runs before mkdir).
+        self.assertFalse((inst_dir / "config.json").exists())
+
+    def test_cmd_start_session_id_override_beats_saved_config(self):
+        """--session-id takes precedence over a saved resume_session_id."""
+        inst_dir = self.instances_dir / "sid-override-test"
+        inst_dir.mkdir(parents=True, exist_ok=True)
+        config = {
+            "name": "sid-override-test",
+            "client": "claude",
+            "session_id": "sid-override-test",
+            "resume_session_id": "11111111-1111-1111-1111-111111111111",
+        }
+        (inst_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
+
+        with (
+            mock.patch.object(self.c2c_start, "run_outer_loop", return_value=0) as mock_loop,
+            mock.patch("shutil.which", return_value="/fake/binary"),
+        ):
+            self.c2c_start.cmd_start(
+                "claude", "sid-override-test", [], Path("/tmp/broker"),
+                session_id_override="550e8400-e29b-41d4-a716-446655440000",
+            )
+        call_kwargs = mock_loop.call_args[1]
+        # Override wins over saved value.
+        self.assertEqual(call_kwargs["resume_session_id"], "550e8400-e29b-41d4-a716-446655440000")
+
 
 class C2CStartConstantsTests(unittest.TestCase):
     """Task 1: constants, SUPPORTED_CLIENTS, and public helper API."""

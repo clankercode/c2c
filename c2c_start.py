@@ -659,6 +659,7 @@ def cmd_start(
     json_out: bool = False,
     binary_override: str | None = None,
     alias_override: str | None = None,
+    session_id_override: str | None = None,
 ) -> int:
     if client not in CLIENT_CONFIGS:
         msg = f"unknown client: {client!r}. Choose from: {', '.join(sorted(CLIENT_CONFIGS))}"
@@ -667,6 +668,18 @@ def cmd_start(
         else:
             print(f"error: {msg}", file=sys.stderr)
         return 1
+
+    # Validate --session-id before any side effects.
+    if session_id_override is not None:
+        try:
+            uuid.UUID(session_id_override)
+        except ValueError:
+            msg = "--session-id must be a valid UUID, e.g. 550e8400-e29b-41d4-a716-446655440000"
+            if json_out:
+                print(json.dumps({"ok": False, "error": msg}))
+            else:
+                print(f"error: {msg}", file=sys.stderr)
+            return 1
 
     # Check for duplicate running instance.
     pid = _read_pid(_outer_pid_path(name))
@@ -711,7 +724,8 @@ def cmd_start(
     # Stable session UUID: generated once on first start, reused on resume
     # so the client can --resume by it. Only used by clients that support
     # session resumption (claude, codex, opencode).
-    resume_session_id = existing.get("resume_session_id") if existing else None
+    # CLI --session-id override takes precedence; falls back to saved value.
+    resume_session_id = session_id_override or (existing.get("resume_session_id") if existing else None)
     if resume_session_id is None:
         resume_session_id = str(uuid.uuid4())
 
@@ -887,12 +901,13 @@ subcommands:
     sub.add_argument("-n", "--name", default=None)
     sub.add_argument("--bin", default=None, help="custom binary path or name to launch")
     sub.add_argument("--alias", default=None, help="custom alias (defaults to instance name)")
+    sub.add_argument("--session-id", default=None, help="explicit session UUID (overrides auto-generated)")
     parsed, remainder = sub.parse_known_args(args.args)
     # strip leading '--' separator if present
     if remainder and remainder[0] == "--":
         remainder = remainder[1:]
     name = parsed.name or default_name(parsed.client)
-    return cmd_start(parsed.client, name, remainder, broker_root, json_out=json_out, binary_override=parsed.bin, alias_override=parsed.alias)
+    return cmd_start(parsed.client, name, remainder, broker_root, json_out=json_out, binary_override=parsed.bin, alias_override=parsed.alias, session_id_override=parsed.session_id)
 
 
 if __name__ == "__main__":
