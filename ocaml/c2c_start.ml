@@ -594,7 +594,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
              "error: instance '%s' was previously a %s instance. Cannot resume as %s. Use 'c2c stop %s' first.\n%!"
              name ex.client client name;
            exit 1);
-        let bo = if binary_override = None then ex.binary_override else binary_override in
+        let bo = if binary_override = None then None else binary_override in
         let ao = if alias_override = None then Some ex.alias else alias_override in
         let ea = if extra_args = [] then ex.extra_args else extra_args in
         (* Validate saved resume_session_id is a valid UUID; if not (e.g. corrupted

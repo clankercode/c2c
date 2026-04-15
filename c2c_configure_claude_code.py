@@ -182,15 +182,6 @@ def _hook_entry() -> dict:
     return {"type": "command", "command": str(HOOK_SCRIPT_PATH)}
 
 
-def _hook_already_registered(settings: dict) -> bool:
-    hook_cmd = str(HOOK_SCRIPT_PATH)
-    for group in settings.get("hooks", {}).get("PostToolUse", []):
-        for h in group.get("hooks", []):
-            if h.get("command") == hook_cmd:
-                return True
-    return False
-
-
 def install_hook_script(*, force: bool) -> str:
     """Write the hook script to ~/.claude/hooks/. Returns status string."""
     if HOOK_SCRIPT_PATH.exists() and not force:
@@ -201,20 +192,62 @@ def install_hook_script(*, force: bool) -> str:
     return "installed"
 
 
+def _is_c2c_hook(h: dict) -> bool:
+    """Check if a hook entry is a c2c inbox hook (by command path)."""
+    cmd = h.get("command", "")
+    return "c2c-inbox-check" in cmd
+
+
+def _deduplicate_hook_entries(post_tool_use: list) -> tuple[list, bool]:
+    """Remove all c2c hook entries across all PostToolUse groups, then add back
+    only the canonical one. This handles the case where the same script is
+    registered under multiple paths (e.g. ~/.claude/hooks/ and ~/.claude-mm/hooks/).
+
+    Returns (filtered_groups, has_canonical) where has_canonical is True if the
+    canonical hook script was already present in the list.
+    """
+    hook_cmd = str(HOOK_SCRIPT_PATH)
+    new_groups = []
+    has_canonical = False
+    for group in post_tool_use:
+        non_c2c_hooks = [h for h in group.get("hooks", []) if not _is_c2c_hook(h)]
+        if any(h.get("command") == hook_cmd for h in group.get("hooks", [])):
+            has_canonical = True
+        if non_c2c_hooks:
+            new_groups.append({**group, "hooks": non_c2c_hooks})
+    return new_groups, has_canonical
+
+
 def configure_hook(*, force: bool) -> str | None:
-    """Install hook script if missing, then register it in settings.json."""
+    """Install hook script if missing, then register it in settings.json.
+
+    Handles two issues:
+    1. Deduplication: removes any existing c2c hook entries before adding
+       (prevents duplicate groups with the same hook script)
+    2. Consolidation: single PostToolUse group with our hook
+    """
     install_hook_script(force=force)
 
     settings = _load_json(SETTINGS_JSON_PATH)
 
-    if _hook_already_registered(settings) and not force:
-        return "already_registered"
-
-    # Ensure the PostToolUse list exists
     hooks_section = settings.setdefault("hooks", {})
     post_tool_use = hooks_section.setdefault("PostToolUse", [])
 
-    # Find existing group with HOOK_MATCHER or append a new one
+    # Check if the canonical hook is already registered (before any changes)
+    hook_cmd = str(HOOK_SCRIPT_PATH)
+    has_canonical = any(
+        h.get("command") == hook_cmd
+        for group in post_tool_use
+        for h in group.get("hooks", [])
+    )
+
+    if has_canonical and not force:
+        return "already_registered"
+
+    # Remove any existing c2c hook entries (deduplication pass)
+    post_tool_use, _ = _deduplicate_hook_entries(post_tool_use)
+
+    # Now add our hook in a single group with matcher ".*"
     target_group = None
     for group in post_tool_use:
         if group.get("matcher") == HOOK_MATCHER:
@@ -224,11 +257,11 @@ def configure_hook(*, force: bool) -> str | None:
         target_group = {"matcher": HOOK_MATCHER, "hooks": []}
         post_tool_use.append(target_group)
 
-    # Add hook entry if not already in this group
-    hook_cmd = str(HOOK_SCRIPT_PATH)
+    # Add hook entry
     if not any(h.get("command") == hook_cmd for h in target_group.get("hooks", [])):
         target_group.setdefault("hooks", []).append(_hook_entry())
 
+    hooks_section["PostToolUse"] = post_tool_use
     _atomic_write(SETTINGS_JSON_PATH, settings)
     return "registered"
 
