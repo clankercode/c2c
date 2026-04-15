@@ -306,15 +306,17 @@ let test_initialize_returns_mcp_capabilities () =
       let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
       match response with
       | None -> fail "expected initialize response"
-       | Some json ->
-           let open Yojson.Safe.Util in
-            check string "protocol version" "2024-11-05"
-              (json |> member "result" |> member "protocolVersion" |> to_string);
-            check bool "instructions present"
-              true
-              (json |> member "result" |> member "instructions" <> `Null);
-            ignore
-              (json |> member "result" |> member "capabilities" |> member "experimental" |> member "claude/channel"))
+      | Some json ->
+          let open Yojson.Safe.Util in
+          check string "protocol version" "2024-11-05"
+            (json |> member "result" |> member "protocolVersion" |> to_string);
+          check bool "instructions present"
+            true
+            (json |> member "result" |> member "instructions" <> `Null);
+          (* Server declares experimental.claude/channel capability as true *)
+          check bool "server declares claude/channel capability"
+            true
+            (json |> member "result" |> member "capabilities" |> member "experimental" |> member "claude/channel" |> to_bool))
 
 let test_initialize_reports_server_version_and_features () =
   with_temp_dir (fun dir ->

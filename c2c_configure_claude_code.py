@@ -99,6 +99,7 @@ def build_mcp_entry(
 ) -> dict:
     env: dict[str, str] = {
         "C2C_MCP_BROKER_ROOT": str(broker_root),
+        "C2C_MCP_CHANNEL_DELIVERY": "1",
     }
     if session_id:
         env["C2C_MCP_SESSION_ID"] = session_id

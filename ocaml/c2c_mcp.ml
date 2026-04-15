@@ -62,7 +62,7 @@ let supported_protocol_version = "2024-11-05"
 let capabilities =
   `Assoc
     [ ("tools", `Assoc [])
-    ; ("experimental", `Assoc [ ("claude/channel", `Assoc []) ])
+    ; ("experimental", `Assoc [ ("claude/channel", `Bool true) ])
     ]
 
 let instructions =

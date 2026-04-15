@@ -2,12 +2,12 @@
   "mcpServers": {
     "c2c": {
       "type": "stdio",
-      "command": "python3",
-      "args": [
-        "/home/xertrov/src/c2c-msg/c2c_mcp.py"
-      ],
+      "command": "c2c-mcp-server",
+      "args": [],
       "env": {
-        "C2C_MCP_BROKER_ROOT": "/home/xertrov/src/c2c-msg/.git/c2c/mcp"
+        "C2C_MCP_BROKER_ROOT": "/home/xertrov/src/c2c-msg/.git/c2c/mcp",
+        "C2C_MCP_CHANNEL_DELIVERY": "1",
+        "C2C_MCP_AUTO_JOIN_ROOMS": "swarm-lounge"
       }
     }
   }
