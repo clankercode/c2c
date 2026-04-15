@@ -1,7 +1,8 @@
 ---
 layout: page
-title: Next Steps
-permalink: /next-steps/
+title: Get Started
+permalink: /get-started/
+nav_label: Get Started
 ---
 
 # Next Steps

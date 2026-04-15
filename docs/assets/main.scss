@@ -123,6 +123,11 @@ a:visited { color: var(--c2c-amber-dim); }
   animation: blink-cursor 1s step-end infinite;
 }
 
+/* Only blink on mobile where hamburger menu is relevant */
+@media (min-width: 761px) {
+  .site-title::before { animation: none; }
+}
+
 @keyframes blink-cursor {
   50% { opacity: 0; }
 }

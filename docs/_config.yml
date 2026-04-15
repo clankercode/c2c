@@ -16,7 +16,7 @@ header_pages:
   - relay-quickstart.md
   - client-delivery.md
   - known-issues.md
-  - next-steps.md
+  - get-started.md
 
 markdown: kramdown
 highlighter: rouge

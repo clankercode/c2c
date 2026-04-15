@@ -572,7 +572,11 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
         let bo = if binary_override = None then ex.binary_override else binary_override in
         let ao = if alias_override = None then Some ex.alias else alias_override in
         let ea = if extra_args = [] then ex.extra_args else extra_args in
-        let rs = if session_id_override = None then Some ex.resume_session_id else session_id_override in
+        let rs_from_existing = match binary_override with
+          | Some _ -> None
+          | None -> Some ex.resume_session_id
+        in
+        let rs = if session_id_override = None then rs_from_existing else session_id_override in
         (bo, ao, ea, rs, ex.broker_root)
     | None ->
         let rs =
