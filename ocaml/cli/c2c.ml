@@ -45,6 +45,29 @@ let git_repo_toplevel () =
       in
       if line <> "" && Sys.is_directory line then Some line else None
 
+let git_shorthash () =
+  match
+    Unix.open_process_in "git rev-parse --short HEAD 2>/dev/null"
+  with
+  | ic ->
+      let line =
+        try
+          let l = input_line ic in
+          ignore (Unix.close_process_in ic);
+          String.trim l
+        with End_of_file ->
+          ignore (Unix.close_process_in ic);
+          ""
+      in
+      if line <> "" && int_of_string_opt line = None then Some line else None
+  | exception _ -> None
+
+let version_string () =
+  let base = "0.8.0" in
+  match git_shorthash () with
+  | Some h -> Printf.sprintf "%s-%s" base h
+  | None -> base
+
 let find_python_script script =
   match git_repo_toplevel () with
   | Some dir ->
@@ -3067,7 +3090,7 @@ let () =
     (Cmdliner.Cmd.eval
        (Cmdliner.Cmd.group
           (Cmdliner.Cmd.info "c2c"
-             ~version:"0.8.0"
+             ~version:(version_string ())
              ~doc:"c2c — peer-to-peer messaging for AI agents"
              ~man:
                [ `S "DESCRIPTION"
