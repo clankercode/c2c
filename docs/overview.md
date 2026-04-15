@@ -54,7 +54,7 @@ Agents call `poll_inbox` to drain their inbox. The sender writes to the recipien
 
 For near-real-time delivery without manual polling per turn:
 
-- **Claude Code** — `c2c setup claude-code` registers a PostToolUse hook (`c2c-inbox-check.sh`) that fires after every tool call, drains the inbox, and surfaces messages directly in the transcript. Combined with `C2C_MCP_AUTO_REGISTER_ALIAS`, this gives stable identity + near-real-time delivery with zero per-turn effort.
+- **Claude Code** — `c2c setup claude` registers a PostToolUse hook (`c2c-inbox-check.sh`) that fires after every tool call, drains the inbox, and surfaces messages directly in the transcript. Combined with `C2C_MCP_AUTO_REGISTER_ALIAS`, this gives stable identity + near-real-time delivery with zero per-turn effort.
 - **Codex** — `c2c start codex` runs a managed session with an outer restart loop, notify-only delivery daemon, and poker. The daemon injects only a "poll now" sentinel into the PTY; message content stays in the broker until Codex calls `poll_inbox`.
 - **OpenCode** — two delivery paths: (1) A TypeScript plugin (`.opencode/plugins/c2c.ts`, installed via `c2c setup opencode`) delivers messages as proper user turns using `client.session.promptAsync` on `session.idle` events. (2) `c2c_opencode_wake_daemon.py` watches the inbox file and PTY-injects a COMMAND telling the TUI to call `poll_inbox`. Messages stay broker-native in both paths.
 - **Kimi Code** — MCP setup is proven. `c2c-kimi-wire-bridge` is the preferred
@@ -63,7 +63,7 @@ For near-real-time delivery without manual polling per turn:
   for one-shot delivery or `--loop` to run as a background daemon. The manual
   TUI master-side PTY wake daemon (`pty_inject`) remains a fallback for
   interactive TUI sessions; message content stays broker-native in both paths.
-- **Crush** — *Experimental / not recommended.* `c2c setup crush` works and
+- **Crush** — *Experimental / not recommended.* `c2c start crush` works and
   one-shot `crush run` poll-and-reply is proven, but Crush lacks context
   compaction and interactive TUI wake is unreliable. Do not rely on Crush as a
   long-lived peer.
@@ -167,7 +167,7 @@ Use the unified `c2c setup <client>` command — no hand-editing required.
 ### Claude Code
 
 ```bash
-c2c setup claude-code
+c2c setup claude
 ```
 
 This writes `mcpServers.c2c` to `~/.claude.json`, registers the PostToolUse inbox hook in `~/.claude/settings.json`, and sets `C2C_MCP_AUTO_REGISTER_ALIAS` (derived from username+hostname) so you get the same alias on every restart. Restart Claude Code to pick it up.
@@ -175,7 +175,7 @@ This writes `mcpServers.c2c` to `~/.claude.json`, registers the PostToolUse inbo
 To specify a custom alias:
 
 ```bash
-c2c setup claude-code --alias my-agent-name
+c2c setup claude --alias my-agent-name
 ```
 
 ### OpenCode
@@ -205,10 +205,10 @@ Writes `~/.kimi/mcp.json` with a `c2c` stdio MCP server entry and a default stab
 ### Crush (experimental)
 
 ```bash
-c2c setup crush
+c2c start crush -n my-crush
 ```
 
-`c2c setup crush` writes the MCP config, but Crush is **not recommended** as a
+`c2c start crush` launches a managed session, but Crush is **not recommended** as a
 long-lived peer. It lacks context compaction and interactive TUI wake is
 unreliable. One-shot `crush run` poll-and-reply works if you need a brief
 conversation, but the managed harness should be considered unsupported.

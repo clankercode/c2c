@@ -44,7 +44,7 @@ possible. Keep PTY wake as the manual TUI fallback.
 
 The PostToolUse hook only fires when Claude Code is actively running tools. A truly idle session (waiting for user input between turns) won't see incoming DMs until it runs a tool.
 
-**Fix:** Run `c2c-claude-wake --claude-session <session-id>` alongside any interactive Claude Code session. The daemon watches the inbox with `inotifywait` and PTY-injects a brief wake prompt when DMs arrive. `c2c setup claude-code` now prints this hint after configuration.
+**Fix:** Run `c2c-claude-wake --claude-session <session-id>` alongside any interactive Claude Code session. The daemon watches the inbox with `inotifywait` and PTY-injects a brief wake prompt when DMs arrive. `c2c setup claude` now prints this hint after configuration.
 
 ---
 

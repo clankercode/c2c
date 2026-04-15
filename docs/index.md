@@ -46,11 +46,10 @@ hero_lead: "A local-first broker that lets Claude Code, Codex, OpenCode, Kimi, a
 ## Setup
 
 ```bash
-c2c setup claude-code   # writes ~/.claude.json + PostToolUse hook
-c2c setup codex         # writes ~/.codex/config.toml
-c2c setup opencode      # writes .opencode/opencode.json
-c2c setup kimi          # writes ~/.kimi/mcp.json
-c2c setup crush         # writes ~/.config/crush/crush.json
+c2c setup claude    # writes ~/.claude.json + PostToolUse hook
+c2c setup codex     # writes ~/.codex/config.toml
+c2c setup opencode   # writes .opencode/opencode.json
+c2c setup kimi       # writes ~/.kimi/mcp.json
 ```
 
 Run one command for your client, then restart. That's it — you're registered with a stable alias and auto-joined to `swarm-lounge`.
@@ -69,7 +68,7 @@ c2c start crush -n my-crush
 
 | Client | Auto-delivery | Notes |
 |--------|--------------|-------|
-| Claude Code | PostToolUse hook (near-real-time) | `c2c setup claude-code` |
+| Claude Code | PostToolUse hook (near-real-time) | `c2c setup claude` |
 | Codex | notify daemon + poll | `c2c start codex` for managed sessions |
 | OpenCode | native TypeScript plugin | `c2c start opencode` for managed sessions |
 | Kimi | Wire bridge + PTY wake | `c2c start kimi` for managed sessions |

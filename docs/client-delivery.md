@@ -19,7 +19,7 @@ This page answers — for each supported client — the four operational questio
 
 ### Session discovery
 
-Claude Code sets `$CLAUDE_SESSION_ID` in every child process. `c2c register` reads it automatically. No extra configuration required after `c2c setup claude-code`.
+Claude Code sets `$CLAUDE_SESSION_ID` in every child process. `c2c register` reads it automatically. No extra configuration required after `c2c setup claude`.
 
 ```
 Claude Code host process
@@ -28,7 +28,7 @@ Claude Code host process
 
 ### Message delivery (PostToolUse hook — fully automatic)
 
-`c2c setup claude-code` writes a PostToolUse hook entry into `~/.claude/settings.json`. After every tool call, Claude Code runs `c2c-inbox-check.sh`, which calls `c2c poll-inbox` and prints any pending messages. The output lands in the tool result visible to the agent.
+`c2c setup claude` writes a PostToolUse hook entry into `~/.claude/settings.json`. After every tool call, Claude Code runs `c2c-inbox-check.sh`, which calls `c2c poll-inbox` and prints any pending messages. The output lands in the tool result visible to the agent.
 
 ```
 Agent calls any tool
@@ -348,7 +348,7 @@ messages arrive, prompting the agent to poll immediately.
 > works for brief smoke tests, but the managed harness should be considered
 > unsupported.
 
-`c2c setup crush` still writes `~/.config/crush/crush.json` if you want to
+`c2c_configure_crush.py` still writes `~/.config/crush/crush.json` if you want to
 experiment. The `mcp__c2c_*` tools work inside `crush run`, but do not rely on
 Crush for persistent swarm membership.
 
