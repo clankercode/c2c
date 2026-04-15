@@ -21,6 +21,7 @@ import signal
 import socket
 import subprocess
 import sys
+import termios
 import time
 import uuid
 from pathlib import Path
@@ -573,7 +574,18 @@ def run_outer_loop(
             try:
                 launch_args = prepare_launch_args(name, client, extra_args, broker_root, alias_override, resume_session_id=resume_session_id, binary_override=binary_override)
                 cmd = [binary_path, *launch_args]
-                child_proc = subprocess.Popen(cmd, env=env)
+
+                # Save TTY attributes so we can restore them after the client exits.
+                # This guards against the client leaving the terminal in a corrupted
+                # state (e.g., raw mode from a pager).
+                old_tty: Any = None
+                try:
+                    if os.isatty(sys.stdin.fileno()):
+                        old_tty = termios.tcgetattr(sys.stdin.fileno())
+                except OSError:
+                    pass
+
+                child_proc = subprocess.Popen(cmd, env=env, start_new_session=True)
 
                 # Start deliver daemon and poker on first iteration (or restart if dead).
                 if deliver_proc is None or deliver_proc.poll() is not None:
@@ -589,6 +601,14 @@ def run_outer_loop(
                         _write_pidfile(_poker_pid_path(name), poker_proc.pid)
 
                 exit_code = child_proc.wait()
+
+                # Restore TTY attributes after client exits.
+                if old_tty is not None:
+                    try:
+                        if os.isatty(sys.stdin.fileno()):
+                            termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, old_tty)
+                    except OSError:
+                        pass
             except KeyboardInterrupt:
                 if child_proc is not None and child_proc.poll() is None:
                     child_proc.terminate()
