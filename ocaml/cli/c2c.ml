@@ -1533,6 +1533,249 @@ let room_group =
     (Cmdliner.Cmd.info "room" ~doc:"Alias for rooms.")
     [ rooms_list; rooms_join; rooms_leave; rooms_send; rooms_history; rooms_invite; rooms_members; rooms_visibility ]
 
+(* --- relay subcommands (shell-out to Python) -------------------------------- *)
+
+let relay_serve_cmd =
+  let listen =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "listen" ] ~docv:"HOST:PORT" ~doc:"Address to listen on (default: 127.0.0.1:7331).")
+  in
+  let token =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token for authentication.")
+  in
+  let token_file =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token-file" ] ~docv:"PATH" ~doc:"Read bearer token from a file.")
+  in
+  let storage =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "storage" ] ~docv:"memory|sqlite" ~doc:"Storage backend (default: memory).")
+  in
+  let db_path =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "db-path" ] ~docv:"PATH" ~doc:"SQLite database path (use with --storage sqlite).")
+  in
+  let gc_interval =
+    Cmdliner.Arg.(value & opt (some int) None & info [ "gc-interval" ] ~docv:"SECONDS" ~doc:"GC interval in seconds (default: 300).")
+  in
+  let verbose =
+    Cmdliner.Arg.(value & flag & info [ "verbose"; "v" ] ~doc:"Enable verbose output.")
+  in
+  let+ listen = listen
+  and+ token = token
+  and+ token_file = token_file
+  and+ storage = storage
+  and+ db_path = db_path
+  and+ gc_interval = gc_interval
+  and+ verbose = verbose in
+  match find_python_script "c2c_relay_server.py" with
+  | None ->
+      Printf.eprintf "error: cannot find c2c_relay_server.py. Run from inside the c2c git repo.\n%!";
+      exit 1
+  | Some script ->
+      let args = [ "python3"; script ] in
+      let args = match listen with None -> args | Some v -> args @ [ "--listen"; v ] in
+      let args = match token with None -> args | Some v -> args @ [ "--token"; v ] in
+      let args = match token_file with None -> args | Some v -> args @ [ "--token-file"; v ] in
+      let args = match storage with None -> args | Some v -> args @ [ "--storage"; v ] in
+      let args = match db_path with None -> args | Some v -> args @ [ "--db-path"; v ] in
+      let args = match gc_interval with None -> args | Some v -> args @ [ "--gc-interval"; string_of_int v ] in
+      let args = if verbose then args @ [ "--verbose" ] else args in
+      Unix.execvp "python3" (Array.of_list args)
+
+let relay_connect_cmd =
+  let relay_url =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL.")
+  in
+  let token =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token.")
+  in
+  let token_file =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token-file" ] ~docv:"PATH" ~doc:"Read bearer token from a file.")
+  in
+  let node_id =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "node-id" ] ~docv:"ID" ~doc:"Node identifier (default: hostname-githash).")
+  in
+  let broker_root =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "broker-root" ] ~docv:"DIR" ~doc:"Broker root directory.")
+  in
+  let interval =
+    Cmdliner.Arg.(value & opt (some int) None & info [ "interval" ] ~docv:"SECONDS" ~doc:"Poll interval in seconds (default: 30).")
+  in
+  let once =
+    Cmdliner.Arg.(value & flag & info [ "once" ] ~doc:"Run once and exit.")
+  in
+  let verbose =
+    Cmdliner.Arg.(value & flag & info [ "verbose"; "v" ] ~doc:"Enable verbose output.")
+  in
+  let+ relay_url = relay_url
+  and+ token = token
+  and+ token_file = token_file
+  and+ node_id = node_id
+  and+ broker_root = broker_root
+  and+ interval = interval
+  and+ once = once
+  and+ verbose = verbose in
+  match find_python_script "c2c_relay_connector.py" with
+  | None ->
+      Printf.eprintf "error: cannot find c2c_relay_connector.py. Run from inside the c2c git repo.\n%!";
+      exit 1
+  | Some script ->
+      let args = [ "python3"; script ] in
+      let args = match relay_url with None -> args | Some v -> args @ [ "--relay-url"; v ] in
+      let args = match token with None -> args | Some v -> args @ [ "--token"; v ] in
+      let args = match token_file with None -> args | Some v -> args @ [ "--token-file"; v ] in
+      let args = match node_id with None -> args | Some v -> args @ [ "--node-id"; v ] in
+      let args = match broker_root with None -> args | Some v -> args @ [ "--broker-root"; v ] in
+      let args = match interval with None -> args | Some v -> args @ [ "--interval"; string_of_int v ] in
+      let args = if once then args @ [ "--once" ] else args in
+      let args = if verbose then args @ [ "--verbose" ] else args in
+      Unix.execvp "python3" (Array.of_list args)
+
+let relay_setup_cmd =
+  let url =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "url" ] ~docv:"URL" ~doc:"Relay server URL.")
+  in
+  let token =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token.")
+  in
+  let token_file =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token-file" ] ~docv:"PATH" ~doc:"Read bearer token from a file.")
+  in
+  let node_id =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "node-id" ] ~docv:"ID" ~doc:"Node identifier.")
+  in
+  let show =
+    Cmdliner.Arg.(value & flag & info [ "show" ] ~doc:"Show current relay configuration.")
+  in
+  let+ url = url
+  and+ token = token
+  and+ token_file = token_file
+  and+ node_id = node_id
+  and+ show = show in
+  match find_python_script "c2c_relay_config.py" with
+  | None ->
+      Printf.eprintf "error: cannot find c2c_relay_config.py. Run from inside the c2c git repo.\n%!";
+      exit 1
+  | Some script ->
+      let args = [ "python3"; script ] in
+      let args = match url with None -> args | Some v -> args @ [ "--url"; v ] in
+      let args = match token with None -> args | Some v -> args @ [ "--token"; v ] in
+      let args = match token_file with None -> args | Some v -> args @ [ "--token-file"; v ] in
+      let args = match node_id with None -> args | Some v -> args @ [ "--node-id"; v ] in
+      let args = if show then args @ [ "--show" ] else args in
+      Unix.execvp "python3" (Array.of_list args)
+
+let relay_status_cmd =
+  let relay_url =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL.")
+  in
+  let token =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token.")
+  in
+  let+ relay_url = relay_url
+  and+ token = token in
+  match find_python_script "c2c_relay_status.py" with
+  | None ->
+      Printf.eprintf "error: cannot find c2c_relay_status.py. Run from inside the c2c git repo.\n%!";
+      exit 1
+  | Some script ->
+      let args = [ "python3"; script; "status" ] in
+      let args = match relay_url with None -> args | Some v -> args @ [ "--relay-url"; v ] in
+      let args = match token with None -> args | Some v -> args @ [ "--token"; v ] in
+      Unix.execvp "python3" (Array.of_list args)
+
+let relay_list_cmd =
+  let relay_url =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL.")
+  in
+  let token =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token.")
+  in
+  let dead =
+    Cmdliner.Arg.(value & flag & info [ "dead" ] ~doc:"Include dead sessions.")
+  in
+  let+ relay_url = relay_url
+  and+ token = token
+  and+ dead = dead in
+  match find_python_script "c2c_relay_status.py" with
+  | None ->
+      Printf.eprintf "error: cannot find c2c_relay_status.py. Run from inside the c2c git repo.\n%!";
+      exit 1
+  | Some script ->
+      let args = [ "python3"; script; "list" ] in
+      let args = match relay_url with None -> args | Some v -> args @ [ "--relay-url"; v ] in
+      let args = match token with None -> args | Some v -> args @ [ "--token"; v ] in
+      let args = if dead then args @ [ "--dead" ] else args in
+      Unix.execvp "python3" (Array.of_list args)
+
+let relay_rooms_cmd =
+  let subcmd =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"list|join|leave|send|history" ~doc:"Rooms subcommand.")
+  in
+  let relay_url =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL.")
+  in
+  let token =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token.")
+  in
+  let+ subcmd = subcmd
+  and+ relay_url = relay_url
+  and+ token = token in
+  match find_python_script "c2c_relay_rooms.py" with
+  | None ->
+      Printf.eprintf "error: cannot find c2c_relay_rooms.py. Run from inside the c2c git repo.\n%!";
+      exit 1
+  | Some script ->
+      let args = [ "python3"; script; subcmd ] in
+      let args = match relay_url with None -> args | Some v -> args @ [ "--relay-url"; v ] in
+      let args = match token with None -> args | Some v -> args @ [ "--token"; v ] in
+      Unix.execvp "python3" (Array.of_list args)
+
+let relay_gc_cmd =
+  let relay_url =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL.")
+  in
+  let token =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token.")
+  in
+  let interval =
+    Cmdliner.Arg.(value & opt (some int) None & info [ "interval" ] ~docv:"SECONDS" ~doc:"GC interval in seconds.")
+  in
+  let once =
+    Cmdliner.Arg.(value & flag & info [ "once" ] ~doc:"Run once and exit.")
+  in
+  let verbose =
+    Cmdliner.Arg.(value & flag & info [ "verbose"; "v" ] ~doc:"Enable verbose output.")
+  in
+  let+ relay_url = relay_url
+  and+ token = token
+  and+ interval = interval
+  and+ once = once
+  and+ verbose = verbose in
+  match find_python_script "c2c_relay_gc.py" with
+  | None ->
+      Printf.eprintf "error: cannot find c2c_relay_gc.py. Run from inside the c2c git repo.\n%!";
+      exit 1
+  | Some script ->
+      let args = [ "python3"; script ] in
+      let args = match relay_url with None -> args | Some v -> args @ [ "--relay-url"; v ] in
+      let args = match token with None -> args | Some v -> args @ [ "--token"; v ] in
+      let args = match interval with None -> args | Some v -> args @ [ "--interval"; string_of_int v ] in
+      let args = if once then args @ [ "--once" ] else args in
+      let args = if verbose then args @ [ "--verbose" ] else args in
+      Unix.execvp "python3" (Array.of_list args)
+
+let relay_serve = Cmdliner.Cmd.v (Cmdliner.Cmd.info "serve" ~doc:"Start the relay server.") relay_serve_cmd
+let relay_connect = Cmdliner.Cmd.v (Cmdliner.Cmd.info "connect" ~doc:"Run the relay connector.") relay_connect_cmd
+let relay_setup = Cmdliner.Cmd.v (Cmdliner.Cmd.info "setup" ~doc:"Configure relay connection.") relay_setup_cmd
+let relay_status = Cmdliner.Cmd.v (Cmdliner.Cmd.info "status" ~doc:"Show relay health.") relay_status_cmd
+let relay_list = Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List relay peers.") relay_list_cmd
+let relay_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "rooms" ~doc:"Manage relay rooms.") relay_rooms_cmd
+let relay_gc = Cmdliner.Cmd.v (Cmdliner.Cmd.info "gc" ~doc:"Run relay garbage collection.") relay_gc_cmd
+
+let relay_group =
+  Cmdliner.Cmd.group
+    ~default:relay_status_cmd
+    (Cmdliner.Cmd.info "relay" ~doc:"Cross-machine relay: serve, connect, setup, status, list, rooms, gc.")
+    [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc ]
+
 (* --- main entry point ----------------------------------------------------- *)
 
 let send = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send" ~doc:"Send a message to a registered peer alias.") send_cmd
@@ -2748,8 +2991,9 @@ let () =
                     $(b,setup), $(b,serve), $(b,mcp), $(b,start), $(b,stop), \
                     $(b,restart), $(b,instances)"
                ; `P "$(b,rooms) — manage N:N chat rooms"
+               ; `P "$(b,relay) — cross-machine relay: serve, connect, setup, status, list, rooms, gc"
                ])
           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
           ; sweep_dryrun; history; health; status; verify; register; refresh_peer
           ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install; setup
-          ; serve; mcp; start; stop; restart; instances; rooms_group; room_group ]))
+          ; serve; mcp; start; stop; restart; instances; rooms_group; room_group; relay_group ]))
