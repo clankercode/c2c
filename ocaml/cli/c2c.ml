@@ -1566,7 +1566,7 @@ let relay_serve_cmd =
   and+ gc_interval = gc_interval
   and+ verbose = verbose in
   (* Parse listen address (default 127.0.0.1:7331) *)
-  let host, port = match listen with
+  let[@ocaml.warning "-26"] host, port = match listen with
     | None -> ("127.0.0.1", 7331)
     | Some v ->
         (match String.split_on_char ':' v with
@@ -1614,8 +1614,19 @@ let relay_serve_cmd =
            let args = if verbose then args @ [ "--verbose" ] else args in
            Unix.execvp "python3" (Array.of_list args))
   | _ ->
-      (* Native in-memory relay *)
-      Lwt_main.run (C2c_mcp__.Relay_server.start_server ~host ~port ~token ~verbose ~gc_interval ())
+      (* Python relay for memory storage *)
+      (match find_python_script "c2c_relay_server.py" with
+       | None ->
+           Printf.eprintf "error: cannot find c2c_relay_server.py. Run from inside the c2c git repo.
+%!";
+           exit 1
+       | Some script ->
+           let args = [ "python3"; script; "--storage"; "memory" ] in
+           let args = match listen with None -> args | Some l -> args @ [ "--listen"; l ] in
+           let args = match token with None -> args | Some t -> args @ [ "--token"; t ] in
+           let args = if verbose then args @ [ "--verbose" ] else args in
+           let args = if gc_interval > 0.0 then args @ [ "--gc-interval"; string_of_float gc_interval ] else args in
+           Unix.execvp "python3" (Array.of_list args))
 
 let relay_connect_cmd =
   let relay_url =
