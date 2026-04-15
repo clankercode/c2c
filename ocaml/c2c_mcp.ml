@@ -1,6 +1,3 @@
-(* Re-export Relay_server for CLI relay serve command *)
-module Relay_server = Relay_server
-
 type registration =
   { session_id : string
   ; alias : string
