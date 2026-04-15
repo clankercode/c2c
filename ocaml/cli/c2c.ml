@@ -1564,20 +1564,57 @@ let relay_serve_cmd =
   and+ db_path = db_path
   and+ gc_interval = gc_interval
   and+ verbose = verbose in
-  match find_python_script "c2c_relay_server.py" with
-  | None ->
-      Printf.eprintf "error: cannot find c2c_relay_server.py. Run from inside the c2c git repo.\n%!";
-      exit 1
-  | Some script ->
-      let args = [ "python3"; script ] in
-      let args = match listen with None -> args | Some v -> args @ [ "--listen"; v ] in
-      let args = match token with None -> args | Some v -> args @ [ "--token"; v ] in
-      let args = match token_file with None -> args | Some v -> args @ [ "--token-file"; v ] in
-      let args = match storage with None -> args | Some v -> args @ [ "--storage"; v ] in
-      let args = match db_path with None -> args | Some v -> args @ [ "--db-path"; v ] in
-      let args = match gc_interval with None -> args | Some v -> args @ [ "--gc-interval"; string_of_int v ] in
-      let args = if verbose then args @ [ "--verbose" ] else args in
-      Unix.execvp "python3" (Array.of_list args)
+  (* Parse listen address (default 127.0.0.1:7331) *)
+  let host, port = match listen with
+    | None -> ("127.0.0.1", 7331)
+    | Some v ->
+        (match String.split_on_char ':' v with
+         | [host; port_str] ->
+             (match int_of_string_opt port_str with
+              | Some p -> (host, p)
+              | None ->
+                  Printf.eprintf "error: invalid port in --listen %S\n%!" v;
+                  exit 1)
+         | _ ->
+             Printf.eprintf "error: --listen must be HOST:PORT (%S)\n%!" v;
+             exit 1)
+  in
+  (* Resolve token: prefer direct value, fall back to file *)
+  let token = match token with
+    | Some t -> Some t
+    | None ->
+        (match token_file with
+         | Some f ->
+             (try Some (Stdlib.input_line (open_in f)) with
+              | Sys_error msg ->
+                  Printf.eprintf "error reading token file: %s\n%!" msg;
+                  exit 1
+              | End_of_file ->
+                  Printf.eprintf "error: token file %S is empty\n%!" f;
+                  exit 1)
+         | None -> None)
+  in
+  (* Convert gc_interval from int option to float (0.0 = disabled) *)
+  let gc_interval = match gc_interval with
+    | Some i -> float_of_int i
+    | None -> 0.0
+  in
+  (* Storage check: sqlite falls back to Python, memory/native uses native OCaml relay *)
+  match storage with
+  | Some "sqlite" ->
+      (* Fall back to Python for sqlite storage *)
+      (match find_python_script "c2c_relay_server.py" with
+       | None ->
+           Printf.eprintf "error: cannot find c2c_relay_server.py. Run from inside the c2c git repo.\n%!";
+           exit 1
+       | Some script ->
+           let args = [ "python3"; script ] in
+           let args = match db_path with None -> args | Some v -> args @ [ "--db-path"; v ] in
+           let args = if verbose then args @ [ "--verbose" ] else args in
+           Unix.execvp "python3" (Array.of_list args))
+  | _ ->
+      (* Native in-memory relay *)
+      Lwt_main.run (C2c_mcp.Relay_server.start_server ~host ~port ~token ~verbose ~gc_interval ())
 
 let relay_connect_cmd =
   let relay_url =
