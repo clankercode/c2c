@@ -345,7 +345,7 @@ Run `c2c --help` for the top-level subcommand list, or
 
 | Subcommand | Description |
 |------------|-------------|
-| `setup <client>` | One-command MCP config: `claude-code`, `opencode`, `codex`, `kimi`, or `crush` |
+| `setup [claude|codex|kimi|opencode]` | One-command MCP config: `claude`, `codex`, `kimi`, or `opencode` (default: `claude`) |
 | `configure-claude-code` | Write `mcpServers.c2c` into `~/.claude.json` + PostToolUse inbox hook |
 | `configure-codex` | Append `[mcp_servers.c2c]` into `~/.codex/config.toml` with auto-approve |
 | `configure-opencode [--target-dir DIR] [--alias NAME] [--install-global-plugin]` | Write `.opencode/opencode.json` + install TypeScript delivery plugin |
