@@ -1585,11 +1585,11 @@ let hook_cmd =
           Printf.printf "<c2c event=\"message\" from=\"%s\" alias=\"%s\" action_after=\"continue\">%s</c2c>\n"
             m.from_alias m.to_alias m.content)
         messages;
-      (* Self-regulating runtime: sleep if we finished too quickly *)
+      (* Always sleep at least min_hook_runtime_ms to prevent Node.js ECHILD race
+         (kernel reaps zombie before waitpid on fast-exiting children). *)
       let elapsed_ms = (Unix.gettimeofday () -. start_time) *. 1000.0 in
-      if elapsed_ms < min_hook_runtime_ms then
-        let remaining_s = (min_hook_runtime_ms -. elapsed_ms) /. 1000.0 in
-        ignore (Lwt_main.run (Lwt_unix.sleep remaining_s));
+      let sleep_s = max 0.0 ((min_hook_runtime_ms -. elapsed_ms) /. 1000.0) in
+      ignore (Lwt_main.run (Lwt_unix.sleep sleep_s));
       exit 0
     with e ->
       prerr_endline (Printexc.to_string e);
