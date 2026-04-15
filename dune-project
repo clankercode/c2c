@@ -4,4 +4,5 @@
 
 (package
  (name c2c)
- (depends dune cmdliner yojson lwt logs alcotest))
+ (depends dune cmdliner yojson lwt logs alcotest)
+ (allow_empty))

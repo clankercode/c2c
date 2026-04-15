@@ -76,6 +76,12 @@ a:visited { color: var(--c2c-cyan-dim); }
   z-index: 100;
 }
 
+.site-header .wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
 .site-title,
 .site-title:visited {
   color: var(--c2c-heading) !important;
@@ -154,6 +160,9 @@ a:visited { color: var(--c2c-cyan-dim); }
 .hero-content {
   position: relative;
   z-index: 2;
+  text-align: center;
+  max-width: 900px;
+  margin: 0 auto;
 }
 
 .hero-title {
@@ -411,7 +420,7 @@ ul li, ol li { margin-bottom: 0.35em; }
 
 /* ---- Layout ---- */
 .page-content { padding: 2.5rem 0; }
-.wrapper { max-width: 980px; }
+.wrapper { max-width: 900px; margin: 0 auto; padding: 0 2rem; box-sizing: border-box; }
 
 /* ---- Footer ---- */
 .site-footer {
