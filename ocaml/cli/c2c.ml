@@ -6,6 +6,30 @@ let ( // ) = Filename.concat
 open Cmdliner.Term.Syntax
 open C2c_mcp
 
+(* Resolve the Claude config dir.
+   Prefers CLAUDE_CONFIG_DIR if set, otherwise resolves ~/.claude as a symlink
+   (so profile dirs like ~/.claude-mm/ work via the symlink). *)
+let resolve_claude_dir () =
+  match Sys.getenv_opt "CLAUDE_CONFIG_DIR" with
+  | Some d when String.trim d <> "" -> String.trim d
+  | _ ->
+      let dot_claude = Filename.concat (Sys.getenv "HOME") ".claude" in
+      (try
+         let rec resolve_link p max_depth =
+           if max_depth <= 0 then p
+           else
+             let stat = Unix.lstat p in
+             if stat.Unix.st_kind = Unix.S_LNK then
+               let target = Unix.readlink p in
+               let resolved = if Filename.is_relative target then
+                                Filename.concat (Filename.dirname p) target
+                              else target in
+               resolve_link resolved (max_depth - 1)
+             else p
+         in
+         resolve_link dot_claude 10
+       with _ -> dot_claude)
+
 (* --- broker root resolution ------------------------------------------------ *)
 
 let broker_root_from_env () =
@@ -2538,7 +2562,8 @@ let setup_cmd =
   let client = Option.value client ~default:"claude" in
   (match String.lowercase_ascii client with
    | "claude" ->
-       let claude_json = Filename.concat (Sys.getenv "HOME") ".claude.json" in
+       let claude_dir = resolve_claude_dir () in
+       let claude_json = Filename.concat claude_dir ".claude.json" in
        let config =
          if Sys.file_exists claude_json then json_read_file claude_json
          else `Assoc []
@@ -2565,9 +2590,9 @@ let setup_cmd =
          | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", mcp_entry) ]) ]
        in
        json_write_file claude_json config;
-       (* Write PostToolUse inbox hook to ~/.claude/settings.json *)
-       let settings_path = Filename.concat (Sys.getenv "HOME") ".claude" // "settings.json" in
-       let hook_script = Filename.concat (Sys.getenv "HOME") ".claude" // "hooks" // "c2c-inbox-check.sh" in
+       (* Write PostToolUse inbox hook to the profile's settings.json *)
+       let settings_path = Filename.concat claude_dir "settings.json" in
+       let hook_script = Filename.concat claude_dir "hooks" // "c2c-inbox-check.sh" in
        (* Ensure hook script exists *)
        (try
           let dir = Filename.dirname hook_script in
@@ -2655,10 +2680,13 @@ let setup_cmd =
               ; ("hook_status", `String hook_status)
               ])
         | Human ->
+            let hook_dir = Filename.concat claude_dir "hooks" in
+            let hook_script = Filename.concat hook_dir "c2c-inbox-check.sh" in
+            let mark = if !hook_registered then "x" else " " in
             Printf.printf "Configured Claude Code for c2c:\n";
-            Printf.printf "  - [%s] MCP server:     ~/.claude.json\n" (if !hook_registered then "x" else " ");
-            Printf.printf "  - [%s] PostToolUse hook: ~/.claude/settings.json\n" (if !hook_registered then "x" else " ");
-            Printf.printf "  - [%s] Inbox hook script: ~/.claude/hooks/c2c-inbox-check.sh\n" (if !hook_registered then "x" else " ");
+            Printf.printf "  - [%s] MCP server:     %s/.claude.json\n" mark claude_dir;
+            Printf.printf "  - [%s] PostToolUse hook: %s/settings.json\n" mark claude_dir;
+            Printf.printf "  - [%s] Inbox hook script: %s\n" mark hook_script;
             Printf.printf "\n  alias:       %s\n" alias_val;
             Printf.printf "  broker root: %s\n" root;
             if !hook_registered then
