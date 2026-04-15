@@ -39,16 +39,19 @@ check:
 # Install OCaml CLI binary to ~/.local/bin (build + copy)
 install-cli:
     opam exec -- dune build -j1 ./ocaml/cli/c2c.exe
+    rm -f ~/.local/bin/c2c
     cp _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c
 
 # Install OCaml MCP server binary to ~/.local/bin (build + copy)
 install-mcp:
     opam exec -- dune build -j1 ./ocaml/server/c2c_mcp_server.exe
+    rm -f ~/.local/bin/c2c-mcp-server
     cp _build/default/ocaml/server/c2c_mcp_server.exe ~/.local/bin/c2c-mcp-server
 
 # Install OCaml inbox hook binary to ~/.local/bin (build + copy)
 install-hook:
     opam exec -- dune build -j1 ./ocaml/tools/c2c_inbox_hook.exe
+    rm -f ~/.local/bin/c2c-inbox-hook-ocaml
     cp _build/default/ocaml/tools/c2c_inbox_hook.exe ~/.local/bin/c2c-inbox-hook-ocaml
 
 # Install all OCaml binaries (CLI + MCP server + inbox hook)
