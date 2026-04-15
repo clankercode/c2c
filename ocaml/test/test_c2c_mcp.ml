@@ -2677,6 +2677,35 @@ let test_leave_room_removes_member () =
       in
       check int "empty after leave" 0 (List.length members))
 
+let test_delete_room_succeeds_when_empty () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Join then leave to create an empty room *)
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"tmp-room"
+          ~alias:"storm-ember" ~session_id:"session-a"
+      in
+      let _ =
+        C2c_mcp.Broker.leave_room broker ~room_id:"tmp-room" ~alias:"storm-ember"
+      in
+      (* delete_room should succeed on an empty room *)
+      C2c_mcp.Broker.delete_room broker ~room_id:"tmp-room";
+      (* Room should no longer appear in list *)
+      let rooms = C2c_mcp.Broker.list_rooms broker in
+      check int "room deleted" 0 (List.length rooms))
+
+let test_delete_room_fails_when_has_members () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"lobby"
+          ~alias:"storm-ember" ~session_id:"session-a"
+      in
+      (* delete_room should raise Invalid_argument *)
+      check_raises "cannot delete room with members"
+        (Invalid_argument "cannot delete room with members: lobby")
+        (fun () -> C2c_mcp.Broker.delete_room broker ~room_id:"lobby"))
+
 let test_send_room_appends_history_and_fans_out () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -4524,6 +4553,10 @@ let () =
              test_join_room_idempotent_non_tail_member_does_not_rebroadcast
          ; test_case "leave_room removes member" `Quick
              test_leave_room_removes_member
+         ; test_case "delete_room succeeds when empty" `Quick
+             test_delete_room_succeeds_when_empty
+         ; test_case "delete_room fails when has members" `Quick
+             test_delete_room_fails_when_has_members
          ; test_case "send_room appends history and fans out" `Quick
              test_send_room_appends_history_and_fans_out
          ; test_case "send_room skips sender inbox" `Quick

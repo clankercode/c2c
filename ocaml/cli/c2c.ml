@@ -1347,6 +1347,26 @@ let rooms_leave_cmd =
      Printf.eprintf "error: %s\n%!" msg;
      exit 1)
 
+let rooms_delete_cmd =
+  let room_id =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOM" ~doc:"Room ID to delete (must have zero members).")
+  in
+  let+ json = json_flag
+  and+ room_id = room_id in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  let output_mode = if json then Json else Human in
+  (try
+     C2c_mcp.Broker.delete_room broker ~room_id;
+     match output_mode with
+     | Json ->
+         print_json
+           (`Assoc [ ("room_id", `String room_id); ("deleted", `Bool true) ])
+     | Human ->
+         Printf.printf "Deleted room %s\n" room_id
+   with Invalid_argument msg ->
+     Printf.eprintf "error: %s\n%!" msg;
+     exit 1)
+
 let rooms_list_cmd =
   let+ json = json_flag in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
@@ -1565,6 +1585,7 @@ let rooms_visibility_cmd =
 let rooms_list = Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List all rooms.") rooms_list_cmd
 let rooms_join = Cmdliner.Cmd.v (Cmdliner.Cmd.info "join" ~doc:"Join a room.") rooms_join_cmd
 let rooms_leave = Cmdliner.Cmd.v (Cmdliner.Cmd.info "leave" ~doc:"Leave a room.") rooms_leave_cmd
+let rooms_delete = Cmdliner.Cmd.v (Cmdliner.Cmd.info "delete" ~doc:"Delete an empty room.") rooms_delete_cmd
 let rooms_send = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send" ~doc:"Send a message to a room.") rooms_send_cmd
 let rooms_history = Cmdliner.Cmd.v (Cmdliner.Cmd.info "history" ~doc:"Show room message history.") rooms_history_cmd
 let rooms_invite = Cmdliner.Cmd.v (Cmdliner.Cmd.info "invite" ~doc:"Invite an alias to a room.") rooms_invite_cmd
@@ -1575,7 +1596,7 @@ let rooms_group =
   Cmdliner.Cmd.group
     ~default:rooms_list_cmd
     (Cmdliner.Cmd.info "rooms" ~doc:"Manage persistent N:N rooms.")
-    [ rooms_list; rooms_join; rooms_leave; rooms_send; rooms_history; rooms_invite; rooms_members; rooms_visibility ]
+    [ rooms_list; rooms_join; rooms_leave; rooms_delete; rooms_send; rooms_history; rooms_invite; rooms_members; rooms_visibility ]
 
 let room_group =
   Cmdliner.Cmd.group

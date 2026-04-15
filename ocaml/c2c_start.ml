@@ -345,6 +345,16 @@ let find_binary (name : string) : string option =
   in
   search (String.split_on_char ':' path)
 
+(* Detect cc- profile wrapper scripts (cc-mm, cc-w, cc-zai, etc.).
+   These are designed to be called directly without extra args, not via
+   c2c start --bin which passes 'start <name> --resume <sid> --name <name>'.
+   For cc- wrappers, we invoke them directly so they manage their own session. *)
+let is_cc_wrapper (binary_path : string) : bool =
+  let basename = Filename.basename binary_path in
+  String.length basename >= 3 && String.sub basename 0 3 = "cc-"
+let is_cc_wrapper_str (name : string) : bool =
+  String.length name >= 3 && String.sub name 0 3 = "cc-"
+
 (* ---------------------------------------------------------------------------
  * Sidecar script paths
  * --------------------------------------------------------------------------- *)
@@ -477,9 +487,15 @@ let run_outer_loop ~(name : string) ~(client : string)
       let env = Array.append env [| Printf.sprintf "C2C_MCP_CLIENT_PID=%d" (Unix.getpid ()) |] in
 
       (* Launch args *)
+      (* cc- wrappers (cc-mm, cc-w, etc.) are profile launchers designed to be called
+         directly without extra args. They handle their own session/profile management.
+         For these, we invoke them directly so they start an interactive session. *)
       let launch_args =
-        prepare_launch_args ~name ~client ~extra_args ~broker_root
-          ?alias_override ?resume_session_id ?binary_override ()
+        if is_cc_wrapper binary_path then
+          []
+        else
+          prepare_launch_args ~name ~client ~extra_args ~broker_root
+            ?alias_override ?resume_session_id ?binary_override ()
       in
       let cmd = binary_path :: launch_args in
 

@@ -1125,6 +1125,27 @@ module Broker = struct
         save_room_members t ~room_id updated;
         updated)
 
+  (* Delete a room entirely. Fails if the room has any members. *)
+  let delete_room t ~room_id =
+    if not (valid_room_id room_id) then
+      invalid_arg ("invalid room_id: " ^ room_id);
+    let dir = room_dir t ~room_id in
+    if not (Sys.file_exists dir) then
+      invalid_arg ("room does not exist: " ^ room_id);
+    (* Hold both locks while checking members and deleting the directory. *)
+    with_room_members_lock t ~room_id (fun () ->
+      with_room_history_lock t ~room_id (fun () ->
+        let members = load_room_members t ~room_id in
+        if members <> [] then
+          invalid_arg ("cannot delete room with members: " ^ room_id);
+        (* Delete all files in the room directory, then the directory itself. *)
+        let files = Sys.readdir dir in
+        Array.iter
+          (fun f ->
+            try Unix.unlink (Filename.concat dir f) with Unix.Unix_error _ -> ())
+          files;
+        try Unix.rmdir dir with Unix.Unix_error _ -> ()))
+
   let send_room_invite t ~room_id ~from_alias ~invitee_alias =
     if not (valid_room_id room_id) then
       invalid_arg ("invalid room_id: " ^ room_id);
@@ -1550,6 +1571,10 @@ let tool_definitions =
       ~description:"Leave a persistent N:N room. Returns the member list after leave. The member alias is resolved from the current MCP session when possible; `alias`/`from_alias` remain legacy fallbacks."
       ~required:["room_id"]
       ~properties:[ prop "room_id" "Room to leave."; prop "alias" "Legacy fallback member alias (deprecated)." ]
+  ; tool_definition ~name:"delete_room"
+      ~description:"Delete a room entirely. Only succeeds when the room has zero members. Returns JSON {room_id, deleted} on success."
+      ~required:["room_id"]
+      ~properties:[ prop "room_id" "Room to delete." ]
   ; tool_definition ~name:"send_room"
       ~description:"Send a message to a persistent N:N room. Appends to room history and fans out to every member's inbox except the sender, with to_alias tagged as '<alias>@<room_id>'. The sender alias is resolved from the current MCP session when possible; `from_alias` remains a legacy fallback. Returns JSON {delivered_to, skipped, ts}."
       ~required:["room_id"; "content"]
@@ -2324,6 +2349,18 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
              |> Yojson.Safe.to_string
            in
            Lwt.return (tool_result ~content ~is_error:false))
+  | "delete_room" ->
+      let room_id = string_member "room_id" arguments in
+      (try
+         Broker.delete_room broker ~room_id;
+         let content =
+           `Assoc [ ("room_id", `String room_id); ("deleted", `Bool true) ]
+           |> Yojson.Safe.to_string
+         in
+         Lwt.return (tool_result ~content ~is_error:false)
+       with Invalid_argument msg ->
+         let content = `Assoc [ ("error", `String msg) ] |> Yojson.Safe.to_string in
+         Lwt.return (tool_result ~content ~is_error:true))
   | "send_room" ->
       let room_id = string_member "room_id" arguments in
       let content = string_member "content" arguments in
