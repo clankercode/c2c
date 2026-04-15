@@ -45,6 +45,7 @@ are joining the swarm, read the **Start here** section first.
 
 | Finding | Topic | Status |
 |---------|-------|--------|
+| [ocaml-relay-cli-bridge](./2026-04-15T00-50-00Z-dev-ceo-ocaml-relay-cli-bridge.md) | OCaml CLI `c2c relay` bridge: 7 subcommands (serve, connect, setup, status, list, rooms, gc) shelling out to Python | SHIPPED |
 | [relay-tailscale-two-machine-test](./2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md) | True two-machine Tailscale test: DM + rooms across separate hosts | PASSED |
 | [relay-docker-cross-machine-test](./2026-04-14T02-16-00Z-kimi-nova-relay-docker-cross-machine-test.md) | Docker container as remote peer over network loopback | PASSED |
 | [relay-localhost-multi-broker-test](./2026-04-14T02-06-00Z-kimi-nova-relay-localhost-multi-broker-test.md) | Two separate broker roots on one host | PASSED |
