@@ -112,7 +112,14 @@ type instance_config = {
 
 let write_config (cfg : instance_config) =
   let dir = instance_dir cfg.name in
-  (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  (try
+     let rec mkdir_p d =
+       if Sys.file_exists d then ()
+       else (mkdir_p (Filename.dirname d); Unix.mkdir d 0o755)
+     in
+     mkdir_p instances_dir;
+     mkdir_p dir
+   with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
   let path = config_path cfg.name in
   let fields =
     [ ("name", `String cfg.name)
