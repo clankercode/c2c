@@ -579,7 +579,14 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
           | Some _ -> Some ex.resume_session_id
           | None -> None
         in
-        let rs = if session_id_override = None then rs_valid else session_id_override in
+        let rs =
+          match session_id_override with
+          | Some s -> Some s
+          | None ->
+              (match rs_valid with
+               | Some v -> Some v
+               | None -> Some (Uuidm.to_string (Uuidm.v `V4)))
+        in
         (bo, ao, ea, rs, ex.broker_root)
     | None ->
         let rs =
@@ -604,7 +611,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
   write_config cfg;
 
   run_outer_loop ~name ~client ~extra_args ~broker_root
-    ?binary_override ?alias_override ?resume_session_id ()
+    ?binary_override ?alias_override ~resume_session_id:cfg.resume_session_id ()
 
 let cmd_stop (name : string) : int =
   match read_pid (outer_pid_path name) with
