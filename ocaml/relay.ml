@@ -1,13 +1,11 @@
 [@@@warning "-33-16-32"]
 (* relay.ml — native OCaml in-memory relay backend *)
 
-module Relay = struct
-
 module RegistrationLease : sig
   type t
   val make : node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> unit -> t
   val is_alive : t -> bool
-  val touch : t -> unit  (* refresh last_seen *)
+  val touch : t -> unit
   val to_json : t -> Yojson.Safe.t
   val node_id : t -> string
   val session_id : t -> string
@@ -79,14 +77,14 @@ module InMemoryRelay : sig
 end = struct
   type t = {
     mutex : Mutex.t;
-    leases : (string, RegistrationLease.t) Hashtbl.t;  (* alias -> lease *)
-    inboxes : ((string * string), Yojson.Safe.t list) Hashtbl.t;  (* (node_id, session_id) -> messages *)
+    leases : (string, RegistrationLease.t) Hashtbl.t;
+    inboxes : ((string * string), Yojson.Safe.t list) Hashtbl.t;
     dead_letter : Yojson.Safe.t Queue.t;
-    rooms : (string, string list) Hashtbl.t;  (* room_id -> member aliases *)
-    room_history : (string, Yojson.Safe.t list) Hashtbl.t;  (* room_id -> messages *)
-    seen_ids : (string, bool) Hashtbl.t;  (* dedup: message_id -> seen *)
+    rooms : (string, string list) Hashtbl.t;
+    room_history : (string, Yojson.Safe.t list) Hashtbl.t;
+    seen_ids : (string, bool) Hashtbl.t;
     dedup_window : int;
-    seen_ids_fifo : string Queue.t;  (* ordered queue for FIFO eviction *)
+    seen_ids_fifo : string Queue.t;
   }
 
   let create ?(dedup_window = 10000) () = {
@@ -106,8 +104,6 @@ end = struct
     Fun.protect ~finally:(fun () -> Mutex.unlock t.mutex) f
 
   let generate_uuid () =
-    (* Simple UUID v4-like generator using Random.bits.
-       Not cryptographically secure but sufficient for message dedup. *)
     let random_hex n =
       let chars = "0123456789abcdef" in
       String.init n (fun _ -> chars.[Random.int 16])
@@ -124,7 +120,6 @@ end = struct
     else (
       Hashtbl.replace t.seen_ids msg_id true;
       Queue.add msg_id t.seen_ids_fifo;
-      (* FIFO eviction *)
       if Queue.length t.seen_ids_fifo > t.dedup_window then (
         match Queue.take_opt t.seen_ids_fifo with
         | None -> ()
@@ -151,7 +146,6 @@ end = struct
          if RegistrationLease.node_id ex <> node_id then
            (relay_err_alias_conflict, ex)
          else
-           (* Same node — allow re-registration, refresh *)
            let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl () in
            Hashtbl.replace t.leases alias lease;
            let key = inbox_key node_id session_id in
@@ -222,7 +216,6 @@ end = struct
         `Error (relay_err_recipient_dead,
                 Printf.sprintf "alias %S is registered but lease has expired" to_alias)
       | Some lease ->
-        (* Exactly-once: check dedup before appending *)
         if not (record_message_id t msg_id) then
           `Duplicate ts
         else begin
@@ -275,7 +268,6 @@ end = struct
         if not (Hashtbl.mem t.room_history room_id) then
           Hashtbl.replace t.room_history room_id [];
         if not already_member then begin
-          (* Broadcast room join *)
           let ts = Unix.gettimeofday () in
           let msg_id = generate_uuid () in
           let content = room_join_content alias room_id in
@@ -288,7 +280,6 @@ end = struct
           ] in
           let hist = Hashtbl.find t.room_history room_id in
           Hashtbl.replace t.room_history room_id (hist_msg :: hist);
-          (* Deliver to each member *)
           List.iter (fun member_alias ->
             match Hashtbl.find_opt t.leases member_alias with
             | None ->
@@ -402,7 +393,6 @@ end = struct
               end
           end
         ) members;
-        (* Append to room history *)
         let hist_msg = `Assoc [
           ("message_id", `String msg_id);
           ("from_alias", `String from_alias);
@@ -478,12 +468,10 @@ end = struct
       ) t.leases;
       List.iter (fun alias ->
         Hashtbl.remove t.leases alias;
-        (* Remove from all rooms *)
         Hashtbl.iter (fun _room_id members ->
           Hashtbl.replace t.rooms _room_id (List.filter ((!=) alias) members)
         ) t.rooms
       ) !expired;
-      (* Prune inboxes for sessions with no matching live lease *)
       let live_keys = ref [] in
       Hashtbl.iter (fun _ lease ->
         live_keys := (RegistrationLease.node_id lease, RegistrationLease.session_id lease) :: !live_keys
@@ -498,5 +486,3 @@ end = struct
       `Ok (List.rev !expired, pruned)
     )
 end
-
-end (* end of Relay module *)

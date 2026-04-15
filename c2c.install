@@ -1,0 +1,7 @@
+lib: [
+  "_build/install/default/lib/c2c/META"
+  "_build/install/default/lib/c2c/dune-package"
+]
+doc: [
+  "_build/install/default/doc/c2c/README.md"
+]

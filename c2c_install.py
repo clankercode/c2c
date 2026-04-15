@@ -16,7 +16,6 @@ COMMANDS = [
     "c2c-configure-crush",
     "c2c-configure-kimi",
     "c2c-configure-opencode",
-    "c2c-inbox-hook",
     "c2c-kimi-wake",
     "c2c-kimi-wire-bridge",
     "c2c-opencode-wake",

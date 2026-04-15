@@ -48,8 +48,8 @@ HOOK_SCRIPT_CONTENT = r"""#!/bin/bash
 #   C2C_MCP_SESSION_ID   — broker session id
 #   C2C_MCP_BROKER_ROOT  — absolute path to broker root dir
 #
-# Requires `c2c-poll-inbox` on PATH (installed by `c2c install`).
-# Works with both the Python wrapper and the compiled binary.
+# Requires `c2c` on PATH (installed by `c2c install`).
+# Works with the `c2c hook` subcommand.
 #
 # Exits silently (0) when not configured, so unmanaged sessions are unaffected.
 
@@ -67,12 +67,9 @@ CONTENT=$(<"$INBOX")
 TRIMMED="${CONTENT//[[:space:]]/}"
 [ "$TRIMMED" = "[]" ] || [ -z "$TRIMMED" ] && exit 0
 
-# Non-empty inbox: drain it and print via file-fallback.
+# Non-empty inbox: drain it and print via `c2c hook`.
 # timeout 5 ensures the hook NEVER blocks the agent indefinitely.
-exec timeout 5 c2c-poll-inbox \
-  --file-fallback \
-  --session-id "$SESSION_ID" \
-  --broker-root "$BROKER_ROOT"
+exec timeout 5 c2c hook
 """
 
 

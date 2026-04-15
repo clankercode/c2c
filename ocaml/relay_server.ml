@@ -29,9 +29,9 @@ end = struct
   let err_internal_error = "internal_error"
 
   (* Relay error codes pass-through *)
-  let relay_err_unknown_alias = Relay.relay_err_unknown_alias
-  let relay_err_alias_conflict = Relay.relay_err_alias_conflict
-  let relay_err_recipient_dead = Relay.relay_err_recipient_dead
+  let relay_err_unknown_alias = "unknown_alias"
+  let relay_err_alias_conflict = "alias_conflict"
+  let relay_err_recipient_dead = "recipient_dead"
 
   (* --- JSON helpers --- *)
 

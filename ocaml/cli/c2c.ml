@@ -1540,34 +1540,35 @@ let min_hook_runtime_ms = 10.0
 
 let hook_cmd =
   (* No arguments - reads env vars C2C_MCP_SESSION_ID and C2C_MCP_BROKER_ROOT *)
-  let+ () = Cmdliner.Term.ret Cmdliner.Term.(const (fun () -> `Help (`Auto, None))) in
-  let session_id =
-    try Sys.getenv "C2C_MCP_SESSION_ID" with Not_found -> ""
-  in
-  let broker_root =
-    try Sys.getenv "C2C_MCP_BROKER_ROOT" with Not_found -> ""
-  in
-  (* Fast path: if not configured, exit silently *)
-  if session_id = "" || broker_root = "" then exit 0;
-  let start_time = Unix.gettimeofday () in
-  try
-    let broker = C2c_mcp.Broker.create ~root:broker_root in
-    let messages = C2c_mcp.Broker.drain_inbox broker ~session_id in
-    (* Output messages in c2c event envelope format *)
-    List.iter
-      (fun (m : C2c_mcp.message) ->
-        Printf.printf "<c2c event=\"message\" from=\"%s\" alias=\"%s\" action_after=\"continue\">%s</c2c>\n"
-          m.from_alias m.to_alias m.content)
-      messages;
-    (* Self-regulating runtime: sleep if we finished too quickly *)
-    let elapsed_ms = (Unix.gettimeofday () -. start_time) *. 1000.0 in
-    if elapsed_ms < min_hook_runtime_ms then
-      let remaining_s = (min_hook_runtime_ms -. elapsed_ms) /. 1000.0 in
-      ignore (Lwt_main.run (Lwt_unix.sleep remaining_s));
-    exit 0
-  with e ->
-    prerr_endline (Printexc.to_string e);
-    exit 1
+  let open Cmdliner.Term in
+  const (fun () ->
+    let session_id =
+      try Sys.getenv "C2C_MCP_SESSION_ID" with Not_found -> ""
+    in
+    let broker_root =
+      try Sys.getenv "C2C_MCP_BROKER_ROOT" with Not_found -> ""
+    in
+    (* Fast path: if not configured, exit silently *)
+    if session_id = "" || broker_root = "" then exit 0;
+    let start_time = Unix.gettimeofday () in
+    try
+      let broker = C2c_mcp.Broker.create ~root:broker_root in
+      let messages = C2c_mcp.Broker.drain_inbox broker ~session_id in
+      (* Output messages in c2c event envelope format *)
+      List.iter
+        (fun (m : C2c_mcp.message) ->
+          Printf.printf "<c2c event=\"message\" from=\"%s\" alias=\"%s\" action_after=\"continue\">%s</c2c>\n"
+            m.from_alias m.to_alias m.content)
+        messages;
+      (* Self-regulating runtime: sleep if we finished too quickly *)
+      let elapsed_ms = (Unix.gettimeofday () -. start_time) *. 1000.0 in
+      if elapsed_ms < min_hook_runtime_ms then
+        let remaining_s = (min_hook_runtime_ms -. elapsed_ms) /. 1000.0 in
+        ignore (Lwt_main.run (Lwt_unix.sleep remaining_s));
+      exit 0
+    with e ->
+      prerr_endline (Printexc.to_string e);
+      exit 1) $ const ()
 
 let hook = Cmdliner.Cmd.v (Cmdliner.Cmd.info "hook" ~doc:"PostToolUse hook: drain inbox and emit messages.") hook_cmd
 
@@ -1651,8 +1652,16 @@ let relay_serve_cmd =
            let args = if verbose then args @ [ "--verbose" ] else args in
            Unix.execvp "python3" (Array.of_list args))
   | _ ->
-      (* Native in-memory relay *)
-      Lwt_main.run (C2c_mcp.Relay_server.start_server ~host ~port ~token ~verbose ~gc_interval ())
+      (* Fall back to Python relay for now *)
+      (match find_python_script "c2c_relay_server.py" with
+       | None ->
+           Printf.eprintf "error: cannot find c2c_relay_server.py. Run from inside the c2c git repo.\n%!";
+           exit 1
+       | Some script ->
+           let args = [ "python3"; script ] in
+           let args = match db_path with None -> args | Some v -> args @ [ "--db-path"; v ] in
+           let args = if verbose then args @ [ "--verbose" ] else args in
+           Unix.execvp "python3" (Array.of_list args))
 
 let relay_connect_cmd =
   let relay_url =
@@ -2383,15 +2392,14 @@ let claude_hook_script = {|
 #!/bin/bash
 # c2c-inbox-check.sh — PostToolUse hook for c2c auto-delivery in Claude Code
 #
-# Delegates to c2c-inbox-hook (OCaml binary) which:
-#   - Drains the inbox and outputs messages
-#   - Self-regulates runtime to prevent Node.js ECHILD race
+# Calls 'c2c hook' which drains the inbox and outputs messages.
+# Self-regulates runtime to prevent Node.js ECHILD race.
 #
 # Required env vars (set by c2c start or the MCP server entry):
 #   C2C_MCP_SESSION_ID   — broker session id
 #   C2C_MCP_BROKER_ROOT  — absolute path to broker root dir
 
-exec c2c-inbox-hook
+exec c2c hook
 |}
 
 let configure_claude_hook () =
@@ -3072,11 +3080,11 @@ let () =
                     $(b,refresh-peer), $(b,tail-log), $(b,my-rooms), $(b,dead-letter), \
                     $(b,prune-rooms), $(b,smoke-test), $(b,init), $(b,install), \
                     $(b,setup), $(b,serve), $(b,mcp), $(b,start), $(b,stop), \
-                    $(b,restart), $(b,instances)"
+                    $(b,restart), $(b,instances), $(b,hook)"
                ; `P "$(b,rooms) — manage N:N chat rooms"
                ; `P "$(b,relay) — cross-machine relay: serve, connect, setup, status, list, rooms, gc"
                ])
           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
           ; sweep_dryrun; history; health; status; verify; register; refresh_peer
           ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install; setup
-          ; serve; mcp; start; stop; restart; instances; rooms_group; room_group; relay_group ]))
+          ; serve; mcp; start; stop; restart; instances; rooms_group; room_group; relay_group; hook ]))
