@@ -110,6 +110,57 @@ def default_name(client: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Client setup detection and auto-setup
+# ---------------------------------------------------------------------------
+
+def _load_json(path: Path) -> dict:
+    """Load JSON file, return empty dict if missing or invalid."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _is_claude_configured() -> bool:
+    """Check if Claude Code has c2c configured (PostToolUse hook)."""
+    settings_path = Path.home() / ".claude" / "settings.json"
+    if not settings_path.exists():
+        return False
+    settings = _load_json(settings_path)
+    hook_cmd = str(Path.home() / ".claude" / "hooks" / "c2c-inbox-check.sh")
+    for group in settings.get("hooks", {}).get("PostToolUse", []):
+        for h in group.get("hooks", []):
+            if h.get("command") == hook_cmd:
+                return True
+    return False
+
+
+def is_client_configured(client: str) -> bool:
+    """Check if a client has been set up for c2c."""
+    if client == "claude":
+        return _is_claude_configured()
+    # Other clients: extend as needed
+    return True  # Assume configured until we add checks
+
+
+def ensure_client_configured(client: str) -> bool:
+    """Ensure client is configured, running setup if not. Returns True if configured."""
+    if is_client_configured(client):
+        return True
+    print(f"[c2c] {client} not configured, running c2c setup {client}...", flush=True)
+    # For claude, use claude-code (the setup client name)
+    setup_client = "claude-code" if client == "claude" else client
+    setup_script = HERE / "c2c_setup.py"
+    args = [sys.executable, str(setup_script), setup_client]
+    result = subprocess.run(args)
+    if result.returncode != 0:
+        print(f"[c2c] warning: setup failed for {client}", flush=True)
+        return False
+    print(f"[c2c] {client} setup complete", flush=True)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Instance state helpers
 # ---------------------------------------------------------------------------
 
@@ -663,6 +714,15 @@ def cmd_start(
 ) -> int:
     if client not in CLIENT_CONFIGS:
         msg = f"unknown client: {client!r}. Choose from: {', '.join(sorted(CLIENT_CONFIGS))}"
+        if json_out:
+            print(json.dumps({"ok": False, "error": msg}))
+        else:
+            print(f"error: {msg}", file=sys.stderr)
+        return 1
+
+    # Auto-setup: ensure client is configured before starting
+    if not ensure_client_configured(client):
+        msg = f"{client} setup failed. Please run 'c2c setup {client}' manually."
         if json_out:
             print(json.dumps({"ok": False, "error": msg}))
         else:
