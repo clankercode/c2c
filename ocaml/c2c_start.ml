@@ -526,7 +526,7 @@ let run_outer_loop ~(name : string) ~(client : string)
         Printf.sprintf "c2c start %s -n %s" client name
         ^ (match binary_override with None -> "" | Some b -> Printf.sprintf " --bin %s" b)
       in
-      print_endline ("\n  " ^ resume_cmd);
+      print_endline ("\nresume via: " ^ resume_cmd);
       cleanup_and_exit exit_code
 
 (* ---------------------------------------------------------------------------
@@ -572,11 +572,14 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
         let bo = if binary_override = None then ex.binary_override else binary_override in
         let ao = if alias_override = None then Some ex.alias else alias_override in
         let ea = if extra_args = [] then ex.extra_args else extra_args in
-        let rs_from_existing = match binary_override with
-          | Some _ -> None
-          | None -> Some ex.resume_session_id
+        (* Validate saved resume_session_id is a valid UUID; if not (e.g. corrupted
+           by an earlier bug that stored the instance name), generate a fresh one. *)
+        let rs_valid =
+          match Uuidm.of_string ex.resume_session_id with
+          | Some _ -> Some ex.resume_session_id
+          | None -> None
         in
-        let rs = if session_id_override = None then rs_from_existing else session_id_override in
+        let rs = if session_id_override = None then rs_valid else session_id_override in
         (bo, ao, ea, rs, ex.broker_root)
     | None ->
         let rs =
