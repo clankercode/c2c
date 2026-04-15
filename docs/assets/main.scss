@@ -145,6 +145,7 @@ a:visited { color: var(--c2c-amber-dim); }
 }
 
 .site-nav .menu-icon > svg { fill: var(--c2c-amber); }
+.site-nav .nav-trigger { display: none !important; width: 0 !important; height: 0 !important; overflow: hidden; }
 
 /* ---- Hero ---- */
 .hero {
