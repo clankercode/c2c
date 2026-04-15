@@ -224,3 +224,52 @@ These scripts provide functionality not yet in OCaml:
 - [ ] c2c_registry.py (Python registry lib)
 - [ ] c2c_start.py (once Phase 2 complete)
 - [ ] relay.py, c2c_relay.py, c2c_auto_relay.py
+
+## Safe Script Deprecation Rules
+
+A Python script can ONLY be moved to `deprecated/` when ALL of these conditions are met:
+
+1. **No `c2c_cli.py` import** - `c2c_cli.py` must not import it directly
+2. **No OCaml delegation** - OCaml code must not use `find_python_script` to call it
+3. **No transitive imports** - No other Python script that IS still needed should import it
+4. **Tests pass** - All tests that reference the script must be updated first
+
+### Scripts Currently Safe to Deprecate
+
+These scripts meet all criteria above (no imports, no delegation):
+
+```
+deprecated/
+└── c2c_auto_relay.py  ✅ Moved
+```
+
+### Scripts NOT Yet Safe to Deprecate
+
+Most scripts are NOT safe because `c2c_cli.py` imports them:
+
+| Script | Reason |
+|--------|--------|
+| `c2c_send.py` | Imported by `c2c_cli.py` |
+| `c2c_list.py` | Imported by `c2c_cli.py` |
+| `c2c_whoami.py` | Imported by `c2c_cli.py` |
+| `c2c_health.py` | Imported by `c2c_cli.py` |
+| `c2c_init.py` | Imported by `c2c_cli.py` |
+| `c2c_setup.py` | Imported by `c2c_cli.py` |
+| (most others) | Similar pattern |
+
+### How to Safely Deprecate a Script
+
+1. **Verify no dependencies** - Check `grep "^import script_name" c2c_*.py`
+2. **Update OCaml if needed** - Remove any `find_python_script` calls in `ocaml/cli/c2c.ml`
+3. **Update tests** - Ensure tests don't reference the Python script
+4. **Move to deprecated/** - `git mv script.py deprecated/`
+5. **Commit** - Document why it's deprecated
+6. **Verify build** - `just build-cli && just test`
+
+### Relay Note
+
+OCaml relay implementations exist as untracked WIP:
+- `ocaml/relay.ml` (in-memory relay backend)
+- `ocaml/relay_server.ml` (HTTP server with Cohttp)
+
+These need dune files updated and OCaml CLI integration before the Python relay scripts can be deprecated.
