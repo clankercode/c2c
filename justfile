@@ -55,10 +55,10 @@ install-hook:
 install-all: install-cli install-mcp install-hook
 
 # Shorthand: build + install CLI in one shot
-bi: install-cli
+bi: install-all
 
 # Build CLI, install, then restart self to pick up new binary
-bii: install-cli
+bii: install-all
     ./restart-self
 
 # Install c2c wrapper scripts to ~/.local/bin (Python scripts only)
