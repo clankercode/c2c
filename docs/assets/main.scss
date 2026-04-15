@@ -2,7 +2,7 @@
 ---
 @charset "utf-8";
 
-@import "minima";
+/* minima styles intentionally omitted — replaced entirely by c2c theme below */
 
 /* =====================================================
    c2c swarm theme — 2026 redesign
@@ -13,22 +13,22 @@
 /* ---- Design tokens ---- */
 :root {
   --c2c-void:        #020204;
-  --c2c-bg:          #07070a;
-  --c2c-surface:     #0f0f14;
-  --c2c-surface-elev:#15151c;
-  --c2c-border:      rgba(255,255,255,0.08);
-  --c2c-border-strong:rgba(255,255,255,0.14);
-  --c2c-text:        #e6e6f0;
-  --c2c-text-muted:  #9090a0;
-  --c2c-heading:     #ffffff;
-  --c2c-cyan:        #00f0ff;
-  --c2c-cyan-dim:    #00a8b3;
-  --c2c-cyan-glow:   rgba(0,240,255,0.35);
-  --c2c-magenta:     #ff2a6d;
-  --c2c-magenta-dim: #b31b4a;
-  --c2c-purple:      #bc13fe;
-  --c2c-yellow:      #f5d300;
-  --c2c-green:       #39ff14;
+  --c2c-bg:          #0a0a10;
+  --c2c-surface:     #111118;
+  --c2c-surface-elev:#18181f;
+  --c2c-border:      rgba(255,255,255,0.06);
+  --c2c-border-strong:rgba(255,255,255,0.12);
+  --c2c-text:        #c8c8d8;
+  --c2c-text-muted:  #7878a0;
+  --c2c-heading:     #f0f0ff;
+  --c2c-cyan:        #00e5ff;
+  --c2c-cyan-dim:    #00a0b8;
+  --c2c-cyan-glow:   rgba(0,229,255,0.25);
+  --c2c-magenta:     #e8245c;
+  --c2c-magenta-dim: #a01840;
+  --c2c-purple:      #a855f7;
+  --c2c-yellow:      #e8c800;
+  --c2c-green:       #30e060;
   --c2c-rose:        #ff6b9d;
 }
 
