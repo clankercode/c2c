@@ -1917,14 +1917,40 @@ let smoke_test_cmd =
 
 let smoke_test = Cmdliner.Cmd.v (Cmdliner.Cmd.info "smoke-test" ~doc:"Run an end-to-end broker smoke test.") smoke_test_cmd
 
+let find_ocaml_server_path () =
+  (* Look for c2c_mcp_server.exe in _build, then try opam *)
+  let candidates = [
+    "_build/default/ocaml/server/c2c_mcp_server.exe";
+    "_build/ocaml/server/c2c_mcp_server.exe";
+  ] in
+  let extra_candidates =
+    try
+      let switch = Sys.getenv "OPAM_SWITCH_PREFIX" in
+      [ switch // "bin/c2c_mcp_server" ]
+    with Not_found -> []
+  in
+  let all = candidates @ extra_candidates in
+  List.find_opt Sys.file_exists all
+
+let json_read_file path =
+  let ic = open_in path in
+  Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+    let s = really_input_string ic (in_channel_length ic) in
+    Yojson.Safe.from_string s)
+
+
 (* --- subcommand: install -------------------------------------------------- *)
 
 let install_cmd =
   let dest =
     Cmdliner.Arg.(value & opt (some string) None & info [ "dest"; "d" ] ~docv:"DIR" ~doc:"Install destination (default: ~/.local/bin).")
   in
+  let mcp_server =
+    Cmdliner.Arg.(value & flag & info [ "mcp-server" ] ~doc:"Also install the c2c MCP server binary as ~/.local/bin/c2c-mcp-server.")
+  in
   let+ json = json_flag
-  and+ dest_opt = dest in
+  and+ dest_opt = dest
+  and+ with_mcp_server = mcp_server in
   let dest_dir =
     match dest_opt with
     | Some d -> d
@@ -1960,17 +1986,47 @@ let install_cmd =
           copy ());
         Unix.chmod (dest_path ^ ".tmp") 0o755;
         Unix.rename (dest_path ^ ".tmp") dest_path;
-        Ok dest_path
+        let extras =
+          if with_mcp_server then
+            match find_ocaml_server_path () with
+            | None -> [ Error "could not find c2c_mcp_server.exe to install" ]
+            | Some server_src ->
+                let mcp_dest = dest_dir // "c2c-mcp-server" in
+                try
+                  let ic = open_in_bin server_src in
+                  let oc = open_out_bin (mcp_dest ^ ".tmp") in
+                  Fun.protect ~finally:(fun () -> close_in ic; close_out oc) (fun () ->
+                    let buf = Bytes.create 65536 in
+                    let rec copy () =
+                      let n = input ic buf 0 (Bytes.length buf) in
+                      if n > 0 then (output oc buf 0 n; copy ())
+                    in
+                    copy ());
+                  Unix.chmod (mcp_dest ^ ".tmp") 0o755;
+                  Unix.rename (mcp_dest ^ ".tmp") mcp_dest;
+                  [ Ok mcp_dest ]
+                with Sys_error msg -> [ Error msg ]
+          else []
+        in
+        Ok (dest_path, extras)
       with
       | Unix.Unix_error (code, func, _arg) ->
           Error (Printf.sprintf "%s: %s" func (Unix.error_message code))
       | Sys_error msg -> Error msg
     in
     (match result with
-     | Ok dest_path ->
+     | Ok (dest_path, extras) ->
          (match output_mode with
-          | Json -> print_json (`Assoc [ ("ok", `Bool true); ("installed", `String dest_path) ])
-          | Human -> Printf.printf "installed c2c to %s\n" dest_path)
+          | Json ->
+              let items = [ ("ok", `Bool true); ("c2c", `String dest_path) ] in
+              let items =
+                let extra_json = List.map (fun x -> match x with Ok p -> `String p | Error m -> `String ("error: " ^ m)) extras in
+                if extra_json = [] then items else items @ [ ("mcp_server", `List extra_json) ]
+              in
+              print_json (`Assoc items)
+          | Human ->
+              Printf.printf "installed c2c to %s\n" dest_path;
+              List.iter (function Ok p -> Printf.printf "installed c2c-mcp-server to %s\n" p | Error m -> Printf.eprintf "error: %s\n%!" m) extras)
      | Error msg ->
          (match output_mode with
           | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
@@ -2063,26 +2119,6 @@ let generate_session_id () =
   done;
   Buffer.contents buf
 
-let find_ocaml_server_path () =
-  (* Look for c2c_mcp_server.exe in _build, then try opam *)
-  let candidates = [
-    "_build/default/ocaml/server/c2c_mcp_server.exe";
-    "_build/ocaml/server/c2c_mcp_server.exe";
-  ] in
-  let extra_candidates =
-    try
-      let switch = Sys.getenv "OPAM_SWITCH_PREFIX" in
-      [ switch // "bin/c2c_mcp_server" ]
-    with Not_found -> []
-  in
-  let all = candidates @ extra_candidates in
-  List.find_opt Sys.file_exists all
-
-let json_read_file path =
-  let ic = open_in path in
-  Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
-    let s = really_input_string ic (in_channel_length ic) in
-    Yojson.Safe.from_string s)
 
 let json_write_file path json =
   let tmp = path ^ ".tmp" in
