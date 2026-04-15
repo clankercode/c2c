@@ -64,9 +64,11 @@ let git_shorthash () =
 
 let version_string () =
   let base = "0.8.0" in
+  let t = Unix.gmtime (Unix.gettimeofday ()) in
+  let ts = Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ" (t.Unix.tm_year + 1900) (t.Unix.tm_mon + 1) t.Unix.tm_mday t.Unix.tm_hour t.Unix.tm_min t.Unix.tm_sec in
   match git_shorthash () with
-  | Some h -> Printf.sprintf "%s-%s" base h
-  | None -> base
+  | Some h -> Printf.sprintf "%s %s %s" base h ts
+  | None -> Printf.sprintf "%s %s" base ts
 
 let find_python_script script =
   match git_repo_toplevel () with
@@ -3064,7 +3066,7 @@ let stop_cmd =
              "stopped"
            with Unix.Unix_error _ -> "stopped")
       | None -> "no pid found"
-    end else "no outer.pid"
+    end else "not running"
   in
   match output_mode with
   | Json ->
