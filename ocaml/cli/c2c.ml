@@ -2664,7 +2664,12 @@ let setup_cmd =
             if !hook_registered then
               Printf.printf "\n  (hook was already registered — no changes made)\n"
             else
-              Printf.printf "\nRestart Claude Code to pick up the new MCP server.\n")
+              Printf.printf "\nRestart Claude Code to pick up the new MCP server.\n";
+            (* Reconstruct the command line for profile-specific usage hint *)
+            let alias_str = match alias_opt with Some a -> " -a " ^ a | None -> "" in
+            let force_str = if _force then " --force" else "" in
+            Printf.printf "\nTo use a custom profile directory:\n";
+            Printf.printf "  CLAUDE_CONFIG_DIR=/path/to/profile c2c setup %s%s%s\n" client alias_str force_str)
    | "codex" -> setup_codex ~output_mode ~root ~alias_val ~server_path
    | "kimi" -> setup_kimi ~output_mode ~root ~alias_val ~server_path
    | "opencode" -> setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt
