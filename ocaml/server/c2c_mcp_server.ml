@@ -103,38 +103,40 @@ let jsonrpc_error ~id ~code ~message =
    notifications for new messages while the session runs. *)
 let start_inbox_watcher ~broker_root ~session_id ~emit_notification =
   let open Lwt.Syntax in
+  let inbox_path = Filename.concat broker_root (session_id ^ ".inbox.json") in
+  let stat_size () =
+    try (Unix.stat inbox_path).Unix.st_size with Unix.Unix_error _ -> 0
+  in
   let rec loop last_size =
     let* () = Lwt_unix.sleep 1.0 in
-    let inbox_path = Filename.concat broker_root (session_id ^ ".inbox.json") in
-    (match
-       try Some (Unix.stat inbox_path) with Unix.Unix_error (Unix.ENOENT, _, _) -> None
-     with
-    | None -> Lwt.return ()
-    | Some stat ->
-        if stat.Unix.st_size > last_size then
+    Lwt.catch
+      (fun () ->
+        let current_size = stat_size () in
+        if current_size > last_size then
           (* New content available — drain and emit *)
           let broker = C2c_mcp.Broker.create ~root:broker_root in
           let messages = C2c_mcp.Broker.drain_inbox broker ~session_id in
           let rec emit_all = function
-            | [] -> Lwt.return stat.Unix.st_size
+            | [] -> Lwt.return_unit
             | msg :: rest ->
                 let* () = emit_notification msg in
                 emit_all rest
           in
-          let* new_last_size = emit_all messages in
-          loop new_last_size
+          let* () = emit_all messages in
+          (* Use post-drain file size, not pre-drain — avoids missing shorter
+             subsequent messages when the previous batch was larger. *)
+          let post_drain_size = stat_size () in
+          loop post_drain_size
         else
-          loop last_size)
+          loop current_size)
+      (fun exn ->
+        let* () =
+          Lwt_io.eprintlf "c2c inbox watcher: %s" (Printexc.to_string exn)
+        in
+        (* Continue watching after transient errors *)
+        loop last_size)
   in
-  let* initial_stat =
-    let inbox_path = Filename.concat broker_root (session_id ^ ".inbox.json") in
-    match
-      try Some (Unix.stat inbox_path) with Unix.Unix_error (Unix.ENOENT, _, _) -> None
-    with
-    | None -> Lwt.return 0
-    | Some stat -> Lwt.return stat.Unix.st_size
-  in
-  loop initial_stat
+  loop (stat_size ())
 
 let emit_notification msg =
   write_message (C2c_mcp.channel_notification msg)

@@ -293,6 +293,126 @@ let test_channel_notification_matches_claude_channel_shape () =
   check string "to alias meta" "storm-storm"
     (json |> member "params" |> member "meta" |> member "to_alias" |> to_string)
 
+let test_channel_notification_empty_content () =
+  let json =
+    C2c_mcp.channel_notification
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "" }
+  in
+  let open Yojson.Safe.Util in
+  check string "jsonrpc" "2.0" (json |> member "jsonrpc" |> to_string);
+  check string "method" "notifications/claude/channel"
+    (json |> member "method" |> to_string);
+  check string "content is empty string" ""
+    (json |> member "params" |> member "content" |> to_string);
+  check string "from alias meta" "storm-ember"
+    (json |> member "params" |> member "meta" |> member "from_alias" |> to_string);
+  check string "to alias meta" "storm-storm"
+    (json |> member "params" |> member "meta" |> member "to_alias" |> to_string)
+
+let test_channel_notification_special_chars () =
+  let content = "line1\nline2\t\"quoted\" <angle> \xc3\xa9\xc3\xa0\xc3\xbc" in
+  let json =
+    C2c_mcp.channel_notification
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content }
+  in
+  let open Yojson.Safe.Util in
+  (* Round-trip through Yojson serialization to verify escaping is valid *)
+  let serialized = Yojson.Safe.to_string json in
+  let reparsed = Yojson.Safe.from_string serialized in
+  check string "content survives round-trip" content
+    (reparsed |> member "params" |> member "content" |> to_string);
+  check string "jsonrpc" "2.0" (reparsed |> member "jsonrpc" |> to_string);
+  check string "method" "notifications/claude/channel"
+    (reparsed |> member "method" |> to_string)
+
+let test_channel_notification_has_no_id_field () =
+  let json =
+    C2c_mcp.channel_notification
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "test" }
+  in
+  let open Yojson.Safe.Util in
+  (* JSON-RPC 2.0 notifications MUST NOT include an "id" field *)
+  check bool "no id field" true (member "id" json = `Null)
+
+let test_initialize_with_channel_capable_client () =
+  with_temp_dir (fun dir ->
+      let request =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 50)
+          ; ("method", `String "initialize")
+          ; ( "params",
+              `Assoc
+                [ ( "capabilities",
+                    `Assoc
+                      [ ( "experimental",
+                          `Assoc [ ("claude/channel", `Bool true) ] ) ] )
+                ; ( "clientInfo",
+                    `Assoc
+                      [ ("name", `String "test-client")
+                      ; ("version", `String "1.0.0")
+                      ] )
+                ] )
+          ]
+      in
+      let response =
+        Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+      in
+      match response with
+      | None -> fail "expected initialize response"
+      | Some json ->
+          let open Yojson.Safe.Util in
+          check string "protocol version" "2024-11-05"
+            (json |> member "result" |> member "protocolVersion" |> to_string);
+          check bool "server declares claude/channel capability" true
+            (json |> member "result" |> member "capabilities"
+             |> member "experimental" |> member "claude/channel" |> to_bool))
+
+let test_initialize_without_channel_capability () =
+  with_temp_dir (fun dir ->
+      let request =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 51)
+          ; ("method", `String "initialize")
+          ; ( "params",
+              `Assoc
+                [ ( "clientInfo",
+                    `Assoc
+                      [ ("name", `String "basic-client")
+                      ; ("version", `String "0.1.0")
+                      ] )
+                ] )
+          ]
+      in
+      let response =
+        Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+      in
+      match response with
+      | None -> fail "expected initialize response"
+      | Some json ->
+          let open Yojson.Safe.Util in
+          check string "protocol version" "2024-11-05"
+            (json |> member "result" |> member "protocolVersion" |> to_string);
+          (* Server always declares its own channel capability regardless
+             of whether the client advertised support *)
+          check bool "server declares claude/channel capability" true
+            (json |> member "result" |> member "capabilities"
+             |> member "experimental" |> member "claude/channel" |> to_bool))
+
+let test_channel_notification_method_is_correct () =
+  let json =
+    C2c_mcp.channel_notification
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "check method" }
+  in
+  let open Yojson.Safe.Util in
+  let method_str = json |> member "method" |> to_string in
+  check string "exact method string" "notifications/claude/channel" method_str;
+  (* Guard against common typos *)
+  check bool "not singular notification" true (method_str <> "notification/claude/channel");
+  check bool "not channel/ prefix" true
+    (not (String.length method_str >= 8 && String.sub method_str 0 8 = "channel/"))
+
 let test_initialize_returns_mcp_capabilities () =
   with_temp_dir (fun dir ->
       let request =
@@ -4417,6 +4537,18 @@ let () =
         ; test_case "tools/call history ignores session_id arg (subagent probe)" `Quick
             test_tools_call_history_ignores_session_id_argument
         ; test_case "channel notification shape" `Quick test_channel_notification_matches_claude_channel_shape
+        ; test_case "channel notification empty content" `Quick
+            test_channel_notification_empty_content
+        ; test_case "channel notification special chars" `Quick
+            test_channel_notification_special_chars
+        ; test_case "channel notification has no id field" `Quick
+            test_channel_notification_has_no_id_field
+        ; test_case "initialize with channel capable client" `Quick
+            test_initialize_with_channel_capable_client
+        ; test_case "initialize without channel capability" `Quick
+            test_initialize_without_channel_capability
+        ; test_case "channel notification method is correct" `Quick
+            test_channel_notification_method_is_correct
         ; test_case "initialize returns capabilities" `Quick test_initialize_returns_mcp_capabilities
          ; test_case "initialize reports server version and features" `Quick
              test_initialize_reports_server_version_and_features

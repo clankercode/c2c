@@ -1,0 +1,124 @@
+# c2c Injection + MCP + PTY + OCaml — Hand-off Document
+
+## Current Status (2026-04-15)
+
+### What We're Building
+
+c2c (Claude-to-Claude) messaging system. Goal: inject messages into running Claude Code sessions so they appear VISIBLE in the chat UI, not just transcript entries.
+
+### Active Work
+
+**DONE** — Agent `ad415cda39d178233` completed:
+
+- ✓ Server declares `experimental.claude/channel: true` in initialize response (`ocaml/c2c_mcp.ml`)
+- ✓ `channel_delivery_enabled()` defaults to `true` (ON by default)
+- ✓ Continuous inbox watcher via Lwt background thread (polls inbox file size every 1s, emits channel notifications for new messages)
+- ✓ `c2c setup claude` sets `C2C_MCP_CHANNEL_DELIVERY=1` by default
+- ✓ OCaml tests: 131 pass, Python tests: 19 pass
+- ✓ Binary installed to `~/.local/bin/c2c-mcp-server`
+
+### Key Discovery
+
+Claude Code does NOT declare `experimental.claude/channel` in its initialize — so `client_supports_claude_channel` always returns `false` and auto-drain never fires. The fix is two-fold:
+1. Server (c2c) declares the capability (not just detecting client support) ✓
+2. Continuous delivery via inbox watcher (not just post-initialize drain) ✓
+
+### Key Discovery
+
+Claude Code does NOT declare `experimental.claude/channel` in its initialize — so `client_supports_claude_channel` always returns `false` and auto-drain never fires. The fix is two-fold:
+1. Server (c2c) declares the capability (not just detecting client support)
+2. Continuous delivery via inbox watcher (not just post-initialize drain)
+
+### What's Already Implemented
+
+| Component | Location | Notes |
+|-----------|----------|-------|
+| `channel_notification` fn | `ocaml/c2c_mcp.ml:1486` | Correct JSON-RPC notification shape ✓ |
+| Server declares `claude/channel` capability | `ocaml/c2c_mcp.ml` | Now declares `true` ✓ |
+| Continuous inbox watcher | `ocaml/server/c2c_mcp_server.ml` | Lwt background thread, polls every 1s ✓ |
+| `channel_delivery_enabled()` | `ocaml/server/c2c_mcp_server.ml` | Defaults to `true` ✓ |
+| `client_supports_claude_channel` | `ocaml/server/c2c_mcp_server.ml:25` | Detects client capability — one direction only |
+| `notifications/claude/channel` test | `ocaml/test/test_c2c_mcp.ml:282` | Validates notification shape ✓ |
+| Auto-drain after initialize | `ocaml/server/c2c_mcp_server.ml:111-124` | Fires only when both: `C2C_MCP_AUTO_DRAIN_CHANNEL=1` AND client-capable |
+| `send_room` channel emission | `ocaml/cli/c2c.ml:2852` | Room messages already emit channel notifications |
+| PTY injection | `c2c_inject.py`, `c2c_poker.py` | Works for terminal emulators (Ghostty pts/7), not SSH |
+| History injection | `c2c_inject.py` | Appends to transcript.jsonl — works but invisible in SSH UI |
+
+### Injection Methods Available
+
+| Method | Works for SSH | Works for Terminal Emulator | Visible in Chat | Complexity |
+|--------|---------------|----------------------------|-----------------|------------|
+| `notifications/claude/channel` (MCP) | Yes | Yes | Yes | Medium — needs implementation |
+| PTY Bracketed Paste | No | Yes (Ghostty, etc.) | Yes | Low — working |
+| History injection (transcript.jsonl) | Yes | Yes | No (invisible in SSH) | Low — working |
+| PostToolUse hook + wake daemon | No | Yes | No (transcript only) | Medium — working |
+
+### Key Environment Variables
+
+- `C2C_MCP_AUTO_DRAIN_CHANNEL` — default `0`, set to `1` to enable post-initialize drain (won't work without client declaring channel support)
+- `C2C_MCP_CHANNEL_DELIVERY` — new flag being added (should default to `1`)
+- `C2C_MCP_BROKER_ROOT` — broker directory (default: `.git/c2c/mcp`)
+- `C2C_MCP_SESSION_ID` — session identifier
+- `C2C_MCP_AUTO_REGISTER_ALIAS` — stable alias
+- `C2C_MCP_AUTO_JOIN_ROOMS` — default `swarm-lounge`
+
+### Important Files
+
+- `c2c_configure_claude_code.py` — setup command to update (enable channel by default)
+- `docs/channel-notification-impl.md` — implementation spec (being updated by agent)
+- `docs/c2c-research/opencode-channel-notification.md` — OpenCode research ✓
+- `docs/c2c-research/codex-channel-notification.md` — Codex research ✓ (also done)
+- `todo2.txt` — full options analysis including terminal emulator APIs
+
+### Known Limitations
+
+- SSH sessions: PTY master not accessible server-side — MCP or history injection only
+- History injection visible only in transcript, not in SSH chat UI
+- Claude Code itself never declares `experimental.claude/channel` — so server must declare capability
+
+### Build + Install
+
+```bash
+opam exec -- dune build -j1
+cp _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c
+cp _build/default/ocaml/server/c2c_mcp_server.exe ~/.local/bin/c2c
+./restart-self  # pick up new binary
+```
+
+## Recent Commits
+
+- `69b045b` — OCaml inject command, session resolution, history injection
+
+## OpenCode Research Result
+
+Saved: `docs/c2c-research/opencode-channel-notification.md`
+
+- `notifications/claude/channel`: **NOT supported**
+- Equivalent: `POST /tui/show-toast` (ephemeral toast, 5s, not in message history)
+- Session message API (`POST /session/{id}/message`): sends user message, triggers AI response
+- `chat.message` hook: read-only/transformative, cannot inject standalone messages
+- Custom plugin bridge possible but requires custom dev
+
+## Codex Research Result
+
+Saved: `docs/c2c-research/codex-channel-notification.md`
+
+- `notifications/claude/channel`: **NOT supported**
+- No PostToolUse hook, no `experimental.claude/channel` capability
+- Delivery via background daemon + PTY sentinel (`<c2c event="message_pending">poll mcp__c2c__poll_inbox</c2c>`) — not visible in chat
+- Messages only appear in tool results, not native chat UI
+- No plugin/hook system like Claude Code
+
+## Cross-Client Summary
+
+| Client | notifications/claude/channel | Visible in Chat | Delivery Mechanism |
+|--------|------------------------------|-----------------|-------------------|
+| Claude Code | Yes (with --dangerously-load-development-channels) | Yes | MCP channel notifications |
+| OpenCode | No | No (toast only, 5s) | `/tui/show-toast` HTTP API |
+| Codex | No | No (tool results only) | PTY sentinel + poll_inbox |
+
+## Open Questions
+
+1. ~~Does OpenCode support `notifications/claude/channel`?~~ **No** — OpenCode has no MCP channel notification equivalent. Closest: `/tui/show-toast` (ephemeral) or session message API.
+2. ~~Does Codex support it?~~ **No** — No channel notification, no PostToolUse hook. PTY sentinel + poll_inbox only.
+3. Is continuous inbox delivery via inotifywait the right approach, or should we use a different mechanism?
