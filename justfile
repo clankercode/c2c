@@ -55,7 +55,13 @@ install-hook:
     cp _build/default/ocaml/tools/c2c_inbox_hook.exe ~/.local/bin/c2c-inbox-hook-ocaml
 
 # Install all OCaml binaries (CLI + MCP server + inbox hook)
-install-all: install-cli install-mcp install-hook
+# Build all first, then copy all — avoids half-updated state on build failure
+install-all:
+    opam exec -- dune build -j1 ./ocaml/cli/c2c.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe
+    rm -f ~/.local/bin/c2c ~/.local/bin/c2c-mcp-server ~/.local/bin/c2c-inbox-hook-ocaml
+    cp _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c
+    cp _build/default/ocaml/server/c2c_mcp_server.exe ~/.local/bin/c2c-mcp-server
+    cp _build/default/ocaml/tools/c2c_inbox_hook.exe ~/.local/bin/c2c-inbox-hook-ocaml
 
 # Shorthand: build + install CLI in one shot
 bi: install-all
