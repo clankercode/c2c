@@ -73,7 +73,13 @@ def start_server(
     auto_join_rooms: str = "",
     watcher_delay: str = "0",
 ) -> subprocess.Popen:
-    """Start the MCP server as a subprocess."""
+    """Start the MCP server as a subprocess.
+
+    watcher_delay defaults to "0" (not the 30s production default) so
+    existing tests observe near-immediate channel delivery. Delay-
+    specific tests (TestWatcherDrainDelay) pass an explicit non-zero
+    value.
+    """
     env = {
         **os.environ,
         "C2C_MCP_BROKER_ROOT": broker_root,
