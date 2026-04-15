@@ -131,14 +131,14 @@ val cleanup_stale_opentui_zig_cache : unit -> int
 (** {1 Sidecar daemons} *)
 
 val start_deliver_daemon :
-  name:string -> client:string -> broker_root:string -> ?child_pid:int -> unit -> int option
-(** [start_deliver_daemon ~name ~client ~broker_root ?child_pid ()] spawns
+  name:string -> client:string -> broker_root:string -> ?child_pid_opt:int -> unit -> int option
+(** [start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt ()] spawns
     c2c_deliver_inbox.py --loop --notify-only and returns its PID, or [None]
     if the script is not found. *)
 
 val start_poker :
-  name:string -> client:string -> ?child_pid:int -> unit -> int option
-(** [start_poker ~name ~client ?child_pid ()] spawns c2c_poker.py for clients
+  name:string -> client:string -> ?child_pid_opt:int -> unit -> int option
+(** [start_poker ~name ~client ?child_pid_opt ()] spawns c2c_poker.py for clients
     that need it (needs_poker = true) and returns its PID, or [None]. *)
 
 (** {1 Outer loop} *)

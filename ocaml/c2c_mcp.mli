@@ -11,6 +11,8 @@ type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : 
 type room_visibility = Public | Invite_only
 type room_meta = { visibility : room_visibility; invited_members : string list }
 
+module C2c_start : module type of C2c_start
+
 module Broker : sig
   type t
   val create : root:string -> t

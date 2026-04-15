@@ -112,6 +112,8 @@ let tool_definition ~name ~description ~required ~properties =
           ] )
     ]
 
+module C2c_start = C2c_start
+
 module Broker = struct
   type t = { root : string }
 

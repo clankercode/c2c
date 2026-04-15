@@ -2898,7 +2898,6 @@ let instances_cmd =
   end
 
 let instances = Cmdliner.Cmd.v (Cmdliner.Cmd.info "instances" ~doc:"List managed c2c instances.") instances_cmd
-
 (* --- subcommand: start ---------------------------------------------------- *)
 
 let start_cmd =
@@ -2914,24 +2913,21 @@ let start_cmd =
   let bin =
     Cmdliner.Arg.(value & opt (some string) None & info [ "bin" ] ~docv:"PATH" ~doc:"Custom binary path or name to launch.")
   in
-  let+ json = json_flag
-  and+ client = client
+  let session_id =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "session-id" ] ~docv:"UUID" ~doc:"Explicit session UUID (overrides auto-generated).")
+  in
+  let+ client = client
   and+ name_opt = name
   and+ alias_opt = alias
-  and+ bin_opt = bin in
-  match find_python_script "c2c_start.py" with
-  | None ->
-      Printf.eprintf "error: cannot find c2c_start.py. Run from inside the c2c git repo.\n%!";
-      exit 1
-  | Some script ->
-      let args = [ "python3"; script; "start"; client ] in
-      let args = match name_opt with None -> args | Some n -> args @ [ "-n"; n ] in
-      let args = match alias_opt with None -> args | Some a -> args @ [ "--alias"; a ] in
-      let args = match bin_opt with None -> args | Some b -> args @ [ "--bin"; b ] in
-      let args = if json then args @ [ "--json" ] else args in
-      Unix.execvp "python3" (Array.of_list args)
+  and+ bin_opt = bin
+  and+ session_id_opt = session_id in
+  let name = Option.value name_opt ~default:(C2c_start.default_name client) in
+  exit (C2c_start.cmd_start ~client ~name ~extra_args:[] ?binary_override:bin_opt ?alias_override:alias_opt ?session_id_override:session_id_opt ())
 
-let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Start a managed c2c instance (delegates to c2c_start.py).") start_cmd
+let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Start a managed c2c instance.") start_cmd
+
+(* --- subcommand: stop ----------------------------------------------------- *)
+
 
 (* --- subcommand: stop ----------------------------------------------------- *)
 
@@ -2983,24 +2979,14 @@ let stop_cmd =
 
 let stop = Cmdliner.Cmd.v (Cmdliner.Cmd.info "stop" ~doc:"Stop a managed c2c instance.") stop_cmd
 
-(* --- subcommand: restart -------------------------------------------------- *)
-
 let restart_cmd =
   let name =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME" ~doc:"Instance name to restart.")
   in
-  let+ json = json_flag
-  and+ name = name in
-  match find_python_script "c2c_start.py" with
-  | None ->
-      Printf.eprintf "error: cannot find c2c_start.py. Run from inside the c2c git repo.\n%!";
-      exit 1
-  | Some script ->
-      let args = [ "python3"; script; "restart"; name ] in
-      let args = if json then args @ [ "--json" ] else args in
-      Unix.execvp "python3" (Array.of_list args)
+  let+ name = name in
+  exit (C2c_start.cmd_restart name)
 
-let restart = Cmdliner.Cmd.v (Cmdliner.Cmd.info "restart" ~doc:"Restart a managed c2c instance (delegates to c2c_start.py).") restart_cmd
+let restart = Cmdliner.Cmd.v (Cmdliner.Cmd.info "restart" ~doc:"Restart a managed c2c instance.") restart_cmd
 
 (* --- main entry point ----------------------------------------------------- *)
 
