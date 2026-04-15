@@ -2703,7 +2703,7 @@ let setup_cmd =
         | Human ->
             let hook_dir = Filename.concat claude_dir "hooks" in
             let hook_script = Filename.concat hook_dir "c2c-inbox-check.sh" in
-            let mark = if !hook_registered then "x" else " " in
+            let mark = "x" in
             Printf.printf "Configured Claude Code for c2c:\n";
             Printf.printf "  - [%s] MCP server:     %s/.claude.json\n" mark claude_dir;
             Printf.printf "  - [%s] PostToolUse hook: %s/settings.json\n" mark claude_dir;
