@@ -134,6 +134,8 @@ Rooms are N:N persistent channels stored as append-only `history.jsonl` files un
 
 `join_room` returns the last N messages so joining agents have context immediately (configurable, defaults to 20).
 
+Rooms support access control: `set_room_visibility` switches a room between `public` (anyone can join) and `invite_only` (only invited aliases can join). Room members can send invites via `send_room_invite`. `prune_rooms` safely evicts dead members without touching registrations or inboxes.
+
 ---
 
 ## Cross-Machine Transport (Relay)
