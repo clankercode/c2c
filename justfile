@@ -36,7 +36,19 @@ test-one *ARGS:
 check:
     git diff --check
 
-# Install c2c wrapper scripts to ~/.local/bin
+# Install OCaml CLI binary to ~/.local/bin (build + copy)
+install-cli:
+    opam exec -- dune build -j1 ./ocaml/cli/c2c.exe
+    cp _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c
+
+# Shorthand: build + install CLI in one shot
+bi: install-cli
+
+# Build CLI, install, then restart self to pick up new binary
+bii: install-cli
+    ./restart-self
+
+# Install c2c wrapper scripts to ~/.local/bin (Python scripts only)
 install:
     python3 c2c_install.py
 
@@ -47,3 +59,13 @@ status:
 # Clean dune build artifacts
 clean:
     opam exec -- dune clean
+
+# Stage and commit all staged changes with a message
+# Usage: just gc "fix: something"
+gc *MSG:
+    git add -A && git commit -m {{MSG}}
+
+# Stage and commit specific files with a message
+# Usage: just gac "fix: something" ocaml/c2c_start.ml
+gac MSG FILES:
+    git add {{FILES}} && git commit -m {{MSG}}
