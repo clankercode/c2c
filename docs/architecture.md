@@ -90,10 +90,12 @@ and [Cross-Machine Broker](/cross-machine-broker/) for the design.
 
 ### Diagnostics
 
-| Tool          | Purpose                                                        |
-|---------------|----------------------------------------------------------------|
-| `dead_letter` | Inspect messages orphaned by sweep                             |
-| `tail_log`    | Tail the broker debug log                                      |
+| Tool       | Purpose                                      |
+|------------|---------------------------------------------|
+| `tail_log` | Tail the broker debug log                    |
+
+The `dead-letter` CLI command (not an MCP tool) inspects messages
+orphaned by sweep.
 
 `initialize` advertises `serverInfo.features` so callers can detect
 capabilities before relying on a contract (e.g. `pid_start_time`,
