@@ -1534,6 +1534,43 @@ let room_group =
     (Cmdliner.Cmd.info "room" ~doc:"Alias for rooms.")
     [ rooms_list; rooms_join; rooms_leave; rooms_send; rooms_history; rooms_invite; rooms_members; rooms_visibility ]
 
+(* --- subcommand: hook (PostToolUse inbox hook) ----------------------------- *)
+
+let min_hook_runtime_ms = 10.0
+
+let hook_cmd =
+  (* No arguments - reads env vars C2C_MCP_SESSION_ID and C2C_MCP_BROKER_ROOT *)
+  let+ () = Cmdliner.Term.ret Cmdliner.Term.(const (fun () -> `Help (`Auto, None))) in
+  let session_id =
+    try Sys.getenv "C2C_MCP_SESSION_ID" with Not_found -> ""
+  in
+  let broker_root =
+    try Sys.getenv "C2C_MCP_BROKER_ROOT" with Not_found -> ""
+  in
+  (* Fast path: if not configured, exit silently *)
+  if session_id = "" || broker_root = "" then exit 0;
+  let start_time = Unix.gettimeofday () in
+  try
+    let broker = C2c_mcp.Broker.create ~root:broker_root in
+    let messages = C2c_mcp.Broker.drain_inbox broker ~session_id in
+    (* Output messages in c2c event envelope format *)
+    List.iter
+      (fun (m : C2c_mcp.message) ->
+        Printf.printf "<c2c event=\"message\" from=\"%s\" alias=\"%s\" action_after=\"continue\">%s</c2c>\n"
+          m.from_alias m.to_alias m.content)
+      messages;
+    (* Self-regulating runtime: sleep if we finished too quickly *)
+    let elapsed_ms = (Unix.gettimeofday () -. start_time) *. 1000.0 in
+    if elapsed_ms < min_hook_runtime_ms then
+      let remaining_s = (min_hook_runtime_ms -. elapsed_ms) /. 1000.0 in
+      ignore (Lwt_main.run (Lwt_unix.sleep remaining_s));
+    exit 0
+  with e ->
+    prerr_endline (Printexc.to_string e);
+    exit 1
+
+let hook = Cmdliner.Cmd.v (Cmdliner.Cmd.info "hook" ~doc:"PostToolUse hook: drain inbox and emit messages.") hook_cmd
+
 (* --- relay subcommands (shell-out to Python) -------------------------------- *)
 
 let relay_serve_cmd =
@@ -1566,7 +1603,7 @@ let relay_serve_cmd =
   and+ gc_interval = gc_interval
   and+ verbose = verbose in
   (* Parse listen address (default 127.0.0.1:7331) *)
-  let[@ocaml.warning "-26"] host, port = match listen with
+  let host, port = match listen with
     | None -> ("127.0.0.1", 7331)
     | Some v ->
         (match String.split_on_char ':' v with
@@ -1614,19 +1651,8 @@ let relay_serve_cmd =
            let args = if verbose then args @ [ "--verbose" ] else args in
            Unix.execvp "python3" (Array.of_list args))
   | _ ->
-      (* Python relay for memory storage *)
-      (match find_python_script "c2c_relay_server.py" with
-       | None ->
-           Printf.eprintf "error: cannot find c2c_relay_server.py. Run from inside the c2c git repo.
-%!";
-           exit 1
-       | Some script ->
-           let args = [ "python3"; script; "--storage"; "memory" ] in
-           let args = match listen with None -> args | Some l -> args @ [ "--listen"; l ] in
-           let args = match token with None -> args | Some t -> args @ [ "--token"; t ] in
-           let args = if verbose then args @ [ "--verbose" ] else args in
-           let args = if gc_interval > 0.0 then args @ [ "--gc-interval"; string_of_float gc_interval ] else args in
-           Unix.execvp "python3" (Array.of_list args))
+      (* Native in-memory relay *)
+      Lwt_main.run (C2c_mcp.Relay_server.start_server ~host ~port ~token ~verbose ~gc_interval ())
 
 let relay_connect_cmd =
   let relay_url =

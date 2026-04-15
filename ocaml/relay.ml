@@ -1,6 +1,8 @@
 [@@@warning "-33-16-32"]
 (* relay.ml — native OCaml in-memory relay backend *)
 
+module Relay = struct
+
 module RegistrationLease : sig
   type t
   val make : node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> unit -> t
@@ -496,3 +498,5 @@ end = struct
       `Ok (List.rev !expired, pruned)
     )
 end
+
+end (* end of Relay module *)
