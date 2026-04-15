@@ -2487,7 +2487,7 @@ let configure_claude_hook () =
 
 let setup_cmd =
   let client =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "client"; "c" ] ~docv:"CLIENT" ~doc:"Client type: claude, codex, kimi, opencode (default: claude).")
+    Cmdliner.Arg.(value & pos 0 (some string) (Some "claude") & info [] ~docv:"CLIENT" ~doc:"Client type: claude, codex, kimi, opencode (default: claude).")
   in
   let alias =
     Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS" ~doc:"Alias to use (default: auto-generated per client).")
@@ -2502,13 +2502,12 @@ let setup_cmd =
     Cmdliner.Arg.(value & flag & info [ "force"; "f" ] ~doc:"Overwrite existing configuration.")
   in
   let+ json = json_flag
-  and+ client_opt = client
+  and+ client = client
   and+ alias_opt = alias
   and+ broker_root_opt = broker_root
   and+ target_dir_opt = target_dir
   and+ _force = force in
   let output_mode = if json then Json else Human in
-  let client = Option.value client_opt ~default:"claude" in
   let root =
     match broker_root_opt with
     | Some r -> r
@@ -2517,7 +2516,7 @@ let setup_cmd =
   let alias_val =
     match alias_opt with
     | Some a -> a
-    | None -> default_alias_for_client client
+    | None -> default_alias_for_client (Option.value client ~default:"claude")
   in
   let server_path =
     match find_ocaml_server_path () with
@@ -2534,6 +2533,9 @@ let setup_cmd =
       Sys.getcwd () // server_path
     else server_path
   in
+  (* Use c2c-mcp-server on PATH if available, else fall back to opam exec build artifact *)
+  let mcp_command = if Sys.file_exists ("/home/xertrov/.local/bin/c2c-mcp-server") then "c2c-mcp-server" else server_path in
+  let client = Option.value client ~default:"claude" in
   (match String.lowercase_ascii client with
    | "claude" ->
        let claude_json = Filename.concat (Sys.getenv "HOME") ".claude.json" in
@@ -2543,8 +2545,8 @@ let setup_cmd =
        in
        let mcp_entry =
          `Assoc
-           [ ("command", `String "opam")
-           ; ("args", `List [ `String "exec"; `String "--"; `String server_path ])
+           [ ("command", `String mcp_command)
+           ; ("args", `List (if mcp_command = "c2c-mcp-server" then [] else [ `String "exec"; `String "--"; `String server_path ]))
            ; ("env", `Assoc
                [ ("C2C_MCP_BROKER_ROOT", `String root)
                ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
@@ -2590,7 +2592,7 @@ let setup_cmd =
              CONTENT=$(<\"$INBOX\")\n\
              TRIMMED=\"${CONTENT//[[:space:]]/}\"\n\
              [ \"$TRIMMED\" = \"[]\" ] || [ -z \"$TRIMMED\" ] && exit 0\n\
-             exec timeout 5 c2c-poll-inbox --file-fallback --session-id \"$SESSION_ID\" --broker-root \"$BROKER_ROOT\"\n"
+             exec timeout 5 c2c hook\n"
           in
           let oc = open_out hook_script in
           output_string oc hook_content;
@@ -2653,13 +2655,16 @@ let setup_cmd =
               ; ("hook_status", `String hook_status)
               ])
         | Human ->
-            Printf.printf "Configured Claude Code for c2c.\n";
-            Printf.printf "  alias:       %s\n" alias_val;
+            Printf.printf "Configured Claude Code for c2c:\n";
+            Printf.printf "  - [%s] MCP server:     ~/.claude.json\n" (if !hook_registered then "x" else " ");
+            Printf.printf "  - [%s] PostToolUse hook: ~/.claude/settings.json\n" (if !hook_registered then "x" else " ");
+            Printf.printf "  - [%s] Inbox hook script: ~/.claude/hooks/c2c-inbox-check.sh\n" (if !hook_registered then "x" else " ");
+            Printf.printf "\n  alias:       %s\n" alias_val;
             Printf.printf "  broker root: %s\n" root;
-            Printf.printf "  config:      %s\n" claude_json;
-            Printf.printf "  hook:        %s\n" hook_status;
-            Printf.printf "  server:      %s\n" server_path;
-            Printf.printf "\nRestart Claude Code to pick up the new MCP server.\n")
+            if !hook_registered then
+              Printf.printf "\n  (hook was already registered — no changes made)\n"
+            else
+              Printf.printf "\nRestart Claude Code to pick up the new MCP server.\n")
    | "codex" -> setup_codex ~output_mode ~root ~alias_val ~server_path
    | "kimi" -> setup_kimi ~output_mode ~root ~alias_val ~server_path
    | "opencode" -> setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt
