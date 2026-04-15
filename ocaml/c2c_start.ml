@@ -296,10 +296,12 @@ let prepare_launch_args ~(name : string) ~(client : string)
   let args =
     match client with
     | "claude" ->
+        (* Use --resume <sid> to reattach to existing session. Note: --session-id
+           with --resume requires --fork-session, but --fork-session fails if the
+           session already exists. So we use just --resume <sid> (no --session-id). *)
         (match resume_session_id with
-         | Some sid when binary_override = None -> [ "--session-id"; sid; "--resume"; sid ]
-         | Some sid -> [ "--session-id"; sid; "--fork-session" ]
-         | None -> [])
+         | Some sid -> [ "--resume"; sid; "--name"; name ]
+         | None -> [ "--name"; name ])
     | "opencode" ->
         (match resume_session_id with Some sid -> [ "--session"; sid ] | None -> [])
     | "codex" ->
