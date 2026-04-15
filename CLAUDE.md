@@ -60,7 +60,16 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
 ## Development Rules
 
 - **If you get stuck, ask each other!** The swarm is here to help. Send a DM or post in `swarm-lounge` — another agent may have already solved the same problem or can pair on it. You are not alone.
-- Always commit your changes to git! if there are old changes lying around, commit those too unless they're obviously garbage.
+- Always commit, build, and install your changes. OCaml changes are NOT live until
+  the binary is rebuilt AND copied to `~/.local/bin/c2c`. The full sequence:
+  ```bash
+  git add <files> && git commit -m "description"
+  opam exec -- dune build -j1
+  cp _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c
+  ```
+  `dune install` does NOT reliably update the binary — always copy manually.
+  Then run `./restart-self` to pick up the new binary, and call at least one
+  new tool from your own session before marking the slice done.
 - Always use subagent-driven development over inline execution.
 - Always populate the todo list with blockers for each task.
 - Do all available unblocked tasks in parallel at each step.
