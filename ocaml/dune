@@ -1,4 +1,4 @@
 (library
  (name c2c_mcp)
- (modules c2c_mcp Relay Relay_server)
+ (modules c2c_mcp)
  (libraries yojson logs lwt.unix cohttp-lwt-unix))
