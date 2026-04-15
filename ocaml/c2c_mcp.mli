@@ -62,7 +62,6 @@ end
 
 (* Native OCaml relay modules *)
 module Relay : module type of Relay
-module Relay_server : module type of Relay_server
 
 val channel_notification : message -> Yojson.Safe.t
 val auto_register_startup : broker_root:string -> unit

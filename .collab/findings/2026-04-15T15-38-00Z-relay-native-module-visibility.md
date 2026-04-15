@@ -1,49 +1,60 @@
-# OCaml Relay Module Visibility Issue
+# OCaml Relay Module Visibility Issue - RESOLVED
 
 **Date**: 2026-04-15
-**Status**: WORKAROUND IN PLACE - native relay not yet callable from CLI
+**Status**: RESOLVED - native OCaml relay server is now working
 
-## Symptom
+## Final Solution
 
-`c2c relay serve` falls back to Python relay because `C2c_mcp.Relay_server.start_server` is "Unbound value" at link time in `c2c.ml`, even though:
+The issue was fundamentally about Dune's module wrapping and cross-file module visibility. The solution was to consolidate all relay code into a single file `relay.ml` with nested modules.
 
-1. `relay.ml` and `relay_server.ml` are in the dune `modules` list
-2. Both `module Relay = Relay` and `module Relay_server = Relay_server` are in `c2c_mcp.ml`
-3. The library builds successfully when c2c.ml doesn't reference `C2c_mcp.Relay_server`
+### Final Architecture
 
-## Root Cause Hypothesis
+**`ocaml/relay.ml`** contains:
+- `module RegistrationLease` - registration lease handling
+- `module InMemoryRelay` - in-memory relay backend
+- `module Relay_server` - HTTP server layer
 
-The `Relay` and `Relay_server` modules defined inside `relay.ml` and `relay_server.ml` (not at file level) may not be accessible as `C2c_mcp.Relay` from outside the library due to Dune's module wrapping behavior.
+All three modules are nested inside `relay.ml` and exposed via `module Relay = Relay` in `c2c_mcp.ml`.
 
-In Dune wrapped libraries, modules are prefixed with `LibraryName__`. The inner modules `RegistrationLease` and `InMemoryRelay` are accessible as `C2c_mcp__.RegistrationLease` but the `Relay` module itself (defined as `module Relay : sig ... end = struct ... end` inside `relay.ml`) might not be re-exported correctly.
-
-## Current State
-
-- `c2c_mcp.ml` has `module Relay = Relay` and `module Relay_server = Relay_server`
-- But `c2c_mcp.cmi` does NOT show Relay as a direct sub-module
-- When c2c.ml tries to call `C2c_mcp.Relay_server.start_server`, it's unbound
-
-## Workaround
-
-The CLI still falls back to Python relay:
+**`ocaml/c2c_mcp.ml`** re-exports:
 ```ocaml
-| _ ->
-    (* Fall back to Python relay for now *)
-    (match find_python_script "c2c_relay_server.py" with ...)
+module Relay = Relay
 ```
 
-## Files Involved
+**`ocaml/c2c_mcp.mli`** exposes:
+```ocaml
+module Relay : module type of Relay
+```
 
-- `ocaml/relay.ml` - defines `RegistrationLease` and `InMemoryRelay` modules (NOT wrapped in another Relay module now)
-- `ocaml/relay_server.ml` - defines `Relay_server` with HTTP handlers
-- `ocaml/c2c_mcp.ml` - has `module Relay = Relay` and `module Relay_server = Relay_server`
-- `ocaml/c2c_mcp.mli` - has `module Relay : module type of Relay` and `module Relay_server : module type of Relay_server`
-- `ocaml/dune` - has `(modules c2c_mcp C2c_start Relay Relay_server)`
-- `ocaml/cli/c2c.ml` - line 1656 tries to call `C2c_mcp.Relay_server.start_server`
+**`ocaml/cli/c2c.ml`** calls:
+```ocaml
+Lwt_main.run (Relay.Relay_server.start_server ~host ~port ~token ~verbose ~gc_interval ())
+```
 
-## Next Steps
+## Key Files
 
-1. Investigate why `module Relay = Relay` in c2c_mcp.ml doesn't expose Relay at the top level
-2. Check if dune's `-open C2c_mcp__` in compilation is causing the issue
-3. Consider making `relay.ml` define `module Relay = struct ... end` at file level instead of inline
-4. Or use `(wrapped false)` in dune (but Dune docs warn against this)
+- `ocaml/relay.ml` - monolithic relay module (RegistrationLease + InMemoryRelay + Relay_server)
+- `ocaml/dune` - `(modules c2c_mcp C2c_start Relay)` with `(wrapped false)`
+- `ocaml/c2c_mcp.ml` - re-exports `module Relay = Relay`
+- `ocaml/c2c_mcp.mli` - `module Relay : module type of Relay`
+- `ocaml/cli/c2c.ml` - calls `Relay.Relay_server.start_server`
+
+## What Was Tried
+
+1. Separate files `registrationLease.ml`, `inMemoryRelay.ml`, `relay_server.ml` - failed due to cross-file module visibility issues with Dune wrapping
+2. `(wrapped false)` alone didn't solve the cross-file visibility
+3. Using `module type of X` in interface files - worked for signatures but didn't solve the visibility issue
+4. Creating explicit `.mli` files - created more problems due to module nesting
+
+## What Worked
+
+Consolidating everything into a single `relay.ml` file with nested modules. This avoids all cross-file module visibility issues because all modules are compiled together in the same file.
+
+## Verification
+
+```bash
+./ocaml/_build/default/ocaml/cli/c2c.exe relay serve --listen 127.0.0.1:7331 --token test-token &
+curl http://127.0.0.1:7331/health  # Returns {"ok":true}
+curl -X POST http://127.0.0.1:7331/register -H "Authorization: Bearer test-token" -d '{"node_id":"a","session_id":"s","alias":"x"}'  # Works
+curl http://127.0.0.1:7331/list -H "Authorization: Bearer test-token"  # Returns registered peers
+```

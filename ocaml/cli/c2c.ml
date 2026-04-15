@@ -1652,16 +1652,18 @@ let relay_serve_cmd =
            let args = if verbose then args @ [ "--verbose" ] else args in
            Unix.execvp "python3" (Array.of_list args))
   | _ ->
-      (* Fall back to Python relay for now *)
-      (match find_python_script "c2c_relay_server.py" with
-       | None ->
-           Printf.eprintf "error: cannot find c2c_relay_server.py. Run from inside the c2c git repo.\n%!";
-           exit 1
-       | Some script ->
-           let args = [ "python3"; script ] in
-           let args = match db_path with None -> args | Some v -> args @ [ "--db-path"; v ] in
-           let args = if verbose then args @ [ "--verbose" ] else args in
-           Unix.execvp "python3" (Array.of_list args))
+      (* Native OCaml relay server *)
+      let verbose_str = if verbose then " (verbose)" else "" in
+      Printf.printf "c2c relay serving on http://%s:%d%s\n%!" host port verbose_str;
+      (match token with
+       | Some _ -> Printf.printf "auth: Bearer token required\n%!"
+       | None -> Printf.printf "auth: DISABLED (no token set — do not expose publicly)\n%!");
+      if gc_interval > 0.0 then
+        Printf.printf "gc: running every %.0fs\n%!" gc_interval
+      else
+        Printf.printf "gc: disabled\n%!";
+      Printf.printf "storage: memory\n%!";
+      Lwt_main.run (Relay.Relay_server.start_server ~host ~port ~token ~verbose ~gc_interval ())
 
 let relay_connect_cmd =
   let relay_url =
