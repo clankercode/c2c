@@ -182,7 +182,7 @@ let write_pid (path : string) (pid : int) =
     (fun () -> output_string oc (Printf.sprintf "%d\n" pid))
 
 let remove_pidfile (path : string) =
-  try Sys.remove path with Unix.Unix_error _ -> ()
+  try Sys.remove path with Unix.Unix_error _ | Sys_error _ -> ()
 
 (* ---------------------------------------------------------------------------
  * Cleanup stale OpenUI Zig cache
