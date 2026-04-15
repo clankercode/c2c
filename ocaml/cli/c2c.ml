@@ -2272,29 +2272,15 @@ let claude_hook_script = {|
 #!/bin/bash
 # c2c-inbox-check.sh — PostToolUse hook for c2c auto-delivery in Claude Code
 #
-# Fires after every tool call. If the session's c2c inbox is non-empty,
-# drains it and outputs messages so Claude Code surfaces them as inline context.
+# Delegates to c2c-inbox-hook (OCaml binary) which:
+#   - Drains the inbox and outputs messages
+#   - Self-regulates runtime to prevent Node.js ECHILD race
 #
 # Required env vars (set by c2c start or the MCP server entry):
 #   C2C_MCP_SESSION_ID   — broker session id
 #   C2C_MCP_BROKER_ROOT  — absolute path to broker root dir
-#
-# Exits silently (0) when not configured, so unmanaged sessions are unaffected.
 
-SESSION_ID="${C2C_MCP_SESSION_ID:-}"
-BROKER_ROOT="${C2C_MCP_BROKER_ROOT:-}"
-
-[ -z "$SESSION_ID" ]   && exit 0
-[ -z "$BROKER_ROOT" ]  && exit 0
-
-INBOX="$BROKER_ROOT/$SESSION_ID.inbox.json"
-[ -f "$INBOX" ] || exit 0
-
-CONTENT=$(<"$INBOX")
-TRIMMED="${CONTENT//[[:space:]]/}"
-[ "$TRIMMED" = "[]" ] || [ -z "$TRIMMED" ] && exit 0
-
-exec timeout 5 c2c poll-inbox --json
+exec c2c-inbox-hook
 |}
 
 let configure_claude_hook () =

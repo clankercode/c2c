@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# c2c-inbox-hook — PostToolUse hook binary wrapper
+#
+# Executes the dune-built OCaml hook binary. This wrapper is installed by
+# `c2c install` and is called by Claude Code's PostToolUse hook.
+
+set -euo pipefail
+
+# Resolve the canonical main-worktree root via git-common-dir so that
+# running from a linked worktree still finds the correct build artifact.
+SCRIPT_DIR="$(dirname "$0")"
+REPO_ROOT="$(cd "$SCRIPT_DIR" && git rev-parse --show-toplevel 2>/dev/null || echo "$SCRIPT_DIR")"
+BIN_PATH="$REPO_ROOT/_build/default/ocaml/tools/c2c_inbox_hook.exe"
+
+exec "$BIN_PATH" "$@"

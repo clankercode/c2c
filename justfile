@@ -6,11 +6,11 @@ default:
 
 # Build the OCaml MCP server
 build:
-    opam exec -- dune build ./ocaml/server/c2c_mcp_server.exe
+    opam exec -- dune build ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe
 
 # Build the OCaml CLI binary
 build-cli:
-    opam exec -- dune build ./ocaml/cli/c2c.exe
+    opam exec -- dune build ./ocaml/cli/c2c.exe ./ocaml/tools/c2c_inbox_hook.exe
 
 # Build both MCP server and CLI
 build-all: build build-cli
