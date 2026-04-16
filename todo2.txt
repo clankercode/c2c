@@ -1,0 +1,171 @@
+# Claude-to-Claude Message Injection: Options Analysis
+
+## The Problem
+
+We want to inject messages into running Claude Code sessions so they appear VISIBLE in the chat UI, not just in the transcript. History injection appends to transcript.jsonl but doesn't trigger React state updates — messages stay invisible.
+
+## Option 1: MCP notifications/claude/channel
+
+**How it works:**
+- MCP server emits `notifications/claude/channel` messages
+- Claude Code's SDK bridge receives them → `extractInboundMessageFields()` → `handleInputPrompt()` → React `setMessages()` → visible in chat
+- This is how Telegram/Slack/Discord plugins work
+
+**Pros:**
+- Official, supported mechanism
+- Works across all session types (SSH, terminal emulator, etc.)
+- Properly handles UUID chain and state
+
+**Cons:**
+- Requires MCP server setup — heavy dependency
+- Requires Claude Code to be running with MCP server loaded
+- Need to register MCP server with Claude Code
+
+**Status:** Feasible but heavy.
+
+---
+
+## Option 2: PTY Injection (Bracketed Paste)
+
+**How it works:**
+- Write to PTY master: `ESC[200~` + message + `ESC[201~` + CR
+- Claude Code reads from PTY slave, processes as user input
+- Works for terminal emulators (Ghostty, WezTerm, iTerm2) where ptmx is accessible
+
+**Pros:**
+- No MCP needed
+- Messages appear as typed input → visible in chat
+- Works on local terminal emulator sessions
+
+**Cons:**
+- SSH sessions: PTY master is on client side, not accessible from server
+- Need ptmx access — doesn't work for SSH, tmux, screen
+- Requires knowing the correct PTS
+
+**Status:** Working for local terminal sessions.
+
+---
+
+## Option 3: Plugin Hooks (systemMessage / additionalContext)
+
+**How it works:**
+- Plugins can return `systemMessage` or `additionalContext` in hook responses
+- These render as meta/system messages in chat
+
+**Problem:**
+- Hooks run in response to tool use or events — they can't independently inject messages
+- No hook fires on a timer or external signal
+- Can't inject arbitrary user messages this way
+
+**Status:** Not viable for independent message injection.
+
+---
+
+## Option 5: Terminal Emulator APIs (Kitty, WezTerm, iTerm2)
+
+**Kitty — `kitten @ send-text`** (Most mature)
+- `kitten @ send-text --match <selector> <text>` — sends text to a specific window
+- Match by: `title:`, `cmdline:`, `pid:`, `cwd:`, `id:`, `state:`, etc.
+- Supports `--stdin` for piping
+- Socket-based control: `kitty -o allow_remote_control=yes --listen-on unix:/tmp/mykitty`
+- Boolean operators for complex matching
+- **Already installed on this system** — could be used immediately
+
+**WezTerm — `Pane:send_text` / `Pane:inject_output`**
+- Lua API: `pane:send_text(text)`, `pane:inject_output(cells)`, `pane:send_paste(text)`
+- CLI: `wezterm cli send-text --pane-id <id>`
+- Well-documented, cross-platform
+
+**iTerm2 — Python/JavaScript scripting**
+- Variables + functions based coprocess API
+- Regex-based triggers
+- Mature but requires Python/JavaScript setup
+
+**Status:** Very promising — Kitty's `kitten @ send-text` is immediately usable.
+
+---
+
+## Option 6: Claude Code `/remote-control`
+
+- Built-in remote control feature for cross-device session control
+- Has active bugs on Windows and `--spawn` data loss concerns on macOS
+- Not ideal for our use case (external process → running session)
+
+**Status:** Not reliable for our injection goals.
+
+---
+
+## Option 7: Third-Party Bridges (Happy, Telegram, etc.)
+
+- **Happy** (happy.engineering): CLI + mobile app + relay, E2E encrypted, free
+- **cc-telegram-bridge**: Claude Code via Telegram
+- Community tools for various platforms
+
+**Status:** Not our own infrastructure, but Good to know alternatives exist.
+
+---
+
+## Option 8: Ghostty AppleScript (macOS only)
+
+- Ghostty v1.0 shipped AppleScript support
+- For Linux: D-Bus API approved but not yet implemented
+- JSON-RPC prototype exists over Unix sockets (community contribution)
+
+**Status:** macOS viable now; Linux needs D-Bus implementation.
+
+---
+
+## Option 9: PostToolUse Hook + Wake Daemon (Already Implemented)
+
+**How it works:**
+- `c2c_claude_wake_daemon.py`: watches inbox via inotifywait, PTY-injects wake prompt when DMs arrive
+- `c2c-inbox-hook` (PostToolUse): prints `<c2c event="message" ...>` to stdout → parsed as user input
+- Works when Claude is active via hook, wakes idle sessions via PTY
+
+**What it can inject:**
+- Hook stdout with `<c2c>` envelope appears as user input in transcript
+- BUT: doesn't trigger React state update — invisible in SSH chat UI
+
+**Status:** Core c2c delivery mechanism, works for message processing but NOT for visual display.
+
+---
+
+## Summary Table
+
+| Method | SSH | Terminal Emulator | Visible in Chat | Complexity |
+|--------|-----|-------------------|-----------------|------------|
+| MCP notifications/claude/channel | Yes | Yes | Yes | High (MCP server) |
+| PTY Bracketed Paste | No | Yes | Yes | Low |
+| Kitty `kitten @ send-text` | No | Yes (local) | Yes | Low |
+| WezTerm Lua API | No | Yes (local) | Yes | Medium |
+| PostToolUse hook + wake daemon | No | Yes | No (transcript only) | Medium |
+| Ghostty AppleScript/D-Bus | macOS only | macOS only | Yes | Medium |
+| Claude Code /remote-control | Buggy | Buggy | Yes | Low (built-in) |
+| Happy (third-party) | Yes | Yes | Yes | Medium |
+
+## Practical Recommendations
+
+1. **For terminal emulator sessions (local):** Use Kitty `kitten @ send-text` or PTY bracketed paste — lowest complexity
+2. **For SSH sessions:** MCP `notifications/claude/channel` is currently the only option for truly visible injection
+3. **For quick experimentation:** Kitty is already installed — try `kitten @ send-text` first
+4. **Further research needed:** Ghostty D-Bus API, WezTerm socket control
+
+---
+
+## See Also
+
+- `findings-pty.md` — PTY injection protocol details
+- `c2c_inject.py` — Python implementation of PTY + history injection
+- `/home/xertrov/src/claude-code/src/bridge/inboundMessages.ts` — SDK message handling
+- `/home/xertrov/src/claude-code/src/components/Messages.tsx` — React message rendering
+- `c2c_claude_wake_daemon.py` — Wake daemon for idle session injection
+- `ocaml/tools/c2c_inbox_hook.ml` — PostToolUse hook implementation
+
+## Sources
+
+- [Kitty Remote Control](https://sw.kovidgoyal.net/kitty/remote-control/)
+- [WezTerm Pane API](https://wezterm.org/docs/lua/pane/)
+- [iTerm2 Scripting](https://iterm2.com/documentation-scripting-fundamentals.html)
+- [Ghostty Scripting API](https://github.com/ghostty-org/ghostty/discussions/2353)
+- [Happy Engineering](https://happy.engineering/)
+- [Claude Code GitHub Issues - remote-control](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+%22remote+control%22)

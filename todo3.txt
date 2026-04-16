@@ -1,0 +1,26 @@
+# c2c TODO — Auto Mail Drain Delay
+
+## Items
+
+1. **Auto mail drain should wait 30-60s for tool call post hook to fire**
+   - Currently auto-drain fires immediately after inbox write
+   - For clients that rely on PostToolUse hook (Claude Code) or equivalent, immediate drain can race with the hook
+   - Delay gives the hook time to fire first (hook polls inbox, emits via stdout)
+   - If hook fires within window, skip redundant channel notification
+   - If hook doesn't fire, fall back to channel notification after delay
+   - Also needed for: OpenCode plugin to drain, Codex PTY sentinel path
+   - Rationale: hook-based delivery is more reliable (goes through transcript) vs channel notification (only works for Claude Code)
+
+2. **OpenCode plugin to drain inbox + update `c2c setup opencode`**
+   - OpenCode has no PostToolUse equivalent — needs a plugin to handle c2c inbox delivery
+   - Use `POST /session/{sessionID}/prompt_async` (not showToast) to submit messages
+   - Plugin should: poll inbox via inotifywait, call `prompt_async` for each new message
+   - `c2c setup opencode` should configure the plugin automatically
+   - See `docs/c2c-research/opencode-channel-notification.md` for OpenCode HTTP API details (prompt_async at line 59)
+
+## Notes
+
+- Claude Code: PostToolUse hook drains inbox and emits `<c2c event="message">` to stdout
+- OpenCode: No equivalent hook — would need a plugin
+- Codex: PTY sentinel approach (`<c2c event="message_pending">poll mcp__c2c__poll_inbox</c2c>`) needs time to be processed
+- Channel notification is the fallthrough for clients that don't have hook/sentinel paths
