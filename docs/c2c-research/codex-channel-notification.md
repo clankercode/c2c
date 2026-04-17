@@ -52,7 +52,7 @@ However, **standard Claude Code does NOT declare this capability** in its initia
 let capabilities =
   `Assoc
     [ ("tools", `Assoc [])
-    ; ("experimental", `Assoc [ ("claude/channel", `Bool true) ])
+    ; ("experimental", `Assoc [ ("claude/channel", `Assoc []) ])
     ]
 ```
 

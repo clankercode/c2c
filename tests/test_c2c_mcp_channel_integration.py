@@ -119,7 +119,7 @@ def initialize_server(proc: subprocess.Popen, *, with_channel: bool = False) -> 
     }
     if with_channel:
         params["capabilities"] = {
-            "experimental": {"claude/channel": True}
+            "experimental": {"claude/channel": {}}
         }
     send_jsonrpc(proc, {
         "jsonrpc": "2.0",
@@ -139,7 +139,7 @@ class TestInitializeChannelCapability:
             resp = initialize_server(proc)
             caps = resp["result"]["capabilities"]
             assert "experimental" in caps
-            assert caps["experimental"]["claude/channel"] is True
+            assert caps["experimental"]["claude/channel"] == {}
         finally:
             proc.terminate()
             proc.wait(timeout=5)
@@ -152,7 +152,7 @@ class TestInitializeChannelCapability:
         try:
             resp = initialize_server(proc, with_channel=False)
             caps = resp["result"]["capabilities"]
-            assert caps["experimental"]["claude/channel"] is True
+            assert caps["experimental"]["claude/channel"] == {}
         finally:
             proc.terminate()
             proc.wait(timeout=5)
@@ -446,7 +446,7 @@ class TestChannelNotificationDelivery:
         try:
             # Initialize WITH channel capability
             resp = initialize_server(proc, with_channel=True)
-            assert resp["result"]["capabilities"]["experimental"]["claude/channel"] is True
+            assert resp["result"]["capabilities"]["experimental"]["claude/channel"] == {}
 
             # Write a message to inbox
             inbox_path = broker_dir / f"{session_id}.inbox.json"
@@ -667,7 +667,7 @@ class TestE2ESessionLifecycle:
         try:
             # Step 1: Initialize
             resp = initialize_server(proc)
-            assert resp["result"]["capabilities"]["experimental"]["claude/channel"] is True
+            assert resp["result"]["capabilities"]["experimental"]["claude/channel"] == {}
             assert resp["result"]["serverInfo"]["name"] == "c2c"
 
             # Step 2: Verify registration via whoami

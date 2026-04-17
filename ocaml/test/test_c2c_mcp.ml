@@ -19,6 +19,8 @@ let string_contains haystack needle =
   in
   loop 0
 
+let is_json_object = function `Assoc _ -> true | _ -> false
+
 let test_register_and_list () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -366,7 +368,7 @@ let test_initialize_with_channel_capable_client () =
             (json |> member "result" |> member "protocolVersion" |> to_string);
           check bool "server declares claude/channel capability" true
             (json |> member "result" |> member "capabilities"
-             |> member "experimental" |> member "claude/channel" |> to_bool))
+             |> member "experimental" |> member "claude/channel" |> is_json_object))
 
 let test_initialize_without_channel_capability () =
   with_temp_dir (fun dir ->
@@ -398,7 +400,7 @@ let test_initialize_without_channel_capability () =
              of whether the client advertised support *)
           check bool "server declares claude/channel capability" true
             (json |> member "result" |> member "capabilities"
-             |> member "experimental" |> member "claude/channel" |> to_bool))
+             |> member "experimental" |> member "claude/channel" |> is_json_object))
 
 let test_channel_notification_method_is_correct () =
   let json =
@@ -433,10 +435,34 @@ let test_initialize_returns_mcp_capabilities () =
           check bool "instructions present"
             true
             (json |> member "result" |> member "instructions" <> `Null);
-          (* Server declares experimental.claude/channel capability as true *)
+          (* Server declares experimental.claude/channel capability with an
+             object value, matching MCP experimental capability schemas. *)
           check bool "server declares claude/channel capability"
             true
-            (json |> member "result" |> member "capabilities" |> member "experimental" |> member "claude/channel" |> to_bool))
+            (json |> member "result" |> member "capabilities"
+             |> member "experimental" |> member "claude/channel" |> is_json_object))
+
+let test_initialize_experimental_capability_values_are_objects () =
+  with_temp_dir (fun dir ->
+      let request =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 13)
+          ; ("method", `String "initialize")
+          ; ("params", `Assoc [])
+          ]
+      in
+      let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+      match response with
+      | None -> fail "expected initialize response"
+      | Some json ->
+          let open Yojson.Safe.Util in
+          let channel =
+            json |> member "result" |> member "capabilities"
+            |> member "experimental" |> member "claude/channel"
+          in
+          check bool "claude/channel capability is an object" true
+            (is_json_object channel))
 
 let test_initialize_reports_server_version_and_features () =
   with_temp_dir (fun dir ->
@@ -4550,6 +4576,8 @@ let () =
         ; test_case "channel notification method is correct" `Quick
             test_channel_notification_method_is_correct
         ; test_case "initialize returns capabilities" `Quick test_initialize_returns_mcp_capabilities
+        ; test_case "initialize experimental capability values are objects" `Quick
+            test_initialize_experimental_capability_values_are_objects
          ; test_case "initialize reports server version and features" `Quick
              test_initialize_reports_server_version_and_features
          ; test_case "initialize reports supported protocol version" `Quick

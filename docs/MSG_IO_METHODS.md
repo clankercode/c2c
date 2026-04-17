@@ -38,7 +38,7 @@ agent's chat UI as visible user messages via an MCP JSON-RPC notification.
 
 #### How it works
 
-The c2c MCP server (OCaml) declares `experimental.claude/channel: true` as a
+The c2c MCP server (OCaml) declares `experimental.claude/channel: {}` as a
 server capability in its `initialize` response. When a message arrives in the
 session inbox, the server emits a `notifications/claude/channel` JSON-RPC
 notification with the message content and metadata. Claude Code's SDK bridge

@@ -27,7 +27,7 @@ All server-side components are implemented and working. The one remaining gap is
 | Component | Location | Status |
 |-----------|----------|--------|
 | `channel_notification` fn | `ocaml/c2c_mcp.ml:1486` | Working. Formats correct JSON-RPC notification shape. |
-| Server capability declaration | `ocaml/c2c_mcp.ml:62-66` | Working. Server advertises `experimental.claude/channel: true` in `initialize` response. |
+| Server capability declaration | `ocaml/c2c_mcp.ml:62-66` | Working. Server advertises `experimental.claude/channel: {}` in `initialize` response. |
 | `client_supports_claude_channel` | `ocaml/server/c2c_mcp_server.ml:32` | Working. Detects `experimental.claude/channel` in client's `initialize` params. |
 | `notifications/claude/channel` test | `ocaml/test/test_c2c_mcp.ml:282` | Passing. Validates notification shape. |
 | Server capability test | `ocaml/test/test_c2c_mcp.ml:316-319` | Passing. Verifies server declares `claude/channel` capability. |
@@ -69,7 +69,7 @@ The continuous inbox watcher (`start_inbox_watcher` in `c2c_mcp_server.ml:104-13
 
 The following items were originally tracked as "Required Changes" and have all been completed:
 
-1. **Server capability declaration** — The `initialize` response now includes `"experimental": { "claude/channel": true }` in capabilities (`ocaml/c2c_mcp.ml:62-66`).
+1. **Server capability declaration** — The `initialize` response now includes `"experimental": { "claude/channel": {} }` in capabilities (`ocaml/c2c_mcp.ml:62-66`).
 
 2. **Channel delivery enabled by default** — `C2C_MCP_CHANNEL_DELIVERY` defaults to `true` in the standalone server (`c2c_mcp_server.ml:11-16`). `c2c setup claude` also explicitly sets `C2C_MCP_CHANNEL_DELIVERY=1` (`c2c_configure_claude_code.py:102`).
 
