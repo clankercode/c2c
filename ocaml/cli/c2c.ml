@@ -2889,17 +2889,19 @@ let run_install_tui ~alias_opt ~broker_root_opt =
     (c, on_path, configured, do_it)
   ) clients in
   let mark b = if b then "[x]" else "[ ]" in
-  Printf.printf "  %s install c2c binary       → ~/.local/bin/c2c%s\n"
-    (mark self_default)
-    (if self then " (already present)" else "");
+  let self_suffix =
+    if self then "→ ~/.local/bin/c2c (already present)"
+    else "→ install to ~/.local/bin/c2c"
+  in
+  Printf.printf "  %s %-22s %s\n" (mark self_default) "install c2c binary" self_suffix;
   List.iter (fun (c, on_path, configured, do_it) ->
     let label = Printf.sprintf "configure %s" c in
     let suffix =
-      if not on_path then " → not on PATH, skipping"
-      else if configured then " → already configured"
-      else " → detected"
+      if not on_path then "→ not on PATH, skipping"
+      else if configured then "→ already configured"
+      else "→ detected"
     in
-    Printf.printf "  %s %-26s%s\n" (mark do_it) label suffix
+    Printf.printf "  %s %-22s %s\n" (mark do_it) label suffix
   ) client_defaults;
   Printf.printf "\nPress [Enter] to proceed, [c] to customize, [n] to abort: ";
   let () = try flush stdout with _ -> () in
