@@ -4,6 +4,31 @@
 default:
     @just --list
 
+# Install OCaml deps into the current opam switch.
+# Keep in sync with the `depends` list in dune-project.
+install-deps:
+    opam install --yes dune cmdliner yojson lwt logs alcotest cohttp-lwt-unix uuidm
+
+# One-shot OCaml toolchain bootstrap: creates the 'c2c' opam switch if missing,
+# then installs deps. Assumes opam + a system ocaml are already installed
+# (e.g. `sudo pacman -S opam ocaml` on Arch, `sudo apt install opam` on Debian).
+# Re-runs are idempotent.
+setup-ocaml:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v opam >/dev/null; then
+        echo "opam not found — install it first (e.g. pacman -S opam ocaml)" >&2
+        exit 1
+    fi
+    if [ ! -d "$HOME/.opam/repo" ] && [ ! -d "$HOME/.opam/default" ]; then
+        opam init --bare --disable-sandboxing --no-setup --yes
+    fi
+    if ! opam switch list --short 2>/dev/null | grep -qx c2c; then
+        opam switch create c2c --packages=ocaml-system --yes
+    fi
+    eval "$(opam env --switch=c2c --set-switch)"
+    just install-deps
+
 # Build the OCaml MCP server
 build:
     opam exec -- dune build ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe

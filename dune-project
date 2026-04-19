@@ -4,5 +4,5 @@
 
 (package
  (name c2c)
- (depends dune cmdliner yojson lwt logs alcotest)
+ (depends dune cmdliner yojson lwt logs alcotest cohttp-lwt-unix uuidm)
  (allow_empty))
