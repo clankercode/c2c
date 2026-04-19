@@ -2540,22 +2540,24 @@ let which_binary name =
 
 (* --- install: claude (MCP server + PostToolUse hook) ---------------------- *)
 
-let setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force =
+let setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery =
   let claude_dir = resolve_claude_dir () in
   let claude_json = Filename.concat claude_dir ".claude.json" in
   let config =
     if Sys.file_exists claude_json then json_read_file claude_json
     else `Assoc []
   in
+  let env_pairs =
+    [ ("C2C_MCP_BROKER_ROOT", `String root)
+    ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
+    ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+    ] @ (if channel_delivery then [ ("C2C_MCP_CHANNEL_DELIVERY", `String "1") ] else [])
+  in
   let mcp_entry =
     `Assoc
       [ ("command", `String mcp_command)
       ; ("args", `List (if mcp_command = "c2c-mcp-server" then [] else [ `String "exec"; `String "--"; `String server_path ]))
-      ; ("env", `Assoc
-          [ ("C2C_MCP_BROKER_ROOT", `String root)
-          ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
-          ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
-          ])
+      ; ("env", `Assoc env_pairs)
       ]
   in
   let config = match config with
@@ -2752,7 +2754,7 @@ let resolve_mcp_server_paths ~output_mode =
   in
   (server_path, mcp_command)
 
-let do_install_client ~output_mode ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force =
+let do_install_client ?(channel_delivery=false) ~output_mode ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force () =
   let root =
     match broker_root_opt with
     | Some r -> r
@@ -2765,7 +2767,7 @@ let do_install_client ~output_mode ~client ~alias_opt ~broker_root_opt ~target_d
   in
   let (server_path, mcp_command) = resolve_mcp_server_paths ~output_mode in
   match String.lowercase_ascii client with
-  | "claude" -> setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force
+  | "claude" -> setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery
   | "codex" -> setup_codex ~output_mode ~root ~alias_val ~server_path
   | "kimi" -> setup_kimi ~output_mode ~root ~alias_val ~server_path
   | "opencode" -> setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt
@@ -2878,6 +2880,17 @@ let prompt_yn ?(default_yes = true) q =
       if t = "" then default_yes
       else (t.[0] = 'y')
 
+let prompt_channel_delivery () =
+  Printf.printf
+    "\n  Enable experimental channel-delivery (C2C_MCP_CHANNEL_DELIVERY=1)?\n\
+    \    When Claude Code declares support for experimental.claude/channel,\n\
+    \    the broker auto-injects inbound messages into the transcript without\n\
+    \    polling. Standard Claude Code doesn't declare this capability, so\n\
+    \    today it's a no-op — but if a future build enables it, auto-injection\n\
+    \    would fire unprompted. Security-conscious users may prefer to leave\n\
+    \    it off and rely on the PostToolUse hook + poll_inbox instead.\n";
+  prompt_yn ~default_yes:false "  Enable channel delivery?"
+
 let run_install_tui ~alias_opt ~broker_root_opt =
   let (self, clients) = detect_installation () in
   Printf.printf "c2c installer\n";
@@ -2951,8 +2964,11 @@ let run_install_tui ~alias_opt ~broker_root_opt =
     List.iter (fun (c, do_it) ->
       if do_it then begin
         Printf.printf "\n→ Configuring %s...\n" c;
-        do_install_client ~output_mode:Human ~client:c ~alias_opt
-          ~broker_root_opt ~target_dir_opt:None ~force:false
+        let channel_delivery =
+          if c = "claude" then prompt_channel_delivery () else false
+        in
+        do_install_client ~channel_delivery ~output_mode:Human ~client:c ~alias_opt
+          ~broker_root_opt ~target_dir_opt:None ~force:false ()
       end
     ) do_clients;
     Printf.printf "\nDone.\n"
@@ -3003,7 +3019,10 @@ let install_client_subcmd client =
     and+ target_dir_opt = target_dir
     and+ force = force in
     let output_mode = if json then Json else Human in
-    do_install_client ~output_mode ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force
+    let channel_delivery =
+      if client = "claude" && output_mode = Human then prompt_channel_delivery () else false
+    in
+    do_install_client ~channel_delivery ~output_mode ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force ()
   in
   let doc = Printf.sprintf "Configure %s for c2c messaging." client in
   Cmdliner.Cmd.v (Cmdliner.Cmd.info client ~doc) term
@@ -3024,7 +3043,7 @@ let install_all_subcmd =
       if on_path && not configured then begin
         if output_mode = Human then Printf.printf "\n→ Configuring %s...\n" c;
         do_install_client ~output_mode ~client:c ~alias_opt ~broker_root_opt
-          ~target_dir_opt:None ~force:false
+          ~target_dir_opt:None ~force:false ()
       end
     ) clients;
     if output_mode = Human then Printf.printf "\nDone.\n"

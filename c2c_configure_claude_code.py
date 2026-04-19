@@ -96,11 +96,13 @@ def build_mcp_entry(
     alias: str | None,
     *,
     ocaml: bool = False,
+    channel_delivery: bool = False,
 ) -> dict:
     env: dict[str, str] = {
         "C2C_MCP_BROKER_ROOT": str(broker_root),
-        "C2C_MCP_CHANNEL_DELIVERY": "1",
     }
+    if channel_delivery:
+        env["C2C_MCP_CHANNEL_DELIVERY"] = "1"
     if session_id:
         env["C2C_MCP_SESSION_ID"] = session_id
     if alias:
@@ -161,6 +163,7 @@ def configure_mcp(
     *,
     force: bool,
     ocaml: bool = False,
+    channel_delivery: bool = False,
 ) -> dict:
     data = _load_json(CLAUDE_JSON_PATH)
     mcp_servers = data.setdefault("mcpServers", {})
@@ -172,7 +175,8 @@ def configure_mcp(
         )
 
     mcp_servers["c2c"] = build_mcp_entry(
-        broker_root, session_id, alias, ocaml=ocaml
+        broker_root, session_id, alias, ocaml=ocaml,
+        channel_delivery=channel_delivery,
     )
     _atomic_write(CLAUDE_JSON_PATH, data)
     return mcp_servers["c2c"]
@@ -316,12 +320,23 @@ def main(argv: list[str] | None = None) -> int:
             "Requires the server to be built ('opam exec -- dune build ocaml/server')."
         ),
     )
+    parser.add_argument(
+        "--enable-channel-delivery",
+        action="store_true",
+        help=(
+            "opt in to the experimental channel-delivery path by setting "
+            "C2C_MCP_CHANNEL_DELIVERY=1 in the MCP server env. No-op on "
+            "clients that don't declare experimental.claude/channel in "
+            "their initialize handshake; retained for forward compatibility."
+        ),
+    )
     args = parser.parse_args(argv)
 
     broker_root = resolve_broker_root(args.broker_root)
     alias = None if args.no_alias else (args.alias or default_alias())
     mcp_entry = configure_mcp(
-        broker_root, args.session_id, alias, force=args.force, ocaml=args.ocaml
+        broker_root, args.session_id, alias, force=args.force, ocaml=args.ocaml,
+        channel_delivery=args.enable_channel_delivery,
     )
     hook_status = configure_hook(force=args.force)
 
