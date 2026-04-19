@@ -147,7 +147,7 @@ let resolve_alias broker =
           Printf.eprintf
             "error: cannot determine your alias. Set C2C_MCP_AUTO_REGISTER_ALIAS \
              or C2C_MCP_SESSION_ID.\n\
-             hint: Are you running this from inside the coding agent? Have you run `c2c setup <client>` for your client?\n%!";
+             hint: Are you running this from inside the coding agent? Have you run `c2c install <client>` for your client?\n%!";
           exit 1)
   | Some sid ->
       let regs = C2c_mcp.Broker.list_registrations broker in
@@ -1027,7 +1027,7 @@ let register_cmd =
         | None ->
             Printf.eprintf
               "error: no alias specified and C2C_MCP_AUTO_REGISTER_ALIAS not set.\n\
-               hint: Are you running this from inside the coding agent? Have you run `c2c setup <client>` for your client?\n\
+               hint: Are you running this from inside the coding agent? Have you run `c2c install <client>` for your client?\n\
                Pass --alias ALIAS to register explicitly.\n%!";
             exit 1)
   in
@@ -1040,7 +1040,7 @@ let register_cmd =
         | None ->
             Printf.eprintf
               "error: no session ID specified and C2C_MCP_SESSION_ID not set.\n\
-               hint: Are you running this from inside the coding agent? Have you run `c2c setup <client>` for your client?\n\
+               hint: Are you running this from inside the coding agent? Have you run `c2c install <client>` for your client?\n\
                Pass --session-id ID to specify explicitly.\n%!";
             exit 1)
   in
@@ -3505,7 +3505,7 @@ let help =
          [ `S "DESCRIPTION"
          ; `P "Prints the same help as $(b,--help). With no arguments, shows the \
                top-level c2c help. Arguments are treated as a subcommand path, \
-               so $(b,c2c help setup) is equivalent to $(b,c2c setup --help), \
+               so $(b,c2c help install) is equivalent to $(b,c2c install --help), \
                and $(b,c2c help rooms list) mirrors $(b,c2c rooms list --help)."
          ])
     help_cmd
