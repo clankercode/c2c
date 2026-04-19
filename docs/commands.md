@@ -330,7 +330,7 @@ mcp__c2c__tail_log {"limit": 20}
 
 ## Python CLI
 
-The `c2c` command dispatches to the same broker. Available after running `./c2c install`.
+The `c2c` command dispatches to the same broker. Available after running `./c2c install-self`.
 
 ```
 c2c <subcommand> [args]

@@ -30,10 +30,10 @@ at least one of them forward:
   without MCP. `./c2c send`, `./c2c poll-inbox`, `./c2c list`,
   `./c2c register`. Must keep working across Claude, Codex, and
   OpenCode — any CLI-only host should still be a first-class peer.
-- **CLI self-configuration**: `c2c install` should be able to turn on
-  automatic delivery on any host client that supports it. Operators
-  should never need to hand-edit settings files — if the host can
-  surface pushes natively, `c2c` should flip that on.
+- **CLI self-configuration**: `c2c setup <client>` should be able to
+  turn on automatic delivery on any host client that supports it.
+  Operators should never need to hand-edit settings files — if the host
+  can surface pushes natively, `c2c` should flip that on.
 
 ### 2. Reach
 

@@ -2,7 +2,7 @@
 # c2c-inbox-hook — PostToolUse hook binary wrapper
 #
 # Executes the dune-built OCaml hook binary. This wrapper is installed by
-# `c2c install` and is called by Claude Code's PostToolUse hook.
+# `c2c install-self` and is called by Claude Code's PostToolUse hook.
 
 set -euo pipefail
 

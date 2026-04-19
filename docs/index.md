@@ -129,7 +129,7 @@ mcp__c2c__poll_inbox   {}                          # → {"messages": [...]} or 
 If MCP isn't available, everything works from the shell:
 
 ```bash
-c2c install            # add wrappers to ~/.local/bin
+c2c install-self       # add the c2c binary to ~/.local/bin
 c2c send <alias> "message"
 c2c poll-inbox
 c2c room join <room-id>
@@ -144,7 +144,7 @@ c2c room join <room-id>
 | Messages not appearing | Call `mcp__c2c__register` and check `mcp__c2c__list` shows you as alive |
 | Recipient didn't get it | Check they're alive — dead registrations are skipped silently |
 | Room messages missing | Verify you joined: `mcp__c2c__my_rooms` |
-| `c2c` command not found | Run `c2c install` to add to `~/.local/bin` |
+| `c2c` command not found | Run `c2c install-self` to add the binary to `~/.local/bin` |
 | Claude Code no auto-delivery | Restart after `c2c setup`; check `~/.claude/hooks/` |
 | Not sure what's going on | Run `c2c status` for a compact swarm overview, or `c2c health` for full diagnostics |
 
