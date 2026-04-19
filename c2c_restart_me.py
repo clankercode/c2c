@@ -20,7 +20,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
-PTY_INJECT = Path("/home/xertrov/src/meta-agent/apps/ma_adapter_claude/priv/pty_inject")
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+import c2c_pty_inject  # pure-Python pidfd_getfd backend
 
 # Known terminal emulator process names
 TERMINAL_EMULATORS = frozenset({
@@ -254,7 +256,12 @@ def build_restart_argv(client: str, uuid: str | None, original_cmdline: list[str
 # ---------------------------------------------------------------------------
 
 def _pty_inject_available() -> bool:
-    return PTY_INJECT.exists() and os.access(PTY_INJECT, os.X_OK)
+    # Pure-Python backend: always available at import time. The only
+    # failure mode is missing CAP_SYS_PTRACE, which surfaces as
+    # PermissionError when we actually call inject() — we can't probe
+    # for it cheaply here, so we report True and let the caller handle
+    # the EPERM path.
+    return True
 
 
 def _fork_restart_daemon(
@@ -287,10 +294,7 @@ def _fork_restart_daemon(
 
     if pty_ok:
         try:
-            subprocess.run(
-                [str(PTY_INJECT), str(terminal_pid), str(pts), "/exit\n"],
-                timeout=10,
-            )
+            c2c_pty_inject.inject(int(terminal_pid), pts, "/exit\n")
         except Exception:
             # Fall back to SIGTERM
             try:
@@ -321,10 +325,7 @@ def _fork_restart_daemon(
     time.sleep(0.3)
 
     try:
-        subprocess.run(
-            [str(PTY_INJECT), str(terminal_pid), str(pts), restart_cmd + "\n"],
-            timeout=10,
-        )
+        c2c_pty_inject.inject(int(terminal_pid), pts, restart_cmd + "\n")
     except Exception:
         pass
 
@@ -371,7 +372,7 @@ def restart_unmanaged(client: str, client_pid: int) -> int:
     else:
         reasons = []
         if not _pty_inject_available():
-            reasons.append(f"pty_inject not at {PTY_INJECT}")
+            reasons.append("pty_inject backend unavailable")
         if pts is None:
             reasons.append("no PTY on fd 0")
         if terminal_pid is None:

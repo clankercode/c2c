@@ -31,7 +31,11 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-PTY_INJECT = Path("/home/xertrov/src/meta-agent/apps/ma_adapter_claude/priv/pty_inject")
+
+import sys as _sys
+if str(ROOT) not in _sys.path:
+    _sys.path.insert(0, str(ROOT))
+import c2c_pty_inject  # pure-Python pidfd_getfd backend
 
 WAKE_PROMPT = (
     "You have pending c2c direct messages. "
@@ -79,25 +83,13 @@ def pty_inject(
     if dry_run:
         print(f"[dry-run] would inject to terminal_pid={terminal_pid} pts={pts}: {message[:80]}...")
         return True
-    if not PTY_INJECT.exists():
-        print(f"[wake-daemon] pty_inject not found: {PTY_INJECT}", file=sys.stderr)
-        return False
     try:
-        command = [str(PTY_INJECT), str(terminal_pid), str(pts), message]
-        if submit_delay is not None:
-            command.append(f"{submit_delay:g}")
-        timeout = 5.0
-        if submit_delay is not None:
-            timeout += submit_delay
-        result = subprocess.run(
-            command,
-            timeout=timeout,
-            capture_output=True,
-            text=True,
+        c2c_pty_inject.inject(
+            int(terminal_pid),
+            pts,
+            message,
+            submit_delay=submit_delay,
         )
-        if result.returncode != 0:
-            print(f"[wake-daemon] pty_inject failed: {result.stderr}", file=sys.stderr)
-            return False
         return True
     except Exception as exc:
         print(f"[wake-daemon] pty_inject error: {exc}", file=sys.stderr)

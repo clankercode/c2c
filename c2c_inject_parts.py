@@ -34,14 +34,9 @@ import uuid
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
-PTY_INJECT = Path(
-    os.environ.get(
-        "C2C_PTY_INJECT",
-        "/home/xertrov/src/meta-agent/apps/ma_adapter_claude/priv/pty_inject",
-    )
-)
 
 sys.path.insert(0, str(BASE))
+import c2c_pty_inject  # noqa: E402  pure-Python pidfd_getfd backend
 from c2c_poker import resolve_claude_session, resolve_pid  # noqa: E402
 
 
@@ -71,11 +66,13 @@ def resolve_target(
 
 
 def inject_via_pty(terminal_pid: int, pts_num: str, payload: str, submit_delay: float) -> None:
-    """Inject one part via pty_inject with the given submit_delay."""
-    cmd = [str(PTY_INJECT), str(terminal_pid), pts_num, payload]
-    if submit_delay is not None:
-        cmd.append(f"{submit_delay:g}")
-    subprocess.run(cmd, check=True, capture_output=True, text=True)
+    """Inject one part via the pure-Python pidfd_getfd backend."""
+    c2c_pty_inject.inject(
+        int(terminal_pid),
+        pts_num,
+        payload,
+        submit_delay=submit_delay,
+    )
 
 
 def inject_via_history(session_id: str, transcript_path: str, message: str) -> None:
@@ -239,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             inject_via_pty(terminal_pid, pts_num, message, args.submit_delay)
             method_used = "pty"
-        except (subprocess.CalledProcessError, OSError) as e:
+        except Exception as e:
             pty_error = str(e)
             if args.method == "pty":
                 if args.json:

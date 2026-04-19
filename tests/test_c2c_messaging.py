@@ -1093,21 +1093,16 @@ class ClaudeSendMsgUnitTests(unittest.TestCase):
             '<c2c event="message" from="c2c-send" source="pty" source_tool="claude_send_msg" action_after="continue">\nhello peer\n</c2c>',
         )
 
-    def test_inject_delegates_to_external_pty_helper_with_terminal_metadata(self):
+    def test_inject_delegates_to_pure_python_pty_backend_with_terminal_metadata(self):
         session = {
             "tty": "/dev/pts/9",
             "terminal_pid": 33333,
         }
 
-        with mock.patch("claude_send_msg.subprocess.run") as run:
+        with mock.patch("claude_send_msg.c2c_pty_inject.inject") as inject:
             claude_send_msg.inject(session, "hello peer")
 
-        run.assert_called_once_with(
-            [str(claude_send_msg.PTY_INJECT), "33333", "9", "hello peer"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        inject.assert_called_once_with(33333, "9", "hello peer")
 
     def test_send_message_to_session_reloads_full_terminal_metadata_when_needed(self):
         partial_session = {

@@ -12,7 +12,9 @@ from xml.sax.saxutils import quoteattr
 HOME = Path.home()
 BASE = Path(__file__).resolve().parent
 LISTER = BASE / "claude_list_sessions.py"
-PTY_INJECT = Path("/home/xertrov/src/meta-agent/apps/ma_adapter_claude/priv/pty_inject")
+if str(BASE) not in sys.path:
+    sys.path.insert(0, str(BASE))
+import c2c_pty_inject  # pure-Python pidfd_getfd backend
 ALLOWED_NAMES = {"C2C msg test", "C2C-test-agent2"}
 
 
@@ -70,15 +72,10 @@ def inject(session: dict, message: str):
     if not tty.startswith("/dev/pts/"):
         raise RuntimeError("target session has no pts tty")
     pts_num = tty.rsplit("/", 1)[-1]
-    terminal_pid = str(session.get("terminal_pid", ""))
+    terminal_pid = session.get("terminal_pid")
     if not terminal_pid:
         raise RuntimeError("could not determine terminal pid")
-    subprocess.run(
-        [str(PTY_INJECT), terminal_pid, pts_num, message],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    c2c_pty_inject.inject(int(terminal_pid), pts_num, message)
 
 
 def render_payload(

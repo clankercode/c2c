@@ -32,14 +32,9 @@ from pathlib import Path
 from xml.sax.saxutils import quoteattr
 
 BASE = Path(__file__).resolve().parent
-PTY_INJECT = Path(
-    os.environ.get(
-        "C2C_PTY_INJECT",
-        "/home/xertrov/src/meta-agent/apps/ma_adapter_claude/priv/pty_inject",
-    )
-)
 
 sys.path.insert(0, str(BASE))
+import c2c_pty_inject  # noqa: E402  pure-Python pidfd_getfd backend
 from claude_list_sessions import (  # noqa: E402
     extract_pts,
     find_terminal_owner,
@@ -181,14 +176,19 @@ def inject(
     *,
     submit_delay: float | None = None,
 ) -> None:
-    command = [str(PTY_INJECT), str(terminal_pid), str(pts_num), payload]
-    if submit_delay is not None:
-        command.append(f"{submit_delay:g}")
-    subprocess.run(
-        command,
-        check=True,
-        capture_output=True,
-        text=True,
+    """Inject *payload* into the PTY master for ``/dev/pts/<pts_num>``.
+
+    Pure-Python replacement for the old ``pty_inject`` C helper. Uses
+    :func:`c2c_pty_inject.inject`, which does ``pidfd_open`` +
+    ``pidfd_getfd`` on the terminal emulator's master fd and writes
+    bracketed-paste + Enter. See that module's docstring for setcap
+    requirements.
+    """
+    c2c_pty_inject.inject(
+        int(terminal_pid),
+        pts_num,
+        payload,
+        submit_delay=submit_delay,
     )
 
 

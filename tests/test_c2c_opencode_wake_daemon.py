@@ -1,4 +1,3 @@
-import subprocess
 import unittest
 from unittest import mock
 
@@ -13,12 +12,15 @@ import c2c_opencode_wake_daemon
 
 
 class OpenCodeWakeDaemonTests(unittest.TestCase):
-    def test_pty_inject_passes_submit_delay_to_helper(self):
-        success = subprocess.CompletedProcess(args=["pty_inject"], returncode=0)
+    """pty_inject() is a thin wrapper over c2c_pty_inject.inject(); these
+    tests assert the arguments are forwarded correctly and failure paths
+    surface as False, not as uncaught exceptions."""
+
+    def test_pty_inject_forwards_submit_delay_to_backend(self):
         with mock.patch(
-            "c2c_opencode_wake_daemon.subprocess.run",
-            return_value=success,
-        ) as run:
+            "c2c_opencode_wake_daemon.c2c_pty_inject.inject",
+            return_value=None,
+        ) as inject:
             result = c2c_opencode_wake_daemon.pty_inject(
                 3725367,
                 22,
@@ -28,17 +30,13 @@ class OpenCodeWakeDaemonTests(unittest.TestCase):
             )
 
         self.assertTrue(result)
-        run.assert_called_once()
-        command = run.call_args.args[0]
-        self.assertEqual(command[-2:], ["wake", "5"])
-        self.assertGreater(run.call_args.kwargs["timeout"], 5.0)
+        inject.assert_called_once_with(3725367, 22, "wake", submit_delay=5.0)
 
-    def test_pty_inject_uses_default_helper_delay_when_submit_delay_is_none(self):
-        success = subprocess.CompletedProcess(args=["pty_inject"], returncode=0)
+    def test_pty_inject_forwards_none_submit_delay(self):
         with mock.patch(
-            "c2c_opencode_wake_daemon.subprocess.run",
-            return_value=success,
-        ) as run:
+            "c2c_opencode_wake_daemon.c2c_pty_inject.inject",
+            return_value=None,
+        ) as inject:
             result = c2c_opencode_wake_daemon.pty_inject(
                 3725367,
                 22,
@@ -48,19 +46,12 @@ class OpenCodeWakeDaemonTests(unittest.TestCase):
             )
 
         self.assertTrue(result)
-        command = run.call_args.args[0]
-        self.assertEqual(command[-1], "wake")
+        inject.assert_called_once_with(3725367, 22, "wake", submit_delay=None)
 
-    def test_pty_inject_reports_helper_failure(self):
-        failed = subprocess.CompletedProcess(
-            args=["pty_inject"],
-            returncode=1,
-            stdout="",
-            stderr="bad delay\n",
-        )
+    def test_pty_inject_reports_backend_failure_as_false(self):
         with mock.patch(
-            "c2c_opencode_wake_daemon.subprocess.run",
-            return_value=failed,
+            "c2c_opencode_wake_daemon.c2c_pty_inject.inject",
+            side_effect=PermissionError("need cap_sys_ptrace"),
         ):
             result = c2c_opencode_wake_daemon.pty_inject(
                 3725367,
@@ -71,6 +62,21 @@ class OpenCodeWakeDaemonTests(unittest.TestCase):
             )
 
         self.assertFalse(result)
+
+    def test_pty_inject_dry_run_does_not_call_backend(self):
+        with mock.patch(
+            "c2c_opencode_wake_daemon.c2c_pty_inject.inject",
+        ) as inject:
+            result = c2c_opencode_wake_daemon.pty_inject(
+                3725367,
+                22,
+                "wake",
+                dry_run=True,
+                submit_delay=None,
+            )
+
+        self.assertTrue(result)
+        inject.assert_not_called()
 
 
 if __name__ == "__main__":

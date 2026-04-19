@@ -34,12 +34,10 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-PTY_INJECT = Path(
-    os.environ.get(
-        "C2C_PTY_INJECT",
-        "/home/xertrov/src/meta-agent/apps/ma_adapter_claude/priv/pty_inject",
-    )
-)
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+import c2c_pty_inject  # pure-Python pidfd_getfd backend
 
 WAKE_PROMPT = (
     "c2c wake: you have pending broker-native DMs. "
@@ -163,17 +161,8 @@ def do_inject(terminal_pid: int, pts: str, message: str, *, dry_run: bool) -> bo
         print(f"[dry-run] would inject to terminal_pid={terminal_pid} pts={pts}:")
         print(f"  {message[:120]}...")
         return True
-    if not PTY_INJECT.exists():
-        print(f"[warn] pty_inject not found at {PTY_INJECT}", file=sys.stderr)
-        return False
     try:
-        result = subprocess.run(
-            [str(PTY_INJECT), str(terminal_pid), str(pts), message],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode != 0:
-            print(f"[warn] pty_inject failed: {result.stderr[:200]}", file=sys.stderr)
-            return False
+        c2c_pty_inject.inject(int(terminal_pid), pts, message)
         return True
     except Exception as exc:
         print(f"[warn] pty_inject error: {exc}", file=sys.stderr)
