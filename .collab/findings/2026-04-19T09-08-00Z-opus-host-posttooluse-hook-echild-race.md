@@ -107,8 +107,12 @@ clean in production:
      nothing.
    - Applied in both writers: OCaml `configure_claude_hook`
      (`ocaml/cli/c2c.ml`) and Python `c2c_configure_claude_code.py`
-     (`HOOK_MATCHER = "^(?!mcp__).*"`). Run `c2c install claude` to
-     apply to an existing `~/.claude/settings.json`.
+     (`HOOK_MATCHER = "^(?!mcp__).*"`).
+   - Upgrade path (commit `dff5192`): `c2c install claude --force` now
+     detects a stale `.*` matcher on an already-registered hook entry
+     and rewrites it to `^(?!mcp__).*` in place. Prior behaviour was
+     "hook already registered — no changes made", which silently left
+     existing installs exposed to the race.
 
 # Attribution test procedure
 
