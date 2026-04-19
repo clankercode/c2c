@@ -131,7 +131,7 @@ deprecated/
 ├── c2c_status.py         # → c2c status
 ├── c2c_verify.py         # → c2c verify
 ├── c2c_refresh_peer.py   # → c2c refresh-peer
-├── c2c_setup.py          # → c2c setup (OCaml primary)
+├── c2c_setup.py          # → c2c install <client> (OCaml primary)
 ├── c2c_relay_config.py   # → c2c relay setup
 ├── c2c_relay_status.py   # → c2c relay status
 ├── c2c_relay_rooms.py    # → c2c relay rooms
