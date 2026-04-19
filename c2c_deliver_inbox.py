@@ -515,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
         write_pidfile(args.pidfile)
 
     try:
-        terminal_pid, pts, _transcript = c2c_inject.resolve_target(args)
+        terminal_pid, pts, _transcript = c2c_inject.resolve_session_info(args)
         if args.loop:
             result = run_loop(
                 session_id=session_id,

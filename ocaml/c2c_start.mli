@@ -75,8 +75,8 @@ val broker_root : unit -> string
 
 (** {1 Environment building} *)
 
-val build_env : string -> string option -> string array
-(** [build_env name alias_override] builds the environment array for a managed
+val build_env : ?broker_root_override:string option -> string -> string option -> string array
+(** [build_env ?broker_root_override name alias_override] builds the environment array for a managed
     client subprocess. Sets C2C_MCP_SESSION_ID, C2C_MCP_AUTO_REGISTER_ALIAS,
     C2C_MCP_BROKER_ROOT, C2C_MCP_AUTO_JOIN_ROOMS, C2C_MCP_AUTO_DRAIN_CHANNEL=0,
     and C2C_MCP_CLIENT_PID. *)

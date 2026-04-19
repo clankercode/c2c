@@ -19,8 +19,8 @@ let clients : (string, client_config) Stdlib.Hashtbl.t = Stdlib.Hashtbl.create 5
 
 let () =
   Stdlib.Hashtbl.add clients "claude"
-    { binary = "claude"; deliver_client = "claude"; needs_poker = true;
-      poker_event = Some "heartbeat"; poker_from = Some "claude-poker";
+    { binary = "claude"; deliver_client = "claude"; needs_poker = false;
+      poker_event = None; poker_from = None;
       extra_env = [] };
   Stdlib.Hashtbl.add clients "codex"
     { binary = "codex"; deliver_client = "codex"; needs_poker = false;
@@ -224,12 +224,13 @@ let cleanup_stale_opentui_zig_cache () : int =
  * Build environment
  * --------------------------------------------------------------------------- *)
 
-let build_env (name : string) (alias_override : string option) : string array =
+let build_env ?(broker_root_override : string option = None) (name : string) (alias_override : string option) : string array =
   let env = Array.copy (Unix.environment ()) in
+  let br = Option.value broker_root_override ~default:(broker_root ()) in
   let additions = [
     "C2C_MCP_SESSION_ID", name;
     "C2C_MCP_AUTO_REGISTER_ALIAS", Option.value alias_override ~default:name;
-    "C2C_MCP_BROKER_ROOT", broker_root ();
+    "C2C_MCP_BROKER_ROOT", br;
     "C2C_MCP_AUTO_JOIN_ROOMS", "swarm-lounge";
     "C2C_MCP_AUTO_DRAIN_CHANNEL", "0";
     (* Managed sessions opt in to experimental channel-delivery. No-op on
@@ -524,7 +525,7 @@ let run_outer_loop ~(name : string) ~(client : string)
       let start_time = Unix.gettimeofday () in
 
       (* Build env *)
-      let env = build_env name alias_override in
+      let env = build_env ~broker_root_override:(Some broker_root) name alias_override in
       let env =
         Array.append env
           (Array.of_list
