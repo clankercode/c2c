@@ -138,7 +138,10 @@ let env_auto_alias () =
   | Some v when String.trim v <> "" -> Some (String.trim v)
   | _ -> None
 
-let resolve_alias broker =
+let resolve_alias ?(override : string option = None) broker =
+  match override with
+  | Some a when String.trim a <> "" -> String.trim a
+  | _ ->
   match env_session_id () with
   | None -> (
       match env_auto_alias () with
@@ -194,11 +197,15 @@ let send_cmd =
   let message =
     Cmdliner.Arg.(non_empty & pos_right 0 string [] & info [] ~docv:"MSG" ~doc:"Message body (remaining args joined with spaces).")
   in
+  let from_override =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "from"; "F" ] ~docv:"ALIAS" ~doc:"Override sender alias. Useful for operators/tests running outside an agent session; equivalent to setting C2C_MCP_AUTO_REGISTER_ALIAS.")
+  in
   let+ json = json_flag
   and+ to_alias = to_alias
-  and+ message = message in
+  and+ message = message
+  and+ from_override = from_override in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let from_alias = resolve_alias broker in
+  let from_alias = resolve_alias ~override:from_override broker in
   let content = String.concat " " message in
   let output_mode = if json then Json else Human in
   (try
