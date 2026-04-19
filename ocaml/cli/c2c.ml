@@ -2591,8 +2591,13 @@ let configure_claude_hook () =
                 | `Assoc n -> (match List.assoc_opt "command" n with Some (`String p) -> p = script_path | _ -> false)
                 | _ -> false) existing_hooks
               in
-              if has_hook then `Assoc m
-              else `Assoc (m @ [ ("hooks", `List (existing_hooks @ [ hook_entry ])) ])
+              let new_hooks = if has_hook then existing_hooks else existing_hooks @ [ hook_entry ] in
+              let m_without_matcher_or_hooks =
+                List.filter (fun (k, _) -> k <> "matcher" && k <> "hooks") m
+              in
+              `Assoc (("matcher", `String "^(?!mcp__).*")
+                      :: m_without_matcher_or_hooks
+                      @ [ ("hooks", `List new_hooks) ])
           | _ ->
               `Assoc [ ("matcher", `String "^(?!mcp__).*"); ("hooks", `List [ hook_entry ]) ]
         in
@@ -2685,6 +2690,8 @@ let setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_comm
      Unix.chmod hook_script 0o755
    with Unix.Unix_error _ -> ());
   let hook_registered = ref false in
+  let settings_changed = ref false in
+  let target_matcher = "^(?!mcp__).*" in
   let settings =
     if Sys.file_exists settings_path then json_read_file settings_path
     else `Assoc []
@@ -2699,7 +2706,7 @@ let setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_comm
           | Some (`List entries) -> entries
           | _ -> []
         in
-        let already = List.exists (fun entry ->
+        let entry_has_hook entry =
           match entry with
           | `Assoc e ->
               (match List.assoc_opt "hooks" e with
@@ -2713,20 +2720,47 @@ let setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_comm
                      | _ -> false) hs
                | _ -> false)
           | _ -> false
-        ) post_tool_use in
+        in
+        let already = List.exists entry_has_hook post_tool_use in
         hook_registered := already;
+        let upgraded_post = List.map (fun entry ->
+          if entry_has_hook entry then
+            match entry with
+            | `Assoc e ->
+                let current_matcher = match List.assoc_opt "matcher" e with
+                  | Some (`String s) -> Some s
+                  | _ -> None
+                in
+                if current_matcher = Some target_matcher then entry
+                else begin
+                  settings_changed := true;
+                  let rest = List.filter (fun (k, _) -> k <> "matcher") e in
+                  `Assoc (("matcher", `String target_matcher) :: rest)
+                end
+            | _ -> entry
+          else entry
+        ) post_tool_use in
         if not already then begin
-          let new_entry = `Assoc [ ("matcher", `String "^(?!mcp__).*"); ("hooks", `List [ `Assoc [ ("type", `String "command"); ("command", `String hook_script) ] ]) ] in
-          let new_post = post_tool_use @ [ new_entry ] in
+          settings_changed := true;
+          let new_entry = `Assoc [ ("matcher", `String target_matcher); ("hooks", `List [ `Assoc [ ("type", `String "command"); ("command", `String hook_script) ] ]) ] in
+          let new_post = upgraded_post @ [ new_entry ] in
           let new_hooks = List.filter (fun (k, _) -> k <> "PostToolUse") hooks @ [ ("PostToolUse", `List new_post) ] in
+          let new_fields = List.filter (fun (k, _) -> k <> "hooks") fields @ [ ("hooks", `Assoc new_hooks) ] in
+          `Assoc new_fields
+        end else if !settings_changed then begin
+          let new_hooks = List.filter (fun (k, _) -> k <> "PostToolUse") hooks @ [ ("PostToolUse", `List upgraded_post) ] in
           let new_fields = List.filter (fun (k, _) -> k <> "hooks") fields @ [ ("hooks", `Assoc new_hooks) ] in
           `Assoc new_fields
         end else
           `Assoc fields
     | _ -> `Assoc []
   in
-  if not !hook_registered then json_write_file settings_path settings;
-  let hook_status = if !hook_registered then "already registered" else "registered" in
+  if !settings_changed then json_write_file settings_path settings;
+  let hook_status =
+    if !hook_registered && not !settings_changed then "already registered"
+    else if !hook_registered then "matcher upgraded"
+    else "registered"
+  in
   (match output_mode with
    | Json ->
        print_json (`Assoc
@@ -2747,8 +2781,10 @@ let setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_comm
        Printf.printf "  - [%s] Inbox hook script: %s\n" mark hook_script;
        Printf.printf "\n  alias:       %s\n" alias_val;
        Printf.printf "  broker root: %s\n" root;
-       if !hook_registered then
+       if !hook_registered && not !settings_changed then
          Printf.printf "\n  (hook was already registered — no changes made)\n"
+       else if !hook_registered then
+         Printf.printf "\n  (hook already registered; upgraded matcher to %s)\n" target_matcher
        else
          Printf.printf "\nRestart Claude Code to pick up the new MCP server.\n";
        let alias_str = match alias_opt with Some a -> " -a " ^ a | None -> "" in
