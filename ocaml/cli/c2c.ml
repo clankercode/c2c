@@ -650,6 +650,43 @@ let history_cmd =
 
 (* --- subcommand: health --------------------------------------------------- *)
 
+(* PTY-inject capability check: managed kimi/codex/opencode deliver daemons
+   use pidfd_getfd, which needs CAP_SYS_PTRACE when yama ptrace_scope >= 1.
+   This surfaces the "forgot to setcap python3" footgun in `c2c health`. *)
+let check_pty_inject_capability () : [ `Ok | `Missing_cap of string | `Unknown ] =
+  let py =
+    let ic = Unix.open_process_in "command -v python3 2>/dev/null" in
+    let line = try input_line ic with End_of_file -> "" in
+    ignore (Unix.close_process_in ic);
+    if String.trim line = "" then "python3" else String.trim line
+  in
+  let yama_ok =
+    try
+      let ic = open_in "/proc/sys/kernel/yama/ptrace_scope" in
+      let v = Fun.protect ~finally:(fun () -> close_in ic) (fun () -> String.trim (input_line ic)) in
+      v = "0"
+    with _ -> false
+  in
+  if yama_ok then `Ok
+  else
+    let cmd = Printf.sprintf "getcap %s 2>/dev/null" (Filename.quote py) in
+    let ic = Unix.open_process_in cmd in
+    let line = try input_line ic with End_of_file -> "" in
+    ignore (Unix.close_process_in ic);
+    let has_cap =
+      let needle = "cap_sys_ptrace" in
+      let nl = String.length needle and ll = String.length line in
+      let rec loop i =
+        if i + nl > ll then false
+        else if String.sub line i nl = needle then true
+        else loop (i + 1)
+      in
+      loop 0
+    in
+    if line = "" then `Missing_cap py
+    else if has_cap then `Ok
+    else `Missing_cap py
+
 let health_cmd =
   let+ json = json_flag in
   let root = resolve_broker_root () in
@@ -664,6 +701,12 @@ let health_cmd =
     List.filter C2c_mcp.Broker.registration_is_alive regs |> List.length
   in
   let rooms = C2c_mcp.Broker.list_rooms broker in
+  let pty_cap = check_pty_inject_capability () in
+  let pty_cap_str = match pty_cap with
+    | `Ok -> "ok"
+    | `Missing_cap py -> Printf.sprintf "MISSING — `sudo setcap cap_sys_ptrace=ep %s` (needed for PTY-inject wake on kimi/codex/opencode)" py
+    | `Unknown -> "unknown"
+  in
   let output_mode = if json then Json else Human in
   match output_mode with
   | Json ->
@@ -676,6 +719,7 @@ let health_cmd =
           ; ("registrations", `Int (List.length regs))
           ; ("alive", `Int alive_count)
           ; ("rooms", `Int (List.length rooms))
+          ; ("pty_inject_cap", `String (match pty_cap with `Ok -> "ok" | `Missing_cap _ -> "missing" | `Unknown -> "unknown"))
           ])
   | Human ->
       Printf.printf "broker root:    %s\n" root;
@@ -684,7 +728,8 @@ let health_cmd =
       Printf.printf "dead-letter:    %s\n" (string_of_bool dead_letter_exists);
       Printf.printf "registrations:  %d (%d alive)\n"
         (List.length regs) alive_count;
-      Printf.printf "rooms:          %d\n" (List.length rooms)
+      Printf.printf "rooms:          %d\n" (List.length rooms);
+      Printf.printf "pty-inject cap: %s\n" pty_cap_str
 
 (* --- subcommand: status --------------------------------------------------- *)
 
