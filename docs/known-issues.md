@@ -130,4 +130,12 @@ tmux send-keys -t <session> Enter
 tmux set -s extended-keys on
 ```
 
+Or use the bundled helper, which reads the current setting and restores it:
+
+```bash
+scripts/c2c-tmux-enter.sh <session>
+```
+
+`scripts/tui-snapshot.sh` already applies this toggle internally.
+
 PTY-inject paths (`c2c_pty_inject.inject`) bypass tmux entirely and are unaffected.
