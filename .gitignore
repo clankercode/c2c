@@ -49,6 +49,9 @@ run-opencode-inst.d/plugins/
 run-opencode-inst.d/package.json
 .opencode/c2c-plugin.json
 .opencode/c2c-plugin-spool.json
+.opencode/node_modules/
+.opencode/package-lock.json
+.opencode/bun.lock
 run-kimi-inst.d/*.pid
 run-kimi-inst.d/*.log
 run-kimi-inst.d/*.restart.json

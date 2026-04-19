@@ -1,0 +1,89 @@
+# c2c TODO — Open Relay Server with E2E Encryption
+
+## Items
+
+1. **E2E encrypted relay server for internet-facing agent messaging**
+   - Current c2c broker is local-only (git-common-dir, file-based)
+   - New goal: relay server accessible over internet with proper security
+   - Cryptographic identity: each agent has Ed25519/X25519 keypair generated at first boot
+   - Relay server stores ONLY encrypted blobs — cannot read message content
+   - E2E encryption: agents derive session key via X25519 ECDH, encrypt before sending
+   - Room membership: cryptographic verification of identity, no plaintext room membership on server
+   - Forward secrecy: session keys derived with Double Ratchet so compromised keys don't retroactively decrypt
+   - Agent onboarding: key exchange on first contact, public key registered on relay
+   - Relay threat model: can ban users, can store encrypted blobs, cannot decrypt messages
+   - Transport: WebSocket over TLS for real-time NAT-traversal delivery
+   - Fallback: long-poll for restrictive networks
+
+## Target User Flow (1-command onboarding)
+
+**Host side (one command):**
+```
+c2c relay host my-room
+```
+- Generates Ed25519/X25519 identity key (first boot) or uses existing
+- Registers public key + room on relay server
+- Returns an invite code / URI (e.g. `c2c://relay.example.com/room/abc123?key=...`)
+- Room key is encrypted inside the invite code, only readable by holder of the code
+
+**Join side (one command):**
+```
+c2c relay join c2c://relay.example.com/room/abc123?key=...
+```
+- Parses invite URI: extracts server endpoint, room ID, encrypted room key
+- Client proves identity via signing challenge from relay
+- Room key decrypted using client's identity key (after ECDH with host)
+- Session established with Double Ratchet forward secrecy
+- No pre-shared secrets, no manual key exchange
+
+**Security model:**
+- Relay sees only: encrypted blobs, room IDs, public key metadata
+- Relay CANNOT read messages (room key never transmitted in plaintext)
+- Invite code is a one-time-use token for initial key distribution
+- Compromised relay cannot retroactively decrypt messages
+
+**Implementation approach:**
+- Use libsodium (or Go's crypto libs in OCaml via ctypes) for X25519 ECDH, Ed25519 signing, sealed_box
+- Room key distribution via sealed_box (anonymous encryption, client identity key only)
+- Forward secrecy via Double Ratchet (libsodium provides crypto_box_easy_*
+- Relay server is a WebSocket relay — stores encrypted blobs only
+
+## OCaml Crypto libs (agent `afbaf01f57c04995c` ✓)
+
+Available on opam:
+
+| Primitive | Package | Notes |
+|-----------|---------|-------|
+| Ed25519 signing | `mirage-crypto-ec` | Recommended — Fiat-Crypto verified |
+| X25519 ECDH | `mirage-crypto-ec` | Recommended |
+| ChaCha20-Poly1305 AEAD | `mirage-crypto` | Hardware-accelerated |
+| HKDF | `kdf` (robur-coop) or `hkdf` | Full KDF suite in `kdf` |
+| Blake2/BLAKE3 | `digestif` | Most comprehensive |
+| Sealed boxes | `sodium` (FFI, UNAUDITED) | Or custom on top of mirage-crypto |
+| RNG | `mirage-crypto-rng` | Required |
+
+**Gaps (need implementation):**
+- **X3DH** — No OCaml impl. Well-specified, implementable on mirage-crypto-ec + mirage-crypto (~2-4 weeks)
+- **Double Ratchet** — No OCaml impl. Largest gap, ~2-4 months. Could use `noise` protocol as alternative
+- `sodium` FFI is unaudited and weakly maintained — avoid if possible
+- `blake3` pins to OCaml < 5.0 — use `digestif` instead
+
+**Recommended stack:** mirage-crypto-ec + mirage-crypto + kdf + digestif
+
+## Research Results (agent `aa0ce82c6bf9e0415` ✓)
+
+Saved: `docs/c2c-research/e2e-encrypted-relay-architecture.md`
+
+**Recommended stack:**
+- **Identity**: Ed25519 key pairs (first boot, registered on relay with signed proof)
+- **Key exchange**: X3DH (offline initial agreement) + Double Ratchet (forward secrecy)
+- **Rooms**: Megolm-style Sender Keys (sender encrypts once, all recipients derive same key, efficient for <50 members)
+- **Relay threat model**: encrypted blobs only, can ban by pubkey but cannot decrypt
+- **Reference libs**: libsignal (Rust, X3DH+DoubleRatchet), libsodium (all primitives), libolm (C, Olm/Megolm), simplexmq (Haskell, privacy architecture reference), OpenMLS (Rust, MLS)
+- **Networking**: WebSocket over TLS 1.3, long-poll fallback
+
+**Implementation path:** libsodium secret_box (1-2wk) → libsignal X3DH+DoubleRatchet (2-3wk) → Megolm rooms (2wk) → privacy hardening (1-2wk)
+
+## Research In Progress
+
+(none — all research tasks complete)

@@ -8,12 +8,27 @@ let session_id () =
   | Some value when String.trim value <> "" -> Some value
   | _ -> None
 
+let channel_delivery_enabled () =
+  match Sys.getenv_opt "C2C_MCP_CHANNEL_DELIVERY" with
+  | Some value ->
+      let normalized = String.lowercase_ascii (String.trim value) in
+      not (List.mem normalized [ "0"; "false"; "no"; "off" ])
+  | None -> true (* default: ON *)
+
 let auto_drain_channel_enabled () =
   match Sys.getenv_opt "C2C_MCP_AUTO_DRAIN_CHANNEL" with
   | Some value ->
       let normalized = String.lowercase_ascii (String.trim value) in
       not (List.mem normalized [ "0"; "false"; "no"; "off" ])
-  | None -> false
+  | None -> channel_delivery_enabled ()
+
+let inbox_watcher_delay_seconds () =
+  match Sys.getenv_opt "C2C_MCP_INBOX_WATCHER_DELAY" with
+  | Some value -> (
+      match float_of_string_opt (String.trim value) with
+      | Some n -> n
+      | None -> 30.0)
+  | None -> 30.0
 
 let assoc_opt name = function
   | `Assoc fields -> List.assoc_opt name fields
@@ -92,6 +107,53 @@ let jsonrpc_error ~id ~code ~message =
     ; ("error", `Assoc [ ("code", `Int code); ("message", `String message) ])
     ]
 
+(* Continuous inbox delivery: background thread that watches the inbox file and emits
+   notifications for new messages while the session runs. *)
+let start_inbox_watcher ~broker_root ~session_id ~emit_notification =
+  let open Lwt.Syntax in
+  let inbox_path = Filename.concat broker_root (session_id ^ ".inbox.json") in
+  let stat_size () =
+    try (Unix.stat inbox_path).Unix.st_size with Unix.Unix_error _ -> 0
+  in
+  let delay = inbox_watcher_delay_seconds () in
+  let rec loop last_size =
+    let* () = Lwt_unix.sleep 1.0 in
+    Lwt.catch
+      (fun () ->
+        let current_size = stat_size () in
+        if current_size > last_size then
+          (* New content detected. Sleep before draining so preferred delivery
+             paths (e.g. PostToolUse hook on Claude Code) can drain first.
+             If the hook already drained, drain_inbox returns [] and we emit
+             nothing. *)
+          let* () = if delay > 0.0 then Lwt_unix.sleep delay else Lwt.return_unit in
+          let broker = C2c_mcp.Broker.create ~root:broker_root in
+          let messages = C2c_mcp.Broker.drain_inbox broker ~session_id in
+          let rec emit_all = function
+            | [] -> Lwt.return_unit
+            | msg :: rest ->
+                let* () = emit_notification msg in
+                emit_all rest
+          in
+          let* () = emit_all messages in
+          (* Use post-drain file size, not pre-drain — avoids missing shorter
+             subsequent messages when the previous batch was larger. *)
+          let post_drain_size = stat_size () in
+          loop post_drain_size
+        else
+          loop current_size)
+      (fun exn ->
+        let* () =
+          Lwt_io.eprintlf "c2c inbox watcher: %s" (Printexc.to_string exn)
+        in
+        (* Continue watching after transient errors *)
+        loop last_size)
+  in
+  loop (stat_size ())
+
+let emit_notification msg =
+  write_message (C2c_mcp.channel_notification msg)
+
 let rec loop ~broker_root ~channel_capable =
   let open Lwt.Syntax in
   let* msg = read_message () in
@@ -112,13 +174,13 @@ let rec loop ~broker_root ~channel_capable =
             | false, _, _ -> Lwt.return_unit
             | true, false, _ -> Lwt.return_unit
             | true, true, None -> Lwt.return_unit
-            | true, true, Some session_id ->
+            | true, true, Some sid ->
                 let broker = C2c_mcp.Broker.create ~root:broker_root in
-                let queued = C2c_mcp.Broker.drain_inbox broker ~session_id in
+                let queued = C2c_mcp.Broker.drain_inbox broker ~session_id:sid in
                 let rec emit = function
                   | [] -> Lwt.return_unit
                   | message :: rest ->
-                      let* () = write_message (C2c_mcp.channel_notification message) in
+                      let* () = emit_notification message in
                       emit rest
                 in
                 emit queued
@@ -129,4 +191,9 @@ let () =
   let root = broker_root () in
   C2c_mcp.auto_register_startup ~broker_root:root;
   C2c_mcp.auto_join_rooms_startup ~broker_root:root;
+  (* Start background inbox watcher if channel delivery is enabled and we have a session_id *)
+  (match (channel_delivery_enabled (), session_id ()) with
+   | true, Some sid ->
+       Lwt.async (fun () -> start_inbox_watcher ~broker_root:root ~session_id:sid ~emit_notification)
+   | _, _ -> ());
   Lwt_main.run (loop ~broker_root:root ~channel_capable:false)
