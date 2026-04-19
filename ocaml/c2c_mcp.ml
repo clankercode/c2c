@@ -122,7 +122,16 @@ module Broker = struct
   let inbox_path t ~session_id = Filename.concat t.root (session_id ^ ".inbox.json")
 
   let ensure_root t =
-    if not (Sys.file_exists t.root) then Unix.mkdir t.root 0o755
+    let rec mkdir_p d =
+      if d = "" || d = "/" || d = "." then ()
+      else if Sys.file_exists d then ()
+      else begin
+        mkdir_p (Filename.dirname d);
+        try Unix.mkdir d 0o755
+        with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+      end
+    in
+    mkdir_p t.root
 
   let read_json_file path ~default =
     if Sys.file_exists path then

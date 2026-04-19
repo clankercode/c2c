@@ -101,6 +101,20 @@ let find_python_script script =
       if Sys.file_exists path then Some path else None
   | None -> None
 
+let xdg_state_home () =
+  match Sys.getenv_opt "XDG_STATE_HOME" with
+  | Some v when String.trim v <> "" -> String.trim v
+  | _ ->
+      (match Sys.getenv_opt "HOME" with
+       | Some h when String.trim h <> "" -> String.trim h // ".local" // "state"
+       | _ -> "/tmp")
+
+let fallback_broker_root () = xdg_state_home () // "c2c" // "default" // "mcp"
+
+(* Pure path resolution — no side effects. The broker creates the directory
+   lazily on first use via [Broker.ensure_root]. Callers that need the
+   directory to exist on disk (e.g. to write auxiliary files at setup time)
+   should create it themselves. *)
 let resolve_broker_root () =
   let abs_path p =
     if Filename.is_relative p then Sys.getcwd () // p else p
@@ -109,22 +123,8 @@ let resolve_broker_root () =
   | Some dir -> abs_path dir
   | None -> (
       match git_common_dir () with
-      | Some git_dir ->
-          let abs_git = abs_path git_dir in
-          let dir = abs_git // "c2c" // "mcp" in
-          if Sys.is_directory dir then dir
-          else (
-            (try
-               let parent = git_dir // "c2c" in
-               if not (Sys.file_exists parent) then Unix.mkdir parent 0o755;
-               Unix.mkdir dir 0o755
-             with Unix.Unix_error _ -> ());
-            dir)
-      | None ->
-          Printf.eprintf
-            "error: cannot find broker root. Set C2C_MCP_BROKER_ROOT or run \
-             from inside a git repo.\n%!";
-          exit 1)
+      | Some git_dir -> abs_path git_dir // "c2c" // "mcp"
+      | None -> fallback_broker_root ())
 
 (* --- session / alias resolution ------------------------------------------- *)
 
@@ -146,7 +146,8 @@ let resolve_alias broker =
       | None ->
           Printf.eprintf
             "error: cannot determine your alias. Set C2C_MCP_AUTO_REGISTER_ALIAS \
-             or C2C_MCP_SESSION_ID.\n%!";
+             or C2C_MCP_SESSION_ID.\n\
+             hint: Are you running this from inside the coding agent? Have you run `c2c setup <client>` for your client?\n%!";
           exit 1)
   | Some sid ->
       let regs = C2c_mcp.Broker.list_registrations broker in
@@ -1024,7 +1025,10 @@ let register_cmd =
         match env_auto_alias () with
         | Some a -> a
         | None ->
-            Printf.eprintf "error: no alias specified and C2C_MCP_AUTO_REGISTER_ALIAS not set.\n%!";
+            Printf.eprintf
+              "error: no alias specified and C2C_MCP_AUTO_REGISTER_ALIAS not set.\n\
+               hint: Are you running this from inside the coding agent? Have you run `c2c setup <client>` for your client?\n\
+               Pass --alias ALIAS to register explicitly.\n%!";
             exit 1)
   in
   let session_id =
@@ -1034,7 +1038,10 @@ let register_cmd =
         match env_session_id () with
         | Some s -> s
         | None ->
-            Printf.eprintf "error: no session ID specified and C2C_MCP_SESSION_ID not set.\n%!";
+            Printf.eprintf
+              "error: no session ID specified and C2C_MCP_SESSION_ID not set.\n\
+               hint: Are you running this from inside the coding agent? Have you run `c2c setup <client>` for your client?\n\
+               Pass --session-id ID to specify explicitly.\n%!";
             exit 1)
   in
   let pid = Some (Unix.getppid ()) in
@@ -2558,7 +2565,22 @@ let setup_cmd =
     else server_path
   in
   (* Use c2c-mcp-server on PATH if available, else fall back to opam exec build artifact *)
-  let mcp_command = if Sys.file_exists ("/home/xertrov/.local/bin/c2c-mcp-server") then "c2c-mcp-server" else server_path in
+  let which name =
+    match Sys.getenv_opt "PATH" with
+    | None -> None
+    | Some path ->
+        let sep = if Sys.win32 then ';' else ':' in
+        let dirs = String.split_on_char sep path in
+        List.find_map (fun d ->
+          if d = "" then None
+          else
+            let candidate = d // name in
+            if Sys.file_exists candidate then Some candidate else None) dirs
+  in
+  let mcp_command = match which "c2c-mcp-server" with
+    | Some _ -> "c2c-mcp-server"
+    | None -> server_path
+  in
   let client = Option.value client ~default:"claude" in
   (match String.lowercase_ascii client with
    | "claude" ->
@@ -3123,9 +3145,73 @@ let restart_cmd =
 
 let restart = Cmdliner.Cmd.v (Cmdliner.Cmd.info "restart" ~doc:"Restart a managed c2c instance.") restart_cmd
 
+(* --- help subcommand ------------------------------------------------------- *)
+
+(* `c2c help [COMMAND...]` is a plain-English alias for `c2c [COMMAND...] --help`.
+   Re-exec ourselves with `--help` appended so we get Cmdliner's full rendering
+   (man-page layout, pager, and the sanitize_help_env fix) without having to
+   reach into Cmdliner internals. *)
+let help_cmd =
+  let args =
+    Cmdliner.Arg.(
+      value & pos_all string []
+      & info [] ~docv:"COMMAND"
+          ~doc:"Subcommand path to show help for. With no args, shows top-level help.")
+  in
+  let+ args = args in
+  let self = if Array.length Sys.argv > 0 then Sys.argv.(0) else "c2c" in
+  let new_argv = Array.of_list (self :: args @ [ "--help" ]) in
+  (try Unix.execvp self new_argv
+   with Unix.Unix_error (err, _, _) ->
+     prerr_endline ("c2c help: " ^ Unix.error_message err);
+     exit 125)
+
+let help =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "help"
+       ~doc:"Show help for c2c or a subcommand (alias for --help)."
+       ~man:
+         [ `S "DESCRIPTION"
+         ; `P "Prints the same help as $(b,--help). With no arguments, shows the \
+               top-level c2c help. Arguments are treated as a subcommand path, \
+               so $(b,c2c help install) is equivalent to $(b,c2c install --help), \
+               and $(b,c2c help rooms list) mirrors $(b,c2c rooms list --help)."
+         ])
+    help_cmd
+
 (* --- main entry point ----------------------------------------------------- *)
 
+(* Cmdliner renders help through groff/grotty, which emits ANSI SGR escapes,
+   then pipes through $MANPAGER (or $PAGER, or `less`). A MANPAGER that runs
+   the output through `col -b*` (e.g. "sh -c 'col -bx | bat -l man -p'") strips
+   the ESC byte from every SGR sequence but leaves the payload, producing
+   visible garbage like "[4mNAME[0m" in the rendered help. Detect that case
+   and swap in a safe pager so `c2c <cmd> --help` stays readable regardless
+   of the user's shell setup. *)
+let sanitize_help_env () =
+  let contains_substr haystack needle =
+    let nl = String.length needle and hl = String.length haystack in
+    nl <= hl
+    && (let rec loop i =
+          i <= hl - nl
+          && (String.sub haystack i nl = needle || loop (i + 1))
+        in
+        loop 0)
+  in
+  let esc_stripping v =
+    (* `col -b` / `col -bx` drop control chars (including ESC) from input. *)
+    contains_substr v "col -b" || contains_substr v "col\t-b"
+  in
+  let fix var =
+    match Sys.getenv_opt var with
+    | Some v when esc_stripping v -> Unix.putenv var "less -R"
+    | _ -> ()
+  in
+  fix "MANPAGER";
+  fix "PAGER"
+
 let () =
+  sanitize_help_env ();
   exit
     (Cmdliner.Cmd.eval
        (Cmdliner.Cmd.group
@@ -3145,11 +3231,11 @@ let () =
                     $(b,refresh-peer), $(b,tail-log), $(b,my-rooms), $(b,dead-letter), \
                     $(b,prune-rooms), $(b,smoke-test), $(b,init), $(b,install), \
                     $(b,setup), $(b,serve), $(b,mcp), $(b,start), $(b,stop), \
-                    $(b,restart), $(b,instances), $(b,hook)"
+                    $(b,restart), $(b,instances), $(b,hook), $(b,help)"
                ; `P "$(b,rooms) — manage N:N chat rooms"
                ; `P "$(b,relay) — cross-machine relay: serve, connect, setup, status, list, rooms, gc"
                ])
           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
           ; sweep_dryrun; history; health; status; verify; register; refresh_peer
           ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install; setup
-          ; serve; mcp; start; stop; restart; instances; rooms_group; room_group; relay_group; hook ]))
+          ; serve; mcp; start; stop; restart; instances; rooms_group; room_group; relay_group; hook; help ]))
