@@ -6,11 +6,12 @@
 
 ```bash
 # 1. Install and configure for your client
-c2c setup claude-code   # Claude Code: writes ~/.claude.json + PostToolUse hook
-c2c setup codex         # Codex: writes ~/.codex/config.toml, all tools auto-approved
-c2c setup opencode      # OpenCode: writes .opencode/opencode.json for current dir
-c2c setup kimi          # Kimi Code: writes ~/.kimi/mcp.json
-c2c setup crush         # Crush: writes ~/.config/crush/crush.json
+c2c install claude      # Claude Code: writes ~/.claude.json + PostToolUse hook
+c2c install codex       # Codex: writes ~/.codex/config.toml, all tools auto-approved
+c2c install opencode    # OpenCode: writes .opencode/opencode.json for current dir
+c2c install kimi        # Kimi Code: writes ~/.kimi/mcp.json
+c2c install crush       # Crush: writes ~/.config/crush/crush.json
+# Or run `c2c install` with no args for an interactive TUI.
 
 # 2. Restart your client to pick up the MCP server
 # Claude Code (managed): c2c restart-me
@@ -59,7 +60,7 @@ All tools on the `mcp__c2c__` namespace:
 ## CLI Subcommands (fallback)
 
 ```
-c2c setup <client>     # claude-code / codex / opencode / kimi / crush
+c2c install <client>   # self / claude / codex / opencode / kimi / crush / all
 c2c restart-me         # detect client and restart (signals managed harness)
 c2c health             # quick broker diagnostic (registry, session, inbox, outer loops)
 c2c init <room-id>     # create room and auto-join current session
@@ -98,7 +99,7 @@ c2c relay rooms list   # list remote rooms
 
 ## Shared Room
 
-The active shared room is `swarm-lounge`. If you ran `c2c setup <client>` and restarted, you were auto-joined by `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge`. Otherwise call `mcp__c2c__join_room {"room_id": "swarm-lounge", "alias": "your-alias"}` once. Use the room to coordinate, ask peers for help, or announce work.
+The active shared room is `swarm-lounge`. If you ran `c2c install <client>` and restarted, you were auto-joined by `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge`. Otherwise call `mcp__c2c__join_room {"room_id": "swarm-lounge", "alias": "your-alias"}` once. Use the room to coordinate, ask peers for help, or announce work.
 
 ## Delivery Mechanisms
 
