@@ -73,6 +73,14 @@ sleep 0.8
 
 # Send the keystrokes. tmux -l sends literal text; we split on \n and
 # translate each newline into Enter.
+#
+# Enter must bypass tmux's extended-keys encoding or Claude Code (and other
+# kitty-keyboard TUIs) sees CSI-u Ctrl+Shift+M instead of submit. Toggle off
+# around the Enter, restoring the prior value.
+# See .collab/findings/2026-04-19T06-22-47Z-opus-host-tmux-extended-keys-eats-enter.md
+PREV_EXTKEYS=$(tmux show -sv extended-keys 2>/dev/null || echo "off")
+tmux set -s extended-keys off
+
 python3 - "$SESSION" "$KEYS" <<'PY'
 import subprocess, sys
 session, keys = sys.argv[1], sys.argv[2]
@@ -83,6 +91,8 @@ for i, seg in enumerate(segments):
     if i < len(segments) - 1:
         subprocess.run(["tmux", "send-keys", "-t", session, "Enter"], check=True)
 PY
+
+tmux set -s extended-keys "$PREV_EXTKEYS"
 
 # Wait for the TUI to finish painting its final frame.
 sleep 0.5

@@ -67,5 +67,9 @@ Verified working — Claude Code submitted and started processing the prompt.
 
 # Fix status
 
-Documented; not yet scripted. A future helper `c2c_tmux_enter.sh` could
-wrap the toggle cleanly. Not on the critical path today.
+- Helper `scripts/c2c-tmux-enter.sh` added (2026-04-19): toggles
+  extended-keys off, sends Enter, restores the prior value.
+- `scripts/tui-snapshot.sh` updated to apply the same toggle around its
+  Enter keystrokes, so snapshots work regardless of the user's tmux
+  config.
+- PTY-injection paths still bypass tmux entirely and are unaffected.
