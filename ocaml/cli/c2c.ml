@@ -4376,6 +4376,14 @@ let print_enriched_landing () =
        Printf.printf "  peers:            %d registered (%d alive)\n" total alive
    | None ->
        Printf.printf "  peers:            (broker not initialised — try `c2c init`)\n");
+  (match check_pty_inject_capability () with
+   | `Ok -> ()
+   | `Unknown -> ()
+   | `Missing_cap py ->
+       Printf.printf
+         "  pty-inject:       MISSING cap_sys_ptrace — kimi/codex/opencode PTY wake will fail\n";
+       Printf.printf
+         "                    fix: sudo setcap cap_sys_ptrace=ep %s\n" py);
   Printf.printf "\nClients\n";
   List.iter (fun (c, on_path, configured) ->
     let status =
