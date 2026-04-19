@@ -273,6 +273,22 @@ let repo_toplevel () : string =
       (fun () -> String.trim (input_line ic))
   with _ -> ""
 
+(* Fallback: derive repo root from a broker_root like "/path/to/repo/.git/c2c/mcp".
+   Used when c2c_start is running in the instance dir (no git context). *)
+let repo_toplevel_from_broker (broker_root : string) : string =
+  let suffix = "/.git/c2c/mcp" in
+  let bl = String.length broker_root and sl = String.length suffix in
+  if bl > sl && String.sub broker_root (bl - sl) sl = suffix
+  then String.sub broker_root 0 (bl - sl)
+  else ""
+
+(* Resolve the repo root: cwd-based first (works when called from the repo),
+   then broker_root-derived (works from the instance dir outer loop). *)
+let resolve_repo_root ~(broker_root : string) : string =
+  let a = repo_toplevel () in
+  if a <> "" then a
+  else repo_toplevel_from_broker broker_root
+
 let build_kimi_mcp_config (name : string) (br : string) (alias_override : string option) : Yojson.Safe.t =
   let alias = Option.value alias_override ~default:name in
   let script_path =
@@ -385,15 +401,15 @@ let is_cc_wrapper_str (name : string) : bool =
  * Sidecar script paths
  * --------------------------------------------------------------------------- *)
 
-let deliver_script_path () : string option =
-  match repo_toplevel () with
+let deliver_script_path ~(broker_root : string) : string option =
+  match resolve_repo_root ~broker_root with
   | "" -> None
   | dir ->
       let p = dir // "c2c_deliver_inbox.py" in
       if Sys.file_exists p then Some p else None
 
-let poker_script_path () : string option =
-  match repo_toplevel () with
+let poker_script_path ~(broker_root : string) : string option =
+  match resolve_repo_root ~broker_root with
   | "" -> None
   | dir ->
       let p = dir // "c2c_poker.py" in
@@ -405,7 +421,7 @@ let poker_script_path () : string option =
 
 let start_deliver_daemon ~(name : string) ~(client : string)
     ~(broker_root : string) ?(child_pid_opt : int option) () : int option =
-  match deliver_script_path () with
+  match deliver_script_path ~broker_root with
   | None -> None
   | Some script ->
       let args =
@@ -422,8 +438,8 @@ let start_deliver_daemon ~(name : string) ~(client : string)
       with Unix.Unix_error _ -> None
 
 let start_poker ~(name : string) ~(client : string)
-    ?(child_pid_opt : int option) () : int option =
-  match poker_script_path () with
+    ~(broker_root : string) ?(child_pid_opt : int option) () : int option =
+  match poker_script_path ~broker_root with
   | None -> None
   | Some script ->
       let cfg = try Some (Stdlib.Hashtbl.find clients client) with Not_found -> None in
@@ -543,7 +559,7 @@ let run_outer_loop ~(name : string) ~(client : string)
              | None -> ());
           (* Start poker *)
           (if !poker_pid = None && cfg.needs_poker then
-             match start_poker ~name ~client ?child_pid_opt:(Some pid) () with
+             match start_poker ~name ~client ~broker_root ?child_pid_opt:(Some pid) () with
              | Some p -> poker_pid := Some p; write_pid (poker_pid_path name) p
              | None -> ());
           pid

@@ -137,9 +137,9 @@ val start_deliver_daemon :
     if the script is not found. *)
 
 val start_poker :
-  name:string -> client:string -> ?child_pid_opt:int -> unit -> int option
-(** [start_poker ~name ~client ?child_pid_opt ()] spawns c2c_poker.py for clients
-    that need it (needs_poker = true) and returns its PID, or [None]. *)
+  name:string -> client:string -> broker_root:string -> ?child_pid_opt:int -> unit -> int option
+(** [start_poker ~name ~client ~broker_root ?child_pid_opt ()] spawns c2c_poker.py
+    for clients that need it (needs_poker = true) and returns its PID, or [None]. *)
 
 (** {1 Outer loop} *)
 
