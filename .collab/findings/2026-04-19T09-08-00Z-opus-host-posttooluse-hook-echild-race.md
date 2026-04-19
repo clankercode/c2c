@@ -80,24 +80,35 @@ After the exec fix, triggered Bash/ls/arithmetic tool calls in a fresh
 scribe session — **no more `PostToolUse:Bash` or `PostToolUse:Tool`
 ECHILD errors** for non-MCP tools.
 
-# Remaining upstream issues (not ours)
+# Full mitigation (2026-04-20)
 
-Two ECHILD classes still surface and are **not** caused by c2c:
+Both upstream classes are now mitigated end-to-end so the transcript is
+clean in production:
 
-1. `UserPromptSubmit` / `Stop` hook ECHILD — comes from the
-   `idle-info` plugin's Node.js hooks
-   (`~/.claude/plugins/marketplaces/idle-info/hooks/hooks.json`).
-   Verified by stubbing c2c hook to `sleep 0.1; exit 0` — errors
-   persisted unchanged.
-2. `PostToolUse:mcp__*` ECHILD — even with our hook stubbed to a
-   500ms plain sleep, `PostToolUse:mcp__c2c__list` still reports
-   ECHILD. So MCP tool PostToolUse hook invocations have an
-   additional Claude Code 2.1.114 race that sleep duration does not
-   mitigate. Non-MCP tools (Bash, Edit, Grep, etc.) are clean.
+1. **`UserPromptSubmit` / `Stop` / `PreCompact` ECHILD from `idle-info`
+   plugin** — plugin's `hooks.json` now wraps each node invocation
+   through `bash -c 'node <script> <&0; rc=$?; sleep 0.05; exit $rc'`.
+   The 50ms sleep floor gives Claude Code's libuv `waitpid()` room to
+   register the child before the kernel reaps it, same pattern as our
+   own hook.
+   - File: `~/.claude/plugins/marketplaces/idle-info/hooks/hooks.json`
+   - Caveat: plugin updates will overwrite this. Re-apply by patching
+     the file again.
 
-These are Claude Code bugs, not c2c bugs. Worth filing upstream if
-they become annoying; for now they're cosmetic (hooks still run, no
-messages lost).
+2. **`PostToolUse:mcp__*` ECHILD** — Claude Code 2.1.114 has a distinct
+   race on `PostToolUse:mcp__*` that fires regardless of hook content
+   (verified with a 500ms stub). Fixed by narrowing the hook matcher
+   from `.*` to `^(?!mcp__).*`, so the hook no longer runs for MCP
+   tools. This is safe because:
+   - `mcp__c2c__*` responses already drain the broker inbox
+     synchronously server-side.
+   - Other MCP tools (Gmail, Calendar, Drive) don't produce c2c
+     traffic, so missing the PostToolUse trigger for them loses
+     nothing.
+   - Applied in both writers: OCaml `configure_claude_hook`
+     (`ocaml/cli/c2c.ml`) and Python `c2c_configure_claude_code.py`
+     (`HOOK_MATCHER = "^(?!mcp__).*"`). Run `c2c install claude` to
+     apply to an existing `~/.claude/settings.json`.
 
 # Attribution test procedure
 

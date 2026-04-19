@@ -35,7 +35,11 @@ CLAUDE_JSON_PATH = Path.home() / ".claude.json"
 SETTINGS_JSON_PATH = Path.home() / ".claude" / "settings.json"
 HOOK_SCRIPT_PATH = Path.home() / ".claude" / "hooks" / "c2c-inbox-check.sh"
 
-HOOK_MATCHER = ".*"
+# Exclude mcp__* tools: Claude Code 2.1.114 has a waitpid race on
+# PostToolUse:mcp__* hooks independent of hook content, and c2c's own MCP
+# server already drains the inbox synchronously after each mcp__c2c__ RPC,
+# so running the hook for MCP tools is both noisy and redundant.
+HOOK_MATCHER = "^(?!mcp__).*"
 
 HOOK_SCRIPT_CONTENT = r"""#!/bin/bash
 # c2c-inbox-check.sh — PostToolUse hook for c2c auto-delivery in Claude Code

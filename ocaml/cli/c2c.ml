@@ -2575,7 +2575,10 @@ let configure_claude_hook () =
         in
         let target_group, other_groups =
           List.partition (fun g -> match g with
-            | `Assoc m -> (match List.assoc_opt "matcher" m with Some (`String ".*") -> true | _ -> false)
+            | `Assoc m -> (match List.assoc_opt "matcher" m with
+              | Some (`String ".*") -> true
+              | Some (`String "^(?!mcp__).*") -> true
+              | _ -> false)
             | _ -> false) post_tool_use
         in
         let target_group = match target_group with
@@ -2591,14 +2594,14 @@ let configure_claude_hook () =
               if has_hook then `Assoc m
               else `Assoc (m @ [ ("hooks", `List (existing_hooks @ [ hook_entry ])) ])
           | _ ->
-              `Assoc [ ("matcher", `String ".*"); ("hooks", `List [ hook_entry ]) ]
+              `Assoc [ ("matcher", `String "^(?!mcp__).*"); ("hooks", `List [ hook_entry ]) ]
         in
         let hooks = List.filter (fun (k, _) -> k <> "PostToolUse") hooks in
         let hooks = hooks @ [ ("PostToolUse", `List (other_groups @ [ target_group ])) ] in
         let fields = List.filter (fun (k, _) -> k <> "hooks") fields in
         `Assoc (fields @ [ ("hooks", `Assoc hooks) ])
     | _ ->
-        `Assoc [ ("hooks", `Assoc [ ("PostToolUse", `List [ `Assoc [ ("matcher", `String ".*"); ("hooks", `List [ hook_entry ]) ] ]) ]) ]
+        `Assoc [ ("hooks", `Assoc [ ("PostToolUse", `List [ `Assoc [ ("matcher", `String "^(?!mcp__).*"); ("hooks", `List [ hook_entry ]) ] ]) ]) ]
   in
   json_write_file settings_path settings
 
@@ -2713,7 +2716,7 @@ let setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_comm
         ) post_tool_use in
         hook_registered := already;
         if not already then begin
-          let new_entry = `Assoc [ ("matcher", `String ".*"); ("hooks", `List [ `Assoc [ ("type", `String "command"); ("command", `String hook_script) ] ]) ] in
+          let new_entry = `Assoc [ ("matcher", `String "^(?!mcp__).*"); ("hooks", `List [ `Assoc [ ("type", `String "command"); ("command", `String hook_script) ] ]) ] in
           let new_post = post_tool_use @ [ new_entry ] in
           let new_hooks = List.filter (fun (k, _) -> k <> "PostToolUse") hooks @ [ ("PostToolUse", `List new_post) ] in
           let new_fields = List.filter (fun (k, _) -> k <> "hooks") fields @ [ ("hooks", `Assoc new_hooks) ] in
