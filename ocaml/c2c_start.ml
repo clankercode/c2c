@@ -232,6 +232,10 @@ let build_env (name : string) (alias_override : string option) : string array =
     "C2C_MCP_BROKER_ROOT", broker_root ();
     "C2C_MCP_AUTO_JOIN_ROOMS", "swarm-lounge";
     "C2C_MCP_AUTO_DRAIN_CHANNEL", "0";
+    (* Managed sessions opt in to experimental channel-delivery. No-op on
+       clients that don't declare experimental.claude/channel in initialize,
+       so harmless where unsupported. *)
+    "C2C_MCP_CHANNEL_DELIVERY", "1";
   ] in
   let merged =
     let existing = Array.to_list env in
