@@ -2032,18 +2032,36 @@ let json_read_file path =
     Yojson.Safe.from_string s)
 
 
-(* --- subcommand: install -------------------------------------------------- *)
+(* --- subcommand: install-self -------------------------------------------- *)
 
-let install_cmd =
+let install_self_cmd =
   let dest =
     Cmdliner.Arg.(value & opt (some string) None & info [ "dest"; "d" ] ~docv:"DIR" ~doc:"Install destination (default: ~/.local/bin).")
   in
   let mcp_server =
     Cmdliner.Arg.(value & flag & info [ "mcp-server" ] ~doc:"Also install the c2c MCP server binary as ~/.local/bin/c2c-mcp-server.")
   in
+  let extra_positional =
+    Cmdliner.Arg.(value & pos_all string [] & info [] ~docv:""
+      ~doc:"Reserved — install-self takes no positional arguments.")
+  in
   let+ json = json_flag
   and+ dest_opt = dest
-  and+ with_mcp_server = mcp_server in
+  and+ with_mcp_server = mcp_server
+  and+ extra_positional = extra_positional in
+  (match extra_positional with
+   | arg :: _ ->
+       let known_clients = [ "claude"; "codex"; "opencode"; "kimi"; "crush" ] in
+       let suggestion =
+         if List.mem arg known_clients
+         then Printf.sprintf "Did you mean `c2c setup %s`?" arg
+         else "For client configuration, use `c2c setup <client>`."
+       in
+       Printf.eprintf
+         "error: install-self takes no positional arguments (got %S).\n       %s\n%!"
+         arg suggestion;
+       exit 2
+   | [] -> ());
   let dest_dir =
     match dest_opt with
     | Some d -> d
@@ -2127,7 +2145,11 @@ let install_cmd =
               Printf.eprintf "error: %s\n%!" msg;
               exit 1))
 
-let install = Cmdliner.Cmd.v (Cmdliner.Cmd.info "install" ~doc:"Install c2c binary to ~/.local/bin.") install_cmd
+let install_self =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "install-self"
+       ~doc:"Install the running c2c binary to ~/.local/bin (for client setup, use `c2c setup <client>`).")
+    install_self_cmd
 
 (* --- subcommand: init ---------------------------------------------------- *)
 
@@ -3174,7 +3196,7 @@ let help =
          [ `S "DESCRIPTION"
          ; `P "Prints the same help as $(b,--help). With no arguments, shows the \
                top-level c2c help. Arguments are treated as a subcommand path, \
-               so $(b,c2c help install) is equivalent to $(b,c2c install --help), \
+               so $(b,c2c help setup) is equivalent to $(b,c2c setup --help), \
                and $(b,c2c help rooms list) mirrors $(b,c2c rooms list --help)."
          ])
     help_cmd
@@ -3229,7 +3251,7 @@ let () =
                     $(b,send-all), $(b,sweep), $(b,sweep-dryrun), $(b,history), \
                     $(b,health), $(b,status), $(b,verify), $(b,register), \
                     $(b,refresh-peer), $(b,tail-log), $(b,my-rooms), $(b,dead-letter), \
-                    $(b,prune-rooms), $(b,smoke-test), $(b,init), $(b,install), \
+                    $(b,prune-rooms), $(b,smoke-test), $(b,init), $(b,install-self), \
                     $(b,setup), $(b,serve), $(b,mcp), $(b,start), $(b,stop), \
                     $(b,restart), $(b,instances), $(b,hook), $(b,help)"
                ; `P "$(b,rooms) — manage N:N chat rooms"
@@ -3237,5 +3259,5 @@ let () =
                ])
           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
           ; sweep_dryrun; history; health; status; verify; register; refresh_peer
-          ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install; setup
+          ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install_self; setup
           ; serve; mcp; start; stop; restart; instances; rooms_group; room_group; relay_group; hook; help ]))
