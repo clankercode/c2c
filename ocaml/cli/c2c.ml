@@ -380,11 +380,15 @@ let send_all_cmd =
   let exclude =
     Cmdliner.Arg.(value & opt (list string) [] & info [ "exclude"; "x" ] ~docv:"ALIAS" ~doc:"Aliases to skip.")
   in
+  let from_override =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "from"; "F" ] ~docv:"ALIAS" ~doc:"Override sender alias. Useful for operators/tests running outside an agent session.")
+  in
   let+ json = json_flag
   and+ exclude = exclude
-  and+ message = message in
+  and+ message = message
+  and+ from_override = from_override in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let from_alias = resolve_alias broker in
+  let from_alias = resolve_alias ~override:from_override broker in
   let content = String.concat " " message in
   let result =
     C2c_mcp.Broker.send_all broker ~from_alias ~content ~exclude_aliases:exclude
@@ -1256,11 +1260,15 @@ let rooms_send_cmd =
   let message =
     Cmdliner.Arg.(non_empty & pos_right 0 string [] & info [] ~docv:"MSG" ~doc:"Message body (remaining args joined with spaces).")
   in
+  let from_override =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "from"; "F" ] ~docv:"ALIAS" ~doc:"Override sender alias. Useful for operators/tests running outside an agent session.")
+  in
   let+ json = json_flag
   and+ room_id = room_id
-  and+ message = message in
+  and+ message = message
+  and+ from_override = from_override in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let from_alias = resolve_alias broker in
+  let from_alias = resolve_alias ~override:from_override broker in
   let content = String.concat " " message in
   let output_mode = if json then Json else Human in
   (try
