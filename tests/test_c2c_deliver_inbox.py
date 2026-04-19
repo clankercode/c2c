@@ -21,7 +21,7 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
 
             with (
                 mock.patch(
-                    "c2c_deliver_inbox.c2c_inject.resolve_target",
+                    "c2c_deliver_inbox.c2c_inject.resolve_session_info",
                     return_value=(33333, "9", None),
                 ),
                 mock.patch(
@@ -81,7 +81,7 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
 
             with (
                 mock.patch(
-                    "c2c_deliver_inbox.c2c_inject.resolve_target",
+                    "c2c_deliver_inbox.c2c_inject.resolve_session_info",
                     return_value=(33333, "9", None),
                 ),
                 mock.patch(
@@ -124,7 +124,7 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
 
             with (
                 mock.patch(
-                    "c2c_deliver_inbox.c2c_inject.resolve_target",
+                    "c2c_deliver_inbox.c2c_inject.resolve_session_info",
                     return_value=(33333, "9", None),
                 ),
                 mock.patch("c2c_deliver_inbox.pid_is_alive", return_value=False),
@@ -215,7 +215,7 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
                         "already_running": False,
                     },
                 ) as start_daemon,
-                mock.patch("c2c_deliver_inbox.c2c_inject.resolve_target") as resolve,
+                mock.patch("c2c_deliver_inbox.c2c_inject.resolve_session_info") as resolve,
                 mock.patch("sys.stdout", new_callable=io.StringIO),
             ):
                 result = c2c_deliver_inbox.main(
@@ -241,7 +241,7 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
     def test_main_reports_target_resolution_errors(self):
         with (
             mock.patch(
-                "c2c_deliver_inbox.c2c_inject.resolve_target",
+                "c2c_deliver_inbox.c2c_inject.resolve_session_info",
                 side_effect=RuntimeError("pid 12345 has no /dev/pts/* on fds 0/1/2"),
             ),
             mock.patch("sys.stderr", new_callable=io.StringIO) as stderr,
@@ -336,7 +336,7 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
 
             with (
                 mock.patch(
-                    "c2c_deliver_inbox.c2c_inject.resolve_target",
+                    "c2c_deliver_inbox.c2c_inject.resolve_session_info",
                     return_value=(33333, "9", None),
                 ),
                 mock.patch("c2c_deliver_inbox.c2c_poker.inject"),

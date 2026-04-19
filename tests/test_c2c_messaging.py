@@ -747,7 +747,7 @@ class C2CDeliverInboxUnitTests(unittest.TestCase):
 
         with (
             mock.patch(
-                "c2c_deliver_inbox.c2c_inject.resolve_target",
+                "c2c_deliver_inbox.c2c_inject.resolve_session_info",
                 return_value=(33333, "9", None),
             ),
             mock.patch("c2c_deliver_inbox.c2c_poker.inject") as inject,
