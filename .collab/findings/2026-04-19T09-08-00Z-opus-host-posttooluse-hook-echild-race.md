@@ -46,29 +46,75 @@ floor inside `c2c hook`. Two gaps remained:
 
 # Fix
 
-In `ocaml/cli/c2c.ml`:
+**First attempt (commit `7d06b40`)** — bumped `min_hook_runtime_ms` from
+10.0 to 50.0 in `ocaml/cli/c2c.ml`, extracted `sleep_to_min_runtime`,
+applied it to every exit path. This turned out to be a red herring for
+the main cause.
 
-- Bumped `min_hook_runtime_ms` from 10.0 to 50.0.
-- Extracted `sleep_to_min_runtime start_time` helper.
-- Called it from every exit path: early-env-empty, normal drain, and
-  exception path.
-- Updated the canonical `claude_hook_script` bash wrapper so that when
-  `c2c` is missing from PATH we still `sleep 0.05` before `exit 0`.
-- Dropped the Lwt_main/Lwt_unix.sleep dance — `Unix.sleepf` is simpler
-  and adequate at 50ms granularity.
+**Real fix (commit `c34d168`)** — in the canonical bash wrapper
+(`claude_hook_script` in `c2c.ml` and the installed
+`~/.claude/hooks/c2c-inbox-check.sh`), replace:
 
-Installed the new wrapper to `~/.claude/hooks/c2c-inbox-check.sh`
-directly so the already-running Claude Code session picks it up on
-next hook fire (hook scripts are re-read from disk on each invocation).
+```bash
+exec c2c hook
+```
+
+with:
+
+```bash
+c2c hook
+exit 0
+```
+
+`exec` replaces the bash process image with the c2c binary at the same
+PID. Claude Code's Node.js hook runner tracks the initially-spawned
+bash PID and its libuv pidfd/SIGCHLD state is tied to that specific
+process image. When bash morphs into the c2c OCaml binary mid-flight,
+the runner's waitpid() bookkeeping surfaces ECHILD on exit — every
+single time. Running c2c as a bash child and exiting bash normally
+keeps the tracked process stable.
 
 # Verification
 
-- `time c2c hook` → 63ms total (floor active, no messages in inbox)
-- `time bash ~/.claude/hooks/c2c-inbox-check.sh` → 58ms total
+After the exec fix, triggered Bash/ls/arithmetic tool calls in a fresh
+scribe session — **no more `PostToolUse:Bash` or `PostToolUse:Tool`
+ECHILD errors** for non-MCP tools.
 
-If 50ms turns out to be too tight under high load, bump to 100ms. The
-ceiling is Claude Code's own timeout on PostToolUse hooks (currently
-seconds, not milliseconds).
+# Remaining upstream issues (not ours)
+
+Two ECHILD classes still surface and are **not** caused by c2c:
+
+1. `UserPromptSubmit` / `Stop` hook ECHILD — comes from the
+   `idle-info` plugin's Node.js hooks
+   (`~/.claude/plugins/marketplaces/idle-info/hooks/hooks.json`).
+   Verified by stubbing c2c hook to `sleep 0.1; exit 0` — errors
+   persisted unchanged.
+2. `PostToolUse:mcp__*` ECHILD — even with our hook stubbed to a
+   500ms plain sleep, `PostToolUse:mcp__c2c__list` still reports
+   ECHILD. So MCP tool PostToolUse hook invocations have an
+   additional Claude Code 2.1.114 race that sleep duration does not
+   mitigate. Non-MCP tools (Bash, Edit, Grep, etc.) are clean.
+
+These are Claude Code bugs, not c2c bugs. Worth filing upstream if
+they become annoying; for now they're cosmetic (hooks still run, no
+messages lost).
+
+# Attribution test procedure
+
+To confirm whether a given ECHILD error is ours:
+
+```bash
+# Disable our hook
+cat > ~/.claude/hooks/c2c-inbox-check.sh <<'EOF'
+#!/bin/bash
+sleep 0.1
+exit 0
+EOF
+
+# Trigger tool calls in a live Claude Code session. If ECHILD still
+# shows for the same hook type (UserPromptSubmit, Stop,
+# PostToolUse:mcp__*), it's upstream. Restore the hook when done.
+```
 
 # Related
 
