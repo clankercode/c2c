@@ -105,3 +105,29 @@ If you launch one agent from inside another (e.g. `kimi` from a Codex session), 
 ### Do Not Set `C2C_MCP_AUTO_DRAIN_CHANNEL=1`
 
 The server defaults to `0` (safe). Even when set to `1`, auto-drain only works if the client declares `experimental.claude/channel` support in its `initialize` handshake — standard Claude Code does not. Setting this env var has no benefit and can cause confusion. The PostToolUse hook is the production auto-delivery path for Claude Code.
+
+### PTY Wake Requires `CAP_SYS_PTRACE` on Python
+
+Managed kimi, codex, opencode, and crush sessions use `c2c_pty_inject` (via `pidfd_getfd`) to wake idle TUIs. When `kernel.yama.ptrace_scope >= 1` (the default on most distros) and the Python interpreter lacks `CAP_SYS_PTRACE`, every wake returns `EPERM` and the session silently misses new messages until it polls manually.
+
+**Fix:** grant the capability once per interpreter install:
+
+```bash
+sudo setcap cap_sys_ptrace=ep "$(command -v python3)"
+```
+
+`c2c health` and the bare `c2c` landing flag this case with the exact command to run. Claude Code is unaffected — its wake path is the PostToolUse hook (and `C2C_MCP_CHANNEL_DELIVERY=1` for managed sessions), which does not require the capability.
+
+### tmux `extended-keys on` Breaks `send-keys Enter` Against Claude TUIs
+
+If `~/.tmux.conf` has `set -s extended-keys on`, `tmux send-keys Enter` arrives at Claude Code as a kitty-protocol `Ctrl+Shift+M` sequence (`^[[27;5;109~`) rather than a bare `0x0D`. Automation that drives the TUI via tmux will see the text appear in the input box but never submit. The same config is what makes `Shift+Enter` insert a literal newline in Claude — so you cannot simply remove it.
+
+**Workaround** for automation scripts that must submit a prompt:
+
+```bash
+tmux set -s extended-keys off
+tmux send-keys -t <session> Enter
+tmux set -s extended-keys on
+```
+
+PTY-inject paths (`c2c_pty_inject.inject`) bypass tmux entirely and are unaffected.
