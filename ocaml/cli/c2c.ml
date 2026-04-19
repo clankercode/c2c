@@ -2526,17 +2526,22 @@ let claude_hook_script = {|
 #
 # Calls 'c2c hook' which drains the inbox and outputs messages.
 # c2c hook self-regulates runtime to prevent Node.js ECHILD race.
-# If `c2c` is not on PATH or fails fast, we still sleep briefly so Claude
-# Code's waitpid() can complete before the kernel reaps the zombie.
+#
+# IMPORTANT: do NOT use `exec c2c hook`. Claude Code's Node.js hook runner
+# tracks the initially-spawned bash PID, and when bash exec's to the c2c
+# binary the runner's waitpid() bookkeeping gets confused and surfaces
+# `ECHILD: unknown error, waitpid` on every tool call. Running c2c as a
+# bash subprocess and exiting bash normally fixes it.
 #
 # Required env vars (set by c2c start or the MCP server entry):
 #   C2C_MCP_SESSION_ID   — broker session id
 #   C2C_MCP_BROKER_ROOT  — absolute path to broker root dir
 
 if command -v c2c >/dev/null 2>&1; then
-    exec c2c hook
+    c2c hook
+    exit 0
 fi
-# c2c binary missing: sleep ~50ms to avoid ECHILD then exit cleanly.
+# c2c binary missing: sleep ~50ms to avoid fast-exit ECHILD, then exit cleanly.
 sleep 0.05
 exit 0
 |}
