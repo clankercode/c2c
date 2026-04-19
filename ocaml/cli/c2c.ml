@@ -2053,36 +2053,9 @@ let json_read_file path =
     Yojson.Safe.from_string s)
 
 
-(* --- subcommand: install-self -------------------------------------------- *)
+(* --- install: self (copy binary to ~/.local/bin) ------------------------- *)
 
-let install_self_cmd =
-  let dest =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "dest"; "d" ] ~docv:"DIR" ~doc:"Install destination (default: ~/.local/bin).")
-  in
-  let mcp_server =
-    Cmdliner.Arg.(value & flag & info [ "mcp-server" ] ~doc:"Also install the c2c MCP server binary as ~/.local/bin/c2c-mcp-server.")
-  in
-  let extra_positional =
-    Cmdliner.Arg.(value & pos_all string [] & info [] ~docv:""
-      ~doc:"Reserved — install-self takes no positional arguments.")
-  in
-  let+ json = json_flag
-  and+ dest_opt = dest
-  and+ with_mcp_server = mcp_server
-  and+ extra_positional = extra_positional in
-  (match extra_positional with
-   | arg :: _ ->
-       let known_clients = [ "claude"; "codex"; "opencode"; "kimi"; "crush" ] in
-       let suggestion =
-         if List.mem arg known_clients
-         then Printf.sprintf "Did you mean `c2c setup %s`?" arg
-         else "For client configuration, use `c2c setup <client>`."
-       in
-       Printf.eprintf
-         "error: install-self takes no positional arguments (got %S).\n       %s\n%!"
-         arg suggestion;
-       exit 2
-   | [] -> ());
+let do_install_self ~output_mode ~dest_opt ~with_mcp_server =
   let dest_dir =
     match dest_opt with
     | Some d -> d
@@ -2090,8 +2063,6 @@ let install_self_cmd =
         let home = Sys.getenv "HOME" in
         home // ".local" // "bin"
   in
-  let output_mode = if json then Json else Human in
-  (* Determine path of the running executable *)
   let exe_path = Sys.executable_name in
   if not (Sys.file_exists exe_path) then (
     match output_mode with
@@ -2165,12 +2136,6 @@ let install_self_cmd =
           | Human ->
               Printf.eprintf "error: %s\n%!" msg;
               exit 1))
-
-let install_self =
-  Cmdliner.Cmd.v
-    (Cmdliner.Cmd.info "install-self"
-       ~doc:"Install the running c2c binary to ~/.local/bin (for client setup, use `c2c setup <client>`).")
-    install_self_cmd
 
 (* --- subcommand: init ---------------------------------------------------- *)
 
@@ -2559,10 +2524,436 @@ let configure_claude_hook () =
   in
   json_write_file settings_path settings
 
-let setup_cmd =
-  let client =
-    Cmdliner.Arg.(value & pos 0 (some string) (Some "claude") & info [] ~docv:"CLIENT" ~doc:"Client type: claude, codex, kimi, opencode (default: claude).")
+(* --- PATH detection helper, shared by install dispatchers --------------- *)
+
+let which_binary name =
+  match Sys.getenv_opt "PATH" with
+  | None -> None
+  | Some path ->
+      let sep = if Sys.win32 then ';' else ':' in
+      let dirs = String.split_on_char sep path in
+      List.find_map (fun d ->
+        if d = "" then None
+        else
+          let candidate = d // name in
+          if Sys.file_exists candidate then Some candidate else None) dirs
+
+(* --- install: claude (MCP server + PostToolUse hook) ---------------------- *)
+
+let setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force =
+  let claude_dir = resolve_claude_dir () in
+  let claude_json = Filename.concat claude_dir ".claude.json" in
+  let config =
+    if Sys.file_exists claude_json then json_read_file claude_json
+    else `Assoc []
   in
+  let mcp_entry =
+    `Assoc
+      [ ("command", `String mcp_command)
+      ; ("args", `List (if mcp_command = "c2c-mcp-server" then [] else [ `String "exec"; `String "--"; `String server_path ]))
+      ; ("env", `Assoc
+          [ ("C2C_MCP_BROKER_ROOT", `String root)
+          ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
+          ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+          ])
+      ]
+  in
+  let config = match config with
+    | `Assoc fields ->
+        let filtered = List.filter (fun (k, _) -> k <> "mcpServers") fields in
+        let existing_mcp = match List.assoc_opt "mcpServers" fields with
+          | Some (`Assoc m) -> List.filter (fun (k, _) -> k <> "c2c") m
+          | _ -> []
+        in
+        `Assoc (filtered @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", mcp_entry) ])) ])
+    | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", mcp_entry) ]) ]
+  in
+  json_write_file claude_json config;
+  let settings_path = Filename.concat claude_dir "settings.json" in
+  let hook_script = Filename.concat claude_dir "hooks" // "c2c-inbox-check.sh" in
+  (try
+     let dir = Filename.dirname hook_script in
+     if not (Sys.file_exists dir) then begin
+       let rec mkdir_p d =
+         if Sys.file_exists d then () else begin
+           mkdir_p (Filename.dirname d);
+           Unix.mkdir d 0o755
+         end
+       in
+       mkdir_p dir
+     end;
+     let hook_content =
+       "#!/bin/bash\n\
+        # c2c-inbox-check.sh — PostToolUse hook for c2c auto-delivery in Claude Code\n\
+        SESSION_ID=\"${C2C_MCP_SESSION_ID:-}\"\n\
+        BROKER_ROOT=\"${C2C_MCP_BROKER_ROOT:-}\"\n\
+        [ -z \"$SESSION_ID\" ] && exit 0\n\
+        [ -z \"$BROKER_ROOT\" ] && exit 0\n\
+        INBOX=\"$BROKER_ROOT/$SESSION_ID.inbox.json\"\n\
+        [ -f \"$INBOX\" ] || exit 0\n\
+        CONTENT=$(<\"$INBOX\")\n\
+        TRIMMED=\"${CONTENT//[[:space:]]/}\"\n\
+        [ \"$TRIMMED\" = \"[]\" ] || [ -z \"$TRIMMED\" ] && exit 0\n\
+        exec timeout 5 c2c hook\n"
+     in
+     let oc = open_out hook_script in
+     output_string oc hook_content;
+     close_out oc;
+     Unix.chmod hook_script 0o755
+   with Unix.Unix_error _ -> ());
+  let hook_registered = ref false in
+  let settings =
+    if Sys.file_exists settings_path then json_read_file settings_path
+    else `Assoc []
+  in
+  let settings = match settings with
+    | `Assoc fields ->
+        let hooks = match List.assoc_opt "hooks" fields with
+          | Some (`Assoc h) -> h
+          | _ -> []
+        in
+        let post_tool_use = match List.assoc_opt "PostToolUse" hooks with
+          | Some (`List entries) -> entries
+          | _ -> []
+        in
+        let already = List.exists (fun entry ->
+          match entry with
+          | `Assoc e ->
+              (match List.assoc_opt "hooks" e with
+               | Some (`List hs) ->
+                   List.exists (fun h ->
+                     match h with
+                     | `Assoc h_fields ->
+                         (match List.assoc_opt "command" h_fields with
+                          | Some (`String cmd) -> cmd = hook_script
+                          | _ -> false)
+                     | _ -> false) hs
+               | _ -> false)
+          | _ -> false
+        ) post_tool_use in
+        hook_registered := already;
+        if not already then begin
+          let new_entry = `Assoc [ ("matcher", `String ".*"); ("hooks", `List [ `Assoc [ ("type", `String "command"); ("command", `String hook_script) ] ]) ] in
+          let new_post = post_tool_use @ [ new_entry ] in
+          let new_hooks = List.filter (fun (k, _) -> k <> "PostToolUse") hooks @ [ ("PostToolUse", `List new_post) ] in
+          let new_fields = List.filter (fun (k, _) -> k <> "hooks") fields @ [ ("hooks", `Assoc new_hooks) ] in
+          `Assoc new_fields
+        end else
+          `Assoc fields
+    | _ -> `Assoc []
+  in
+  if not !hook_registered then json_write_file settings_path settings;
+  let hook_status = if !hook_registered then "already registered" else "registered" in
+  (match output_mode with
+   | Json ->
+       print_json (`Assoc
+         [ ("ok", `Bool true)
+         ; ("client", `String "claude")
+         ; ("alias", `String alias_val)
+         ; ("broker_root", `String root)
+         ; ("config", `String claude_json)
+         ; ("hook_status", `String hook_status)
+         ])
+   | Human ->
+       let hook_dir = Filename.concat claude_dir "hooks" in
+       let hook_script = Filename.concat hook_dir "c2c-inbox-check.sh" in
+       let mark = "x" in
+       Printf.printf "Configured Claude Code for c2c:\n";
+       Printf.printf "  - [%s] MCP server:     %s/.claude.json\n" mark claude_dir;
+       Printf.printf "  - [%s] PostToolUse hook: %s/settings.json\n" mark claude_dir;
+       Printf.printf "  - [%s] Inbox hook script: %s\n" mark hook_script;
+       Printf.printf "\n  alias:       %s\n" alias_val;
+       Printf.printf "  broker root: %s\n" root;
+       if !hook_registered then
+         Printf.printf "\n  (hook was already registered — no changes made)\n"
+       else
+         Printf.printf "\nRestart Claude Code to pick up the new MCP server.\n";
+       let alias_str = match alias_opt with Some a -> " -a " ^ a | None -> "" in
+       let force_str = if force then " --force" else "" in
+       Printf.printf "\nTo use a custom profile directory:\n";
+       Printf.printf "  CLAUDE_CONFIG_DIR=/path/to/profile c2c install claude%s%s\n" alias_str force_str)
+
+(* --- install: crush (JSON) --- *)
+
+let setup_crush ~output_mode ~root ~alias_val ~server_path =
+  let config_path = Filename.concat (Sys.getenv "HOME") (".config" // "crush" // "crush.json") in
+  let existing =
+    if Sys.file_exists config_path then json_read_file config_path
+    else `Assoc []
+  in
+  let c2c_entry =
+    `Assoc
+      [ ("type", `String "stdio")
+      ; ("command", `String "opam")
+      ; ("args", `List [ `String "exec"; `String "--"; `String server_path ])
+      ; ("env", `Assoc
+          [ ("C2C_MCP_BROKER_ROOT", `String root)
+          ; ("C2C_MCP_SESSION_ID", `String alias_val)
+          ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+          ])
+      ]
+  in
+  let config = match existing with
+    | `Assoc fields ->
+        let existing_mcp = match List.assoc_opt "mcpServers" fields with
+          | Some (`Assoc m) -> List.filter (fun (k, _) -> k <> "c2c") m
+          | _ -> []
+        in
+        `Assoc (List.filter (fun (k, _) -> k <> "mcpServers") fields
+                @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", c2c_entry) ])) ])
+    | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", c2c_entry) ]) ]
+  in
+  (try
+     let rec mkdir_p d =
+       if Sys.file_exists d then () else begin
+         mkdir_p (Filename.dirname d);
+         Unix.mkdir d 0o755
+       end
+     in
+     mkdir_p (Filename.dirname config_path)
+   with Unix.Unix_error _ -> ());
+  json_write_file config_path config;
+  match output_mode with
+  | Json ->
+      print_json (`Assoc
+        [ ("ok", `Bool true)
+        ; ("client", `String "crush")
+        ; ("alias", `String alias_val)
+        ; ("broker_root", `String root)
+        ; ("config", `String config_path)
+        ])
+  | Human ->
+      Printf.printf "Configured Crush for c2c (experimental).\n";
+      Printf.printf "  alias:       %s\n" alias_val;
+      Printf.printf "  broker root: %s\n" root;
+      Printf.printf "  config:      %s\n" config_path;
+      Printf.printf "  server:      %s\n" server_path
+
+(* --- install: shared dispatcher (used by `c2c install <client>` and TUI) --- *)
+
+let resolve_mcp_server_paths ~output_mode =
+  let server_path =
+    match find_ocaml_server_path () with
+    | Some p -> p
+    | None ->
+        (match output_mode with
+         | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String "cannot find c2c_mcp_server binary") ])
+         | Human ->
+             Printf.eprintf "error: cannot find c2c_mcp_server binary. Build with: just build\n%!");
+        exit 1
+  in
+  let server_path =
+    if Filename.is_relative server_path then Sys.getcwd () // server_path
+    else server_path
+  in
+  let mcp_command = match which_binary "c2c-mcp-server" with
+    | Some _ -> "c2c-mcp-server"
+    | None -> server_path
+  in
+  (server_path, mcp_command)
+
+let do_install_client ~output_mode ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force =
+  let root =
+    match broker_root_opt with
+    | Some r -> r
+    | None -> resolve_broker_root ()
+  in
+  let alias_val =
+    match alias_opt with
+    | Some a -> a
+    | None -> default_alias_for_client client
+  in
+  let (server_path, mcp_command) = resolve_mcp_server_paths ~output_mode in
+  match String.lowercase_ascii client with
+  | "claude" -> setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force
+  | "codex" -> setup_codex ~output_mode ~root ~alias_val ~server_path
+  | "kimi" -> setup_kimi ~output_mode ~root ~alias_val ~server_path
+  | "opencode" -> setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt
+  | "crush" -> setup_crush ~output_mode ~root ~alias_val ~server_path
+  | _ ->
+      (match output_mode with
+       | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String (Printf.sprintf "unknown client '%s'. Use: claude, codex, kimi, opencode, crush" client)) ])
+       | Human ->
+           Printf.eprintf "error: unknown client '%s'. Use: claude, codex, kimi, opencode, crush\n%!" client;
+           exit 1)
+
+(* --- install: detection + TUI --------------------------------------------- *)
+
+let known_clients = [ "claude"; "codex"; "opencode"; "kimi"; "crush" ]
+
+let self_installed_path () =
+  let home = try Sys.getenv "HOME" with Not_found -> "" in
+  let p = home // ".local" // "bin" // "c2c" in
+  if Sys.file_exists p then Some p else None
+
+let client_configured client =
+  let home = try Sys.getenv "HOME" with Not_found -> "" in
+  match String.lowercase_ascii client with
+  | "claude" ->
+      let p = home // ".claude.json" in
+      if not (Sys.file_exists p) then false
+      else
+        (try
+           match json_read_file p with
+           | `Assoc fields ->
+               (match List.assoc_opt "mcpServers" fields with
+                | Some (`Assoc m) -> List.mem_assoc "c2c" m
+                | _ -> false)
+           | _ -> false
+         with _ -> false)
+  | "codex" ->
+      let p = home // ".codex" // "config.toml" in
+      if not (Sys.file_exists p) then false
+      else
+        (try
+           let ic = open_in p in
+           let s =
+             Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+               really_input_string ic (in_channel_length ic))
+           in
+           let needle = "[mcp_servers.c2c]" in
+           let nl = String.length needle and hl = String.length s in
+           let rec loop i =
+             i <= hl - nl
+             && (String.sub s i nl = needle || loop (i + 1))
+           in
+           loop 0
+         with _ -> false)
+  | "kimi" ->
+      let p = home // ".kimi" // "mcp.json" in
+      if not (Sys.file_exists p) then false
+      else
+        (try
+           match json_read_file p with
+           | `Assoc fields ->
+               (match List.assoc_opt "mcpServers" fields with
+                | Some (`Assoc m) -> List.mem_assoc "c2c" m
+                | _ -> false)
+           | _ -> false
+         with _ -> false)
+  | "opencode" ->
+      let p = Sys.getcwd () // ".opencode" // "opencode.json" in
+      if not (Sys.file_exists p) then false
+      else
+        (try
+           match json_read_file p with
+           | `Assoc fields ->
+               (match List.assoc_opt "mcp" fields with
+                | Some (`Assoc m) -> List.mem_assoc "c2c" m
+                | _ -> false)
+           | _ -> false
+         with _ -> false)
+  | "crush" ->
+      let p = home // ".config" // "crush" // "crush.json" in
+      if not (Sys.file_exists p) then false
+      else
+        (try
+           match json_read_file p with
+           | `Assoc fields ->
+               (match List.assoc_opt "mcpServers" fields with
+                | Some (`Assoc m) -> List.mem_assoc "c2c" m
+                | _ -> false)
+           | _ -> false
+         with _ -> false)
+  | _ -> false
+
+(* [detect_installation ()] returns the detection snapshot:
+   (self_installed, [(client, binary_on_path, configured)]) *)
+let detect_installation () =
+  let self = self_installed_path () <> None in
+  let clients = List.map (fun c ->
+    (c, which_binary c <> None, client_configured c)
+  ) known_clients in
+  (self, clients)
+
+let prompt_yn ?(default_yes = true) q =
+  Printf.printf "%s " q;
+  let suffix = if default_yes then "[Y/n]: " else "[y/N]: " in
+  print_string suffix;
+  let () = try flush stdout with _ -> () in
+  match (try Some (input_line stdin) with End_of_file -> None) with
+  | None -> default_yes
+  | Some s ->
+      let t = String.lowercase_ascii (String.trim s) in
+      if t = "" then default_yes
+      else (t.[0] = 'y')
+
+let run_install_tui ~alias_opt ~broker_root_opt =
+  let (self, clients) = detect_installation () in
+  Printf.printf "c2c installer\n";
+  Printf.printf "─────────────\n\n";
+  Printf.printf "Here's the plan — press [Enter] to proceed with defaults.\n\n";
+  let self_default = not self in
+  let client_defaults = List.map (fun (c, on_path, configured) ->
+    let do_it = on_path && not configured in
+    (c, on_path, configured, do_it)
+  ) clients in
+  let mark b = if b then "[x]" else "[ ]" in
+  Printf.printf "  %s install c2c binary       → ~/.local/bin/c2c%s\n"
+    (mark self_default)
+    (if self then " (already present)" else "");
+  List.iter (fun (c, on_path, configured, do_it) ->
+    let label = Printf.sprintf "configure %s" c in
+    let suffix =
+      if not on_path then " → not on PATH, skipping"
+      else if configured then " → already configured"
+      else " → detected"
+    in
+    Printf.printf "  %s %-26s%s\n" (mark do_it) label suffix
+  ) client_defaults;
+  Printf.printf "\nPress [Enter] to proceed, [c] to customize, [n] to abort: ";
+  let () = try flush stdout with _ -> () in
+  let choice =
+    match (try Some (input_line stdin) with End_of_file -> None) with
+    | None -> ""
+    | Some s -> String.lowercase_ascii (String.trim s)
+  in
+  let (do_self, do_clients) =
+    if choice = "n" || choice = "no" || choice = "abort" then begin
+      Printf.printf "Aborted.\n";
+      exit 0
+    end
+    else if choice = "c" || choice = "customize" then begin
+      Printf.printf "\nCustomize:\n";
+      let s =
+        if self then
+          prompt_yn ~default_yes:false "  Reinstall c2c binary?"
+        else prompt_yn "  Install c2c binary?"
+      in
+      let cs = List.map (fun (c, on_path, configured, _default) ->
+        if not on_path then (c, false)
+        else
+          let q =
+            if configured
+            then Printf.sprintf "  Reconfigure %s?" c
+            else Printf.sprintf "  Configure %s?" c
+          in
+          let default = not configured in
+          (c, prompt_yn ~default_yes:default q)
+      ) client_defaults in
+      (s, cs)
+    end
+    else
+      let cs = List.map (fun (c, _, _, do_it) -> (c, do_it)) client_defaults in
+      (self_default, cs)
+  in
+  Printf.printf "\n";
+  if do_self then begin
+    Printf.printf "→ Installing c2c binary...\n";
+    do_install_self ~output_mode:Human ~dest_opt:None ~with_mcp_server:false
+  end;
+  List.iter (fun (c, do_it) ->
+    if do_it then begin
+      Printf.printf "\n→ Configuring %s...\n" c;
+      do_install_client ~output_mode:Human ~client:c ~alias_opt
+        ~broker_root_opt ~target_dir_opt:None ~force:false
+    end
+  ) do_clients;
+  Printf.printf "\nDone.\n"
+
+(* --- install: Cmdliner wiring --------------------------------------------- *)
+
+let install_common_args () =
   let alias =
     Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS" ~doc:"Alias to use (default: auto-generated per client).")
   in
@@ -2575,205 +2966,95 @@ let setup_cmd =
   let force =
     Cmdliner.Arg.(value & flag & info [ "force"; "f" ] ~doc:"Overwrite existing configuration.")
   in
-  let+ json = json_flag
-  and+ client = client
-  and+ alias_opt = alias
-  and+ broker_root_opt = broker_root
-  and+ target_dir_opt = target_dir
-  and+ _force = force in
-  let output_mode = if json then Json else Human in
-  let root =
-    match broker_root_opt with
-    | Some r -> r
-    | None -> resolve_broker_root ()
-  in
-  let alias_val =
-    match alias_opt with
-    | Some a -> a
-    | None -> default_alias_for_client (Option.value client ~default:"claude")
-  in
-  let server_path =
-    match find_ocaml_server_path () with
-    | Some p -> p
-    | None ->
-        (match output_mode with
-         | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String "cannot find c2c_mcp_server binary") ])
-         | Human ->
-             Printf.eprintf "error: cannot find c2c_mcp_server binary. Build with: just build\n%!");
-        exit 1
-  in
-  let server_path =
-    if Filename.is_relative server_path then
-      Sys.getcwd () // server_path
-    else server_path
-  in
-  (* Use c2c-mcp-server on PATH if available, else fall back to opam exec build artifact *)
-  let which name =
-    match Sys.getenv_opt "PATH" with
-    | None -> None
-    | Some path ->
-        let sep = if Sys.win32 then ';' else ':' in
-        let dirs = String.split_on_char sep path in
-        List.find_map (fun d ->
-          if d = "" then None
-          else
-            let candidate = d // name in
-            if Sys.file_exists candidate then Some candidate else None) dirs
-  in
-  let mcp_command = match which "c2c-mcp-server" with
-    | Some _ -> "c2c-mcp-server"
-    | None -> server_path
-  in
-  let client = Option.value client ~default:"claude" in
-  (match String.lowercase_ascii client with
-   | "claude" ->
-       let claude_dir = resolve_claude_dir () in
-       let claude_json = Filename.concat claude_dir ".claude.json" in
-       let config =
-         if Sys.file_exists claude_json then json_read_file claude_json
-         else `Assoc []
-       in
-       let mcp_entry =
-         `Assoc
-           [ ("command", `String mcp_command)
-           ; ("args", `List (if mcp_command = "c2c-mcp-server" then [] else [ `String "exec"; `String "--"; `String server_path ]))
-           ; ("env", `Assoc
-               [ ("C2C_MCP_BROKER_ROOT", `String root)
-               ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
-               ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
-               ])
-           ]
-       in
-       let config = match config with
-         | `Assoc fields ->
-             let filtered = List.filter (fun (k, _) -> k <> "mcpServers") fields in
-             let existing_mcp = match List.assoc_opt "mcpServers" fields with
-               | Some (`Assoc m) -> List.filter (fun (k, _) -> k <> "c2c") m
-               | _ -> []
-             in
-             `Assoc (filtered @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", mcp_entry) ])) ])
-         | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", mcp_entry) ]) ]
-       in
-       json_write_file claude_json config;
-       (* Write PostToolUse inbox hook to the profile's settings.json *)
-       let settings_path = Filename.concat claude_dir "settings.json" in
-       let hook_script = Filename.concat claude_dir "hooks" // "c2c-inbox-check.sh" in
-       (* Ensure hook script exists *)
-       (try
-          let dir = Filename.dirname hook_script in
-          if not (Sys.file_exists dir) then begin
-            let rec mkdir_p d =
-              if Sys.file_exists d then () else begin
-                mkdir_p (Filename.dirname d);
-                Unix.mkdir d 0o755
-              end
-            in
-            mkdir_p dir
-          end;
-          let hook_content =
-            "#!/bin/bash\n\
-             # c2c-inbox-check.sh — PostToolUse hook for c2c auto-delivery in Claude Code\n\
-             SESSION_ID=\"${C2C_MCP_SESSION_ID:-}\"\n\
-             BROKER_ROOT=\"${C2C_MCP_BROKER_ROOT:-}\"\n\
-             [ -z \"$SESSION_ID\" ] && exit 0\n\
-             [ -z \"$BROKER_ROOT\" ] && exit 0\n\
-             INBOX=\"$BROKER_ROOT/$SESSION_ID.inbox.json\"\n\
-             [ -f \"$INBOX\" ] || exit 0\n\
-             CONTENT=$(<\"$INBOX\")\n\
-             TRIMMED=\"${CONTENT//[[:space:]]/}\"\n\
-             [ \"$TRIMMED\" = \"[]\" ] || [ -z \"$TRIMMED\" ] && exit 0\n\
-             exec timeout 5 c2c hook\n"
-          in
-          let oc = open_out hook_script in
-          output_string oc hook_content;
-          close_out oc;
-          Unix.chmod hook_script 0o755
-        with Unix.Unix_error _ -> ());
-       (* Add PostToolUse hook entry to settings.json *)
-       let hook_registered = ref false in
-       let settings =
-         if Sys.file_exists settings_path then json_read_file settings_path
-         else `Assoc []
-       in
-       let settings = match settings with
-         | `Assoc fields ->
-             let hooks = match List.assoc_opt "hooks" fields with
-               | Some (`Assoc h) -> h
-               | _ -> []
-             in
-             let post_tool_use = match List.assoc_opt "PostToolUse" hooks with
-               | Some (`List entries) -> entries
-               | _ -> []
-             in
-             (* Check if our hook is already registered *)
-             let already = List.exists (fun entry ->
-               match entry with
-               | `Assoc e ->
-                   (match List.assoc_opt "hooks" e with
-                    | Some (`List hs) ->
-                        List.exists (fun h ->
-                          match h with
-                          | `Assoc h_fields ->
-                              (match List.assoc_opt "command" h_fields with
-                               | Some (`String cmd) -> cmd = hook_script
-                               | _ -> false)
-                          | _ -> false) hs
-                    | _ -> false)
-               | _ -> false
-             ) post_tool_use in
-             hook_registered := already;
-             if not already then begin
-               let new_entry = `Assoc [ ("matcher", `String ".*"); ("hooks", `List [ `Assoc [ ("type", `String "command"); ("command", `String hook_script) ] ]) ] in
-               let new_post = post_tool_use @ [ new_entry ] in
-               let new_hooks = List.filter (fun (k, _) -> k <> "PostToolUse") hooks @ [ ("PostToolUse", `List new_post) ] in
-               let new_fields = List.filter (fun (k, _) -> k <> "hooks") fields @ [ ("hooks", `Assoc new_hooks) ] in
-               `Assoc new_fields
-             end else
-               `Assoc fields
-         | _ -> `Assoc []
-       in
-       if not !hook_registered then json_write_file settings_path settings;
-       let hook_status = if !hook_registered then "already registered" else "registered" in
-       (match output_mode with
-        | Json ->
-            print_json (`Assoc
-              [ ("ok", `Bool true)
-              ; ("client", `String "claude")
-              ; ("alias", `String alias_val)
-              ; ("broker_root", `String root)
-              ; ("config", `String claude_json)
-              ; ("hook_status", `String hook_status)
-              ])
-        | Human ->
-            let hook_dir = Filename.concat claude_dir "hooks" in
-            let hook_script = Filename.concat hook_dir "c2c-inbox-check.sh" in
-            let mark = "x" in
-            Printf.printf "Configured Claude Code for c2c:\n";
-            Printf.printf "  - [%s] MCP server:     %s/.claude.json\n" mark claude_dir;
-            Printf.printf "  - [%s] PostToolUse hook: %s/settings.json\n" mark claude_dir;
-            Printf.printf "  - [%s] Inbox hook script: %s\n" mark hook_script;
-            Printf.printf "\n  alias:       %s\n" alias_val;
-            Printf.printf "  broker root: %s\n" root;
-            if !hook_registered then
-              Printf.printf "\n  (hook was already registered — no changes made)\n"
-            else
-              Printf.printf "\nRestart Claude Code to pick up the new MCP server.\n";
-            (* Reconstruct the command line for profile-specific usage hint *)
-            let alias_str = match alias_opt with Some a -> " -a " ^ a | None -> "" in
-            let force_str = if _force then " --force" else "" in
-            Printf.printf "\nTo use a custom profile directory:\n";
-            Printf.printf "  CLAUDE_CONFIG_DIR=/path/to/profile c2c setup %s%s%s\n" client alias_str force_str)
-   | "codex" -> setup_codex ~output_mode ~root ~alias_val ~server_path
-   | "kimi" -> setup_kimi ~output_mode ~root ~alias_val ~server_path
-   | "opencode" -> setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt
-   | _ ->
-       (match output_mode with
-        | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String (Printf.sprintf "unknown client '%s'. Use: claude, codex, kimi, opencode" client)) ])
-        | Human ->
-            Printf.eprintf "error: unknown client '%s'. Use: claude, codex, kimi, opencode\n%!" client;
-            exit 1))
+  (alias, broker_root, target_dir, force)
 
-let setup = Cmdliner.Cmd.v (Cmdliner.Cmd.info "setup" ~doc:"Configure a client for c2c messaging.") setup_cmd
+let install_self_subcmd =
+  let dest =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "dest"; "d" ] ~docv:"DIR" ~doc:"Install destination (default: ~/.local/bin).")
+  in
+  let mcp_server =
+    Cmdliner.Arg.(value & flag & info [ "mcp-server" ] ~doc:"Also install the c2c MCP server binary as ~/.local/bin/c2c-mcp-server.")
+  in
+  let term =
+    let+ json = json_flag
+    and+ dest_opt = dest
+    and+ with_mcp_server = mcp_server in
+    let output_mode = if json then Json else Human in
+    do_install_self ~output_mode ~dest_opt ~with_mcp_server
+  in
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "self"
+       ~doc:"Install the running c2c binary to ~/.local/bin.")
+    term
+
+let install_client_subcmd client =
+  let (alias, broker_root, target_dir, force) = install_common_args () in
+  let term =
+    let+ json = json_flag
+    and+ alias_opt = alias
+    and+ broker_root_opt = broker_root
+    and+ target_dir_opt = target_dir
+    and+ force = force in
+    let output_mode = if json then Json else Human in
+    do_install_client ~output_mode ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force
+  in
+  let doc = Printf.sprintf "Configure %s for c2c messaging." client in
+  Cmdliner.Cmd.v (Cmdliner.Cmd.info client ~doc) term
+
+let install_all_subcmd =
+  let (alias, broker_root, _target_dir, _force) = install_common_args () in
+  let term =
+    let+ json = json_flag
+    and+ alias_opt = alias
+    and+ broker_root_opt = broker_root in
+    let output_mode = if json then Json else Human in
+    let (self, clients) = detect_installation () in
+    if not self then begin
+      if output_mode = Human then Printf.printf "→ Installing c2c binary...\n";
+      do_install_self ~output_mode ~dest_opt:None ~with_mcp_server:false
+    end;
+    List.iter (fun (c, on_path, configured) ->
+      if on_path && not configured then begin
+        if output_mode = Human then Printf.printf "\n→ Configuring %s...\n" c;
+        do_install_client ~output_mode ~client:c ~alias_opt ~broker_root_opt
+          ~target_dir_opt:None ~force:false
+      end
+    ) clients;
+    if output_mode = Human then Printf.printf "\nDone.\n"
+  in
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "all"
+       ~doc:"Install c2c binary and auto-configure every detected client (scriptable, no prompts).")
+    term
+
+let install_default_term =
+  let (alias, broker_root, _target_dir, _force) = install_common_args () in
+  let+ alias_opt = alias
+  and+ broker_root_opt = broker_root in
+  run_install_tui ~alias_opt ~broker_root_opt
+
+let install =
+  let info = Cmdliner.Cmd.info "install"
+    ~doc:"Install c2c — binary and/or client integrations."
+    ~man:
+      [ `S "DESCRIPTION"
+      ; `P "With no subcommand, $(b,c2c install) runs an interactive TUI that \
+            detects which clients are on PATH and offers to configure each. \
+            Press $(b,Enter) to accept the defaults (install c2c binary + \
+            configure every detected client that isn't already set up), \
+            $(b,c) to customize, or $(b,n) to abort."
+      ; `P "Use the subcommands for scriptable (non-interactive) installs: \
+            $(b,c2c install self) installs only the binary; \
+            $(b,c2c install claude|codex|opencode|kimi|crush) configures one \
+            client; $(b,c2c install all) does the same as the TUI's default \
+            path without prompting."
+      ]
+  in
+  Cmdliner.Cmd.group ~default:install_default_term info
+    ([ install_self_subcmd
+     ; install_all_subcmd
+     ]
+     @ List.map install_client_subcmd known_clients)
 
 (* --- subcommand: serve (MCP server mode) ---------------------------------- *)
 
@@ -3954,11 +4235,81 @@ let sanitize_help_env () =
   fix "MANPAGER";
   fix "PAGER"
 
+(* Enriched landing for bare `c2c` (no subcommand). Shows detection status
+   and suggested next commands — doubles as a "where am I?" report. *)
+let print_enriched_landing () =
+  let version = version_string () in
+  let (self, clients) = detect_installation () in
+  let self_path = self_installed_path () in
+  let broker_root = try resolve_broker_root () with _ -> "(unresolved)" in
+  Printf.printf "c2c %s — peer-to-peer messaging for AI agents\n" version;
+  Printf.printf "\n";
+  Printf.printf "Status\n";
+  Printf.printf "  binary on PATH:   %s\n"
+    (match self_path with
+     | Some p -> Printf.sprintf "yes (%s)" p
+     | None -> "no");
+  Printf.printf "  broker root:      %s\n" broker_root;
+  let broker_live =
+    try
+      let broker = C2c_mcp.Broker.create ~root:broker_root in
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      let alive =
+        List.filter C2c_mcp.Broker.registration_is_alive regs |> List.length
+      in
+      Some (List.length regs, alive)
+    with _ -> None
+  in
+  (match broker_live with
+   | Some (total, alive) ->
+       Printf.printf "  peers:            %d registered (%d alive)\n" total alive
+   | None ->
+       Printf.printf "  peers:            (broker not initialised — try `c2c init`)\n");
+  Printf.printf "\nClients\n";
+  List.iter (fun (c, on_path, configured) ->
+    let status =
+      match on_path, configured with
+      | false, _ -> "not on PATH"
+      | true, true -> "configured"
+      | true, false -> "on PATH, not configured"
+    in
+    Printf.printf "  %-10s %s\n" c status
+  ) clients;
+  let missing_clients =
+    List.filter_map (fun (c, on_path, configured) ->
+      if on_path && not configured then Some c else None) clients
+  in
+  let suggestions =
+    let buf = Buffer.create 256 in
+    if not self then
+      Buffer.add_string buf "  c2c install self            install the c2c binary to ~/.local/bin\n";
+    List.iter (fun c ->
+      Buffer.add_string buf (Printf.sprintf "  c2c install %-16s configure %s for c2c\n" c c)
+    ) missing_clients;
+    Buffer.contents buf
+  in
+  if suggestions <> "" then begin
+    Printf.printf "\nSuggested next steps\n";
+    print_string suggestions;
+    Printf.printf "  c2c install                 interactive installer (TUI)\n"
+  end else begin
+    Printf.printf "\nEverything looks configured. Some useful commands:\n";
+    Printf.printf "  c2c list                    list registered peers\n";
+    Printf.printf "  c2c send ALIAS MSG          send a message\n";
+    Printf.printf "  c2c poll-inbox              read pending messages\n";
+    Printf.printf "  c2c rooms list              list rooms you're in\n"
+  end;
+  Printf.printf "\nRun `c2c help` or `c2c --help` for the full command list.\n"
+
+let default_term =
+  let+ () = Cmdliner.Term.const () in
+  print_enriched_landing ()
+
 let () =
   sanitize_help_env ();
   exit
     (Cmdliner.Cmd.eval
-       (Cmdliner.Cmd.group
+       (Cmdliner.Cmd.group ~default:default_term
           (Cmdliner.Cmd.info "c2c"
              ~version:(version_string ())
              ~doc:"c2c — peer-to-peer messaging for AI agents"
@@ -3973,14 +4324,18 @@ let () =
                     $(b,send-all), $(b,sweep), $(b,sweep-dryrun), $(b,history), \
                     $(b,health), $(b,status), $(b,verify), $(b,register), \
                     $(b,refresh-peer), $(b,tail-log), $(b,my-rooms), $(b,dead-letter), \
-                    $(b,prune-rooms), $(b,smoke-test), $(b,init), $(b,install-self), \
-                    $(b,setup), $(b,serve), $(b,mcp), $(b,start), $(b,stop), \
+                    $(b,prune-rooms), $(b,smoke-test), $(b,init), $(b,install), \
+                    $(b,serve), $(b,mcp), $(b,start), $(b,stop), \
                     $(b,restart), $(b,instances), $(b,hook), $(b,inject), \
                     $(b,screen), $(b,help)"
+               ; `P "$(b,install) — install c2c + client integrations (TUI by default). \
+                     Use $(b,c2c install self) for binary-only, \
+                     $(b,c2c install claude|codex|opencode|kimi|crush) per-client, \
+                     or $(b,c2c install all) for non-interactive full setup."
                ; `P "$(b,rooms) — manage N:N chat rooms"
                ; `P "$(b,relay) — cross-machine relay: serve, connect, setup, status, list, rooms, gc"
                ])
           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
           ; sweep_dryrun; history; health; status; verify; register; refresh_peer
-          ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install_self; setup
+          ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
           ; serve; mcp; start; stop; restart; instances; rooms_group; room_group; relay_group; hook; inject; screen; help ]))

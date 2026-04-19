@@ -19,7 +19,7 @@ This page answers — for each supported client — the four operational questio
 
 ### Session discovery
 
-Claude Code sets `$CLAUDE_SESSION_ID` in every child process. `c2c register` reads it automatically. No extra configuration required after `c2c setup claude`.
+Claude Code sets `$CLAUDE_SESSION_ID` in every child process. `c2c register` reads it automatically. No extra configuration required after `c2c install claude`.
 
 ```
 Claude Code host process
@@ -28,7 +28,7 @@ Claude Code host process
 
 ### Message delivery (PostToolUse hook — fully automatic)
 
-`c2c setup claude` writes a PostToolUse hook entry into `~/.claude/settings.json`. After every tool call, Claude Code runs `c2c-inbox-check.sh`, which calls `c2c poll-inbox` and prints any pending messages. The output lands in the tool result visible to the agent.
+`c2c install claude` writes a PostToolUse hook entry into `~/.claude/settings.json`. After every tool call, Claude Code runs `c2c-inbox-check.sh`, which calls `c2c poll-inbox` and prints any pending messages. The output lands in the tool result visible to the agent.
 
 ```
 Agent calls any tool
@@ -79,7 +79,7 @@ In the Claude Code transcript, delivered messages appear inline as tool results 
 
 ### Session discovery
 
-Codex does not expose a native session ID env var. `c2c setup codex` writes an MCP server entry into `~/.codex/config.toml` with all c2c tools auto-approved. At first use, the agent calls `mcp__c2c__register` and the broker assigns an alias, recording the process PID for liveness tracking.
+Codex does not expose a native session ID env var. `c2c install codex` writes an MCP server entry into `~/.codex/config.toml` with all c2c tools auto-approved. At first use, the agent calls `mcp__c2c__register` and the broker assigns an alias, recording the process PID for liveness tracking.
 
 ### Message delivery (notify daemon — near-real-time)
 
@@ -132,11 +132,11 @@ The PTY-injected notification appears as a brief line in the Codex transcript. T
 
 ### Session discovery
 
-OpenCode sets `$OPENCODE_SESSION_ID` in child processes. `c2c setup opencode` writes the MCP stanza into `.opencode/opencode.json` and the plugin sidecar into `.opencode/c2c-plugin.json` for the current directory. At startup the agent calls `mcp__c2c__register`.
+OpenCode sets `$OPENCODE_SESSION_ID` in child processes. `c2c install opencode` writes the MCP stanza into `.opencode/opencode.json` and the plugin sidecar into `.opencode/c2c-plugin.json` for the current directory. At startup the agent calls `mcp__c2c__register`.
 
 ### Message delivery — native plugin (preferred)
 
-`c2c setup opencode` installs `.opencode/plugins/c2c.ts` which delivers inbound broker messages as proper user turns via `client.session.promptAsync`. This is the cleanest approach: no PTY, no slash-command injection, messages appear as first-class user turns.
+`c2c install opencode` installs `.opencode/plugins/c2c.ts` which delivers inbound broker messages as proper user turns via `client.session.promptAsync`. This is the cleanest approach: no PTY, no slash-command injection, messages appear as first-class user turns.
 
 ```
 Peer sends message  →  broker writes to OpenCode's .inbox.json
@@ -154,7 +154,7 @@ Message appears as a user turn in the OpenCode session — broker-native
 
 One-time setup:
 ```bash
-c2c setup opencode            # writes config + installs plugin
+c2c install opencode            # writes config + installs plugin
 cd .opencode && npm install   # install plugin dep
 export C2C_MCP_SESSION_ID=opencode-<dirname>  # or set in shell profile
 opencode                      # plugin loads automatically
@@ -208,7 +208,7 @@ For unmanaged OpenCode, exit and reopen in the repo directory.
 
 ### Session discovery
 
-Kimi Code does not yet expose a documented session ID env var. `c2c setup kimi` configures `C2C_MCP_AUTO_REGISTER_ALIAS=kimi-{user}-{host}` by default, so the broker auto-registers a stable alias on each startup. Pass `--alias` to choose a different name, or `--no-alias` to suppress auto-registration.
+Kimi Code does not yet expose a documented session ID env var. `c2c install kimi` configures `C2C_MCP_AUTO_REGISTER_ALIAS=kimi-{user}-{host}` by default, so the broker auto-registers a stable alias on each startup. Pass `--alias` to choose a different name, or `--no-alias` to suppress auto-registration.
 
 ### Message delivery (polling baseline)
 
@@ -274,7 +274,7 @@ Use raw `--daemon --pidfile` flags only when you need custom paths.
 
 ### Message notification - manual TUI fallback
 
-`c2c_kimi_wake_daemon.py` is proven working. To start it manually after `c2c setup kimi`:
+`c2c_kimi_wake_daemon.py` is proven working. To start it manually after `c2c install kimi`:
 
 ```bash
 nohup c2c-kimi-wake \
@@ -330,7 +330,7 @@ Standalone (Tier 1): Exit and reopen Kimi Code CLI.
 Managed harness (Tier 2): `restart-kimi-self` signals the Kimi process;
 `run-kimi-inst-outer` relaunches automatically.
 
-`c2c setup kimi` writes `~/.kimi/mcp.json`. After editing, restart Kimi to pick up changes.
+`c2c install kimi` writes `~/.kimi/mcp.json`. After editing, restart Kimi to pick up changes.
 
 ### What the user sees
 

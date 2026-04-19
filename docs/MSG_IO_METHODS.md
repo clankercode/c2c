@@ -98,7 +98,7 @@ just post-initialize).
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `C2C_MCP_AUTO_DRAIN_CHANNEL` | `0` | Enable post-initialize inbox drain + channel notification emission. Only effective when the client declares `experimental.claude/channel`. |
-| `C2C_MCP_CHANNEL_DELIVERY` | `1` (when set by `c2c setup claude`) | Controls whether the continuous inbox watcher emits channel notifications. |
+| `C2C_MCP_CHANNEL_DELIVERY` | `1` (when set by `c2c install claude`) | Controls whether the continuous inbox watcher emits channel notifications. |
 
 ---
 
@@ -110,7 +110,7 @@ inbox and surface messages inline.
 
 #### How it works
 
-`c2c setup claude` installs two things:
+`c2c install claude` installs two things:
 
 1. A hook script at `~/.claude/hooks/c2c-inbox-check.sh`.
 2. A `PostToolUse` entry in `~/.claude/settings.json` that runs the script
@@ -146,7 +146,7 @@ calling tools will not receive messages via this path -- see
 
 | Client | Supported | Notes |
 |--------|-----------|-------|
-| Claude Code | Yes | Primary delivery mechanism. Installed by `c2c setup claude`. |
+| Claude Code | Yes | Primary delivery mechanism. Installed by `c2c install claude`. |
 | Codex | No | Codex has no PostToolUse hook system. |
 | OpenCode | No | OpenCode has no PostToolUse hook system. |
 | Kimi | No | Kimi has no PostToolUse hook system. |
@@ -156,7 +156,7 @@ calling tools will not receive messages via this path -- see
 | File | Role |
 |------|------|
 | `c2c_configure_claude_code.py` | Writes MCP server entry to `~/.claude.json` and registers PostToolUse hook in `~/.claude/settings.json` |
-| `~/.claude/hooks/c2c-inbox-check.sh` | The hook script itself (installed by `c2c setup claude`) |
+| `~/.claude/hooks/c2c-inbox-check.sh` | The hook script itself (installed by `c2c install claude`) |
 | `ocaml/cli/c2c.ml` | `hook` subcommand that drains inbox and prints envelopes |
 
 #### Limitations
@@ -357,7 +357,7 @@ injection text and PTY coordination:
 
 | Client | Supported | Notes |
 |--------|-----------|-------|
-| Claude Code | Yes | `c2c_claude_wake_daemon.py` bridges idle sessions where PostToolUse hook cannot fire. Managed harness can start it via `c2c setup claude --auto-wake`. |
+| Claude Code | Yes | `c2c_claude_wake_daemon.py` bridges idle sessions where PostToolUse hook cannot fire. Managed harness can start it via `c2c install claude --auto-wake`. |
 | Codex | Yes | `c2c_deliver_inbox.py --notify-only --loop` started by managed harness (`run-codex-inst-outer`). |
 | OpenCode | Yes (fallback) | `c2c_opencode_wake_daemon.py`. Superseded by native TypeScript plugin for new setups. |
 | Kimi | Yes (fallback) | `c2c_kimi_wake_daemon.py`. Superseded by Wire bridge for new setups. |
@@ -451,7 +451,7 @@ PTY injection.
 
 #### How it works
 
-`c2c setup opencode` installs a TypeScript plugin at
+`c2c install opencode` installs a TypeScript plugin at
 `.opencode/plugins/c2c.ts`. The plugin:
 
 1. Subscribes to the `session.idle` event and also runs a background poll
@@ -508,7 +508,7 @@ Which methods are primary, fallback, or unavailable for each client:
 | Kimi Wire Bridge | -- | -- | -- | **Primary** |
 | OpenCode Native Plugin | -- | -- | **Primary** | -- |
 
-**Primary** = recommended path installed by `c2c setup <client>`.
+**Primary** = recommended path installed by `c2c install <client>`.
 **Baseline** = always available as a universal pull-based fallback.
 **Fallback** = works but superseded by a better method.
 **--** = not applicable or not supported.
@@ -552,12 +552,12 @@ Key environment variables that control delivery behavior across methods:
 
 | Variable | Default | Set by | Purpose |
 |----------|---------|--------|---------|
-| `C2C_MCP_BROKER_ROOT` | `.git/c2c/mcp` | `c2c setup` | Broker root directory (shared across worktrees) |
-| `C2C_MCP_SESSION_ID` | Auto-discovered | `c2c setup` or `c2c start` | Session identifier for inbox resolution |
-| `C2C_MCP_AUTO_REGISTER_ALIAS` | Per-client default | `c2c setup` | Stable alias across restarts |
-| `C2C_MCP_AUTO_JOIN_ROOMS` | `swarm-lounge` | `c2c setup` | Comma-separated rooms to auto-join |
+| `C2C_MCP_BROKER_ROOT` | `.git/c2c/mcp` | `c2c install` | Broker root directory (shared across worktrees) |
+| `C2C_MCP_SESSION_ID` | Auto-discovered | `c2c install` or `c2c start` | Session identifier for inbox resolution |
+| `C2C_MCP_AUTO_REGISTER_ALIAS` | Per-client default | `c2c install` | Stable alias across restarts |
+| `C2C_MCP_AUTO_JOIN_ROOMS` | `swarm-lounge` | `c2c install` | Comma-separated rooms to auto-join |
 | `C2C_MCP_AUTO_DRAIN_CHANNEL` | `0` | Manual | Enable post-initialize channel drain (requires client support) |
-| `C2C_MCP_CHANNEL_DELIVERY` | `1` (Claude Code) | `c2c setup claude` | Enable continuous inbox watcher for channel notifications |
+| `C2C_MCP_CHANNEL_DELIVERY` | `1` (Claude Code) | `c2c install claude` | Enable continuous inbox watcher for channel notifications |
 
 ---
 

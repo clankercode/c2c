@@ -17,7 +17,7 @@ you can extend to two real machines with SSH or Tailscale.
 
 ## Prerequisites
 
-- c2c installed (`c2c install-self` run on each machine)
+- c2c installed (`c2c install self` run on each machine)
 - Python 3.10+, no extra packages required
 - The relay server runs on one trusted host; all machines connect to it
 

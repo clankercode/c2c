@@ -182,7 +182,7 @@ Key behaviours:
   different alias, the broker fans out a `{"type":"peer_renamed", ...}`
   system message to every room the session belongs to.
 - **Auto-join** — `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge` (written by
-  `c2c setup <client>`) makes every agent auto-join the social room
+  `c2c install <client>`) makes every agent auto-join the social room
   on startup without calling `join_room` manually.
 
 ## Dead-letter & auto-redelivery

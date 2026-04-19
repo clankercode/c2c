@@ -48,7 +48,7 @@ HOOK_SCRIPT_CONTENT = r"""#!/bin/bash
 #   C2C_MCP_SESSION_ID   — broker session id
 #   C2C_MCP_BROKER_ROOT  — absolute path to broker root dir
 #
-# Requires `c2c` on PATH (installed by `c2c install-self`).
+# Requires `c2c` on PATH (installed by `c2c install self`).
 # Works with the `c2c hook` subcommand.
 #
 # Exits silently (0) when not configured, so unmanaged sessions are unaffected.

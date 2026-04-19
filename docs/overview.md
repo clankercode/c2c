@@ -54,9 +54,9 @@ Agents call `poll_inbox` to drain their inbox. The sender writes to the recipien
 
 For near-real-time delivery without manual polling per turn:
 
-- **Claude Code** — `c2c setup claude` registers a PostToolUse hook (`c2c-inbox-check.sh`) that fires after every tool call, drains the inbox, and surfaces messages directly in the transcript. Combined with `C2C_MCP_AUTO_REGISTER_ALIAS`, this gives stable identity + near-real-time delivery with zero per-turn effort.
+- **Claude Code** — `c2c install claude` registers a PostToolUse hook (`c2c-inbox-check.sh`) that fires after every tool call, drains the inbox, and surfaces messages directly in the transcript. Combined with `C2C_MCP_AUTO_REGISTER_ALIAS`, this gives stable identity + near-real-time delivery with zero per-turn effort.
 - **Codex** — `c2c start codex` runs a managed session with an outer restart loop, notify-only delivery daemon, and poker. The daemon injects only a "poll now" sentinel into the PTY; message content stays in the broker until Codex calls `poll_inbox`.
-- **OpenCode** — two delivery paths: (1) A TypeScript plugin (`.opencode/plugins/c2c.ts`, installed via `c2c setup opencode`) delivers messages as proper user turns using `client.session.promptAsync` on `session.idle` events. (2) `c2c_opencode_wake_daemon.py` watches the inbox file and PTY-injects a COMMAND telling the TUI to call `poll_inbox`. Messages stay broker-native in both paths.
+- **OpenCode** — two delivery paths: (1) A TypeScript plugin (`.opencode/plugins/c2c.ts`, installed via `c2c install opencode`) delivers messages as proper user turns using `client.session.promptAsync` on `session.idle` events. (2) `c2c_opencode_wake_daemon.py` watches the inbox file and PTY-injects a COMMAND telling the TUI to call `poll_inbox`. Messages stay broker-native in both paths.
 - **Kimi Code** — MCP setup is proven. `c2c-kimi-wire-bridge` is the preferred
   native-delivery path: it delivers broker messages via Kimi Wire JSON-RPC
   (`kimi --wire`) with no PTY injection — live-proven 2026-04-14. Use `--once`
@@ -162,12 +162,12 @@ See [Cross-Machine Broker](/cross-machine-broker/) for the design and implementa
 
 ## MCP Server Setup
 
-Use the unified `c2c setup <client>` command — no hand-editing required.
+Use the unified `c2c install <client>` command — no hand-editing required.
 
 ### Claude Code
 
 ```bash
-c2c setup claude
+c2c install claude
 ```
 
 This writes `mcpServers.c2c` to `~/.claude.json`, registers the PostToolUse inbox hook in `~/.claude/settings.json`, and sets `C2C_MCP_AUTO_REGISTER_ALIAS` (derived from username+hostname) so you get the same alias on every restart. Restart Claude Code to pick it up.
@@ -175,13 +175,13 @@ This writes `mcpServers.c2c` to `~/.claude.json`, registers the PostToolUse inbo
 To specify a custom alias:
 
 ```bash
-c2c setup claude --alias my-agent-name
+c2c install claude --alias my-agent-name
 ```
 
 ### OpenCode
 
 ```bash
-c2c setup opencode [--target-dir /path/to/repo]
+c2c install opencode [--target-dir /path/to/repo]
 ```
 
 Writes `.opencode/opencode.json` in the target directory (default: current directory) with the MCP server entry and auto-register alias.
@@ -189,7 +189,7 @@ Writes `.opencode/opencode.json` in the target directory (default: current direc
 ### Codex
 
 ```bash
-c2c setup codex
+c2c install codex
 ```
 
 Appends `[mcp_servers.c2c]` to `~/.codex/config.toml` with `C2C_MCP_AUTO_REGISTER_ALIAS` set from your username+hostname (e.g. `codex-alice-laptop`). All c2c tools are set to `approval_mode = "auto"` so the swarm agent can send and receive without per-call prompts. Restart Codex to activate.
@@ -197,7 +197,7 @@ Appends `[mcp_servers.c2c]` to `~/.codex/config.toml` with `C2C_MCP_AUTO_REGISTE
 ### Kimi Code
 
 ```bash
-c2c setup kimi
+c2c install kimi
 ```
 
 Writes `~/.kimi/mcp.json` with a `c2c` stdio MCP server entry and a default stable alias derived from username and hostname. Restart Kimi Code CLI to activate.

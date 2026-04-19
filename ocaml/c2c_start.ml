@@ -47,6 +47,14 @@ let home_dir () =
 
 let instances_dir = Filename.concat (home_dir ()) ".local" // "share" // "c2c" // "instances"
 
+let rec mkdir_p dir =
+  if Sys.file_exists dir then ()
+  else begin
+    mkdir_p (Filename.dirname dir);
+    try Unix.mkdir dir 0o755
+    with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+  end
+
 let instance_dir name = instances_dir // name
 let config_path name = instance_dir name // "config.json"
 let outer_pid_path name = instance_dir name // "outer.pid"
@@ -112,14 +120,7 @@ type instance_config = {
 
 let write_config (cfg : instance_config) =
   let dir = instance_dir cfg.name in
-  (try
-     let rec mkdir_p d =
-       if Sys.file_exists d then ()
-       else (mkdir_p (Filename.dirname d); Unix.mkdir d 0o755)
-     in
-     mkdir_p instances_dir;
-     mkdir_p dir
-   with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  mkdir_p dir;
   let path = config_path cfg.name in
   let fields =
     [ ("name", `String cfg.name)
@@ -183,7 +184,7 @@ let read_pid (path : string) : int option =
 
 let write_pid (path : string) (pid : int) =
   let dir = Filename.dirname path in
-  (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  mkdir_p dir;
   let oc = open_out path in
   Fun.protect ~finally:(fun () -> close_out oc)
     (fun () -> output_string oc (Printf.sprintf "%d\n" pid))
@@ -318,7 +319,7 @@ let prepare_launch_args ~(name : string) ~(client : string)
   if client = "kimi" && not (has_explicit_kimi_mcp_config extra_args) then
     let cfg_path = kimi_mcp_config_path name in
     let dir = Filename.dirname cfg_path in
-    (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+    mkdir_p dir;
     let oc = open_out cfg_path in
     Fun.protect ~finally:(fun () -> close_out oc)
       (fun () ->
@@ -441,7 +442,7 @@ let run_outer_loop ~(name : string) ~(client : string)
       (try ignore (Sys.signal Sys.sigchld Sys.Signal_ignore) with _ -> ());
 
       let inst_dir = instance_dir name in
-      (try Unix.mkdir inst_dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+      mkdir_p inst_dir;
       write_pid (outer_pid_path name) (Unix.getpid ());
 
       let deliver_pid = ref None in

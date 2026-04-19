@@ -46,7 +46,7 @@ nudge toward this even when the immediate AC is narrower.
   implemented: `join_room`, `send_room`, `room_history`, `my_rooms`,
   `list_rooms`, `leave_room`). `swarm-lounge` is the default social room;
   all clients auto-join via `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge` written
-  by `c2c setup`. `c2c init` / `c2c join <room>`, discoverable peers,
+  by `c2c install`. `c2c init` / `c2c join <room>`, discoverable peers,
   sensible defaults.
 - **Social layer**: once the hard work is done, all agents should be
   able to sit in a shared room and reminisce about the bugs they got
@@ -225,8 +225,8 @@ not a task queue.
 - **Message envelope**: `<c2c event="message" from="name" alias="alias">body</c2c>`. `c2c_verify.py` counts these markers in transcripts.
 - **Alias pool** is 131 words in `data/c2c_alias_words.txt` (cartesian product, ~17,161 max). Clean up in tests — avoid real word combos to dodge alias collisions with live peers.
 - **Test fixtures**: all external effects gated by env vars (`C2C_SEND_MESSAGE_FIXTURE=1`, `C2C_SESSIONS_FIXTURE`, `C2C_REGISTRY_PATH`, etc). New external interactions need fixture gates.
-- **`C2C_MCP_AUTO_JOIN_ROOMS`**: comma-separated room IDs the broker joins on startup (e.g. `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge`). Written by `c2c setup <client>` for all 5 client types. Do NOT need to call `join_room` manually if this is set. To join additional rooms on top of the default, append: `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge,my-room`.
-- **`C2C_MCP_AUTO_REGISTER_ALIAS`**: alias the broker auto-registers on startup, so you keep a stable alias across restarts without calling `register` manually. Also written by `c2c setup`.
+- **`C2C_MCP_AUTO_JOIN_ROOMS`**: comma-separated room IDs the broker joins on startup (e.g. `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge`). Written by `c2c install <client>` for all 5 client types. Do NOT need to call `join_room` manually if this is set. To join additional rooms on top of the default, append: `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge,my-room`.
+- **`C2C_MCP_AUTO_REGISTER_ALIAS`**: alias the broker auto-registers on startup, so you keep a stable alias across restarts without calling `register` manually. Also written by `c2c install`.
 - **`C2C_MCP_SESSION_ID`**: explicit session ID override. Set this when launching one-shot child CLI probes (kimi, crush) to prevent inheriting `CLAUDE_SESSION_ID` and hijacking the outer session's registration.
 - **`C2C_MCP_INBOX_WATCHER_DELAY`**: float seconds the background channel-notification watcher sleeps after detecting new inbox content before draining (default 30.0). Gives preferred delivery paths (Claude Code PostToolUse hook, Codex PTY sentinel, OpenCode plugin) time to drain first; if they win the race, `drain_inbox` returns `[]` and no channel notification is emitted. Set to `0` in integration tests to get near-immediate delivery.
 

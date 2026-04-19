@@ -23,7 +23,7 @@ python3 c2c_register.py <session-id>
 Alias convention:
 - Managed sessions get a fixed stable alias via `C2C_MCP_AUTO_REGISTER_ALIAS`
   (e.g. `kimi-nova`, `opencode-local`, `codex-xertrov-x-game`). Written
-  by `c2c setup <client>` and `c2c configure-<client>`.
+  by `c2c install <client>` and `c2c configure-<client>`.
 - Ad-hoc Claude Code sessions get a randomly-assigned `<word>-<word>`
   alias from the 131-word pool in `data/c2c_alias_words.txt` (~17,161
   combinations).

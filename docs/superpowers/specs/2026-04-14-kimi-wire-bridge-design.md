@@ -11,7 +11,7 @@ Wire JSON-RPC `prompt` surface while idle.
 
 Kimi already works well as an MCP client:
 
-- `c2c setup kimi` writes `~/.kimi/mcp.json`.
+- `c2c install kimi` writes `~/.kimi/mcp.json`.
 - `kimi --print --mcp-config-file ...` has proven c2c send, room send, poll,
   receive, and reply.
 - Existing managed Kimi TUI delivery uses a notify-only wake daemon and
@@ -30,7 +30,7 @@ the better fit because it exposes structured JSON-RPC methods:
 
 ## Non-goals
 
-- Do not replace `c2c setup kimi`.
+- Do not replace `c2c install kimi`.
 - Do not remove `c2c_kimi_wake_daemon.py` or `c2c_pts_inject.py`.
 - Do not build a full custom Kimi UI.
 - Do not implement remote relay behavior in this slice.
