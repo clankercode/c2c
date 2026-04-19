@@ -2939,19 +2939,24 @@ let run_install_tui ~alias_opt ~broker_root_opt =
       let cs = List.map (fun (c, _, _, do_it) -> (c, do_it)) client_defaults in
       (self_default, cs)
   in
-  Printf.printf "\n";
-  if do_self then begin
-    Printf.printf "→ Installing c2c binary...\n";
-    do_install_self ~output_mode:Human ~dest_opt:None ~with_mcp_server:false
-  end;
-  List.iter (fun (c, do_it) ->
-    if do_it then begin
-      Printf.printf "\n→ Configuring %s...\n" c;
-      do_install_client ~output_mode:Human ~client:c ~alias_opt
-        ~broker_root_opt ~target_dir_opt:None ~force:false
-    end
-  ) do_clients;
-  Printf.printf "\nDone.\n"
+  let any_action = do_self || List.exists (fun (_, do_it) -> do_it) do_clients in
+  if not any_action then
+    Printf.printf "\nNothing to do.\n"
+  else begin
+    Printf.printf "\n";
+    if do_self then begin
+      Printf.printf "→ Installing c2c binary...\n";
+      do_install_self ~output_mode:Human ~dest_opt:None ~with_mcp_server:false
+    end;
+    List.iter (fun (c, do_it) ->
+      if do_it then begin
+        Printf.printf "\n→ Configuring %s...\n" c;
+        do_install_client ~output_mode:Human ~client:c ~alias_opt
+          ~broker_root_opt ~target_dir_opt:None ~force:false
+      end
+    ) do_clients;
+    Printf.printf "\nDone.\n"
+  end
 
 (* --- install: Cmdliner wiring --------------------------------------------- *)
 
