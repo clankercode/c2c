@@ -294,6 +294,26 @@ let build_kimi_mcp_config (name : string) (br : string) (alias_override : string
                ] ] ] ]
 
 (* ---------------------------------------------------------------------------
+ * Claude session-file probe
+ *
+ * Claude stores conversations at ~/.claude/projects/<project-slug>/<uuid>.jsonl.
+ * The slug is derived from cwd, so we don't know it up front — just scan every
+ * project dir for <uuid>.jsonl. Cheap: one readdir of ~/.claude/projects plus
+ * one stat per subdir.
+ * --------------------------------------------------------------------------- *)
+
+let claude_session_exists uuid =
+  let root = home_dir () // ".claude" // "projects" in
+  if not (Sys.file_exists root) then false
+  else
+    try
+      let entries = Sys.readdir root in
+      Array.exists (fun slug ->
+        Sys.file_exists (root // slug // (uuid ^ ".jsonl"))
+      ) entries
+    with _ -> false
+
+(* ---------------------------------------------------------------------------
  * Launch argument preparation
  * --------------------------------------------------------------------------- *)
 
@@ -304,11 +324,16 @@ let prepare_launch_args ~(name : string) ~(client : string)
   let args =
     match client with
     | "claude" ->
-        (* Use --resume <sid> to reattach to existing session. Note: --session-id
-           with --resume requires --fork-session, but --fork-session fails if the
-           session already exists. So we use just --resume <sid> (no --session-id). *)
+        (* Use --session-id <uuid> to create a brand-new session with a known id,
+           or --resume <sid> to reattach an existing one. --session-id errors out
+           if a session with that id already exists; --resume errors out if it
+           doesn't. So probe ~/.claude/projects/*/<uuid>.jsonl to pick. *)
         (match resume_session_id with
-         | Some sid -> [ "--resume"; sid; "--name"; name ]
+         | Some sid ->
+             let flag =
+               if claude_session_exists sid then "--resume" else "--session-id"
+             in
+             [ flag; sid; "--name"; name ]
          | None -> [ "--name"; name ])
     | "opencode" ->
         (match resume_session_id with Some sid -> [ "--session"; sid ] | None -> [])
