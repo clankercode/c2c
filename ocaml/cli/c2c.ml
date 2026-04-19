@@ -4269,12 +4269,37 @@ let print_enriched_landing () =
   let self_path = self_installed_path () in
   let broker_root = try resolve_broker_root () with _ -> "(unresolved)" in
   Printf.printf "c2c %s — peer-to-peer messaging for AI agents\n" version;
+  let format_binary_status path build_rel_path =
+    match path with
+    | None -> "not installed"
+    | Some p ->
+        let p_mtime = try Some (Unix.stat p).Unix.st_mtime with _ -> None in
+        let build_path =
+          match git_repo_toplevel () with
+          | Some root -> Some (root // build_rel_path)
+          | None -> None
+        in
+        let build_mtime =
+          match build_path with
+          | Some bp when Sys.file_exists bp ->
+              (try Some (Unix.stat bp).Unix.st_mtime with _ -> None)
+          | _ -> None
+        in
+        (match p_mtime, build_mtime with
+         | Some pt, Some bt when bt > pt +. 1.0 ->
+             let age_min = int_of_float ((bt -. pt) /. 60.0) in
+             Printf.sprintf "%s  (STALE — newer build %dm ahead; `cp %s %s`)"
+               p age_min (Option.value ~default:"?" build_path) p
+         | _ -> p)
+  in
   Printf.printf "\n";
   Printf.printf "Status\n";
-  Printf.printf "  binary on PATH:   %s\n"
-    (match self_path with
-     | Some p -> Printf.sprintf "yes (%s)" p
-     | None -> "no");
+  Printf.printf "  c2c on PATH:      %s\n"
+    (format_binary_status self_path "_build/default/ocaml/cli/c2c.exe");
+  let mcp_server_path = which_binary "c2c-mcp-server" in
+  Printf.printf "  c2c-mcp-server:   %s\n"
+    (format_binary_status mcp_server_path
+       "_build/default/ocaml/server/c2c_mcp_server.exe");
   Printf.printf "  broker root:      %s\n" broker_root;
   let broker_live =
     try
