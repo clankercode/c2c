@@ -1673,38 +1673,44 @@ let room_group =
 
 (* --- subcommand: hook (PostToolUse inbox hook) ----------------------------- *)
 
-let min_hook_runtime_ms = 10.0
+let min_hook_runtime_ms = 50.0
+
+let sleep_to_min_runtime start_time =
+  (* Sleep so total runtime is at least min_hook_runtime_ms. Prevents Node.js
+     ECHILD race: fast-exiting hooks are reaped by the kernel before Claude
+     Code's waitpid(), which then fails with ECHILD. *)
+  let elapsed_ms = (Unix.gettimeofday () -. start_time) *. 1000.0 in
+  let sleep_s = max 0.0 ((min_hook_runtime_ms -. elapsed_ms) /. 1000.0) in
+  if sleep_s > 0.0 then Unix.sleepf sleep_s
 
 let hook_cmd =
   (* No arguments - reads env vars C2C_MCP_SESSION_ID and C2C_MCP_BROKER_ROOT *)
   let open Cmdliner.Term in
   const (fun () ->
+    let start_time = Unix.gettimeofday () in
     let session_id =
       try Sys.getenv "C2C_MCP_SESSION_ID" with Not_found -> ""
     in
     let broker_root =
       try Sys.getenv "C2C_MCP_BROKER_ROOT" with Not_found -> ""
     in
-    (* Fast path: if not configured, exit silently *)
-    if session_id = "" || broker_root = "" then exit 0;
-    let start_time = Unix.gettimeofday () in
+    if session_id = "" || broker_root = "" then begin
+      sleep_to_min_runtime start_time;
+      exit 0
+    end;
     try
       let broker = C2c_mcp.Broker.create ~root:broker_root in
       let messages = C2c_mcp.Broker.drain_inbox broker ~session_id in
-      (* Output messages in c2c event envelope format *)
       List.iter
         (fun (m : C2c_mcp.message) ->
           Printf.printf "<c2c event=\"message\" from=\"%s\" alias=\"%s\" action_after=\"continue\">%s</c2c>\n"
             m.from_alias m.to_alias m.content)
         messages;
-      (* Always sleep at least min_hook_runtime_ms to prevent Node.js ECHILD race
-         (kernel reaps zombie before waitpid on fast-exiting children). *)
-      let elapsed_ms = (Unix.gettimeofday () -. start_time) *. 1000.0 in
-      let sleep_s = max 0.0 ((min_hook_runtime_ms -. elapsed_ms) /. 1000.0) in
-      ignore (Lwt_main.run (Lwt_unix.sleep sleep_s));
+      sleep_to_min_runtime start_time;
       exit 0
     with e ->
       prerr_endline (Printexc.to_string e);
+      sleep_to_min_runtime start_time;
       exit 1) $ const ()
 
 let hook = Cmdliner.Cmd.v (Cmdliner.Cmd.info "hook" ~doc:"PostToolUse hook: drain inbox and emit messages.") hook_cmd
@@ -2519,13 +2525,20 @@ let claude_hook_script = {|
 # c2c-inbox-check.sh — PostToolUse hook for c2c auto-delivery in Claude Code
 #
 # Calls 'c2c hook' which drains the inbox and outputs messages.
-# Self-regulates runtime to prevent Node.js ECHILD race.
+# c2c hook self-regulates runtime to prevent Node.js ECHILD race.
+# If `c2c` is not on PATH or fails fast, we still sleep briefly so Claude
+# Code's waitpid() can complete before the kernel reaps the zombie.
 #
 # Required env vars (set by c2c start or the MCP server entry):
 #   C2C_MCP_SESSION_ID   — broker session id
 #   C2C_MCP_BROKER_ROOT  — absolute path to broker root dir
 
-exec c2c hook
+if command -v c2c >/dev/null 2>&1; then
+    exec c2c hook
+fi
+# c2c binary missing: sleep ~50ms to avoid ECHILD then exit cleanly.
+sleep 0.05
+exit 0
 |}
 
 let configure_claude_hook () =
