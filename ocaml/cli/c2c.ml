@@ -4289,7 +4289,7 @@ let print_enriched_landing () =
   let suggestions =
     let buf = Buffer.create 256 in
     if not self then
-      Buffer.add_string buf "  c2c install self            install the c2c binary to ~/.local/bin\n";
+      Buffer.add_string buf (Printf.sprintf "  c2c install %-16s install the c2c binary to ~/.local/bin\n" "self");
     List.iter (fun c ->
       Buffer.add_string buf (Printf.sprintf "  c2c install %-16s configure %s for c2c\n" c c)
     ) missing_clients;
@@ -4298,13 +4298,13 @@ let print_enriched_landing () =
   if suggestions <> "" then begin
     Printf.printf "\nSuggested next steps\n";
     print_string suggestions;
-    Printf.printf "  c2c install                 interactive installer (TUI)\n"
+    Printf.printf "  c2c install %-16s interactive installer (TUI)\n" ""
   end else begin
     Printf.printf "\nEverything looks configured. Some useful commands:\n";
-    Printf.printf "  c2c list                    list registered peers\n";
-    Printf.printf "  c2c send ALIAS MSG          send a message\n";
-    Printf.printf "  c2c poll-inbox              read pending messages\n";
-    Printf.printf "  c2c rooms list              list rooms you're in\n"
+    Printf.printf "  %-28s list registered peers\n" "c2c list";
+    Printf.printf "  %-28s send a message\n" "c2c send ALIAS MSG";
+    Printf.printf "  %-28s read pending messages\n" "c2c poll-inbox";
+    Printf.printf "  %-28s list rooms you're in\n" "c2c rooms list"
   end;
   Printf.printf "\nRun `c2c help` or `c2c --help` for the full command list.\n"
 
