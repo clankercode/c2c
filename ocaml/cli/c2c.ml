@@ -1534,8 +1534,13 @@ let rooms_join_cmd =
   let room_id =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOM" ~doc:"Room ID.")
   in
+  let history_limit =
+    Cmdliner.Arg.(value & opt int 20 & info [ "history-limit" ] ~docv:"N"
+      ~doc:"Recent messages to show after joining (default 20, max 200, 0 to skip).")
+  in
   let+ json = json_flag
-  and+ room_id = room_id in
+  and+ room_id = room_id
+  and+ history_limit = history_limit in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let alias = resolve_alias broker in
   let session_id = resolve_session_id () in
@@ -1544,27 +1549,34 @@ let rooms_join_cmd =
      let members =
        C2c_mcp.Broker.join_room broker ~room_id ~alias ~session_id
      in
+     let backfill =
+       if history_limit <= 0 then []
+       else C2c_mcp.Broker.read_room_history broker ~room_id
+              ~limit:(min history_limit 200) ()
+     in
      match output_mode with
      | Json ->
          print_json
            (`Assoc
              [ ("room_id", `String room_id)
-             ; ( "members",
-                 `List
-                   (List.map
-                      (fun (m : C2c_mcp.room_member) ->
-                        `Assoc
-                          [ ("alias", `String m.rm_alias)
-                          ; ("session_id", `String m.rm_session_id)
-                          ])
-                      members))
+             ; ("members", `List (List.map (fun (m : C2c_mcp.room_member) ->
+                   `Assoc [("alias", `String m.rm_alias); ("session_id", `String m.rm_session_id)])
+                 members))
+             ; ("history", `List (List.map (fun (m : C2c_mcp.room_message) ->
+                   `Assoc [("ts", `Float m.rm_ts); ("from_alias", `String m.rm_from_alias);
+                           ("content", `String m.rm_content)])
+                 backfill))
              ])
      | Human ->
-         Printf.printf "Joined room %s (%d members)\n" room_id
-           (List.length members);
-         List.iter
-           (fun (m : C2c_mcp.room_member) -> Printf.printf "  %s\n" m.rm_alias)
-           members
+         Printf.printf "Joined room %s (%d members)\n" room_id (List.length members);
+         List.iter (fun (m : C2c_mcp.room_member) -> Printf.printf "  %s\n" m.rm_alias) members;
+         if backfill <> [] then begin
+           Printf.printf "\nRecent history (%d msgs):\n" (List.length backfill);
+           List.iter (fun (m : C2c_mcp.room_message) ->
+             let t = Unix.gmtime m.rm_ts in
+             Printf.printf "[%02d:%02d] <%s> %s\n"
+               t.tm_hour t.tm_min m.rm_from_alias m.rm_content) backfill
+         end
    with Invalid_argument msg ->
      Printf.eprintf "error: %s\n%!" msg;
      exit 1)
