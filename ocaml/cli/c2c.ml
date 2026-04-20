@@ -1673,7 +1673,7 @@ let room_group =
 
 (* --- subcommand: hook (PostToolUse inbox hook) ----------------------------- *)
 
-let min_hook_runtime_ms = 50.0
+let min_hook_runtime_ms = 100.0
 
 let sleep_to_min_runtime start_time =
   (* Sleep so total runtime is at least min_hook_runtime_ms. Prevents Node.js
