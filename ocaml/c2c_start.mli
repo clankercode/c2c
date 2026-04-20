@@ -155,6 +155,7 @@ val run_outer_loop :
   ?binary_override:string ->
   ?alias_override:string ->
   ?resume_session_id:string ->
+  ?one_hr_cache:bool ->
   unit ->
   int
 (** [run_outer_loop] runs the outer restart loop for the given instance
@@ -171,6 +172,7 @@ val cmd_start :
   ?binary_override:string ->
   ?alias_override:string ->
   ?session_id_override:string ->
+  ?one_hr_cache:bool ->
   unit ->
   int
 (** [cmd_start] validates and starts a managed instance. Returns 0 on success,
@@ -182,6 +184,12 @@ val cmd_stop : string -> int
 
 val cmd_restart : string -> int
 (** [cmd_restart name] stops then restarts an instance. Returns exit code. *)
+
+val cmd_restart_self : ?name:string -> unit -> int
+(** [cmd_restart_self ?name ()] signals the managed inner client for this
+    instance so the outer loop relaunches it. Intended for agents running
+    inside a managed c2c-start session (name falls back to
+    [C2C_MCP_SESSION_ID]). Returns 0 on signal, non-zero on error. *)
 
 val cmd_instances : unit -> int
 (** [cmd_instances ()] lists all known instances. Returns 0. *)

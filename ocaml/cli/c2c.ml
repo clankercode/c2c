@@ -4447,13 +4447,17 @@ let start_cmd =
   let session_id =
     Cmdliner.Arg.(value & opt (some string) None & info [ "session-id" ] ~docv:"UUID" ~doc:"Explicit session UUID (overrides auto-generated).")
   in
+  let one_hr_cache =
+    Cmdliner.Arg.(value & flag & info [ "1hr-cache" ] ~doc:"Set ENABLE_PROMPT_CACHING_1H=1 (claude only; default off — 1h cache writes cost 2x, only worth it if you hit the cache).")
+  in
   let+ client = client
   and+ name_opt = name
   and+ alias_opt = alias
   and+ bin_opt = bin
-  and+ session_id_opt = session_id in
+  and+ session_id_opt = session_id
+  and+ one_hr_cache = one_hr_cache in
   let name = Option.value name_opt ~default:(C2c_start.default_name client) in
-  exit (C2c_start.cmd_start ~client ~name ~extra_args:[] ?binary_override:bin_opt ?alias_override:alias_opt ?session_id_override:session_id_opt ())
+  exit (C2c_start.cmd_start ~client ~name ~extra_args:[] ?binary_override:bin_opt ?alias_override:alias_opt ?session_id_override:session_id_opt ~one_hr_cache ())
 
 let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Start a managed c2c instance.") start_cmd
 
@@ -4518,6 +4522,15 @@ let restart_cmd =
   exit (C2c_start.cmd_restart name)
 
 let restart = Cmdliner.Cmd.v (Cmdliner.Cmd.info "restart" ~doc:"Restart a managed c2c instance.") restart_cmd
+
+let restart_self_cmd =
+  let name =
+    Cmdliner.Arg.(value & pos 0 (some string) None & info [] ~docv:"NAME" ~doc:"Instance name (default: \\$C2C_MCP_SESSION_ID).")
+  in
+  let+ name = name in
+  exit (C2c_start.cmd_restart_self ?name ())
+
+let restart_self = Cmdliner.Cmd.v (Cmdliner.Cmd.info "restart-self" ~doc:"Signal our own managed inner client so the outer loop relaunches it. Intended for agents to reload themselves after a binary update; name falls back to \\$C2C_MCP_SESSION_ID.") restart_self_cmd
 
 (* --- help subcommand ------------------------------------------------------- *)
 
@@ -5421,4 +5434,4 @@ let () =
           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
           ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
           ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-          ; serve; mcp; start; stop; restart; instances; rooms_group; room_group; relay_group; monitor; hook; inject; screen; help ]))
+          ; serve; mcp; start; stop; restart; restart_self; instances; rooms_group; room_group; relay_group; monitor; hook; inject; screen; help ]))

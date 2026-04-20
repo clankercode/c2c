@@ -71,6 +71,7 @@ let rec mkdir_p dir =
 let instance_dir name = instances_dir // name
 let config_path name = instance_dir name // "config.json"
 let outer_pid_path name = instance_dir name // "outer.pid"
+let inner_pid_path name = instance_dir name // "inner.pid"
 let deliver_pid_path name = instance_dir name // "deliver.pid"
 let poker_pid_path name = instance_dir name // "poker.pid"
 
@@ -490,7 +491,7 @@ let start_poker ~(name : string) ~(client : string)
 let run_outer_loop ~(name : string) ~(client : string)
     ~(extra_args : string list) ~(broker_root : string)
     ?(binary_override : string option) ?(alias_override : string option)
-    ?(resume_session_id : string option) () : int =
+    ?(resume_session_id : string option) ?(one_hr_cache = false) () : int =
   let cfg =
     try Stdlib.Hashtbl.find clients client
     with Not_found ->
@@ -527,6 +528,7 @@ let run_outer_loop ~(name : string) ~(client : string)
         stop_sidecar !deliver_pid;
         stop_sidecar !poker_pid;
         remove_pidfile (outer_pid_path name);
+        remove_pidfile (inner_pid_path name);
         remove_pidfile (deliver_pid_path name);
         remove_pidfile (poker_pid_path name);
         code
@@ -550,6 +552,11 @@ let run_outer_loop ~(name : string) ~(client : string)
              (List.map (fun (k, v) -> Printf.sprintf "%s=%s" k v) cfg.extra_env))
       in
       let env = Array.append env [| Printf.sprintf "C2C_MCP_CLIENT_PID=%d" (Unix.getpid ()) |] in
+      let env =
+        if one_hr_cache then
+          Array.append env [| "ENABLE_PROMPT_CACHING_1H=1" |]
+        else env
+      in
 
       (* Launch args *)
       (* cc- wrappers (cc-mm, cc-w, etc.) are profile launchers designed to be called
@@ -592,6 +599,9 @@ let run_outer_loop ~(name : string) ~(client : string)
                    exit 127)
             | p -> p
           in
+          (* Record inner pid so `c2c restart-self` can SIGTERM just the
+             managed child without killing the outer loop. *)
+          write_pid (inner_pid_path name) pid;
           (* Start deliver daemon (skipped for clients whose delivery is
              handled in-tree, e.g. claude via PostToolUse hook + channel). *)
           (if !deliver_pid = None && cfg.needs_deliver then
@@ -643,7 +653,7 @@ let run_outer_loop ~(name : string) ~(client : string)
 
 let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?(binary_override : string option) ?(alias_override : string option)
-    ?(session_id_override : string option) () : int =
+    ?(session_id_override : string option) ?(one_hr_cache = false) () : int =
   if not (Stdlib.Hashtbl.mem clients client) then
     (Printf.eprintf "error: unknown client: '%s'. Choose from: %s\n%!"
        client (String.concat ", " (List.sort String.compare supported_clients));
@@ -719,7 +729,48 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
   write_config cfg;
 
   run_outer_loop ~name ~client ~extra_args ~broker_root
-    ?binary_override ?alias_override ~resume_session_id:cfg.resume_session_id ()
+    ?binary_override ?alias_override ~resume_session_id:cfg.resume_session_id
+    ~one_hr_cache ()
+
+(* Signal the managed inner client so the outer loop relaunches it. Designed
+   to be callable by an agent running *inside* that client, so the outer
+   wrapper gets a fresh process with the --resume flag and the agent picks up
+   its conversation intact. Name resolution: explicit arg, else
+   C2C_MCP_SESSION_ID (set by c2c start for managed clients). *)
+let cmd_restart_self ?(name : string option) () : int =
+  let name =
+    match name with
+    | Some n -> Some n
+    | None -> Sys.getenv_opt "C2C_MCP_SESSION_ID"
+  in
+  match name with
+  | None ->
+      Printf.eprintf
+        "error: no instance name. Pass one as an arg or run inside a \
+         managed c2c-start session (C2C_MCP_SESSION_ID is set).\n%!";
+      1
+  | Some name ->
+      (match read_pid (inner_pid_path name) with
+       | None ->
+           Printf.eprintf
+             "error: no inner.pid for '%s' — was it started with a recent \
+              c2c? Stop + start to populate.\n%!" name;
+           1
+       | Some pid when not (pid_alive pid) ->
+           Printf.eprintf
+             "error: inner pid %d for '%s' not alive (outer may be \
+              relaunching).\n%!" pid name;
+           1
+       | Some pid when pid = Unix.getpid () ->
+           Printf.eprintf "error: refusing to signal our own pid\n%!"; 1
+       | Some pid ->
+           Printf.printf
+             "[c2c restart-self] SIGTERM pid %d for '%s' (outer will \
+              relaunch)\n%!" pid name;
+           (try Unix.kill pid Sys.sigterm; 0
+            with Unix.Unix_error (e, _, _) ->
+              Printf.eprintf "kill failed: %s\n%!" (Unix.error_message e);
+              1))
 
 let cmd_stop (name : string) : int =
   match read_pid (outer_pid_path name) with
