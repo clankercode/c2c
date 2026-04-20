@@ -9,6 +9,9 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+
+print(f"DEPRECATED: {__file__} is deprecated — use 'c2c start codex' instead. See CLAUDE.md.", file=__import__('sys').stderr)
+
 import time
 from pathlib import Path
 import os

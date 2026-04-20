@@ -13,6 +13,9 @@ import json
 import os
 import subprocess
 import sys
+
+print(f"DEPRECATED: {__file__} is deprecated — use 'c2c start kimi' instead. See CLAUDE.md.", file=__import__('sys').stderr)
+
 import threading
 import time
 from pathlib import Path

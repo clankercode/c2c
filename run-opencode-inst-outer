@@ -13,6 +13,9 @@ import os
 import signal
 import subprocess
 import sys
+
+print(f"DEPRECATED: {__file__} is deprecated — use 'c2c start opencode' instead. See CLAUDE.md.", file=__import__('sys').stderr)
+
 import time
 from pathlib import Path
 
