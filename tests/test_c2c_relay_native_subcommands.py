@@ -120,6 +120,49 @@ class NativeRelaySubcommandTests(unittest.TestCase):
             "relay rooms send",
         )
 
+    def test_relay_setup_native_merge_and_show(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+            path = tf.name
+        try:
+            env = {**os.environ, "C2C_RELAY_CONFIG": path}
+            # Write initial config.
+            r = subprocess.run(
+                [str(BINARY), "relay", "setup",
+                 "--url", "https://r.example", "--token", "abc", "--node-id", "n1"],
+                env=env, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            # Show should return all three fields.
+            r = subprocess.run(
+                [str(BINARY), "relay", "setup", "--show"],
+                env=env, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            cfg = json.loads(r.stdout)
+            self.assertEqual(cfg.get("url"), "https://r.example")
+            self.assertEqual(cfg.get("token"), "abc")
+            self.assertEqual(cfg.get("node_id"), "n1")
+            # Partial update must preserve unprovided fields.
+            r = subprocess.run(
+                [str(BINARY), "relay", "setup", "--token", "new"],
+                env=env, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            r = subprocess.run(
+                [str(BINARY), "relay", "setup", "--show"],
+                env=env, capture_output=True, text=True, timeout=10,
+            )
+            cfg = json.loads(r.stdout)
+            self.assertEqual(cfg.get("url"), "https://r.example")
+            self.assertEqual(cfg.get("token"), "new")
+            self.assertEqual(cfg.get("node_id"), "n1")
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
 
 if __name__ == "__main__":
     unittest.main()

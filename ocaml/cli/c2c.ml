@@ -1878,18 +1878,75 @@ let relay_setup_cmd =
   and+ token_file = token_file
   and+ node_id = node_id
   and+ show = show in
-  match find_python_script "c2c_relay_config.py" with
-  | None ->
-      Printf.eprintf "error: cannot find c2c_relay_config.py. Run from inside the c2c git repo.\n%!";
-      exit 1
-  | Some script ->
-      let args = [ "python3"; script ] in
-      let args = match url with None -> args | Some v -> args @ [ "--url"; v ] in
-      let args = match token with None -> args | Some v -> args @ [ "--token"; v ] in
-      let args = match token_file with None -> args | Some v -> args @ [ "--token-file"; v ] in
-      let args = match node_id with None -> args | Some v -> args @ [ "--node-id"; v ] in
-      let args = if show then args @ [ "--show" ] else args in
-      Unix.execvp "python3" (Array.of_list args)
+  (* Native OCaml relay config management. Mirrors c2c_relay_config.py:
+     priority = $C2C_RELAY_CONFIG > $C2C_MCP_BROKER_ROOT/relay.json >
+     ~/.config/c2c/relay.json. Fields: url, token, node_id. *)
+  let config_path () =
+    match Sys.getenv_opt "C2C_RELAY_CONFIG" with
+    | Some p when p <> "" -> p
+    | _ ->
+        (match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
+         | Some d when d <> "" -> Filename.concat d "relay.json"
+         | _ ->
+             let home = try Sys.getenv "HOME" with Not_found -> "." in
+             Filename.concat home ".config/c2c/relay.json")
+  in
+  let read_all path =
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+      really_input_string ic (in_channel_length ic))
+  in
+  let load path =
+    match try Some (read_all path) with _ -> None with
+    | None -> `Assoc []
+    | Some s ->
+        (try Yojson.Safe.from_string s with _ -> `Assoc [])
+  in
+  let rec mkdir_p dir =
+    if dir = "/" || dir = "." || dir = "" then ()
+    else if Sys.file_exists dir then ()
+    else begin
+      mkdir_p (Filename.dirname dir);
+      try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+    end
+  in
+  let save path json =
+    mkdir_p (Filename.dirname path);
+    let oc = open_out path in
+    Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+      output_string oc (Yojson.Safe.pretty_to_string json);
+      output_char oc '\n')
+  in
+  let path = config_path () in
+  if show then begin
+    let cfg = load path in
+    print_endline (Yojson.Safe.pretty_to_string cfg);
+    exit 0
+  end;
+  let token_final =
+    match token with
+    | Some _ as v -> v
+    | None ->
+        (match token_file with
+         | Some f -> (try Some (String.trim (read_all f)) with _ -> None)
+         | None -> None)
+  in
+  (* Merge: keep existing fields, override with provided ones. *)
+  let existing = match load path with `Assoc l -> l | _ -> [] in
+  let set_field fields key = function
+    | None -> fields
+    | Some v ->
+        (key, `String v) :: List.filter (fun (k, _) -> k <> key) fields
+  in
+  let merged =
+    existing
+    |> (fun f -> set_field f "url" url)
+    |> (fun f -> set_field f "token" token_final)
+    |> (fun f -> set_field f "node_id" node_id)
+  in
+  save path (`Assoc merged);
+  Printf.printf "wrote %s\n" path;
+  exit 0
 
 let resolve_relay_url opt =
   match opt with
