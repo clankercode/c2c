@@ -10,6 +10,7 @@ type client_config = {
   binary : string;
   deliver_client : string;
   needs_deliver : bool;
+  needs_wire_daemon : bool;   (* use OCaml wire-daemon instead of PTY deliver *)
   needs_poker : bool;
   poker_event : string option;
   poker_from : string option;
@@ -24,12 +25,12 @@ let () =
      adds the CAP_SYS_PTRACE preflight banner for no benefit. *)
   Stdlib.Hashtbl.add clients "claude"
     { binary = "claude"; deliver_client = "claude";
-      needs_deliver = false; needs_poker = false;
+      needs_deliver = false; needs_wire_daemon = false; needs_poker = false;
       poker_event = None; poker_from = None;
       extra_env = [] };
   Stdlib.Hashtbl.add clients "codex"
     { binary = "codex"; deliver_client = "codex";
-      needs_deliver = true; needs_poker = false;
+      needs_deliver = true; needs_wire_daemon = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] };
   (* opencode: the TypeScript c2c plugin (.opencode/plugins/c2c.ts) handles
      delivery in-process via client.session.promptAsync. Python deliver
@@ -37,16 +38,19 @@ let () =
      TUI when setcap is missing. *)
   Stdlib.Hashtbl.add clients "opencode"
     { binary = "opencode"; deliver_client = "opencode";
-      needs_deliver = false; needs_poker = false;
+      needs_deliver = false; needs_wire_daemon = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] };
+  (* kimi: Wire bridge (kimi --wire JSON-RPC) is the current delivery path.
+     PTY deliver daemon is deprecated. Wire daemon polls broker and delivers
+     via Wire prompt, no PTY access needed. *)
   Stdlib.Hashtbl.add clients "kimi"
     { binary = "kimi"; deliver_client = "kimi";
-      needs_deliver = true; needs_poker = true;
+      needs_deliver = false; needs_wire_daemon = true; needs_poker = true;
       poker_event = Some "heartbeat"; poker_from = Some "kimi-poker";
       extra_env = [] };
   Stdlib.Hashtbl.add clients "crush"
     { binary = "crush"; deliver_client = "crush";
-      needs_deliver = true; needs_poker = false;
+      needs_deliver = true; needs_wire_daemon = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] }
 
 let supported_clients = Stdlib.Hashtbl.fold (fun k _ acc -> k :: acc) clients []
@@ -439,6 +443,13 @@ let poker_script_path ~(broker_root : string) : string option =
       let p = dir // "c2c_poker.py" in
       if Sys.file_exists p then Some p else None
 
+let wire_bridge_script_path ~(broker_root : string) : string option =
+  match resolve_repo_root ~broker_root with
+  | "" -> None
+  | dir ->
+      let p = dir // "c2c_kimi_wire_bridge.py" in
+      if Sys.file_exists p then Some p else None
+
 (* ---------------------------------------------------------------------------
  * Sidecar daemon spawning
  * --------------------------------------------------------------------------- *)
@@ -484,6 +495,27 @@ let start_poker ~(name : string) ~(client : string)
              Some pid
            with Unix.Unix_error _ -> None)
 
+let start_wire_daemon ~(name : string) ~(alias : string)
+    ~(broker_root : string) () : int option =
+  match wire_bridge_script_path ~broker_root with
+  | None -> None
+  | Some script ->
+      let args =
+        [ "python3"; script
+        ; "--session-id"; name
+        ; "--alias"; alias
+        ; "--broker-root"; broker_root
+        ; "--loop"
+        ; "--interval"; "5"
+        ]
+      in
+      (try
+         let pid = Unix.create_process_env "python3" (Array.of_list args)
+             (Unix.environment ()) Unix.stdin Unix.stdout Unix.stderr
+         in
+         Some pid
+       with Unix.Unix_error _ -> None)
+
 (* ---------------------------------------------------------------------------
  * Outer loop
  * --------------------------------------------------------------------------- *)
@@ -512,6 +544,7 @@ let run_outer_loop ~(name : string) ~(client : string)
 
       let deliver_pid = ref None in
       let poker_pid = ref None in
+      let wire_pid = ref None in
 
       let stop_sidecar pid_opt =
         match pid_opt with
@@ -527,6 +560,7 @@ let run_outer_loop ~(name : string) ~(client : string)
       let cleanup_and_exit code =
         stop_sidecar !deliver_pid;
         stop_sidecar !poker_pid;
+        stop_sidecar !wire_pid;
         remove_pidfile (outer_pid_path name);
         remove_pidfile (inner_pid_path name);
         remove_pidfile (deliver_pid_path name);
@@ -602,12 +636,18 @@ let run_outer_loop ~(name : string) ~(client : string)
           (* Record inner pid so `c2c restart-self` can SIGTERM just the
              managed child without killing the outer loop. *)
           write_pid (inner_pid_path name) pid;
-          (* Start deliver daemon (skipped for clients whose delivery is
-             handled in-tree, e.g. claude via PostToolUse hook + channel). *)
+          (* Start deliver daemon (PTY notify path, used for Codex). *)
           (if !deliver_pid = None && cfg.needs_deliver then
              match start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt:(Some pid) () with
              | Some p -> deliver_pid := Some p; write_pid (deliver_pid_path name) p
              | None -> ());
+          (* Start wire-daemon (Kimi Wire bridge delivery, replaces PTY deliver). *)
+          (if !wire_pid = None && cfg.needs_wire_daemon then begin
+             let alias = Option.value alias_override ~default:name in
+             match start_wire_daemon ~name ~alias ~broker_root () with
+             | Some p -> wire_pid := Some p
+             | None -> ()
+           end);
           (* Start poker *)
           (if !poker_pid = None && cfg.needs_poker then
              match start_poker ~name ~client ~broker_root ?child_pid_opt:(Some pid) () with
