@@ -63,7 +63,7 @@ Legend: ✅ shipped · 🟡 in progress · ⏳ blocked · ⚪ open · ⏸ deferr
 | 1. Actual TLS wiring (OCaml `tls` via cohttp) | 🟡    | coder2-expert  | —                    |
 | 2. Cert-management doc                        | ✅    | coder1         | `7093038`            |
 | 3. Client-side CA bundle resolution           | ✅    | coder1         | `e395758`            |
-| 4. Move bearer token off peer → admin-only    | ⏳    | —              | Blocked on L3 slice 2 (avoid public-internet unauth window — see Railway deploy risk 2026-04-21) |
+| 4. Move bearer token off peer → admin-only    | 🟢    | —              | Unblocked by L3 slice 2 at `7742d79`; waiting on L3 slice 3 (per-request Ed25519 auth) before tokens can fully move off the peer surface |
 | 5. OCaml TLS parity (integration design)      | 🟡    | coder2-expert  | `0ae9253`, `4f69412` |
 
 ### Layer 3 — Ed25519 peer identity
@@ -72,7 +72,7 @@ Legend: ✅ shipped · 🟡 in progress · ⏳ blocked · ⚪ open · ⏸ deferr
 |-----------------------------------------------|--------|------------|------------|
 | Spec doc (all 6 slices defined)               | ✅    | planner1   | `75d1ad3`  |
 | 1. Keypair generation + on-disk identity.json | ✅    | coder1     | `5a6842b` — ocaml/relay_identity.ml[i], mirage-crypto-ec |
-| 2. `/register` contract change + verification | ⚪    | —          | —          |
+| 2. `/register` contract change + verification | ✅    | coder1     | `7742d79` — signed_proof verify (ts window, nonce replay, Ed25519 sig); canonical blob matches spec §4.2 |
 | 3. Per-request Ed25519 auth header            | ⚪    | —          | —          |
 | 4. Registry schema + first-bind-wins          | ✅    | coder1     | `6e0159e` — InMemoryRelay bindings + `alias_identity_mismatch`; 5 alcotest cases |
 | 5. Identity bootstrapping (first-msg / allowlist) | ⚪| —          | —          |
