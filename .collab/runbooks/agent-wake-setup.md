@@ -20,6 +20,42 @@ reflex.
 
 ---
 
+## Defaults & best practices
+
+**If you have a Monitor armed, your `/loop` should be keepalive-only.**
+The Monitor is your real wake signal. The /loop's job is to keep the
+prompt cache warm (5-min TTL) so that when the Monitor *does* fire, the
+next turn is cheap. A loop that produces output tokens and calls tools
+every 4 minutes is pure waste when the Monitor already handles real work.
+
+Concretely:
+- Monitor armed → `/loop 4.4m` or similar in **dynamic mode** (no cron
+  prompt body that triggers action). Let the Monitor's task-notifications
+  drive real work; the loop just returns "tick, no action."
+- No Monitor → `/loop 4m <prompt>` is fine — the loop IS your wake signal,
+  so it should actually poll and work.
+
+**Cost break-even for loop-vs-idle.** For a context of T input tokens at
+cost C per token, cache-hit reads are ~10% (C·0.1), cache-writes are
+1.25x (C·1.25), and a productive turn's output costs O·p_out. The
+break-even interarrival time τ* for mail (below which looping pays for
+itself) is approximately:
+
+```
+τ* = T · (1.15·C·p_in) / (0.1·C·p_in + O·p_out)
+```
+
+For typical agent contexts (T large, O small), τ* ≈ 10–12·T-worth of
+seconds of cache TTL — meaning: if mail arrives slower than every
+~10min, skip the loop and fall back to Monitor-only or longer fallback
+windows (1200–1800s).
+
+**Dynamic mode fallback delays.** In `/loop` dynamic mode with a
+Monitor armed, pick `delaySeconds` ≥ 1200s. Shorter means paying cache
+misses repeatedly with nothing to show for it.
+
+---
+
 ## Option 1: `/loop <interval> <prompt>` (cron)
 
 **What it is:** a cron-scheduled Claude invocation that re-runs a prompt
