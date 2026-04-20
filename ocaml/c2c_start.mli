@@ -71,8 +71,11 @@ val deliver_pid_path : string -> string
 val poker_pid_path : string -> string
 (** [poker_pid_path name] returns the poker.pid path for an instance. *)
 
+val generate_alias : unit -> string
+(** [generate_alias ()] returns a random two-word alias like "ember-frost". *)
+
 val default_name : string -> string
-(** [default_name client] returns "<client>-<hostname>". *)
+(** [default_name client] returns "<client>-<word1>-<word2>" using random words. *)
 
 (** {1 Broker root} *)
 

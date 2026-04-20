@@ -89,6 +89,15 @@ function resolvePermissionSupervisors(sidecar: Record<string, unknown>): string[
 // ---------------------------------------------------------------------------
 
 const C2CDelivery: Plugin = async (ctx) => {
+  // If running as the global plugin and a project-level plugin exists in the
+  // current directory, defer to it — avoids double-loading when both are active.
+  const projectPluginPath = path.join(process.cwd(), ".opencode", "plugins", "c2c.ts");
+  const thisPluginPath = new URL(import.meta.url).pathname;
+  const isGlobalPlugin = thisPluginPath.includes("/.config/opencode/plugins/");
+  if (isGlobalPlugin && fs.existsSync(projectPluginPath)) {
+    return {}; // project-level plugin will handle delivery
+  }
+
   // --- Config (env vars > sidecar .opencode/c2c-plugin.json) ---
   const sidecar = loadSidecarConfig();
   const sessionId: string =

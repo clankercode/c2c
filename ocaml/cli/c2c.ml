@@ -3460,18 +3460,8 @@ let json_write_file path json =
   Unix.rename tmp path
 
 let default_alias_for_client client =
-  let user = try Sys.getenv "USER" with Not_found -> "user" in
-  let host =
-    try
-      let h = Sys.getenv "HOSTNAME" in
-      try String.sub h 0 (String.index h '.') with Not_found -> h
-    with Not_found ->
-      try
-        let h = Unix.gethostname () in
-        try String.sub h 0 (String.index h '.') with Not_found -> h
-      with _ -> "localhost"
-  in
-  Printf.sprintf "%s-%s-%s" client user host
+  let suffix = C2c_start.generate_alias () in
+  Printf.sprintf "%s-%s" client suffix
 
 (* --- setup: Codex (TOML) --- *)
 
@@ -4074,7 +4064,10 @@ let do_install_client ?(channel_delivery=false) ~output_mode ~client ~alias_opt 
   let alias_val =
     match alias_opt with
     | Some a -> a
-    | None -> default_alias_for_client client
+    | None ->
+        let a = default_alias_for_client client in
+        Printf.eprintf "[c2c setup] no --alias given; auto-picked alias=%s. Pass --alias NAME to override.\n%!" a;
+        a
   in
   let (server_path, mcp_command) = resolve_mcp_server_paths ~output_mode in
   match String.lowercase_ascii client with
@@ -4451,9 +4444,12 @@ let init_cmd =
     match alias_opt with
     | Some a -> a
     | None ->
-        match client_resolved with
-        | Some c -> default_alias_for_client c
-        | None -> generate_alias ()
+        let a = match client_resolved with
+          | Some c -> default_alias_for_client c
+          | None -> generate_alias ()
+        in
+        Printf.eprintf "[c2c register] no --alias given; auto-picked alias=%s. Pass --alias NAME to override.\n%!" a;
+        a
   in
   (* Ensure Ed25519 identity exists — idempotent, safe to run always. *)
   let _identity_init_rc = Sys.command "c2c relay identity init 2>/dev/null" in
@@ -4975,7 +4971,13 @@ let start_cmd =
   and+ bin_opt = bin
   and+ session_id_opt = session_id
   and+ one_hr_cache = one_hr_cache in
-  let name = Option.value name_opt ~default:(C2c_start.default_name client) in
+  let name = match name_opt with
+    | Some n -> n
+    | None ->
+        let n = C2c_start.default_name client in
+        Printf.eprintf "[c2c start] no -n given; auto-picked name=%s. Pass -n NAME to override.\n%!" n;
+        n
+  in
   exit (C2c_start.cmd_start ~client ~name ~extra_args:[] ?binary_override:bin_opt ?alias_override:alias_opt ?session_id_override:session_id_opt ~one_hr_cache ())
 
 let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Start a managed c2c instance.") start_cmd

@@ -226,19 +226,18 @@ let record_death ~broker_root ~name ~client ~exit_code ~duration_s ~inst_dir =
     close_out oc
   with _ -> ())
 
+let alias_words = [| "amber"; "ash"; "azure"; "birch"; "blade"; "blaze"; "bloom"; "brass"; "brick"; "bright"; "bronze"; "brook"; "cedar"; "chalk"; "charm"; "clay"; "copper"; "coral"; "creek"; "crimson"; "crown"; "crystal"; "dawn"; "dusk"; "ember"; "fern"; "flame"; "flint"; "frost"; "gale"; "glow"; "granite"; "gravel"; "haze"; "hazel"; "iron"; "ivory"; "jade"; "lake"; "lava"; "leaf"; "limestone"; "lime"; "marble"; "mist"; "moss"; "mountain"; "onyx"; "opal"; "pine"; "quartz"; "reef"; "ridge"; "river"; "ruby"; "rust"; "sage"; "sand"; "shadow"; "silver"; "slate"; "smoke"; "snow"; "spark"; "steel"; "stone"; "storm"; "summit"; "thorn"; "tide"; "timber"; "vale"; "vine"; "wave"; "weld"; "willow" |]
+
+let generate_alias () =
+  let () = Random.self_init () in
+  let n = Array.length alias_words in
+  let w1 = alias_words.(Random.int n) in
+  let w2 = alias_words.(Random.int n) in
+  Printf.sprintf "%s-%s" w1 w2
+
 let default_name client =
-  let hostname =
-    try
-      let ic = Unix.open_process_in "hostname" in
-      Fun.protect ~finally:(fun () -> ignore (Unix.close_process_in ic))
-        (fun () -> input_line ic)
-    with _ -> "localhost"
-  in
-  let hostname =
-    try String.map (fun c -> if c = '.' then '-' else c) hostname
-    with _ -> hostname
-  in
-  Printf.sprintf "%s-%s" client hostname
+  let suffix = generate_alias () in
+  Printf.sprintf "%s-%s" client suffix
 
 (* ---------------------------------------------------------------------------
  * Broker root
