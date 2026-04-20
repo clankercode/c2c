@@ -8,8 +8,10 @@
  * Config (all optional, with sensible defaults):
  *   C2C_MCP_SESSION_ID      — broker session ID to poll (required for delivery)
  *   C2C_MCP_BROKER_ROOT     — broker root dir (default: auto-detect)
- *   C2C_PLUGIN_POLL_INTERVAL_MS — poll interval in ms (default: 2000)
+ *   C2C_PLUGIN_POLL_INTERVAL_MS — safety-net poll interval in ms (default: 30000; primary wake is c2c monitor)
  *   C2C_PLUGIN_DELIVER_ON_IDLE  — "1" = only deliver on session.idle (default: "0")
+ *   C2C_PERMISSION_SUPERVISOR   — alias to DM on permission.ask (default: "coordinator1")
+ *   C2C_PERMISSION_TIMEOUT_MS   — ms to await supervisor reply before falling back to dialog (default: 120000)
  *
  * Delivery strategy:
  *   - Primary: poll on session.idle events (agent is between tool calls)
@@ -55,12 +57,22 @@ const C2CDelivery: Plugin = async (ctx) => {
   const brokerRoot: string = process.env.C2C_MCP_BROKER_ROOT || sidecar.broker_root || "";
   const configuredOpenCodeSessionId: string =
     process.env.C2C_OPENCODE_SESSION_ID || sidecar.opencode_session_id || "";
-  const pollIntervalMs: number = parseInt(process.env.C2C_PLUGIN_POLL_INTERVAL_MS || "2000", 10);
+  const pollIntervalMs: number = parseInt(process.env.C2C_PLUGIN_POLL_INTERVAL_MS || "30000", 10);
   const idleOnlyMode: boolean = (process.env.C2C_PLUGIN_DELIVER_ON_IDLE || "0") === "1";
+  const permissionSupervisor: string =
+    process.env.C2C_PERMISSION_SUPERVISOR || sidecar.permission_supervisor || "coordinator1";
+  const permissionTimeoutMs: number = parseInt(
+    process.env.C2C_PERMISSION_TIMEOUT_MS || "120000", 10
+  );
 
   // Track the active root session (set from session events)
   let activeSessionId: string | null = configuredOpenCodeSessionId || null;
   let backgroundLoopStarted = false;
+
+  // Dedup window for permission notifications: track last 10 seen permission IDs.
+  const seenPermissionIds: string[] = [];
+  // Pending async permission approvals (v2): permId → resolve function.
+  const pendingPermissions = new Map<string, (reply: string) => void>();
 
   // --- Helpers ---
 
@@ -186,6 +198,25 @@ const C2CDelivery: Plugin = async (ctx) => {
     }
   }
 
+  /** Extract a structured permission reply from message content, or null. */
+  function extractPermissionReply(content: string): { permId: string; decision: string } | null {
+    const m = content.match(/\bpermission:([a-zA-Z0-9_-]+):(approve-once|approve-always|reject)\b/);
+    return m ? { permId: m[1], decision: m[2] } : null;
+  }
+
+  /** Await a supervisor permission reply; resolves with decision string or "timeout". */
+  function waitForPermissionReply(permId: string, timeoutMs: number): Promise<string> {
+    return new Promise((resolve) => {
+      pendingPermissions.set(permId, resolve);
+      setTimeout(() => {
+        if (pendingPermissions.has(permId)) {
+          pendingPermissions.delete(permId);
+          resolve("timeout");
+        }
+      }, timeoutMs);
+    });
+  }
+
   /** Format a single broker message as a c2c envelope for injection. */
   function formatEnvelope(msg: Msg): string {
     const from = msg.from_alias || "unknown";
@@ -208,6 +239,15 @@ const C2CDelivery: Plugin = async (ctx) => {
 
     const failed: Msg[] = [];
     for (const msg of messages) {
+      // Intercept structured permission replies before normal delivery.
+      const permReply = extractPermissionReply(msg.content);
+      if (permReply && pendingPermissions.has(permReply.permId)) {
+        const resolve = pendingPermissions.get(permReply.permId)!;
+        pendingPermissions.delete(permReply.permId);
+        resolve(permReply.decision);
+        await log(`permission reply from ${msg.from_alias}: ${permReply.permId} → ${permReply.decision}`);
+        continue;
+      }
       const envelope = formatEnvelope(msg);
       try {
         await ctx.client.session.promptAsync({
@@ -252,34 +292,43 @@ const C2CDelivery: Plugin = async (ctx) => {
   function startBackgroundLoop(): void {
     if (backgroundLoopStarted || idleOnlyMode) return;
     backgroundLoopStarted = true;
+
+    // Debounce: skip tryDeliver if a delivery cycle is already in flight.
+    let deliveryInFlight = false;
     const tick = async () => {
-      await tryDeliver();
+      if (deliveryInFlight) return;
+      deliveryInFlight = true;
+      try { await tryDeliver(); } finally { deliveryInFlight = false; }
     };
 
-    // Use fs.watch on the broker directory for cross-platform file change detection.
-    // Watch the directory (not the file) because atomic writes (temp + os.replace)
-    // change the inode — fs.watch on a replaced file path can miss events.
-    if (brokerRoot) {
-      try {
-        const inboxName = `${sessionId}.inbox.json`;
-        fs.watch(brokerRoot, { persistent: false }, (_eventType, filename) => {
-          if (filename === inboxName) {
-            tick().catch(() => {});
-          }
-        });
-        await log(`watching ${brokerRoot} for ${inboxName} changes`);
-      } catch (err) {
-        await log(`fs.watch failed (${err}), falling back to poll every ${pollIntervalMs}ms`);
-        setInterval(tick, pollIntervalMs);
-      }
-    } else {
-      // No broker root — fall back to polling
-      setInterval(tick, pollIntervalMs);
+    // Spawn `c2c monitor` and trigger delivery only on 📬 (inbox-write) events.
+    // 💬 (peer DM to others), 📤 (drain), 🗑️ (sweep) are noise — skip them.
+    function spawnMonitor(): void {
+      const repoCli = path.join(process.cwd(), "c2c");
+      const command = process.env.C2C_CLI_COMMAND || (fs.existsSync(repoCli) ? repoCli : "c2c");
+      const args = ["monitor"];
+      if (sessionId) args.push("--alias", sessionId);
+      const proc = spawn(command, args, { cwd: process.cwd(), env: process.env, shell: false });
+      let buf = "";
+      proc.stdout?.on("data", (chunk: Buffer) => {
+        buf += chunk.toString();
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) !== -1) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (line && line.includes("📬")) tick().catch(() => {});
+        }
+      });
+      proc.on("close", () => { void log("c2c monitor exited, restarting in 5s"); setTimeout(spawnMonitor, 5000); });
+      proc.on("error", () => { setTimeout(spawnMonitor, 10_000); });
     }
 
-    // Safety net: poll once on startup and every 30s in case fs.watch misses events
+    spawnMonitor();
+    void log(`c2c monitor spawned (alias=${sessionId})`);
+
+    // Safety net: poll once on startup and every pollIntervalMs in case monitor misses events
     setTimeout(tick, 1000);
-    setInterval(tick, 30_000);
+    setInterval(tick, pollIntervalMs);
   }
 
   // --- Guard: no delivery without session ID ---
@@ -304,6 +353,8 @@ const C2CDelivery: Plugin = async (ctx) => {
         await log("starting delivery loop");
         await toast(`c2c: delivery active (session=${sessionId})`);
         startBackgroundLoop();
+        // Drain any messages that queued while the session was offline (cold-boot gap).
+        await tryDeliver();
       },
     },
 
@@ -320,6 +371,40 @@ const C2CDelivery: Plugin = async (ctx) => {
         return;
       }
 
+      // Notify supervisor on permission.updated (v1: notification-only, no dialog mutation)
+      if (event.type === "permission.updated") {
+        const perm = (event as any).properties?.permission ?? (event as any).properties ?? {};
+        const permId: string = perm.id || "";
+        if (permId) {
+          if (seenPermissionIds.includes(permId)) return;
+          // Skip v1 notification if v2 permission.ask hook is awaiting this ID.
+          if (pendingPermissions.has(permId)) return;
+          seenPermissionIds.push(permId);
+          if (seenPermissionIds.length > 10) seenPermissionIds.shift();
+        }
+        const title: string = perm.title || "unknown";
+        const type: string = perm.type || "unknown";
+        const pattern: string = JSON.stringify(perm.pattern ?? "N/A");
+        const sid: string = perm.sessionID || activeSessionId || sessionId || "unknown";
+        const msg = [
+          `PERMISSION REQUEST (v1 notification) from ${sessionId}:`,
+          `  session: ${sid}`,
+          `  title: ${title}`,
+          `  type: ${type}`,
+          `  pattern: ${pattern}`,
+          `  id: ${permId || "unknown"}`,
+          `  (v1 fallback — respond via TUI dialog)`,
+        ].join("\n");
+        try {
+          await runC2c(["send", permissionSupervisor, msg]);
+          await log(`permission notification sent to ${permissionSupervisor}: ${permId}`);
+          void toast(`c2c: permission notified → ${permissionSupervisor}`);
+        } catch (err) {
+          await log(`permission notification error: ${err}`);
+        }
+        return;
+      }
+
       // Deliver on session.idle — agent has just finished a turn and is ready
       if (event.type === "session.idle") {
         const e = event as EventSessionIdle;
@@ -331,6 +416,53 @@ const C2CDelivery: Plugin = async (ctx) => {
         activeSessionId = idleSessionId;
         await deliverMessages(idleSessionId);
       }
+    },
+
+    hooks: {
+      "permission.ask": async (input: any, output: { status: "ask" | "deny" | "allow" }) => {
+        const permId: string = input.id || "";
+        const title: string = input.title || "unknown";
+        const type: string = input.type || "unknown";
+        const pattern: string = JSON.stringify(input.pattern ?? "N/A");
+        const sid: string = input.sessionID || activeSessionId || sessionId || "unknown";
+        const timeoutSec = Math.round(permissionTimeoutMs / 1000);
+        const msg = [
+          `PERMISSION REQUEST (async) from ${sessionId}:`,
+          `  session: ${sid}`,
+          `  title: ${title}`,
+          `  type: ${type}`,
+          `  pattern: ${pattern}`,
+          `  id: ${permId || "unknown"}`,
+          `Reply within ${timeoutSec}s with one of:`,
+          `  c2c send ${sessionId} "permission:${permId}:approve-once"`,
+          `  c2c send ${sessionId} "permission:${permId}:approve-always"`,
+          `  c2c send ${sessionId} "permission:${permId}:reject"`,
+          `(timeout → falls back to TUI dialog)`,
+        ].join("\n");
+        try {
+          await runC2c(["send", permissionSupervisor, msg]);
+          await log(`permission.ask sent to ${permissionSupervisor}: ${permId}`);
+          void toast(`c2c: awaiting permission approval from ${permissionSupervisor}…`);
+        } catch (err) {
+          await log(`permission.ask notify error: ${err}`);
+          return; // notify failed — fall through to dialog
+        }
+        if (!permId) return; // no ID to track, fall through to dialog
+        const reply = await waitForPermissionReply(permId, permissionTimeoutMs);
+        if (reply === "approve-once" || reply === "approve-always") {
+          output.status = "allow";
+          await log(`permission approved by ${permissionSupervisor}: ${permId} (${reply})`);
+          void toast(`c2c: permission approved (${reply})`);
+        } else if (reply === "reject") {
+          output.status = "deny";
+          await log(`permission rejected by ${permissionSupervisor}: ${permId}`);
+          void toast(`c2c: permission rejected`, "warning");
+        } else {
+          // timeout — leave output.status as "ask" (default) to show TUI dialog
+          await log(`permission timeout (${timeoutSec}s): ${permId} — showing dialog`);
+          void toast(`c2c: permission timeout — showing dialog`, "warning");
+        }
+      },
     },
   };
 };

@@ -292,10 +292,17 @@ const C2CDelivery: Plugin = async (ctx) => {
   function startBackgroundLoop(): void {
     if (backgroundLoopStarted || idleOnlyMode) return;
     backgroundLoopStarted = true;
-    const tick = async () => { await tryDeliver(); };
 
-    // Spawn `c2c monitor` and trigger delivery on each output line (each line = inbox event).
-    // On exit (inotifywait unavailable, binary not found, etc.) restart after a short delay.
+    // Debounce: skip tryDeliver if a delivery cycle is already in flight.
+    let deliveryInFlight = false;
+    const tick = async () => {
+      if (deliveryInFlight) return;
+      deliveryInFlight = true;
+      try { await tryDeliver(); } finally { deliveryInFlight = false; }
+    };
+
+    // Spawn `c2c monitor` and trigger delivery only on 📬 (inbox-write) events.
+    // 💬 (peer DM to others), 📤 (drain), 🗑️ (sweep) are noise — skip them.
     function spawnMonitor(): void {
       const repoCli = path.join(process.cwd(), "c2c");
       const command = process.env.C2C_CLI_COMMAND || (fs.existsSync(repoCli) ? repoCli : "c2c");
@@ -309,7 +316,7 @@ const C2CDelivery: Plugin = async (ctx) => {
         while ((nl = buf.indexOf("\n")) !== -1) {
           const line = buf.slice(0, nl).trim();
           buf = buf.slice(nl + 1);
-          if (line) tick().catch(() => {});
+          if (line && line.includes("📬")) tick().catch(() => {});
         }
       });
       proc.on("close", () => { void log("c2c monitor exited, restarting in 5s"); setTimeout(spawnMonitor, 5000); });
