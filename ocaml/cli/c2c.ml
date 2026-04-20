@@ -678,9 +678,27 @@ let check_supervisor_config () =
           with _ -> None
         else None
       in
-      (match sidecar_sup with
-       | Some v -> (`Green, Printf.sprintf "supervisor: %s (from sidecar)" v)
-       | None -> (`Yellow, "supervisor: coordinator1 (default — run: c2c init --supervisor <alias> or c2c repo set supervisor <alias>)"))
+      let repo_sup =
+        let repo_cfg_path = Filename.concat (Sys.getcwd ()) ".c2c/repo.json" in
+        if Sys.file_exists repo_cfg_path then
+          try
+            let ic = open_in repo_cfg_path in
+            let data = Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+              let n = in_channel_length ic in really_input_string ic n) in
+            let j = Yojson.Safe.from_string data in
+            let sup = Yojson.Safe.Util.(j |> member "supervisors") in
+            (match sup with
+             | `List items ->
+                 let names = List.filter_map (function `String s -> Some s | _ -> None) items in
+                 if names <> [] then Some (String.concat ", " names) else None
+             | _ -> None)
+          with _ -> None
+        else None
+      in
+      (match sidecar_sup, repo_sup with
+       | Some v, _ -> (`Green, Printf.sprintf "supervisor: %s (from sidecar)" v)
+       | _, Some v -> (`Green, Printf.sprintf "supervisor: %s (from .c2c/repo.json)" v)
+       | None, None -> (`Yellow, "supervisor: coordinator1 (default — run: c2c init --supervisor <alias> or c2c repo set supervisor <alias>)"))
 
 let check_relay_http () =
   let url = match Sys.getenv_opt "C2C_RELAY_URL" with Some v when v <> "" -> v | _ -> "https://relay.c2c.im" in
