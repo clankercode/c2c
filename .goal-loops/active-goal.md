@@ -227,26 +227,22 @@ These are Max's target experiences, verbatim:
   mode. Stale ghost registrations (crush-fresh-test, opencode-c2c-msg) cleaned up
   to unblock goal calculation. (2026-04-14, storm-beacon).
 
-### Active Work (as of 2026-04-21, planner1)
+### Active Work (as of 2026-04-21, planner1 + coder2-expert)
 
-- **c2c tail + --since**: `c2c room history --since` filter and `c2c tail <room>
-  --follow` live-follow — specs in `.collab/findings/2026-04-20T21-45-00Z-*`.
-  Assigned to coder2-expert.
-- **c2c health extension**: supervisor config check, relay reachability probe,
-  per-client plugin install check — spec `.collab/findings/2026-04-20T21-35-00Z-*`.
-  Assigned to coder2-expert.
-- **c2c init supervisor command**: per-repo supervisor list, TUI checklist, multi-
-  supervisor round-robin/first-alive/broadcast — spec `.collab/findings/2026-04-20T21-05-00Z-*`.
-  coder2-expert has initial implementation (b300f55).
-- **Supervisor liveness in plugin**: `querySupervisorLiveness()` via `c2c list --json`,
-  broadcast fallback — spec `.collab/findings/2026-04-20T21-30-00Z-*`. Pending impl.
+- **Relay room persistence**: implemented and smoke-tested (ebaefbb). --persist-dir /
+  C2C_RELAY_PERSIST_DIR flag. Both send_room and join_room write to JSONL on disk.
+  Needs Railway deploy (coordinator1 gate): set C2C_RELAY_PERSIST_DIR=/data + volume.
 - **AFK-wait promptAsync validation**: does `promptAsync` fire during human-turn?
-  Queued for next non-bypass OpenCode TUI window.
+  Blocked on end-to-end delivery test. Delivery now confirmed working (inbox drains).
+  Needs TUI render confirmation in coordinator1's pane.
 - **v2 permission async approval validation**: live test of `permission.ask` hook
-  with structured c2c reply. Queued for same TUI window.
+  with structured c2c reply. Same dependency.
 - **Cross-machine relay**: loopback proof PASSED 2026-04-20 (relay-test-sender →
   relay-test-receiver via relay.c2c.im). Real multi-machine test pending.
   Runbook: `.collab/runbooks/cross-machine-relay-proof.md`.
+- **Relay auth prod migration**: design in .collab/findings/2026-04-21T08-15-00Z-*. 
+  Steps 2-4 for coder2-expert (identity init in c2c init ✓ done, auto-sign register,
+  health shows auth_mode). Step 1 (set C2C_RELAY_TOKEN on Railway) for Max.
 
 ### Recent Completions (2026-04-20/21, planner1 + coder2-expert + coordinator1)
 
@@ -268,6 +264,18 @@ These are Max's target experiences, verbatim:
   daemon; CLAUDE.md deprecation flags on all PTY wake scripts (d592dfd+).
 - **c2c relay loopback proof** ✓: send + poll via relay.c2c.im confirmed working
   with two CLI aliases (no broker needed). Recipe in runbook.
+- **OpenCode silent-drain fixed** ✓: drainInbox now uses `c2c poll-inbox --json`;
+  session.created sets activeSessionId + triggers immediate delivery (8d37cea, b13988f).
+  Inbox drain confirmed working end-to-end.
+- **OpenCode orphan process cleanup** ✓: plugin kills monitor subprocess on process
+  exit; c2c monitor exits on ppid==1; reserved alias guard (3397061, c09f89e).
+- **Random word-pair aliases** ✓: default_name + default_alias_for_client now generate
+  e.g. `opencode-ember-frost` instead of hostname-based names (969bcf9, de1b772).
+- **c2c install global plugin fix** ✓: always copies real plugin to global path on
+  install; fixes Filename.chop_suffix crash; boot banner + PID prefix in debug log
+  (ebbb0f7, d74e20e, 3927d13).
+- **c2c-tmux-exec.sh** ✓: safety wrapper prevents send-keys into running TUI;
+  --force/--escape-tui/--dry-run flags (24df5da, scripts/c2c-tmux-exec.sh).
 
 ### Remaining Product Polish
 
