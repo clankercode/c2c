@@ -850,8 +850,8 @@ def print_health_report(report: dict[str, Any]) -> None:
             print(f"✓ Claude wake daemon: running (pid {cwd['pid']})")
         else:
             sid = report.get("session", {}).get("session_id", "")
-            print("~ Claude wake daemon: not running")
-            print(f"    Run: nohup c2c-claude-wake --claude-session {sid} &")
+            print("~ Claude wake daemon: not running (deprecated PTY path)")
+            print(f"    AFK gap workaround: run /loop 4m in your Claude Code session")
 
     # Deliver daemon (Kimi / OpenCode / Codex / Crush auto-delivery).
     # Skip the warning for Claude Code sessions that have the PostToolUse hook
