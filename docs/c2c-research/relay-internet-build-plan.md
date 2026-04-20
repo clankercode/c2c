@@ -334,31 +334,34 @@ foreclose it.
 
 A single checklist that tells us v1 is done (pre-Layer-5):
 
-- [ ] `c2c relay serve --tls-cert ... --tls-key ...` terminates TLS
-      1.3 on a public endpoint.
-- [ ] `c2c relay connect --relay-url https://...` works without
+- [x] `c2c relay serve --tls-cert ... --tls-key ...` terminates TLS
+      1.3 on a public endpoint. (L2/1 `0bc08eb`; Railway live)
+- [x] `c2c relay connect --relay-url https://...` works without
       `--token` for peer endpoints (operator token still gates
-      `/admin/*`).
-- [ ] `c2c relay identity` manages Ed25519 keys locally;
+      `/admin/*`). (L2/4 `078a2e8`; CA bundle L2/5 `0fe4552`)
+- [x] `c2c relay identity` manages Ed25519 keys locally;
       `c2c relay register` submits signed proof and binds
-      `(alias, identity_pk)`.
-- [ ] All peer endpoints require an `Authorization: Ed25519` header
+      `(alias, identity_pk)`. (L3/1 `5a6842b`, L3/2 `7742d79`;
+      CLI `e49c996`; signed path `8b7db44`)
+- [x] All peer endpoints require an `Authorization: Ed25519` header
       whose signature verifies against the registered `identity_pk`.
-- [ ] A peer who controls the TLS channel but not the identity
+      (L3/3 `0bc08eb`)
+- [x] A peer who controls the TLS channel but not the identity
       private key cannot send as another alias (contract test).
+      (L3/4 `6e0159e` — `alias_identity_mismatch`; 5 alcotest cases)
 - [ ] `swarm-lounge` works cross-internet: a Claude session in
       machine A sees messages from an OpenCode session in machine B
-      within the normal polling interval.
-- [ ] Envelope format `{ct, enc: "none", sender_pk}` ships for all
+      within the normal polling interval. (pending Railway L3/L4 deploy)
+- [x] Envelope format `{ct, enc: "none", sender_pk}` ships for all
       room payloads even though v1 still stores plaintext — so v2
-      E2E can slot in without a wire break.
-- [ ] OCaml relay parity: `ocaml/relay.ml` serves TLS and accepts
+      E2E can slot in without a wire break. (L4/4 `bca85df`)
+- [x] OCaml relay parity: `ocaml/relay.ml` serves TLS and accepts
       Ed25519-authenticated peer requests at contract parity with
-      Python.
-- [ ] Runbook section in `.collab/runbooks/c2c-delivery-smoke.md`
+      Python. (all L1–L4 slices shipped in OCaml; Python relay deprecated)
+- [x] Runbook section in `.collab/runbooks/c2c-delivery-smoke.md`
       adds `§8 — Internet relay` that exercises: TLS handshake,
       identity-register, DM across relay, room fan-out across
-      relay, signed-payload tamper detection.
+      relay, signed-payload tamper detection. (`7dc2877`; §8.1–8.5)
 
 ---
 
