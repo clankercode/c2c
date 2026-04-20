@@ -133,6 +133,9 @@ let start_inbox_watcher ~broker_root ~session_id ~emit_notification =
             | [] -> Lwt.return_unit
             | msg :: rest ->
                 let* () = emit_notification msg in
+                (* 10ms yield lets the pipe buffer flush between notifications so
+                   the consumer's select() sees each one in a separate iteration. *)
+                let* () = Lwt_unix.sleep 0.01 in
                 emit_all rest
           in
           let* () = emit_all messages in
