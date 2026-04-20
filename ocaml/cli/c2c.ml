@@ -704,7 +704,7 @@ let health_cmd =
   let pty_cap = check_pty_inject_capability () in
   let pty_cap_str = match pty_cap with
     | `Ok -> "ok"
-    | `Missing_cap py -> Printf.sprintf "MISSING — `sudo setcap cap_sys_ptrace=ep %s` (needed for PTY-inject wake on kimi/codex/opencode)" py
+    | `Missing_cap py -> Printf.sprintf "missing — `sudo setcap cap_sys_ptrace=ep %s` (only needed for Codex PTY notify daemon; OpenCode + Kimi use non-PTY delivery)" py
     | `Unknown -> "unknown"
   in
   let output_mode = if json then Json else Human in
