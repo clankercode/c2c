@@ -347,31 +347,31 @@ injection text and PTY coordination:
 
 | Daemon | Client | Injection text |
 |--------|--------|----------------|
-| `c2c_claude_wake_daemon.py` | Claude Code | Wake prompt asking the agent to call `poll_inbox` |
+| `c2c_claude_wake_daemon.py` (**deprecated**) | Claude Code | Wake prompt asking the agent to call `poll_inbox` |
 | `c2c_deliver_inbox.py --notify-only` | Codex | `<c2c event="message_pending">poll mcp__c2c__poll_inbox</c2c>` sentinel |
-| `c2c_opencode_wake_daemon.py` | OpenCode | `/mcp__c2c__poll_inbox` slash-command |
-| `c2c_kimi_wake_daemon.py` | Kimi | Wake prompt via master-side `pty_inject` with 1.5s submit delay |
-| `c2c_crush_wake_daemon.py` | Crush | Wake prompt (experimental/unsupported) |
+| `c2c_opencode_wake_daemon.py` (**deprecated**) | OpenCode | Superseded by TypeScript plugin + `c2c monitor` subprocess |
+| `c2c_kimi_wake_daemon.py` (**deprecated**) | Kimi | Superseded by `c2c_kimi_wire_bridge.py` (Wire JSON-RPC, no PTY) |
+| `c2c_crush_wake_daemon.py` (**deprecated**) | Crush | Unreliable; Crush not a first-class peer |
 
 #### Client support
 
 | Client | Supported | Notes |
 |--------|-----------|-------|
-| Claude Code | Yes | `c2c_claude_wake_daemon.py` bridges idle sessions where PostToolUse hook cannot fire. Managed harness can start it via `c2c install claude --auto-wake`. |
-| Codex | Yes | `c2c_deliver_inbox.py --notify-only --loop` started by managed harness (`run-codex-inst-outer`). |
-| OpenCode | Yes (fallback) | `c2c_opencode_wake_daemon.py`. Superseded by native TypeScript plugin for new setups. |
-| Kimi | Yes (fallback) | `c2c_kimi_wake_daemon.py`. Superseded by Wire bridge for new setups. |
-| Crush | Experimental | `c2c_crush_wake_daemon.py`. Unreliable; Crush lacks context compaction. |
+| Claude Code | Yes (gap) | PostToolUse hook covers active tool calls. AFK gap (idle session) has no non-PTY fix yet; `c2c_claude_wake_daemon.py` deprecated. |
+| Codex | Yes | `c2c_deliver_inbox.py --notify-only --loop` started by managed harness. |
+| OpenCode | Yes ✓ | TypeScript plugin (`c2c.ts`) delivers via `c2c monitor` subprocess → `promptAsync`. No PTY. |
+| Kimi | Yes ✓ | `c2c_kimi_wire_bridge.py` (Wire JSON-RPC). Preferred over deprecated PTY wake. |
+| Crush | Deprecated | Unreliable; Crush lacks context compaction. |
 
 #### Key files
 
 | File | Role |
 |------|------|
-| `c2c_claude_wake_daemon.py` | Claude Code wake daemon |
+| `c2c_claude_wake_daemon.py` | Claude Code PTY wake — **deprecated** |
 | `c2c_deliver_inbox.py` | Codex notify daemon (with `--notify-only --loop`) |
-| `c2c_opencode_wake_daemon.py` | OpenCode wake daemon |
-| `c2c_kimi_wake_daemon.py` | Kimi wake daemon |
-| `c2c_crush_wake_daemon.py` | Crush wake daemon (experimental) |
+| `c2c_opencode_wake_daemon.py` | OpenCode PTY wake — **deprecated**; use TypeScript plugin |
+| `c2c_kimi_wake_daemon.py` | Kimi PTY wake — **deprecated**; use Wire bridge |
+| `c2c_crush_wake_daemon.py` | Crush PTY wake — **deprecated** |
 | `c2c_poker.py` | Shared PTY injection helper used by all daemons |
 
 #### Limitations
