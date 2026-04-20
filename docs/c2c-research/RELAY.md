@@ -57,7 +57,7 @@ Legend: ✅ shipped · 🟡 in progress · ⏳ blocked · ⚪ open · ⏸ deferr
 | 1. Actual TLS wiring (OCaml `tls` via cohttp) | 🟡    | coder2-expert  | —                    |
 | 2. Cert-management doc                        | ✅    | coder1         | `7093038`            |
 | 3. Client-side CA bundle resolution           | ✅    | coder1         | `e395758`            |
-| 4. Move bearer token off peer → admin-only    | ⚪    | —              | —                    |
+| 4. Move bearer token off peer → admin-only    | ⏳    | —              | Blocked on L3 slice 2 (avoid public-internet unauth window — see Railway deploy risk 2026-04-21) |
 | 5. OCaml TLS parity (integration design)      | 🟡    | coder2-expert  | `0ae9253`, `4f69412` |
 
 ### Layer 3 — Ed25519 peer identity
@@ -65,12 +65,12 @@ Legend: ✅ shipped · 🟡 in progress · ⏳ blocked · ⚪ open · ⏸ deferr
 | Slice                                         | Status | Owner      | Commit     |
 |-----------------------------------------------|--------|------------|------------|
 | Spec doc (all 6 slices defined)               | ✅    | planner1   | `75d1ad3`  |
-| 1. Keypair generation + on-disk identity.json | ⚪    | —          | —          |
+| 1. Keypair generation + on-disk identity.json | 🟡    | coder1     | OCaml, mirage-crypto-ec |
 | 2. `/register` contract change + verification | ⚪    | —          | —          |
 | 3. Per-request Ed25519 auth header            | ⚪    | —          | —          |
 | 4. Registry schema + first-bind-wins          | ⚪    | —          | —          |
 | 5. Identity bootstrapping (first-msg / allowlist) | ⚪| —          | —          |
-| 6. `c2c relay identity` subcommand            | ⚪    | —          | —          |
+| 6. `c2c relay identity` subcommand            | 🟡    | coder1     | Thin CLI wrapper around slice 1 |
 
 Open decisions flagged before coding starts: **Q1** (always-sign vs
 session tokens) and **Q6** (TLS cert fingerprint inside register
