@@ -3,7 +3,7 @@
 Tracks which client→client DM combinations work and how delivery is achieved.
 Update this when a new pathway is verified or broken.
 
-Last updated: 2026-04-14 by kimi-nova (Crush demoted from first-class support).
+Last updated: 2026-04-21 by coder2-expert (PTY deprecated; plugin→c2c monitor path).
 
 ## Legend
 
@@ -34,8 +34,8 @@ Last updated: 2026-04-14 by kimi-nova (Crush demoted from first-class support).
 - **Claude Code → OpenCode**: ✓ proven (storm-ember → opencode-local password game,
   2026-04-13). storm-ember sent via mcp__c2c__send, opencode TUI drained via
   mcp__c2c__poll_inbox, replied via mcp__c2c__send back. Full broker-native path,
-  no PTY injection. Delivery mechanism is receiver-side (OpenCode plugin); any
-  sender benefits automatically — wake+poll remains fallback.
+  no PTY injection. Delivery mechanism is receiver-side (OpenCode plugin via
+  `c2c monitor` subprocess → `promptAsync`); any sender benefits automatically.
 
 - **Claude Code → Codex**: ✓ delivery via notify daemon (`c2c_deliver_inbox.py
   --notify-only --loop`, started by `run-codex-inst-outer`). Daemon watches
