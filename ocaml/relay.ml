@@ -1035,7 +1035,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
       with _ -> "unknown"
     in
     respond_ok (json_ok [
-      ("version", `String "0.6.9");
+      ("version", `String "0.6.10");
       ("git_hash", `String git_hash)
     ])
 

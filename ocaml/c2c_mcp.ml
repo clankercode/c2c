@@ -11,7 +11,7 @@ type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : 
 type room_visibility = Public | Invite_only
 type room_meta = { visibility : room_visibility; invited_members : string list }
 
-let server_version = "0.6.9"
+let server_version = "0.6.10"
 
 let server_features =
   [ "liveness"
