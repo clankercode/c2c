@@ -2219,6 +2219,103 @@ let relay_rooms_cmd =
            let args = match token with None -> args | Some v -> args @ [ "--token"; v ] in
            Unix.execvp "python3" (Array.of_list args))
 
+(* c2c relay register — bind Ed25519 identity on the relay (§8.2) *)
+let relay_register_cmd =
+  let relay_url =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL.")
+  in
+  let token =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token.")
+  in
+  let alias =
+    Cmdliner.Arg.(required & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Alias to register.")
+  in
+  let+ relay_url = relay_url and+ token = token and+ alias = alias in
+  match resolve_relay_url relay_url with
+  | None ->
+      Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+      exit 1
+  | Some url ->
+      let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+      let node_id = Printf.sprintf "cli-%d" (int_of_float (Unix.gettimeofday ())) in
+      let session_id = node_id in
+      let identity_pk = match Relay_identity.load () with
+        | Ok id -> id.Relay_identity.public_key
+        | Error _ -> ""
+      in
+      let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.register client
+        ~node_id ~session_id ~alias ~client_type:"cli" ~identity_pk ()) in
+      print_endline (Yojson.Safe.pretty_to_string result);
+      (match result with
+       | `Assoc fields ->
+           (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
+       | _ -> exit 1)
+
+(* c2c relay dm — cross-host direct messages (§8.3) *)
+let relay_dm_cmd =
+  let subcmd =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"send|poll" ~doc:"DM subcommand: send or poll.")
+  in
+  let relay_url =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL.")
+  in
+  let token =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token.")
+  in
+  let alias =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Your alias (required for poll).")
+  in
+  let words =
+    Cmdliner.Arg.(value & pos_right 0 string [] & info [] ~docv:"WORDS" ~doc:"For send: <to-alias> <message...>")
+  in
+  let+ subcmd = subcmd and+ relay_url = relay_url and+ token = token
+  and+ alias = alias and+ words = words in
+  match resolve_relay_url relay_url with
+  | None ->
+      Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+      exit 1
+  | Some url ->
+      let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+      (match subcmd with
+       | "send" ->
+           (match words with
+            | [] | [_] ->
+                Printf.eprintf "error: usage: dm send <to-alias> <message...>\n%!";
+                exit 1
+            | to_alias :: msg_words ->
+                let from_alias = match alias with
+                  | Some a -> a
+                  | None ->
+                      Printf.eprintf "error: --alias required for dm send\n%!";
+                      exit 1
+                in
+                let content = String.concat " " msg_words in
+                let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.send client
+                  ~from_alias ~to_alias ~content ()) in
+                print_endline (Yojson.Safe.pretty_to_string result);
+                (match result with
+                 | `Assoc fields ->
+                     (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
+                 | _ -> exit 1))
+       | "poll" ->
+           let from_alias = match alias with
+             | Some a -> a
+             | None ->
+                 Printf.eprintf "error: --alias required for dm poll\n%!";
+                 exit 1
+           in
+           let node_id = Printf.sprintf "cli-%s" from_alias in
+           let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.poll_inbox client
+             ~node_id ~session_id:node_id) in
+           print_endline (Yojson.Safe.pretty_to_string result);
+           (match result with
+            | `Assoc fields ->
+                (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
+            | _ -> exit 1)
+       | other ->
+           Printf.eprintf "error: unknown dm subcommand: %s\n%!" other;
+           exit 1)
+
 let relay_gc_cmd =
   let relay_url =
     Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL.")
@@ -2408,12 +2505,14 @@ let relay_status = Cmdliner.Cmd.v (Cmdliner.Cmd.info "status" ~doc:"Show relay h
 let relay_list = Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List relay peers.") relay_list_cmd
 let relay_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "rooms" ~doc:"Manage relay rooms.") relay_rooms_cmd
 let relay_gc = Cmdliner.Cmd.v (Cmdliner.Cmd.info "gc" ~doc:"Run relay garbage collection.") relay_gc_cmd
+let relay_register = Cmdliner.Cmd.v (Cmdliner.Cmd.info "register" ~doc:"Register Ed25519 identity on the relay.") relay_register_cmd
+let relay_dm = Cmdliner.Cmd.v (Cmdliner.Cmd.info "dm" ~doc:"Send or receive cross-host direct messages.") relay_dm_cmd
 
 let relay_group =
   Cmdliner.Cmd.group
     ~default:relay_status_cmd
-    (Cmdliner.Cmd.info "relay" ~doc:"Cross-machine relay: serve, connect, setup, status, list, rooms, gc, identity.")
-    [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_identity ]
+    (Cmdliner.Cmd.info "relay" ~doc:"Cross-machine relay: serve, connect, setup, status, list, rooms, gc, identity, register, dm.")
+    [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_identity; relay_register; relay_dm ]
 
 (* --- main entry point ----------------------------------------------------- *)
 
