@@ -65,7 +65,7 @@ Legend: ✅ shipped · 🟡 in progress · ⏳ blocked · ⚪ open · ⏸ deferr
 | Slice                                         | Status | Owner      | Commit     |
 |-----------------------------------------------|--------|------------|------------|
 | Spec doc (all 6 slices defined)               | ✅    | planner1   | `75d1ad3`  |
-| 1. Keypair generation + on-disk identity.json | 🟡    | coder1     | OCaml, mirage-crypto-ec |
+| 1. Keypair generation + on-disk identity.json | ✅    | coder1     | `5a6842b` — ocaml/relay_identity.ml[i], mirage-crypto-ec |
 | 2. `/register` contract change + verification | ⚪    | —          | —          |
 | 3. Per-request Ed25519 auth header            | ⚪    | —          | —          |
 | 4. Registry schema + first-bind-wins          | ⚪    | —          | —          |
