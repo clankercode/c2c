@@ -74,7 +74,7 @@ Legend: ✅ shipped · 🟡 in progress · ⏳ blocked · ⚪ open · ⏸ deferr
 | 1. Keypair generation + on-disk identity.json | ✅    | coder1     | `5a6842b` — ocaml/relay_identity.ml[i], mirage-crypto-ec |
 | 2. `/register` contract change + verification | ⚪    | —          | —          |
 | 3. Per-request Ed25519 auth header            | ⚪    | —          | —          |
-| 4. Registry schema + first-bind-wins          | ⚪    | —          | —          |
+| 4. Registry schema + first-bind-wins          | ✅    | coder1     | `6e0159e` — InMemoryRelay bindings + `alias_identity_mismatch`; 5 alcotest cases |
 | 5. Identity bootstrapping (first-msg / allowlist) | ⚪| —          | —          |
 | 6. `c2c relay identity` subcommand            | ✅    | coder1     | `29f1b66` — init/show/fingerprint/rotate/import/export |
 
@@ -160,3 +160,9 @@ Concrete consequences already applied:
   reported in swarm-lounge at 00:31Z.
 - 2026-04-21 coder2-expert — added Layer 1 slices 4–5 (native `relay
   list`, `rooms list`, `gc --once`) at `b7a789b`, `6a1f8cb`.
+- 2026-04-21 coder1 — L3 slice 4 (registry schema + first-bind-wins) at
+  `6e0159e`. `InMemoryRelay` gains a bindings Hashtbl and
+  `identity_pk_of`; second register with same alias + different pk
+  returns new error code `alias_identity_mismatch`. HTTP `/register`
+  decodes optional b64url-nopad `identity_pk`; `Relay_client.register`
+  mirrors the field. 5 alcotest cases in `test_relay_bindings.ml`.
