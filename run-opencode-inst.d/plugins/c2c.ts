@@ -105,17 +105,67 @@ const C2CDelivery: Plugin = async (ctx) => {
     "first-alive";
   let supervisorIndex = 0;
 
+  // Liveness cache: keyed by alias, expires after 30s
+  const livenessCache = new Map<string, { alive: boolean; lastSeenAge: number; cachedAt: number }>();
+  const livenessCacheTtlMs = 30_000;
+  const staleThresholdS = parseInt(process.env.C2C_SUPERVISOR_STALE_THRESHOLD_S || "300", 10);
+
+  async function querySupervisorLiveness(): Promise<Map<string, { alive: boolean; lastSeenAge: number }>> {
+    const now = Date.now();
+    // Return cache if fresh
+    const allCached = permissionSupervisors.every(alias => {
+      const entry = livenessCache.get(alias);
+      return entry && (now - entry.cachedAt) < livenessCacheTtlMs;
+    });
+    if (allCached) {
+      return new Map(permissionSupervisors.map(alias => {
+        const e = livenessCache.get(alias)!;
+        return [alias, { alive: e.alive, lastSeenAge: e.lastSeenAge }];
+      }));
+    }
+    try {
+      const raw = await runC2c(["list", "--json"]);
+      const parsed = JSON.parse(raw);
+      const sessions: any[] = Array.isArray(parsed) ? parsed : (parsed.sessions ?? parsed.registrations ?? []);
+      const result = new Map<string, { alive: boolean; lastSeenAge: number }>();
+      for (const alias of permissionSupervisors) {
+        const entry = sessions.find((s: any) => s.alias === alias || s.session_id === alias);
+        if (!entry) {
+          result.set(alias, { alive: false, lastSeenAge: Infinity });
+        } else {
+          const lastSeenAge = entry.last_seen ? now / 1000 - entry.last_seen : Infinity;
+          result.set(alias, { alive: entry.alive === true, lastSeenAge });
+        }
+        // Update cache
+        const liveness = result.get(alias)!;
+        livenessCache.set(alias, { ...liveness, cachedAt: now });
+      }
+      return result;
+    } catch {
+      // c2c list failed — assume all alive (graceful degradation)
+      return new Map(permissionSupervisors.map(alias => [alias, { alive: true, lastSeenAge: 0 }]));
+    }
+  }
+
   /** Returns supervisor(s) to notify for this request. */
-  const selectSupervisors = (): string[] => {
+  const selectSupervisors = async (): Promise<string[]> => {
     if (supervisorStrategy === "broadcast") return permissionSupervisors;
     if (supervisorStrategy === "round-robin") {
       return [permissionSupervisors[supervisorIndex++ % permissionSupervisors.length]];
     }
-    // first-alive and default: return first (liveness check is a v2 improvement)
-    return [permissionSupervisors[0]];
+    // first-alive: query broker liveness, pick first live+fresh supervisor
+    const liveness = await querySupervisorLiveness();
+    const live = permissionSupervisors.filter(alias => {
+      const s = liveness.get(alias);
+      return s && s.alive && s.lastSeenAge < staleThresholdS;
+    });
+    if (live.length > 0) return [live[0]];
+    // Fallback: broadcast to all (none are live/fresh)
+    await log(`supervisor liveness: no live supervisor — broadcasting to all ${permissionSupervisors.length}`);
+    return permissionSupervisors;
   };
   /** Returns a single supervisor (first of selectSupervisors). */
-  const nextSupervisor = () => selectSupervisors()[0];
+  const nextSupervisor = async () => (await selectSupervisors())[0];
   const permissionTimeoutMs: number = parseInt(
     process.env.C2C_PERMISSION_TIMEOUT_MS || "120000", 10
   );
@@ -461,7 +511,7 @@ const C2CDelivery: Plugin = async (ctx) => {
           `  id: ${permId || "unknown"}`,
           `  (v1 fallback — respond via TUI dialog)`,
         ].join("\n");
-        const supervisors = selectSupervisors();
+        const supervisors = await selectSupervisors();
         for (const supervisor of supervisors) {
           try {
             await runC2c(["send", supervisor, msg]);
@@ -508,7 +558,7 @@ const C2CDelivery: Plugin = async (ctx) => {
           `  c2c send ${sessionId} "permission:${permId}:reject"`,
           `(timeout → falls back to TUI dialog)`,
         ].join("\n");
-        const supervisor = nextSupervisor(); // single for ask: first reply wins
+        const supervisor = await nextSupervisor(); // single for ask: first reply wins
         try {
           await runC2c(["send", supervisor, msg]);
           await log(`permission.ask sent to ${supervisor}: ${permId}`);
