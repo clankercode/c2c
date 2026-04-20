@@ -12,3 +12,8 @@
  (name test_relay_bindings)
  (modules test_relay_bindings)
  (libraries c2c_mcp alcotest))
+
+(test
+ (name test_relay_signed_ops)
+ (modules test_relay_signed_ops)
+ (libraries c2c_mcp alcotest digestif.ocaml base64))
