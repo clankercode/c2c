@@ -5490,6 +5490,107 @@ let wire_daemon_group =
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "list"   ~doc:"List all wire-daemon state files.") wire_daemon_list_cmd
     ]
 
+(* --- subcommand group: repo ------------------------------------------------ *)
+
+let repo_config_path () =
+  Filename.concat (Sys.getcwd ()) ".c2c" // "repo.json"
+
+let load_repo_config () =
+  let path = repo_config_path () in
+  if not (Sys.file_exists path) then `Assoc []
+  else
+    (try Yojson.Safe.from_file path
+     with _ -> `Assoc [])
+
+let save_repo_config json =
+  let path = repo_config_path () in
+  let dir = Filename.dirname path in
+  (try Unix.mkdir dir 0o755 with Unix.Unix_error _ -> ());
+  json_write_file path json
+
+let repo_set_supervisor_cmd =
+  let aliases_arg =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ALIAS[,ALIAS2,...]"
+                    ~doc:"Supervisor alias or comma-separated list for round-robin fallback.")
+  in
+  let+ aliases_str = aliases_arg
+  and+ json = json_flag in
+  let aliases = List.filter (fun s -> s <> "") (String.split_on_char ',' aliases_str) in
+  if aliases = [] then (
+    Printf.eprintf "error: at least one alias required\n%!";
+    exit 1
+  );
+  let config = load_repo_config () in
+  let fields = match config with `Assoc f -> f | _ -> [] in
+  let supervisor_val = `List (List.map (fun a -> `String a) aliases) in
+  let fields' =
+    ("permission_supervisors", supervisor_val)
+    :: List.filter (fun (k, _) -> k <> "permission_supervisors") fields
+  in
+  save_repo_config (`Assoc fields');
+  let output_mode = if json then Json else Human in
+  (match output_mode with
+   | Json ->
+       print_json (`Assoc
+         [ ("ok", `Bool true)
+         ; ("permission_supervisors", supervisor_val)
+         ; ("config", `String (repo_config_path ()))
+         ])
+   | Human ->
+       Printf.printf "Supervisor set: %s\n" (String.concat ", " aliases);
+       Printf.printf "Config: %s\n" (repo_config_path ());
+       Printf.printf "\nPlugin will DM supervisors in round-robin order on permission.ask.\n";
+       Printf.printf "Override at runtime: C2C_PERMISSION_SUPERVISOR=alias\n")
+
+let repo_show_cmd =
+  let+ json = json_flag in
+  let config = load_repo_config () in
+  let output_mode = if json then Json else Human in
+  (match output_mode with
+   | Json -> print_json config
+   | Human ->
+       let path = repo_config_path () in
+       if not (Sys.file_exists path) then (
+         Printf.printf "No repo config (.c2c/repo.json) — using defaults.\n";
+         Printf.printf "  Run: c2c repo set supervisor <alias> to configure.\n"
+       ) else (
+         Printf.printf "Repo config: %s\n" path;
+         let fields = match config with `Assoc f -> f | _ -> [] in
+         (match List.assoc_opt "permission_supervisors" fields with
+          | Some (`List aliases) ->
+              let names = List.filter_map (function `String s -> Some s | _ -> None) aliases in
+              Printf.printf "  permission_supervisors: %s\n" (String.concat ", " names)
+          | _ ->
+              Printf.printf "  permission_supervisors: (not set — default: coordinator1)\n");
+         List.iter (fun (k, v) ->
+           if k <> "permission_supervisors" then
+             Printf.printf "  %s: %s\n" k (Yojson.Safe.to_string v)
+         ) fields
+       ))
+
+let repo_group =
+  Cmdliner.Cmd.group
+    (Cmdliner.Cmd.info "repo"
+       ~doc:"Per-repository c2c configuration (supervisors, defaults).")
+    [ Cmdliner.Cmd.group
+        (Cmdliner.Cmd.info "set" ~doc:"Set a per-repo config value.")
+        [ Cmdliner.Cmd.v
+            (Cmdliner.Cmd.info "supervisor"
+               ~doc:"Set permission supervisor alias(es) for this repo."
+               ~man:[ `S "DESCRIPTION"
+                    ; `P "Sets the alias(es) that receive permission.ask notifications \
+                          when OpenCode needs approval. Stored in .c2c/repo.json."
+                    ; `S "EXAMPLES"
+                    ; `P "$(b,c2c repo set supervisor coordinator1)"
+                    ; `P "$(b,c2c repo set supervisor coordinator1,planner1)  — round-robin"
+                    ])
+            repo_set_supervisor_cmd
+        ]
+    ; Cmdliner.Cmd.v
+        (Cmdliner.Cmd.info "show" ~doc:"Show current repo config.")
+        repo_show_cmd
+    ]
+
 (* --- subcommand: screen ---------------------------------------------------- *)
 
 (** Resolve a pts number from a Claude session identifier using pure OCaml.
@@ -5758,4 +5859,4 @@ let () =
           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
           ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
           ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-          ; serve; mcp; start; stop; restart; restart_self; instances; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; screen; help ]))
+          ; serve; mcp; start; stop; restart; restart_self; instances; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; help ]))
