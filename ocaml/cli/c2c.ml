@@ -1707,6 +1707,26 @@ let parse_to_alias s =
   | [_alias; room] -> `Room room
   | _ -> `Direct s
 
+(* Short-window dedup for room fanouts. One room message lands in N peer
+   archives; each archive append emits. Keyed on (from_alias, to_alias,
+   content) — if we saw the exact same triple within the last 30s, skip.
+   Max 1024 entries, oldest evicted on overflow. *)
+let dedup_seen : (string * string * string, float) Hashtbl.t = Hashtbl.create 64
+let dedup_window_s = 30.0
+
+let dedup_check ~from ~to_raw ~content =
+  let key = (from, to_raw, content) in
+  let now = Unix.gettimeofday () in
+  (* Opportunistic GC when table gets large *)
+  if Hashtbl.length dedup_seen > 1024 then begin
+    let stale = Hashtbl.fold (fun k ts acc ->
+      if now -. ts > dedup_window_s then k :: acc else acc) dedup_seen [] in
+    List.iter (Hashtbl.remove dedup_seen) stale
+  end;
+  match Hashtbl.find_opt dedup_seen key with
+  | Some ts when now -. ts < dedup_window_s -> false
+  | _ -> Hashtbl.replace dedup_seen key now; true
+
 (* Emit one notification line per unique sender, collapsing bursts. *)
 let emit_messages ~my_alias ~all ~full_body msgs =
   (* Group messages by from_alias *)
@@ -1728,7 +1748,9 @@ let emit_messages ~my_alias ~all ~full_body msgs =
       | Some me -> to_raw = me || String.length to_raw > String.length me + 1
                    && String.sub to_raw 0 (String.length me) = me
     in
-    if all || is_mine then begin
+    let body = jstr first "content" "" in
+    let keep = dedup_check ~from ~to_raw ~content:body in
+    if keep && (all || is_mine) then begin
       let icon = if is_mine then "📬" else "💬" in
       let dest = match parse_to_alias to_raw with
         | `Room room -> "@" ^ room
@@ -1736,11 +1758,9 @@ let emit_messages ~my_alias ~all ~full_body msgs =
       in
       let subject =
         if n = 1 then
-          let body = jstr first "content" "" in
           if full_body then Printf.sprintf "\"%s\"" body
           else Printf.sprintf "\"%s\"" (truncate body 80)
         else
-          let body = jstr first "content" "" in
           Printf.sprintf "(%d msgs) \"%s\"" n (truncate body 60)
       in
       Printf.printf "%s %s  %s→%s  %s\n%!"
