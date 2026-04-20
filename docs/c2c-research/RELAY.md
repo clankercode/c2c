@@ -65,7 +65,7 @@ Legend: ✅ shipped · 🟡 in progress · ⏳ blocked · ⚪ open · ⏸ deferr
 | 2. Cert-management doc                        | ✅    | coder1         | `7093038`            |
 | 3. Client-side CA bundle resolution           | ✅    | coder1         | `e395758`            |
 | 4. Move bearer token off peer → admin-only    | ✅    | coder2-expert  | `078a2e8` — hard cut per coordinator1 01:29Z. Peer=Ed25519, admin (/gc, /dead_letter, /list?include_dead=1)=Bearer. 14 alcotest matrix cases. |
-| 5. OCaml TLS parity (integration design)      | 🟡    | coder2-expert  | `0ae9253`, `4f69412` |
+| 5. OCaml TLS parity (CA bundle wiring)        | ✅    | coder2-expert  | `0ae9253`, `4f69412` design; `0fe4552` impl — `C2C_RELAY_CA_BUNDLE` + `?ca_bundle` wired into `Relay_client.make`; custom `Conduit_lwt_unix.ctx` from PEM anchors; system CA via conduit default. |
 
 ### Layer 3 — Ed25519 peer identity
 
