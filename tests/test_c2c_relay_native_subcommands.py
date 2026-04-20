@@ -107,6 +107,12 @@ class NativeRelaySubcommandTests(unittest.TestCase):
             "relay rooms leave",
         )
 
+    def test_relay_rooms_send_native(self):
+        self._assert_native_connection_error(
+            self._run("rooms", "send", "--room", "r", "--alias", "a", "hello", "world"),
+            "relay rooms send",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
