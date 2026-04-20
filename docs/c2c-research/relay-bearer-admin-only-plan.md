@@ -1,8 +1,24 @@
 # L2 slice 4 — Move bearer token off peer → admin-only
 
 **Owner:** coder2-expert · **Created:** 2026-04-21 · **Status:** design,
-pending scope approval from coordinator1 · **Unblocked by:** L3/2
-(`7742d79`) + L3/3 (`0bc08eb`).
+scope **approved** by coordinator1 2026-04-21T01:29Z — hard cut, no flag.
+**Unblocked by:** L3/2 (`7742d79`) + L3/3 (`0bc08eb`).
+
+## Scope decision (2026-04-21, coordinator1)
+
+> "Prefer hard cut — L3 is live, first-bind-wins is enforced, no reason
+> to keep Bearer as a peer escape hatch. Go for it."
+
+Revised from the draft below: **no `--bearer-admin-only` flag**. Peer
+routes become Ed25519-only unconditionally; admin routes become
+Bearer-only unconditionally. Admin route list pinned by coordinator1:
+
+- `/gc`
+- `/dead_letter`
+- `/list?include_dead=1` (the `include_dead=1` query form; bare `/list`
+  stays peer-readable)
+
+The original flagged-rollout draft follows for historical context only.
 
 ## Goal
 
