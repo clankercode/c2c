@@ -1786,9 +1786,12 @@ end
 module Relay_client : sig
   type t
 
-  val make : ?token:string -> ?timeout:float -> string -> t
-  (** [make ?token ?timeout base_url] builds a client for an HTTP relay.
-      [base_url] is e.g. ["http://localhost:8765"] (no trailing slash). *)
+  val make : ?token:string -> ?timeout:float -> ?ca_bundle:string -> string -> t
+  (** [make ?token ?timeout ?ca_bundle base_url] builds a client for an HTTP
+      relay.  [base_url] is e.g. ["http://localhost:8765"] (no trailing slash).
+      [ca_bundle] is a path to a PEM CA bundle for HTTPS with self-signed
+      certs (e.g. Tailscale scenarios).  Defaults to env
+      [C2C_RELAY_CA_BUNDLE]; omitting both uses the system trust store. *)
 
   val request :
     t -> meth:Cohttp.Code.meth -> path:string -> ?body:Yojson.Safe.t -> unit ->
@@ -1833,14 +1836,42 @@ end = struct
     base_url : string;
     token : string option;
     timeout : float;
+    ca_bundle : string option;
   }
 
   let strip_trailing_slash s =
     let n = String.length s in
     if n > 0 && s.[n-1] = '/' then String.sub s 0 (n-1) else s
 
-  let make ?token ?(timeout = 10.0) base_url =
-    { base_url = strip_trailing_slash base_url; token; timeout }
+  let make ?token ?(timeout = 10.0) ?ca_bundle base_url =
+    let ca_bundle = match ca_bundle with
+      | Some _ -> ca_bundle
+      | None ->
+          match Sys.getenv_opt "C2C_RELAY_CA_BUNDLE" with
+          | Some p when p <> "" -> Some p
+          | _ -> None
+    in
+    { base_url = strip_trailing_slash base_url; token; timeout; ca_bundle }
+
+  (* Build a custom Net.ctx from a PEM CA bundle path for self-signed certs. *)
+  let net_ctx_of_bundle path =
+    let pem =
+      let ic = open_in path in
+      let n = in_channel_length ic in
+      let buf = Bytes.create n in
+      really_input ic buf 0 n;
+      close_in ic;
+      Bytes.to_string buf
+    in
+    let certs = match X509.Certificate.decode_pem_multiple pem with
+      | Ok cs -> cs
+      | Error (`Msg m) -> failwith ("C2C_RELAY_CA_BUNDLE parse error: " ^ m)
+    in
+    let auth = X509.Authenticator.chain_of_trust
+      ~time:(fun () -> Some (Ptime_clock.now ())) certs
+    in
+    Conduit_lwt_unix.init ~tls_authenticator:auth () >>= fun conduit_ctx ->
+    Lwt.return (Cohttp_lwt_unix.Client.custom_ctx ~ctx:conduit_ctx ())
 
   let connection_error msg =
     `Assoc [
@@ -1861,8 +1892,12 @@ end = struct
     let body_payload = Cohttp_lwt.Body.of_string body_str in
     Lwt.catch
       (fun () ->
+        (match t.ca_bundle with
+         | None -> Lwt.return_none
+         | Some path -> net_ctx_of_bundle path >|= Option.some)
+        >>= fun ctx_opt ->
         let call =
-          Cohttp_lwt_unix.Client.call ~headers ~body:body_payload meth uri
+          Cohttp_lwt_unix.Client.call ?ctx:ctx_opt ~headers ~body:body_payload meth uri
         in
         Lwt.pick [
           call;
