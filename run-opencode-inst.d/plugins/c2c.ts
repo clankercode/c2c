@@ -21,7 +21,7 @@
  *
  * Installation: place in .opencode/plugins/c2c.ts (project-level) or
  *   ~/.config/opencode/plugins/c2c.ts (global).
- * Also run: c2c setup opencode  (writes env vars needed by the broker MCP tool)
+ * Also run: c2c install opencode  (writes env vars needed by the broker MCP tool)
  */
 
 import type { Plugin } from "@opencode-ai/plugin";
@@ -424,11 +424,16 @@ const C2CDelivery: Plugin = async (ctx) => {
 
     // Spawn `c2c monitor` and trigger delivery only on 📬 (inbox-write) events.
     // 💬 (peer DM to others), 📤 (drain), 🗑️ (sweep) are noise — skip them.
+    let activeMonitorProc: ReturnType<typeof spawn> | null = null;
+    let monitorStopped = false;
+
     function spawnMonitor(): void {
+      if (monitorStopped) return;
       const command = process.env.C2C_CLI_COMMAND || "c2c";
       const args = ["monitor"];
       if (sessionId) args.push("--alias", sessionId);
       const proc = spawn(command, args, { cwd: process.cwd(), env: process.env, shell: false });
+      activeMonitorProc = proc;
       let buf = "";
       proc.stdout?.on("data", (chunk: Buffer) => {
         buf += chunk.toString();
@@ -439,9 +444,21 @@ const C2CDelivery: Plugin = async (ctx) => {
           if (line && line.includes("📬")) tick().catch(() => {});
         }
       });
-      proc.on("close", () => { void log("c2c monitor exited, restarting in 5s"); setTimeout(spawnMonitor, 5000); });
-      proc.on("error", () => { setTimeout(spawnMonitor, 10_000); });
+      proc.on("close", () => {
+        if (activeMonitorProc === proc) activeMonitorProc = null;
+        if (!monitorStopped) {
+          void log("c2c monitor exited, restarting in 5s");
+          setTimeout(spawnMonitor, 5000);
+        }
+      });
+      proc.on("error", () => { if (!monitorStopped) setTimeout(spawnMonitor, 10_000); });
     }
+
+    // Kill monitor on graceful exit so it doesn't outlive opencode.
+    process.on("exit", () => {
+      monitorStopped = true;
+      try { activeMonitorProc?.kill("SIGTERM"); } catch { /* ignore */ }
+    });
 
     spawnMonitor();
     void log(`c2c monitor spawned (alias=${sessionId})`);

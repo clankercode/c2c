@@ -21,7 +21,7 @@
  *
  * Installation: place in .opencode/plugins/c2c.ts (project-level) or
  *   ~/.config/opencode/plugins/c2c.ts (global).
- * Also run: c2c setup opencode  (writes env vars needed by the broker MCP tool)
+ * Also run: c2c install opencode  (writes env vars needed by the broker MCP tool)
  */
 
 import type { Plugin } from "@opencode-ai/plugin";

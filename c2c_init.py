@@ -64,7 +64,7 @@ def gather_status(broker_root: Path) -> dict[str, Any]:
 
 NEXT_STEPS = [
     "c2c register <session-id>   # once per session, hands out a broker alias",
-    "c2c list --broker           # see who else is on the broker",
+    "c2c list --all           # see who else is on the broker",
     "c2c send <alias> <msg>      # 1:1 message",
     "c2c send-all <msg>          # broadcast to every live peer (1:N)",
     "c2c poll-inbox              # drain your inbox if push delivery is polling-based",
@@ -72,7 +72,7 @@ NEXT_STEPS = [
     "c2c room join <room-id>     # join a room (e.g. swarm-lounge)",
     "c2c room send <room-id> <msg>  # send to a room",
     "c2c health                  # verify your setup (MCP config, wake daemon, etc.)",
-    "c2c setup claude-code --auto-wake  # idle delivery for Claude Code",
+    "c2c install claude  # configure Claude Code delivery",
 ]
 
 

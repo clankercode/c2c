@@ -797,7 +797,7 @@ def print_health_report(report: dict[str, Any]) -> None:
             print("✗ Session: could not look up session")
         else:
             print("○ Session: no agent context (run inside Claude/Codex/OpenCode/Kimi for session check)")
-            print("    Tip: c2c health --session-id <id>  to check a specific session")
+            print("    Tip: c2c_health.py --session-id <id>  to check a specific session")
 
     # Rooms
     rooms = report["rooms"]
@@ -827,10 +827,10 @@ def print_health_report(report: dict[str, Any]) -> None:
             print("✓ PostToolUse hook: installed and registered (Claude Code auto-delivery active)")
         else:
             print("~ PostToolUse hook: script found but not in settings.json")
-            print(f"    Run: c2c setup claude-code")
+            print(f"    Run: c2c install claude")
     else:
         print("○ PostToolUse hook: not installed (Claude Code only, optional)")
-        print(f"    Run: c2c setup claude-code  to enable auto-delivery")
+        print(f"    Run: c2c install claude  to enable auto-delivery")
 
     # Claude Code MCP config
     mcp = report.get("claude_mcp", {})
@@ -838,10 +838,10 @@ def print_health_report(report: dict[str, Any]) -> None:
         print("✓ Claude Code MCP: c2c server configured in ~/.claude.json")
     elif mcp.get("exists"):
         print("~ Claude Code MCP: ~/.claude.json exists but has no c2c server entry")
-        print("    Run: c2c setup claude-code")
+        print("    Run: c2c install claude")
     else:
         print("○ Claude Code MCP: ~/.claude.json not found")
-        print("    Run: c2c setup claude-code")
+        print("    Run: c2c install claude")
 
     # Claude Code wake daemon
     cwd = report.get("claude_wake_daemon", {})
