@@ -692,7 +692,11 @@ let check_relay_http () =
     let auth_mode = Yojson.Safe.Util.(result |> member "auth_mode" |> to_string_option |> Option.value ~default:"unknown") in
     let ok = Yojson.Safe.Util.(result |> member "ok") = `Bool true in
     if ok then
-      let auth_str = if auth_mode = "dev" then ", ⚠ dev mode (no auth)" else Printf.sprintf ", %s" auth_mode in
+      let auth_str = match auth_mode with
+        | "dev" -> " ⚠ dev mode (no auth)"
+        | "prod" -> " prod mode"
+        | _ -> ""  (* field absent in older relay versions — suppress *)
+      in
       (`Green, Printf.sprintf "relay: reachable — %s @ %s%s (%s)" version git_hash auth_str url)
     else (`Red, Printf.sprintf "relay: error response from %s" url)
   with exn ->
