@@ -72,12 +72,32 @@ let test_sign_send_envelope_accepted () =
   Alcotest.(check bool) "send envelope verifies" true
     (Relay_identity.verify ~pk:id.public_key ~msg:blob ~sig_)
 
+let test_verify_history_envelope_ok () =
+  let id = Relay_identity.generate () in
+  let env = Relay_signed_ops.sign_send_room id
+    ~room_id:"lounge" ~from_alias:"alice" ~content:"ping" in
+  match Relay_signed_ops.verify_history_envelope
+    ~room_id:"lounge" ~from_alias:"alice" ~content:"ping" env with
+  | Ok () -> ()
+  | Error e -> Alcotest.fail ("expected Ok, got Error: " ^ e)
+
+let test_verify_history_envelope_wrong_content () =
+  let id = Relay_identity.generate () in
+  let env = Relay_signed_ops.sign_send_room id
+    ~room_id:"lounge" ~from_alias:"alice" ~content:"ping" in
+  match Relay_signed_ops.verify_history_envelope
+    ~room_id:"lounge" ~from_alias:"alice" ~content:"pong" env with
+  | Ok () -> Alcotest.fail "expected Error for content mismatch"
+  | Error _ -> ()
+
 let tests = [
   "nonce_fresh_each_call",        `Quick, test_nonce_fresh_each_call;
   "rfc3339_shape",                `Quick, test_rfc3339_shape;
   "sign_join_accepted",           `Quick, test_sign_join_accepted_by_server_verify;
   "sign_leave_ctx_distinct",      `Quick, test_sign_leave_distinct_from_join;
   "sign_send_envelope_accepted",  `Quick, test_sign_send_envelope_accepted;
+  "verify_history_ok",            `Quick, test_verify_history_envelope_ok;
+  "verify_history_content_mismatch", `Quick, test_verify_history_envelope_wrong_content;
 ]
 
 let () = Alcotest.run "relay_signed_ops" [ "layer4_client_signer", tests ]

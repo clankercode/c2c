@@ -51,3 +51,46 @@ let sign_send_room identity ~room_id ~from_alias ~content =
     ("ts", `String ts);
     ("nonce", `String nonce);
   ]
+
+let verify_history_envelope ~room_id ~from_alias ~content envelope =
+  let decode s =
+    match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet s with
+    | Ok x -> Ok x
+    | Error _ -> Error ("b64 decode failed: " ^ s)
+  in
+  let get_s fields k =
+    match List.assoc_opt k fields with
+    | Some (`String s) -> Ok s
+    | _ -> Error ("missing field: " ^ k)
+  in
+  match envelope with
+  | `Assoc fields ->
+      let ( let* ) = Result.bind in
+      let* ct = get_s fields "ct" in
+      let* enc = get_s fields "enc" in
+      let* sender_pk_b64 = get_s fields "sender_pk" in
+      let* sig_b64 = get_s fields "sig" in
+      let* ts = get_s fields "ts" in
+      let* nonce = get_s fields "nonce" in
+      if enc <> "none" then Error ("unsupported enc: " ^ enc)
+      else
+        let* ct_bytes = decode ct in
+        if ct_bytes <> content then Error "ct does not match content"
+        else
+          let* sender_pk = decode sender_pk_b64 in
+          let* sig_ = decode sig_b64 in
+          if String.length sender_pk <> 32 then Error "bad sender_pk length"
+          else if String.length sig_ <> 64 then Error "bad sig length"
+          else
+            let ct_hash =
+              let h = Digestif.SHA256.digest_string content in
+              b64url_nopad (Digestif.SHA256.to_raw_string h)
+            in
+            let blob = Relay_identity.canonical_msg
+              ~ctx:Relay.room_send_sign_ctx
+              [ room_id; from_alias; sender_pk_b64; enc; ct_hash; ts; nonce ]
+            in
+            if Relay_identity.verify ~pk:sender_pk ~msg:blob ~sig_
+            then Ok ()
+            else Error "signature does not verify"
+  | _ -> Error "envelope is not an object"

@@ -40,3 +40,15 @@ val sign_room_op :
 val sign_send_room :
   Relay_identity.t -> room_id:string -> from_alias:string
   -> content:string -> Yojson.Safe.t
+
+(** [verify_history_envelope ~room_id ~from_alias ~content envelope]
+    reconstructs the server-side canonical blob for an L4/2 send
+    envelope and verifies the Ed25519 signature against [sender_pk].
+
+    Returns [Ok ()] on valid signature, [Error reason] otherwise
+    (malformed envelope, wrong enc, ct/content mismatch, bad sig).
+    Time window and nonce replay are NOT re-checked here — this
+    verifies authenticity of the history record, not freshness. *)
+val verify_history_envelope :
+  room_id:string -> from_alias:string -> content:string
+  -> Yojson.Safe.t -> (unit, string) result

@@ -2158,8 +2158,38 @@ let relay_rooms_cmd =
        | Some url, Some room_id ->
            let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
            let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.room_history client ~room_id ~limit ()) in
-           print_endline (Yojson.Safe.pretty_to_string result);
-           (match result with
+           (* L4/3 client verify: annotate each history entry with sig_ok. *)
+           let annotate entry =
+             match entry with
+             | `Assoc fs ->
+                 (match List.assoc_opt "envelope" fs with
+                  | Some env ->
+                      let get_s k = match List.assoc_opt k fs with
+                        | Some (`String s) -> Some s | _ -> None in
+                      (match get_s "room_id", get_s "from_alias", get_s "content" with
+                       | Some r, Some fa, Some c ->
+                           let ok = match Relay_signed_ops.verify_history_envelope
+                             ~room_id:r ~from_alias:fa ~content:c env with
+                             | Ok () -> `Bool true
+                             | Error _ -> `Bool false in
+                           `Assoc (("sig_ok", ok) :: fs)
+                       | _ -> `Assoc (("sig_ok", `Null) :: fs))
+                  | None -> `Assoc (("sig_ok", `Null) :: fs))
+             | other -> other
+           in
+           let annotated = match result with
+             | `Assoc fs ->
+                 let fs' = List.map (fun (k, v) ->
+                   if k = "history" then
+                     match v with
+                     | `List items -> (k, `List (List.map annotate items))
+                     | other -> (k, other)
+                   else (k, v)) fs in
+                 `Assoc fs'
+             | other -> other
+           in
+           print_endline (Yojson.Safe.pretty_to_string annotated);
+           (match annotated with
             | `Assoc fields ->
                 (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
             | _ -> exit 1))
