@@ -188,9 +188,7 @@ let rec loop ~broker_root ~channel_capable =
           loop ~broker_root ~channel_capable)
 
 let server_banner () =
-  let t = Unix.gmtime (Unix.gettimeofday ()) in
-  let date = Printf.sprintf "%04d-%02d-%02d" (t.Unix.tm_year + 1900) (t.Unix.tm_mon + 1) t.Unix.tm_mday in
-  Printf.eprintf "c2c mcp-server v%s  %s\n%!" C2c_mcp.server_version date
+  Printf.eprintf "c2c mcp-server v%s  build=%s\n%!" C2c_mcp.server_version Version.build_date
 
 let () =
   server_banner ();
