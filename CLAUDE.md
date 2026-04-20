@@ -183,58 +183,45 @@ Claude Code's `Monitor` tool turns file events into
 want to arm this ONCE per session on arrival so you see cross-agent
 traffic in near-real-time instead of waiting on your next cron fire.
 
-Arm exactly one persistent broad monitor on the broker dir:
+Arm exactly one persistent broad monitor using the native `c2c monitor` command:
 
 ```
 Monitor({
-  summary: "any c2c inbox modify (all sessions)",
-  command: "inotifywait -m -e close_write .git/c2c/mcp --include '.*\\.inbox\\.json$'",
+  summary: "c2c inbox watcher (all sessions)",
+  command: "c2c monitor --all",
   persistent: true
 })
 ```
 
-Why these specific choices:
-
-- **`.git/c2c/mcp`, not your own inbox file.** Watching only your own
-  session means you miss orphan/ghost writes, cross-alias traffic, and
-  sweep deletes that reveal routing bugs. The whole point of c2c is
-  cross-agent visibility.
-- **`close_write` event.** This fires when a writer finishes flushing —
-  one event per completed message (send) or drain (poll). `modify`
-  double-fires; `create` misses updates to existing inboxes.
-- **Filename include regex `.*\.inbox\.json$`.** Excludes the `.lock`
-  sidecars (which get opened/closed on every locked read), the
-  `registry.json`, and `dead-letter.jsonl`. You can broaden the regex if
-  you want to track those — but expect more noise.
-- **`persistent: true`.** So the monitor outlives a single `/loop`
-  firing and you don't rearm it on every tick.
-- **Check before rearming.** On resume, call `TaskList` and skip the
-  arm step if a broad monitor is already running — duplicate monitors
-  spam notifications and the extra signals don't wake you any faster.
-
-Events arrive as `<task-notification>` entries and look like:
+Each output line is a pre-formatted notification summary:
 
 ```
-14:05:34 codex-local.inbox.json
-14:05:34 d16034fc-....inbox.json
+📬 coordinator1 — from coder1: hello!        (new message to your inbox)
+💬 planner1 — (2 msgs)                       (message to another peer)
+📤 coder1 polled (drained)                   (peer polled their inbox)
+🗑️  scribe inbox deleted (sweep)             (sweep event)
 ```
 
-Each line is `HH:MM:SS <filename>`. Read them as "something (a send,
-a drain, or a sweep) just touched this inbox." On every event,
-classify fast:
+Why `c2c monitor --all`:
 
-1. **Your own inbox was written** → call `mcp__c2c__poll_inbox` or read
-   the file directly; someone is trying to reach you.
-2. **A peer's inbox was written** → someone sent TO that peer. Not
-   yours to handle; ignore unless you're debugging routing.
-3. **A peer's inbox was drained** (modify event where the file became
-   `[]`) → peer is alive and polling. Useful liveness signal.
-4. **An inbox was deleted** → sweep ran. Check `dead-letter.jsonl` if
-   you care about the content.
+- **Broad watch, not just your inbox.** Cross-agent visibility is the point.
+- **Human-readable summaries.** The notification subject shows sender, snippet,
+  and event type — no need to decode raw filenames.
+- **`--all` vs default.** Without `--all`, only your own alias's inbox events
+  are shown. Use `--all` for the broad swarm-aware monitor.
+- **`persistent: true`.** So the monitor outlives a single `/loop` firing.
+- **Check before rearming.** On resume, call `TaskList` first — skip the arm
+  step if a broad monitor is already running.
 
-Don't respond to every event — most are peer-to-peer chatter you have
-no reason to intercept. The monitor is a situational-awareness tool,
-not a task queue.
+On every notification, classify fast:
+
+1. **`📬` (your inbox written)** → call `mcp__c2c__poll_inbox`; someone sent you a DM.
+2. **`💬` (peer inbox written)** → peer-to-peer traffic, not yours to handle.
+3. **`📤` (inbox drained)** → peer is alive and polling. Useful liveness signal.
+4. **`🗑️` (inbox deleted)** → sweep ran. Check `dead-letter.jsonl` if needed.
+
+Don't respond to every event — most are peer chatter. The monitor is
+situational-awareness, not a task queue. Requires `inotify-tools` (`inotifywait`).
 
 ## Key Architecture Notes
 
