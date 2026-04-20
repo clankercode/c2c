@@ -2199,6 +2199,9 @@ let monitor_cmd =
     let ic = Unix.open_process_in cmd in
     Fun.protect ~finally:(fun () -> ignore (Unix.close_process_in ic)) (fun () ->
       try while true do
+        (* If our parent died (reparented to init/PID 1), we are an orphan —
+           exit rather than accumulate as a zombie monitor process. *)
+        (if Unix.getppid () = 1 then exit 0);
         let line = input_line ic in
         let parts = String.split_on_char ' ' (String.trim line) in
         (match parts with
@@ -3653,13 +3656,14 @@ let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt =
   let local_plugin = ".opencode" // "plugins" // "c2c.ts" in
   let plugin_src =
     if Sys.file_exists local_plugin then Some local_plugin
-    else if Sys.file_exists global_plugin_path then Some global_plugin_path
+    else if Sys.file_exists global_plugin_path && file_size global_plugin_path >= 1024 then
+      Some global_plugin_path
     else None
   in
   let plugin_note =
     match plugin_src with
     | None ->
-        Printf.sprintf "plugin not found — install globally first: c2c setup opencode (from c2c repo, or copy c2c.ts to %s)" global_plugin_path
+        Printf.sprintf "plugin not found — run: c2c install opencode (from c2c repo, or copy .opencode/plugins/c2c.ts to %s)" global_plugin_path
     | Some src ->
         let plugins_dir = config_dir // "plugins" in
         (try Unix.mkdir plugins_dir 0o755 with Unix.Unix_error _ -> ());
