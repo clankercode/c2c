@@ -2144,32 +2144,34 @@ let relay_gc_cmd =
   and+ interval = interval
   and+ once = once
   and+ verbose = verbose in
-  if once && interval = None then begin
-    match resolve_relay_url relay_url with
-    | None ->
-        Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
-        exit 1
-    | Some url ->
-        let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
-        let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.gc client) in
-        print_endline (Yojson.Safe.pretty_to_string result);
-        (match result with
-         | `Assoc fields ->
-             (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
-         | _ -> exit 1)
-  end else
-  match find_python_script "c2c_relay_gc.py" with
+  match resolve_relay_url relay_url with
   | None ->
-      Printf.eprintf "error: cannot find c2c_relay_gc.py. Run from inside the c2c git repo.\n%!";
+      Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
       exit 1
-  | Some script ->
-      let args = [ "python3"; script ] in
-      let args = match relay_url with None -> args | Some v -> args @ [ "--relay-url"; v ] in
-      let args = match token with None -> args | Some v -> args @ [ "--token"; v ] in
-      let args = match interval with None -> args | Some v -> args @ [ "--interval"; string_of_int v ] in
-      let args = if once then args @ [ "--once" ] else args in
-      let args = if verbose then args @ [ "--verbose" ] else args in
-      Unix.execvp "python3" (Array.of_list args)
+  | Some url ->
+      let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+      let run_once () =
+        let open Lwt.Infix in
+        C2c_mcp.Relay.Relay_client.gc client >>= fun result ->
+        if verbose || once then print_endline (Yojson.Safe.pretty_to_string result);
+        let ok = match result with
+          | `Assoc fields ->
+              (match List.assoc_opt "ok" fields with Some (`Bool true) -> true | _ -> false)
+          | _ -> false
+        in
+        Lwt.return ok
+      in
+      if once then begin
+        let ok = Lwt_main.run (run_once ()) in
+        exit (if ok then 0 else 1)
+      end else begin
+        let sleep_s = match interval with Some s -> float_of_int s | None -> 30.0 in
+        let rec loop () =
+          let open Lwt.Infix in
+          run_once () >>= fun _ -> Lwt_unix.sleep sleep_s >>= loop
+        in
+        Lwt_main.run (loop ())
+      end
 
 (* --- relay identity (Layer 3 slice 6) ------------------------------------- *)
 (* Wraps Relay_identity (ocaml/relay_identity.ml) with init/show/fingerprint
