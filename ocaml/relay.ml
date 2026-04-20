@@ -826,3 +826,164 @@ end = struct
     Cohttp_lwt_unix.Server.create ~mode:(`TCP (`Port port)) spec
 
 end
+
+(* --- Relay_client --- *)
+
+module Relay_client : sig
+  type t
+
+  val make : ?token:string -> ?timeout:float -> string -> t
+  (** [make ?token ?timeout base_url] builds a client for an HTTP relay.
+      [base_url] is e.g. ["http://localhost:8765"] (no trailing slash). *)
+
+  val request :
+    t -> meth:Cohttp.Code.meth -> path:string -> ?body:Yojson.Safe.t -> unit ->
+    Yojson.Safe.t Lwt.t
+  (** Low-level primitive: issue [meth path] with optional JSON body.
+      Returns the parsed JSON response dict. On network / parse error returns
+      ["ok": false, "error_code": "connection_error", "error": <msg>]. *)
+
+  val health : t -> Yojson.Safe.t Lwt.t
+  val register :
+    t -> node_id:string -> session_id:string -> alias:string ->
+    ?client_type:string -> ?ttl:float -> unit -> Yojson.Safe.t Lwt.t
+  val heartbeat : t -> node_id:string -> session_id:string -> Yojson.Safe.t Lwt.t
+  val list_peers : t -> Yojson.Safe.t Lwt.t
+  val send :
+    t -> from_alias:string -> to_alias:string -> content:string ->
+    ?message_id:string -> unit -> Yojson.Safe.t Lwt.t
+  val poll_inbox : t -> node_id:string -> session_id:string -> Yojson.Safe.t Lwt.t
+  val list_rooms : t -> Yojson.Safe.t Lwt.t
+  val room_history :
+    t -> room_id:string -> ?limit:int -> unit -> Yojson.Safe.t Lwt.t
+  val join_room : t -> alias:string -> room_id:string -> Yojson.Safe.t Lwt.t
+  val leave_room : t -> alias:string -> room_id:string -> Yojson.Safe.t Lwt.t
+  val send_room :
+    t -> from_alias:string -> room_id:string -> content:string ->
+    ?message_id:string -> unit -> Yojson.Safe.t Lwt.t
+  val gc : t -> Yojson.Safe.t Lwt.t
+end = struct
+
+  type t = {
+    base_url : string;
+    token : string option;
+    timeout : float;
+  }
+
+  let strip_trailing_slash s =
+    let n = String.length s in
+    if n > 0 && s.[n-1] = '/' then String.sub s 0 (n-1) else s
+
+  let make ?token ?(timeout = 10.0) base_url =
+    { base_url = strip_trailing_slash base_url; token; timeout }
+
+  let connection_error msg =
+    `Assoc [
+      ("ok", `Bool false);
+      ("error_code", `String "connection_error");
+      ("error", `String msg);
+    ]
+
+  let request t ~meth ~path ?body () =
+    let uri = Uri.of_string (t.base_url ^ path) in
+    let headers =
+      let base = Cohttp.Header.init_with "Content-Type" "application/json" in
+      match t.token with
+      | Some tok -> Cohttp.Header.add base "Authorization" ("Bearer " ^ tok)
+      | None -> base
+    in
+    let body_str = Yojson.Safe.to_string (Option.value body ~default:(`Assoc [])) in
+    let body_payload = Cohttp_lwt.Body.of_string body_str in
+    Lwt.catch
+      (fun () ->
+        let call =
+          Cohttp_lwt_unix.Client.call ~headers ~body:body_payload meth uri
+        in
+        Lwt.pick [
+          call;
+          (Lwt_unix.sleep t.timeout >>= fun () ->
+           Lwt.fail (Failure "request_timeout"));
+        ]
+        >>= fun (_resp, resp_body) ->
+        Cohttp_lwt.Body.to_string resp_body >>= fun text ->
+        try Lwt.return (Yojson.Safe.from_string text)
+        with _ -> Lwt.return (connection_error "invalid_json_response"))
+      (fun exn ->
+        Lwt.return (connection_error (Printexc.to_string exn)))
+
+  let post t path body = request t ~meth:`POST ~path ~body ()
+  let get t path = request t ~meth:`GET ~path ()
+
+  let health t = get t "/health"
+
+  let register t ~node_id ~session_id ~alias
+      ?(client_type = "unknown") ?(ttl = 300.0) () =
+    post t "/register" (`Assoc [
+      ("node_id", `String node_id);
+      ("session_id", `String session_id);
+      ("alias", `String alias);
+      ("client_type", `String client_type);
+      ("ttl", `Float ttl);
+    ])
+
+  let heartbeat t ~node_id ~session_id =
+    post t "/heartbeat" (`Assoc [
+      ("node_id", `String node_id);
+      ("session_id", `String session_id);
+    ])
+
+  let list_peers t = get t "/list"
+
+  let send t ~from_alias ~to_alias ~content ?message_id () =
+    let base = [
+      ("from_alias", `String from_alias);
+      ("to_alias", `String to_alias);
+      ("content", `String content);
+    ] in
+    let body = match message_id with
+      | Some mid -> ("message_id", `String mid) :: base
+      | None -> base
+    in
+    post t "/send" (`Assoc body)
+
+  let poll_inbox t ~node_id ~session_id =
+    post t "/poll_inbox" (`Assoc [
+      ("node_id", `String node_id);
+      ("session_id", `String session_id);
+    ])
+
+  let list_rooms t = get t "/list_rooms"
+
+  let room_history t ~room_id ?(limit = 50) () =
+    post t "/room_history" (`Assoc [
+      ("room_id", `String room_id);
+      ("limit", `Int limit);
+    ])
+
+  let join_room t ~alias ~room_id =
+    post t "/join_room" (`Assoc [
+      ("alias", `String alias);
+      ("room_id", `String room_id);
+    ])
+
+  let leave_room t ~alias ~room_id =
+    post t "/leave_room" (`Assoc [
+      ("alias", `String alias);
+      ("room_id", `String room_id);
+    ])
+
+  let send_room t ~from_alias ~room_id ~content ?message_id () =
+    let base = [
+      ("from_alias", `String from_alias);
+      ("room_id", `String room_id);
+      ("content", `String content);
+    ] in
+    let body = match message_id with
+      | Some mid -> ("message_id", `String mid) :: base
+      | None -> base
+    in
+    post t "/send_room" (`Assoc body)
+
+  let gc t = get t "/gc"
+
+end
