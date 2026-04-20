@@ -182,8 +182,11 @@ const C2CDelivery: Plugin = async (ctx) => {
   // --- Helpers ---
 
   // Debug log to disk — survives even if OpenCode log API is broken.
+  // Enable with C2C_PLUGIN_DEBUG=1.
+  const pluginDebug = (process.env.C2C_PLUGIN_DEBUG || "0") === "1";
   const debugLogPath = path.join(process.cwd(), ".opencode", "c2c-debug.log");
   function debugLog(msg: string): void {
+    if (!pluginDebug) return;
     try {
       const ts = new Date().toISOString();
       fs.appendFileSync(debugLogPath, `[${ts}] ${msg}\n`);
@@ -299,13 +302,11 @@ const C2CDelivery: Plugin = async (ctx) => {
 
   /** Drain inbox using the c2c CLI and return parsed messages. */
   async function drainInbox(): Promise<Msg[]> {
-    if (!sessionId) return [];
     try {
-      const args: string[] = ["poll-inbox", "--json", "--file-fallback"];
-      if (sessionId) args.push("--session-id", sessionId);
-      if (brokerRoot) args.push("--broker-root", brokerRoot);
-      const stdout = (await runC2c(args)).trim();
-      return parsePollResult(stdout);
+      const stdout = (await runC2c(["poll-inbox", "--json"])).trim();
+      const msgs = parsePollResult(stdout);
+      await log(`drainInbox: got ${msgs.length} message(s)`);
+      return msgs;
     } catch (err) {
       await log(`drainInbox error: ${err}`);
       return [];
@@ -391,26 +392,10 @@ const C2CDelivery: Plugin = async (ctx) => {
     const sid = activeSessionId;
     await log(`tryDeliver: activeSessionId=${JSON.stringify(sid)}`);
     if (!sid) {
-      // No session yet — try to discover the current session from the API
-      try {
-        const sessionsRaw = await ctx.client.session.list();
-        await log(`tryDeliver: session.list() raw=${JSON.stringify(sessionsRaw).slice(0, 500)}`);
-        const sessions = sessionsRaw as any;
-        const data: any[] = sessions?.data ?? sessions?.sessions ?? (Array.isArray(sessions) ? sessions : []);
-        await log(`tryDeliver: session.list() data.length=${data.length} ids=${data.map((s: any) => s.id).join(",")}`);
-        if (data.length > 0) {
-          const root = data.find((s: any) => !s.parentID) || data[0];
-          await log(`tryDeliver: picked root session id=${root?.id} parentID=${root?.parentID}`);
-          if (root?.id) {
-            activeSessionId = root.id;
-            await deliverMessages(root.id);
-          }
-        } else {
-          await log("tryDeliver: session.list() returned empty — no session to deliver to");
-        }
-      } catch (err) {
-        await log(`tryDeliver: session.list() threw: ${err}`);
-      }
+      // No session yet — wait for session.created event to set activeSessionId.
+      // Do NOT use session.list() fallback: it returns ALL historical sessions
+      // across all OpenCode instances and would deliver to the wrong session.
+      await log("tryDeliver: no session yet — waiting for session.created");
       return;
     }
     await deliverMessages(sid);
@@ -488,16 +473,9 @@ const C2CDelivery: Plugin = async (ctx) => {
         // is null and session.list() returns empty. Retry with backoff until the session
         // is discovered (via session.created event) or we give up after ~30s.
         await tryDeliver();
-        if (!activeSessionId) {
-          let attempts = 0;
-          const retryUntilSession = async () => {
-            if (activeSessionId) return; // session.created set it — monitor handles delivery
-            if (attempts++ >= 15) { await log("cold-boot retry exhausted (no session in 30s)"); return; }
-            await tryDeliver();
-            if (!activeSessionId) setTimeout(() => retryUntilSession().catch(() => {}), 2000);
-          };
-          setTimeout(() => retryUntilSession().catch(() => {}), 2000);
-        }
+        // session.created will fire soon and set activeSessionId; the background
+        // monitor loop will then deliver any queued messages on the next tick.
+        // No retry needed here — tryDeliver is a no-op until activeSessionId is set.
       },
     },
 
