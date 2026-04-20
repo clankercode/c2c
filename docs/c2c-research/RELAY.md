@@ -49,6 +49,8 @@ Legend: ✅ shipped · 🟡 in progress · ⏳ blocked · ⚪ open · ⏸ deferr
 | 3. Native OCaml `c2c relay status`            | ✅    | coordinator1 | `bbaf8e8`   |
 | 4. Native OCaml `c2c relay list` (--dead still shells out) | ✅ | coder2-expert | `b7a789b`   |
 | 5. Native OCaml `c2c relay rooms list` + `gc --once` | ✅ | coder2-expert | `6a1f8cb`   |
+| 6. Native OCaml `c2c relay rooms history --room --limit` | ✅ | coder2-expert | `e4ff0fe`   |
+| 7. Regression test suite for native relay subcommands | ✅ | coder2-expert | `555046f`   |
 
 ### Layer 2 — TLS + operator bearer token
 
