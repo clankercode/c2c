@@ -524,13 +524,15 @@ let prepare_launch_args ~(name : string) ~(client : string)
     | "opencode" ->
         (* OpenCode rejects UUIDs — session IDs must start with "ses". Only
            pass --session when resuming a prior OpenCode-generated ID.
-           --log-level INFO --print-logs enables logging to the log dir. *)
+           --log-level INFO writes to the log dir. Do NOT add --print-logs:
+           it streams to stdout and floods the TUI. client.log symlink in
+           the instance dir is the supported forensic path. *)
         let session_arg = match resume_session_id with
          | Some sid when String.length sid >= 3 && String.sub sid 0 3 = "ses" ->
              [ "--session"; sid ]
          | _ -> []
         in
-        [ "--log-level"; "INFO"; "--print-logs" ] @ session_arg
+        [ "--log-level"; "INFO" ] @ session_arg
     | "codex" ->
         (match resume_session_id with Some _ -> [ "resume"; "--last" ] | None -> [])
     | _ -> []

@@ -2429,6 +2429,10 @@ let relay_serve_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "allowed-identities" ] ~docv:"PATH"
       ~doc:"JSON file mapping {alias: identity_pk_b64} (L3/5). Listed aliases require a matching signed register; unlisted aliases stay first-mover-wins.")
   in
+  let persist_dir =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "persist-dir" ] ~docv:"DIR"
+      ~doc:"Directory for persistent room history storage (or C2C_RELAY_PERSIST_DIR). Room messages are written to <dir>/rooms/<room_id>/history.jsonl and loaded on startup.")
+  in
   let+ listen = listen
   and+ token = token
   and+ token_file = token_file
@@ -2438,7 +2442,8 @@ let relay_serve_cmd =
   and+ verbose = verbose
   and+ tls_cert = tls_cert
   and+ tls_key = tls_key
-  and+ allowed_identities = allowed_identities in
+  and+ allowed_identities = allowed_identities
+  and+ persist_dir = persist_dir in
   (* Parse listen address (default 127.0.0.1:7331) *)
   let host, port = match listen with
     | None -> ("127.0.0.1", 7331)
@@ -2520,9 +2525,16 @@ let relay_serve_cmd =
           | Yojson.Json_error msg ->
             Printf.eprintf "error parsing --allowed-identities: %s\n%!" msg; exit 1)
       in
+      let persist_dir = match persist_dir with
+        | Some d -> Some d
+        | None -> Sys.getenv_opt "C2C_RELAY_PERSIST_DIR"
+      in
       Version.banner ~role:"relay-server" ~git_hash:(Option.value (git_shorthash ()) ~default:"unknown");
       Printf.eprintf "  listen=%s:%d\n%!" host port;
-      Lwt_main.run (Relay.Relay_server.start_server ~host ~port ~token ~verbose ~gc_interval ?tls:tls_cfg ~allowlist ())
+      (match persist_dir with
+       | Some d -> Printf.eprintf "  persist-dir=%s\n%!" d
+       | None -> Printf.eprintf "  persist-dir=none (in-memory only)\n%!");
+      Lwt_main.run (Relay.Relay_server.start_server ~host ~port ~token ~verbose ~gc_interval ?tls:tls_cfg ~allowlist ?persist_dir ())
 
 let relay_connect_cmd =
   let relay_url =

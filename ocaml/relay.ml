@@ -162,7 +162,7 @@ end
 
 module InMemoryRelay : sig
   type t
-  val create : ?dedup_window:int -> unit -> t
+  val create : ?dedup_window:int -> ?persist_dir:string -> unit -> t
   val register : t -> node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> unit -> (string * RegistrationLease.t)
   val identity_pk_of : t -> alias:string -> string option
   (* L3/5 identity bootstrapping. *)
@@ -213,25 +213,70 @@ end = struct
     seen_ids : (string, bool) Hashtbl.t;
     dedup_window : int;
     seen_ids_fifo : string Queue.t;
+    persist_dir : string option;  (* if set, room history is also written to disk *)
   }
 
-  let create ?(dedup_window = 10000) () = {
-    mutex = Mutex.create ();
-    leases = Hashtbl.create 16;
-    bindings = Hashtbl.create 16;
-    register_nonces = Hashtbl.create 64;
-    request_nonces = Hashtbl.create 256;
-    inboxes = Hashtbl.create 16;
-    dead_letter = Queue.create ();
-    rooms = Hashtbl.create 16;
-    room_visibility = Hashtbl.create 16;
-    room_invites = Hashtbl.create 16;
-    allowed_identities = Hashtbl.create 16;
-    room_history = Hashtbl.create 16;
-    seen_ids = Hashtbl.create 64;
-    seen_ids_fifo = Queue.create ();
-    dedup_window;
-  }
+  let room_history_jsonl_path persist_dir room_id =
+    Filename.concat (Filename.concat persist_dir ("rooms/" ^ room_id)) "history.jsonl"
+
+  let load_room_history_from_disk persist_dir room_history =
+    let rooms_dir = Filename.concat persist_dir "rooms" in
+    if not (Sys.file_exists rooms_dir) then ()
+    else begin
+      let entries = try Array.to_list (Sys.readdir rooms_dir) with Sys_error _ -> [] in
+      List.iter (fun room_id ->
+        let path = room_history_jsonl_path persist_dir room_id in
+        if Sys.file_exists path then begin
+          let ic = open_in path in
+          let lines = ref [] in
+          (try while true do
+            let line = String.trim (input_line ic) in
+            if line <> "" then
+              (try lines := Yojson.Safe.from_string line :: !lines
+               with _ -> ())
+          done with End_of_file -> ());
+          close_in_noerr ic;
+          (* Lines were read oldest-first; history is stored newest-first *)
+          Hashtbl.replace room_history room_id !lines
+        end
+      ) entries
+    end
+
+  let append_room_history_to_disk persist_dir room_id hist_msg =
+    let path = room_history_jsonl_path persist_dir room_id in
+    let dir = Filename.dirname path in
+    (try
+       let rec mkdir_p d =
+         if Sys.file_exists d then ()
+         else begin mkdir_p (Filename.dirname d); Unix.mkdir d 0o755 end
+       in
+       mkdir_p dir;
+       let oc = open_out_gen [Open_creat; Open_append; Open_wronly] 0o644 path in
+       output_string oc (Yojson.Safe.to_string hist_msg ^ "\n");
+       close_out oc
+     with _ -> ())
+
+  let create ?(dedup_window = 10000) ?persist_dir () =
+    let room_history = Hashtbl.create 16 in
+    (* Load persisted room history on startup *)
+    Option.iter (fun d -> load_room_history_from_disk d room_history) persist_dir;
+    { mutex = Mutex.create ();
+      leases = Hashtbl.create 16;
+      bindings = Hashtbl.create 16;
+      register_nonces = Hashtbl.create 64;
+      request_nonces = Hashtbl.create 256;
+      inboxes = Hashtbl.create 16;
+      dead_letter = Queue.create ();
+      rooms = Hashtbl.create 16;
+      room_visibility = Hashtbl.create 16;
+      room_invites = Hashtbl.create 16;
+      allowed_identities = Hashtbl.create 16;
+      room_history;
+      seen_ids = Hashtbl.create 64;
+      seen_ids_fifo = Queue.create ();
+      dedup_window;
+      persist_dir;
+    }
 
   let with_lock t f =
     Mutex.lock t.mutex;
@@ -465,6 +510,7 @@ end = struct
           ] in
           let hist = Hashtbl.find t.room_history room_id in
           Hashtbl.replace t.room_history room_id (hist_msg :: hist);
+          Option.iter (fun d -> append_room_history_to_disk d room_id hist_msg) t.persist_dir;
           List.iter (fun member_alias ->
             match Hashtbl.find_opt t.leases member_alias with
             | None ->
@@ -602,6 +648,8 @@ end = struct
           | Some h -> h | None -> []
         in
         Hashtbl.replace t.room_history room_id (hist_msg :: hist);
+        (* Persist to disk when configured *)
+        Option.iter (fun d -> append_room_history_to_disk d room_id hist_msg) t.persist_dir;
         `Ok (ts, List.rev !delivered_to, List.rev !skipped)
       end
     )
@@ -709,6 +757,7 @@ module Relay_server : sig
     ?gc_interval:float ->
     ?tls:[ `Cert_key of string * string ] ->
     ?allowlist:(string * string) list ->
+    ?persist_dir:string ->
     unit ->
     unit Lwt.t
 end = struct
@@ -1756,8 +1805,8 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
 
   (* --- Server startup --- *)
 
-  let start_server ~host ~port ~token ?(verbose=false) ?(gc_interval=0.0) ?tls ?(allowlist=[]) () =
-    let relay = InMemoryRelay.create () in
+  let start_server ~host ~port ~token ?(verbose=false) ?(gc_interval=0.0) ?tls ?(allowlist=[]) ?persist_dir () =
+    let relay = InMemoryRelay.create ?persist_dir () in
     List.iter (fun (alias, identity_pk_b64) ->
       InMemoryRelay.set_allowed_identity relay ~alias ~identity_pk_b64)
       allowlist;
