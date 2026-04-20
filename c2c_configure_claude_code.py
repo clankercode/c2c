@@ -403,18 +403,14 @@ def main(argv: list[str] | None = None) -> int:
         print("   New Claude sessions opened after setup will already have it.")
         print()
         if wake_daemon_pid:
-            print(f"✓ Started idle wake daemon (pid {wake_daemon_pid})")
+            print(f"✓ Started idle wake daemon (pid {wake_daemon_pid}) [DEPRECATED]")
             print(f"  log: {wake_log}")
         elif args.auto_wake:
-            print(f"✗ Failed to start idle wake daemon: {wake_log}")
-        if claude_session_id:
-            print()
-            print("To manually start the idle wake daemon later:")
-            print(f"  nohup c2c-claude-wake --claude-session {claude_session_id} &")
-        else:
-            print()
-            print("To manually start the idle wake daemon later:")
-            print("  nohup c2c-claude-wake --claude-session <session-name-or-id> &")
+            print(f"✗ Failed to start idle wake daemon (deprecated): {wake_log}")
+        print()
+        print("Auto-delivery: PostToolUse hook fires on every tool call (near-real-time).")
+        print("  For AFK sessions: run `/loop 4m Check mail` inside Claude Code to poll every 4 min.")
+        print("  (c2c-claude-wake PTY daemon is deprecated — do not use)")
     return 0
 
 
