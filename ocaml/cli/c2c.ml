@@ -650,6 +650,67 @@ let history_cmd =
 
 (* --- subcommand: health --------------------------------------------------- *)
 
+(* Scan for running deprecated PTY-based wake daemons.
+   Returns a list of (script_name, pids, fix_hint) for any that are running. *)
+let check_deprecated_daemons () :
+    (string * int list * string) list =
+  let patterns =
+    [ ( "c2c_claude_wake_daemon.py"
+      , "deprecated: use /loop 4m in Claude Code instead" )
+    ; ( "c2c_opencode_wake_daemon.py"
+      , "deprecated: TypeScript plugin handles delivery; kill this daemon" )
+    ; ( "c2c_kimi_wake_daemon.py"
+      , "deprecated: use Wire bridge (c2c wire-daemon start) instead" )
+    ; ( "c2c_crush_wake_daemon.py"
+      , "deprecated: Crush PTY wake is unreliable; no replacement" )
+    ]
+  in
+  List.filter_map
+    (fun (script, hint) ->
+       (* Require python in the command to avoid matching pgrep/shell wrappers
+          that contain the script name as part of an eval or snapshot string. *)
+       let pattern = "python.*" ^ script in
+       let cmd =
+         Printf.sprintf "pgrep -a -f %s 2>/dev/null" (Filename.quote pattern)
+       in
+       let ic = Unix.open_process_in cmd in
+       let lines = ref [] in
+       (try
+          while true do
+            lines := input_line ic :: !lines
+          done
+        with End_of_file -> ());
+       ignore (Unix.close_process_in ic);
+       (* Filter: only keep lines where the process executable is python,
+          not shell wrappers (zsh/bash eval) that contain the script name
+          as part of a snapshot or pgrep invocation string. *)
+       let is_python_proc line =
+         let parts = String.split_on_char ' ' (String.trim line) in
+         match parts with
+         | _ :: cmd :: _ ->
+             let base = Filename.basename cmd in
+             let lc = String.lowercase_ascii base in
+             String.length lc >= 6
+             && String.sub lc 0 6 = "python"
+         | _ -> false
+       in
+       let pids =
+         List.filter_map
+           (fun line ->
+              if not (is_python_proc line) then None
+              else
+                let line = String.trim line in
+                match String.split_on_char ' ' line with
+                | pid_str :: _ -> (
+                    match int_of_string_opt pid_str with
+                    | Some pid -> Some pid
+                    | None -> None)
+                | [] -> None)
+           !lines
+       in
+       if pids = [] then None else Some (script, pids, hint))
+    patterns
+
 (* PTY-inject capability check: managed kimi/codex/opencode deliver daemons
    use pidfd_getfd, which needs CAP_SYS_PTRACE when yama ptrace_scope >= 1.
    This surfaces the "forgot to setcap python3" footgun in `c2c health`. *)
@@ -707,9 +768,21 @@ let health_cmd =
     | `Missing_cap py -> Printf.sprintf "missing — `sudo setcap cap_sys_ptrace=ep %s` (only needed for Codex PTY notify daemon; OpenCode + Kimi use non-PTY delivery)" py
     | `Unknown -> "unknown"
   in
+  let stale_daemons = check_deprecated_daemons () in
   let output_mode = if json then Json else Human in
   match output_mode with
   | Json ->
+      let stale_json =
+        `List
+          (List.map
+             (fun (script, pids, hint) ->
+                `Assoc
+                  [ ("script", `String script)
+                  ; ("pids", `List (List.map (fun p -> `Int p) pids))
+                  ; ("fix", `String hint)
+                  ])
+             stale_daemons)
+      in
       print_json
         (`Assoc
           [ ("broker_root", `String root)
@@ -720,6 +793,7 @@ let health_cmd =
           ; ("alive", `Int alive_count)
           ; ("rooms", `Int (List.length rooms))
           ; ("pty_inject_cap", `String (match pty_cap with `Ok -> "ok" | `Missing_cap _ -> "missing" | `Unknown -> "unknown"))
+          ; ("stale_deprecated_daemons", stale_json)
           ])
   | Human ->
       Printf.printf "broker root:    %s\n" root;
@@ -729,7 +803,22 @@ let health_cmd =
       Printf.printf "registrations:  %d (%d alive)\n"
         (List.length regs) alive_count;
       Printf.printf "rooms:          %d\n" (List.length rooms);
-      Printf.printf "pty-inject cap: %s\n" pty_cap_str
+      Printf.printf "pty-inject cap: %s\n" pty_cap_str;
+      if stale_daemons = [] then
+        Printf.printf "stale daemons:  none\n"
+      else begin
+        Printf.printf "stale daemons:  %d deprecated process(es) running!\n"
+          (List.length stale_daemons);
+        List.iter
+          (fun (script, pids, hint) ->
+             let pid_str =
+               String.concat ", " (List.map string_of_int pids)
+             in
+             Printf.printf "  ⚠  %s (pid %s)\n" script pid_str;
+             Printf.printf "     fix: %s\n" hint;
+             Printf.printf "     kill: kill %s\n" pid_str)
+          stale_daemons
+      end
 
 (* --- subcommand: status --------------------------------------------------- *)
 
