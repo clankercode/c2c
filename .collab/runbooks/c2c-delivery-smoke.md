@@ -61,6 +61,15 @@ issues, the mcp-server is STALE, or the hook body contains `exec c2c hook`,
 stop and fix before proceeding — most downstream symptoms will be
 attributable to one of these.
 
+**After-binary-rebuild caveat:** `c2c start` landed a SIGCHLD fix
+(`d4413bd`) that affects Node.js hook-runner `waitpid()` behavior in
+the managed client. The fix only takes effect for sessions **spawned
+by the post-`d4413bd` binary** — existing sessions launched from an
+earlier binary will continue to spew ECHILD on `UserPromptSubmit` /
+`Stop` / non-MCP `PostToolUse:*` until restarted. After any
+`c2c start` / binary rebuild, plan a staggered restart of live
+sessions (see `scripts/c2c-swarm.sh restart <alias>`).
+
 ---
 
 ## §1. Self-contained broker round-trip (`c2c smoke-test`)
@@ -178,15 +187,20 @@ c2c send <target-alias> "hook-probe-$(date +%s)"
 - ECHILD on `PostToolUse:<builtin>` → hook body still has `exec c2c hook`.
   Rerun `c2c install claude --force` and re-grep.
 - ECHILD on `UserPromptSubmit`/`Stop`/`PostToolUse:Read` or similar
-  non-MCP builtins → **suspected** upstream idle-info plugin Node.js
-  race and/or a Claude Code 2.1.114 hook-runner bug. Under active
-  investigation as of 2026-04-20 — coordinator1 saw fresh instances in
-  planner1's and coder1's panes, so do NOT assume it's purely
-  cosmetic until proven. If you see these in a smoke-test run, capture
-  the pane, file a finding, and flag coordinator1. Apply the
-  cache-vs-marketplaces hooks.json patch from
-  `.collab/findings/2026-04-20T12-57-10Z-coder2-expert-echild-hook-regressions.md`
-  and retest before concluding.
+  non-MCP builtins → **root cause identified 2026-04-20:** `c2c start`
+  was not resetting SIGCHLD to SIG_DFL before exec'ing the managed
+  client, so Claude Code's Node.js runtime inherited SIG_IGN and its
+  internal `waitpid()` bookkeeping returned `ECHILD`. Fixed in commit
+  `d4413bd` (`fix(start): reset SIGCHLD to SIG_DFL in managed-client
+  child before exec`). NOT cosmetic — evidence gathered with
+  `scripts/c2c-swarm.sh grep-echild` showed 100–200 hits per live
+  pane. The fix only applies to sessions launched with the post-`d4413bd`
+  binary, so any session started before that commit will keep spewing
+  ECHILD until restarted. If you see these in a smoke-test run: check
+  commit hash (`c2c --version`) is ≥ `d4413bd`, and the session itself
+  was spawned AFTER the binary was installed — if not, restart the
+  session. The `min_hook_runtime_ms` bump (`1c82e8c`, 50→100) is a
+  belt-and-braces layer on top of the SIG_DFL fix.
 
 ---
 
@@ -279,3 +293,9 @@ echo "pre-flight + core OK"
   checks for `c2c hook` without a leading `exec`), added
   c2c-mcp-server staleness check, hedged the §4b "cosmetic" claim on
   `UserPromptSubmit`/`Stop` ECHILD pending confirmation.
+- 2026-04-20 planner1 — ECHILD root cause identified and fixed
+  (`d4413bd`: SIGCHLD SIG_DFL reset before exec in `c2c start`).
+  §4b updated with the real root cause, verification hash, and the
+  "fix requires fresh session" caveat. Added an "after-binary-rebuild"
+  callout under §0 so future agents know a staggered restart pass is
+  the completion step of any `c2c start` change.
