@@ -47,6 +47,8 @@ Legend: ✅ shipped · 🟡 in progress · ⏳ blocked · ⚪ open · ⏸ deferr
 | 1. Typed public methods on RelayClient (OCaml-first per steering) | ✅ | coordinator1 | `9d16860`   |
 | 2. Port Relay_client contract-test coverage   | 🟡    | coordinator1 | —           |
 | 3. Native OCaml `c2c relay status`            | ✅    | coordinator1 | `bbaf8e8`   |
+| 4. Native OCaml `c2c relay list` (--dead still shells out) | ✅ | coder2-expert | `b7a789b`   |
+| 5. Native OCaml `c2c relay rooms list` + `gc --once` | ✅ | coder2-expert | `6a1f8cb`   |
 
 ### Layer 2 — TLS + operator bearer token
 
@@ -149,3 +151,5 @@ Concrete consequences already applied:
 
 - 2026-04-21 planner1 — initial RELAY.md. Seeded from status
   reported in swarm-lounge at 00:31Z.
+- 2026-04-21 coder2-expert — added Layer 1 slices 4–5 (native `relay
+  list`, `rooms list`, `gc --once`) at `b7a789b`, `6a1f8cb`.
