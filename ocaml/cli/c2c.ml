@@ -1891,24 +1891,37 @@ let relay_setup_cmd =
       let args = if show then args @ [ "--show" ] else args in
       Unix.execvp "python3" (Array.of_list args)
 
+let resolve_relay_url opt =
+  match opt with
+  | Some v -> Some v
+  | None -> (try Some (Sys.getenv "C2C_RELAY_URL") with Not_found -> None)
+
+let resolve_relay_token opt =
+  match opt with
+  | Some v -> Some v
+  | None -> (try Some (Sys.getenv "C2C_RELAY_TOKEN") with Not_found -> None)
+
 let relay_status_cmd =
   let relay_url =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL.")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL (or C2C_RELAY_URL).")
   in
   let token =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token.")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token (or C2C_RELAY_TOKEN).")
   in
   let+ relay_url = relay_url
   and+ token = token in
-  match find_python_script "c2c_relay_status.py" with
+  match resolve_relay_url relay_url with
   | None ->
-      Printf.eprintf "error: cannot find c2c_relay_status.py. Run from inside the c2c git repo.\n%!";
+      Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
       exit 1
-  | Some script ->
-      let args = [ "python3"; script; "status" ] in
-      let args = match relay_url with None -> args | Some v -> args @ [ "--relay-url"; v ] in
-      let args = match token with None -> args | Some v -> args @ [ "--token"; v ] in
-      Unix.execvp "python3" (Array.of_list args)
+  | Some url ->
+      let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+      let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.health client) in
+      print_endline (Yojson.Safe.pretty_to_string result);
+      (match result with
+       | `Assoc fields ->
+           (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
+       | _ -> exit 1)
 
 let relay_list_cmd =
   let relay_url =
