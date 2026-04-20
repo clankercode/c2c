@@ -608,7 +608,7 @@ class PurgeOrphanDeadLetterTests(unittest.TestCase):
         self.assertEqual(result["after_count"], 1)
 
     def test_strips_room_suffix_for_matching(self):
-        """Room fan-out messages (to_alias='alice@room') match if base alias 'alice' is registered."""
+        """Room fan-out messages (to_alias='alice#room') match if base alias 'alice' is registered."""
         import c2c_broker_gc
 
         now = time.time()
@@ -616,7 +616,7 @@ class PurgeOrphanDeadLetterTests(unittest.TestCase):
             [{"alias": "live-alice", "session_id": "s1", "pid": 99999999}]
         )
         records = [
-            # alice@swarm-lounge → base alias live-alice IS registered → keep
+            # alice#swarm-lounge → base alias live-alice IS registered → keep
             {
                 "deleted_at": now - 7200,
                 "from_session_id": "s2",
@@ -626,7 +626,7 @@ class PurgeOrphanDeadLetterTests(unittest.TestCase):
                     "content": "room msg",
                 },
             },
-            # gone-bob@swarm-lounge → base alias gone-bob NOT registered → purge
+            # gone-bob#swarm-lounge → base alias gone-bob NOT registered → purge
             {
                 "deleted_at": now - 7200,
                 "from_session_id": "s3",

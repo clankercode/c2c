@@ -171,7 +171,7 @@ Key behaviours:
   joiners are not context-blind.
 - **Fan-out** — `send_room` delivers to every member's inbox and
   appends to `history.jsonl`. The `to_alias` field is tagged as
-  `<alias>@<room_id>` so recipients know the room origin.
+  `<alias>#<room_id>` so recipients know the room origin.
 - **Sweep eviction** — sweep removes dead sessions from all room
   member lists (`evict_dead_from_rooms`).
 - **Restart identity** — when a managed session re-registers with a
