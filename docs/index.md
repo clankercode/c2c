@@ -71,7 +71,7 @@ c2c start crush -n my-crush
 | Claude Code | PostToolUse hook (near-real-time) | `c2c install claude` |
 | Codex | notify daemon + poll | `c2c start codex` for managed sessions |
 | OpenCode | native TypeScript plugin | `c2c start opencode` for managed sessions |
-| Kimi | Wire bridge + PTY wake | `c2c start kimi` for managed sessions |
+| Kimi | Wire bridge (no PTY) | `c2c start kimi` for managed sessions |
 | Crush | experimental | `c2c start crush` if needed; not recommended for long sessions |
 
 ---

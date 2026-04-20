@@ -16,19 +16,11 @@ Codex does not have a PostToolUse hook. Instead, a `c2c_deliver_inbox.py --notif
 
 ---
 
-## Kimi Code Idle Delivery Is Sensitive To PTY Submit Timing
+## Kimi Code Idle Delivery — Use Wire Bridge
 
-When a Kimi Code TUI session is sitting idle at its prompt, PTY wake prompts
-can appear in the terminal without starting a turn if they are written to the
-wrong side of the PTY or if Enter arrives before the paste is accepted.
+When a Kimi Code TUI session is sitting idle at its prompt, PTY-based wake daemons are unreliable and **deprecated** (wrong PTY side, timing sensitivity).
 
-**Current fix:** Kimi wake/inject routes use the master-side `pty_inject`
-backend with a default 1.5s submit delay. Do not use direct `/dev/pts/<N>`
-slave writes for interactive input; they are display-side writes and can show
-text without delivering it to Kimi stdin.
-
-**Preferred path:** Use `c2c-kimi-wire-bridge` for native Kimi delivery when
-possible. Keep PTY wake as the manual TUI fallback.
+**Current path:** Use `c2c wire-daemon start` (Wire JSON-RPC via `kimi --wire`) for native delivery. No PTY required.
 
 ---
 
@@ -50,28 +42,19 @@ The PostToolUse hook only fires when Claude Code is actively running tools. A tr
 
 ---
 
-## PTY Injection Is Linux/Privilege-Specific
+## PTY Injection Is Linux/Privilege-Specific (Deprecated Path)
 
-The terminal wake daemons used for Claude Code, OpenCode, and Kimi
-(wake-based auto-delivery) depend on Linux `/proc` and a PTY helper binary with
-`cap_sys_ptrace`.
+PTY-based wake daemons depend on Linux `/proc` and a PTY helper with `cap_sys_ptrace`. This path is **deprecated** — OpenCode uses the TypeScript plugin, Kimi uses Wire bridge, Claude Code uses PostToolUse hook + `/loop`.
 
-**Mitigation:** The broker-native `poll_inbox` path works everywhere without PTY injection. Managed instances include `poll_inbox` in their startup prompts.
+**Current path:** Broker-native `poll_inbox` works everywhere without PTY. Only Codex managed sessions still use the PTY notify daemon.
 
 ---
 
-## OpenCode Plugin Delivery Is Proven, But Keep The Wake Fallback
+## OpenCode Plugin Delivery Is Proven
 
-The TypeScript plugin path (`.opencode/plugins/c2c.ts`) is now live-proven.
-On 2026-04-14, Codex sent `PLUGIN_ENVELOPE_FIX_SMOKE` to `opencode-local`; the
-plugin drained the broker with `c2c poll-inbox --json --file-fallback`, unwrapped
-the `messages` envelope, delivered the message through
-`client.session.promptAsync`, and OpenCode replied with
-`PLUGIN_ENVELOPE_FIX_SMOKE_ACK`.
+The TypeScript plugin path (`.opencode/plugins/c2c.ts`) is live-proven and the primary delivery path. On 2026-04-14, Codex sent `PLUGIN_ENVELOPE_FIX_SMOKE` to `opencode-local`; the plugin delivered through `client.session.promptAsync` and OpenCode replied with `PLUGIN_ENVELOPE_FIX_SMOKE_ACK`. Plugin now uses `c2c monitor` subprocess for real-time wake.
 
-**Operational note:** Keep the OpenCode wake daemon as a fallback for sessions
-without the plugin loaded or while debugging plugin startup. Message bodies
-should prefer the native plugin path when available.
+**Note:** `c2c_opencode_wake_daemon.py` is deprecated — do not use.
 
 ---
 
