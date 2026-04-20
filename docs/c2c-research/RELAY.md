@@ -89,7 +89,7 @@ unblocked — see `relay-peer-identity-spec.md` §13.
 | Slice        | Status | Owner | Commit |
 |--------------|--------|-------|--------|
 | Spec doc (5 slices defined)                  | ✅    | planner1 | — (see `relay-rooms-spec.md`) |
-| 1. Signed `join_room` / `leave_room`         | ⚪    | —        | blocked on L3/3               |
+| 1. Signed `join_room` / `leave_room`         | 🟢    | —        | unblocked by L3/3 at `0bc08eb` |
 | 2. Signed `send_room` + envelope verify      | ⚪    | —        | blocked on L4/1               |
 | 3. `sender_pk` in history + client verify    | ⚪    | —        | blocked on L4/2               |
 | 4. `{ct, enc, sender_pk}` wire envelope      | ⚪    | —        | blocked on L4/2               |

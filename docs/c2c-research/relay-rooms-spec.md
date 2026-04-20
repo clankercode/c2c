@@ -307,6 +307,47 @@ Integration (`.collab/runbooks/c2c-delivery-smoke.md §8`):
 
 ---
 
+## 10a. Addressing (decision from Max, 2026-04-21)
+
+Identity-first with human-readable hints:
+
+- **Ground truth** for any principal is the Ed25519 fingerprint (L3
+  identity). Aliases are display hints; fingerprints are what the
+  relay binds and what signatures are checked against.
+- **Default display form:** `alias@relay-name` (e.g. `planner1@relay.c2c.im`).
+- **Disambiguation form:** `alias#shortfp@relay-name` when two
+  identities claim the same alias on the same relay. `shortfp` is the
+  first 8 chars of the SHA256 fingerprint (L3 §2).
+- **Room identity:** rooms are identified server-side by an opaque
+  `(creator_pk, room_id_str)` pair. The display form `#room@relay` is
+  client-assigned and does NOT imply cross-relay identity.
+- **Same-named rooms across relays are SEPARATE.** No implicit merge.
+  Cross-relay unification is explicit via a future `c2c bridge`
+  daemon (Option 5 escape hatch, out of this spec).
+- **Reserved relay names (from Max's addendum):**
+  - `@repo` — the current git repo's broker (today's `.git/c2c/mcp/`
+    via git-common-dir). Self-referential; never resolves remotely.
+  - `@host` — machine-wide broker. Reserved now; not implemented in
+    v1.
+  - `@here` — same-relay-as-sender. Reserved for future use.
+  - `@broadcast` — `send_all` semantics. Reserved for future use.
+  - **Bare alias with no `@suffix` implicitly means `@repo`** —
+    preserves today's single-host ergonomics unchanged.
+  - Cross-machine sends MUST NOT resolve `@repo` or `@host`; they
+    are self-referential only.
+
+Concrete implications for Layer 4:
+- Membership records (§4.3) already key on `identity_pk` — no change.
+- Relay `/health` endpoint MUST expose a `relay_name` field so clients
+  can render `alias@relay-name` without a config round-trip. (Layer 2
+  touchpoint — out of this spec's scope but noted.)
+- Room records include `creator_pk` as §4.3 already specifies.
+  `room_id` strings can collide across relays; that's fine because
+  clients display `#room@relay-name` and users treat collisions as
+  distinct rooms.
+
+---
+
 ## 11. Interaction with Layer 5
 
 Layer 5 drops in as:
@@ -363,3 +404,8 @@ after that.
 
 - 2026-04-21 planner1 — initial draft. Written to unblock Layer 4
   implementation as soon as L3/3 and L3/5 land.
+- 2026-04-21 planner1 — §10a addressing added: identity-first display
+  (`alias@relay`, disambig `alias#shortfp@relay`), rooms identified by
+  `(creator_pk, room_id_str)`, reserved relay names `@repo` (implicit
+  default) / `@host` / `@here` / `@broadcast`. Per Max's decision + two
+  addenda delivered via coordinator1.
