@@ -689,8 +689,11 @@ let check_relay_http () =
     let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.health client) in
     let version = Yojson.Safe.Util.(result |> member "version" |> to_string_option |> Option.value ~default:"?") in
     let git_hash = Yojson.Safe.Util.(result |> member "git_hash" |> to_string_option |> Option.value ~default:"?") in
+    let auth_mode = Yojson.Safe.Util.(result |> member "auth_mode" |> to_string_option |> Option.value ~default:"unknown") in
     let ok = Yojson.Safe.Util.(result |> member "ok") = `Bool true in
-    if ok then (`Green, Printf.sprintf "relay: reachable — %s @ %s (%s)" version git_hash url)
+    if ok then
+      let auth_str = if auth_mode = "dev" then ", ⚠ dev mode (no auth)" else Printf.sprintf ", %s" auth_mode in
+      (`Green, Printf.sprintf "relay: reachable — %s @ %s%s (%s)" version git_hash auth_str url)
     else (`Red, Printf.sprintf "relay: error response from %s" url)
   with exn ->
     (`Red, Printf.sprintf "relay: unreachable (%s)" (Printexc.to_string exn))

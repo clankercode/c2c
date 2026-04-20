@@ -1074,7 +1074,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
 
   (* --- Route handlers --- *)
 
-  let handle_health () =
+  let handle_health ~auth_mode () =
     let git_hash =
       (* Railway injects RAILWAY_GIT_COMMIT_SHA at runtime; prefer it over a
          git subprocess (which fails in Docker where .git is absent). *)
@@ -1091,7 +1091,8 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
     in
     respond_ok (json_ok [
       ("version", `String Version.version);
-      ("git_hash", `String git_hash)
+      ("git_hash", `String git_hash);
+      ("auth_mode", `String auth_mode)
     ])
 
   let handle_list relay ~include_dead =
@@ -1694,7 +1695,8 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
         respond_html landing_html
 
       | `GET, "/health" ->
-        handle_health ()
+        let auth_mode = if token = None then "dev" else "prod" in
+        handle_health ~auth_mode ()
 
       | `GET, "/list" ->
         handle_list relay ~include_dead:(query_bool "include_dead")
