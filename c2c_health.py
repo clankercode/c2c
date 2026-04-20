@@ -128,7 +128,7 @@ def _archive_activity_counts(broker_root: Path) -> dict[str, int]:
             except json.JSONDecodeError:
                 continue
             for key in ("from_alias", "to_alias"):
-                value = str(entry.get(key) or "").split("@", 1)[0]
+                value = str(entry.get(key) or "").split("#", 1)[0]
                 if value and value != "c2c-system":
                     counts[value] = counts.get(value, 0) + 1
     return counts
