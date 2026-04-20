@@ -27,12 +27,17 @@ showed `~/.local/share/c2c/instances/opencode-test/` does not exist.
 The outer loop cleaned up state on exit. Only the pane buffer retained
 the exit message, and that's ephemeral.
 
-## Root cause
+## Root cause (corrected)
 
-`c2c_start.ml` `cmd_stop` / outer-loop cleanup removes the instance
-state directory unconditionally when the managed client exits
-non-zero. Stdout/stderr of the inner client is bound to the PTY and
-never tee'd to a file.
+Investigation (grep `rm|rmdir|rmtree` in c2c_start.ml and Python
+scripts): **nothing in the codebase removes the instance dir on exit.**
+`cleanup_and_exit` only removes pidfiles. The empty
+`~/.local/share/c2c/` at diagnosis time was likely because
+opencode-test predates a recent schema change, or was manually wiped.
+
+The real gap is that the inner client's stdout/stderr is bound
+directly to the outer's TTY and never tee'd to a file. Even if the
+instance dir were populated, there'd be no log in it to diagnose.
 
 ## Impact
 
@@ -44,18 +49,21 @@ never tee'd to a file.
 
 ## Proposed fix
 
-1. **Persist a ring-buffer log.** In `c2c_start.ml`, tee the inner
-   client's stderr to `<instance_dir>/stderr.log` (capped at ~2MB,
-   rotated). Keep on non-zero exit.
-2. **Keep instance dir on error exit.** Only remove on clean exit
-   (code 0) and on explicit `c2c stop <name>`. Non-zero exit retains
-   the last config + log for 24h.
-3. **Emit structured death event.** On inner exit, write
-   `<broker>/deaths/<name>-<ts>.json` with {name, client, exit_code,
+1. **Tee stderr to `<instance_dir>/stderr.log`.** Before `execvpe` in
+   the child fork at c2c_start.ml ~L630, replace stderr with a
+   `Unix.pipe` write-end. In parent, spawn a tiny reader thread that
+   (a) writes to the inherited outer-stderr fd so user still sees TUI
+   output, (b) appends to `<inst_dir>/stderr.log` (capped at 2MB with
+   ring rotation). Keep file on exit.
+2. **Emit structured death event.** On inner exit with code ≠ 0,
+   append `<broker>/deaths.jsonl` entry: {name, client, exit_code,
    duration_s, last_50_stderr_lines}. Coordinator/supervisors can
-   subscribe.
-4. **Surface in `c2c instances`.** Add a `--with-deaths` flag that
-   lists recent non-zero exits with root-cause hints.
+   tail this.
+3. **Surface in `c2c instances`.** Add `--with-deaths` flag that
+   lists recent non-zero exits with the tail of their stderr.log.
+4. **`c2c diag <name>`.** New subcommand: prints last death's
+   stderr.log tail + exit code + elapsed time. Replaces the
+   "run-before-clearing-pane" forensic dance.
 
 ## Workaround (now)
 
