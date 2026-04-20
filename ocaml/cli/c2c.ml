@@ -1868,12 +1868,82 @@ let rooms_visibility_cmd =
      Printf.eprintf "error: %s\n%!" msg;
      exit 1)
 
+let rooms_tail_cmd =
+  let room_id =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOM" ~doc:"Room ID.")
+  in
+  let follow =
+    Cmdliner.Arg.(value & flag & info [ "follow"; "f" ] ~doc:"Follow: print new messages as they arrive (like tail -f). Default: true.")
+  in
+  let no_follow =
+    Cmdliner.Arg.(value & flag & info [ "no-follow"; "n" ] ~doc:"Print last N lines and exit (disables follow).")
+  in
+  let lines =
+    Cmdliner.Arg.(value & opt int 20 & info [ "lines"; "l" ] ~docv:"N" ~doc:"Number of historical lines to show before following.")
+  in
+  let since =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "since" ] ~docv:"SINCE"
+      ~doc:"Show only messages since this time (same format as room history --since).")
+  in
+  let+ room_id = room_id
+  and+ follow = follow
+  and+ no_follow = no_follow
+  and+ lines = lines
+  and+ since = since in
+  let since_ts = match since with None -> 0.0 | Some s -> parse_since_str s in
+  let do_follow = (not no_follow) || follow in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  let path = C2c_mcp.Broker.room_history_path broker ~room_id in
+  if not (Sys.file_exists path) && not do_follow then begin
+    Printf.eprintf "room %s has no history\n%!" room_id; exit 0
+  end;
+  let format_msg line =
+    try
+      let json = Yojson.Safe.from_string line in
+      let open Yojson.Safe.Util in
+      let ts = json |> member "ts" |> to_number in
+      if ts < since_ts then ()
+      else begin
+        let from_alias = json |> member "from_alias" |> to_string in
+        let content = json |> member "content" |> to_string in
+        let t = Unix.gmtime ts in
+        Printf.printf "[%02d:%02d:%02d] %s: %s\n%!" t.tm_hour t.tm_min t.tm_sec from_alias content
+      end
+    with _ -> ()
+  in
+  (* Print historical lines *)
+  if Sys.file_exists path then begin
+    let messages = C2c_mcp.Broker.read_room_history broker ~room_id ~limit:lines ~since:since_ts () in
+    List.iter (fun (m : C2c_mcp.room_message) ->
+      let t = Unix.gmtime m.rm_ts in
+      Printf.printf "[%02d:%02d:%02d] %s: %s\n%!" t.tm_hour t.tm_min t.tm_sec m.rm_from_alias m.rm_content
+    ) messages
+  end;
+  if not do_follow then ()
+  else begin
+    (* Follow: stat-poll the file for new bytes *)
+    let size = ref (try (Unix.stat path).Unix.st_size with Unix.Unix_error _ -> 0) in
+    while true do
+      Unix.sleepf 0.5;
+      let new_size = try (Unix.stat path).Unix.st_size with Unix.Unix_error _ -> 0 in
+      if new_size > !size then begin
+        let ic = open_in path in
+        (try Unix.lseek (Unix.descr_of_in_channel ic) !size Unix.SEEK_SET |> ignore
+         with _ -> ());
+        (try while true do format_msg (input_line ic) done
+         with End_of_file -> close_in_noerr ic);
+        size := new_size
+      end
+    done
+  end
+
 let rooms_list = Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List all rooms.") rooms_list_cmd
 let rooms_join = Cmdliner.Cmd.v (Cmdliner.Cmd.info "join" ~doc:"Join a room.") rooms_join_cmd
 let rooms_leave = Cmdliner.Cmd.v (Cmdliner.Cmd.info "leave" ~doc:"Leave a room.") rooms_leave_cmd
 let rooms_delete = Cmdliner.Cmd.v (Cmdliner.Cmd.info "delete" ~doc:"Delete an empty room.") rooms_delete_cmd
 let rooms_send = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send" ~doc:"Send a message to a room.") rooms_send_cmd
 let rooms_history = Cmdliner.Cmd.v (Cmdliner.Cmd.info "history" ~doc:"Show room message history.") rooms_history_cmd
+let rooms_tail = Cmdliner.Cmd.v (Cmdliner.Cmd.info "tail" ~doc:"Tail room history; follow new messages as they arrive.") rooms_tail_cmd
 let rooms_invite = Cmdliner.Cmd.v (Cmdliner.Cmd.info "invite" ~doc:"Invite an alias to a room.") rooms_invite_cmd
 let rooms_members = Cmdliner.Cmd.v (Cmdliner.Cmd.info "members" ~doc:"List room members.") rooms_members_cmd
 let rooms_visibility = Cmdliner.Cmd.v (Cmdliner.Cmd.info "visibility" ~doc:"Get or set room visibility.") rooms_visibility_cmd
@@ -1882,13 +1952,13 @@ let rooms_group =
   Cmdliner.Cmd.group
     ~default:rooms_list_cmd
     (Cmdliner.Cmd.info "rooms" ~doc:"Manage persistent N:N rooms.")
-    [ rooms_list; rooms_join; rooms_leave; rooms_delete; rooms_send; rooms_history; rooms_invite; rooms_members; rooms_visibility ]
+    [ rooms_list; rooms_join; rooms_leave; rooms_delete; rooms_send; rooms_history; rooms_tail; rooms_invite; rooms_members; rooms_visibility ]
 
 let room_group =
   Cmdliner.Cmd.group
     ~default:rooms_list_cmd
     (Cmdliner.Cmd.info "room" ~doc:"Alias for rooms.")
-    [ rooms_list; rooms_join; rooms_leave; rooms_send; rooms_history; rooms_invite; rooms_members; rooms_visibility ]
+    [ rooms_list; rooms_join; rooms_leave; rooms_send; rooms_history; rooms_tail; rooms_invite; rooms_members; rooms_visibility ]
 
 (* --- subcommand: monitor (inotify-based inbox watcher) --------------------- *)
 

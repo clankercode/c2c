@@ -51,6 +51,7 @@ module Broker : sig
   val join_room : t -> room_id:string -> alias:string -> session_id:string -> room_member list
   val leave_room : t -> room_id:string -> alias:string -> room_member list
   val delete_room : t -> room_id:string -> unit
+  val room_history_path : t -> room_id:string -> string
   val append_room_history : t -> room_id:string -> from_alias:string -> content:string -> float
   val read_room_history : t -> room_id:string -> limit:int -> ?since:float -> unit -> room_message list
   type send_room_result = { sr_delivered_to : string list; sr_skipped : string list; sr_ts : float }

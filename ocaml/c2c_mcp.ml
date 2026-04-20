@@ -104,6 +104,9 @@ let prop name description =
 let int_prop name description =
   (name, `Assoc [("type", `String "integer"); ("description", `String description)])
 
+let float_prop name description =
+  (name, `Assoc [("type", `String "number"); ("description", `String description)])
+
 let arr_prop name description =
   ( name,
     `Assoc
@@ -1620,9 +1623,9 @@ let tool_definitions =
       ~required:[]
       ~properties:[]
   ; tool_definition ~name:"room_history"
-      ~description:"Return the last `limit` (default 50) messages from a room's append-only history. Read-only."
+      ~description:"Return the last `limit` (default 50) messages from a room's append-only history. Pass `since` as a Unix epoch float to get only messages newer than that timestamp — useful for incremental polling without re-reading old history. Read-only."
       ~required:["room_id"]
-      ~properties:[ prop "room_id" "Room whose history to retrieve."; int_prop "limit" "Max messages to return (default 50)." ]
+      ~properties:[ prop "room_id" "Room whose history to retrieve."; int_prop "limit" "Max messages to return (default 50)."; float_prop "since" "Only return messages with ts > since (Unix epoch float, optional)." ]
   ; tool_definition ~name:"history"
       ~description:"Return your own archived inbox messages, newest first. Every message drained via poll_inbox is archived to a per-session append-only log before the live inbox is cleared, so this tool gives you a durable record of everything you've ever received. Caller's session_id is always resolved from the MCP env (C2C_MCP_SESSION_ID); passing a session_id argument is ignored for isolation — you can only read your own history. Optional `limit` (default 50). Returns a JSON array of {drained_at, from_alias, to_alias, content} objects."
       ~required:[]
@@ -2484,7 +2487,8 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
         | Some n -> n
         | None -> 50
       in
-      let history = Broker.read_room_history broker ~room_id ~limit () in
+      let since = Broker.float_opt_member "since" arguments |> Option.value ~default:0.0 in
+      let history = Broker.read_room_history broker ~room_id ~limit ~since () in
       let content =
         `List
           (List.map
