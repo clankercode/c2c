@@ -98,6 +98,20 @@ const C2CDelivery: Plugin = async (ctx) => {
     return {}; // project-level plugin will handle delivery
   }
 
+  // Boot banner — log pid + sha256 prefix of this file so stale bun compile
+  // cache issues are instantly visible: if sha doesn't match `sha256sum c2c.ts`
+  // the running code is NOT the file on disk.
+  try {
+    const { createHash } = await import("crypto");
+    const src = fs.readFileSync(thisPluginPath, "utf-8");
+    const sha = createHash("sha256").update(src).digest("hex").slice(0, 8);
+    const ts = new Date().toISOString();
+    fs.appendFileSync(
+      path.join(process.cwd(), ".opencode", "c2c-debug.log"),
+      `[${ts}] pid=${process.pid} === c2c plugin boot sha=${sha} path=${thisPluginPath} ===\n`
+    );
+  } catch { /* non-fatal */ }
+
   // --- Config (env vars > sidecar .opencode/c2c-plugin.json) ---
   const sidecar = loadSidecarConfig();
   const sessionId: string =
@@ -191,14 +205,16 @@ const C2CDelivery: Plugin = async (ctx) => {
   // --- Helpers ---
 
   // Debug log to disk — survives even if OpenCode log API is broken.
-  // Enable with C2C_PLUGIN_DEBUG=1.
+  // Enable with C2C_PLUGIN_DEBUG=1. Boot banner always written (see above).
   const pluginDebug = (process.env.C2C_PLUGIN_DEBUG || "0") === "1";
   const debugLogPath = path.join(process.cwd(), ".opencode", "c2c-debug.log");
+  const pluginPid = process.pid;
+
   function debugLog(msg: string): void {
     if (!pluginDebug) return;
     try {
       const ts = new Date().toISOString();
-      fs.appendFileSync(debugLogPath, `[${ts}] ${msg}\n`);
+      fs.appendFileSync(debugLogPath, `[${ts}] [pid=${pluginPid}] ${msg}\n`);
     } catch { /* non-fatal */ }
   }
 
@@ -506,14 +522,16 @@ const C2CDelivery: Plugin = async (ctx) => {
     },
 
     event: async ({ event }: { event: Event }) => {
-      // Track root session ID from creation events
+      // Track root session ID from creation events — also trigger immediate delivery
+      // so queued messages arrive without waiting for the next background loop tick.
       if (event.type === "session.created") {
         const e = event as EventSessionCreated;
         const info = (e as any).properties?.info;
         if (info?.id && !info?.parentID) {
           if (configuredOpenCodeSessionId && info.id !== configuredOpenCodeSessionId) return;
           activeSessionId = info.id;
-          await log(`tracking root session: ${info.id}`);
+          await log(`tracking root session: ${info.id} — triggering cold-boot delivery`);
+          await deliverMessages(info.id);
         }
         return;
       }
