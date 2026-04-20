@@ -165,6 +165,12 @@ module InMemoryRelay : sig
   val create : ?dedup_window:int -> unit -> t
   val register : t -> node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> unit -> (string * RegistrationLease.t)
   val identity_pk_of : t -> alias:string -> string option
+  (* L3/5 identity bootstrapping. *)
+  val set_allowed_identity : t -> alias:string -> identity_pk_b64:string -> unit
+  val allowed_identity_of : t -> alias:string -> string option
+  val check_allowlist : t -> alias:string -> identity_pk_b64:string ->
+    [ `Allowed | `Mismatch | `Unlisted ]
+  val unbind_alias : t -> alias:string -> bool
   val check_register_nonce : t -> nonce:string -> ts:float -> (unit, string) result
   val check_request_nonce : t -> nonce:string -> ts:float -> (unit, string) result
   val heartbeat : t -> node_id:string -> session_id:string -> (string * RegistrationLease.t)
@@ -200,6 +206,8 @@ end = struct
     (* Layer 4 slice 5: per-room visibility and invited identity_pk list. *)
     room_visibility : (string, string) Hashtbl.t;  (* "public" | "invite" *)
     room_invites : (string, string list) Hashtbl.t; (* b64url-nopad pks *)
+    (* L3/5: operator allowlist (alias → identity_pk b64url-nopad). *)
+    allowed_identities : (string, string) Hashtbl.t;
     room_history : (string, Yojson.Safe.t list) Hashtbl.t;
     seen_ids : (string, bool) Hashtbl.t;
     dedup_window : int;
@@ -217,6 +225,7 @@ end = struct
     rooms = Hashtbl.create 16;
     room_visibility = Hashtbl.create 16;
     room_invites = Hashtbl.create 16;
+    allowed_identities = Hashtbl.create 16;
     room_history = Hashtbl.create 16;
     seen_ids = Hashtbl.create 64;
     seen_ids_fifo = Queue.create ();
@@ -260,6 +269,24 @@ end = struct
 
   let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = 300.0) ?(identity_pk = "") () =
     with_lock t (fun () ->
+      let allow_state =
+        match Hashtbl.find_opt t.allowed_identities alias with
+        | None -> `Unlisted
+        | Some pinned_b64 ->
+          if identity_pk = "" then `ListedNoPk
+          else
+            let submitted_b64 =
+              Base64.encode_string ~pad:false
+                ~alphabet:Base64.uri_safe_alphabet identity_pk
+            in
+            if submitted_b64 = pinned_b64 then `Allowed
+            else `AllowMismatch
+      in
+      match allow_state with
+      | `AllowMismatch | `ListedNoPk ->
+        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk () in
+        ("alias_not_allowed", dummy)
+      | `Unlisted | `Allowed ->
       let binding_state =
         if identity_pk = "" then `NoNewPk
         else
@@ -295,6 +322,26 @@ end = struct
 
   let identity_pk_of t ~alias =
     with_lock t (fun () -> Hashtbl.find_opt t.bindings alias)
+
+  let set_allowed_identity t ~alias ~identity_pk_b64 =
+    with_lock t (fun () -> Hashtbl.replace t.allowed_identities alias identity_pk_b64)
+
+  let allowed_identity_of t ~alias =
+    with_lock t (fun () -> Hashtbl.find_opt t.allowed_identities alias)
+
+  let check_allowlist t ~alias ~identity_pk_b64 =
+    with_lock t (fun () ->
+      match Hashtbl.find_opt t.allowed_identities alias with
+      | None -> `Unlisted
+      | Some pinned ->
+        if identity_pk_b64 = pinned then `Allowed else `Mismatch)
+
+  let unbind_alias t ~alias =
+    with_lock t (fun () ->
+      let had = Hashtbl.mem t.bindings alias in
+      Hashtbl.remove t.bindings alias;
+      Hashtbl.remove t.leases alias;
+      had)
 
   let check_nonce_in tbl ~ttl ~nonce ~ts =
     let cutoff = ts -. ttl in
@@ -758,6 +805,7 @@ end = struct
     let is_admin =
       path = "/gc"
       || path = "/dead_letter"
+      || path = "/admin/unbind"
       || (path = "/list" && include_dead)
     in
     if is_unauth then (true, None)
@@ -979,6 +1027,15 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
   let handle_list_rooms relay =
     let rooms = InMemoryRelay.list_rooms relay in
     respond_ok (json_ok [ ("rooms", `List rooms) ])
+
+  let handle_admin_unbind relay body =
+    let alias = get_string body "alias" in
+    if alias = "" then
+      respond_bad_request (json_error_str err_bad_request "alias is required")
+    else
+      let removed = InMemoryRelay.unbind_alias relay ~alias in
+      Printf.printf "audit: admin_unbind alias=%s removed=%b\n%!" alias removed;
+      respond_ok (`Assoc [("ok", `Bool true); ("removed", `Bool removed); ("alias", `String alias)])
 
   let handle_gc relay =
     match InMemoryRelay.gc relay with
@@ -1564,6 +1621,12 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
 
       | `GET, "/gc" ->
         handle_gc relay
+
+      | `POST, "/admin/unbind" ->
+        let json = parse_body () in
+        (match json with
+         | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
+         | Ok j -> handle_admin_unbind relay j)
 
       | `POST, "/register" ->
         let json = parse_body () in

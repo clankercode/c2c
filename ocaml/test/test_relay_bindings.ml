@@ -280,6 +280,91 @@ let test_invite_ctx_constants () =
   Alcotest.(check string) "not_a_member code"
     "not_a_member" relay_err_not_a_member
 
+(* --- L3/5: operator allowlist + admin unbind --- *)
+
+let b64url s =
+  Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet s
+
+let test_allowlist_unlisted_falls_through () =
+  (* No allowlist entry → normal first-mover registration. *)
+  let r = InMemoryRelay.create () in
+  let pk = String.make 32 'A' in
+  let code, _ = InMemoryRelay.register r ~node_id:"n" ~session_id:"s"
+    ~alias:"alice" ~identity_pk:pk () in
+  Alcotest.(check string) "unlisted alias ok" "ok" code
+
+let test_allowlist_matching_pk_accepted () =
+  let r = InMemoryRelay.create () in
+  let pk = String.make 32 'A' in
+  InMemoryRelay.set_allowed_identity r ~alias:"alice"
+    ~identity_pk_b64:(b64url pk);
+  let code, _ = InMemoryRelay.register r ~node_id:"n" ~session_id:"s"
+    ~alias:"alice" ~identity_pk:pk () in
+  Alcotest.(check string) "allowlist match accepted" "ok" code
+
+let test_allowlist_mismatched_pk_rejected () =
+  let r = InMemoryRelay.create () in
+  let pinned = String.make 32 'A' in
+  let wrong = String.make 32 'B' in
+  InMemoryRelay.set_allowed_identity r ~alias:"alice"
+    ~identity_pk_b64:(b64url pinned);
+  let code, _ = InMemoryRelay.register r ~node_id:"n" ~session_id:"s"
+    ~alias:"alice" ~identity_pk:wrong () in
+  Alcotest.(check string) "allowlist mismatch rejected"
+    "alias_not_allowed" code
+
+let test_allowlist_listed_no_pk_rejected () =
+  (* Listed aliases require a signed registration — legacy unsigned
+     register of a pinned alias must fail. *)
+  let r = InMemoryRelay.create () in
+  InMemoryRelay.set_allowed_identity r ~alias:"alice"
+    ~identity_pk_b64:(b64url (String.make 32 'A'));
+  let code, _ = InMemoryRelay.register r ~node_id:"n" ~session_id:"s"
+    ~alias:"alice" () in
+  Alcotest.(check string) "allowlist needs pk" "alias_not_allowed" code
+
+let test_allowlist_query_roundtrip () =
+  let r = InMemoryRelay.create () in
+  Alcotest.(check (option string)) "no entry initially" None
+    (InMemoryRelay.allowed_identity_of r ~alias:"alice");
+  InMemoryRelay.set_allowed_identity r ~alias:"alice"
+    ~identity_pk_b64:"pinnedpkb64";
+  Alcotest.(check (option string)) "entry roundtrips"
+    (Some "pinnedpkb64")
+    (InMemoryRelay.allowed_identity_of r ~alias:"alice");
+  (* check_allowlist variants *)
+  let s = InMemoryRelay.check_allowlist r ~alias:"bob"
+    ~identity_pk_b64:"anything" in
+  Alcotest.(check bool) "bob unlisted" true (s = `Unlisted);
+  let s = InMemoryRelay.check_allowlist r ~alias:"alice"
+    ~identity_pk_b64:"pinnedpkb64" in
+  Alcotest.(check bool) "alice allowed" true (s = `Allowed);
+  let s = InMemoryRelay.check_allowlist r ~alias:"alice"
+    ~identity_pk_b64:"wrongpk" in
+  Alcotest.(check bool) "alice mismatch" true (s = `Mismatch)
+
+let test_unbind_removes_binding () =
+  let r = InMemoryRelay.create () in
+  let pk = String.make 32 'A' in
+  let _ = InMemoryRelay.register r ~node_id:"n" ~session_id:"s"
+    ~alias:"alice" ~identity_pk:pk () in
+  Alcotest.(check bool) "binding present before unbind" true
+    (InMemoryRelay.identity_pk_of r ~alias:"alice" <> None);
+  let removed = InMemoryRelay.unbind_alias r ~alias:"alice" in
+  Alcotest.(check bool) "unbind reports removed" true removed;
+  Alcotest.(check (option string)) "binding gone" None
+    (InMemoryRelay.identity_pk_of r ~alias:"alice");
+  (* After unbind, a different pk can claim the alias. *)
+  let pk2 = String.make 32 'B' in
+  let code, _ = InMemoryRelay.register r ~node_id:"n2" ~session_id:"s2"
+    ~alias:"alice" ~identity_pk:pk2 () in
+  Alcotest.(check string) "fresh bind after unbind" "ok" code
+
+let test_unbind_missing_alias_is_noop () =
+  let r = InMemoryRelay.create () in
+  Alcotest.(check bool) "unbind of unknown alias returns false" false
+    (InMemoryRelay.unbind_alias r ~alias:"ghost")
+
 let tests = [
   "register_without_pk_legacy",    `Quick, test_register_without_pk_legacy;
   "first_bind_stores_pk",          `Quick, test_first_bind_stores_pk;
@@ -305,6 +390,13 @@ let tests = [
   "invite_list_roundtrip",         `Quick, test_invite_list_roundtrip;
   "set_visibility",                `Quick, test_set_visibility;
   "invite_ctx_constants",          `Quick, test_invite_ctx_constants;
+  "allowlist_unlisted_falls_through", `Quick, test_allowlist_unlisted_falls_through;
+  "allowlist_matching_pk_accepted",   `Quick, test_allowlist_matching_pk_accepted;
+  "allowlist_mismatched_pk_rejected", `Quick, test_allowlist_mismatched_pk_rejected;
+  "allowlist_listed_no_pk_rejected",  `Quick, test_allowlist_listed_no_pk_rejected;
+  "allowlist_query_roundtrip",     `Quick, test_allowlist_query_roundtrip;
+  "unbind_removes_binding",        `Quick, test_unbind_removes_binding;
+  "unbind_missing_alias_is_noop",  `Quick, test_unbind_missing_alias_is_noop;
 ]
 
 let () =

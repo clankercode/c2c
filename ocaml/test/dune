@@ -11,7 +11,7 @@
 (test
  (name test_relay_bindings)
  (modules test_relay_bindings)
- (libraries c2c_mcp alcotest))
+ (libraries c2c_mcp alcotest base64))
 
 (test
  (name test_relay_signed_ops)
