@@ -3473,26 +3473,36 @@ let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt =
       ]
   in
   json_write_file sidecar sidecar_json;
-  let plugin_src = ".opencode/plugins/c2c.ts" in
+  (* Find plugin source: prefer CWD-relative (c2c dev repo), fall back to global install path. *)
+  let home = try Sys.getenv "HOME" with Not_found -> "" in
+  let global_plugin_path = home // ".config" // "opencode" // "plugins" // "c2c.ts" in
+  let plugin_src =
+    let local = ".opencode" // "plugins" // "c2c.ts" in
+    if Sys.file_exists local then Some local
+    else if Sys.file_exists global_plugin_path then Some global_plugin_path
+    else None
+  in
   let plugin_note =
-    if Sys.file_exists plugin_src then begin
-      let plugins_dir = config_dir // "plugins" in
-      (try Unix.mkdir plugins_dir 0o755 with Unix.Unix_error _ -> ());
-      let dest = plugins_dir // "c2c.ts" in
-      (try
-         let ic = open_in_bin plugin_src in
-         let oc = open_out_bin (dest ^ ".tmp") in
-         Fun.protect ~finally:(fun () -> close_in ic; close_out oc) (fun () ->
-           let buf = Bytes.create 65536 in
-           let rec copy () =
-             let n = input ic buf 0 (Bytes.length buf) in
-             if n > 0 then (output oc buf 0 n; copy ())
-           in
-           copy ());
-         Unix.rename (dest ^ ".tmp") dest;
-         Printf.sprintf "plugin installed to %s" dest
-       with _ -> "plugin copy failed")
-    end else "plugin source not found (expected .opencode/plugins/c2c.ts in c2c repo)"
+    match plugin_src with
+    | None ->
+        Printf.sprintf "plugin not found — install globally first: c2c setup opencode (from c2c repo, or copy c2c.ts to %s)" global_plugin_path
+    | Some src ->
+        let plugins_dir = config_dir // "plugins" in
+        (try Unix.mkdir plugins_dir 0o755 with Unix.Unix_error _ -> ());
+        let dest = plugins_dir // "c2c.ts" in
+        (try
+           let ic = open_in_bin src in
+           let oc = open_out_bin (dest ^ ".tmp") in
+           Fun.protect ~finally:(fun () -> close_in ic; close_out oc) (fun () ->
+             let buf = Bytes.create 65536 in
+             let rec copy () =
+               let n = input ic buf 0 (Bytes.length buf) in
+               if n > 0 then (output oc buf 0 n; copy ())
+             in
+             copy ());
+           Unix.rename (dest ^ ".tmp") dest;
+           Printf.sprintf "plugin installed to %s (from %s)" dest src
+         with _ -> "plugin copy failed")
   in
   match output_mode with
   | Json ->
