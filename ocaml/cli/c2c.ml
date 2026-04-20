@@ -1673,6 +1673,81 @@ let room_group =
 
 (* --- subcommand: monitor (inotify-based inbox watcher) --------------------- *)
 
+(* Read an inbox JSON file, returning the parsed message list. *)
+let read_inbox_file path =
+  try
+    let ic = open_in path in
+    let content = Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+      let buf = Buffer.create 512 in
+      (try while true do Buffer.add_channel buf ic 1 done with End_of_file -> ());
+      Buffer.contents buf)
+    in
+    (match Yojson.Safe.from_string content with
+     | `List msgs -> msgs
+     | _ -> [])
+  with _ -> []
+
+(* Extract a string field from a JSON assoc or return a default. *)
+let jstr fields key def =
+  match List.assoc_opt key fields with Some (`String s) -> s | _ -> def
+
+(* Truncate a string to max_len, appending "…" if clipped. *)
+let truncate s max_len =
+  let s = String.trim s in
+  if String.length s > max_len then String.sub s 0 max_len ^ "…" else s
+
+(* Current time as [HH:MM:SS] *)
+let now_hms () =
+  let t = Unix.localtime (Unix.gettimeofday ()) in
+  Printf.sprintf "[%02d:%02d:%02d]" t.Unix.tm_hour t.Unix.tm_min t.Unix.tm_sec
+
+(* Determine if a to_alias value is a room fanout (contains '@') *)
+let parse_to_alias s =
+  match String.split_on_char '@' s with
+  | [_alias; room] -> `Room room
+  | _ -> `Direct s
+
+(* Emit one notification line per unique sender, collapsing bursts. *)
+let emit_messages ~my_alias ~all ~full_body msgs =
+  (* Group messages by from_alias *)
+  let by_sender = Hashtbl.create 4 in
+  List.iter (fun msg ->
+    match msg with
+    | `Assoc fields ->
+        let from = jstr fields "from_alias" "?" in
+        let existing = try Hashtbl.find by_sender from with Not_found -> [] in
+        Hashtbl.replace by_sender from (existing @ [fields])
+    | _ -> ()
+  ) msgs;
+  Hashtbl.iter (fun from sender_msgs ->
+    let n = List.length sender_msgs in
+    let first = List.hd sender_msgs in
+    let to_raw = jstr first "to_alias" "" in
+    let is_mine = match my_alias with
+      | None -> true
+      | Some me -> to_raw = me || String.length to_raw > String.length me + 1
+                   && String.sub to_raw 0 (String.length me) = me
+    in
+    if all || is_mine then begin
+      let icon = if is_mine then "📬" else "💬" in
+      let dest = match parse_to_alias to_raw with
+        | `Room room -> "@" ^ room
+        | `Direct d -> if is_mine then "you" else d
+      in
+      let subject =
+        if n = 1 then
+          let body = jstr first "content" "" in
+          if full_body then Printf.sprintf "\"%s\"" body
+          else Printf.sprintf "\"%s\"" (truncate body 80)
+        else
+          let body = jstr first "content" "" in
+          Printf.sprintf "(%d msgs) \"%s\"" n (truncate body 60)
+      in
+      Printf.printf "%s %s  %s→%s  %s\n%!"
+        (now_hms ()) icon from dest subject
+    end
+  ) by_sender
+
 let monitor_cmd =
   let open Cmdliner in
   let open Cmdliner.Term in
@@ -1682,12 +1757,34 @@ let monitor_cmd =
   in
   let alias_opt =
     Arg.(value & opt (some string) None & info ["alias";"a"] ~docv:"ALIAS"
-           ~doc:"Only show events for this inbox alias. Defaults to C2C_MCP_SESSION_ID.")
+           ~doc:"My alias (default: C2C_MCP_SESSION_ID). Only messages addressed to \
+                 this alias are shown by default.")
   in
   let all_flag =
-    Arg.(value & flag & info ["all"] ~doc:"Show all inbox events, not just ones addressed to --alias.")
+    Arg.(value & flag & info ["all"]
+           ~doc:"Also show messages addressed to other peers (situational awareness).")
   in
-  const (fun broker_root_arg alias_arg all ->
+  let drains_flag =
+    Arg.(value & flag & info ["drains"]
+           ~doc:"Show drain events (when a peer polls their inbox to empty).")
+  in
+  let sweeps_flag =
+    Arg.(value & flag & info ["sweeps"]
+           ~doc:"Show sweep/delete events.")
+  in
+  let full_body_flag =
+    Arg.(value & flag & info ["full-body";"body"]
+           ~doc:"Emit full message content instead of an 80-char subject snippet.")
+  in
+  let from_opt =
+    Arg.(value & opt (some string) None & info ["from"] ~docv:"ALIAS"
+           ~doc:"Only show messages from this sender alias.")
+  in
+  let json_flag =
+    Arg.(value & flag & info ["json"]
+           ~doc:"Emit JSON objects instead of human-readable lines.")
+  in
+  const (fun broker_root_arg alias_arg all drains sweeps full_body from_filter json ->
     let broker_root =
       match broker_root_arg with
       | Some r -> r
@@ -1695,7 +1792,8 @@ let monitor_cmd =
           (match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
            | Some r -> r
            | None -> (try resolve_broker_root () with _ ->
-               Printf.eprintf "c2c monitor: cannot resolve broker root (set C2C_MCP_BROKER_ROOT or run from repo)\n%!";
+               Printf.eprintf "c2c monitor: cannot resolve broker root \
+                 (set C2C_MCP_BROKER_ROOT or run from inside the repo)\n%!";
                exit 1))
     in
     let my_alias =
@@ -1703,7 +1801,6 @@ let monitor_cmd =
       | Some a -> Some a
       | None -> Sys.getenv_opt "C2C_MCP_SESSION_ID"
     in
-    (* inotifywait line format: "<dir>/ CLOSE_WRITE,CLOSE <filename>" *)
     let cmd = Printf.sprintf
       "inotifywait -m -q -e close_write,delete --format '%%e %%f' %s"
       (Filename.quote broker_root)
@@ -1712,85 +1809,83 @@ let monitor_cmd =
     Fun.protect ~finally:(fun () -> ignore (Unix.close_process_in ic)) (fun () ->
       try while true do
         let line = input_line ic in
-        (* Parse: EVENT FILENAME *)
         let parts = String.split_on_char ' ' (String.trim line) in
         (match parts with
-         | event :: filename :: _ when
-             (let n = String.length filename in
-              n > 11 && String.sub filename (n - 11) 11 = ".inbox.json"
-              && not (let n2 = String.length filename in n2 >= 5 && String.sub filename (n2-5) 5 = ".lock")) ->
-             let alias = String.sub filename 0 (String.length filename - 11) in
-             let is_mine = match my_alias with None -> true | Some a -> a = alias in
-             (* Apply filter: show all, or only show my alias + events FROM others to mine *)
-             if all || is_mine then begin
-               let inbox_path = Filename.concat broker_root filename in
+         | event :: filename :: _ ->
+             let n = String.length filename in
+             let is_inbox = n > 11 && String.sub filename (n - 11) 11 = ".inbox.json" in
+             let is_lock  = n >= 5  && String.sub filename (n - 5) 5 = ".lock" in
+             if is_inbox && not is_lock then begin
+               let alias = String.sub filename 0 (n - 11) in
                let event_up = String.uppercase_ascii event in
-               let label, detail =
-                 if String.sub event_up 0 (min 6 (String.length event_up)) = "DELETE" then
-                   ("🗑️ ", Printf.sprintf "%s inbox deleted (sweep)" alias)
-                 else begin
-                   (* Read inbox for count + snippet *)
-                   let content =
-                     try
-                       let ic2 = open_in inbox_path in
-                       Fun.protect ~finally:(fun () -> close_in ic2) (fun () ->
-                         let buf = Buffer.create 256 in
-                         (try while true do Buffer.add_channel buf ic2 1 done with End_of_file -> ());
-                         Buffer.contents buf)
-                     with _ -> "[]"
-                   in
-                   let messages =
-                     try match Yojson.Safe.from_string content with
-                       | `List msgs -> msgs
-                       | _ -> []
-                     with _ -> []
-                   in
-                   match messages with
-                   | [] ->
-                     ("📤 ", Printf.sprintf "%s polled (drained)" alias)
-                   | msgs ->
-                     let n = List.length msgs in
-                     (* Grab snippet from first message *)
-                     let snippet =
-                       match List.nth_opt msgs 0 with
-                       | Some (`Assoc fields) ->
-                           let from = (match List.assoc_opt "from_alias" fields with
-                             | Some (`String s) -> s | _ -> "?") in
-                           let body = (match List.assoc_opt "content" fields with
-                             | Some (`String s) ->
-                                 let s = String.trim s in
-                                 if String.length s > 60 then String.sub s 0 60 ^ "…" else s
-                             | _ -> "") in
-                           if is_mine then
-                             Printf.sprintf "from %s: %s" from body
-                           else
-                             Printf.sprintf "(%d msg%s)" n (if n = 1 then "" else "s")
-                       | _ -> Printf.sprintf "(%d msg%s)" n (if n = 1 then "" else "s")
-                     in
-                     let icon = if is_mine then "📬 " else "💬 " in
-                     (icon, Printf.sprintf "%s — %s" alias snippet)
-                 end
-               in
-               Printf.printf "%s%s\n%!" label detail
+               let is_delete = String.length event_up >= 6
+                               && String.sub event_up 0 6 = "DELETE" in
+               if is_delete then begin
+                 if sweeps then
+                   Printf.printf "%s 🗑️  SWEEP  %s (inbox deleted)\n%!" (now_hms ()) alias
+               end else begin
+                 let inbox_path = Filename.concat broker_root filename in
+                 let msgs = read_inbox_file inbox_path in
+                 (* Apply --from filter *)
+                 let msgs = match from_filter with
+                   | None -> msgs
+                   | Some f -> List.filter (fun m -> match m with
+                       | `Assoc fields -> jstr fields "from_alias" "" = f
+                       | _ -> false) msgs
+                 in
+                 (match msgs with
+                  | [] ->
+                      if drains then
+                        Printf.printf "%s 📤  DRAIN  %s (inbox cleared)\n%!" (now_hms ()) alias
+                  | msgs ->
+                      if json then begin
+                        let is_mine = match my_alias with
+                          | None -> true | Some me -> alias = me in
+                        if all || is_mine then
+                          List.iter (fun m ->
+                            let m_with_ts = match m with
+                              | `Assoc fields ->
+                                  let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+                                  `Assoc (("monitor_ts", `String ts) :: fields)
+                              | _ -> m
+                            in
+                            print_string (Yojson.Safe.to_string m_with_ts);
+                            print_newline ()
+                          ) msgs
+                      end else
+                        emit_messages ~my_alias ~all ~full_body msgs)
+               end
              end
-         | _ -> ()  (* ignore non-inbox files and lock sidecars *)
+         | _ -> ()
         )
       done with End_of_file -> ())
-  ) $ broker_root_opt $ alias_opt $ all_flag
+  ) $ broker_root_opt $ alias_opt $ all_flag $ drains_flag $ sweeps_flag
+    $ full_body_flag $ from_opt $ json_flag
 
 let monitor =
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "monitor"
-       ~doc:"Watch broker inboxes and emit formatted notifications."
+       ~doc:"Watch broker inboxes and emit formatted event notifications."
        ~man:[ `S "DESCRIPTION"
-            ; `P "Runs $(b,inotifywait) on the broker inbox directory and emits a \
-                  human-readable line per event. Designed for use with Claude Code's \
+            ; `P "Watches the broker inbox directory with $(b,inotifywait) and emits \
+                  one formatted line per new message (or event). Designed for Claude Code's \
                   Monitor tool — each output line becomes the notification summary."
-            ; `P "Default: show events for your own alias ($(b,C2C_MCP_SESSION_ID)). \
-                  Use $(b,--all) to watch every inbox."
+            ; `P "Default behaviour: only show messages addressed to your alias \
+                  ($(b,C2C_MCP_SESSION_ID)). New messages only — drains and sweeps \
+                  suppressed unless $(b,--drains)/$(b,--sweeps) are set."
+            ; `P "Burst deduplication: multiple messages from the same sender in one \
+                  inbox write are collapsed to a single line with a count."
+            ; `S "OUTPUT FORMAT"
+            ; `P "[HH:MM:SS] ICON  TYPE  from→to  \"subject…\""
+            ; `P "ICON: 📬 = addressed to you, 💬 = peer traffic (--all), \
+                  📤 = drain (--drains), 🗑️ = sweep (--sweeps)"
             ; `S "EXAMPLES"
-            ; `P "$(b,c2c monitor)  — watch your own inbox"
-            ; `P "$(b,c2c monitor --all)  — watch all inboxes (broad monitor)"
+            ; `P "$(b,c2c monitor)  — watch your own inbox (default)"
+            ; `P "$(b,c2c monitor --all)  — broad swarm monitor"
+            ; `P "$(b,c2c monitor --all --drains --sweeps)  — everything"
+            ; `P "$(b,c2c monitor --from coder1)  — only messages from coder1"
+            ; `P "$(b,c2c monitor --full-body)  — include complete message body"
+            ; `P "$(b,c2c monitor --json)  — JSON output for programmatic parsing"
             ; `P "In Claude Code: Monitor({command: \"c2c monitor --all\", persistent: true})"
             ])
     monitor_cmd
