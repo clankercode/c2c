@@ -28,7 +28,10 @@ USER opam
 WORKDIR /home/opam/c2c
 RUN opam update -y \
  && opam install --yes \
-        dune cmdliner yojson lwt logs cohttp-lwt-unix uuidm
+        dune cmdliner yojson lwt logs cohttp-lwt-unix uuidm \
+        base64 digestif mirage-crypto-ec mirage-crypto-rng \
+        mirage-crypto-rng-unix mirage-crypto-rng-lwt \
+        tls-lwt ca-certs
 
 # Layer: sources + build.
 COPY --chown=opam:opam dune-project ./
