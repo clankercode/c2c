@@ -53,6 +53,7 @@ Legend: ✅ shipped · 🟡 in progress · ⏳ blocked · ⚪ open · ⏸ deferr
 | 7. Regression test suite for native relay subcommands | ✅ | coder2-expert | `555046f`   |
 | 8. Native OCaml `c2c relay rooms join/leave --room --alias` | ✅ | coder2-expert | `4de4f63`   |
 | 9. Native OCaml `c2c relay rooms send` — all rooms verbs native | ✅ | coder2-expert | `7bfd7ac`   |
+| 10. Native OCaml `c2c relay setup` (config load/save/merge/--show) | ✅ | coder2-expert | `96152c5` |
 
 ### Layer 2 — TLS + operator bearer token
 
