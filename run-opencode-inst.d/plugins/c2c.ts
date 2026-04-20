@@ -504,14 +504,9 @@ const C2CDelivery: Plugin = async (ctx) => {
 
   // --- Guard: no delivery without session ID ---
   if (!sessionId) {
-    return {
-      lifecycle: {
-        start: async () => {
-          await log("C2C_MCP_SESSION_ID not set — message delivery disabled");
-          await toast("c2c plugin: set C2C_MCP_SESSION_ID to enable delivery", "warning");
-        },
-      },
-    };
+    await log("C2C_MCP_SESSION_ID not set — message delivery disabled");
+    void toast("c2c plugin: set C2C_MCP_SESSION_ID to enable delivery", "warning");
+    return {};
   }
 
   // Introspect available API methods to diagnose promptAsync availability.
@@ -523,22 +518,6 @@ const C2CDelivery: Plugin = async (ctx) => {
 
   // --- Return hooks ---
   return {
-    lifecycle: {
-      start: async () => {
-        await log("starting delivery loop");
-        await toast(`c2c: delivery active (session=${sessionId})`);
-        startBackgroundLoop();
-        // Drain any messages that queued while the session was offline (cold-boot gap).
-        // On first start the TUI may not have created a session yet, so activeSessionId
-        // is null and session.list() returns empty. Retry with backoff until the session
-        // is discovered (via session.created event) or we give up after ~30s.
-        await tryDeliver();
-        // session.created will fire soon and set activeSessionId; the background
-        // monitor loop will then deliver any queued messages on the next tick.
-        // No retry needed here — tryDeliver is a no-op until activeSessionId is set.
-      },
-    },
-
     event: async ({ event }: { event: Event }) => {
       // Track root session ID from creation events — also trigger immediate delivery
       // so queued messages arrive without waiting for the next background loop tick.
