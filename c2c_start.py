@@ -53,6 +53,9 @@ CLIENT_CONFIGS: dict[str, dict[str, Any]] = {
         "binary": "opencode",
         "deliver_client": "opencode",
         "needs_poker": False,
+        # TypeScript plugin (c2c.ts) handles delivery via c2c monitor → promptAsync.
+        # PTY-based deliver daemon is deprecated for OpenCode.
+        "skip_deliver": True,
         "extra_env": {},
     },
     "kimi": {
@@ -702,7 +705,7 @@ def run_outer_loop(
                 child_proc = subprocess.Popen(cmd, env=env, start_new_session=True)
 
                 # Start deliver daemon and poker on first iteration (or restart if dead).
-                if deliver_proc is None or deliver_proc.poll() is not None:
+                if not cfg.get("skip_deliver") and (deliver_proc is None or deliver_proc.poll() is not None):
                     deliver_proc = _start_deliver_daemon(
                         name, cfg["deliver_client"], broker_root, child_proc.pid
                     )
