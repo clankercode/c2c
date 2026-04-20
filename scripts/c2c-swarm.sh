@@ -13,6 +13,12 @@
 #   send <alias> <text>  Type <text> + Enter into that alias's pane
 #                        Uses scripts/c2c-tmux-enter.sh for Enter (extended-keys safe)
 #   send-raw <alias> <text>  Type <text> without a trailing Enter
+#   keys <alias> <tmux-key>...  Forward raw tmux key tokens (Enter,
+#                        Escape, Up, C-c, M-x, …). Use for dismissing
+#                        dialogs, sending interrupts, navigating menus.
+#   enter <alias>        Send the extended-keys-safe Enter by itself
+#                        (same helper `send` uses). Handy after `send-raw`
+#                        or for confirming a dialog.
 #   follow <alias> [log] Start streaming pane to LOG (default /tmp/c2c-swarm-<alias>.log)
 #   unfollow <alias>     Stop pipe-pane on that alias
 #   grep <regex>         Grep scrollback across all swarm panes (ANSI stripped)
@@ -108,6 +114,25 @@ cmd_send_raw() {
   local alias="${1:?usage: send-raw <alias> <text...>}"; shift
   local target; target=$(_target_for_alias "$alias")
   tmux send-keys -t "$target" -l "$*"
+}
+
+# Forward raw tmux key names / special keys to a pane. No -l, so tokens
+# like `Enter`, `Escape`, `Up`, `C-c`, `M-x` are interpreted by tmux.
+# Useful for dismissing dialogs, navigating menus, sending interrupts.
+cmd_keys() {
+  local alias="${1:?usage: keys <alias> <tmux-key>...  (e.g. keys planner1 Enter, keys coder1 C-c)}"; shift
+  local target; target=$(_target_for_alias "$alias")
+  tmux send-keys -t "$target" "$@"
+}
+
+# Convenience: extended-keys-safe Enter (same helper `send` uses internally).
+# Separate from `keys <alias> Enter` because Claude Code's TUI has a
+# keybinding that treats raw tmux `Enter` differently from the helper's
+# bracketed sequence in some modes.
+cmd_enter() {
+  local alias="${1:?usage: enter <alias>}"
+  local target; target=$(_target_for_alias "$alias")
+  "$ENTER_HELPER" "$target"
 }
 
 cmd_follow() {
@@ -217,6 +242,8 @@ case "$cmd" in
   peek-all)      cmd_peek_all "$@" ;;
   send)          cmd_send "$@" ;;
   send-raw)      cmd_send_raw "$@" ;;
+  keys)          cmd_keys "$@" ;;
+  enter)         cmd_enter "$@" ;;
   follow)        cmd_follow "$@" ;;
   unfollow)      cmd_unfollow "$@" ;;
   grep)          cmd_grep "$@" ;;
