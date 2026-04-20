@@ -306,7 +306,7 @@ HOME=$HOME_B c2c relay register --alias smoke-A
 On **host A**:
 ```bash
 c2c relay register --alias smoke-A   # idempotent if already registered
-c2c relay dm send smoke-B "hello from A $(date -Is)"
+c2c relay dm send smoke-B "hello from A $(date -Is)" --alias smoke-A
 # Expect: {"ok":true}
 ```
 
