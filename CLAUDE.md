@@ -73,6 +73,12 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   hasn't been proven across every harness — verify it works in your context
   before relying on it; otherwise install and restart separately.
   `just --list` shows every available recipe (build, install, test, gc, …).
+  **Use `just` for iterative dev too**, not just final install: `just build`
+  for a compile check, `just test-ocaml` / `just test` for the test suite,
+  `just test-one -k "test_foo"` to run a single case. Reach for `opam exec
+  -- dune build` directly only when a recipe is missing — if you find
+  yourself typing the raw dune/opam invocation, consider adding a recipe
+  to the justfile so the next agent doesn't have to.
   Fall back to the manual sequence (`opam exec -- dune build -j1 && cp
   _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c`) only if `just` is
   unavailable — `dune install` does NOT reliably update the binary.
