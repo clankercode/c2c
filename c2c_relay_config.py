@@ -10,9 +10,12 @@ Config file location (in priority order):
   3. ~/.config/c2c/relay.json  (fallback user-level config)
 
 Config file format (JSON):
-    {"url": "http://host:7331", "token": "secret", "node_id": "hostname-abc12345"}
+    {"url": "https://host:8443", "token": "secret", "node_id": "hostname-abc12345",
+     "ca_bundle": "/etc/c2c/relay.crt"}
 
 All fields are optional; absent fields fall back to CLI args or auto-derivation.
+`ca_bundle` points at a PEM file used to verify a self-signed relay cert (see
+docs/c2c-research/relay-tls-setup.md §3.3). Unset means trust the system CA bundle.
 """
 from __future__ import annotations
 
@@ -62,13 +65,14 @@ def resolve_relay_params(
     url: Optional[str] = None,
     token: Optional[str] = None,
     node_id: Optional[str] = None,
+    ca_bundle: Optional[str] = None,
     config_path: Optional[Path] = None,
 ) -> dict:
     """Merge CLI args, environment, and saved config.
 
     Precedence: explicit args, C2C_RELAY_* environment variables, saved config.
 
-    Returns dict with keys: url, token, node_id (any may be None/empty).
+    Returns dict with keys: url, token, node_id, ca_bundle (any may be None/empty).
     """
     cfg = load_config(config_path)
     return {
@@ -78,6 +82,12 @@ def resolve_relay_params(
             node_id
             or os.environ.get("C2C_RELAY_NODE_ID")
             or cfg.get("node_id")
+            or ""
+        ),
+        "ca_bundle": (
+            ca_bundle
+            or os.environ.get("C2C_RELAY_CA_BUNDLE")
+            or cfg.get("ca_bundle")
             or ""
         ),
     }
@@ -100,6 +110,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--token-file", default="", help="File containing Bearer token")
     parser.add_argument("--node-id", default="",
                         help="Override node_id (default: auto-derived)")
+    parser.add_argument("--ca-bundle", default="",
+                        help="Path to PEM CA bundle for self-signed relay certs")
     parser.add_argument("--config", default="",
                         help="Config file path (default: auto)")
     parser.add_argument("--show", action="store_true",
@@ -145,6 +157,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         data["token"] = token
     if node_id:
         data["node_id"] = node_id
+    ca_bundle = args.ca_bundle.strip()
+    if ca_bundle:
+        data["ca_bundle"] = str(Path(ca_bundle).expanduser())
 
     saved_path = save_config(data, config_path)
     if args.json:
@@ -159,6 +174,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("  token: ***")
         if node_id:
             print(f"  node_id: {node_id}")
+        if "ca_bundle" in data:
+            print(f"  ca_bundle: {data['ca_bundle']}")
     return 0
 
 

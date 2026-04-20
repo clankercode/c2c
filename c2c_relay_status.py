@@ -19,15 +19,16 @@ from c2c_relay_config import resolve_relay_params
 from c2c_relay_connector import RelayClient
 
 
-def _make_client(url: str, token: str) -> RelayClient:
-    return RelayClient(url, token=token or None)
+def _make_client(url: str, token: str, ca_bundle: str = "") -> RelayClient:
+    return RelayClient(url, token=token or None, ca_bundle=ca_bundle or None)
 
 
 def cmd_status(
-    url: str, token: str, node_id: str, *, json_out: bool = False
+    url: str, token: str, node_id: str, *, ca_bundle: str = "",
+    json_out: bool = False,
 ) -> int:
     """Show relay health and basic stats."""
-    client = _make_client(url, token)
+    client = _make_client(url, token, ca_bundle)
 
     health = client.health()
     if not health.get("ok"):
@@ -61,10 +62,11 @@ def cmd_status(
 
 
 def cmd_list(
-    url: str, token: str, *, include_dead: bool = False, json_out: bool = False
+    url: str, token: str, *, ca_bundle: str = "",
+    include_dead: bool = False, json_out: bool = False
 ) -> int:
     """List all remote peers on the relay."""
-    client = _make_client(url, token)
+    client = _make_client(url, token, ca_bundle)
 
     health = client.health()
     if not health.get("ok"):
@@ -137,6 +139,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         token=token or None,
         node_id=args.node_id or None,
     )
+    ca_bundle = params.get("ca_bundle", "")
 
     if not params["url"]:
         print(
@@ -149,9 +152,10 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if subcommand == "status":
         return cmd_status(params["url"], params["token"], params["node_id"],
-                          json_out=args.json)
+                          ca_bundle=ca_bundle, json_out=args.json)
     else:  # list
         return cmd_list(params["url"], params["token"],
+                        ca_bundle=ca_bundle,
                         include_dead=getattr(args, "dead", False),
                         json_out=args.json)
 

@@ -32,8 +32,10 @@ from c2c_relay_connector import RelayClient
 # Relay room helpers
 # ---------------------------------------------------------------------------
 
-def _make_client(url: str, token: str) -> RelayClient:
-    return RelayClient(url, token=token or None)
+def _make_client(url: str, token: str, ca_bundle: str = "") -> RelayClient:
+    import os
+    ca = ca_bundle or os.environ.get("C2C_RELAY_CA_BUNDLE", "")
+    return RelayClient(url, token=token or None, ca_bundle=ca or None)
 
 
 def cmd_list(url: str, token: str, *, json_out: bool = False) -> int:

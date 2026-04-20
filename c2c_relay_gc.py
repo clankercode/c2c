@@ -92,7 +92,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         return 1
 
-    client = RelayClient(params["url"], token=params["token"] or None)
+    client = RelayClient(
+        params["url"],
+        token=params["token"] or None,
+        ca_bundle=params.get("ca_bundle") or None,
+    )
 
     # Verify relay is reachable before entering loop
     health = client.health()

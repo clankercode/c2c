@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import ssl
 import sys
 import time
 import urllib.error
@@ -57,10 +58,15 @@ class RelayClient:
     """Thin synchronous HTTP client matching the relay server API."""
 
     def __init__(self, base_url: str, token: Optional[str] = None,
-                 timeout: float = 10.0) -> None:
+                 timeout: float = 10.0,
+                 ca_bundle: Optional[str] = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.timeout = timeout
+        self.ca_bundle = ca_bundle or None
+        self._ssl_context: Optional[ssl.SSLContext] = None
+        if self.ca_bundle and self.base_url.startswith("https://"):
+            self._ssl_context = ssl.create_default_context(cafile=self.ca_bundle)
 
     def _request(self, method: str, path: str, body: Optional[dict] = None) -> dict:
         url = f"{self.base_url}{path}"
@@ -70,7 +76,9 @@ class RelayClient:
         if self.token:
             req.add_header("Authorization", f"Bearer {self.token}")
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(
+                req, timeout=self.timeout, context=self._ssl_context
+            ) as resp:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as exc:
             try:
@@ -339,6 +347,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="Relay lease TTL in seconds (default: 300)")
     parser.add_argument("--once", action="store_true", help="Run one sync and exit")
     parser.add_argument("--verbose", action="store_true", help="Log to stderr")
+    parser.add_argument("--ca-bundle", default="",
+                        help="PEM CA bundle for self-signed relay TLS (or C2C_RELAY_CA_BUNDLE)")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     # Load token
@@ -376,7 +386,13 @@ def main(argv: Optional[list[str]] = None) -> int:
               file=sys.stderr)
         return 1
 
-    client = RelayClient(args.relay_url, token=token)
+    import os as _os
+    ca_bundle = (
+        args.ca_bundle.strip()
+        or _os.environ.get("C2C_RELAY_CA_BUNDLE", "").strip()
+        or None
+    )
+    client = RelayClient(args.relay_url, token=token, ca_bundle=ca_bundle)
 
     # Health check
     health = client.health()
