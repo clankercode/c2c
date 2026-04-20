@@ -1671,6 +1671,130 @@ let room_group =
     (Cmdliner.Cmd.info "room" ~doc:"Alias for rooms.")
     [ rooms_list; rooms_join; rooms_leave; rooms_send; rooms_history; rooms_invite; rooms_members; rooms_visibility ]
 
+(* --- subcommand: monitor (inotify-based inbox watcher) --------------------- *)
+
+let monitor_cmd =
+  let open Cmdliner in
+  let open Cmdliner.Term in
+  let broker_root_opt =
+    Arg.(value & opt (some string) None & info ["broker-root";"root"] ~docv:"DIR"
+           ~doc:"Broker root dir (default: auto-resolve via env/git).")
+  in
+  let alias_opt =
+    Arg.(value & opt (some string) None & info ["alias";"a"] ~docv:"ALIAS"
+           ~doc:"Only show events for this inbox alias. Defaults to C2C_MCP_SESSION_ID.")
+  in
+  let all_flag =
+    Arg.(value & flag & info ["all"] ~doc:"Show all inbox events, not just ones addressed to --alias.")
+  in
+  const (fun broker_root_arg alias_arg all ->
+    let broker_root =
+      match broker_root_arg with
+      | Some r -> r
+      | None ->
+          (match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
+           | Some r -> r
+           | None -> (try resolve_broker_root () with _ ->
+               Printf.eprintf "c2c monitor: cannot resolve broker root (set C2C_MCP_BROKER_ROOT or run from repo)\n%!";
+               exit 1))
+    in
+    let my_alias =
+      match alias_arg with
+      | Some a -> Some a
+      | None -> Sys.getenv_opt "C2C_MCP_SESSION_ID"
+    in
+    (* inotifywait line format: "<dir>/ CLOSE_WRITE,CLOSE <filename>" *)
+    let cmd = Printf.sprintf
+      "inotifywait -m -q -e close_write,delete --format '%%e %%f' %s"
+      (Filename.quote broker_root)
+    in
+    let ic = Unix.open_process_in cmd in
+    Fun.protect ~finally:(fun () -> ignore (Unix.close_process_in ic)) (fun () ->
+      try while true do
+        let line = input_line ic in
+        (* Parse: EVENT FILENAME *)
+        let parts = String.split_on_char ' ' (String.trim line) in
+        (match parts with
+         | event :: filename :: _ when
+             (let n = String.length filename in
+              n > 11 && String.sub filename (n - 11) 11 = ".inbox.json"
+              && not (let n2 = String.length filename in n2 >= 5 && String.sub filename (n2-5) 5 = ".lock")) ->
+             let alias = String.sub filename 0 (String.length filename - 11) in
+             let is_mine = match my_alias with None -> true | Some a -> a = alias in
+             (* Apply filter: show all, or only show my alias + events FROM others to mine *)
+             if all || is_mine then begin
+               let inbox_path = Filename.concat broker_root filename in
+               let event_up = String.uppercase_ascii event in
+               let label, detail =
+                 if String.sub event_up 0 (min 6 (String.length event_up)) = "DELETE" then
+                   ("🗑️ ", Printf.sprintf "%s inbox deleted (sweep)" alias)
+                 else begin
+                   (* Read inbox for count + snippet *)
+                   let content =
+                     try
+                       let ic2 = open_in inbox_path in
+                       Fun.protect ~finally:(fun () -> close_in ic2) (fun () ->
+                         let buf = Buffer.create 256 in
+                         (try while true do Buffer.add_channel buf ic2 1 done with End_of_file -> ());
+                         Buffer.contents buf)
+                     with _ -> "[]"
+                   in
+                   let messages =
+                     try match Yojson.Safe.from_string content with
+                       | `List msgs -> msgs
+                       | _ -> []
+                     with _ -> []
+                   in
+                   match messages with
+                   | [] ->
+                     ("📤 ", Printf.sprintf "%s polled (drained)" alias)
+                   | msgs ->
+                     let n = List.length msgs in
+                     (* Grab snippet from first message *)
+                     let snippet =
+                       match List.nth_opt msgs 0 with
+                       | Some (`Assoc fields) ->
+                           let from = (match List.assoc_opt "from_alias" fields with
+                             | Some (`String s) -> s | _ -> "?") in
+                           let body = (match List.assoc_opt "content" fields with
+                             | Some (`String s) ->
+                                 let s = String.trim s in
+                                 if String.length s > 60 then String.sub s 0 60 ^ "…" else s
+                             | _ -> "") in
+                           if is_mine then
+                             Printf.sprintf "from %s: %s" from body
+                           else
+                             Printf.sprintf "(%d msg%s)" n (if n = 1 then "" else "s")
+                       | _ -> Printf.sprintf "(%d msg%s)" n (if n = 1 then "" else "s")
+                     in
+                     let icon = if is_mine then "📬 " else "💬 " in
+                     (icon, Printf.sprintf "%s — %s" alias snippet)
+                 end
+               in
+               Printf.printf "%s%s\n%!" label detail
+             end
+         | _ -> ()  (* ignore non-inbox files and lock sidecars *)
+        )
+      done with End_of_file -> ())
+  ) $ broker_root_opt $ alias_opt $ all_flag
+
+let monitor =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "monitor"
+       ~doc:"Watch broker inboxes and emit formatted notifications."
+       ~man:[ `S "DESCRIPTION"
+            ; `P "Runs $(b,inotifywait) on the broker inbox directory and emits a \
+                  human-readable line per event. Designed for use with Claude Code's \
+                  Monitor tool — each output line becomes the notification summary."
+            ; `P "Default: show events for your own alias ($(b,C2C_MCP_SESSION_ID)). \
+                  Use $(b,--all) to watch every inbox."
+            ; `S "EXAMPLES"
+            ; `P "$(b,c2c monitor)  — watch your own inbox"
+            ; `P "$(b,c2c monitor --all)  — watch all inboxes (broad monitor)"
+            ; `P "In Claude Code: Monitor({command: \"c2c monitor --all\", persistent: true})"
+            ])
+    monitor_cmd
+
 (* --- subcommand: hook (PostToolUse inbox hook) ----------------------------- *)
 
 let min_hook_runtime_ms = 100.0
@@ -5050,4 +5174,4 @@ let () =
           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
           ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
           ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-          ; serve; mcp; start; stop; restart; instances; rooms_group; room_group; relay_group; hook; inject; screen; help ]))
+          ; serve; mcp; start; stop; restart; instances; rooms_group; room_group; relay_group; monitor; hook; inject; screen; help ]))
