@@ -1979,12 +1979,38 @@ let relay_rooms_cmd =
   let limit =
     Cmdliner.Arg.(value & opt int 50 & info [ "limit" ] ~docv:"N" ~doc:"Max messages for history (default 50).")
   in
+  let alias =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Alias (required for join/leave).")
+  in
   let+ subcmd = subcmd
   and+ relay_url = relay_url
   and+ token = token
   and+ room = room
-  and+ limit = limit in
+  and+ limit = limit
+  and+ alias = alias in
+  let run_alias_op op_name client_fn =
+    match resolve_relay_url relay_url, room, alias with
+    | None, _, _ ->
+        Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+        exit 1
+    | _, None, _ ->
+        Printf.eprintf "error: --room required for 'rooms %s'.\n%!" op_name;
+        exit 1
+    | _, _, None ->
+        Printf.eprintf "error: --alias required for 'rooms %s'.\n%!" op_name;
+        exit 1
+    | Some url, Some room_id, Some alias ->
+        let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+        let result = Lwt_main.run (client_fn client ~alias ~room_id) in
+        print_endline (Yojson.Safe.pretty_to_string result);
+        (match result with
+         | `Assoc fields ->
+             (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
+         | _ -> exit 1)
+  in
   match subcmd with
+  | "join" -> run_alias_op "join" C2c_mcp.Relay.Relay_client.join_room
+  | "leave" -> run_alias_op "leave" C2c_mcp.Relay.Relay_client.leave_room
   | "history" ->
       (match resolve_relay_url relay_url, room with
        | None, _ ->

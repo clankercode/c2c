@@ -95,6 +95,18 @@ class NativeRelaySubcommandTests(unittest.TestCase):
             "relay rooms history --room swarm-lounge",
         )
 
+    def test_relay_rooms_join_native(self):
+        self._assert_native_connection_error(
+            self._run("rooms", "join", "--room", "r", "--alias", "a"),
+            "relay rooms join",
+        )
+
+    def test_relay_rooms_leave_native(self):
+        self._assert_native_connection_error(
+            self._run("rooms", "leave", "--room", "r", "--alias", "a"),
+            "relay rooms leave",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
