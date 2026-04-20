@@ -29,6 +29,10 @@ let request_sign_ctx = "c2c/v1/request"
 (* Layer 4 room ops (spec §4.1/§4.2): use the register ts window + nonce TTL. *)
 let room_join_sign_ctx = "c2c/v1/room-join"
 let room_leave_sign_ctx = "c2c/v1/room-leave"
+let room_send_sign_ctx = "c2c/v1/room-send"
+
+(* Layer 4 envelope error codes (spec §9). *)
+let relay_err_unsupported_enc = "unsupported_enc"
 
 (* Parse a header value like
      "Ed25519 alias=foo,ts=1776698000,nonce=AAA,sig=BBB"
@@ -1118,16 +1122,101 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
         let result = InMemoryRelay.leave_room relay ~alias ~room_id in
         respond_ok (json_of_room_join_result result)
 
-  and handle_send_room relay body =
+  (* Layer 4 slice 2: verify optional signed envelope on /send_room.
+     Envelope shape per spec §2: {ct, enc, sender_pk, sig, ts, nonce}.
+     In v1, `ct` is base64url-nopad of the UTF-8 message text; relay
+     still fans out `content` verbatim. Soft rollout: no envelope → legacy
+     path. Envelope present → verify end-to-end before send_room. *)
+  let verify_room_send_envelope relay ~from_alias ~room_id ~content body =
+    match List.assoc_opt "envelope" (match body with `Assoc l -> l | _ -> []) with
+    | None -> Ok ()  (* legacy unsigned path *)
+    | Some env ->
+      let es k = match env with
+        | `Assoc l ->
+          (match List.assoc_opt k l with Some (`String s) -> s | _ -> "")
+        | _ -> ""
+      in
+      let ct_b64 = es "ct" in
+      let enc = es "enc" in
+      let sender_pk_b64 = es "sender_pk" in
+      let sig_b64 = es "sig" in
+      let ts = es "ts" in
+      let nonce = es "nonce" in
+      if ct_b64 = "" || enc = "" || sender_pk_b64 = ""
+         || sig_b64 = "" || ts = "" || nonce = "" then
+        Error (relay_err_missing_proof_field,
+          "envelope must include ct, enc, sender_pk, sig, ts, nonce")
+      else if enc <> "none" then
+        Error (relay_err_unsupported_enc,
+          Printf.sprintf "enc=%S not supported in v1 (only \"none\")" enc)
+      else
+        match decode_b64url sender_pk_b64 with
+        | Error _ -> Error (err_bad_request, "sender_pk not base64url-nopad")
+        | Ok sender_pk when String.length sender_pk <> 32 ->
+          Error (err_bad_request, "sender_pk must be 32 bytes")
+        | Ok sender_pk ->
+          match decode_b64url sig_b64 with
+          | Error _ -> Error (err_bad_request, "sig not base64url-nopad")
+          | Ok sig_ when String.length sig_ <> 64 ->
+            Error (relay_err_signature_invalid, "sig must be 64 bytes")
+          | Ok sig_ ->
+            match decode_b64url ct_b64 with
+            | Error _ -> Error (err_bad_request, "ct not base64url-nopad")
+            | Ok ct_bytes ->
+              (* v1 enc=none: ct must be UTF-8 of the content field. *)
+              if ct_bytes <> content then
+                Error (relay_err_signature_invalid,
+                  "ct does not match content (enc=none)")
+              else
+                match parse_rfc3339_utc ts with
+                | None -> Error (err_bad_request, "ts must be RFC3339 UTC")
+                | Some ts_client ->
+                  let now = Unix.gettimeofday () in
+                  let skew = ts_client -. now in
+                  if skew > register_ts_future_window
+                     || -. skew > register_ts_past_window then
+                    Error (relay_err_timestamp_out_of_window,
+                      Printf.sprintf "ts skew %.1fs outside window" skew)
+                  else
+                    match InMemoryRelay.check_register_nonce relay ~nonce ~ts:ts_client with
+                    | Error code -> Error (code, "nonce already seen within TTL")
+                    | Ok () ->
+                      (match InMemoryRelay.identity_pk_of relay ~alias:from_alias with
+                       | Some bound when bound <> sender_pk ->
+                         Error (relay_err_alias_identity_mismatch,
+                           "sender_pk does not match registered binding")
+                       | _ ->
+                         let ct_hash = body_sha256_b64 ct_bytes in
+                         let blob =
+                           Relay_identity.canonical_msg ~ctx:room_send_sign_ctx
+                             [ room_id; from_alias; sender_pk_b64; enc;
+                               ct_hash; ts; nonce ]
+                         in
+                         if Relay_identity.verify ~pk:sender_pk ~msg:blob ~sig_ then
+                           Ok ()
+                         else
+                           Error (relay_err_signature_invalid,
+                             "Ed25519 envelope signature does not verify"))
+
+  let handle_send_room relay body =
     let from_alias = get_string body "from_alias" in
     let room_id = get_string body "room_id" in
     let content = get_string body "content" in
     if from_alias = "" || room_id = "" || content = "" then
       respond_bad_request (json_error_str err_bad_request "from_alias, room_id, and content are required")
     else
-      let message_id = get_opt_string body "message_id" in
-      match InMemoryRelay.send_room relay ~from_alias ~room_id ~content ~message_id with
-      | `Ok (ts, delivered, skipped) -> respond_ok (json_of_send_room_result (ts, delivered, skipped))
+      match verify_room_send_envelope relay ~from_alias ~room_id ~content body with
+      | Error (code, msg) ->
+        if code = err_bad_request
+           || code = relay_err_missing_proof_field
+           || code = relay_err_unsupported_enc then
+          respond_bad_request (json_error_str code msg)
+        else
+          respond_unauthorized (json_error_str code msg)
+      | Ok () ->
+        let message_id = get_opt_string body "message_id" in
+        match InMemoryRelay.send_room relay ~from_alias ~room_id ~content ~message_id with
+        | `Ok (ts, delivered, skipped) -> respond_ok (json_of_send_room_result (ts, delivered, skipped))
 
   let handle_room_history relay body =
     let room_id = get_string body "room_id" in

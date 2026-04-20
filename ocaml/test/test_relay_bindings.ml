@@ -205,6 +205,36 @@ let test_room_op_constants () =
   Alcotest.(check string) "join ctx" "c2c/v1/room-join" room_join_sign_ctx;
   Alcotest.(check string) "leave ctx" "c2c/v1/room-leave" room_leave_sign_ctx
 
+(* --- L4 slice 2: signed send_room envelope --- *)
+
+let test_room_send_blob_roundtrips () =
+  let id = Relay_identity.generate () in
+  let pk_b64 = b64url_nopad id.public_key in
+  let ct = "hello room" in
+  let ct_hash = body_sha256_b64 ct in
+  let ts = "2026-04-21T03:00:00Z" in
+  let nonce = "sn-1" in
+  let blob = Relay_identity.canonical_msg ~ctx:room_send_sign_ctx
+    [ "lounge"; "alice"; pk_b64; "none"; ct_hash; ts; nonce ] in
+  let sig_ = Relay_identity.sign id blob in
+  Alcotest.(check bool) "send envelope sig verifies" true
+    (Relay_identity.verify ~pk:id.public_key ~msg:blob ~sig_);
+  (* Tampered ct hash: signature must fail. *)
+  let tampered = Relay_identity.canonical_msg ~ctx:room_send_sign_ctx
+    [ "lounge"; "alice"; pk_b64; "none"; body_sha256_b64 "different"; ts; nonce ] in
+  Alcotest.(check bool) "ct tampering rejected" false
+    (Relay_identity.verify ~pk:id.public_key ~msg:tampered ~sig_)
+
+let test_room_send_ctx_distinct () =
+  Alcotest.(check string) "send ctx" "c2c/v1/room-send" room_send_sign_ctx;
+  Alcotest.(check bool) "distinct from join/leave" true
+    (room_send_sign_ctx <> room_join_sign_ctx
+     && room_send_sign_ctx <> room_leave_sign_ctx)
+
+let test_unsupported_enc_code () =
+  Alcotest.(check string) "unsupported_enc code"
+    "unsupported_enc" relay_err_unsupported_enc
+
 let tests = [
   "register_without_pk_legacy",    `Quick, test_register_without_pk_legacy;
   "first_bind_stores_pk",          `Quick, test_first_bind_stores_pk;
@@ -223,6 +253,9 @@ let tests = [
   "room_join_signed_ok",           `Quick, test_room_join_signed_ok;
   "room_leave_ctx_distinct",       `Quick, test_room_leave_ctx_distinct;
   "room_op_constants",             `Quick, test_room_op_constants;
+  "room_send_blob_roundtrips",     `Quick, test_room_send_blob_roundtrips;
+  "room_send_ctx_distinct",        `Quick, test_room_send_ctx_distinct;
+  "unsupported_enc_code",          `Quick, test_unsupported_enc_code;
 ]
 
 let () =
