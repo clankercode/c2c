@@ -715,7 +715,7 @@ end = struct
 
   (* Error codes *)
   let err_bad_request = "bad_request"
-  let err_not_found = "not_not_found"
+  let err_not_found = "not_found"
   let err_internal_error = "internal_error"
 
   (* --- JSON helpers --- *)

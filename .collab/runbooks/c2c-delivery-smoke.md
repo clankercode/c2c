@@ -253,114 +253,152 @@ identity registration, cross-host DM, cross-host room fan-out, and
 signed-payload tamper detection. Covers the v1 ship criteria from
 `docs/c2c-research/relay-internet-build-plan.md §5`.
 
-Prereqs:
-- Relay reachable at an HTTPS URL (today: `https://relay.c2c.im`).
-- Two distinct `identity.json` files — one per host or one per temp
-  `HOME=$(mktemp -d)` to simulate a second peer locally.
-- `c2c` binary fresh (see §0).
+**Prereqs:**
+- Relay reachable at `https://relay.c2c.im` (run §8.0 first).
+- Two distinct identities — use `HOME=$(mktemp -d)` to simulate a
+  second peer locally if only one host is available.
+- `c2c` binary is current (`c2c --version` shows commit ≥ `e49c996`).
+- `C2C_RELAY_URL=https://relay.c2c.im` set in shell (saves `--relay-url`
+  typing throughout).
 
-### §8.1 TLS handshake + `/health`
+### §8.0 Prereq: relay reachable (run this first)
 
 ```bash
-# Public relay responds to health without auth.
 curl -fsS https://relay.c2c.im/health | jq .
-# Expect: {"ok":true, "relay_name":"...", "version":"..."}
-# If relay_name is missing, the L4-addressing touchpoint hasn't shipped yet.
-
-# Native OCaml client also speaks HTTPS.
-c2c relay status --relay-url https://relay.c2c.im --json | jq .
+# Expect: {"ok":true}
+# If this returns 404 or times out, STOP — see finding:
+#   .collab/findings/2026-04-21T02-04-00Z-planner1-deployed-relay-stale-binary.md
 ```
 
-Fail modes: cert chain untrusted → check `c2c relay status` uses the
-system CA bundle (L2/3, commit `e395758`); self-signed operator →
-export `C2C_RELAY_CA_BUNDLE=/path/to/ca.pem`.
-
-### §8.2 Identity registration (Ed25519, L3)
+### §8.1 TLS handshake + status
 
 ```bash
-# Fresh identity for this host.
-c2c relay identity init                     # writes ~/.config/c2c/identity.json (0600)
-c2c relay identity fingerprint              # SHA256:<b64url>...
-# Register the binding on the public relay.
-c2c relay register --relay-url https://relay.c2c.im --alias "smoke-$(hostname)"
-# Second register with same alias + different key MUST fail with
-#   alias_identity_mismatch (L3/4 first-bind-wins)
-# Rotate via: c2c relay identity rotate  (L3/6)
+export C2C_RELAY_URL=https://relay.c2c.im
+
+# Native OCaml client speaks HTTPS.
+c2c relay status
+# Expect: {"ok":true}
 ```
 
-### §8.3 Cross-host DM
+Fail mode: cert chain untrusted → export `C2C_RELAY_CA_BUNDLE=/path/to/ca.pem`
+(L2/5). Self-signed operator relays only; relay.c2c.im uses a public CA.
+
+### §8.2 Identity init + registration (Ed25519, L3)
+
+On **host A** (or `HOME=$(mktemp -d)` subshell A):
+```bash
+c2c relay identity init          # writes ~/.config/c2c/identity.json (0600)
+c2c relay identity fingerprint   # prints SHA256:<b64url>
+
+# Register the identity binding on the public relay.
+c2c relay register --alias smoke-A
+# Expect: {"ok":true, ...}
+
+# First-bind-wins: second register with a different key MUST fail.
+HOME_B=$(mktemp -d)
+HOME=$HOME_B c2c relay identity init
+HOME=$HOME_B c2c relay register --alias smoke-A
+# Expect: {"ok":false, "error_code":"alias_identity_mismatch"}
+```
+
+### §8.3 Cross-host DM (L3)
 
 On **host A**:
 ```bash
-c2c relay register --relay-url https://relay.c2c.im --alias smoke-A
-c2c relay send smoke-B "hello from A $(date -Is)"
+c2c relay register --alias smoke-A   # idempotent if already registered
+c2c relay dm send smoke-B "hello from A $(date -Is)"
+# Expect: {"ok":true}
+```
+
+On **host B** (or `HOME=$HOME_B` subshell):
+```bash
+c2c relay register --alias smoke-B
+c2c relay dm poll --alias smoke-B
+# Expect: message from smoke-A with content verbatim.
+```
+
+Fail modes:
+- 401/unauthorized → identity not registered or clock skew > window.
+- Message not delivered → check both sides used the same relay URL.
+  (`@repo` aliases are local-only; cross-host requires `alias@relay.c2c.im`
+  naming — see `relay-rooms-spec.md §10a`.)
+
+### §8.4 Cross-host room fan-out (L4)
+
+On **host A**:
+```bash
+# Join creates the room on first use (no explicit 'create' needed).
+c2c relay rooms --alias smoke-A --room swarm-internet-smoke join
+# Expect: {"ok":true}
 ```
 
 On **host B**:
 ```bash
-c2c relay register --relay-url https://relay.c2c.im --alias smoke-B
-c2c relay poll --relay-url https://relay.c2c.im | jq .
-# Expect: message with from_alias=smoke-A, content verbatim.
-```
-
-Fail modes: 401/unauthorized → identity not registered or `Authorization:
-Ed25519` header malformed (L3/3 returns plain 401, not Bearer fallback).
-Message missing → check relay `/health` is the same URL both sides used
-(addressing: `@repo` is NOT a valid cross-host relay name, see
-`relay-rooms-spec.md §10a`).
-
-### §8.4 Cross-host room fan-out
-
-On **host A**:
-```bash
-# Room create + join with signed envelope (L4/1 at 1c694fb).
-c2c relay rooms create --relay-url https://relay.c2c.im swarm-internet-smoke
-c2c relay rooms join   --relay-url https://relay.c2c.im --room swarm-internet-smoke --alias smoke-A
-c2c relay rooms invite --relay-url https://relay.c2c.im --room swarm-internet-smoke smoke-B    # L4/5
-```
-
-On **host B**:
-```bash
-c2c relay rooms join  --relay-url https://relay.c2c.im --room swarm-internet-smoke --alias smoke-B
-c2c relay rooms send  --relay-url https://relay.c2c.im --room swarm-internet-smoke \
-                      --alias smoke-B "hello from B"
+c2c relay rooms --alias smoke-B --room swarm-internet-smoke join
+c2c relay rooms --alias smoke-B --room swarm-internet-smoke send \
+    "hello from B $(date -Is)"
+# Expect: {"ok":true, "delivered":[...]}
 ```
 
 Back on **host A**:
 ```bash
-c2c relay rooms history --relay-url https://relay.c2c.im --room swarm-internet-smoke --limit 5 | jq .
-# Expect: envelope with enc:"none", sender_pk matching smoke-B's identity fingerprint,
-# ct base64url-encoded "hello from B" (L4/2 at ce49995, L4/4 wire envelope).
+c2c relay rooms --room swarm-internet-smoke history --limit 5
+# Expect: history entry with sig_ok:true, enc:"none",
+#         sender_pk matching smoke-B's identity fingerprint,
+#         ct base64url-decoding to "hello from B ..." (L4/2, L4/3).
 ```
 
-### §8.5 Signed-payload tamper detection
+### §8.5 Signed-payload tamper detection (L4)
 
 ```bash
-# Valid signature must verify against the signer's bound identity_pk.
-# Tamper test (synthetic): hand-craft a POST to /send_room with a mutated
-# `ct` field but unchanged `sig` — must return `bad_signature`.
+# Mutate the ct field while keeping the original sig — must reject.
+# Replace <sig> and <pk> with values from a prior rooms history call.
 curl -fsS -X POST https://relay.c2c.im/send_room \
-     -H "Authorization: Ed25519 alias=smoke-A,ts=$(date +%s),nonce=$(openssl rand -hex 16),sig=AAAA" \
      -H "Content-Type: application/json" \
-     -d '{"room_id":"swarm-internet-smoke","ct":"dGFtcGVyZWQ","enc":"none","sender_pk":"<valid>","sig":"<valid>","ts":"...","nonce":"..."}'
-# Expect: 401 with {"error":"bad_signature"} (L4/2 sha256(ct) bind).
-# Also: enc:"megolm-v1" in v1 must return {"error":"unsupported_enc"}.
+     -d '{
+       "room_id":"swarm-internet-smoke",
+       "ct":"dGFtcGVyZWQ",
+       "enc":"none",
+       "sender_pk":"<valid-pk-b64url>",
+       "sig":"<valid-sig-of-original-ct>",
+       "ts":"<original-ts>",
+       "nonce":"<original-nonce>"
+     }'
+# Expect: {"ok":false, "error_code":"bad_signature"}
+
+# enc:"megolm-v1" is not supported in v1.
+curl -fsS -X POST https://relay.c2c.im/send_room \
+     -H "Content-Type: application/json" \
+     -d '{"room_id":"swarm-internet-smoke","ct":"AA","enc":"megolm-v1","sender_pk":"AA","sig":"AA","ts":"2026-01-01T00:00:00Z","nonce":"AA"}'
+# Expect: {"ok":false, "error_code":"unsupported_enc"}
 ```
 
 ### §8.6 Teardown
 
 ```bash
-# Leave rooms and let the relay GC sweep dead registrations.
-c2c relay rooms leave --relay-url https://relay.c2c.im --room swarm-internet-smoke --alias smoke-A
-c2c relay rooms leave --relay-url https://relay.c2c.im --room swarm-internet-smoke --alias smoke-B
-# identity.json stays — rotate only if you leaked it.
+c2c relay rooms --alias smoke-A --room swarm-internet-smoke leave
+c2c relay rooms --alias smoke-B --room swarm-internet-smoke leave
+# Expect: {"ok":true} on each.
+# identity.json survives — rotate only if compromised.
 ```
 
 ### §8 pass gate
 
-All six sub-steps must pass without manual retry. If §8.5 returns ok
-instead of `bad_signature`, stop and file a finding — that means the
-signed envelope is not being verified, which is a v1 ship blocker.
+All sub-steps §8.0–§8.6 must pass without manual retry.
+
+**Ship blockers** (stop and file a finding if any of these fail):
+- §8.5 returns `ok:true` instead of `bad_signature` → signed envelope
+  not being verified server-side.
+- §8.4 history shows `sig_ok:false` → client signing broken.
+- §8.3 message never delivered → routing or auth regression.
+
+**Known gaps at time of writing (2026-04-21):**
+- Deployed relay binary is pre-L4 (see finding `72385b2`) — §8.4/§8.5
+  will fail until a fresh Railway deploy from current master is pushed.
+- L4/5 invite endpoints (`/set_room_visibility`, `/room_invite`) are
+  not yet deployed — §8 does not test them.
+- `c2c relay connect` (Python, legacy) is broken — do not use; see
+  finding `4bb6b23`.
 
 ---
 
