@@ -4,6 +4,9 @@ type registration =
   ; pid : int option
   ; pid_start_time : int option
   ; registered_at : float option
+  ; canonical_alias : string option
+  (** Fully-qualified form: "<alias>#<repo>@<host>". None for registrations
+      created before this field was added (Phase 0 compatibility). *)
   }
 type message = { from_alias : string; to_alias : string; content : string }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
@@ -184,7 +187,7 @@ module Broker = struct
       cleanup_tmp ();
       raise e
 
-  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at } =
+  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias } =
     let base =
       [ ("session_id", `String session_id); ("alias", `String alias) ]
     in
@@ -198,10 +201,15 @@ module Broker = struct
       | Some n -> with_pid @ [ ("pid_start_time", `Int n) ]
       | None -> with_pid
     in
-    let fields =
+    let with_ra =
       match registered_at with
       | Some ts -> with_pst @ [ ("registered_at", `Float ts) ]
       | None -> with_pst
+    in
+    let fields =
+      match canonical_alias with
+      | Some ca -> with_ra @ [ ("canonical_alias", `String ca) ]
+      | None -> with_ra
     in
     `Assoc fields
 
@@ -226,11 +234,16 @@ module Broker = struct
 
   let registration_of_json json =
     let open Yojson.Safe.Util in
+    let str_opt name j =
+      try match j |> member name with `String s -> Some s | _ -> None
+      with _ -> None
+    in
     { session_id = json |> member "session_id" |> to_string
     ; alias = json |> member "alias" |> to_string
     ; pid = int_opt_member "pid" json
     ; pid_start_time = int_opt_member "pid_start_time" json
     ; registered_at = float_opt_member "registered_at" json
+    ; canonical_alias = str_opt "canonical_alias" json
     }
 
   let message_to_json { from_alias; to_alias; content } =
@@ -396,6 +409,69 @@ module Broker = struct
 
   let reserved_system_aliases = ["c2c"; "c2c-system"]
 
+  (* --- canonical alias helpers ----------------------------------------------- *)
+
+  (* Derive repo slug from broker_root path:
+     broker_root = .../repo/.git/c2c/mcp → "repo" *)
+  let repo_slug_of_broker_root broker_root =
+    try
+      let git_dir = Filename.dirname (Filename.dirname broker_root) in
+      let repo_root = Filename.dirname git_dir in
+      let slug = Filename.basename repo_root in
+      if slug = "" || slug = "." || slug = "/" then "unknown" else slug
+    with _ -> "unknown"
+
+  let short_hostname () =
+    try
+      let h = Unix.gethostname () in
+      match String.split_on_char '.' h with
+      | s :: _ when s <> "" -> s
+      | _ -> h
+    with _ -> "unknown"
+
+  let compute_canonical_alias ~alias ~broker_root =
+    Printf.sprintf "%s#%s@%s" alias
+      (repo_slug_of_broker_root broker_root)
+      (short_hostname ())
+
+  (* Primes for alias disambiguation *)
+  let small_primes = [| 2; 3; 5; 7; 11; 13; 17; 19; 23; 29; 31; 37; 41; 43; 47 |]
+
+  let next_prime_after n =
+    let is_prime p =
+      if p < 2 then false
+      else
+        let rec check d = d * d > p || (p mod d <> 0 && check (d + 1)) in
+        check 2
+    in
+    let rec find p = if is_prime p then p else find (p + 1) in
+    find (n + 1)
+
+  (* Suggest a free alias by appending the next prime suffix.
+     Runs under the registry lock (regs is already loaded). *)
+  let suggest_alias_prime regs ~base_alias =
+    let alive = List.filter_map (fun reg ->
+      if registration_is_alive reg then Some reg.alias else None) regs in
+    if not (List.mem base_alias alive) then base_alias
+    else begin
+      let n = Array.length small_primes in
+      let rec try_idx i =
+        let p =
+          if i < n then small_primes.(i)
+          else next_prime_after small_primes.(n - 1)
+        in
+        let candidate = Printf.sprintf "%s-%d" base_alias p in
+        if not (List.mem candidate alive) then candidate
+        else try_idx (i + 1)
+      in
+      try_idx 0
+    end
+
+  (* Public wrapper: reads registry and suggests disambiguated alias. *)
+  let suggest_alias_for_alias t ~alias =
+    with_registry_lock t (fun () ->
+      suggest_alias_prime (load_registrations t) ~base_alias:alias)
+
   let register t ~session_id ~alias ~pid ~pid_start_time =
     if List.mem alias reserved_system_aliases then
       invalid_arg (Printf.sprintf
@@ -418,7 +494,8 @@ module Broker = struct
         (* Same-session re-registration (alias changed or pid/registered_at
            refresh): update in-place by replacing the old entry in [rest]. *)
         let new_reg = { session_id; alias; pid; pid_start_time
-                      ; registered_at = Some (Unix.gettimeofday ()) }
+                      ; registered_at = Some (Unix.gettimeofday ())
+                      ; canonical_alias = Some (compute_canonical_alias ~alias ~broker_root:(root t)) }
         in
         let kept =
           match
@@ -1991,17 +2068,17 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       in
       (match alias_hijack_conflict with
        | Some conflict ->
+           let suggested = Broker.suggest_alias_for_alias broker ~alias in
            Lwt.return
              (tool_result
                 ~content:
                   (Printf.sprintf
                      "register rejected: alias '%s' is currently held by \
-                      an alive session '%s'. Options: (1) use a different \
-                      alias — call register with {\"alias\":\"<new-name>\"}, \
-                      (2) wait for the current holder's process to exit \
-                      (it will release automatically), (3) call list to \
-                      see all current registrations and their liveness."
-                     alias conflict.session_id)
+                      an alive session '%s'. Suggested free alias: '%s'. \
+                      Options: (1) register with {\"alias\":\"%s\"}, \
+                      (2) wait for the current holder's process to exit, \
+                      (3) call list to see all current registrations."
+                     alias conflict.session_id suggested suggested)
                 ~is_error:true)
        | None ->
            Broker.register broker ~session_id ~alias ~pid ~pid_start_time;
@@ -2069,10 +2146,15 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                  | Broker.Unknown -> `Null
                in
                let with_alive = with_pid @ [ ("alive", alive_field) ] in
-               let fields =
+               let with_ra =
                  match registered_at with
                  | Some ts -> with_alive @ [ ("registered_at", `Float ts) ]
                  | None -> with_alive
+               in
+               let fields =
+                 match reg.canonical_alias with
+                 | Some ca -> with_ra @ [ ("canonical_alias", `String ca) ]
+                 | None -> with_ra
                in
                `Assoc fields)
              registrations)
@@ -2165,15 +2247,19 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                 Lwt.return (tool_result ~content:result_json ~is_error:false)))
   | "whoami" ->
       let session_id = resolve_session_id arguments in
-      let alias =
+      let reg_opt =
         Broker.list_registrations broker
         |> List.find_opt (fun reg -> reg.session_id = session_id)
-        |> Option.map (fun reg -> reg.alias)
       in
       let content =
-        match alias with
-        | Some found -> found
+        match reg_opt with
         | None -> ""
+        | Some reg ->
+            (match reg.canonical_alias with
+             | Some ca ->
+                 `Assoc [ ("alias", `String reg.alias); ("canonical_alias", `String ca) ]
+                 |> Yojson.Safe.to_string
+             | None -> reg.alias)
       in
       Lwt.return (tool_result ~content ~is_error:false)
   | "poll_inbox" ->

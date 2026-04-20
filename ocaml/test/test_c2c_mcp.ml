@@ -1326,8 +1326,18 @@ let test_tools_call_whoami_uses_current_session_id_when_omitted () =
           | None -> fail "expected tools/call response"
           | Some json ->
               let open Yojson.Safe.Util in
-              check string "whoami alias" "storm-live"
-                (json |> member "result" |> member "content" |> index 0 |> member "text" |> to_string)))
+              let raw = json |> member "result" |> member "content" |> index 0 |> member "text" |> to_string in
+              (* whoami now returns JSON when canonical_alias is present *)
+              let alias_val =
+                (try match Yojson.Safe.from_string raw with
+                  | `Assoc fields ->
+                      (match List.assoc_opt "alias" fields with
+                       | Some (`String s) -> s
+                       | _ -> raw)
+                  | _ -> raw
+                with _ -> raw)
+              in
+              check string "whoami alias" "storm-live" alias_val))
 
 let test_tools_call_poll_inbox_drains_messages_as_tool_result () =
   with_temp_dir (fun dir ->
@@ -1685,6 +1695,7 @@ let test_start_time_mismatch_is_not_alive () =
     ; pid = Some me
     ; pid_start_time = Some bogus_start_time
     ; registered_at = None
+    ; canonical_alias = None
     }
   in
   check bool "mismatched start_time → not alive" false
@@ -1699,6 +1710,7 @@ let test_start_time_match_is_alive () =
     ; pid = Some me
     ; pid_start_time = start
     ; registered_at = None
+    ; canonical_alias = None
     }
   in
   check bool "matching start_time → alive" true
@@ -1713,6 +1725,7 @@ let test_start_time_none_falls_back_to_proc_exists () =
     ; pid = Some me
     ; pid_start_time = None
     ; registered_at = None
+    ; canonical_alias = None
     }
   in
   check bool "pid exists + no stored start_time → alive" true
