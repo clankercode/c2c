@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+"""Thin shim: delegates to c2c_cli.py (Python subcommands) or the OCaml binary."""
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+# Subcommands handled by the Python CLI
+PYTHON_SUBCOMMANDS = {
+    "broker-gc", "configure-claude-code", "configure-codex", "configure-crush",
+    "configure-kimi", "configure-opencode", "dead-letter", "deliver-inbox",
+    "health", "history", "inject", "init", "install", "list", "mcp",
+    "peek-inbox", "poker-sweep", "poll-inbox", "prune", "refresh-peer",
+    "register", "relay", "restart-me", "room", "send", "send-all",
+    "setup", "verify", "wake-peer", "whoami", "wire-daemon",
+}
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        subcmd = None
+    else:
+        subcmd = args[0]
+
+    if subcmd in PYTHON_SUBCOMMANDS:
+        cli = SCRIPT_DIR / "c2c_cli.py"
+        result = subprocess.run([sys.executable, str(cli)] + args)
+        return result.returncode
+
+    # Fall through to OCaml binary on PATH
+    result = subprocess.run(["c2c"] + args)
+    return result.returncode
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
-SCRIPT_DIR="$(dirname "$0")"
-exec c2c list "$@"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec python3 "$SCRIPT_DIR/c2c_cli.py" list "$@"
