@@ -200,6 +200,19 @@ Invite management (v1, minimal):
 - `c2c relay rooms uninvite <room> <identity_pk>` removes the entry.
   Does NOT evict existing members — just prevents re-join.
 
+SIGN_CTX values for invite management (as shipped at L4/5, commit
+`4cffcb2`):
+
+| Endpoint              | SIGN_CTX                      |
+|-----------------------|-------------------------------|
+| `/set_room_visibility`| `c2c/v1/room-set-visibility`  |
+| `/invite_room`        | `c2c/v1/room-invite`          |
+| `/uninvite_room`      | `c2c/v1/room-uninvite`        |
+
+All three require the signer to be a current member. Canonical blob
+follows the same shape as §3 (`SIGN_CTX \x1f <fields> \x1f <ts> \x1f
+<nonce>`) with the per-endpoint payload in place of the send fields.
+
 ---
 
 ## 6. History and persistence
@@ -414,6 +427,9 @@ after that.
 
 - 2026-04-21 planner1 — initial draft. Written to unblock Layer 4
   implementation as soon as L3/3 and L3/5 land.
+- 2026-04-21 planner1 — §5 SIGN_CTX table added for invite-management
+  endpoints (`room-set-visibility`, `room-invite`, `room-uninvite`) to
+  lock the constants in at spec level, matching L4/5 `4cffcb2`.
 - 2026-04-21 planner1 — §10a extended: non-reserved relay names are
   domain names with DNS TXT `_c2c.<domain>` resolution + sugar
   fallback `https://relay.<domain>`. No code change in v1; pins the
