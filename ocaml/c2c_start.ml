@@ -9,6 +9,7 @@ let ( // ) = Filename.concat
 type client_config = {
   binary : string;
   deliver_client : string;
+  needs_deliver : bool;
   needs_poker : bool;
   poker_event : string option;
   poker_from : string option;
@@ -18,22 +19,30 @@ type client_config = {
 let clients : (string, client_config) Stdlib.Hashtbl.t = Stdlib.Hashtbl.create 5
 
 let () =
+  (* claude: PostToolUse hook + MCP channel notifications handle delivery.
+     Python c2c_deliver_inbox.py is not needed and its PTY-inject path
+     adds the CAP_SYS_PTRACE preflight banner for no benefit. *)
   Stdlib.Hashtbl.add clients "claude"
-    { binary = "claude"; deliver_client = "claude"; needs_poker = false;
+    { binary = "claude"; deliver_client = "claude";
+      needs_deliver = false; needs_poker = false;
       poker_event = None; poker_from = None;
       extra_env = [] };
   Stdlib.Hashtbl.add clients "codex"
-    { binary = "codex"; deliver_client = "codex"; needs_poker = false;
+    { binary = "codex"; deliver_client = "codex";
+      needs_deliver = true; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] };
   Stdlib.Hashtbl.add clients "opencode"
-    { binary = "opencode"; deliver_client = "opencode"; needs_poker = false;
+    { binary = "opencode"; deliver_client = "opencode";
+      needs_deliver = true; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] };
   Stdlib.Hashtbl.add clients "kimi"
-    { binary = "kimi"; deliver_client = "kimi"; needs_poker = true;
+    { binary = "kimi"; deliver_client = "kimi";
+      needs_deliver = true; needs_poker = true;
       poker_event = Some "heartbeat"; poker_from = Some "kimi-poker";
       extra_env = [] };
   Stdlib.Hashtbl.add clients "crush"
-    { binary = "crush"; deliver_client = "crush"; needs_poker = false;
+    { binary = "crush"; deliver_client = "crush";
+      needs_deliver = true; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] }
 
 let supported_clients = Stdlib.Hashtbl.fold (fun k _ acc -> k :: acc) clients []
@@ -574,8 +583,9 @@ let run_outer_loop ~(name : string) ~(client : string)
                    exit 127)
             | p -> p
           in
-          (* Start deliver daemon *)
-          (if !deliver_pid = None then
+          (* Start deliver daemon (skipped for clients whose delivery is
+             handled in-tree, e.g. claude via PostToolUse hook + channel). *)
+          (if !deliver_pid = None && cfg.needs_deliver then
              match start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt:(Some pid) () with
              | Some p -> deliver_pid := Some p; write_pid (deliver_pid_path name) p
              | None -> ());

@@ -61,14 +61,21 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
 
 - **If you get stuck, ask each other!** The swarm is here to help. Send a DM or post in `swarm-lounge` — another agent may have already solved the same problem or can pair on it. You are not alone.
 - **Do not delete or reset shared files without checking.** Other agents in the swarm are likely working in parallel. Before deleting a file, resetting a commit, or discarding changes, verify it is your own work (or clearly abandoned/invalid) — not another agent's active branch, staged changes, or findings. When in doubt, ask in `swarm-lounge`.
-- Always commit, build, and install your changes. OCaml changes are NOT live until
-  the binary is rebuilt AND copied to `~/.local/bin/c2c`. The full sequence:
+- Always commit, build, and install your changes. OCaml changes are NOT live
+  until the binary is rebuilt AND copied to `~/.local/bin/c2c`. **Prefer the
+  `just` recipes** — they build + install all OCaml binaries atomically and
+  handle the "Text file busy" case on a live binary:
   ```bash
   git add <files> && git commit -m "description"
-  opam exec -- dune build -j1
-  cp _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c
+  just install-all        # or `just bi`; builds + installs CLI, mcp-server, hook
   ```
-  `dune install` does NOT reliably update the binary — always copy manually.
+  `just bii` chains `install-all` with `./restart-self`, but restart-self
+  hasn't been proven across every harness — verify it works in your context
+  before relying on it; otherwise install and restart separately.
+  `just --list` shows every available recipe (build, install, test, gc, …).
+  Fall back to the manual sequence (`opam exec -- dune build -j1 && cp
+  _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c`) only if `just` is
+  unavailable — `dune install` does NOT reliably update the binary.
   Then run `./restart-self` to pick up the new binary, and call at least one
   new tool from your own session before marking the slice done.
 - Always use subagent-driven development over inline execution.

@@ -13,6 +13,10 @@ type client_config = {
   deliver_client : string;
       (** Client identifier passed to the deliver daemon
           (e.g. "claude", "kimi"). *)
+  needs_deliver : bool;
+      (** Whether to spawn c2c_deliver_inbox.py (the Python PTY-inject daemon).
+          Off for clients whose delivery is handled in-tree (e.g. claude via
+          PostToolUse hook + MCP channel notifications). *)
   needs_poker : bool;
       (** Whether this client needs a poker sidecar. *)
   poker_event : string option;
