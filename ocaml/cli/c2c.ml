@@ -5255,6 +5255,131 @@ let inject_cmd =
 
 let inject = Cmdliner.Cmd.v (Cmdliner.Cmd.info "inject" ~doc:"Inject messages or keycodes into a live session.") inject_cmd
 
+(* --- subcommand group: wire-daemon ---------------------------------------- *)
+
+let wire_daemon_start_cmd =
+  let session_id =
+    Cmdliner.Arg.(required & opt (some string) None & info ["session-id"] ~docv:"ID"
+                    ~doc:"Session ID for the wire daemon (used as pidfile key).")
+  in
+  let alias =
+    Cmdliner.Arg.(value & opt (some string) None & info ["alias"] ~docv:"ALIAS"
+                    ~doc:"Alias to register (defaults to session-id).")
+  in
+  let command =
+    Cmdliner.Arg.(value & opt string "kimi" & info ["command"] ~docv:"CMD"
+                    ~doc:"kimi binary to invoke (default: kimi).")
+  in
+  let work_dir =
+    Cmdliner.Arg.(value & opt string "." & info ["work-dir"] ~docv:"DIR"
+                    ~doc:"Working directory for kimi --wire (default: .).")
+  in
+  let interval =
+    Cmdliner.Arg.(value & opt float 5.0 & info ["interval"] ~docv:"SEC"
+                    ~doc:"Seconds between inbox polls (default: 5.0).")
+  in
+  let+ json = json_flag
+  and+ session_id = session_id
+  and+ alias_opt = alias
+  and+ command = command
+  and+ work_dir = work_dir
+  and+ interval = interval in
+  let alias = Option.value alias_opt ~default:session_id in
+  let broker_root = resolve_broker_root () in
+  let (st, action) =
+    C2c_wire_daemon.start_daemon
+      ~session_id ~alias ~broker_root ~command ~work_dir ~interval
+  in
+  (match action with
+   | `Already_running ->
+       if json then
+         print_json (`Assoc [ ("ok", `Bool true); ("already_running", `Bool true);
+                               ("status", C2c_wire_daemon.status_to_json st) ])
+       else
+         Printf.printf "wire-daemon already running for %s (pid %s)\n"
+           session_id (Option.fold ~none:"?" ~some:string_of_int st.pid)
+   | `Started ->
+       if json then
+         print_json (`Assoc [ ("ok", `Bool true); ("started", `Bool true);
+                               ("status", C2c_wire_daemon.status_to_json st) ])
+       else begin
+         if st.running then
+           Printf.printf "wire-daemon started for %s (pid %s)\n"
+             session_id (Option.fold ~none:"?" ~some:string_of_int st.pid)
+         else
+           Printf.printf "wire-daemon fork failed for %s\n" session_id
+       end)
+
+let wire_daemon_stop_cmd =
+  let session_id =
+    Cmdliner.Arg.(required & opt (some string) None & info ["session-id"] ~docv:"ID"
+                    ~doc:"Session ID of the daemon to stop.")
+  in
+  let+ json = json_flag
+  and+ session_id = session_id in
+  let (st, action) = C2c_wire_daemon.stop_daemon session_id in
+  (match action with
+   | `Not_running ->
+       if json then
+         print_json (`Assoc [ ("ok", `Bool true); ("not_running", `Bool true) ])
+       else
+         Printf.printf "wire-daemon not running for %s\n" session_id
+   | `Stopped ->
+       if json then
+         print_json (`Assoc [ ("ok", `Bool true); ("stopped", `Bool true);
+                               ("status", C2c_wire_daemon.status_to_json st) ])
+       else
+         Printf.printf "wire-daemon stopped for %s\n" session_id)
+
+let wire_daemon_status_cmd =
+  let session_id =
+    Cmdliner.Arg.(required & opt (some string) None & info ["session-id"] ~docv:"ID"
+                    ~doc:"Session ID to query.")
+  in
+  let+ json = json_flag
+  and+ session_id = session_id in
+  let st = C2c_wire_daemon.get_status session_id in
+  if json then
+    print_json (C2c_wire_daemon.status_to_json st)
+  else begin
+    Printf.printf "session_id: %s\n" st.session_id;
+    Printf.printf "running:    %s\n" (string_of_bool st.running);
+    (match st.pid with
+     | Some p -> Printf.printf "pid:        %d\n" p
+     | None   -> Printf.printf "pid:        (none)\n");
+    Printf.printf "pidfile:    %s\n" st.pidfile;
+    (match st.logfile with
+     | Some l -> Printf.printf "log:        %s\n" l
+     | None   -> ())
+  end
+
+let wire_daemon_list_cmd =
+  let+ json = json_flag in
+  let daemons = C2c_wire_daemon.list_daemons () in
+  if json then
+    print_json (`List (List.map C2c_wire_daemon.status_to_json daemons))
+  else begin
+    if daemons = [] then
+      Printf.printf "no wire daemons found\n"
+    else
+      List.iter (fun (st : C2c_wire_daemon.daemon_status) ->
+          let pid_str = Option.fold ~none:"(none)" ~some:string_of_int st.pid in
+          Printf.printf "%s  pid=%-8s  %s\n"
+            st.session_id pid_str
+            (if st.running then "running" else "stopped"))
+        daemons
+  end
+
+let wire_daemon_group =
+  Cmdliner.Cmd.group
+    (Cmdliner.Cmd.info "wire-daemon"
+       ~doc:"Manage Kimi Wire bridge daemon lifecycle (start/stop/status/list).")
+    [ Cmdliner.Cmd.v (Cmdliner.Cmd.info "start"  ~doc:"Start a wire-daemon for a session.") wire_daemon_start_cmd
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "stop"   ~doc:"Stop a running wire-daemon.") wire_daemon_stop_cmd
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "status" ~doc:"Show status of a wire-daemon.") wire_daemon_status_cmd
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "list"   ~doc:"List all wire-daemon state files.") wire_daemon_list_cmd
+    ]
+
 (* --- subcommand: screen ---------------------------------------------------- *)
 
 (** Resolve a pts number from a Claude session identifier using pure OCaml.
@@ -5523,4 +5648,4 @@ let () =
           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
           ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
           ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-          ; serve; mcp; start; stop; restart; restart_self; instances; rooms_group; room_group; relay_group; monitor; hook; inject; screen; help ]))
+          ; serve; mcp; start; stop; restart; restart_self; instances; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; screen; help ]))

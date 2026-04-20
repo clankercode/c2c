@@ -22,3 +22,8 @@
  (name test_relay_auth_matrix)
  (modules test_relay_auth_matrix)
  (libraries c2c_mcp alcotest str))
+
+(test
+ (name test_wire_bridge)
+ (modules test_wire_bridge)
+ (libraries c2c_mcp alcotest unix))

@@ -1,7 +1,7 @@
 (library
  (name c2c_mcp)
  (wrapped false)
- (modules c2c_mcp C2c_start Relay Relay_identity Relay_signed_ops)
+ (modules c2c_mcp C2c_start Relay Relay_identity Relay_signed_ops C2c_wire_bridge C2c_wire_daemon)
  (libraries yojson logs lwt.unix cohttp-lwt-unix uuidm
             base64 digestif.ocaml mirage-crypto-ec mirage-crypto-rng.unix
             ca-certs conduit-lwt-unix x509 ptime.clock.os))
