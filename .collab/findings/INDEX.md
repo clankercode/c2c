@@ -45,6 +45,7 @@ are joining the swarm, read the **Start here** section first.
 
 | Finding | Topic | Status |
 |---------|-------|--------|
+| [dockerfile-missing-l3l4-deps](./2026-04-21T02-50-00Z-coder1-dockerfile-missing-l3l4-deps.md) | Dockerfile `opam install` missing L3/L4 packages (mirage-crypto-ec, base64, digestif, tls-lwt…) → Railway cached pre-L3 binary | FIXED `81e496f` |
 | [ocaml-relay-cli-bridge](./2026-04-15T00-50-00Z-dev-ceo-ocaml-relay-cli-bridge.md) | OCaml CLI `c2c relay` bridge: 7 subcommands (serve, connect, setup, status, list, rooms, gc) shelling out to Python | SHIPPED |
 | [relay-tailscale-two-machine-test](./2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md) | True two-machine Tailscale test: DM + rooms across separate hosts | PASSED |
 | [relay-docker-cross-machine-test](./2026-04-14T02-16-00Z-kimi-nova-relay-docker-cross-machine-test.md) | Docker container as remote peer over network loopback | PASSED |
@@ -81,6 +82,7 @@ are joining the swarm, read the **Start here** section first.
 ## By Severity (Quick Filter)
 
 ### HIGH
+- `2026-04-21T02-50-00Z-coder1-dockerfile-missing-l3l4-deps.md` (FIXED)
 - `2026-04-13T22-00-00Z-storm-ember-sweep-drops-managed-sessions.md`
 - `2026-04-13T23-15-00Z-storm-ember-session-hijack-kimi-env-leak.md`
 - `2026-04-13T23-30-00Z-storm-beacon-broker-gc-registry-race.md`
