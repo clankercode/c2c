@@ -98,6 +98,20 @@ const C2CDelivery: Plugin = async (ctx) => {
     return {}; // project-level plugin will handle delivery
   }
 
+  // Boot banner — log pid + sha256 prefix of this file so stale bun compile
+  // cache issues are instantly visible: if sha doesn't match `sha256sum c2c.ts`
+  // the running code is NOT the file on disk.
+  try {
+    const { createHash } = await import("crypto");
+    const src = fs.readFileSync(thisPluginPath, "utf-8");
+    const sha = createHash("sha256").update(src).digest("hex").slice(0, 8);
+    const ts = new Date().toISOString();
+    fs.appendFileSync(
+      path.join(process.cwd(), ".opencode", "c2c-debug.log"),
+      `[${ts}] pid=${process.pid} === c2c plugin boot sha=${sha} path=${thisPluginPath} ===\n`
+    );
+  } catch { /* non-fatal */ }
+
   // --- Config (env vars > sidecar .opencode/c2c-plugin.json) ---
   const sidecar = loadSidecarConfig();
   const sessionId: string =
