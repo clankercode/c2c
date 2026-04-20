@@ -51,6 +51,8 @@ Legend: ✅ shipped · 🟡 in progress · ⏳ blocked · ⚪ open · ⏸ deferr
 | 5. Native OCaml `c2c relay rooms list` + `gc --once` | ✅ | coder2-expert | `6a1f8cb`   |
 | 6. Native OCaml `c2c relay rooms history --room --limit` | ✅ | coder2-expert | `e4ff0fe`   |
 | 7. Regression test suite for native relay subcommands | ✅ | coder2-expert | `555046f`   |
+| 8. Native OCaml `c2c relay rooms join/leave --room --alias` | ✅ | coder2-expert | `4de4f63`   |
+| 9. Native OCaml `c2c relay rooms send` — all rooms verbs native | ✅ | coder2-expert | `7bfd7ac`   |
 
 ### Layer 2 — TLS + operator bearer token
 
