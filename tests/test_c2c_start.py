@@ -324,16 +324,29 @@ class C2CStartOuterLoopBehaviorTests(unittest.TestCase):
     """Tests for run_outer_loop edge cases: SIGINT and backoff."""
 
     def setUp(self):
-        import c2c_start
+        import c2c_start, signal
         self.c2c_start = c2c_start
         self.temp_dir = tempfile.TemporaryDirectory()
         self.instances_dir = Path(self.temp_dir.name) / "instances"
         self._orig_instances_dir = c2c_start.INSTANCES_DIR
         c2c_start.INSTANCES_DIR = self.instances_dir
+        self._orig_sigchld = signal.getsignal(signal.SIGCHLD)
+        # Prevent _preflight_pidfd_check from calling subprocess.run (uses real Popen)
+        self._preflight_patcher = mock.patch.object(
+            c2c_start, "_preflight_pidfd_check", return_value=(True, None)
+        )
+        self._preflight_patcher.start()
+        # Prevent signal.signal calls from leaking SIGCHLD=SIG_IGN into the process
+        self._signal_patcher = mock.patch("signal.signal")
+        self._signal_patcher.start()
 
     def tearDown(self):
+        import signal
+        self._signal_patcher.stop()
+        self._preflight_patcher.stop()
         self.c2c_start.INSTANCES_DIR = self._orig_instances_dir
         self.temp_dir.cleanup()
+        signal.signal(signal.SIGCHLD, self._orig_sigchld)
 
     def test_run_outer_loop_prints_resume_command_on_exit(self):
         """After child exits, the outer loop prints a resume command."""
