@@ -31,6 +31,7 @@ Python is being displaced in favor of OCaml as each layer lands.
 | `e2e-encrypted-relay-architecture.md`        | Crypto architecture research (X3DH, Double Ratchet…)  |
 | `relay-tls-setup.md`                         | Operator recipe for certs (LE, self-signed, proxy)    |
 | `relay-peer-identity-spec.md`                | Layer 3 concrete spec — Ed25519 format, handshake     |
+| `relay-railway-deploy.md`                    | Operator recipe for Railway deployment                |
 | `RELAY.md` (this file)                       | Dashboard / status index                              |
 
 ---
@@ -96,7 +97,7 @@ sender_pk}`) so this doesn't require another wire break.
 
 | Task                                         | Status | Owner  | Notes                        |
 |----------------------------------------------|--------|--------|------------------------------|
-| Task #6 — Railway deploy demo                | 🟡    | coder1 | Offered, pending ACK         |
+| Task #6 — Railway deploy demo                | ✅    | coder1 | `a8266bd` — `docker build` + `railway up` unverified by coder1 (no daemon in sandbox); operator smoke still pending |
 
 ---
 
