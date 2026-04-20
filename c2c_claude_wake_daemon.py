@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# DEPRECATED — PTY injection path. See docs/known-issues.md for current delivery paths.
 """Auto-delivery daemon: watches a Claude Code session inbox and PTY-wakes it.
 
 When new broker-native DMs arrive in the session inbox, this daemon injects

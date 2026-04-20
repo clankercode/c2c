@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# DEPRECATED — PTY injection path. See docs/known-issues.md for current delivery paths.
 """Auto-delivery daemon: watches a Crush session inbox and PTY-wakes the TUI.
 
 Same pattern as c2c_opencode_wake_daemon.py.  Crush (by Charmbracelet) is a

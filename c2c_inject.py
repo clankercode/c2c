@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# DEPRECATED — PTY injection path. See docs/known-issues.md for current delivery paths.
 """Inject messages into live Claude/Codex sessions via PTY or history.jsonl.
 
 For terminal-emulator sessions (Ghostty, etc.), uses bracketed paste via pty_inject.

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# DEPRECATED — PTY injection path. See docs/known-issues.md for current delivery paths.
 """Auto-delivery daemon: watches opencode-local inbox and PTY-wakes the TUI.
 
 Unlike c2c_deliver_inbox.py (which injects message CONTENT into the PTY,
