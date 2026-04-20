@@ -10,6 +10,7 @@
  *   C2C_MCP_BROKER_ROOT     — broker root dir (default: auto-detect)
  *   C2C_PLUGIN_POLL_INTERVAL_MS — poll interval in ms (default: 2000)
  *   C2C_PLUGIN_DELIVER_ON_IDLE  — "1" = only deliver on session.idle (default: "0")
+ *   C2C_PERMISSION_SUPERVISOR   — alias to DM on permission.updated (default: "coordinator1")
  *
  * Delivery strategy:
  *   - Primary: poll on session.idle events (agent is between tool calls)
@@ -57,10 +58,15 @@ const C2CDelivery: Plugin = async (ctx) => {
     process.env.C2C_OPENCODE_SESSION_ID || sidecar.opencode_session_id || "";
   const pollIntervalMs: number = parseInt(process.env.C2C_PLUGIN_POLL_INTERVAL_MS || "2000", 10);
   const idleOnlyMode: boolean = (process.env.C2C_PLUGIN_DELIVER_ON_IDLE || "0") === "1";
+  const permissionSupervisor: string =
+    process.env.C2C_PERMISSION_SUPERVISOR || sidecar.permission_supervisor || "coordinator1";
 
   // Track the active root session (set from session events)
   let activeSessionId: string | null = configuredOpenCodeSessionId || null;
   let backgroundLoopStarted = false;
+
+  // Dedup window for permission notifications: track last 10 seen permission IDs.
+  const seenPermissionIds: string[] = [];
 
   // --- Helpers ---
 
@@ -316,6 +322,38 @@ const C2CDelivery: Plugin = async (ctx) => {
           if (configuredOpenCodeSessionId && info.id !== configuredOpenCodeSessionId) return;
           activeSessionId = info.id;
           await log(`tracking root session: ${info.id}`);
+        }
+        return;
+      }
+
+      // Notify supervisor on permission.updated (v1: notification-only, no dialog mutation)
+      if (event.type === "permission.updated") {
+        const perm = (event as any).properties?.permission ?? (event as any).properties ?? {};
+        const permId: string = perm.id || "";
+        if (permId) {
+          if (seenPermissionIds.includes(permId)) return;
+          seenPermissionIds.push(permId);
+          if (seenPermissionIds.length > 10) seenPermissionIds.shift();
+        }
+        const title: string = perm.title || "unknown";
+        const type: string = perm.type || "unknown";
+        const pattern: string = JSON.stringify(perm.pattern ?? "N/A");
+        const sid: string = perm.sessionID || activeSessionId || sessionId || "unknown";
+        const msg = [
+          `PERMISSION REQUEST (notification) from ${sessionId}:`,
+          `  session: ${sid}`,
+          `  title: ${title}`,
+          `  type: ${type}`,
+          `  pattern: ${pattern}`,
+          `  id: ${permId || "unknown"}`,
+          `  (v1 — respond via TUI dialog)`,
+        ].join("\n");
+        try {
+          await runC2c(["send", permissionSupervisor, msg]);
+          await log(`permission notification sent to ${permissionSupervisor}: ${permId}`);
+          void toast(`c2c: permission notified → ${permissionSupervisor}`);
+        } catch (err) {
+          await log(`permission notification error: ${err}`);
         }
         return;
       }
