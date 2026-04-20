@@ -149,20 +149,24 @@ edit.
 addressable through a single client-side abstraction that works
 identically for localhost and remote.
 
-**Why first:** today `c2c_relay_connector.py` has URL-assembly
-scattered across `_request`, the rooms CLI duplicates it, and
-`ocaml/relay.ml`'s Cohttp client reimplements a third copy. Any
-change to the wire protocol (TLS, new auth header, new endpoint) has
-to be done in all three or things silently diverge. Unify first.
+**Why first:** the Python `RelayClient._request` is already
+centralized in `c2c_relay_connector.py`, but callers (`rooms.py`,
+`gc.py`, `status.py`) reach into the private `_request()` directly
+instead of using typed public methods. `ocaml/relay.ml` has its own
+Cohttp client with no `Relay_client` module at all — that is the
+real duplication. Any change to the wire protocol (TLS, new auth
+header, new endpoint) today has to be done in two places. Unify
+first.
 
-**Slices:**
-1. Extract a `RelayClient` abstract base in
-   `c2c_relay_connector.py` with a single `_request(method, path,
-   body=None)` method; every other relay CLI (rooms, status) goes
-   through it.
-2. Port the same abstraction into OCaml as a `Relay_client` module
-   in `ocaml/relay.ml` (or new file) with identical contract-test
-   coverage.
+**Slices (scoping refined 2026-04-21 after coordinator1 survey):**
+1. Python cleanup: replace `client._request(...)` calls in
+   `c2c_relay_rooms.py`, `c2c_relay_gc.py`, `c2c_relay_status.py`
+   with typed public methods on `RelayClient`. Extend with
+   `list_peers(include_dead)` where `status.py` needs it. Small,
+   safe, stabilizes the contract surface.
+2. OCaml port: introduce a `Relay_client` module in `ocaml/relay.ml`
+   (or new file) with method signatures matching the stabilized
+   Python surface. This is where the real duplication is eliminated.
 3. Add a `RelayClient` test-double used by existing contract tests
    so new transport work can swap in without rewriting tests.
 
