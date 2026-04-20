@@ -859,7 +859,10 @@ end = struct
     Yojson.Safe.Util.to_string_option (Yojson.Safe.Util.member field json)
 
   let get_int json field default =
-    Yojson.Safe.Util.to_int_option (Yojson.Safe.Util.member field json)
+    (match Yojson.Safe.Util.member field json with
+     | `Int n -> Some n
+     | `Float f -> Some (int_of_float f)
+     | _ -> None)
     |> Option.value ~default
 
   (* --- Response helpers --- *)
@@ -1745,7 +1748,9 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
      | [] -> ()
      | _ ->
        Printf.printf "allowlist: %d pinned identities\n%!" (List.length allowlist));
-    let callback = make_callback relay token in
+    let callback conn req body =
+      make_callback relay token conn req body
+    in
     let gc_thread =
       if gc_interval > 0.0 then
         Lwt.async (fun () -> gc_loop relay gc_interval)
@@ -1804,6 +1809,11 @@ module Relay_client : sig
   val register :
     t -> node_id:string -> session_id:string -> alias:string ->
     ?client_type:string -> ?ttl:float -> ?identity_pk:string ->
+    unit -> Yojson.Safe.t Lwt.t
+  val register_signed :
+    t -> node_id:string -> session_id:string -> alias:string ->
+    ?client_type:string -> ?ttl:float ->
+    identity_pk_b64:string -> sig_b64:string -> nonce:string -> ts:string ->
     unit -> Yojson.Safe.t Lwt.t
   val heartbeat : t -> node_id:string -> session_id:string -> Yojson.Safe.t Lwt.t
   val list_peers : t -> ?include_dead:bool -> unit -> Yojson.Safe.t Lwt.t
@@ -1934,6 +1944,21 @@ end = struct
         base @ [("identity_pk", `String b64)]
     in
     post t "/register" (`Assoc fields)
+
+  let register_signed t ~node_id ~session_id ~alias
+      ?(client_type = "unknown") ?(ttl = 300.0)
+      ~identity_pk_b64 ~sig_b64 ~nonce ~ts () =
+    post t "/register" (`Assoc [
+      ("node_id", `String node_id);
+      ("session_id", `String session_id);
+      ("alias", `String alias);
+      ("client_type", `String client_type);
+      ("ttl", `Float ttl);
+      ("identity_pk", `String identity_pk_b64);
+      ("signature", `String sig_b64);
+      ("nonce", `String nonce);
+      ("timestamp", `String ts);
+    ])
 
   let heartbeat t ~node_id ~session_id =
     post t "/heartbeat" (`Assoc [

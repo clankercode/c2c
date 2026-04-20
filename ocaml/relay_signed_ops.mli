@@ -28,6 +28,12 @@ val random_nonce_b64 : unit -> string
 
     [ctx] is one of [Relay.room_join_sign_ctx],
     [Relay.room_leave_sign_ctx], etc. *)
+(** [sign_register identity ~alias ~relay_url] produces a signed_proof
+    over the canonical register blob (ctx = [Relay.register_sign_ctx]).
+    relay_url is lower-cased before hashing, matching server behaviour. *)
+val sign_register :
+  Relay_identity.t -> alias:string -> relay_url:string -> signed_proof
+
 val sign_room_op :
   Relay_identity.t -> ctx:string -> room_id:string -> alias:string
   -> signed_proof

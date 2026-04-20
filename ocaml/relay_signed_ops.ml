@@ -20,6 +20,15 @@ let random_nonce_b64 () =
   let bytes = Mirage_crypto_rng.generate 16 in
   b64url_nopad bytes
 
+let sign_register identity ~alias ~relay_url =
+  let pk_b64 = b64url_nopad identity.Relay_identity.public_key in
+  let ts = now_rfc3339_utc () in
+  let nonce = random_nonce_b64 () in
+  let blob = Relay_identity.canonical_msg ~ctx:Relay.register_sign_ctx
+    [ alias; String.lowercase_ascii relay_url; pk_b64; ts; nonce ] in
+  let sig_ = Relay_identity.sign identity blob in
+  { identity_pk_b64 = pk_b64; ts; nonce; sig_b64 = b64url_nopad sig_ }
+
 let sign_room_op identity ~ctx ~room_id ~alias =
   let pk_b64 = b64url_nopad identity.Relay_identity.public_key in
   let ts = now_rfc3339_utc () in

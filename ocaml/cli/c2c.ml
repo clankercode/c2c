@@ -2458,12 +2458,19 @@ let relay_register_cmd =
       let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
       let node_id = Printf.sprintf "cli-%d" (int_of_float (Unix.gettimeofday ())) in
       let session_id = node_id in
-      let identity_pk = match Relay_identity.load () with
-        | Ok id -> id.Relay_identity.public_key
-        | Error _ -> ""
+      let result = (match Relay_identity.load () with
+        | Ok id ->
+            let p = Relay_signed_ops.sign_register id ~alias ~relay_url:url in
+            Lwt_main.run (C2c_mcp.Relay.Relay_client.register_signed client
+              ~node_id ~session_id ~alias ~client_type:"cli"
+              ~identity_pk_b64:p.Relay_signed_ops.identity_pk_b64
+              ~sig_b64:p.Relay_signed_ops.sig_b64
+              ~nonce:p.Relay_signed_ops.nonce
+              ~ts:p.Relay_signed_ops.ts ())
+        | Error _ ->
+            Lwt_main.run (C2c_mcp.Relay.Relay_client.register client
+              ~node_id ~session_id ~alias ~client_type:"cli" ~identity_pk:"" ()))
       in
-      let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.register client
-        ~node_id ~session_id ~alias ~client_type:"cli" ~identity_pk ()) in
       print_endline (Yojson.Safe.pretty_to_string result);
       (match result with
        | `Assoc fields ->
