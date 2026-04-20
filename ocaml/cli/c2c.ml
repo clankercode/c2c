@@ -1701,11 +1701,26 @@ let hook_cmd =
     try
       let broker = C2c_mcp.Broker.create ~root:broker_root in
       let messages = C2c_mcp.Broker.drain_inbox broker ~session_id in
-      List.iter
-        (fun (m : C2c_mcp.message) ->
-          Printf.printf "<c2c event=\"message\" from=\"%s\" alias=\"%s\" action_after=\"continue\">%s</c2c>\n"
-            m.from_alias m.to_alias m.content)
-        messages;
+      (match messages with
+       | [] -> ()
+       | _ ->
+         let buf = Buffer.create 256 in
+         List.iter
+           (fun (m : C2c_mcp.message) ->
+             Buffer.add_string buf
+               (Printf.sprintf "<c2c event=\"message\" from=\"%s\" alias=\"%s\" action_after=\"continue\">%s</c2c>\n"
+                  m.from_alias m.to_alias m.content))
+           messages;
+         let json : Yojson.Safe.t =
+           `Assoc [
+             ("hookSpecificOutput", `Assoc [
+               ("hookEventName", `String "PostToolUse");
+               ("additionalContext", `String (Buffer.contents buf));
+             ])
+           ]
+         in
+         print_string (Yojson.Safe.to_string json);
+         print_newline ());
       sleep_to_min_runtime start_time;
       exit 0
     with e ->
