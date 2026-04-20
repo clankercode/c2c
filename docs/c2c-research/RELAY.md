@@ -70,7 +70,7 @@ Legend: ✅ shipped · 🟡 in progress · ⏳ blocked · ⚪ open · ⏸ deferr
 | 3. Per-request Ed25519 auth header            | ⚪    | —          | —          |
 | 4. Registry schema + first-bind-wins          | ⚪    | —          | —          |
 | 5. Identity bootstrapping (first-msg / allowlist) | ⚪| —          | —          |
-| 6. `c2c relay identity` subcommand            | 🟡    | coder1     | Thin CLI wrapper around slice 1 |
+| 6. `c2c relay identity` subcommand            | ✅    | coder1     | `29f1b66` — init/show/fingerprint/rotate/import/export |
 
 Open decisions flagged before coding starts: **Q1** (always-sign vs
 session tokens) and **Q6** (TLS cert fingerprint inside register
