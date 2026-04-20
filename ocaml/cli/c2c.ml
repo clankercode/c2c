@@ -3604,7 +3604,10 @@ let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt =
   end;
   let config_dir = target_dir // ".opencode" in
   let config_path = config_dir // "opencode.json" in
-  let dir_name = Filename.basename (Filename.chop_suffix target_dir "/") in
+  let dir_name = Filename.basename (
+    let n = String.length target_dir in
+    if n > 1 && target_dir.[n-1] = '/' then String.sub target_dir 0 (n-1)
+    else target_dir) in
   let session_id = Printf.sprintf "opencode-%s" dir_name in
   (try Unix.mkdir config_dir 0o755 with Unix.Unix_error _ -> ());
   let config =
@@ -3670,10 +3673,11 @@ let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt =
         let dest = plugins_dir // "c2c.ts" in
         (try
            copy_file ~src ~dst:dest;
-           (* When source is local (real plugin from c2c repo), also update global plugin
-              if it is missing or suspiciously small (stub like "// plugin" = 9 bytes). *)
+           (* When source is local (real plugin from c2c repo), always update the
+              global plugin so ~/.config/opencode/plugins/c2c.ts gets the real
+              content with self-detect defer logic. Idempotent if already correct. *)
            let global_note =
-             if src = local_plugin && file_size global_plugin_path < 1024 then begin
+             if src = local_plugin then begin
                (try
                   let gdir = Filename.dirname global_plugin_path in
                   (try Unix.mkdir gdir 0o755 with Unix.Unix_error _ -> ());
