@@ -186,7 +186,7 @@ class SQLiteRelayContractTests(unittest.TestCase):
         result = self.relay.send_room("codex", "swarm-lounge", "hi all")
         self.assertIn("kimi", result["delivered_to"])
         msgs = self.relay.poll_inbox("node-b", "sess-2")
-        self.assertEqual(msgs[0]["to_alias"], "kimi@swarm-lounge")
+        self.assertEqual(msgs[0]["to_alias"], "kimi#swarm-lounge")
 
     def test_join_room_broadcasts_system_notice_to_all_members(self):
         self.relay.register("node-a", "sess-1", alias="codex")
@@ -205,7 +205,7 @@ class SQLiteRelayContractTests(unittest.TestCase):
             ]
             self.assertEqual(len(notice), 1)
             self.assertEqual(notice[0]["from_alias"], "c2c-system")
-            self.assertEqual(notice[0]["to_alias"].split("@", 1)[1], "swarm-lounge")
+            self.assertEqual(notice[0]["to_alias"].split("#", 1)[1], "swarm-lounge")
 
     def test_join_room_records_system_notice_in_history(self):
         self.relay.register("node-a", "sess-1", alias="codex")

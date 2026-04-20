@@ -233,7 +233,7 @@ def purge_orphan_dead_letter(
     """Remove dead-letter entries whose recipient alias is not in the registry.
 
     A dead-letter entry becomes an orphan when its `to_alias` (stripping any
-    @room_id suffix) has not been registered for at least ttl_seconds.  This
+    #room_id suffix) has not been registered for at least ttl_seconds.  This
     covers transient aliases (random word-pairs assigned to Claude Code sessions
     without C2C_MCP_AUTO_REGISTER_ALIAS) that will never re-register.
 
@@ -278,8 +278,8 @@ def purge_orphan_dead_letter(
                 if isinstance(deleted_at, (int, float)) and deleted_at < cutoff:
                     # Old enough to be an orphan candidate — check recipient alias
                     to_alias = record.get("message", {}).get("to_alias", "")
-                    # Strip @room_id suffix for room fan-out messages
-                    base_alias = to_alias.split("@")[0] if to_alias else ""
+                    # Strip #room_id suffix for room fan-out messages
+                    base_alias = to_alias.split("#")[0] if to_alias else ""
                     if base_alias and base_alias not in registered_aliases:
                         drop = True
                         purged += 1

@@ -23,7 +23,7 @@ modified — replay is idempotent; operators can re-run after transient
 failures.
 
 `--purge-orphans` removes entries older than --orphan-ttl seconds whose
-to_alias (stripping @room_id suffix) is no longer in the registry. This
+to_alias (stripping #room_id suffix) is no longer in the registry. This
 cleans up transient aliases that will never re-register. Safe to run at any
 time; aliases that ARE registered are always preserved for redelivery.
 """

@@ -509,7 +509,7 @@ class C2CVerifyBrokerTests(unittest.TestCase):
         msgs = [
             {
                 "from_alias": "c2c-system",
-                "to_alias": "agent-a@swarm-lounge",
+                "to_alias": "agent-a#swarm-lounge",
                 "content": "{}",
                 "drained_at": 1.0,
             }

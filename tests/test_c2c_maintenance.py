@@ -622,7 +622,7 @@ class PurgeOrphanDeadLetterTests(unittest.TestCase):
                 "from_session_id": "s2",
                 "message": {
                     "from_alias": "sender",
-                    "to_alias": "live-alice@swarm-lounge",
+                    "to_alias": "live-alice#swarm-lounge",
                     "content": "room msg",
                 },
             },
@@ -632,7 +632,7 @@ class PurgeOrphanDeadLetterTests(unittest.TestCase):
                 "from_session_id": "s3",
                 "message": {
                     "from_alias": "sender",
-                    "to_alias": "gone-bob@swarm-lounge",
+                    "to_alias": "gone-bob#swarm-lounge",
                     "content": "room msg",
                 },
             },
@@ -648,7 +648,7 @@ class PurgeOrphanDeadLetterTests(unittest.TestCase):
         remaining = [
             json.loads(l) for l in dl_path.read_text().splitlines() if l.strip()
         ]
-        self.assertEqual(remaining[0]["message"]["to_alias"], "live-alice@swarm-lounge")
+        self.assertEqual(remaining[0]["message"]["to_alias"], "live-alice#swarm-lounge")
 
     def test_keeps_entry_within_ttl(self):
         """Recent entries are kept even if the alias is not registered."""
@@ -973,7 +973,7 @@ class BrokerGcDeadLetterTests(unittest.TestCase):
                 json.dumps(
                     {
                         "deleted_at": now - 10000,
-                        "message": {"to_alias": "bob@swarm-lounge"},
+                        "message": {"to_alias": "bob#swarm-lounge"},
                     }
                 ),
             ]

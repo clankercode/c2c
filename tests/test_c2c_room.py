@@ -104,8 +104,8 @@ class RoomJoinLeaveTests(unittest.TestCase):
             self.assertEqual(len(inbox_b), 1)
             self.assertEqual(inbox_a[0]["from_alias"], "c2c-system")
             self.assertEqual(inbox_b[0]["from_alias"], "c2c-system")
-            self.assertEqual(inbox_a[0]["to_alias"], "alice@lobby")
-            self.assertEqual(inbox_b[0]["to_alias"], "bob@lobby")
+            self.assertEqual(inbox_a[0]["to_alias"], "alice#lobby")
+            self.assertEqual(inbox_b[0]["to_alias"], "bob#lobby")
             self.assertEqual(inbox_a[0]["content"], "bob joined room lobby")
             self.assertEqual(inbox_b[0]["content"], "bob joined room lobby")
 
@@ -194,7 +194,7 @@ class RoomSendTests(unittest.TestCase):
             )
             self.assertEqual(len(inbox), 1)
             self.assertEqual(inbox[0]["from_alias"], "alice")
-            self.assertEqual(inbox[0]["to_alias"], "bob@lobby")
+            self.assertEqual(inbox[0]["to_alias"], "bob#lobby")
 
             # alice's inbox should be unchanged
             inbox_a = json.loads(

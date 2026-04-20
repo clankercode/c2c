@@ -380,7 +380,7 @@ class SQLiteRelay:
                 (member_alias,),
             )
             lease = cur.fetchone()
-            to_alias = f"{member_alias}@{room_id}"
+            to_alias = f"{member_alias}#{room_id}"
             if lease is None or (lease["last_seen"] + lease["ttl"]) < ts:
                 conn.execute(
                     """
@@ -488,7 +488,7 @@ class SQLiteRelay:
                         (
                             msg_id,
                             from_alias,
-                            f"{alias}@{room_id}",
+                            f"{alias}#{room_id}",
                             content,
                             ts,
                             "recipient_dead",
@@ -507,7 +507,7 @@ class SQLiteRelay:
                         lease["session_id"],
                         msg_id,
                         from_alias,
-                        f"{alias}@{room_id}",
+                        f"{alias}#{room_id}",
                         content,
                         ts,
                     ),

@@ -371,7 +371,7 @@ class InMemoryRelay:
             msg = {
                 "message_id": message_id,
                 "from_alias": ROOM_SYSTEM_ALIAS,
-                "to_alias": f"{member_alias}@{room_id}",
+                "to_alias": f"{member_alias}#{room_id}",
                 "content": content,
                 "ts": ts,
                 "room_id": room_id,
@@ -417,7 +417,7 @@ class InMemoryRelay:
                 msg = {
                     "message_id": msg_id,
                     "from_alias": from_alias,
-                    "to_alias": f"{alias}@{room_id}",
+                    "to_alias": f"{alias}#{room_id}",
                     "content": content,
                     "ts": ts,
                     "room_id": room_id,

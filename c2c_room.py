@@ -329,7 +329,7 @@ def send_room(
                 items.append(
                     {
                         "from_alias": from_alias,
-                        "to_alias": f"{malias}@{room_id}",
+                        "to_alias": f"{malias}#{room_id}",
                         "content": content,
                     }
                 )

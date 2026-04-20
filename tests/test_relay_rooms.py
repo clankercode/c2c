@@ -64,7 +64,7 @@ class InMemoryRoomTests(unittest.TestCase):
             notice = [m for m in msgs if m["content"] == "bob joined room general"]
             self.assertEqual(len(notice), 1)
             self.assertEqual(notice[0]["from_alias"], "c2c-system")
-            self.assertEqual(notice[0]["to_alias"].split("@", 1)[1], "general")
+            self.assertEqual(notice[0]["to_alias"].split("#", 1)[1], "general")
 
     def test_join_room_records_system_notice_in_history(self):
         self.relay.join_room("alice", "lobby")
@@ -127,7 +127,7 @@ class InMemoryRoomTests(unittest.TestCase):
         self.relay.send_room("alice", "lounge3", "room tagged")
         msgs = self.relay.poll_inbox("n", "s-bob")
         tagged = [m for m in msgs if m["content"] == "room tagged"]
-        self.assertTrue(tagged[0]["to_alias"].endswith("@lounge3"))
+        self.assertTrue(tagged[0]["to_alias"].endswith("#lounge3"))
 
     def test_send_room_empty_room_returns_ok(self):
         r = self.relay.send_room("alice", "empty-room", "hello")

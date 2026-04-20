@@ -250,7 +250,7 @@ class OnboardingSmokeTest(unittest.TestCase):
             self.assertEqual(len(messages), 1)
             self.assertEqual(messages[0]["from_alias"], "alice-room")
             self.assertEqual(messages[0]["content"], "room hello")
-            self.assertEqual(messages[0]["to_alias"], "bob-room@smoke")
+            self.assertEqual(messages[0]["to_alias"], "bob-room#smoke")
         finally:
             self._shutdown(alice, bob)
 
