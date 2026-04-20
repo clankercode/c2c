@@ -5524,8 +5524,8 @@ let repo_set_supervisor_cmd =
   let fields = match config with `Assoc f -> f | _ -> [] in
   let supervisor_val = `List (List.map (fun a -> `String a) aliases) in
   let fields' =
-    ("permission_supervisors", supervisor_val)
-    :: List.filter (fun (k, _) -> k <> "permission_supervisors") fields
+    ("supervisors", supervisor_val)
+    :: List.filter (fun (k, _) -> k <> "supervisors" && k <> "permission_supervisors") fields
   in
   save_repo_config (`Assoc fields');
   let output_mode = if json then Json else Human in
@@ -5556,12 +5556,12 @@ let repo_show_cmd =
        ) else (
          Printf.printf "Repo config: %s\n" path;
          let fields = match config with `Assoc f -> f | _ -> [] in
-         (match List.assoc_opt "permission_supervisors" fields with
+         (match List.assoc_opt "supervisors" fields with
           | Some (`List aliases) ->
               let names = List.filter_map (function `String s -> Some s | _ -> None) aliases in
-              Printf.printf "  permission_supervisors: %s\n" (String.concat ", " names)
+              Printf.printf "  supervisors: %s\n" (String.concat ", " names)
           | _ ->
-              Printf.printf "  permission_supervisors: (not set — default: coordinator1)\n");
+              Printf.printf "  supervisors: (not set — default: coordinator1)\n");
          List.iter (fun (k, v) ->
            if k <> "permission_supervisors" then
              Printf.printf "  %s: %s\n" k (Yojson.Safe.to_string v)

@@ -1,1 +1,1 @@
-{ "permission_supervisors": [ "coordinator1", "planner1" ] }
+{ "supervisors": [ "coordinator1", "planner1" ] }

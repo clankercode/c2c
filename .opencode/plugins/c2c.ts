@@ -56,20 +56,30 @@ function loadRepoConfig(): Record<string, unknown> {
   }
 }
 
-/** Resolve supervisor aliases from env > repo.json > sidecar > default. */
+/** Resolve supervisor aliases from env > sidecar > repo.json > default. */
 function resolvePermissionSupervisors(sidecar: Record<string, unknown>): string[] {
-  // Env var (single alias or comma-separated)
-  const envVal = process.env.C2C_PERMISSION_SUPERVISOR;
-  if (envVal) return envVal.split(",").map((s) => s.trim()).filter(Boolean);
-  // Repo config: permission_supervisors array
+  // C2C_PERMISSION_SUPERVISOR: single alias override (highest priority)
+  const envSingle = process.env.C2C_PERMISSION_SUPERVISOR;
+  if (envSingle) return [envSingle];
+  // C2C_SUPERVISORS: comma-separated list override
+  const envList = process.env.C2C_SUPERVISORS;
+  if (envList) return envList.split(",").map((s) => s.trim()).filter(Boolean);
+  // Sidecar: supervisors array (c2c init --supervisor writes here)
+  const sidecarSups = sidecar.supervisors;
+  if (Array.isArray(sidecarSups) && sidecarSups.length > 0) {
+    const names = sidecarSups.filter((s): s is string => typeof s === "string");
+    if (names.length > 0) return names;
+  }
+  // Repo config: supervisors array (c2c repo set supervisor writes here)
   const repo = loadRepoConfig();
-  const repoSups = repo.permission_supervisors;
+  const repoSups = repo.supervisors ?? repo.permission_supervisors;
   if (Array.isArray(repoSups) && repoSups.length > 0) {
-    return repoSups.filter((s): s is string => typeof s === "string");
+    const names = repoSups.filter((s): s is string => typeof s === "string");
+    if (names.length > 0) return names;
   }
   // Sidecar: permission_supervisor (legacy single value)
-  const sidecarSup = sidecar.permission_supervisor;
-  if (typeof sidecarSup === "string" && sidecarSup) return [sidecarSup];
+  const sidecarLegacy = sidecar.permission_supervisor;
+  if (typeof sidecarLegacy === "string" && sidecarLegacy) return [sidecarLegacy];
   // Default
   return ["coordinator1"];
 }
@@ -89,11 +99,19 @@ const C2CDelivery: Plugin = async (ctx) => {
   const pollIntervalMs: number = parseInt(process.env.C2C_PLUGIN_POLL_INTERVAL_MS || "30000", 10);
   const idleOnlyMode: boolean = (process.env.C2C_PLUGIN_DELIVER_ON_IDLE || "0") === "1";
   const permissionSupervisors: string[] = resolvePermissionSupervisors(sidecar);
+  const supervisorStrategy: string =
+    (sidecar.supervisor_strategy as string) ||
+    loadRepoConfig().supervisor_strategy as string ||
+    "first-alive";
   let supervisorIndex = 0;
   const nextSupervisor = () => {
-    const s = permissionSupervisors[supervisorIndex % permissionSupervisors.length];
-    supervisorIndex++;
-    return s;
+    if (supervisorStrategy === "round-robin") {
+      const s = permissionSupervisors[supervisorIndex % permissionSupervisors.length];
+      supervisorIndex++;
+      return s;
+    }
+    // first-alive and default: return first (liveness check is a v2 improvement)
+    return permissionSupervisors[0];
   };
   const permissionTimeoutMs: number = parseInt(
     process.env.C2C_PERMISSION_TIMEOUT_MS || "120000", 10
