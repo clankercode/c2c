@@ -78,9 +78,10 @@ Legend: ✅ shipped · 🟡 in progress · ⏳ blocked · ⚪ open · ⏸ deferr
 | 5. Identity bootstrapping (first-msg / allowlist) | ⚪| —          | —          |
 | 6. `c2c relay identity` subcommand            | ✅    | coder1     | `29f1b66` — init/show/fingerprint/rotate/import/export |
 
-Open decisions flagged before coding starts: **Q1** (always-sign vs
-session tokens) and **Q6** (TLS cert fingerprint inside register
-blob) — see `relay-peer-identity-spec.md` §13.
+Open decisions resolved 2026-04-21: **Q1** → always-sign, no session
+tokens in v1. **Q6** → no TLS cert fingerprint in register blob (don't
+couple identity bindings to cert rotation). L3 slices 2 & 3 now fully
+unblocked — see `relay-peer-identity-spec.md` §13.
 
 ### Layer 4 — Room routing over authenticated channel
 

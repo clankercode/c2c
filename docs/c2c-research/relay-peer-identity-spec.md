@@ -424,10 +424,13 @@ All tests live under `tests/test_c2c_relay_identity_*.py`.
 
 ## 13. Open questions for review
 
-1. **Token vs per-request signing default**: should v1 default to
-   session tokens (faster, bearer risk) or always-sign (strict,
-   more crypto per request)? Recommend always-sign as the default
-   and tokens opt-in; revisit on benchmarks.
+1. **Token vs per-request signing default** — **RESOLVED 2026-04-21:
+   always-sign, no session tokens in v1.** Per-request Ed25519 verify
+   is microseconds on modern HW; tokens add a bearer-credential
+   weakness (MITM can replay) for no real CPU win at our scale. One
+   codepath, less test surface. Revisit only if benchmarks demand.
+   Session-token §5.2 stays in the doc as a future option but is
+   NOT implemented in v1.
 2. **OCaml crypto lib (tentatively resolved)**: recommend
    `mirage-crypto-ec` since it reuses the TLS dep from Layer 2. Keep
    `hacl-star` as fallback if build/link issues emerge. Needs a
@@ -442,11 +445,15 @@ All tests live under `tests/test_c2c_relay_identity_*.py`.
    session tokens be revoked instantly or allowed to expire (<= 1h)?
    Instant revocation is safer; forces a re-register. Recommend
    instant revocation.
-6. **Hostname binding in `c2c/v1/register`**: I've included
-   `relay_url` (normalized) — should this also include the server's
-   TLS cert fingerprint so a rogue relay that presents a forged cert
-   can't replay a client registration? Possibly overkill given
-   Layer 2 already verifies the cert. Flagging for security review.
+6. **Hostname binding in `c2c/v1/register`** — **RESOLVED 2026-04-21:
+   leave TLS cert fingerprint out of v1 register context.** Layer 2
+   cert validation already catches rogue-cert scenarios. Including
+   the fingerprint in the register blob would couple identity
+   bindings to cert rotation (every Let's Encrypt 90-day renewal
+   would invalidate bindings unless the check is relaxed to
+   ignore-cert, which defeats the point). `relay_url` alone is
+   sufficient binding for v1. Revisit if a concrete rogue-CA threat
+   emerges.
 
 ---
 
@@ -473,3 +480,7 @@ All tests live under `tests/test_c2c_relay_identity_*.py`.
   Python test-only), recommended `mirage-crypto-ec`, switched §8
   subcommand to native OCaml (no Python shell-out), resolved open
   question #2 to a recommendation.
+- 2026-04-21 planner1 — resolved Q1 (always-sign, no session tokens
+  in v1) and Q6 (no TLS cert fingerprint in register blob; avoid
+  coupling to cert rotation). 10-minute hold posted in swarm-lounge
+  elapsed with no objections. L3 slices 2 & 3 now fully unblocked.
