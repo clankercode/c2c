@@ -346,6 +346,8 @@ const C2CDelivery: Plugin = async (ctx) => {
         await log("starting delivery loop");
         await toast(`c2c: delivery active (session=${sessionId})`);
         startBackgroundLoop();
+        // Drain any messages that queued while the session was offline (cold-boot gap).
+        await tryDeliver();
       },
     },
 

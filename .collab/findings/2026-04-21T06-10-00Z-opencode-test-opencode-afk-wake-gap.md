@@ -3,7 +3,7 @@
 **Date**: 2026-04-21T06:10:00Z  
 **Reporter**: planner1 (archive evidence from coordinator1)  
 **Severity**: Medium  
-**Status**: Gap #1 (cold-boot) — accepted behavior. Gap #2 (AFK-wait) — plugin uses `c2c monitor` subprocess → `promptAsync`; validation pending (requires non-bypass OpenCode session).
+**Status**: Gap #1 (cold-boot) — **resolved** (lifecycle.start now calls tryDeliver() + 1s startup poll). Gap #2 (AFK-wait) — plugin uses `c2c monitor` subprocess → `promptAsync`; validation pending (requires non-bypass OpenCode session).
 
 ---
 
@@ -25,9 +25,10 @@ OpenCode is not running, the plugin does not exist — no `fs.watch` listener is
 armed, no `session.idle` event fires. Inbox file changes go unobserved. Messages
 queue until next `poll_inbox` (1s startup poll or 30s safety-net in the plugin).
 
-**Fix path**: Expected behavior for an in-process plugin. Acceptable for now.
-Ensure `c2c_configure_opencode.py --install-global-plugin` is run so the plugin
-auto-loads on every OpenCode start and the 1s startup poll drains the queue.
+**Fix**: `lifecycle.start` now explicitly calls `tryDeliver()` (commit after a02de4f),
+so cold-boot messages are drained immediately when the plugin lifecycle fires,
+not just on the 1s safety-net poll. Also ensure `c2c setup opencode --install-global-plugin`
+is run so the plugin auto-loads on every OpenCode start.
 
 ---
 
