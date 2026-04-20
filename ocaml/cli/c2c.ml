@@ -2670,20 +2670,7 @@ let setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_comm
        in
        mkdir_p dir
      end;
-     let hook_content =
-       "#!/bin/bash\n\
-        # c2c-inbox-check.sh — PostToolUse hook for c2c auto-delivery in Claude Code\n\
-        SESSION_ID=\"${C2C_MCP_SESSION_ID:-}\"\n\
-        BROKER_ROOT=\"${C2C_MCP_BROKER_ROOT:-}\"\n\
-        [ -z \"$SESSION_ID\" ] && exit 0\n\
-        [ -z \"$BROKER_ROOT\" ] && exit 0\n\
-        INBOX=\"$BROKER_ROOT/$SESSION_ID.inbox.json\"\n\
-        [ -f \"$INBOX\" ] || exit 0\n\
-        CONTENT=$(<\"$INBOX\")\n\
-        TRIMMED=\"${CONTENT//[[:space:]]/}\"\n\
-        [ \"$TRIMMED\" = \"[]\" ] || [ -z \"$TRIMMED\" ] && exit 0\n\
-        exec timeout 5 c2c hook\n"
-     in
+     let hook_content = claude_hook_script in
      let oc = open_out hook_script in
      output_string oc hook_content;
      close_out oc;
