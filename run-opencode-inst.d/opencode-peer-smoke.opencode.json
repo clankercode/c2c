@@ -4,11 +4,10 @@
     "c2c": {
       "type": "local",
       "command": [
-        "python3",
-        "/home/xertrov/src/c2c-msg/c2c_mcp.py"
+        "c2c-mcp-server"
       ],
       "environment": {
-        "C2C_MCP_BROKER_ROOT": "/home/xertrov/src/c2c-msg/.git/c2c/mcp",
+        "C2C_MCP_BROKER_ROOT": "/home/xertrov/src/c2c/.git/c2c/mcp",
         "C2C_MCP_SESSION_ID": "opencode-peer-smoke",
         "C2C_MCP_AUTO_REGISTER_ALIAS": "opencode-peer",
         "C2C_MCP_AUTO_DRAIN_CHANNEL": "0",
