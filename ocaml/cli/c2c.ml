@@ -2098,7 +2098,24 @@ let relay_rooms_cmd =
        | Some url, Some room_id, Some from_alias, ws ->
            let content = String.concat " " ws in
            let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
-           let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.send_room client ~from_alias ~room_id ~content ()) in
+           (* L4/4: sign the send with the local identity when available.
+              Falls back to legacy unsigned path if no identity is on disk
+              (spec soft-rollout). *)
+           let result =
+             match Relay_identity.load () with
+             | Ok id ->
+                 let envelope =
+                   Relay_signed_ops.sign_send_room id
+                     ~room_id ~from_alias ~content
+                 in
+                 Lwt_main.run
+                   (C2c_mcp.Relay.Relay_client.send_room_signed client
+                      ~from_alias ~room_id ~content ~envelope ())
+             | Error _ ->
+                 Lwt_main.run
+                   (C2c_mcp.Relay.Relay_client.send_room client
+                      ~from_alias ~room_id ~content ())
+           in
            print_endline (Yojson.Safe.pretty_to_string result);
            (match result with
             | `Assoc fields ->

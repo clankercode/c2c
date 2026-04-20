@@ -1814,6 +1814,10 @@ module Relay_client : sig
   val send_room :
     t -> from_alias:string -> room_id:string -> content:string ->
     ?message_id:string -> unit -> Yojson.Safe.t Lwt.t
+  val send_room_signed :
+    t -> from_alias:string -> room_id:string -> content:string ->
+    envelope:Yojson.Safe.t -> ?message_id:string -> unit ->
+    Yojson.Safe.t Lwt.t
   val gc : t -> Yojson.Safe.t Lwt.t
 end = struct
 
@@ -1960,6 +1964,19 @@ end = struct
       ("from_alias", `String from_alias);
       ("room_id", `String room_id);
       ("content", `String content);
+    ] in
+    let body = match message_id with
+      | Some mid -> ("message_id", `String mid) :: base
+      | None -> base
+    in
+    post t "/send_room" (`Assoc body)
+
+  let send_room_signed t ~from_alias ~room_id ~content ~envelope ?message_id () =
+    let base = [
+      ("from_alias", `String from_alias);
+      ("room_id", `String room_id);
+      ("content", `String content);
+      ("envelope", envelope);
     ] in
     let body = match message_id with
       | Some mid -> ("message_id", `String mid) :: base
