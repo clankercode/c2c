@@ -1790,7 +1790,12 @@ let monitor_cmd =
                  Avoids the race where the PostToolUse hook drains the inbox before \
                  the monitor can peek. Every drained message is recorded here.")
   in
-  const (fun broker_root_arg alias_arg all drains sweeps full_body from_filter json archive ->
+  let include_self_flag =
+    Arg.(value & flag & info ["include-self"]
+           ~doc:"Include messages sent by you. Off by default — your own broadcasts \
+                 and DMs echo back through archive/inbox events and are noise.")
+  in
+  const (fun broker_root_arg alias_arg all drains sweeps full_body from_filter json archive include_self ->
     let broker_root =
       match broker_root_arg with
       | Some r -> r
@@ -1883,6 +1888,15 @@ let monitor_cmd =
                      | `Assoc fields -> jstr fields "from_alias" "" = f
                      | _ -> false) entries
                in
+               (* Drop self-sent unless --include-self *)
+               let entries =
+                 if include_self then entries
+                 else match my_alias with
+                   | None -> entries
+                   | Some me -> List.filter (fun m -> match m with
+                       | `Assoc fields -> jstr fields "from_alias" "" <> me
+                       | _ -> true) entries
+               in
                (match entries with
                 | [] -> ()
                 | msgs ->
@@ -1926,6 +1940,15 @@ let monitor_cmd =
                        | `Assoc fields -> jstr fields "from_alias" "" = f
                        | _ -> false) msgs
                  in
+                 (* Drop self-sent unless --include-self *)
+                 let msgs =
+                   if include_self then msgs
+                   else match my_alias with
+                     | None -> msgs
+                     | Some me -> List.filter (fun m -> match m with
+                         | `Assoc fields -> jstr fields "from_alias" "" <> me
+                         | _ -> true) msgs
+                 in
                  (match msgs with
                   | [] ->
                       if drains then
@@ -1953,7 +1976,7 @@ let monitor_cmd =
         )
       done with End_of_file -> ())
   ) $ broker_root_opt $ alias_opt $ all_flag $ drains_flag $ sweeps_flag
-    $ full_body_flag $ from_opt $ json_flag $ archive_flag
+    $ full_body_flag $ from_opt $ json_flag $ archive_flag $ include_self_flag
 
 let monitor =
   Cmdliner.Cmd.v
