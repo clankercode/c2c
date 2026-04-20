@@ -3421,9 +3421,24 @@ let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt =
   (* Find plugin source: prefer CWD-relative (c2c dev repo), fall back to global install path. *)
   let home = try Sys.getenv "HOME" with Not_found -> "" in
   let global_plugin_path = home // ".config" // "opencode" // "plugins" // "c2c.ts" in
+  let copy_file ~src ~dst =
+    let ic = open_in_bin src in
+    let oc = open_out_bin (dst ^ ".tmp") in
+    Fun.protect ~finally:(fun () -> close_in ic; close_out oc) (fun () ->
+      let buf = Bytes.create 65536 in
+      let rec loop () =
+        let n = input ic buf 0 (Bytes.length buf) in
+        if n > 0 then (output oc buf 0 n; loop ())
+      in
+      loop ());
+    Unix.rename (dst ^ ".tmp") dst
+  in
+  let file_size path =
+    try (Unix.stat path).Unix.st_size with Unix.Unix_error _ -> 0
+  in
+  let local_plugin = ".opencode" // "plugins" // "c2c.ts" in
   let plugin_src =
-    let local = ".opencode" // "plugins" // "c2c.ts" in
-    if Sys.file_exists local then Some local
+    if Sys.file_exists local_plugin then Some local_plugin
     else if Sys.file_exists global_plugin_path then Some global_plugin_path
     else None
   in
@@ -3436,17 +3451,20 @@ let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt =
         (try Unix.mkdir plugins_dir 0o755 with Unix.Unix_error _ -> ());
         let dest = plugins_dir // "c2c.ts" in
         (try
-           let ic = open_in_bin src in
-           let oc = open_out_bin (dest ^ ".tmp") in
-           Fun.protect ~finally:(fun () -> close_in ic; close_out oc) (fun () ->
-             let buf = Bytes.create 65536 in
-             let rec copy () =
-               let n = input ic buf 0 (Bytes.length buf) in
-               if n > 0 then (output oc buf 0 n; copy ())
-             in
-             copy ());
-           Unix.rename (dest ^ ".tmp") dest;
-           Printf.sprintf "plugin installed to %s (from %s)" dest src
+           copy_file ~src ~dst:dest;
+           (* When source is local (real plugin from c2c repo), also update global plugin
+              if it is missing or suspiciously small (stub like "// plugin" = 9 bytes). *)
+           let global_note =
+             if src = local_plugin && file_size global_plugin_path < 1024 then begin
+               (try
+                  let gdir = Filename.dirname global_plugin_path in
+                  (try Unix.mkdir gdir 0o755 with Unix.Unix_error _ -> ());
+                  copy_file ~src ~dst:global_plugin_path;
+                  " + global updated"
+                with _ -> " (global update failed)")
+             end else ""
+           in
+           Printf.sprintf "plugin installed to %s%s" dest global_note
          with _ -> "plugin copy failed")
   in
   match output_mode with
