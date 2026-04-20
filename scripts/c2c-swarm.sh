@@ -160,15 +160,27 @@ cmd_restart() {
   # Claude Code responds to /exit slash command
   tmux send-keys -t "$target" -l '/exit'
   "$ENTER_HELPER" "$target"
-  echo "sent /exit; waiting up to 20s for shell prompt to return…"
-  local i=0
-  while [ $i -lt 40 ]; do
+  echo "sent /exit; waiting up to 30s for shell prompt to return…"
+  # The shell-ready signal is the c2c-start wrapper's post-exit banner
+  # ("resume via: c2c start …"). Waiting on a bare "❯" is unreliable
+  # because Claude's "Background work is running" confirmation dialog
+  # also renders "❯ 1. Exit anyway" in its last three lines. If we see
+  # that dialog, press Enter to confirm option 1 (Exit anyway).
+  local i=0 confirmed=0
+  while [ $i -lt 60 ]; do
     local snap
-    snap=$(tmux capture-pane -t "$target" -p | tail -3 | sed 's/\x1b\[[0-9;]*m//g')
+    snap=$(tmux capture-pane -t "$target" -p | tail -15 | sed 's/\x1b\[[0-9;]*m//g')
     case "$snap" in
-      *'$ '*|*'❯ '*|*'> '*|*'# '*)
-        echo "shell prompt detected"
+      *'resume via: c2c start'*)
+        echo "shell prompt detected (c2c-start exit banner)"
         break
+        ;;
+      *'Background work is running'*|*'Exit anyway'*)
+        if [ "$confirmed" -eq 0 ]; then
+          echo "confirm-exit dialog detected; pressing Enter to confirm"
+          "$ENTER_HELPER" "$target"
+          confirmed=1
+        fi
         ;;
     esac
     sleep 0.5
