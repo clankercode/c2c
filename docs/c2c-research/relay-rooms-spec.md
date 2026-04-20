@@ -241,6 +241,19 @@ Clients fetch via `room_history`:
 - Returns envelopes verbatim. Client re-verifies `sig` on every read
   (defence in depth; relay-side verify at write time is primary).
 
+Implementation: `c2c relay rooms history` annotates each entry with
+`sig_ok`:
+- `true`  — envelope present and the Ed25519 signature over the
+  canonical `room-send` blob verifies against `sender_pk`.
+- `false` — envelope present but signature failed to verify (the
+  entry is retained in the output for forensics; callers MUST treat
+  the content as untrusted).
+- `null`  — legacy entry with no envelope (e.g. `c2c-system` join
+  notices pre-L4/3). Trust policy is operator-defined.
+
+Freshness (`ts` window, `nonce` replay) is NOT rechecked on history
+reads; that is authenticity-of-record, not freshness-of-delivery.
+
 ---
 
 ## 7. Fan-out
