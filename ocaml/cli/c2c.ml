@@ -2551,7 +2551,7 @@ let relay_register_cmd =
       exit 1
   | Some url ->
       let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
-      let node_id = Printf.sprintf "cli-%d" (int_of_float (Unix.gettimeofday ())) in
+      let node_id = Printf.sprintf "cli-%s" alias in
       let session_id = node_id in
       let result = (match Relay_identity.load () with
         | Ok id ->
