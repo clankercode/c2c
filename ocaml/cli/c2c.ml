@@ -1760,6 +1760,10 @@ let relay_serve_cmd =
   let tls_key =
     Cmdliner.Arg.(value & opt (some string) None & info [ "tls-key" ] ~docv:"PATH" ~doc:"PEM private-key file for TLS (required with --tls-cert).")
   in
+  let allowed_identities =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "allowed-identities" ] ~docv:"PATH"
+      ~doc:"JSON file mapping {alias: identity_pk_b64} (L3/5). Listed aliases require a matching signed register; unlisted aliases stay first-mover-wins.")
+  in
   let+ listen = listen
   and+ token = token
   and+ token_file = token_file
@@ -1768,7 +1772,8 @@ let relay_serve_cmd =
   and+ gc_interval = gc_interval
   and+ verbose = verbose
   and+ tls_cert = tls_cert
-  and+ tls_key = tls_key in
+  and+ tls_key = tls_key
+  and+ allowed_identities = allowed_identities in
   (* Parse listen address (default 127.0.0.1:7331) *)
   let host, port = match listen with
     | None -> ("127.0.0.1", 7331)
@@ -1829,7 +1834,28 @@ let relay_serve_cmd =
             Printf.eprintf "error: --tls-key requires --tls-cert\n%!"; exit 1
       in
       Printf.printf "storage: memory\n%!";
-      Lwt_main.run (Relay.Relay_server.start_server ~host ~port ~token ~verbose ~gc_interval ?tls:tls_cfg ())
+      let allowlist = match allowed_identities with
+        | None -> []
+        | Some path ->
+          (try
+            let json = Yojson.Safe.from_file path in
+            match json with
+            | `Assoc pairs ->
+              List.map (fun (alias, v) -> match v with
+                | `String pk_b64 -> (alias, pk_b64)
+                | _ ->
+                  Printf.eprintf "error: --allowed-identities entry for %S must be a string\n%!" alias;
+                  exit 1) pairs
+            | _ ->
+              Printf.eprintf "error: --allowed-identities file must be a JSON object { alias: pk_b64, ... }\n%!";
+              exit 1
+          with
+          | Sys_error msg ->
+            Printf.eprintf "error reading --allowed-identities: %s\n%!" msg; exit 1
+          | Yojson.Json_error msg ->
+            Printf.eprintf "error parsing --allowed-identities: %s\n%!" msg; exit 1)
+      in
+      Lwt_main.run (Relay.Relay_server.start_server ~host ~port ~token ~verbose ~gc_interval ?tls:tls_cfg ~allowlist ())
 
 let relay_connect_cmd =
   let relay_url =

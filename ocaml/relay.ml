@@ -708,6 +708,7 @@ module Relay_server : sig
     ?verbose:bool ->
     ?gc_interval:float ->
     ?tls:[ `Cert_key of string * string ] ->
+    ?allowlist:(string * string) list ->
     unit ->
     unit Lwt.t
 end = struct
@@ -1735,8 +1736,15 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
 
   (* --- Server startup --- *)
 
-  let start_server ~host ~port ~token ?(verbose=false) ?(gc_interval=0.0) ?tls () =
+  let start_server ~host ~port ~token ?(verbose=false) ?(gc_interval=0.0) ?tls ?(allowlist=[]) () =
     let relay = InMemoryRelay.create () in
+    List.iter (fun (alias, identity_pk_b64) ->
+      InMemoryRelay.set_allowed_identity relay ~alias ~identity_pk_b64)
+      allowlist;
+    (match allowlist with
+     | [] -> ()
+     | _ ->
+       Printf.printf "allowlist: %d pinned identities\n%!" (List.length allowlist));
     let callback = make_callback relay token in
     let gc_thread =
       if gc_interval > 0.0 then
