@@ -1,0 +1,35 @@
+# Keep the Docker build context small and deterministic.
+.git
+.github
+.claude
+.codex
+.goal-loops
+.collab
+.vscode
+.idea
+node_modules
+_build
+_opam
+dist
+target
+
+# Large/unneeded for the OCaml relay build
+tests/
+docs/
+scripts/
+website/
+data/
+
+# Python side (the relay container only ships the OCaml binary)
+*.py
+*.pyc
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+
+# Local state
+.git/c2c/
+*.log
+*.sqlite
+*.sqlite-journal
