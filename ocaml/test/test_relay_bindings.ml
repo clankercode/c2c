@@ -235,6 +235,51 @@ let test_unsupported_enc_code () =
   Alcotest.(check string) "unsupported_enc code"
     "unsupported_enc" relay_err_unsupported_enc
 
+(* --- L4 slice 5: invited_members ACL --- *)
+
+let test_default_visibility_public () =
+  let r = InMemoryRelay.create () in
+  Alcotest.(check string) "default is public"
+    "public" (InMemoryRelay.room_visibility_of r ~room_id:"lounge")
+
+let test_invite_list_roundtrip () =
+  let r = InMemoryRelay.create () in
+  let pk1 = "pk1_b64" and pk2 = "pk2_b64" in
+  InMemoryRelay.invite_to_room r ~room_id:"r" ~identity_pk_b64:pk1;
+  InMemoryRelay.invite_to_room r ~room_id:"r" ~identity_pk_b64:pk2;
+  (* Idempotent — second invite of pk1 is a no-op. *)
+  InMemoryRelay.invite_to_room r ~room_id:"r" ~identity_pk_b64:pk1;
+  Alcotest.(check bool) "pk1 invited" true
+    (InMemoryRelay.is_invited r ~room_id:"r" ~identity_pk_b64:pk1);
+  Alcotest.(check bool) "pk2 invited" true
+    (InMemoryRelay.is_invited r ~room_id:"r" ~identity_pk_b64:pk2);
+  Alcotest.(check bool) "random not invited" false
+    (InMemoryRelay.is_invited r ~room_id:"r" ~identity_pk_b64:"other");
+  InMemoryRelay.uninvite_from_room r ~room_id:"r" ~identity_pk_b64:pk1;
+  Alcotest.(check bool) "pk1 removed" false
+    (InMemoryRelay.is_invited r ~room_id:"r" ~identity_pk_b64:pk1);
+  Alcotest.(check bool) "pk2 still invited" true
+    (InMemoryRelay.is_invited r ~room_id:"r" ~identity_pk_b64:pk2)
+
+let test_set_visibility () =
+  let r = InMemoryRelay.create () in
+  InMemoryRelay.set_room_visibility r ~room_id:"r" ~visibility:"invite";
+  Alcotest.(check string) "invite"
+    "invite" (InMemoryRelay.room_visibility_of r ~room_id:"r");
+  InMemoryRelay.set_room_visibility r ~room_id:"r" ~visibility:"public";
+  Alcotest.(check string) "public"
+    "public" (InMemoryRelay.room_visibility_of r ~room_id:"r")
+
+let test_invite_ctx_constants () =
+  Alcotest.(check string) "invite ctx" "c2c/v1/room-invite" room_invite_sign_ctx;
+  Alcotest.(check string) "uninvite ctx" "c2c/v1/room-uninvite" room_uninvite_sign_ctx;
+  Alcotest.(check string) "set-visibility ctx"
+    "c2c/v1/room-set-visibility" room_set_visibility_sign_ctx;
+  Alcotest.(check string) "not_invited code"
+    "not_invited" relay_err_not_invited;
+  Alcotest.(check string) "not_a_member code"
+    "not_a_member" relay_err_not_a_member
+
 let tests = [
   "register_without_pk_legacy",    `Quick, test_register_without_pk_legacy;
   "first_bind_stores_pk",          `Quick, test_first_bind_stores_pk;
@@ -256,6 +301,10 @@ let tests = [
   "room_send_blob_roundtrips",     `Quick, test_room_send_blob_roundtrips;
   "room_send_ctx_distinct",        `Quick, test_room_send_ctx_distinct;
   "unsupported_enc_code",          `Quick, test_unsupported_enc_code;
+  "default_visibility_public",     `Quick, test_default_visibility_public;
+  "invite_list_roundtrip",         `Quick, test_invite_list_roundtrip;
+  "set_visibility",                `Quick, test_set_visibility;
+  "invite_ctx_constants",          `Quick, test_invite_ctx_constants;
 ]
 
 let () =

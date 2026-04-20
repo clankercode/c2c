@@ -33,6 +33,13 @@ let room_send_sign_ctx = "c2c/v1/room-send"
 
 (* Layer 4 envelope error codes (spec §9). *)
 let relay_err_unsupported_enc = "unsupported_enc"
+let relay_err_not_invited = "not_invited"
+let relay_err_not_a_member = "not_a_member"
+
+(* Layer 4 slice 5: signed invite / uninvite / set_visibility. *)
+let room_invite_sign_ctx = "c2c/v1/room-invite"
+let room_uninvite_sign_ctx = "c2c/v1/room-uninvite"
+let room_set_visibility_sign_ctx = "c2c/v1/room-set-visibility"
 
 (* Parse a header value like
      "Ed25519 alias=foo,ts=1776698000,nonce=AAA,sig=BBB"
@@ -173,6 +180,13 @@ module InMemoryRelay : sig
   val gc : t -> [> `Ok of string list * int]
   val dead_letter : t -> Yojson.Safe.t list
   val list_rooms : t -> Yojson.Safe.t list
+  val room_visibility_of : t -> room_id:string -> string
+  val room_invites_of : t -> room_id:string -> string list
+  val is_invited : t -> room_id:string -> identity_pk_b64:string -> bool
+  val set_room_visibility : t -> room_id:string -> visibility:string -> unit
+  val invite_to_room : t -> room_id:string -> identity_pk_b64:string -> unit
+  val uninvite_from_room : t -> room_id:string -> identity_pk_b64:string -> unit
+  val is_room_member_alias : t -> room_id:string -> alias:string -> bool
 end = struct
   type t = {
     mutex : Mutex.t;
@@ -183,6 +197,9 @@ end = struct
     inboxes : ((string * string), Yojson.Safe.t list) Hashtbl.t;
     dead_letter : Yojson.Safe.t Queue.t;
     rooms : (string, string list) Hashtbl.t;
+    (* Layer 4 slice 5: per-room visibility and invited identity_pk list. *)
+    room_visibility : (string, string) Hashtbl.t;  (* "public" | "invite" *)
+    room_invites : (string, string list) Hashtbl.t; (* b64url-nopad pks *)
     room_history : (string, Yojson.Safe.t list) Hashtbl.t;
     seen_ids : (string, bool) Hashtbl.t;
     dedup_window : int;
@@ -198,6 +215,8 @@ end = struct
     inboxes = Hashtbl.create 16;
     dead_letter = Queue.create ();
     rooms = Hashtbl.create 16;
+    room_visibility = Hashtbl.create 16;
+    room_invites = Hashtbl.create 16;
     room_history = Hashtbl.create 16;
     seen_ids = Hashtbl.create 64;
     seen_ids_fifo = Queue.create ();
@@ -437,6 +456,47 @@ end = struct
       Hashtbl.replace t.rooms room_id members';
       `Ok
     )
+
+  (* Layer 4 slice 5 helpers — visibility + invited_pk list. *)
+  let room_visibility_of t ~room_id =
+    with_lock t (fun () ->
+      match Hashtbl.find_opt t.room_visibility room_id with
+      | Some v -> v | None -> "public")
+
+  let room_invites_of t ~room_id =
+    with_lock t (fun () ->
+      match Hashtbl.find_opt t.room_invites room_id with
+      | Some l -> l | None -> [])
+
+  let is_invited t ~room_id ~identity_pk_b64 =
+    with_lock t (fun () ->
+      match Hashtbl.find_opt t.room_invites room_id with
+      | None -> false
+      | Some l -> List.mem identity_pk_b64 l)
+
+  let set_room_visibility t ~room_id ~visibility =
+    with_lock t (fun () ->
+      Hashtbl.replace t.room_visibility room_id visibility)
+
+  let invite_to_room t ~room_id ~identity_pk_b64 =
+    with_lock t (fun () ->
+      let cur = match Hashtbl.find_opt t.room_invites room_id with
+        | Some l -> l | None -> [] in
+      if not (List.mem identity_pk_b64 cur) then
+        Hashtbl.replace t.room_invites room_id (identity_pk_b64 :: cur))
+
+  let uninvite_from_room t ~room_id ~identity_pk_b64 =
+    with_lock t (fun () ->
+      match Hashtbl.find_opt t.room_invites room_id with
+      | None -> ()
+      | Some l ->
+        Hashtbl.replace t.room_invites room_id
+          (List.filter ((<>) identity_pk_b64) l))
+
+  let is_room_member_alias t ~room_id ~alias =
+    with_lock t (fun () ->
+      match Hashtbl.find_opt t.rooms room_id with
+      | None -> false | Some m -> List.mem alias m)
 
   let send_room t ~from_alias ~room_id ~content ?(message_id = None) =
     with_lock t (fun () ->
@@ -1100,10 +1160,93 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
         else
           respond_unauthorized (json_error_str code msg)
       | Ok () ->
+        (* L4/5 ACL: if room is invite-only, require identity_pk ∈ invited. *)
+        let visibility = InMemoryRelay.room_visibility_of relay ~room_id in
+        let pk_b64 = get_opt_string body "identity_pk" |> Option.value ~default:"" in
+        let admitted =
+          visibility <> "invite"
+          || (pk_b64 <> "" && InMemoryRelay.is_invited relay ~room_id ~identity_pk_b64:pk_b64)
+        in
+        if not admitted then
+          respond_unauthorized (json_error_str relay_err_not_invited
+            (Printf.sprintf "room %S is invite-only and caller is not on the list" room_id))
+        else
         let result = InMemoryRelay.join_room relay ~alias ~room_id in
         respond_ok (match result with
           | `Ok -> json_of_room_join_result `Ok
           | `Error (code, msg) -> json_error code msg [])
+
+  (* L4/5 — set_room_visibility. Signed by any existing room member. *)
+  let handle_set_room_visibility relay body =
+    let alias = get_string body "alias" in
+    let room_id = get_string body "room_id" in
+    let visibility = get_string body "visibility" in
+    if alias = "" || room_id = "" || visibility = "" then
+      respond_bad_request (json_error_str err_bad_request
+        "alias, room_id, and visibility are required")
+    else if visibility <> "public" && visibility <> "invite" then
+      respond_bad_request (json_error_str err_bad_request
+        "visibility must be \"public\" or \"invite\"")
+    else
+      match verify_room_op_proof relay
+              ~sign_ctx:room_set_visibility_sign_ctx
+              ~room_id ~alias body with
+      | Error (code, msg) ->
+        if code = err_bad_request || code = relay_err_missing_proof_field then
+          respond_bad_request (json_error_str code msg)
+        else
+          respond_unauthorized (json_error_str code msg)
+      | Ok () ->
+        if not (InMemoryRelay.is_room_member_alias relay ~room_id ~alias) then
+          respond_unauthorized (json_error_str relay_err_not_a_member
+            (Printf.sprintf "alias %S is not a member of room %S" alias room_id))
+        else begin
+          InMemoryRelay.set_room_visibility relay ~room_id ~visibility;
+          respond_ok (`Assoc [
+            ("ok", `Bool true);
+            ("room_id", `String room_id);
+            ("visibility", `String visibility);
+          ])
+        end
+
+  (* L4/5 — invite / uninvite. Signed by any existing room member. *)
+  let handle_room_invite_op relay ~sign_ctx ~op body =
+    let alias = get_string body "alias" in
+    let room_id = get_string body "room_id" in
+    let target_pk = get_string body "invitee_pk" in
+    if alias = "" || room_id = "" || target_pk = "" then
+      respond_bad_request (json_error_str err_bad_request
+        "alias, room_id, and invitee_pk are required")
+    else
+      match verify_room_op_proof relay ~sign_ctx ~room_id ~alias body with
+      | Error (code, msg) ->
+        if code = err_bad_request || code = relay_err_missing_proof_field then
+          respond_bad_request (json_error_str code msg)
+        else
+          respond_unauthorized (json_error_str code msg)
+      | Ok () ->
+        if not (InMemoryRelay.is_room_member_alias relay ~room_id ~alias) then
+          respond_unauthorized (json_error_str relay_err_not_a_member
+            (Printf.sprintf "alias %S is not a member of room %S" alias room_id))
+        else begin
+          (match op with
+           | `Invite ->
+             InMemoryRelay.invite_to_room relay ~room_id ~identity_pk_b64:target_pk
+           | `Uninvite ->
+             InMemoryRelay.uninvite_from_room relay ~room_id ~identity_pk_b64:target_pk);
+          let invites = InMemoryRelay.room_invites_of relay ~room_id in
+          respond_ok (`Assoc [
+            ("ok", `Bool true);
+            ("room_id", `String room_id);
+            ("invited_members", `List (List.map (fun s -> `String s) invites));
+          ])
+        end
+
+  let handle_invite_room relay body =
+    handle_room_invite_op relay ~sign_ctx:room_invite_sign_ctx ~op:`Invite body
+
+  let handle_uninvite_room relay body =
+    handle_room_invite_op relay ~sign_ctx:room_uninvite_sign_ctx ~op:`Uninvite body
 
   let handle_leave_room relay body =
     let alias = get_string body "alias" in
@@ -1413,6 +1556,24 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j -> handle_leave_room relay j)
+
+      | `POST, "/set_room_visibility" ->
+        let json = parse_body () in
+        (match json with
+         | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
+         | Ok j -> handle_set_room_visibility relay j)
+
+      | `POST, "/invite_room" ->
+        let json = parse_body () in
+        (match json with
+         | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
+         | Ok j -> handle_invite_room relay j)
+
+      | `POST, "/uninvite_room" ->
+        let json = parse_body () in
+        (match json with
+         | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
+         | Ok j -> handle_uninvite_room relay j)
 
       | `POST, "/send_room" ->
         let json = parse_body () in
