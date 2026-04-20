@@ -7,3 +7,8 @@
  (name test_relay_identity)
  (modules test_relay_identity)
  (libraries c2c_mcp alcotest str unix))
+
+(test
+ (name test_relay_bindings)
+ (modules test_relay_bindings)
+ (libraries c2c_mcp alcotest))

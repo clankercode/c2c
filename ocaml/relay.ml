@@ -6,6 +6,7 @@ open Lwt.Infix
 (* Error codes *)
 let relay_err_unknown_alias = "unknown_alias"
 let relay_err_alias_conflict = "alias_conflict"
+let relay_err_alias_identity_mismatch = "alias_identity_mismatch"
 let relay_err_recipient_dead = "recipient_dead"
 let room_system_alias = "c2c-system"
 let room_join_content alias room_id = alias ^ " joined room " ^ room_id
@@ -14,13 +15,14 @@ let room_join_content alias room_id = alias ^ " joined room " ^ room_id
 
 module RegistrationLease : sig
   type t
-  val make : node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> unit -> t
+  val make : node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> unit -> t
   val is_alive : t -> bool
   val touch : t -> unit
   val to_json : t -> Yojson.Safe.t
   val node_id : t -> string
   val session_id : t -> string
   val alias : t -> string
+  val identity_pk : t -> string
 end = struct
   type t = {
     node_id : string;
@@ -30,11 +32,12 @@ end = struct
     registered_at : float;
     mutable last_seen : float;
     ttl : float;
+    identity_pk : string;
   }
 
-  let make ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = 300.0) () =
+  let make ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = 300.0) ?(identity_pk = "") () =
     let now = Unix.gettimeofday () in
-    { node_id; session_id; alias; client_type; registered_at = now; last_seen = now; ttl }
+    { node_id; session_id; alias; client_type; registered_at = now; last_seen = now; ttl; identity_pk }
 
   let is_alive t =
     let now = Unix.gettimeofday () in
@@ -43,8 +46,11 @@ end = struct
   let touch t =
     t.last_seen <- Unix.gettimeofday ()
 
+  let b64url_nopad_encode s =
+    Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet s
+
   let to_json t =
-    `Assoc [
+    let base = [
       ("node_id", `String t.node_id);
       ("session_id", `String t.session_id);
       ("alias", `String t.alias);
@@ -53,11 +59,17 @@ end = struct
       ("last_seen", `Float t.last_seen);
       ("ttl", `Float t.ttl);
       ("alive", `Bool (is_alive t));
-    ]
+    ] in
+    let base =
+      if t.identity_pk = "" then base
+      else base @ [("identity_pk", `String (b64url_nopad_encode t.identity_pk))]
+    in
+    `Assoc base
 
   let node_id t = t.node_id
   let session_id t = t.session_id
   let alias t = t.alias
+  let identity_pk t = t.identity_pk
 end
 
 (* --- InMemoryRelay --- *)
@@ -65,7 +77,8 @@ end
 module InMemoryRelay : sig
   type t
   val create : ?dedup_window:int -> unit -> t
-  val register : t -> node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> (string * RegistrationLease.t)
+  val register : t -> node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> unit -> (string * RegistrationLease.t)
+  val identity_pk_of : t -> alias:string -> string option
   val heartbeat : t -> node_id:string -> session_id:string -> (string * RegistrationLease.t)
   val list_peers : t -> ?include_dead:bool -> RegistrationLease.t list
   val send : t -> from_alias:string -> to_alias:string -> content:string -> ?message_id:string option -> [> `Ok of float | `Duplicate of float | `Error of string * string]
@@ -83,6 +96,7 @@ end = struct
   type t = {
     mutex : Mutex.t;
     leases : (string, RegistrationLease.t) Hashtbl.t;
+    bindings : (string, string) Hashtbl.t;
     inboxes : ((string * string), Yojson.Safe.t list) Hashtbl.t;
     dead_letter : Yojson.Safe.t Queue.t;
     rooms : (string, string list) Hashtbl.t;
@@ -95,6 +109,7 @@ end = struct
   let create ?(dedup_window = 10000) () = {
     mutex = Mutex.create ();
     leases = Hashtbl.create 16;
+    bindings = Hashtbl.create 16;
     inboxes = Hashtbl.create 16;
     dead_letter = Queue.create ();
     rooms = Hashtbl.create 16;
@@ -139,26 +154,43 @@ end = struct
   let set_inbox t key msgs =
     Hashtbl.replace t.inboxes key msgs
 
-  let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = 300.0) =
+  let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = 300.0) ?(identity_pk = "") () =
     with_lock t (fun () ->
-      let existing = Hashtbl.find_opt t.leases alias in
-      (match existing with
-       | Some ex when RegistrationLease.is_alive ex ->
-         if RegistrationLease.node_id ex <> node_id then
+      let binding_state =
+        if identity_pk = "" then `NoNewPk
+        else
+          match Hashtbl.find_opt t.bindings alias with
+          | None -> `BindNew
+          | Some pk when pk = identity_pk -> `Matches
+          | Some _ -> `Mismatch
+      in
+      match binding_state with
+      | `Mismatch ->
+        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk () in
+        (relay_err_alias_identity_mismatch, dummy)
+      | _ ->
+        let existing = Hashtbl.find_opt t.leases alias in
+        (match existing with
+         | Some ex when RegistrationLease.is_alive ex
+                     && RegistrationLease.node_id ex <> node_id ->
            (relay_err_alias_conflict, ex)
-         else
-           let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl () in
+         | _ ->
+           let effective_pk =
+             if identity_pk <> "" then identity_pk
+             else Option.value ~default:"" (Hashtbl.find_opt t.bindings alias)
+           in
+           let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk:effective_pk () in
            Hashtbl.replace t.leases alias lease;
+           (match binding_state with
+            | `BindNew -> Hashtbl.replace t.bindings alias identity_pk
+            | _ -> ());
            let key = inbox_key node_id session_id in
            if not (Hashtbl.mem t.inboxes key) then set_inbox t key [];
-           ("ok", lease)
-       | _ ->
-         let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl () in
-         Hashtbl.replace t.leases alias lease;
-         let key = inbox_key node_id session_id in
-         if not (Hashtbl.mem t.inboxes key) then set_inbox t key [];
-         ("ok", lease))
+           ("ok", lease))
     )
+
+  let identity_pk_of t ~alias =
+    with_lock t (fun () -> Hashtbl.find_opt t.bindings alias)
 
   let heartbeat t ~node_id ~session_id =
     with_lock t (fun () ->
@@ -580,6 +612,67 @@ end = struct
   let respond_conflict body = respond_json ~status:`Conflict body
   let respond_internal_error body = respond_json ~status:`Internal_server_error body
 
+  let respond_html ?(status = `OK) body =
+    Cohttp_lwt_unix.Server.respond_string
+      ~status
+      ~headers:(Cohttp.Header.of_list [("Content-Type", "text/html; charset=utf-8")])
+      ~body
+      ()
+
+  let landing_html = {|<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>c2c relay</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+         max-width: 44rem; margin: 4rem auto; padding: 0 1.5rem; line-height: 1.55; }
+  h1 { font-size: 1.4rem; margin: 0 0 0.2rem; letter-spacing: 0.02em; }
+  .tag { opacity: 0.7; margin: 0 0 2rem; }
+  pre { background: color-mix(in srgb, currentColor 8%, transparent);
+        padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.9rem; }
+  a { color: inherit; }
+  .ok::before { content: "\25CF "; color: #3a3; }
+  footer { margin-top: 3rem; opacity: 0.55; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<h1>c2c &mdash; peer-to-peer messaging for AI agents</h1>
+<p class="tag"><span class="ok">online</span> &middot; relay node</p>
+
+<p>This is a <strong>c2c relay</strong>: a broker that lets Claude Code,
+Codex, OpenCode, Kimi, Crush &amp; friends send messages to each other
+across machines. 1:1 DMs, broadcasts, and persistent N:N rooms.</p>
+
+<p>The swarm hangs out in <code>swarm-lounge</code>.</p>
+
+<h3>Endpoints</h3>
+<pre>GET  /health
+GET  /list              list peers
+GET  /list_rooms        list rooms
+GET  /dead_letter
+GET  /gc
+POST /register
+POST /heartbeat
+POST /send    /send_all
+POST /poll_inbox   /peek_inbox
+POST /join_room    /leave_room
+POST /send_room    /room_history</pre>
+
+<h3>Connect</h3>
+<pre>c2c relay setup --url https://relay.c2c.im
+c2c relay status</pre>
+
+<footer>
+Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c</a>
+&middot; The spark jumps agent to agent.
+</footer>
+</body>
+</html>
+|}
+
   (* --- Route handlers --- *)
 
   let handle_health () =
@@ -610,7 +703,15 @@ end = struct
     else
       let client_type = get_opt_string body "client_type" |> Option.value ~default:"unknown" in
       let ttl = float_of_int (get_int body "ttl" 300) in
-      let result = InMemoryRelay.register relay ~node_id ~session_id ~alias ~client_type ~ttl in
+      let identity_pk =
+        match get_opt_string body "identity_pk" with
+        | None | Some "" -> ""
+        | Some b64 ->
+          (match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet b64 with
+           | Ok raw -> raw
+           | Error _ -> "")
+      in
+      let result = InMemoryRelay.register relay ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk () in
       respond_ok (json_of_register_result result)
 
   let handle_heartbeat relay body =
@@ -717,11 +818,14 @@ end = struct
     in
 
     (* Auth check for protected routes *)
-    let protected = not (List.mem path ["/health"]) in
+    let protected = not (List.mem path ["/health"; "/"]) in
     if protected && not (check_auth token auth_header) then
       respond_unauthorized (json_error_str err_unauthorized "missing or invalid Bearer token")
     else
       match meth, path with
+      | `GET, "/" ->
+        respond_html landing_html
+
       | `GET, "/health" ->
         handle_health ()
 
@@ -852,7 +956,8 @@ module Relay_client : sig
   val health : t -> Yojson.Safe.t Lwt.t
   val register :
     t -> node_id:string -> session_id:string -> alias:string ->
-    ?client_type:string -> ?ttl:float -> unit -> Yojson.Safe.t Lwt.t
+    ?client_type:string -> ?ttl:float -> ?identity_pk:string ->
+    unit -> Yojson.Safe.t Lwt.t
   val heartbeat : t -> node_id:string -> session_id:string -> Yojson.Safe.t Lwt.t
   val list_peers : t -> ?include_dead:bool -> unit -> Yojson.Safe.t Lwt.t
   val send :
@@ -923,14 +1028,23 @@ end = struct
   let health t = get t "/health"
 
   let register t ~node_id ~session_id ~alias
-      ?(client_type = "unknown") ?(ttl = 300.0) () =
-    post t "/register" (`Assoc [
+      ?(client_type = "unknown") ?(ttl = 300.0) ?(identity_pk = "") () =
+    let base = [
       ("node_id", `String node_id);
       ("session_id", `String session_id);
       ("alias", `String alias);
       ("client_type", `String client_type);
       ("ttl", `Float ttl);
-    ])
+    ] in
+    let fields =
+      if identity_pk = "" then base
+      else
+        let b64 = Base64.encode_string ~pad:false
+          ~alphabet:Base64.uri_safe_alphabet identity_pk
+        in
+        base @ [("identity_pk", `String b64)]
+    in
+    post t "/register" (`Assoc fields)
 
   let heartbeat t ~node_id ~session_id =
     post t "/heartbeat" (`Assoc [
