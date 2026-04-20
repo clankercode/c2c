@@ -93,7 +93,7 @@ unblocked — see `relay-peer-identity-spec.md` §13.
 | 2. Signed `send_room` + envelope verify      | ✅    | coder1   | `ce49995` — c2c/v1/room-send ctx; enc=none; ct==content bind; 3 alcotest cases |
 | 3. `sender_pk` in history + client verify    | 🟢    | —        | unblocked by L4/2 at `ce49995` |
 | 4. `{ct, enc, sender_pk}` wire envelope      | 🟢    | —        | unblocked by L4/2 at `ce49995` |
-| 5. `invited_members` ACL + invite/uninvite   | 🟢    | —        | unblocked by L4/1             |
+| 5. `invited_members` ACL + invite/uninvite   | ✅    | coder1   | `4cffcb2` — visibility gate in join_room; /set_room_visibility, /invite_room, /uninvite_room (signed, member-only); 4 alcotest cases |
 
 ### Layer 5 — E2E crypto upgrade path
 
