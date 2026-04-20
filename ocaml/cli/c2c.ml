@@ -1739,13 +1739,21 @@ let relay_serve_cmd =
   let verbose =
     Cmdliner.Arg.(value & flag & info [ "verbose"; "v" ] ~doc:"Enable verbose output.")
   in
+  let tls_cert =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "tls-cert" ] ~docv:"PATH" ~doc:"PEM certificate file for TLS (enables HTTPS).")
+  in
+  let tls_key =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "tls-key" ] ~docv:"PATH" ~doc:"PEM private-key file for TLS (required with --tls-cert).")
+  in
   let+ listen = listen
   and+ token = token
   and+ token_file = token_file
   and+ storage = storage
   and+ db_path = db_path
   and+ gc_interval = gc_interval
-  and+ verbose = verbose in
+  and+ verbose = verbose
+  and+ tls_cert = tls_cert
+  and+ tls_key = tls_key in
   (* Parse listen address (default 127.0.0.1:7331) *)
   let host, port = match listen with
     | None -> ("127.0.0.1", 7331)
@@ -1796,17 +1804,17 @@ let relay_serve_cmd =
            Unix.execvp "python3" (Array.of_list args))
   | _ ->
       (* Native OCaml relay server *)
-      let verbose_str = if verbose then " (verbose)" else "" in
-      Printf.printf "c2c relay serving on http://%s:%d%s\n%!" host port verbose_str;
-      (match token with
-       | Some _ -> Printf.printf "auth: Bearer token required\n%!"
-       | None -> Printf.printf "auth: DISABLED (no token set — do not expose publicly)\n%!");
-      if gc_interval > 0.0 then
-        Printf.printf "gc: running every %.0fs\n%!" gc_interval
-      else
-        Printf.printf "gc: disabled\n%!";
+      let tls_cfg =
+        match tls_cert, tls_key with
+        | Some c, Some k -> Some (`Cert_key (c, k))
+        | None, None -> None
+        | Some _, None ->
+            Printf.eprintf "error: --tls-cert requires --tls-key\n%!"; exit 1
+        | None, Some _ ->
+            Printf.eprintf "error: --tls-key requires --tls-cert\n%!"; exit 1
+      in
       Printf.printf "storage: memory\n%!";
-      Lwt_main.run (Relay.Relay_server.start_server ~host ~port ~token ~verbose ~gc_interval ())
+      Lwt_main.run (Relay.Relay_server.start_server ~host ~port ~token ~verbose ~gc_interval ?tls:tls_cfg ())
 
 let relay_connect_cmd =
   let relay_url =
