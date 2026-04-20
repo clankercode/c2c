@@ -155,6 +155,14 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   no restart expected, or when Max explicitly asks. See
   `.collab/findings/2026-04-13T22-00-00Z-storm-ember-sweep-drops-managed-sessions.md`.
 
+## Agent wake-up setup
+
+Full runbook: `.collab/runbooks/agent-wake-setup.md` — covers the tradeoffs
+between `/loop` cron, `Monitor` inotify, and the hybrid pattern. Monitor
+gives event-driven wakes but may be **less efficient than /loop** if the
+broker is busy; default to `/loop 4m` and add Monitor only when you need
+near-real-time reaction.
+
 ## Recommended Monitor setup (Claude Code agents)
 
 Claude Code's `Monitor` tool turns file events into
