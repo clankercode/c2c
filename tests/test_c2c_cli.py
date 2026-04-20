@@ -134,6 +134,8 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_crush_wake_daemon.py",
         "c2c_cli.py",
         "c2c_history.py",
+        "c2c_pty_inject.py",
+        "c2c_setcap.py",
         "c2c_status.py",
         "c2c_smoke_test.py",
         "c2c_sweep_dryrun.py",
