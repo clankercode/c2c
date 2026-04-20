@@ -79,6 +79,13 @@ class NativeRelaySubcommandTests(unittest.TestCase):
     def test_relay_list_native(self):
         self._assert_native_connection_error(self._run("list"), "relay list")
 
+    def test_relay_list_dead_native(self):
+        # --dead used to shell out to Python; after server-side include_dead
+        # support landed, it's fully native.
+        self._assert_native_connection_error(
+            self._run("list", "--dead"), "relay list --dead"
+        )
+
     def test_relay_rooms_list_native(self):
         self._assert_native_connection_error(
             self._run("rooms", "list"), "relay rooms list"

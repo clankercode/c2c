@@ -585,8 +585,8 @@ end = struct
   let handle_health () =
     respond_ok (json_ok [])
 
-  let handle_list relay =
-    let peers = InMemoryRelay.list_peers relay ~include_dead:false |> List.map RegistrationLease.to_json in
+  let handle_list relay ~include_dead =
+    let peers = InMemoryRelay.list_peers relay ~include_dead |> List.map RegistrationLease.to_json in
     respond_ok (json_ok [ ("peers", `List peers) ])
 
   let handle_dead_letter relay =
@@ -706,9 +706,15 @@ end = struct
   let make_callback relay token _conn req body =
     let open Cohttp in
     let open Cohttp_lwt_unix in
-    let path = Uri.path (Request.uri req) in
+    let uri = Request.uri req in
+    let path = Uri.path uri in
     let meth = Request.meth req in
     let auth_header = Header.get (Request.headers req) "Authorization" in
+    let query_bool name =
+      match Uri.get_query_param uri name with
+      | Some v -> let v = String.lowercase_ascii v in v = "1" || v = "true" || v = "yes"
+      | None -> false
+    in
 
     (* Auth check for protected routes *)
     let protected = not (List.mem path ["/health"]) in
@@ -720,7 +726,7 @@ end = struct
         handle_health ()
 
       | `GET, "/list" ->
-        handle_list relay
+        handle_list relay ~include_dead:(query_bool "include_dead")
 
       | `GET, "/dead_letter" ->
         handle_dead_letter relay
@@ -848,7 +854,7 @@ module Relay_client : sig
     t -> node_id:string -> session_id:string -> alias:string ->
     ?client_type:string -> ?ttl:float -> unit -> Yojson.Safe.t Lwt.t
   val heartbeat : t -> node_id:string -> session_id:string -> Yojson.Safe.t Lwt.t
-  val list_peers : t -> Yojson.Safe.t Lwt.t
+  val list_peers : t -> ?include_dead:bool -> unit -> Yojson.Safe.t Lwt.t
   val send :
     t -> from_alias:string -> to_alias:string -> content:string ->
     ?message_id:string -> unit -> Yojson.Safe.t Lwt.t
@@ -932,7 +938,8 @@ end = struct
       ("session_id", `String session_id);
     ])
 
-  let list_peers t = get t "/list"
+  let list_peers t ?(include_dead = false) () =
+    if include_dead then get t "/list?include_dead=1" else get t "/list"
 
   let send t ~from_alias ~to_alias ~content ?message_id () =
     let base = [
