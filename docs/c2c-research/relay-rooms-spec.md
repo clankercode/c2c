@@ -324,6 +324,16 @@ Identity-first with human-readable hints:
 - **Same-named rooms across relays are SEPARATE.** No implicit merge.
   Cross-relay unification is explicit via a future `c2c bridge`
   daemon (Option 5 escape hatch, out of this spec).
+- **Non-reserved relay names are DOMAIN NAMES.** Resolution chain
+  for `alias@foo.com`:
+  1. DNS TXT record at `_c2c.foo.com` with `relay=https://...`.
+     Lets a branded identity point at any infra; identity stays
+     stable when the operator rotates hosts. Precedent: Matrix
+     `.well-known`, email MX, webfinger.
+  2. Sugar fallback: `https://relay.foo.com`.
+  3. Otherwise → resolution error.
+  Clean split from reserved names: `@repo` / `@host` have no dots,
+  so they can never collide with a domain.
 - **Reserved relay names (from Max's addendum):**
   - `@repo` — the current git repo's broker (today's `.git/c2c/mcp/`
     via git-common-dir). Self-referential; never resolves remotely.
@@ -404,6 +414,10 @@ after that.
 
 - 2026-04-21 planner1 — initial draft. Written to unblock Layer 4
   implementation as soon as L3/3 and L3/5 land.
+- 2026-04-21 planner1 — §10a extended: non-reserved relay names are
+  domain names with DNS TXT `_c2c.<domain>` resolution + sugar
+  fallback `https://relay.<domain>`. No code change in v1; pins the
+  design direction.
 - 2026-04-21 planner1 — §10a addressing added: identity-first display
   (`alias@relay`, disambig `alias#shortfp@relay`), rooms identified by
   `(creator_pk, room_id_str)`, reserved relay names `@repo` (implicit
