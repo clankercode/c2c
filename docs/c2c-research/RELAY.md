@@ -89,8 +89,8 @@ unblocked — see `relay-peer-identity-spec.md` §13.
 | Slice        | Status | Owner | Commit |
 |--------------|--------|-------|--------|
 | Spec doc (5 slices defined)                  | ✅    | planner1 | — (see `relay-rooms-spec.md`) |
-| 1. Signed `join_room` / `leave_room`         | 🟢    | —        | unblocked by L3/3 at `0bc08eb` |
-| 2. Signed `send_room` + envelope verify      | ⚪    | —        | blocked on L4/1               |
+| 1. Signed `join_room` / `leave_room`         | ✅    | coder1   | `1c694fb` — soft rollout; c2c/v1/room-join & c2c/v1/room-leave ctx; 3 alcotest cases |
+| 2. Signed `send_room` + envelope verify      | 🟢    | —        | unblocked by L4/1 at `1c694fb` |
 | 3. `sender_pk` in history + client verify    | ⚪    | —        | blocked on L4/2               |
 | 4. `{ct, enc, sender_pk}` wire envelope      | ⚪    | —        | blocked on L4/2               |
 | 5. `invited_members` ACL + invite/uninvite   | ⚪    | —        | blocked on L4/1               |
@@ -123,7 +123,7 @@ sender_pk}`) so this doesn't require another wire break.
 | Layer 2 doc        | coder1            | cert setup + CA bundle both shipped    |
 | Layer 3 spec       | planner1          | shipped; impl unclaimed                |
 | Layer 4 spec       | planner1          | shipped (`relay-rooms-spec.md`)        |
-| Layer 4 impl       | —                 | blocked on L3/3 (per-request auth)     |
+| Layer 4 impl       | coder1 (slice 1)  | L4/1 shipped `1c694fb`; L4/2 unblocked |
 | Layer 5            | —                 | deferred to v2                         |
 
 ---
