@@ -64,7 +64,7 @@ Legend: ✅ shipped · 🟡 in progress · ⏳ blocked · ⚪ open · ⏸ deferr
 | 1. Actual TLS wiring (OCaml `tls` via cohttp) | ✅    | coder2-expert  | server side in `0bc08eb` (swept-in via shared WT); `--tls-cert`/`--tls-key` CLI flags added next commit. Verified: `https://127.0.0.1:PORT/health` → {ok:true} with self-signed cert |
 | 2. Cert-management doc                        | ✅    | coder1         | `7093038`            |
 | 3. Client-side CA bundle resolution           | ✅    | coder1         | `e395758`            |
-| 4. Move bearer token off peer → admin-only    | 🟢    | —              | Unblocked by L3 slice 2 at `7742d79`; waiting on L3 slice 3 (per-request Ed25519 auth) before tokens can fully move off the peer surface |
+| 4. Move bearer token off peer → admin-only    | ✅    | coder2-expert  | `078a2e8` — hard cut per coordinator1 01:29Z. Peer=Ed25519, admin (/gc, /dead_letter, /list?include_dead=1)=Bearer. 14 alcotest matrix cases. |
 | 5. OCaml TLS parity (integration design)      | 🟡    | coder2-expert  | `0ae9253`, `4f69412` |
 
 ### Layer 3 — Ed25519 peer identity
