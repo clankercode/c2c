@@ -31,9 +31,13 @@ let () =
     { binary = "codex"; deliver_client = "codex";
       needs_deliver = true; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] };
+  (* opencode: the TypeScript c2c plugin (.opencode/plugins/c2c.ts) handles
+     delivery in-process via client.session.promptAsync. Python deliver
+     daemon is redundant and surfaces a noisy CAP_SYS_PTRACE banner in the
+     TUI when setcap is missing. *)
   Stdlib.Hashtbl.add clients "opencode"
     { binary = "opencode"; deliver_client = "opencode";
-      needs_deliver = true; needs_poker = false;
+      needs_deliver = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] };
   Stdlib.Hashtbl.add clients "kimi"
     { binary = "kimi"; deliver_client = "kimi";
@@ -366,7 +370,12 @@ let prepare_launch_args ~(name : string) ~(client : string)
              [ flag; sid; "--name"; name ]
          | None -> [ "--name"; name ])
     | "opencode" ->
-        (match resume_session_id with Some sid -> [ "--session"; sid ] | None -> [])
+        (* OpenCode rejects UUIDs — session IDs must start with "ses". Only
+           pass --session when resuming a prior OpenCode-generated ID. *)
+        (match resume_session_id with
+         | Some sid when String.length sid >= 3 && String.sub sid 0 3 = "ses" ->
+             [ "--session"; sid ]
+         | _ -> [])
     | "codex" ->
         (match resume_session_id with Some _ -> [ "resume"; "--last" ] | None -> [])
     | _ -> []

@@ -344,7 +344,9 @@ def prepare_launch_args(
             args.append("--fork-session")
         else:
             args.extend(["--resume", resume_session_id])
-    elif client == "opencode" and resume_session_id:
+    elif client == "opencode" and resume_session_id and resume_session_id.startswith("ses"):
+        # OpenCode rejects UUIDs — session IDs must start with "ses". Only
+        # pass --session when resuming a prior OpenCode-generated ID.
         args.extend(["--session", resume_session_id])
     elif client == "codex" and resume_session_id:
         args.extend(["resume", "--last"])
