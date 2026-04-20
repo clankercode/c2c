@@ -1624,7 +1624,24 @@ let tool_definitions =
 
 let string_member name json =
   let open Yojson.Safe.Util in
-  json |> member name |> to_string
+  match json |> member name with
+  | `String s -> s
+  | `Null ->
+      invalid_arg
+        (Printf.sprintf "missing required string argument '%s'" name)
+  | other ->
+      invalid_arg
+        (Printf.sprintf
+           "argument '%s' must be a string, got %s"
+           name
+           (match other with
+            | `Int _ -> "int"
+            | `Float _ -> "float"
+            | `Bool _ -> "bool"
+            | `List _ -> "array"
+            | `Assoc _ -> "object"
+            | `Null -> "null"
+            | _ -> "other"))
 
 (* Like [string_member] but accepts a list of candidate argument names
    and picks the first one that is present and non-empty. Used for
@@ -1636,12 +1653,17 @@ let string_member_any names json =
   let open Yojson.Safe.Util in
   let rec find = function
     | [] ->
-        (* fall through to the first name so the raised exception
-           names the canonical key, matching the pre-existing error
-           surface for missing required arguments. *)
         (match names with
          | [] -> invalid_arg "string_member_any: no candidate names"
-         | first :: _ -> json |> member first |> to_string)
+         | [ first ] ->
+             invalid_arg
+               (Printf.sprintf "missing required string argument '%s'" first)
+         | first :: rest ->
+             invalid_arg
+               (Printf.sprintf
+                  "missing required string argument '%s' (or alternatives: %s)"
+                  first
+                  (String.concat ", " rest)))
     | name :: rest ->
         (match json |> member name with
          | `Null -> find rest
@@ -2015,7 +2037,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       in
       Lwt.return (tool_result ~content ~is_error:false)
   | "send" ->
-      let to_alias = string_member "to_alias" arguments in
+      let to_alias = string_member_any [ "to_alias"; "alias" ] arguments in
       let content = string_member "content" arguments in
       (match alias_for_current_session_or_argument broker arguments with
        | None ->
@@ -2573,7 +2595,15 @@ let handle_request ~broker_root json =
       let* result =
         Lwt.catch
           (fun () -> handle_tool_call ~broker ~tool_name ~arguments)
-          (fun exn -> Lwt.return (tool_result ~content:(Printexc.to_string exn) ~is_error:true))
+          (fun exn ->
+            let msg =
+              match exn with
+              | Invalid_argument m -> m
+              | Yojson.Safe.Util.Type_error (m, _) ->
+                  Printf.sprintf "argument type error: %s" m
+              | _ -> Printexc.to_string exn
+            in
+            Lwt.return (tool_result ~content:msg ~is_error:true))
       in
       let is_error =
         (try Yojson.Safe.Util.(result |> member "isError" |> to_bool) with _ -> false)

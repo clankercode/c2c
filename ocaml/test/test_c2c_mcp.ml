@@ -637,6 +637,91 @@ let test_tools_call_send_routes_message_through_broker () =
        let msg = List.hd inbox in
        check string "mcp routed content" "hello from mcp" msg.content)
 
+let test_tools_call_send_accepts_alias_as_to_alias_synonym () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-b" ~alias:"storm-storm" ~pid:None ~pid_start_time:None;
+      let request =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 301)
+          ; ("method", `String "tools/call")
+          ; ( "params",
+              `Assoc
+                [ ("name", `String "send")
+                ; ( "arguments",
+                    `Assoc
+                      [ ("from_alias", `String "storm-ember")
+                      ; ("alias", `String "storm-storm")
+                      ; ("content", `String "via alias synonym")
+                      ] )
+                ] )
+          ]
+      in
+      let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+      (match response with None -> fail "expected tools/call response" | Some _ -> ());
+      let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-b" in
+      check int "one inbox message" 1 (List.length inbox);
+      let msg = List.hd inbox in
+      check string "routed via alias synonym" "via alias synonym" msg.content)
+
+let test_tools_call_send_missing_to_alias_returns_named_error () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None;
+      let request =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 302)
+          ; ("method", `String "tools/call")
+          ; ( "params",
+              `Assoc
+                [ ("name", `String "send")
+                ; ( "arguments",
+                    `Assoc
+                      [ ("from_alias", `String "storm-ember")
+                      ; ("content", `String "no recipient supplied")
+                      ] )
+                ] )
+          ]
+      in
+      let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+      match response with
+      | None -> fail "expected tools/call response"
+      | Some json ->
+          let open Yojson.Safe.Util in
+          let result = json |> member "result" in
+          let is_error = try result |> member "isError" |> to_bool with _ -> false in
+          check bool "send signals isError" true is_error;
+          let text = result |> member "content" |> index 0 |> member "text" |> to_string in
+          check bool "error names the missing field"
+            true
+            (let needle_a = "to_alias" in
+             let needle_b = "alias" in
+             let contains s sub =
+               let n = String.length s and k = String.length sub in
+               let rec loop i =
+                 if i + k > n then false
+                 else if String.sub s i k = sub then true
+                 else loop (i + 1)
+               in
+               loop 0
+             in
+             contains text needle_a || contains text needle_b);
+          check bool "error does not leak raw Yojson Type_error"
+            false
+            (let contains s sub =
+               let n = String.length s and k = String.length sub in
+               let rec loop i =
+                 if i + k > n then false
+                 else if String.sub s i k = sub then true
+                 else loop (i + 1)
+               in
+               loop 0
+             in
+             contains text "Yojson__Safe.Util.Type_error"))
+
 let test_tools_call_send_uses_current_registered_alias () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-a";
@@ -4586,6 +4671,10 @@ let () =
          ; test_case "tools/list makes current-session args optional" `Quick
              test_tools_list_marks_register_and_whoami_session_id_as_optional
          ; test_case "tools/call send routes through broker" `Quick test_tools_call_send_routes_message_through_broker
+         ; test_case "tools/call send accepts `alias` as to_alias synonym" `Quick
+             test_tools_call_send_accepts_alias_as_to_alias_synonym
+         ; test_case "tools/call send missing to_alias returns named error" `Quick
+             test_tools_call_send_missing_to_alias_returns_named_error
          ; test_case "tools/call send binds sender to current registration" `Quick
              test_tools_call_send_uses_current_registered_alias
          ; test_case "tools/call send binds sender even if own pid is stale" `Quick
