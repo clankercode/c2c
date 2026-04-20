@@ -174,3 +174,11 @@ Concrete consequences already applied:
   returns new error code `alias_identity_mismatch`. HTTP `/register`
   decodes optional b64url-nopad `identity_pk`; `Relay_client.register`
   mirrors the field. 5 alcotest cases in `test_relay_bindings.ml`.
+- 2026-04-21 coder1 — L1 CLI gap closed: `c2c relay register` +
+  `c2c relay dm send/poll` at `e49c996`. These were the last missing
+  verbs blocking runbook §8.
+- 2026-04-21 planner1 — `7dc2877`: fixed `err_not_found` typo in
+  `relay.ml:718` (was `"not_not_found"`). Rewrote runbook §8 against
+  real CLI surface; §8 is now executable pending fresh Railway deploy.
+  Filed 3 findings: relay-down resolved, §8-cli-drift, stale-deploy
+  (binary on relay.c2c.im is pre-L4; push auth needed from Max).
