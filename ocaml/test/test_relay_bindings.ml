@@ -235,6 +235,65 @@ let test_unsupported_enc_code () =
   Alcotest.(check string) "unsupported_enc code"
     "unsupported_enc" relay_err_unsupported_enc
 
+(* --- L4 slice 3: envelope in history + fan-out --- *)
+
+let test_send_room_persists_envelope_in_history () =
+  let r = InMemoryRelay.create () in
+  (* Need two members for send_room to actually fan out; we only check
+     the history path here. Register both with aliases. *)
+  let _ = InMemoryRelay.register r ~node_id:"n" ~session_id:"s1" ~alias:"alice" () in
+  let _ = InMemoryRelay.register r ~node_id:"n" ~session_id:"s2" ~alias:"bob" () in
+  let _ = InMemoryRelay.join_room r ~alias:"alice" ~room_id:"rm" in
+  let _ = InMemoryRelay.join_room r ~alias:"bob" ~room_id:"rm" in
+  let env = `Assoc [
+    ("ct", `String "aGVsbG8");
+    ("enc", `String "none");
+    ("sender_pk", `String "pkb64");
+    ("sig", `String "sigb64");
+    ("ts", `String "2026-04-21T05:00:00Z");
+    ("nonce", `String "nc");
+  ] in
+  let _ = InMemoryRelay.send_room r ~from_alias:"alice" ~room_id:"rm"
+    ~content:"hello" ~envelope:env () in
+  let hist = InMemoryRelay.room_history r ~room_id:"rm" ~limit:10 in
+  (* hist contains system join messages plus one send message; find the
+     send (non-system, from_alias=alice with content=hello). *)
+  let send_entry =
+    List.find_opt (fun entry -> match entry with
+      | `Assoc l ->
+        (match List.assoc_opt "content" l with
+         | Some (`String "hello") -> true | _ -> false)
+      | _ -> false) hist
+  in
+  match send_entry with
+  | None -> Alcotest.fail "send history entry not found"
+  | Some (`Assoc l) ->
+    Alcotest.(check bool) "envelope in history" true
+      (List.assoc_opt "envelope" l <> None)
+  | Some _ -> Alcotest.fail "entry not an object"
+
+let test_send_room_without_envelope_legacy_history () =
+  let r = InMemoryRelay.create () in
+  let _ = InMemoryRelay.register r ~node_id:"n" ~session_id:"s1" ~alias:"a1" () in
+  let _ = InMemoryRelay.register r ~node_id:"n" ~session_id:"s2" ~alias:"a2" () in
+  let _ = InMemoryRelay.join_room r ~alias:"a1" ~room_id:"rm" in
+  let _ = InMemoryRelay.join_room r ~alias:"a2" ~room_id:"rm" in
+  let _ = InMemoryRelay.send_room r ~from_alias:"a1" ~room_id:"rm"
+    ~content:"legacy" () in
+  let hist = InMemoryRelay.room_history r ~room_id:"rm" ~limit:10 in
+  let send_entry =
+    List.find (fun entry -> match entry with
+      | `Assoc l ->
+        (match List.assoc_opt "content" l with
+         | Some (`String "legacy") -> true | _ -> false)
+      | _ -> false) hist
+  in
+  match send_entry with
+  | `Assoc l ->
+    Alcotest.(check bool) "no envelope key on legacy send" false
+      (List.assoc_opt "envelope" l <> None)
+  | _ -> Alcotest.fail "unexpected shape"
+
 (* --- L4 slice 5: invited_members ACL --- *)
 
 let test_default_visibility_public () =
@@ -397,6 +456,8 @@ let tests = [
   "allowlist_query_roundtrip",     `Quick, test_allowlist_query_roundtrip;
   "unbind_removes_binding",        `Quick, test_unbind_removes_binding;
   "unbind_missing_alias_is_noop",  `Quick, test_unbind_missing_alias_is_noop;
+  "send_room_persists_envelope",   `Quick, test_send_room_persists_envelope_in_history;
+  "send_room_legacy_no_envelope",  `Quick, test_send_room_without_envelope_legacy_history;
 ]
 
 let () =

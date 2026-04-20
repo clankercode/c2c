@@ -181,7 +181,7 @@ module InMemoryRelay : sig
   val send_all : t -> from_alias:string -> content:string -> ?message_id:string option -> [> `Ok of float * string list * string list]
   val join_room : t -> alias:string -> room_id:string -> [> `Ok | `Error of string * string]
   val leave_room : t -> alias:string -> room_id:string -> [> `Ok | `Error of string * string]
-  val send_room : t -> from_alias:string -> room_id:string -> content:string -> ?message_id:string option -> [> `Ok of float * string list * string list]
+  val send_room : t -> from_alias:string -> room_id:string -> content:string -> ?message_id:string option -> ?envelope:Yojson.Safe.t -> unit -> [> `Ok of float * string list * string list]
   val room_history : t -> room_id:string -> ?limit:int -> Yojson.Safe.t list
   val gc : t -> [> `Ok of string list * int]
   val dead_letter : t -> Yojson.Safe.t list
@@ -206,7 +206,8 @@ end = struct
     (* Layer 4 slice 5: per-room visibility and invited identity_pk list. *)
     room_visibility : (string, string) Hashtbl.t;  (* "public" | "invite" *)
     room_invites : (string, string list) Hashtbl.t; (* b64url-nopad pks *)
-    (* L3/5: operator allowlist (alias → identity_pk b64url-nopad). *)
+    (* L3/5: operator allowlist (alias → identity_pk b64url-nopad). If an
+       alias is present here, registrations must match the pinned pk. *)
     allowed_identities : (string, string) Hashtbl.t;
     room_history : (string, Yojson.Safe.t list) Hashtbl.t;
     seen_ids : (string, bool) Hashtbl.t;
@@ -545,7 +546,7 @@ end = struct
       match Hashtbl.find_opt t.rooms room_id with
       | None -> false | Some m -> List.mem alias m)
 
-  let send_room t ~from_alias ~room_id ~content ?(message_id = None) =
+  let send_room t ~from_alias ~room_id ~content ?(message_id = None) ?envelope () =
     with_lock t (fun () ->
       let msg_id = match message_id with Some id -> id | None -> generate_uuid () in
       let ts = Unix.gettimeofday () in
@@ -556,40 +557,47 @@ end = struct
       else begin
         let delivered_to = ref [] in
         let skipped = ref [] in
+        (* L4/3: append envelope verbatim when the signed path was taken
+           (spec §6/§7). Fan-out and history carry the full envelope so
+           clients can re-verify sig on receipt. *)
+        let with_envelope base = match envelope with
+          | None -> base
+          | Some e -> ("envelope", e) :: base
+        in
         List.iter (fun alias ->
           if alias = from_alias then ()
           else begin
             match Hashtbl.find_opt t.leases alias with
             | None ->
               skipped := alias :: !skipped;
-              let dl = `Assoc [
+              let dl = `Assoc (with_envelope [
                 ("message_id", `String msg_id); ("from_alias", `String from_alias);
                 ("to_alias", `String (alias ^ "@" ^ room_id)); ("content", `String content);
                 ("ts", `Float ts); ("room_id", `String room_id); ("reason", `String "recipient_dead");
-              ] in Queue.add dl t.dead_letter
+              ]) in Queue.add dl t.dead_letter
             | Some lease ->
               if not (RegistrationLease.is_alive lease) then begin
                 skipped := alias :: !skipped;
-                let dl = `Assoc [
+                let dl = `Assoc (with_envelope [
                   ("message_id", `String msg_id); ("from_alias", `String from_alias);
                   ("to_alias", `String (alias ^ "@" ^ room_id)); ("content", `String content);
                   ("ts", `Float ts); ("room_id", `String room_id); ("reason", `String "recipient_dead");
-                ] in Queue.add dl t.dead_letter
+                ]) in Queue.add dl t.dead_letter
               end else begin
                 delivered_to := alias :: !delivered_to;
                 let key = inbox_key (RegistrationLease.node_id lease) (RegistrationLease.session_id lease) in
-                let msg = `Assoc [
+                let msg = `Assoc (with_envelope [
                   ("message_id", `String msg_id); ("from_alias", `String from_alias);
                   ("room_id", `String room_id); ("content", `String content); ("ts", `Float ts);
-                ] in
+                ]) in
                 let inbox = get_inbox t key in set_inbox t key (msg :: inbox)
               end
           end
         ) members;
-        let hist_msg = `Assoc [
+        let hist_msg = `Assoc (with_envelope [
           ("message_id", `String msg_id); ("from_alias", `String from_alias);
           ("room_id", `String room_id); ("content", `String content); ("ts", `Float ts);
-        ] in
+        ]) in
         let hist = match Hashtbl.find_opt t.room_history room_id with
           | Some h -> h | None -> []
         in
@@ -1463,7 +1471,15 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
           respond_unauthorized (json_error_str code msg)
       | Ok () ->
         let message_id = get_opt_string body "message_id" in
-        match InMemoryRelay.send_room relay ~from_alias ~room_id ~content ~message_id with
+        let envelope =
+          match body with
+          | `Assoc l ->
+            (match List.assoc_opt "envelope" l with
+             | Some e -> Some e | None -> None)
+          | _ -> None
+        in
+        match InMemoryRelay.send_room relay ~from_alias ~room_id ~content
+                ~message_id ?envelope () with
         | `Ok (ts, delivered, skipped) -> respond_ok (json_of_send_room_result (ts, delivered, skipped))
 
   let handle_room_history relay body =
