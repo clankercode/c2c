@@ -5508,39 +5508,53 @@ let save_repo_config json =
   (try Unix.mkdir dir 0o755 with Unix.Unix_error _ -> ());
   json_write_file path json
 
+let valid_strategies = [ "first-alive"; "round-robin"; "broadcast" ]
+
 let repo_set_supervisor_cmd =
   let aliases_arg =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ALIAS[,ALIAS2,...]"
-                    ~doc:"Supervisor alias or comma-separated list for round-robin fallback.")
+                    ~doc:"Supervisor alias or comma-separated list.")
+  in
+  let strategy_arg =
+    Cmdliner.Arg.(value & opt (some string) None & info ["strategy"; "s"] ~docv:"STRATEGY"
+                    ~doc:"Dispatch strategy: first-alive (default), round-robin, broadcast.")
   in
   let+ aliases_str = aliases_arg
+  and+ strategy_opt = strategy_arg
   and+ json = json_flag in
   let aliases = List.filter (fun s -> s <> "") (String.split_on_char ',' aliases_str) in
   if aliases = [] then (
     Printf.eprintf "error: at least one alias required\n%!";
     exit 1
   );
+  (match strategy_opt with
+   | Some s when not (List.mem s valid_strategies) ->
+       Printf.eprintf "error: unknown strategy '%s'. Use: %s\n%!" s (String.concat ", " valid_strategies);
+       exit 1
+   | _ -> ());
   let config = load_repo_config () in
   let fields = match config with `Assoc f -> f | _ -> [] in
   let supervisor_val = `List (List.map (fun a -> `String a) aliases) in
-  let fields' =
-    ("supervisors", supervisor_val)
-    :: List.filter (fun (k, _) -> k <> "supervisors" && k <> "permission_supervisors") fields
+  let fields' = ref
+    (("supervisors", supervisor_val)
+     :: List.filter (fun (k, _) -> k <> "supervisors" && k <> "permission_supervisors" && k <> "supervisor_strategy") fields)
   in
-  save_repo_config (`Assoc fields');
+  (match strategy_opt with
+   | Some s -> fields' := ("supervisor_strategy", `String s) :: !fields'
+   | None -> ());
+  save_repo_config (`Assoc !fields');
   let output_mode = if json then Json else Human in
+  let strategy_str = match strategy_opt with Some s -> s | None -> "first-alive (default)" in
   (match output_mode with
    | Json ->
-       print_json (`Assoc
-         [ ("ok", `Bool true)
-         ; ("permission_supervisors", supervisor_val)
-         ; ("config", `String (repo_config_path ()))
-         ])
+       let out = [ ("ok", `Bool true); ("supervisors", supervisor_val); ("config", `String (repo_config_path ())) ] in
+       let out = match strategy_opt with Some s -> ("supervisor_strategy", `String s) :: out | None -> out in
+       print_json (`Assoc out)
    | Human ->
        Printf.printf "Supervisor set: %s\n" (String.concat ", " aliases);
-       Printf.printf "Config: %s\n" (repo_config_path ());
-       Printf.printf "\nPlugin will DM supervisors in round-robin order on permission.ask.\n";
-       Printf.printf "Override at runtime: C2C_PERMISSION_SUPERVISOR=alias\n")
+       Printf.printf "Strategy:      %s\n" strategy_str;
+       Printf.printf "Config:        %s\n" (repo_config_path ());
+       Printf.printf "Override:      C2C_PERMISSION_SUPERVISOR=alias or C2C_SUPERVISORS=a,b\n")
 
 let repo_show_cmd =
   let+ json = json_flag in
@@ -5562,9 +5576,11 @@ let repo_show_cmd =
               Printf.printf "  supervisors: %s\n" (String.concat ", " names)
           | _ ->
               Printf.printf "  supervisors: (not set — default: coordinator1)\n");
+         let shown = [ "supervisors"; "permission_supervisors" ] in
          List.iter (fun (k, v) ->
-           if k <> "permission_supervisors" then
-             Printf.printf "  %s: %s\n" k (Yojson.Safe.to_string v)
+           if not (List.mem k shown) then
+             let vstr = match v with `String s -> s | _ -> Yojson.Safe.to_string v in
+             Printf.printf "  %s: %s\n" k vstr
          ) fields
        ))
 

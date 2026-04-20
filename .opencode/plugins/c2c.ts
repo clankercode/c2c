@@ -101,18 +101,21 @@ const C2CDelivery: Plugin = async (ctx) => {
   const permissionSupervisors: string[] = resolvePermissionSupervisors(sidecar);
   const supervisorStrategy: string =
     (sidecar.supervisor_strategy as string) ||
-    loadRepoConfig().supervisor_strategy as string ||
+    (loadRepoConfig().supervisor_strategy as string) ||
     "first-alive";
   let supervisorIndex = 0;
-  const nextSupervisor = () => {
+
+  /** Returns supervisor(s) to notify for this request. */
+  const selectSupervisors = (): string[] => {
+    if (supervisorStrategy === "broadcast") return permissionSupervisors;
     if (supervisorStrategy === "round-robin") {
-      const s = permissionSupervisors[supervisorIndex % permissionSupervisors.length];
-      supervisorIndex++;
-      return s;
+      return [permissionSupervisors[supervisorIndex++ % permissionSupervisors.length]];
     }
     // first-alive and default: return first (liveness check is a v2 improvement)
-    return permissionSupervisors[0];
+    return [permissionSupervisors[0]];
   };
+  /** Returns a single supervisor (first of selectSupervisors). */
+  const nextSupervisor = () => selectSupervisors()[0];
   const permissionTimeoutMs: number = parseInt(
     process.env.C2C_PERMISSION_TIMEOUT_MS || "120000", 10
   );
@@ -445,14 +448,16 @@ const C2CDelivery: Plugin = async (ctx) => {
           `  id: ${permId || "unknown"}`,
           `  (v1 fallback — respond via TUI dialog)`,
         ].join("\n");
-        const supervisor = nextSupervisor();
-        try {
-          await runC2c(["send", supervisor, msg]);
-          await log(`permission notification sent to ${supervisor}: ${permId}`);
-          void toast(`c2c: permission notified → ${supervisor}`);
-        } catch (err) {
-          await log(`permission notification error: ${err}`);
+        const supervisors = selectSupervisors();
+        for (const supervisor of supervisors) {
+          try {
+            await runC2c(["send", supervisor, msg]);
+            await log(`permission notification sent to ${supervisor}: ${permId}`);
+          } catch (err) {
+            await log(`permission notification error (${supervisor}): ${err}`);
+          }
         }
+        void toast(`c2c: permission notified → ${supervisors.join(", ")}`);
         return;
       }
 
@@ -490,11 +495,11 @@ const C2CDelivery: Plugin = async (ctx) => {
           `  c2c send ${sessionId} "permission:${permId}:reject"`,
           `(timeout → falls back to TUI dialog)`,
         ].join("\n");
-        const supervisor = nextSupervisor();
+        const supervisor = nextSupervisor(); // single for ask: first reply wins
         try {
           await runC2c(["send", supervisor, msg]);
           await log(`permission.ask sent to ${supervisor}: ${permId}`);
-          void toast(`c2c: awaiting permission approval from ${supervisor}…`);
+          void toast(`c2c: awaiting permission from ${supervisor}…`);
         } catch (err) {
           await log(`permission.ask notify error: ${err}`);
           return; // notify failed — fall through to dialog

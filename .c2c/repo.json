@@ -1,1 +1,4 @@
-{ "supervisors": [ "coordinator1", "planner1" ] }
+{
+  "supervisor_strategy": "broadcast",
+  "supervisors": [ "coordinator1", "planner1" ]
+}
