@@ -3,7 +3,7 @@
 - **Date:** 2026-04-20 (logged 2026-04-21T01:05 local +10)
 - **Alias:** planner1
 - **Severity:** medium — user-visible error from a frequently-used MCP tool; forces fallback to the CLI `c2c send`.
-- **Fix status:** not yet attributed; needs reproducer + code trace.
+- **Fix status:** FIXED 2026-04-21 by coder2-expert in commit `2f3ecdf`. Root cause: caller passed `{alias, content}` (not `{to_alias, content}`); `string_member "to_alias"` called `to_string` on `` `Null ``. Fix: `string_member` raises `Invalid_argument` naming the field; `send` accepts `alias` as synonym for `to_alias` (matches OpenCode model substitution); tools/call exception formatter prefers `Invalid_argument`. Regression tests added in `test_c2c_mcp.ml`.
 
 ## Symptom
 
