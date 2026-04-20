@@ -635,6 +635,17 @@ module Relay_server : sig
     Cohttp_lwt.Body.t ->
     (Cohttp.Response.t * Cohttp_lwt.Body.t) Lwt.t
 
+  (* L2/4 auth decision — exposed for unit testing the route matrix.
+     Returns (allow, error_msg_if_denied). Admin routes require Bearer;
+     peer routes require Ed25519; unauth routes always allow. *)
+  val auth_decision :
+    path:string ->
+    include_dead:bool ->
+    token:string option ->
+    auth_header:string option ->
+    ed25519_verified:bool ->
+    bool * string option
+
   val start_server :
     host:string ->
     port:int ->
@@ -648,7 +659,6 @@ end = struct
 
   (* Error codes *)
   let err_bad_request = "bad_request"
-  let err_unauthorized = "unauthorized"
   let err_not_found = "not_not_found"
   let err_internal_error = "internal_error"
 
@@ -726,6 +736,44 @@ end = struct
         (match String.split_on_char ' ' h with
          | ["Bearer"; token'] -> token' = t
          | _ -> false)
+
+  let header_has_bearer = function
+    | Some h ->
+      (match String.split_on_char ' ' h with
+       | "Bearer" :: _ -> true
+       | _ -> false)
+    | None -> false
+
+  let header_has_ed25519 = function
+    | Some h ->
+      let p = "Ed25519 " in
+      String.length h >= String.length p
+      && String.sub h 0 (String.length p) = p
+    | None -> false
+
+  let err_unauthorized = "unauthorized"
+
+  let auth_decision ~path ~include_dead ~token ~auth_header ~ed25519_verified =
+    let is_unauth = List.mem path ["/health"; "/"] in
+    let is_admin =
+      path = "/gc"
+      || path = "/dead_letter"
+      || (path = "/list" && include_dead)
+    in
+    if is_unauth then (true, None)
+    else if is_admin then
+      if header_has_ed25519 auth_header then
+        (false, Some
+          "admin routes require Bearer token; Ed25519 is for peer routes (spec §5.1)")
+      else if check_auth token auth_header then (true, None)
+      else (false, Some "admin route requires Bearer token")
+    else
+      if ed25519_verified then (true, None)
+      else if header_has_bearer auth_header then
+        (false, Some
+          "peer routes require Ed25519 auth per spec §5.1; Bearer is admin-only")
+      else if token = None then (true, None)  (* dev mode *)
+      else (false, Some "peer route requires Ed25519 auth (spec §5.1)")
 
   (* --- Request body parsing --- *)
 
@@ -1460,11 +1508,11 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
       | None -> false
     in
 
-    (* Auth check for protected routes.
-       Two accepted forms (spec §5): Ed25519 per-request signature
-       (stronger, cryptographically binds to alias) or Bearer token
-       (legacy, accepted during soft rollout). *)
-    let protected = not (List.mem path ["/health"; "/"]) in
+    (* Auth check — L2/4 hard cut (spec §5.1, approved 2026-04-21).
+       Peer routes require Ed25519 per-request signature; admin routes
+       require Bearer. Mixing is rejected both ways. When no Bearer
+       token is configured on the server (dev mode), admin routes
+       still skip the Bearer check — mirrors prior behavior. *)
     Cohttp_lwt.Body.to_string body >>= fun body_str ->
     let body_sha256 = body_sha256_b64 body_str in
     let query = sorted_query_string uri in
@@ -1472,17 +1520,25 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
       try_verify_ed25519_request relay ~auth_header
         ~meth:(meth_to_string meth) ~path ~query ~body_sha256_b64:body_sha256
     in
-    let auth_ok, ed25519_err =
+    let include_dead = query_bool "include_dead" in
+    let ed25519_verified, ed25519_err =
       match ed25519_result with
-      | Ok (Some _) -> (true, None)   (* verified Ed25519 proof *)
-      | Ok None ->                    (* no Ed25519 header — fall back to Bearer *)
-        (check_auth token auth_header, None)
+      | Ok (Some _) -> (true, None)
+      | Ok None -> (false, None)
       | Error (code, msg) -> (false, Some (code, msg))
     in
-    if protected && not auth_ok then
+    let auth_ok, auth_err_msg =
+      auth_decision ~path ~include_dead ~token ~auth_header ~ed25519_verified
+    in
+    if not auth_ok then
       let code, msg = match ed25519_err with
         | Some (c, m) -> c, m
-        | None -> err_unauthorized, "missing or invalid auth"
+        | None ->
+          let m = match auth_err_msg with
+            | Some m -> m
+            | None -> "missing or invalid auth"
+          in
+          err_unauthorized, m
       in
       respond_unauthorized (json_error_str code msg)
     else
