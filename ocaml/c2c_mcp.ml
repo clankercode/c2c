@@ -461,7 +461,14 @@ module Broker = struct
             end)
           conflicting)
 
+  let reserved_aliases = ["c2c"; "c2c-system"]
+
   let enqueue_message t ~from_alias ~to_alias ~content =
+    (* Reject messages claiming a reserved system from_alias — prevents spoofing. *)
+    if List.mem from_alias reserved_aliases then
+      invalid_arg (Printf.sprintf
+        "send rejected: from_alias '%s' is a reserved system alias" from_alias)
+    else
     with_registry_lock t (fun () ->
         match resolve_live_session_id_by_alias t to_alias with
         | Unknown_alias -> invalid_arg ("unknown alias: " ^ to_alias)
@@ -1935,6 +1942,14 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
              | Some a -> a
              | None -> invalid_arg "alias is required (pass {\"alias\":\"your-name\"} or set C2C_MCP_AUTO_REGISTER_ALIAS)")
       in
+      (* Reserved aliases — always blocked. *)
+      let reserved_aliases = ["c2c"; "c2c-system"] in
+      if List.mem alias reserved_aliases then
+        Lwt.return (tool_result
+          ~content:(Printf.sprintf
+            "register rejected: '%s' is a reserved system alias and cannot be registered" alias)
+          ~is_error:true)
+      else
       let pid =
         match current_client_pid () with
         | Some pid -> Some pid
