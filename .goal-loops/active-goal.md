@@ -227,11 +227,47 @@ These are Max's target experiences, verbatim:
   mode. Stale ghost registrations (crush-fresh-test, opencode-c2c-msg) cleaned up
   to unblock goal calculation. (2026-04-14, storm-beacon).
 
-### Active Work
+### Active Work (as of 2026-04-21, planner1)
 
-- No active delivery-proof blocker is currently recorded here. The next
-  high-leverage work is product polish, per-pair Crush matrix expansion if
-  desired, and keeping managed sessions healthy through restarts.
+- **c2c tail + --since**: `c2c room history --since` filter and `c2c tail <room>
+  --follow` live-follow — specs in `.collab/findings/2026-04-20T21-45-00Z-*`.
+  Assigned to coder2-expert.
+- **c2c health extension**: supervisor config check, relay reachability probe,
+  per-client plugin install check — spec `.collab/findings/2026-04-20T21-35-00Z-*`.
+  Assigned to coder2-expert.
+- **c2c init supervisor command**: per-repo supervisor list, TUI checklist, multi-
+  supervisor round-robin/first-alive/broadcast — spec `.collab/findings/2026-04-20T21-05-00Z-*`.
+  coder2-expert has initial implementation (b300f55).
+- **Supervisor liveness in plugin**: `querySupervisorLiveness()` via `c2c list --json`,
+  broadcast fallback — spec `.collab/findings/2026-04-20T21-30-00Z-*`. Pending impl.
+- **AFK-wait promptAsync validation**: does `promptAsync` fire during human-turn?
+  Queued for next non-bypass OpenCode TUI window.
+- **v2 permission async approval validation**: live test of `permission.ask` hook
+  with structured c2c reply. Queued for same TUI window.
+- **Cross-machine relay**: loopback proof PASSED 2026-04-20 (relay-test-sender →
+  relay-test-receiver via relay.c2c.im). Real multi-machine test pending.
+  Runbook: `.collab/runbooks/cross-machine-relay-proof.md`.
+
+### Recent Completions (2026-04-20/21, planner1 + coder2-expert + coordinator1)
+
+- **v0.6.10** ✓: version bump, RAILWAY_GIT_COMMIT_SHA for git_hash in relay + MCP
+  server (76cb410, 538068d). relay.c2c.im now reports real commit hash.
+- **§8 signed L4 envelopes** ✓: PASSED on live relay (254c7f6, per findings).
+- **@ → # room separator rename** ✓: broker, relay, plugin, CLAUDE.md (798a9dd, 9345ea8).
+- **OpenCode plugin cold-boot fix** ✓: `lifecycle.start` calls `tryDeliver()` so
+  inbox drains immediately on plugin init (0dd3d77, commit d57236b+).
+- **OpenCode permission hook v1** ✓: `permission.updated` event → DM supervisor
+  (default coordinator1). Validated by code review (9ba7724).
+- **OpenCode permission hook v2** ✓: `permission.ask` async hook awaits supervisor
+  DM reply (120s timeout, falls back to TUI dialog). Reviewed PASS (a02de4f).
+- **Plugin fork-bomb fix** ✓: removed `./c2c` CWD-relative check from `runC2c()`;
+  PATH-only now prevents Python wrapper from being selected (d81489f).
+- **Monitor event debounce** ✓: plugin's `c2c monitor --alias` watcher now has
+  filter+debounce on events (5cb32a2).
+- **PTY/Python deprecation sweep** ✓: `c2c start opencode` no longer spawns PTY
+  daemon; CLAUDE.md deprecation flags on all PTY wake scripts (d592dfd+).
+- **c2c relay loopback proof** ✓: send + poll via relay.c2c.im confirmed working
+  with two CLI aliases (no broker needed). Recipe in runbook.
 
 ### Remaining Product Polish
 
@@ -243,10 +279,16 @@ These are Max's target experiences, verbatim:
   `c2c room list --json` now include `alive_member_count`,
   `dead_member_count`, `unknown_member_count`, and `member_details` so stale
   room memberships are visible without running sweep.
-- **Room access control** — shipped in broker v0.6.9 (8576a00). Invite-only
+- **Room access control** ✓ — shipped in broker v0.6.9 (8576a00). Invite-only
   rooms, visibility settings, member invites, and join guards.
-- **Room UX improvements** — richer room history text formatting shipped
+- **Room UX improvements** ✓ — richer room history text formatting shipped
   (human-readable timestamps, system-message styling, empty-state messaging).
+- **Room history persistence** ✓ — `history.jsonl` per room, append-only,
+  survives restarts, new-joiner backfill. Missing: `--since` filter, `c2c tail`,
+  size cap (specs written 2026-04-21, pending coder2 impl).
+- **Supervisor config** — `c2c init --supervisor` + multi-supervisor liveness
+  (specs written, coder2 implementing).
+- **c2c health** — relay reachability + plugin install checks (spec written, pending).
 - Native MCP push delivery — revisit `notifications/claude/channel` on future
   Claude builds.
 
