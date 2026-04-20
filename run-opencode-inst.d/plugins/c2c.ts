@@ -35,14 +35,53 @@ import * as path from "path";
 // ---------------------------------------------------------------------------
 
 /** Read .opencode/c2c-plugin.json relative to the CWD, returning {} on miss. */
-function loadSidecarConfig(): Record<string, string> {
+function loadSidecarConfig(): Record<string, unknown> {
   try {
     const sidecar = path.join(process.cwd(), ".opencode", "c2c-plugin.json");
     const raw = fs.readFileSync(sidecar, "utf-8");
-    return JSON.parse(raw) as Record<string, string>;
+    return JSON.parse(raw) as Record<string, unknown>;
   } catch {
     return {};
   }
+}
+
+/** Read .c2c/repo.json relative to the CWD, returning {} on miss. */
+function loadRepoConfig(): Record<string, unknown> {
+  try {
+    const repo = path.join(process.cwd(), ".c2c", "repo.json");
+    const raw = fs.readFileSync(repo, "utf-8");
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+/** Resolve supervisor aliases from env > sidecar > repo.json > default. */
+function resolvePermissionSupervisors(sidecar: Record<string, unknown>): string[] {
+  // C2C_PERMISSION_SUPERVISOR: single alias override (highest priority)
+  const envSingle = process.env.C2C_PERMISSION_SUPERVISOR;
+  if (envSingle) return [envSingle];
+  // C2C_SUPERVISORS: comma-separated list override
+  const envList = process.env.C2C_SUPERVISORS;
+  if (envList) return envList.split(",").map((s) => s.trim()).filter(Boolean);
+  // Sidecar: supervisors array (c2c init --supervisor writes here)
+  const sidecarSups = sidecar.supervisors;
+  if (Array.isArray(sidecarSups) && sidecarSups.length > 0) {
+    const names = sidecarSups.filter((s): s is string => typeof s === "string");
+    if (names.length > 0) return names;
+  }
+  // Repo config: supervisors array (c2c repo set supervisor writes here)
+  const repo = loadRepoConfig();
+  const repoSups = repo.supervisors ?? repo.permission_supervisors;
+  if (Array.isArray(repoSups) && repoSups.length > 0) {
+    const names = repoSups.filter((s): s is string => typeof s === "string");
+    if (names.length > 0) return names;
+  }
+  // Sidecar: permission_supervisor (legacy single value)
+  const sidecarLegacy = sidecar.permission_supervisor;
+  if (typeof sidecarLegacy === "string" && sidecarLegacy) return [sidecarLegacy];
+  // Default
+  return ["coordinator1"];
 }
 
 // ---------------------------------------------------------------------------
@@ -59,8 +98,24 @@ const C2CDelivery: Plugin = async (ctx) => {
     process.env.C2C_OPENCODE_SESSION_ID || sidecar.opencode_session_id || "";
   const pollIntervalMs: number = parseInt(process.env.C2C_PLUGIN_POLL_INTERVAL_MS || "30000", 10);
   const idleOnlyMode: boolean = (process.env.C2C_PLUGIN_DELIVER_ON_IDLE || "0") === "1";
-  const permissionSupervisor: string =
-    process.env.C2C_PERMISSION_SUPERVISOR || sidecar.permission_supervisor || "coordinator1";
+  const permissionSupervisors: string[] = resolvePermissionSupervisors(sidecar);
+  const supervisorStrategy: string =
+    (sidecar.supervisor_strategy as string) ||
+    (loadRepoConfig().supervisor_strategy as string) ||
+    "first-alive";
+  let supervisorIndex = 0;
+
+  /** Returns supervisor(s) to notify for this request. */
+  const selectSupervisors = (): string[] => {
+    if (supervisorStrategy === "broadcast") return permissionSupervisors;
+    if (supervisorStrategy === "round-robin") {
+      return [permissionSupervisors[supervisorIndex++ % permissionSupervisors.length]];
+    }
+    // first-alive and default: return first (liveness check is a v2 improvement)
+    return [permissionSupervisors[0]];
+  };
+  /** Returns a single supervisor (first of selectSupervisors). */
+  const nextSupervisor = () => selectSupervisors()[0];
   const permissionTimeoutMs: number = parseInt(
     process.env.C2C_PERMISSION_TIMEOUT_MS || "120000", 10
   );
@@ -352,7 +407,20 @@ const C2CDelivery: Plugin = async (ctx) => {
         await toast(`c2c: delivery active (session=${sessionId})`);
         startBackgroundLoop();
         // Drain any messages that queued while the session was offline (cold-boot gap).
+        // On first start the TUI may not have created a session yet, so activeSessionId
+        // is null and session.list() returns empty. Retry with backoff until the session
+        // is discovered (via session.created event) or we give up after ~30s.
         await tryDeliver();
+        if (!activeSessionId) {
+          let attempts = 0;
+          const retryUntilSession = async () => {
+            if (activeSessionId) return; // session.created set it — monitor handles delivery
+            if (attempts++ >= 15) { await log("cold-boot retry exhausted (no session in 30s)"); return; }
+            await tryDeliver();
+            if (!activeSessionId) setTimeout(() => retryUntilSession().catch(() => {}), 2000);
+          };
+          setTimeout(() => retryUntilSession().catch(() => {}), 2000);
+        }
       },
     },
 
@@ -393,13 +461,16 @@ const C2CDelivery: Plugin = async (ctx) => {
           `  id: ${permId || "unknown"}`,
           `  (v1 fallback — respond via TUI dialog)`,
         ].join("\n");
-        try {
-          await runC2c(["send", permissionSupervisor, msg]);
-          await log(`permission notification sent to ${permissionSupervisor}: ${permId}`);
-          void toast(`c2c: permission notified → ${permissionSupervisor}`);
-        } catch (err) {
-          await log(`permission notification error: ${err}`);
+        const supervisors = selectSupervisors();
+        for (const supervisor of supervisors) {
+          try {
+            await runC2c(["send", supervisor, msg]);
+            await log(`permission notification sent to ${supervisor}: ${permId}`);
+          } catch (err) {
+            await log(`permission notification error (${supervisor}): ${err}`);
+          }
         }
+        void toast(`c2c: permission notified → ${supervisors.join(", ")}`);
         return;
       }
 
@@ -437,10 +508,11 @@ const C2CDelivery: Plugin = async (ctx) => {
           `  c2c send ${sessionId} "permission:${permId}:reject"`,
           `(timeout → falls back to TUI dialog)`,
         ].join("\n");
+        const supervisor = nextSupervisor(); // single for ask: first reply wins
         try {
-          await runC2c(["send", permissionSupervisor, msg]);
-          await log(`permission.ask sent to ${permissionSupervisor}: ${permId}`);
-          void toast(`c2c: awaiting permission approval from ${permissionSupervisor}…`);
+          await runC2c(["send", supervisor, msg]);
+          await log(`permission.ask sent to ${supervisor}: ${permId}`);
+          void toast(`c2c: awaiting permission from ${supervisor}…`);
         } catch (err) {
           await log(`permission.ask notify error: ${err}`);
           return; // notify failed — fall through to dialog
@@ -449,11 +521,11 @@ const C2CDelivery: Plugin = async (ctx) => {
         const reply = await waitForPermissionReply(permId, permissionTimeoutMs);
         if (reply === "approve-once" || reply === "approve-always") {
           output.status = "allow";
-          await log(`permission approved by ${permissionSupervisor}: ${permId} (${reply})`);
+          await log(`permission approved by ${supervisor}: ${permId} (${reply})`);
           void toast(`c2c: permission approved (${reply})`);
         } else if (reply === "reject") {
           output.status = "deny";
-          await log(`permission rejected by ${permissionSupervisor}: ${permId}`);
+          await log(`permission rejected by ${supervisor}: ${permId}`);
           void toast(`c2c: permission rejected`, "warning");
         } else {
           // timeout — leave output.status as "ask" (default) to show TUI dialog

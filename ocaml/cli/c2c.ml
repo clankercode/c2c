@@ -650,6 +650,91 @@ let history_cmd =
 
 (* --- subcommand: health --------------------------------------------------- *)
 
+let check_supervisor_config () =
+  let env_sup =
+    match Sys.getenv_opt "C2C_PERMISSION_SUPERVISOR" with
+    | Some v when String.trim v <> "" -> Some v
+    | _ -> (match Sys.getenv_opt "C2C_SUPERVISORS" with Some v when String.trim v <> "" -> Some v | _ -> None)
+  in
+  match env_sup with
+  | Some v -> (`Green, Printf.sprintf "supervisor: %s (from env)" v)
+  | None ->
+      let sidecar = Filename.concat (Sys.getcwd ()) ".opencode/c2c-plugin.json" in
+      let sidecar_sup =
+        if Sys.file_exists sidecar then
+          try
+            let ic = open_in sidecar in
+            let data = Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+              let n = in_channel_length ic in really_input_string ic n) in
+            let j = Yojson.Safe.from_string data in
+            let sup = Yojson.Safe.Util.(j |> member "supervisors") in
+            let single = Yojson.Safe.Util.(j |> member "supervisor") in
+            (match sup, single with
+             | `List items, _ ->
+                 let names = List.filter_map (function `String s -> Some s | _ -> None) items in
+                 if names <> [] then Some (String.concat ", " names) else None
+             | _, `String s when s <> "" -> Some s
+             | _ -> None)
+          with _ -> None
+        else None
+      in
+      (match sidecar_sup with
+       | Some v -> (`Green, Printf.sprintf "supervisor: %s (from sidecar)" v)
+       | None -> (`Yellow, "supervisor: coordinator1 (default — run: c2c init --supervisor <alias>)"))
+
+let check_relay_http () =
+  let url = match Sys.getenv_opt "C2C_RELAY_URL" with Some v when v <> "" -> v | _ -> "https://relay.c2c.im" in
+  try
+    let client = C2c_mcp.Relay.Relay_client.make ~timeout:5.0 url in
+    let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.health client) in
+    let version = Yojson.Safe.Util.(result |> member "version" |> to_string_option |> Option.value ~default:"?") in
+    let git_hash = Yojson.Safe.Util.(result |> member "git_hash" |> to_string_option |> Option.value ~default:"?") in
+    let ok = Yojson.Safe.Util.(result |> member "ok") = `Bool true in
+    if ok then (`Green, Printf.sprintf "relay: reachable — %s @ %s (%s)" version git_hash url)
+    else (`Red, Printf.sprintf "relay: error response from %s" url)
+  with exn ->
+    (`Red, Printf.sprintf "relay: unreachable (%s)" (Printexc.to_string exn))
+
+let check_plugin_installs () =
+  let home = try Sys.getenv "HOME" with Not_found -> "" in
+  let results = ref [] in
+  let add r = results := r :: !results in
+
+  (* Claude Code: PostToolUse hook in ~/.claude/settings.json *)
+  let settings_path = home // ".claude" // "settings.json" in
+  (if Sys.file_exists settings_path then
+     try
+       let ic = open_in settings_path in
+       let data = Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+         let n = in_channel_length ic in really_input_string ic n) in
+       let j = Yojson.Safe.from_string data in
+       let hooks_str = Yojson.Safe.to_string Yojson.Safe.Util.(j |> member "hooks") in
+       if String.length hooks_str > 2 && (let needle = "c2c" in
+         let nl = String.length needle and ll = String.length hooks_str in
+         let found = ref false in
+         for i = 0 to ll - nl do
+           if String.sub hooks_str i nl = needle then found := true
+         done; !found)
+       then add (`Green, "claude-code: PostToolUse hook configured")
+       else add (`Yellow, "claude-code: no c2c hook (run: c2c install claude)")
+     with _ -> add (`Gray, "claude-code: could not read settings.json")
+   else add (`Gray, "claude-code: settings.json not found"));
+
+  (* OpenCode: project-level or global plugin *)
+  let project_plugin = (Sys.getcwd ()) // ".opencode" // "plugins" // "c2c.ts" in
+  let global_plugin = home // ".config" // "opencode" // "plugins" // "c2c.ts" in
+  let global_size = try (Unix.stat global_plugin).Unix.st_size with Unix.Unix_error _ -> 0 in
+  (if Sys.file_exists project_plugin then
+     add (`Green, "opencode: plugin installed (project-level)")
+   else if Sys.file_exists global_plugin && global_size >= 1024 then
+     add (`Green, "opencode: plugin installed (global)")
+   else if Sys.file_exists global_plugin then
+     add (`Yellow, Printf.sprintf "opencode: global plugin is a stub (%d bytes) — run: c2c install opencode from c2c repo" global_size)
+   else
+     add (`Yellow, "opencode: plugin not installed (run: c2c install opencode)"));
+
+  List.rev !results
+
 (* Scan for running deprecated PTY-based wake daemons.
    Returns a list of (script_name, pids, fix_hint) for any that are running. *)
 let check_deprecated_daemons () :
@@ -769,6 +854,9 @@ let health_cmd =
     | `Unknown -> "unknown"
   in
   let stale_daemons = check_deprecated_daemons () in
+  let supervisor_check = check_supervisor_config () in
+  let relay_check = check_relay_http () in
+  let plugin_checks = check_plugin_installs () in
   let output_mode = if json then Json else Human in
   match output_mode with
   | Json ->
@@ -783,6 +871,10 @@ let health_cmd =
                   ])
              stale_daemons)
       in
+      let color_str = function `Green -> "green" | `Yellow -> "yellow" | `Red -> "red" | `Gray -> "gray" in
+      let plugin_json = `List (List.map (fun (c, msg) -> `Assoc [("status", `String (color_str c)); ("message", `String msg)]) plugin_checks) in
+      let (sup_col, sup_msg) = supervisor_check in
+      let (rel_col, rel_msg) = relay_check in
       print_json
         (`Assoc
           [ ("broker_root", `String root)
@@ -794,8 +886,12 @@ let health_cmd =
           ; ("rooms", `Int (List.length rooms))
           ; ("pty_inject_cap", `String (match pty_cap with `Ok -> "ok" | `Missing_cap _ -> "missing" | `Unknown -> "unknown"))
           ; ("stale_deprecated_daemons", stale_json)
+          ; ("supervisor", `Assoc [("status", `String (color_str sup_col)); ("message", `String sup_msg)])
+          ; ("relay", `Assoc [("status", `String (color_str rel_col)); ("message", `String rel_msg)])
+          ; ("plugins", plugin_json)
           ])
   | Human ->
+      let icon = function `Green -> "✓" | `Yellow -> "⚠" | `Red -> "✗" | `Gray -> "–" in
       Printf.printf "broker root:    %s\n" root;
       Printf.printf "root exists:    %s\n" (string_of_bool root_exists);
       Printf.printf "registry:       %s\n" (string_of_bool registry_exists);
@@ -804,6 +900,11 @@ let health_cmd =
         (List.length regs) alive_count;
       Printf.printf "rooms:          %d\n" (List.length rooms);
       Printf.printf "pty-inject cap: %s\n" pty_cap_str;
+      let (sup_col, sup_msg) = supervisor_check in
+      Printf.printf "%s %s\n" (icon sup_col) sup_msg;
+      let (rel_col, rel_msg) = relay_check in
+      Printf.printf "%s %s\n" (icon rel_col) rel_msg;
+      List.iter (fun (c, msg) -> Printf.printf "%s %s\n" (icon c) msg) plugin_checks;
       if stale_daemons = [] then
         Printf.printf "stale daemons:  none\n"
       else begin
