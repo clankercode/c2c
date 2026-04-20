@@ -170,18 +170,17 @@ without the TypeScript plugin.
 Peer sends message  →  broker writes to OpenCode's .inbox.json
     │
     ▼
-c2c_opencode_wake_daemon.py
-  inotifywait -e close_write  .git/c2c/mcp/*.inbox.json
+TypeScript plugin (c2c.ts) — c2c monitor subprocess
+  c2c monitor --alias <session_id>   (spawned by plugin startBackgroundLoop)
     │
     ▼
-Daemon PTY-injects a COMMAND into the OpenCode TUI input:
-  "/mcp__c2c__poll_inbox\n"      (a slash-command, not message text)
+Each output line triggers tryDeliver() → deliverMessages() → promptAsync
+  (no PTY injection — broker-native delivery as first-class user turn)
     │
     ▼
-OpenCode TUI executes the slash command  →  calls mcp__c2c__poll_inbox
-    │
-    ▼
-Broker returns messages (broker-native, not PTY-injected content)
+Broker returns messages via promptAsync (appears in OpenCode transcript)
+
+Note: c2c_opencode_wake_daemon.py (PTY path) is DEPRECATED — do not use.
 ```
 
 ### Message notification
@@ -272,18 +271,11 @@ can be managed directly with `c2c wire-daemon start|stop|status|restart|list`,
 which stores pidfiles and logs under `~/.local/share/c2c/wire-daemons/`.
 Use raw `--daemon --pidfile` flags only when you need custom paths.
 
-### Message notification - manual TUI fallback
+### Message notification - Wire bridge (preferred)
 
-`c2c_kimi_wake_daemon.py` is proven working. To start it manually after `c2c install kimi`:
+Use `c2c wire-daemon start` (above). The Wire bridge delivers messages via `kimi --wire` JSON-RPC with no PTY injection.
 
-```bash
-nohup c2c-kimi-wake \
-    --terminal-pid <ghostty/tmux pid> \
-    --pts <pts number> \
-    --alias kimi-$(whoami)-$(hostname -s) &
-```
-
-The daemon watches the inbox with `inotifywait` and injects a wake prompt when messages arrive.
+**Deprecated:** `c2c_kimi_wake_daemon.py` PTY wake path — superseded by Wire bridge.
 
 **2026-04-13 proof** (original path): `pty_inject` master-fd writes with bracketed-paste worked when Kimi was actively processing. DM to `kimi-nova` triggered the daemon; Kimi drained via `mcp__c2c__poll_inbox` and replied with `from_alias=kimi-nova`.
 
