@@ -2941,7 +2941,7 @@ let setcap_cmd =
       Unix.execvp "python3" (Array.of_list args)
 
 let setcap = Cmdliner.Cmd.v (Cmdliner.Cmd.info "setcap"
-                               ~doc:"Grant CAP_SYS_PTRACE to the c2c Python interpreter so PTY injection works.")
+                               ~doc:"Grant CAP_SYS_PTRACE to the c2c Python interpreter (only needed for Codex PTY notify daemon; OpenCode + Kimi use non-PTY delivery).")
                setcap_cmd
 
 let peek_inbox = Cmdliner.Cmd.v (Cmdliner.Cmd.info "peek-inbox" ~doc:"Peek at your inbox without draining.") peek_inbox_cmd
