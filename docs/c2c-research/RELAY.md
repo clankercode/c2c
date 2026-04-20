@@ -74,7 +74,7 @@ Legend: ✅ shipped · 🟡 in progress · ⏳ blocked · ⚪ open · ⏸ deferr
 | Spec doc (all 6 slices defined)               | ✅    | planner1   | `75d1ad3`  |
 | 1. Keypair generation + on-disk identity.json | ✅    | coder1     | `5a6842b` — ocaml/relay_identity.ml[i], mirage-crypto-ec |
 | 2. `/register` contract change + verification | ✅    | coder1     | `7742d79` — signed_proof verify (ts window, nonce replay, Ed25519 sig); canonical blob matches spec §4.2 |
-| 3. Per-request Ed25519 auth header            | ⚪    | —          | —          |
+| 3. Per-request Ed25519 auth header            | ✅    | coder1     | `0bc08eb` — `Authorization: Ed25519 alias=,ts=,nonce=,sig=`; canonical blob per §5.1; 30s/5s window + 2-min nonce; Bearer fallback for soft rollout |
 | 4. Registry schema + first-bind-wins          | ✅    | coder1     | `6e0159e` — InMemoryRelay bindings + `alias_identity_mismatch`; 5 alcotest cases |
 | 5. Identity bootstrapping (first-msg / allowlist) | ⚪| —          | —          |
 | 6. `c2c relay identity` subcommand            | ✅    | coder1     | `29f1b66` — init/show/fingerprint/rotate/import/export |
