@@ -1784,7 +1784,13 @@ let monitor_cmd =
     Arg.(value & flag & info ["json"]
            ~doc:"Emit JSON objects instead of human-readable lines.")
   in
-  const (fun broker_root_arg alias_arg all drains sweeps full_body from_filter json ->
+  let archive_flag =
+    Arg.(value & flag & info ["archive"]
+           ~doc:"Watch append-only archive (archive/*.jsonl) instead of live inboxes. \
+                 Avoids the race where the PostToolUse hook drains the inbox before \
+                 the monitor can peek. Every drained message is recorded here.")
+  in
+  const (fun broker_root_arg alias_arg all drains sweeps full_body from_filter json archive ->
     let broker_root =
       match broker_root_arg with
       | Some r -> r
@@ -1801,9 +1807,61 @@ let monitor_cmd =
       | Some a -> Some a
       | None -> Sys.getenv_opt "C2C_MCP_SESSION_ID"
     in
+    (* Archive mode watches <broker_root>/archive/*.jsonl (append-only).
+       Each drained message is a full JSON object on its own line. We track
+       per-file read offsets so we only emit newly-appended lines. This avoids
+       the race where the PostToolUse hook drains the live inbox before our
+       inotify event fires on <root>/*.inbox.json. *)
+    let watch_dir =
+      if archive then Filename.concat broker_root "archive" else broker_root
+    in
+    if archive && not (Sys.file_exists watch_dir) then begin
+      (try Unix.mkdir watch_dir 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
+    end;
+    (* Per-file read offsets for archive mode. Init to current size so we
+       don't re-emit historical entries on startup. *)
+    let archive_offsets : (string, int) Hashtbl.t = Hashtbl.create 16 in
+    if archive && Sys.file_exists watch_dir then begin
+      Array.iter (fun fname ->
+        let n = String.length fname in
+        if n > 6 && String.sub fname (n - 6) 6 = ".jsonl" then
+          let path = Filename.concat watch_dir fname in
+          try
+            let st = Unix.stat path in
+            Hashtbl.replace archive_offsets path st.Unix.st_size
+          with _ -> ()
+      ) (Sys.readdir watch_dir)
+    end;
+    let read_new_archive_entries path =
+      let prev = try Hashtbl.find archive_offsets path with Not_found -> 0 in
+      try
+        let st = Unix.stat path in
+        let sz = st.Unix.st_size in
+        if sz <= prev then []
+        else
+          let fd = Unix.openfile path [Unix.O_RDONLY] 0 in
+          Fun.protect ~finally:(fun () -> Unix.close fd) (fun () ->
+            let _ = Unix.lseek fd prev Unix.SEEK_SET in
+            let buf = Bytes.create (sz - prev) in
+            let rec read_all off rem =
+              if rem <= 0 then () else
+              let r = Unix.read fd buf off rem in
+              if r = 0 then () else read_all (off + r) (rem - r)
+            in
+            read_all 0 (sz - prev);
+            Hashtbl.replace archive_offsets path sz;
+            let text = Bytes.unsafe_to_string buf in
+            let lines = String.split_on_char '\n' text in
+            List.filter_map (fun ln ->
+              let ln = String.trim ln in
+              if ln = "" then None
+              else try Some (Yojson.Safe.from_string ln) with _ -> None
+            ) lines)
+      with _ -> []
+    in
     let cmd = Printf.sprintf
-      "inotifywait -m -q -e close_write,delete --format '%%e %%f' %s"
-      (Filename.quote broker_root)
+      "inotifywait -m -q -e close_write,modify,delete --format '%%e %%f' %s"
+      (Filename.quote watch_dir)
     in
     let ic = Unix.open_process_in cmd in
     Fun.protect ~finally:(fun () -> ignore (Unix.close_process_in ic)) (fun () ->
@@ -1811,6 +1869,41 @@ let monitor_cmd =
         let line = input_line ic in
         let parts = String.split_on_char ' ' (String.trim line) in
         (match parts with
+         | event :: filename :: _ when archive ->
+             let n = String.length filename in
+             let is_jsonl = n > 6 && String.sub filename (n - 6) 6 = ".jsonl" in
+             if is_jsonl then begin
+               let sid = String.sub filename 0 (n - 6) in
+               let path = Filename.concat watch_dir filename in
+               let entries = read_new_archive_entries path in
+               (* Apply --from filter *)
+               let entries = match from_filter with
+                 | None -> entries
+                 | Some f -> List.filter (fun m -> match m with
+                     | `Assoc fields -> jstr fields "from_alias" "" = f
+                     | _ -> false) entries
+               in
+               (match entries with
+                | [] -> ()
+                | msgs ->
+                    if json then begin
+                      let is_mine = match my_alias with
+                        | None -> true | Some me -> sid = me in
+                      if all || is_mine then
+                        List.iter (fun m ->
+                          let m_with_ts = match m with
+                            | `Assoc fields ->
+                                let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+                                `Assoc (("monitor_ts", `String ts) :: fields)
+                            | _ -> m
+                          in
+                          print_string (Yojson.Safe.to_string m_with_ts);
+                          print_newline ()
+                        ) msgs
+                    end else
+                      emit_messages ~my_alias ~all ~full_body msgs)
+             end;
+             ignore event
          | event :: filename :: _ ->
              let n = String.length filename in
              let is_inbox = n > 11 && String.sub filename (n - 11) 11 = ".inbox.json" in
@@ -1860,7 +1953,7 @@ let monitor_cmd =
         )
       done with End_of_file -> ())
   ) $ broker_root_opt $ alias_opt $ all_flag $ drains_flag $ sweeps_flag
-    $ full_body_flag $ from_opt $ json_flag
+    $ full_body_flag $ from_opt $ json_flag $ archive_flag
 
 let monitor =
   Cmdliner.Cmd.v
@@ -1886,7 +1979,9 @@ let monitor =
             ; `P "$(b,c2c monitor --from coder1)  — only messages from coder1"
             ; `P "$(b,c2c monitor --full-body)  — include complete message body"
             ; `P "$(b,c2c monitor --json)  — JSON output for programmatic parsing"
-            ; `P "In Claude Code: Monitor({command: \"c2c monitor --all\", persistent: true})"
+            ; `P "$(b,c2c monitor --archive --all)  — watch append-only archive; \
+                  no race with PostToolUse hook drains. Recommended for Claude Code."
+            ; `P "In Claude Code: Monitor({command: \"c2c monitor --archive --all\", persistent: true})"
             ])
     monitor_cmd
 
