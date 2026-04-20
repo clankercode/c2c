@@ -116,15 +116,9 @@ class TestRelayGcVerbose(unittest.TestCase):
 class TestRelayGcNoConfig(unittest.TestCase):
     def test_no_url_returns_1(self):
         # No relay config saved, no --relay-url → should return 1
-        import os
-        env_backup = {k: os.environ.pop(k, None)
-                      for k in ("C2C_RELAY_URL", "C2C_RELAY_TOKEN")}
-        try:
+        # Mock resolve_relay_params so config files don't interfere.
+        with mock.patch("c2c_relay_gc.resolve_relay_params", return_value={"url": "", "token": ""}):
             rc = gc_cli.main(["--once"])
-        finally:
-            for k, v in env_backup.items():
-                if v is not None:
-                    os.environ[k] = v
         self.assertEqual(rc, 1)
 
 
