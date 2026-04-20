@@ -4,6 +4,37 @@
 to execute · **Scope:** OCaml-native TLS wiring for `ocaml/relay.ml`'s server
 + `Relay_client`.
 
+## TL;DR (for approval)
+
+**Ask:** approve one opam install so this slice can ship:
+
+```
+opam install tls-lwt mirage-crypto-rng-lwt ca-certs
+```
+
+**Code changes land in three files:**
+
+- `ocaml/relay.ml` — extend `start_server` (line 807) with `?tls:[`Cert_key
+  of string * string]`; flip final `Server.create` (line 826) to `` `TLS ``
+  mode and init `Mirage_crypto_rng_lwt`. See §Server side.
+- `ocaml/relay.ml` — `Relay_client`: honor `C2C_RELAY_CA_BUNDLE` env var,
+  fall back to `Ca_certs.authenticator ()`; reject `http://` for non-local
+  URLs. See §Client side.
+- `ocaml/cli/c2c.ml` — add `--tls-cert PATH` / `--tls-key PATH` to
+  `relay_serve_cmd` (~line 1738), validated as both-or-neither. See §CLI.
+
+**Approved design decisions (coordinator1, 2026-04-21):**
+
+1. Single `c2c relay serve` binary with opt-in `--tls-cert` flag — no
+   separate `c2c-relay-tls`.
+2. Layer 2 (transport TLS + bearer auth) ships standalone; does not wait
+   for Layer 3 (Ed25519 peer identity).
+3. Operator-managed certs in v1 via `--tls-cert/--tls-key` — no certbot
+   auto-integration yet.
+
+**Blockers:** opam install approval (supply-chain sensitive — not in the
+current manifest). No other blockers; design is ready to execute.
+
 ## Context
 
 Layer 2 of `relay-internet-build-plan.md` mandates TLS 1.3 for all relay
