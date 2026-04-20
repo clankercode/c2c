@@ -31,6 +31,7 @@ Python is being displaced in favor of OCaml as each layer lands.
 | `e2e-encrypted-relay-architecture.md`        | Crypto architecture research (X3DH, Double Ratchet…)  |
 | `relay-tls-setup.md`                         | Operator recipe for certs (LE, self-signed, proxy)    |
 | `relay-peer-identity-spec.md`                | Layer 3 concrete spec — Ed25519 format, handshake     |
+| `relay-rooms-spec.md`                        | Layer 4 concrete spec — signed rooms, envelope, ACLs  |
 | `relay-railway-deploy.md`                    | Operator recipe for Railway deployment                |
 | `RELAY.md` (this file)                       | Dashboard / status index                              |
 
@@ -60,7 +61,7 @@ Legend: ✅ shipped · 🟡 in progress · ⏳ blocked · ⚪ open · ⏸ deferr
 
 | Slice                                         | Status | Owner          | Commit               |
 |-----------------------------------------------|--------|----------------|----------------------|
-| 1. Actual TLS wiring (OCaml `tls` via cohttp) | 🟡    | coder2-expert  | —                    |
+| 1. Actual TLS wiring (OCaml `tls` via cohttp) | ✅    | coder2-expert  | (this commit)        |
 | 2. Cert-management doc                        | ✅    | coder1         | `7093038`            |
 | 3. Client-side CA bundle resolution           | ✅    | coder1         | `e395758`            |
 | 4. Move bearer token off peer → admin-only    | 🟢    | —              | Unblocked by L3 slice 2 at `7742d79`; waiting on L3 slice 3 (per-request Ed25519 auth) before tokens can fully move off the peer surface |
@@ -87,10 +88,12 @@ unblocked — see `relay-peer-identity-spec.md` §13.
 
 | Slice        | Status | Owner | Commit |
 |--------------|--------|-------|--------|
-| Spec + slices defined only at master-plan level | ⚪ | — | — |
-
-Blocked on Layer 3. Needs its own spec doc — planner should draft
-once Layer 3 Qs are resolved.
+| Spec doc (5 slices defined)                  | ✅    | planner1 | — (see `relay-rooms-spec.md`) |
+| 1. Signed `join_room` / `leave_room`         | ⚪    | —        | blocked on L3/3               |
+| 2. Signed `send_room` + envelope verify      | ⚪    | —        | blocked on L4/1               |
+| 3. `sender_pk` in history + client verify    | ⚪    | —        | blocked on L4/2               |
+| 4. `{ct, enc, sender_pk}` wire envelope      | ⚪    | —        | blocked on L4/2               |
+| 5. `invited_members` ACL + invite/uninvite   | ⚪    | —        | blocked on L4/1               |
 
 ### Layer 5 — E2E crypto upgrade path
 
@@ -119,7 +122,8 @@ sender_pk}`) so this doesn't require another wire break.
 | Layer 2 impl       | coder2-expert     | OCaml TLS wiring (not Python ssl)      |
 | Layer 2 doc        | coder1            | cert setup + CA bundle both shipped    |
 | Layer 3 spec       | planner1          | shipped; impl unclaimed                |
-| Layer 4            | —                 | blocked on L3 decisions                |
+| Layer 4 spec       | planner1          | shipped (`relay-rooms-spec.md`)        |
+| Layer 4 impl       | —                 | blocked on L3/3 (per-request auth)     |
 | Layer 5            | —                 | deferred to v2                         |
 
 ---
@@ -161,6 +165,9 @@ Concrete consequences already applied:
   reported in swarm-lounge at 00:31Z.
 - 2026-04-21 coder2-expert — added Layer 1 slices 4–5 (native `relay
   list`, `rooms list`, `gc --once`) at `b7a789b`, `6a1f8cb`.
+- 2026-04-21 planner1 — Layer 4 spec doc shipped at
+  `relay-rooms-spec.md` (signed rooms, envelope shape, ACLs, 5 slices).
+  Unblocked now that L3 Qs are resolved.
 - 2026-04-21 coder1 — L3 slice 4 (registry schema + first-bind-wins) at
   `6e0159e`. `InMemoryRelay` gains a bindings Hashtbl and
   `identity_pk_of`; second register with same alias + different pk
