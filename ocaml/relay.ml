@@ -1027,12 +1027,18 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
 
   let handle_health () =
     let git_hash =
-      try
-        let ic = Unix.open_process_in "git rev-parse --short HEAD 2>/dev/null" in
-        let line = input_line ic in
-        ignore (Unix.close_process_in ic);
-        String.trim line
-      with _ -> "unknown"
+      (* Railway injects RAILWAY_GIT_COMMIT_SHA at runtime; prefer it over a
+         git subprocess (which fails in Docker where .git is absent). *)
+      match Sys.getenv_opt "RAILWAY_GIT_COMMIT_SHA" with
+      | Some sha when String.length sha >= 7 ->
+        String.sub sha 0 7
+      | _ ->
+        (try
+          let ic = Unix.open_process_in "git rev-parse --short HEAD 2>/dev/null" in
+          let line = input_line ic in
+          ignore (Unix.close_process_in ic);
+          String.trim line
+        with _ -> "unknown")
     in
     respond_ok (json_ok [
       ("version", `String "0.6.10");

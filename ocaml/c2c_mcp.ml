@@ -13,6 +13,17 @@ type room_meta = { visibility : room_visibility; invited_members : string list }
 
 let server_version = "0.6.10"
 
+let server_git_hash =
+  match Sys.getenv_opt "RAILWAY_GIT_COMMIT_SHA" with
+  | Some sha when String.length sha >= 7 -> String.sub sha 0 7
+  | _ ->
+    (try
+      let ic = Unix.open_process_in "git rev-parse --short HEAD 2>/dev/null" in
+      let line = input_line ic in
+      ignore (Unix.close_process_in ic);
+      String.trim line
+    with _ -> "unknown")
+
 let server_features =
   [ "liveness"
   ; "pid_start_time"
@@ -55,6 +66,7 @@ let server_info =
   `Assoc
     [ ("name", `String "c2c")
     ; ("version", `String server_version)
+    ; ("git_hash", `String server_git_hash)
     ; ("features", `List (List.map (fun f -> `String f) server_features))
     ]
 
