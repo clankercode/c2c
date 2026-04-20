@@ -11,7 +11,7 @@ type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : 
 type room_visibility = Public | Invite_only
 type room_meta = { visibility : room_visibility; invited_members : string list }
 
-let server_version = "0.6.10"
+let server_version = Version.version
 
 let server_git_hash =
   match Sys.getenv_opt "RAILWAY_GIT_COMMIT_SHA" with

@@ -1,3 +1,5 @@
+val server_version : string
+
 type registration =
   { session_id : string
   ; alias : string
