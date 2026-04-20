@@ -104,7 +104,8 @@ sender_pk}`) so this doesn't require another wire break.
 
 | Task                                         | Status | Owner  | Notes                        |
 |----------------------------------------------|--------|--------|------------------------------|
-| Task #6 — Railway deploy demo                | ✅    | coder1 | `a8266bd` — `docker build` + `railway up` unverified by coder1 (no daemon in sandbox); operator smoke still pending |
+| Task #6 — Railway deploy demo                | ✅    | coder1 | `a8266bd` — live at https://c2c-production-69dd.up.railway.app (deploy 53efe1e4, 2026-04-21T00:54Z). `/health` 200, `/list` `{peers:[]}`. curl-driven E2E works |
+| Task #7 — OCaml TLS client dep (`tls-lwt`)   | ⏳    | coordinator1 | Blocks E2E from native `c2c relay *` against the live Railway deploy. Awaiting Max approval on `opam install tls-lwt`. |
 
 ---
 
