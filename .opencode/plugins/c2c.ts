@@ -8,7 +8,7 @@
  * Config (all optional, with sensible defaults):
  *   C2C_MCP_SESSION_ID      — broker session ID to poll (required for delivery)
  *   C2C_MCP_BROKER_ROOT     — broker root dir (default: auto-detect)
- *   C2C_PLUGIN_POLL_INTERVAL_MS — poll interval in ms (default: 2000)
+ *   C2C_PLUGIN_POLL_INTERVAL_MS — safety-net poll interval in ms (default: 30000; primary wake is c2c monitor)
  *   C2C_PLUGIN_DELIVER_ON_IDLE  — "1" = only deliver on session.idle (default: "0")
  *   C2C_PERMISSION_SUPERVISOR   — alias to DM on permission.updated (default: "coordinator1")
  *
@@ -56,7 +56,7 @@ const C2CDelivery: Plugin = async (ctx) => {
   const brokerRoot: string = process.env.C2C_MCP_BROKER_ROOT || sidecar.broker_root || "";
   const configuredOpenCodeSessionId: string =
     process.env.C2C_OPENCODE_SESSION_ID || sidecar.opencode_session_id || "";
-  const pollIntervalMs: number = parseInt(process.env.C2C_PLUGIN_POLL_INTERVAL_MS || "2000", 10);
+  const pollIntervalMs: number = parseInt(process.env.C2C_PLUGIN_POLL_INTERVAL_MS || "30000", 10);
   const idleOnlyMode: boolean = (process.env.C2C_PLUGIN_DELIVER_ON_IDLE || "0") === "1";
   const permissionSupervisor: string =
     process.env.C2C_PERMISSION_SUPERVISOR || sidecar.permission_supervisor || "coordinator1";
@@ -258,34 +258,36 @@ const C2CDelivery: Plugin = async (ctx) => {
   function startBackgroundLoop(): void {
     if (backgroundLoopStarted || idleOnlyMode) return;
     backgroundLoopStarted = true;
-    const tick = async () => {
-      await tryDeliver();
-    };
+    const tick = async () => { await tryDeliver(); };
 
-    // Use fs.watch on the broker directory for cross-platform file change detection.
-    // Watch the directory (not the file) because atomic writes (temp + os.replace)
-    // change the inode — fs.watch on a replaced file path can miss events.
-    if (brokerRoot) {
-      try {
-        const inboxName = `${sessionId}.inbox.json`;
-        fs.watch(brokerRoot, { persistent: false }, (_eventType, filename) => {
-          if (filename === inboxName) {
-            tick().catch(() => {});
-          }
-        });
-        void log(`watching ${brokerRoot} for ${inboxName} changes`);
-      } catch (err) {
-        void log(`fs.watch failed (${err}), falling back to poll every ${pollIntervalMs}ms`);
-        setInterval(tick, pollIntervalMs);
-      }
-    } else {
-      // No broker root — fall back to polling
-      setInterval(tick, pollIntervalMs);
+    // Spawn `c2c monitor` and trigger delivery on each output line (each line = inbox event).
+    // On exit (inotifywait unavailable, binary not found, etc.) restart after a short delay.
+    function spawnMonitor(): void {
+      const repoCli = path.join(process.cwd(), "c2c");
+      const command = process.env.C2C_CLI_COMMAND || (fs.existsSync(repoCli) ? repoCli : "c2c");
+      const args = ["monitor"];
+      if (sessionId) args.push("--alias", sessionId);
+      const proc = spawn(command, args, { cwd: process.cwd(), env: process.env, shell: false });
+      let buf = "";
+      proc.stdout?.on("data", (chunk: Buffer) => {
+        buf += chunk.toString();
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) !== -1) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (line) tick().catch(() => {});
+        }
+      });
+      proc.on("close", () => { void log("c2c monitor exited, restarting in 5s"); setTimeout(spawnMonitor, 5000); });
+      proc.on("error", () => { setTimeout(spawnMonitor, 10_000); });
     }
 
-    // Safety net: poll once on startup and every 30s in case fs.watch misses events
+    spawnMonitor();
+    void log(`c2c monitor spawned (alias=${sessionId})`);
+
+    // Safety net: poll once on startup and every pollIntervalMs in case monitor misses events
     setTimeout(tick, 1000);
-    setInterval(tick, 30_000);
+    setInterval(tick, pollIntervalMs);
   }
 
   // --- Guard: no delivery without session ID ---
