@@ -2685,6 +2685,7 @@ let setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_comm
   json_write_file claude_json config;
   let settings_path = Filename.concat claude_dir "settings.json" in
   let hook_script = Filename.concat claude_dir "hooks" // "c2c-inbox-check.sh" in
+  let script_changed = ref false in
   (try
      let dir = Filename.dirname hook_script in
      if not (Sys.file_exists dir) then begin
@@ -2697,6 +2698,16 @@ let setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_comm
        mkdir_p dir
      end;
      let hook_content = claude_hook_script in
+     let existing =
+       if Sys.file_exists hook_script then
+         try
+           let ic = open_in hook_script in
+           Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+             really_input_string ic (in_channel_length ic))
+         with _ -> ""
+       else ""
+     in
+     if existing <> hook_content then script_changed := true;
      let oc = open_out hook_script in
      output_string oc hook_content;
      close_out oc;
@@ -2770,7 +2781,8 @@ let setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_comm
   in
   if !settings_changed then json_write_file settings_path settings;
   let hook_status =
-    if !hook_registered && not !settings_changed then "already registered"
+    if !hook_registered && not !settings_changed && not !script_changed then "already registered"
+    else if !hook_registered && !script_changed && not !settings_changed then "script updated"
     else if !hook_registered then "matcher upgraded"
     else "registered"
   in
@@ -2794,8 +2806,10 @@ let setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_comm
        Printf.printf "  - [%s] Inbox hook script: %s\n" mark hook_script;
        Printf.printf "\n  alias:       %s\n" alias_val;
        Printf.printf "  broker root: %s\n" root;
-       if !hook_registered && not !settings_changed then
+       if !hook_registered && not !settings_changed && not !script_changed then
          Printf.printf "\n  (hook was already registered — no changes made)\n"
+       else if !hook_registered && !script_changed && not !settings_changed then
+         Printf.printf "\n  (hook already registered; script body updated at %s)\n" hook_script
        else if !hook_registered then
          Printf.printf "\n  (hook already registered; upgraded matcher to %s)\n" target_matcher
        else
