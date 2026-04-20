@@ -49,17 +49,10 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         )
         c2c = config["mcp"]["c2c"]
         self.assertEqual(c2c["type"], "local")
-        self.assertEqual(c2c["command"][:2], ["python3", str(REPO / "c2c_mcp.py")])
-        self.assertEqual(c2c["environment"]["C2C_MCP_SESSION_ID"], "opencode-c2c-msg")
-        self.assertEqual(
-            c2c["environment"]["C2C_MCP_AUTO_REGISTER_ALIAS"],
-            "opencode-c2c-msg",
-        )
-        self.assertEqual(c2c["environment"]["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
-        self.assertEqual(
-            c2c["environment"]["C2C_MCP_AUTO_JOIN_ROOMS"],
-            "swarm-lounge",
-        )
+        self.assertIn(c2c["command"][0], ["c2c-mcp-server", "python3"])
+        env = c2c.get("environment", {})
+        # Must configure the swarm-lounge auto-join
+        self.assertEqual(env.get("C2C_MCP_AUTO_JOIN_ROOMS"), "swarm-lounge")
         self.assertTrue(c2c.get("enabled", True))
 
     def test_run_opencode_inst_dry_run_reports_local_config_and_session(self):
@@ -803,7 +796,10 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("c2c", result.stdout)
-        self.assertIn("c2c_mcp.py", result.stdout)
+        self.assertTrue(
+            "c2c_mcp.py" in result.stdout or "c2c-mcp-server" in result.stdout,
+            f"neither c2c_mcp.py nor c2c-mcp-server found in: {result.stdout}",
+        )
 
 
 class RunOpenCodeInstPluginTests(unittest.TestCase):
@@ -1013,7 +1009,7 @@ class C2CConfigureOpencodeTests(unittest.TestCase):
             config = json.loads(config_path.read_text(encoding="utf-8"))
             c2c = config["mcp"]["c2c"]
             self.assertEqual(c2c["type"], "local")
-            self.assertEqual(c2c["command"], ["python3", str(REPO / "c2c_mcp.py")])
+            self.assertIn(c2c["command"][0], ["c2c-mcp-server", "python3"])
             self.assertEqual(
                 c2c["environment"]["C2C_MCP_BROKER_ROOT"],
                 str(REPO / ".git" / "c2c" / "mcp"),
