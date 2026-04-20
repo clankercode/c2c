@@ -554,8 +554,9 @@ const C2CDelivery: Plugin = async (ctx) => {
         return;
       }
 
-      // Notify supervisor on permission.updated (v1: notification-only, no dialog mutation)
-      if (event.type === "permission.updated") {
+      // Notify supervisor on permission.asked (v1: notification-only, no dialog mutation)
+      // Bus publishes "permission.asked"; the hooks["permission.ask"] below intercepts pre-dialog.
+      if (event.type === "permission.asked") {
         const perm = (event as any).properties?.permission ?? (event as any).properties ?? {};
         const permId: string = perm.id || "";
         if (permId) {
@@ -604,8 +605,7 @@ const C2CDelivery: Plugin = async (ctx) => {
       }
     },
 
-    hooks: {
-      "permission.ask": async (input: any, output: { status: "ask" | "deny" | "allow" }) => {
+    "permission.ask": async (input: any, output: { status: "ask" | "deny" | "allow" }) => {
         const permId: string = input.id || "";
         const title: string = input.title || "unknown";
         const type: string = input.type || "unknown";
@@ -650,7 +650,6 @@ const C2CDelivery: Plugin = async (ctx) => {
           void toast(`c2c: permission timeout — showing dialog`, "warning");
         }
       },
-    },
   };
 };
 
