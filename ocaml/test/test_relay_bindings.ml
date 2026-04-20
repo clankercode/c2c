@@ -108,6 +108,67 @@ let test_signed_register_blob_roundtrips () =
   Alcotest.(check bool) "tampered blob rejected" false
     (Relay_identity.verify ~pk:id.public_key ~msg:tampered ~sig_)
 
+(* --- L3 slice 3: per-request Ed25519 auth helpers --- *)
+
+let test_parse_ed25519_auth_happy () =
+  let s = "alias=foo,ts=1776698000,nonce=AAA,sig=BBB" in
+  match parse_ed25519_auth_params s with
+  | Ok (a, t, n, sg) ->
+    Alcotest.(check string) "alias" "foo" a;
+    Alcotest.(check string) "ts" "1776698000" t;
+    Alcotest.(check string) "nonce" "AAA" n;
+    Alcotest.(check string) "sig" "BBB" sg
+  | Error e -> Alcotest.failf "expected Ok, got %s" e
+
+let test_parse_ed25519_auth_missing_field () =
+  let s = "alias=foo,ts=1,nonce=AAA" in
+  match parse_ed25519_auth_params s with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "expected Error on missing sig"
+
+let test_sorted_query_string () =
+  let u1 = Uri.of_string "https://relay/path?zulu=1&alpha=2" in
+  Alcotest.(check string) "sorted alphabetically"
+    "alpha=2&zulu=1" (sorted_query_string u1);
+  let u2 = Uri.of_string "https://relay/path" in
+  Alcotest.(check string) "empty query" "" (sorted_query_string u2)
+
+let test_body_sha256_b64 () =
+  Alcotest.(check string) "empty body" "" (body_sha256_b64 "");
+  (* SHA256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+     base64url-nopad: ungFv48Bz-pBFEDeXa4iI7ADYaOWF3qctBD_YfIAFa0 *)
+  Alcotest.(check string) "abc hash"
+    "ungWv48Bz-pBQUDeXa4iI7ADYaOWF3qctBD_YfIAFa0"
+    (body_sha256_b64 "abc")
+
+let test_request_blob_roundtrip () =
+  let id = Relay_identity.generate () in
+  let ts = "1776698000" in
+  let nonce = "cmFuZG9tbm9uY2U" in
+  let blob =
+    canonical_request_blob ~meth:"POST" ~path:"/send"
+      ~query:"" ~body_sha256_b64:"hashhash" ~ts ~nonce
+  in
+  let sig_ = Relay_identity.sign id blob in
+  Alcotest.(check bool) "request sig verifies" true
+    (Relay_identity.verify ~pk:id.public_key ~msg:blob ~sig_);
+  let tampered =
+    canonical_request_blob ~meth:"GET" ~path:"/send"
+      ~query:"" ~body_sha256_b64:"hashhash" ~ts ~nonce
+  in
+  Alcotest.(check bool) "mutation on method rejected" false
+    (Relay_identity.verify ~pk:id.public_key ~msg:tampered ~sig_)
+
+let test_request_nonce_cache () =
+  let r = InMemoryRelay.create () in
+  let now = Unix.gettimeofday () in
+  (match InMemoryRelay.check_request_nonce r ~nonce:"n1" ~ts:now with
+   | Ok () -> () | Error e -> Alcotest.failf "fresh rejected: %s" e);
+  match InMemoryRelay.check_request_nonce r ~nonce:"n1" ~ts:now with
+  | Error e ->
+    Alcotest.(check string) "nonce_replay code" relay_err_nonce_replay e
+  | Ok () -> Alcotest.fail "replay accepted"
+
 let tests = [
   "register_without_pk_legacy",    `Quick, test_register_without_pk_legacy;
   "first_bind_stores_pk",          `Quick, test_first_bind_stores_pk;
@@ -117,6 +178,12 @@ let tests = [
   "nonce_accepts_fresh",           `Quick, test_nonce_accepts_fresh;
   "nonce_rejects_replay",          `Quick, test_nonce_rejects_replay;
   "signed_register_blob_roundtrips", `Quick, test_signed_register_blob_roundtrips;
+  "parse_ed25519_auth_happy",      `Quick, test_parse_ed25519_auth_happy;
+  "parse_ed25519_auth_missing_field", `Quick, test_parse_ed25519_auth_missing_field;
+  "sorted_query_string",           `Quick, test_sorted_query_string;
+  "body_sha256_b64",               `Quick, test_body_sha256_b64;
+  "request_blob_roundtrip",        `Quick, test_request_blob_roundtrip;
+  "request_nonce_cache",           `Quick, test_request_nonce_cache;
 ]
 
 let () =

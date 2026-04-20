@@ -19,6 +19,66 @@ let register_ts_future_window = 30.0
 let register_nonce_ttl = 600.0
 
 let register_sign_ctx = "c2c/v1/register"
+
+(* Per-request auth (spec §5.1): 30s past / 5s future, 2 min nonce TTL *)
+let request_ts_past_window = 30.0
+let request_ts_future_window = 5.0
+let request_nonce_ttl = 120.0
+let request_sign_ctx = "c2c/v1/request"
+
+(* Parse a header value like
+     "Ed25519 alias=foo,ts=1776698000,nonce=AAA,sig=BBB"
+   into the four fields. Leading "Ed25519 " prefix is stripped by the caller. *)
+let parse_ed25519_auth_params s =
+  let parts = String.split_on_char ',' s in
+  let tbl = Hashtbl.create 4 in
+  List.iter (fun p ->
+    match String.index_opt p '=' with
+    | None -> ()
+    | Some i ->
+      let k = String.sub p 0 i |> String.trim in
+      let v = String.sub p (i + 1) (String.length p - i - 1) |> String.trim in
+      Hashtbl.replace tbl k v
+  ) parts;
+  let field name =
+    match Hashtbl.find_opt tbl name with
+    | Some v when v <> "" -> Ok v
+    | _ -> Error (Printf.sprintf "missing %s" name)
+  in
+  match field "alias", field "ts", field "nonce", field "sig" with
+  | Ok a, Ok t, Ok n, Ok s -> Ok (a, t, n, s)
+  | Error e, _, _, _
+  | _, Error e, _, _
+  | _, _, Error e, _
+  | _, _, _, Error e -> Error e
+
+(* Build the canonical request blob per spec §5.1. Fields are joined
+   with 0x1F, prefixed by the SIGN_CTX literal. *)
+let canonical_request_blob ~meth ~path ~query ~body_sha256_b64 ~ts ~nonce =
+  Relay_identity.canonical_msg ~ctx:request_sign_ctx
+    [ String.uppercase_ascii meth; path; query; body_sha256_b64; ts; nonce ]
+
+(* Sort query params by key ascending, re-encode as k=v&k=v. Matches what
+   a client would sign. Empty query → "". *)
+let sorted_query_string uri =
+  let params = Uri.query uri in
+  let flat =
+    List.concat_map (fun (k, vs) -> List.map (fun v -> (k, v)) vs) params
+  in
+  let sorted =
+    List.sort (fun (a, _) (b, _) -> String.compare a b) flat
+  in
+  String.concat "&"
+    (List.map (fun (k, v) ->
+       Uri.pct_encode ~component:`Query_key k ^ "=" ^
+       Uri.pct_encode ~component:`Query_value v) sorted)
+
+let body_sha256_b64 body_str =
+  if body_str = "" then ""
+  else
+    let digest = Digestif.SHA256.digest_string body_str in
+    let raw = Digestif.SHA256.to_raw_string digest in
+    Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet raw
 let room_system_alias = "c2c-system"
 let room_join_content alias room_id = alias ^ " joined room " ^ room_id
 
@@ -91,6 +151,7 @@ module InMemoryRelay : sig
   val register : t -> node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> unit -> (string * RegistrationLease.t)
   val identity_pk_of : t -> alias:string -> string option
   val check_register_nonce : t -> nonce:string -> ts:float -> (unit, string) result
+  val check_request_nonce : t -> nonce:string -> ts:float -> (unit, string) result
   val heartbeat : t -> node_id:string -> session_id:string -> (string * RegistrationLease.t)
   val list_peers : t -> ?include_dead:bool -> RegistrationLease.t list
   val send : t -> from_alias:string -> to_alias:string -> content:string -> ?message_id:string option -> [> `Ok of float | `Duplicate of float | `Error of string * string]
@@ -110,6 +171,7 @@ end = struct
     leases : (string, RegistrationLease.t) Hashtbl.t;
     bindings : (string, string) Hashtbl.t;
     register_nonces : (string, float) Hashtbl.t;
+    request_nonces : (string, float) Hashtbl.t;
     inboxes : ((string * string), Yojson.Safe.t list) Hashtbl.t;
     dead_letter : Yojson.Safe.t Queue.t;
     rooms : (string, string list) Hashtbl.t;
@@ -124,6 +186,7 @@ end = struct
     leases = Hashtbl.create 16;
     bindings = Hashtbl.create 16;
     register_nonces = Hashtbl.create 64;
+    request_nonces = Hashtbl.create 256;
     inboxes = Hashtbl.create 16;
     dead_letter = Queue.create ();
     rooms = Hashtbl.create 16;
@@ -206,21 +269,21 @@ end = struct
   let identity_pk_of t ~alias =
     with_lock t (fun () -> Hashtbl.find_opt t.bindings alias)
 
+  let check_nonce_in tbl ~ttl ~nonce ~ts =
+    let cutoff = ts -. ttl in
+    let expired = ref [] in
+    Hashtbl.iter (fun n t0 -> if t0 < cutoff then expired := n :: !expired) tbl;
+    List.iter (Hashtbl.remove tbl) !expired;
+    if Hashtbl.mem tbl nonce then Error relay_err_nonce_replay
+    else (Hashtbl.replace tbl nonce ts; Ok ())
+
   let check_register_nonce t ~nonce ~ts =
     with_lock t (fun () ->
-      (* Evict expired nonces *)
-      let cutoff = ts -. register_nonce_ttl in
-      let expired = ref [] in
-      Hashtbl.iter (fun n t0 -> if t0 < cutoff then expired := n :: !expired)
-        t.register_nonces;
-      List.iter (Hashtbl.remove t.register_nonces) !expired;
-      if Hashtbl.mem t.register_nonces nonce then
-        Error relay_err_nonce_replay
-      else begin
-        Hashtbl.replace t.register_nonces nonce ts;
-        Ok ()
-      end
-    )
+      check_nonce_in t.register_nonces ~ttl:register_nonce_ttl ~nonce ~ts)
+
+  let check_request_nonce t ~nonce ~ts =
+    with_lock t (fun () ->
+      check_nonce_in t.request_nonces ~ttl:request_nonce_ttl ~nonce ~ts)
 
   let heartbeat t ~node_id ~session_id =
     with_lock t (fun () ->
@@ -510,6 +573,7 @@ module Relay_server : sig
     token:string option ->
     ?verbose:bool ->
     ?gc_interval:float ->
+    ?tls:[ `Cert_key of string * string ] ->
     unit ->
     unit Lwt.t
 end = struct
@@ -994,6 +1058,65 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
 
   (* --- Main callback factory --- *)
 
+  let meth_to_string = function
+    | `GET -> "GET" | `POST -> "POST" | `PUT -> "PUT"
+    | `DELETE -> "DELETE" | `HEAD -> "HEAD" | `PATCH -> "PATCH"
+    | `OPTIONS -> "OPTIONS" | `CONNECT -> "CONNECT" | `TRACE -> "TRACE"
+    | `Other s -> String.uppercase_ascii s
+
+  (* If Authorization header starts with "Ed25519 ", verify the full proof
+     per spec §5.1 and return [Ok (Some alias)]. Returns [Ok None] when no
+     Ed25519 header is present so the caller can fall back to Bearer. *)
+  let try_verify_ed25519_request relay ~auth_header ~meth ~path ~query
+      ~body_sha256_b64 =
+    match auth_header with
+    | None -> Ok None
+    | Some h ->
+      let prefix = "Ed25519 " in
+      let plen = String.length prefix in
+      if String.length h < plen || String.sub h 0 plen <> prefix then
+        Ok None
+      else
+        let params_str =
+          String.sub h plen (String.length h - plen) |> String.trim
+        in
+        match parse_ed25519_auth_params params_str with
+        | Error e -> Error (err_unauthorized, "malformed Ed25519 auth: " ^ e)
+        | Ok (alias, ts_str, nonce, sig_b64) ->
+          (match (try Some (float_of_string ts_str) with _ -> None) with
+           | None -> Error (err_unauthorized, "ts must be unix seconds")
+           | Some ts_client ->
+             let now = Unix.gettimeofday () in
+             let skew = ts_client -. now in
+             if skew > request_ts_future_window
+                || -. skew > request_ts_past_window then
+               Error (relay_err_timestamp_out_of_window,
+                 Printf.sprintf "request ts skew %.1fs outside window" skew)
+             else
+               match InMemoryRelay.check_request_nonce relay ~nonce ~ts:ts_client with
+               | Error code -> Error (code, "request nonce replay")
+               | Ok () ->
+                 match InMemoryRelay.identity_pk_of relay ~alias with
+                 | None ->
+                   Error (err_unauthorized,
+                     Printf.sprintf "alias %S has no identity binding" alias)
+                 | Some pk ->
+                   match decode_b64url sig_b64 with
+                   | Error _ ->
+                     Error (err_unauthorized, "sig not base64url-nopad")
+                   | Ok sig_ when String.length sig_ <> 64 ->
+                     Error (relay_err_signature_invalid, "sig must be 64 bytes")
+                   | Ok sig_ ->
+                     let blob =
+                       canonical_request_blob ~meth ~path ~query
+                         ~body_sha256_b64 ~ts:ts_str ~nonce
+                     in
+                     if Relay_identity.verify ~pk ~msg:blob ~sig_ then
+                       Ok (Some alias)
+                     else
+                       Error (relay_err_signature_invalid,
+                         "Ed25519 request signature does not verify"))
+
   let make_callback relay token _conn req body =
     let open Cohttp in
     let open Cohttp_lwt_unix in
@@ -1023,11 +1146,36 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
       | None -> false
     in
 
-    (* Auth check for protected routes *)
+    (* Auth check for protected routes.
+       Two accepted forms (spec §5): Ed25519 per-request signature
+       (stronger, cryptographically binds to alias) or Bearer token
+       (legacy, accepted during soft rollout). *)
     let protected = not (List.mem path ["/health"; "/"]) in
-    if protected && not (check_auth token auth_header) then
-      respond_unauthorized (json_error_str err_unauthorized "missing or invalid Bearer token")
+    Cohttp_lwt.Body.to_string body >>= fun body_str ->
+    let body_sha256 = body_sha256_b64 body_str in
+    let query = sorted_query_string uri in
+    let ed25519_result =
+      try_verify_ed25519_request relay ~auth_header
+        ~meth:(meth_to_string meth) ~path ~query ~body_sha256_b64:body_sha256
+    in
+    let auth_ok, ed25519_err =
+      match ed25519_result with
+      | Ok (Some _) -> (true, None)   (* verified Ed25519 proof *)
+      | Ok None ->                    (* no Ed25519 header — fall back to Bearer *)
+        (check_auth token auth_header, None)
+      | Error (code, msg) -> (false, Some (code, msg))
+    in
+    if protected && not auth_ok then
+      let code, msg = match ed25519_err with
+        | Some (c, m) -> c, m
+        | None -> err_unauthorized, "missing or invalid auth"
+      in
+      respond_unauthorized (json_error_str code msg)
     else
+      let parse_body () =
+        try Ok (Yojson.Safe.from_string body_str)
+        with Yojson.Json_error msg -> Error msg
+      in
       match meth, path with
       | `GET, "/" ->
         respond_html landing_html
@@ -1048,61 +1196,61 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
         handle_gc relay
 
       | `POST, "/register" ->
-        read_json_body body >>= fun json ->
+        let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j -> handle_register relay ~relay_url j)
 
       | `POST, "/heartbeat" ->
-        read_json_body body >>= fun json ->
+        let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j -> handle_heartbeat relay j)
 
       | `POST, "/send" ->
-        read_json_body body >>= fun json ->
+        let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j -> handle_send relay j)
 
       | `POST, "/send_all" ->
-        read_json_body body >>= fun json ->
+        let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j -> handle_send_all relay j)
 
       | `POST, "/poll_inbox" ->
-        read_json_body body >>= fun json ->
+        let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j -> handle_poll_inbox relay j)
 
       | `POST, "/peek_inbox" ->
-        read_json_body body >>= fun json ->
+        let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j -> handle_peek_inbox relay j)
 
       | `POST, "/join_room" ->
-        read_json_body body >>= fun json ->
+        let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j -> handle_join_room relay j)
 
       | `POST, "/leave_room" ->
-        read_json_body body >>= fun json ->
+        let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j -> handle_leave_room relay j)
 
       | `POST, "/send_room" ->
-        read_json_body body >>= fun json ->
+        let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j -> handle_send_room relay j)
 
       | `POST, "/room_history" ->
-        read_json_body body >>= fun json ->
+        let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j -> handle_room_history relay j)
@@ -1120,7 +1268,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
 
   (* --- Server startup --- *)
 
-  let start_server ~host ~port ~token ?(verbose=false) ?(gc_interval=0.0) () =
+  let start_server ~host ~port ~token ?(verbose=false) ?(gc_interval=0.0) ?tls () =
     let relay = InMemoryRelay.create () in
     let callback = make_callback relay token in
     let gc_thread =
@@ -1129,8 +1277,13 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
       else
         ()
     in
+    let _ = gc_thread in
+    let scheme = match tls with Some _ -> "https" | None -> "http" in
     let verbose_str = if verbose then " (verbose)" else "" in
-    Printf.printf "c2c relay serving on http://%s:%d%s\n%!" host port verbose_str;
+    Printf.printf "c2c relay serving on %s://%s:%d%s\n%!" scheme host port verbose_str;
+    (match tls with
+     | Some _ -> Printf.printf "tls: enabled\n%!"
+     | None -> ());
     (match token with
      | Some _ -> Printf.printf "auth: Bearer token required\n%!"
      | None -> Printf.printf "auth: DISABLED (no token set — do not expose publicly)\n%!");
@@ -1139,7 +1292,17 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
     else
       Printf.printf "gc: disabled\n%!";
     let spec = Cohttp_lwt_unix.Server.make ~callback () in
-    Cohttp_lwt_unix.Server.create ~mode:(`TCP (`Port port)) spec
+    match tls with
+    | None ->
+        Cohttp_lwt_unix.Server.create ~mode:(`TCP (`Port port)) spec
+    | Some (`Cert_key (cert_path, key_path)) ->
+        Mirage_crypto_rng_unix.use_default ();
+        Cohttp_lwt_unix.Server.create
+          ~mode:(`TLS (`Crt_file_path cert_path,
+                       `Key_file_path key_path,
+                       `No_password,
+                       `Port port))
+          spec
 
 end
 
