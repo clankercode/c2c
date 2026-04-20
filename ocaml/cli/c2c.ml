@@ -680,7 +680,7 @@ let check_supervisor_config () =
       in
       (match sidecar_sup with
        | Some v -> (`Green, Printf.sprintf "supervisor: %s (from sidecar)" v)
-       | None -> (`Yellow, "supervisor: coordinator1 (default — run: c2c init --supervisor <alias>)"))
+       | None -> (`Yellow, "supervisor: coordinator1 (default — run: c2c init --supervisor <alias> or c2c repo set supervisor <alias>)"))
 
 let check_relay_http () =
   let url = match Sys.getenv_opt "C2C_RELAY_URL" with Some v when v <> "" -> v | _ -> "https://relay.c2c.im" in
@@ -4386,6 +4386,26 @@ let install_default_term =
   and+ broker_root_opt = broker_root in
   run_install_tui ~alias_opt ~broker_root_opt
 
+(* --- repo config helpers (also used by init_cmd + repo subcommand) ------- *)
+
+let repo_config_path () =
+  Filename.concat (Sys.getcwd ()) ".c2c" // "repo.json"
+
+let load_repo_config () =
+  let path = repo_config_path () in
+  if not (Sys.file_exists path) then `Assoc []
+  else
+    (try Yojson.Safe.from_file path
+     with _ -> `Assoc [])
+
+let save_repo_config json =
+  let path = repo_config_path () in
+  let dir = Filename.dirname path in
+  (try Unix.mkdir dir 0o755 with Unix.Unix_error _ -> ());
+  json_write_file path json
+
+let valid_strategies = [ "first-alive"; "round-robin"; "broadcast" ]
+
 (* --- subcommand: init ---------------------------------------------------- *)
 
 let detect_client () =
@@ -4424,11 +4444,21 @@ let init_cmd =
     Arg.(value & flag & info ["no-setup"]
            ~doc:"Skip client MCP setup; only register and join room.")
   in
+  let supervisor_arg =
+    Arg.(value & opt (some string) None & info ["supervisor"; "S"] ~docv:"ALIAS[,ALIAS2,...]"
+           ~doc:"Permission supervisor alias(es). Written to .c2c/repo.json. Equivalent to c2c repo set supervisor.")
+  in
+  let supervisor_strategy_arg =
+    Arg.(value & opt (some string) None & info ["supervisor-strategy"] ~docv:"STRATEGY"
+           ~doc:"Supervisor dispatch strategy: first-alive (default), round-robin, broadcast.")
+  in
   let+ json = json_flag
   and+ client_opt = client_opt
   and+ alias_opt = alias_opt_arg
   and+ room = room_arg
-  and+ no_setup = no_setup in
+  and+ no_setup = no_setup
+  and+ supervisor_opt = supervisor_arg
+  and+ supervisor_strategy_opt = supervisor_strategy_arg in
   let output_mode = if json then Json else Human in
   let root = resolve_broker_root () in
   let broker = C2c_mcp.Broker.create ~root in
@@ -4491,6 +4521,35 @@ let init_cmd =
        with Invalid_argument msg -> `Error msg)
   in
 
+  let supervisor_result =
+    match supervisor_opt with
+    | None -> `Skipped
+    | Some sup_str ->
+        let aliases = List.filter (fun s -> s <> "") (String.split_on_char ',' sup_str) in
+        if aliases = [] then `Error "empty supervisor list"
+        else begin
+          (match supervisor_strategy_opt with
+           | Some s when not (List.mem s valid_strategies) ->
+               Printf.eprintf "error: unknown strategy '%s'. Use: %s\n%!"
+                 s (String.concat ", " valid_strategies);
+               exit 1
+           | _ -> ());
+          let config = load_repo_config () in
+          let fields = match config with `Assoc f -> f | _ -> [] in
+          let supervisor_val = `List (List.map (fun a -> `String a) aliases) in
+          let fields' = ref
+            (("supervisors", supervisor_val)
+             :: List.filter (fun (k, _) -> k <> "supervisors" && k <> "permission_supervisors"
+                                           && k <> "supervisor_strategy") fields)
+          in
+          (match supervisor_strategy_opt with
+           | Some s -> fields' := ("supervisor_strategy", `String s) :: !fields'
+           | None -> ());
+          save_repo_config (`Assoc !fields');
+          `Set (aliases, supervisor_strategy_opt)
+        end
+  in
+
   (match output_mode with
    | Json ->
        let setup_json = match setup_result with
@@ -4504,6 +4563,13 @@ let init_cmd =
          | `Skipped -> `Null
          | `Error e -> `String (Printf.sprintf "error: %s" e)
        in
+       let supervisor_json = match supervisor_result with
+         | `Set (aliases, strat) ->
+             `Assoc ([ ("ok", `Bool true); ("aliases", `List (List.map (fun a -> `String a) aliases)) ]
+                     @ (match strat with Some s -> [("strategy", `String s)] | None -> []))
+         | `Skipped -> `Null
+         | `Error e -> `Assoc [("ok", `Bool false); ("error", `String e)]
+       in
        print_json (`Assoc
          [ ("ok", `Bool true)
          ; ("session_id", `String session_id)
@@ -4511,6 +4577,7 @@ let init_cmd =
          ; ("broker_root", `String root)
          ; ("setup", setup_json)
          ; ("room", room_json)
+         ; ("supervisor", supervisor_json)
          ])
    | Human ->
        Printf.printf "\nc2c init complete!\n";
@@ -4526,6 +4593,12 @@ let init_cmd =
         | `Joined r -> Printf.printf "  room:     joined #%s\n" r
         | `Skipped -> ()
         | `Error e -> Printf.printf "  room:     error joining — %s\n" e);
+       (match supervisor_result with
+        | `Set (aliases, strat) ->
+            Printf.printf "  supervisor: %s%s\n" (String.concat ", " aliases)
+              (match strat with Some s -> Printf.sprintf " (strategy: %s)" s | None -> "")
+        | `Skipped -> ()
+        | `Error e -> Printf.printf "  supervisor: error — %s\n" e);
        Printf.printf "\nYou're ready! Try:\n";
        Printf.printf "  c2c list              — see peers\n";
        Printf.printf "  c2c send ALIAS MSG    — send a message\n";
@@ -4545,6 +4618,8 @@ let init =
             ; `P "$(b,c2c init)  — auto-detect client, configure, register, join swarm-lounge"
             ; `P "$(b,c2c init --client opencode --alias my-bot)  — explicit client and alias"
             ; `P "$(b,c2c init --no-setup --room project-room)  — skip MCP setup, join custom room"
+            ; `P "$(b,c2c init --supervisor coordinator1)  — set permission supervisor"
+            ; `P "$(b,c2c init --supervisor coordinator1,planner1 --supervisor-strategy round-robin)  — multi-supervisor"
             ])
     init_cmd
 
@@ -5898,24 +5973,6 @@ let wire_daemon_group =
     ]
 
 (* --- subcommand group: repo ------------------------------------------------ *)
-
-let repo_config_path () =
-  Filename.concat (Sys.getcwd ()) ".c2c" // "repo.json"
-
-let load_repo_config () =
-  let path = repo_config_path () in
-  if not (Sys.file_exists path) then `Assoc []
-  else
-    (try Yojson.Safe.from_file path
-     with _ -> `Assoc [])
-
-let save_repo_config json =
-  let path = repo_config_path () in
-  let dir = Filename.dirname path in
-  (try Unix.mkdir dir 0o755 with Unix.Unix_error _ -> ());
-  json_write_file path json
-
-let valid_strategies = [ "first-alive"; "round-robin"; "broadcast" ]
 
 let repo_set_supervisor_cmd =
   let aliases_arg =
