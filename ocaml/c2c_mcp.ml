@@ -1309,7 +1309,7 @@ module Broker = struct
       invalid_arg ("invalid room_id: " ^ room_id);
     append_room_history_unchecked t ~room_id ~from_alias ~content
 
-  let read_room_history t ~room_id ~limit =
+  let read_room_history t ~room_id ~limit ?(since = 0.0) () =
     if not (valid_room_id room_id) then
       invalid_arg ("invalid room_id: " ^ room_id);
     let path = room_history_path t ~room_id in
@@ -1328,11 +1328,22 @@ module Broker = struct
              done
            with End_of_file -> ());
           let all = List.rev !lines in
-          let n = List.length all in
+          (* Filter by timestamp before applying limit *)
+          let filtered =
+            if since <= 0.0 then all
+            else List.filter (fun line ->
+              try
+                let json = Yojson.Safe.from_string line in
+                let ts = Yojson.Safe.Util.(json |> member "ts" |> to_number) in
+                ts >= since
+              with _ -> true
+            ) all
+          in
+          let n = List.length filtered in
           let to_take = if limit <= 0 then n else min limit n in
           let start = n - to_take in
           let taken =
-            List.filteri (fun i _ -> i >= start) all
+            List.filteri (fun i _ -> i >= start) filtered
           in
           List.map
             (fun line ->
@@ -1360,7 +1371,7 @@ module Broker = struct
       invalid_arg ("invalid room_id: " ^ room_id);
     (* Dedup: skip if the same sender just sent the same content within the window. *)
     let now = Unix.gettimeofday () in
-    let recent = read_room_history t ~room_id ~limit:20 in
+    let recent = read_room_history t ~room_id ~limit:20 () in
     let is_dup =
       List.exists
         (fun m ->
@@ -2349,7 +2360,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
            in
            let history =
              if history_limit = 0 then []
-             else Broker.read_room_history broker ~room_id ~limit:history_limit
+             else Broker.read_room_history broker ~room_id ~limit:history_limit ()
            in
            let content =
              `Assoc
@@ -2473,7 +2484,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
         | Some n -> n
         | None -> 50
       in
-      let history = Broker.read_room_history broker ~room_id ~limit in
+      let history = Broker.read_room_history broker ~room_id ~limit () in
       let content =
         `List
           (List.map

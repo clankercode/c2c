@@ -52,7 +52,7 @@ module Broker : sig
   val leave_room : t -> room_id:string -> alias:string -> room_member list
   val delete_room : t -> room_id:string -> unit
   val append_room_history : t -> room_id:string -> from_alias:string -> content:string -> float
-  val read_room_history : t -> room_id:string -> limit:int -> room_message list
+  val read_room_history : t -> room_id:string -> limit:int -> ?since:float -> unit -> room_message list
   type send_room_result = { sr_delivered_to : string list; sr_skipped : string list; sr_ts : float }
   val send_room : t -> from_alias:string -> room_id:string -> content:string -> send_room_result
   type room_info = { ri_room_id : string; ri_member_count : int; ri_members : string list; ri_alive_member_count : int; ri_dead_member_count : int; ri_unknown_member_count : int; ri_member_details : room_member_info list; ri_visibility : room_visibility; ri_invited_members : string list }

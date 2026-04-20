@@ -1084,7 +1084,7 @@ let test_tools_call_register_alias_rename_notifies_rooms () =
           (match response with None -> fail "expected register response" | Some _ -> ());
           let history =
             C2c_mcp.Broker.read_room_history broker ~room_id:"swarm-lounge"
-              ~limit:10
+              ~limit:10 ()
           in
           check int "two join events plus one rename history event" 3
             (List.length history);
@@ -2817,7 +2817,7 @@ let test_join_room_broadcasts_system_message_to_all_members () =
       check string "same join content to joining member" msg_a.content
         msg_b.content;
       let history =
-        C2c_mcp.Broker.read_room_history broker ~room_id:"lobby" ~limit:10
+        C2c_mcp.Broker.read_room_history broker ~room_id:"lobby" ~limit:10 ()
       in
       check int "two join events in history" 2 (List.length history);
       let last = List.hd (List.rev history) in
@@ -2847,7 +2847,7 @@ let test_join_room_idempotent_does_not_rebroadcast () =
       check int "duplicate join does not enqueue another system message" 0
         (List.length inbox);
       let history =
-        C2c_mcp.Broker.read_room_history broker ~room_id:"lobby" ~limit:10
+        C2c_mcp.Broker.read_room_history broker ~room_id:"lobby" ~limit:10 ()
       in
       check int "duplicate join does not append another history entry" 1
         (List.length history))
@@ -2874,7 +2874,7 @@ let test_join_room_idempotent_non_tail_member_does_not_rebroadcast () =
         C2c_mcp.Broker.drain_inbox broker ~session_id:"session-b"
       in
       let before =
-        C2c_mcp.Broker.read_room_history broker ~room_id:"lobby" ~limit:10
+        C2c_mcp.Broker.read_room_history broker ~room_id:"lobby" ~limit:10 ()
       in
       let members =
         C2c_mcp.Broker.join_room broker ~room_id:"lobby"
@@ -2893,7 +2893,7 @@ let test_join_room_idempotent_non_tail_member_does_not_rebroadcast () =
       check int "non-tail duplicate does not notify other member" 0
         (List.length inbox_b);
       let after =
-        C2c_mcp.Broker.read_room_history broker ~room_id:"lobby" ~limit:10
+        C2c_mcp.Broker.read_room_history broker ~room_id:"lobby" ~limit:10 ()
       in
       check int "non-tail duplicate does not append history"
         (List.length before) (List.length after))
@@ -2974,7 +2974,7 @@ let test_send_room_appends_history_and_fans_out () =
       check bool "ts is positive" true (result.sr_ts > 0.0);
       (* Verify history.jsonl *)
       let history =
-        C2c_mcp.Broker.read_room_history broker ~room_id:"chat" ~limit:50
+        C2c_mcp.Broker.read_room_history broker ~room_id:"chat" ~limit:50 ()
       in
       check int "two join entries plus one room message" 3
         (List.length history);
@@ -3058,7 +3058,7 @@ let test_send_room_deduplicates_identical_content_within_window () =
       let inbox_b = C2c_mcp.Broker.read_inbox broker ~session_id:"session-b" in
       check int "receiver has 1 message (dedup)" 1 (List.length inbox_b);
       (* Room history also has exactly one entry *)
-      let history = C2c_mcp.Broker.read_room_history broker ~room_id:"chat" ~limit:10 in
+      let history = C2c_mcp.Broker.read_room_history broker ~room_id:"chat" ~limit:10 () in
       let sender_messages =
         List.filter
           (fun (m : C2c_mcp.room_message) -> m.rm_from_alias = "sender")
@@ -3098,7 +3098,7 @@ let test_send_room_does_not_dedup_different_content () =
       in
       check int "first send delivered" 1 (List.length r1.sr_delivered_to);
       check int "second send (different content) delivered" 1 (List.length r2.sr_delivered_to);
-      let history = C2c_mcp.Broker.read_room_history broker ~room_id:"chat" ~limit:10 in
+      let history = C2c_mcp.Broker.read_room_history broker ~room_id:"chat" ~limit:10 () in
       let sender_messages =
         List.filter
           (fun (m : C2c_mcp.room_message) -> m.rm_from_alias = "sender")
@@ -3163,7 +3163,7 @@ let test_room_history_returns_last_n_lines () =
              ~content:(Printf.sprintf "msg-%d" i))
       done;
       let history =
-        C2c_mcp.Broker.read_room_history broker ~room_id:"chat" ~limit:3
+        C2c_mcp.Broker.read_room_history broker ~room_id:"chat" ~limit:3 ()
       in
       check int "limit 3 returns 3" 3 (List.length history);
       (* Should be the last 3: msg-8, msg-9, msg-10 *)
@@ -3178,7 +3178,7 @@ let test_room_history_empty_room () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       let history =
-        C2c_mcp.Broker.read_room_history broker ~room_id:"empty-chat" ~limit:50
+        C2c_mcp.Broker.read_room_history broker ~room_id:"empty-chat" ~limit:50 ()
       in
       check int "empty room has no history" 0 (List.length history))
 
@@ -3949,7 +3949,7 @@ let test_room_history_limit_larger_than_total_returns_all () =
       done;
       (* Request 100 but only 5 exist: should return all 5, not fail. *)
       let history =
-        C2c_mcp.Broker.read_room_history broker ~room_id:"overflow" ~limit:100
+        C2c_mcp.Broker.read_room_history broker ~room_id:"overflow" ~limit:100 ()
       in
       check int "returns all 5 when limit > count" 5 (List.length history);
       check string "first message" "msg-1"
@@ -3972,7 +3972,7 @@ let test_room_history_preserves_multiple_senders () =
         (C2c_mcp.Broker.append_room_history broker ~room_id:"multi-sender"
            ~from_alias:"alice" ~content:"alice again");
       let history =
-        C2c_mcp.Broker.read_room_history broker ~room_id:"multi-sender" ~limit:10
+        C2c_mcp.Broker.read_room_history broker ~room_id:"multi-sender" ~limit:10 ()
       in
       check int "3 messages" 3 (List.length history);
       check string "first sender" "alice" (List.nth history 0).rm_from_alias;
@@ -4019,7 +4019,7 @@ let test_room_history_limit_one_returns_last () =
                ~from_alias:"sender" ~content:msg))
         [ "first"; "second"; "third"; "fourth"; "fifth" ];
       let history =
-        C2c_mcp.Broker.read_room_history broker ~room_id:"limit-one" ~limit:1
+        C2c_mcp.Broker.read_room_history broker ~room_id:"limit-one" ~limit:1 ()
       in
       check int "exactly one message" 1 (List.length history);
       check string "most recent only" "fifth" (List.hd history).rm_content)
@@ -4202,7 +4202,7 @@ let test_register_rename_fans_out_peer_renamed_notification () =
           let history =
             C2c_mcp.Broker.read_room_history
               (C2c_mcp.Broker.create ~root:dir)
-              ~room_id:"rename-test-room" ~limit:20
+              ~room_id:"rename-test-room" ~limit:20 ()
           in
           let found =
             List.exists
