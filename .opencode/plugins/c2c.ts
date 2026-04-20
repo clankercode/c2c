@@ -99,8 +99,7 @@ const C2CDelivery: Plugin = async (ctx) => {
   }
 
   async function runC2c(args: string[]): Promise<string> {
-    const repoCli = path.join(process.cwd(), "c2c");
-    const command = process.env.C2C_CLI_COMMAND || (fs.existsSync(repoCli) ? repoCli : "c2c");
+    const command = process.env.C2C_CLI_COMMAND || "c2c";
     const timeoutMs = parseInt(process.env.C2C_PLUGIN_CLI_TIMEOUT_MS || "5000", 10);
 
     return new Promise((resolve, reject) => {
@@ -304,8 +303,7 @@ const C2CDelivery: Plugin = async (ctx) => {
     // Spawn `c2c monitor` and trigger delivery only on 📬 (inbox-write) events.
     // 💬 (peer DM to others), 📤 (drain), 🗑️ (sweep) are noise — skip them.
     function spawnMonitor(): void {
-      const repoCli = path.join(process.cwd(), "c2c");
-      const command = process.env.C2C_CLI_COMMAND || (fs.existsSync(repoCli) ? repoCli : "c2c");
+      const command = process.env.C2C_CLI_COMMAND || "c2c";
       const args = ["monitor"];
       if (sessionId) args.push("--alias", sessionId);
       const proc = spawn(command, args, { cwd: process.cwd(), env: process.env, shell: false });
