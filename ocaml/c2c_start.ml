@@ -743,14 +743,14 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
           | None ->
               (match rs_valid with
                | Some v -> Some v
-               | None -> Some (Uuidm.to_string (Uuidm.v `V4)))
+               | None -> Some (Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())))
         in
         (bo, ao, ea, rs, ex.broker_root)
     | None ->
         let rs =
           match session_id_override with
           | Some s -> s
-          | None -> Uuidm.to_string (Uuidm.v `V4)
+          | None -> Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
         in
         (binary_override, alias_override, extra_args, Some rs, broker_root ())
   in
