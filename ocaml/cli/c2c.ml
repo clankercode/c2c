@@ -1674,6 +1674,29 @@ let rooms_list_cmd =
               r.ri_member_count alive vis)
           rooms
 
+let parse_since_str s =
+  let s = String.trim s in
+  let len = String.length s in
+  if len = 0 then 0.0
+  else
+    let last = s.[len - 1] in
+    let num_part = String.sub s 0 (len - 1) in
+    match last with
+    | 'h' -> (try Unix.gettimeofday () -. float_of_string num_part *. 3600. with _ -> 0.0)
+    | 'd' -> (try Unix.gettimeofday () -. float_of_string num_part *. 86400. with _ -> 0.0)
+    | 'm' when len > 1 && s.[len-2] >= '0' && s.[len-2] <= '9' ->
+        (try Unix.gettimeofday () -. float_of_string num_part *. 60. with _ -> 0.0)
+    | _ -> (try float_of_string s with _ ->
+        (* Try ISO 8601: YYYY-MM-DDTHH:MM:SSZ *)
+        try
+          Scanf.sscanf s "%d-%d-%dT%d:%d:%d"
+            (fun yr mo dy hr mi se ->
+               let t = { Unix.tm_year = yr - 1900; tm_mon = mo - 1; tm_mday = dy;
+                         tm_hour = hr; tm_min = mi; tm_sec = se;
+                         tm_wday = 0; tm_yday = 0; tm_isdst = false } in
+               fst (Unix.mktime t))
+        with _ -> 0.0)
+
 let rooms_history_cmd =
   let room_id =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOM" ~doc:"Room ID.")
@@ -1681,14 +1704,20 @@ let rooms_history_cmd =
   let limit =
     Cmdliner.Arg.(value & opt int 50 & info [ "limit"; "l" ] ~docv:"N" ~doc:"Max messages to return.")
   in
+  let since =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "since" ] ~docv:"SINCE"
+      ~doc:"Return only messages at or after this time. Accepts: Unix timestamp (float), relative (1h, 24h, 7d, 30m), or ISO 8601 (2026-04-20T18:00:00Z).")
+  in
   let+ json = json_flag
   and+ room_id = room_id
-  and+ limit = limit in
+  and+ limit = limit
+  and+ since = since in
+  let since_ts = match since with None -> 0.0 | Some s -> parse_since_str s in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let output_mode = if json then Json else Human in
   (try
      let messages =
-       C2c_mcp.Broker.read_room_history broker ~room_id ~limit
+       C2c_mcp.Broker.read_room_history broker ~room_id ~limit ~since:since_ts ()
      in
      match output_mode with
      | Json ->
