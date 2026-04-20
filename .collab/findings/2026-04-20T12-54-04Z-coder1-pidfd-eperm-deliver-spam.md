@@ -53,11 +53,14 @@ deliver-daemon log.
 
 - [x] Investigated
 - [x] DM'd coordinator1 with approach for relay to Max (2026-04-20T12:53Z)
-- [ ] Approach approved
-- [ ] Layer 1 implemented (preflight banner)
-- [ ] Layer 2 implemented (rate-limit)
-- [ ] Layer 3 implemented (`c2c setcap` helper)
-- [ ] Tested end-to-end
+- [x] Approach approved (coordinator1, 2026-04-20T12:59Z)
+- [x] Layer 1 implemented (preflight banner in `c2c_start.run_outer_loop`)
+- [x] Layer 2 implemented (rate-limit in `c2c_deliver_inbox.inject_payload`)
+- [x] Layer 3 implemented (`c2c setcap [--apply] [--json]`)
+- [x] Committed (`99b7db2`)
+- [x] OCaml binary rebuilt and installed to `~/.local/bin/c2c`
+- [x] Smoke-tested `c2c setcap --json` via the fresh binary
+- [ ] Joint smoke test with coder2-expert (ECHILD fix)
 
 ## Notes for next agent
 
