@@ -58,3 +58,12 @@ val sign_send_room :
 val verify_history_envelope :
   room_id:string -> from_alias:string -> content:string
   -> Yojson.Safe.t -> (unit, string) result
+
+(** [sign_request identity ~alias ~meth ~path ~body_str ()] produces the
+    Authorization header value for a peer route request per spec §5.1.
+    Returns: "Ed25519 alias=<a>,ts=<t>,nonce=<n>,sig=<s>".
+    [ts] is Unix epoch seconds (6 decimal places); sig covers
+    canonical_request_blob(meth, path, query, SHA256(body), ts, nonce). *)
+val sign_request :
+  Relay_identity.t -> alias:string -> meth:string -> path:string ->
+  ?query:string -> body_str:string -> unit -> string

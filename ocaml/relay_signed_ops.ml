@@ -61,6 +61,24 @@ let sign_send_room identity ~room_id ~from_alias ~content =
     ("nonce", `String nonce);
   ]
 
+(** Build the Authorization header value for a peer route request (spec §5.1).
+    Returns: "Ed25519 alias=<a>,ts=<t>,nonce=<n>,sig=<s>" for use in the
+    Authorization HTTP header. The signature covers the canonical request blob:
+    METHOD, path, query, SHA256(body), ts (Unix epoch secs), nonce. *)
+let sign_request identity ~alias ~meth ~path ?(query = "") ~body_str () =
+  let ts = Printf.sprintf "%.6f" (Unix.gettimeofday ()) in
+  let nonce = random_nonce_b64 () in
+  let body_hash =
+    if body_str = "" then ""
+    else b64url_nopad (Digestif.SHA256.to_raw_string (Digestif.SHA256.digest_string body_str))
+  in
+  let blob = Relay.canonical_request_blob
+    ~meth:(String.uppercase_ascii meth) ~path ~query ~body_sha256_b64:body_hash
+    ~ts ~nonce
+  in
+  let sig_ = Relay_identity.sign identity blob in
+  Printf.sprintf "Ed25519 alias=%s,ts=%s,nonce=%s,sig=%s" alias ts nonce (b64url_nopad sig_)
+
 let verify_history_envelope ~room_id ~from_alias ~content envelope =
   let decode s =
     match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet s with

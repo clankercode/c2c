@@ -2982,8 +2982,20 @@ let relay_dm_cmd =
                       exit 1
                 in
                 let content = String.concat " " msg_words in
-                let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.send client
-                  ~from_alias ~to_alias ~content ()) in
+                let body_str = Yojson.Safe.to_string (`Assoc [
+                  ("from_alias", `String from_alias);
+                  ("to_alias", `String to_alias);
+                  ("content", `String content);
+                ]) in
+                let result = (match Relay_identity.load () with
+                  | Ok id ->
+                      let auth = Relay_signed_ops.sign_request id ~alias:from_alias
+                        ~meth:"POST" ~path:"/send" ~body_str () in
+                      Lwt_main.run (C2c_mcp.Relay.Relay_client.send_signed client
+                        ~from_alias ~to_alias ~content ~auth_header:auth ())
+                  | Error _ ->
+                      Lwt_main.run (C2c_mcp.Relay.Relay_client.send client
+                        ~from_alias ~to_alias ~content ())) in
                 print_endline (Yojson.Safe.pretty_to_string result);
                 (match result with
                  | `Assoc fields ->

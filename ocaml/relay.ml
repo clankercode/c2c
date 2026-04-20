@@ -1867,8 +1867,8 @@ module Relay_client : sig
       [C2C_RELAY_CA_BUNDLE]; omitting both uses the system trust store. *)
 
   val request :
-    t -> meth:Cohttp.Code.meth -> path:string -> ?body:Yojson.Safe.t -> unit ->
-    Yojson.Safe.t Lwt.t
+    t -> meth:Cohttp.Code.meth -> path:string -> ?body:Yojson.Safe.t ->
+    ?auth_override:string -> unit -> Yojson.Safe.t Lwt.t
   (** Low-level primitive: issue [meth path] with optional JSON body.
       Returns the parsed JSON response dict. On network / parse error returns
       ["ok": false, "error_code": "connection_error", "error": <msg>]. *)
@@ -1888,6 +1888,9 @@ module Relay_client : sig
   val send :
     t -> from_alias:string -> to_alias:string -> content:string ->
     ?message_id:string -> unit -> Yojson.Safe.t Lwt.t
+  val send_signed :
+    t -> from_alias:string -> to_alias:string -> content:string ->
+    auth_header:string -> ?message_id:string -> unit -> Yojson.Safe.t Lwt.t
   val poll_inbox : t -> node_id:string -> session_id:string -> Yojson.Safe.t Lwt.t
   val list_rooms : t -> Yojson.Safe.t Lwt.t
   val room_history :
@@ -1958,13 +1961,16 @@ end = struct
       ("error", `String msg);
     ]
 
-  let request t ~meth ~path ?body () =
+  let request t ~meth ~path ?body ?auth_override () =
     let uri = Uri.of_string (t.base_url ^ path) in
     let headers =
       let base = Cohttp.Header.init_with "Content-Type" "application/json" in
-      match t.token with
-      | Some tok -> Cohttp.Header.add base "Authorization" ("Bearer " ^ tok)
-      | None -> base
+      match auth_override with
+      | Some h -> Cohttp.Header.add base "Authorization" h
+      | None ->
+          (match t.token with
+           | Some tok -> Cohttp.Header.add base "Authorization" ("Bearer " ^ tok)
+           | None -> base)
     in
     let body_str = Yojson.Safe.to_string (Option.value body ~default:(`Assoc [])) in
     let body_payload = Cohttp_lwt.Body.of_string body_str in
@@ -1990,6 +1996,7 @@ end = struct
         Lwt.return (connection_error (Printexc.to_string exn)))
 
   let post t path body = request t ~meth:`POST ~path ~body ()
+  let post_auth t path body auth = request t ~meth:`POST ~path ~body ~auth_override:auth ()
   let get t path = request t ~meth:`GET ~path ()
 
   let health t = get t "/health"
@@ -2048,6 +2055,18 @@ end = struct
       | None -> base
     in
     post t "/send" (`Assoc body)
+
+  let send_signed t ~from_alias ~to_alias ~content ~auth_header ?message_id () =
+    let base = [
+      ("from_alias", `String from_alias);
+      ("to_alias", `String to_alias);
+      ("content", `String content);
+    ] in
+    let body = match message_id with
+      | Some mid -> ("message_id", `String mid) :: base
+      | None -> base
+    in
+    post_auth t "/send" (`Assoc body) auth_header
 
   let poll_inbox t ~node_id ~session_id =
     post t "/poll_inbox" (`Assoc [
