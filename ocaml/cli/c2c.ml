@@ -2051,6 +2051,138 @@ let relay_gc_cmd =
       let args = if verbose then args @ [ "--verbose" ] else args in
       Unix.execvp "python3" (Array.of_list args)
 
+(* --- relay identity (Layer 3 slice 6) ------------------------------------- *)
+(* Wraps Relay_identity (ocaml/relay_identity.ml) with init/show/fingerprint
+   subcommands for managing ~/.config/c2c/identity.json. See
+   docs/c2c-research/relay-peer-identity-spec.md §8. *)
+
+let relay_identity_init_cmd =
+  let alias_hint =
+    Cmdliner.Arg.(value & opt string "" & info [ "alias-hint" ] ~docv:"HINT"
+      ~doc:"Informational alias label stored in identity.json (not authoritative).")
+  in
+  let path =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "path" ] ~docv:"PATH"
+      ~doc:"Override identity file path (default: ~/.config/c2c/identity.json).")
+  in
+  let force =
+    Cmdliner.Arg.(value & flag & info [ "force" ]
+      ~doc:"Overwrite an existing identity file without prompting.")
+  in
+  let json = Cmdliner.Arg.(value & flag & info [ "json" ] ~doc:"Emit JSON output.") in
+  let+ alias_hint = alias_hint
+  and+ path = path
+  and+ force = force
+  and+ json = json in
+  let target = match path with Some p -> p | None -> Relay_identity.default_path () in
+  if (not force) && Sys.file_exists target then begin
+    if json then
+      print_endline (Printf.sprintf
+        {|{"ok":false,"error":"identity exists","path":%S,"hint":"pass --force to overwrite"}|}
+        target)
+    else
+      Printf.eprintf
+        "error: %s already exists. Pass --force to overwrite.\n%!" target;
+    exit 1
+  end;
+  let id = Relay_identity.generate ~alias_hint () in
+  match Relay_identity.save ~path:target id with
+  | Error msg ->
+      if json then
+        print_endline (Printf.sprintf
+          {|{"ok":false,"error":%S}|} msg)
+      else
+        Printf.eprintf "error: %s\n%!" msg;
+      exit 1
+  | Ok () ->
+      if json then
+        print_endline (Yojson.Safe.to_string
+          (`Assoc [
+            "ok", `Bool true;
+            "path", `String target;
+            "fingerprint", `String id.fingerprint;
+            "alias_hint", `String id.alias_hint;
+            "created_at", `String id.created_at;
+          ]))
+      else begin
+        Printf.printf "identity written to %s\n" target;
+        Printf.printf "  fingerprint: %s\n" id.fingerprint;
+        if id.alias_hint <> "" then
+          Printf.printf "  alias_hint:  %s\n" id.alias_hint;
+        Printf.printf "  created_at:  %s\n" id.created_at
+      end
+
+let relay_identity_show_cmd =
+  let path =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "path" ] ~docv:"PATH"
+      ~doc:"Override identity file path (default: ~/.config/c2c/identity.json).")
+  in
+  let json = Cmdliner.Arg.(value & flag & info [ "json" ] ~doc:"Emit JSON output.") in
+  let+ path = path
+  and+ json = json in
+  let target = match path with Some p -> p | None -> Relay_identity.default_path () in
+  match Relay_identity.load ~path:target () with
+  | Error msg ->
+      if json then
+        print_endline (Printf.sprintf {|{"ok":false,"error":%S}|} msg)
+      else
+        Printf.eprintf "error: %s\n%!" msg;
+      exit 1
+  | Ok id ->
+      if json then
+        (* Never emit the private_key on show — only public metadata. *)
+        print_endline (Yojson.Safe.to_string
+          (`Assoc [
+            "ok", `Bool true;
+            "path", `String target;
+            "fingerprint", `String id.fingerprint;
+            "alias_hint", `String id.alias_hint;
+            "created_at", `String id.created_at;
+            "alg", `String id.alg;
+            "version", `Int id.version;
+          ]))
+      else begin
+        Printf.printf "path:        %s\n" target;
+        Printf.printf "fingerprint: %s\n" id.fingerprint;
+        Printf.printf "alg:         %s\n" id.alg;
+        if id.alias_hint <> "" then
+          Printf.printf "alias_hint:  %s\n" id.alias_hint;
+        Printf.printf "created_at:  %s\n" id.created_at
+      end
+
+let relay_identity_fingerprint_cmd =
+  let path =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "path" ] ~docv:"PATH"
+      ~doc:"Override identity file path (default: ~/.config/c2c/identity.json).")
+  in
+  let+ path = path in
+  let target = match path with Some p -> p | None -> Relay_identity.default_path () in
+  match Relay_identity.load ~path:target () with
+  | Error msg -> Printf.eprintf "error: %s\n%!" msg; exit 1
+  | Ok id -> print_endline id.fingerprint
+
+let relay_identity_init =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "init" ~doc:"Generate a new Ed25519 identity keypair.")
+    relay_identity_init_cmd
+
+let relay_identity_show =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "show" ~doc:"Print identity metadata (fingerprint, alias_hint, created_at).")
+    relay_identity_show_cmd
+
+let relay_identity_fingerprint =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "fingerprint" ~doc:"Print just the SHA256 fingerprint, one line.")
+    relay_identity_fingerprint_cmd
+
+let relay_identity =
+  Cmdliner.Cmd.group
+    ~default:relay_identity_show_cmd
+    (Cmdliner.Cmd.info "identity"
+      ~doc:"Manage the local Ed25519 identity used for peer authentication.")
+    [ relay_identity_init; relay_identity_show; relay_identity_fingerprint ]
+
 let relay_serve = Cmdliner.Cmd.v (Cmdliner.Cmd.info "serve" ~doc:"Start the relay server.") relay_serve_cmd
 let relay_connect = Cmdliner.Cmd.v (Cmdliner.Cmd.info "connect" ~doc:"Run the relay connector.") relay_connect_cmd
 let relay_setup = Cmdliner.Cmd.v (Cmdliner.Cmd.info "setup" ~doc:"Configure relay connection.") relay_setup_cmd
@@ -2062,8 +2194,8 @@ let relay_gc = Cmdliner.Cmd.v (Cmdliner.Cmd.info "gc" ~doc:"Run relay garbage co
 let relay_group =
   Cmdliner.Cmd.group
     ~default:relay_status_cmd
-    (Cmdliner.Cmd.info "relay" ~doc:"Cross-machine relay: serve, connect, setup, status, list, rooms, gc.")
-    [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc ]
+    (Cmdliner.Cmd.info "relay" ~doc:"Cross-machine relay: serve, connect, setup, status, list, rooms, gc, identity.")
+    [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_identity ]
 
 (* --- main entry point ----------------------------------------------------- *)
 
