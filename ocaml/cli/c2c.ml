@@ -5637,7 +5637,7 @@ let () =
                     $(b,prune-rooms), $(b,smoke-test), $(b,init), $(b,install), \
                     $(b,serve), $(b,mcp), $(b,start), $(b,stop), \
                     $(b,restart), $(b,instances), $(b,hook), $(b,inject), \
-                    $(b,screen), $(b,help)"
+                    $(b,wire-daemon), $(b,screen), $(b,help)"
                ; `P "$(b,install) — install c2c + client integrations (TUI by default). \
                      Use $(b,c2c install self) for binary-only, \
                      $(b,c2c install claude|codex|opencode|kimi|crush) per-client, \
