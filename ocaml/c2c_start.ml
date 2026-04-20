@@ -62,6 +62,25 @@ let supported_clients = Stdlib.Hashtbl.fold (fun k _ acc -> k :: acc) clients []
 let home_dir () =
   try Sys.getenv "HOME" with Not_found -> "/home/" ^ Sys.getenv "USER"
 
+let opencode_log_dir () = home_dir () // ".local" // "share" // "opencode" // "log"
+
+let latest_opencode_log () : string option =
+  let dir = opencode_log_dir () in
+  if not (Sys.file_exists dir) then None
+  else
+    try
+      let entries = Array.to_list (Sys.readdir dir) in
+      let logs = List.filter (fun f ->
+        Filename.check_suffix f ".log" &&
+        String.length f > 0 &&
+        f.[0] <> '.') entries
+      in
+      if logs = [] then None
+      else
+        let latest = List.hd (List.sort String.compare (List.rev logs)) in
+        Some (dir // latest)
+    with _ -> None
+
 let instances_dir = Filename.concat (home_dir ()) ".local" // "share" // "c2c" // "instances"
 
 let rec mkdir_p dir =
@@ -74,11 +93,13 @@ let rec mkdir_p dir =
 
 let instance_dir name = instances_dir // name
 let config_path name = instance_dir name // "config.json"
+let meta_json_path name = instance_dir name // "meta.json"
 let outer_pid_path name = instance_dir name // "outer.pid"
 let inner_pid_path name = instance_dir name // "inner.pid"
 let deliver_pid_path name = instance_dir name // "deliver.pid"
 let poker_pid_path name = instance_dir name // "poker.pid"
 let stderr_log_path name = instance_dir name // "stderr.log"
+let client_log_path name = instance_dir name // "client.log"
 let deaths_jsonl_path broker_root = broker_root // "deaths.jsonl"
 
 (* Tee stderr to inst_dir/stderr.log with 2 MB ring rotation.
@@ -502,11 +523,14 @@ let prepare_launch_args ~(name : string) ~(client : string)
          | None -> [ "--name"; name ])
     | "opencode" ->
         (* OpenCode rejects UUIDs — session IDs must start with "ses". Only
-           pass --session when resuming a prior OpenCode-generated ID. *)
-        (match resume_session_id with
+           pass --session when resuming a prior OpenCode-generated ID.
+           --log-level INFO --print-logs enables logging to the log dir. *)
+        let session_arg = match resume_session_id with
          | Some sid when String.length sid >= 3 && String.sub sid 0 3 = "ses" ->
              [ "--session"; sid ]
-         | _ -> [])
+         | _ -> []
+        in
+        [ "--log-level"; "INFO"; "--print-logs" ] @ session_arg
     | "codex" ->
         (match resume_session_id with Some _ -> [ "resume"; "--last" ] | None -> [])
     | _ -> []
@@ -730,6 +754,34 @@ let run_outer_loop ~(name : string) ~(client : string)
             ?alias_override ?resume_session_id ?binary_override ()
       in
       let cmd = binary_path :: launch_args in
+
+      (* Write meta.json with launch metadata *)
+      let meta_path = meta_json_path name in
+      let meta_entries = [
+        ("client", `String client);
+        ("binary", `String binary_path);
+        ("args", `List (List.map (fun s -> `String s) launch_args));
+        ("pid", `Int (Unix.getpid ()));
+        ("start_ts", `Float start_time);
+      ] in
+      (try
+        let oc = open_out meta_path in
+        Fun.protect ~finally:(fun () -> close_out oc)
+          (fun () ->
+            Yojson.Safe.pretty_to_channel oc (`Assoc meta_entries);
+            output_string oc "\n")
+      with _ -> ());
+
+      (* Symlink latest opencode log to client.log *)
+      (if client = "opencode" then
+        (match latest_opencode_log () with
+         | Some log_path ->
+             let client_log = client_log_path name in
+             (try
+               (try Unix.unlink client_log with _ -> ());
+               Unix.symlink log_path client_log
+             with _ -> ())
+         | None -> ()));
 
       (* Save TTY attrs *)
       let old_tty =
