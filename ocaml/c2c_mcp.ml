@@ -1046,7 +1046,7 @@ module Broker = struct
       (fun m ->
         if m.rm_alias = from_alias then ()
         else begin
-          let tagged_to = m.rm_alias ^ "@" ^ room_id in
+          let tagged_to = m.rm_alias ^ "#" ^ room_id in
           try
             with_registry_lock t (fun () ->
                 match resolve_live_session_id_by_alias t m.rm_alias with

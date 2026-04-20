@@ -1104,7 +1104,7 @@ let test_tools_call_register_alias_rename_notifies_rooms () =
           check int "peer received room fanout" 1 (List.length peer_inbox);
           let msg = List.hd peer_inbox in
           check string "fanout sender" "c2c-system" msg.from_alias;
-          check string "fanout to tagged peer" "peer-alias@swarm-lounge"
+          check string "fanout to tagged peer" "peer-alias#swarm-lounge"
             msg.to_alias;
           check string "fanout content matches history" event.rm_content
             msg.content))
@@ -2808,9 +2808,9 @@ let test_join_room_broadcasts_system_message_to_all_members () =
         msg_a.from_alias;
       check string "system sender to joining member" "c2c-system"
         msg_b.from_alias;
-      check string "existing member tagged to room" "alice@lobby"
+      check string "existing member tagged to room" "alice#lobby"
         msg_a.to_alias;
-      check string "joining member tagged to room" "bob@lobby"
+      check string "joining member tagged to room" "bob#lobby"
         msg_b.to_alias;
       check string "join broadcast content" "bob joined room lobby"
         msg_a.content;
@@ -2988,7 +2988,7 @@ let test_send_room_appends_history_and_fans_out () =
       check int "one inbox message for storm-storm" 1 (List.length inbox_b);
       let msg = List.hd inbox_b in
       check string "inbox from_alias" "storm-ember" msg.from_alias;
-      check string "inbox to_alias tagged" "storm-storm@chat" msg.to_alias;
+      check string "inbox to_alias tagged" "storm-storm#chat" msg.to_alias;
       check string "inbox content" "hello room" msg.content)
 
 let test_send_room_skips_sender_inbox () =
@@ -3602,7 +3602,7 @@ let test_tools_call_send_room_via_mcp () =
           check int "recipient inbox has one message" 1 (List.length inbox);
           let msg = List.hd inbox in
           check string "from_alias" "storm-sender" msg.from_alias;
-          check string "to_alias tagged" "storm-recv@mcp-chat" msg.to_alias;
+          check string "to_alias tagged" "storm-recv#mcp-chat" msg.to_alias;
           check string "content" "hello via mcp room" msg.content))
 
 (* Regression: OpenCode's backing model substitutes `alias` for

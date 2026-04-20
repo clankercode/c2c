@@ -470,7 +470,7 @@ end = struct
             | None ->
               let dl = `Assoc [
                 ("message_id", `String msg_id); ("from_alias", `String room_system_alias);
-                ("to_alias", `String (member_alias ^ "@" ^ room_id)); ("content", `String content);
+                ("to_alias", `String (member_alias ^ "#" ^ room_id)); ("content", `String content);
                 ("ts", `Float ts); ("room_id", `String room_id); ("reason", `String "recipient_dead");
               ] in Queue.add dl t.dead_letter
             | Some lease ->
@@ -478,14 +478,14 @@ end = struct
                 let key = inbox_key (RegistrationLease.node_id lease) (RegistrationLease.session_id lease) in
                 let msg = `Assoc [
                   ("message_id", `String msg_id); ("from_alias", `String room_system_alias);
-                  ("to_alias", `String (member_alias ^ "@" ^ room_id)); ("content", `String content);
+                  ("to_alias", `String (member_alias ^ "#" ^ room_id)); ("content", `String content);
                   ("ts", `Float ts); ("room_id", `String room_id);
                 ] in
                 let inbox = get_inbox t key in set_inbox t key (msg :: inbox)
               else
                 let dl = `Assoc [
                   ("message_id", `String msg_id); ("from_alias", `String room_system_alias);
-                  ("to_alias", `String (member_alias ^ "@" ^ room_id)); ("content", `String content);
+                  ("to_alias", `String (member_alias ^ "#" ^ room_id)); ("content", `String content);
                   ("ts", `Float ts); ("room_id", `String room_id); ("reason", `String "recipient_dead");
                 ] in Queue.add dl t.dead_letter
           ) members'
@@ -572,7 +572,7 @@ end = struct
               skipped := alias :: !skipped;
               let dl = `Assoc (with_envelope [
                 ("message_id", `String msg_id); ("from_alias", `String from_alias);
-                ("to_alias", `String (alias ^ "@" ^ room_id)); ("content", `String content);
+                ("to_alias", `String (alias ^ "#" ^ room_id)); ("content", `String content);
                 ("ts", `Float ts); ("room_id", `String room_id); ("reason", `String "recipient_dead");
               ]) in Queue.add dl t.dead_letter
             | Some lease ->
@@ -580,7 +580,7 @@ end = struct
                 skipped := alias :: !skipped;
                 let dl = `Assoc (with_envelope [
                   ("message_id", `String msg_id); ("from_alias", `String from_alias);
-                  ("to_alias", `String (alias ^ "@" ^ room_id)); ("content", `String content);
+                  ("to_alias", `String (alias ^ "#" ^ room_id)); ("content", `String content);
                   ("ts", `Float ts); ("room_id", `String room_id); ("reason", `String "recipient_dead");
                 ]) in Queue.add dl t.dead_letter
               end else begin
@@ -1026,7 +1026,18 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
   (* --- Route handlers --- *)
 
   let handle_health () =
-    respond_ok (json_ok [])
+    let git_hash =
+      try
+        let ic = Unix.open_process_in "git rev-parse --short HEAD 2>/dev/null" in
+        let line = input_line ic in
+        ignore (Unix.close_process_in ic);
+        String.trim line
+      with _ -> "unknown"
+    in
+    respond_ok (json_ok [
+      ("version", `String "0.6.9");
+      ("git_hash", `String git_hash)
+    ])
 
   let handle_list relay ~include_dead =
     let peers = InMemoryRelay.list_peers relay ~include_dead |> List.map RegistrationLease.to_json in
