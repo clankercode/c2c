@@ -8,7 +8,8 @@
       ],
       "environment": {
         "C2C_MCP_BROKER_ROOT": "/home/xertrov/src/c2c/.git/c2c/mcp",
-        "C2C_MCP_CHANNEL_DELIVERY": "1",
+        "C2C_MCP_SESSION_ID": "opencode-c2c",
+        "C2C_MCP_AUTO_DRAIN_CHANNEL": "0",
         "C2C_MCP_AUTO_JOIN_ROOMS": "swarm-lounge"
       },
       "enabled": true
