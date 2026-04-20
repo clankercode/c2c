@@ -1,5 +1,6 @@
 (library
  (name c2c_mcp)
  (wrapped false)
- (modules c2c_mcp C2c_start Relay)
- (libraries yojson logs lwt.unix cohttp-lwt-unix uuidm))
+ (modules c2c_mcp C2c_start Relay Relay_identity)
+ (libraries yojson logs lwt.unix cohttp-lwt-unix uuidm
+            base64 digestif.ocaml mirage-crypto-ec mirage-crypto-rng.unix))
