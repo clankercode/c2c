@@ -8,6 +8,17 @@ let relay_err_unknown_alias = "unknown_alias"
 let relay_err_alias_conflict = "alias_conflict"
 let relay_err_alias_identity_mismatch = "alias_identity_mismatch"
 let relay_err_recipient_dead = "recipient_dead"
+let relay_err_signature_invalid = "signature_invalid"
+let relay_err_timestamp_out_of_window = "timestamp_out_of_window"
+let relay_err_nonce_replay = "nonce_replay"
+let relay_err_missing_proof_field = "missing_proof_field"
+
+(* Signature windows (spec §4.3): 120s past / 30s future, 10 min nonce TTL *)
+let register_ts_past_window = 120.0
+let register_ts_future_window = 30.0
+let register_nonce_ttl = 600.0
+
+let register_sign_ctx = "c2c/v1/register"
 let room_system_alias = "c2c-system"
 let room_join_content alias room_id = alias ^ " joined room " ^ room_id
 
@@ -79,6 +90,7 @@ module InMemoryRelay : sig
   val create : ?dedup_window:int -> unit -> t
   val register : t -> node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> unit -> (string * RegistrationLease.t)
   val identity_pk_of : t -> alias:string -> string option
+  val check_register_nonce : t -> nonce:string -> ts:float -> (unit, string) result
   val heartbeat : t -> node_id:string -> session_id:string -> (string * RegistrationLease.t)
   val list_peers : t -> ?include_dead:bool -> RegistrationLease.t list
   val send : t -> from_alias:string -> to_alias:string -> content:string -> ?message_id:string option -> [> `Ok of float | `Duplicate of float | `Error of string * string]
@@ -97,6 +109,7 @@ end = struct
     mutex : Mutex.t;
     leases : (string, RegistrationLease.t) Hashtbl.t;
     bindings : (string, string) Hashtbl.t;
+    register_nonces : (string, float) Hashtbl.t;
     inboxes : ((string * string), Yojson.Safe.t list) Hashtbl.t;
     dead_letter : Yojson.Safe.t Queue.t;
     rooms : (string, string list) Hashtbl.t;
@@ -110,6 +123,7 @@ end = struct
     mutex = Mutex.create ();
     leases = Hashtbl.create 16;
     bindings = Hashtbl.create 16;
+    register_nonces = Hashtbl.create 64;
     inboxes = Hashtbl.create 16;
     dead_letter = Queue.create ();
     rooms = Hashtbl.create 16;
@@ -191,6 +205,22 @@ end = struct
 
   let identity_pk_of t ~alias =
     with_lock t (fun () -> Hashtbl.find_opt t.bindings alias)
+
+  let check_register_nonce t ~nonce ~ts =
+    with_lock t (fun () ->
+      (* Evict expired nonces *)
+      let cutoff = ts -. register_nonce_ttl in
+      let expired = ref [] in
+      Hashtbl.iter (fun n t0 -> if t0 < cutoff then expired := n :: !expired)
+        t.register_nonces;
+      List.iter (Hashtbl.remove t.register_nonces) !expired;
+      if Hashtbl.mem t.register_nonces nonce then
+        Error relay_err_nonce_replay
+      else begin
+        Hashtbl.replace t.register_nonces nonce ts;
+        Ok ()
+      end
+    )
 
   let heartbeat t ~node_id ~session_id =
     with_lock t (fun () ->
@@ -774,7 +804,32 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
     match InMemoryRelay.gc relay with
     | `Ok (expired, pruned) -> respond_ok (json_of_gc_result (expired, pruned))
 
-  let handle_register relay body =
+  (* Parse an RFC 3339 / ISO 8601 UTC timestamp like "2026-04-21T00:05:30Z"
+     into Unix epoch seconds. Returns None on malformed input. *)
+  let parse_rfc3339_utc s =
+    try
+      Scanf.sscanf s "%4d-%2d-%2dT%2d:%2d:%2dZ"
+        (fun y mo d h mi se ->
+          let tm = Unix.{
+            tm_year = y - 1900; tm_mon = mo - 1; tm_mday = d;
+            tm_hour = h; tm_min = mi; tm_sec = se;
+            tm_wday = 0; tm_yday = 0; tm_isdst = false;
+          } in
+          (* gmtime-inverse: use Unix.mktime on UTC by subtracting local offset *)
+          let local_epoch, _ = Unix.mktime tm in
+          let utc_tm = Unix.gmtime local_epoch in
+          let drift =
+            (utc_tm.tm_hour - tm.tm_hour) * 3600
+            + (utc_tm.tm_min - tm.tm_min) * 60
+            + (utc_tm.tm_sec - tm.tm_sec)
+          in
+          Some (local_epoch -. float_of_int drift))
+    with _ -> None
+
+  let decode_b64url s =
+    Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet s
+
+  let handle_register relay ~relay_url body =
     let node_id = get_string body "node_id" in
     let session_id = get_string body "session_id" in
     let alias = get_string body "alias" in
@@ -783,16 +838,71 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
     else
       let client_type = get_opt_string body "client_type" |> Option.value ~default:"unknown" in
       let ttl = float_of_int (get_int body "ttl" 300) in
-      let identity_pk =
-        match get_opt_string body "identity_pk" with
-        | None | Some "" -> ""
-        | Some b64 ->
-          (match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet b64 with
-           | Ok raw -> raw
-           | Error _ -> "")
+      let identity_pk_b64 = get_opt_string body "identity_pk" |> Option.value ~default:"" in
+      let signature_b64 = get_opt_string body "signature" |> Option.value ~default:"" in
+      let nonce_b64 = get_opt_string body "nonce" |> Option.value ~default:"" in
+      let timestamp_str = get_opt_string body "timestamp" |> Option.value ~default:"" in
+      let has_proof_fields =
+        identity_pk_b64 <> "" && signature_b64 <> ""
+        && nonce_b64 <> "" && timestamp_str <> ""
       in
-      let result = InMemoryRelay.register relay ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk () in
-      respond_ok (json_of_register_result result)
+      let partial_proof =
+        (identity_pk_b64 <> "" || signature_b64 <> ""
+         || nonce_b64 <> "" || timestamp_str <> "")
+        && not has_proof_fields
+      in
+      if partial_proof then
+        respond_bad_request (json_error_str relay_err_missing_proof_field
+          "identity_pk, signature, nonce, and timestamp must all be present together")
+      else if has_proof_fields then
+        (* Signed registration path — verify before binding. *)
+        match decode_b64url identity_pk_b64 with
+        | Error _ ->
+          respond_bad_request (json_error_str err_bad_request "identity_pk not base64url-nopad")
+        | Ok identity_pk when String.length identity_pk <> 32 ->
+          respond_bad_request (json_error_str err_bad_request "identity_pk must be 32 bytes")
+        | Ok identity_pk ->
+          match decode_b64url signature_b64 with
+          | Error _ ->
+            respond_bad_request (json_error_str err_bad_request "signature not base64url-nopad")
+          | Ok sig_ when String.length sig_ <> 64 ->
+            respond_bad_request (json_error_str relay_err_signature_invalid "signature must be 64 bytes")
+          | Ok sig_ ->
+            match parse_rfc3339_utc timestamp_str with
+            | None ->
+              respond_bad_request (json_error_str err_bad_request "timestamp must be RFC3339 UTC")
+            | Some ts_client ->
+              let now = Unix.gettimeofday () in
+              let skew = ts_client -. now in
+              if skew > register_ts_future_window || -. skew > register_ts_past_window then
+                respond_bad_request (json_error_str relay_err_timestamp_out_of_window
+                  (Printf.sprintf "timestamp skew %.1fs outside [-%.0f, +%.0f]"
+                     skew register_ts_past_window register_ts_future_window))
+              else
+                match InMemoryRelay.check_register_nonce relay ~nonce:nonce_b64 ~ts:ts_client with
+                | Error code ->
+                  respond_bad_request (json_error_str code "nonce already seen within TTL")
+                | Ok () ->
+                  let signed =
+                    Relay_identity.canonical_msg ~ctx:register_sign_ctx
+                      [ alias; String.lowercase_ascii relay_url;
+                        identity_pk_b64; timestamp_str; nonce_b64 ]
+                  in
+                  if not (Relay_identity.verify ~pk:identity_pk ~msg:signed ~sig_) then
+                    respond_unauthorized (json_error_str relay_err_signature_invalid
+                      "Ed25519 signature does not verify against identity_pk")
+                  else
+                    let result =
+                      InMemoryRelay.register relay ~node_id ~session_id ~alias
+                        ~client_type ~ttl ~identity_pk ()
+                    in
+                    respond_ok (json_of_register_result result)
+      else
+        (* Legacy path — no identity_pk supplied, behaves exactly as before. *)
+        let result =
+          InMemoryRelay.register relay ~node_id ~session_id ~alias ~client_type ~ttl ()
+        in
+        respond_ok (json_of_register_result result)
 
   let handle_heartbeat relay body =
     let node_id = get_string body "node_id" in
@@ -891,6 +1001,22 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
     let path = Uri.path uri in
     let meth = Request.meth req in
     let auth_header = Header.get (Request.headers req) "Authorization" in
+    let host_header = Header.get (Request.headers req) "Host" in
+    (* Reconstruct the relay URL a client would have signed against.
+       Scheme: forwarded-proto → X-Forwarded-Proto → uri.scheme → http. *)
+    let scheme =
+      match Header.get (Request.headers req) "X-Forwarded-Proto" with
+      | Some s when s <> "" -> s
+      | _ ->
+        (match Uri.scheme uri with
+         | Some s when s <> "" -> s
+         | _ -> "http")
+    in
+    let relay_url =
+      match host_header with
+      | Some h when h <> "" -> Printf.sprintf "%s://%s" scheme h
+      | _ -> ""
+    in
     let query_bool name =
       match Uri.get_query_param uri name with
       | Some v -> let v = String.lowercase_ascii v in v = "1" || v = "true" || v = "yes"
@@ -925,7 +1051,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
         read_json_body body >>= fun json ->
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_register relay j)
+         | Ok j -> handle_register relay ~relay_url j)
 
       | `POST, "/heartbeat" ->
         read_json_body body >>= fun json ->

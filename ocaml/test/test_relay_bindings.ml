@@ -67,12 +67,56 @@ let test_legacy_then_bind () =
   Alcotest.(check (option string)) "binding created on first pk"
     (Some pk) (InMemoryRelay.identity_pk_of r ~alias:"dave")
 
+(* --- L3 slice 2: nonce cache + signed register proof --- *)
+
+let test_nonce_accepts_fresh () =
+  let r = InMemoryRelay.create () in
+  let now = Unix.gettimeofday () in
+  match InMemoryRelay.check_register_nonce r ~nonce:"abc" ~ts:now with
+  | Ok () -> ()
+  | Error e -> Alcotest.failf "expected Ok, got %s" e
+
+let test_nonce_rejects_replay () =
+  let r = InMemoryRelay.create () in
+  let now = Unix.gettimeofday () in
+  let _ = InMemoryRelay.check_register_nonce r ~nonce:"xyz" ~ts:now in
+  match InMemoryRelay.check_register_nonce r ~nonce:"xyz" ~ts:now with
+  | Ok () -> Alcotest.fail "expected replay rejection"
+  | Error e ->
+    Alcotest.(check string) "nonce_replay code"
+      relay_err_nonce_replay e
+
+let test_signed_register_blob_roundtrips () =
+  (* Simulates a client signing the canonical register blob with Ed25519,
+     then the relay reconstructing it and verifying. *)
+  let id = Relay_identity.generate ~alias_hint:"coder1" () in
+  let relay_url = "https://relay.c2c.im" in
+  let identity_pk_b64 = Base64.encode_string ~pad:false
+    ~alphabet:Base64.uri_safe_alphabet id.public_key in
+  let ts = "2026-04-21T00:05:30Z" in
+  let nonce = "YWJjZGVmZ2hpams" in
+  let signed = Relay_identity.canonical_msg ~ctx:register_sign_ctx
+    [ "coder1"; String.lowercase_ascii relay_url;
+      identity_pk_b64; ts; nonce ] in
+  let sig_ = Relay_identity.sign id signed in
+  Alcotest.(check bool) "signature verifies" true
+    (Relay_identity.verify ~pk:id.public_key ~msg:signed ~sig_);
+  (* mutation: tamper with alias, verification should fail *)
+  let tampered = Relay_identity.canonical_msg ~ctx:register_sign_ctx
+    [ "mallory"; String.lowercase_ascii relay_url;
+      identity_pk_b64; ts; nonce ] in
+  Alcotest.(check bool) "tampered blob rejected" false
+    (Relay_identity.verify ~pk:id.public_key ~msg:tampered ~sig_)
+
 let tests = [
-  "register_without_pk_legacy",  `Quick, test_register_without_pk_legacy;
-  "first_bind_stores_pk",        `Quick, test_first_bind_stores_pk;
-  "rebind_same_pk_accepted",     `Quick, test_rebind_same_pk_accepted;
-  "rebind_different_pk_rejected",`Quick, test_rebind_different_pk_rejected;
-  "legacy_then_bind",            `Quick, test_legacy_then_bind;
+  "register_without_pk_legacy",    `Quick, test_register_without_pk_legacy;
+  "first_bind_stores_pk",          `Quick, test_first_bind_stores_pk;
+  "rebind_same_pk_accepted",       `Quick, test_rebind_same_pk_accepted;
+  "rebind_different_pk_rejected",  `Quick, test_rebind_different_pk_rejected;
+  "legacy_then_bind",              `Quick, test_legacy_then_bind;
+  "nonce_accepts_fresh",           `Quick, test_nonce_accepts_fresh;
+  "nonce_rejects_replay",          `Quick, test_nonce_rejects_replay;
+  "signed_register_blob_roundtrips", `Quick, test_signed_register_blob_roundtrips;
 ]
 
 let () =
