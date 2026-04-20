@@ -92,7 +92,7 @@ unblocked — see `relay-peer-identity-spec.md` §13.
 | 1. Signed `join_room` / `leave_room`         | ✅    | coder1   | `1c694fb` — soft rollout; c2c/v1/room-join & c2c/v1/room-leave ctx; 3 alcotest cases |
 | 2. Signed `send_room` + envelope verify      | ✅    | coder1   | `ce49995` — c2c/v1/room-send ctx; enc=none; ct==content bind; 3 alcotest cases |
 | 3. `sender_pk` in history + client verify    | ✅    | coder1   | `c8ae614` — InMemoryRelay.send_room ?envelope passthrough; history + fan-out include envelope; 2 alcotest cases |
-| 4. `{ct, enc, sender_pk}` wire envelope      | 🟢    | —        | unblocked by L4/2 at `ce49995` |
+| 4. `{ct, enc, sender_pk}` wire envelope      | ✅    | coder1   | `bca85df` — `c2c relay rooms send` now signs+sends v1 envelope by default via `Relay_client.send_room_signed`; legacy fallback when no identity on disk |
 | 5. `invited_members` ACL + invite/uninvite   | ✅    | coder1   | `4cffcb2` — visibility gate in join_room; /set_room_visibility, /invite_room, /uninvite_room (signed, member-only); 4 alcotest cases |
 
 ### Layer 5 — E2E crypto upgrade path
