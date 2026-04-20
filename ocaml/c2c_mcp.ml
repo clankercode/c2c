@@ -394,7 +394,12 @@ module Broker = struct
      the registry snapshot before a re-register can write to a now-orphan
      inbox file because resolution is unsynchronized with eviction. *)
 
+  let reserved_system_aliases = ["c2c"; "c2c-system"]
+
   let register t ~session_id ~alias ~pid ~pid_start_time =
+    if List.mem alias reserved_system_aliases then
+      invalid_arg (Printf.sprintf
+        "register rejected: '%s' is a reserved system alias" alias);
     with_registry_lock t (fun () ->
         let regs = load_registrations t in
         (* Split registrations into:
@@ -461,11 +466,9 @@ module Broker = struct
             end)
           conflicting)
 
-  let reserved_aliases = ["c2c"; "c2c-system"]
-
   let enqueue_message t ~from_alias ~to_alias ~content =
     (* Reject messages claiming a reserved system from_alias — prevents spoofing. *)
-    if List.mem from_alias reserved_aliases then
+    if List.mem from_alias reserved_system_aliases then
       invalid_arg (Printf.sprintf
         "send rejected: from_alias '%s' is a reserved system alias" from_alias)
     else
@@ -1943,8 +1946,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
              | None -> invalid_arg "alias is required (pass {\"alias\":\"your-name\"} or set C2C_MCP_AUTO_REGISTER_ALIAS)")
       in
       (* Reserved aliases — always blocked. *)
-      let reserved_aliases = ["c2c"; "c2c-system"] in
-      if List.mem alias reserved_aliases then
+      if List.mem alias Broker.reserved_system_aliases then
         Lwt.return (tool_result
           ~content:(Printf.sprintf
             "register rejected: '%s' is a reserved system alias and cannot be registered" alias)

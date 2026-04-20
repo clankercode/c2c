@@ -20,6 +20,9 @@ module Broker : sig
   type t
   val create : root:string -> t
   val root : t -> string
+  val reserved_system_aliases : string list
+  (** Aliases that cannot be registered by any peer: ["c2c"; "c2c-system"]. *)
+
   val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> unit
   val list_registrations : t -> registration list
   val save_registrations : t -> registration list -> unit
