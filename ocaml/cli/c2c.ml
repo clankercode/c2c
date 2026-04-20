@@ -1701,9 +1701,9 @@ let now_hms () =
   let t = Unix.localtime (Unix.gettimeofday ()) in
   Printf.sprintf "[%02d:%02d:%02d]" t.Unix.tm_hour t.Unix.tm_min t.Unix.tm_sec
 
-(* Determine if a to_alias value is a room fanout (contains '@') *)
+(* Determine if a to_alias value is a room fanout (contains '#') *)
 let parse_to_alias s =
-  match String.split_on_char '@' s with
+  match String.split_on_char '#' s with
   | [_alias; room] -> `Room room
   | _ -> `Direct s
 
@@ -1750,10 +1750,10 @@ let emit_messages ~my_alias ~all ~full_body msgs =
     in
     let body = jstr first "content" "" in
     (* Normalize room fanouts: each peer's archive tags to_alias with their
-       own alias prefix (coder1@swarm-lounge vs planner1@swarm-lounge) so
-       dedup sees them as distinct. Strip alias, keep just @<room>. *)
+       own alias prefix (coder1#swarm-lounge vs planner1#swarm-lounge) so
+       dedup sees them as distinct. Strip alias, keep just #<room>. *)
     let dedup_to = match parse_to_alias to_raw with
-      | `Room room -> "@" ^ room
+      | `Room room -> "#" ^ room
       | `Direct d -> d
     in
     let keep = dedup_check ~from ~to_raw:dedup_to ~content:body in

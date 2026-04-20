@@ -1364,7 +1364,7 @@ module Broker = struct
     let ts = append_room_history_unchecked t ~room_id ~from_alias ~content in
     (* Step 2: fan out to each member except sender. For each recipient,
        take registry_lock -> inbox_lock (existing lock order) and enqueue
-       with to_alias tagged as "<alias>@<room_id>" so the recipient can
+       with to_alias tagged as "<alias>#<room_id>" so the recipient can
        distinguish room messages from direct messages. *)
     let delivered, skipped =
       fan_out_room_message t ~room_id ~from_alias ~content
@@ -1585,7 +1585,7 @@ let tool_definitions =
       ~required:["room_id"]
       ~properties:[ prop "room_id" "Room to delete." ]
   ; tool_definition ~name:"send_room"
-      ~description:"Send a message to a persistent N:N room. Appends to room history and fans out to every member's inbox except the sender, with to_alias tagged as '<alias>@<room_id>'. The sender alias is resolved from the current MCP session when possible; `from_alias` remains a legacy fallback. Returns JSON {delivered_to, skipped, ts}."
+      ~description:"Send a message to a persistent N:N room. Appends to room history and fans out to every member's inbox except the sender, with to_alias tagged as '<alias>#<room_id>'. The sender alias is resolved from the current MCP session when possible; `from_alias` remains a legacy fallback. Returns JSON {delivered_to, skipped, ts}."
       ~required:["room_id"; "content"]
       ~properties:[ prop "room_id" "Target room."; prop "content" "Message body."; prop "alias" "Legacy fallback sender alias (deprecated)." ]
   ; tool_definition ~name:"list_rooms"
