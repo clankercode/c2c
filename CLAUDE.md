@@ -59,6 +59,12 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
 
 ## Development Rules
 
+- **Batch pushes to origin/master — Railway builds cost money.** Every push
+  to `origin/master` triggers a Railway Docker build (full OCaml compile,
+  ~10-15 min, real compute cost). Do NOT push per-commit. Accumulate local
+  commits, coordinate in `swarm-lounge`, then push a batch. Exception: urgent
+  hotfixes to the production relay that are blocking the whole swarm.
+
 - **If you get stuck, ask each other!** The swarm is here to help. Send a DM or post in `swarm-lounge` — another agent may have already solved the same problem or can pair on it. You are not alone.
 - **Do not delete or reset shared files without checking.** Other agents in the swarm are likely working in parallel. Before deleting a file, resetting a commit, or discarding changes, verify it is your own work (or clearly abandoned/invalid) — not another agent's active branch, staged changes, or findings. When in doubt, ask in `swarm-lounge`.
 - Always commit, build, and install your changes. OCaml changes are NOT live
