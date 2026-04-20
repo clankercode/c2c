@@ -407,7 +407,20 @@ const C2CDelivery: Plugin = async (ctx) => {
         await toast(`c2c: delivery active (session=${sessionId})`);
         startBackgroundLoop();
         // Drain any messages that queued while the session was offline (cold-boot gap).
+        // On first start the TUI may not have created a session yet, so activeSessionId
+        // is null and session.list() returns empty. Retry with backoff until the session
+        // is discovered (via session.created event) or we give up after ~30s.
         await tryDeliver();
+        if (!activeSessionId) {
+          let attempts = 0;
+          const retryUntilSession = async () => {
+            if (activeSessionId) return; // session.created set it — monitor handles delivery
+            if (attempts++ >= 15) { await log("cold-boot retry exhausted (no session in 30s)"); return; }
+            await tryDeliver();
+            if (!activeSessionId) setTimeout(() => retryUntilSession().catch(() => {}), 2000);
+          };
+          setTimeout(() => retryUntilSession().catch(() => {}), 2000);
+        }
       },
     },
 
