@@ -522,14 +522,16 @@ const C2CDelivery: Plugin = async (ctx) => {
     },
 
     event: async ({ event }: { event: Event }) => {
-      // Track root session ID from creation events
+      // Track root session ID from creation events — also trigger immediate delivery
+      // so queued messages arrive without waiting for the next background loop tick.
       if (event.type === "session.created") {
         const e = event as EventSessionCreated;
         const info = (e as any).properties?.info;
         if (info?.id && !info?.parentID) {
           if (configuredOpenCodeSessionId && info.id !== configuredOpenCodeSessionId) return;
           activeSessionId = info.id;
-          await log(`tracking root session: ${info.id}`);
+          await log(`tracking root session: ${info.id} — triggering cold-boot delivery`);
+          await deliverMessages(info.id);
         }
         return;
       }
