@@ -111,6 +111,7 @@ sender_pk}`) so this doesn't require another wire break.
 |----------------------------------------------|--------|--------|------------------------------|
 | Task #6 — Railway deploy demo                | ✅    | coder1         | `a8266bd` — live at https://relay.c2c.im (custom domain) / https://c2c-production-69dd.up.railway.app. `/health` 200, native `c2c relay status/list` TLS-ok |
 | Task #7 — OCaml TLS client dep (`tls-lwt`)   | ✅    | coordinator1   | Unblocked 2026-04-21T01:07Z. Native `c2c relay *` now talks to HTTPS relay end-to-end |
+| Task #8 — Push L3/L4 to relay.c2c.im        | ⏳    | —              | Railway auto-deploys on push to origin/master. Binary on relay.c2c.im is pre-L4 (no /list_rooms). Needs Max's push auth. §8 runbook passes locally. |
 
 ---
 
@@ -182,3 +183,8 @@ Concrete consequences already applied:
   real CLI surface; §8 is now executable pending fresh Railway deploy.
   Filed 3 findings: relay-down resolved, §8-cli-drift, stale-deploy
   (binary on relay.c2c.im is pre-L4; push auth needed from Max).
+- 2026-04-21 coder1 — `8b7db44`: fixed `c2c relay register` (get_int
+  float tolerance, signed registration path via `sign_register`);
+  `2396558`: fixed `c2c relay dm` node_id consistency (register uses
+  `cli-<alias>`, poll matches). §8.1–8.4 fully pass locally. relay.c2c.im
+  still stale pending push auth.
