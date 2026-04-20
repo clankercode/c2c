@@ -240,8 +240,8 @@ def main(argv: list[str] | None = None) -> int:
             + " && opencode mcp list' to verify, or launch opencode from that dir."
         )
         print()
-        print("For near-real-time auto-delivery in a manual TUI session:")
-        print("  nohup c2c-opencode-wake --terminal-pid <ghostty-pid> --pts <pts> &")
+        print("Auto-delivery is handled by the c2c TypeScript plugin (c2c.ts).")
+        print("No PTY wake daemon needed — plugin uses c2c monitor for real-time wake.")
     return 0
 
 

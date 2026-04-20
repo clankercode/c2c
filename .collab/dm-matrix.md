@@ -13,7 +13,7 @@ Last updated: 2026-04-14 by kimi-nova (Crush demoted from first-class support).
 - ✗ **broken**: known issue
 - **hook** = PostToolUse hook (c2c-inbox-check.sh) auto-delivers after every tool call
 - **poll** = recipient calls mcp__c2c__poll_inbox (polling, works everywhere)
-- **wake** = c2c_opencode_wake_daemon.py auto-delivers via PTY COMMAND injection
+- **plugin** = TypeScript plugin (c2c.ts) delivers via c2c monitor → promptAsync (no PTY)
 - **notify** = c2c_deliver_inbox.py --notify-only loop daemon injects poll notification via PTY
 
 ## 1:1 DM Matrix
