@@ -1976,15 +1976,32 @@ let relay_rooms_cmd =
   let+ subcmd = subcmd
   and+ relay_url = relay_url
   and+ token = token in
-  match find_python_script "c2c_relay_rooms.py" with
-  | None ->
-      Printf.eprintf "error: cannot find c2c_relay_rooms.py. Run from inside the c2c git repo.\n%!";
-      exit 1
-  | Some script ->
-      let args = [ "python3"; script; subcmd ] in
-      let args = match relay_url with None -> args | Some v -> args @ [ "--relay-url"; v ] in
-      let args = match token with None -> args | Some v -> args @ [ "--token"; v ] in
-      Unix.execvp "python3" (Array.of_list args)
+  match subcmd with
+  | "list" ->
+      (match resolve_relay_url relay_url with
+       | None ->
+           Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+           exit 1
+       | Some url ->
+           let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+           let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.list_rooms client) in
+           print_endline (Yojson.Safe.pretty_to_string result);
+           (match result with
+            | `Assoc fields ->
+                (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
+            | _ -> exit 1))
+  | _ ->
+      (* join / leave / send / history still require CLI args not plumbed here
+         — fall back to Python until we grow them on the OCaml side. *)
+      (match find_python_script "c2c_relay_rooms.py" with
+       | None ->
+           Printf.eprintf "error: cannot find c2c_relay_rooms.py. Run from inside the c2c git repo.\n%!";
+           exit 1
+       | Some script ->
+           let args = [ "python3"; script; subcmd ] in
+           let args = match relay_url with None -> args | Some v -> args @ [ "--relay-url"; v ] in
+           let args = match token with None -> args | Some v -> args @ [ "--token"; v ] in
+           Unix.execvp "python3" (Array.of_list args))
 
 let relay_gc_cmd =
   let relay_url =
@@ -2007,6 +2024,20 @@ let relay_gc_cmd =
   and+ interval = interval
   and+ once = once
   and+ verbose = verbose in
+  if once && interval = None then begin
+    match resolve_relay_url relay_url with
+    | None ->
+        Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+        exit 1
+    | Some url ->
+        let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+        let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.gc client) in
+        print_endline (Yojson.Safe.pretty_to_string result);
+        (match result with
+         | `Assoc fields ->
+             (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
+         | _ -> exit 1)
+  end else
   match find_python_script "c2c_relay_gc.py" with
   | None ->
       Printf.eprintf "error: cannot find c2c_relay_gc.py. Run from inside the c2c git repo.\n%!";
