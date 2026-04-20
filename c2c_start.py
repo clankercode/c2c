@@ -83,6 +83,62 @@ DOUBLE_SIGINT_WINDOW_SECONDS = 2.0
 HERE = Path(__file__).resolve().parent
 
 
+def _preflight_pidfd_check() -> tuple[bool, str | None]:
+    """Probe whether pidfd_getfd works across process boundaries.
+
+    Self-probes always succeed (ptrace_scope doesn't restrict self-access),
+    so we check more cheaply: is ptrace_scope permissive, or does the
+    interpreter have cap_sys_ptrace? If neither, inject will fail.
+
+    Returns (ok, error_message). ok=True means PTY injection will work.
+    ok=False with an error message means the caller should print a banner
+    and continue in degraded mode.
+    """
+    # Short-circuit: if ptrace_scope is 0, cross-process pidfd_getfd is unrestricted.
+    try:
+        scope_raw = Path("/proc/sys/kernel/yama/ptrace_scope").read_text().strip()
+        if scope_raw == "0":
+            return True, None
+    except OSError:
+        return True, None  # no yama module — pidfd_getfd likely unrestricted
+
+    # ptrace_scope >= 1: need cap_sys_ptrace on the interpreter.
+    import shutil as _shutil
+
+    getcap = _shutil.which("getcap")
+    interp = os.path.realpath(sys.executable)
+    if getcap is None:
+        return True, None  # can't check; assume ok rather than false-positive banner
+    try:
+        result = subprocess.run(
+            [getcap, interp],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True, None
+    if "cap_sys_ptrace" in result.stdout.lower():
+        return True, None
+    return False, (
+        f"ptrace_scope={scope_raw} and interpreter {interp} lacks cap_sys_ptrace"
+    )
+
+
+def _print_pidfd_banner(err: str) -> None:
+    interp = os.path.realpath(sys.executable)
+    print(
+        f"[c2c] PTY injection unavailable: CAP_SYS_PTRACE missing on {interp}\n"
+        f"      Run: sudo setcap cap_sys_ptrace=ep {interp}\n"
+        f"      Or:  sudo sysctl -w kernel.yama.ptrace_scope=0  (lowers system-wide ptrace guard)\n"
+        f"      Continuing in degraded mode — MCP delivery still works for Claude Code\n"
+        f"      (PostToolUse hook) and any client that drains via mcp__c2c__poll_inbox.\n"
+        f"      Details: {err}",
+        flush=True,
+    )
+
+
 def _instance_dir(name: str) -> Path:
     return INSTANCES_DIR / name
 
@@ -566,6 +622,11 @@ def run_outer_loop(
     # Auto-reap child processes (deliver daemon, poker) so they don't linger
     # as zombies if they exit before the main client.
     signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+
+    # Preflight: warn once if pidfd_getfd is blocked. Non-fatal.
+    ok, err = _preflight_pidfd_check()
+    if not ok and err is not None:
+        _print_pidfd_banner(err)
 
     inst_dir = _instance_dir(name)
     inst_dir.mkdir(parents=True, exist_ok=True)

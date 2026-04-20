@@ -17,6 +17,33 @@ import c2c_pts_inject
 
 KIMI_SUBMIT_DELAY = 1.5
 
+_EPERM_STATE = {"printed": False, "skipped": 0}
+
+
+def _note_inject_success() -> None:
+    """Reset the EPERM banner guard after a successful inject so transient
+    permission errors (e.g. cap briefly missing, then reapplied) don't
+    permanently silence the banner."""
+    _EPERM_STATE["printed"] = False
+    _EPERM_STATE["skipped"] = 0
+
+
+def _note_inject_eperm(exc: PermissionError) -> None:
+    """Print the EPERM banner once per run, then silently count skipped injects."""
+    if not _EPERM_STATE["printed"]:
+        interp = os.path.realpath(sys.executable)
+        print(
+            f"[c2c-deliver-inbox] PTY injection disabled: CAP_SYS_PTRACE missing on {interp}\n"
+            f"    Run: sudo setcap cap_sys_ptrace=ep {interp}\n"
+            f"    Or lower kernel.yama.ptrace_scope (sysctl -w kernel.yama.ptrace_scope=0)\n"
+            f"    Continuing in degraded mode (MCP delivery unaffected).\n"
+            f"    Original error: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        _EPERM_STATE["printed"] = True
+    _EPERM_STATE["skipped"] += 1
+
 
 def peek_inbox(broker_root: Path, session_id: str) -> list[dict[str, Any]]:
     path = c2c_poll_inbox.inbox_path(broker_root, session_id)
@@ -277,12 +304,20 @@ def inject_payload(
     pts: str,
     payload: str,
     submit_delay: float | None,
-) -> None:
+) -> bool:
+    """Inject payload via PTY. Returns True on success, False if CAP_SYS_PTRACE
+    is missing (logs an actionable banner once, silently counts subsequent skips)."""
     delay = effective_submit_delay(client, submit_delay)
-    if delay is None:
-        c2c_poker.inject(terminal_pid, pts, payload)
-    else:
-        c2c_poker.inject(terminal_pid, pts, payload, submit_delay=delay)
+    try:
+        if delay is None:
+            c2c_poker.inject(terminal_pid, pts, payload)
+        else:
+            c2c_poker.inject(terminal_pid, pts, payload, submit_delay=delay)
+    except PermissionError as exc:
+        _note_inject_eperm(exc)
+        return False
+    _note_inject_success()
+    return True
 
 
 def messages_signature(messages: list[dict[str, Any]]) -> str:
@@ -313,14 +348,13 @@ def deliver_once(
         delivered = 0
         if notify_only and messages and not dry_run and not suppress_notify:
             payload = notify_payload(session_id=session_id, count=len(messages), client=client)
-            inject_payload(
+            notified = inject_payload(
                 client=client,
                 terminal_pid=terminal_pid,
                 pts=pts,
                 payload=payload,
                 submit_delay=submit_delay,
             )
-            notified = True
     else:
         source, messages = c2c_poll_inbox.poll_inbox(
             broker_root=broker_root,
@@ -329,14 +363,16 @@ def deliver_once(
             force_file=file_fallback,
             allow_file_fallback=True,
         )
+        delivered = 0
         for message in messages:
-            inject_payload(
+            if inject_payload(
                 client=client,
                 terminal_pid=terminal_pid,
                 pts=pts,
                 payload=message_payload(message),
                 submit_delay=submit_delay,
-            )
+            ):
+                delivered += 1
 
     return build_result(
         session_id=session_id,

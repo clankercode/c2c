@@ -26,6 +26,7 @@ import c2c_restart_me
 import c2c_room
 import c2c_send
 import c2c_send_all
+import c2c_setcap
 import c2c_smoke_test
 import c2c_status
 import c2c_sweep_dryrun
@@ -48,6 +49,7 @@ SAFE_AUTO_APPROVE_SUBCOMMANDS = {
     "sweep-dryrun",
     "wake-peer",
     "instances",
+    "setcap",
 }
 
 USAGE = (
@@ -56,7 +58,7 @@ USAGE = (
     "configure-kimi|configure-opencode|dead-letter|deliver-inbox|health|"
     "history|init|inject|install|instances|list|mcp|peek-inbox|poker-sweep|"
     "poll-inbox|prune|refresh-peer|register|restart|restart-me|room|send|"
-    "send-all|setup|smoke-test|start|status|stop|sweep|sweep-dryrun|verify|"
+    "send-all|setcap|setup|smoke-test|start|status|stop|sweep|sweep-dryrun|verify|"
     "wake-peer|watch|whoami|wire-daemon> [...args]"
 )
 
@@ -180,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
         return c2c_send.main(remainder)
     if subcommand == "send-all":
         return c2c_send_all.main(remainder)
+    if subcommand == "setcap":
+        return c2c_setcap.main(remainder)
     if subcommand == "smoke-test":
         return c2c_smoke_test.main(remainder)
     if subcommand == "sweep":

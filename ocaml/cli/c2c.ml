@@ -2038,6 +2038,32 @@ let peek_inbox_cmd =
           (fun (m : C2c_mcp.message) -> Printf.printf "[%s] %s\n" m.from_alias m.content)
           messages
 
+(* --- subcommand: setcap --------------------------------------------------- *)
+
+let setcap_cmd =
+  let apply =
+    Cmdliner.Arg.(value & flag & info [ "apply" ]
+                    ~doc:"Exec `sudo setcap cap_sys_ptrace=ep <interp>` (needs tty + sudo).")
+  in
+  let json =
+    Cmdliner.Arg.(value & flag & info [ "json" ] ~doc:"Machine-readable output.")
+  in
+  let+ apply = apply
+  and+ json = json in
+  match find_python_script "c2c_setcap.py" with
+  | None ->
+      Printf.eprintf "error: cannot find c2c_setcap.py. Run from inside the c2c git repo.\n%!";
+      exit 1
+  | Some script ->
+      let args = [ "python3"; script ] in
+      let args = if apply then args @ [ "--apply" ] else args in
+      let args = if json then args @ [ "--json" ] else args in
+      Unix.execvp "python3" (Array.of_list args)
+
+let setcap = Cmdliner.Cmd.v (Cmdliner.Cmd.info "setcap"
+                               ~doc:"Grant CAP_SYS_PTRACE to the c2c Python interpreter so PTY injection works.")
+               setcap_cmd
+
 let peek_inbox = Cmdliner.Cmd.v (Cmdliner.Cmd.info "peek-inbox" ~doc:"Peek at your inbox without draining.") peek_inbox_cmd
 let send_all = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send-all" ~doc:"Broadcast a message to all peers.") send_all_cmd
 let sweep = Cmdliner.Cmd.v (Cmdliner.Cmd.info "sweep" ~doc:"Remove dead registrations and orphan inboxes.") sweep_cmd
@@ -4499,6 +4525,6 @@ let () =
                ; `P "$(b,relay) — cross-machine relay: serve, connect, setup, status, list, rooms, gc"
                ])
           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
-          ; sweep_dryrun; history; health; status; verify; register; refresh_peer
+          ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
           ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
           ; serve; mcp; start; stop; restart; instances; rooms_group; room_group; relay_group; hook; inject; screen; help ]))
