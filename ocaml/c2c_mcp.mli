@@ -7,6 +7,8 @@ type registration =
   ; pid : int option
   ; pid_start_time : int option
   ; registered_at : float option
+  ; canonical_alias : string option
+  (** Fully-qualified form: "<alias>#<repo>@<host>". None for pre-Phase-1 rows. *)
   }
 type message = { from_alias : string; to_alias : string; content : string }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
@@ -22,6 +24,15 @@ module Broker : sig
   val root : t -> string
   val reserved_system_aliases : string list
   (** Aliases that cannot be registered by any peer: ["c2c"; "c2c-system"]. *)
+
+  val compute_canonical_alias : alias:string -> broker_root:string -> string
+  (** [compute_canonical_alias ~alias ~broker_root] returns "<alias>#<repo>@<host>"
+      where repo is derived from broker_root path and host is the short hostname. *)
+
+  val suggest_alias_for_alias : t -> alias:string -> string
+  (** [suggest_alias_for_alias t ~alias] returns a free alias.
+      If [alias] is available, returns it unchanged. If it's taken by an alive
+      session, returns "<alias>-<next-prime>" until a free slot is found. *)
 
   val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> unit
   val list_registrations : t -> registration list
