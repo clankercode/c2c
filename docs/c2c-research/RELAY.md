@@ -91,7 +91,7 @@ unblocked — see `relay-peer-identity-spec.md` §13.
 | Spec doc (5 slices defined)                  | ✅    | planner1 | — (see `relay-rooms-spec.md`) |
 | 1. Signed `join_room` / `leave_room`         | ✅    | coder1   | `1c694fb` — soft rollout; c2c/v1/room-join & c2c/v1/room-leave ctx; 3 alcotest cases |
 | 2. Signed `send_room` + envelope verify      | ✅    | coder1   | `ce49995` — c2c/v1/room-send ctx; enc=none; ct==content bind; 3 alcotest cases |
-| 3. `sender_pk` in history + client verify    | 🟢    | —        | unblocked by L4/2 at `ce49995` |
+| 3. `sender_pk` in history + client verify    | ✅    | coder1   | `c8ae614` — InMemoryRelay.send_room ?envelope passthrough; history + fan-out include envelope; 2 alcotest cases |
 | 4. `{ct, enc, sender_pk}` wire envelope      | 🟢    | —        | unblocked by L4/2 at `ce49995` |
 | 5. `invited_members` ACL + invite/uninvite   | ✅    | coder1   | `4cffcb2` — visibility gate in join_room; /set_room_visibility, /invite_room, /uninvite_room (signed, member-only); 4 alcotest cases |
 
