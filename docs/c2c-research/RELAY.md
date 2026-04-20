@@ -76,7 +76,7 @@ Legend: ✅ shipped · 🟡 in progress · ⏳ blocked · ⚪ open · ⏸ deferr
 | 2. `/register` contract change + verification | ✅    | coder1     | `7742d79` — signed_proof verify (ts window, nonce replay, Ed25519 sig); canonical blob matches spec §4.2 |
 | 3. Per-request Ed25519 auth header            | ✅    | coder1     | `0bc08eb` — `Authorization: Ed25519 alias=,ts=,nonce=,sig=`; canonical blob per §5.1; 30s/5s window + 2-min nonce; Bearer fallback for soft rollout |
 | 4. Registry schema + first-bind-wins          | ✅    | coder1     | `6e0159e` — InMemoryRelay bindings + `alias_identity_mismatch`; 5 alcotest cases |
-| 5. Identity bootstrapping (first-msg / allowlist) | ⚪| —          | —          |
+| 5. Identity bootstrapping (first-msg / allowlist) | ✅| coder2-expert | `9ecad6c` — allowed_identities allowlist on InMemoryRelay (auto-accept matches, `alias_not_allowed` on mismatch/unsigned-on-pinned); POST /admin/unbind (Bearer-only via L2/4); 7 alcotest cases. CLI wiring follow-up. |
 | 6. `c2c relay identity` subcommand            | ✅    | coder1     | `29f1b66` — init/show/fingerprint/rotate/import/export |
 
 Open decisions resolved 2026-04-21: **Q1** → always-sign, no session
