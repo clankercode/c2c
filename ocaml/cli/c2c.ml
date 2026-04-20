@@ -5572,6 +5572,26 @@ let wire_daemon_list_cmd =
         daemons
   end
 
+let wire_daemon_format_prompt_cmd =
+  let json_messages =
+    Cmdliner.Arg.(required & opt (some string) None & info [ "json-messages" ] ~docv:"JSON"
+      ~doc:"JSON array of {from_alias,to_alias,content} message objects.")
+  in
+  let+ json_messages = json_messages in
+  let msgs_json = Yojson.Safe.from_string json_messages in
+  let msgs = match msgs_json with
+    | `List items -> List.filter_map (function
+        | `Assoc _ as obj ->
+            let get_str key = match List.assoc_opt key (match obj with `Assoc f -> f | _ -> []) with
+              | Some (`String s) -> s | _ -> "" in
+            Some C2c_mcp.{ from_alias = get_str "from_alias"
+                          ; to_alias   = get_str "to_alias"
+                          ; content    = get_str "content" }
+        | _ -> None) items
+    | _ -> []
+  in
+  print_string (C2c_wire_bridge.format_prompt msgs)
+
 let wire_daemon_group =
   Cmdliner.Cmd.group
     (Cmdliner.Cmd.info "wire-daemon"
@@ -5580,6 +5600,7 @@ let wire_daemon_group =
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "stop"   ~doc:"Stop a running wire-daemon.") wire_daemon_stop_cmd
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "status" ~doc:"Show status of a wire-daemon.") wire_daemon_status_cmd
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "list"   ~doc:"List all wire-daemon state files.") wire_daemon_list_cmd
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "format-prompt" ~doc:"[diagnostic] Format broker messages as Wire prompt text.") wire_daemon_format_prompt_cmd
     ]
 
 (* --- subcommand group: repo ------------------------------------------------ *)
