@@ -1936,16 +1936,32 @@ let relay_list_cmd =
   let+ relay_url = relay_url
   and+ token = token
   and+ dead = dead in
-  match find_python_script "c2c_relay_status.py" with
-  | None ->
-      Printf.eprintf "error: cannot find c2c_relay_status.py. Run from inside the c2c git repo.\n%!";
-      exit 1
-  | Some script ->
-      let args = [ "python3"; script; "list" ] in
-      let args = match relay_url with None -> args | Some v -> args @ [ "--relay-url"; v ] in
-      let args = match token with None -> args | Some v -> args @ [ "--token"; v ] in
-      let args = if dead then args @ [ "--dead" ] else args in
-      Unix.execvp "python3" (Array.of_list args)
+  if dead then begin
+    (* OCaml server doesn't yet expose include_dead on /list; shell out
+       to Python for parity until the server side adds the filter. *)
+    match find_python_script "c2c_relay_status.py" with
+    | None ->
+        Printf.eprintf "error: cannot find c2c_relay_status.py. Run from inside the c2c git repo.\n%!";
+        exit 1
+    | Some script ->
+        let args = [ "python3"; script; "list"; "--dead" ] in
+        let args = match relay_url with None -> args | Some v -> args @ [ "--relay-url"; v ] in
+        let args = match token with None -> args | Some v -> args @ [ "--token"; v ] in
+        Unix.execvp "python3" (Array.of_list args)
+  end else begin
+    match resolve_relay_url relay_url with
+    | None ->
+        Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+        exit 1
+    | Some url ->
+        let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+        let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.list_peers client) in
+        print_endline (Yojson.Safe.pretty_to_string result);
+        (match result with
+         | `Assoc fields ->
+             (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
+         | _ -> exit 1)
+  end
 
 let relay_rooms_cmd =
   let subcmd =
