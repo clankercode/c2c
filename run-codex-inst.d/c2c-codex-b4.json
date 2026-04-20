@@ -8,11 +8,11 @@
     "--sandbox",
     "danger-full-access"
   ],
-  "cwd": "/home/xertrov/src/c2c-msg",
+  "cwd": "/home/xertrov/src/c2c",
   "title": "c2c-codex-b4",
   "c2c_session_id": "codex-local",
   "pre_exec": [
-    "/home/xertrov/src/c2c-msg/run-codex-inst-rearm",
+    "/home/xertrov/src/c2c/run-codex-inst-rearm",
     "c2c-codex-b4"
   ],
   "prompt": "Session resumed by run-codex-inst-outer. You are the Codex C2C participant for this repo. First call mcp__c2c__poll_inbox as alias codex if that tool exists; if host MCP startup failed or the tool is unavailable, immediately run ./c2c-poll-inbox --session-id codex-local --json as the local fallback and handle any queued messages. Then read tmp_status.txt, tmp_collab_lock.md, and run-codex-inst.d/c2c-codex-b4.restart.json if present before continuing in-progress work. If there is nothing queued and nothing in flight, say so briefly and stop.",

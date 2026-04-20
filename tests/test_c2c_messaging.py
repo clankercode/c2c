@@ -621,7 +621,6 @@ class C2CInjectUnitTests(unittest.TestCase):
         stdout = io.StringIO()
 
         with (
-            mock.patch("c2c_inject.c2c_pts_inject.inject") as pts_inject,
             mock.patch("c2c_inject.c2c_poker.inject") as pty_inject,
             mock.patch("sys.stdout", stdout),
         ):
@@ -640,7 +639,6 @@ class C2CInjectUnitTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
-        pts_inject.assert_not_called()
         pty_inject.assert_called_once_with(
             44444,
             "12",

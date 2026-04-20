@@ -233,6 +233,14 @@ def main(argv: list[str] | None = None) -> int:
         help="delay between parts in ms (default: 500)",
     )
     parser.add_argument(
+        "--submit-delay",
+        type=float,
+        default=None,
+        metavar="S",
+        dest="submit_delay",
+        help="seconds to wait before sending Enter after bracketed paste",
+    )
+    parser.add_argument(
         "--method",
         choices=["pty", "history", "auto"],
         default="auto",
@@ -269,25 +277,35 @@ def main(argv: list[str] | None = None) -> int:
         source_tool="c2c_inject",
     )
 
-    submit_delay = effective_submit_delay(args.client, None)
+    submit_delay = effective_submit_delay(args.client, args.submit_delay)
+
+    method_used = None
+    terminal_pid = None
+    pts = None
+
+    if args.method in ("pty", "auto"):
+        if args.dry_run:
+            # Resolve session for dry-run output but skip injection
+            try:
+                terminal_pid, pts, _transcript = resolve_session_info(args)
+                method_used = "pty"
+            except Exception:
+                pass
 
     if not args.dry_run:
-        method_used = None
-        terminal_pid = None
-        pts = None
-
         if args.method in ("pty", "auto"):
             try:
                 terminal_pid, pts, _transcript = resolve_session_info(args)
                 # Try PTY injection
-                if len(parts) == 1 and parts[0][0] == full_text:
-                    # Single text part - use original payload path
+                has_keycodes = any(name.startswith(":") for name, _ in parts)
+                if not has_keycodes:
+                    # All plain text — join into a single message and inject once
                     if submit_delay is None:
                         c2c_poker.inject(terminal_pid, pts, payload)
                     else:
                         c2c_poker.inject(terminal_pid, pts, payload, submit_delay=submit_delay)
                 else:
-                    # Multi-part or keycode - inject each part sequentially
+                    # Multi-part with keycodes — inject each part sequentially
                     for i, (name, data) in enumerate(parts):
                         payload_i = render_payload(name, args.event, args.sender, args.alias, args.raw,
                                                    source="pty", source_tool="c2c_inject")
@@ -318,11 +336,6 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"History injection failed: {e}", file=sys.stderr)
                 return 1
 
-    else:
-        method_used = args.method
-        terminal_pid = None
-        pts = None
-
     result = build_result(
         client=args.client,
         method=method_used or args.method,
@@ -330,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
         pts=pts,
         payload=payload,
         dry_run=args.dry_run,
-        submit_delay=args.delay,
+        submit_delay=submit_delay,
         sent_at=sent_at,
     )
     if args.json:
