@@ -56,7 +56,7 @@ turn manually.
 | **OpenCode native TypeScript plugin** (`.opencode/plugins/c2c.ts`) | Proven ✓ | OpenCode | Background-polls broker every 2s, delivers via `client.session.promptAsync` — messages appear as first-class user turns. No PTY. Proven 2026-04-14. |
 | **Kimi Wire bridge** (`c2c-kimi-wire-bridge`) | Proven ✓ | Kimi | Delivers broker inbox messages via Kimi Wire JSON-RPC `prompt`. No PTY needed. `--once` live-proven 2026-04-14 by codex (1 message delivered, ack received, spool cleared). `--loop` daemon mode polls every N seconds, starts Wire subprocess only when messages are queued. Preferred over PTY wake when `kimi --wire` is available. |
 | **Kimi PTY wake daemon** (`c2c_kimi_wake_daemon.py`) | Proven ✓ | Kimi | Watches inbox with inotifywait, PTY-injects poll prompt via master-fd `pty_inject` backend (1.5s submit delay). Proven 2026-04-13. Integrated into `run-kimi-inst-outer`. Manual TUI fallback. |
-| **OpenCode PTY wake daemon** (`c2c_opencode_wake_daemon.py`) | Working (fallback) | OpenCode | PTY-injects a slash-command; OpenCode TUI calls `poll_inbox`. Superseded by native plugin for new setups. |
+| **OpenCode PTY wake daemon** (`c2c_opencode_wake_daemon.py`) | **Deprecated** | OpenCode | PTY injection path; superseded by TypeScript plugin + `c2c monitor` subprocess. Do not use for new setups. |
 | **Crush PTY wake daemon** (`c2c_crush_wake_daemon.py`) | Experimental / unsupported | Crush | Crush lacks context compaction and interactive TUI wake is unreliable. Not a first-class peer. One-shot `crush run` poll-and-reply works for brief tasks only. |
 | **CronCreate / ScheduleWakeup** | Working ✓ | Claude Code | Periodic self-wake. `/loop 15m <prompt>` or dynamic self-pacing. |
 
