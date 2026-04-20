@@ -3199,63 +3199,7 @@ let do_install_self ~output_mode ~dest_opt ~with_mcp_server =
               Printf.eprintf "error: %s\n%!" msg;
               exit 1))
 
-(* --- subcommand: init ---------------------------------------------------- *)
-
-let init_cmd =
-  let room_id =
-    Cmdliner.Arg.(value & pos ~rev:true 0 (some string) None & info [] ~docv:"ROOM" ~doc:"Optional room to create/join.")
-  in
-  let+ json = json_flag
-  and+ room_id_opt = room_id in
-  let root = resolve_broker_root () in
-  let broker = C2c_mcp.Broker.create ~root in
-  let regs = C2c_mcp.Broker.list_registrations broker in
-  let alive_count =
-    List.filter C2c_mcp.Broker.registration_is_alive regs |> List.length
-  in
-  let output_mode = if json then Json else Human in
-  (match output_mode with
-   | Json ->
-       let peer_aliases = List.sort String.compare (List.map (fun r -> r.C2c_mcp.alias) regs) in
-       print_json (`Assoc
-         [ ("broker_root", `String root)
-         ; ("broker_root_exists", `Bool (Sys.file_exists root && Sys.is_directory root))
-         ; ("peer_count", `Int (List.length regs))
-         ; ("alive_count", `Int alive_count)
-         ; ("peers", `List (List.map (fun a -> `String a) peer_aliases))
-         ])
-   | Human ->
-       Printf.printf "broker root: %s\n" root;
-       Printf.printf "peer count:  %d (%d alive)\n" (List.length regs) alive_count;
-       if regs <> [] then (
-         let aliases = List.sort String.compare (List.map (fun r -> r.C2c_mcp.alias) regs) in
-         Printf.printf "peers:       %s\n" (String.concat ", " aliases);
-       ) else
-         Printf.printf "peers:       (none)\n";
-       Printf.printf "\nNext steps:\n";
-       Printf.printf "  c2c register          — register as a peer\n";
-       Printf.printf "  c2c send ALIAS MSG    — send a message\n";
-       Printf.printf "  c2c poll-inbox        — check your inbox\n";
-       Printf.printf "  c2c send-all MSG       — broadcast to all peers\n";
-       Printf.printf "  c2c rooms join ROOM    — join a chat room\n";
-       ());
-  (* Optionally join a room *)
-  match room_id_opt with
-  | None -> ()
-  | Some room ->
-      let session_id = resolve_session_id () in
-      let alias = resolve_alias broker in
-      (try
-         let (_ : C2c_mcp.room_member list) = C2c_mcp.Broker.join_room broker ~session_id ~alias ~room_id:room in
-         match output_mode with
-         | Json -> print_json (`Assoc [ ("joined_room", `String room) ])
-         | Human -> Printf.printf "joined room: %s\n" room
-       with Invalid_argument msg ->
-         match output_mode with
-         | Json -> print_json (`Assoc [ ("error", `String msg) ])
-         | Human -> Printf.eprintf "error: %s\n%!" msg)
-
-let init = Cmdliner.Cmd.v (Cmdliner.Cmd.info "init" ~doc:"Bootstrap the c2c broker and print status.") init_cmd
+(* --- subcommand: init — defined after do_install_client below ----------- *)
 
 (* --- subcommand: setup --------------------------------------------------- *)
 
@@ -4182,6 +4126,161 @@ let install_default_term =
   let+ alias_opt = alias
   and+ broker_root_opt = broker_root in
   run_install_tui ~alias_opt ~broker_root_opt
+
+(* --- subcommand: init ---------------------------------------------------- *)
+
+let detect_client () =
+  (match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+   | Some sid ->
+       let clients = [ "opencode"; "claude"; "codex"; "kimi"; "crush" ] in
+       List.find_opt (fun c ->
+         let cl = String.length c in
+         String.length sid >= cl && String.sub sid 0 cl = c) clients
+   | None -> None)
+  |> (function
+      | Some _ as v -> v
+      | None ->
+          let has_bin name =
+            let path = try Sys.getenv "PATH" with Not_found -> "" in
+            List.exists (fun d -> Sys.file_exists (d // name))
+              (String.split_on_char ':' path)
+          in
+          List.find_opt has_bin [ "opencode"; "claude"; "codex"; "kimi" ])
+
+let init_cmd =
+  let open Cmdliner in
+  let client_opt =
+    Arg.(value & opt (some string) None & info ["client"; "c"] ~docv:"CLIENT"
+           ~doc:"Client to configure: claude, opencode, codex, kimi. Auto-detected when omitted.")
+  in
+  let alias_opt_arg =
+    Arg.(value & opt (some string) None & info ["alias"; "a"] ~docv:"ALIAS"
+           ~doc:"Alias to register under. Auto-generated when omitted.")
+  in
+  let room_arg =
+    Arg.(value & opt string "swarm-lounge" & info ["room"; "r"] ~docv:"ROOM"
+           ~doc:"Room to join on init (default: swarm-lounge). Pass empty string to skip.")
+  in
+  let no_setup =
+    Arg.(value & flag & info ["no-setup"]
+           ~doc:"Skip client MCP setup; only register and join room.")
+  in
+  let+ json = json_flag
+  and+ client_opt = client_opt
+  and+ alias_opt = alias_opt_arg
+  and+ room = room_arg
+  and+ no_setup = no_setup in
+  let output_mode = if json then Json else Human in
+  let root = resolve_broker_root () in
+  let broker = C2c_mcp.Broker.create ~root in
+
+  let client_resolved =
+    match client_opt with
+    | Some c -> Some c
+    | None -> detect_client ()
+  in
+
+  let setup_result =
+    if no_setup then `Skipped
+    else match client_resolved with
+      | None ->
+          (match output_mode with
+           | Human ->
+               Printf.printf "No client detected. Specify one with --client:\n";
+               Printf.printf "  c2c init --client opencode\n";
+               Printf.printf "  c2c init --client claude\n";
+               Printf.printf "  c2c init --client codex\n"
+           | Json -> ());
+          `No_client
+      | Some client ->
+          (try
+             do_install_client ~output_mode ~client ~alias_opt ~broker_root_opt:(Some root) ~target_dir_opt:None ~force:false ();
+             `Ok client
+           with e -> `Error (Printexc.to_string e))
+  in
+
+  let session_id =
+    match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+    | Some s when String.trim s <> "" -> s
+    | _ -> generate_session_id ()
+  in
+  let alias =
+    match alias_opt with
+    | Some a -> a
+    | None ->
+        match client_resolved with
+        | Some c -> default_alias_for_client c
+        | None -> generate_alias ()
+  in
+  C2c_mcp.Broker.register broker ~session_id ~alias ~pid:None ~pid_start_time:None;
+
+  let room_result =
+    if String.trim room = "" then `Skipped
+    else
+      (try
+         let (_ : C2c_mcp.room_member list) =
+           C2c_mcp.Broker.join_room broker ~session_id ~alias ~room_id:room
+         in
+         `Joined room
+       with Invalid_argument msg -> `Error msg)
+  in
+
+  (match output_mode with
+   | Json ->
+       let setup_json = match setup_result with
+         | `Ok c -> `String (Printf.sprintf "configured %s" c)
+         | `Skipped -> `String "skipped"
+         | `No_client -> `String "no client detected"
+         | `Error e -> `String (Printf.sprintf "error: %s" e)
+       in
+       let room_json = match room_result with
+         | `Joined r -> `String r
+         | `Skipped -> `Null
+         | `Error e -> `String (Printf.sprintf "error: %s" e)
+       in
+       print_json (`Assoc
+         [ ("ok", `Bool true)
+         ; ("session_id", `String session_id)
+         ; ("alias", `String alias)
+         ; ("broker_root", `String root)
+         ; ("setup", setup_json)
+         ; ("room", room_json)
+         ])
+   | Human ->
+       Printf.printf "\nc2c init complete!\n";
+       Printf.printf "  session:  %s\n" session_id;
+       Printf.printf "  alias:    %s\n" alias;
+       Printf.printf "  broker:   %s\n" root;
+       (match setup_result with
+        | `Ok c -> Printf.printf "  setup:    %s configured\n" c
+        | `Skipped -> ()
+        | `No_client -> Printf.printf "  setup:    skipped (no client detected)\n"
+        | `Error e -> Printf.printf "  setup:    error — %s\n" e);
+       (match room_result with
+        | `Joined r -> Printf.printf "  room:     joined #%s\n" r
+        | `Skipped -> ()
+        | `Error e -> Printf.printf "  room:     error joining — %s\n" e);
+       Printf.printf "\nYou're ready! Try:\n";
+       Printf.printf "  c2c list              — see peers\n";
+       Printf.printf "  c2c send ALIAS MSG    — send a message\n";
+       Printf.printf "  c2c poll-inbox        — check your inbox\n";
+       Printf.printf "  c2c send-room %s MSG  — chat in the room\n" room)
+
+let init =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "init"
+       ~doc:"One-command project onboarding: configure client MCP, register, join swarm-lounge."
+       ~man:[ `S "DESCRIPTION"
+            ; `P "$(b,c2c init) configures the current AI client for c2c messaging, registers \
+                  the session, and joins swarm-lounge. Run once per project."
+            ; `P "Auto-detects the client from $(b,C2C_MCP_SESSION_ID) or installed binaries. \
+                  Override with $(b,--client)."
+            ; `S "EXAMPLES"
+            ; `P "$(b,c2c init)  — auto-detect client, configure, register, join swarm-lounge"
+            ; `P "$(b,c2c init --client opencode --alias my-bot)  — explicit client and alias"
+            ; `P "$(b,c2c init --no-setup --room project-room)  — skip MCP setup, join custom room"
+            ])
+    init_cmd
 
 let install =
   let info = Cmdliner.Cmd.info "install"
