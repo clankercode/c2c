@@ -1933,7 +1933,7 @@ end = struct
       ("session_id", `String session_id);
       ("alias", `String alias);
       ("client_type", `String client_type);
-      ("ttl", `Float ttl);
+      ("ttl", `Int (int_of_float ttl));
     ] in
     let fields =
       if identity_pk = "" then base
@@ -1953,7 +1953,7 @@ end = struct
       ("session_id", `String session_id);
       ("alias", `String alias);
       ("client_type", `String client_type);
-      ("ttl", `Float ttl);
+      ("ttl", `Int (int_of_float ttl));
       ("identity_pk", `String identity_pk_b64);
       ("signature", `String sig_b64);
       ("nonce", `String nonce);
