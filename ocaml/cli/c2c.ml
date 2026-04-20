@@ -2308,7 +2308,8 @@ let relay_serve_cmd =
           | Yojson.Json_error msg ->
             Printf.eprintf "error parsing --allowed-identities: %s\n%!" msg; exit 1)
       in
-      Printf.eprintf "c2c relay-server %s  port=%d\n%!" (version_string ()) port;
+      Version.banner ~role:"relay-server" ~git_hash:(Option.value (git_shorthash ()) ~default:"unknown");
+      Printf.eprintf "  listen=%s:%d\n%!" host port;
       Lwt_main.run (Relay.Relay_server.start_server ~host ~port ~token ~verbose ~gc_interval ?tls:tls_cfg ~allowlist ())
 
 let relay_connect_cmd =

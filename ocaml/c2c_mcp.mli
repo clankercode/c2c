@@ -1,4 +1,5 @@
 val server_version : string
+val server_git_hash : string
 
 type registration =
   { session_id : string

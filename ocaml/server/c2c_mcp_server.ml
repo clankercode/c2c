@@ -188,7 +188,7 @@ let rec loop ~broker_root ~channel_capable =
           loop ~broker_root ~channel_capable)
 
 let server_banner () =
-  Printf.eprintf "c2c mcp-server v%s  build=%s\n%!" C2c_mcp.server_version Version.build_date
+  Version.banner ~role:"mcp-server" ~git_hash:C2c_mcp.server_git_hash
 
 let () =
   server_banner ();
