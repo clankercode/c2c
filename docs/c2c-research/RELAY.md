@@ -47,7 +47,7 @@ Legend: ✅ shipped · 🟡 in progress · ⏳ blocked · ⚪ open · ⏸ deferr
 | 1. Typed public methods on RelayClient (OCaml-first per steering) | ✅ | coordinator1 | `9d16860`   |
 | 2. Port Relay_client contract-test coverage   | 🟡    | coordinator1 | —           |
 | 3. Native OCaml `c2c relay status`            | ✅    | coordinator1 | `bbaf8e8`   |
-| 4. Native OCaml `c2c relay list` (--dead still shells out) | ✅ | coder2-expert | `b7a789b`   |
+| 4. Native OCaml `c2c relay list` (including `--dead` after server include_dead) | ✅ | coder2-expert | `b7a789b`, `18494b4` |
 | 5. Native OCaml `c2c relay rooms list` + `gc --once` | ✅ | coder2-expert | `6a1f8cb`   |
 | 6. Native OCaml `c2c relay rooms history --room --limit` | ✅ | coder2-expert | `e4ff0fe`   |
 | 7. Regression test suite for native relay subcommands | ✅ | coder2-expert | `555046f`   |
