@@ -26,6 +26,10 @@ let request_ts_future_window = 5.0
 let request_nonce_ttl = 120.0
 let request_sign_ctx = "c2c/v1/request"
 
+(* Layer 4 room ops (spec §4.1/§4.2): use the register ts window + nonce TTL. *)
+let room_join_sign_ctx = "c2c/v1/room-join"
+let room_leave_sign_ctx = "c2c/v1/room-leave"
+
 (* Parse a header value like
      "Ed25519 alias=foo,ts=1776698000,nonce=AAA,sig=BBB"
    into the four fields. Leading "Ed25519 " prefix is stripped by the caller. *)
@@ -1016,16 +1020,86 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
       let msgs = InMemoryRelay.peek_inbox relay ~node_id ~session_id in
       respond_ok (json_ok [ ("messages", `List msgs) ])
 
+  (* Layer 4 slice 1: verify optional signed proof on room join/leave.
+     Returns [Ok ()] when either (a) no proof fields are present (legacy
+     path) or (b) all fields present and verify correctly. Returns
+     [Error (code, msg)] for any partial/invalid/forged proof. *)
+  let verify_room_op_proof relay ~sign_ctx ~room_id ~alias body =
+    let identity_pk_b64 = get_opt_string body "identity_pk" |> Option.value ~default:"" in
+    let signature_b64 = get_opt_string body "sig" |> Option.value ~default:"" in
+    let nonce_b64 = get_opt_string body "nonce" |> Option.value ~default:"" in
+    let timestamp_str = get_opt_string body "ts" |> Option.value ~default:"" in
+    let has_proof =
+      identity_pk_b64 <> "" && signature_b64 <> ""
+      && nonce_b64 <> "" && timestamp_str <> ""
+    in
+    let partial =
+      (identity_pk_b64 <> "" || signature_b64 <> ""
+       || nonce_b64 <> "" || timestamp_str <> "")
+      && not has_proof
+    in
+    if partial then
+      Error (relay_err_missing_proof_field,
+        "identity_pk, sig, nonce, and ts must all be present together")
+    else if not has_proof then
+      Ok ()  (* legacy unsigned path — accept *)
+    else
+      match decode_b64url identity_pk_b64 with
+      | Error _ -> Error (err_bad_request, "identity_pk not base64url-nopad")
+      | Ok identity_pk when String.length identity_pk <> 32 ->
+        Error (err_bad_request, "identity_pk must be 32 bytes")
+      | Ok identity_pk ->
+        match decode_b64url signature_b64 with
+        | Error _ -> Error (err_bad_request, "sig not base64url-nopad")
+        | Ok sig_ when String.length sig_ <> 64 ->
+          Error (relay_err_signature_invalid, "sig must be 64 bytes")
+        | Ok sig_ ->
+          match parse_rfc3339_utc timestamp_str with
+          | None -> Error (err_bad_request, "ts must be RFC3339 UTC")
+          | Some ts_client ->
+            let now = Unix.gettimeofday () in
+            let skew = ts_client -. now in
+            if skew > register_ts_future_window || -. skew > register_ts_past_window then
+              Error (relay_err_timestamp_out_of_window,
+                Printf.sprintf "ts skew %.1fs outside window" skew)
+            else
+              match InMemoryRelay.check_register_nonce relay ~nonce:nonce_b64 ~ts:ts_client with
+              | Error code -> Error (code, "nonce already seen within TTL")
+              | Ok () ->
+                (* Bind identity_pk to alias: must match any existing binding. *)
+                (match InMemoryRelay.identity_pk_of relay ~alias with
+                 | Some bound when bound <> identity_pk ->
+                   Error (relay_err_alias_identity_mismatch,
+                     "identity_pk does not match registered binding")
+                 | _ ->
+                   let blob =
+                     Relay_identity.canonical_msg ~ctx:sign_ctx
+                       [ room_id; alias; identity_pk_b64; timestamp_str; nonce_b64 ]
+                   in
+                   if Relay_identity.verify ~pk:identity_pk ~msg:blob ~sig_ then
+                     Ok ()
+                   else
+                     Error (relay_err_signature_invalid,
+                       "Ed25519 signature does not verify"))
+
   let handle_join_room relay body =
     let alias = get_string body "alias" in
     let room_id = get_string body "room_id" in
     if alias = "" || room_id = "" then
       respond_bad_request (json_error_str err_bad_request "alias and room_id are required")
     else
-      let result = InMemoryRelay.join_room relay ~alias ~room_id in
-      respond_ok (match result with
-        | `Ok -> json_of_room_join_result `Ok
-        | `Error (code, msg) -> json_error code msg [])
+      match verify_room_op_proof relay ~sign_ctx:room_join_sign_ctx
+              ~room_id ~alias body with
+      | Error (code, msg) ->
+        if code = err_bad_request || code = relay_err_missing_proof_field then
+          respond_bad_request (json_error_str code msg)
+        else
+          respond_unauthorized (json_error_str code msg)
+      | Ok () ->
+        let result = InMemoryRelay.join_room relay ~alias ~room_id in
+        respond_ok (match result with
+          | `Ok -> json_of_room_join_result `Ok
+          | `Error (code, msg) -> json_error code msg [])
 
   let handle_leave_room relay body =
     let alias = get_string body "alias" in
@@ -1033,8 +1107,16 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
     if alias = "" || room_id = "" then
       respond_bad_request (json_error_str err_bad_request "alias and room_id are required")
     else
-      let result = InMemoryRelay.leave_room relay ~alias ~room_id in
-      respond_ok (json_of_room_join_result result)
+      match verify_room_op_proof relay ~sign_ctx:room_leave_sign_ctx
+              ~room_id ~alias body with
+      | Error (code, msg) ->
+        if code = err_bad_request || code = relay_err_missing_proof_field then
+          respond_bad_request (json_error_str code msg)
+        else
+          respond_unauthorized (json_error_str code msg)
+      | Ok () ->
+        let result = InMemoryRelay.leave_room relay ~alias ~room_id in
+        respond_ok (json_of_room_join_result result)
 
   and handle_send_room relay body =
     let from_alias = get_string body "from_alias" in
@@ -1337,7 +1419,13 @@ module Relay_client : sig
   val room_history :
     t -> room_id:string -> ?limit:int -> unit -> Yojson.Safe.t Lwt.t
   val join_room : t -> alias:string -> room_id:string -> Yojson.Safe.t Lwt.t
+  val join_room_signed : t -> alias:string -> room_id:string
+    -> identity_pk:string -> ts:string -> nonce:string -> sig_:string
+    -> Yojson.Safe.t Lwt.t
   val leave_room : t -> alias:string -> room_id:string -> Yojson.Safe.t Lwt.t
+  val leave_room_signed : t -> alias:string -> room_id:string
+    -> identity_pk:string -> ts:string -> nonce:string -> sig_:string
+    -> Yojson.Safe.t Lwt.t
   val send_room :
     t -> from_alias:string -> room_id:string -> content:string ->
     ?message_id:string -> unit -> Yojson.Safe.t Lwt.t
@@ -1456,10 +1544,30 @@ end = struct
       ("room_id", `String room_id);
     ])
 
+  let join_room_signed t ~alias ~room_id ~identity_pk ~ts ~nonce ~sig_ =
+    post t "/join_room" (`Assoc [
+      ("alias", `String alias);
+      ("room_id", `String room_id);
+      ("identity_pk", `String identity_pk);
+      ("ts", `String ts);
+      ("nonce", `String nonce);
+      ("sig", `String sig_);
+    ])
+
   let leave_room t ~alias ~room_id =
     post t "/leave_room" (`Assoc [
       ("alias", `String alias);
       ("room_id", `String room_id);
+    ])
+
+  let leave_room_signed t ~alias ~room_id ~identity_pk ~ts ~nonce ~sig_ =
+    post t "/leave_room" (`Assoc [
+      ("alias", `String alias);
+      ("room_id", `String room_id);
+      ("identity_pk", `String identity_pk);
+      ("ts", `String ts);
+      ("nonce", `String nonce);
+      ("sig", `String sig_);
     ])
 
   let send_room t ~from_alias ~room_id ~content ?message_id () =
