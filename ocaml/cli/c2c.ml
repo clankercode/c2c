@@ -1749,7 +1749,14 @@ let emit_messages ~my_alias ~all ~full_body msgs =
                    && String.sub to_raw 0 (String.length me) = me
     in
     let body = jstr first "content" "" in
-    let keep = dedup_check ~from ~to_raw ~content:body in
+    (* Normalize room fanouts: each peer's archive tags to_alias with their
+       own alias prefix (coder1@swarm-lounge vs planner1@swarm-lounge) so
+       dedup sees them as distinct. Strip alias, keep just @<room>. *)
+    let dedup_to = match parse_to_alias to_raw with
+      | `Room room -> "@" ^ room
+      | `Direct d -> d
+    in
+    let keep = dedup_check ~from ~to_raw:dedup_to ~content:body in
     if keep && (all || is_mine) then begin
       let icon = if is_mine then "📬" else "💬" in
       let dest = match parse_to_alias to_raw with
