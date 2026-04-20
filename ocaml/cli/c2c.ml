@@ -4629,6 +4629,79 @@ let instances_cmd =
   end
 
 let instances = Cmdliner.Cmd.v (Cmdliner.Cmd.info "instances" ~doc:"List managed c2c instances.") instances_cmd
+
+(* --- subcommand: diag ----------------------------------------------------- *)
+
+let diag_cmd =
+  let name_arg =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME" ~doc:"Instance name.")
+  in
+  let lines_arg =
+    Cmdliner.Arg.(value & opt int 50 & info [ "lines"; "n" ] ~docv:"N" ~doc:"Number of stderr tail lines (default: 50).")
+  in
+  let+ name = name_arg
+  and+ lines = lines_arg in
+  let inst_dir = instances_dir () // name in
+  if not (Sys.file_exists inst_dir) then begin
+    Printf.eprintf "error: no instance dir for '%s'. Was it ever started?\n%!" name;
+    exit 1
+  end;
+  (* Print last death record if any *)
+  let broker_root = resolve_broker_root () in
+  let deaths_path = broker_root // "deaths.jsonl" in
+  let last_death =
+    if Sys.file_exists deaths_path then
+      (try
+        let ic = open_in deaths_path in
+        let last = ref None in
+        (try while true do
+          let line = String.trim (input_line ic) in
+          if line <> "" then begin
+            match Yojson.Safe.from_string line with
+            | `Assoc fields ->
+                (match List.assoc_opt "name" fields with
+                 | Some (`String n) when n = name -> last := Some fields
+                 | _ -> ())
+            | _ -> ()
+          end
+        done with End_of_file -> ());
+        close_in ic;
+        !last
+      with _ -> None)
+    else None
+  in
+  (match last_death with
+   | None -> ()
+   | Some fields ->
+       let exit_code = match List.assoc_opt "exit_code" fields with Some (`Int n) -> n | _ -> -1 in
+       let duration_s = match List.assoc_opt "duration_s" fields with Some (`Float f) -> f | _ -> 0.0 in
+       let ts = match List.assoc_opt "ts" fields with Some (`Float f) -> f | _ -> 0.0 in
+       let t = Unix.gmtime ts in
+       let ts_str = Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
+         (t.Unix.tm_year + 1900) (t.Unix.tm_mon + 1) t.Unix.tm_mday
+         t.Unix.tm_hour t.Unix.tm_min t.Unix.tm_sec in
+       Printf.printf "last death: exit=%d  duration=%.1fs  at=%s\n" exit_code duration_s ts_str);
+  (* Print stderr.log tail *)
+  let log_path = inst_dir // "stderr.log" in
+  if not (Sys.file_exists log_path) then
+    Printf.printf "no stderr.log (instance may not have produced any stderr)\n"
+  else begin
+    Printf.printf "\n--- stderr.log (last %d lines) ---\n" lines;
+    let ic = open_in log_path in
+    let all_lines = ref [] in
+    (try while true do
+      all_lines := input_line ic :: !all_lines
+    done with End_of_file -> ());
+    close_in ic;
+    let all = List.rev !all_lines in
+    let n = List.length all in
+    let skip = max 0 (n - lines) in
+    let rec drop i lst = match lst with [] -> [] | _ :: t -> if i > 0 then drop (i-1) t else lst in
+    List.iter (fun l -> print_endline l) (drop skip all)
+  end
+
+let diag = Cmdliner.Cmd.v (Cmdliner.Cmd.info "diag" ~doc:"Show diagnostic info (last death + stderr tail) for a managed instance.") diag_cmd
+
 (* --- subcommand: start ---------------------------------------------------- *)
 
 let start_cmd =
@@ -5876,4 +5949,4 @@ let () =
           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
           ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
           ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-          ; serve; mcp; start; stop; restart; restart_self; instances; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; help ]))
+          ; serve; mcp; start; stop; restart; restart_self; instances; diag; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; help ]))

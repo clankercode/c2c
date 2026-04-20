@@ -78,6 +78,132 @@ let outer_pid_path name = instance_dir name // "outer.pid"
 let inner_pid_path name = instance_dir name // "inner.pid"
 let deliver_pid_path name = instance_dir name // "deliver.pid"
 let poker_pid_path name = instance_dir name // "poker.pid"
+let stderr_log_path name = instance_dir name // "stderr.log"
+let deaths_jsonl_path broker_root = broker_root // "deaths.jsonl"
+
+(* Tee stderr to inst_dir/stderr.log with 2 MB ring rotation.
+   Returns (pipe_write_fd, tee_thread) — caller must close pipe_write_fd
+   after the child exits so the thread sees EOF and finishes. *)
+let start_stderr_tee ~inst_dir ~outer_stderr_fd =
+  let log_path = inst_dir // "stderr.log" in
+  let max_bytes = 2 * 1024 * 1024 in
+  let (pipe_read_fd, pipe_write_fd) = Unix.pipe ~cloexec:false () in
+  let buf = Buffer.create 4096 in
+  let tee_thread = Thread.create (fun () ->
+    let chunk = Bytes.create 4096 in
+    let log_fd = ref None in
+    let open_log () =
+      match !log_fd with
+      | Some _ -> ()
+      | None ->
+        (try
+          let fd = Unix.openfile log_path
+            Unix.[ O_WRONLY; O_CREAT; O_APPEND ] 0o644 in
+          log_fd := Some fd
+        with _ -> ())
+    in
+    let rotate_if_needed fd =
+      try
+        let size = (Unix.fstat fd).Unix.st_size in
+        if size >= max_bytes then begin
+          (* Keep second half as ring *)
+          let half = max_bytes / 2 in
+          let tmp = log_path ^ ".rot" in
+          let ic = open_in log_path in
+          (try seek_in ic half with _ -> ());
+          let oc = open_out tmp in
+          (try
+            while true do
+              output_char oc (input_char ic)
+            done
+          with End_of_file -> ());
+          close_in ic; close_out oc;
+          Unix.rename tmp log_path;
+          Unix.close fd;
+          log_fd := None;
+          open_log ()
+        end
+      with _ -> ()
+    in
+    let flush_line line =
+      (* Write to outer stderr *)
+      (try
+        let s = line ^ "\n" in
+        let b = Bytes.of_string s in
+        ignore (Unix.write outer_stderr_fd b 0 (Bytes.length b))
+      with _ -> ());
+      (* Write to log *)
+      open_log ();
+      (match !log_fd with
+       | None -> ()
+       | Some fd ->
+           rotate_if_needed fd;
+           (match !log_fd with
+            | None -> ()
+            | Some fd2 ->
+                let s = line ^ "\n" in
+                (try ignore (Unix.write fd2 (Bytes.of_string s) 0 (String.length s))
+                 with _ -> ())))
+    in
+    (try
+      while true do
+        let n = Unix.read pipe_read_fd chunk 0 (Bytes.length chunk) in
+        if n = 0 then raise Exit;
+        let s = Bytes.sub_string chunk 0 n in
+        Buffer.add_string buf s;
+        (* Flush complete lines *)
+        let content = Buffer.contents buf in
+        let lines = String.split_on_char '\n' content in
+        let rec flush_lines = function
+          | [] -> ()
+          | [ partial ] -> Buffer.clear buf; Buffer.add_string buf partial
+          | line :: rest -> flush_line line; flush_lines rest
+        in
+        flush_lines lines
+      done
+    with _ -> ());
+    (* Flush remainder *)
+    let rest = Buffer.contents buf in
+    if rest <> "" then flush_line rest;
+    Unix.close pipe_read_fd;
+    (match !log_fd with Some fd -> Unix.close fd | None -> ())
+  ) () in
+  (pipe_write_fd, tee_thread)
+
+(* Append a death record when inner client exits non-zero. *)
+let record_death ~broker_root ~name ~client ~exit_code ~duration_s ~inst_dir =
+  let log_path = inst_dir // "stderr.log" in
+  let last_lines =
+    try
+      let ic = open_in log_path in
+      let lines = ref [] in
+      (try while true do
+        lines := input_line ic :: !lines
+      done with End_of_file -> ());
+      close_in ic;
+      let all = List.rev !lines in
+      let n = List.length all in
+      let skip = max 0 (n - 50) in
+      let rec drop i lst = match lst with [] -> [] | _ :: t -> if i > 0 then drop (i-1) t else lst in
+      drop skip all
+    with _ -> []
+  in
+  let ts = Unix.gettimeofday () in
+  let entry = `Assoc
+    [ ("ts", `Float ts)
+    ; ("name", `String name)
+    ; ("client", `String client)
+    ; ("exit_code", `Int exit_code)
+    ; ("duration_s", `Float duration_s)
+    ; ("last_stderr", `List (List.map (fun l -> `String l) last_lines))
+    ] in
+  let path = deaths_jsonl_path broker_root in
+  (try
+    let oc = open_out_gen [ Open_wronly; Open_creat; Open_append ] 0o644 path in
+    output_string oc (Yojson.Safe.to_string entry);
+    output_char oc '\n';
+    close_out oc
+  with _ -> ())
 
 let default_name client =
   let hostname =
@@ -611,6 +737,13 @@ let run_outer_loop ~(name : string) ~(client : string)
          with _ -> None)
       in
 
+      (* Tee child stderr to inst_dir/stderr.log.
+         Save outer stderr fd first so the tee thread can write to it. *)
+      let outer_stderr_fd = Unix.dup Unix.stderr in
+      let (tee_write_fd, tee_thread) =
+        start_stderr_tee ~inst_dir ~outer_stderr_fd
+      in
+
       (* Spawn the managed client with SIGCHLD reset to SIG_DFL. The outer
          loop sets SIGCHLD=SIG_IGN at line 488 to auto-reap its own
          sidecar children (deliver daemon, poker). SIG_IGN is inherited
@@ -627,6 +760,10 @@ let run_outer_loop ~(name : string) ~(client : string)
             | 0 ->
                 (try ignore (Sys.signal Sys.sigchld Sys.Signal_default) with _ -> ());
                 (try ignore (Sys.signal Sys.sigpipe Sys.Signal_default) with _ -> ());
+                (* Redirect child stderr through the tee pipe *)
+                (try Unix.dup2 tee_write_fd Unix.stderr with _ -> ());
+                (try Unix.close tee_write_fd with _ -> ());
+                (try Unix.close outer_stderr_fd with _ -> ());
                 (try Unix.execvpe binary_path (Array.of_list cmd) env
                  with e ->
                    Printf.eprintf "exec %s failed: %s\n%!" binary_path (Printexc.to_string e);
@@ -672,6 +809,11 @@ let run_outer_loop ~(name : string) ~(client : string)
            with _ -> 1)
       in
 
+      (* Close tee pipe write-end so the tee thread sees EOF, then join *)
+      (try Unix.close tee_write_fd with _ -> ());
+      Thread.join tee_thread;
+      (try Unix.close outer_stderr_fd with _ -> ());
+
       (* Restore TTY *)
       (match old_tty with
        | Some t -> (try Unix.tcsetattr Unix.stdin Unix.TCSANOW t with _ -> ())
@@ -679,6 +821,10 @@ let run_outer_loop ~(name : string) ~(client : string)
 
       let elapsed = Unix.gettimeofday () -. start_time in
       Printf.printf "[c2c-start/%s] inner exited code=%d after %.1fs\n%!" name exit_code elapsed;
+
+      (* Record structured death on non-zero exit *)
+      if exit_code <> 0 then
+        record_death ~broker_root ~name ~client ~exit_code ~duration_s:elapsed ~inst_dir;
 
       let resume_cmd =
         Printf.sprintf "c2c start %s -n %s" client name
