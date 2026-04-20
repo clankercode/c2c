@@ -1973,10 +1973,34 @@ let relay_rooms_cmd =
   let token =
     Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token.")
   in
+  let room =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "room" ] ~docv:"ROOM" ~doc:"Room id (required for history).")
+  in
+  let limit =
+    Cmdliner.Arg.(value & opt int 50 & info [ "limit" ] ~docv:"N" ~doc:"Max messages for history (default 50).")
+  in
   let+ subcmd = subcmd
   and+ relay_url = relay_url
-  and+ token = token in
+  and+ token = token
+  and+ room = room
+  and+ limit = limit in
   match subcmd with
+  | "history" ->
+      (match resolve_relay_url relay_url, room with
+       | None, _ ->
+           Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+           exit 1
+       | _, None ->
+           Printf.eprintf "error: --room required for 'rooms history'.\n%!";
+           exit 1
+       | Some url, Some room_id ->
+           let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+           let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.room_history client ~room_id ~limit ()) in
+           print_endline (Yojson.Safe.pretty_to_string result);
+           (match result with
+            | `Assoc fields ->
+                (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
+            | _ -> exit 1))
   | "list" ->
       (match resolve_relay_url relay_url with
        | None ->

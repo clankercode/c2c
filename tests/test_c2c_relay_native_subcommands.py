@@ -89,6 +89,12 @@ class NativeRelaySubcommandTests(unittest.TestCase):
             self._run("gc", "--once"), "relay gc --once"
         )
 
+    def test_relay_rooms_history_native(self):
+        self._assert_native_connection_error(
+            self._run("rooms", "history", "--room", "swarm-lounge"),
+            "relay rooms history --room swarm-lounge",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
