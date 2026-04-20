@@ -101,13 +101,31 @@ const C2CDelivery: Plugin = async (ctx) => {
   // Boot banner — log pid + sha256 prefix of this file so stale bun compile
   // cache issues are instantly visible: if sha doesn't match `sha256sum c2c.ts`
   // the running code is NOT the file on disk.
+  //
+  // Also rotates the log if it exceeds C2C_PLUGIN_DEBUG_MAX_LINES (default 500)
+  // so stale entries from dead sessions don't pile up and confuse future readers.
   try {
     const { createHash } = await import("crypto");
     const src = fs.readFileSync(thisPluginPath, "utf-8");
     const sha = createHash("sha256").update(src).digest("hex").slice(0, 8);
     const ts = new Date().toISOString();
+    const logPath = path.join(process.cwd(), ".opencode", "c2c-debug.log");
+    const maxLines = parseInt(process.env.C2C_PLUGIN_DEBUG_MAX_LINES || "500", 10);
+    try {
+      if (fs.existsSync(logPath)) {
+        const lineCount = fs.readFileSync(logPath, "utf-8").split("\n").length;
+        if (lineCount > maxLines) {
+          const backup = logPath + ".1";
+          fs.renameSync(logPath, backup);
+          // Fresh log starts with a rotation notice so context is clear.
+          fs.writeFileSync(logPath,
+            `[${ts}] pid=${process.pid} --- log rotated (was ${lineCount} lines > ${maxLines}) prev: ${backup} ---\n`
+          );
+        }
+      }
+    } catch { /* rotation failure is non-fatal */ }
     fs.appendFileSync(
-      path.join(process.cwd(), ".opencode", "c2c-debug.log"),
+      logPath,
       `[${ts}] pid=${process.pid} === c2c plugin boot sha=${sha} path=${thisPluginPath} ===\n`
     );
   } catch { /* non-fatal */ }
