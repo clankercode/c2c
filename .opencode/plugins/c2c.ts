@@ -205,8 +205,8 @@ const C2CDelivery: Plugin = async (ctx) => {
   // --- Helpers ---
 
   // Debug log to disk — survives even if OpenCode log API is broken.
-  // Enable with C2C_PLUGIN_DEBUG=1. Boot banner always written (see above).
-  const pluginDebug = (process.env.C2C_PLUGIN_DEBUG || "0") === "1";
+  // On by default; silence with C2C_PLUGIN_DEBUG=0.
+  const pluginDebug = (process.env.C2C_PLUGIN_DEBUG || "1") !== "0";
   const debugLogPath = path.join(process.cwd(), ".opencode", "c2c-debug.log");
   const pluginPid = process.pid;
 
