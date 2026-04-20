@@ -4455,6 +4455,10 @@ let init_cmd =
         | Some c -> default_alias_for_client c
         | None -> generate_alias ()
   in
+  (* Ensure Ed25519 identity exists — idempotent, safe to run always. *)
+  let _identity_init_rc = Sys.command "c2c relay identity init 2>/dev/null" in
+  ignore _identity_init_rc;
+
   C2c_mcp.Broker.register broker ~session_id ~alias ~pid:None ~pid_start_time:None;
 
   let room_result =

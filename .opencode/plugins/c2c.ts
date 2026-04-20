@@ -181,7 +181,17 @@ const C2CDelivery: Plugin = async (ctx) => {
 
   // --- Helpers ---
 
+  // Debug log to disk — survives even if OpenCode log API is broken.
+  const debugLogPath = path.join(process.cwd(), ".opencode", "c2c-debug.log");
+  function debugLog(msg: string): void {
+    try {
+      const ts = new Date().toISOString();
+      fs.appendFileSync(debugLogPath, `[${ts}] ${msg}\n`);
+    } catch { /* non-fatal */ }
+  }
+
   async function log(msg: string): Promise<void> {
+    debugLog(msg);
     try {
       await ctx.client.app.log({
         body: { service: "c2c", level: "debug", message: `c2c: ${msg}` },
@@ -330,10 +340,12 @@ const C2CDelivery: Plugin = async (ctx) => {
 
   /** Deliver drained messages to the active session via promptAsync. */
   async function deliverMessages(targetSessionId: string): Promise<void> {
+    await log(`deliverMessages: targetSessionId=${JSON.stringify(targetSessionId)}`);
     // Drain spool first (messages from failed previous delivery cycle).
     const spooled = readSpool();
     const fresh = await drainInbox();
     const messages = [...spooled, ...fresh];
+    await log(`deliverMessages: spooled=${spooled.length} fresh=${fresh.length} total=${messages.length}`);
     if (messages.length === 0) return;
 
     // Persist combined set before delivery so nothing is lost on failure.
@@ -353,15 +365,18 @@ const C2CDelivery: Plugin = async (ctx) => {
         continue;
       }
       const envelope = formatEnvelope(msg);
+      const callArgs = {
+        path: { id: targetSessionId },
+        body: { parts: [{ type: "text", text: envelope }] },
+        url: "/session/{id}/prompt_async",
+      };
+      await log(`promptAsync CALL: path.id=${targetSessionId} body.text.slice(0,120)=${envelope.slice(0, 120)}`);
       try {
-        await ctx.client.session.promptAsync({
-          path: { id: targetSessionId },
-          body: { parts: [{ type: "text", text: envelope }] },
-          url: "/session/{id}/prompt_async",
-        } as any);
+        const result = await (ctx.client.session as any).promptAsync(callArgs);
+        await log(`promptAsync RESULT: ${JSON.stringify(result).slice(0, 300)}`);
         await log(`delivered from ${msg.from_alias}`);
       } catch (err) {
-        await log(`promptAsync error: ${err}`);
+        await log(`promptAsync THREW: ${err}`);
         // Keep in spool — will be retried on next delivery cycle.
         failed.push(msg);
         await toast(`c2c: delivery error from ${msg.from_alias}`, "error");
@@ -374,19 +389,27 @@ const C2CDelivery: Plugin = async (ctx) => {
   /** Try to deliver to the best-known session ID. */
   async function tryDeliver(): Promise<void> {
     const sid = activeSessionId;
+    await log(`tryDeliver: activeSessionId=${JSON.stringify(sid)}`);
     if (!sid) {
       // No session yet — try to discover the current session from the API
       try {
-        const sessions = await ctx.client.session.list();
-        if (sessions?.data?.length) {
-          const root = sessions.data.find((s: any) => !s.parentID) || sessions.data[0];
+        const sessionsRaw = await ctx.client.session.list();
+        await log(`tryDeliver: session.list() raw=${JSON.stringify(sessionsRaw).slice(0, 500)}`);
+        const sessions = sessionsRaw as any;
+        const data: any[] = sessions?.data ?? sessions?.sessions ?? (Array.isArray(sessions) ? sessions : []);
+        await log(`tryDeliver: session.list() data.length=${data.length} ids=${data.map((s: any) => s.id).join(",")}`);
+        if (data.length > 0) {
+          const root = data.find((s: any) => !s.parentID) || data[0];
+          await log(`tryDeliver: picked root session id=${root?.id} parentID=${root?.parentID}`);
           if (root?.id) {
             activeSessionId = root.id;
             await deliverMessages(root.id);
           }
+        } else {
+          await log("tryDeliver: session.list() returned empty — no session to deliver to");
         }
-      } catch {
-        // Not available yet
+      } catch (err) {
+        await log(`tryDeliver: session.list() threw: ${err}`);
       }
       return;
     }
@@ -446,7 +469,11 @@ const C2CDelivery: Plugin = async (ctx) => {
     };
   }
 
+  // Introspect available API methods to diagnose promptAsync availability.
+  const sessionMethods = Object.keys(ctx.client.session as any).join(",");
+  const appMethods = Object.keys(ctx.client.app as any).join(",");
   await log(`plugin loaded (session=${sessionId}, interval=${pollIntervalMs}ms, idleOnly=${idleOnlyMode})`);
+  await log(`API introspect: session methods=[${sessionMethods}] app methods=[${appMethods}]`);
   startBackgroundLoop();
 
   // --- Return hooks ---
