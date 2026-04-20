@@ -276,6 +276,20 @@ These are Max's target experiences, verbatim:
   (ebbb0f7, d74e20e, 3927d13).
 - **c2c-tmux-exec.sh** ✓: safety wrapper prevents send-keys into running TUI;
   --force/--escape-tui/--dry-run flags (24df5da, scripts/c2c-tmux-exec.sh).
+- **Reserved alias enforcement** ✓: c2c/c2c-system blocked at Broker.register +
+  enqueue_message; test suite added (ed8da6e, 666f148, de1b772).
+- **Random word-pair aliases** ✓ (upstream from session): already recorded above.
+- **stale CLI refs fixed** ✓: c2c setup → c2c install, c2c list --broker → c2c list --all (fc2ae5c).
+- **run-opencode-inst.d path fix** ✓: c2c-msg hardcoded paths → c2c (7b3562b).
+- **c2c init --supervisor** ✓: writes supervisors to .c2c/repo.json; --supervisor-strategy
+  also supported; health hint fixed (8604b60).
+- **Canonical alias Phase 1** ✓: `registration.canonical_alias = "<alias>#<repo>@<host>"`
+  stored on every register; prime disambiguator in conflict response; list/whoami emit it
+  (af1e799 planner1+coder2-expert, 6962d1a).
+- **opencode-perm.sh** ✓: tmux helper to dismiss OpenCode permission dialogs
+  (allow-once/allow-always/reject); dialog detection before sending keys (e9a1a7d).
+- **Plugin log rotation** ✓: c2c-debug.log rotates on boot when >500 lines (fc69905).
+  Fixes bug #4 from session-bug-haul.
 
 ### Remaining Product Polish
 
@@ -292,11 +306,12 @@ These are Max's target experiences, verbatim:
 - **Room UX improvements** ✓ — richer room history text formatting shipped
   (human-readable timestamps, system-message styling, empty-state messaging).
 - **Room history persistence** ✓ — `history.jsonl` per room, append-only,
-  survives restarts, new-joiner backfill. Missing: `--since` filter, `c2c tail`,
-  size cap (specs written 2026-04-21, pending coder2 impl).
-- **Supervisor config** — `c2c init --supervisor` + multi-supervisor liveness
-  (specs written, coder2 implementing).
-- **c2c health** — relay reachability + plugin install checks (spec written, pending).
+  survives restarts, new-joiner backfill. `--since` filter + `c2c tail --follow`
+  already shipped (see rooms_tail in OCaml CLI).
+- **Supervisor config** ✓ — `c2c init --supervisor` + `c2c repo set supervisor`
+  + multi-supervisor liveness in plugin (8604b60).
+- **c2c health** ✓ — relay reachability + auth_mode + plugin install checks
+  + supervisor config check (a9c66e4, 8604b60, check_plugin_installs in OCaml).
 - Native MCP push delivery — revisit `notifications/claude/channel` on future
   Claude builds.
 
