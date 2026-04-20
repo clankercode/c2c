@@ -90,10 +90,10 @@ unblocked — see `relay-peer-identity-spec.md` §13.
 |--------------|--------|-------|--------|
 | Spec doc (5 slices defined)                  | ✅    | planner1 | — (see `relay-rooms-spec.md`) |
 | 1. Signed `join_room` / `leave_room`         | ✅    | coder1   | `1c694fb` — soft rollout; c2c/v1/room-join & c2c/v1/room-leave ctx; 3 alcotest cases |
-| 2. Signed `send_room` + envelope verify      | 🟢    | —        | unblocked by L4/1 at `1c694fb` |
+| 2. Signed `send_room` + envelope verify      | 🟡    | coder1   | in-progress per lounge 2026-04-21T01:28Z |
 | 3. `sender_pk` in history + client verify    | ⚪    | —        | blocked on L4/2               |
 | 4. `{ct, enc, sender_pk}` wire envelope      | ⚪    | —        | blocked on L4/2               |
-| 5. `invited_members` ACL + invite/uninvite   | ⚪    | —        | blocked on L4/1               |
+| 5. `invited_members` ACL + invite/uninvite   | 🟢    | —        | unblocked by L4/1             |
 
 ### Layer 5 — E2E crypto upgrade path
 
