@@ -552,10 +552,27 @@ let run_outer_loop ~(name : string) ~(client : string)
          with _ -> None)
       in
 
+      (* Spawn the managed client with SIGCHLD reset to SIG_DFL. The outer
+         loop sets SIGCHLD=SIG_IGN at line 488 to auto-reap its own
+         sidecar children (deliver daemon, poker). SIG_IGN is inherited
+         across execve, so without this reset the managed client (Claude
+         Code, Codex, etc.) would inherit it too — the kernel would auto-
+         reap every hook child it spawns, and Node.js/libuv's waitpid()
+         would then fail with ECHILD. Verified on Claude Code 2.1.114:
+         SigIgn=0x11000 on the client process produced PostToolUse ECHILD
+         on roughly every non-trivial tool call. Forking manually lets us
+         reset the disposition in the child between fork and exec. *)
       let child_pid_opt =
         try
-          let pid = Unix.create_process_env binary_path (Array.of_list cmd) env
-              Unix.stdin Unix.stdout Unix.stderr
+          let pid = match Unix.fork () with
+            | 0 ->
+                (try ignore (Sys.signal Sys.sigchld Sys.Signal_default) with _ -> ());
+                (try ignore (Sys.signal Sys.sigpipe Sys.Signal_default) with _ -> ());
+                (try Unix.execvpe binary_path (Array.of_list cmd) env
+                 with e ->
+                   Printf.eprintf "exec %s failed: %s\n%!" binary_path (Printexc.to_string e);
+                   exit 127)
+            | p -> p
           in
           (* Start deliver daemon *)
           (if !deliver_pid = None then
