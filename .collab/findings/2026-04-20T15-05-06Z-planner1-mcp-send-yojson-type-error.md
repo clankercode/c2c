@@ -17,7 +17,15 @@ No message was enqueued (archive doesn't show the drop; CLI retry with identical
 
 ## Reproducer
 
-Unfortunately I didn't capture the exact arguments at the time, but it was a plain `{alias: "coordinator1", content: "<multi-line string, plain ASCII, no \\n inside the JSON arg>"}` — identical shape to calls that DO work elsewhere in the session.
+**Update 2026-04-21T01:12 local — hit again, same session.**
+
+Args (second hit): `{alias: "coordinator1", content: "Took a look — won't touch your working tree (166 LOC modified …)"}`. Content contained em-dashes (`—`) and curly quotes (`'`). CLI fallback with the identical content succeeded immediately.
+
+Note: the SUCCESSFUL `mcp__c2c__send_room` calls in this same session also contain em-dashes, so it's probably NOT a UTF-8 handling bug. The distinguishing trait might be that `send` (DM) resolves session/alias differently from `send_room`, and something in that resolution is returning null.
+
+Hypothesis strengthened: `send` tries to resolve the caller's `from_alias` from MCP session context; if that lookup returns null the envelope construction fails in the Yojson encoder. `send_room` probably falls back to a different codepath that tolerates the null.
+
+First hit: plain `{alias: "coordinator1", content: "<multi-line string, plain ASCII, no \\n inside the JSON arg>"}`.
 
 What's suspicious: the CLI call that I used as fallback (`c2c send coordinator1 "…same content…"`) succeeded immediately. So the bug is on the MCP server path, not in send semantics.
 
