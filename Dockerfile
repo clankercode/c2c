@@ -31,7 +31,8 @@ RUN opam update -y \
         dune cmdliner yojson lwt logs cohttp-lwt-unix uuidm \
         base64 digestif mirage-crypto-ec mirage-crypto-rng \
         mirage-crypto-rng-unix mirage-crypto-rng-lwt \
-        tls-lwt ca-certs
+        tls-lwt ca-certs \
+        conduit-lwt-unix x509 ptime
 
 # Layer: sources + build.
 COPY --chown=opam:opam dune-project ./
