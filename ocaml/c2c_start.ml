@@ -932,6 +932,20 @@ let run_outer_loop ~(name : string) ~(client : string)
           Array.append env [| "ENABLE_PROMPT_CACHING_1H=1" |]
         else env
       in
+      (* When launching opencode with a kickoff prompt, signal the c2c plugin
+         to proactively create a session and deliver the prompt if the TUI
+         never fires session.created on its own (e.g. under tmux/non-interactive
+         stdin). Use a per-instance path so concurrent launches don't clobber
+         each other's kickoff. See #64. *)
+      let kickoff_inst_path = inst_dir // "kickoff-prompt.txt" in
+      let env =
+        if client = "opencode" && Option.is_some kickoff_prompt then
+          Array.append env [|
+            "C2C_AUTO_KICKOFF=1";
+            Printf.sprintf "C2C_KICKOFF_PROMPT_PATH=%s" kickoff_inst_path;
+          |]
+        else env
+      in
 
       (* Launch args *)
       (* cc- wrappers (cc-mm, cc-w, etc.) are profile launchers designed to be called
@@ -1004,12 +1018,12 @@ let run_outer_loop ~(name : string) ~(client : string)
         end
       end);
 
-      (* Write kickoff prompt file so the plugin delivers it on first session.idle. *)
+      (* Write kickoff prompt to the per-instance path set above in C2C_KICKOFF_PROMPT_PATH.
+         Using inst_dir isolates concurrent launches so they can't clobber each other. *)
       (match kickoff_prompt with
        | Some prompt when client = "opencode" ->
-           let kp_path = Filename.concat (Sys.getcwd ()) ".opencode" // "kickoff-prompt.txt" in
            (try
-             let oc = open_out kp_path in
+             let oc = open_out kickoff_inst_path in
              Fun.protect ~finally:(fun () -> close_out oc)
                (fun () -> output_string oc prompt)
            with _ -> ())

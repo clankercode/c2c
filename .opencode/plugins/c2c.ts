@@ -938,10 +938,15 @@ const C2CDelivery: Plugin = async (ctx) => {
   // Kickoff prompt — one-shot getting-started message written by c2c start --auto
   // ---------------------------------------------------------------------------
 
-  const kickoffPromptPath = path.join(process.cwd(), ".opencode", "kickoff-prompt.txt");
+  // Per-instance kickoff path set by `c2c start` (#64). Falls back to shared path
+  // for manual installs that don't use c2c start.
+  const kickoffPromptPath =
+    process.env.C2C_KICKOFF_PROMPT_PATH ||
+    path.join(process.cwd(), ".opencode", "kickoff-prompt.txt");
+  const autoKickoff = (process.env.C2C_AUTO_KICKOFF || "0") !== "0";
   let kickoffDelivered = false;
 
-  /** Deliver .opencode/kickoff-prompt.txt then delete it. No-op if absent or already delivered. */
+  /** Deliver kickoff prompt file then delete it. No-op if absent or already delivered. */
   async function deliverKickoffPrompt(targetSessionId: string): Promise<void> {
     if (kickoffDelivered) return;
     let text: string;
@@ -1069,6 +1074,37 @@ const C2CDelivery: Plugin = async (ctx) => {
   await spawnStateWriter();
   void bootstrapRootSession();
   startBackgroundLoop();
+
+  // Auto-kickoff (#64): when C2C_AUTO_KICKOFF=1 and no session materializes
+  // within a grace window, proactively create a session via session.create()
+  // and deliver the kickoff prompt. Unblocks tmux-launched --auto flows where
+  // session.created never fires on its own.
+  if (process.env.C2C_AUTO_KICKOFF === "1") {
+    const graceMs = parseInt(process.env.C2C_AUTO_KICKOFF_GRACE_MS || "8000", 10);
+    setTimeout(async () => {
+      if (activeSessionId) {
+        await log(`auto-kickoff: session already adopted (${activeSessionId}), skip`);
+        return;
+      }
+      if (!fs.existsSync(kickoffPromptPath)) {
+        await log(`auto-kickoff: no kickoff-prompt.txt, skip`);
+        return;
+      }
+      try {
+        await log(`auto-kickoff: grace elapsed (${graceMs}ms), calling session.create`);
+        const res: any = await (ctx.client.session as any).create({ body: { title: "c2c kickoff" } });
+        const sid: string | undefined = res?.data?.id ?? res?.id;
+        if (!sid) { await log(`auto-kickoff: session.create returned no id: ${JSON.stringify(res).slice(0,200)}`); return; }
+        activeSessionId = sid;
+        pluginState.root_opencode_session_id = sid;
+        writeStatePatch({ root_opencode_session_id: sid });
+        await log(`auto-kickoff: created session ${sid} — delivering kickoff prompt`);
+        await deliverKickoffPrompt(sid);
+      } catch (err) {
+        await log(`auto-kickoff: error: ${err}`);
+      }
+    }, graceMs);
+  }
 
   // --- Return hooks ---
   return {
