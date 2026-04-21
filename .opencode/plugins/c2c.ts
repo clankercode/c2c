@@ -261,6 +261,10 @@ const C2CDelivery: Plugin = async (ctx) => {
   const seenPermissionIds: string[] = [];
   // Pending async permission approvals (v2): permId → resolve function.
   const pendingPermissions = new Map<string, (reply: string) => void>();
+  // Dedup window for question.asked events.
+  const seenQuestionIds: string[] = [];
+  // Pending question replies: questionId → resolve({answer, rejected}).
+  const pendingQuestions = new Map<string, (reply: {answer: string | null; rejected: boolean}) => void>();
   // Permissions that already timed-out and were auto-rejected. Kept around so
   // we can DM a "too late" notice to a supervisor whose reply arrives after
   // the window closed. Map: permId → {sid, supervisors, timedOutAtMs}.
@@ -275,41 +279,77 @@ const C2CDelivery: Plugin = async (ctx) => {
   // --- Helpers ---
 
   type TuiFocusType = "permission" | "question" | "prompt" | "menu" | "unknown";
-  type PluginStateSnapshot = {
-    agentIdle: boolean;
-    stepCount: number;
-    lastStepDetails: Record<string, unknown>;
-    provider: string;
-    model: string;
-    tuiFocusType: TuiFocusType;
-    promptHasText: boolean;
-    opencodePid: number;
-    startTimeMs: number;
-    lastUpdatedMs: number;
+  type LastStep = {
+    event_type: string;
+    at: string;
+    details: Record<string, unknown> | null;
+  };
+  type PluginState = {
+    c2c_session_id: string;
+    c2c_alias: string | null;
+    root_opencode_session_id: string | null;
+    opencode_pid: number;
+    plugin_started_at: string;
+    state_last_updated_at: string;
+    agent: {
+      is_idle: boolean | null;
+      turn_count: number;
+      step_count: number;
+      last_step: LastStep | null;
+      provider_id: string | null;
+      model_id: string | null;
+    };
+    tui_focus: {
+      ty: TuiFocusType;
+      details: Record<string, unknown> | null;
+    };
+    prompt: {
+      has_text: boolean | null;
+    };
+  };
+  type StateSnapshotEnvelope = {
+    event: "state.snapshot";
+    ts: string;
+    state: PluginState;
+  };
+  type StatePatchEnvelope = {
+    event: "state.patch";
+    ts: string;
+    patch: Record<string, unknown>;
   };
 
-  const pluginState: PluginStateSnapshot = {
-    agentIdle: false,
-    stepCount: 0,
-    lastStepDetails: { eventType: "plugin.boot" },
-    provider: "",
-    model: "",
-    tuiFocusType: "unknown",
-    promptHasText: false,
-    opencodePid: process.pid,
-    startTimeMs: pluginStartTimeMs,
-    lastUpdatedMs: pluginStartTimeMs,
+  const pluginStartedAt = new Date(pluginStartTimeMs).toISOString();
+  const pluginState: PluginState = {
+    c2c_session_id: sessionId,
+    c2c_alias: typeof sidecar.alias === "string" && sidecar.alias.trim() ? sidecar.alias.trim() : null,
+    root_opencode_session_id: configuredOpenCodeSessionId || null,
+    opencode_pid: process.pid,
+    plugin_started_at: pluginStartedAt,
+    state_last_updated_at: pluginStartedAt,
+    agent: {
+      is_idle: null,
+      turn_count: 0,
+      step_count: 0,
+      last_step: null,
+      provider_id: null,
+      model_id: null,
+    },
+    tui_focus: {
+      ty: "unknown",
+      details: null,
+    },
+    prompt: {
+      has_text: null,
+    },
   };
+  let stateWriterProc: ReturnType<typeof spawn> | null = null;
+  let stateWriterAvailable = false;
 
   function firstString(...values: unknown[]): string {
     for (const value of values) {
       if (typeof value === "string" && value.trim()) return value.trim();
     }
     return "";
-  }
-
-  function truncateText(value: string, limit = 160): string {
-    return value.length <= limit ? value : value.slice(0, limit) + "...";
   }
 
   function detectPromptHasText(event: Event): boolean | null {
@@ -340,80 +380,232 @@ const C2CDelivery: Plugin = async (ctx) => {
     return null;
   }
 
-  function detectFocusType(event: Event, promptHasText: boolean | null): TuiFocusType {
-    const type = String(event.type || "").toLowerCase();
-    if (type.startsWith("permission.")) return "permission";
-    if (type.includes("question")) return "question";
-    if (type.includes("menu")) return "menu";
-    if (type.includes("prompt")) return "prompt";
-    if (event.type === "session.idle" || event.type === "session.created") return "prompt";
-    if (promptHasText !== null) return "prompt";
-    return "unknown";
+  function compactSessionDetails(sessionID: string | null): Record<string, unknown> | null {
+    return sessionID ? { session_id: sessionID } : null;
   }
 
-  function summarizeEvent(event: Event): Record<string, unknown> {
+  function compactPermissionDetails(event: Event): Record<string, unknown> | null {
     const props = (event as any).properties ?? {};
-    const info = props.info ?? {};
-    const summary: Record<string, unknown> = {
-      eventType: event.type,
-      atMs: Date.now(),
-    };
-    const session = firstString(info.id, props.sessionID, props.sessionId, activeSessionId);
-    if (session) summary.sessionID = session;
-    const permissionID = firstString(props.id, props.permissionID, props.permissionId);
-    if (permissionID) summary.permissionID = permissionID;
-    const title = firstString(props.title, info.title);
-    if (title) summary.title = title;
-    const subtype = firstString(props.type, info.type);
-    if (subtype) summary.type = subtype;
-    const preview = firstString(
-      props.text,
-      props.prompt,
-      props.input,
-      props.query,
-      typeof props.pattern === "string" ? props.pattern : "",
-    );
-    if (preview) summary.preview = truncateText(preview);
-    return summary;
+    const id = firstString(props.id, props.permissionID, props.permissionId) || null;
+    const title = firstString(props.title) || null;
+    const type = firstString(props.type) || null;
+    return { id, title, type };
   }
 
-  function streamStateSnapshot(): void {
-    const command = process.env.C2C_CLI_COMMAND || "c2c";
-    const snapshot: PluginStateSnapshot = {
-      ...pluginState,
-      lastStepDetails: { ...pluginState.lastStepDetails },
-      lastUpdatedMs: Date.now(),
+  function makeLastStep(eventType: string, details: Record<string, unknown> | null): LastStep {
+    return {
+      event_type: eventType,
+      at: new Date().toISOString(),
+      details,
     };
-    pluginState.lastUpdatedMs = snapshot.lastUpdatedMs;
+  }
+
+  function cloneState(): PluginState {
+    return {
+      ...pluginState,
+      agent: {
+        ...pluginState.agent,
+        last_step: pluginState.agent.last_step
+          ? {
+              ...pluginState.agent.last_step,
+              details: pluginState.agent.last_step.details
+                ? { ...pluginState.agent.last_step.details }
+                : null,
+            }
+          : null,
+      },
+      tui_focus: {
+        ...pluginState.tui_focus,
+        details: pluginState.tui_focus.details ? { ...pluginState.tui_focus.details } : null,
+      },
+      prompt: {
+        ...pluginState.prompt,
+      },
+    };
+  }
+
+  function writeStateLine(payload: StateSnapshotEnvelope | StatePatchEnvelope): void {
+    if (!stateWriterAvailable || !stateWriterProc?.stdin) return;
+    try {
+      stateWriterProc.stdin.write(JSON.stringify(payload) + "\n");
+    } catch {
+      stateWriterAvailable = false;
+      stateWriterProc = null;
+      // TODO: add reconnect/backoff once the OCaml sink exists and the contract stabilizes.
+    }
+  }
+
+  function writeStateSnapshot(): void {
+    const ts = new Date().toISOString();
+    pluginState.state_last_updated_at = ts;
+    writeStateLine({ event: "state.snapshot", ts, state: cloneState() });
+  }
+
+  function writeStatePatch(patch: Record<string, unknown>): void {
+    const ts = new Date().toISOString();
+    pluginState.state_last_updated_at = ts;
+    writeStateLine({
+      event: "state.patch",
+      ts,
+      patch: {
+        ...patch,
+        state_last_updated_at: ts,
+      },
+    });
+  }
+
+  async function spawnStateWriter(): Promise<void> {
+    const command = process.env.C2C_CLI_COMMAND || "c2c";
     try {
       const proc = spawn(command, ["oc-plugin", "stream-write-statefile"], {
         cwd: process.cwd(),
         env: process.env,
         shell: false,
       });
-      proc.stdin?.end(JSON.stringify(snapshot) + "\n");
-      proc.on("error", () => {});
-      proc.on("close", () => {});
+      stateWriterProc = proc;
+      stateWriterAvailable = true;
+      proc.on("error", (err) => {
+        stateWriterAvailable = false;
+        stateWriterProc = null;
+        void log(`state writer error: ${err}`);
+      });
+      proc.on("close", (code) => {
+        stateWriterAvailable = false;
+        if (stateWriterProc === proc) stateWriterProc = null;
+        void log(`state writer exited: code=${code}`);
+      });
+      writeStateSnapshot();
     } catch {
-      // Best-effort: silently ignore if c2c binary is absent.
+      stateWriterAvailable = false;
+      stateWriterProc = null;
+      await log("state writer spawn failed");
+      // TODO: add reconnect/backoff once the OCaml sink exists and the contract stabilizes.
     }
   }
 
-  function updatePluginState(event: Event): void {
+  function eventSessionId(event: Event): string | null {
     const props = (event as any).properties ?? {};
     const info = props.info ?? {};
-    const provider = firstString(info.provider, props.provider, pluginState.provider);
-    const model = firstString(info.model, props.model, pluginState.model);
-    if (provider) pluginState.provider = provider;
-    if (model) pluginState.model = model;
+    return firstString(info.id, props.sessionID, props.sessionId, activeSessionId) || null;
+  }
+
+  function shouldAdoptRootFromIdle(event: Event): string | null {
+    if (pluginState.root_opencode_session_id) return null;
+    if (event.type !== "session.idle") return null;
+    const sessionID = eventSessionId(event);
+    if (!sessionID) return null;
+    if (configuredOpenCodeSessionId && sessionID !== configuredOpenCodeSessionId) return null;
+    return sessionID;
+  }
+
+  function belongsToTrackedRoot(event: Event): boolean {
+    const sessionID = eventSessionId(event);
+    if (!sessionID) return false;
+    return sessionID === pluginState.root_opencode_session_id;
+  }
+
+  function maybeTrackProviderAndModel(event: Event): void {
+    const props = (event as any).properties ?? {};
+    const info = props.info ?? {};
+    const provider = firstString(info.provider, props.provider) || null;
+    const model = firstString(info.model, props.model) || null;
+    if (provider) pluginState.agent.provider_id = provider;
+    if (model) pluginState.agent.model_id = model;
+  }
+
+  function applyRootSessionCreated(event: Event): void {
+    const info = (event as any).properties?.info;
+    if (!info?.id || info?.parentID) return;
+    if (configuredOpenCodeSessionId && info.id !== configuredOpenCodeSessionId) return;
+    pluginState.root_opencode_session_id = info.id;
+    pluginState.agent.step_count += 1;
+    pluginState.agent.last_step = makeLastStep("session.created", compactSessionDetails(info.id));
+    pluginState.tui_focus = { ty: "prompt", details: null };
+    pluginState.prompt.has_text = false;
+    writeStatePatch({
+      root_opencode_session_id: info.id,
+      agent: {
+        step_count: pluginState.agent.step_count,
+        last_step: pluginState.agent.last_step,
+      },
+      tui_focus: pluginState.tui_focus,
+      prompt: pluginState.prompt,
+    });
+  }
+
+  function applyIdleState(event: Event): void {
+    const adopted = shouldAdoptRootFromIdle(event);
+    if (adopted) pluginState.root_opencode_session_id = adopted;
+    if (!belongsToTrackedRoot(event)) return;
+
+    const sessionID = eventSessionId(event);
+    pluginState.agent.is_idle = true;
+    pluginState.agent.turn_count += 1;
+    pluginState.agent.step_count += 1;
+    pluginState.agent.last_step = makeLastStep("session.idle", compactSessionDetails(sessionID));
+    pluginState.tui_focus = { ty: "prompt", details: null };
+    pluginState.prompt.has_text = false;
+    writeStatePatch({
+      root_opencode_session_id: pluginState.root_opencode_session_id,
+      agent: {
+        is_idle: true,
+        turn_count: pluginState.agent.turn_count,
+        step_count: pluginState.agent.step_count,
+        last_step: pluginState.agent.last_step,
+      },
+      tui_focus: pluginState.tui_focus,
+      prompt: pluginState.prompt,
+    });
+  }
+
+  function applyPermissionState(event: Event): void {
+    const props = (event as any).properties ?? {};
+    const sessionID = firstString(props.sessionID, props.sessionId, activeSessionId) || null;
+    if (!pluginState.root_opencode_session_id && sessionID && event.type === "permission.asked") {
+      if (!configuredOpenCodeSessionId || configuredOpenCodeSessionId === sessionID) {
+        pluginState.root_opencode_session_id = sessionID;
+      }
+    }
+    if (!sessionID || sessionID !== pluginState.root_opencode_session_id) return;
+
+    pluginState.agent.is_idle = false;
+    pluginState.agent.step_count += 1;
+    pluginState.agent.last_step = makeLastStep(event.type, compactPermissionDetails(event));
+    pluginState.tui_focus = {
+      ty: "permission",
+      details: compactPermissionDetails(event),
+    };
+    writeStatePatch({
+      root_opencode_session_id: pluginState.root_opencode_session_id,
+      agent: {
+        is_idle: false,
+        step_count: pluginState.agent.step_count,
+        last_step: pluginState.agent.last_step,
+      },
+      tui_focus: pluginState.tui_focus,
+    });
+  }
+
+  function updatePluginState(event: Event): void {
+    maybeTrackProviderAndModel(event);
+
+    if (event.type === "session.created") {
+      applyRootSessionCreated(event);
+      return;
+    }
+
+    if (event.type === "session.idle") {
+      applyIdleState(event);
+      return;
+    }
+
+    if (event.type === "permission.asked" || event.type === "permission.updated") {
+      applyPermissionState(event);
+      return;
+    }
 
     const promptHasText = detectPromptHasText(event);
-    if (promptHasText !== null) pluginState.promptHasText = promptHasText;
-    pluginState.tuiFocusType = detectFocusType(event, promptHasText);
-    pluginState.agentIdle = event.type === "session.idle";
-    if (event.type === "session.idle") pluginState.stepCount += 1;
-    pluginState.lastStepDetails = summarizeEvent(event);
-    streamStateSnapshot();
+    if (promptHasText !== null) pluginState.prompt.has_text = promptHasText;
   }
 
   // Debug log to disk — survives even if OpenCode log API is broken.
@@ -556,6 +748,28 @@ const C2CDelivery: Plugin = async (ctx) => {
     return m ? { permId: m[1], decision: m[2] } : null;
   }
 
+  /** Extract a question reply: `question:<id>:answer:<text>` or `question:<id>:reject`. */
+  function extractQuestionReply(content: string): { qId: string; answer: string | null; rejected: boolean } | null {
+    const rejectM = content.match(/\bquestion:([a-zA-Z0-9_-]+):reject\b/);
+    if (rejectM) return { qId: rejectM[1], answer: null, rejected: true };
+    const answerM = content.match(/\bquestion:([a-zA-Z0-9_-]+):answer:(.+)/s);
+    if (answerM) return { qId: answerM[1], answer: answerM[2].trim(), rejected: false };
+    return null;
+  }
+
+  /** Await a supervisor question reply; resolves with answer text or null (rejected/timeout). */
+  function waitForQuestionReply(qId: string, timeoutMs: number): Promise<{answer: string | null; rejected: boolean}> {
+    return new Promise((resolve) => {
+      pendingQuestions.set(qId, resolve);
+      setTimeout(() => {
+        if (pendingQuestions.has(qId)) {
+          pendingQuestions.delete(qId);
+          resolve({ answer: null, rejected: false }); // timeout → reject with no noise
+        }
+      }, timeoutMs);
+    });
+  }
+
   /** Await a supervisor permission reply; resolves with decision string or "timeout". */
   function waitForPermissionReply(permId: string, timeoutMs: number): Promise<string> {
     return new Promise((resolve) => {
@@ -600,6 +814,15 @@ const C2CDelivery: Plugin = async (ctx) => {
         pendingPermissions.delete(permReply.permId);
         resolve(permReply.decision);
         await log(`permission reply from ${msg.from_alias}: ${permReply.permId} → ${permReply.decision}`);
+        continue;
+      }
+      // Intercept question replies before normal delivery.
+      const qReply = extractQuestionReply(msg.content);
+      if (qReply && pendingQuestions.has(qReply.qId)) {
+        const resolve = pendingQuestions.get(qReply.qId)!;
+        pendingQuestions.delete(qReply.qId);
+        resolve({ answer: qReply.answer, rejected: qReply.rejected });
+        await log(`question reply from ${msg.from_alias}: ${qReply.qId} → ${qReply.rejected ? "reject" : `"${qReply.answer}"`}`);
         continue;
       }
       // Late reply: request already timed-out and was auto-rejected. Let the
@@ -738,7 +961,7 @@ const C2CDelivery: Plugin = async (ctx) => {
   try { pluginHash = crypto.createHash("sha256").update(fs.readFileSync(pluginFilePath)).digest("hex").slice(0, 12); } catch { /**/ }
   await log(`plugin loaded (session=${sessionId}, interval=${pollIntervalMs}ms, idleOnly=${idleOnlyMode}, sha256=${pluginHash})`);
   await log(`API introspect: session methods=[${sessionMethods}] app methods=[${appMethods}]`);
-  streamStateSnapshot();
+  await spawnStateWriter();
   startBackgroundLoop();
 
   // --- Return hooks ---
@@ -879,6 +1102,88 @@ const C2CDelivery: Plugin = async (ctx) => {
           } catch (err) {
             await log(`permission HTTP resolve error: ${permId} → ${response}: ${err}`);
             void toast(`c2c · resolve failed — use TUI dialog`, "error");
+          }
+        })();
+        return;
+      }
+
+      // Question flow: opencode emits "question.asked" when the agent needs
+      // human input (clarification, multiple-choice, free text). We notify the
+      // supervisor via DM and forward their reply through the HTTP API.
+      if (event.type === "question.asked") {
+        const qProps = (event as any).properties ?? {};
+        const qId: string = qProps.id || "";
+        if (!qId || seenQuestionIds.includes(qId)) return;
+        seenQuestionIds.push(qId);
+        if (seenQuestionIds.length > 20) seenQuestionIds.shift();
+
+        const questions: Array<{question: string; header: string; options: Array<{value: string}>}> =
+          qProps.questions || [];
+        const sid: string = qProps.sessionID || activeSessionId || sessionId || "unknown";
+        const instanceName: string = process.env.C2C_INSTANCE_NAME || "";
+        const from = instanceName || sessionId || sid;
+        const timeoutSec = 300; // 5 min default for questions
+
+        // Capture in statefile so observer pane shows pending question.
+        if (questions.length > 0) {
+          const first = questions[0];
+          pluginState.pendingQuestion = {
+            id: qId,
+            text: first.question || "",
+            header: first.header || "",
+            options: (first.options || []).map((o: any) => String(o.value || o)),
+          };
+          streamStateSnapshot();
+        }
+
+        const lines = [`QUESTION REQUEST from ${from}:`];
+        for (let i = 0; i < questions.length; i++) {
+          const q = questions[i];
+          lines.push(`  Q${i + 1}: ${q.header || q.question}`);
+          if (q.question !== q.header) lines.push(`       ${q.question}`);
+          const opts = (q.options || []).map((o: any) => String(o.value || o));
+          if (opts.length > 0) lines.push(`       Options: ${opts.join(" | ")}`);
+        }
+        lines.push(`  id: ${qId}`, `  session: ${sid}`);
+        lines.push(`Reply within ${timeoutSec}s:`);
+        lines.push(`  c2c send ${sessionId} "question:${qId}:answer:<your answer>"`);
+        lines.push(`  c2c send ${sessionId} "question:${qId}:reject"`);
+
+        void (async () => {
+          const supervisors = await selectSupervisors();
+          for (const supervisor of supervisors) {
+            try {
+              await runC2c(["send", supervisor, lines.join("\n")]);
+              await log(`question DM sent to ${supervisor}: ${qId}`);
+            } catch (err) {
+              await log(`question DM error (${supervisor}): ${err}`);
+            }
+          }
+          void toast(`c2c · question — awaiting human input`);
+          const reply = await waitForQuestionReply(qId, timeoutSec * 1000);
+          pluginState.pendingQuestion = null;
+          streamStateSnapshot();
+          const answers: string[][] = questions.map(() =>
+            reply.answer !== null ? [reply.answer] : []
+          );
+          try {
+            if (reply.rejected || reply.answer === null) {
+              await (ctx.client as any).question.reject({
+                path: { id: qId },
+              });
+              await log(`question rejected/timed-out: ${qId}`);
+              void toast(`c2c · question ${reply.rejected ? "rejected" : "timed out"}`, "warning");
+            } else {
+              await (ctx.client as any).question.reply({
+                path: { id: qId },
+                body: { answers },
+              });
+              await log(`question replied: ${qId} → "${reply.answer}"`);
+              void toast(`c2c · question answered`);
+            }
+          } catch (err) {
+            await log(`question API error: ${qId}: ${err}`);
+            void toast(`c2c · question reply failed — use TUI`, "error");
           }
         })();
         return;
