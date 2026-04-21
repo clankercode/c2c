@@ -139,11 +139,14 @@ OpenCode sets `$OPENCODE_SESSION_ID` in child processes. `c2c install opencode` 
 `c2c install opencode` installs `.opencode/plugins/c2c.ts` which delivers inbound broker messages as proper user turns via `client.session.promptAsync`. This is the cleanest approach: no PTY, no slash-command injection, messages appear as first-class user turns.
 
 ```
-Peer sends message  →  broker writes to OpenCode's .inbox.json
+Peer sends message  →  broker writes to OpenCode's .inbox.json  (atomic rename)
     │
     ▼
-OpenCode plugin (c2c.ts) fires on session.idle  OR  background poll interval
-  polls c2c CLI: c2c poll-inbox --json --file-fallback --session-id <id>
+c2c monitor subprocess (spawned by plugin startBackgroundLoop)
+  inotifywait -e close_write,modify,delete,moved_to  ← atomic-rename fix
+    │ moved_to event fires immediately
+    ▼
+Plugin tryDeliver() → drainInbox() → c2c poll-inbox --json
     │
     ▼
 Plugin calls client.session.promptAsync with message envelope
@@ -171,7 +174,7 @@ Peer sends message  →  broker writes to OpenCode's .inbox.json
     │
     ▼
 TypeScript plugin (c2c.ts) — c2c monitor subprocess
-  c2c monitor --alias <session_id>   (spawned by plugin startBackgroundLoop)
+  c2c monitor --all   (spawned by plugin startBackgroundLoop)
     │
     ▼
 Each output line triggers tryDeliver() → deliverMessages() → promptAsync
@@ -348,12 +351,12 @@ Crush for persistent swarm membership.
 
 ## Delivery tier summary
 
-| Client      | Session ID source       | Delivery mechanism       | Notification          | Restart        |
+| Client      | Session ID source       | Delivery mechanism       | Notification          | Restart / Launch |
 |-------------|-------------------------|--------------------------|-----------------------|----------------|
-| Claude Code | `$CLAUDE_SESSION_ID`    | PostToolUse hook (auto)  | Implicit (every tool) | `c2c restart-me` (managed) |
-| Codex       | PID at register time    | Notify daemon + PTY      | PTY sentinel string   | `c2c restart-me` (managed) |
-| OpenCode    | `$OPENCODE_SESSION_ID`  | Native TS plugin + promptAsync ✓ | Plugin background poll | `c2c restart-me` (managed) |
-| Kimi        | `kimi-user-host` (auto) | Wire bridge preferred; notify daemon fallback | Wire prompt / PTY sentinel | `restart-kimi-self` (managed†) |
+| Claude Code | `$CLAUDE_SESSION_ID`    | PostToolUse hook (auto)  | Implicit (every tool) | `c2c start claude` |
+| Codex       | PID at register time    | Notify daemon + PTY      | PTY sentinel string   | `c2c start codex` |
+| OpenCode    | `$OPENCODE_SESSION_ID`  | Native TS plugin + promptAsync ✓ | `c2c monitor --all` inotify (moved_to) | `c2c start opencode` |
+| Kimi        | `kimi-user-host` (auto) | Wire bridge (`kimi --wire` JSON-RPC) | Wire prompt | `c2c start kimi` |
 
 ---
 
