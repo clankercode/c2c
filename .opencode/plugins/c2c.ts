@@ -205,8 +205,6 @@ const C2CDelivery: Plugin = async (ctx) => {
     await log(`supervisor liveness: no live supervisor — broadcasting to all ${permissionSupervisors.length}`);
     return permissionSupervisors;
   };
-  /** Returns a single supervisor (first of selectSupervisors). */
-  const nextSupervisor = async () => (await selectSupervisors())[0];
   const permissionTimeoutMs: number = parseInt(
     process.env.C2C_PERMISSION_TIMEOUT_MS || "120000", 10
   );
@@ -561,44 +559,73 @@ const C2CDelivery: Plugin = async (ctx) => {
         return;
       }
 
-      // Notify supervisor on permission events (v1: notification-only, no dialog mutation).
-      // OpenCode publishes "permission.updated" in the external SDK Event stream and
-      // "permission.asked" on the internal bus. Config-declared bash:ask appears to only
-      // fire "permission.updated" via the SDK subscription path; runtime-ask fires both.
-      // Check both to cover all cases.
-      if (event.type === "permission.updated" || event.type === "permission.asked") {
+      // Permission flow (v2): opencode emits "permission.asked" via the SDK Event
+      // stream for every ask — both config-declared (e.g. `"permission": {"bash": "ask"}`)
+      // and runtime-declared. The `permission.ask` plugin hook in the Hooks interface
+      // is NOT wired in current opencode builds (binary has no literal "permission.ask"
+      // string — only "permission.asked"/"permission.replied" events). So we resolve
+      // the dialog by calling the HTTP API directly.
+      if (event.type === "permission.asked" || event.type === "permission.updated") {
         const perm = (event as any).properties ?? {};
         const permId: string = perm.id || "";
-        if (permId) {
-          if (seenPermissionIds.includes(permId)) return;
-          // Skip v1 notification if v2 permission.ask hook is awaiting this ID.
-          if (pendingPermissions.has(permId)) return;
-          seenPermissionIds.push(permId);
-          if (seenPermissionIds.length > 10) seenPermissionIds.shift();
-        }
+        if (!permId) return;
+        if (seenPermissionIds.includes(permId)) return;
+        seenPermissionIds.push(permId);
+        if (seenPermissionIds.length > 20) seenPermissionIds.shift();
+
         const title: string = perm.title || "unknown";
         const type: string = perm.type || "unknown";
         const pattern: string = JSON.stringify(perm.pattern ?? "N/A");
         const sid: string = perm.sessionID || activeSessionId || sessionId || "unknown";
+        const timeoutSec = Math.round(permissionTimeoutMs / 1000);
         const msg = [
-          `PERMISSION REQUEST (v1 notification) from ${sessionId}:`,
+          `PERMISSION REQUEST from ${sessionId}:`,
           `  session: ${sid}`,
           `  title: ${title}`,
           `  type: ${type}`,
           `  pattern: ${pattern}`,
-          `  id: ${permId || "unknown"}`,
-          `  (v1 fallback — respond via TUI dialog)`,
+          `  id: ${permId}`,
+          `Reply within ${timeoutSec}s with one of:`,
+          `  c2c send ${sessionId} "permission:${permId}:approve-once"`,
+          `  c2c send ${sessionId} "permission:${permId}:approve-always"`,
+          `  c2c send ${sessionId} "permission:${permId}:reject"`,
+          `(timeout → falls through to TUI dialog)`,
         ].join("\n");
-        const supervisors = await selectSupervisors();
-        for (const supervisor of supervisors) {
-          try {
-            await runC2c(["send", supervisor, msg]);
-            await log(`permission notification sent to ${supervisor}: ${permId}`);
-          } catch (err) {
-            await log(`permission notification error (${supervisor}): ${err}`);
+
+        // Fire-and-forget: wait for a reply in the background and resolve via HTTP.
+        void (async () => {
+          const supervisors = await selectSupervisors();
+          for (const supervisor of supervisors) {
+            try {
+              await runC2c(["send", supervisor, msg]);
+              await log(`permission DM sent to ${supervisor}: ${permId}`);
+            } catch (err) {
+              await log(`permission DM error (${supervisor}): ${err}`);
+            }
           }
-        }
-        void toast(`c2c: permission notified → ${supervisors.join(", ")}`);
+          void toast(`c2c: awaiting permission from ${supervisors.join(", ")}…`);
+          const reply = await waitForPermissionReply(permId, permissionTimeoutMs);
+          if (reply === "timeout") {
+            await log(`permission timeout (${timeoutSec}s): ${permId} — leaving TUI dialog open`);
+            void toast(`c2c: permission timeout — use TUI dialog`, "warning");
+            return;
+          }
+          const response =
+            reply === "approve-once" ? "once" :
+            reply === "approve-always" ? "always" :
+            "reject";
+          try {
+            await (ctx.client as any).postSessionIdPermissionsPermissionId({
+              path: { id: sid, permissionID: permId },
+              body: { response },
+            });
+            await log(`permission resolved via HTTP: ${permId} → ${response}`);
+            void toast(`c2c: permission ${response}`);
+          } catch (err) {
+            await log(`permission HTTP resolve error: ${permId} → ${response}: ${err}`);
+            void toast(`c2c: permission resolve failed — use TUI dialog`, "error");
+          }
+        })();
         return;
       }
 
@@ -615,52 +642,6 @@ const C2CDelivery: Plugin = async (ctx) => {
       }
     },
 
-    "permission.ask": async (input: any, output: { status: "ask" | "deny" | "allow" }) => {
-        await log(`permission.ask hook fired: id=${input.id || "?"} type=${input.type || "?"} title=${input.title || "?"}`);
-        const permId: string = input.id || "";
-        const title: string = input.title || "unknown";
-        const type: string = input.type || "unknown";
-        const pattern: string = JSON.stringify(input.pattern ?? "N/A");
-        const sid: string = input.sessionID || activeSessionId || sessionId || "unknown";
-        const timeoutSec = Math.round(permissionTimeoutMs / 1000);
-        const msg = [
-          `PERMISSION REQUEST (async) from ${sessionId}:`,
-          `  session: ${sid}`,
-          `  title: ${title}`,
-          `  type: ${type}`,
-          `  pattern: ${pattern}`,
-          `  id: ${permId || "unknown"}`,
-          `Reply within ${timeoutSec}s with one of:`,
-          `  c2c send ${sessionId} "permission:${permId}:approve-once"`,
-          `  c2c send ${sessionId} "permission:${permId}:approve-always"`,
-          `  c2c send ${sessionId} "permission:${permId}:reject"`,
-          `(timeout → falls back to TUI dialog)`,
-        ].join("\n");
-        const supervisor = await nextSupervisor(); // single for ask: first reply wins
-        try {
-          await runC2c(["send", supervisor, msg]);
-          await log(`permission.ask sent to ${supervisor}: ${permId}`);
-          void toast(`c2c: awaiting permission from ${supervisor}…`);
-        } catch (err) {
-          await log(`permission.ask notify error: ${err}`);
-          return; // notify failed — fall through to dialog
-        }
-        if (!permId) return; // no ID to track, fall through to dialog
-        const reply = await waitForPermissionReply(permId, permissionTimeoutMs);
-        if (reply === "approve-once" || reply === "approve-always") {
-          output.status = "allow";
-          await log(`permission approved by ${supervisor}: ${permId} (${reply})`);
-          void toast(`c2c: permission approved (${reply})`);
-        } else if (reply === "reject") {
-          output.status = "deny";
-          await log(`permission rejected by ${supervisor}: ${permId}`);
-          void toast(`c2c: permission rejected`, "warning");
-        } else {
-          // timeout — leave output.status as "ask" (default) to show TUI dialog
-          await log(`permission timeout (${timeoutSec}s): ${permId} — showing dialog`);
-          void toast(`c2c: permission timeout — showing dialog`, "warning");
-        }
-      },
   };
 };
 

@@ -93,6 +93,7 @@ function makeCtx() {
       },
       app: { log: vi.fn().mockResolvedValue({}) },
       tui: { showToast: vi.fn().mockResolvedValue({}) },
+      postSessionIdPermissionsPermissionId: vi.fn().mockResolvedValue({}),
     },
   };
 }
@@ -240,6 +241,59 @@ describe('c2c plugin unit tests', () => {
     expect(ctx.client.session.promptAsync).toHaveBeenCalled();
     const lastCall = ctx.client.session.promptAsync.mock.calls.at(-1)!;
     expect(lastCall[0].path.id).toBe('real-root');
+  });
+
+  it('permission.asked event: DMs supervisor, resolves via HTTP on approve-once', async () => {
+    // sessionCreated cold-boot drain
+    queueSpawn({ messages: [] });
+    // supervisor liveness query
+    spawnQueue.push({
+      stdout: JSON.stringify({ sessions: [{ alias: 'coordinator1', alive: true, last_seen: Date.now() / 1000 }] }),
+      stderr: '', code: 0,
+    });
+    // send DM to supervisor
+    spawnQueue.push({ stdout: '', stderr: '', code: 0 });
+    // sessionIdle drain returns the supervisor's permission reply
+    queueSpawn({
+      messages: [{ from_alias: 'coordinator1', to_alias: 'oc-coder1', content: 'permission:perm-xyz:approve-once' }],
+    });
+
+    const ctx = makeCtx();
+    process.env.C2C_PERMISSION_TIMEOUT_MS = '10000';
+    const hooks = await C2CDelivery(ctx as any);
+    await fireEvent(hooks, sessionCreated('root-session'));
+
+    await fireEvent(hooks, {
+      type: 'permission.asked',
+      properties: {
+        id: 'perm-xyz',
+        sessionID: 'root-session',
+        title: 'bash',
+        type: 'bash',
+        pattern: 'echo hi',
+      },
+    });
+
+    // Pump microtasks so the fire-and-forget async runs through selectSupervisors + send DM.
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+
+    // Supervisor reply lands on the next session.idle drain.
+    await fireEvent(hooks, sessionIdle('root-session'));
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+
+    expect(ctx.client.postSessionIdPermissionsPermissionId).toHaveBeenCalledTimes(1);
+    const call = ctx.client.postSessionIdPermissionsPermissionId.mock.calls[0]![0];
+    expect(call.path.id).toBe('root-session');
+    expect(call.path.permissionID).toBe('perm-xyz');
+    expect(call.body.response).toBe('once');
+
+    // DM to supervisor includes the permission ID.
+    const sendCall = spawnCalls.find((c) => c.args[0] === 'send');
+    expect(sendCall).toBeDefined();
+    expect(sendCall!.args[1]).toBe('coordinator1');
+    expect(sendCall!.args[2]).toContain('perm-xyz');
+
+    delete process.env.C2C_PERMISSION_TIMEOUT_MS;
   });
 
   it('disables delivery when C2C_MCP_SESSION_ID not set', async () => {
