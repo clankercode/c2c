@@ -15,3 +15,24 @@ CAMLprim value caml_c2c_setpgid(value vpid, value vpgid)
         caml_unix_error(errno, "setpgid", Nothing);
     return Val_unit;
 }
+
+/* tcsetpgrp(3): set the foreground process group of the terminal.
+   Required when we fork+setpgid the managed client in a tmux pane:
+   without this, opencode/node detects it's in a background pg and
+   exits 109 when reading the TTY. Errors are silently ignored because
+   a) SIGTTOU is blocked in the caller to keep the call itself from
+   suspending us, and b) the fd may not be a tty (detached launch). */
+#include <signal.h>
+#include <sys/types.h>
+CAMLprim value caml_c2c_tcsetpgrp(value vfd, value vpgrp)
+{
+    struct sigaction sa, old_sa;
+    sa.sa_handler = SIG_IGN;
+    sa.sa_flags = 0;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGTTOU, &sa, &old_sa);
+    int ret = tcsetpgrp(Int_val(vfd), (pid_t)Int_val(vpgrp));
+    sigaction(SIGTTOU, &old_sa, NULL);
+    (void)ret; /* intentionally ignore error */
+    return Val_unit;
+}

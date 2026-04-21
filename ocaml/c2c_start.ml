@@ -6,6 +6,12 @@ let ( // ) = Filename.concat
    Implementation in ocaml/cli/c2c_posix_stubs.c. *)
 external setpgid : int -> int -> unit = "caml_c2c_setpgid"
 
+(* tcsetpgrp(3) binding — errors suppressed inside the stub. After the
+   child forks into its own pgid, we hand it the controlling terminal
+   so it's the tty's foreground process group; otherwise TUIs like
+   opencode detect background-pg and exit 109. *)
+external tcsetpgrp : Unix.file_descr -> int -> unit = "caml_c2c_tcsetpgrp"
+
 (* ---------------------------------------------------------------------------
  * Client configurations
  * --------------------------------------------------------------------------- *)
@@ -558,6 +564,12 @@ let prepare_launch_args ~(name : string) ~(client : string)
  * --------------------------------------------------------------------------- *)
 
 let find_binary (name : string) : string option =
+  (* Absolute path: use directly without PATH search. *)
+  if String.length name > 0 && name.[0] = '/' then
+    (if Sys.file_exists name then
+       (try Unix.access name [ Unix.X_OK ]; Some name with _ -> None)
+     else None)
+  else
   let path = try Sys.getenv "PATH" with Not_found -> "" in
   let rec search dirs =
     match dirs with
@@ -795,10 +807,20 @@ let run_outer_loop ~(name : string) ~(client : string)
       in
 
       (* Tee child stderr to inst_dir/stderr.log.
-         Save outer stderr fd first so the tee thread can write to it. *)
+         Save outer stderr fd first so the tee thread can write to it.
+         Skip the tee when outer stderr is a TTY: opencode (and possibly
+         other node-based clients) detect stderr TTY-vs-pipe mismatch
+         relative to stdin and exit 109. When stderr is a pipe/file (e.g.
+         `c2c start … 2>log`), the tee is safe. Detected operator-side
+         repro: tmux pane launch of `c2c start opencode` → 109 in 1.1s;
+         same command with `2>log` works fine. *)
+      let stderr_is_tty = try Unix.isatty Unix.stderr with _ -> false in
       let outer_stderr_fd = Unix.dup Unix.stderr in
-      let (tee_write_fd, tee_thread) =
-        start_stderr_tee ~inst_dir ~outer_stderr_fd
+      let (tee_write_fd_opt, tee_thread_opt) =
+        if stderr_is_tty then (None, None)
+        else
+          let (fd, th) = start_stderr_tee ~inst_dir ~outer_stderr_fd in
+          (Some fd, Some th)
       in
 
       (* Spawn the managed client with SIGCHLD reset to SIG_DFL. The outer
@@ -821,9 +843,21 @@ let run_outer_loop ~(name : string) ~(client : string)
                    kill(-PGID) at cleanup time takes down all descendants atomically:
                    node/bun, the c2c monitor spawned by the plugin, etc. *)
                 (try setpgid 0 0 with _ -> ());
-                (* Redirect child stderr through the tee pipe *)
-                (try Unix.dup2 tee_write_fd Unix.stderr with _ -> ());
-                (try Unix.close tee_write_fd with _ -> ());
+                (* Hand the controlling TTY's foreground process group to
+                   the child's new pgid. Without this, opencode detects
+                   background-pg and exits 109 in a tmux pane. No-op when
+                   stdin isn't a tty (detached launch). *)
+                (try
+                   if Unix.isatty Unix.stdin then
+                     tcsetpgrp Unix.stdin (Unix.getpid ())
+                 with _ -> ());
+                (* Redirect child stderr through the tee pipe (only when
+                   we installed one; otherwise child inherits outer stderr). *)
+                (match tee_write_fd_opt with
+                 | Some fd ->
+                     (try Unix.dup2 fd Unix.stderr with _ -> ());
+                     (try Unix.close fd with _ -> ())
+                 | None -> ());
                 (try Unix.close outer_stderr_fd with _ -> ());
                 (try Unix.execvpe binary_path (Array.of_list cmd) env
                  with e ->
@@ -878,8 +912,12 @@ let run_outer_loop ~(name : string) ~(client : string)
       in
 
       (* Close tee pipe write-end so the tee thread sees EOF, then join *)
-      (try Unix.close tee_write_fd with _ -> ());
-      Thread.join tee_thread;
+      (match tee_write_fd_opt with
+       | Some fd -> (try Unix.close fd with _ -> ())
+       | None -> ());
+      (match tee_thread_opt with
+       | Some th -> Thread.join th
+       | None -> ());
       (try Unix.close outer_stderr_fd with _ -> ());
 
       (* Restore TTY *)
