@@ -4,6 +4,7 @@ import { C2cEvent } from "./types";
 import { EventFeed } from "./EventFeed";
 import { ComposeBar } from "./ComposeBar";
 import { registerAlias } from "./useSend";
+import { loadHistory } from "./useHistory";
 
 const MAX_EVENTS = 1000;
 const ALIAS_KEY = "c2c-gui-my-alias";
@@ -67,7 +68,14 @@ export function App() {
       }
     }
 
-    startMonitor();
+    // Load recent history before starting the live monitor.
+    loadHistory(100).then(hist => {
+      if (!cancelled && hist.length > 0) {
+        setEvents(hist);
+      }
+      if (!cancelled) startMonitor();
+    });
+
     return () => {
       cancelled = true;
       childRef.current?.kill().catch(() => {});
