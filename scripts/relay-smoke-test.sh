@@ -116,6 +116,14 @@ if echo "$leave_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit
 else
   red "room leave failed"
 fi
+
+# Room history (unauthenticated — should work without Ed25519)
+hist_out=$(c2c relay rooms history --room "$ROOM" --relay-url "$RELAY" 2>&1) || true
+if echo "$hist_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
+  green "room history (unauthenticated) succeeded"
+else
+  red "room history failed"
+fi
 echo ""
 
 # 7. Ed25519 identity check
