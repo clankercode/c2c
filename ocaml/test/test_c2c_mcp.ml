@@ -36,7 +36,7 @@ let test_send_enqueues_message_for_target_alias () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None;
       C2c_mcp.Broker.register broker ~session_id:"session-b" ~alias:"storm-storm" ~pid:None ~pid_start_time:None;
-      C2c_mcp.Broker.enqueue_message broker ~from_alias:"storm-ember" ~to_alias:"storm-storm" ~content:"hello";
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"storm-ember" ~to_alias:"storm-storm" ~content:"hello" ();
       let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-b" in
       check int "one inbox message" 1 (List.length inbox);
       let msg = List.hd inbox in
@@ -48,7 +48,7 @@ let test_drain_inbox_returns_and_clears_messages () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None;
       C2c_mcp.Broker.register broker ~session_id:"session-b" ~alias:"storm-storm" ~pid:None ~pid_start_time:None;
-      C2c_mcp.Broker.enqueue_message broker ~from_alias:"storm-ember" ~to_alias:"storm-storm" ~content:"hello";
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"storm-ember" ~to_alias:"storm-storm" ~content:"hello" ();
        let drained = C2c_mcp.Broker.drain_inbox broker ~session_id:"session-b" in
        check int "drained one message" 1 (List.length drained);
        check int "inbox now empty" 0 (List.length (C2c_mcp.Broker.read_inbox broker ~session_id:"session-b")))
@@ -79,7 +79,7 @@ let test_drain_inbox_empty_does_not_rewrite_existing_empty_file () =
       C2c_mcp.Broker.register broker ~session_id:"session-idle" ~alias:"idle"
         ~pid:None ~pid_start_time:None;
       C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
-        ~to_alias:"idle" ~content:"one";
+        ~to_alias:"idle" ~content:"one" ();
       let _ = C2c_mcp.Broker.drain_inbox broker ~session_id:"session-idle" in
       check bool "inbox file exists after first drain" true
         (Sys.file_exists path);
@@ -113,9 +113,9 @@ let test_drain_inbox_archives_messages_before_clearing () =
       C2c_mcp.Broker.register broker ~session_id:"session-bob"
         ~alias:"bob" ~pid:None ~pid_start_time:None;
       C2c_mcp.Broker.enqueue_message broker ~from_alias:"alice"
-        ~to_alias:"bob" ~content:"first ping";
+        ~to_alias:"bob" ~content:"first ping" ();
       C2c_mcp.Broker.enqueue_message broker ~from_alias:"alice"
-        ~to_alias:"bob" ~content:"second ping";
+        ~to_alias:"bob" ~content:"second ping" ();
       let drained =
         C2c_mcp.Broker.drain_inbox broker ~session_id:"session-bob"
       in
@@ -166,7 +166,7 @@ let test_read_archive_respects_limit () =
         ~alias:"recv" ~pid:None ~pid_start_time:None;
       for i = 1 to 5 do
         C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
-          ~to_alias:"recv" ~content:(Printf.sprintf "msg-%d" i)
+          ~to_alias:"recv" ~content:(Printf.sprintf "msg-%d" i) ()
       done;
       let _ = C2c_mcp.Broker.drain_inbox broker ~session_id:"session-recv" in
       (* Ask for the last 2 — should be msg-5 and msg-4 (newest first). *)
@@ -192,9 +192,9 @@ let test_tools_call_history_returns_archived_messages () =
           C2c_mcp.Broker.register broker ~session_id:"session-histcaller"
             ~alias:"histcaller" ~pid:None ~pid_start_time:None;
           C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
-            ~to_alias:"histcaller" ~content:"archived-one";
+            ~to_alias:"histcaller" ~content:"archived-one" ();
           C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
-            ~to_alias:"histcaller" ~content:"archived-two";
+            ~to_alias:"histcaller" ~content:"archived-two" ();
           let _ =
             C2c_mcp.Broker.drain_inbox broker ~session_id:"session-histcaller"
           in
@@ -244,7 +244,7 @@ let test_tools_call_history_ignores_session_id_argument () =
             ~alias:"attacker" ~pid:None ~pid_start_time:None;
           (* Seed victim's archive. *)
           C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
-            ~to_alias:"victim" ~content:"secret-to-victim";
+            ~to_alias:"victim" ~content:"secret-to-victim" ();
           let _ =
             C2c_mcp.Broker.drain_inbox broker ~session_id:"session-victim"
           in
@@ -284,7 +284,7 @@ let test_tools_call_history_ignores_session_id_argument () =
 let test_channel_notification_matches_claude_channel_shape () =
   let json =
     C2c_mcp.channel_notification
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "debate me" }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "debate me"; deferrable = false }
   in
   let open Yojson.Safe.Util in
   check string "jsonrpc" "2.0" (json |> member "jsonrpc" |> to_string);
@@ -298,7 +298,7 @@ let test_channel_notification_matches_claude_channel_shape () =
 let test_channel_notification_empty_content () =
   let json =
     C2c_mcp.channel_notification
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "" }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = ""; deferrable = false }
   in
   let open Yojson.Safe.Util in
   check string "jsonrpc" "2.0" (json |> member "jsonrpc" |> to_string);
@@ -315,7 +315,7 @@ let test_channel_notification_special_chars () =
   let content = "line1\nline2\t\"quoted\" <angle> \xc3\xa9\xc3\xa0\xc3\xbc" in
   let json =
     C2c_mcp.channel_notification
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content; deferrable = false }
   in
   let open Yojson.Safe.Util in
   (* Round-trip through Yojson serialization to verify escaping is valid *)
@@ -330,7 +330,7 @@ let test_channel_notification_special_chars () =
 let test_channel_notification_has_no_id_field () =
   let json =
     C2c_mcp.channel_notification
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "test" }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "test"; deferrable = false }
   in
   let open Yojson.Safe.Util in
   (* JSON-RPC 2.0 notifications MUST NOT include an "id" field *)
@@ -405,7 +405,7 @@ let test_initialize_without_channel_capability () =
 let test_channel_notification_method_is_correct () =
   let json =
     C2c_mcp.channel_notification
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "check method" }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "check method"; deferrable = false }
   in
   let open Yojson.Safe.Util in
   let method_str = json |> member "method" |> to_string in
@@ -1508,8 +1508,8 @@ let test_tools_call_poll_inbox_drains_messages_as_tool_result () =
           let broker = C2c_mcp.Broker.create ~root:dir in
           C2c_mcp.Broker.register broker ~session_id:"session-from" ~alias:"storm-from" ~pid:None ~pid_start_time:None;
           C2c_mcp.Broker.register broker ~session_id:"session-poll" ~alias:"storm-poll" ~pid:None ~pid_start_time:None;
-          C2c_mcp.Broker.enqueue_message broker ~from_alias:"storm-from" ~to_alias:"storm-poll" ~content:"hello-one";
-          C2c_mcp.Broker.enqueue_message broker ~from_alias:"storm-from" ~to_alias:"storm-poll" ~content:"hello-two";
+          C2c_mcp.Broker.enqueue_message broker ~from_alias:"storm-from" ~to_alias:"storm-poll" ~content:"hello-one" ();
+          C2c_mcp.Broker.enqueue_message broker ~from_alias:"storm-from" ~to_alias:"storm-poll" ~content:"hello-two" ();
           let request =
             `Assoc
               [ ("jsonrpc", `String "2.0")
@@ -1592,7 +1592,7 @@ let test_enqueue_to_dead_peer_raises () =
         (Invalid_argument "recipient is not alive: storm-dead")
         (fun () ->
           C2c_mcp.Broker.enqueue_message broker
-            ~from_alias:"storm-dead" ~to_alias:"storm-dead" ~content:"ping"))
+            ~from_alias:"storm-dead" ~to_alias:"storm-dead" ~content:"ping" ()))
 
 let test_enqueue_picks_live_when_zombie_shares_alias () =
   with_temp_dir (fun dir ->
@@ -1601,7 +1601,7 @@ let test_enqueue_picks_live_when_zombie_shares_alias () =
       C2c_mcp.Broker.register broker ~session_id:"session-zombie" ~alias:"storm-twin" ~pid:(Some dead) ~pid_start_time:None;
       C2c_mcp.Broker.register broker ~session_id:"session-live" ~alias:"storm-twin" ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
       C2c_mcp.Broker.enqueue_message broker
-        ~from_alias:"storm-twin" ~to_alias:"storm-twin" ~content:"alive!";
+        ~from_alias:"storm-twin" ~to_alias:"storm-twin" ~content:"alive!" ();
       let zombie_inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-zombie" in
       let live_inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-live" in
       check int "zombie inbox untouched" 0 (List.length zombie_inbox);
@@ -1622,7 +1622,7 @@ let test_registration_without_pid_loads_as_alive () =
       check bool "legacy entry treated as alive" true
         (C2c_mcp.Broker.registration_is_alive reg);
       C2c_mcp.Broker.enqueue_message broker
-        ~from_alias:"storm-legacy" ~to_alias:"storm-legacy" ~content:"still works";
+        ~from_alias:"storm-legacy" ~to_alias:"storm-legacy" ~content:"still works" ();
       let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"legacy-session" in
       check int "legacy enqueue delivered" 1 (List.length inbox))
 
@@ -1657,7 +1657,7 @@ let test_enqueue_writes_inbox_at_0o600 () =
         ~session_id:"recv-sid" ~alias:"recv"
         ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
       C2c_mcp.Broker.enqueue_message broker
-        ~from_alias:"sender" ~to_alias:"recv" ~content:"hello";
+        ~from_alias:"sender" ~to_alias:"recv" ~content:"hello" ();
       let st = Unix.stat (Filename.concat dir "recv-sid.inbox.json") in
       let mode = st.Unix.st_perm land 0o777 in
       check int "inbox file mode is 0o600" 0o600 mode)
@@ -1798,9 +1798,9 @@ let test_write_json_file_leaves_no_tmp_sidecars () =
         ~session_id:"send-sid" ~alias:"send"
         ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
       C2c_mcp.Broker.enqueue_message broker
-        ~from_alias:"send" ~to_alias:"recv" ~content:"hello";
+        ~from_alias:"send" ~to_alias:"recv" ~content:"hello" ();
       C2c_mcp.Broker.enqueue_message broker
-        ~from_alias:"send" ~to_alias:"recv" ~content:"world";
+        ~from_alias:"send" ~to_alias:"recv" ~content:"world" ();
       let entries = Sys.readdir dir |> Array.to_list in
       let tmp_sidecars =
         List.filter
@@ -2022,7 +2022,7 @@ let test_register_evicts_prior_reg_with_same_alias () =
            regs);
       (* Enqueue must now reach the new session. *)
       C2c_mcp.Broker.enqueue_message broker
-        ~from_alias:"sender" ~to_alias:"storm-recv" ~content:"hello";
+        ~from_alias:"sender" ~to_alias:"storm-recv" ~content:"hello" ();
       let msgs =
         C2c_mcp.Broker.read_inbox broker ~session_id:"new-session"
       in
@@ -2047,10 +2047,10 @@ let test_register_migrates_undrained_inbox_on_alias_re_register () =
         ~pid:None ~pid_start_time:None;
       C2c_mcp.Broker.enqueue_message broker
         ~from_alias:"sender" ~to_alias:"storm-recv"
-        ~content:"queued before re-register";
+        ~content:"queued before re-register" ();
       C2c_mcp.Broker.enqueue_message broker
         ~from_alias:"sender" ~to_alias:"storm-recv"
-        ~content:"second queued message";
+        ~content:"second queued message" ();
       (* Re-register same alias with a new session_id. *)
       C2c_mcp.Broker.register broker
         ~session_id:"new-session" ~alias:"storm-recv"
@@ -2092,7 +2092,7 @@ let test_register_serializes_with_concurrent_enqueue () =
               (try
                  C2c_mcp.Broker.enqueue_message broker
                    ~from_alias:"sender" ~to_alias:"target"
-                   ~content:(Printf.sprintf "msg-%d" i)
+                   ~content:(Printf.sprintf "msg-%d" i) ()
                with _ -> ())
             done;
             exit 0
@@ -2148,7 +2148,7 @@ let test_concurrent_enqueue_does_not_lose_messages () =
                   C2c_mcp.Broker.enqueue_message broker
                     ~from_alias:(Printf.sprintf "sender-%d" i)
                     ~to_alias:"storm-recv"
-                    ~content:(Printf.sprintf "msg-%d-%d" i j)
+                    ~content:(Printf.sprintf "msg-%d-%d" i j) ()
                 done;
                 exit 0
             | child -> child)
@@ -2220,7 +2220,7 @@ let test_sweep_preserves_live_reg_and_its_inbox () =
         ~session_id:"session-live" ~alias:"storm-live"
         ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
       C2c_mcp.Broker.enqueue_message broker
-        ~from_alias:"storm-live" ~to_alias:"storm-live" ~content:"keep me";
+        ~from_alias:"storm-live" ~to_alias:"storm-live" ~content:"keep me" ();
       let result = C2c_mcp.Broker.sweep broker in
       check int "no drops" 0 (List.length result.dropped_regs);
       check int "no deletions" 0 (List.length result.deleted_inboxes);
@@ -3532,9 +3532,9 @@ let test_tools_call_peek_inbox_does_not_drain () =
           C2c_mcp.Broker.register broker ~session_id:"session-peeker"
             ~alias:"peeker" ~pid:None ~pid_start_time:None;
           C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
-            ~to_alias:"peeker" ~content:"first";
+            ~to_alias:"peeker" ~content:"first" ();
           C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
-            ~to_alias:"peeker" ~content:"second";
+            ~to_alias:"peeker" ~content:"second" ();
           let request =
             `Assoc
               [ ("jsonrpc", `String "2.0")
@@ -3580,7 +3580,7 @@ let test_tools_call_peek_inbox_ignores_session_id_argument () =
           C2c_mcp.Broker.register broker ~session_id:"session-victim"
             ~alias:"victim" ~pid:None ~pid_start_time:None;
           C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
-            ~to_alias:"victim" ~content:"secret for victim only";
+            ~to_alias:"victim" ~content:"secret for victim only" ();
           let request =
             `Assoc
               [ ("jsonrpc", `String "2.0")
@@ -4209,7 +4209,7 @@ let test_large_inbox_drains_all_messages () =
         ~pid_start_time:None;
       for i = 1 to 50 do
         C2c_mcp.Broker.enqueue_message broker ~from_alias:"src" ~to_alias:"dst"
-          ~content:(Printf.sprintf "bulk-%d" i)
+          ~content:(Printf.sprintf "bulk-%d" i) ()
       done;
       (* drain_inbox removes and returns all messages *)
       let inbox = C2c_mcp.Broker.drain_inbox broker ~session_id:"s-dst" in

@@ -209,7 +209,7 @@ let send_cmd =
   let content = String.concat " " message in
   let output_mode = if json then Json else Human in
   (try
-     C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content;
+     C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content ();
      let ts = Unix.gettimeofday () in
      match output_mode with
      | Json ->
@@ -3572,7 +3572,7 @@ let smoke_test_cmd =
       (Unix.gettimeofday () |> int_of_float)
       (Random.int 100000)
   in
-  C2c_mcp.Broker.enqueue_message broker ~from_alias:alias_a ~to_alias:alias_b ~content:marker;
+  C2c_mcp.Broker.enqueue_message broker ~from_alias:alias_a ~to_alias:alias_b ~content:marker ();
   let messages = C2c_mcp.Broker.drain_inbox broker ~session_id:session_b in
   let ok = List.exists (fun (m : C2c_mcp.message) -> m.content = marker) messages in
   let rec rm_rf path =
@@ -6194,7 +6194,8 @@ let wire_daemon_format_prompt_cmd =
               | Some (`String s) -> s | _ -> "" in
             Some C2c_mcp.{ from_alias = get_str "from_alias"
                           ; to_alias   = get_str "to_alias"
-                          ; content    = get_str "content" }
+                          ; content    = get_str "content"
+                          ; deferrable = false }
         | _ -> None) items
     | _ -> []
   in
@@ -6218,7 +6219,8 @@ let wire_daemon_spool_write_cmd =
               | Some (`String s) -> s | _ -> "" in
             Some C2c_mcp.{ from_alias = get_str "from_alias"
                           ; to_alias   = get_str "to_alias"
-                          ; content    = get_str "content" }
+                          ; content    = get_str "content"
+                          ; deferrable = false }
         | _ -> None) items
     | _ -> []
   in
@@ -6817,7 +6819,7 @@ let supervisor_send ~to_alias ~content =
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let from_alias = resolve_alias ~override:None broker in
   (try
-     C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content;
+     C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content ();
      Printf.printf "ok -> %s (from %s)\n" to_alias from_alias
    with Invalid_argument msg ->
      Printf.eprintf "error: %s\n%!" msg; exit 1)

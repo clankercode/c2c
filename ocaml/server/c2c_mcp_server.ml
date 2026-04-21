@@ -128,10 +128,10 @@ let start_inbox_watcher ~broker_root ~session_id ~emit_notification =
              nothing. *)
           let* () = if delay > 0.0 then Lwt_unix.sleep delay else Lwt.return_unit in
           let broker = C2c_mcp.Broker.create ~root:broker_root in
-          let messages = C2c_mcp.Broker.drain_inbox broker ~session_id in
+          (* Push path: skip if DND; drain only non-deferrable messages *)
           let messages =
             if C2c_mcp.Broker.is_dnd broker ~session_id then []
-            else messages
+            else C2c_mcp.Broker.drain_inbox_push broker ~session_id
           in
           let rec emit_all = function
             | [] -> Lwt.return_unit

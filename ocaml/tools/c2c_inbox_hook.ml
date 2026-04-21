@@ -155,7 +155,9 @@ let () =
 
   try
     let broker = C2c_mcp.Broker.create ~root:broker_root in
-    let messages = C2c_mcp.Broker.drain_inbox broker ~session_id in
+    (* Push path: drain only non-deferrable messages; deferrable stay in inbox
+       for the agent to read on next explicit poll_inbox or idle flush. *)
+    let messages = C2c_mcp.Broker.drain_inbox_push broker ~session_id in
 
     (* Look up alias from registry for the statefile *)
     let alias =

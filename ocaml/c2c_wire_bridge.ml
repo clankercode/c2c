@@ -73,7 +73,7 @@ let spool_read sp =
               let to_alias   = str "to_alias" in
               let content    = str "content" in
               if from_alias = "" && content = "" then None
-              else Some C2c_mcp.{ from_alias; to_alias; content })
+              else Some C2c_mcp.{ from_alias; to_alias; content; deferrable = false })
             items
       | _ -> []
       | exception _ -> []

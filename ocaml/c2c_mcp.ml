@@ -13,7 +13,7 @@ type registration =
   ; dnd_since : float option  (** When DND was last enabled. *)
   ; dnd_until : float option  (** Auto-expire epoch (None = manual off only). *)
   }
-type message = { from_alias : string; to_alias : string; content : string }
+type message = { from_alias : string; to_alias : string; content : string; deferrable : bool }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 type room_visibility = Public | Invite_only
@@ -69,6 +69,7 @@ let server_features =
   ; "room_invite"
   ; "room_visibility"
   ; "dnd"
+  ; "deferrable"
   ]
 
 let server_info =
@@ -274,18 +275,24 @@ module Broker = struct
     ; dnd_until = float_opt_member "dnd_until" json
     }
 
-  let message_to_json { from_alias; to_alias; content } =
-    `Assoc
+  let message_to_json { from_alias; to_alias; content; deferrable } =
+    let base =
       [ ("from_alias", `String from_alias)
       ; ("to_alias", `String to_alias)
       ; ("content", `String content)
       ]
+    in
+    `Assoc (if deferrable then base @ [("deferrable", `Bool true)] else base)
 
   let message_of_json json =
     let open Yojson.Safe.Util in
     { from_alias = json |> member "from_alias" |> to_string
     ; to_alias = json |> member "to_alias" |> to_string
     ; content = json |> member "content" |> to_string
+    ; deferrable =
+        (match json |> member "deferrable" with
+         | `Bool b -> b
+         | _ -> false)
     }
 
   let load_registrations t =
@@ -621,7 +628,7 @@ module Broker = struct
             end)
           conflicting)
 
-  let enqueue_message t ~from_alias ~to_alias ~content =
+  let enqueue_message t ~from_alias ~to_alias ~content ?(deferrable = false) () =
     (* Reject messages claiming a reserved system from_alias — prevents spoofing. *)
     if List.mem from_alias reserved_system_aliases then
       invalid_arg (Printf.sprintf
@@ -636,7 +643,7 @@ module Broker = struct
             with_inbox_lock t ~session_id (fun () ->
                 let current = load_inbox t ~session_id in
                 let next =
-                  current @ [ { from_alias; to_alias; content } ]
+                  current @ [ { from_alias; to_alias; content; deferrable } ]
                 in
                 save_inbox t ~session_id next))
 
@@ -671,7 +678,7 @@ module Broker = struct
                         let current = load_inbox t ~session_id in
                         let next =
                           current
-                          @ [ { from_alias; to_alias = reg.alias; content } ]
+                          @ [ { from_alias; to_alias = reg.alias; content; deferrable = false } ]
                         in
                         save_inbox t ~session_id next);
                     sent := reg.alias :: !sent
@@ -740,15 +747,17 @@ module Broker = struct
               (fun () ->
                 let ts = Unix.gettimeofday () in
                 List.iter
-                  (fun ({ from_alias; to_alias; content } : message) ->
-                    let record =
-                      `Assoc
-                        [ ("drained_at", `Float ts)
-                        ; ("session_id", `String session_id)
-                        ; ("from_alias", `String from_alias)
-                        ; ("to_alias", `String to_alias)
-                        ; ("content", `String content)
-                        ]
+                  (fun ({ from_alias; to_alias; content; deferrable } : message) ->
+                    let base =
+                      [ ("drained_at", `Float ts)
+                      ; ("session_id", `String session_id)
+                      ; ("from_alias", `String from_alias)
+                      ; ("to_alias", `String to_alias)
+                      ; ("content", `String content)
+                      ]
+                    in
+                    let record = `Assoc
+                      (if deferrable then base @ [("deferrable", `Bool true)] else base)
                     in
                     output_string oc (Yojson.Safe.to_string record);
                     output_char oc '\n')
@@ -842,6 +851,22 @@ module Broker = struct
              append_archive t ~session_id ~messages;
              save_inbox t ~session_id []);
         messages)
+
+  (* Like drain_inbox but only drains non-deferrable messages.  Deferrable
+     messages stay in the inbox for the next explicit poll or idle-flush.
+     Used by push paths (channel notification watcher, PostToolUse hook) to
+     suppress low-priority messages that the sender marked as non-urgent. *)
+  let drain_inbox_push t ~session_id =
+    with_inbox_lock t ~session_id (fun () ->
+        let messages = load_inbox t ~session_id in
+        let to_push = List.filter (fun m -> not m.deferrable) messages in
+        let to_keep = List.filter (fun m -> m.deferrable) messages in
+        (match to_push with
+         | [] -> ()
+         | _ ->
+             append_archive t ~session_id ~messages:to_push;
+             save_inbox t ~session_id to_keep);
+        to_push)
 
   type sweep_result =
     { dropped_regs : registration list
@@ -1234,7 +1259,7 @@ module Broker = struct
                     with_inbox_lock t ~session_id (fun () ->
                         let current = load_inbox t ~session_id in
                         let next =
-                          current @ [ { from_alias; to_alias = tagged_to; content } ]
+                          current @ [ { from_alias; to_alias = tagged_to; content; deferrable = false } ]
                         in
                         save_inbox t ~session_id next);
                     delivered := m.rm_alias :: !delivered
@@ -1685,7 +1710,7 @@ module Broker = struct
     end
 end
 
-let channel_notification ({ from_alias; to_alias; content } : message) =
+let channel_notification ({ from_alias; to_alias; content; deferrable = _ } : message) =
   `Assoc
     [ ("jsonrpc", `String "2.0")
     ; ("method", `String "notifications/claude/channel")
@@ -1739,9 +1764,9 @@ let tool_definitions =
       ~required:[]
       ~properties:[]
   ; tool_definition ~name:"send"
-      ~description:"Send a C2C message to a registered peer alias. The sender alias is resolved from the current MCP session when possible; `from_alias` remains a legacy fallback for non-session callers. Returns JSON {queued:true, ts:<epoch-seconds>, from_alias:<string>, to_alias:<string>} on success."
+      ~description:"Send a C2C message to a registered peer alias. The sender alias is resolved from the current MCP session when possible; `from_alias` remains a legacy fallback for non-session callers. Optional `deferrable:true` marks the message as low-priority: push paths (channel notification, PostToolUse hook) skip it — recipient reads it on next explicit poll_inbox or idle flush. Returns JSON {queued:true, ts:<epoch-seconds>, from_alias:<string>, to_alias:<string>} on success."
       ~required:["to_alias"; "content"]
-      ~properties:[ prop "to_alias" "Target peer alias."; prop "from_alias" "Legacy fallback sender alias (deprecated)."; prop "content" "Message body." ]
+      ~properties:[ prop "to_alias" "Target peer alias."; prop "from_alias" "Legacy fallback sender alias (deprecated)."; prop "content" "Message body."; prop "deferrable" "Optional bool. When true, marks the message as low-priority — push delivery is suppressed; recipient reads it on next poll_inbox or idle flush." ]
   ; tool_definition ~name:"whoami"
       ~description:"Resolve the current C2C session registration."
       ~required:[]
@@ -2359,7 +2384,12 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                           from_alias conflict.session_id)
                      ~is_error:true)
             | None ->
-                Broker.enqueue_message broker ~from_alias ~to_alias ~content;
+                let deferrable =
+                  try match Yojson.Safe.Util.member "deferrable" arguments with
+                    | `Bool b -> b | _ -> false
+                  with _ -> false
+                in
+                Broker.enqueue_message broker ~from_alias ~to_alias ~content ~deferrable ();
                 let ts = Unix.gettimeofday () in
                 let recipient_dnd =
                   match Broker.list_registrations broker
@@ -2376,6 +2406,10 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                 in
                 let receipt_fields =
                   if recipient_dnd then receipt_fields @ [("recipient_dnd", `Bool true)]
+                  else receipt_fields
+                in
+                let receipt_fields =
+                  if deferrable then receipt_fields @ [("deferrable", `Bool true)]
                   else receipt_fields
                 in
                 let receipt = `Assoc receipt_fields |> Yojson.Safe.to_string in
@@ -2454,12 +2488,14 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       let content =
         `List
           (List.map
-             (fun ({ from_alias; to_alias; content } : message) ->
-               `Assoc
+             (fun ({ from_alias; to_alias; content; deferrable } : message) ->
+               let base =
                  [ ("from_alias", `String from_alias)
                  ; ("to_alias", `String to_alias)
                  ; ("content", `String content)
-                 ])
+                 ]
+               in
+               `Assoc (if deferrable then base @ [("deferrable", `Bool true)] else base))
              messages)
         |> Yojson.Safe.to_string
       in
@@ -2482,12 +2518,14 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
            let content =
              `List
                (List.map
-                  (fun ({ from_alias; to_alias; content } : message) ->
-                    `Assoc
+                  (fun ({ from_alias; to_alias; content; deferrable } : message) ->
+                    let base =
                       [ ("from_alias", `String from_alias)
                       ; ("to_alias", `String to_alias)
                       ; ("content", `String content)
-                      ])
+                      ]
+                    in
+                    `Assoc (if deferrable then base @ [("deferrable", `Bool true)] else base))
                   messages)
              |> Yojson.Safe.to_string
            in

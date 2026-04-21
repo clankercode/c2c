@@ -4,7 +4,7 @@
     identical to the Python reference implementation. *)
 
 let msg ?(from_alias="") ?(to_alias="") content =
-  C2c_mcp.{ from_alias; to_alias; content }
+  C2c_mcp.{ from_alias; to_alias; content; deferrable = false }
 
 (* ---------------------------------------------------------------------------
  * format_envelope parity (vs Python format_c2c_envelope)

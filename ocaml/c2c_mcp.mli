@@ -13,7 +13,7 @@ type registration =
   ; dnd_since : float option
   ; dnd_until : float option
   }
-type message = { from_alias : string; to_alias : string; content : string }
+type message = { from_alias : string; to_alias : string; content : string; deferrable : bool }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 type room_visibility = Public | Invite_only
@@ -45,11 +45,12 @@ module Broker : sig
   val registration_is_alive : registration -> bool
   val read_pid_start_time : int -> int option
   val capture_pid_start_time : int option -> int option
-  val enqueue_message : t -> from_alias:string -> to_alias:string -> content:string -> unit
+  val enqueue_message : t -> from_alias:string -> to_alias:string -> content:string -> ?deferrable:bool -> unit -> unit
   type send_all_result = { sent_to : string list; skipped : (string * string) list }
   val send_all : t -> from_alias:string -> content:string -> exclude_aliases:string list -> send_all_result
   val read_inbox : t -> session_id:string -> message list
   val drain_inbox : t -> session_id:string -> message list
+  val drain_inbox_push : t -> session_id:string -> message list
   val with_inbox_lock : t -> session_id:string -> (unit -> 'a) -> 'a
   type sweep_result = { dropped_regs : registration list; deleted_inboxes : string list; preserved_messages : int }
   val sweep : t -> sweep_result
