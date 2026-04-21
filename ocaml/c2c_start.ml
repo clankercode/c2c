@@ -714,6 +714,8 @@ let run_outer_loop ~(name : string) ~(client : string)
       let deliver_pid = ref None in
       let poker_pid = ref None in
       let wire_pid = ref None in
+      (* Inner child PID — set after fork so the SIGTERM handler can kill it. *)
+      let inner_child_pid = ref None in
 
       let stop_sidecar pid_opt =
         match pid_opt with
@@ -727,6 +729,15 @@ let run_outer_loop ~(name : string) ~(client : string)
       in
 
       let cleanup_and_exit code =
+        (* Kill inner client's entire process group (opencode, node, c2c monitor, …)
+           before cleaning up sidecars. The inner ran with setpgid 0 0 so its
+           PGID == its PID; killing -pid kills the whole group. *)
+        (match !inner_child_pid with
+         | None -> ()
+         | Some p ->
+             (try Unix.kill (- p) Sys.sigterm with Unix.Unix_error _ -> ());
+             Unix.sleepf 0.3;
+             (try Unix.kill (- p) Sys.sigkill with Unix.Unix_error _ -> ()));
         stop_sidecar !deliver_pid;
         stop_sidecar !poker_pid;
         stop_sidecar !wire_pid;
@@ -736,6 +747,13 @@ let run_outer_loop ~(name : string) ~(client : string)
         remove_pidfile (poker_pid_path name);
         code
       in
+
+      (* Install SIGTERM handler so `c2c stop` (which sends SIGTERM to the outer)
+         triggers a clean shutdown instead of leaving sidecars and the inner client
+         orphaned as ppid=1 zombies. *)
+      ignore (Sys.signal Sys.sigterm (Sys.Signal_handle (fun _ ->
+        ignore (cleanup_and_exit 0);
+        exit 0)));
 
       (* Cleanup stale zig cache *)
       (try
@@ -868,7 +886,9 @@ let run_outer_loop ~(name : string) ~(client : string)
             | p -> p
           in
           (* Record inner pid so `c2c restart-self` can SIGTERM just the
-             managed child without killing the outer loop. *)
+             managed child without killing the outer loop. Also used by the
+             SIGTERM handler so `c2c stop` can kill the whole inner pgid. *)
+          inner_child_pid := Some pid;
           write_pid (inner_pid_path name) pid;
           (* Start deliver daemon (PTY notify path, used for Codex). *)
           (if !deliver_pid = None && cfg.needs_deliver then
