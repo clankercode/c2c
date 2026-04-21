@@ -101,6 +101,75 @@ are joining the swarm, read the **Start here** section first.
 All other findings are live proofs, post-mortems of already-fixed issues, or
 informational architecture notes.
 
+### 📅 2026-04-21 Session (today's findings)
+
+#### Process / Delivery Hygiene
+
+| Finding | Topic | Status |
+|---------|-------|--------|
+| [shared-workdir-wip-sweep](./2026-04-21T01-24-00Z-coder2-expert-shared-workdir-wip-sweep.md) | Shared working tree — one agent's `git checkout` wipes another's uncommitted WIP | MEDIUM / mitigation listed |
+| [git-stash-sweeps-peer-wip](./2026-04-21T01-47-00Z-coder2-expert-git-stash-sweeps-peer-wip.md) | `git stash` in a shared worktree silently buries another agent's staged WIP | MEDIUM / cherry-pick workaround |
+| [hook-raw-stdout-blackhole](./2026-04-21T01-34-00Z-coordinator1-hook-raw-stdout-blackhole.md) | PostToolUse hook raw stdout was silently discarded — every early DM lost | CRITICAL / FIXED |
+| [mcp-disconnect-pattern](./2026-04-21T06-50-00Z-coder2-expert-mcp-disconnect-pattern.md) | MCP server recurring disconnect in active session | INFO |
+| [c2c-start-no-forensics](./2026-04-21T07-36-00Z-coordinator1-c2c-start-no-forensics.md) | `c2c start` lacked forensics on unexpected client exits | MEDIUM / FIXED |
+
+#### OpenCode Delivery & Permission Flow
+
+| Finding | Topic | Status |
+|---------|-------|--------|
+| [opencode-permission-lock](./2026-04-21T04-01-00Z-coordinator1-opencode-permission-lock.md) | OpenCode TUI silently blocks on permission prompts — kills swarm participation | HIGH / FIXED (HTTP v2) |
+| [opencode-delivery-gaps](./2026-04-21T07-47-00Z-coordinator1-opencode-delivery-gaps.md) | Two OpenCode delivery gaps: cold-boot spool + `moved_to` inotify miss | HIGH / FIXED |
+| [opencode-silent-drain-root-cause](./2026-04-21T08-27-00Z-planner1-opencode-silent-drain-root-cause.md) | OpenCode silent drain — two root causes: `permission.ask` dead + `moved_to` miss | CRITICAL / FIXED |
+| [double-plugin-load](./2026-04-21T08-29-00Z-planner1-double-plugin-load.md) | Global + project `c2c.ts` both fire — duplicate delivery, doubled side-effects | MEDIUM / documented |
+| [drain-stale-flags-mystery](./2026-04-21T08-40-00Z-coordinator1-drain-stale-flags-mystery.md) | `drainInbox` was called with flags not in plugin source — stale bun JIT cache | HIGH / FIXED (sha256 stamp) |
+| [global-plugin-stub-permission-hook-gap](./2026-04-21T09-15-00Z-planner1-global-plugin-stub-permission-hook-gap.md) | Global plugin stub didn't wire permission hook — silent gap for global installs | HIGH / RESOLVED |
+| [permission-hook-wrong-shape](./2026-04-21T09-33-00Z-planner1-permission-hook-wrong-shape.md) | Permission hook emitted wrong event shape — supervisor DM never fired | HIGH / FIXED |
+| [permission-hook-silent](./2026-04-21T11-57-00Z-coordinator1-permission-hook-silent.md) | `permission.hook` hook fires but plugin wasn't logging event receipt | MEDIUM / FIXED (`6828ce6`) |
+| [permission-event-type-mismatch](./2026-04-21T12-10-00Z-coder2-expert-permission-event-type-mismatch.md) | Plugin got `permission.updated` not `permission.asked` for bash:ask config — broken async DM | MEDIUM / FIXED (`6828ce6`) |
+| [opencode-afk-wake-gap](./2026-04-21T06-10-00Z-opencode-test-opencode-afk-wake-gap.md) | OpenCode AFK wake gap observed during opencode-test session | INFO |
+
+#### Relay / Auth
+
+| Finding | Topic | Status |
+|---------|-------|--------|
+| [deployed-relay-stale-binary](./2026-04-21T02-04-00Z-planner1-deployed-relay-stale-binary.md) | relay.c2c.im missing current endpoints — stale Railway binary | HIGH / deploy pending |
+| [relay-auth-prod-design](./2026-04-21T08-15-00Z-planner1-relay-auth-prod-design.md) | Design: moving relay.c2c.im from dev to prod Ed25519 mode | DESIGN / SHIPPED |
+| [relay-connector-ed25519-gap](./2026-04-21T12-00-00Z-coder2-expert-relay-connector-ed25519-gap.md) | Relay connector peer routes lacked Ed25519 auth in prod mode | HIGH / FIXED (`92aba0d`) |
+| [connector-register-no-pk-binding](./2026-04-21T12-15-00Z-coder2-expert-connector-register-no-pk-binding.md) | Python relay connector `/register` lacked identity_pk binding | MEDIUM / FIXED (`cfc7939`) |
+
+#### `c2c monitor` / inotify
+
+| Finding | Topic | Status |
+|---------|-------|--------|
+| [monitor-missed-atomic-writes](./2026-04-21T12-55-00Z-coordinator1-monitor-missed-atomic-writes.md) | `c2c monitor` missed all atomic inbox writes — `moved_to` not subscribed | HIGH / FIXED (`15c4a82`) |
+
+#### Registry / Liveness
+
+| Finding | Topic | Status |
+|---------|-------|--------|
+| [planner1-stale-pid-registration](./2026-04-21T13-05-00Z-coordinator1-planner1-stale-pid-registration.md) | planner1 had stale PID 424242 — DMs failing, room msgs working | MEDIUM / fixed via `c2c refresh-peer` |
+| [planner1-stale-alive-flag](./2026-04-21T13-05-00Z-coordinator1-planner1-stale-alive-flag.md) | planner1 shows alive=false despite being active | MEDIUM / self-healed |
+| [pid-reuse-ghost-registration](./2026-04-21T13-11-00Z-planner1-pid-reuse-ghost-registration.md) | PID reuse causes dead session to appear alive in broker | MEDIUM / known-limitation |
+
+#### Process Isolation & OCaml c2c start
+
+| Finding | Topic | Status |
+|---------|-------|--------|
+| [session-bug-haul](./2026-04-21T08-47-00Z-coordinator1-session-bug-haul.md) | Consolidated log: 7 bugs in `c2c start` / plugin / registry | MIXED |
+| [session-bug-haul-fixes](./2026-04-21T10-05-00Z-coder2-expert-session-bug-haul-fixes.md) | Fixes for 3 of 7 bug-haul items (pgid, monitor orphan, dup-name) | FIXED (3/7) |
+| [sigchld-waitpid-race](./2026-04-21T11-00-00Z-coder2-expert-sigchld-waitpid-race.md) | `SIGCHLD=SIG_IGN` + fast-exit child → `waitpid` returns ECHILD | MEDIUM / FIXED |
+
+#### Tooling / Infra
+
+| Finding | Topic | Status |
+|---------|-------|--------|
+| [channel-notification-test-failure](./2026-04-21T06-10-00Z-coder2-expert-channel-notification-test-failure.md) | Pre-existing `test_full_session_lifecycle` failure in channel notification tests | INFO / known |
+| [wire-daemon-ocaml-port-needed](./2026-04-21T06-32-00Z-coder2-expert-wire-daemon-ocaml-port-needed.md) | Wire daemon needed OCaml port to avoid Python subprocess overhead | MEDIUM / FIXED |
+| [health-version-git-hash](./2026-04-21T06-15-00Z-opencode-test-health-version-git-hash.md) | `/health` version + git_hash fields added for Railway deploy verification | INFO |
+| [docker-git-hash-unknown](./2026-04-21T06-40-00Z-opencode-test-docker-git-hash-unknown.md) | Docker build showed `git_hash=unknown` — BUILD_DATE/GIT_HASH not passed | INFO / FIXED |
+| [remote-mcp-transport-design](./2026-04-21T08-20-00Z-planner1-remote-mcp-transport-design.md) | Design note: remote MCP transport options for cross-host agent mesh | DESIGN |
+| [cli-flag-audit](./2026-04-21T08-25-00Z-sonnet-subagent-cli-flag-audit.md) | CLI flag audit across relay subcommands | INFO |
+
 ---
 
 ## How to Add a Finding
