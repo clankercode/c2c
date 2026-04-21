@@ -166,7 +166,7 @@ informational architecture notes.
 
 | Finding | Topic | Status |
 |---------|-------|--------|
-| [channel-notification-test-failure](./2026-04-21T06-10-00Z-coder2-expert-channel-notification-test-failure.md) | Pre-existing `test_full_session_lifecycle` failure in channel notification tests | INFO / known |
+| [channel-notification-test-failure](./2026-04-21T06-10-00Z-coder2-expert-channel-notification-test-failure.md) | Pre-existing `test_full_session_lifecycle` failure in channel notification tests | FIXED (605895c) |
 | [wire-daemon-ocaml-port-needed](./2026-04-21T06-32-00Z-coder2-expert-wire-daemon-ocaml-port-needed.md) | Wire daemon needed OCaml port to avoid Python subprocess overhead | MEDIUM / FIXED |
 | [health-version-git-hash](./2026-04-21T06-15-00Z-opencode-test-health-version-git-hash.md) | `/health` version + git_hash fields added for Railway deploy verification | INFO |
 | [docker-git-hash-unknown](./2026-04-21T06-40-00Z-opencode-test-docker-git-hash-unknown.md) | Docker build showed `git_hash=unknown` — BUILD_DATE/GIT_HASH not passed | INFO / FIXED |
