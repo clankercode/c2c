@@ -96,6 +96,7 @@ let body_sha256_b64 body_str =
     Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet raw
 let room_system_alias = "c2c-system"
 let room_join_content alias room_id = alias ^ " joined room " ^ room_id
+let room_leave_content alias room_id = alias ^ " left room " ^ room_id
 
 (* --- RegistrationLease --- *)
 
@@ -552,6 +553,43 @@ end = struct
       let removed = List.mem alias members in
       let members' = if removed then List.filter ((!=) alias) members else members in
       Hashtbl.replace t.rooms room_id members';
+      if removed && members' <> [] then begin
+        let ts = Unix.gettimeofday () in
+        let msg_id = generate_uuid () in
+        let content = room_leave_content alias room_id in
+        let hist_msg = `Assoc [
+          ("message_id", `String msg_id); ("from_alias", `String room_system_alias);
+          ("room_id", `String room_id); ("content", `String content); ("ts", `Float ts);
+        ] in
+        (match Hashtbl.find_opt t.room_history room_id with
+         | Some hist -> Hashtbl.replace t.room_history room_id (hist_msg :: hist)
+         | None -> ());
+        Option.iter (fun d -> append_room_history_to_disk d room_id hist_msg) t.persist_dir;
+        List.iter (fun member_alias ->
+          match Hashtbl.find_opt t.leases member_alias with
+          | None ->
+            let dl = `Assoc [
+              ("message_id", `String msg_id); ("from_alias", `String room_system_alias);
+              ("to_alias", `String (member_alias ^ "#" ^ room_id)); ("content", `String content);
+              ("ts", `Float ts); ("room_id", `String room_id); ("reason", `String "recipient_dead");
+            ] in Queue.add dl t.dead_letter
+          | Some lease ->
+            if RegistrationLease.is_alive lease then
+              let key = inbox_key (RegistrationLease.node_id lease) (RegistrationLease.session_id lease) in
+              let msg = `Assoc [
+                ("message_id", `String msg_id); ("from_alias", `String room_system_alias);
+                ("to_alias", `String (member_alias ^ "#" ^ room_id)); ("content", `String content);
+                ("ts", `Float ts); ("room_id", `String room_id);
+              ] in
+              let inbox = get_inbox t key in set_inbox t key (msg :: inbox)
+            else
+              let dl = `Assoc [
+                ("message_id", `String msg_id); ("from_alias", `String room_system_alias);
+                ("to_alias", `String (member_alias ^ "#" ^ room_id)); ("content", `String content);
+                ("ts", `Float ts); ("room_id", `String room_id); ("reason", `String "recipient_dead");
+              ] in Queue.add dl t.dead_letter
+        ) members'
+      end;
       `Ok
     )
 

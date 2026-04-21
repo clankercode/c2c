@@ -1281,6 +1281,7 @@ module Broker = struct
   let room_system_alias = "c2c-system"
 
   let room_join_content ~alias ~room_id = alias ^ " joined room " ^ room_id
+  let room_leave_content ~alias ~room_id = alias ^ " left room " ^ room_id
 
   let append_room_history_unchecked t ~room_id ~from_alias ~content =
     let ts = Unix.gettimeofday () in
@@ -1337,6 +1338,11 @@ module Broker = struct
 
   let broadcast_room_join t ~room_id ~alias =
     let content = room_join_content ~alias ~room_id in
+    ignore (append_room_history_unchecked t ~room_id ~from_alias:room_system_alias ~content);
+    ignore (fan_out_room_message t ~room_id ~from_alias:room_system_alias ~content)
+
+  let broadcast_room_leave t ~room_id ~alias =
+    let content = room_leave_content ~alias ~room_id in
     ignore (append_room_history_unchecked t ~room_id ~from_alias:room_system_alias ~content);
     ignore (fan_out_room_message t ~room_id ~from_alias:room_system_alias ~content)
 
@@ -1403,11 +1409,15 @@ module Broker = struct
   let leave_room t ~room_id ~alias =
     if not (valid_room_id room_id) then
       invalid_arg ("invalid room_id: " ^ room_id);
-    with_room_members_lock t ~room_id (fun () ->
-        let members = load_room_members t ~room_id in
-        let updated = List.filter (fun m -> m.rm_alias <> alias) members in
-        save_room_members t ~room_id updated;
-        updated)
+    let should_broadcast, updated =
+      with_room_members_lock t ~room_id (fun () ->
+          let members = load_room_members t ~room_id in
+          let updated = List.filter (fun m -> m.rm_alias <> alias) members in
+          save_room_members t ~room_id updated;
+          (updated <> members, updated))
+    in
+    if should_broadcast then broadcast_room_leave t ~room_id ~alias;
+    updated
 
   (* Delete a room entirely. Fails if the room has any members. *)
   let delete_room t ~room_id =
