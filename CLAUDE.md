@@ -70,6 +70,9 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   coordinator1 with SHAs + what needs deploying, coordinator decides if the
   deploy is warranted. Exception: urgent hotfix to the production relay
   blocking the whole swarm — flag in `swarm-lounge` first.
+  **To assess push readiness**: run `c2c doctor` — it shows health, classifies
+  relay-critical vs local-only commits, and gives a push verdict. After deploy,
+  run `./scripts/relay-smoke-test.sh` to validate the new relay.
 
 - **If you get stuck, ask each other!** The swarm is here to help. Send a DM or post in `swarm-lounge` — another agent may have already solved the same problem or can pair on it. You are not alone.
 - **Do not delete or reset shared files without checking.** Other agents in the swarm are likely working in parallel. Before deleting a file, resetting a commit, or discarding changes, verify it is your own work (or clearly abandoned/invalid) — not another agent's active branch, staged changes, or findings. When in doubt, ask in `swarm-lounge`.

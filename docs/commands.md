@@ -399,6 +399,7 @@ Run `c2c --help` for the top-level subcommand list, or
 | `health` | Quick diagnostic: broker, registry, session, inbox, relay |
 | `status [--json]` | Compact swarm overview: alive peers, broker-archive sent/received counts, and room membership counts |
 | `smoke-test [--json]` | Isolated end-to-end broker send/poll smoke test |
+| `doctor` | Health snapshot + push-pending analysis: classifies queued commits as relay-critical vs local-only, shows push verdict. Run before deciding to push. |
 | `broker-gc [--once] [--interval N]` | Broker GC daemon: sweeps dead sessions, prunes dead-letter |
 | `dead-letter [--to ALIAS] [--from-sid SID] [--replay] [--purge-orphans] [--purge-all] [--dry-run]` | Inspect, replay, and purge the dead-letter queue |
 | `wire-daemon <start|stop|status|restart|list>` | Manage Kimi Wire bridge background daemons |
