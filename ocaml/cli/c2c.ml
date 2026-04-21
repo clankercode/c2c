@@ -657,10 +657,18 @@ let history_cmd =
   let limit =
     Cmdliner.Arg.(value & opt int 50 & info [ "limit"; "l" ] ~docv:"N" ~doc:"Max messages to return.")
   in
+  let session_id_flag =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "session-id"; "s" ] ~docv:"ID"
+      ~doc:"Session ID to read archive for. Overrides C2C_MCP_SESSION_ID.")
+  in
   let+ json = json_flag
-  and+ limit = limit in
+  and+ limit = limit
+  and+ session_id_opt = session_id_flag in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let session_id = resolve_session_id_for_inbox broker in
+  let session_id = match session_id_opt with
+    | Some sid -> sid
+    | None -> resolve_session_id_for_inbox broker
+  in
   let entries = C2c_mcp.Broker.read_archive broker ~session_id ~limit in
   let output_mode = if json then Json else Human in
   match output_mode with

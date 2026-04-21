@@ -28,11 +28,11 @@ function entryToEvent(e: HistoryEntry, toAlias?: string): C2cEvent {
   };
 }
 
-export async function loadHistory(limit = 100): Promise<C2cEvent[]> {
+export async function loadHistory(limit = 100, sessionId?: string): Promise<C2cEvent[]> {
   try {
-    const result = await Command.create("c2c", [
-      "history", "--json", "--limit", String(limit),
-    ]).execute();
+    const args = ["history", "--json", "--limit", String(limit)];
+    if (sessionId) args.push("--session-id", sessionId);
+    const result = await Command.create("c2c", args).execute();
     if (result.code !== 0) return [];
     const entries: HistoryEntry[] = JSON.parse(result.stdout);
     return entries.map(e => entryToEvent(e));

@@ -152,7 +152,8 @@ export function App() {
     const refreshTimer = setInterval(() => refreshBroker(), 60_000);
 
     // Load recent history before starting the live monitor.
-    loadHistory(100).then(hist => {
+    const storedAlias = localStorage.getItem(ALIAS_KEY) ?? undefined;
+    loadHistory(100, storedAlias).then(hist => {
       if (!cancelled && hist.length > 0) {
         setEvents(hist);
       }
