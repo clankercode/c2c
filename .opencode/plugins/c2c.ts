@@ -1245,12 +1245,16 @@ const C2CDelivery: Plugin = async (ctx) => {
           void (async () => {
             const maxRetries = 3;
             for (let r = 1; r <= maxRetries; r++) {
-              // On first iteration always attempt delivery (spool may be empty because
-              // promptAsync hasn't failed yet — we deliver first, spool check is for retry).
-              // In idle-only mode, session.idle is the sole delivery trigger — do not
-              // call deliverMessages here (would double-deliver with session.idle).
+              // On first iteration always attempt delivery: drain the cold-boot spawn
+              // queue (readSpool is empty but spawn has queued entries). sessionIdle
+              // will later deliver the supervisor reply — this cold-boot drain must
+              // run first to consume the empty-messages drain entry, otherwise sessionIdle
+              // drains the wrong spawn entry. idleOnlyMode does NOT skip first delivery.
               if (r === 1) {
-                if (!idleOnlyMode) await deliverMessages(info.id).catch(() => {});
+                // In idle-only mode, sessionIdle is the delivery trigger for normal messages,
+                // but the cold-boot drain must still run to consume the cold-boot queue entry
+                // so sessionIdle drains the supervisor-reply entry (not the cold-boot entry).
+                await deliverMessages(info.id).catch(() => {});
               } else {
                 if (readSpool().length === 0) break;
                 const retryDelayMs = coldBootDelayMs > 0
