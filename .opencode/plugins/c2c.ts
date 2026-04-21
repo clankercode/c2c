@@ -1154,6 +1154,20 @@ const C2CDelivery: Plugin = async (ctx) => {
         pluginState.root_opencode_session_id = sid;
         writeStatePatch({ root_opencode_session_id: sid });
         await log(`auto-kickoff: created session ${sid} — delivering kickoff prompt`);
+        // Drive the TUI to focus the new session. The TuiPlugin SDK surface
+        // has no event bus (confirmed in @opencode-ai/plugin tui.d.ts), so we
+        // instead POST tui.session.select to the running opencode's HTTP API.
+        // The runtime accepts a broader event set than the SDK types expose.
+        try {
+          const resp = await fetch(new URL("/tui/publish", ctx.serverUrl), {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ type: "tui.session.select", properties: { sessionID: sid } }),
+          });
+          await log(`auto-kickoff: tui.session.select posted (status=${resp.status})`);
+        } catch (err) {
+          await log(`auto-kickoff: tui.session.select POST failed: ${err}`);
+        }
         await deliverKickoffPrompt(sid);
       } catch (err) {
         await log(`auto-kickoff: error: ${err}`);
