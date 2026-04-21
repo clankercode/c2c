@@ -27,3 +27,8 @@
  (name test_wire_bridge)
  (modules test_wire_bridge)
  (libraries c2c_mcp alcotest unix))
+
+(test
+ (name test_c2c_name)
+ (modules test_c2c_name)
+ (libraries c2c_mcp))
