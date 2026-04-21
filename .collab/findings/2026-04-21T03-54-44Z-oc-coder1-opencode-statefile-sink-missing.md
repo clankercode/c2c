@@ -37,3 +37,10 @@ Plugin side implemented; sink side still missing.
 Low to medium. No production regression, but the feature is only half live
 until the CLI/OCaml sink lands, so operators should not expect a persisted
 statefile yet.
+
+## Update (2026-04-21, planner1)
+
+**RESOLVED.** `c2c oc-plugin stream-write-statefile` was implemented by
+coordinator1 in commit `83234c7`. The sink now reads JSON snapshots from stdin
+and writes them atomically to `~/.local/share/c2c/instances/NAME/oc-plugin-state.json`.
+The `c2c statefile` CLI command also provides read access. Feature fully live.
