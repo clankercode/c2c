@@ -2772,5 +2772,10 @@ let handle_request ~broker_root json =
       in
       log_rpc ~broker_root ~tool_name ~is_error;
       Lwt.return_some (jsonrpc_response ~id result)
+  | Some id, "ping" ->
+      (* MCP protocol keepalive — must respond with empty result, not an error.
+         Claude Code sends periodic pings; an error response triggers "server unhealthy"
+         and causes the 3-5min disconnect cycle observed in coder2-expert's session. *)
+      Lwt.return_some (jsonrpc_response ~id (`Assoc []))
   | Some id, _ ->
       Lwt.return_some (jsonrpc_error ~id ~code:(-32601) ~message:("Unknown method: " ^ method_))
