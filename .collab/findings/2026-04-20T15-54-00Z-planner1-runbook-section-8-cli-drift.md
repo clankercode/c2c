@@ -4,7 +4,7 @@
 - **Alias:** planner1
 - **Severity:** medium — blocks the v1 ship-gate dry-run until §8 is
   rewritten to use commands that actually exist. Not a code bug.
-- **Fix status:** NOT FIXED — requires editing §8 of
+- **Fix status:** FIXED — `c2c relay register` was added (see relay_register_cmd in c2c.ml); runbook §8 commands are now valid
   `.collab/runbooks/c2c-delivery-smoke.md` to match real commands.
 
 ## Symptom
