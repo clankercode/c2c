@@ -703,12 +703,24 @@ def check_tmp_space(tmp_dir: Path = Path("/tmp")) -> dict[str, Any]:
 
 
 def check_instances() -> dict[str, Any]:
-    """Check running c2c managed instances (via c2c_start.list_instances())."""
+    """Check running c2c managed instances via the OCaml CLI binary."""
     result: dict[str, Any] = {"checked": True, "instances": [], "alive_count": 0}
     try:
-        import c2c_start
+        import shutil
+        import subprocess
 
-        instances = c2c_start.list_instances()
+        c2c_bin = shutil.which("c2c") or "c2c"
+        proc = subprocess.run(
+            [c2c_bin, "instances", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if proc.returncode != 0:
+            result["checked"] = False
+            result["error"] = proc.stderr.strip() or f"exit {proc.returncode}"
+            return result
+        instances = json.loads(proc.stdout)
         result["instances"] = instances
         result["alive_count"] = sum(1 for inst in instances if inst.get("outer_alive"))
         result["total_count"] = len(instances)

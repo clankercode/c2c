@@ -5279,6 +5279,8 @@ let instances_cmd =
           [ ("name", `String name)
           ; ("client", `String client)
           ; ("status", `String status)
+          ; ("outer_alive", `Bool (status = "running"))
+          ; ("outer_pid", match pid with Some p -> `Int p | None -> `Null)
           ]
         in
         let fields = match pid with

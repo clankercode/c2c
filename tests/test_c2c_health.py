@@ -1163,73 +1163,61 @@ class HealthCheckTmpSpaceTests(unittest.TestCase):
 
 
 class HealthCheckInstancesTests(unittest.TestCase):
-    """Tests for c2c_health.check_instances()."""
+    """Tests for c2c_health.check_instances() — now uses OCaml 'c2c instances --json'."""
 
     def setUp(self):
         import c2c_health
-        import c2c_start
 
         self.c2c_health = c2c_health
-        self.c2c_start = c2c_start
-        self.instances_dir_patcher = mock.patch.object(
-            c2c_start,
-            "INSTANCES_DIR",
-            Path(tempfile.mkdtemp()),
-        )
-        self.instances_dir = self.instances_dir_patcher.start()
 
-    def tearDown(self):
-        self.instances_dir_patcher.stop()
-        import shutil
-
-        shutil.rmtree(str(self.c2c_start.INSTANCES_DIR), ignore_errors=True)
+    def _make_proc(self, instances: list, returncode: int = 0):
+        """Return a mock CompletedProcess for subprocess.run."""
+        proc = mock.MagicMock()
+        proc.returncode = returncode
+        proc.stdout = json.dumps(instances)
+        proc.stderr = ""
+        return proc
 
     def test_returns_checked_true_and_empty_when_no_instances(self):
-        result = self.c2c_health.check_instances()
+        with mock.patch("subprocess.run", return_value=self._make_proc([])):
+            result = self.c2c_health.check_instances()
         self.assertTrue(result["checked"])
         self.assertEqual(result["instances"], [])
         self.assertEqual(result["alive_count"], 0)
         self.assertEqual(result["total_count"], 0)
 
     def test_alive_count_reflects_live_outer_pids(self):
-        # Create two instances — one alive (current pid), one dead (pid 0)
-        with mock.patch.object(
-            self.c2c_start,
-            "run_outer_loop",
-            return_value=0,
-        ):
-            br = Path(tempfile.mkdtemp())
-            self.c2c_start.cmd_start("codex", "inst-a", [], br)
-
-        # Patch list_instances so one shows outer_alive=True and one False
         fake = [
             {
                 "name": "inst-a",
                 "client": "codex",
+                "status": "running",
                 "outer_alive": True,
                 "outer_pid": os.getpid(),
+                "pid": os.getpid(),
             },
             {
                 "name": "inst-b",
                 "client": "kimi",
+                "status": "stopped",
                 "outer_alive": False,
                 "outer_pid": None,
             },
         ]
-        with mock.patch.object(self.c2c_start, "list_instances", return_value=fake):
+        with mock.patch("subprocess.run", return_value=self._make_proc(fake)):
             result = self.c2c_health.check_instances()
         self.assertEqual(result["alive_count"], 1)
         self.assertEqual(result["total_count"], 2)
 
-    def test_check_instances_graceful_on_import_error(self):
-        with mock.patch.dict("sys.modules", {"c2c_start": None}):
+    def test_check_instances_graceful_on_subprocess_error(self):
+        with mock.patch("subprocess.run", side_effect=Exception("c2c not found")):
             result = self.c2c_health.check_instances()
         self.assertFalse(result.get("checked", True))
 
     def test_instances_in_run_health_check_output(self):
         """check_instances result is included in run_health_check() dict."""
         br = Path(tempfile.mkdtemp())
-        with mock.patch.object(self.c2c_start, "list_instances", return_value=[]):
+        with mock.patch("subprocess.run", return_value=self._make_proc([])):
             report = self.c2c_health.run_health_check(br)
         self.assertIn("instances", report)
         self.assertTrue(report["instances"]["checked"])
