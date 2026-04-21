@@ -542,7 +542,15 @@ let refresh_opencode_identity ~name ~alias ~broker_root ~project_dir =
             `Assoc (put "mcp" mcp_updated top)
         | other -> other
       in
-      write_json_file_atomic config_path updated
+      (* Write with indentation to keep the project config human-readable. *)
+      let tmp = config_path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+      (try
+        let oc = open_out tmp in
+        (try Yojson.Safe.pretty_to_channel oc updated; output_char oc '\n'
+         with e -> close_out_noerr oc; raise e);
+        close_out oc;
+        Unix.rename tmp config_path
+      with _ -> ())
     with _ -> ()));
   (* Update sidecar c2c-plugin.json with current identity. *)
   let sidecar_path = config_dir // "c2c-plugin.json" in
