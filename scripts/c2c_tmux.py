@@ -14,7 +14,7 @@ Usage:
     c2c_tmux.py capture <alias|target> [-n N]
     c2c_tmux.py layout <COLSxROWS>
     c2c_tmux.py whoami
-    c2c_tmux.py launch <client> [-n ALIAS] [--auto] [--cwd DIR] [--split h|v] [--window NAME] [--extra ARG ...]
+    c2c_tmux.py launch <client> [-n ALIAS] [--auto] [--cwd DIR] [--split h|v] [--new-window] [--window NAME] [--extra ARG ...]
     c2c_tmux.py wait-alive <alias> [--timeout SECONDS]
     c2c_tmux.py stop <alias>
 
@@ -193,12 +193,40 @@ def cmd_layout(args: argparse.Namespace) -> int:
     return subprocess.run([str(layout_sh), args.grid]).returncode
 
 
-def cmd_launch(args: argparse.Namespace) -> int:
-    """Open a fresh tmux pane/window and run `c2c start <client> ...` in it.
+_SHELL_CMDS = {"fish", "bash", "zsh", "sh", "dash"}
 
-    Must be called from inside tmux (uses the current session). The command
-    line is built up and sent via send-keys + Enter, so the launcher survives
-    the user's shell rc behavior (no reliance on 'tmux -- sh -c').
+
+def _find_idle_pane_in_active_window(self_pane_id: str | None) -> str | None:
+    """Return first pane in the active window whose current command looks
+    like an idle shell (fish/bash/zsh/…) and isn't this very pane.
+    Skips panes running c2c, claude, opencode, codex, kimi, crush, node, tmux, etc."""
+    out = tmux(
+        "list-panes", "-F",
+        "#{pane_id}\t#{pane_current_command}\t#{pane_active}",
+    ).stdout
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        pid, cmd, active = parts[0], parts[1], parts[2]
+        if pid == self_pane_id:
+            continue  # never hijack the caller's own pane
+        if active == "1":
+            continue  # leave the active pane for the human
+        if cmd in _SHELL_CMDS:
+            return pid
+    return None
+
+
+def cmd_launch(args: argparse.Namespace) -> int:
+    """Run `c2c start <client> ...` in a tmux pane.
+
+    By default, reuses an idle shell pane in the current window (fish/bash/zsh
+    that isn't the caller's pane and isn't the active pane). Falls back to
+    splitting the current pane if no idle pane is available. Use --new-window
+    to force a fresh window, or --split h|v to split the active pane.
+
+    Must be called from inside tmux.
     """
     if not os.environ.get("TMUX"):
         print("launch: not inside tmux — open a tmux session first", file=sys.stderr)
@@ -214,21 +242,38 @@ def cmd_launch(args: argparse.Namespace) -> int:
         cmd.extend(args.extra)
     shell_cmd = shlex.join(cmd)
 
-    if args.split in ("h", "v"):
-        flag = "-h" if args.split == "h" else "-v"
-        res = tmux("split-window", flag, "-P", "-F", "#{pane_id}", "bash")
-    else:
+    self_pane = os.environ.get("TMUX_PANE")
+    pane: str | None = None
+    placement: str
+
+    if args.new_window:
         title = args.window or (f"c2c-{args.name}" if args.name else f"c2c-{args.client}")
         res = tmux("new-window", "-n", title, "-P", "-F", "#{pane_id}", "bash")
-    pane = res.stdout.strip()
+        pane = res.stdout.strip()
+        placement = f"new window '{title}'"
+    elif args.split in ("h", "v"):
+        flag = "-h" if args.split == "h" else "-v"
+        res = tmux("split-window", flag, "-P", "-F", "#{pane_id}", "bash")
+        pane = res.stdout.strip()
+        placement = f"split --{args.split}"
+    else:
+        # Default: reuse idle shell pane in active window; fall back to split.
+        pane = _find_idle_pane_in_active_window(self_pane)
+        if pane:
+            placement = "reused idle pane"
+        else:
+            res = tmux("split-window", "-h", "-P", "-F", "#{pane_id}", "bash")
+            pane = res.stdout.strip()
+            placement = "split -h (no idle pane found)"
+
     if not pane:
-        print("launch: failed to create tmux pane", file=sys.stderr)
+        print("launch: failed to obtain tmux pane", file=sys.stderr)
         return 1
 
     if args.cwd:
         tmux("send-keys", "-t", pane, f"cd {shlex.quote(args.cwd)}", "Enter", capture=False)
     tmux("send-keys", "-t", pane, shell_cmd, "Enter", capture=False)
-    print(f"launched on {pane}: {shell_cmd}")
+    print(f"launched on {pane} ({placement}): {shell_cmd}")
     if args.name:
         print(f"next: {sys.argv[0]} wait-alive {args.name}")
     return 0
@@ -330,8 +375,9 @@ def build_parser() -> argparse.ArgumentParser:
     lc.add_argument("-n", "--name", help="alias to pass to `c2c start -n <name>`")
     lc.add_argument("--auto", action="store_true", help="forward --auto (kickoff prompt)")
     lc.add_argument("--cwd", help="cd into this dir before running c2c start")
-    lc.add_argument("--split", choices=("h", "v"), help="split current window horizontally/vertically instead of new-window")
-    lc.add_argument("--window", help="name for the new window (default: c2c-<name|client>)")
+    lc.add_argument("--split", choices=("h", "v"), help="force split of active pane (h|v) instead of reusing an idle pane")
+    lc.add_argument("--new-window", action="store_true", help="force fresh tmux window instead of reusing an idle pane")
+    lc.add_argument("--window", help="name for the new window (with --new-window; default: c2c-<name|client>)")
     lc.add_argument("--extra", nargs=argparse.REMAINDER, help="extra args forwarded to `c2c start`")
     lc.set_defaults(func=cmd_launch)
 
