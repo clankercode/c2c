@@ -41,8 +41,10 @@ build-cli:
 build-all: build build-cli
 
 # Run Python tests only
+# --force-test-env bypasses the pre-flight process-count guard (needed when
+# running alongside a live swarm; safe for CI where no swarm is running).
 test-py:
-    python3 -m pytest tests/ -q --tb=short
+    python3 -m pytest tests/ -q --tb=short --force-test-env
 
 # Run OCaml tests only
 test-ocaml:
