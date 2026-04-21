@@ -1,8 +1,9 @@
 # OCaml `c2c setup claude-code` Missing PostToolUse Hook
 
 **Severity**: Medium
-**Status**: Open
+**Status**: FIXED — `configure_claude_hook()` added to `setup_claude` in `ocaml/cli/c2c.ml` (~line 3932). `c2c install claude` now writes both MCP entry and PostToolUse hook.
 **Discovered**: 2026-04-14T06:50Z by cc-zai-spire-walker
+**Confirmed fixed**: 2026-04-21 by coder2-expert (verified `configure_claude_hook` call in `setup_claude`)
 
 ## Symptom
 

@@ -2726,6 +2726,41 @@ let test_prune_rooms_evicts_pidless_zombie_members () =
       check string "remaining member is alive-peer" "alive-peer"
         (List.hd members).C2c_mcp.rm_alias)
 
+let test_liveness_unverified_pid_shows_unknown () =
+  (* pid=Some live_pid, pid_start_time=None must show alive=null (Unknown),
+     NOT alive=true. The ghost-alive bug: if the original process dies and the
+     PID is reused, we can't tell — so we return Unknown rather than Alive.
+     The list tool must expose this as null, not true. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let live_pid = Unix.getpid () in
+      C2c_mcp.Broker.register broker
+        ~session_id:"s-unverified" ~alias:"unverified-peer"
+        ~pid:(Some live_pid) ~pid_start_time:None;
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      let reg = List.find (fun r -> r.C2c_mcp.alias = "unverified-peer") regs in
+      (match C2c_mcp.Broker.registration_liveness_state reg with
+       | C2c_mcp.Broker.Unknown -> ()
+       | C2c_mcp.Broker.Alive ->
+           fail "pid+no_start_time must return Unknown, not Alive (ghost-alive bug)"
+       | C2c_mcp.Broker.Dead ->
+           fail "pid+no_start_time with live proc must not return Dead"))
+
+let test_prune_rooms_keeps_unverified_pid_member () =
+  (* prune_rooms must NOT evict a session with pid=Some live_pid, pid_start_time=None.
+     Unknown-with-live-pid is conservative: process may be alive; don't evict.
+     Only Unknown with pid=None (true pidless zombie) gets evicted. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"s-unverified" ~alias:"unverified-peer"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+      ignore
+        (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
+           ~alias:"unverified-peer" ~session_id:"s-unverified");
+      let evicted = C2c_mcp.Broker.prune_rooms broker in
+      check int "unverified-pid member must NOT be evicted" 0 (List.length evicted))
+
 let test_prune_rooms_evicts_orphan_room_members () =
   (* prune_rooms should also evict room members whose registration row is
      already gone.  list_rooms reports these as dead, so prune_rooms must not
@@ -4941,6 +4976,10 @@ let () =
              test_tools_call_prune_rooms_via_mcp
          ; test_case "prune_rooms evicts pidless zombie members (Unknown liveness)" `Quick
              test_prune_rooms_evicts_pidless_zombie_members
+         ; test_case "liveness: pid+no_start_time shows Unknown not Alive (ghost-alive fix)" `Quick
+             test_liveness_unverified_pid_shows_unknown
+         ; test_case "prune_rooms keeps unverified-pid member (conservative)" `Quick
+             test_prune_rooms_keeps_unverified_pid_member
          ; test_case "prune_rooms evicts orphan room members" `Quick
              test_prune_rooms_evicts_orphan_room_members
          ; test_case "register redelivers dead-letter on same session_id" `Quick
