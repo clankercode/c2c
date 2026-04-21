@@ -83,9 +83,9 @@ export async function loadRoomHistory(roomId: string, limit = 50): Promise<C2cEv
 
 export async function loadPeerHistory(peerAlias: string, myAlias: string, limit = 50): Promise<C2cEvent[]> {
   try {
-    const result = await Command.create("c2c", [
-      "history", "--json", "--limit", String(limit),
-    ]).execute();
+    const args = ["history", "--json", "--limit", String(limit)];
+    if (myAlias) args.push("--session-id", myAlias);
+    const result = await Command.create("c2c", args).execute();
     if (result.code !== 0) return [];
     const entries: HistoryEntry[] = JSON.parse(result.stdout);
     return entries
