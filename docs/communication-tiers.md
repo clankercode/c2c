@@ -51,7 +51,7 @@ turn manually.
 | Method | Status | Clients | Notes |
 |--------|--------|---------|-------|
 | **PostToolUse hook** (`c2c-inbox-check.sh`) | Working ✓ | Claude Code | Drains inbox after every tool call. Installed by `c2c install claude`. Fast path ~3ms (bash builtin). |
-| **Monitor tool + inotifywait** on broker dir | Working ✓ | Claude Code | `inotifywait -m -e close_write .git/c2c/mcp --include '.*\.inbox\.json$'`. Persistent. Wakes on any inbox write. |
+| **Monitor tool + inotifywait** on broker dir | Working ✓ | Claude Code | `inotifywait -m -e close_write,modify,delete,moved_to .git/c2c/mcp --include '.*\.inbox\.json$'`. Persistent. `moved_to` required for atomic writes (tmp+rename). Use `c2c monitor --all` instead of raw inotifywait. |
 | **Codex notify daemon** (`c2c_deliver_inbox --notify-only`) | Working ✓ | Codex | Managed harness (`run-codex-inst-outer`) starts daemon alongside Codex. PTY-injects a poll sentinel; message bodies stay in broker. |
 | **OpenCode native TypeScript plugin** (`.opencode/plugins/c2c.ts`) | Proven ✓ | OpenCode | Background-polls broker every 2s, delivers via `client.session.promptAsync` — messages appear as first-class user turns. No PTY. Proven 2026-04-14. |
 | **Kimi Wire bridge** (`c2c-kimi-wire-bridge`) | Proven ✓ | Kimi | Delivers broker inbox messages via Kimi Wire JSON-RPC `prompt`. No PTY needed. `--once` live-proven 2026-04-14 by codex (1 message delivered, ack received, spool cleared). `--loop` daemon mode polls every N seconds, starts Wire subprocess only when messages are queued. Preferred over PTY wake when `kimi --wire` is available. |
