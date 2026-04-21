@@ -69,3 +69,4 @@ run-codex-inst.d
 .playwright-mcp/
 *.png
 c2c-site-current.*
+.codex
