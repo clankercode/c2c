@@ -159,6 +159,8 @@ informational architecture notes.
 | [session-bug-haul](./2026-04-21T08-47-00Z-coordinator1-session-bug-haul.md) | Consolidated log: 7 bugs in `c2c start` / plugin / registry | MIXED |
 | [session-bug-haul-fixes](./2026-04-21T10-05-00Z-coder2-expert-session-bug-haul-fixes.md) | Fixes for 3 of 7 bug-haul items (pgid, monitor orphan, dup-name) | FIXED (3/7) |
 | [sigchld-waitpid-race](./2026-04-21T11-00-00Z-coder2-expert-sigchld-waitpid-race.md) | `SIGCHLD=SIG_IGN` + fast-exit child → `waitpid` returns ECHILD | MEDIUM / FIXED |
+| [fresh-oc-register-gap](./2026-04-21T15-50-00Z-coordinator1-fresh-oc-register-gap.md) | `c2c start opencode` — alias never landed in registry (3 stacked root causes) | HIGH / FIXED (eabd46e, d69b500, auto_register_startup) |
+| [opencode-json-session-collision](./2026-04-21T19-00-00Z-planner1-opencode-json-session-collision.md) | Shared `.opencode/opencode.json` had per-session `SESSION_ID` → last-writer-wins | MEDIUM / FIXED (c9ddf52, 6ec97b6) |
 
 #### Tooling / Infra
 
