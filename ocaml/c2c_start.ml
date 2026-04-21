@@ -890,6 +890,25 @@ let run_outer_loop ~(name : string) ~(client : string)
       let elapsed = Unix.gettimeofday () -. start_time in
       Printf.printf "[c2c-start/%s] inner exited code=%d after %.1fs\n%!" name exit_code elapsed;
 
+      (* Exit 109 from opencode = DB lock contention (multiple opencode instances
+         sharing the same ~/.local/share/opencode/opencode.db). Surfaces as a
+         silent fast exit with no stderr output. *)
+      if client = "opencode" && exit_code = 109 then begin
+        let n_oc = try
+          let ic = Unix.open_process_in "pgrep -c -f '.opencode.*--log-level' 2>/dev/null" in
+          let n = try int_of_string (String.trim (input_line ic)) with _ -> 0 in
+          ignore (Unix.close_process_in ic); n
+        with _ -> 0 in
+        Printf.eprintf
+          "hint: opencode exited 109 — likely database lock contention.\n\
+           \  There are ~%d other opencode process(es) sharing ~/.local/share/opencode/opencode.db.\n\
+           \  Fix: stop orphan instances first.\n\
+           \    pgrep -a opencode          # list running instances\n\
+           \    pkill -f '.opencode'       # kill all (use with care)\n\
+           \    c2c instances              # check c2c-managed instances\n%!"
+          n_oc
+      end;
+
       (* Record structured death on non-zero exit *)
       if exit_code <> 0 then
         record_death ~broker_root ~name ~client ~exit_code ~duration_s:elapsed ~inst_dir;

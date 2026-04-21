@@ -528,7 +528,21 @@ const C2CDelivery: Plugin = async (ctx) => {
           if (configuredOpenCodeSessionId && info.id !== configuredOpenCodeSessionId) return;
           activeSessionId = info.id;
           await log(`tracking root session: ${info.id} — triggering cold-boot delivery`);
+          // Delay before first promptAsync: calling it too soon after session.created
+          // can succeed silently but the session may not yet be ready to surface the
+          // message. Configurable via C2C_PLUGIN_COLD_BOOT_DELAY_MS (default 1500;
+          // set to 0 in tests to skip the delay).
+          const coldBootDelayMs = parseInt(process.env.C2C_PLUGIN_COLD_BOOT_DELAY_MS || "1500", 10);
+          if (coldBootDelayMs > 0) {
+            await new Promise<void>(resolve => setTimeout(resolve, coldBootDelayMs));
+          }
           await deliverMessages(info.id);
+          // If messages remain in spool after the first attempt, retry once more after 3s.
+          const afterSpool = readSpool();
+          if (afterSpool.length > 0) {
+            await log(`cold-boot: ${afterSpool.length} message(s) still in spool after first attempt — retrying in 3s`);
+            setTimeout(() => deliverMessages(info.id).catch(() => {}), 3000);
+          }
         }
         return;
       }
