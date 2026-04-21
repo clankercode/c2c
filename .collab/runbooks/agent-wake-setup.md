@@ -95,19 +95,21 @@ session between other triggers.
 **How to arm (canonical broad watcher):**
 ```
 Monitor({
-  summary: "any c2c inbox modify (all sessions)",
-  command: "inotifywait -m -e close_write .git/c2c/mcp --include '.*\\.inbox\\.json$'",
+  summary: "c2c inbox watcher (all sessions)",
+  command: "c2c monitor --all",
   persistent: true
 })
 ```
 
-Why these specific choices:
-- **Broker dir, not own inbox** — cross-agent visibility is the whole
-  point; watching only your own alias means missing routing bugs.
-- **`close_write`** — one event per completed send/drain. `modify`
-  double-fires; `create` misses updates.
-- **Include regex `.*\.inbox\.json$`** — excludes `.lock` sidecars,
-  `registry.json`, and `dead-letter.jsonl`. Broaden if needed.
+Why `c2c monitor --all` over raw inotifywait:
+- **Handles `moved_to`** — the broker writes inboxes atomically via
+  tmp+rename, generating `moved_to` not `close_write`. Raw `inotifywait
+  -e close_write` silently misses all normal sends (15c4a82). The `c2c
+  monitor` subcommand watches `close_write,modify,delete,moved_to`.
+- **Human-readable summaries** — notification subject shows sender,
+  snippet, and event type; no raw filename decoding needed.
+- **Cross-agent visibility** — `--all` watches the whole broker dir, not
+  just your own alias.
 - **`persistent: true`** — outlives a single `/loop` firing.
 
 **Check before rearming:** on resume, call TaskList; skip arm if a
