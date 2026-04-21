@@ -101,11 +101,13 @@ val prepare_launch_args :
   ?alias_override:string ->
   ?resume_session_id:string ->
   ?binary_override:string ->
+  ?codex_xml_input_fd:string ->
   unit ->
   string list
 (** [prepare_launch_args] returns client args, adding managed per-instance
     config where needed. Handles --session-id, --resume for claude, --session
-    for opencode, resume --last for codex, and --mcp-config-file for kimi. *)
+    for opencode, resume --last for codex, optional --xml-input-fd for Codex,
+    and --mcp-config-file for kimi. *)
 
 (** {1 Configuration persistence} *)
 
@@ -141,10 +143,17 @@ val cleanup_stale_opentui_zig_cache : unit -> int
 (** {1 Sidecar daemons} *)
 
 val start_deliver_daemon :
-  name:string -> client:string -> broker_root:string -> ?child_pid_opt:int -> unit -> int option
+  name:string ->
+  client:string ->
+  broker_root:string ->
+  ?child_pid_opt:int ->
+  ?xml_output_fd:string ->
+  unit ->
+  int option
 (** [start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt ()] spawns
-    c2c_deliver_inbox.py --loop --notify-only and returns its PID, or [None]
-    if the script is not found. *)
+    c2c_deliver_inbox.py and returns its PID, or [None] if the script is not
+    found. Without [xml_output_fd] it uses the notify-only PTY path; with
+    [xml_output_fd] it uses the Codex XML sideband path. *)
 
 val start_poker :
   name:string -> client:string -> broker_root:string -> ?child_pid_opt:int -> unit -> int option

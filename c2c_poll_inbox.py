@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +74,55 @@ def atomic_write_json(path: Path, value: Any) -> None:
     os.replace(temp_path, path)
 
 
+def archive_dir(broker_root: Path) -> Path:
+    return broker_root / "archive"
+
+
+def archive_path(broker_root: Path, session_id: str) -> Path:
+    return archive_dir(broker_root) / f"{session_id}.jsonl"
+
+
+def archive_lock_path(broker_root: Path, session_id: str) -> Path:
+    return archive_dir(broker_root) / f"{session_id}.lock"
+
+
+@contextlib.contextmanager
+def archive_lock(broker_root: Path, session_id: str):
+    archive_dir(broker_root).mkdir(parents=True, exist_ok=True)
+    with open(archive_lock_path(broker_root, session_id), "w", encoding="utf-8") as handle:
+        fcntl.lockf(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.lockf(handle, fcntl.LOCK_UN)
+
+
+def append_archive(
+    broker_root: Path, session_id: str, messages: list[dict[str, Any]]
+) -> None:
+    if not messages:
+        return
+    path = archive_path(broker_root, session_id)
+    archive_dir(broker_root).mkdir(parents=True, exist_ok=True)
+    with archive_lock(broker_root, session_id):
+        with open(path, "a", encoding="utf-8") as handle:
+            drained_at = time.time()
+            for message in messages:
+                entry = {
+                    "drained_at": drained_at,
+                    "session_id": session_id,
+                    "from_alias": str(message.get("from_alias", "")),
+                    "to_alias": str(message.get("to_alias", "")),
+                    "content": str(message.get("content", "")),
+                }
+                if message.get("deferrable"):
+                    entry["deferrable"] = True
+                handle.write(json.dumps(entry))
+                handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+
 def file_fallback_poll(broker_root: Path, session_id: str) -> list[dict[str, Any]]:
     path = inbox_path(broker_root, session_id)
     with inbox_lock(broker_root, session_id):
@@ -87,6 +137,7 @@ def file_fallback_poll(broker_root: Path, session_id: str) -> list[dict[str, Any
             if not isinstance(loaded, list):
                 raise ValueError(f"inbox is not a JSON list: {path}")
             messages = [item for item in loaded if isinstance(item, dict)]
+        append_archive(broker_root, session_id, messages)
         atomic_write_json(path, [])
         return messages
 

@@ -204,6 +204,34 @@ class C2CStartUnitTests(unittest.TestCase):
 
         self.assertEqual(args, ["--approval-policy", "never"])
 
+    def test_codex_launch_args_use_xml_input_fd_when_supported(self):
+        broker_root = Path(self.temp_dir.name) / "broker"
+
+        args = self.c2c_start.prepare_launch_args(
+            "codex-proof",
+            "codex",
+            ["--approval-policy", "never"],
+            broker_root,
+            codex_xml_input_fd=3,
+        )
+
+        self.assertEqual(args, ["--xml-input-fd", "3", "--approval-policy", "never"])
+
+    def test_start_deliver_daemon_uses_xml_fd_without_notify_only(self):
+        broker_root = Path(self.temp_dir.name) / "broker"
+        with mock.patch("c2c_start.subprocess.Popen") as popen:
+            self.c2c_start._start_deliver_daemon(
+                "codex-proof",
+                "codex",
+                broker_root,
+                12345,
+                xml_output_fd=7,
+            )
+
+        cmd = popen.call_args.args[0]
+        self.assertIn("--xml-output-fd", cmd)
+        self.assertNotIn("--notify-only", cmd)
+
     def test_instances_cli_empty_json(self):
         buf = io.StringIO()
         with mock.patch("sys.stdout", buf):

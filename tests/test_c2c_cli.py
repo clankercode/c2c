@@ -13,6 +13,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 import c2c_mcp
+import c2c_configure_codex
 from c2c_registry import save_registry
 
 
@@ -184,6 +185,57 @@ class C2CCLITests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(payload["session_id"], "6e45bbe8-998c-4140-b77e-c6f117e6ca4b")
         self.assertRegex(payload["alias"], r"^[a-z]+-[a-z]+$")
+
+    def test_configure_codex_block_omits_session_and_auto_register_env(self):
+        block = c2c_configure_codex.build_toml_block(
+            Path("/tmp/broker-root"),
+            "codex-test-alias",
+        )
+
+        self.assertIn('C2C_MCP_BROKER_ROOT = "/tmp/broker-root"', block)
+        self.assertIn('C2C_MCP_AUTO_JOIN_ROOMS = "swarm-lounge"', block)
+        self.assertNotIn("C2C_MCP_SESSION_ID", block)
+        self.assertNotIn("C2C_MCP_AUTO_REGISTER_ALIAS", block)
+        self.assertIn('[mcp_servers.c2c.tools.register]', block)
+        self.assertIn('approval_mode = "auto"', block)
+
+    def test_configure_codex_cli_output_does_not_claim_restart_auto_register(self):
+        home_dir = Path(self.temp_dir.name) / "home"
+        broker_root = Path(self.temp_dir.name) / "broker"
+        home_dir.mkdir(parents=True, exist_ok=True)
+        broker_root.mkdir(parents=True, exist_ok=True)
+
+        env = dict(self.env)
+        env["HOME"] = str(home_dir)
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(REPO / "c2c_configure_codex.py"),
+                "--alias",
+                "codex-test-alias",
+                "--broker-root",
+                str(broker_root),
+            ],
+            cwd=REPO,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=CLI_TIMEOUT_SECONDS,
+        )
+
+        self.assertEqual(result_code(result), 0)
+        self.assertIn("wrote [mcp_servers.c2c]", result.stdout)
+        self.assertIn(f"broker_root: {broker_root}", result.stdout)
+        self.assertIn("alias:       codex-test-alias", result.stdout)
+        self.assertNotIn("auto-registers on every restart", result.stdout)
+        config_text = (home_dir / ".codex" / "config.toml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(f'C2C_MCP_BROKER_ROOT = "{broker_root}"', config_text)
+        self.assertIn('C2C_MCP_AUTO_JOIN_ROOMS = "swarm-lounge"', config_text)
+        self.assertNotIn("C2C_MCP_SESSION_ID", config_text)
+        self.assertNotIn("C2C_MCP_AUTO_REGISTER_ALIAS", config_text)
 
     def test_register_is_idempotent_for_same_live_session(self):
         first = self.invoke_cli("c2c-register", "agent-one", "--json")

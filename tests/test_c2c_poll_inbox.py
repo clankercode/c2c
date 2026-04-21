@@ -100,6 +100,11 @@ class C2CPollInboxTests(unittest.TestCase):
             ],
         )
         self.assertEqual(json.loads(inbox_path.read_text(encoding="utf-8")), [])
+        archive_path = broker_root / "archive" / "codex-local.jsonl"
+        self.assertTrue(archive_path.exists())
+        archived = [json.loads(line) for line in archive_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        self.assertEqual(len(archived), 1)
+        self.assertEqual(archived[0]["content"], "recover without mcp")
 
     def test_c2c_poll_inbox_defaults_session_from_run_codex_env(self):
         with mock.patch.dict(
@@ -139,6 +144,10 @@ class C2CPollInboxTests(unittest.TestCase):
         self.assertEqual(source, "file")
         self.assertEqual(messages[0]["content"], "mcp failed but file worked")
         self.assertEqual(json.loads(inbox_path.read_text(encoding="utf-8")), [])
+        archive_path = broker_root / "archive" / "codex-local.jsonl"
+        self.assertTrue(archive_path.exists())
+        archived = [json.loads(line) for line in archive_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        self.assertEqual(archived[0]["content"], "mcp failed but file worked")
 
     def test_c2c_poll_inbox_times_out_mcp_startup_and_falls_back_to_file(self):
         broker_root = Path(self.temp_dir.name) / "mcp-broker"

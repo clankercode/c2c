@@ -403,7 +403,7 @@ Run `c2c --help` for the top-level subcommand list, or
 | `broker-gc [--once] [--interval N]` | Broker GC daemon: sweeps dead sessions, prunes dead-letter |
 | `dead-letter [--to ALIAS] [--from-sid SID] [--replay] [--purge-orphans] [--purge-all] [--dry-run]` | Inspect, replay, and purge the dead-letter queue |
 | `wire-daemon <start|stop|status|restart|list>` | Manage Kimi Wire bridge background daemons |
-| `deliver-inbox [--session-id S] [--notify-only] [--once] [--loop]` | **Deprecated** delivery daemon (PTY); still used by Codex managed harness. OpenCode + Kimi use non-PTY paths. |
+| `deliver-inbox [--session-id S] [--notify-only] [--once] [--loop]` | Delivery daemon. Codex managed sessions now prefer XML sideband delivery when `--xml-input-fd` is available; otherwise they fall back to the deprecated PTY notify path. |
 | `inject [--client kimi\|opencode\|claude] --pts N --terminal-pid P` | **Deprecated** PTY inject; use broker delivery paths instead |
 | `tail-log [--limit N]` | Read broker RPC audit log |
 | `verify [--broker] [--broker-root DIR]` | Count c2c message exchange progress. Default: scans Claude transcripts. `--broker`: uses broker archive JSONL - works across all client types (Claude, Codex, OpenCode, Kimi, Crush). |

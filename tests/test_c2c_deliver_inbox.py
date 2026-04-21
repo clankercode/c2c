@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -14,6 +15,34 @@ import c2c_deliver_inbox
 
 
 class C2CDeliverInboxLoopTests(unittest.TestCase):
+    def test_main_xml_output_fd_bypasses_terminal_resolution(self):
+        read_fd, write_fd = os.pipe()
+        try:
+            with (
+                mock.patch("c2c_deliver_inbox.c2c_inject.resolve_session_info") as resolve,
+                mock.patch("c2c_deliver_inbox.deliver_once", return_value={"delivered": 0, "messages": [], "ok": True, "dry_run": False}),
+                mock.patch("sys.stdout", new_callable=io.StringIO),
+            ):
+                result = c2c_deliver_inbox.main(
+                    [
+                        "--client",
+                        "codex",
+                        "--pid",
+                        "12345",
+                        "--session-id",
+                        "codex-local",
+                        "--xml-output-fd",
+                        str(write_fd),
+                        "--json",
+                    ]
+                )
+        finally:
+            os.close(read_fd)
+            os.close(write_fd)
+
+        self.assertEqual(result, 0)
+        resolve.assert_not_called()
+
     def test_loop_runs_until_max_iterations_and_sleeps_between_empty_polls(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             broker_root = Path(temp_dir) / "mcp-broker"
@@ -368,6 +397,80 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
                 json.loads(inbox_path.read_text(encoding="utf-8"))[0]["content"],
                 "SECRET_NOTIFY_BODY",
             )
+
+    def test_deliver_once_xml_output_spools_and_clears_after_success(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            broker_root = Path(temp_dir) / "mcp-broker"
+            broker_root.mkdir()
+            read_fd, write_fd = os.pipe()
+            try:
+                with (
+                    mock.patch(
+                        "c2c_deliver_inbox.c2c_poll_inbox.poll_inbox",
+                        return_value=(
+                            "file",
+                            [{"from_alias": "storm-echo", "to_alias": "codex", "content": "hello"}],
+                        ),
+                    ),
+                ):
+                    result = c2c_deliver_inbox.deliver_once(
+                        session_id="codex-local",
+                        broker_root=broker_root,
+                        client="codex",
+                        terminal_pid=12345,
+                        pts="9",
+                        dry_run=False,
+                        timeout=0.1,
+                        file_fallback=True,
+                        notify_only=False,
+                        xml_output_fd=write_fd,
+                    )
+                os.close(write_fd)
+                payload = os.read(read_fd, 4096).decode("utf-8")
+            finally:
+                os.close(read_fd)
+
+            self.assertEqual(result["delivered"], 1)
+            self.assertIn('<message type="user">', payload)
+            self.assertIn('<c2c event="message" from="storm-echo" alias="codex"', payload)
+            spool_path = broker_root.parent / "codex-xml" / "codex-local.spool.json"
+            self.assertEqual(json.loads(spool_path.read_text(encoding="utf-8")), [])
+
+    def test_deliver_once_xml_output_keeps_spool_on_write_failure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            broker_root = Path(temp_dir) / "mcp-broker"
+            broker_root.mkdir()
+            read_fd, write_fd = os.pipe()
+            os.close(read_fd)
+            os.close(write_fd)
+
+            with (
+                mock.patch(
+                    "c2c_deliver_inbox.c2c_poll_inbox.poll_inbox",
+                    return_value=(
+                        "file",
+                        [{"from_alias": "storm-echo", "to_alias": "codex", "content": "hello"}],
+                    ),
+                ),
+            ):
+                with self.assertRaises(OSError):
+                    c2c_deliver_inbox.deliver_once(
+                        session_id="codex-local",
+                        broker_root=broker_root,
+                        client="codex",
+                        terminal_pid=12345,
+                        pts="9",
+                        dry_run=False,
+                        timeout=0.1,
+                        file_fallback=True,
+                        notify_only=False,
+                        xml_output_fd=write_fd,
+                    )
+
+            spool_path = broker_root.parent / "codex-xml" / "codex-local.spool.json"
+            spooled = json.loads(spool_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(spooled), 1)
+            self.assertEqual(spooled[0]["content"], "hello")
 
 
 if __name__ == "__main__":

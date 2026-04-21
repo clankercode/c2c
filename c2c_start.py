@@ -24,6 +24,7 @@ import sys
 import termios
 import time
 import uuid
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -333,7 +334,7 @@ def _build_kimi_mcp_config(name: str, broker_root: Path, alias_override: str | N
 
 
 def prepare_launch_args(
-    name: str, client: str, extra_args: list[str], broker_root: Path, alias_override: str | None = None, *, resume_session_id: str | None = None, binary_override: str | None = None, is_resume: bool = False
+    name: str, client: str, extra_args: list[str], broker_root: Path, alias_override: str | None = None, *, resume_session_id: str | None = None, binary_override: str | None = None, is_resume: bool = False, codex_xml_input_fd: int | None = None
 ) -> list[str]:
     """Return client args, adding managed per-instance config where needed."""
     args: list[str] = []
@@ -362,6 +363,8 @@ def prepare_launch_args(
             args.append("--continue")
     elif client == "codex" and resume_session_id:
         args.extend(["resume", "--last"])
+    if client == "codex" and codex_xml_input_fd is not None:
+        args = ["--xml-input-fd", str(codex_xml_input_fd), *args]
 
     if client != "kimi" or _has_explicit_kimi_mcp_config(extra_args):
         return args + list(extra_args)
@@ -541,7 +544,7 @@ def _find_binary(name: str) -> str | None:
 
 
 def _start_deliver_daemon(
-    name: str, client: str, broker_root: Path, child_pid: int | None = None
+    name: str, client: str, broker_root: Path, child_pid: int | None = None, xml_output_fd: int | None = None
 ) -> subprocess.Popen | None:
     """Start deliver daemon in the background, return Popen or None."""
     deliver_script = HERE / "c2c_deliver_inbox.py"
@@ -554,23 +557,41 @@ def _start_deliver_daemon(
         client,
         "--session-id",
         name,
-        "--notify-only",
         "--loop",
         "--broker-root",
         str(broker_root),
     ]
+    if xml_output_fd is None:
+        cmd.append("--notify-only")
     if child_pid is not None:
         cmd.extend(["--pid", str(child_pid)])
+    if xml_output_fd is not None:
+        cmd.extend(["--xml-output-fd", str(xml_output_fd)])
     try:
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
+            pass_fds=() if xml_output_fd is None else (xml_output_fd,),
         )
         return proc
     except OSError:
         return None
+
+
+def _codex_supports_xml_input_fd(binary_path: str) -> bool:
+    try:
+        result = subprocess.run(
+            [binary_path, "--help"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return "--xml-input-fd" in (result.stdout or "") or "--xml-input-fd" in (result.stderr or "")
 
 
 def _start_poker(name: str, client: str, child_pid: int | None = None) -> subprocess.Popen | None:
@@ -698,8 +719,27 @@ def run_outer_loop(
             )
             started = time.monotonic()
             child_proc = None
+            codex_pipe_read: int | None = None
+            codex_pipe_write: int | None = None
             try:
-                launch_args = prepare_launch_args(name, client, extra_args, broker_root, alias_override, resume_session_id=resume_session_id, binary_override=binary_override, is_resume=(is_resume or iteration > 1))
+                codex_xml_input_fd = None
+                if client == "codex" and _codex_supports_xml_input_fd(binary_path):
+                    codex_pipe_read, codex_pipe_write = os.pipe()
+                    os.set_inheritable(codex_pipe_read, True)
+                    os.set_inheritable(codex_pipe_write, True)
+                    codex_xml_input_fd = 3
+
+                launch_args = prepare_launch_args(
+                    name,
+                    client,
+                    extra_args,
+                    broker_root,
+                    alias_override,
+                    resume_session_id=resume_session_id,
+                    binary_override=binary_override,
+                    is_resume=(is_resume or iteration > 1),
+                    codex_xml_input_fd=codex_xml_input_fd,
+                )
                 cmd = [binary_path, *launch_args]
 
                 # Save TTY attributes so we can restore them after the client exits.
@@ -712,15 +752,46 @@ def run_outer_loop(
                 except OSError:
                     pass
 
-                child_proc = subprocess.Popen(cmd, env=env, start_new_session=True)
+                popen_kwargs: dict[str, Any] = {
+                    "env": env,
+                    "start_new_session": True,
+                }
+                if codex_pipe_read is not None:
+                    def _setup_codex_xml_fd() -> None:
+                        os.dup2(codex_pipe_read, 3)
+                        if codex_pipe_read != 3:
+                            os.close(codex_pipe_read)
+
+                    popen_kwargs["pass_fds"] = (codex_pipe_read,)
+                    popen_kwargs["preexec_fn"] = _setup_codex_xml_fd
+
+                child_proc = subprocess.Popen(cmd, **popen_kwargs)
+                if codex_pipe_read is not None:
+                    os.close(codex_pipe_read)
+                    codex_pipe_read = None
 
                 # Start deliver daemon and poker on first iteration (or restart if dead).
                 if not cfg.get("skip_deliver") and (deliver_proc is None or deliver_proc.poll() is not None):
                     deliver_proc = _start_deliver_daemon(
-                        name, cfg["deliver_client"], broker_root, child_proc.pid
+                        name,
+                        cfg["deliver_client"],
+                        broker_root,
+                        child_proc.pid,
+                        xml_output_fd=codex_pipe_write,
                     )
+                    if deliver_proc is None and codex_pipe_write is not None:
+                        deliver_proc = _start_deliver_daemon(
+                            name,
+                            cfg["deliver_client"],
+                            broker_root,
+                            child_proc.pid,
+                            xml_output_fd=None,
+                        )
                     if deliver_proc is not None:
                         _write_pidfile(_deliver_pid_path(name), deliver_proc.pid)
+                if codex_pipe_write is not None:
+                    os.close(codex_pipe_write)
+                    codex_pipe_write = None
 
                 if poker_proc is None or poker_proc.poll() is not None:
                     poker_proc = _start_poker(name, client, child_proc.pid)
@@ -755,6 +826,13 @@ def run_outer_loop(
                     flush=True,
                 )
                 exit_code = 130
+            finally:
+                with suppress(OSError):
+                    if codex_pipe_read is not None:
+                        os.close(codex_pipe_read)
+                with suppress(OSError):
+                    if codex_pipe_write is not None:
+                        os.close(codex_pipe_write)
 
             elapsed = time.monotonic() - started
             print(

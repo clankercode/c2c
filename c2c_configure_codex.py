@@ -64,7 +64,6 @@ def build_toml_block(broker_root: Path, alias: str) -> str:
         "",
         "[mcp_servers.c2c.env]",
         f'C2C_MCP_BROKER_ROOT = "{broker_root}"',
-        f'C2C_MCP_SESSION_ID = "{alias}"',
         'C2C_MCP_AUTO_JOIN_ROOMS = "swarm-lounge"',
         "",
     ]
@@ -137,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--alias",
         default=None,
-        help=f"stable alias for auto-registration (default: {default_alias()})",
+        help=f"alias label for CLI output (default: {default_alias()})",
     )
     parser.add_argument(
         "--force",
@@ -163,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"wrote [mcp_servers.c2c] to {result['config_path']}")
         print(f"  broker_root: {result['broker_root']}")
-        print(f"  alias:       {result['alias']} (auto-registers on every restart)")
+        print(f"  alias:       {result['alias']}")
         print("Restart Codex to pick up the new MCP server.")
     return 0
 

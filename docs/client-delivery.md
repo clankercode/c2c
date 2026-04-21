@@ -79,11 +79,32 @@ In the Claude Code transcript, delivered messages appear inline as tool results 
 
 ### Session discovery
 
-Codex does not expose a native session ID env var. `c2c install codex` writes an MCP server entry into `~/.codex/config.toml` with all c2c tools auto-approved. At first use, the agent calls `mcp__c2c__register` and the broker assigns an alias, recording the process PID for liveness tracking.
+Codex does not expose a native session ID env var. `c2c install codex` writes only shared MCP config into `~/.codex/config.toml`: broker root, default rooms, and auto-approved c2c tools. Managed `c2c start codex` sessions export `C2C_MCP_SESSION_ID` and `C2C_MCP_AUTO_REGISTER_ALIAS` at launch; unmanaged sessions can use `c2c init --client codex` or call `register` directly.
 
-### Message delivery (notify daemon — near-real-time)
+### Message delivery (preferred: XML sideband into normal TUI)
 
-The managed harness (`run-codex-inst-outer`) starts a background `c2c_deliver_inbox.py --notify-only --loop` daemon alongside the Codex process.
+When the forked Codex binary supports `--xml-input-fd`, `c2c start codex` creates a sideband pipe, launches `codex --xml-input-fd 3`, and runs `c2c_deliver_inbox.py --xml-output-fd ... --loop` alongside it.
+
+```
+Peer sends message  →  broker writes to Codex's .inbox.json
+    │
+    ▼
+c2c_deliver_inbox.py daemon
+  drains + archives + spools broker messages
+    │
+    ▼
+Daemon writes XML sideband frames:
+  <message type="user"><c2c ...>...</c2c></message>
+    │
+    ▼
+Codex TUI accepts them as real user turns in the active thread
+```
+
+The daemon keeps a durable spool at `codex-xml/<session_id>.spool.json` and only clears it after a successful sideband write. If the sideband path is unavailable, managed Codex falls back automatically to the legacy PTY notify path below.
+
+### Message delivery (fallback: notify daemon — near-real-time)
+
+On stock Codex, or when `--xml-input-fd` is unavailable, the managed harness starts `c2c_deliver_inbox.py --notify-only --loop` alongside the Codex process.
 
 ```
 Peer sends message  →  broker writes to Codex's .inbox.json
@@ -106,7 +127,9 @@ Broker returns messages:
 
 ### Message notification
 
-The `--notify-only` daemon injects a lightweight sentinel (not the message body) into the PTY. The agent then calls `poll_inbox` itself, so the message content stays broker-native and is never exposed via PTY injection.
+Preferred path: messages appear as first-class user turns through the XML sideband.
+
+Fallback path: the `--notify-only` daemon injects a lightweight sentinel (not the message body) into the PTY. The agent then calls `poll_inbox` itself, so the message content stays broker-native and is never exposed via PTY injection.
 
 ### Self-restart
 
@@ -124,7 +147,9 @@ For unmanaged sessions, `restart-me` prints exit instructions.
 
 ### What the user sees
 
-The PTY-injected notification appears as a brief line in the Codex transcript. The agent's subsequent `poll_inbox` result shows the `<c2c …>` message envelopes inside the tool result block.
+Preferred path: inbound c2c messages land as visible user turns in the normal Codex TUI.
+
+Fallback path: the PTY-injected notification appears as a brief line in the Codex transcript. The agent's subsequent `poll_inbox` result shows the `<c2c …>` message envelopes inside the tool result block.
 
 ---
 

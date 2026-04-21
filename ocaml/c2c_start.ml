@@ -747,7 +747,7 @@ let claude_session_exists uuid =
 let prepare_launch_args ~(name : string) ~(client : string)
     ~(extra_args : string list) ~(broker_root : string)
     ?(alias_override : string option) ?(resume_session_id : string option)
-    ?(binary_override : string option) () : string list =
+    ?(binary_override : string option) ?(codex_xml_input_fd : string option) () : string list =
   let args =
     match client with
     | "claude" ->
@@ -777,6 +777,11 @@ let prepare_launch_args ~(name : string) ~(client : string)
     | "codex" ->
         (match resume_session_id with Some _ -> [ "resume"; "--last" ] | None -> [])
     | _ -> []
+  in
+  let args =
+    match client, codex_xml_input_fd with
+    | "codex", Some fd -> [ "--xml-input-fd"; fd ] @ args
+    | _ -> args
   in
   if client = "kimi" && not (has_explicit_kimi_mcp_config extra_args) then
     let cfg_path = kimi_mcp_config_path name in
@@ -835,6 +840,32 @@ let deliver_script_path ~(broker_root : string) : string option =
       let p = dir // "c2c_deliver_inbox.py" in
       if Sys.file_exists p then Some p else None
 
+let codex_supports_xml_input_fd (binary_path : string) : bool =
+  let contains needle haystack =
+    let nlen = String.length needle
+    and hlen = String.length haystack in
+    let rec loop i =
+      if i + nlen > hlen then false
+      else if String.sub haystack i nlen = needle then true
+      else loop (i + 1)
+    in
+    loop 0
+  in
+  try
+    let cmd = Printf.sprintf "%s --help 2>/dev/null" (Filename.quote binary_path) in
+    let ic = Unix.open_process_in cmd in
+    Fun.protect ~finally:(fun () -> ignore (Unix.close_process_in ic))
+      (fun () ->
+        let found = ref false in
+        (try
+           while not !found do
+             let line = input_line ic in
+             if contains "--xml-input-fd" line then found := true
+           done
+         with End_of_file -> ());
+        !found)
+  with _ -> false
+
 let poker_script_path ~(broker_root : string) : string option =
   match resolve_repo_root ~broker_root with
   | "" -> None
@@ -854,13 +885,16 @@ let wire_bridge_script_path ~(broker_root : string) : string option =
  * --------------------------------------------------------------------------- *)
 
 let start_deliver_daemon ~(name : string) ~(client : string)
-    ~(broker_root : string) ?(child_pid_opt : int option) () : int option =
+    ~(broker_root : string) ?(child_pid_opt : int option)
+    ?(xml_output_fd : string option) () : int option =
   match deliver_script_path ~broker_root with
   | None -> None
   | Some script ->
       let args =
         [ "python3"; script; "--client"; client; "--session-id"; name;
-          "--notify-only"; "--loop"; "--broker-root"; broker_root ]
+          "--loop"; "--broker-root"; broker_root ]
+        @ (match xml_output_fd with None -> [ "--notify-only" ] | Some _ -> [])
+        @ (match xml_output_fd with None -> [] | Some fd -> [ "--xml-output-fd"; fd ])
         @ (match child_pid_opt with None -> [] | Some p -> [ "--pid"; string_of_int p ])
       in
       try
@@ -1053,11 +1087,15 @@ let run_outer_loop ~(name : string) ~(client : string)
          directly without extra args. They handle their own session/profile management.
          For these, we invoke them directly so they start an interactive session. *)
       let launch_args =
+        let codex_xml_input_fd =
+          if client = "codex" && codex_supports_xml_input_fd binary_path then Some "3"
+          else None
+        in
         if is_cc_wrapper binary_path then
           []
         else
           prepare_launch_args ~name ~client ~extra_args ~broker_root
-            ?alias_override ?resume_session_id ?binary_override ()
+            ?alias_override ?resume_session_id ?binary_override ?codex_xml_input_fd ()
       in
       let cmd = binary_path :: launch_args in
 
@@ -1176,6 +1214,11 @@ let run_outer_loop ~(name : string) ~(client : string)
          reset the disposition in the child between fork and exec. *)
       let child_pid_opt =
         try
+          let codex_xml_pipe =
+            if client = "codex" && List.mem "--xml-input-fd" launch_args then
+              Some (Unix.pipe ~cloexec:false ())
+            else None
+          in
           let pid = match Unix.fork () with
             | 0 ->
                 (try ignore (Sys.signal Sys.sigchld Sys.Signal_default) with _ -> ());
@@ -1199,6 +1242,13 @@ let run_outer_loop ~(name : string) ~(client : string)
                      (try Unix.dup2 fd Unix.stderr with _ -> ());
                      (try Unix.close fd with _ -> ())
                  | None -> ());
+                (match codex_xml_pipe with
+                 | Some (read_fd, write_fd) ->
+                     let fd3 : Unix.file_descr = Obj.magic 3 in
+                     (try Unix.dup2 read_fd fd3 with _ -> ());
+                     (try Unix.close read_fd with _ -> ());
+                     (try Unix.close write_fd with _ -> ())
+                 | None -> ());
                 (try Unix.close outer_stderr_fd with _ -> ());
                 (try Unix.execvpe binary_path (Array.of_list cmd) env
                  with e ->
@@ -1213,9 +1263,28 @@ let run_outer_loop ~(name : string) ~(client : string)
           write_pid (inner_pid_path name) pid;
           (* Start deliver daemon (PTY notify path, used for Codex). *)
           (if !deliver_pid = None && cfg.needs_deliver then
-             match start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt:(Some pid) () with
+             let xml_output_fd =
+               match codex_xml_pipe with
+               | Some (_read_fd, write_fd) ->
+                   let fd4 : Unix.file_descr = Obj.magic 4 in
+                   (try Unix.dup2 write_fd fd4 with _ -> ());
+                   Some "4"
+               | None -> None
+             in
+             match start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt:(Some pid) ?xml_output_fd () with
              | Some p -> deliver_pid := Some p; write_pid (deliver_pid_path name) p
-             | None -> ());
+             | None ->
+                 (match xml_output_fd with
+                 | Some _ ->
+                      (match start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt:(Some pid) () with
+                       | Some p -> deliver_pid := Some p; write_pid (deliver_pid_path name) p
+                       | None -> ())
+                  | None -> ()));
+          (match codex_xml_pipe with
+           | Some (read_fd, write_fd) ->
+               (try Unix.close read_fd with _ -> ());
+               (try Unix.close write_fd with _ -> ())
+           | None -> ());
           (* Start wire-daemon (Kimi Wire bridge delivery, replaces PTY deliver). *)
           (if !wire_pid = None && cfg.needs_wire_daemon then begin
              let alias = Option.value alias_override ~default:name in

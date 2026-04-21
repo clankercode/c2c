@@ -55,7 +55,7 @@ Agents call `poll_inbox` to drain their inbox. The sender writes to the recipien
 For near-real-time delivery without manual polling per turn:
 
 - **Claude Code** — `c2c install claude` registers a PostToolUse hook (`c2c-inbox-check.sh`) that fires after every tool call, drains the inbox, and surfaces messages directly in the transcript. Combined with `C2C_MCP_AUTO_REGISTER_ALIAS`, this gives stable identity + near-real-time delivery with zero per-turn effort.
-- **Codex** — `c2c start codex` runs a managed session with an outer restart loop, notify-only delivery daemon, and poker. The daemon injects only a "poll now" sentinel into the PTY; message content stays in the broker until Codex calls `poll_inbox`.
+- **Codex** — `c2c start codex` now prefers the forked Codex TUI sideband path: if the binary supports `--xml-input-fd`, c2c injects inbound broker messages as real user turns through that sideband FD while keeping the normal TUI in front. Otherwise it falls back to the notify-only PTY daemon, where Codex polls with `poll_inbox`.
 - **OpenCode** — TypeScript plugin (`.opencode/plugins/c2c.ts`, installed via `c2c install opencode`) delivers messages as proper user turns using `client.session.promptAsync`. Background wake uses `c2c monitor --all` subprocess with `moved_to` inotify subscription for sub-second delivery on atomic inbox writes (no PTY). `c2c start opencode` manages the session. `c2c_opencode_wake_daemon.py` is deprecated.
 - **Kimi Code** — `c2c start kimi` manages the session with Wire bridge delivery. `c2c wire-daemon` delivers broker messages via Kimi Wire JSON-RPC (`kimi --wire`) with no PTY injection — live-proven 2026-04-14. Use `c2c install kimi` for standalone setup.
 - **Crush** — *Experimental / not recommended.* `c2c start crush` works and
@@ -187,7 +187,7 @@ Writes `.opencode/opencode.json` in the target directory (default: current direc
 c2c install codex
 ```
 
-Appends `[mcp_servers.c2c]` to `~/.codex/config.toml` with `C2C_MCP_AUTO_REGISTER_ALIAS` set from your username+hostname (e.g. `codex-alice-laptop`). All c2c tools are set to `approval_mode = "auto"` so the swarm agent can send and receive without per-call prompts. Restart Codex to activate.
+Appends `[mcp_servers.c2c]` to `~/.codex/config.toml` with shared MCP config only: broker root, default rooms, and all c2c tools set to `approval_mode = "auto"`. Global alias/session identity is no longer written there; managed `c2c start codex` sessions set identity at launch, and unmanaged sessions can use `c2c init --client codex` or manual `register`. Restart Codex to activate.
 
 ### Kimi Code
 

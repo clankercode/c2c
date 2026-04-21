@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import subprocess
@@ -72,6 +73,61 @@ def message_payload(message: dict[str, Any]) -> str:
         source="broker",
         source_tool="c2c_deliver_inbox",
     )
+
+
+def xml_output_dir(broker_root: Path) -> Path:
+    return broker_root.parent / "codex-xml"
+
+
+def default_xml_spool_path(broker_root: Path, session_id: str) -> Path:
+    return xml_output_dir(broker_root) / f"{session_id}.spool.json"
+
+
+def _xml_attr(value: object) -> str:
+    return html.escape(str(value or ""), quote=True)
+
+
+def xml_message_payload(message: dict[str, Any]) -> str:
+    sender = _xml_attr(message.get("from_alias") or "unknown")
+    alias = _xml_attr(message.get("to_alias") or "")
+    content = str(message.get("content") or "")
+    return (
+        f'<message type="user"><c2c event="message" from="{sender}" alias="{alias}" '
+        'source="broker" action_after="continue">'
+        f"{content}</c2c></message>\n"
+    )
+
+
+class C2CSpool:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def read(self) -> list[dict[str, Any]]:
+        if not self.path.exists():
+            return []
+        raw = self.path.read_text(encoding="utf-8").strip()
+        if not raw:
+            return []
+        loaded = json.loads(raw)
+        return [item for item in loaded if isinstance(item, dict)] if isinstance(loaded, list) else []
+
+    def replace(self, messages: list[dict[str, Any]]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        c2c_poll_inbox.atomic_write_json(self.path, messages)
+
+    def append(self, messages: list[dict[str, Any]]) -> None:
+        self.replace([*self.read(), *messages])
+
+    def clear(self) -> None:
+        self.replace([])
+
+
+def deliver_xml_messages(*, fd: int, messages: list[dict[str, Any]]) -> None:
+    payload = "".join(xml_message_payload(message) for message in messages).encode("utf-8")
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        view = view[written:]
 
 
 def notify_payload(*, session_id: str, count: int, client: str = "generic") -> str:
@@ -339,6 +395,7 @@ def deliver_once(
     notify_only: bool,
     submit_delay: float | None = None,
     suppress_notify: bool = False,
+    xml_output_fd: int | None = None,
 ) -> dict[str, Any]:
     notified = False
     delivered = None
@@ -356,6 +413,38 @@ def deliver_once(
                 submit_delay=submit_delay,
             )
     else:
+        if xml_output_fd is not None:
+            source = "xml"
+            spool = C2CSpool(default_xml_spool_path(broker_root, session_id))
+            messages = spool.read()
+            if not messages:
+                _source, fresh = c2c_poll_inbox.poll_inbox(
+                    broker_root=broker_root,
+                    session_id=session_id,
+                    timeout=timeout,
+                    force_file=file_fallback,
+                    allow_file_fallback=True,
+                )
+                if fresh:
+                    spool.append(fresh)
+                messages = spool.read()
+            delivered = 0
+            if messages:
+                deliver_xml_messages(fd=xml_output_fd, messages=messages)
+                delivered = len(messages)
+                spool.clear()
+            return build_result(
+                session_id=session_id,
+                broker_root=broker_root,
+                source=source,
+                client=client,
+                terminal_pid=terminal_pid,
+                pts=pts,
+                messages=messages,
+                dry_run=dry_run,
+                delivered=delivered,
+                notified=notified,
+            )
         source, messages = c2c_poll_inbox.poll_inbox(
             broker_root=broker_root,
             session_id=session_id,
@@ -404,6 +493,7 @@ def run_loop(
     interval: float,
     max_iterations: int | None,
     watched_pid: int | None,
+    xml_output_fd: int | None = None,
 ) -> dict[str, Any]:
     iterations = 0
     total_delivered = 0
@@ -437,6 +527,7 @@ def run_loop(
             notify_only=notify_only,
             submit_delay=submit_delay,
             suppress_notify=suppress_notify,
+            xml_output_fd=xml_output_fd,
         )
         if notify_only and last_result.get("notified"):
             last_notify_at = time.monotonic()
@@ -520,6 +611,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="peek and render without draining or injecting",
     )
+    parser.add_argument(
+        "--xml-output-fd",
+        type=int,
+        default=None,
+        help="write Codex XML user-turn frames to this inherited fd instead of PTY injection",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(raw_argv)
 
@@ -551,7 +648,11 @@ def main(argv: list[str] | None = None) -> int:
         write_pidfile(args.pidfile)
 
     try:
-        terminal_pid, pts, _transcript = c2c_inject.resolve_session_info(args)
+        if args.xml_output_fd is None:
+            terminal_pid, pts, _transcript = c2c_inject.resolve_session_info(args)
+        else:
+            terminal_pid = args.terminal_pid or args.pid or 0
+            pts = args.pts or ""
         if args.loop:
             result = run_loop(
                 session_id=session_id,
@@ -568,6 +669,7 @@ def main(argv: list[str] | None = None) -> int:
                 interval=args.interval,
                 max_iterations=args.max_iterations,
                 watched_pid=watched_pid,
+                xml_output_fd=args.xml_output_fd,
             )
         else:
             result = deliver_once(
@@ -581,6 +683,7 @@ def main(argv: list[str] | None = None) -> int:
                 file_fallback=args.file_fallback,
                 notify_only=args.notify_only,
                 submit_delay=args.submit_delay,
+                xml_output_fd=args.xml_output_fd,
             )
     except Exception as exc:
         print(f"[c2c-deliver-inbox] {exc}", file=sys.stderr)
