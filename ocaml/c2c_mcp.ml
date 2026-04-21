@@ -12,6 +12,12 @@ type registration =
       poll_inbox is never gated — the agent can always explicitly drain. *)
   ; dnd_since : float option  (** When DND was last enabled. *)
   ; dnd_until : float option  (** Auto-expire epoch (None = manual off only). *)
+  ; client_type : string option
+  (** "human" exempts from provisional sweep; None = agent (default). *)
+  ; confirmed_at : float option
+  (** Epoch of first poll_inbox call. None = session registered but never
+      drained — still "provisional". Provisional + pid=None sessions are
+      eligible for sweep after C2C_PROVISIONAL_SWEEP_TIMEOUT seconds. *)
   }
 type message = { from_alias : string; to_alias : string; content : string; deferrable : bool }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
@@ -70,6 +76,8 @@ let server_features =
   ; "room_visibility"
   ; "dnd"
   ; "deferrable"
+  ; "provisional_registration"
+  ; "client_type"
   ]
 
 let server_info =
@@ -194,7 +202,7 @@ module Broker = struct
       cleanup_tmp ();
       raise e
 
-  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until } =
+  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; confirmed_at } =
     let base =
       [ ("session_id", `String session_id); ("alias", `String alias) ]
     in
@@ -228,10 +236,20 @@ module Broker = struct
       | Some ts when dnd -> with_dnd @ [ ("dnd_since", `Float ts) ]
       | _ -> with_dnd
     in
-    let fields =
+    let with_dnd_until =
       match dnd_until with
       | Some ts when dnd -> with_dnd_since @ [ ("dnd_until", `Float ts) ]
       | _ -> with_dnd_since
+    in
+    let with_client_type =
+      match client_type with
+      | Some ct -> with_dnd_until @ [ ("client_type", `String ct) ]
+      | None -> with_dnd_until
+    in
+    let fields =
+      match confirmed_at with
+      | Some ts -> with_client_type @ [ ("confirmed_at", `Float ts) ]
+      | None -> with_client_type
     in
     `Assoc fields
 
@@ -273,6 +291,8 @@ module Broker = struct
     ; dnd = bool_member_default "dnd" json false
     ; dnd_since = float_opt_member "dnd_since" json
     ; dnd_until = float_opt_member "dnd_until" json
+    ; client_type = str_opt "client_type" json
+    ; confirmed_at = float_opt_member "confirmed_at" json
     }
 
   let message_to_json { from_alias; to_alias; content; deferrable } =
@@ -403,6 +423,29 @@ module Broker = struct
         (match List.find_opt registration_is_alive matches with
          | Some reg -> Resolved reg.session_id
          | None -> All_recipients_dead)
+
+  (* A provisional registration has no confirmed PID-based liveness yet AND
+     has never drained its inbox (confirmed_at = None). Human sessions are
+     exempt. Provisional sessions with no PID are eligible for sweep after
+     C2C_PROVISIONAL_SWEEP_TIMEOUT seconds (default 1800). *)
+  let is_provisional reg =
+    match reg.client_type with
+    | Some "human" -> false
+    | _ ->
+        reg.pid = None && reg.confirmed_at = None
+
+  let provisional_sweep_timeout () =
+    match Sys.getenv_opt "C2C_PROVISIONAL_SWEEP_TIMEOUT" with
+    | Some v -> (try float_of_string v with _ -> 1800.0)
+    | None -> 1800.0
+
+  let is_provisional_expired reg =
+    if not (is_provisional reg) then false
+    else
+      match reg.registered_at with
+      | None -> false  (* legacy rows predate registered_at — never provisional-expired *)
+      | Some ra ->
+          Unix.gettimeofday () -. ra > provisional_sweep_timeout ()
 
   let load_inbox t ~session_id =
     ensure_root t;
@@ -548,7 +591,7 @@ module Broker = struct
     with_registry_lock t (fun () ->
       suggest_alias_prime (load_registrations t) ~base_alias:alias)
 
-  let register t ~session_id ~alias ~pid ~pid_start_time =
+  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) () =
     if List.mem alias reserved_system_aliases then
       invalid_arg (Printf.sprintf
         "register rejected: '%s' is a reserved system alias" alias);
@@ -569,18 +612,25 @@ module Broker = struct
         in
         (* Same-session re-registration (alias changed or pid/registered_at
            refresh): update in-place by replacing the old entry in [rest]. *)
-        (* Look up old entry to preserve DND state across re-registration. *)
-        let old_dnd_state =
+        (* Look up old entry to preserve DND state + confirmed_at + client_type
+           across re-registration. *)
+        let old_state =
           match List.find_opt (fun reg -> reg.session_id = session_id) rest with
-          | Some r -> (r.dnd, r.dnd_since, r.dnd_until)
-          | None -> (false, None, None)
+          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type)
+          | None -> (false, None, None, None, client_type)
         in
         let new_reg =
-          let (dnd, dnd_since, dnd_until) = old_dnd_state in
+          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type) = old_state in
+          let effective_client_type = match client_type with
+            | Some _ -> client_type
+            | None -> old_client_type
+          in
           { session_id; alias; pid; pid_start_time
           ; registered_at = Some (Unix.gettimeofday ())
           ; canonical_alias = Some (compute_canonical_alias ~alias ~broker_root:(root t))
-          ; dnd; dnd_since; dnd_until }
+          ; dnd; dnd_since; dnd_until
+          ; client_type = effective_client_type
+          ; confirmed_at = old_confirmed_at }
         in
         let kept =
           match
@@ -952,8 +1002,12 @@ module Broker = struct
   let sweep t =
     with_registry_lock t (fun () ->
         let regs = load_registrations t in
+        (* Dead: PID-based liveness check failed OR provisional registration
+           that has never been confirmed and has timed out. *)
         let alive, dead =
-          List.partition registration_is_alive regs
+          List.partition
+            (fun reg -> registration_is_alive reg && not (is_provisional_expired reg))
+            regs
         in
         if dead <> [] then save_registrations t alive;
         let alive_sids =
@@ -992,6 +1046,25 @@ module Broker = struct
         ; deleted_inboxes = deleted
         ; preserved_messages = !preserved
         })
+
+  (* Promote a provisional registration to confirmed on first poll_inbox call.
+     Sets confirmed_at to now if it is currently None. No-op for already-confirmed
+     or non-existent sessions. *)
+  let confirm_registration t ~session_id =
+    with_registry_lock t (fun () ->
+        let regs = load_registrations t in
+        let changed = ref false in
+        let regs' =
+          List.map
+            (fun reg ->
+              if reg.session_id = session_id && reg.confirmed_at = None then begin
+                changed := true;
+                { reg with confirmed_at = Some (Unix.gettimeofday ()) }
+              end else
+                reg)
+            regs
+        in
+        if !changed then save_registrations t regs')
 
   (* Scan dead-letter.jsonl for records belonging to this session and return
      them for redelivery, removing matched records from the file.
@@ -2013,7 +2086,7 @@ let auto_register_startup ~broker_root =
          && not same_pid_alive_different_session
       then begin
         let pid_start_time = Broker.capture_pid_start_time pid in
-        Broker.register broker ~session_id ~alias ~pid ~pid_start_time;
+        Broker.register broker ~session_id ~alias ~pid ~pid_start_time ();
         ignore (Broker.redeliver_dead_letter_for_session broker ~session_id ~alias)
       end
   | _ -> ()
@@ -2155,6 +2228,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
         | Some pid -> Some pid
         | None -> Some (Unix.getppid ())
       in
+      let client_type = optional_string_member "client_type" arguments in
       (* Detect whether this is a brand-new registration (no existing row for
          this session_id). Used below to emit peer_register broadcast. *)
       let is_new_registration =
@@ -2249,7 +2323,8 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
            in
            Lwt.return (tool_result ~content ~is_error:true)
        | None ->
-           Broker.register broker ~session_id ~alias ~pid ~pid_start_time;
+           Broker.register broker ~session_id ~alias ~pid ~pid_start_time
+             ~client_type ();
            List.iter
              (fun room_id ->
                try
@@ -2484,6 +2559,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       Lwt.return (tool_result ~content ~is_error:false)
   | "poll_inbox" ->
       let session_id = resolve_session_id arguments in
+      Broker.confirm_registration broker ~session_id;
       let messages = Broker.drain_inbox broker ~session_id in
       let content =
         `List

@@ -12,6 +12,11 @@ type registration =
   ; dnd : bool
   ; dnd_since : float option
   ; dnd_until : float option
+  ; client_type : string option
+  (** "human" exempts from provisional sweep; None = agent (default). *)
+  ; confirmed_at : float option
+  (** Epoch of first poll_inbox call. None = session registered but never
+      drained — still "provisional". *)
   }
 type message = { from_alias : string; to_alias : string; content : string; deferrable : bool }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
@@ -38,7 +43,7 @@ module Broker : sig
       is available (up to 5 tries: primes 2,3,5,7,11), or [None] when all
       candidates are exhausted (ALIAS_COLLISION_EXHAUSTED). *)
 
-  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> unit
+  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> unit -> unit
   val list_registrations : t -> registration list
   val save_registrations : t -> registration list -> unit
   val with_registry_lock : t -> (unit -> 'a) -> 'a
@@ -84,6 +89,11 @@ module Broker : sig
   val prune_rooms : t -> (string * string) list
   val is_dnd : t -> session_id:string -> bool
   val set_dnd : t -> session_id:string -> dnd:bool -> ?until:float -> unit -> bool option
+  val confirm_registration : t -> session_id:string -> unit
+  (** [confirm_registration t ~session_id] sets confirmed_at to now for the
+      session if it is currently None. No-op for already-confirmed sessions. *)
+  val is_provisional : registration -> bool
+  val is_provisional_expired : registration -> bool
 end
 
 (* Native OCaml relay modules *)

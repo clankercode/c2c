@@ -1394,7 +1394,7 @@ let register_cmd =
     | None -> Some (Unix.getppid ())
   in
   let pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid in
-  C2c_mcp.Broker.register broker ~session_id ~alias ~pid ~pid_start_time;
+  C2c_mcp.Broker.register broker ~session_id ~alias ~pid ~pid_start_time ();
   let output_mode = if json then Json else Human in
   match output_mode with
   | Json ->
@@ -3608,8 +3608,8 @@ let smoke_test_cmd =
   let alias_b = "smoke-b" in
   let pid = Some (Unix.getpid ()) in
   let pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid in
-  C2c_mcp.Broker.register broker ~session_id:session_a ~alias:alias_a ~pid ~pid_start_time;
-  C2c_mcp.Broker.register broker ~session_id:session_b ~alias:alias_b ~pid ~pid_start_time;
+  C2c_mcp.Broker.register broker ~session_id:session_a ~alias:alias_a ~pid ~pid_start_time ();
+  C2c_mcp.Broker.register broker ~session_id:session_b ~alias:alias_b ~pid ~pid_start_time ();
   let marker =
     Printf.sprintf "c2c-smoke-%d-%d"
       (Unix.gettimeofday () |> int_of_float)
@@ -4812,7 +4812,7 @@ let init_cmd =
   let _identity_init_rc = Sys.command "c2c relay identity init 2>/dev/null" in
   ignore _identity_init_rc;
 
-  C2c_mcp.Broker.register broker ~session_id ~alias ~pid:None ~pid_start_time:None;
+  C2c_mcp.Broker.register broker ~session_id ~alias ~pid:None ~pid_start_time:None ();
 
   let room_result =
     if String.trim room = "" then `Skipped

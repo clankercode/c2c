@@ -24,7 +24,7 @@ let is_json_object = function `Assoc _ -> true | _ -> false
 let test_register_and_list () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None ();
       let regs = C2c_mcp.Broker.list_registrations broker in
       check int "one registration" 1 (List.length regs);
       let reg = List.hd regs in
@@ -34,8 +34,8 @@ let test_register_and_list () =
 let test_send_enqueues_message_for_target_alias () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None;
-      C2c_mcp.Broker.register broker ~session_id:"session-b" ~alias:"storm-storm" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-b" ~alias:"storm-storm" ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.enqueue_message broker ~from_alias:"storm-ember" ~to_alias:"storm-storm" ~content:"hello" ();
       let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-b" in
       check int "one inbox message" 1 (List.length inbox);
@@ -46,8 +46,8 @@ let test_send_enqueues_message_for_target_alias () =
 let test_drain_inbox_returns_and_clears_messages () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None;
-      C2c_mcp.Broker.register broker ~session_id:"session-b" ~alias:"storm-storm" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-b" ~alias:"storm-storm" ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.enqueue_message broker ~from_alias:"storm-ember" ~to_alias:"storm-storm" ~content:"hello" ();
        let drained = C2c_mcp.Broker.drain_inbox broker ~session_id:"session-b" in
        check int "drained one message" 1 (List.length drained);
@@ -75,9 +75,9 @@ let test_drain_inbox_empty_does_not_rewrite_existing_empty_file () =
       let path = Filename.concat dir "session-idle.inbox.json" in
       (* Enqueue then drain so the file exists and is already `[]`. *)
       C2c_mcp.Broker.register broker ~session_id:"session-sender"
-        ~alias:"sender" ~pid:None ~pid_start_time:None;
+        ~alias:"sender" ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker ~session_id:"session-idle" ~alias:"idle"
-        ~pid:None ~pid_start_time:None;
+        ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
         ~to_alias:"idle" ~content:"one" ();
       let _ = C2c_mcp.Broker.drain_inbox broker ~session_id:"session-idle" in
@@ -109,9 +109,9 @@ let test_drain_inbox_archives_messages_before_clearing () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-alice"
-        ~alias:"alice" ~pid:None ~pid_start_time:None;
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker ~session_id:"session-bob"
-        ~alias:"bob" ~pid:None ~pid_start_time:None;
+        ~alias:"bob" ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.enqueue_message broker ~from_alias:"alice"
         ~to_alias:"bob" ~content:"first ping" ();
       C2c_mcp.Broker.enqueue_message broker ~from_alias:"alice"
@@ -161,9 +161,9 @@ let test_read_archive_respects_limit () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-sender"
-        ~alias:"sender" ~pid:None ~pid_start_time:None;
+        ~alias:"sender" ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker ~session_id:"session-recv"
-        ~alias:"recv" ~pid:None ~pid_start_time:None;
+        ~alias:"recv" ~pid:None ~pid_start_time:None ();
       for i = 1 to 5 do
         C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
           ~to_alias:"recv" ~content:(Printf.sprintf "msg-%d" i) ()
@@ -188,9 +188,9 @@ let test_tools_call_history_returns_archived_messages () =
         (fun () ->
           let broker = C2c_mcp.Broker.create ~root:dir in
           C2c_mcp.Broker.register broker ~session_id:"session-sender"
-            ~alias:"sender" ~pid:None ~pid_start_time:None;
+            ~alias:"sender" ~pid:None ~pid_start_time:None ();
           C2c_mcp.Broker.register broker ~session_id:"session-histcaller"
-            ~alias:"histcaller" ~pid:None ~pid_start_time:None;
+            ~alias:"histcaller" ~pid:None ~pid_start_time:None ();
           C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
             ~to_alias:"histcaller" ~content:"archived-one" ();
           C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
@@ -237,11 +237,11 @@ let test_tools_call_history_ignores_session_id_argument () =
         (fun () ->
           let broker = C2c_mcp.Broker.create ~root:dir in
           C2c_mcp.Broker.register broker ~session_id:"session-sender"
-            ~alias:"sender" ~pid:None ~pid_start_time:None;
+            ~alias:"sender" ~pid:None ~pid_start_time:None ();
           C2c_mcp.Broker.register broker ~session_id:"session-victim"
-            ~alias:"victim" ~pid:None ~pid_start_time:None;
+            ~alias:"victim" ~pid:None ~pid_start_time:None ();
           C2c_mcp.Broker.register broker ~session_id:"session-attacker"
-            ~alias:"attacker" ~pid:None ~pid_start_time:None;
+            ~alias:"attacker" ~pid:None ~pid_start_time:None ();
           (* Seed victim's archive. *)
           C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
             ~to_alias:"victim" ~content:"secret-to-victim" ();
@@ -611,8 +611,8 @@ let test_tools_list_marks_register_and_whoami_session_id_as_optional () =
 let test_tools_call_send_routes_message_through_broker () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None;
-      C2c_mcp.Broker.register broker ~session_id:"session-b" ~alias:"storm-storm" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-b" ~alias:"storm-storm" ~pid:None ~pid_start_time:None ();
       let request =
         `Assoc
           [ ("jsonrpc", `String "2.0")
@@ -640,8 +640,8 @@ let test_tools_call_send_routes_message_through_broker () =
 let test_tools_call_send_accepts_alias_as_to_alias_synonym () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None;
-      C2c_mcp.Broker.register broker ~session_id:"session-b" ~alias:"storm-storm" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-b" ~alias:"storm-storm" ~pid:None ~pid_start_time:None ();
       let request =
         `Assoc
           [ ("jsonrpc", `String "2.0")
@@ -669,7 +669,7 @@ let test_tools_call_send_accepts_alias_as_to_alias_synonym () =
 let test_tools_call_send_missing_to_alias_returns_named_error () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None ();
       let request =
         `Assoc
           [ ("jsonrpc", `String "2.0")
@@ -730,9 +730,9 @@ let test_tools_call_send_uses_current_registered_alias () =
         (fun () ->
           let broker = C2c_mcp.Broker.create ~root:dir in
           C2c_mcp.Broker.register broker ~session_id:"session-a"
-            ~alias:"storm-ember" ~pid:None ~pid_start_time:None;
+            ~alias:"storm-ember" ~pid:None ~pid_start_time:None ();
           C2c_mcp.Broker.register broker ~session_id:"session-b"
-            ~alias:"storm-storm" ~pid:None ~pid_start_time:None;
+            ~alias:"storm-storm" ~pid:None ~pid_start_time:None ();
           let request =
             `Assoc
               [ ("jsonrpc", `String "2.0")
@@ -782,9 +782,9 @@ let test_tools_call_send_uses_current_alias_even_if_pid_stale () =
           let broker = C2c_mcp.Broker.create ~root:dir in
           C2c_mcp.Broker.register broker ~session_id:"session-a"
             ~alias:"storm-ember" ~pid:(Some 999_999_999)
-            ~pid_start_time:None;
+            ~pid_start_time:None ();
           C2c_mcp.Broker.register broker ~session_id:"session-b"
-            ~alias:"storm-storm" ~pid:None ~pid_start_time:None;
+            ~alias:"storm-storm" ~pid:None ~pid_start_time:None ();
           let request =
             `Assoc
               [ ("jsonrpc", `String "2.0")
@@ -819,8 +819,8 @@ let test_tools_call_send_uses_current_alias_even_if_pid_stale () =
 let test_tools_call_send_returns_receipt_json () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      C2c_mcp.Broker.register broker ~session_id:"session-x" ~alias:"sender-x" ~pid:None ~pid_start_time:None;
-      C2c_mcp.Broker.register broker ~session_id:"session-y" ~alias:"receiver-y" ~pid:None ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-x" ~alias:"sender-x" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-y" ~alias:"receiver-y" ~pid:None ~pid_start_time:None ();
       let request =
         `Assoc
           [ ("jsonrpc", `String "2.0")
@@ -984,7 +984,7 @@ let test_tools_call_register_rejects_alias_hijack () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       (* session-owner registers "storm-beacon" with a live PID *)
       C2c_mcp.Broker.register broker ~session_id:"session-owner"
-        ~alias:"storm-beacon" ~pid:(Some live_pid) ~pid_start_time:None;
+        ~alias:"storm-beacon" ~pid:(Some live_pid) ~pid_start_time:None ();
       (* session-thief tries to claim the same alias *)
       Unix.putenv "C2C_MCP_SESSION_ID" "session-thief";
       Fun.protect
@@ -1060,7 +1060,7 @@ let test_tools_call_register_allows_takeover_of_pidless_stale_alias () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       (* Register alias with pid=None — legacy pidless row, liveness=Unknown *)
       C2c_mcp.Broker.register broker ~session_id:"session-stale"
-        ~alias:"drifting-elk" ~pid:None ~pid_start_time:None;
+        ~alias:"drifting-elk" ~pid:None ~pid_start_time:None ();
       (* A new session tries to claim the same alias *)
       Unix.putenv "C2C_MCP_SESSION_ID" "session-new";
       Fun.protect
@@ -1114,7 +1114,7 @@ let test_tools_call_register_alias_collision_exhausted () =
         C2c_mcp.Broker.register broker
           ~session_id:(Printf.sprintf "session-owner-%d" i)
           ~alias:(Printf.sprintf "nova%s" sfx)
-          ~pid:(Some live_pid) ~pid_start_time:None
+          ~pid:(Some live_pid) ~pid_start_time:None ()
       ) primes;
       (* session-exhausted tries to claim "nova" when all slots are taken *)
       Unix.putenv "C2C_MCP_SESSION_ID" "session-exhausted";
@@ -1171,7 +1171,7 @@ let test_tools_call_register_allows_own_alias_refresh () =
       let live_pid = Unix.getpid () in
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-self"
-        ~alias:"my-alias" ~pid:(Some live_pid) ~pid_start_time:None;
+        ~alias:"my-alias" ~pid:(Some live_pid) ~pid_start_time:None ();
       Unix.putenv "C2C_MCP_SESSION_ID" "session-self";
       Fun.protect
         ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
@@ -1205,9 +1205,9 @@ let test_tools_call_register_alias_rename_notifies_rooms () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-renamed"
-        ~alias:"old-alias" ~pid:None ~pid_start_time:None;
+        ~alias:"old-alias" ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker ~session_id:"session-peer"
-        ~alias:"peer-alias" ~pid:None ~pid_start_time:None;
+        ~alias:"peer-alias" ~pid:None ~pid_start_time:None ();
       ignore
         (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
            ~alias:"old-alias" ~session_id:"session-renamed");
@@ -1319,7 +1319,7 @@ let test_auto_register_startup_skips_when_alive_session_has_different_alias () =
       (* Pre-register an alive session with alias "claude-code-session" *)
       C2c_mcp.Broker.register broker
         ~session_id:"shared-session" ~alias:"claude-code-session"
-        ~pid:(Some me) ~pid_start_time:my_start;
+        ~pid:(Some me) ~pid_start_time:my_start ();
       (* Now simulate kimi starting with the same session_id but a different alias *)
       Unix.putenv "C2C_MCP_SESSION_ID" "shared-session";
       Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "kimi-child-alias";
@@ -1347,7 +1347,7 @@ let test_auto_register_startup_skips_when_alive_session_owns_alias () =
       (* Pre-register an alive kimi session owning alias "kimi-nova" *)
       C2c_mcp.Broker.register broker
         ~session_id:"kimi-real-session" ~alias:"kimi-nova"
-        ~pid:(Some me) ~pid_start_time:my_start;
+        ~pid:(Some me) ~pid_start_time:my_start ();
       (* Simulate one-shot probe: different session_id, same alias *)
       Unix.putenv "C2C_MCP_SESSION_ID" "one-shot-probe-session";
       Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "kimi-nova";
@@ -1375,7 +1375,7 @@ let test_auto_register_startup_skips_when_alive_same_session_different_pid () =
       (* Pre-register an alive session with pid=real_pid *)
       C2c_mcp.Broker.register broker
         ~session_id:"kimi-nova" ~alias:"kimi-nova-2"
-        ~pid:(Some real_pid) ~pid_start_time:real_start;
+        ~pid:(Some real_pid) ~pid_start_time:real_start ();
       (* Simulate child process with inherited wrong C2C_MCP_CLIENT_PID *)
       let fake_pid = 111111 in
       Unix.putenv "C2C_MCP_SESSION_ID" "kimi-nova";
@@ -1416,7 +1416,7 @@ let test_auto_join_rooms_startup_prefers_registered_alias () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-social"
-        ~alias:"new-alias" ~pid:None ~pid_start_time:None;
+        ~alias:"new-alias" ~pid:None ~pid_start_time:None ();
       Unix.putenv "C2C_MCP_SESSION_ID" "session-social";
       Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "old-env-alias";
       Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "swarm-lounge";
@@ -1472,7 +1472,7 @@ let test_tools_call_whoami_uses_current_session_id_when_omitted () =
         ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
         (fun () ->
           let broker = C2c_mcp.Broker.create ~root:dir in
-          C2c_mcp.Broker.register broker ~session_id:"session-live" ~alias:"storm-live" ~pid:None ~pid_start_time:None;
+          C2c_mcp.Broker.register broker ~session_id:"session-live" ~alias:"storm-live" ~pid:None ~pid_start_time:None ();
           let request =
             `Assoc
               [ ("jsonrpc", `String "2.0")
@@ -1506,8 +1506,8 @@ let test_tools_call_poll_inbox_drains_messages_as_tool_result () =
         ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
         (fun () ->
           let broker = C2c_mcp.Broker.create ~root:dir in
-          C2c_mcp.Broker.register broker ~session_id:"session-from" ~alias:"storm-from" ~pid:None ~pid_start_time:None;
-          C2c_mcp.Broker.register broker ~session_id:"session-poll" ~alias:"storm-poll" ~pid:None ~pid_start_time:None;
+          C2c_mcp.Broker.register broker ~session_id:"session-from" ~alias:"storm-from" ~pid:None ~pid_start_time:None ();
+          C2c_mcp.Broker.register broker ~session_id:"session-poll" ~alias:"storm-poll" ~pid:None ~pid_start_time:None ();
           C2c_mcp.Broker.enqueue_message broker ~from_alias:"storm-from" ~to_alias:"storm-poll" ~content:"hello-one" ();
           C2c_mcp.Broker.enqueue_message broker ~from_alias:"storm-from" ~to_alias:"storm-poll" ~content:"hello-two" ();
           let request =
@@ -1550,7 +1550,7 @@ let test_tools_call_poll_inbox_empty_inbox_returns_empty_json_array () =
         ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
         (fun () ->
           let broker = C2c_mcp.Broker.create ~root:dir in
-          C2c_mcp.Broker.register broker ~session_id:"session-empty" ~alias:"storm-empty" ~pid:None ~pid_start_time:None;
+          C2c_mcp.Broker.register broker ~session_id:"session-empty" ~alias:"storm-empty" ~pid:None ~pid_start_time:None ();
           let request =
             `Assoc
               [ ("jsonrpc", `String "2.0")
@@ -1587,7 +1587,7 @@ let test_enqueue_to_dead_peer_raises () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       let dead = dead_pid () in
-      C2c_mcp.Broker.register broker ~session_id:"session-dead" ~alias:"storm-dead" ~pid:(Some dead) ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-dead" ~alias:"storm-dead" ~pid:(Some dead) ~pid_start_time:None ();
       check_raises "dead recipient raises Invalid_argument"
         (Invalid_argument "recipient is not alive: storm-dead")
         (fun () ->
@@ -1598,8 +1598,8 @@ let test_enqueue_picks_live_when_zombie_shares_alias () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       let dead = dead_pid () in
-      C2c_mcp.Broker.register broker ~session_id:"session-zombie" ~alias:"storm-twin" ~pid:(Some dead) ~pid_start_time:None;
-      C2c_mcp.Broker.register broker ~session_id:"session-live" ~alias:"storm-twin" ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"session-zombie" ~alias:"storm-twin" ~pid:(Some dead) ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-live" ~alias:"storm-twin" ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       C2c_mcp.Broker.enqueue_message broker
         ~from_alias:"storm-twin" ~to_alias:"storm-twin" ~content:"alive!" ();
       let zombie_inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-zombie" in
@@ -1629,7 +1629,7 @@ let test_registration_without_pid_loads_as_alive () =
 let test_registration_persists_pid () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      C2c_mcp.Broker.register broker ~session_id:"s" ~alias:"a" ~pid:(Some 42) ~pid_start_time:None;
+      C2c_mcp.Broker.register broker ~session_id:"s" ~alias:"a" ~pid:(Some 42) ~pid_start_time:None ();
       let reg =
         C2c_mcp.Broker.list_registrations (C2c_mcp.Broker.create ~root:dir)
         |> List.hd
@@ -1645,7 +1645,7 @@ let test_register_writes_registry_at_0o600 () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
-        ~session_id:"s" ~alias:"a" ~pid:None ~pid_start_time:None;
+        ~session_id:"s" ~alias:"a" ~pid:None ~pid_start_time:None ();
       let st = Unix.stat (Filename.concat dir "registry.json") in
       let mode = st.Unix.st_perm land 0o777 in
       check int "registry.json mode is 0o600" 0o600 mode)
@@ -1655,7 +1655,7 @@ let test_enqueue_writes_inbox_at_0o600 () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"recv-sid" ~alias:"recv"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       C2c_mcp.Broker.enqueue_message broker
         ~from_alias:"sender" ~to_alias:"recv" ~content:"hello" ();
       let st = Unix.stat (Filename.concat dir "recv-sid.inbox.json") in
@@ -1677,17 +1677,17 @@ let test_tools_call_list_reports_alive_tristate () =
       let live_start = C2c_mcp.Broker.read_pid_start_time live_pid in
       C2c_mcp.Broker.register broker
         ~session_id:"live-sid" ~alias:"live"
-        ~pid:(Some live_pid) ~pid_start_time:live_start;
+        ~pid:(Some live_pid) ~pid_start_time:live_start ();
       (* Dead: pid we know doesn't exist. Picking pid 1 with a
          deliberately wrong start_time forces the start_time mismatch
          path even on the off-chance pid 1 exists. *)
       C2c_mcp.Broker.register broker
         ~session_id:"dead-sid" ~alias:"dead"
-        ~pid:(Some 999_999_999) ~pid_start_time:(Some 1);
+        ~pid:(Some 999_999_999) ~pid_start_time:(Some 1) ();
       (* Pidless legacy row *)
       C2c_mcp.Broker.register broker
         ~session_id:"legacy-sid" ~alias:"legacy"
-        ~pid:None ~pid_start_time:None;
+        ~pid:None ~pid_start_time:None ();
       let request =
         `Assoc
           [ ("jsonrpc", `String "2.0")
@@ -1745,7 +1745,7 @@ let test_tools_call_list_includes_registered_at () =
       let before = Unix.gettimeofday () in
       C2c_mcp.Broker.register broker
         ~session_id:"ts-sid" ~alias:"ts-peer"
-        ~pid:None ~pid_start_time:None;
+        ~pid:None ~pid_start_time:None ();
       let after = Unix.gettimeofday () in
       let request =
         `Assoc
@@ -1793,10 +1793,10 @@ let test_write_json_file_leaves_no_tmp_sidecars () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"recv-sid" ~alias:"recv"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       C2c_mcp.Broker.register broker
         ~session_id:"send-sid" ~alias:"send"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       C2c_mcp.Broker.enqueue_message broker
         ~from_alias:"send" ~to_alias:"recv" ~content:"hello" ();
       C2c_mcp.Broker.enqueue_message broker
@@ -1833,7 +1833,7 @@ let test_registration_persists_pid_start_time () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"s" ~alias:"a"
-        ~pid:(Some 42) ~pid_start_time:(Some 9999);
+        ~pid:(Some 42) ~pid_start_time:(Some 9999) ();
       let reg =
         C2c_mcp.Broker.list_registrations (C2c_mcp.Broker.create ~root:dir)
         |> List.hd
@@ -1859,6 +1859,8 @@ let test_start_time_mismatch_is_not_alive () =
     ; dnd = false
     ; dnd_since = None
     ; dnd_until = None
+    ; client_type = None
+    ; confirmed_at = None
     }
   in
   check bool "mismatched start_time → not alive" false
@@ -1877,6 +1879,8 @@ let test_start_time_match_is_alive () =
     ; dnd = false
     ; dnd_since = None
     ; dnd_until = None
+    ; client_type = None
+    ; confirmed_at = None
     }
   in
   check bool "matching start_time → alive" true
@@ -1895,6 +1899,8 @@ let test_start_time_none_falls_back_to_proc_exists () =
     ; dnd = false
     ; dnd_since = None
     ; dnd_until = None
+    ; client_type = None
+    ; confirmed_at = None
     }
   in
   check bool "pid exists + no stored start_time → alive" true
@@ -1907,7 +1913,7 @@ let test_concurrent_register_does_not_lose_entries () =
          created and doesn't trip over ensure_root races of its own. *)
       let _ = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register (C2c_mcp.Broker.create ~root:dir)
-        ~session_id:"seed" ~alias:"seed-alias" ~pid:None ~pid_start_time:None;
+        ~session_id:"seed" ~alias:"seed-alias" ~pid:None ~pid_start_time:None ();
       let children =
         List.init n (fun i ->
             match Unix.fork () with
@@ -1916,7 +1922,7 @@ let test_concurrent_register_does_not_lose_entries () =
                 C2c_mcp.Broker.register broker
                   ~session_id:(Printf.sprintf "s-%d" i)
                   ~alias:(Printf.sprintf "a-%d" i)
-                  ~pid:None ~pid_start_time:None;
+                  ~pid:None ~pid_start_time:None ();
                 exit 0
             | child -> child)
       in
@@ -1947,7 +1953,7 @@ let test_auto_register_startup_redelivers_dead_letter_messages () =
       let dead = dead_pid () in
       C2c_mcp.Broker.register broker
         ~session_id:"managed-session" ~alias:"opencode-local"
-        ~pid:(Some dead) ~pid_start_time:None;
+        ~pid:(Some dead) ~pid_start_time:None ();
       write_file (Filename.concat dir "managed-session.inbox.json")
         {|[{"from_alias":"storm-ember","to_alias":"opencode-local","content":"queued while down"},{"from_alias":"storm-beacon","to_alias":"opencode-local","content":"second queued while down"}]|};
       let result = C2c_mcp.Broker.sweep broker in
@@ -1999,11 +2005,11 @@ let test_register_evicts_prior_reg_with_same_alias () =
          session that left a ghost row behind. *)
       C2c_mcp.Broker.register broker
         ~session_id:"old-session" ~alias:"storm-recv"
-        ~pid:None ~pid_start_time:None;
+        ~pid:None ~pid_start_time:None ();
       (* Second register: same alias, fresh session_id with pid. *)
       C2c_mcp.Broker.register broker
         ~session_id:"new-session" ~alias:"storm-recv"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       let regs = C2c_mcp.Broker.list_registrations broker in
       check int "only one reg for the alias" 1
         (List.length
@@ -2044,7 +2050,7 @@ let test_register_migrates_undrained_inbox_on_alias_re_register () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"old-session" ~alias:"storm-recv"
-        ~pid:None ~pid_start_time:None;
+        ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.enqueue_message broker
         ~from_alias:"sender" ~to_alias:"storm-recv"
         ~content:"queued before re-register" ();
@@ -2054,7 +2060,7 @@ let test_register_migrates_undrained_inbox_on_alias_re_register () =
       (* Re-register same alias with a new session_id. *)
       C2c_mcp.Broker.register broker
         ~session_id:"new-session" ~alias:"storm-recv"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       let drained =
         C2c_mcp.Broker.drain_inbox broker ~session_id:"new-session"
       in
@@ -2082,7 +2088,7 @@ let test_register_serializes_with_concurrent_enqueue () =
       let parent_pid = Unix.getpid () in
       C2c_mcp.Broker.register (C2c_mcp.Broker.create ~root:dir)
         ~session_id:"target-s0" ~alias:"target"
-        ~pid:(Some parent_pid) ~pid_start_time:None;
+        ~pid:(Some parent_pid) ~pid_start_time:None ();
       let n_msgs = 60 in
       let sender =
         match Unix.fork () with
@@ -2105,7 +2111,7 @@ let test_register_serializes_with_concurrent_enqueue () =
           ~session_id:(Printf.sprintf "target-s%d" k)
           ~alias:"target"
           ~pid:(Some parent_pid)
-          ~pid_start_time:None
+          ~pid_start_time:None ()
       done;
       let rec waitpid_eintr child =
         try ignore (Unix.waitpid [] child)
@@ -2136,7 +2142,7 @@ let test_concurrent_enqueue_does_not_lose_messages () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"recipient" ~alias:"storm-recv"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       let n = 12 in
       let per_child = 20 in
       let children =
@@ -2181,7 +2187,7 @@ let test_sweep_drops_dead_reg_and_its_inbox () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       let dead = dead_pid () in
       C2c_mcp.Broker.register broker
-        ~session_id:"session-dead" ~alias:"storm-dead" ~pid:(Some dead) ~pid_start_time:None;
+        ~session_id:"session-dead" ~alias:"storm-dead" ~pid:(Some dead) ~pid_start_time:None ();
       (* Seed a fake inbox file for the dead reg. *)
       write_file (Filename.concat dir "session-dead.inbox.json") "[]";
       let result = C2c_mcp.Broker.sweep broker in
@@ -2201,7 +2207,7 @@ let test_sweep_deletes_orphan_inbox_file () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"session-live" ~alias:"storm-live"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       (* Orphan: no matching registration. *)
       write_file (Filename.concat dir "orphan-sid.inbox.json")
         {|[{"from_alias":"x","to_alias":"y","content":"hi"}]|};
@@ -2218,7 +2224,7 @@ let test_sweep_preserves_live_reg_and_its_inbox () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"session-live" ~alias:"storm-live"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       C2c_mcp.Broker.enqueue_message broker
         ~from_alias:"storm-live" ~to_alias:"storm-live" ~content:"keep me" ();
       let result = C2c_mcp.Broker.sweep broker in
@@ -2248,7 +2254,7 @@ let test_sweep_preserves_nonempty_orphan_to_dead_letter () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"session-live" ~alias:"storm-live"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       (* Orphan inbox with 2 messages. *)
       write_file (Filename.concat dir "ghost-sid.inbox.json")
         {|[{"from_alias":"storm-ember","to_alias":"storm-storm","content":"alpha"},{"from_alias":"storm-beacon","to_alias":"storm-storm","content":"beta"}]|};
@@ -2333,16 +2339,16 @@ let test_tools_call_send_all_routes_through_broker_and_returns_result () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"session-sender" ~alias:"storm-sender"
-        ~pid:None ~pid_start_time:None;
+        ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker
         ~session_id:"session-a" ~alias:"storm-a"
-        ~pid:None ~pid_start_time:None;
+        ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker
         ~session_id:"session-b" ~alias:"storm-b"
-        ~pid:None ~pid_start_time:None;
+        ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker
         ~session_id:"session-c" ~alias:"storm-c"
-        ~pid:None ~pid_start_time:None;
+        ~pid:None ~pid_start_time:None ();
       let request =
         `Assoc
           [ ("jsonrpc", `String "2.0")
@@ -2419,13 +2425,13 @@ let test_send_all_fans_out_and_skips_sender () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"session-sender" ~alias:"storm-sender"
-        ~pid:None ~pid_start_time:None;
+        ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker
         ~session_id:"session-a" ~alias:"storm-a"
-        ~pid:None ~pid_start_time:None;
+        ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker
         ~session_id:"session-b" ~alias:"storm-b"
-        ~pid:None ~pid_start_time:None;
+        ~pid:None ~pid_start_time:None ();
       let result =
         C2c_mcp.Broker.send_all broker
           ~from_alias:"storm-sender"
@@ -2462,16 +2468,16 @@ let test_send_all_honors_exclude_aliases () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"session-sender" ~alias:"storm-sender"
-        ~pid:None ~pid_start_time:None;
+        ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker
         ~session_id:"session-a" ~alias:"storm-a"
-        ~pid:None ~pid_start_time:None;
+        ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker
         ~session_id:"session-b" ~alias:"storm-b"
-        ~pid:None ~pid_start_time:None;
+        ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker
         ~session_id:"session-c" ~alias:"storm-c"
-        ~pid:None ~pid_start_time:None;
+        ~pid:None ~pid_start_time:None ();
       let result =
         C2c_mcp.Broker.send_all broker
           ~from_alias:"storm-sender"
@@ -2498,13 +2504,13 @@ let test_send_all_skips_dead_recipients_with_reason () =
       let dead = dead_pid () in
       C2c_mcp.Broker.register broker
         ~session_id:"session-sender" ~alias:"storm-sender"
-        ~pid:None ~pid_start_time:None;
+        ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker
         ~session_id:"session-live" ~alias:"storm-live"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       C2c_mcp.Broker.register broker
         ~session_id:"session-dead" ~alias:"storm-dead"
-        ~pid:(Some dead) ~pid_start_time:None;
+        ~pid:(Some dead) ~pid_start_time:None ();
       let result =
         C2c_mcp.Broker.send_all broker
           ~from_alias:"storm-sender"
@@ -2534,7 +2540,7 @@ let test_send_all_sender_only_registry_returns_empty_result () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"session-alone" ~alias:"solo"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       let result =
         C2c_mcp.Broker.send_all broker
           ~from_alias:"solo"
@@ -2555,7 +2561,7 @@ let test_sweep_empty_orphan_writes_no_dead_letter () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"session-live" ~alias:"storm-live"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       write_file (Filename.concat dir "empty-orphan.inbox.json") "[]";
       let result = C2c_mcp.Broker.sweep broker in
       check int "one orphan deleted" 1 (List.length result.deleted_inboxes);
@@ -2563,6 +2569,94 @@ let test_sweep_empty_orphan_writes_no_dead_letter () =
       let dead_letter = C2c_mcp.Broker.dead_letter_path broker in
       check bool "no dead-letter noise for empty orphan" false
         (Sys.file_exists dead_letter))
+
+(* Provisional sweep: a pid=None, confirmed_at=None reg with a recent registered_at
+   is NOT swept until the timeout has elapsed. *)
+let test_sweep_preserves_fresh_provisional_reg () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Register with pid=None — no PID, no confirmed_at yet (provisional).
+         registered_at defaults to now (fresh). Default timeout is 1800s.
+         Sweep should NOT drop this — it hasn't timed out. *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"prov-session" ~alias:"storm-prov"
+        ~pid:None ~pid_start_time:None ();
+      let result = C2c_mcp.Broker.sweep broker in
+      check int "fresh provisional not dropped" 0 (List.length result.dropped_regs);
+      check int "provisional still registered" 1
+        (List.length (C2c_mcp.Broker.list_registrations broker)))
+
+(* Provisional sweep: a pid=None, confirmed_at=None reg with a registered_at
+   older than the timeout IS swept. *)
+let test_sweep_drops_expired_provisional_reg () =
+  with_temp_dir (fun dir ->
+      (* Write a registry JSON with a registered_at 3601 seconds in the past.
+         Default timeout is 1800s — this should be swept. *)
+      let expired_ts = Unix.gettimeofday () -. 3601.0 in
+      let reg_json =
+        Printf.sprintf
+          {|[{"session_id":"prov-expired","alias":"storm-expired","registered_at":%f}]|}
+          expired_ts
+      in
+      write_file (Filename.concat dir "registry.json") reg_json;
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      Unix.putenv "C2C_PROVISIONAL_SWEEP_TIMEOUT" "1800";
+      let result = C2c_mcp.Broker.sweep broker in
+      Unix.putenv "C2C_PROVISIONAL_SWEEP_TIMEOUT" "1800";
+      check int "expired provisional dropped" 1 (List.length result.dropped_regs);
+      check int "no regs remain" 0
+        (List.length (C2c_mcp.Broker.list_registrations broker)))
+
+(* confirm_registration: first poll_inbox sets confirmed_at; subsequent calls are no-ops. *)
+let test_confirm_registration_sets_confirmed_at () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"conf-session" ~alias:"storm-conf"
+        ~pid:None ~pid_start_time:None ();
+      let before = C2c_mcp.Broker.list_registrations broker in
+      check bool "confirmed_at is None before poll"
+        true ((List.hd before).confirmed_at = None);
+      C2c_mcp.Broker.confirm_registration broker ~session_id:"conf-session";
+      let after = C2c_mcp.Broker.list_registrations broker in
+      check bool "confirmed_at is Some after confirm"
+        true ((List.hd after).confirmed_at <> None);
+      (* Idempotent: second call doesn't change the timestamp *)
+      let ts1 = (List.hd after).confirmed_at in
+      C2c_mcp.Broker.confirm_registration broker ~session_id:"conf-session";
+      let after2 = C2c_mcp.Broker.list_registrations broker in
+      check bool "confirmed_at unchanged on second confirm"
+        true ((List.hd after2).confirmed_at = ts1))
+
+(* confirm_registration: confirmed session is NOT swept even after timeout. *)
+let test_confirmed_reg_not_swept_after_timeout () =
+  with_temp_dir (fun dir ->
+      (* Write a registry JSON: registered_at expired, but confirmed_at is set. *)
+      let expired_ts = Unix.gettimeofday () -. 3601.0 in
+      let reg_json =
+        Printf.sprintf
+          {|[{"session_id":"conf-old","alias":"storm-confirmed-old","registered_at":%f,"confirmed_at":%f}]|}
+          expired_ts expired_ts
+      in
+      write_file (Filename.concat dir "registry.json") reg_json;
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let result = C2c_mcp.Broker.sweep broker in
+      (* confirmed_at means it's no longer provisional — sweep should NOT drop it *)
+      check int "confirmed (but old) reg not dropped" 0 (List.length result.dropped_regs))
+
+(* client_type=human: exempted from provisional sweep even with expired registered_at. *)
+let test_human_client_type_exempt_from_provisional_sweep () =
+  with_temp_dir (fun dir ->
+      let expired_ts = Unix.gettimeofday () -. 3601.0 in
+      let reg_json =
+        Printf.sprintf
+          {|[{"session_id":"human-session","alias":"storm-human","registered_at":%f,"client_type":"human"}]|}
+          expired_ts
+      in
+      write_file (Filename.concat dir "registry.json") reg_json;
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let result = C2c_mcp.Broker.sweep broker in
+      check int "human client_type not swept" 0 (List.length result.dropped_regs))
 
 let test_sweep_evicts_dead_members_from_rooms () =
   (* When sweep drops a dead registration, evict_dead_from_rooms should
@@ -2575,10 +2669,10 @@ let test_sweep_evicts_dead_members_from_rooms () =
          backward-compat, so we use a large impossible pid instead). *)
       C2c_mcp.Broker.register broker
         ~session_id:"session-alive" ~alias:"storm-alive"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       C2c_mcp.Broker.register broker
         ~session_id:"session-ghost" ~alias:"storm-ghost"
-        ~pid:(Some 999999999) ~pid_start_time:None;
+        ~pid:(Some 999999999) ~pid_start_time:None ();
       (* Both join swarm-lounge *)
       ignore
         (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
@@ -2619,10 +2713,10 @@ let test_prune_rooms_evicts_dead_members_without_touching_registrations () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"s-alive" ~alias:"alive-peer"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       C2c_mcp.Broker.register broker
         ~session_id:"s-dead" ~alias:"dead-peer"
-        ~pid:(Some 999999999) ~pid_start_time:None;
+        ~pid:(Some 999999999) ~pid_start_time:None ();
       ignore
         (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
            ~alias:"alive-peer" ~session_id:"s-alive");
@@ -2650,7 +2744,7 @@ let test_prune_rooms_noop_when_all_members_alive () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"s-alive" ~alias:"alive-peer"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       ignore
         (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
            ~alias:"alive-peer" ~session_id:"s-alive");
@@ -2664,10 +2758,10 @@ let test_tools_call_prune_rooms_via_mcp () =
       let broker = C2c_mcp.Broker.create ~root:broker_root in
       C2c_mcp.Broker.register broker
         ~session_id:"s-alive" ~alias:"alive-peer"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       C2c_mcp.Broker.register broker
         ~session_id:"s-dead" ~alias:"dead-peer"
-        ~pid:(Some 999999999) ~pid_start_time:None;
+        ~pid:(Some 999999999) ~pid_start_time:None ();
       ignore
         (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
            ~alias:"alive-peer" ~session_id:"s-alive");
@@ -2713,11 +2807,11 @@ let test_prune_rooms_evicts_pidless_zombie_members () =
       (* Alive member: current pid, no pid_start_time *)
       C2c_mcp.Broker.register broker
         ~session_id:"s-alive" ~alias:"alive-peer"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       (* Pidless zombie: no pid at all — legacy registration *)
       C2c_mcp.Broker.register broker
         ~session_id:"s-zombie" ~alias:"zombie-peer"
-        ~pid:None ~pid_start_time:None;
+        ~pid:None ~pid_start_time:None ();
       ignore
         (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
            ~alias:"alive-peer" ~session_id:"s-alive");
@@ -2749,7 +2843,7 @@ let test_liveness_unverified_pid_shows_unknown () =
       let live_pid = Unix.getpid () in
       C2c_mcp.Broker.register broker
         ~session_id:"s-unverified" ~alias:"unverified-peer"
-        ~pid:(Some live_pid) ~pid_start_time:None;
+        ~pid:(Some live_pid) ~pid_start_time:None ();
       let regs = C2c_mcp.Broker.list_registrations broker in
       let reg = List.find (fun r -> r.C2c_mcp.alias = "unverified-peer") regs in
       (match C2c_mcp.Broker.registration_liveness_state reg with
@@ -2767,7 +2861,7 @@ let test_prune_rooms_keeps_unverified_pid_member () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"s-unverified" ~alias:"unverified-peer"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       ignore
         (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
            ~alias:"unverified-peer" ~session_id:"s-unverified");
@@ -2782,7 +2876,7 @@ let test_prune_rooms_evicts_orphan_room_members () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"s-alive" ~alias:"alive-peer"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       ignore
         (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
            ~alias:"alive-peer" ~session_id:"s-alive");
@@ -2997,9 +3091,9 @@ let test_join_room_broadcasts_system_message_to_all_members () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-a"
-        ~alias:"alice" ~pid:None ~pid_start_time:None;
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker ~session_id:"session-b"
-        ~alias:"bob" ~pid:None ~pid_start_time:None;
+        ~alias:"bob" ~pid:None ~pid_start_time:None ();
       let _ =
         C2c_mcp.Broker.join_room broker ~room_id:"lobby"
           ~alias:"alice" ~session_id:"session-a"
@@ -3046,7 +3140,7 @@ let test_join_room_idempotent_does_not_rebroadcast () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-a"
-        ~alias:"alice" ~pid:None ~pid_start_time:None;
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
       let _ =
         C2c_mcp.Broker.join_room broker ~room_id:"lobby"
           ~alias:"alice" ~session_id:"session-a"
@@ -3073,9 +3167,9 @@ let test_join_room_idempotent_non_tail_member_does_not_rebroadcast () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-a"
-        ~alias:"alice" ~pid:None ~pid_start_time:None;
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker ~session_id:"session-b"
-        ~alias:"bob" ~pid:None ~pid_start_time:None;
+        ~alias:"bob" ~pid:None ~pid_start_time:None ();
       let _ =
         C2c_mcp.Broker.join_room broker ~room_id:"lobby"
           ~alias:"alice" ~session_id:"session-a"
@@ -3161,9 +3255,9 @@ let test_send_room_appends_history_and_fans_out () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       (* Register both aliases so they have live inboxes. *)
       C2c_mcp.Broker.register broker ~session_id:"session-a"
-        ~alias:"storm-ember" ~pid:None ~pid_start_time:None;
+        ~alias:"storm-ember" ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker ~session_id:"session-b"
-        ~alias:"storm-storm" ~pid:None ~pid_start_time:None;
+        ~alias:"storm-storm" ~pid:None ~pid_start_time:None ();
       (* Both join the room. *)
       let _ =
         C2c_mcp.Broker.join_room broker ~room_id:"chat"
@@ -3212,9 +3306,9 @@ let test_send_room_skips_sender_inbox () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-a"
-        ~alias:"storm-ember" ~pid:None ~pid_start_time:None;
+        ~alias:"storm-ember" ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker ~session_id:"session-b"
-        ~alias:"storm-storm" ~pid:None ~pid_start_time:None;
+        ~alias:"storm-storm" ~pid:None ~pid_start_time:None ();
       let _ =
         C2c_mcp.Broker.join_room broker ~room_id:"chat"
           ~alias:"storm-ember" ~session_id:"session-a"
@@ -3242,9 +3336,9 @@ let test_send_room_deduplicates_identical_content_within_window () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-a"
-        ~alias:"sender" ~pid:None ~pid_start_time:None;
+        ~alias:"sender" ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker ~session_id:"session-b"
-        ~alias:"receiver" ~pid:None ~pid_start_time:None;
+        ~alias:"receiver" ~pid:None ~pid_start_time:None ();
       let _ =
         C2c_mcp.Broker.join_room broker ~room_id:"chat"
           ~alias:"sender" ~session_id:"session-a"
@@ -3288,9 +3382,9 @@ let test_send_room_does_not_dedup_different_content () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-a"
-        ~alias:"sender" ~pid:None ~pid_start_time:None;
+        ~alias:"sender" ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker ~session_id:"session-b"
-        ~alias:"receiver" ~pid:None ~pid_start_time:None;
+        ~alias:"receiver" ~pid:None ~pid_start_time:None ();
       let _ =
         C2c_mcp.Broker.join_room broker ~room_id:"chat"
           ~alias:"sender" ~session_id:"session-a"
@@ -3328,11 +3422,11 @@ let test_list_rooms_returns_room_with_members () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"s-alice" ~alias:"alice"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None;
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
       C2c_mcp.Broker.register broker ~session_id:"s-bob" ~alias:"bob"
-        ~pid:(Some 999999999) ~pid_start_time:None;
+        ~pid:(Some 999999999) ~pid_start_time:None ();
       C2c_mcp.Broker.register broker ~session_id:"s-carol" ~alias:"carol"
-        ~pid:None ~pid_start_time:None;
+        ~pid:None ~pid_start_time:None ();
       let _ =
         C2c_mcp.Broker.join_room broker ~room_id:"room-alpha"
           ~alias:"alice" ~session_id:"s-alice"
@@ -3458,7 +3552,7 @@ let test_tools_call_join_room_backfills_recent_history () =
           let broker = C2c_mcp.Broker.create ~root:dir in
           (* First member joins and seeds three messages into history. *)
           C2c_mcp.Broker.register broker ~session_id:"session-firstmember"
-            ~alias:"first-member" ~pid:None ~pid_start_time:None;
+            ~alias:"first-member" ~pid:None ~pid_start_time:None ();
           let _ =
             C2c_mcp.Broker.join_room broker ~room_id:"backfill-room"
               ~alias:"first-member" ~session_id:"session-firstmember"
@@ -3530,7 +3624,7 @@ let test_tools_call_peek_inbox_does_not_drain () =
         (fun () ->
           let broker = C2c_mcp.Broker.create ~root:dir in
           C2c_mcp.Broker.register broker ~session_id:"session-peeker"
-            ~alias:"peeker" ~pid:None ~pid_start_time:None;
+            ~alias:"peeker" ~pid:None ~pid_start_time:None ();
           C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
             ~to_alias:"peeker" ~content:"first" ();
           C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
@@ -3576,9 +3670,9 @@ let test_tools_call_peek_inbox_ignores_session_id_argument () =
         (fun () ->
           let broker = C2c_mcp.Broker.create ~root:dir in
           C2c_mcp.Broker.register broker ~session_id:"session-self"
-            ~alias:"self" ~pid:None ~pid_start_time:None;
+            ~alias:"self" ~pid:None ~pid_start_time:None ();
           C2c_mcp.Broker.register broker ~session_id:"session-victim"
-            ~alias:"victim" ~pid:None ~pid_start_time:None;
+            ~alias:"victim" ~pid:None ~pid_start_time:None ();
           C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
             ~to_alias:"victim" ~content:"secret for victim only" ();
           let request =
@@ -3615,9 +3709,9 @@ let test_my_rooms_returns_only_sessions_memberships () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-me"
-        ~alias:"me-alias" ~pid:None ~pid_start_time:None;
+        ~alias:"me-alias" ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker ~session_id:"session-other"
-        ~alias:"other-alias" ~pid:None ~pid_start_time:None;
+        ~alias:"other-alias" ~pid:None ~pid_start_time:None ();
       let _ =
         C2c_mcp.Broker.join_room broker ~room_id:"room-one"
           ~alias:"me-alias" ~session_id:"session-me"
@@ -3651,9 +3745,9 @@ let test_tools_call_my_rooms_uses_env_session_id () =
         (fun () ->
           let broker = C2c_mcp.Broker.create ~root:dir in
           C2c_mcp.Broker.register broker ~session_id:"session-env"
-            ~alias:"env-me" ~pid:None ~pid_start_time:None;
+            ~alias:"env-me" ~pid:None ~pid_start_time:None ();
           C2c_mcp.Broker.register broker ~session_id:"session-victim"
-            ~alias:"victim" ~pid:None ~pid_start_time:None;
+            ~alias:"victim" ~pid:None ~pid_start_time:None ();
           let _ =
             C2c_mcp.Broker.join_room broker ~room_id:"visible-to-env"
               ~alias:"env-me" ~session_id:"session-env"
@@ -3704,7 +3798,7 @@ let test_tools_call_join_room_respects_history_limit_zero () =
         (fun () ->
           let broker = C2c_mcp.Broker.create ~root:dir in
           C2c_mcp.Broker.register broker ~session_id:"session-seed"
-            ~alias:"seed-member" ~pid:None ~pid_start_time:None;
+            ~alias:"seed-member" ~pid:None ~pid_start_time:None ();
           let _ =
             C2c_mcp.Broker.join_room broker ~room_id:"quiet-room"
               ~alias:"seed-member" ~session_id:"session-seed"
@@ -3756,9 +3850,9 @@ let test_tools_call_send_room_via_mcp () =
           let broker = C2c_mcp.Broker.create ~root:dir in
           (* Register two aliases. *)
           C2c_mcp.Broker.register broker ~session_id:"session-sender-room"
-            ~alias:"storm-sender" ~pid:None ~pid_start_time:None;
+            ~alias:"storm-sender" ~pid:None ~pid_start_time:None ();
           C2c_mcp.Broker.register broker ~session_id:"session-recv-room"
-            ~alias:"storm-recv" ~pid:None ~pid_start_time:None;
+            ~alias:"storm-recv" ~pid:None ~pid_start_time:None ();
           (* Both join the room. *)
           let _ =
             C2c_mcp.Broker.join_room broker ~room_id:"mcp-chat"
@@ -3834,9 +3928,9 @@ let test_tools_call_send_room_accepts_alias_as_from_alias_alias () =
         (fun () ->
           let broker = C2c_mcp.Broker.create ~root:dir in
           C2c_mcp.Broker.register broker ~session_id:"session-sender-alias"
-            ~alias:"storm-sender" ~pid:None ~pid_start_time:None;
+            ~alias:"storm-sender" ~pid:None ~pid_start_time:None ();
           C2c_mcp.Broker.register broker ~session_id:"session-recv-alias"
-            ~alias:"storm-recv" ~pid:None ~pid_start_time:None;
+            ~alias:"storm-recv" ~pid:None ~pid_start_time:None ();
           let _ =
             C2c_mcp.Broker.join_room broker ~room_id:"alias-chat"
               ~alias:"storm-sender" ~session_id:"session-sender-alias"
@@ -3906,9 +4000,9 @@ let test_tools_call_send_room_uses_current_session_alias_when_omitted () =
         (fun () ->
           let broker = C2c_mcp.Broker.create ~root:dir in
           C2c_mcp.Broker.register broker ~session_id:"session-sender-current"
-            ~alias:"storm-sender" ~pid:None ~pid_start_time:None;
+            ~alias:"storm-sender" ~pid:None ~pid_start_time:None ();
           C2c_mcp.Broker.register broker ~session_id:"session-recv-current"
-            ~alias:"storm-recv" ~pid:None ~pid_start_time:None;
+            ~alias:"storm-recv" ~pid:None ~pid_start_time:None ();
           let _ =
             C2c_mcp.Broker.join_room broker ~room_id:"current-chat"
               ~alias:"storm-sender" ~session_id:"session-sender-current"
@@ -4114,7 +4208,7 @@ let test_tools_call_join_room_accepts_from_alias_as_alias () =
         (fun () ->
           let broker = C2c_mcp.Broker.create ~root:dir in
           C2c_mcp.Broker.register broker ~session_id:"session-join-from_alias"
-            ~alias:"storm-joiner" ~pid:None ~pid_start_time:None;
+            ~alias:"storm-joiner" ~pid:None ~pid_start_time:None ();
           let request =
             `Assoc
               [ ("jsonrpc", `String "2.0")
@@ -4204,9 +4298,9 @@ let test_large_inbox_drains_all_messages () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"s-src" ~alias:"src" ~pid:None
-        ~pid_start_time:None;
+        ~pid_start_time:None ();
       C2c_mcp.Broker.register broker ~session_id:"s-dst" ~alias:"dst" ~pid:None
-        ~pid_start_time:None;
+        ~pid_start_time:None ();
       for i = 1 to 50 do
         C2c_mcp.Broker.enqueue_message broker ~from_alias:"src" ~to_alias:"dst"
           ~content:(Printf.sprintf "bulk-%d" i) ()
@@ -4251,7 +4345,7 @@ let test_tools_call_leave_room_accepts_from_alias_as_alias () =
         (fun () ->
           let broker = C2c_mcp.Broker.create ~root:dir in
           C2c_mcp.Broker.register broker ~session_id:"session-leave-from_alias"
-            ~alias:"storm-leaver" ~pid:None ~pid_start_time:None;
+            ~alias:"storm-leaver" ~pid:None ~pid_start_time:None ();
           let _ =
             C2c_mcp.Broker.join_room broker ~room_id:"from-alias-leave"
               ~alias:"storm-leaver"
@@ -4453,7 +4547,7 @@ let test_register_new_peer_broadcasts_peer_register_to_swarm_lounge () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       (* Existing peer in swarm-lounge *)
       C2c_mcp.Broker.register broker ~session_id:"session-existing"
-        ~alias:"existing-peer" ~pid:None ~pid_start_time:None;
+        ~alias:"existing-peer" ~pid:None ~pid_start_time:None ();
       ignore
         (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
            ~alias:"existing-peer" ~session_id:"session-existing");
@@ -4548,10 +4642,10 @@ let test_tools_call_send_rejects_impersonation () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       (* "real-owner" holds "storm-beacon" with a live pid *)
       C2c_mcp.Broker.register broker ~session_id:"real-owner"
-        ~alias:"storm-beacon" ~pid:(Some live_pid) ~pid_start_time:None;
+        ~alias:"storm-beacon" ~pid:(Some live_pid) ~pid_start_time:None ();
       (* "storm-beacon" also registers a target to send to *)
       C2c_mcp.Broker.register broker ~session_id:"target-session"
-        ~alias:"tide-runner" ~pid:(Some live_pid) ~pid_start_time:None;
+        ~alias:"tide-runner" ~pid:(Some live_pid) ~pid_start_time:None ();
       (* An unrelated session tries to send as "storm-beacon" *)
       Unix.putenv "C2C_MCP_SESSION_ID" "impostor-session";
       Fun.protect
@@ -4599,7 +4693,7 @@ let test_tools_call_send_all_rejects_impersonation () =
       let live_pid = Unix.getpid () in
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"real-owner"
-        ~alias:"storm-beacon" ~pid:(Some live_pid) ~pid_start_time:None;
+        ~alias:"storm-beacon" ~pid:(Some live_pid) ~pid_start_time:None ();
       Unix.putenv "C2C_MCP_SESSION_ID" "impostor-session";
       Fun.protect
         ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
@@ -4639,7 +4733,7 @@ let test_tools_call_send_room_rejects_impersonation () =
       let live_pid = Unix.getpid () in
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"real-owner"
-        ~alias:"storm-beacon" ~pid:(Some live_pid) ~pid_start_time:None;
+        ~alias:"storm-beacon" ~pid:(Some live_pid) ~pid_start_time:None ();
       ignore
         (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
            ~alias:"storm-beacon" ~session_id:"real-owner");
@@ -4681,7 +4775,7 @@ let test_send_room_invite_adds_to_invite_list () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-a"
-        ~alias:"alice" ~pid:None ~pid_start_time:None;
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
       ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
                 ~alias:"alice" ~session_id:"session-a");
       C2c_mcp.Broker.send_room_invite broker ~room_id:"secret-club"
@@ -4695,7 +4789,7 @@ let test_send_room_invite_only_member_can_invite () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-a"
-        ~alias:"alice" ~pid:None ~pid_start_time:None;
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
       ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
                 ~alias:"alice" ~session_id:"session-a");
       check_raises "non-member cannot invite"
@@ -4708,7 +4802,7 @@ let test_join_room_invite_only_rejects_uninvited () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-a"
-        ~alias:"alice" ~pid:None ~pid_start_time:None;
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
       ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
                 ~alias:"alice" ~session_id:"session-a");
       C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret-club"
@@ -4723,7 +4817,7 @@ let test_join_room_invite_only_accepts_invited () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-a"
-        ~alias:"alice" ~pid:None ~pid_start_time:None;
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
       ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
                 ~alias:"alice" ~session_id:"session-a");
       C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret-club"
@@ -4776,7 +4870,7 @@ let test_tools_call_send_room_invite_via_mcp () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-a"
-        ~alias:"alice" ~pid:None ~pid_start_time:None;
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
       ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
                 ~alias:"alice" ~session_id:"session-a");
       Unix.putenv "C2C_MCP_SESSION_ID" "session-a";
@@ -4818,7 +4912,7 @@ let test_tools_call_set_room_visibility_via_mcp () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-a"
-        ~alias:"alice" ~pid:None ~pid_start_time:None;
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
       ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
                 ~alias:"alice" ~session_id:"session-a");
       Unix.putenv "C2C_MCP_SESSION_ID" "session-a";
@@ -4861,9 +4955,9 @@ let test_join_room_invite_only_rejects_uninvited_via_mcp () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-a"
-        ~alias:"alice" ~pid:None ~pid_start_time:None;
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker ~session_id:"session-b"
-        ~alias:"bob" ~pid:None ~pid_start_time:None;
+        ~alias:"bob" ~pid:None ~pid_start_time:None ();
       ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
                 ~alias:"alice" ~session_id:"session-a");
       C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret-club"
@@ -5039,6 +5133,16 @@ let () =
              test_sweep_preserves_nonempty_orphan_to_dead_letter
          ; test_case "sweep empty orphan writes no dead-letter" `Quick
              test_sweep_empty_orphan_writes_no_dead_letter
+         ; test_case "sweep preserves fresh provisional reg" `Quick
+             test_sweep_preserves_fresh_provisional_reg
+         ; test_case "sweep drops expired provisional reg" `Quick
+             test_sweep_drops_expired_provisional_reg
+         ; test_case "confirm_registration sets confirmed_at" `Quick
+             test_confirm_registration_sets_confirmed_at
+         ; test_case "confirmed reg not swept after timeout" `Quick
+             test_confirmed_reg_not_swept_after_timeout
+         ; test_case "human client_type exempt from provisional sweep" `Quick
+             test_human_client_type_exempt_from_provisional_sweep
          ; test_case "sweep evicts dead members from rooms" `Quick
              test_sweep_evicts_dead_members_from_rooms
          ; test_case "prune_rooms evicts dead members without touching registrations" `Quick
