@@ -1266,5 +1266,103 @@ class C2CStartNameValidationTests(unittest.TestCase):
         self.assertFalse(nested.exists(), f"nested dir was created: {nested}")
 
 
+@_CLI_SKIP
+class PollInboxAliasFallbackTests(unittest.TestCase):
+    """Regression: `c2c poll-inbox` must fall back to alias-based session_id lookup.
+
+    Scenario: C2C_MCP_SESSION_ID=my-alias but the registry has the registration
+    under session_id=real-session (alias=my-alias). The inbox file lives at
+    real-session.inbox.json, NOT my-alias.inbox.json.
+
+    Before 68283ef: poll-inbox tried my-alias.inbox.json → got [] even though
+    real-session.inbox.json had messages (the planner1 session_id mismatch bug).
+
+    After fix: poll-inbox uses alias fallback → finds real-session → drains correctly.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.broker_root = Path(self.tmp.name) / "broker"
+        self.broker_root.mkdir(parents=True)
+
+        # Write a registry with session_id != alias
+        reg = {
+            "session_id": "real-session-id",
+            "alias": "my-alias",
+            "pid": os.getpid(),
+            "pid_start_time": 0,
+            "registered_at": 0.0,
+        }
+        (self.broker_root / "registry.json").write_text(json.dumps([reg]))
+
+        # Write a test message into the real session's inbox
+        msg = {
+            "from_alias": "sender1",
+            "to_alias": "my-alias",
+            "content": "hello from fallback test",
+            "deferrable": False,
+        }
+        (self.broker_root / "real-session-id.inbox.json").write_text(json.dumps([msg]))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _poll(self) -> tuple[int, str, str]:
+        from conftest import spawn_tracked
+        env = {
+            **os.environ,
+            "C2C_MCP_BROKER_ROOT": str(self.broker_root),
+            "C2C_MCP_SESSION_ID": "my-alias",
+            "C2C_MCP_AUTO_REGISTER_ALIAS": "my-alias",
+        }
+        proc = spawn_tracked(
+            [str(CLI_EXE), "poll-inbox", "--json"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        stdout, stderr = proc.communicate(timeout=CLI_TIMEOUT)
+        return proc.returncode, stdout, stderr
+
+    def test_alias_fallback_finds_inbox(self):
+        """poll-inbox with session_id mismatch must drain the alias-resolved inbox."""
+        rc, stdout, _stderr = self._poll()
+        self.assertEqual(rc, 0, f"poll-inbox exited non-zero: {_stderr}")
+        msgs = json.loads(stdout)
+        self.assertEqual(len(msgs), 1, f"expected 1 message via alias fallback, got: {msgs}")
+        self.assertEqual(msgs[0]["from_alias"], "sender1")
+        self.assertEqual(msgs[0]["content"], "hello from fallback test")
+
+    def test_alias_fallback_prints_info_to_stderr(self):
+        """poll-inbox alias fallback must log a diagnostic to stderr so the mismatch is visible."""
+        _rc, _stdout, stderr = self._poll()
+        self.assertIn("my-alias", stderr, f"alias not mentioned in stderr: {stderr!r}")
+        self.assertIn("real-session-id", stderr, f"resolved session_id not in stderr: {stderr!r}")
+
+    def test_no_fallback_when_no_alias_env(self):
+        """Without C2C_MCP_AUTO_REGISTER_ALIAS, poll-inbox must NOT fall back — returns []."""
+        from conftest import spawn_tracked
+        env = {
+            **os.environ,
+            "C2C_MCP_BROKER_ROOT": str(self.broker_root),
+            "C2C_MCP_SESSION_ID": "my-alias",
+            # deliberately omit C2C_MCP_AUTO_REGISTER_ALIAS
+        }
+        env.pop("C2C_MCP_AUTO_REGISTER_ALIAS", None)
+        proc = spawn_tracked(
+            [str(CLI_EXE), "poll-inbox", "--json"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        stdout, stderr = proc.communicate(timeout=CLI_TIMEOUT)
+        self.assertEqual(proc.returncode, 0)
+        msgs = json.loads(stdout)
+        # Without the alias env, it looks for my-alias.inbox.json which doesn't exist → []
+        self.assertEqual(msgs, [], f"expected [] without alias env, got: {msgs}")
+
+
 if __name__ == "__main__":
     unittest.main()
