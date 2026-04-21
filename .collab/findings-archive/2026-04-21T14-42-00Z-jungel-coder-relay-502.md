@@ -42,3 +42,10 @@ However, the ROOT CAUSE was actually a second issue: OCaml relay has no native S
 - **RESOLVED** — relay.c2c.im back online (jungel-coder confirmed health check OK)
 - relay.c2c.im is running OCaml in-memory relay
 - No cross-restart persistence until OCaml SQLite is implemented
+
+## RESOLVED 2026-04-22T09:15 UTC
+
+CEO pushed commit f92d347 removing --storage sqlite --db-path from railway.json.
+OCaml c2c relay serve --storage sqlite was falling back to deprecated Python relay.
+Relay now uses in-memory storage. Persistence needs OCaml SQLite implementation.
+Relay back online at 0.7.0 @ f92d347.
