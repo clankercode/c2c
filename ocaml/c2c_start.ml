@@ -548,6 +548,7 @@ let build_env ?(broker_root_override : string option = None) (name : string) (al
     (try Unix.readlink "/proc/self/exe" with Unix.Unix_error _ -> Sys.argv.(0))
   in
   let additions = [
+    "C2C_WRAPPER_SELF", "1";  (* marks the wrapper process itself; bash subshells of the managed client don't inherit this *)
     "C2C_MCP_SESSION_ID", name;
     "C2C_INSTANCE_NAME", name;
     "C2C_MCP_AUTO_REGISTER_ALIAS", Option.value alias_override ~default:name;
@@ -1348,14 +1349,14 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
   end;
 
   (* Guard: fail fast if already running inside a c2c agent session.
-     C2C_INSTANCE_NAME means we ARE the managed client (set by our own
-     build_env), so skip the guard in that case. If session-id or alias
-     is set without INSTANCE_NAME, we're inside a nested c2c session. *)
+     C2C_WRAPPER_SELF is set by build_env exclusively in the wrapper process
+     (passed to exec'd client via env, NOT inherited by bash subshells of the
+     managed client). If session or alias is set without C2C_WRAPPER_SELF,
+     we're inside a nested c2c session. *)
   (match Sys.getenv_opt "C2C_MCP_SESSION_ID",
          Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS",
-         Sys.getenv_opt "C2C_INSTANCE_NAME" with
+         Sys.getenv_opt "C2C_WRAPPER_SELF" with
    | Some _, None, None ->
-       (* session-id set, alias not set, no instance name → nested session *)
        let use_color = Unix.isatty Unix.stderr in
        let red = if use_color then "\027[1;31m" else "" in
        let reset = if use_color then "\027[0m" else "" in
@@ -1370,7 +1371,6 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
          red reset sid_str;
        exit 1
    | None, Some _, None ->
-       (* alias set, no session-id, no instance name → nested session *)
        let use_color = Unix.isatty Unix.stderr in
        let red = if use_color then "\027[1;31m" else "" in
        let reset = if use_color then "\027[0m" else "" in
@@ -1385,7 +1385,6 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
          red reset alias_str;
        exit 1
    | Some _, Some _, None ->
-       (* both set, no instance name → definitely nested session *)
        let use_color = Unix.isatty Unix.stderr in
        let red = if use_color then "\027[1;31m" else "" in
        let reset = if use_color then "\027[0m" else "" in
@@ -1399,9 +1398,9 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
           \  or 'c2c restart-self' to restart the inner client.\n%!"
          red reset sid_str;
        exit 1
-   | None, None, _ -> ()  (* no session vars OR we have INSTANCE_NAME → OK *)
-   | Some _, None, Some _ -> ()  (* session + instance_name → OK (managed client) *)
-   | None, Some _, Some _ -> ()  (* alias + instance_name → OK (managed client) *)
+   | None, None, _ -> ()  (* no session vars → OK *)
+   | Some _, None, Some _ -> ()  (* session + wrapper_self → OK (managed client) *)
+   | None, Some _, Some _ -> ()  (* alias + wrapper_self → OK (managed client) *)
    | Some _, Some _, Some _ -> ());
 
   (* Validate --session-id. OpenCode accepts ses_* session IDs from its TUI;
