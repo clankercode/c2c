@@ -4109,7 +4109,24 @@ let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt ?(
                 with _ -> " (global update failed)")
              end else ""
            in
-           Printf.sprintf "plugin installed to %s%s" dest global_note
+           (* Also install the TUI companion plugin (c2c-tui.ts) if present
+              alongside c2c.ts in the source tree. It auto-focuses the TUI on
+              sessions the server plugin creates, so --auto kickoff no longer
+              leaves the user staring at the "New session" banner. *)
+           let tui_src = Filename.dirname src // "c2c-tui.ts" in
+           let tui_global = home // ".config" // "opencode" // "plugins" // "c2c-tui.ts" in
+           let tui_note =
+             if Sys.file_exists tui_src then begin
+               let tui_dest = plugins_dir // "c2c-tui.ts" in
+               (try
+                  copy_file ~src:tui_src ~dst:tui_dest;
+                  if src = local_plugin then
+                    (try copy_file ~src:tui_src ~dst:tui_global with _ -> ());
+                  " + tui plugin"
+                with _ -> " (tui plugin copy failed)")
+             end else ""
+           in
+           Printf.sprintf "plugin installed to %s%s%s" dest global_note tui_note
          with _ -> "plugin copy failed")
   in
   match output_mode with

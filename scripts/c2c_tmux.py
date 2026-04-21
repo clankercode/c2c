@@ -26,6 +26,7 @@ Shared conventions:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shlex
@@ -114,6 +115,16 @@ def target_for_alias(alias: str) -> str:
         if p.alias == alias:
             return p.target
     sys.exit(f"c2c_tmux: no alias '{alias}' found; try `{sys.argv[0]} list`")
+
+
+def alias_is_alive(alias: str) -> bool:
+    c2c_bin = shutil.which("c2c") or "c2c"
+    try:
+        out = subprocess.run([c2c_bin, "list", "--json"], capture_output=True, text=True, check=False).stdout
+        rows = json.loads(out) if out.strip() else []
+    except (json.JSONDecodeError, FileNotFoundError):
+        return False
+    return any(r.get("alias") == alias and r.get("alive") is True for r in rows)
 
 
 # ---------------------------------------------------------------- commands
@@ -241,6 +252,13 @@ def cmd_launch(args: argparse.Namespace) -> int:
     if args.extra:
         cmd.extend(args.extra)
     shell_cmd = shlex.join(cmd)
+
+    if args.name and alias_is_alive(args.name):
+        print(
+            f"launch: alias '{args.name}' is already alive — choose a different name or stop it first",
+            file=sys.stderr,
+        )
+        return 1
 
     self_pane = os.environ.get("TMUX_PANE")
     pane: str | None = None
