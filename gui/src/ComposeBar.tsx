@@ -1,10 +1,12 @@
-import { useState, KeyboardEvent } from "react";
+import { useState, useEffect, KeyboardEvent } from "react";
 import { sendMessage } from "./useSend";
 
 interface Props {
   peers: string[];
   rooms: string[];
   myAlias: string;
+  initialTo?: string;
+  initialIsRoom?: boolean;
 }
 
 const INPUT_STYLE: React.CSSProperties = {
@@ -17,9 +19,13 @@ const INPUT_STYLE: React.CSSProperties = {
   outline: "none",
 };
 
-export function ComposeBar({ peers, rooms, myAlias }: Props) {
-  const [to, setTo] = useState("");
-  const [isRoom, setIsRoom] = useState(false);
+export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoom = false }: Props) {
+  const [to, setTo] = useState(initialTo);
+  const [isRoom, setIsRoom] = useState(initialIsRoom);
+
+  useEffect(() => {
+    if (initialTo) { setTo(initialTo); setIsRoom(initialIsRoom); }
+  }, [initialTo, initialIsRoom]);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);

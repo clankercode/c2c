@@ -3,6 +3,7 @@ import { Command, Child } from "@tauri-apps/plugin-shell";
 import { C2cEvent } from "./types";
 import { EventFeed } from "./EventFeed";
 import { ComposeBar } from "./ComposeBar";
+import { Sidebar } from "./Sidebar";
 import { registerAlias } from "./useSend";
 import { loadHistory } from "./useHistory";
 import { discoverPeers, discoverRooms } from "./useDiscovery";
@@ -15,6 +16,8 @@ export function App() {
   const [status, setStatus] = useState<"connecting" | "live" | "error">("connecting");
   const [peers, setPeers] = useState<Set<string>>(new Set());
   const [rooms, setRooms] = useState<Set<string>>(new Set());
+  const [composeTo, setComposeTo] = useState("");
+  const [composeIsRoom, setComposeIsRoom] = useState(false);
   const [myAlias, setMyAlias] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "");
   const [aliasInput, setAliasInput] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "");
   const [aliasStatus, setAliasStatus] = useState<string | null>(null);
@@ -157,15 +160,25 @@ export function App() {
         </div>
       </div>
 
-      {/* Event feed */}
-      <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-        {events.length === 0 ? (
-          <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#585b70" }}>
-            Waiting for swarm events…
-          </div>
-        ) : (
-          <EventFeed events={events} />
-        )}
+      {/* Main area: sidebar + feed */}
+      <div style={{ flex: 1, overflow: "hidden", display: "flex" }}>
+        <Sidebar
+          peers={[...peers]}
+          rooms={[...rooms]}
+          onSelect={(target, isRoom) => {
+            setComposeTo(target);
+            setComposeIsRoom(isRoom);
+          }}
+        />
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          {events.length === 0 ? (
+            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#585b70" }}>
+              Waiting for swarm events…
+            </div>
+          ) : (
+            <EventFeed events={events} />
+          )}
+        </div>
       </div>
 
       {/* Compose bar */}
@@ -173,6 +186,8 @@ export function App() {
         peers={[...peers]}
         rooms={[...rooms]}
         myAlias={myAlias}
+        initialTo={composeTo}
+        initialIsRoom={composeIsRoom}
       />
     </div>
   );
