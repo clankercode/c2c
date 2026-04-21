@@ -5,7 +5,7 @@
 - **Severity:** high — blocks v1 ship-gate end-to-end. §8.2–§8.6 all
   depend on `/join_room` / `/send_room` / `/room_history` on the
   public relay, which the deployed binary is not routing.
-- **Fix status:** NOT FIXED — requires a fresh Railway deploy from
+- **Fix status:** RESOLVED 2026-04-21T13:52Z — relay redeployed, 11/11 smoke tests pass
   current master. Relates to the RAILPACK/railway.json mismatch flagged
   in `2026-04-20T15-48-00Z-planner1-relay-production-down.md`.
 
