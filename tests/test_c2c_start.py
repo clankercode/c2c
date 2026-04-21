@@ -1215,6 +1215,10 @@ class C2CStartNameValidationTests(unittest.TestCase):
             "PATH": str(self.tmp_path) + ":" + os.environ.get("PATH", ""),
             "C2C_MCP_BROKER_ROOT": str(self.broker_root),
             "C2C_INSTANCES_DIR": str(self.instances_dir),
+            # Prevent git rev-parse from finding the real repo, so
+            # refresh_opencode_identity uses the broker-derived path (tmp dir)
+            # rather than the real .opencode/opencode.json.
+            "GIT_DIR": str(self.tmp_path / "no-such-git"),
         }
         proc = spawn_tracked(
             [str(CLI_EXE), "start", "opencode", "-n", name],
@@ -1222,6 +1226,7 @@ class C2CStartNameValidationTests(unittest.TestCase):
             stderr=subprocess.PIPE,
             text=True,
             env=env,
+            cwd=str(self.tmp_path),
         )
         try:
             stdout, stderr = proc.communicate(timeout=CLI_TIMEOUT)

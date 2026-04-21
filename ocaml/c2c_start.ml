@@ -500,9 +500,9 @@ let build_env ?(broker_root_override : string option = None) (name : string) (al
  * Called by start_inner when client = "opencode".
  * --------------------------------------------------------------------------- *)
 
-let refresh_opencode_identity ~name ~alias ~broker_root =
+let refresh_opencode_identity ~name ~alias ~broker_root ~project_dir =
   let ( // ) = Filename.concat in
-  let config_dir = Sys.getcwd () // ".opencode" in
+  let config_dir = project_dir // ".opencode" in
   (* Patch opencode.json mcp.c2c.environment with identity vars. *)
   let config_path = config_dir // "opencode.json" in
   (if Sys.file_exists config_path then
@@ -946,10 +946,14 @@ let run_outer_loop ~(name : string) ~(client : string)
       with _ -> ());
 
       (* For OpenCode: refresh opencode.json env + sidecar with this instance's
-         session_id and alias so the MCP server auto-registers the right identity. *)
+         session_id and alias so the MCP server auto-registers the right identity.
+         Use resolve_repo_root so we only write to the actual git project dir,
+         not to whatever cwd happens to be (avoids overwriting in test scenarios). *)
       (if client = "opencode" then begin
         let alias = Option.value alias_override ~default:name in
-        refresh_opencode_identity ~name ~alias ~broker_root
+        let project_dir = resolve_repo_root ~broker_root in
+        if project_dir <> "" then
+          refresh_opencode_identity ~name ~alias ~broker_root ~project_dir
       end);
 
       (* Write kickoff prompt file so the plugin delivers it on first session.idle. *)
