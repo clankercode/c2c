@@ -67,6 +67,11 @@ const mockCtx = {
         return {};
       },
     },
+    postSessionIdPermissionsPermissionId: async (call: any) => {
+      line('PERMISSION_RESOLVED: ' + JSON.stringify(call));
+      await postJson('/session/permission_respond', call);
+      return {};
+    },
   },
 };
 
