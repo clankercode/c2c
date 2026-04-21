@@ -209,6 +209,7 @@ const C2CDelivery: Plugin = async (ctx) => {
   const permissionTimeoutMs: number = parseInt(
     process.env.C2C_PERMISSION_TIMEOUT_MS || "600000", 10
   );
+  const pluginStartTimeMs = Date.now();
 
   // Track the active root session (set from session events)
   let activeSessionId: string | null = configuredOpenCodeSessionId || null;
@@ -231,6 +232,148 @@ const C2CDelivery: Plugin = async (ctx) => {
   const timedOutMemoryMs: number = 30 * 60 * 1000; // 30 min
 
   // --- Helpers ---
+
+  type TuiFocusType = "permission" | "question" | "prompt" | "menu" | "unknown";
+  type PluginStateSnapshot = {
+    agentIdle: boolean;
+    stepCount: number;
+    lastStepDetails: Record<string, unknown>;
+    provider: string;
+    model: string;
+    tuiFocusType: TuiFocusType;
+    promptHasText: boolean;
+    opencodePid: number;
+    startTimeMs: number;
+    lastUpdatedMs: number;
+  };
+
+  const pluginState: PluginStateSnapshot = {
+    agentIdle: false,
+    stepCount: 0,
+    lastStepDetails: { eventType: "plugin.boot" },
+    provider: "",
+    model: "",
+    tuiFocusType: "unknown",
+    promptHasText: false,
+    opencodePid: process.pid,
+    startTimeMs: pluginStartTimeMs,
+    lastUpdatedMs: pluginStartTimeMs,
+  };
+
+  function firstString(...values: unknown[]): string {
+    for (const value of values) {
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+    return "";
+  }
+
+  function truncateText(value: string, limit = 160): string {
+    return value.length <= limit ? value : value.slice(0, limit) + "...";
+  }
+
+  function detectPromptHasText(event: Event): boolean | null {
+    const props = (event as any).properties ?? {};
+    const candidates = [
+      props.text,
+      props.prompt,
+      props.input,
+      props.value,
+      props.query,
+      props.info?.text,
+      props.info?.prompt,
+      props.info?.input,
+    ];
+    for (const candidate of candidates) {
+      if (typeof candidate === "string") return candidate.trim().length > 0;
+    }
+    const parts = props.body?.parts ?? props.parts;
+    if (Array.isArray(parts)) {
+      const text = parts
+        .filter((part: any) => part?.type === "text" && typeof part?.text === "string")
+        .map((part: any) => part.text)
+        .join("\n")
+        .trim();
+      return text.length > 0;
+    }
+    if (event.type === "session.idle" || event.type === "session.created") return false;
+    return null;
+  }
+
+  function detectFocusType(event: Event, promptHasText: boolean | null): TuiFocusType {
+    const type = String(event.type || "").toLowerCase();
+    if (type.startsWith("permission.")) return "permission";
+    if (type.includes("question")) return "question";
+    if (type.includes("menu")) return "menu";
+    if (type.includes("prompt")) return "prompt";
+    if (event.type === "session.idle" || event.type === "session.created") return "prompt";
+    if (promptHasText !== null) return "prompt";
+    return "unknown";
+  }
+
+  function summarizeEvent(event: Event): Record<string, unknown> {
+    const props = (event as any).properties ?? {};
+    const info = props.info ?? {};
+    const summary: Record<string, unknown> = {
+      eventType: event.type,
+      atMs: Date.now(),
+    };
+    const session = firstString(info.id, props.sessionID, props.sessionId, activeSessionId);
+    if (session) summary.sessionID = session;
+    const permissionID = firstString(props.id, props.permissionID, props.permissionId);
+    if (permissionID) summary.permissionID = permissionID;
+    const title = firstString(props.title, info.title);
+    if (title) summary.title = title;
+    const subtype = firstString(props.type, info.type);
+    if (subtype) summary.type = subtype;
+    const preview = firstString(
+      props.text,
+      props.prompt,
+      props.input,
+      props.query,
+      typeof props.pattern === "string" ? props.pattern : "",
+    );
+    if (preview) summary.preview = truncateText(preview);
+    return summary;
+  }
+
+  function streamStateSnapshot(): void {
+    const command = process.env.C2C_CLI_COMMAND || "c2c";
+    const snapshot: PluginStateSnapshot = {
+      ...pluginState,
+      lastStepDetails: { ...pluginState.lastStepDetails },
+      lastUpdatedMs: Date.now(),
+    };
+    pluginState.lastUpdatedMs = snapshot.lastUpdatedMs;
+    try {
+      const proc = spawn(command, ["oc-plugin", "stream-write-statefile"], {
+        cwd: process.cwd(),
+        env: process.env,
+        shell: false,
+      });
+      proc.stdin?.end(JSON.stringify(snapshot) + "\n");
+      proc.on("error", () => {});
+      proc.on("close", () => {});
+    } catch {
+      // Best-effort: silently ignore if c2c binary is absent.
+    }
+  }
+
+  function updatePluginState(event: Event): void {
+    const props = (event as any).properties ?? {};
+    const info = props.info ?? {};
+    const provider = firstString(info.provider, props.provider, pluginState.provider);
+    const model = firstString(info.model, props.model, pluginState.model);
+    if (provider) pluginState.provider = provider;
+    if (model) pluginState.model = model;
+
+    const promptHasText = detectPromptHasText(event);
+    if (promptHasText !== null) pluginState.promptHasText = promptHasText;
+    pluginState.tuiFocusType = detectFocusType(event, promptHasText);
+    pluginState.agentIdle = event.type === "session.idle";
+    if (event.type === "session.idle") pluginState.stepCount += 1;
+    pluginState.lastStepDetails = summarizeEvent(event);
+    streamStateSnapshot();
+  }
 
   // Debug log to disk — survives even if OpenCode log API is broken.
   // On by default; silence with C2C_PLUGIN_DEBUG=0.
@@ -554,6 +697,7 @@ const C2CDelivery: Plugin = async (ctx) => {
   try { pluginHash = crypto.createHash("sha256").update(fs.readFileSync(pluginFilePath)).digest("hex").slice(0, 12); } catch { /**/ }
   await log(`plugin loaded (session=${sessionId}, interval=${pollIntervalMs}ms, idleOnly=${idleOnlyMode}, sha256=${pluginHash})`);
   await log(`API introspect: session methods=[${sessionMethods}] app methods=[${appMethods}]`);
+  streamStateSnapshot();
   startBackgroundLoop();
 
   // --- Return hooks ---
@@ -561,6 +705,7 @@ const C2CDelivery: Plugin = async (ctx) => {
     event: async ({ event }: { event: Event }) => {
       // Log every event type for debugging (permission hook, delivery, etc.)
       await log(`event: type=${event.type}`);
+      updatePluginState(event);
       // Track root session ID from creation events — also trigger immediate delivery
       // so queued messages arrive without waiting for the next background loop tick.
       if (event.type === "session.created") {

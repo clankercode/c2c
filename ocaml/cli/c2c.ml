@@ -6288,6 +6288,74 @@ let screen_cmd =
 
 let screen = Cmdliner.Cmd.v (Cmdliner.Cmd.info "screen" ~doc:"Capture PTY screen content as text.") screen_cmd
 
+(* --- subcommand group: oc-plugin ------------------------------------------ *)
+(* Sink commands for the OpenCode TypeScript plugin (c2c.ts).
+   The plugin pipes state snapshots via stdin; these commands persist them
+   at discoverable paths so external tools (GUI observer, c2c status, etc.)
+   can read current OpenCode agent state without querying the plugin directly. *)
+
+let oc_plugin_stream_write_statefile_cmd =
+  Cmdliner.Term.(const (fun () ->
+    (* Statefile path:
+       - $C2C_INSTANCE_NAME set  → ~/.local/share/c2c/instances/<name>/oc-plugin-state.json
+       - else                    → ~/.local/share/c2c/oc-plugin-state.json          *)
+    let home = Sys.getenv_opt "HOME" |> Option.value ~default:"/tmp" in
+    let base_dir = Filename.concat home ".local/share/c2c" in
+    let mkdir_p dir =
+      let parts = String.split_on_char '/' dir in
+      let _ = List.fold_left (fun acc part ->
+        if part = "" then acc
+        else
+          let p = if acc = "" then "/" ^ part else acc ^ "/" ^ part in
+          (try Unix.mkdir p 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+          p
+      ) "" parts in ()
+    in
+    let statefile =
+      match Sys.getenv_opt "C2C_INSTANCE_NAME" with
+      | Some name when String.trim name <> "" ->
+          let inst_dir = Filename.concat (Filename.concat base_dir "instances") (String.trim name) in
+          mkdir_p inst_dir;
+          Filename.concat inst_dir "oc-plugin-state.json"
+      | _ ->
+          mkdir_p base_dir;
+          Filename.concat base_dir "oc-plugin-state.json"
+    in
+    (* Read one JSON line from stdin. *)
+    let line = try input_line stdin with End_of_file -> "" in
+    if String.trim line = "" then ()
+    else begin
+      (* Validate + normalise JSON. *)
+      let json =
+        try Some (Yojson.Safe.from_string line)
+        with _ -> None
+      in
+      match json with
+      | None -> () (* malformed — silently ignore per plugin contract *)
+      | Some j ->
+          let payload = Yojson.Safe.to_string j in
+          (* Atomic write: tmp → rename(2). *)
+          let tmp = statefile ^ ".tmp" in
+          (try
+            let oc = open_out tmp in
+            output_string oc payload;
+            output_char oc '\n';
+            close_out oc;
+            Unix.rename tmp statefile
+          with _ -> ())
+    end) $ Cmdliner.Term.const ())
+
+let oc_plugin_group =
+  Cmdliner.Cmd.group
+    (Cmdliner.Cmd.info "oc-plugin"
+       ~doc:"OpenCode plugin sink commands (called by .opencode/plugins/c2c.ts).")
+    [ Cmdliner.Cmd.v
+        (Cmdliner.Cmd.info "stream-write-statefile"
+           ~doc:"Read a JSON state snapshot from stdin and write it atomically \
+                 to ~/.local/share/c2c/instances/$C2C_INSTANCE_NAME/oc-plugin-state.json \
+                 (or ~/.local/share/c2c/oc-plugin-state.json if C2C_INSTANCE_NAME is unset).")
+        oc_plugin_stream_write_statefile_cmd ]
+
 (* --- main entry point ----------------------------------------------------- *)
 
 (* Cmdliner renders help through groff/grotty, which emits ANSI SGR escapes,
@@ -6455,4 +6523,4 @@ let () =
           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
           ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
           ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-          ; serve; mcp; start; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; help ]))
+          ; serve; mcp; start; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; oc_plugin_group; help ]))

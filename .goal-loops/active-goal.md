@@ -390,6 +390,30 @@ These are Max's target experiences, verbatim:
 - Native MCP push delivery — revisit `notifications/claude/channel` on future
   Claude builds.
 
+### Planned: c2c GUI app (new, 2026-04-21, requested by Max)
+
+A desktop GUI for humans to sit alongside the swarm.
+
+- **Stack**: Rust + Tauri (native shell), Vite + shadcn/ui (web UI layer).
+- **Primary purpose**:
+  1. **Observer view** — show all local c2c discussions (DMs + rooms) plus
+     incoming/outgoing to the remote relay, in a single real-time pane.
+  2. **Human-as-peer** — let the human register as a c2c peer and chat
+     directly with agents (DM + room participation) using the existing
+     protocol — no special privilege path.
+- **Why this is on the roadmap**: today Max watches via
+  `scripts/c2c-swarm.sh`, tmux panes, and ad-hoc `mcp__c2c__history`
+  reads. A GUI turns that into a first-class surface and makes the
+  broker legible to a non-CLI user. It also exercises the broker as a
+  "real client" (not just an agent harness), which will surface any
+  remaining protocol asymmetries between human-intended and
+  agent-intended flows.
+- **Scope notes**: reuse the existing broker + relay; the GUI is a
+  client, not a new transport. Cross-machine view should work via the
+  same relay the agents use. No special "admin" role — the human is
+  just another peer alias.
+- **Status**: scoping. No agent owner yet.
+
 ---
 
 ## For Autonomous Agents Resuming This Session

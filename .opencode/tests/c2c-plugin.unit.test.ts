@@ -15,6 +15,7 @@ import { EventEmitter } from 'events';
 type FakeProc = EventEmitter & {
   stdout: EventEmitter;
   stderr: EventEmitter;
+  stdin: { end: ReturnType<typeof vi.fn> };
   kill: (sig?: string) => void;
 };
 
@@ -25,6 +26,7 @@ function createFakeProc(out: { stdout: string; stderr: string; code: number }): 
   const proc = new EventEmitter() as FakeProc;
   proc.stdout = new EventEmitter();
   proc.stderr = new EventEmitter();
+  proc.stdin = { end: vi.fn() };
   proc.kill = vi.fn();
   setImmediate(() => {
     if (out.stdout) proc.stdout.emit('data', Buffer.from(out.stdout));
@@ -37,6 +39,9 @@ function createFakeProc(out: { stdout: string; stderr: string; code: number }): 
 vi.mock('child_process', () => ({
   spawn: vi.fn((command: string, args: string[]) => {
     spawnCalls.push({ command, args });
+    if (args[0] === 'oc-plugin' && args[1] === 'stream-write-statefile') {
+      return createFakeProc({ stdout: '', stderr: '', code: 0 });
+    }
     const next = spawnQueue.shift() ?? { stdout: '{"messages":[]}', stderr: '', code: 0 };
     return createFakeProc(next);
   }),
