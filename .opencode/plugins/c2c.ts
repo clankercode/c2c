@@ -570,6 +570,22 @@ const C2CDelivery: Plugin = async (ctx) => {
           if (configuredOpenCodeSessionId && info.id !== configuredOpenCodeSessionId) return;
           activeSessionId = info.id;
           await log(`tracking root session: ${info.id} — triggering cold-boot delivery`);
+          // Persist the TUI-generated ses_* ID for the instance so that a
+          // subsequent `c2c start opencode -n <name>` can pass --session
+          // and resume this exact conversation instead of a fresh one.
+          if (sessionId && info.id.startsWith("ses")) {
+            try {
+              const instDir = path.join(
+                process.env.HOME || "",
+                ".local", "share", "c2c", "instances", sessionId
+              );
+              fs.mkdirSync(instDir, { recursive: true });
+              fs.writeFileSync(path.join(instDir, "opencode-session.txt"), info.id + "\n");
+              await log(`captured opencode session id → ${path.join(instDir, "opencode-session.txt")}`);
+            } catch (err) {
+              await log(`session id capture error: ${err}`);
+            }
+          }
           // Delay before first promptAsync: calling it too soon after session.created
           // can succeed silently but the session may not yet be ready to surface the
           // message. Configurable via C2C_PLUGIN_COLD_BOOT_DELAY_MS (default 1500;

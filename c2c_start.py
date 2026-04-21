@@ -333,7 +333,7 @@ def _build_kimi_mcp_config(name: str, broker_root: Path, alias_override: str | N
 
 
 def prepare_launch_args(
-    name: str, client: str, extra_args: list[str], broker_root: Path, alias_override: str | None = None, *, resume_session_id: str | None = None, binary_override: str | None = None
+    name: str, client: str, extra_args: list[str], broker_root: Path, alias_override: str | None = None, *, resume_session_id: str | None = None, binary_override: str | None = None, is_resume: bool = False
 ) -> list[str]:
     """Return client args, adding managed per-instance config where needed."""
     args: list[str] = []
@@ -347,10 +347,19 @@ def prepare_launch_args(
             args.append("--fork-session")
         else:
             args.extend(["--resume", resume_session_id])
-    elif client == "opencode" and resume_session_id and resume_session_id.startswith("ses"):
-        # OpenCode rejects UUIDs — session IDs must start with "ses". Only
-        # pass --session when resuming a prior OpenCode-generated ID.
-        args.extend(["--session", resume_session_id])
+    elif client == "opencode":
+        # OpenCode session IDs are TUI-generated ("ses_*"); a UUID-style
+        # resume_session_id is just our stable-name placeholder. Prefer a
+        # captured ses_* ID; otherwise fall back to --continue on resume so
+        # the TUI reopens the most recently touched session for this user.
+        captured_path = instance_dir(name) / "opencode-session.txt"
+        captured = captured_path.read_text().strip() if captured_path.exists() else ""
+        if captured.startswith("ses"):
+            args.extend(["--session", captured])
+        elif resume_session_id and resume_session_id.startswith("ses"):
+            args.extend(["--session", resume_session_id])
+        elif is_resume:
+            args.append("--continue")
     elif client == "codex" and resume_session_id:
         args.extend(["resume", "--last"])
 
@@ -614,6 +623,7 @@ def run_outer_loop(
     binary_override: str | None = None,
     alias_override: str | None = None,
     resume_session_id: str | None = None,
+    is_resume: bool = False,
 ) -> int:
     """Run the outer restart loop for the given instance (blocking)."""
     cfg = CLIENT_CONFIGS[client]
@@ -689,7 +699,7 @@ def run_outer_loop(
             started = time.monotonic()
             child_proc = None
             try:
-                launch_args = prepare_launch_args(name, client, extra_args, broker_root, alias_override, resume_session_id=resume_session_id, binary_override=binary_override)
+                launch_args = prepare_launch_args(name, client, extra_args, broker_root, alias_override, resume_session_id=resume_session_id, binary_override=binary_override, is_resume=(is_resume or iteration > 1))
                 cmd = [binary_path, *launch_args]
 
                 # Save TTY attributes so we can restore them after the client exits.
@@ -879,6 +889,7 @@ def cmd_start(
         binary_override=binary_override,
         alias_override=alias_override,
         resume_session_id=resume_session_id,
+        is_resume=existing is not None,
     )
 
 
