@@ -1083,7 +1083,24 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
        if not (String.length sid >= 3 && String.sub sid 0 3 = "ses") then begin
          Printf.eprintf "error: --session-id for opencode must be a ses_* session ID (e.g. ses_abc123)\n%!";
          exit 1
-       end
+       end;
+       (* Pre-flight: verify the ses_* session actually exists.
+          opencode silently creates a new session for unknown IDs, which
+          causes a hang in the managed wake path — fail fast instead. *)
+       (match Sys.command
+           (Printf.sprintf "opencode session list --format json 2>/dev/null \
+                            | python3 -c \"import json,sys; d=json.load(sys.stdin); \
+                                          exit(0 if any(s.get('id')=='%s' for s in d) else 1)\" \
+                            2>/dev/null" (String.escaped sid))
+       with
+       | 0 -> ()
+       | _ ->
+           Printf.eprintf
+             "error: opencode session '%s' not found.\n\
+              \  List sessions:  opencode session list\n\
+              \  Omit -s to start a fresh session.\n%!"
+             sid;
+           exit 1)
    | Some sid ->
        (match Uuidm.of_string sid with
         | Some _ -> ()

@@ -1013,6 +1013,107 @@ class C2CStartExit109RegressionTests(unittest.TestCase):
 
 
 @_CLI_SKIP
+class C2CStartOpencodeSessionPreflightTests(unittest.TestCase):
+    """Pre-flight: c2c start opencode -s ses_* must verify the session exists.
+
+    When -s ses_<id> is provided, c2c start calls `opencode session list --format json`
+    and exits 1 with an error message if the session is not found — instead of
+    silently hanging after opencode creates a new session for the unknown ID.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self.broker_root = self.tmp_path / "broker"
+        self.broker_root.mkdir(parents=True)
+        self.instances_dir = self.tmp_path / "instances"
+        self.instances_dir.mkdir(parents=True)
+        import uuid
+        self._run_id = uuid.uuid4().hex[:8]
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _make_opencode_stub(self, session_ids: list) -> Path:
+        """Create a stub opencode binary that returns the given session IDs."""
+        import json as _json
+        sessions_json = _json.dumps([
+            {"id": sid, "title": f"Session {sid}", "updated": 1000000000000,
+             "created": 1000000000000, "projectId": "proj123", "directory": "/tmp"}
+            for sid in session_ids
+        ])
+        stub = self.tmp_path / "opencode"
+        stub.write_text(
+            "#!/bin/sh\n"
+            # Match: opencode session list --format json
+            'if [ "$1" = "session" ] && [ "$2" = "list" ]; then\n'
+            f"  echo '{sessions_json}'\n"
+            "  exit 0\n"
+            "fi\n"
+            # Any other invocation: simulate a fast exit so the test doesn't hang
+            "exit 1\n"
+        )
+        stub.chmod(0o755)
+        return stub
+
+    def _run_start_with_session(self, ses_id: str, session_ids: list) -> tuple[int, str, str]:
+        stub = self._make_opencode_stub(session_ids)
+        name = f"preflight-{self._run_id}"
+        from conftest import spawn_tracked
+        env = {
+            **os.environ,
+            "PATH": str(self.tmp_path) + ":" + os.environ.get("PATH", ""),
+            "C2C_MCP_BROKER_ROOT": str(self.broker_root),
+            "C2C_INSTANCES_DIR": str(self.instances_dir),
+        }
+        proc = spawn_tracked(
+            [str(CLI_EXE), "start", "opencode", "-n", name, "-s", ses_id],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            stdout, stderr = proc.communicate(timeout=CLI_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            self.fail(f"c2c start hung waiting for opencode session preflight (ses={ses_id!r})")
+        return proc.returncode, stdout, stderr
+
+    def test_missing_session_exits_with_error(self):
+        """c2c start exits 1 with a clear message when the ses_* ID is not in session list."""
+        rc, _out, stderr = self._run_start_with_session(
+            "ses_nonexistent999", session_ids=["ses_abc123", "ses_def456"]
+        )
+        self.assertEqual(rc, 1, f"expected exit 1, got {rc}; stderr={stderr!r}")
+        self.assertIn("ses_nonexistent999", stderr,
+                      f"error must mention the bad session ID; stderr={stderr!r}")
+        self.assertIn("not found", stderr.lower(),
+                      f"error must say 'not found'; stderr={stderr!r}")
+
+    def test_missing_session_suggests_list_command(self):
+        """Error message suggests 'opencode session list' to the user."""
+        _rc, _out, stderr = self._run_start_with_session(
+            "ses_missing", session_ids=[]
+        )
+        self.assertIn("opencode session list", stderr,
+                      f"hint missing from stderr: {stderr!r}")
+
+    def test_valid_session_passes_preflight(self):
+        """c2c start passes preflight (and proceeds to launch) when session exists."""
+        VALID = "ses_good000"
+        # The stub opencode will exit 1 on the actual launch (not session list),
+        # so the process exits non-zero — but not exit 1 from preflight.
+        # The key is it should NOT have the "not found" error in stderr.
+        _rc, _out, stderr = self._run_start_with_session(
+            VALID, session_ids=[VALID]
+        )
+        self.assertNotIn("not found", stderr.lower(),
+                         f"preflight should not have failed; stderr={stderr!r}")
+
+
+@_CLI_SKIP
 class C2CStartRegistryCleanupRegressionTests(unittest.TestCase):
     """Regression coverage for clean-exit registry cleanup in OCaml c2c start."""
 
