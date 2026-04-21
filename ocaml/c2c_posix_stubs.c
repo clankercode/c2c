@@ -16,6 +16,14 @@ CAMLprim value caml_c2c_setpgid(value vpid, value vpgid)
     return Val_unit;
 }
 
+/* getpgrp(2): return the process group ID of the calling process.
+   OCaml's Unix module omits this call. */
+CAMLprim value caml_c2c_getpgrp(value unit)
+{
+    (void)unit;
+    return Val_int((int)getpgrp());
+}
+
 /* tcsetpgrp(3): set the foreground process group of the terminal.
    Required when we fork+setpgid the managed client in a tmux pane:
    without this, opencode/node detects it's in a background pg and

@@ -11,6 +11,7 @@ external setpgid : int -> int -> unit = "caml_c2c_setpgid"
    so it's the tty's foreground process group; otherwise TUIs like
    opencode detect background-pg and exit 109. *)
 external tcsetpgrp : Unix.file_descr -> int -> unit = "caml_c2c_tcsetpgrp"
+external getpgrp : unit -> int = "caml_c2c_getpgrp"
 
 (* ---------------------------------------------------------------------------
  * Client configurations
@@ -966,13 +967,34 @@ let run_outer_loop ~(name : string) ~(client : string)
         let alias = Option.value alias_override ~default:name in
         let project_dir = resolve_repo_root ~broker_root in
         if project_dir <> "" then begin
-          (* Self-heal: if opencode.json is missing, run `c2c install opencode`
-             before refreshing identity. Without this, the MCP server boots
-             without c2c configured and the session registers no alias. *)
+          (* Self-heal: if opencode.json is missing, offer to run c2c install opencode.
+             On a TTY prompt the user (default Y); non-TTY or piped runs install silently
+             so `c2c start opencode` in scripts and --auto pipelines are non-interactive. *)
           let config_path = Filename.concat project_dir ".opencode" // "opencode.json" in
           (if not (Sys.file_exists config_path) then begin
-            Printf.eprintf "  [c2c start] .opencode/opencode.json not found — running c2c install opencode...\n%!";
-            ignore (Sys.command "c2c install opencode 2>/dev/null")
+            let stdin_is_tty = (try Unix.isatty Unix.stdin with _ -> false) in
+            let do_install =
+              if stdin_is_tty then begin
+                Printf.eprintf
+                  "  [c2c start] .opencode/opencode.json not found — \
+                   c2c install opencode has not been run.\n\
+                  \  Run it now? [Y/n] %!";
+                let answer = try String.trim (input_line stdin) with End_of_file -> "" in
+                let lower = String.lowercase_ascii answer in
+                lower = "" || lower = "y" || lower = "yes"
+              end else
+                true  (* non-TTY: always install silently *)
+            in
+            if do_install then begin
+              if not stdin_is_tty then
+                Printf.eprintf
+                  "  [c2c start] .opencode/opencode.json not found — \
+                   running c2c install opencode...\n%!";
+              ignore (Sys.command "c2c install opencode 2>/dev/null")
+            end else
+              Printf.eprintf
+                "  [c2c start] skipping install — \
+                 session may not auto-register without opencode.json\n%!"
           end);
           refresh_opencode_identity ~name ~alias ~broker_root ~project_dir
         end
@@ -1125,6 +1147,15 @@ let run_outer_loop ~(name : string) ~(client : string)
                | exception Unix.Unix_error (Unix.EINTR, _, _) -> wait_for_child ()
              in
              let code = wait_for_child () in
+             (* Reclaim the controlling TTY before writing anything. The child held
+                the terminal's foreground pgrp (via tcsetpgrp in the child). On a
+                normal Ctrl-D exit it doesn't release it, so any write the outer makes
+                while backgrounded triggers SIGTTOU and stops the outer process —
+                leaving `fg` with a ghost job in the shell. *)
+             (try
+               if Unix.isatty Unix.stdin then
+                 tcsetpgrp Unix.stdin (getpgrp ())
+             with _ -> ());
              (* Reap grandchildren: child ran with setpgid 0 0, so its PGID == its PID.
                 Kill the whole process group (c2c monitor, node, bun, etc.) so orphans
                 don't accumulate on restart. *)
