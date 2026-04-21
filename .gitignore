@@ -52,6 +52,8 @@ run-opencode-inst.d/package.json
 .opencode/node_modules/
 .opencode/package-lock.json
 .opencode/bun.lock
+.opencode/c2c-debug.log
+.opencode/c2c-debug.log.*
 run-kimi-inst.d/*.pid
 run-kimi-inst.d/*.log
 run-kimi-inst.d/*.restart.json
