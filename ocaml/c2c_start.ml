@@ -987,7 +987,16 @@ let run_outer_loop ~(name : string) ~(client : string)
              let rec wait_for_child () =
                match Unix.waitpid [ Unix.WUNTRACED ] child_pid_opt with
                | _, Unix.WSIGNALED n -> 128 + n
-               | _, Unix.WSTOPPED n -> 128 + n
+               | _, Unix.WSTOPPED _ ->
+                   (* Ctrl-Z on the child's foreground pgrp: don't treat as
+                      death. Reclaim the TTY, stop ourselves so the shell
+                      sees a suspended job, then on SIGCONT hand the TTY
+                      back, resume the child, and keep waiting. *)
+                   (try tcsetpgrp Unix.stdin (Unix.getpid ()) with _ -> ());
+                   (try Unix.kill (Unix.getpid ()) Sys.sigstop with _ -> ());
+                   (try tcsetpgrp Unix.stdin child_pid_opt with _ -> ());
+                   (try Unix.kill (- child_pid_opt) Sys.sigcont with _ -> ());
+                   wait_for_child ()
                | _, Unix.WEXITED n -> n
                | exception Unix.Unix_error (Unix.EINTR, _, _) -> wait_for_child ()
              in
@@ -1060,6 +1069,33 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     (Printf.eprintf "error: unknown client: '%s'. Choose from: %s\n%!"
        client (String.concat ", " (List.sort String.compare supported_clients));
      exit 1);
+
+  (* Validate instance name: only [A-Za-z0-9._-], 1..64 chars, no leading dot.
+     Rejects '/', '#', '@', whitespace, and other shell/broker-hostile chars
+     that can create nested dirs or collide with alias@repo#host syntax. *)
+  let name_ok n =
+    let len = String.length n in
+    if len = 0 || len > 64 then false
+    else if n.[0] = '.' then false
+    else begin
+      let ok = ref true in
+      String.iter (fun c ->
+        let good =
+          (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+          || (c >= '0' && c <= '9')
+          || c = '-' || c = '_' || c = '.'
+        in
+        if not good then ok := false
+      ) n;
+      !ok
+    end
+  in
+  if not (name_ok name) then begin
+    Printf.eprintf
+      "error: invalid instance name '%s'. Allowed chars: [A-Za-z0-9._-], 1..64, no leading dot.\n%!"
+      name;
+    exit 1
+  end;
 
   (* Validate --session-id. OpenCode accepts ses_* session IDs from its TUI;
      claude/codex/other clients expect a UUID. *)
