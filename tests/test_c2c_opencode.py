@@ -1081,7 +1081,8 @@ class C2CConfigureOpencodeTests(unittest.TestCase):
             env = config["mcp"]["c2c"]["environment"]
             self.assertNotIn("C2C_MCP_SESSION_ID", env,
                              "SESSION_ID must not be in shared project config (multi-agent collision)")
-            self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "opencode-primary")
+            self.assertNotIn("C2C_MCP_AUTO_REGISTER_ALIAS", env,
+                             "AUTO_REGISTER_ALIAS must not be in shared project config (multi-agent collision)")
             sidecar = json.loads(
                 (target / ".opencode" / "c2c-plugin.json").read_text(encoding="utf-8")
             )

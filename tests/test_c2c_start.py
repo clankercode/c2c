@@ -1429,21 +1429,23 @@ class C2CStartKickoffPromptTests(unittest.TestCase):
         return proc.returncode, stdout, stderr
 
     def test_auto_writes_kickoff_prompt_file(self):
-        """--auto must write .opencode/kickoff-prompt.txt before launching."""
+        """--auto must write per-instance kickoff-prompt.txt before launching."""
         self._run_start_auto("kp-test-agent")
-        kp = self.tmp_path / ".opencode" / "kickoff-prompt.txt"
+        # Written to per-instance dir (C2C_INSTANCES_DIR/name/) so concurrent
+        # launches don't clobber each other's shared .opencode/kickoff-prompt.txt
+        kp = self.instances_dir / "kp-test-agent" / "kickoff-prompt.txt"
         self.assertTrue(kp.exists(), "kickoff-prompt.txt must be written with --auto")
 
     def test_kickoff_prompt_contains_alias(self):
         """kickoff-prompt.txt must mention the agent's alias."""
         self._run_start_auto("kp-alias-agent")
-        kp = (self.tmp_path / ".opencode" / "kickoff-prompt.txt").read_text()
+        kp = (self.instances_dir / "kp-alias-agent" / "kickoff-prompt.txt").read_text()
         self.assertIn("kp-alias-agent", kp)
 
     def test_kickoff_prompt_contains_role_when_set(self):
         """kickoff-prompt.txt must include the role when a role file exists."""
         self._run_start_auto("kp-role-agent", role="senior planner and coordinator")
-        kp = (self.tmp_path / ".opencode" / "kickoff-prompt.txt").read_text()
+        kp = (self.instances_dir / "kp-role-agent" / "kickoff-prompt.txt").read_text()
         self.assertIn("senior planner and coordinator", kp)
 
     def test_no_kickoff_prompt_without_auto(self):
@@ -1466,7 +1468,7 @@ class C2CStartKickoffPromptTests(unittest.TestCase):
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.communicate()
-        kp = self.tmp_path / ".opencode" / "kickoff-prompt.txt"
+        kp = self.instances_dir / "no-auto-agent" / "kickoff-prompt.txt"
         self.assertFalse(kp.exists(), "kickoff-prompt.txt must not be written without --auto")
 
 
