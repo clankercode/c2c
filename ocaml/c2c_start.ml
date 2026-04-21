@@ -494,6 +494,71 @@ let build_env ?(broker_root_override : string option = None) (name : string) (al
   merged
 
 (* ---------------------------------------------------------------------------
+ * OpenCode identity files refresh
+ * Ensures .opencode/opencode.json and .opencode/c2c-plugin.json have the
+ * correct session_id + alias for this managed instance before launch.
+ * Called by start_inner when client = "opencode".
+ * --------------------------------------------------------------------------- *)
+
+let refresh_opencode_identity ~name ~alias ~broker_root =
+  let ( // ) = Filename.concat in
+  let config_dir = Sys.getcwd () // ".opencode" in
+  (* Patch opencode.json mcp.c2c.environment with identity vars. *)
+  let config_path = config_dir // "opencode.json" in
+  (if Sys.file_exists config_path then
+    (try
+      let cfg = Yojson.Safe.from_file config_path in
+      let identity_env = [
+        ("C2C_MCP_SESSION_ID", `String name);
+        ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias);
+        ("C2C_MCP_BROKER_ROOT", `String broker_root);
+        ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge");
+        ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0");
+      ] in
+      let merge_env env_obj new_pairs =
+        let existing = match env_obj with `Assoc p -> p | _ -> [] in
+        let keys = List.map fst new_pairs in
+        let kept = List.filter (fun (k, _) -> not (List.mem k keys)) existing in
+        `Assoc (kept @ new_pairs)
+      in
+      let put key v pairs =
+        if List.mem_assoc key pairs
+        then List.map (fun (k, x) -> if k = key then (k, v) else (k, x)) pairs
+        else pairs @ [(key, v)]
+      in
+      let updated = match cfg with
+        | `Assoc top ->
+            let mcp_obj = match List.assoc_opt "mcp" top with Some m -> m | None -> `Assoc [] in
+            let mcp_pairs = match mcp_obj with `Assoc p -> p | _ -> [] in
+            let c2c_obj = match List.assoc_opt "c2c" mcp_pairs with Some c -> c | None -> `Assoc [] in
+            let c2c_pairs = match c2c_obj with `Assoc p -> p | _ -> [] in
+            let env_obj = match List.assoc_opt "environment" c2c_pairs with Some e -> e | None -> `Assoc [] in
+            let env_updated = merge_env env_obj identity_env in
+            let c2c_updated = `Assoc (put "environment" env_updated c2c_pairs) in
+            let mcp_updated = `Assoc (put "c2c" c2c_updated mcp_pairs) in
+            `Assoc (put "mcp" mcp_updated top)
+        | other -> other
+      in
+      write_json_file_atomic config_path updated
+    with _ -> ()));
+  (* Update sidecar c2c-plugin.json with current identity. *)
+  let sidecar_path = config_dir // "c2c-plugin.json" in
+  (try
+    let existing = if Sys.file_exists sidecar_path then
+      (match Yojson.Safe.from_file sidecar_path with `Assoc p -> p | _ -> [])
+    else []
+    in
+    let identity = [
+      ("session_id", `String name);
+      ("alias", `String alias);
+      ("broker_root", `String broker_root);
+    ] in
+    let keys = List.map fst identity in
+    let kept = List.filter (fun (k, _) -> not (List.mem k keys)) existing in
+    write_json_file_atomic sidecar_path (`Assoc (kept @ identity))
+  with _ -> ())
+
+(* ---------------------------------------------------------------------------
  * Kimi MCP config generation
  * --------------------------------------------------------------------------- *)
 
@@ -878,6 +943,13 @@ let run_outer_loop ~(name : string) ~(client : string)
             output_string oc "\n")
       with _ -> ());
 
+      (* For OpenCode: refresh opencode.json env + sidecar with this instance's
+         session_id and alias so the MCP server auto-registers the right identity. *)
+      (if client = "opencode" then begin
+        let alias = Option.value alias_override ~default:name in
+        refresh_opencode_identity ~name ~alias ~broker_root
+      end);
+
       (* Symlink latest opencode log to client.log *)
       (if client = "opencode" then
         (match latest_opencode_log () with
@@ -987,14 +1059,21 @@ let run_outer_loop ~(name : string) ~(client : string)
              let rec wait_for_child () =
                match Unix.waitpid [ Unix.WUNTRACED ] child_pid_opt with
                | _, Unix.WSIGNALED n -> 128 + n
-               | _, Unix.WSTOPPED _ ->
-                   (* Ctrl-Z on the child's foreground pgrp: don't treat as
-                      death. Reclaim the TTY, stop ourselves so the shell
-                      sees a suspended job, then on SIGCONT hand the TTY
-                      back, resume the child, and keep waiting. *)
+               | _, Unix.WSTOPPED sig_n when sig_n = Sys.sigtstp ->
+                   (* Ctrl-Z (SIGTSTP) on the child's foreground pgrp: user
+                      wants to suspend. Reclaim the TTY, stop ourselves so
+                      the shell sees a suspended job, then on SIGCONT hand
+                      the TTY back, resume the child, and keep waiting. *)
                    (try tcsetpgrp Unix.stdin (Unix.getpid ()) with _ -> ());
                    (try Unix.kill (Unix.getpid ()) Sys.sigstop with _ -> ());
                    (try tcsetpgrp Unix.stdin child_pid_opt with _ -> ());
+                   (try Unix.kill (- child_pid_opt) Sys.sigcont with _ -> ());
+                   wait_for_child ()
+               | _, Unix.WSTOPPED _ ->
+                   (* SIGTTIN/SIGTTOU/SIGSTOP etc — not a user suspend.
+                      Resume the child and keep waiting; don't propagate
+                      the stop to ourselves (would strand the outer on
+                      clean-exit paths like opencode's Ctrl-D shutdown). *)
                    (try Unix.kill (- child_pid_opt) Sys.sigcont with _ -> ());
                    wait_for_child ()
                | _, Unix.WEXITED n -> n
