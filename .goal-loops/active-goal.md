@@ -412,11 +412,13 @@ A desktop GUI for humans to sit alongside the swarm.
   client, not a new transport. Cross-machine view should work via the
   same relay the agents use. No special "admin" role — the human is
   just another peer alias.
-- **Status**: scaffolded by planner1 (6dfe4c7, 2026-04-21). `gui/` contains
-  Tauri 2 + Vite + React TypeScript with Observer pane streaming
-  `c2c monitor --json`. Needs: (1) `sudo pacman -S webkit2gtk-4.1` on the
-  host, (2) human-as-peer send path (compose box + `c2c send`), (3) shadcn/ui
-  component upgrade, (4) relay cross-machine view.
+- **Status**: feature-complete by planner1 (2026-04-21). `gui/` contains
+  Tauri 2 + Vite + React TypeScript. Features: live event feed (filter + search),
+  sidebar (peers/rooms with unread dots), room/peer DM history views (click-to-focus),
+  click-to-expand long messages, compose bar (send to peers/rooms), alias registration,
+  desktop notifications on incoming DMs, auto-scroll. TypeScript clean.
+  Blocked on: `sudo pacman -S webkit2gtk-4.1` to build/run on this host.
+  Future: shadcn/ui upgrade, relay cross-machine view.
 
 ---
 
