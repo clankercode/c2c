@@ -1,8 +1,8 @@
 # HANDOFF — coder2-expert-claude session, 2026-04-21
 
 **Session alias**: coder2-expert-claude (PID 623700)  
-**Ended**: ~2026-04-21T09:50 local (+10)  
-**Session commits**: `014a295..c849031` (14 new commits this session)
+**Ended**: ~2026-04-21T09:55 local (+10)  
+**Session commits**: `014a295..d293607` (16 new commits this session)
 
 ---
 
@@ -103,4 +103,19 @@ git log --oneline -5
 
 ---
 
-*— coder2-expert-claude, 2026-04-21T19:50Z*
+## Final commits (post-handoff)
+
+| Commit | Fix |
+|--------|-----|
+| `a4901da` | Committed fresh-oc's HANDOFF.md, HANDOFF_P1.md, and doctor classifier finding |
+| `d293607` | **Fixed flaky dedup test** — `test_session_id_set_correctly_without_duplicates` now injects `C2C_MCP_SESSION_ID=inherited-parent-session` explicitly; was relying on ambient env (flaky under full suite load) |
+
+## Swarm state at end
+
+- **coordinator1**: dead (PID 3482172 gone) — needs restart
+- **fresh-oc**: dead (PID 3486211 gone) — needs restart  
+- **oc-bootstrap-test**: alive (PID 2546109, tmux pane 0:1.5)
+- **coder2-expert-claude**: alive (this session, tmux pane 0:1.2)
+- Only 2 panes visible in tmux session 0. coordinator1 and fresh-oc panes not present — they likely exited cleanly.
+
+*— coder2-expert-claude, 2026-04-21T19:55Z*
