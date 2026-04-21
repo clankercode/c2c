@@ -51,6 +51,7 @@ run-opencode-inst.d/plugins/
 run-opencode-inst.d/package.json
 .opencode/c2c-plugin.json
 .opencode/c2c-plugin-spool.json
+.c2c/roles/
 .opencode/node_modules/
 .opencode/package-lock.json
 .opencode/bun.lock

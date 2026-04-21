@@ -5399,17 +5399,60 @@ let doctor = Cmdliner.Cmd.v (Cmdliner.Cmd.info "doctor"
 
 (* --- subcommand: start ---------------------------------------------------- *)
 
-let default_kickoff_prompt ~name ~alias =
+let roles_dir () = Filename.concat (Sys.getcwd ()) ".c2c" // "roles"
+
+let role_file_path ~alias =
+  roles_dir () // (alias ^ ".md")
+
+let read_role ~alias =
+  let path = role_file_path ~alias in
+  try
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+      let buf = Buffer.create 256 in
+      (try while true do Buffer.add_channel buf ic 1 done with End_of_file -> ());
+      let s = String.trim (Buffer.contents buf) in
+      if s = "" then None else Some s)
+  with Sys_error _ -> None
+
+let write_role ~alias ~content =
+  let dir = roles_dir () in
+  (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  let path = role_file_path ~alias in
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc content;
+    output_char oc '\n')
+
+let prompt_for_role ~alias =
+  if Unix.isatty Unix.stdin then begin
+    Printf.eprintf "\n[c2c start] No role file found for alias '%s'.\n" alias;
+    Printf.eprintf "  What is this agent's role? (e.g. coder, planner, coordinator — press Enter to skip)\n";
+    Printf.eprintf "  > %!";
+    let line = try input_line stdin with End_of_file -> "" in
+    let trimmed = String.trim line in
+    if trimmed <> "" then begin
+      write_role ~alias ~content:trimmed;
+      Printf.eprintf "[c2c start] Role saved to .c2c/roles/%s.md\n%!" (alias ^ ".md");
+      Some trimmed
+    end else None
+  end else None
+
+let default_kickoff_prompt ~name ~alias ?role () =
+  let role_section = match role with
+    | None -> ""
+    | Some r -> Printf.sprintf "\nYour assigned role: %s\n" r
+  in
   Printf.sprintf
     "You have been started as a c2c swarm agent.\n\
-     Instance: %s  Alias: %s\n\n\
+     Instance: %s  Alias: %s%s\n\
      Getting started:\n\
      1. Poll your inbox:  use the MCP poll_inbox tool (or: c2c poll-inbox)\n\
      2. See active peers: c2c list\n\
      3. Post in the lounge: send_room swarm-lounge with a hello message\n\
      4. Read CLAUDE.md for the mission brief and open tasks\n\n\
      The swarm coordinates via c2c instant messaging. You are now part of it."
-    name alias
+    name alias role_section
 
 let start_cmd =
   let client =
@@ -5452,11 +5495,21 @@ let start_cmd =
         n
   in
   let effective_alias = Option.value alias_opt ~default:name in
+  (* Load saved role or prompt on first launch if stdin is a TTY. *)
+  let role =
+    match read_role ~alias:effective_alias with
+    | Some r -> Some r
+    | None -> prompt_for_role ~alias:effective_alias
+  in
   let kickoff_prompt =
     match kickoff_prompt_text with
     | Some t -> Some t
-    | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:effective_alias)
-    | None -> None
+    | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role ())
+    | None ->
+        (* Even without --auto, if a role is set, write a role-seeded kickoff prompt. *)
+        (match role with
+         | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role ())
+         | None -> None)
   in
   exit (C2c_start.cmd_start ~client ~name ~extra_args:[] ?binary_override:bin_opt ?alias_override:alias_opt ?session_id_override:session_id_opt ~one_hr_cache ?kickoff_prompt ())
 
