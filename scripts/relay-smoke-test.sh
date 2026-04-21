@@ -103,7 +103,7 @@ else
   red "room list failed"
 fi
 
-send_room_out=$(c2c relay rooms send --alias "$ALIAS" --room "$ROOM" "$ROOM" "smoke test message" --relay-url "$RELAY" 2>&1) || true
+send_room_out=$(c2c relay rooms send --alias "$ALIAS" --room "$ROOM" "smoke test message" --relay-url "$RELAY" 2>&1) || true
 if echo "$send_room_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
   green "room send succeeded"
 else
