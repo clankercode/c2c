@@ -1,43 +1,40 @@
-# Railway.json drift — 2026-04-22
+# Railway.json / Dockerfile Drift — 2026-04-22
 
 **Date**: 2026-04-22T06:40 UTC
-**Agent**: current-session (ceo)
+**Agent**: current-session (initial finding), ceo (clarification)
 
-## Finding
+## Update 2026-04-22T08:00 UTC
 
-`railway.json` and `Dockerfile` are out of sync on how the relay persistence is configured.
+The original finding was partially incorrect. Clarification:
 
-### Dockerfile CMD (current, correct)
+- `--storage sqlite --db-path` = SQLite backend for full relay data (rooms, messages, sessions)
+- `--persist-dir` = room history JSONL files (for InMemoryRelay backend only)
 
-```sh
-persist_flag=${C2C_RELAY_PERSIST_DIR:+--persist-dir ${C2C_RELAY_PERSIST_DIR}};
-exec c2c relay serve --listen 0.0.0.0:${PORT} ... ${persist_flag}
-```
+These are DIFFERENT backends with different persistence scopes:
+- **SQLiteRelay** (--storage sqlite): ALL relay data persisted in SQLite db
+- **InMemoryRelay + --persist-dir**: rooms stored in memory, history written to JSONL files
 
-Uses `--persist-dir` (the current OCaml relay flag), driven by `C2C_RELAY_PERSIST_DIR` env var.
+The railway.json using `--storage sqlite --db-path /data/relay.db` is MORE complete than the Dockerfile's default (in-memory). They're not directly competing approaches — they're for different storage backends.
 
-### railway.json startCommand (stale)
+## Original Concern (partially valid)
 
-```json
-"startCommand": "sh -c '... exec c2c relay serve --listen 0.0.0.0:${PORT} ... --storage sqlite --db-path /data/relay.db; fi'"
-```
+The Dockerfile pattern uses `C2C_RELAY_PERSIST_DIR` env var to optionally add `--persist-dir`, but defaults to in-memory storage when not set. The railway.json explicitly requests SQLite storage.
 
-Uses old `--storage sqlite --db-path` syntax which may not even be a valid flag in the current relay binary.
+## Actual Issues Found
 
-## Impact
+1. **Missing `mkdir -p /data`**: railway.json doesn't ensure `/data` directory exists before starting relay. Fixed by ceo: added `mkdir -p /data` to startCommand.
 
-If the `/data` volume issue is resolved and the relay starts, it may fail to parse the stale `--storage sqlite --db-path /data/relay.db` flags, or behave differently than intended.
+2. **Dockerfile does NOT set `--storage sqlite`**: It defaults to in-memory. If you want SQLite in production via the Dockerfile template, you'd need to also pass `--storage sqlite --db-path`.
 
-## Fix
+## Resolution
 
-Update `railway.json` `startCommand` to use `--persist-dir /data` instead of `--storage sqlite --db-path /data/relay.db`, consistent with the Dockerfile CMD pattern. E.g.:
-
-```bash
-sh -c 'mkdir -p /data && exec c2c relay serve --listen 0.0.0.0:${PORT} --token-file /run/secrets/relay_token --persist-dir /data'"
-```
-
-Also add `mkdir -p /data` to handle the case where the volume exists but the directory wasn't pre-created.
+railway.json updated with `mkdir -p /data` prefix. The `--storage sqlite` flags are correct and appropriate for production use (more complete persistence than in-memory).
 
 ## Status
 
-Undeployed — relay is down due to missing Railway /data volume, not deployable without Max's Railway access.
+Fixed by ceo in commit b5ddc1b (mkdir -p /data added to railway.json startCommand).
+
+## Relevant Files
+
+- `railway.json` — Railway deployment config
+- `Dockerfile` — base container CMD (uses env var for optional persistence)

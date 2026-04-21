@@ -5,7 +5,7 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "startCommand": "sh -c 'if [ -f /run/secrets/relay_token ]; then exec c2c relay serve --listen 0.0.0.0:${PORT} --token-file /run/secrets/relay_token --storage sqlite --db-path /data/relay.db; elif [ -n \"${RELAY_TOKEN:-}\" ]; then exec c2c relay serve --listen 0.0.0.0:${PORT} --token \"${RELAY_TOKEN}\" --storage sqlite --db-path /data/relay.db; else exec c2c relay serve --listen 0.0.0.0:${PORT} --storage sqlite --db-path /data/relay.db; fi'",
+    "startCommand": "sh -c 'mkdir -p /data && if [ -f /run/secrets/relay_token ]; then exec c2c relay serve --listen 0.0.0.0:${PORT} --token-file /run/secrets/relay_token --storage sqlite --db-path /data/relay.db; elif [ -n \"${RELAY_TOKEN:-}\" ]; then exec c2c relay serve --listen 0.0.0.0:${PORT} --token \"${RELAY_TOKEN}\" --storage sqlite --db-path /data/relay.db; else exec c2c relay serve --listen 0.0.0.0:${PORT} --storage sqlite --db-path /data/relay.db; fi'",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 30,
     "restartPolicyType": "ON_FAILURE",
