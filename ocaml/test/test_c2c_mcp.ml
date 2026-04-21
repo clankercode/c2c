@@ -854,6 +854,35 @@ let test_tools_call_send_returns_receipt_json () =
           let ts = receipt |> member "ts" |> to_float in
           check bool "ts is positive" true (ts > 0.0))
 
+(* MCP ping must return empty result, not -32601. Claude Code sends periodic
+   pings; an error response triggers "server unhealthy" and a 3-5min disconnect
+   cycle. Regression test for e107929. *)
+let test_mcp_ping_returns_empty_result () =
+  with_temp_dir (fun dir ->
+      let request =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 1)
+          ; ("method", `String "ping")
+          ; ("params", `Assoc [])
+          ]
+      in
+      let response =
+        Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+      in
+      match response with
+      | None -> fail "expected response to ping"
+      | Some json ->
+          let open Yojson.Safe.Util in
+          let result = json |> member "result" in
+          check bool "ping result is object (not error)" true
+            (result <> `Null);
+          (* result must be empty {}, not an error *)
+          check bool "no error field in ping response" true
+            (json |> member "error" = `Null);
+          check bool "ping result is empty object" true
+            (result = `Assoc []))
+
 let test_tools_call_register_uses_current_session_id_when_omitted () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-live";
@@ -4820,6 +4849,8 @@ let () =
          ; test_case "tools/call send binds sender even if own pid is stale" `Quick
              test_tools_call_send_uses_current_alias_even_if_pid_stale
          ; test_case "tools/call send returns receipt JSON" `Quick test_tools_call_send_returns_receipt_json
+         ; test_case "MCP ping returns empty result not -32601 (e107929)" `Quick
+             test_mcp_ping_returns_empty_result
          ; test_case "tools/call register uses current session id when omitted" `Quick
               test_tools_call_register_uses_current_session_id_when_omitted
          ; test_case "tools/call register prefers explicit client pid env" `Quick
