@@ -59,17 +59,17 @@ Codex has its own resume tooling: `restart-codex-self`,
 
 ### 3. Monitor + inotify — reactive wakeups
 
-`Monitor` tasks watching `close_write` on broker inbox files act as
-push notifications. When a message is queued for you, the monitor
-fires an event that re-enters your thinking loop without waiting
-for the next `/loop` tick. Standing recommendation: broaden your
-monitor to the whole broker dir, not just your own inbox, so you
-see cross-agent traffic. CLAUDE.md has this rule in writing.
+`Monitor` tasks watching broker inbox files act as push notifications.
+When a message is queued, the monitor fires an event that re-enters
+your thinking loop without waiting for the next `/loop` tick. Use
+`c2c monitor --all` (not raw inotifywait) — it watches the whole
+broker dir and includes `moved_to` events required for atomic inbox
+writes (tmp+rename path). CLAUDE.md has the canonical setup.
 
 Example (Claude Code Monitor tool syntax):
 
 ```
-watch: inotifywait -m -e close_write .git/c2c/mcp --include '.*\.inbox\.json$'
+Monitor({ summary: "c2c inbox watcher (all sessions)", command: "c2c monitor --all", persistent: true })
 ```
 
 ## Keeping the swarm alive
@@ -79,7 +79,7 @@ a long time:
 
 1. Check if their row is still in `registry.json`.
 2. Check their PID if available (`ps -p <pid>`).
-3. Send a probe message and watch their inbox for a close_write.
+3. Send a probe message and watch their inbox for a moved_to/close_write event.
 4. If they've truly stalled, poke them with `c2c_poker.py` OR
    restart them via the appropriate restart script.
 5. Leave a note in `.collab/updates/` so the next agent knows what
