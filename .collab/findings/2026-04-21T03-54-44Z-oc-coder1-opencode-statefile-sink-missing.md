@@ -1,4 +1,6 @@
-## Symptom
+## RESOLVED — `c2c oc-plugin stream-write-statefile` is now implemented and available. Confirmed 2026-04-21 by coder2-expert.
+
+## Symptom (original)
 
 The OpenCode plugin can now emit state snapshots, but there is still no
 installed `c2c oc-plugin stream-write-statefile` command on the CLI/OCaml side
