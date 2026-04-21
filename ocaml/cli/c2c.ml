@@ -5136,6 +5136,25 @@ let diag_cmd =
 
 let diag = Cmdliner.Cmd.v (Cmdliner.Cmd.info "diag" ~doc:"Show diagnostic info (last death + stderr tail) for a managed instance.") diag_cmd
 
+(* --- subcommand: doctor --------------------------------------------------- *)
+
+let doctor_cmd =
+  let+ () = Cmdliner.Term.const () in
+  match git_repo_toplevel () with
+  | None ->
+      Printf.eprintf "error: must run from inside the c2c git repo.\n%!";
+      exit 1
+  | Some toplevel ->
+      let script = toplevel // "scripts" // "c2c-doctor.sh" in
+      if not (Sys.file_exists script) then begin
+        Printf.eprintf "error: scripts/c2c-doctor.sh not found.\n%!";
+        exit 1
+      end;
+      Unix.execvp "bash" [| "bash"; script |]
+
+let doctor = Cmdliner.Cmd.v (Cmdliner.Cmd.info "doctor"
+    ~doc:"Health snapshot + push-pending analysis (for Max / human operators).") doctor_cmd
+
 (* --- subcommand: start ---------------------------------------------------- *)
 
 let start_cmd =
@@ -6433,4 +6452,4 @@ let () =
           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
           ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
           ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-          ; serve; mcp; start; stop; restart; restart_self; instances; diag; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; help ]))
+          ; serve; mcp; start; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; help ]))
