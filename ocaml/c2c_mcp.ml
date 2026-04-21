@@ -448,26 +448,32 @@ module Broker = struct
     find (n + 1)
 
   (* Suggest a free alias by appending the next prime suffix.
-     Runs under the registry lock (regs is already loaded). *)
-  let suggest_alias_prime regs ~base_alias =
+     Runs under the registry lock (regs is already loaded).
+     Returns Some candidate on success, None when all max_tries primes are taken
+     (ALIAS_COLLISION_EXHAUSTED). max_tries defaults to 5 (primes 2,3,5,7,11). *)
+  let suggest_alias_prime ?(max_tries = 5) regs ~base_alias =
     let alive = List.filter_map (fun reg ->
       if registration_is_alive reg then Some reg.alias else None) regs in
-    if not (List.mem base_alias alive) then base_alias
+    if not (List.mem base_alias alive) then Some base_alias
     else begin
       let n = Array.length small_primes in
       let rec try_idx i =
-        let p =
-          if i < n then small_primes.(i)
-          else next_prime_after small_primes.(n - 1)
-        in
-        let candidate = Printf.sprintf "%s-%d" base_alias p in
-        if not (List.mem candidate alive) then candidate
-        else try_idx (i + 1)
+        if i >= max_tries then None
+        else begin
+          let p =
+            if i < n then small_primes.(i)
+            else next_prime_after small_primes.(n - 1)
+          in
+          let candidate = Printf.sprintf "%s-%d" base_alias p in
+          if not (List.mem candidate alive) then Some candidate
+          else try_idx (i + 1)
+        end
       in
       try_idx 0
     end
 
-  (* Public wrapper: reads registry and suggests disambiguated alias. *)
+  (* Public wrapper: reads registry and suggests disambiguated alias.
+     Returns Some alias on success, None when ALIAS_COLLISION_EXHAUSTED. *)
   let suggest_alias_for_alias t ~alias =
     with_registry_lock t (fun () ->
       suggest_alias_prime (load_registrations t) ~base_alias:alias)
@@ -2068,18 +2074,41 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       in
       (match alias_hijack_conflict with
        | Some conflict ->
-           let suggested = Broker.suggest_alias_for_alias broker ~alias in
-           Lwt.return
-             (tool_result
-                ~content:
-                  (Printf.sprintf
-                     "register rejected: alias '%s' is currently held by \
-                      an alive session '%s'. Suggested free alias: '%s'. \
-                      Options: (1) register with {\"alias\":\"%s\"}, \
-                      (2) wait for the current holder's process to exit, \
-                      (3) call list to see all current registrations."
-                     alias conflict.session_id suggested suggested)
-                ~is_error:true)
+           let suggested_opt = Broker.suggest_alias_for_alias broker ~alias in
+           let content =
+             match suggested_opt with
+             | Some suggested ->
+                 Yojson.Safe.to_string
+                   (`Assoc
+                     [ ("error", `String
+                          (Printf.sprintf
+                             "register rejected: alias '%s' is currently held by \
+                              an alive session '%s'. Suggested free alias: '%s'. \
+                              Options: (1) register with {\"alias\":\"%s\"}, \
+                              (2) wait for the current holder's process to exit, \
+                              (3) call list to see all current registrations."
+                             alias conflict.session_id suggested suggested))
+                     ; ("collision", `Bool true)
+                     ; ("contested_alias", `String alias)
+                     ; ("holder_session_id", `String conflict.session_id)
+                     ; ("suggested_alias", `String suggested)
+                     ])
+             | None ->
+                 Yojson.Safe.to_string
+                   (`Assoc
+                     [ ("error", `String
+                          (Printf.sprintf
+                             "register rejected: alias '%s' is currently held by \
+                              an alive session '%s', and all prime-suffixed \
+                              candidates are also taken. Choose a different base alias."
+                             alias conflict.session_id))
+                     ; ("collision", `Bool true)
+                     ; ("collision_exhausted", `Bool true)
+                     ; ("contested_alias", `String alias)
+                     ; ("holder_session_id", `String conflict.session_id)
+                     ])
+           in
+           Lwt.return (tool_result ~content ~is_error:true)
        | None ->
            Broker.register broker ~session_id ~alias ~pid ~pid_start_time;
            List.iter

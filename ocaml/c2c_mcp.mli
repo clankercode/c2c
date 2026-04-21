@@ -29,10 +29,11 @@ module Broker : sig
   (** [compute_canonical_alias ~alias ~broker_root] returns "<alias>#<repo>@<host>"
       where repo is derived from broker_root path and host is the short hostname. *)
 
-  val suggest_alias_for_alias : t -> alias:string -> string
-  (** [suggest_alias_for_alias t ~alias] returns a free alias.
-      If [alias] is available, returns it unchanged. If it's taken by an alive
-      session, returns "<alias>-<next-prime>" until a free slot is found. *)
+  val suggest_alias_for_alias : t -> alias:string -> string option
+  (** [suggest_alias_for_alias t ~alias] returns [Some alias] when [alias] is
+      free, [Some "<alias>-<prime>"] when it's taken but a prime-suffixed slot
+      is available (up to 5 tries: primes 2,3,5,7,11), or [None] when all
+      candidates are exhausted (ALIAS_COLLISION_EXHAUSTED). *)
 
   val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> unit
   val list_registrations : t -> registration list

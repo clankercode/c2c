@@ -993,7 +993,20 @@ let test_tools_call_register_rejects_alias_hijack () =
                check bool "error mentions contested alias" true
                  (string_contains text "storm-beacon");
                check bool "error mentions holder session" true
-                 (string_contains text "session-owner"));
+                 (string_contains text "session-owner");
+               (* Structured response: JSON with suggested_alias and collision flag *)
+               let parsed = Yojson.Safe.from_string text in
+               let collision =
+                 parsed |> member "collision" |> to_bool_option
+                 |> Option.value ~default:false
+               in
+               check bool "collision flag set" true collision;
+               let suggested =
+                 parsed |> member "suggested_alias" |> to_string_option
+               in
+               check bool "suggested_alias present" true (suggested <> None);
+               check string "suggested_alias is prime-suffixed"
+                 "storm-beacon-2" (Option.value suggested ~default:""));
           (* Original owner must still be registered *)
           let regs = C2c_mcp.Broker.list_registrations broker in
           let open C2c_mcp in
@@ -1007,6 +1020,68 @@ let test_tools_call_register_rejects_alias_hijack () =
             List.find_opt (fun r -> r.session_id = "session-thief") regs
           in
           check bool "thief not registered" true (thief = None)))
+
+(* When all prime-suffixed alias candidates are also alive, the broker returns
+   collision_exhausted=true in the structured error rather than looping forever. *)
+let test_tools_call_register_alias_collision_exhausted () =
+  with_temp_dir (fun dir ->
+      let live_pid = Unix.getpid () in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Register the base alias + all 5 prime suffixes with live PIDs *)
+      let primes = [ ""; "-2"; "-3"; "-5"; "-7"; "-11" ] in
+      List.iteri (fun i sfx ->
+        C2c_mcp.Broker.register broker
+          ~session_id:(Printf.sprintf "session-owner-%d" i)
+          ~alias:(Printf.sprintf "nova%s" sfx)
+          ~pid:(Some live_pid) ~pid_start_time:None
+      ) primes;
+      (* session-exhausted tries to claim "nova" when all slots are taken *)
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-exhausted";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 88)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "register")
+                    ; ("arguments", `Assoc [ ("alias", `String "nova") ])
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected tools/call response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let is_error =
+                json |> member "result" |> member "isError" |> to_bool_option
+                |> Option.value ~default:false
+              in
+              check bool "collision_exhausted rejected with isError=true" true is_error;
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              let parsed = Yojson.Safe.from_string text in
+              let exhausted =
+                parsed |> member "collision_exhausted" |> to_bool_option
+                |> Option.value ~default:false
+              in
+              check bool "collision_exhausted flag set" true exhausted;
+              let collision =
+                parsed |> member "collision" |> to_bool_option
+                |> Option.value ~default:false
+              in
+              check bool "collision flag set on exhausted" true collision;
+              (* suggested_alias should be absent when exhausted *)
+              check bool "no suggested_alias when exhausted" true
+                (parsed |> member "suggested_alias" |> to_string_option = None)))
 
 (* register should allow re-registering the same alias under the same
    session_id (PID refresh after a restart). *)
@@ -4701,6 +4776,8 @@ let () =
              test_tools_call_register_no_alias_falls_back_to_env
          ; test_case "tools/call register rejects alias hijack from alive session" `Quick
              test_tools_call_register_rejects_alias_hijack
+         ; test_case "tools/call register returns collision_exhausted when all primes taken" `Quick
+             test_tools_call_register_alias_collision_exhausted
          ; test_case "tools/call register allows own alias refresh" `Quick
              test_tools_call_register_allows_own_alias_refresh
          ; test_case "tools/call register alias rename notifies rooms" `Quick
