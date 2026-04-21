@@ -326,6 +326,16 @@ class RelayClientTests(TwoBrokerTestCase):
         self.assertFalse(r["ok"])
         self.assertEqual(r["error_code"], "connection_error")
 
+    def test_list_rooms_no_auth_required(self):
+        client = RelayClient(self.relay_url)  # no token
+        r = client.list_rooms()
+        self.assertIsInstance(r, list)
+
+    def test_room_history_no_auth_required(self):
+        client = RelayClient(self.relay_url)  # no token
+        r = client.room_history("nonexistent-room")
+        self.assertIsInstance(r, list)
+
 
 # ---------------------------------------------------------------------------
 # Ed25519 signing unit tests
