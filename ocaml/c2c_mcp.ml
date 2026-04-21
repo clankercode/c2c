@@ -2046,6 +2046,13 @@ let current_session_id () =
   | Some value when String.trim value <> "" -> Some value
   | _ -> None
 
+(* Derive a process-unique session_id from alias + parent PID when
+   C2C_MCP_SESSION_ID is not set. Enables auto-registration without
+   requiring the shared project opencode.json to be patched per-instance.
+   Format: "<alias>-pid<ppid>" — readable and collision-resistant. *)
+let derived_session_id_from_alias alias =
+  Printf.sprintf "%s-pid%d" alias (Unix.getppid ())
+
 let auto_register_alias () =
   match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
   | Some value when String.trim value <> "" -> Some (String.trim value)
@@ -2066,8 +2073,14 @@ let current_client_pid () =
   | None -> None
 
 let auto_register_startup ~broker_root =
-  match (auto_register_alias (), current_session_id ()) with
-  | Some alias, Some session_id ->
+  match auto_register_alias () with
+  | None -> ()
+  | Some alias ->
+  let session_id = match current_session_id () with
+    | Some sid -> sid
+    | None -> derived_session_id_from_alias alias
+  in
+  begin
       let broker = Broker.create ~root:broker_root in
       (* Safety guard: if an alive registration already exists for this
          session_id with a DIFFERENT alias, skip auto-register. This
@@ -2143,49 +2156,54 @@ let auto_register_startup ~broker_root =
         Broker.register broker ~session_id ~alias ~pid ~pid_start_time ();
         ignore (Broker.redeliver_dead_letter_for_session broker ~session_id ~alias)
       end
-  | _ -> ()
+  end
 
 (** Auto-join rooms listed in C2C_MCP_AUTO_JOIN_ROOMS (comma-separated) on
     server startup. Only runs when auto-registration is also configured (both
-    C2C_MCP_AUTO_REGISTER_ALIAS and C2C_MCP_SESSION_ID must be set). This is
+    C2C_MCP_AUTO_REGISTER_ALIAS must be set; C2C_MCP_SESSION_ID is optional
+    (derived from alias+ppid when absent). This is
     the social-layer entry point: operators set
       C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge
     in the MCP env so every agent session joins the persistent social channel
     automatically on first startup. Idempotent — joining the same room twice
     is a no-op on the broker side. *)
 let auto_join_rooms_startup ~broker_root =
-  match (auto_register_alias (), current_session_id ()) with
-  | Some alias, Some session_id ->
-      let rooms_raw =
-        match Sys.getenv_opt "C2C_MCP_AUTO_JOIN_ROOMS" with
-        | Some v -> String.trim v
-        | None -> ""
-      in
-      if rooms_raw <> "" then begin
-        let rooms =
-          String.split_on_char ',' rooms_raw
-          |> List.map String.trim
-          |> List.filter (fun s -> s <> "")
-        in
-        let broker = Broker.create ~root:broker_root in
-        let alias =
-          match
-            List.find_opt
-              (fun reg -> reg.session_id = session_id)
-              (Broker.list_registrations broker)
-          with
-          | Some reg -> reg.alias
-          | None -> alias
-        in
-        List.iter
-          (fun room_id ->
-            if Broker.valid_room_id room_id then
-              ignore (Broker.join_room broker ~room_id ~alias ~session_id)
-            (* silently skip invalid room IDs so a misconfiguration doesn't
-               crash the server *))
-          rooms
-      end
-  | _ -> ()
+  match auto_register_alias () with
+  | None -> ()
+  | Some alias ->
+  let session_id = match current_session_id () with
+    | Some sid -> sid
+    | None -> derived_session_id_from_alias alias
+  in
+  let rooms_raw =
+    match Sys.getenv_opt "C2C_MCP_AUTO_JOIN_ROOMS" with
+    | Some v -> String.trim v
+    | None -> ""
+  in
+  if rooms_raw <> "" then begin
+    let rooms =
+      String.split_on_char ',' rooms_raw
+      |> List.map String.trim
+      |> List.filter (fun s -> s <> "")
+    in
+    let broker = Broker.create ~root:broker_root in
+    let alias =
+      match
+        List.find_opt
+          (fun reg -> reg.session_id = session_id)
+          (Broker.list_registrations broker)
+      with
+      | Some reg -> reg.alias
+      | None -> alias
+    in
+    List.iter
+      (fun room_id ->
+        if Broker.valid_room_id room_id then
+          ignore (Broker.join_room broker ~room_id ~alias ~session_id)
+        (* silently skip invalid room IDs so a misconfiguration doesn't
+           crash the server *))
+      rooms
+  end
 
 let resolve_session_id arguments =
   match optional_string_member "session_id" arguments with

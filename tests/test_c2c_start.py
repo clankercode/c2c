@@ -966,6 +966,9 @@ class C2CStartExit109RegressionTests(unittest.TestCase):
             # Redirect instance state to temp dir so no stale entries accumulate
             # in ~/.local/share/c2c/instances/ after tests run.
             "C2C_INSTANCES_DIR": str(self.instances_dir),
+            # Prevent git rev-parse from finding the real repo so
+            # refresh_opencode_identity doesn't patch .opencode/opencode.json.
+            "GIT_DIR": str(self.tmp_path / "no-such-git"),
         }
         proc = spawn_tracked(
             [str(CLI_EXE), "start", "opencode", "-n", name],
@@ -973,6 +976,7 @@ class C2CStartExit109RegressionTests(unittest.TestCase):
             stderr=subprocess.PIPE,
             text=True,
             env=env,
+            cwd=str(self.tmp_path),
         )
         try:
             stdout, stderr = proc.communicate(timeout=CLI_TIMEOUT)
@@ -1065,6 +1069,7 @@ class C2CStartOpencodeSessionPreflightTests(unittest.TestCase):
             "PATH": str(self.tmp_path) + ":" + os.environ.get("PATH", ""),
             "C2C_MCP_BROKER_ROOT": str(self.broker_root),
             "C2C_INSTANCES_DIR": str(self.instances_dir),
+            "GIT_DIR": str(self.tmp_path / "no-such-git"),
         }
         proc = spawn_tracked(
             [str(CLI_EXE), "start", "opencode", "-n", name, "-s", ses_id],
@@ -1072,6 +1077,7 @@ class C2CStartOpencodeSessionPreflightTests(unittest.TestCase):
             stderr=subprocess.PIPE,
             text=True,
             env=env,
+            cwd=str(self.tmp_path),
         )
         try:
             stdout, stderr = proc.communicate(timeout=CLI_TIMEOUT)
@@ -1158,6 +1164,7 @@ class C2CStartRegistryCleanupRegressionTests(unittest.TestCase):
             "PATH": str(self.tmp_path) + ":" + os.environ.get("PATH", ""),
             "C2C_MCP_BROKER_ROOT": str(self.broker_root),
             "C2C_INSTANCES_DIR": str(self.instances_dir),
+            "GIT_DIR": str(self.tmp_path / "no-such-git"),
         }
         proc = spawn_tracked(
             [str(CLI_EXE), "start", "opencode", "-n", self.name],
@@ -1165,6 +1172,7 @@ class C2CStartRegistryCleanupRegressionTests(unittest.TestCase):
             stderr=subprocess.PIPE,
             text=True,
             env=env,
+            cwd=str(self.tmp_path),
         )
         stdout, stderr = proc.communicate(timeout=CLI_TIMEOUT)
         self.assertEqual(proc.returncode, 0, f"stdout={stdout!r} stderr={stderr!r}")

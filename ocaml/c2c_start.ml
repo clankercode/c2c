@@ -508,8 +508,11 @@ let refresh_opencode_identity ~name ~alias ~broker_root ~project_dir =
   (if Sys.file_exists config_path then
     (try
       let cfg = Yojson.Safe.from_file config_path in
+      (* Do NOT write C2C_MCP_SESSION_ID to the shared project opencode.json —
+         the broker now derives a unique session_id from alias+ppid when the
+         env var is absent, avoiding multi-agent collision on the shared file.
+         Only write stable config that's safe across concurrent sessions. *)
       let identity_env = [
-        ("C2C_MCP_SESSION_ID", `String name);
         ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias);
         ("C2C_MCP_BROKER_ROOT", `String broker_root);
         ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge");
