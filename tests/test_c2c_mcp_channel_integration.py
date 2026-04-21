@@ -970,3 +970,57 @@ class TestPeerRenameGuard:
             obs.wait(timeout=5)
             proc.terminate()
             proc.wait(timeout=5)
+
+
+class TestDerivedSessionId:
+    """Auto-registration succeeds when C2C_MCP_SESSION_ID is absent.
+
+    The broker derives session_id = alias when the env var is not set.
+    This enables shared project opencode.json without per-instance collision
+    (the alias is stable; only managed sessions inject a unique session_id
+    via env inheritance from c2c start).
+    """
+
+    def test_auto_register_works_without_session_id_env(self, broker_dir: Path) -> None:
+        """MCP server registers using alias as session_id when C2C_MCP_SESSION_ID is absent."""
+        alias = "no-sid-agent"
+        env = {
+            **os.environ,
+            "C2C_MCP_BROKER_ROOT": str(broker_dir),
+            "C2C_MCP_AUTO_REGISTER_ALIAS": alias,
+            "C2C_MCP_CHANNEL_DELIVERY": "0",
+            "C2C_MCP_AUTO_DRAIN_CHANNEL": "0",
+            "C2C_MCP_AUTO_JOIN_ROOMS": "",
+            "C2C_MCP_INBOX_WATCHER_DELAY": "0",
+        }
+        # Explicitly unset C2C_MCP_SESSION_ID so derived path is exercised.
+        env.pop("C2C_MCP_SESSION_ID", None)
+
+        proc = spawn_tracked(
+            [str(MCP_SERVER_EXE)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            text=True,
+            bufsize=1,
+        )
+        try:
+            initialize_server(proc)
+            time.sleep(0.2)
+
+            # The server should have auto-registered with session_id = alias.
+            regs_path = broker_dir / "registry.json"
+            assert regs_path.exists(), "registry.json should exist after auto-register"
+            regs = json.loads(regs_path.read_text())
+            assert len(regs) >= 1, f"Expected at least one registration, got: {regs}"
+            # session_id should be the alias (derived path)
+            matching = [r for r in regs if r.get("alias") == alias]
+            assert matching, f"No registration with alias={alias!r}: {regs}"
+            reg = matching[0]
+            assert reg["session_id"] == alias, (
+                f"Expected session_id={alias!r} (derived from alias), got {reg['session_id']!r}"
+            )
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
