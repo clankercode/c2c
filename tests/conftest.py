@@ -27,12 +27,19 @@ import pytest
 # Each entry is a (label, pattern, live_limit) tuple:
 #   label       — human name shown in error messages
 #   pattern     — pgrep -f pattern
-#   live_limit  — max allowed pre-existing matches before we refuse the run
+#   live_limit  — max allowed pre-existing matches before pre-flight refuses
+#                 the run. Use None to skip pre-flight for this pattern
+#                 (still tracked for post-test leak detection).
+#
+# IMPORTANT: Do NOT set a limit for "c2c-start" — live swarm agents run as
+# `c2c start <client>` managed instances and are not test pollution. The
+# post-test baseline-diff approach (see _process_leak_guard below) already
+# catches newly leaked instances without tripping on legitimate live peers.
 # ---------------------------------------------------------------------------
-_LEAK_PATTERNS: list[tuple[str, str, int]] = [
+_LEAK_PATTERNS: list[tuple[str, str, int | None]] = [
     ("opencode",       r"\.opencode.*--log-level",  3),
     ("c2c-mcp-server", r"c2c_mcp_server\.exe",      1),
-    ("c2c-start",      r"c2c start ",               2),
+    ("c2c-start",      r"c2c start ",               None),  # live swarm; no pre-flight limit
 ]
 
 
@@ -88,6 +95,8 @@ def pytest_configure(config: pytest.Config) -> None:
 
     problems: list[str] = []
     for label, pat, limit in _LEAK_PATTERNS:
+        if limit is None:
+            continue  # no pre-flight check for this pattern (live swarm ok)
         pids = _pgrep_pids(pat)
         if len(pids) > limit:
             problems.append(
