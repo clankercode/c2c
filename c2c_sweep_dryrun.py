@@ -159,6 +159,29 @@ def duplicate_pid_entries(registrations: list[dict], root: Path) -> list[dict]:
     return entries
 
 
+import os
+import time as _time_module
+
+
+def is_provisional_expired(reg: dict, timeout_s: float | None = None) -> bool:
+    """Mirror OCaml is_provisional_expired: pid=None, confirmed_at=None, timed-out registered_at."""
+    if reg.get("pid") is not None:
+        return False
+    if reg.get("confirmed_at") is not None:
+        return False
+    if reg.get("client_type") == "human":
+        return False
+    registered_at = reg.get("registered_at")
+    if registered_at is None:
+        return False
+    if timeout_s is None:
+        try:
+            timeout_s = float(os.environ.get("C2C_PROVISIONAL_SWEEP_TIMEOUT", "1800"))
+        except ValueError:
+            timeout_s = 1800.0
+    return (_time_module.time() - registered_at) > timeout_s
+
+
 def analyze(root: Path) -> dict:
     regs = load_registry(root)
     inboxes = collect_inboxes(root)
@@ -168,6 +191,7 @@ def analyze(root: Path) -> dict:
     dead_regs = []
     live_regs = []
     legacy_regs = []
+    provisional_expired_regs = []
 
     for reg in regs:
         sid = reg.get("session_id", "")
@@ -182,9 +206,14 @@ def analyze(root: Path) -> dict:
             "pid": pid,
             "pid_start_time": start_time,
             "inbox_messages": inbox_message_count(inboxes[sid]) if sid in inboxes else None,
+            "registered_at": reg.get("registered_at"),
+            "confirmed_at": reg.get("confirmed_at"),
         }
         if pid is None:
-            legacy_regs.append(entry)
+            if is_provisional_expired(reg):
+                provisional_expired_regs.append(entry)
+            else:
+                legacy_regs.append(entry)
         elif pid_is_alive(pid, start_time):
             live_regs.append(entry)
         else:
@@ -210,11 +239,14 @@ def analyze(root: Path) -> dict:
 
     dropped_inboxes = (
         [e["session_id"] for e in dead_regs]
+        + [e["session_id"] for e in provisional_expired_regs]
         + [o["session_id"] for o in orphan_inboxes]
     )
     nonempty_drops = [
         o for o in orphan_inboxes if (o["messages"] or 0) > 0
-    ] + [e for e in dead_regs if (e["inbox_messages"] or 0) > 0]
+    ] + [e for e in dead_regs if (e["inbox_messages"] or 0) > 0] + [
+        e for e in provisional_expired_regs if (e["inbox_messages"] or 0) > 0
+    ]
 
     return {
         "root": str(root),
@@ -223,6 +255,7 @@ def analyze(root: Path) -> dict:
             "inbox_files": len(inboxes),
             "live": len(live_regs),
             "legacy_pidless": len(legacy_regs),
+            "provisional_expired": len(provisional_expired_regs),
             "dead": len(dead_regs),
             "orphan_inboxes": len(orphan_inboxes),
             "dropped_if_swept": len(dropped_inboxes),
@@ -230,6 +263,7 @@ def analyze(root: Path) -> dict:
         },
         "live_regs": live_regs,
         "legacy_pidless_regs": legacy_regs,
+        "provisional_expired_regs": provisional_expired_regs,
         "dead_regs": dead_regs,
         "orphan_inboxes": orphan_inboxes,
         "duplicate_pids": duplicate_pid_entries(regs, root),
@@ -246,6 +280,7 @@ def print_report(report: dict) -> None:
     print(f"  registrations          {t['registrations']}")
     print(f"    live                 {t['live']}")
     print(f"    legacy (pid=None)    {t['legacy_pidless']}")
+    print(f"    provisional expired  {t['provisional_expired']}")
     print(f"    dead                 {t['dead']}")
     print(f"  inbox files on disk    {t['inbox_files']}")
     print(f"  orphan inboxes         {t['orphan_inboxes']}")
@@ -266,6 +301,19 @@ def print_report(report: dict) -> None:
             likely = entry.get("likely_stale_aliases") or []
             suffix = f"  likely stale: {', '.join(likely)}" if likely else ""
             print(f"  pid={entry['pid']}: {aliases}{suffix}")
+
+    if report.get("provisional_expired_regs"):
+        print()
+        print("provisional expired registrations (pid=None, timed out — would be dropped):")
+        for reg in report["provisional_expired_regs"]:
+            msgs = reg["inbox_messages"]
+            suffix = f"  [{msgs} pending msgs]" if msgs else ""
+            age = ""
+            if reg.get("registered_at"):
+                import time as _t
+                elapsed = int(_t.time() - reg["registered_at"])
+                age = f"  age={elapsed}s"
+            print(f"  {reg['alias']:<20} {reg['session_id']}{age}{suffix}")
 
     if report["dead_regs"]:
         print()
