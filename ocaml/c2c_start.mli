@@ -162,6 +162,7 @@ val run_outer_loop :
   ?alias_override:string ->
   ?resume_session_id:string ->
   ?one_hr_cache:bool ->
+  ?kickoff_prompt:string ->
   unit ->
   int
 (** [run_outer_loop] runs the outer restart loop for the given instance
@@ -179,6 +180,7 @@ val cmd_start :
   ?alias_override:string ->
   ?session_id_override:string ->
   ?one_hr_cache:bool ->
+  ?kickoff_prompt:string ->
   unit ->
   int
 (** [cmd_start] validates and starts a managed instance. Returns 0 on success,

@@ -1465,7 +1465,7 @@ let tail_log_cmd =
 let my_rooms_cmd =
   let+ json = json_flag in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let session_id = resolve_session_id () in
+  let session_id = resolve_session_id_for_inbox broker in
   let rooms = C2c_mcp.Broker.my_rooms broker ~session_id in
   let output_mode = if json then Json else Human in
   match output_mode with

@@ -818,7 +818,8 @@ let start_wire_daemon ~(name : string) ~(alias : string)
 let run_outer_loop ~(name : string) ~(client : string)
     ~(extra_args : string list) ~(broker_root : string)
     ?(binary_override : string option) ?(alias_override : string option)
-    ?(resume_session_id : string option) ?(one_hr_cache = false) () : int =
+    ?(resume_session_id : string option) ?(one_hr_cache = false)
+    ?(kickoff_prompt : string option) () : int =
   let cfg =
     try Stdlib.Hashtbl.find clients client
     with Not_found ->
@@ -949,6 +950,17 @@ let run_outer_loop ~(name : string) ~(client : string)
         let alias = Option.value alias_override ~default:name in
         refresh_opencode_identity ~name ~alias ~broker_root
       end);
+
+      (* Write kickoff prompt file so the plugin delivers it on first session.idle. *)
+      (match kickoff_prompt with
+       | Some prompt when client = "opencode" ->
+           let kp_path = Filename.concat (Sys.getcwd ()) ".opencode" // "kickoff-prompt.txt" in
+           (try
+             let oc = open_out kp_path in
+             Fun.protect ~finally:(fun () -> close_out oc)
+               (fun () -> output_string oc prompt)
+           with _ -> ())
+       | _ -> ());
 
       (* Symlink latest opencode log to client.log *)
       (if client = "opencode" then
@@ -1143,7 +1155,8 @@ let run_outer_loop ~(name : string) ~(client : string)
 
 let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?(binary_override : string option) ?(alias_override : string option)
-    ?(session_id_override : string option) ?(one_hr_cache = false) () : int =
+    ?(session_id_override : string option) ?(one_hr_cache = false)
+    ?(kickoff_prompt : string option) () : int =
   if not (Stdlib.Hashtbl.mem clients client) then
     (Printf.eprintf "error: unknown client: '%s'. Choose from: %s\n%!"
        client (String.concat ", " (List.sort String.compare supported_clients));
@@ -1283,7 +1296,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
 
   run_outer_loop ~name ~client ~extra_args ~broker_root
     ?binary_override ?alias_override ~resume_session_id:cfg.resume_session_id
-    ~one_hr_cache ()
+    ~one_hr_cache ?kickoff_prompt ()
 
 (* Signal the managed inner client so the outer loop relaunches it. Designed
    to be callable by an agent running *inside* that client, so the outer
