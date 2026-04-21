@@ -273,6 +273,22 @@ describe('c2c plugin unit tests', () => {
     expect(events[1].patch.agent.last_step.details.session_id).toBe('late-root');
   });
 
+  it('bootstraps root session from HTTP session.list on plugin start (resume scenario)', async () => {
+    const ctx = makeCtx();
+    (ctx.client.session.list as any).mockResolvedValue({
+      data: [{ id: 'ses-resumed', time: { updated: 1000, created: 900 } }],
+    });
+    await C2CDelivery(ctx as any);
+    // pump microtasks so void bootstrapRootSession() resolves
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+
+    const events = stateEvents();
+    expect(events.length).toBeGreaterThanOrEqual(2);
+    const patch = events.find((e) => e.event === 'state.patch');
+    expect(patch).toBeDefined();
+    expect(patch!.patch.root_opencode_session_id).toBe('ses-resumed');
+  });
+
   it('does not let non-root permission events mutate published root state', async () => {
     const ctx = makeCtx();
     const hooks = await C2CDelivery(ctx as any);

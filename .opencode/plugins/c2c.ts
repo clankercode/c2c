@@ -483,6 +483,29 @@ const C2CDelivery: Plugin = async (ctx) => {
     }
   }
 
+  /** On resume (session.created missed), bootstrap root from HTTP session list. */
+  async function bootstrapRootSession(): Promise<void> {
+    if (pluginState.root_opencode_session_id) return;
+    try {
+      const result = await (ctx.client.session as any).list();
+      const sessions: any[] = Array.isArray(result?.data) ? result.data
+        : Array.isArray(result) ? result : [];
+      const roots = sessions
+        .filter((s: any) => !s.parentID && s.id)
+        .sort((a: any, b: any) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0));
+      const candidate = configuredOpenCodeSessionId
+        ? (roots.find((s: any) => s.id === configuredOpenCodeSessionId) ?? roots[0])
+        : roots[0];
+      if (!candidate?.id) return;
+      pluginState.root_opencode_session_id = candidate.id;
+      if (!activeSessionId) activeSessionId = candidate.id;
+      await log(`bootstrapped root session from HTTP list: ${candidate.id}`);
+      writeStatePatch({ root_opencode_session_id: candidate.id });
+    } catch (err) {
+      await log(`bootstrapRootSession: non-fatal error: ${err}`);
+    }
+  }
+
   function eventSessionId(event: Event): string | null {
     const props = (event as any).properties ?? {};
     const info = props.info ?? {};
@@ -962,6 +985,7 @@ const C2CDelivery: Plugin = async (ctx) => {
   await log(`plugin loaded (session=${sessionId}, interval=${pollIntervalMs}ms, idleOnly=${idleOnlyMode}, sha256=${pluginHash})`);
   await log(`API introspect: session methods=[${sessionMethods}] app methods=[${appMethods}]`);
   await spawnStateWriter();
+  void bootstrapRootSession();
   startBackgroundLoop();
 
   // --- Return hooks ---
@@ -1122,7 +1146,7 @@ const C2CDelivery: Plugin = async (ctx) => {
         const sid: string = qProps.sessionID || activeSessionId || sessionId || "unknown";
         const instanceName: string = process.env.C2C_INSTANCE_NAME || "";
         const from = instanceName || sessionId || sid;
-        const timeoutSec = 300; // 5 min default for questions
+        const timeoutSec = Math.round(permissionTimeoutMs / 1000); // reuses C2C_PERMISSION_TIMEOUT_MS
 
         // Capture in statefile so observer pane shows pending question.
         if (questions.length > 0) {
@@ -1133,7 +1157,7 @@ const C2CDelivery: Plugin = async (ctx) => {
             header: first.header || "",
             options: (first.options || []).map((o: any) => String(o.value || o)),
           };
-          streamStateSnapshot();
+          writeStateSnapshot();
         }
 
         const lines = [`QUESTION REQUEST from ${from}:`];
@@ -1162,7 +1186,7 @@ const C2CDelivery: Plugin = async (ctx) => {
           void toast(`c2c · question — awaiting human input`);
           const reply = await waitForQuestionReply(qId, timeoutSec * 1000);
           pluginState.pendingQuestion = null;
-          streamStateSnapshot();
+          writeStateSnapshot();
           const answers: string[][] = questions.map(() =>
             reply.answer !== null ? [reply.answer] : []
           );
