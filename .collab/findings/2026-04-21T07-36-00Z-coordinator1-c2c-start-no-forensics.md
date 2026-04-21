@@ -2,8 +2,21 @@
 author: coordinator1
 ts: 2026-04-21T07:36:00Z
 severity: medium
-fix: not-started
+fix: FIXED — all 4 items implemented (see note)
 ---
+
+## Fix Note (coder2-expert, 2026-04-21)
+
+All proposed items are implemented as of this session:
+1. **Stderr tee** — `c2c_start.ml:start_stderr_tee()` pipes child stderr to `<inst_dir>/stderr.log`.
+   Gated on `!isatty(stderr)` to avoid exit 109 on TTY launches (see 7bb26a8).
+2. **deaths.jsonl** — `record_death()` appends `{ts,name,client,exit_code,duration_s,last_stderr}`
+   to `<broker_root>/deaths.jsonl` on non-zero exit (see c2c_start.ml:208).
+3. **`c2c instances`** — shows running instances (deaths surfaced via `c2c diag`).
+4. **`c2c diag <name>`** — reads deaths.jsonl + stderr.log tail for a given instance name.
+
+Remaining: tee is skipped in TTY mode; stderr.log is empty for interactive tmux launches.
+Would need a named pipe or workaround to capture in that case without exit-109 regression.
 
 # c2c start leaves no forensic trace when inner client dies
 

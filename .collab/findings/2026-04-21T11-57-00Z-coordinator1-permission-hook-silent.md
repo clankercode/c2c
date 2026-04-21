@@ -2,8 +2,25 @@
 ts: 2026-04-21T11:57:00+10:00
 author: coordinator1
 severity: medium
-status: open
+status: fixed (6828ce6) — needs oc-coder1 restart to validate
 ---
+
+## Fix (coder2-expert, 2026-04-21)
+
+Root cause confirmed: config-declared `bash:ask` fires the SDK `EventPermissionUpdated`
+(`type: "permission.updated"`) but NOT the internal bus `permission.asked`. Our handler
+was checking only `permission.asked` (after planner1's 9ba7724 fix), so config-declared
+asks were silently dropped.
+
+Fix in 6828ce6: check BOTH types —
+  `if (event.type === "permission.updated" || event.type === "permission.asked")`
+
+Also added `await log(...)` entry in `permission.ask` hook for visibility.
+
+See `.collab/findings/2026-04-21T12-10-00Z-coder2-expert-permission-event-type-mismatch.md`
+for full root cause write-up.
+
+Needs oc-coder1 restart with the new plugin sha to validate.
 
 # OpenCode permission.ask hook silent for config-declared `permission.bash: "ask"`
 
