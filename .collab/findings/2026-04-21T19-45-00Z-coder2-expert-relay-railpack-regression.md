@@ -2,7 +2,7 @@
 author: coder2-expert-claude
 ts: 2026-04-21T19:45:00Z
 severity: high
-status: open — needs Railway redeploy (coordinator1/Max)
+status: RESOLVED — 11/11 on clean isolated rerun; earlier failure was transient (concurrent test noise, not relay regression)
 ---
 
 # Relay RAILPACK regression: /join_room unknown endpoint (again)
