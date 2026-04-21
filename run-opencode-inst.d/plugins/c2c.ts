@@ -214,6 +214,7 @@ const C2CDelivery: Plugin = async (ctx) => {
   // Track the active root session (set from session events)
   let activeSessionId: string | null = configuredOpenCodeSessionId || null;
   let backgroundLoopStarted = false;
+  let pendingToastShown = false; // debounce the "messages waiting" toast
 
   // Dedup window for permission notifications: track last 10 seen permission IDs.
   const seenPermissionIds: string[] = [];
@@ -428,6 +429,8 @@ const C2CDelivery: Plugin = async (ctx) => {
     }
     // Update spool: clear if all delivered, write failures if any.
     writeSpool(failed);
+    // Reset toast debounce so a future batch of messages shows a fresh toast.
+    if (failed.length === 0) pendingToastShown = false;
   }
 
   /** Try to deliver to the best-known session ID. */
@@ -439,6 +442,15 @@ const C2CDelivery: Plugin = async (ctx) => {
       // Do NOT use session.list() fallback: it returns ALL historical sessions
       // across all OpenCode instances and would deliver to the wrong session.
       await log("tryDeliver: no session yet — waiting for session.created");
+      // If there are spooled messages, show a one-time toast so the user knows
+      // to type something to receive them (promptAsync requires an active session).
+      if (!pendingToastShown) {
+        const pending = readSpool();
+        if (pending.length > 0) {
+          pendingToastShown = true;
+          await toast(`${pending.length} c2c message(s) waiting — start a session to receive`, "info");
+        }
+      }
       return;
     }
     await deliverMessages(sid);
@@ -519,6 +531,8 @@ const C2CDelivery: Plugin = async (ctx) => {
   // --- Return hooks ---
   return {
     event: async ({ event }: { event: Event }) => {
+      // Log every event type for debugging (permission hook, delivery, etc.)
+      await log(`event: type=${event.type}`);
       // Track root session ID from creation events — also trigger immediate delivery
       // so queued messages arrive without waiting for the next background loop tick.
       if (event.type === "session.created") {
@@ -547,10 +561,13 @@ const C2CDelivery: Plugin = async (ctx) => {
         return;
       }
 
-      // Notify supervisor on permission.asked (v1: notification-only, no dialog mutation)
-      // Bus publishes "permission.asked"; the hooks["permission.ask"] below intercepts pre-dialog.
-      if (event.type === "permission.asked") {
-        const perm = (event as any).properties?.permission ?? (event as any).properties ?? {};
+      // Notify supervisor on permission events (v1: notification-only, no dialog mutation).
+      // OpenCode publishes "permission.updated" in the external SDK Event stream and
+      // "permission.asked" on the internal bus. Config-declared bash:ask appears to only
+      // fire "permission.updated" via the SDK subscription path; runtime-ask fires both.
+      // Check both to cover all cases.
+      if (event.type === "permission.updated" || event.type === "permission.asked") {
+        const perm = (event as any).properties ?? {};
         const permId: string = perm.id || "";
         if (permId) {
           if (seenPermissionIds.includes(permId)) return;
@@ -599,6 +616,7 @@ const C2CDelivery: Plugin = async (ctx) => {
     },
 
     "permission.ask": async (input: any, output: { status: "ask" | "deny" | "allow" }) => {
+        await log(`permission.ask hook fired: id=${input.id || "?"} type=${input.type || "?"} title=${input.title || "?"}`);
         const permId: string = input.id || "";
         const title: string = input.title || "unknown";
         const type: string = input.type || "unknown";
