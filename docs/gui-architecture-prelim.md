@@ -228,7 +228,10 @@ Planner1's canonical-alias work (`alias#repo@host`) is the substrate.
 
 ## Answers from Max
 
-* in progress *
+- In the future we should support statefiles for all clients we support (note: i think we should drop some and keep just claude, codex, and opencode as tier-1 supported platforms. I have a custom build of codex that will make this possible. for claude, we need a way to listen to events and I'm not sure that we have much of a plugin yet. In any case, the equivalent stuff should be implemented for claude in follow up tasks. Using a plugin might make installing hooks and other claude config the like much easier, too. 
+- relay-traffic visibility: hmm we'll need planner1 to confirm. i think they should be written to the inbox but not sure. 
+- compose-box: Yes i think markdown rendering would be good, mentions might be useful and can decide who mail is addressed to (so we don't need a 'to' field). we can remove at-mentions from the start or end of messages provided they're all at the start or end (maybe space or comma spearated, we should handle the format flexibly). # can show a filter-suggestion menu of room names, similar to @ mention filter lists. slash commands that are user oriented could be very useful. 
+- yes we should use best practice methods for handling it. also the rust backend can read ahead in any threads we're close to and prepopulate message history for us. In terms of going way back, we should provide ways of doing that which are more amenable to browsing with any precision. need to have performance criteria + debug mode to syntesize a lot of data to make sure we can test with it. also use gtkwebviewwebdriver or whatever it's called for tauri ui automation. 
 
 ## Rough milestones (order, not dates)
 
