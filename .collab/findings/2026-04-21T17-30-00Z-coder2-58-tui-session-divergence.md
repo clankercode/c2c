@@ -1,6 +1,6 @@
 # #58: TUI/Plugin Session Divergence Root Cause
 
-**Status**: Root cause confirmed from debug log. Fix candidates identified.
+**Status**: FIXED — 7b063ac + b3b2b1a + 7669ec4 (2026-04-21)
 
 ## Symptom
 After `c2c start opencode --auto -n oc-e2e-test`, Max returned to find:
