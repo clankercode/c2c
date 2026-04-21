@@ -30,6 +30,14 @@ let t_root_no_auth () =
   Alcotest.(check bool) "/ allowed without auth" true
     (allowed (decide ~path:"/" ()))
 
+let t_list_rooms_no_auth () =
+  Alcotest.(check bool) "/list_rooms allowed without auth (read-only)" true
+    (allowed (decide ~path:"/list_rooms" ~token:(Some "x") ()))
+
+let t_room_history_no_auth () =
+  Alcotest.(check bool) "/room_history allowed without auth (read-only)" true
+    (allowed (decide ~path:"/room_history" ~token:(Some "x") ()))
+
 (* --- Peer routes (Ed25519 only) --- *)
 
 let t_peer_ed25519_ok () =
@@ -117,6 +125,8 @@ let () =
     "unauth", [
       Alcotest.test_case "/health no auth" `Quick t_health_no_auth;
       Alcotest.test_case "/ no auth" `Quick t_root_no_auth;
+      Alcotest.test_case "/list_rooms no auth" `Quick t_list_rooms_no_auth;
+      Alcotest.test_case "/room_history no auth" `Quick t_room_history_no_auth;
     ];
     "peer", [
       Alcotest.test_case "Ed25519 ok" `Quick t_peer_ed25519_ok;

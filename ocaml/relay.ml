@@ -859,7 +859,11 @@ end = struct
   let err_unauthorized = "unauthorized"
 
   let auth_decision ~path ~include_dead ~token ~auth_header ~ed25519_verified =
-    let is_unauth = List.mem path ["/health"; "/"] in
+    (* /list_rooms and /room_history are read-only queries with no state mutation;
+       treating them as peer routes (Ed25519 required) would break `c2c relay rooms list`
+       and `room history` which have no natural signing alias in prod mode. Allow
+       unauthenticated read access — same as /health. *)
+    let is_unauth = List.mem path ["/health"; "/"; "/list_rooms"; "/room_history"] in
     let is_admin =
       path = "/gc"
       || path = "/dead_letter"
