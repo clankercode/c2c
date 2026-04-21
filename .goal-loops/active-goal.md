@@ -240,9 +240,11 @@ These are Max's target experiences, verbatim:
 - **Cross-machine relay**: loopback proof PASSED 2026-04-20 (relay-test-sender →
   relay-test-receiver via relay.c2c.im). Real multi-machine test pending.
   Runbook: `.collab/runbooks/cross-machine-relay-proof.md`.
-- **Relay auth prod migration**: Steps 2-4 already implemented (identity in c2c init ✓,
-  auto-sign register ✓, health shows auth_mode ✓). Step 1 (set C2C_RELAY_TOKEN on
-  Railway) for Max — only remaining gate.
+- **Relay auth prod migration**: RELAY_TOKEN set on Railway ✓ (relay now in prod mode).
+  Bootstrap bug fixed: `/register` now bypasses header-level Ed25519 (adb152f, planner1).
+  Needs `git push origin master` (Max gate — SSH key not available in agent sessions)
+  + Railway rebuild (~15min) before `c2c relay register` works in prod.
+  Steps 2-4 implemented: identity in c2c init ✓, auto-sign register ✓, health auth_mode ✓.
 
 ### Recent Completions (2026-04-20/21, planner1 + coder2-expert + coordinator1)
 
