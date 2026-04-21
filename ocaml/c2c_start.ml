@@ -965,8 +965,17 @@ let run_outer_loop ~(name : string) ~(client : string)
       (if client = "opencode" then begin
         let alias = Option.value alias_override ~default:name in
         let project_dir = resolve_repo_root ~broker_root in
-        if project_dir <> "" then
+        if project_dir <> "" then begin
+          (* Self-heal: if opencode.json is missing, run `c2c install opencode`
+             before refreshing identity. Without this, the MCP server boots
+             without c2c configured and the session registers no alias. *)
+          let config_path = Filename.concat project_dir ".opencode" // "opencode.json" in
+          (if not (Sys.file_exists config_path) then begin
+            Printf.eprintf "  [c2c start] .opencode/opencode.json not found — running c2c install opencode...\n%!";
+            ignore (Sys.command "c2c install opencode 2>/dev/null")
+          end);
           refresh_opencode_identity ~name ~alias ~broker_root ~project_dir
+        end
       end);
 
       (* Write kickoff prompt file so the plugin delivers it on first session.idle. *)
