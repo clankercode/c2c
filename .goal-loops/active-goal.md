@@ -235,8 +235,10 @@ These are Max's target experiences, verbatim:
 - **AFK-wait promptAsync validation**: does `promptAsync` fire during human-turn?
   Blocked on end-to-end delivery test. Delivery now confirmed working (inbox drains).
   Needs TUI render confirmation in coordinator1's pane.
-- **v2 permission async approval validation**: live test of `permission.ask` hook
-  with structured c2c reply. Same dependency.
+- **v2 permission async approval validation** ✓ LIVE-PROVEN 2026-04-21 (d9e0db7, Max):
+  plugin received `permission.asked`, DM'd coordinator1, drained approve-once reply,
+  called `postSessionIdPermissionsPermissionId` → `response=once`, TUI dialog closed,
+  echo ran, toast shown. End-to-end permission approval flow fully working.
 - **Cross-machine relay**: loopback proof PASSED 2026-04-20 (relay-test-sender →
   relay-test-receiver via relay.c2c.im). Real multi-machine test pending.
   Runbook: `.collab/runbooks/cross-machine-relay-proof.md`.
