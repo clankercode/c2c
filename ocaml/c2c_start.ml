@@ -1347,6 +1347,63 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     exit 1
   end;
 
+  (* Guard: fail fast if already running inside a c2c agent session.
+     C2C_INSTANCE_NAME means we ARE the managed client (set by our own
+     build_env), so skip the guard in that case. If session-id or alias
+     is set without INSTANCE_NAME, we're inside a nested c2c session. *)
+  (match Sys.getenv_opt "C2C_MCP_SESSION_ID",
+         Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS",
+         Sys.getenv_opt "C2C_INSTANCE_NAME" with
+   | Some _, None, None ->
+       (* session-id set, alias not set, no instance name → nested session *)
+       let use_color = Unix.isatty Unix.stderr in
+       let red = if use_color then "\027[1;31m" else "" in
+       let reset = if use_color then "\027[0m" else "" in
+       let sid_str = match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+         | Some s -> s | None -> "(unknown)" in
+       Printf.eprintf
+         "%sFATAL:%s refusing to start nested session.\n\
+          \  You are already running inside a c2c agent session\n\
+          \  (C2C_MCP_SESSION_ID=%s).\n\
+          \  Hint: use 'c2c stop' to exit the current session first,\n\
+          \  or 'c2c restart-self' to restart the inner client.\n%!"
+         red reset sid_str;
+       exit 1
+   | None, Some _, None ->
+       (* alias set, no session-id, no instance name → nested session *)
+       let use_color = Unix.isatty Unix.stderr in
+       let red = if use_color then "\027[1;31m" else "" in
+       let reset = if use_color then "\027[0m" else "" in
+       let alias_str = match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
+         | Some a -> a | None -> "(unknown)" in
+       Printf.eprintf
+         "%sFATAL:%s refusing to start nested session.\n\
+          \  You are already running inside a c2c agent session\n\
+          \  (C2C_MCP_AUTO_REGISTER_ALIAS=%s).\n\
+          \  Hint: use 'c2c stop' to exit the current session first,\n\
+          \  or 'c2c restart-self' to restart the inner client.\n%!"
+         red reset alias_str;
+       exit 1
+   | Some _, Some _, None ->
+       (* both set, no instance name → definitely nested session *)
+       let use_color = Unix.isatty Unix.stderr in
+       let red = if use_color then "\027[1;31m" else "" in
+       let reset = if use_color then "\027[0m" else "" in
+       let sid_str = match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+         | Some s -> s | None -> "(unknown)" in
+       Printf.eprintf
+         "%sFATAL:%s refusing to start nested session.\n\
+          \  You are already running inside a c2c agent session\n\
+          \  (C2C_MCP_SESSION_ID=%s).\n\
+          \  Hint: use 'c2c stop' to exit the current session first,\n\
+          \  or 'c2c restart-self' to restart the inner client.\n%!"
+         red reset sid_str;
+       exit 1
+   | None, None, _ -> ()  (* no session vars OR we have INSTANCE_NAME → OK *)
+   | Some _, None, Some _ -> ()  (* session + instance_name → OK (managed client) *)
+   | None, Some _, Some _ -> ()  (* alias + instance_name → OK (managed client) *)
+   | Some _, Some _, Some _ -> ());
+
   (* Validate --session-id. OpenCode accepts ses_* session IDs from its TUI;
      claude/codex/other clients expect a UUID. *)
   (match session_id_override with
