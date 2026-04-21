@@ -348,6 +348,9 @@ export function App() {
           {myAlias && !aliasStatus && (
             <span style={{ fontSize: 11, color: "#89dceb" }}>you: {myAlias}</span>
           )}
+          {!myAlias && !aliasStatus && (
+            <span style={{ fontSize: 11, color: "#45475a" }}>observer mode</span>
+          )}
         </div>
       </div>
 
