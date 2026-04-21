@@ -2,7 +2,7 @@
 date: 2026-04-21T12:15:00Z
 author: coder2-expert
 severity: MEDIUM — Python relay connector cannot use Ed25519 in prod mode
-status: KNOWN GAP — partial fix (signing code added), body-level register not implemented
+status: FIXED — cfc7939 (coder2-expert, 2026-04-21T12:20Z)
 ---
 
 # Python relay connector: register lacks identity_pk binding for Ed25519 auth
