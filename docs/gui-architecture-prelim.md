@@ -158,53 +158,101 @@ human identity* so `max@<host>` is a cryptographically distinct peer
 from any agent accidentally aliasing to "max" on another machine.
 Planner1's canonical-alias work (`alias#repo@host`) is the substrate.
 
+
+> Alias set by human can be whatever, though prepopulate it with their username sure. 
+> and yes that both sounds good. 
+
+
 ## Open questions for Max
 
 1. **Alias / identity**: do you want a single "Max" alias across all
    hosts, or per-host (`max@laptop`, `max@desktop`)? My hunch is
    per-host, federated by relay.
+
+> yeah per-host is good, and we can have an N:1 relationship to an identity at a relay. like ssh keys and github accounts. 
+
 2. **Launch story**: run alongside one of your `c2c start` managed
    instances, or stand alone (no agent is required — GUI can be the
    only running c2c client). I assume stand-alone.
+
+> standalone, shoudl work system wide.
+
 3. **Local-only vs relay-by-default**: v1 I'd keep it local-only
    (same broker as agents on this box) and add a "connect remote"
    toggle later. Sound right?
+
+> yeah local only and we'll add relayer in phase 2. we should have a
+> spec doc that lays out all the features and phases
+
 4. **Platform priority**: Linux only for v1 (your daily driver),
    macOS + Windows later? Tauri makes this mostly free but the
    `c2c` binary has to be installed and on PATH. On macOS that's a
    non-trivial onboarding.
+
+> Linux only. oh yeah launching `c2c gui` and/or `c2c tui` would be nice ways of letting the user start the thing. 
 5. **Theme**: deep-space dark aesthetic from c2c.im, or something
    more neutral?
+
+> yeah sounds good, match c2c.im and we'll codify the design with a design doc to sync from going fwd. 
+
 6. **Installation story**: `cargo install c2c-gui` (hacky), AppImage,
    Flatpak, or a `just gui-install` recipe that builds and symlinks?
+
+> cargo install should work, but we'll also have precomiled binaries on github + some nice npm wrappers. I might register c2c.im on npm if that's valid. can i do both a package and an org with the same name? you'd install like `bun i -g c2c.im` and `bun i -g @c2c.im/gui` (i think that's the syntax at least, anyway it's cool it is similar to urls). 
+
+
+
 7. **Telemetry / observability of the GUI itself**: log Tauri events
    to `~/.local/share/c2c-gui/gui.log` — fine, or do you want
    `--debug` only?
+
+> log to file
+
 8. **Permission-dialog rendering**: do you want me to include the
    v2 supervisor-approval dialog in v1 scope, or strictly
    observer + chat first? It's high-value (you'd stop needing tmux to
    approve permissions) but it widens v1 scope.
+
+> Yes that's a great idea, also questions if we have those implemented yet. or we'll do question forwarding from c2c plugin first then build gui later. 
+
 9. **Who builds it**: as I said in the last message — do we spin up a
    dedicated `gui1` agent, or is this human-owned? I don't have a
    strong opinion; agents can carry it, but Tauri + React + shadcn
    is the kind of stack where human taste in the UI matters.
+
+> yeah we can spin up a gui agent, i can give UI feedback, but with gtk web view web driver or whatever, plus screenshots, the agnet should be able to do a lot itself. 
+
 10. **Name**: "c2c" works for the broker but is maybe not a great
     product name for a GUI. "c2c-desktop", "swarm-view", "compass",
     etc. Do you have one in mind?
+
+> c2c explorer? swarm inbox? some combination? idk
 
 ## Things I'm pretty sure about, open to challenge
 
 - **Subprocess-based integration beats library integration** for v1.
   We've already proven the CLI is stable; duplicating into Rust
   is a rewrite we don't need.
+
+> sounds good
+
 - **`c2c monitor --all --json` is the spine.** Every pane subscribes
   to the same stream and filters client-side. One long-lived
   subprocess, clean fan-out inside Tauri.
+
+> okay, provided that can work system wide, like there are lots of repos one might have. we'll need an index of everywhere c2c has been run that we can find details. 
+
 - **No privileged role.** The human is just another peer. If we can't
   do it with the peer API, the peer API is missing.
+
+> yep. we can set up like admin controls for local stuff maybe based on crypto id etc, but any agent should eb able to have those permissions too. 
+
 - **Statefile + monitor compose nicely.** Monitor gives the message
   plane; statefile gives the per-agent cognitive plane. Together
   they are enough for a "what is the swarm doing right now?" view.
+
+> yep!
+
 
 ## Things I'm unsure about
 
