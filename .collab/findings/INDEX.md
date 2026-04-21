@@ -136,6 +136,7 @@ informational architecture notes.
 | [relay-auth-prod-design](./2026-04-21T08-15-00Z-planner1-relay-auth-prod-design.md) | Design: moving relay.c2c.im from dev to prod Ed25519 mode | DESIGN / SHIPPED |
 | [relay-connector-ed25519-gap](./2026-04-21T12-00-00Z-coder2-expert-relay-connector-ed25519-gap.md) | Relay connector peer routes lacked Ed25519 auth in prod mode | HIGH / FIXED (`92aba0d`) |
 | [connector-register-no-pk-binding](./2026-04-21T12-15-00Z-coder2-expert-connector-register-no-pk-binding.md) | Python relay connector `/register` lacked identity_pk binding | MEDIUM / FIXED (`cfc7939`) |
+| [relay-room-auth-fix](./2026-04-21T13-55-00Z-planner1-relay-room-auth-fix.md) | Room ops (join/leave/send) rejected — body-level proof not reaching handler | HIGH / FIXED (`fe8251c`) |
 
 #### `c2c monitor` / inotify
 
