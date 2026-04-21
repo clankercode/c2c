@@ -3059,8 +3059,19 @@ let relay_dm_cmd =
                  exit 1
            in
            let node_id = Printf.sprintf "cli-%s" from_alias in
-           let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.poll_inbox client
-             ~node_id ~session_id:node_id) in
+           let body_str = Yojson.Safe.to_string (`Assoc [
+             ("node_id", `String node_id);
+             ("session_id", `String node_id);
+           ]) in
+           let result = (match Relay_identity.load () with
+             | Ok id ->
+                 let auth = Relay_signed_ops.sign_request id ~alias:from_alias
+                   ~meth:"POST" ~path:"/poll_inbox" ~body_str () in
+                 Lwt_main.run (C2c_mcp.Relay.Relay_client.poll_inbox_signed client
+                   ~node_id ~session_id:node_id ~auth_header:auth)
+             | Error _ ->
+                 Lwt_main.run (C2c_mcp.Relay.Relay_client.poll_inbox client
+                   ~node_id ~session_id:node_id)) in
            print_endline (Yojson.Safe.pretty_to_string result);
            (match result with
             | `Assoc fields ->

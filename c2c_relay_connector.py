@@ -38,7 +38,11 @@ at the same relay server, each with a different --broker-root.
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
+import os
+import secrets
 import ssl
 import sys
 import time
@@ -51,6 +55,62 @@ from c2c_relay_contract import derive_node_id
 
 
 # ---------------------------------------------------------------------------
+# Ed25519 peer-route signing (spec §5.1)
+# ---------------------------------------------------------------------------
+
+_UNIT_SEP = "\x1f"
+_REQUEST_SIGN_CTX = "c2c/v1/request"
+
+# Routes that use Bearer (admin) — everything else is a peer route needing Ed25519.
+_ADMIN_PATHS = {"/gc", "/dead_letter", "/admin/unbind"}
+_UNAUTH_PATHS = {"/health", "/"}
+_SELF_AUTH_PATHS = {"/register"}
+
+
+def _b64url_nopad(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+
+def _load_identity(identity_path: Optional[str] = None) -> Optional[dict]:
+    if identity_path is None:
+        xdg = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+        identity_path = os.path.join(xdg, "c2c", "identity.json")
+    path = Path(identity_path)
+    if not path.exists():
+        return None
+    try:
+        stat = path.stat()
+        if stat.st_mode & 0o077:
+            return None  # refuse to load world/group-readable key (mirrors OCaml)
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _sign_peer_request(identity: dict, alias: str, method: str, path: str,
+                       body_bytes: bytes) -> str:
+    pk_b64 = identity.get("public_key", "")
+    sk_b64 = identity.get("private_key", "")
+    if not pk_b64 or not sk_b64:
+        raise ValueError("identity missing public_key or private_key")
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    sk_bytes = base64.urlsafe_b64decode(sk_b64 + "==")
+    priv = Ed25519PrivateKey.from_private_bytes(sk_bytes)
+
+    ts = f"{time.time():.6f}"
+    nonce = _b64url_nopad(secrets.token_bytes(16))
+
+    body_hash = (
+        _b64url_nopad(hashlib.sha256(body_bytes).digest()) if body_bytes else ""
+    )
+    # canonical_request_blob: ctx \x1f METHOD \x1f path \x1f query \x1f body_hash \x1f ts \x1f nonce
+    blob = _UNIT_SEP.join([_REQUEST_SIGN_CTX, method.upper(), path, "", body_hash, ts, nonce])
+    sig = priv.sign(blob.encode())
+    return f"Ed25519 alias={alias},ts={ts},nonce={nonce},sig={_b64url_nopad(sig)}"
+
+
+# ---------------------------------------------------------------------------
 # HTTP relay client
 # ---------------------------------------------------------------------------
 
@@ -59,7 +119,8 @@ class RelayClient:
 
     def __init__(self, base_url: str, token: Optional[str] = None,
                  timeout: float = 10.0,
-                 ca_bundle: Optional[str] = None) -> None:
+                 ca_bundle: Optional[str] = None,
+                 identity_path: Optional[str] = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.timeout = timeout
@@ -67,14 +128,35 @@ class RelayClient:
         self._ssl_context: Optional[ssl.SSLContext] = None
         if self.ca_bundle and self.base_url.startswith("https://"):
             self._ssl_context = ssl.create_default_context(cafile=self.ca_bundle)
+        self._identity = _load_identity(identity_path)
+        self._alias: Optional[str] = None  # set by caller when known
 
-    def _request(self, method: str, path: str, body: Optional[dict] = None) -> dict:
+    def _request(self, method: str, path: str, body: Optional[dict] = None,
+                 auth_override: Optional[str] = None, alias: Optional[str] = None) -> dict:
         url = f"{self.base_url}{path}"
-        data = json.dumps(body or {}).encode()
-        req = urllib.request.Request(url, data=data, method=method)
+        body_bytes = json.dumps(body or {}).encode()
+        req = urllib.request.Request(url, data=body_bytes, method=method)
         req.add_header("Content-Type", "application/json")
-        if self.token:
+
+        base_path = path.split("?")[0]
+        effective_alias = alias or self._alias
+        if auth_override:
+            req.add_header("Authorization", auth_override)
+        elif base_path in _UNAUTH_PATHS or base_path in _SELF_AUTH_PATHS:
+            pass  # no auth header needed
+        elif base_path in _ADMIN_PATHS or (path.startswith("/list") and "include_dead" in path):
+            if self.token:
+                req.add_header("Authorization", f"Bearer {self.token}")
+        elif self._identity and effective_alias:
+            try:
+                auth = _sign_peer_request(self._identity, effective_alias, method, base_path, body_bytes)
+                req.add_header("Authorization", auth)
+            except Exception:
+                if self.token:
+                    req.add_header("Authorization", f"Bearer {self.token}")
+        elif self.token:
             req.add_header("Authorization", f"Bearer {self.token}")
+
         try:
             with urllib.request.urlopen(
                 req, timeout=self.timeout, context=self._ssl_context
@@ -98,12 +180,13 @@ class RelayClient:
             "client_type": client_type, "ttl": ttl,
         })
 
-    def heartbeat(self, node_id: str, session_id: str) -> dict:
+    def heartbeat(self, node_id: str, session_id: str, alias: Optional[str] = None) -> dict:
         return self._request("POST", "/heartbeat",
-                             {"node_id": node_id, "session_id": session_id})
+                             {"node_id": node_id, "session_id": session_id},
+                             alias=alias)
 
-    def list_peers(self) -> list[dict]:
-        r = self._request("GET", "/list")
+    def list_peers(self, alias: Optional[str] = None) -> list[dict]:
+        r = self._request("GET", "/list", alias=alias)
         return r.get("peers", [])
 
     def send(self, from_alias: str, to_alias: str, content: str,
@@ -113,11 +196,12 @@ class RelayClient:
         }
         if message_id:
             body["message_id"] = message_id
-        return self._request("POST", "/send", body)
+        return self._request("POST", "/send", body, alias=from_alias)
 
-    def poll_inbox(self, node_id: str, session_id: str) -> list[dict]:
+    def poll_inbox(self, node_id: str, session_id: str, alias: Optional[str] = None) -> list[dict]:
         r = self._request("POST", "/poll_inbox",
-                          {"node_id": node_id, "session_id": session_id})
+                          {"node_id": node_id, "session_id": session_id},
+                          alias=alias)
         return r.get("messages", [])
 
     def list_rooms(self) -> list[dict]:
@@ -275,7 +359,7 @@ class RelayConnector:
                     # Conflict or error — log and skip
                     self._log(f"register {alias} failed: {r}")
             else:
-                r = self.relay.heartbeat(self.node_id, session_id)
+                r = self.relay.heartbeat(self.node_id, session_id, alias=alias)
                 if r.get("ok"):
                     result["heartbeated"].append(alias)
 
@@ -303,7 +387,7 @@ class RelayConnector:
             session_id = reg["session_id"]
             if session_id not in self._registered:
                 continue
-            msgs = self.relay.poll_inbox(self.node_id, session_id)
+            msgs = self.relay.poll_inbox(self.node_id, session_id, alias=reg["alias"])
             if msgs:
                 delivered = append_to_local_inbox(self.broker_root, session_id, msgs)
                 result["inbound_delivered"] += delivered

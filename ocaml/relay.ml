@@ -1875,6 +1875,7 @@ module Relay_client : sig
     identity_pk_b64:string -> sig_b64:string -> nonce:string -> ts:string ->
     unit -> Yojson.Safe.t Lwt.t
   val heartbeat : t -> node_id:string -> session_id:string -> Yojson.Safe.t Lwt.t
+  val heartbeat_signed : t -> node_id:string -> session_id:string -> auth_header:string -> Yojson.Safe.t Lwt.t
   val list_peers : t -> ?include_dead:bool -> unit -> Yojson.Safe.t Lwt.t
   val send :
     t -> from_alias:string -> to_alias:string -> content:string ->
@@ -1883,6 +1884,7 @@ module Relay_client : sig
     t -> from_alias:string -> to_alias:string -> content:string ->
     auth_header:string -> ?message_id:string -> unit -> Yojson.Safe.t Lwt.t
   val poll_inbox : t -> node_id:string -> session_id:string -> Yojson.Safe.t Lwt.t
+  val poll_inbox_signed : t -> node_id:string -> session_id:string -> auth_header:string -> Yojson.Safe.t Lwt.t
   val list_rooms : t -> Yojson.Safe.t Lwt.t
   val room_history :
     t -> room_id:string -> ?limit:int -> unit -> Yojson.Safe.t Lwt.t
@@ -2032,8 +2034,22 @@ end = struct
       ("session_id", `String session_id);
     ])
 
+  let heartbeat_signed t ~node_id ~session_id ~auth_header =
+    let body = `Assoc [
+      ("node_id", `String node_id);
+      ("session_id", `String session_id);
+    ] in
+    post_auth t "/heartbeat" body auth_header
+
   let list_peers t ?(include_dead = false) () =
     if include_dead then get t "/list?include_dead=1" else get t "/list"
+
+  let poll_inbox_signed t ~node_id ~session_id ~auth_header =
+    let body = `Assoc [
+      ("node_id", `String node_id);
+      ("session_id", `String session_id);
+    ] in
+    post_auth t "/poll_inbox" body auth_header
 
   let send t ~from_alias ~to_alias ~content ?message_id () =
     let base = [
