@@ -267,6 +267,35 @@ class C2CStartUnitTests(unittest.TestCase):
         self.assertEqual(args, ("claude", "c2c-r2-b2", [], broker_root))
         self.assertEqual(kwargs.get("alias_override"), "storm-beacon")
 
+    def test_prepare_launch_args_opencode_uses_session_file_over_uuid(self):
+        """prepare_launch_args passes --session <ses_*> from opencode-session.txt.
+
+        The plugin writes opencode-session.txt on first session.created. On next
+        `c2c start opencode -n <name>`, prepare_launch_args must prefer the ses_*
+        ID from the file over any UUID resume_session_id (which opencode rejects).
+        """
+        from c2c_start import prepare_launch_args
+
+        inst_name = "oc-resume-e2e"
+        inst_dir = self.instances_dir / inst_name
+        inst_dir.mkdir(parents=True)
+
+        ses_id = "ses_deadbeef1234"
+        (inst_dir / "opencode-session.txt").write_text(ses_id + "\n")
+
+        # Pass a UUID as resume_session_id — file should win
+        with mock.patch("c2c_start.instance_dir", return_value=inst_dir):
+            args = prepare_launch_args(
+                inst_name, "opencode", [], self.instances_dir.parent / "broker",
+                resume_session_id="550e8400-e29b-41d4-a716-446655440000",
+                is_resume=True,
+            )
+
+        self.assertIn("--session", args, "--session flag must be present")
+        idx = args.index("--session")
+        self.assertEqual(args[idx + 1], ses_id,
+                         "ses_* from opencode-session.txt must win over UUID")
+
 
 class C2CStartDeliverDaemonTests(unittest.TestCase):
     """Tests for _start_deliver_daemon client-specific command construction."""
@@ -865,6 +894,27 @@ class C2CStartConstantsTests(unittest.TestCase):
         self.assertNotIn("--resume", args)
         self.assertNotIn("--session-id", args)
 
+    def test_prepare_launch_args_opencode_passes_session_flag_for_ses_id(self):
+        """OpenCode gets --session <ses_*> when resume_session_id starts with 'ses'."""
+        from c2c_start import prepare_launch_args
+
+        args = prepare_launch_args(
+            "oc-test", "opencode", [], Path("/tmp/broker"),
+            resume_session_id="ses_abc123xyz",
+        )
+        self.assertIn("--session", args)
+        idx = args.index("--session")
+        self.assertEqual(args[idx + 1], "ses_abc123xyz")
+
+    def test_prepare_launch_args_opencode_no_session_for_uuid(self):
+        """OpenCode does NOT get --session when resume_session_id is a UUID (not ses_*)."""
+        from c2c_start import prepare_launch_args
+
+        args = prepare_launch_args(
+            "oc-test", "opencode", [], Path("/tmp/broker"),
+            resume_session_id="550e8400-e29b-41d4-a716-446655440000",
+        )
+        self.assertNotIn("--session", args)
 
 CLI_EXE = Path(__file__).resolve().parents[1] / "_build" / "default" / "ocaml" / "cli" / "c2c.exe"
 _CLI_BUILT = CLI_EXE.exists()
