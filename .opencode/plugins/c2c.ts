@@ -11,7 +11,7 @@
  *   C2C_PLUGIN_POLL_INTERVAL_MS — safety-net poll interval in ms (default: 30000; primary wake is c2c monitor)
  *   C2C_PLUGIN_DELIVER_ON_IDLE  — "1" = only deliver on session.idle (default: "0")
  *   C2C_PERMISSION_SUPERVISOR   — alias to DM on permission.ask (default: "coordinator1")
- *   C2C_PERMISSION_TIMEOUT_MS   — ms to await supervisor reply before falling back to dialog (default: 300000 = 5 min; covers supervisor compaction windows)
+ *   C2C_PERMISSION_TIMEOUT_MS   — ms to await supervisor reply before auto-rejecting (default: 600000 = 10 min). On timeout the plugin auto-rejects via HTTP (fail-closed) and will notify any late-arriving reply that the request has already been rejected.
  *
  * Delivery strategy:
  *   - Primary: poll on session.idle events (agent is between tool calls)
@@ -207,7 +207,7 @@ const C2CDelivery: Plugin = async (ctx) => {
     return permissionSupervisors;
   };
   const permissionTimeoutMs: number = parseInt(
-    process.env.C2C_PERMISSION_TIMEOUT_MS || "300000", 10
+    process.env.C2C_PERMISSION_TIMEOUT_MS || "600000", 10
   );
 
   // Track the active root session (set from session events)
@@ -219,6 +219,16 @@ const C2CDelivery: Plugin = async (ctx) => {
   const seenPermissionIds: string[] = [];
   // Pending async permission approvals (v2): permId → resolve function.
   const pendingPermissions = new Map<string, (reply: string) => void>();
+  // Permissions that already timed-out and were auto-rejected. Kept around so
+  // we can DM a "too late" notice to a supervisor whose reply arrives after
+  // the window closed. Map: permId → {sid, supervisors, timedOutAtMs}.
+  const timedOutPermissions = new Map<string, {
+    sid: string;
+    supervisors: string[];
+    timedOutAtMs: number;
+  }>();
+  // Cleanup window for timed-out entries; after this many ms we forget.
+  const timedOutMemoryMs: number = 30 * 60 * 1000; // 30 min
 
   // --- Helpers ---
 
@@ -408,6 +418,21 @@ const C2CDelivery: Plugin = async (ctx) => {
         await log(`permission reply from ${msg.from_alias}: ${permReply.permId} → ${permReply.decision}`);
         continue;
       }
+      // Late reply: request already timed-out and was auto-rejected. Let the
+      // supervisor know so they aren't left wondering why their decision had
+      // no effect.
+      if (permReply && timedOutPermissions.has(permReply.permId)) {
+        const entry = timedOutPermissions.get(permReply.permId)!;
+        const lateBySec = Math.round((Date.now() - entry.timedOutAtMs) / 1000);
+        const notice = `permission ${permReply.permId}: your reply \"${permReply.decision}\" arrived ${lateBySec}s after the timeout — request was already auto-rejected. Bump C2C_PERMISSION_TIMEOUT_MS on the requester to widen the window.`;
+        try {
+          await runC2c(["send", msg.from_alias || "coordinator1", notice]);
+          await log(`late permission reply → ${msg.from_alias}: ${permReply.permId} (${lateBySec}s late)`);
+        } catch (err) {
+          await log(`late permission reply DM error: ${err}`);
+        }
+        continue;
+      }
       const envelope = formatEnvelope(msg);
       const callArgs = {
         path: { id: targetSessionId },
@@ -594,7 +619,7 @@ const C2CDelivery: Plugin = async (ctx) => {
           `  c2c send ${sessionId} "permission:${permId}:approve-once"`,
           `  c2c send ${sessionId} "permission:${permId}:approve-always"`,
           `  c2c send ${sessionId} "permission:${permId}:reject"`,
-          `(timeout → falls through to TUI dialog)`,
+          `(timeout → auto-reject via HTTP; late replies will be NACK'd)`,
         ].join("\n");
 
         // Fire-and-forget: wait for a reply in the background and resolve via HTTP.
@@ -610,22 +635,37 @@ const C2CDelivery: Plugin = async (ctx) => {
           }
           void toast(`c2c: awaiting permission from ${supervisors.join(", ")}…`);
           const reply = await waitForPermissionReply(permId, permissionTimeoutMs);
-          if (reply === "timeout") {
-            await log(`permission timeout (${timeoutSec}s): ${permId} — leaving TUI dialog open`);
-            void toast(`c2c: permission timeout — use TUI dialog`, "warning");
-            return;
-          }
+          const timedOut = reply === "timeout";
           const response =
             reply === "approve-once" ? "once" :
             reply === "approve-always" ? "always" :
-            "reject";
+            "reject"; // covers both explicit reject AND timeout (fail-closed)
+          if (timedOut) {
+            await log(`permission timeout (${timeoutSec}s): ${permId} — auto-rejecting`);
+            timedOutPermissions.set(permId, {
+              sid,
+              supervisors,
+              timedOutAtMs: Date.now(),
+            });
+            // Garbage-collect the entry later so the Map doesn't grow forever.
+            setTimeout(() => timedOutPermissions.delete(permId), timedOutMemoryMs);
+            // Notify every supervisor we asked, so the swarm knows the
+            // request expired without human input.
+            for (const supervisor of supervisors) {
+              try {
+                await runC2c(["send", supervisor,
+                  `permission ${permId} timed out after ${timeoutSec}s — auto-rejected. Reply with "permission:${permId}:approve-once" or similar to learn it arrived late.`]);
+              } catch { /* best-effort */ }
+            }
+            void toast(`c2c: permission timeout — auto-rejected`, "warning");
+          }
           try {
             await (ctx.client as any).postSessionIdPermissionsPermissionId({
               path: { id: sid, permissionID: permId },
               body: { response },
             });
-            await log(`permission resolved via HTTP: ${permId} → ${response}`);
-            void toast(`c2c: permission ${response}`);
+            await log(`permission resolved via HTTP: ${permId} → ${response}${timedOut ? " (timeout)" : ""}`);
+            if (!timedOut) void toast(`c2c: permission ${response}`);
           } catch (err) {
             await log(`permission HTTP resolve error: ${permId} → ${response}: ${err}`);
             void toast(`c2c: permission resolve failed — use TUI dialog`, "error");

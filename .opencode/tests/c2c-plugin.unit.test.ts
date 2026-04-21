@@ -296,6 +296,94 @@ describe('c2c plugin unit tests', () => {
     delete process.env.C2C_PERMISSION_TIMEOUT_MS;
   });
 
+  it('permission.asked: on timeout, auto-rejects via HTTP and DMs supervisor', async () => {
+    // sessionCreated cold-boot drain
+    queueSpawn({ messages: [] });
+    // supervisor liveness query
+    spawnQueue.push({
+      stdout: JSON.stringify({ sessions: [{ alias: 'coordinator1', alive: true, last_seen: Date.now() / 1000 }] }),
+      stderr: '', code: 0,
+    });
+    // DM to supervisor on ask
+    spawnQueue.push({ stdout: '', stderr: '', code: 0 });
+    // DM to supervisor on timeout notification
+    spawnQueue.push({ stdout: '', stderr: '', code: 0 });
+
+    const ctx = makeCtx();
+    process.env.C2C_PERMISSION_TIMEOUT_MS = '200';
+    const hooks = await C2CDelivery(ctx as any);
+    await fireEvent(hooks, sessionCreated('root-session'));
+
+    await fireEvent(hooks, {
+      type: 'permission.asked',
+      properties: { id: 'perm-timeout', sessionID: 'root-session', title: 'bash', type: 'bash', pattern: 'echo hi' },
+    });
+
+    // Let the fire-and-forget async get past selectSupervisors + DM send,
+    // then advance timers past the timeout window.
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+    await vi.advanceTimersByTimeAsync(250);
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+
+    expect(ctx.client.postSessionIdPermissionsPermissionId).toHaveBeenCalledTimes(1);
+    const call = ctx.client.postSessionIdPermissionsPermissionId.mock.calls[0]![0];
+    expect(call.path.permissionID).toBe('perm-timeout');
+    expect(call.body.response).toBe('reject');
+
+    // There should be TWO sends to coordinator1: the initial ask, then the timeout notice.
+    const sends = spawnCalls.filter((c) => c.args[0] === 'send' && c.args[1] === 'coordinator1');
+    expect(sends.length).toBeGreaterThanOrEqual(2);
+    expect(sends.at(-1)!.args[2]).toContain('timed out');
+    expect(sends.at(-1)!.args[2]).toContain('auto-rejected');
+
+    delete process.env.C2C_PERMISSION_TIMEOUT_MS;
+  });
+
+  it('permission.asked: late reply after timeout is NACK\'d back to sender', async () => {
+    queueSpawn({ messages: [] }); // sessionCreated cold-boot
+    spawnQueue.push({ // liveness
+      stdout: JSON.stringify({ sessions: [{ alias: 'coordinator1', alive: true, last_seen: Date.now() / 1000 }] }),
+      stderr: '', code: 0,
+    });
+    spawnQueue.push({ stdout: '', stderr: '', code: 0 }); // initial DM
+    spawnQueue.push({ stdout: '', stderr: '', code: 0 }); // timeout DM
+    // sessionIdle drain delivers a late reply
+    queueSpawn({
+      messages: [{ from_alias: 'coordinator1', to_alias: 'oc-coder1', content: 'permission:perm-late:approve-once' }],
+    });
+    spawnQueue.push({ stdout: '', stderr: '', code: 0 }); // NACK send
+
+    const ctx = makeCtx();
+    process.env.C2C_PERMISSION_TIMEOUT_MS = '200';
+    const hooks = await C2CDelivery(ctx as any);
+    await fireEvent(hooks, sessionCreated('root-session'));
+
+    await fireEvent(hooks, {
+      type: 'permission.asked',
+      properties: { id: 'perm-late', sessionID: 'root-session', title: 'bash', type: 'bash', pattern: 'echo hi' },
+    });
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+    await vi.advanceTimersByTimeAsync(250);
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+
+    // Now the supervisor's (too-late) reply arrives on the next idle drain.
+    await fireEvent(hooks, sessionIdle('root-session'));
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+
+    // NACK message back to coordinator1 announcing the reply arrived late.
+    const nackSend = spawnCalls.find((c) =>
+      c.args[0] === 'send' && c.args[1] === 'coordinator1' &&
+      typeof c.args[2] === 'string' && c.args[2].includes('arrived') && c.args[2].includes('after the timeout')
+    );
+    expect(nackSend).toBeDefined();
+    expect(nackSend!.args[2]).toContain('perm-late');
+
+    // The late reply MUST NOT trigger a second HTTP resolve call.
+    expect(ctx.client.postSessionIdPermissionsPermissionId).toHaveBeenCalledTimes(1);
+
+    delete process.env.C2C_PERMISSION_TIMEOUT_MS;
+  });
+
   it('disables delivery when C2C_MCP_SESSION_ID not set', async () => {
     delete process.env.C2C_MCP_SESSION_ID;
     const ctx = makeCtx();
