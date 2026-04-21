@@ -103,6 +103,32 @@ An alias was removed from `registry.json` (deregistration or sweep). Emitted in 
 }
 ```
 
+### `room.join`
+
+An alias was added to a room's `members.json`. Emitted in live mode only.
+
+```json
+{
+  "event_type": "room.join",
+  "room_id":    "swarm-lounge",
+  "alias":      "coder1",
+  "monitor_ts": "1745241305.001"
+}
+```
+
+### `room.leave`
+
+An alias was removed from a room's `members.json`. Emitted in live mode only.
+
+```json
+{
+  "event_type": "room.leave",
+  "room_id":    "swarm-lounge",
+  "alias":      "old-agent-xyz",
+  "monitor_ts": "1745241320.500"
+}
+```
+
 ---
 
 ## Planned Event Types
@@ -111,8 +137,6 @@ These are not yet emitted but are reserved for future implementation:
 
 | `event_type`     | Trigger                                   |
 |------------------|-------------------------------------------|
-| `room.join`      | Agent joins a room                        |
-| `room.leave`     | Agent leaves a room                       |
 | `room.invite`    | Room invite sent                          |
 
 ---
