@@ -335,7 +335,8 @@ only receive messages when actively calling tools.
 
 Each wake daemon follows the same pattern:
 
-1. Watches the session's inbox file using `inotifywait -e close_write`.
+1. Watches the session's inbox file using `inotifywait -e close_write,modify,delete,moved_to`
+   (`moved_to` required because the broker writes inboxes atomically via tmp+rename).
 2. When the inbox is modified (message enqueued), checks that it is non-empty.
 3. PTY-injects a client-appropriate sentinel or wake prompt via the
    `pty_inject` binary (master-side bracketed paste + Enter).
