@@ -129,6 +129,6 @@ else
 fi
 
 echo ""
-echo "  Tests:  $(python3 -m pytest tests/ -q --force-test-env --tb=no -q 2>&1 | tail -1 || echo 'run pytest to check')"
-echo "  OCaml:  $(just test-ocaml 2>&1 | tail -1 | sed 's/^//' || echo 'run just test-ocaml to check')"
+echo "  To run tests: just test   (Python + OCaml)"
+echo "  To smoke-test relay: ./scripts/relay-smoke-test.sh"
 echo ""
