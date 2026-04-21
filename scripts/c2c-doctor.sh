@@ -39,11 +39,16 @@ fi
 bold "=== Push queue: $AHEAD commits ahead of origin/master ==="
 echo ""
 
-# Classify commits into relay-critical vs local-only
-# Relay-critical = touches relay server code, Python relay connector, opencode plugin,
-# or is explicitly a relay fix.
+# Classify commits into relay-critical vs local-only.
+# Relay-critical = touches relay server code or Python relay connector.
+# Docs, findings, GitHub Pages files, and scripts are local-only even when
+# their commit message mentions "relay" (e.g. "docs: mark relay.c2c.im live").
 # Note: c2c_start.ml is NOT relay-critical — Railway runs `c2c relay serve`, not
 # `c2c start`. Changes to the client launcher only affect local agent machines.
+
+# Paths that are always local-only even if they mention relay in the message:
+DOCS_ONLY_PATTERN="^(docs/|_config\.yml|Gemfile|_layouts/|_includes/|\.collab/|\.goal-loops/|README)"
+
 RELAY_CRITICAL=()
 LOCAL_ONLY=()
 
@@ -53,11 +58,21 @@ while IFS= read -r line; do
   # Check which files the commit touches
   files=$(git diff-tree --no-commit-id -r --name-only "$sha" 2>/dev/null || true)
   is_critical=0
+  # File-based: only relay server code and connector scripts are relay-critical
   if echo "$files" | grep -qE "ocaml/relay\.ml|c2c_relay_connector\.py|c2c_relay_server\.py|ocaml/relay_signed_ops"; then
     is_critical=1
   fi
-  if echo "$msg" | grep -qiE "relay|deploy|prod|fix\(relay|feat\(relay"; then
+  # Message-based: only explicit relay/deploy scope prefixes (not plain "relay" in body).
+  # msg has the SHA stripped, so pattern starts at the commit subject directly.
+  if echo "$msg" | grep -qiE "^(fix|feat|refactor|perf)\((relay|deploy)\)"; then
     is_critical=1
+  fi
+  # Override: if ALL changed files are docs/findings/pages, never relay-critical
+  if [[ $is_critical -eq 1 ]] && [[ -n "$files" ]]; then
+    non_docs=$(echo "$files" | grep -vE "$DOCS_ONLY_PATTERN" || true)
+    if [[ -z "$non_docs" ]]; then
+      is_critical=0
+    fi
   fi
   if [[ $is_critical -eq 1 ]]; then
     RELAY_CRITICAL+=("$sha $msg")

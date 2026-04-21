@@ -123,6 +123,31 @@ class DoctorScriptClassificationTests(unittest.TestCase):
             import shutil
             shutil.rmtree(d)
 
+    def test_docs_relay_mention_is_not_relay_critical(self):
+        """Commits touching only docs/ are local-only even if message mentions relay."""
+        d, git, env = self._make_temp_repo()
+        try:
+            # Create a docs-only commit that mentions relay in the message
+            docs_dir = Path(d) / "docs"
+            docs_dir.mkdir()
+            (docs_dir / "overview.md").write_text("relay.c2c.im live\n")
+            git("add", "docs/overview.md")
+            git("commit", "-m", "docs(website): mark relay.c2c.im live — v0.6.11 prod mode")
+            stub = Path(d) / "c2c"
+            stub.write_text("#!/bin/bash\necho '{\"ok\":true}'\n")
+            stub.chmod(0o755)
+            result = subprocess.run(
+                ["bash", str(DOCTOR_SCRIPT)],
+                capture_output=True, text=True,
+                cwd=d,
+                env={**env, "PATH": str(d) + ":" + os.environ["PATH"]}
+            )
+            self.assertIn("Local-only", result.stdout)
+            self.assertNotIn("Relay/deploy critical", result.stdout)
+        finally:
+            import shutil
+            shutil.rmtree(d)
+
 
 @unittest.skipUnless(C2C_BIN.exists(), f"c2c binary not found at {C2C_BIN}")
 class DoctorCLITests(unittest.TestCase):
