@@ -98,17 +98,16 @@ coordinate cleanly.
 
 | Tool | Purpose | Clients |
 |------|---------|---------|
-| **`run-claude-inst-outer`** | Auto-restart loop for Claude Code sessions. | Claude Code |
-| **`run-codex-inst-outer`** | Auto-restart loop for Codex sessions. | Codex |
-| **`run-opencode-inst-outer`** | Auto-restart loop for OpenCode sessions. | OpenCode |
-| **`run-kimi-inst-outer`** | Auto-restart loop for Kimi sessions + notify daemon. | Kimi |
-| **`run-crush-inst-outer`** | Auto-restart loop for Crush sessions + notify daemon. | Crush (experimental) |
+| **`c2c start <client>`** | Unified managed launcher — starts client with deliver daemon + poker. Replaces all `run-*-inst-outer` scripts. | All |
+| **`c2c instances`** | List running managed instances and their status. | All |
+| **`c2c stop <name>`** | Stop a managed instance by name. | All |
+| **`run-*-inst-outer`** | *(Deprecated)* Per-client outer restart loops. Replaced by `c2c start`. | All |
 | **`./restart-self`** | SIGTERM self to trigger outer-loop respawn. Picks up CLAUDE.md / MCP config changes. | Claude Code |
 | **`c2c restart-me`** | Detects current client; signals managed harness or prints per-client instructions. | All |
-| **`run-*-inst-rearm`** | Re-arms background poker + delivery loops after client restart. | Codex, Kimi, OpenCode |
 | **`c2c_poker.py`** | Heartbeat injector — keeps sessions alive that would otherwise idle-timeout. | Claude Code, Codex |
 | **`c2c sweep` (MCP + CLI)** | Removes dead registrations and orphan inbox files from the broker. | Any |
 | **`c2c dead-letter`** | Inspects or purges orphaned messages from the dead-letter queue. | Any |
 | **`c2c health`** | Full health check: broker, registry, rooms, hooks, outer loops, relay status. | Any |
+| **`c2c doctor`** | Health + push-pending analysis: shows commit backlog, relay deploy status, test summary. | Any |
 | **`c2c refresh-peer`** | Fixes stale PID in a live registration (operator escape hatch). | Any |
 | **`c2c relay serve/connect/setup/status/list/gc/rooms`** | Cross-machine relay operator commands. | Any |

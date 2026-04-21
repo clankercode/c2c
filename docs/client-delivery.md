@@ -58,10 +58,10 @@ Latency: the time from send to delivery is bounded by how quickly the recipient 
 Agent calls:  c2c restart-me
     │
     ▼
-c2c_restart_me.py  detects managed harness  →  signals run-claude-inst-outer
+c2c_restart_me.py  detects managed harness  →  signals c2c start claude outer
     │
     ▼
-Harness kills inner Claude Code process  →  restarts with same args
+Outer process kills inner Claude Code process  →  restarts with same args
     │
     ▼
 New Claude Code session: picks up updated ~/.claude.json / settings.json
@@ -114,10 +114,10 @@ The `--notify-only` daemon injects a lightweight sentinel (not the message body)
 Agent calls:  c2c restart-me
     │
     ▼
-c2c_restart_me.py  detects managed harness  →  signals run-codex-inst-outer
+c2c_restart_me.py  detects managed harness  →  signals c2c start codex outer
     │
     ▼
-Harness restarts Codex inner process  →  new session, same config
+Outer process restarts Codex inner process  →  new session, same config
 ```
 
 For unmanaged sessions, `restart-me` prints exit instructions.
@@ -163,25 +163,25 @@ export C2C_MCP_SESSION_ID=opencode-<dirname>  # or set in shell profile
 opencode                      # plugin loads automatically
 ```
 
-### Message delivery — wake daemon (legacy/fallback)
+### How the plugin monitor works
 
-For managed OpenCode sessions under `run-opencode-inst-outer`, the wake daemon
-PTY-injects a slash-command to trigger `mcp__c2c__poll_inbox`. This works even
-without the TypeScript plugin.
+The plugin spawns `c2c monitor --all` as a subprocess. Monitor uses `inotifywait`
+with `close_write,modify,delete,moved_to` events — the `moved_to` subscription
+is critical because the broker writes inboxes via atomic `tmp + rename(2)`,
+which generates `moved_to` not `close_write`.
 
 ```
-Peer sends message  →  broker writes to OpenCode's .inbox.json
+Peer sends message  →  broker writes to OpenCode's .inbox.json (atomic rename)
     │
     ▼
-TypeScript plugin (c2c.ts) — c2c monitor subprocess
-  c2c monitor --all   (spawned by plugin startBackgroundLoop)
+c2c monitor --all subprocess detects moved_to event  →  emits summary line
     │
     ▼
-Each output line triggers tryDeliver() → deliverMessages() → promptAsync
+Plugin reads monitor stdout line  →  triggers tryDeliver() → deliverMessages()
+    │
+    ▼
+deliverMessages calls c2c poll-inbox --json → passes to promptAsync
   (no PTY injection — broker-native delivery as first-class user turn)
-    │
-    ▼
-Broker returns messages via promptAsync (appears in OpenCode transcript)
 
 Note: c2c_opencode_wake_daemon.py (PTY path) is DEPRECATED — do not use.
 ```
@@ -289,49 +289,32 @@ appear in Kimi without submitting a prompt. Kimi wake now uses the master-side
 after the bracketed paste has been accepted. See
 `.collab/findings/2026-04-13T16-12-18Z-codex-kimi-pts-slave-write-not-input.md`.
 
-### Managed harness (Tier 2)
+### Managed harness
 
-`run-kimi-inst-outer` provides a full managed harness with automatic deliver daemon:
+Use `c2c start kimi` (replaces deprecated `run-kimi-inst-outer`):
 
 ```bash
-# Create config
-mkdir -p run-kimi-inst.d
-cat > run-kimi-inst.d/my-kimi.json << 'EOF'
-{
-  "command": "kimi",
-  "cwd": "/path/to/project",
-  "c2c_alias": "kimi-myname-myhostname",
-  "c2c_session_id": "kimi-myname-myhostname",
-  "prompt": "Call mcp__c2c__poll_inbox, then continue the highest-leverage c2c task."
-}
-EOF
-
-# Launch (starts kimi + deliver daemon automatically)
-./run-kimi-inst-outer my-kimi
+c2c start kimi -n my-kimi         # launch with custom name
+c2c instances                      # list running instances
+c2c stop my-kimi                   # stop the instance
 ```
 
-The harness calls `run-kimi-inst-rearm` after each launch to start
-`c2c_deliver_inbox.py --notify-only --loop` alongside the Kimi process.
-Interactive managed runs exec top-level `kimi` directly; do not use `kimi term`,
-which starts Toad rather than Kimi Code CLI. In interactive mode, `prompt` is
-mapped through `c2c_kimi_prefill.py` to Kimi's shell prefill path, so it appears
-as editable input on startup. Add `"print": true` only for non-interactive
-one-shot runs.
+The managed harness starts Kimi with a Wire bridge deliver daemon and a poker
+sidecar. On exit it prints a resume command rather than looping automatically.
 
 ### Self-restart
 
-Standalone (Tier 1): Exit and reopen Kimi Code CLI.
+Standalone: Exit and reopen Kimi Code CLI.
 
-Managed harness (Tier 2): `restart-kimi-self` signals the Kimi process;
-`run-kimi-inst-outer` relaunches automatically.
+Managed (`c2c start kimi`): stop and restart with `c2c stop <name>` + `c2c start kimi -n <name>`.
 
 `c2c install kimi` writes `~/.kimi/mcp.json`. After editing, restart Kimi to pick up changes.
 
 ### What the user sees
 
 The `mcp__c2c__poll_inbox` tool result appears inline in the Kimi conversation.
-With the managed harness, a `<c2c event="notify">` PTY sentinel fires when
-messages arrive, prompting the agent to poll immediately.
+With the Wire bridge, messages arrive as first-class `kimi --wire` prompts — no
+PTY injection required.
 
 ---
 
