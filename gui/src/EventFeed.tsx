@@ -230,7 +230,14 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
                 }}
               >
                 <span style={{ color: "#45475a", marginRight: 8, fontSize: 11 }}>
-                  {new Date(parseFloat(e.monitor_ts) * 1000).toLocaleTimeString()}
+                  {(() => {
+                    const d = new Date(parseFloat(e.monitor_ts) * 1000);
+                    const now = new Date();
+                    const sameDay = d.toDateString() === now.toDateString();
+                    return sameDay
+                      ? d.toLocaleTimeString()
+                      : d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString();
+                  })()}
                 </span>
                 <span style={{ marginRight: 6 }}>{eventIcon(e)}</span>
                 <span style={{ color: eventColor(e) }}>
