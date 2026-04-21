@@ -1245,13 +1245,21 @@ const C2CDelivery: Plugin = async (ctx) => {
           void (async () => {
             const maxRetries = 3;
             for (let r = 1; r <= maxRetries; r++) {
-              if (readSpool().length === 0) break;
-              const retryDelayMs = 3000 * Math.pow(2, r - 1); // 3s, 6s, 12s
-              await log(`cold-boot: spool not empty after attempt ${r} — retrying in ${retryDelayMs}ms`);
-              await new Promise<void>(resolve => setTimeout(resolve, retryDelayMs));
+              // On first iteration always attempt delivery (spool may be empty because
+              // promptAsync hasn't failed yet — we deliver first, spool check is for retry).
               // In idle-only mode, session.idle is the sole delivery trigger — do not
               // call deliverMessages here (would double-deliver with session.idle).
-              if (!idleOnlyMode) await deliverMessages(info.id).catch(() => {});
+              if (r === 1) {
+                if (!idleOnlyMode) await deliverMessages(info.id).catch(() => {});
+              } else {
+                if (readSpool().length === 0) break;
+                const retryDelayMs = coldBootDelayMs > 0
+                  ? 3000 * Math.pow(2, r - 1)
+                  : coldBootDelayMs;
+                await log(`cold-boot: spool not empty after attempt ${r} — retrying in ${retryDelayMs}ms`);
+                await new Promise<void>(resolve => setTimeout(resolve, retryDelayMs));
+                if (!idleOnlyMode) await deliverMessages(info.id).catch(() => {});
+              }
             }
           })();
         }
