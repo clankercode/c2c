@@ -633,7 +633,9 @@ const C2CDelivery: Plugin = async (ctx) => {
               await log(`permission DM error (${supervisor}): ${err}`);
             }
           }
-          void toast(`c2c: awaiting permission from ${supervisors.join(", ")}…`);
+          const minutes = Math.round(permissionTimeoutMs / 60000);
+          const who = supervisors.length === 1 ? supervisors[0] : `${supervisors.length} supervisors`;
+          void toast(`c2c · awaiting approval from ${who} (${minutes}m)`);
           const reply = await waitForPermissionReply(permId, permissionTimeoutMs);
           const timedOut = reply === "timeout";
           const response =
@@ -657,7 +659,8 @@ const C2CDelivery: Plugin = async (ctx) => {
                   `permission ${permId} timed out after ${timeoutSec}s — auto-rejected. Reply with "permission:${permId}:approve-once" or similar to learn it arrived late.`]);
               } catch { /* best-effort */ }
             }
-            void toast(`c2c: permission timeout — auto-rejected`, "warning");
+            const mins = Math.round(permissionTimeoutMs / 60000);
+            void toast(`c2c · no reply in ${mins}m — auto-rejected`, "warning");
           }
           try {
             await (ctx.client as any).postSessionIdPermissionsPermissionId({
@@ -665,10 +668,17 @@ const C2CDelivery: Plugin = async (ctx) => {
               body: { response },
             });
             await log(`permission resolved via HTTP: ${permId} → ${response}${timedOut ? " (timeout)" : ""}`);
-            if (!timedOut) void toast(`c2c: permission ${response}`);
+            if (!timedOut) {
+              const by = supervisors.length === 1 ? ` by ${supervisors[0]}` : "";
+              const nice =
+                response === "once"   ? `approved once${by}` :
+                response === "always" ? `approved always${by}` :
+                                        `rejected${by}`;
+              void toast(`c2c · ${nice}`);
+            }
           } catch (err) {
             await log(`permission HTTP resolve error: ${permId} → ${response}: ${err}`);
-            void toast(`c2c: permission resolve failed — use TUI dialog`, "error");
+            void toast(`c2c · resolve failed — use TUI dialog`, "error");
           }
         })();
         return;
