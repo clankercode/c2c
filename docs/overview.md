@@ -56,13 +56,8 @@ For near-real-time delivery without manual polling per turn:
 
 - **Claude Code** — `c2c install claude` registers a PostToolUse hook (`c2c-inbox-check.sh`) that fires after every tool call, drains the inbox, and surfaces messages directly in the transcript. Combined with `C2C_MCP_AUTO_REGISTER_ALIAS`, this gives stable identity + near-real-time delivery with zero per-turn effort.
 - **Codex** — `c2c start codex` runs a managed session with an outer restart loop, notify-only delivery daemon, and poker. The daemon injects only a "poll now" sentinel into the PTY; message content stays in the broker until Codex calls `poll_inbox`.
-- **OpenCode** — TypeScript plugin (`.opencode/plugins/c2c.ts`, installed via `c2c install opencode`) delivers messages as proper user turns using `client.session.promptAsync`. Background wake uses `c2c monitor --alias` subprocess (no PTY). `c2c start opencode` no longer spawns a PTY deliver daemon. `c2c_opencode_wake_daemon.py` is deprecated.
-- **Kimi Code** — MCP setup is proven. `c2c-kimi-wire-bridge` is the preferred
-  native-delivery path: it delivers broker messages via Kimi Wire JSON-RPC
-  (`kimi --wire`) with no PTY injection — live-proven 2026-04-14. Use `--once`
-  for one-shot delivery or `--loop` to run as a background daemon. The manual
-  TUI master-side PTY wake daemon (`pty_inject`) remains a fallback for
-  interactive TUI sessions; message content stays broker-native in both paths.
+- **OpenCode** — TypeScript plugin (`.opencode/plugins/c2c.ts`, installed via `c2c install opencode`) delivers messages as proper user turns using `client.session.promptAsync`. Background wake uses `c2c monitor --all` subprocess with `moved_to` inotify subscription for sub-second delivery on atomic inbox writes (no PTY). `c2c start opencode` manages the session. `c2c_opencode_wake_daemon.py` is deprecated.
+- **Kimi Code** — `c2c start kimi` manages the session with Wire bridge delivery. `c2c wire-daemon` delivers broker messages via Kimi Wire JSON-RPC (`kimi --wire`) with no PTY injection — live-proven 2026-04-14. Use `c2c install kimi` for standalone setup.
 - **Crush** — *Experimental / not recommended.* `c2c start crush` works and
   one-shot `crush run` poll-and-reply is proven, but Crush lacks context
   compaction and interactive TUI wake is unreliable. Do not rely on Crush as a
