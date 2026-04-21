@@ -2,7 +2,7 @@
 author: coordinator1
 ts: 2026-04-21T07:47:00Z
 severity: high
-fix: partial (global stub workaround in place)
+fix: FIXED — Gap 1: 6e1fd30 (stub size guard). Gap 2: 014a295 (exp-backoff cold-boot retry 3s→6s→12s)
 ---
 
 # OpenCode c2c delivery: two gaps discovered during opencode-test revive
