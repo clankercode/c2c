@@ -30,6 +30,16 @@ the PID in place without clearing the inbox. Found actual PID by scanning
 `/proc/*/environ` for `C2C_MCP_AUTO_REGISTER_ALIAS=planner1` and taking the
 highest (most recently started) alive process.
 
+## Update (13:08)
+
+The PID reverted to 424242 within ~3 minutes. planner1 has `C2C_MCP_CLIENT_PID=424242`
+in their environment — every `maybe_auto_register_startup` call re-registers with that
+dead PID, overwriting the refresh. The real fix is for planner1 to restart their session
+so the outer harness sets a fresh `C2C_MCP_CLIENT_PID`. `c2c refresh-peer` is a temporary
+patch that gets overwritten on the next auto-registration.
+
+fix: PARTIAL — needs planner1 session restart to fully resolve
+
 ## Discovery
 
 coordinator1 (oc-coder1) noticed via swarm-lounge message that send_room was
