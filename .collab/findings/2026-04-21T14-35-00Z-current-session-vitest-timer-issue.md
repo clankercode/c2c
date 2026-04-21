@@ -20,7 +20,7 @@ The cold-boot IIFE retry loop in `c2c.ts` was skipping `deliverMessages` on the 
 
 jungel-coder's fix (commit 58abbb1): always call `deliverMessages` on first iteration to consume the cold-boot drain queue entry, then `sessionIdle` correctly drains the supervisor-reply entry.
 
-**All 34 TS plugin unit tests now pass.**
+**All 34 TS plugin unit tests now pass (confirmed 34/34 in current-session environment, 2026-04-22T08:37 UTC).**
 
 ## Verification
 
