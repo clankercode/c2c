@@ -46,6 +46,7 @@ run-opencode-inst.d/*.restart.json
 run-opencode-inst.d/*.log
 run-opencode-inst.d/node_modules
 run-opencode-inst.d/plugins/
+!run-opencode-inst.d/plugins/c2c.ts
 run-opencode-inst.d/package.json
 .opencode/c2c-plugin.json
 .opencode/c2c-plugin-spool.json
