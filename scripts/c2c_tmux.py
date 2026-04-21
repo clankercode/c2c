@@ -14,6 +14,9 @@ Usage:
     c2c_tmux.py capture <alias|target> [-n N]
     c2c_tmux.py layout <COLSxROWS>
     c2c_tmux.py whoami
+    c2c_tmux.py launch <client> [-n ALIAS] [--auto] [--cwd DIR] [--split h|v] [--window NAME] [--extra ARG ...]
+    c2c_tmux.py wait-alive <alias> [--timeout SECONDS]
+    c2c_tmux.py stop <alias>
 
 Shared conventions:
     <alias>  — a swarm agent alias (resolved via `c2c start <client> -n <alias>`).
@@ -26,6 +29,7 @@ import argparse
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -189,6 +193,77 @@ def cmd_layout(args: argparse.Namespace) -> int:
     return subprocess.run([str(layout_sh), args.grid]).returncode
 
 
+def cmd_launch(args: argparse.Namespace) -> int:
+    """Open a fresh tmux pane/window and run `c2c start <client> ...` in it.
+
+    Must be called from inside tmux (uses the current session). The command
+    line is built up and sent via send-keys + Enter, so the launcher survives
+    the user's shell rc behavior (no reliance on 'tmux -- sh -c').
+    """
+    if not os.environ.get("TMUX"):
+        print("launch: not inside tmux — open a tmux session first", file=sys.stderr)
+        return 2
+
+    c2c_bin = shutil.which("c2c") or "c2c"
+    cmd = [c2c_bin, "start", args.client]
+    if args.auto:
+        cmd.append("--auto")
+    if args.name:
+        cmd.extend(["-n", args.name])
+    if args.extra:
+        cmd.extend(args.extra)
+    shell_cmd = shlex.join(cmd)
+
+    if args.split in ("h", "v"):
+        flag = "-h" if args.split == "h" else "-v"
+        res = tmux("split-window", flag, "-P", "-F", "#{pane_id}", "bash")
+    else:
+        title = args.window or (f"c2c-{args.name}" if args.name else f"c2c-{args.client}")
+        res = tmux("new-window", "-n", title, "-P", "-F", "#{pane_id}", "bash")
+    pane = res.stdout.strip()
+    if not pane:
+        print("launch: failed to create tmux pane", file=sys.stderr)
+        return 1
+
+    if args.cwd:
+        tmux("send-keys", "-t", pane, f"cd {shlex.quote(args.cwd)}", "Enter", capture=False)
+    tmux("send-keys", "-t", pane, shell_cmd, "Enter", capture=False)
+    print(f"launched on {pane}: {shell_cmd}")
+    if args.name:
+        print(f"next: {sys.argv[0]} wait-alive {args.name}")
+    return 0
+
+
+def cmd_wait_alive(args: argparse.Namespace) -> int:
+    """Poll `c2c list --json` until the alias is alive, or timeout."""
+    import json as _json
+    import time as _time
+    c2c_bin = shutil.which("c2c") or "c2c"
+    deadline = _time.monotonic() + args.timeout
+    last_status = "missing"
+    while _time.monotonic() < deadline:
+        try:
+            out = subprocess.run([c2c_bin, "list", "--json"], capture_output=True, text=True, check=False).stdout
+            rows = _json.loads(out) if out.strip() else []
+        except (_json.JSONDecodeError, FileNotFoundError):
+            rows = []
+        for r in rows:
+            if r.get("alias") == args.alias:
+                if r.get("alive"):
+                    print(f"alive: {args.alias} (pid={r.get('pid')})")
+                    return 0
+                last_status = f"registered but alive={r.get('alive')} pid={r.get('pid')}"
+                break
+        _time.sleep(0.5)
+    print(f"wait-alive: {args.alias} not alive within {args.timeout}s (last={last_status})", file=sys.stderr)
+    return 1
+
+
+def cmd_stop(args: argparse.Namespace) -> int:
+    c2c_bin = shutil.which("c2c") or "c2c"
+    return subprocess.run([c2c_bin, "stop", args.alias]).returncode
+
+
 def cmd_whoami(args: argparse.Namespace) -> int:
     tty_env = os.environ.get("TMUX_PANE") or ""
     if not tty_env:
@@ -249,6 +324,25 @@ def build_parser() -> argparse.ArgumentParser:
     ly.set_defaults(func=cmd_layout)
 
     sp.add_parser("whoami", help="identify the calling pane by alias").set_defaults(func=cmd_whoami)
+
+    lc = sp.add_parser("launch", help="open a tmux pane and run `c2c start <client> ...`")
+    lc.add_argument("client", help="claude | codex | opencode | kimi | crush")
+    lc.add_argument("-n", "--name", help="alias to pass to `c2c start -n <name>`")
+    lc.add_argument("--auto", action="store_true", help="forward --auto (kickoff prompt)")
+    lc.add_argument("--cwd", help="cd into this dir before running c2c start")
+    lc.add_argument("--split", choices=("h", "v"), help="split current window horizontally/vertically instead of new-window")
+    lc.add_argument("--window", help="name for the new window (default: c2c-<name|client>)")
+    lc.add_argument("--extra", nargs=argparse.REMAINDER, help="extra args forwarded to `c2c start`")
+    lc.set_defaults(func=cmd_launch)
+
+    wa = sp.add_parser("wait-alive", help="poll broker until an alias is alive")
+    wa.add_argument("alias")
+    wa.add_argument("--timeout", type=float, default=60.0)
+    wa.set_defaults(func=cmd_wait_alive)
+
+    st = sp.add_parser("stop", help="`c2c stop <alias>` a managed instance")
+    st.add_argument("alias")
+    st.set_defaults(func=cmd_stop)
 
     return p
 
