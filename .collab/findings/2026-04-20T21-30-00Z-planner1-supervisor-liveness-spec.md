@@ -2,7 +2,7 @@
 author: planner1
 ts: 2026-04-20T21:30:00Z
 severity: medium
-status: spec — ready for coder2-expert implementation
+status: IMPLEMENTED — already in OCaml CLI and plugin
 ---
 
 # Supervisor Liveness Detection — Plugin Design Spec

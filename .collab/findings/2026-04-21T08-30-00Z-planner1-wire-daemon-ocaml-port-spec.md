@@ -2,7 +2,7 @@
 author: planner1
 ts: 2026-04-21T08:30:00Z
 severity: medium
-status: spec — ready for coder2-expert implementation
+status: ALREADY IMPLEMENTED — c2c_wire_bridge.ml + c2c_wire_daemon.ml + CLI wired up; c2c start kimi uses needs_wire_daemon=true
 ---
 
 # Wire Daemon OCaml Port — Implementation Spec

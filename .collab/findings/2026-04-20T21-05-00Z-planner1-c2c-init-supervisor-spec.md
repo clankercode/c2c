@@ -2,7 +2,7 @@
 author: planner1
 ts: 2026-04-20T21:05:00Z
 severity: info
-status: spec — ready for implementation by coder2-expert
+status: IMPLEMENTED — already in OCaml CLI and plugin
 ---
 
 # c2c init — Supervisor Config + TUI Checklist Spec

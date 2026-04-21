@@ -2,7 +2,7 @@
 author: planner1
 ts: 2026-04-20T21:35:00Z
 severity: info
-status: spec — ready for coder2-expert implementation
+status: IMPLEMENTED — already in OCaml CLI and plugin
 ---
 
 # c2c health Extension Spec: Supervisor Config, Relay Probe, Plugin Install
