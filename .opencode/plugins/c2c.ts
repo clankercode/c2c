@@ -550,6 +550,11 @@ const C2CDelivery: Plugin = async (ctx) => {
     const info = (event as any).properties?.info;
     if (!info?.id || info?.parentID) return;
     if (configuredOpenCodeSessionId && info.id !== configuredOpenCodeSessionId) return;
+    // Reset kickoff flag so the new root session always receives the kickoff prompt.
+    // Without this, if a second root session is created mid-run (e.g. agent ran a
+    // command that triggered session.created), kickoffDelivered stays true and the
+    // new session starts blank — root cause of #58 TUI divergence.
+    kickoffDelivered = false;
     pluginState.root_opencode_session_id = info.id;
     pluginState.agent.step_count += 1;
     pluginState.agent.last_step = makeLastStep("session.created", compactSessionDetails(info.id));
@@ -879,7 +884,7 @@ const C2CDelivery: Plugin = async (ctx) => {
         body: { parts: [{ type: "text", text: envelope }] },
         url: "/session/{id}/prompt_async",
       };
-      await log(`promptAsync CALL: path.id=${targetSessionId} body.text.slice(0,120)=${envelope.slice(0, 120)}`);
+      await log(`promptAsync CALL: path.id=${targetSessionId} body.text.slice(0,400)=${envelope.slice(0, 400)}`);
       try {
         const result = await (ctx.client.session as any).promptAsync(callArgs);
         await log(`promptAsync RESULT: ${JSON.stringify(result).slice(0, 300)}`);
