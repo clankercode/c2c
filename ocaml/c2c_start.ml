@@ -524,7 +524,11 @@ let refresh_opencode_identity ~name ~alias ~broker_root ~project_dir =
       let merge_env env_obj new_pairs =
         let existing = match env_obj with `Assoc p -> p | _ -> [] in
         let keys = List.map fst new_pairs in
-        let kept = List.filter (fun (k, _) -> not (List.mem k keys)) existing in
+        (* Also strip per-instance keys that must never appear in the shared
+           project config — old Python installs wrote AUTO_REGISTER_ALIAS here. *)
+        let drop_keys = ["C2C_MCP_AUTO_REGISTER_ALIAS"; "C2C_MCP_SESSION_ID"] in
+        let kept = List.filter (fun (k, _) ->
+          not (List.mem k keys) && not (List.mem k drop_keys)) existing in
         `Assoc (kept @ new_pairs)
       in
       let put key v pairs =
