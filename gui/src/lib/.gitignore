@@ -1,0 +1,4 @@
+# Allow gui/src/lib/ — excluded by root gitignore's lib/ rule (Python venv artifact)
+!.gitignore
+!*.ts
+!*.tsx

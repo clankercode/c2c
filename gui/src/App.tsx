@@ -7,6 +7,7 @@ import { Sidebar } from "./Sidebar";
 import { registerAlias } from "./useSend";
 import { loadHistory, loadRoomHistory, loadPeerHistory } from "./useHistory";
 import { discoverPeers, discoverRooms } from "./useDiscovery";
+import { WelcomeWizard } from "./components/WelcomeWizard";
 
 const MAX_EVENTS = 1000;
 const ALIAS_KEY = "c2c-gui-my-alias";
@@ -29,6 +30,7 @@ export function App() {
   const myAliasRef = useRef<string>("");
   const [myAlias, setMyAlias] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "");
   const [aliasInput, setAliasInput] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "");
+  const [showWizard, setShowWizard] = useState(() => !localStorage.getItem(ALIAS_KEY));
   const [aliasStatus, setAliasStatus] = useState<string | null>(null);
   const childRef = useRef<Child | null>(null);
 
@@ -166,11 +168,19 @@ export function App() {
 
   const statusColor = { connecting: "#f9e2af", live: "#a6e3a1", error: "#f38ba8" }[status];
 
+  function handleWizardComplete(alias: string) {
+    setMyAlias(alias);
+    setAliasInput(alias);
+    localStorage.setItem(ALIAS_KEY, alias);
+    setShowWizard(false);
+  }
+
   return (
     <div style={{
       display: "flex", flexDirection: "column", height: "100vh",
       background: "#1e1e2e", color: "#cdd6f4",
     }}>
+      <WelcomeWizard open={showWizard} onComplete={handleWizardComplete} />
       {/* Header */}
       <div style={{
         padding: "6px 16px", background: "#181825",

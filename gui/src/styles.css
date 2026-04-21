@@ -1,3 +1,5 @@
+@import "tailwindcss";
+
 /* Catppuccin Mocha palette + layout primitives */
 :root {
   --base:    #1e1e2e;
