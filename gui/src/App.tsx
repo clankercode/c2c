@@ -271,6 +271,14 @@ export function App() {
         ) : (
           <span style={{ marginLeft: "auto", fontSize: 11, color: statusColor }}>● {status}</span>
         )}
+        {(unreadRooms.size + unreadPeers.size) > 0 && (
+          <span style={{
+            background: "#f38ba8", color: "#1e1e2e",
+            borderRadius: 10, padding: "1px 6px", fontSize: 10, fontWeight: 700,
+          }}>
+            {unreadRooms.size + unreadPeers.size} unread
+          </span>
+        )}
         <span style={{ fontSize: 11, color: "#585b70" }}>{events.length} events</span>
         {health && (
           <>
