@@ -251,7 +251,7 @@ These are Max's target experiences, verbatim:
 - **relay /register prod-mode auth fix** ✓: `auth_decision` now exempts `/register`
   from outer Ed25519 check (adb152f). Relay at relay.c2c.im was rejecting all new
   registrations in prod mode (RELAY_TOKEN set). Auth matrix regression tests added (b1d687f).
-  **Needs Railway deploy** — 33 commits ahead of origin as of 2026-04-21T12:00Z.
+  **Needs Railway deploy** — 41 commits ahead of origin as of 2026-04-21T12:45Z.
 - **Broker tristate liveness for alias-hijack guard** ✓: pidless (Unknown) stale entries
   no longer block new sessions from claiming the same alias (cfae0cc). Regression test
   added (0da8015). Bug #7 from session-bug-haul.
@@ -275,6 +275,18 @@ These are Max's target experiences, verbatim:
   (SDK external Event type) and `"permission.asked"` (opencode internal bus) to cover
   config-declared and runtime bash:ask paths. Added hook-entry logging (6828ce6).
   Needs oc-coder1 restart to validate.
+- **Relay connector signed register** ✓: Python connector now sends body-level Ed25519 proof
+  (identity_pk + sig + nonce + timestamp) on /register, matching OCaml `register_signed`.
+  Aliases get pk bound at registration so heartbeat/poll/send can use Ed25519 header auth
+  in subsequent calls (cfc7939, coder2-expert). `_sign_register_body()` added to
+  `c2c_relay_connector.py`; 2 new Python signing tests.
+- **Relay list admin/peer route fix** ✓: `/list?include_dead=1` correctly uses Bearer
+  (admin); `/list` (no include_dead) uses Ed25519 (peer). Was signing all list calls
+  as peer (0734082, coder2-expert).
+- **`c2c health` commits-behind count** ✓: stale deploy warning now shows `(N commits)` so
+  Max can see at a glance how far behind the deployed relay is (e9f55f8, planner1).
+- **v0.6.11** ✓: version bumped in `ocaml/version.ml` (21bb97a, planner1).
+- **Debug log gitignore** ✓: `.opencode/c2c-debug.log*` added to `.gitignore` (cf47515, planner1).
 
 ### Recent Completions (2026-04-20/21, planner1 + coder2-expert + coordinator1)
 
