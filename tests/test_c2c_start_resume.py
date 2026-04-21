@@ -156,3 +156,70 @@ def test_session_id_set_correctly_without_duplicates(tmp_path: Path) -> None:
     assert oc_session_lines[0] == f"C2C_OPENCODE_SESSION_ID={DEDUP_SES_ID}", (
         f"Wrong opencode session ID: {oc_session_lines[0]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Live E2E: resume + TUI focus combined (requires C2C_TEST_RESUME_E2E=1)
+# ---------------------------------------------------------------------------
+
+import json
+import time
+
+pytestmark_e2e = pytest.mark.skipif(
+    not os.environ.get("C2C_TEST_RESUME_E2E"),
+    reason="Set C2C_TEST_RESUME_E2E=1 to run live resume+TUI-focus E2E tests",
+)
+
+
+@pytestmark_e2e
+def test_resume_e2e_plugin_tracks_correct_session(tmp_path: Path) -> None:
+    """Live E2E: c2c start opencode -s ses_* → plugin's root_opencode_session_id
+    matches the requested session (not a fresh 'c2c kickoff' session).
+
+    Validates both:
+    - 911c0b2: C2C_OPENCODE_SESSION_ID propagated so plugin doesn't auto-kickoff
+    - 7667564 / ddb81ba: TUI focuses the resumed session via ctx.client.tui.publish()
+
+    Requires: a valid ses_* session ID in C2C_TEST_RESUME_SESSION_ID env var,
+    and opencode to be installed.
+    """
+    ses_id = os.environ.get("C2C_TEST_RESUME_SESSION_ID", "")
+    if not ses_id.startswith("ses_"):
+        pytest.skip("Set C2C_TEST_RESUME_SESSION_ID=ses_<id> to a valid session")
+
+    inst_name = f"resume-e2e-{int(time.time())}"
+    # The OCaml binary uses C2C_INSTANCES_DIR for its own state, but the
+    # TypeScript plugin always writes oc-plugin-state.json to the canonical
+    # ~/.local/share/c2c/instances/<name>/ path regardless of that env var.
+    canonical_instances = Path.home() / ".local" / "share" / "c2c" / "instances"
+    env = {**os.environ}
+
+    proc = subprocess.Popen(
+        [C2C_BIN, "start", "opencode", "-n", inst_name, "-s", ses_id],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    state_file = canonical_instances / inst_name / "oc-plugin-state.json"
+    deadline = time.monotonic() + 30.0
+    root_session = None
+    while time.monotonic() < deadline:
+        time.sleep(1)
+        if state_file.exists():
+            try:
+                raw = json.loads(state_file.read_text())
+                root_session = raw.get("state", raw).get("root_opencode_session_id")
+                if root_session:
+                    break
+            except Exception:
+                pass
+
+    proc.terminate()
+    proc.wait(timeout=5)
+
+    assert root_session is not None, "Plugin never wrote root_opencode_session_id"
+    assert root_session == ses_id, (
+        f"Plugin adopted wrong session: got {root_session!r}, expected {ses_id!r}. "
+        "This is the auto-kickoff clobber bug (911c0b2 regression)."
+    )
