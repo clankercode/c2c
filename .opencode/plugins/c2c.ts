@@ -86,6 +86,47 @@ function resolvePermissionSupervisors(sidecar: Record<string, unknown>): string[
 }
 
 // ---------------------------------------------------------------------------
+// Permission summary (module-level for testability)
+// ---------------------------------------------------------------------------
+
+/**
+ * Produce a human-readable one-line summary of a permission request so
+ * supervisors can make an informed approve/reject decision.
+ *
+ * Priority for the action value:
+ *   metadata.command > metadata.input > metadata.cmd > pattern (joined) > title > type
+ */
+export function summarizePermission(perm: Record<string, unknown>): string {
+  const type = typeof perm.type === "string" && perm.type ? perm.type : "unknown";
+  const title = typeof perm.title === "string" ? perm.title : "";
+  const meta = (typeof perm.metadata === "object" && perm.metadata !== null)
+    ? (perm.metadata as Record<string, unknown>)
+    : {};
+
+  const rawPattern = perm.pattern;
+  const patternStr: string = Array.isArray(rawPattern)
+    ? rawPattern.join(" ")
+    : typeof rawPattern === "string" ? rawPattern : "";
+
+  const metaAction: string = [meta.command, meta.input, meta.cmd]
+    .filter((v): v is string => typeof v === "string" && v.length > 0)[0] ?? "";
+
+  const action = metaAction || patternStr || (title && title !== "unknown" ? title : "") || "";
+
+  switch (type) {
+    case "bash":
+      return action ? `bash: \`${action}\`` : "bash: (unknown command)";
+    case "file":
+    case "fs":
+      return action ? `file: ${action}` : "file access (unknown path)";
+    case "network":
+      return action ? `network: ${action}` : "network access (unknown target)";
+    default:
+      return action ? `${type}: ${action}` : type;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Plugin definition
 // ---------------------------------------------------------------------------
 
@@ -764,23 +805,21 @@ const C2CDelivery: Plugin = async (ctx) => {
         seenPermissionIds.push(permId);
         if (seenPermissionIds.length > 20) seenPermissionIds.shift();
 
-        const title: string = perm.title || "unknown";
-        const type: string = perm.type || "unknown";
-        const pattern: string = JSON.stringify(perm.pattern ?? "N/A");
         const sid: string = perm.sessionID || activeSessionId || sessionId || "unknown";
         const timeoutSec = Math.round(permissionTimeoutMs / 1000);
+        const summary = summarizePermission(perm as Record<string, unknown>);
+        const instanceName: string = process.env.C2C_INSTANCE_NAME || "";
+        const from = instanceName || sessionId || sid;
         const msg = [
-          `PERMISSION REQUEST from ${sessionId}:`,
-          `  session: ${sid}`,
-          `  title: ${title}`,
-          `  type: ${type}`,
-          `  pattern: ${pattern}`,
+          `PERMISSION REQUEST from ${from}:`,
+          `  action: ${summary}`,
           `  id: ${permId}`,
-          `Reply within ${timeoutSec}s with one of:`,
+          `  session: ${sid}`,
+          `Reply within ${timeoutSec}s:`,
           `  c2c send ${sessionId} "permission:${permId}:approve-once"`,
           `  c2c send ${sessionId} "permission:${permId}:approve-always"`,
           `  c2c send ${sessionId} "permission:${permId}:reject"`,
-          `(timeout → auto-reject via HTTP; late replies will be NACK'd)`,
+          `(timeout → auto-reject; late replies will be NACK'd)`,
         ].join("\n");
 
         // Fire-and-forget: wait for a reply in the background and resolve via HTTP.
