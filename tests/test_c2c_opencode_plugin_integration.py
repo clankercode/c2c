@@ -138,6 +138,8 @@ def _start_harness(
     env = {
         **os.environ,
         "C2C_MCP_INBOX_WATCHER_DELAY": "0",
+        # Skip cold-boot delay so integration tests complete within their timeout
+        "C2C_PLUGIN_COLD_BOOT_DELAY_MS": "0",
         **env_overrides,
     }
     return subprocess.Popen(

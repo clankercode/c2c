@@ -1,6 +1,11 @@
 # Cross-Machine Relay Proof — Runbook
 
-**Status**: Loopback proof PASSED 2026-04-20 (planner1). Real cross-machine test pending.
+**Status**: Loopback proof PASSED 2026-04-21 (planner1, post timezone fix 7cee845). Real cross-machine test pending.
+
+**Important fix**: commit 7cee845 fixed a critical timezone bug in `parse_rfc3339_utc`
+that caused Ed25519 relay auth to fail with `-86400s skew` on non-UTC machines (e.g.,
+AEST). The relay server binary must be rebuilt from this commit or later for local relay
+tests to work on non-UTC hosts. Production relay (Railway, UTC) was unaffected.
 
 ---
 
