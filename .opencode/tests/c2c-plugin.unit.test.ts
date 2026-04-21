@@ -15,18 +15,28 @@ import { EventEmitter } from 'events';
 type FakeProc = EventEmitter & {
   stdout: EventEmitter;
   stderr: EventEmitter;
-  stdin: { end: ReturnType<typeof vi.fn> };
+  stdin: { end: ReturnType<typeof vi.fn>; write: ReturnType<typeof vi.fn> };
   kill: (sig?: string) => void;
 };
 
 const spawnQueue: Array<{ stdout: string; stderr: string; code: number }> = [];
 const spawnCalls: Array<{ command: string; args: string[] }> = [];
+const stateWriterLines: string[] = [];
 
 function createFakeProc(out: { stdout: string; stderr: string; code: number }): FakeProc {
   const proc = new EventEmitter() as FakeProc;
   proc.stdout = new EventEmitter();
   proc.stderr = new EventEmitter();
-  proc.stdin = { end: vi.fn() };
+  proc.stdin = {
+    end: vi.fn((chunk?: string) => {
+      if (typeof chunk === 'string') stateWriterLines.push(chunk);
+      return true;
+    }),
+    write: vi.fn((chunk: string) => {
+      stateWriterLines.push(chunk);
+      return true;
+    }),
+  };
   proc.kill = vi.fn();
   setImmediate(() => {
     if (out.stdout) proc.stdout.emit('data', Buffer.from(out.stdout));
@@ -36,11 +46,29 @@ function createFakeProc(out: { stdout: string; stderr: string; code: number }): 
   return proc;
 }
 
+function createPersistentProc(): FakeProc {
+  const proc = new EventEmitter() as FakeProc;
+  proc.stdout = new EventEmitter();
+  proc.stderr = new EventEmitter();
+  proc.stdin = {
+    end: vi.fn((chunk?: string) => {
+      if (typeof chunk === 'string') stateWriterLines.push(chunk);
+      return true;
+    }),
+    write: vi.fn((chunk: string) => {
+      stateWriterLines.push(chunk);
+      return true;
+    }),
+  };
+  proc.kill = vi.fn();
+  return proc;
+}
+
 vi.mock('child_process', () => ({
   spawn: vi.fn((command: string, args: string[]) => {
     spawnCalls.push({ command, args });
     if (args[0] === 'oc-plugin' && args[1] === 'stream-write-statefile') {
-      return createFakeProc({ stdout: '', stderr: '', code: 0 });
+      return createPersistentProc();
     }
     const next = spawnQueue.shift() ?? { stdout: '{"messages":[]}', stderr: '', code: 0 };
     return createFakeProc(next);
@@ -99,6 +127,10 @@ function makeCtx() {
       app: { log: vi.fn().mockResolvedValue({}) },
       tui: { showToast: vi.fn().mockResolvedValue({}) },
       postSessionIdPermissionsPermissionId: vi.fn().mockResolvedValue({}),
+      question: {
+        reply: vi.fn().mockResolvedValue({}),
+        reject: vi.fn().mockResolvedValue({}),
+      },
     },
   };
 }
@@ -125,6 +157,10 @@ function sessionIdle(sessionID: string) {
   };
 }
 
+function stateEvents() {
+  return stateWriterLines.map((line) => JSON.parse(line.trim()));
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -137,9 +173,11 @@ describe('c2c plugin unit tests', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval'] });
     spawnQueue.length = 0;
     spawnCalls.length = 0;
+    stateWriterLines.length = 0;
     fakeSpoolState.data = null;
     process.env.C2C_MCP_SESSION_ID = 'test-session';
     process.env.C2C_MCP_BROKER_ROOT = '/tmp/broker';
+    process.env.C2C_PERMISSION_SUPERVISOR = 'coordinator1';
     // Idle-only mode: suppress the background monitor/poll loop so that
     // spawnMonitor() does not consume spawn queue entries before drainInbox()
     // can use them. These unit tests drive delivery via event callbacks.
@@ -152,6 +190,7 @@ describe('c2c plugin unit tests', () => {
     vi.useRealTimers();
     delete process.env.C2C_MCP_SESSION_ID;
     delete process.env.C2C_MCP_BROKER_ROOT;
+    delete process.env.C2C_PERMISSION_SUPERVISOR;
     delete process.env.C2C_PLUGIN_DELIVER_ON_IDLE;
     delete process.env.C2C_PLUGIN_COLD_BOOT_DELAY_MS;
   });
@@ -174,6 +213,115 @@ describe('c2c plugin unit tests', () => {
     expect(text).toContain('alias="bob"');
     expect(text).toContain('hello world');
     expect(text).toContain('</c2c>');
+  });
+
+  it('emits a startup state.snapshot and uses persistent writer command', async () => {
+    const ctx = makeCtx();
+    await C2CDelivery(ctx as any);
+
+    const streamSpawn = spawnCalls.find((c) =>
+      c.args[0] === 'oc-plugin' && c.args[1] === 'stream-write-statefile'
+    );
+    expect(streamSpawn).toBeDefined();
+
+    const events = stateEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].event).toBe('state.snapshot');
+    expect(events[0].state.c2c_session_id).toBe('test-session');
+    expect(events[0].state.opencode_pid).toBeTypeOf('number');
+    expect(events[0].state.c2c_alias).toBeNull();
+    expect(events[0].state.agent.turn_count).toBe(0);
+    expect(events[0].state.agent.step_count).toBe(0);
+    expect(events[0].state.agent.last_step).toBeNull();
+    expect(events[0].state.prompt.has_text).toBeNull();
+  });
+
+  it('emits state.patch for root session.created and session.idle', async () => {
+    const ctx = makeCtx();
+    const hooks = await C2CDelivery(ctx as any);
+
+    await fireEvent(hooks, sessionCreated('root-session'));
+    await fireEvent(hooks, sessionIdle('root-session'));
+
+    const events = stateEvents();
+    expect(events.map((e) => e.event)).toEqual([
+      'state.snapshot',
+      'state.patch',
+      'state.patch',
+    ]);
+    expect(events[1].patch.root_opencode_session_id).toBe('root-session');
+    expect(events[1].patch.agent.step_count).toBe(1);
+    expect(events[1].patch.agent.last_step.event_type).toBe('session.created');
+    expect(events[2].patch.agent.is_idle).toBe(true);
+    expect(events[2].patch.agent.turn_count).toBe(1);
+    expect(events[2].patch.agent.step_count).toBe(2);
+    expect(events[2].patch.tui_focus.ty).toBe('prompt');
+  });
+
+  it('bootstraps root state from first session.idle when session.created was missed', async () => {
+    const ctx = makeCtx();
+    const hooks = await C2CDelivery(ctx as any);
+
+    await fireEvent(hooks, sessionIdle('late-root'));
+
+    const events = stateEvents();
+    expect(events).toHaveLength(2);
+    expect(events[1].event).toBe('state.patch');
+    expect(events[1].patch.root_opencode_session_id).toBe('late-root');
+    expect(events[1].patch.agent.turn_count).toBe(1);
+    expect(events[1].patch.agent.step_count).toBe(1);
+    expect(events[1].patch.agent.last_step.details.session_id).toBe('late-root');
+  });
+
+  it('does not let non-root permission events mutate published root state', async () => {
+    const ctx = makeCtx();
+    const hooks = await C2CDelivery(ctx as any);
+
+    await fireEvent(hooks, sessionCreated('root-session'));
+    const beforeCount = stateEvents().length;
+    await fireEvent(hooks, {
+      type: 'permission.asked',
+      properties: {
+        id: 'perm-sub',
+        sessionID: 'sub-session',
+        title: 'bash',
+        type: 'bash',
+        pattern: 'echo hi',
+      },
+    });
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+
+    expect(stateEvents()).toHaveLength(beforeCount);
+  });
+
+  it('emits permission focus patch for root permission event', async () => {
+    spawnQueue.push({ stdout: '', stderr: '', code: 0 });
+
+    const ctx = makeCtx();
+    const hooks = await C2CDelivery(ctx as any);
+    await fireEvent(hooks, sessionCreated('root-session'));
+    await fireEvent(hooks, {
+      type: 'permission.asked',
+      properties: {
+        id: 'perm-root',
+        sessionID: 'root-session',
+        title: 'bash',
+        type: 'bash',
+        pattern: 'echo hi',
+      },
+    });
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+
+    const events = stateEvents();
+    const permissionPatch = events.at(-1)!;
+    expect(permissionPatch.event).toBe('state.patch');
+    expect(permissionPatch.patch.agent.is_idle).toBe(false);
+    expect(permissionPatch.patch.tui_focus.ty).toBe('permission');
+    expect(permissionPatch.patch.tui_focus.details).toEqual({
+      id: 'perm-root',
+      title: 'bash',
+      type: 'bash',
+    });
   });
 
   it('spools messages on promptAsync failure then retries on next delivery', async () => {
@@ -251,7 +399,7 @@ describe('c2c plugin unit tests', () => {
   it('permission.asked event: DMs supervisor, resolves via HTTP on approve-once', async () => {
     // sessionCreated cold-boot drain
     queueSpawn({ messages: [] });
-    // supervisor liveness query
+    // supervisor liveness query (selectSupervisors first-alive strategy)
     spawnQueue.push({
       stdout: JSON.stringify({ sessions: [{ alias: 'coordinator1', alive: true, last_seen: Date.now() / 1000 }] }),
       stderr: '', code: 0,
@@ -304,11 +452,6 @@ describe('c2c plugin unit tests', () => {
   it('permission.asked: on timeout, auto-rejects via HTTP and DMs supervisor', async () => {
     // sessionCreated cold-boot drain
     queueSpawn({ messages: [] });
-    // supervisor liveness query
-    spawnQueue.push({
-      stdout: JSON.stringify({ sessions: [{ alias: 'coordinator1', alive: true, last_seen: Date.now() / 1000 }] }),
-      stderr: '', code: 0,
-    });
     // DM to supervisor on ask
     spawnQueue.push({ stdout: '', stderr: '', code: 0 });
     // DM to supervisor on timeout notification
@@ -385,6 +528,119 @@ describe('c2c plugin unit tests', () => {
 
     // The late reply MUST NOT trigger a second HTTP resolve call.
     expect(ctx.client.postSessionIdPermissionsPermissionId).toHaveBeenCalledTimes(1);
+
+    delete process.env.C2C_PERMISSION_TIMEOUT_MS;
+  });
+
+  it('question.asked: DMs supervisor and forwards answer via HTTP', async () => {
+    // cold-boot drain
+    queueSpawn({ messages: [] });
+    // supervisor liveness query
+    spawnQueue.push({
+      stdout: JSON.stringify({ sessions: [{ alias: 'coordinator1', alive: true, last_seen: Date.now() / 1000 }] }),
+      stderr: '', code: 0,
+    });
+    // send DM to supervisor
+    spawnQueue.push({ stdout: '', stderr: '', code: 0 });
+    // session.idle drain returns the supervisor's question answer
+    queueSpawn({
+      messages: [{ from_alias: 'coordinator1', to_alias: 'test-session', content: 'question:q-abc:answer:yes please' }],
+    });
+
+    const ctx = makeCtx();
+    process.env.C2C_PERMISSION_TIMEOUT_MS = '10000';
+    const hooks = await C2CDelivery(ctx as any);
+    await fireEvent(hooks, sessionCreated('root-session'));
+
+    await fireEvent(hooks, {
+      type: 'question.asked',
+      properties: {
+        id: 'q-abc',
+        sessionID: 'root-session',
+        questions: [{ question: 'Proceed?', header: 'Confirm', options: [{ value: 'yes please' }, { value: 'no' }] }],
+      },
+    });
+
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+
+    // Supervisor reply arrives on next idle drain.
+    await fireEvent(hooks, sessionIdle('root-session'));
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+
+    // HTTP question.reply must have been called with the answer.
+    expect(ctx.client.question.reply).toHaveBeenCalledTimes(1);
+    const replyCall = ctx.client.question.reply.mock.calls[0]![0];
+    expect(replyCall.path.id).toBe('q-abc');
+    expect(replyCall.body.answers[0][0]).toBe('yes please');
+    expect(ctx.client.question.reject).not.toHaveBeenCalled();
+
+    // DM to supervisor mentions the question id.
+    const sendCall = spawnCalls.find((c) => c.args[0] === 'send');
+    expect(sendCall).toBeDefined();
+    expect(sendCall!.args[2]).toContain('q-abc');
+    expect(sendCall!.args[2]).toContain('Confirm');
+
+    delete process.env.C2C_PERMISSION_TIMEOUT_MS;
+  });
+
+  it('question.asked: auto-rejects via HTTP on timeout', async () => {
+    queueSpawn({ messages: [] }); // cold-boot
+    spawnQueue.push({ // liveness query
+      stdout: JSON.stringify({ sessions: [{ alias: 'coordinator1', alive: true, last_seen: Date.now() / 1000 }] }),
+      stderr: '', code: 0,
+    });
+    spawnQueue.push({ stdout: '', stderr: '', code: 0 }); // DM send
+
+    const ctx = makeCtx();
+    process.env.C2C_PERMISSION_TIMEOUT_MS = '100'; // short timeout for test
+    const hooks = await C2CDelivery(ctx as any);
+    await fireEvent(hooks, sessionCreated('root-session'));
+
+    await fireEvent(hooks, {
+      type: 'question.asked',
+      properties: {
+        id: 'q-timeout',
+        sessionID: 'root-session',
+        questions: [{ question: 'Do it?', header: 'Confirm', options: [] }],
+      },
+    });
+
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+    // Advance fake timers past the 100ms question timeout.
+    vi.advanceTimersByTime(500);
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+
+    expect(ctx.client.question.reject).toHaveBeenCalledTimes(1);
+    const rejectCall = ctx.client.question.reject.mock.calls[0]![0];
+    expect(rejectCall.path.id).toBe('q-timeout');
+
+    delete process.env.C2C_PERMISSION_TIMEOUT_MS;
+  });
+
+  it('question.asked: deduplicates repeated event for same id', async () => {
+    queueSpawn({ messages: [] }); // cold-boot
+    spawnQueue.push({ // liveness query (only once — dedup prevents second DM)
+      stdout: JSON.stringify({ sessions: [{ alias: 'coordinator1', alive: true, last_seen: Date.now() / 1000 }] }),
+      stderr: '', code: 0,
+    });
+    spawnQueue.push({ stdout: '', stderr: '', code: 0 }); // DM send (only once)
+
+    const ctx = makeCtx();
+    process.env.C2C_PERMISSION_TIMEOUT_MS = '10000';
+    const hooks = await C2CDelivery(ctx as any);
+    await fireEvent(hooks, sessionCreated('root-session'));
+
+    const evt = {
+      type: 'question.asked',
+      properties: { id: 'q-dedup', sessionID: 'root-session', questions: [] },
+    };
+    await fireEvent(hooks, evt);
+    await fireEvent(hooks, evt); // duplicate
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+
+    // Only one DM send spawned, not two.
+    const sendCalls = spawnCalls.filter((c) => c.args[0] === 'send');
+    expect(sendCalls.length).toBe(1);
 
     delete process.env.C2C_PERMISSION_TIMEOUT_MS;
   });
