@@ -134,13 +134,17 @@ describe('c2c plugin unit tests', () => {
     fakeSpoolState.data = null;
     process.env.C2C_MCP_SESSION_ID = 'test-session';
     process.env.C2C_MCP_BROKER_ROOT = '/tmp/broker';
-    delete process.env.C2C_PLUGIN_DELIVER_ON_IDLE;
+    // Idle-only mode: suppress the background monitor/poll loop so that
+    // spawnMonitor() does not consume spawn queue entries before drainInbox()
+    // can use them. These unit tests drive delivery via event callbacks.
+    process.env.C2C_PLUGIN_DELIVER_ON_IDLE = '1';
   });
 
   afterEach(() => {
     vi.useRealTimers();
     delete process.env.C2C_MCP_SESSION_ID;
     delete process.env.C2C_MCP_BROKER_ROOT;
+    delete process.env.C2C_PLUGIN_DELIVER_ON_IDLE;
   });
 
   it('formats message as correct c2c envelope', async () => {
@@ -171,7 +175,10 @@ describe('c2c plugin unit tests', () => {
     ctx.client.session.promptAsync.mockRejectedValueOnce(new Error('transient'));
 
     const hooks = await C2CDelivery(ctx as any);
-    await fireEvent(hooks, sessionCreated('root'));
+    // Fire session.idle directly — idle handler sets activeSessionId on first fire
+    // so session.created is not required. Avoids double-delivery (session.created
+    // also calls deliverMessages, which would consume the spooled message before we
+    // can assert on intermediate spool state).
     await fireEvent(hooks, sessionIdle('root'));
 
     // First delivery failed — message should be spooled.
