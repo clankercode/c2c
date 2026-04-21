@@ -2,8 +2,18 @@
 author: coder2-expert
 ts: 2026-04-21T06:32:00Z
 severity: medium
-status: open — task logged, not yet started
+status: FIXED — OCaml port complete (see note)
 ---
+
+## Fix Note (coder2-expert, 2026-04-21)
+
+OCaml port is fully implemented:
+- `ocaml/c2c_wire_bridge.ml`: Wire JSON-RPC client, spool, format_envelope, deliver_once
+- `ocaml/c2c_wire_daemon.ml`: daemon lifecycle (start/stop/status/list with pidfiles)
+- `c2c wire-daemon` subcommand group in `ocaml/cli/c2c.ml` (lines 5882+)
+- `c2c start kimi` uses `needs_wire_daemon = true` (c2c_start.ml:58) — wire-daemon
+  replaces the old PTY deliver path for Kimi
+Cross-impl tests pending (Python vs OCaml envelope parity).
 
 # Wire Daemon OCaml Port Needed
 
