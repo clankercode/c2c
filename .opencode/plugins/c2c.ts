@@ -1154,21 +1154,19 @@ const C2CDelivery: Plugin = async (ctx) => {
         pluginState.root_opencode_session_id = sid;
         writeStatePatch({ root_opencode_session_id: sid });
         await log(`auto-kickoff: created session ${sid} — delivering kickoff prompt`);
-        // Drive the TUI to focus the new session. The TuiPlugin SDK surface
-        // has no event bus (confirmed in @opencode-ai/plugin tui.d.ts), so we
-        // instead POST tui.session.select to the running opencode's HTTP API.
-        // The runtime accepts a broader event set than the SDK types expose.
+        // Drive the TUI to focus the new session via the SDK client (not raw fetch).
+        // ctx.serverUrl returns a fallback port 4096 when the server-proxy hasn't
+        // set its URL in the plugin's closure — use ctx.client.tui.publish() instead,
+        // which uses the SDK's in-process transport and always reaches the right server.
+        // tui.session.select is valid at the HTTP level but not in the SDK union type,
+        // so we cast to any. See binary analysis finding 2026-04-21T19-24-00Z.
         try {
-          const publishUrl = new URL("/tui/publish", ctx.serverUrl);
-          await log(`auto-kickoff: tui.session.select POST to ${publishUrl.toString()}`);
-          const resp = await fetch(publishUrl, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ type: "tui.session.select", properties: { sessionID: sid } }),
+          const result = await (ctx.client.tui as any).publish({
+            body: { type: "tui.session.select", properties: { sessionID: sid } },
           });
-          await log(`auto-kickoff: tui.session.select posted (status=${resp.status})`);
+          await log(`auto-kickoff: tui.session.select SDK publish ok: ${JSON.stringify(result?.data ?? result)}`);
         } catch (err) {
-          await log(`auto-kickoff: tui.session.select POST failed: ${err}`);
+          await log(`auto-kickoff: tui.session.select SDK publish failed: ${err}`);
         }
         await deliverKickoffPrompt(sid);
       } catch (err) {
