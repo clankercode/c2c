@@ -11,11 +11,9 @@ export async function sendMessage(
   }
   try {
     const args = isRoom
-      ? ["room", "send", toAlias, message]
-      : ["send", toAlias, message];
-    const env: Record<string, string> = {};
-    if (myAlias) env["C2C_MCP_SESSION_ID"] = myAlias;
-    const result = await Command.create("c2c", args, { env }).execute();
+      ? (myAlias ? ["room", "send", "--from", myAlias, toAlias, message] : ["room", "send", toAlias, message])
+      : (myAlias ? ["send", "--from", myAlias, toAlias, message] : ["send", toAlias, message]);
+    const result = await Command.create("c2c", args).execute();
     if (result.code !== 0) {
       return { ok: false, error: result.stderr || `exit ${result.code}` };
     }
@@ -29,7 +27,6 @@ export async function registerAlias(
   alias: string,
 ): Promise<{ ok: boolean; error?: string }> {
   try {
-    // Use alias as session_id so `c2c send` can resolve from_alias via C2C_MCP_SESSION_ID
     const result = await Command.create("c2c", [
       "register", "--alias", alias, "--session-id", alias,
     ]).execute();
