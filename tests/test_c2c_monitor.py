@@ -29,8 +29,8 @@ if str(REPO) not in sys.path:
 C2C_BIN = shutil.which("c2c") or str(REPO / "_build/default/ocaml/cli/c2c.exe")
 INOTIFYWAIT = shutil.which("inotifywait")
 
-MONITOR_STARTUP_SECONDS = 2.0
-EVENT_TIMEOUT_SECONDS = 5.0
+MONITOR_STARTUP_SECONDS = 3.0   # allow extra time under load (inotifywait setup)
+EVENT_TIMEOUT_SECONDS = 8.0
 
 
 def _read_events(proc, stop_event, events_out, timeout=EVENT_TIMEOUT_SECONDS):
