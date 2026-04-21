@@ -347,7 +347,7 @@ module Broker = struct
         if not (Sys.file_exists ("/proc/" ^ string_of_int pid)) then Dead
         else
           (match reg.pid_start_time with
-           | None -> Alive
+           | None -> Unknown
            | Some stored ->
                (match read_pid_start_time pid with
                 | Some current -> if current = stored then Alive else Dead
@@ -1374,17 +1374,19 @@ module Broker = struct
   let prune_rooms t =
     with_registry_lock t (fun () ->
       let regs = load_registrations t in
-      (* Use tristate liveness: treat Unknown (pid=None, no /proc check possible)
-         the same as Dead for eviction purposes.  registration_is_alive collapses
-         Unknown→Alive for backward-compat with sweep/enqueue, but in prune_rooms
-         we want to clear out pidless zombie room members too — they cannot be
-         verified alive and their inboxes accumulate dead fan-out messages. *)
+      (* Use tristate liveness: treat Unknown as Dead for pidless rows (pid=None),
+         since they cannot be verified alive and accumulate dead fan-out messages.
+         However, Unknown rows with a set PID (pid_start_time missing but process
+         may exist) are treated conservatively — do NOT evict, since the process
+         might still be alive. registration_is_alive collapses Unknown→Alive for
+         backward-compat with sweep/enqueue delivery. *)
       let dead_regs =
         regs
         |> List.filter (fun r ->
                match registration_liveness_state r with
                | Alive -> false
-               | Dead | Unknown -> true)
+               | Dead -> true
+               | Unknown -> Option.is_none r.pid)
       in
       let orphan_members = orphan_room_members t regs in
       let dead_sids =
@@ -2066,13 +2068,16 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
          confused or malicious agents from hijacking another agent's alias.
          Use registration_liveness_state (tristate) so that pidless/Unknown entries
          do NOT block — registration_is_alive returns true for pid=None, which would
-         permanently strand an alias held by a stale pidless row. *)
+         permanently strand an alias held by a stale pidless row. We also block when
+         pid is set and process exists but pid_start_time is missing (conservative:
+         can't verify PID reuse, so protect the alias). *)
       let alias_hijack_conflict =
         List.find_opt
           (fun reg ->
             reg.alias = alias
             && reg.session_id <> session_id
-            && Broker.registration_liveness_state reg = Broker.Alive)
+            && Option.is_some reg.pid
+            && Broker.registration_is_alive reg)
           (Broker.list_registrations broker)
       in
       (match alias_hijack_conflict with
