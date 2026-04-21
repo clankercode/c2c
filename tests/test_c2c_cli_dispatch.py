@@ -184,6 +184,7 @@ class C2CCLIDispatchTests(unittest.TestCase):
                 "inbox_files": 0,
                 "live": 2,
                 "legacy_pidless": 0,
+                "provisional_expired": 0,
                 "dead": 0,
                 "orphan_inboxes": 0,
                 "dropped_if_swept": 0,
@@ -198,6 +199,7 @@ class C2CCLIDispatchTests(unittest.TestCase):
             ],
             "duplicate_aliases": {},
             "dead_regs": [],
+            "provisional_expired_regs": [],
             "nonempty_content_at_risk": [],
         }
 
