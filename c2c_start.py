@@ -805,17 +805,27 @@ def cmd_start(
             print(f"error: {msg}", file=sys.stderr)
         return 1
 
-    # Validate --session-id before any side effects.
+    # Validate --session-id before any side effects. OpenCode accepts ses_* IDs;
+    # claude/codex expect a UUID.
     if session_id_override is not None:
-        try:
-            uuid.UUID(session_id_override)
-        except ValueError:
-            msg = "--session-id must be a valid UUID, e.g. 550e8400-e29b-41d4-a716-446655440000"
-            if json_out:
-                print(json.dumps({"ok": False, "error": msg}))
-            else:
-                print(f"error: {msg}", file=sys.stderr)
-            return 1
+        if client == "opencode":
+            if not session_id_override.startswith("ses"):
+                msg = "--session-id for opencode must be a ses_* session ID (e.g. ses_abc123)"
+                if json_out:
+                    print(json.dumps({"ok": False, "error": msg}))
+                else:
+                    print(f"error: {msg}", file=sys.stderr)
+                return 1
+        else:
+            try:
+                uuid.UUID(session_id_override)
+            except ValueError:
+                msg = "--session-id must be a valid UUID, e.g. 550e8400-e29b-41d4-a716-446655440000"
+                if json_out:
+                    print(json.dumps({"ok": False, "error": msg}))
+                else:
+                    print(f"error: {msg}", file=sys.stderr)
+                return 1
 
     # Check for duplicate running instance.
     pid = _read_pid(_outer_pid_path(name))
@@ -1038,7 +1048,7 @@ subcommands:
     sub.add_argument("-n", "--name", default=None)
     sub.add_argument("--bin", default=None, help="custom binary path or name to launch")
     sub.add_argument("--alias", default=None, help="custom alias (defaults to instance name)")
-    sub.add_argument("--session-id", default=None, help="explicit session UUID (overrides auto-generated)")
+    sub.add_argument("-s", "--session-id", default=None, help="explicit session ID — UUID for claude/codex, ses_* for opencode (overrides auto-generated)")
     parsed, remainder = sub.parse_known_args(args.args)
     # strip leading '--' separator if present
     if remainder and remainder[0] == "--":

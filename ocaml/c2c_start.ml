@@ -1061,13 +1061,21 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
        client (String.concat ", " (List.sort String.compare supported_clients));
      exit 1);
 
-  (* Validate --session-id *)
+  (* Validate --session-id. OpenCode accepts ses_* session IDs from its TUI;
+     claude/codex/other clients expect a UUID. *)
   (match session_id_override with
    | None -> ()
+   | Some sid when client = "opencode" ->
+       if not (String.length sid >= 3 && String.sub sid 0 3 = "ses") then begin
+         Printf.eprintf "error: --session-id for opencode must be a ses_* session ID (e.g. ses_abc123)\n%!";
+         exit 1
+       end
    | Some sid ->
-       (try ignore (Uuidm.of_string sid) with _ ->
-         Printf.eprintf "error: --session-id must be a valid UUID, e.g. 550e8400-e29b-41d4-a716-446655440000\n%!";
-         exit 1));
+       (match Uuidm.of_string sid with
+        | Some _ -> ()
+        | None ->
+            Printf.eprintf "error: --session-id must be a valid UUID, e.g. 550e8400-e29b-41d4-a716-446655440000\n%!";
+            exit 1));
 
   let inst_dir = instance_dir name in
   (match read_pid (outer_pid_path name) with
@@ -1104,6 +1112,24 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
         let bo = if binary_override = None then None else binary_override in
         let ao = if alias_override = None then Some ex.alias else alias_override in
         let ea = if extra_args = [] then ex.extra_args else extra_args in
+        (* For OpenCode: prefer the ses_* session ID captured by the plugin
+           in opencode-session.txt over the UUID stored in instance config.
+           The plugin writes this file when it first sees a session.created
+           event so that `c2c start opencode -n <name>` can resume the exact
+           conversation on the next launch. *)
+        let opencode_session_file = instance_dir name // "opencode-session.txt" in
+        let ses_id_from_file =
+          if client = "opencode" && Sys.file_exists opencode_session_file then
+            (try
+               let ic = open_in opencode_session_file in
+               let line = input_line ic in
+               close_in ic;
+               let s = String.trim line in
+               (* Accept only ses_* IDs — plugin guarantees this, but guard anyway. *)
+               if String.length s >= 3 && String.sub s 0 3 = "ses" then Some s else None
+             with _ -> None)
+          else None
+        in
         (* Validate saved resume_session_id is a valid UUID; if not (e.g. corrupted
            by an earlier bug that stored the instance name), generate a fresh one. *)
         let rs_valid =
@@ -1115,9 +1141,12 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
           match session_id_override with
           | Some s -> Some s
           | None ->
-              (match rs_valid with
-               | Some v -> Some v
-               | None -> Some (Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())))
+              (match ses_id_from_file with
+               | Some v -> Some v   (* OpenCode ses_* wins over stored UUID *)
+               | None ->
+                   (match rs_valid with
+                    | Some v -> Some v
+                    | None -> Some (Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()))))
         in
         (bo, ao, ea, rs, ex.broker_root)
     | None ->
