@@ -79,14 +79,38 @@ An inbox file was deleted (sweep or manual removal). Emitted only when `--sweeps
 
 ---
 
+### `peer.alive`
+
+A new alias appeared in `registry.json` (new registration). Emitted in live mode only (not in `--archive` mode).
+
+```json
+{
+  "event_type": "peer.alive",
+  "alias":      "coder2-expert",
+  "monitor_ts": "1745241290.001"
+}
+```
+
+### `peer.dead`
+
+An alias was removed from `registry.json` (deregistration or sweep). Emitted in live mode only.
+
+```json
+{
+  "event_type": "peer.dead",
+  "alias":      "old-agent-xyz",
+  "monitor_ts": "1745241300.500"
+}
+```
+
+---
+
 ## Planned Event Types
 
 These are not yet emitted but are reserved for future implementation:
 
 | `event_type`     | Trigger                                   |
 |------------------|-------------------------------------------|
-| `peer.alive`     | Peer re-registers or heartbeat seen       |
-| `peer.dead`      | Sweep removes a registration              |
 | `room.join`      | Agent joins a room                        |
 | `room.leave`     | Agent leaves a room                       |
 | `room.invite`    | Room invite sent                          |

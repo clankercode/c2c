@@ -2199,6 +2199,31 @@ let monitor_cmd =
       | Some a -> Some a
       | None -> Sys.getenv_opt "C2C_MCP_SESSION_ID"
     in
+    let registry_path = Filename.concat broker_root "registry.json" in
+    (* Read aliases from registry.json — returns (alias, session_id) pairs. *)
+    let read_registry_aliases () =
+      try
+        let ic = open_in registry_path in
+        let content = really_input_string ic (in_channel_length ic) in
+        close_in ic;
+        match Yojson.Safe.from_string content with
+        | `Assoc fields ->
+            (match List.assoc_opt "registrations" fields with
+             | Some (`List regs) ->
+                 List.filter_map (fun r -> match r with
+                   | `Assoc rfields ->
+                       (match List.assoc_opt "alias" rfields,
+                              List.assoc_opt "session_id" rfields with
+                        | Some (`String a), Some (`String s) -> Some (a, s)
+                        | _ -> None)
+                   | _ -> None) regs
+             | _ -> [])
+        | _ -> []
+      with _ -> []
+    in
+    (* Snapshot: alias → session_id. Used to diff registry changes. *)
+    let known_peers : (string, string) Hashtbl.t = Hashtbl.create 16 in
+    List.iter (fun (a, s) -> Hashtbl.replace known_peers a s) (read_registry_aliases ());
     (* Archive mode watches <broker_root>/archive/*.jsonl (append-only).
        Each drained message is a full JSON object on its own line. We track
        per-file read offsets so we only emit newly-appended lines. This avoids
@@ -2387,6 +2412,41 @@ let monitor_cmd =
                       end else
                         emit_messages ~my_alias ~all ~full_body msgs)
                end
+             end else if filename = "registry.json" && not archive then begin
+               (* Registry changed — diff against snapshot and emit peer events. *)
+               let new_regs = read_registry_aliases () in
+               let new_tbl : (string, string) Hashtbl.t = Hashtbl.create 16 in
+               List.iter (fun (a, s) -> Hashtbl.replace new_tbl a s) new_regs;
+               let ts () = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+               (* Emit peer.alive for any alias not previously known. *)
+               List.iter (fun (a, _s) ->
+                 if not (Hashtbl.mem known_peers a) then begin
+                   if json then begin
+                     print_string (Yojson.Safe.to_string
+                       (`Assoc [ "event_type", `String "peer.alive"
+                               ; "alias",      `String a
+                               ; "monitor_ts", `String (ts ()) ]));
+                     print_newline ()
+                   end else
+                     Printf.printf "%s 🟢  PEER   %s (registered)\n%!" (now_hms ()) a
+                 end
+               ) new_regs;
+               (* Emit peer.dead for any alias no longer present. *)
+               Hashtbl.iter (fun a _s ->
+                 if not (Hashtbl.mem new_tbl a) then begin
+                   if json then begin
+                     print_string (Yojson.Safe.to_string
+                       (`Assoc [ "event_type", `String "peer.dead"
+                               ; "alias",      `String a
+                               ; "monitor_ts", `String (ts ()) ]));
+                     print_newline ()
+                   end else
+                     Printf.printf "%s 🔴  PEER   %s (deregistered)\n%!" (now_hms ()) a
+                 end
+               ) known_peers;
+               (* Update snapshot. *)
+               Hashtbl.reset known_peers;
+               List.iter (fun (a, s) -> Hashtbl.replace known_peers a s) new_regs
              end
          | _ -> ()
         )
