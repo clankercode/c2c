@@ -36,6 +36,28 @@ _LEAK_PATTERNS: list[tuple[str, str, int]] = [
 ]
 
 
+def _read_cmdline(pid: int) -> str:
+    try:
+        raw = open(f"/proc/{pid}/cmdline", "rb").read()
+    except OSError:
+        return ""
+    return raw.replace(b"\0", b" ").decode("utf-8", errors="replace").strip()
+
+
+def _is_real_mcp_server_process(pid: int) -> bool:
+    cmdline = _read_cmdline(pid)
+    if not cmdline:
+        return False
+    parts = cmdline.split()
+    if not parts:
+        return False
+    exe = os.path.basename(parts[0])
+    if exe != "c2c_mcp_server.exe":
+        return False
+    # Exclude dune/opam/bash wrapper/build jobs that merely mention the target path.
+    return not any(part in {"dune", "opam", "bash", "sh"} for part in parts[:2])
+
+
 def _pgrep_pids(pattern: str) -> FrozenSet[int]:
     """Return frozenset of PIDs matching *pattern* via pgrep -f."""
     try:
@@ -43,7 +65,10 @@ def _pgrep_pids(pattern: str) -> FrozenSet[int]:
             ["pgrep", "-f", pattern],
             capture_output=True, text=True, check=False
         ).stdout
-        return frozenset(int(p) for p in out.split() if p.strip().isdigit())
+        pids = frozenset(int(p) for p in out.split() if p.strip().isdigit())
+        if pattern == r"c2c_mcp_server\.exe":
+            return frozenset(pid for pid in pids if _is_real_mcp_server_process(pid))
+        return pids
     except FileNotFoundError:
         return frozenset()
 

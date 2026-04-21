@@ -962,5 +962,77 @@ class C2CStartExit109RegressionTests(unittest.TestCase):
                         f"no exit_code=109 in deaths.jsonl: {entries}")
 
 
+@_CLI_SKIP
+class C2CStartRegistryCleanupRegressionTests(unittest.TestCase):
+    """Regression coverage for clean-exit registry cleanup in OCaml c2c start."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self.broker_root = self.tmp_path / "broker"
+        self.broker_root.mkdir(parents=True)
+        self.instances_dir = self.tmp_path / "instances"
+        self.instances_dir.mkdir(parents=True)
+        self.stub = self.tmp_path / "opencode"
+        self.stub.write_text("#!/bin/sh\nexit 0\n")
+        self.stub.chmod(0o755)
+        self.name = "clean-exit-registry"
+        registry = [
+            {
+                "session_id": self.name,
+                "alias": self.name,
+                "pid": 4242,
+                "pid_start_time": 9999,
+                "registered_at": 1234.5,
+            },
+            {
+                "session_id": "peer",
+                "alias": "peer",
+                "pid": 5252,
+                "pid_start_time": 8888,
+            },
+        ]
+        registry_path = self.broker_root / "registry.json"
+        registry_path.write_text(json.dumps(registry), encoding="utf-8")
+        registry_path.chmod(0o600)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_clean_exit_strips_only_managed_pid_fields_and_preserves_mode(self):
+        from conftest import spawn_tracked
+
+        env = {
+            **os.environ,
+            "PATH": str(self.tmp_path) + ":" + os.environ.get("PATH", ""),
+            "C2C_MCP_BROKER_ROOT": str(self.broker_root),
+            "C2C_INSTANCES_DIR": str(self.instances_dir),
+        }
+        proc = spawn_tracked(
+            [str(CLI_EXE), "start", "opencode", "-n", self.name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        stdout, stderr = proc.communicate(timeout=CLI_TIMEOUT)
+        self.assertEqual(proc.returncode, 0, f"stdout={stdout!r} stderr={stderr!r}")
+
+        registry_path = self.broker_root / "registry.json"
+        mode = registry_path.stat().st_mode & 0o777
+        self.assertEqual(mode, 0o600)
+
+        registrations = json.loads(registry_path.read_text(encoding="utf-8"))
+        managed = next(r for r in registrations if r["session_id"] == self.name)
+        self.assertNotIn("pid", managed)
+        self.assertNotIn("pid_start_time", managed)
+        self.assertEqual(managed["alias"], self.name)
+        self.assertEqual(managed["registered_at"], 1234.5)
+
+        peer = next(r for r in registrations if r["session_id"] == "peer")
+        self.assertEqual(peer["pid"], 5252)
+        self.assertEqual(peer["pid_start_time"], 8888)
+
+
 if __name__ == "__main__":
     unittest.main()

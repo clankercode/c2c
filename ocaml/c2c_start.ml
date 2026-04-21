@@ -104,6 +104,65 @@ let rec mkdir_p dir =
     with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
   end
 
+let with_file_lock (path : string) (f : unit -> 'a) : 'a =
+  let fd = Unix.openfile path [ Unix.O_RDWR; Unix.O_CREAT ] 0o644 in
+  Fun.protect
+    ~finally:(fun () ->
+      (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+      (try Unix.close fd with _ -> ()))
+    (fun () ->
+      Unix.lockf fd Unix.F_LOCK 0;
+      f ())
+
+let write_json_file_atomic (path : string) (json : Yojson.Safe.t) : unit =
+  let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+  let oc =
+    open_out_gen [ Open_wronly; Open_creat; Open_trunc; Open_text ] 0o600 tmp
+  in
+  let cleanup_tmp () = try Unix.unlink tmp with _ -> () in
+  (try
+     Fun.protect
+       ~finally:(fun () -> try close_out oc with _ -> ())
+       (fun () -> Yojson.Safe.to_channel oc json)
+   with e ->
+     cleanup_tmp ();
+     raise e);
+  try Unix.rename tmp path
+  with e ->
+    cleanup_tmp ();
+    raise e
+
+let clear_registration_pid ~(broker_root : string) ~(session_id : string) : unit =
+  let reg_path = broker_root // "registry.json" in
+  let lock_path = broker_root // "registry.json.lock" in
+  if Sys.file_exists reg_path then
+    with_file_lock lock_path (fun () ->
+      let json = try Yojson.Safe.from_file reg_path with _ -> `List [] in
+      let updated =
+        match json with
+        | `List regs ->
+            `List
+              (List.map
+                 (fun r ->
+                   match r with
+                   | `Assoc fields ->
+                       let sid =
+                         match List.assoc_opt "session_id" fields with
+                         | Some (`String s) -> s
+                         | _ -> ""
+                       in
+                       if sid = session_id then
+                         `Assoc
+                           (List.filter
+                              (fun (k, _) -> k <> "pid" && k <> "pid_start_time")
+                              fields)
+                       else r
+                   | _ -> r)
+                 regs)
+        | _ -> json
+      in
+      write_json_file_atomic reg_path updated)
+
 let instance_dir name = instances_dir // name
 let config_path name = instance_dir name // "config.json"
 let meta_json_path name = instance_dir name // "meta.json"
@@ -753,29 +812,7 @@ let run_outer_loop ~(name : string) ~(client : string)
            Done inline (not via C2c_mcp.Broker) to avoid a compile-time
            cycle: c2c_mcp.mli re-exports C2c_start, so C2c_start cannot
            depend on C2c_mcp. *)
-        (try
-           let reg_path = Filename.concat broker_root "registry.json" in
-           if Sys.file_exists reg_path then begin
-             let json = Yojson.Safe.from_file reg_path in
-             let updated = match json with
-               | `List regs ->
-                   `List (List.map (fun r ->
-                     match r with
-                     | `Assoc fields ->
-                         let sid = match List.assoc_opt "session_id" fields with
-                           | Some (`String s) -> s | _ -> "" in
-                         if sid = name then
-                           `Assoc (List.filter (fun (k, _) ->
-                             k <> "pid" && k <> "pid_start_time") fields)
-                         else r
-                     | _ -> r) regs)
-               | _ -> json
-             in
-             let tmp = reg_path ^ ".clear_pid.tmp" in
-             Yojson.Safe.to_file tmp updated;
-             Unix.rename tmp reg_path
-           end
-         with _ -> ());
+        (try clear_registration_pid ~broker_root ~session_id:name with _ -> ());
         code
       in
 
