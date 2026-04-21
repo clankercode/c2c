@@ -114,8 +114,12 @@ class RelayHandler(BaseHTTPRequestHandler):
     # --- routing ---
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/health":
-            self._ok({"ok": True})
+        if self.path in ("/health", "/list_rooms"):
+            # Unauthenticated read-only routes (consistent with OCaml relay auth_decision).
+            if self.path == "/health":
+                self._ok({"ok": True})
+            else:
+                self._ok({"ok": True, "rooms": self.server.relay.list_rooms()})
             return
         if not self._authorized():
             self._err(401, "unauthorized", "missing or invalid Bearer token")
@@ -124,20 +128,22 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._handle_list({})
         elif self.path == "/dead_letter":
             self._ok({"ok": True, "dead_letter": self.server.relay.dead_letter()})
-        elif self.path == "/list_rooms":
-            self._ok({"ok": True, "rooms": self.server.relay.list_rooms()})
         elif self.path == "/gc":
             self._ok(self.server.relay.gc())
         else:
             self._err(404, "not_found", f"unknown endpoint: {self.path}")
 
     def do_POST(self) -> None:  # noqa: N802
-        if not self._authorized():
-            self._err(401, "unauthorized", "missing or invalid Bearer token")
-            return
         body = self._read_json()
         if body is None:
             self._err(400, "bad_request", "request body is not valid JSON")
+            return
+        # /room_history is unauthenticated read-only (consistent with OCaml relay auth_decision).
+        if self.path == "/room_history":
+            self._handle_room_history(body)
+            return
+        if not self._authorized():
+            self._err(401, "unauthorized", "missing or invalid Bearer token")
             return
         routes = {
             "/register": self._handle_register,
@@ -150,7 +156,6 @@ class RelayHandler(BaseHTTPRequestHandler):
             "/join_room": self._handle_join_room,
             "/leave_room": self._handle_leave_room,
             "/send_room": self._handle_send_room,
-            "/room_history": self._handle_room_history,
         }
         handler = routes.get(self.path)
         if handler is None:
