@@ -2130,6 +2130,12 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
         | Some pid -> Some pid
         | None -> Some (Unix.getppid ())
       in
+      (* Detect whether this is a brand-new registration (no existing row for
+         this session_id). Used below to emit peer_register broadcast. *)
+      let is_new_registration =
+        not (List.exists (fun r -> r.session_id = session_id)
+               (Broker.list_registrations broker))
+      in
       (* Detect alias rename before registering so we can notify rooms.
          A rename is genuine when the same process (matched by PID) re-registers
          under a new alias.  When both the old and new registration have a real
@@ -2227,14 +2233,16 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                       ~new_alias:alias)
                with _ -> ())
              rooms_to_notify;
-           (* Fan out peer-renamed notification to rooms the session was in. *)
+           (* Fan out peer-renamed notification to rooms the session was in.
+              Message is human-readable first so agents see it naturally;
+              JSON suffix lets tooling parse structured metadata. *)
            (match old_alias_opt with
             | None -> ()
             | Some old_alias ->
                 let content =
                   Printf.sprintf
-                    {|{"type":"peer_renamed","old_alias":"%s","new_alias":"%s"}|}
-                    old_alias alias
+                    "%s renamed to %s {\"type\":\"peer_renamed\",\"old_alias\":\"%s\",\"new_alias\":\"%s\"}"
+                    old_alias alias old_alias alias
                 in
                 List.iter
                   (fun room_id ->
@@ -2244,6 +2252,38 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                             ~room_id ~content)
                      with _ -> ()))
                   rooms_to_notify);
+           (* Emit peer_register event when a brand-new session registers.
+              Broadcasts to swarm-lounge (the default social room) and any
+              other rooms the session is already in (edge case: manual join
+              before explicit register). This is distinct from the join event
+              that fires when auto_join_rooms_startup runs — that event says
+              "alias joined room <id>"; this one says "alias registered" and
+              fires even if the session never joins any rooms. *)
+           (if is_new_registration then begin
+             let social_rooms =
+               let auto_rooms =
+                 match Sys.getenv_opt "C2C_MCP_AUTO_JOIN_ROOMS" with
+                 | Some v ->
+                     String.split_on_char ',' v
+                     |> List.map String.trim
+                     |> List.filter (fun s -> s <> "" && Broker.valid_room_id s)
+                 | None -> []
+               in
+               (* Always include swarm-lounge; deduplicate *)
+               let all = "swarm-lounge" :: auto_rooms in
+               List.sort_uniq String.compare all
+             in
+             let content =
+               Printf.sprintf
+                 "%s registered {\"type\":\"peer_register\",\"alias\":\"%s\"}"
+                 alias alias
+             in
+             List.iter
+               (fun room_id ->
+                 try ignore (Broker.send_room broker ~from_alias:"c2c-system" ~room_id ~content)
+                 with _ -> ())
+               social_rooms
+           end);
            (* Auto-redeliver any dead-letter messages addressed to this session.
               This recovers messages that were swept while the managed harness was
               between outer-loop iterations. *)

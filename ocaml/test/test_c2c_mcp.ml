@@ -1246,7 +1246,11 @@ let test_tools_call_register_alias_rename_notifies_rooms () =
             (List.length history);
           let event = List.hd (List.rev history) in
           check string "rename event sender" "c2c-system" event.rm_from_alias;
-          let parsed = Yojson.Safe.from_string event.rm_content in
+          (* Content is "old renamed to new {...json...}"; extract JSON suffix *)
+          let json_start = String.index event.rm_content '{' in
+          let json_str = String.sub event.rm_content json_start
+            (String.length event.rm_content - json_start) in
+          let parsed = Yojson.Safe.from_string json_str in
           let open Yojson.Safe.Util in
           check string "event type" "peer_renamed"
             (parsed |> member "type" |> to_string);
@@ -4422,7 +4426,10 @@ let test_register_rename_fans_out_peer_renamed_notification () =
               (fun m ->
                 let open Yojson.Safe in
                 try
-                  let j = from_string m.C2c_mcp.rm_content in
+                  (* Content is "old renamed to new {...json...}"; extract JSON suffix *)
+                  let s = m.C2c_mcp.rm_content in
+                  let idx = String.index s '{' in
+                  let j = from_string (String.sub s idx (String.length s - idx)) in
                   Util.(member "type" j |> to_string) = "peer_renamed"
                   && Util.(member "old_alias" j |> to_string) = "old-alias"
                   && Util.(member "new_alias" j |> to_string) = "new-alias"
@@ -4438,6 +4445,63 @@ let test_register_rename_fans_out_peer_renamed_notification () =
           check (list string) "room member alias updated after rename"
             [ "new-alias" ]
             (List.map (fun m -> m.C2c_mcp.rm_alias) members)))
+
+let test_register_new_peer_broadcasts_peer_register_to_swarm_lounge () =
+  (* When a brand-new session registers, a peer_register event should
+     be broadcast to swarm-lounge so existing members are notified. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Existing peer in swarm-lounge *)
+      C2c_mcp.Broker.register broker ~session_id:"session-existing"
+        ~alias:"existing-peer" ~pid:None ~pid_start_time:None;
+      ignore
+        (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
+           ~alias:"existing-peer" ~session_id:"session-existing");
+      ignore (C2c_mcp.Broker.drain_inbox broker ~session_id:"session-existing");
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-new-peer";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "new-peer";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 1)
+              ; ("method", `String "tools/call")
+              ; ("params",
+                 `Assoc
+                   [ ("name", `String "register")
+                   ; ("arguments", `Assoc [ ("alias", `String "new-peer") ])
+                   ])
+              ]
+          in
+          ignore (Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request));
+          let lounge_history =
+            C2c_mcp.Broker.read_room_history broker ~room_id:"swarm-lounge"
+              ~limit:20 ()
+          in
+          let found_register =
+            List.exists
+              (fun m ->
+                let open Yojson.Safe in
+                try
+                  let s = m.C2c_mcp.rm_content in
+                  let idx = String.index s '{' in
+                  let j = from_string (String.sub s idx (String.length s - idx)) in
+                  Util.(member "type" j |> to_string) = "peer_register"
+                  && Util.(member "alias" j |> to_string) = "new-peer"
+                with _ -> false)
+              lounge_history
+          in
+          check bool "peer_register in swarm-lounge history" true found_register;
+          let existing_inbox =
+            C2c_mcp.Broker.read_inbox broker ~session_id:"session-existing"
+          in
+          check (list string) "existing peer notified via inbox fanout"
+            [ "new-peer registered {\"type\":\"peer_register\",\"alias\":\"new-peer\"}" ]
+            (List.map (fun m -> m.C2c_mcp.content) existing_inbox)))
 
 let test_join_room_updates_session_id_on_alias_rejoin () =
   (* When the same alias joins a room twice with different session_ids
@@ -5089,6 +5153,8 @@ let () =
              test_room_history_limit_one_returns_last
          ; test_case "register rename fans out peer_renamed notification" `Quick
              test_register_rename_fans_out_peer_renamed_notification
+         ; test_case "new peer registration broadcasts peer_register to swarm-lounge" `Quick
+             test_register_new_peer_broadcasts_peer_register_to_swarm_lounge
          ; test_case "join_room updates session_id when alias rejoins with new session" `Quick
              test_join_room_updates_session_id_on_alias_rejoin
          ; test_case "join_room updates alias when session rejoins with new alias" `Quick
