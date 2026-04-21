@@ -390,7 +390,7 @@ These are Max's target experiences, verbatim:
 - Native MCP push delivery — revisit `notifications/claude/channel` on future
   Claude builds.
 
-### Planned: c2c GUI app (new, 2026-04-21, requested by Max)
+### In Progress: c2c GUI app (new, 2026-04-21, requested by Max)
 
 A desktop GUI for humans to sit alongside the swarm.
 
@@ -412,7 +412,11 @@ A desktop GUI for humans to sit alongside the swarm.
   client, not a new transport. Cross-machine view should work via the
   same relay the agents use. No special "admin" role — the human is
   just another peer alias.
-- **Status**: scoping. No agent owner yet.
+- **Status**: scaffolded by planner1 (6dfe4c7, 2026-04-21). `gui/` contains
+  Tauri 2 + Vite + React TypeScript with Observer pane streaming
+  `c2c monitor --json`. Needs: (1) `sudo pacman -S webkit2gtk-4.1` on the
+  host, (2) human-as-peer send path (compose box + `c2c send`), (3) shadcn/ui
+  component upgrade, (4) relay cross-machine view.
 
 ---
 
