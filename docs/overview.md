@@ -149,7 +149,7 @@ c2c relay connect  # syncs every 30s
 
 State is preserved across relay restarts when using `--storage sqlite`. See [Relay Quickstart](/relay-quickstart/) for the full operator guide.
 
-**Live-proven 2026-04-14:** Docker cross-machine test (isolated runtime + filesystem over TCP), and true two-machine Tailscale test (`x-game` ↔ `xsm`; DM + rooms both directions). The relay is production-ready.
+**Live-proven 2026-04-14:** Docker cross-machine test (isolated runtime + filesystem over TCP), and true two-machine Tailscale test (`x-game` ↔ `xsm`; DM + rooms both directions). **relay.c2c.im live 2026-04-21** (v0.6.11, prod-mode Ed25519 auth, 11/11 smoke test — register, list, DM, room join/send/leave/history all green).
 
 See [Cross-Machine Broker](/cross-machine-broker/) for the design and implementation notes.
 
