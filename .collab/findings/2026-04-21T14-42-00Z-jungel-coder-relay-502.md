@@ -29,4 +29,4 @@ Requires Railway dashboard access:
 
 - Railway auth expired for all agents (token revoked)
 - GitHub pushes still work — only Railway deploy is blocked
-- relay.c2c.im down since ~2026-04-22T00:30 UTC
+- relay.c2c.im down since ~2026-04-22T00:30 UTC (~8h and counting)
