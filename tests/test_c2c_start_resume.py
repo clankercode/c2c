@@ -76,17 +76,20 @@ def _run_c2c_start(
 # Tests
 # ---------------------------------------------------------------------------
 
+SES_ID = "ses_test_fixture_abc"
+
+
 def test_resume_ses_id_sets_c2c_opencode_session_id(tmp_path: Path) -> None:
-    """c2c start opencode -s ses_abc → C2C_OPENCODE_SESSION_ID=ses_abc in child env."""
-    fake_bin = _make_env_printer(tmp_path)
+    """c2c start opencode -s ses_* → C2C_OPENCODE_SESSION_ID=<sid> in child env."""
+    fake_bin = _make_env_printer(tmp_path, known_session_id=SES_ID)
     result = _run_c2c_start(
         tmp_path=tmp_path,
         fake_bin_dir=fake_bin.parent,
         instance_name="resume-test",
-        extra_args=["-s", "ses_abc123"],
+        extra_args=["-s", SES_ID],
     )
-    assert "C2C_OPENCODE_SESSION_ID=ses_abc123" in result.stderr, (
-        f"Expected C2C_OPENCODE_SESSION_ID=ses_abc123 in child env.\nstderr:\n{result.stderr[:2000]}"
+    assert f"C2C_OPENCODE_SESSION_ID={SES_ID}" in result.stderr, (
+        f"Expected C2C_OPENCODE_SESSION_ID={SES_ID} in child env.\nstderr:\n{result.stderr[:2000]}"
     )
 
 
@@ -118,30 +121,38 @@ def test_no_session_flag_does_not_set_var(tmp_path: Path) -> None:
     )
 
 
+DEDUP_SES_ID = "ses_dedup_fixture_xyz"
+
+
 def test_session_id_set_correctly_without_duplicates(tmp_path: Path) -> None:
-    """Child env has exactly one C2C_MCP_SESSION_ID and one C2C_OPENCODE_SESSION_ID."""
-    fake_bin = _make_env_printer(tmp_path)
+    """Child env has exactly one C2C_MCP_SESSION_ID and one C2C_OPENCODE_SESSION_ID.
+
+    Regression for build_env duplicate-key bug (0648a87): when running from
+    inside an existing managed session (CLAUDE_SESSION_ID set), the parent's
+    C2C_MCP_SESSION_ID was leaking into the child alongside the intended one.
+    """
+    fake_bin = _make_env_printer(tmp_path, known_session_id=DEDUP_SES_ID)
     result = _run_c2c_start(
         tmp_path=tmp_path,
         fake_bin_dir=fake_bin.parent,
         instance_name="dedup-test",
-        extra_args=["-s", "ses_dedup123"],
+        extra_args=["-s", DEDUP_SES_ID],
     )
     lines = result.stderr.splitlines()
     session_id_lines = [l for l in lines if l.startswith("C2C_MCP_SESSION_ID=")]
     oc_session_lines = [l for l in lines if l.startswith("C2C_OPENCODE_SESSION_ID=")]
 
     assert len(session_id_lines) == 1, (
-        f"Expected exactly 1 C2C_MCP_SESSION_ID in env, got {len(session_id_lines)}:\n"
+        f"Expected exactly 1 C2C_MCP_SESSION_ID (no duplicates), got {len(session_id_lines)}:\n"
         + "\n".join(session_id_lines)
     )
     assert session_id_lines[0] == "C2C_MCP_SESSION_ID=dedup-test", (
         f"Wrong session ID: {session_id_lines[0]}"
     )
     assert len(oc_session_lines) == 1, (
-        f"Expected exactly 1 C2C_OPENCODE_SESSION_ID in env, got {len(oc_session_lines)}:\n"
+        f"Expected exactly 1 C2C_OPENCODE_SESSION_ID, got {len(oc_session_lines)}:\n"
         + "\n".join(oc_session_lines)
     )
-    assert oc_session_lines[0] == "C2C_OPENCODE_SESSION_ID=ses_dedup123", (
+    assert oc_session_lines[0] == f"C2C_OPENCODE_SESSION_ID={DEDUP_SES_ID}", (
         f"Wrong opencode session ID: {oc_session_lines[0]}"
     )
