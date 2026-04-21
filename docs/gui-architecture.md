@@ -205,6 +205,33 @@ export interface PeerDeadEvent {
 
 ---
 
+## Decisions (recorded 2026-04-21, Max)
+
+| Question | Decision |
+|---|---|
+| shadcn/ui component library | **Install it.** Run `bunx shadcn@latest init` from `gui/`, add Tailwind v4. Replaces hand-rolled CSS where components exist. |
+| Relay cross-machine view | **Deferred post-v1.** Not a blocker; existing observer feed covers local broker. |
+| Launch command | `bun run tauri dev` from `gui/` after `bun install`. Requires `c2c` in PATH. |
+| First-run onboarding | **Welcome wizard.** On first launch (no alias configured), show a setup wizard: (1) enter alias, (2) `c2c register <alias>`, (3) confirm registered. Guides user into the swarm without CLI knowledge. |
+
+---
+
+## Welcome Wizard (#66)
+
+On first launch (or if no alias is registered), show a modal wizard instead of
+the main feed:
+
+```
+Step 1: "Choose your alias"   → text input, validate with c2c name rules
+Step 2: "Registering…"        → run `c2c register <alias>`; show stdout
+Step 3: "You're in the swarm" → confirm alias, show peer count, dismiss to main feed
+```
+
+After dismiss, alias is persisted in Tauri app storage so the wizard doesn't
+re-run on next launch.
+
+---
+
 ## Non-goals
 
 - The GUI is NOT an admin console. It has no ability to sweep, delete peers, or

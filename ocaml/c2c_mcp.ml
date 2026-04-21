@@ -2125,12 +2125,19 @@ let auto_register_startup ~broker_root =
          process (e.g. kimi launched from codex) from inheriting a wrong
          C2C_MCP_CLIENT_PID and clobbering the correct liveness entry.
          Legitimate restarts are still allowed because the old PID will be
-         dead by the time the new process starts. *)
+         dead by the time the new process starts.
+         IMPORTANT: exclude pid=None entries. After c2c start cleans up,
+         clear_registration_pid strips the PID so the entry has pid=None.
+         registration_is_alive returns true for pid=None (legacy compat), so
+         without this exclusion Guard 3 would block re-registration on resume
+         (None != Some new_pid triggers the guard incorrectly). A no-pid row
+         cannot "own" an alias — treat it as an empty slot. *)
       let same_session_alive_different_pid =
         List.exists
           (fun reg ->
              reg.session_id = session_id
              && reg.alias = alias
+             && reg.pid <> None
              && Broker.registration_is_alive reg
              && reg.pid <> pid)
           existing
