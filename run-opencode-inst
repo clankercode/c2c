@@ -158,11 +158,14 @@ def _ensure_opencode_plugin(config_path: Path, cwd_path: Path) -> None:
         os.symlink(str(nm_src), str(nm_dest))
     # Also keep the global plugin in sync so manual TUI sessions always load
     # the latest version (global plugin is ~/.config/opencode/plugins/c2c.ts).
+    # Only write if plugin_src is a real plugin (≥1 KB) — prevents a stub or
+    # truncated file from corrupting the global install.
     global_plugins = Path.home() / ".config" / "opencode" / "plugins"
     global_dest = global_plugins / "c2c.ts"
     try:
-        global_plugins.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(str(plugin_src), str(global_dest))
+        if plugin_src.stat().st_size >= 1024:
+            global_plugins.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(plugin_src), str(global_dest))
     except OSError:
         pass  # Non-fatal — global sync is best-effort
 
