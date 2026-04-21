@@ -3965,6 +3965,7 @@ let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt ?(
               ; ("environment", `Assoc
                   [ ("C2C_MCP_BROKER_ROOT", `String root)
                   ; ("C2C_MCP_SESSION_ID", `String session_id)
+                  ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
                   ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
                   ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
                   ])
