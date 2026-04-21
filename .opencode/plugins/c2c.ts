@@ -214,6 +214,7 @@ const C2CDelivery: Plugin = async (ctx) => {
   // Track the active root session (set from session events)
   let activeSessionId: string | null = configuredOpenCodeSessionId || null;
   let backgroundLoopStarted = false;
+  let pendingToastShown = false; // debounce the "messages waiting" toast
 
   // Dedup window for permission notifications: track last 10 seen permission IDs.
   const seenPermissionIds: string[] = [];
@@ -428,6 +429,8 @@ const C2CDelivery: Plugin = async (ctx) => {
     }
     // Update spool: clear if all delivered, write failures if any.
     writeSpool(failed);
+    // Reset toast debounce so a future batch of messages shows a fresh toast.
+    if (failed.length === 0) pendingToastShown = false;
   }
 
   /** Try to deliver to the best-known session ID. */
@@ -439,6 +442,15 @@ const C2CDelivery: Plugin = async (ctx) => {
       // Do NOT use session.list() fallback: it returns ALL historical sessions
       // across all OpenCode instances and would deliver to the wrong session.
       await log("tryDeliver: no session yet — waiting for session.created");
+      // If there are spooled messages, show a one-time toast so the user knows
+      // to type something to receive them (promptAsync requires an active session).
+      if (!pendingToastShown) {
+        const pending = readSpool();
+        if (pending.length > 0) {
+          pendingToastShown = true;
+          await toast(`${pending.length} c2c message(s) waiting — start a session to receive`, "info");
+        }
+      }
       return;
     }
     await deliverMessages(sid);
