@@ -327,5 +327,107 @@ class RelayClientTests(TwoBrokerTestCase):
         self.assertEqual(r["error_code"], "connection_error")
 
 
+# ---------------------------------------------------------------------------
+# Ed25519 signing unit tests
+# ---------------------------------------------------------------------------
+
+class Ed25519SigningTests(unittest.TestCase):
+    """Unit tests for the _sign_peer_request function and identity loading."""
+
+    def _make_temp_identity(self, tmp_dir: Path) -> tuple[Path, dict]:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from c2c_relay_connector import _b64url_nopad
+        priv = Ed25519PrivateKey.generate()
+        pub = priv.public_key()
+        sk_bytes = priv.private_bytes_raw()
+        pk_bytes = pub.public_bytes_raw()
+        identity = {
+            "version": 1,
+            "alg": "ed25519",
+            "public_key": _b64url_nopad(pk_bytes),
+            "private_key": _b64url_nopad(sk_bytes),
+            "fingerprint": "SHA256:test",
+            "created_at": "2026-01-01T00:00:00Z",
+            "alias_hint": "test-agent",
+        }
+        p = tmp_dir / "identity.json"
+        p.write_text(json.dumps(identity), encoding="utf-8")
+        p.chmod(0o600)
+        return p, identity
+
+    def test_sign_peer_request_header_format(self):
+        from c2c_relay_connector import _sign_peer_request
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p, identity = self._make_temp_identity(Path(d))
+            header = _sign_peer_request(identity, "test-alias", "POST", "/heartbeat",
+                                        b'{"node_id":"n1","session_id":"s1"}')
+        self.assertTrue(header.startswith("Ed25519 "))
+        parts = dict(kv.split("=", 1) for kv in header[len("Ed25519 "):].split(","))
+        self.assertEqual(parts["alias"], "test-alias")
+        self.assertIn("ts", parts)
+        self.assertIn("nonce", parts)
+        self.assertIn("sig", parts)
+
+    def test_sign_peer_request_signature_is_valid(self):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+        from c2c_relay_connector import _sign_peer_request, _b64url_nopad, _UNIT_SEP, _REQUEST_SIGN_CTX
+        import base64
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p, identity = self._make_temp_identity(Path(d))
+            body = b'{"node_id":"n1","session_id":"s1"}'
+            header = _sign_peer_request(identity, "test-alias", "POST", "/heartbeat", body)
+        parts = dict(kv.split("=", 1) for kv in header[len("Ed25519 "):].split(","))
+        ts = parts["ts"]
+        nonce = parts["nonce"]
+        sig_b64 = parts["sig"] + "=="
+        sig = base64.urlsafe_b64decode(sig_b64)
+        # reconstruct canonical blob
+        import hashlib
+        body_hash = _b64url_nopad(hashlib.sha256(body).digest())
+        blob = _UNIT_SEP.join([_REQUEST_SIGN_CTX, "POST", "/heartbeat", "", body_hash, ts, nonce])
+        # verify
+        pk_bytes = base64.urlsafe_b64decode(identity["public_key"] + "==")
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        pub = Ed25519PublicKey.from_public_bytes(pk_bytes)
+        pub.verify(sig, blob.encode())  # raises if invalid
+
+    def test_load_identity_from_path(self):
+        from c2c_relay_connector import _load_identity
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p, identity = self._make_temp_identity(Path(d))
+            loaded = _load_identity(str(p))
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded["alg"], "ed25519")
+
+    def test_load_identity_rejects_permissive_file(self):
+        from c2c_relay_connector import _load_identity
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p, identity = self._make_temp_identity(Path(d))
+            p.chmod(0o644)  # too permissive
+            loaded = _load_identity(str(p))
+        self.assertIsNone(loaded)
+
+    def test_relay_client_uses_bearer_without_identity(self):
+        """When no identity_path is set, RelayClient uses Bearer token."""
+        # RelayClient without identity_path won't load identity
+        client = RelayClient("http://127.0.0.1:9999", token="mytoken")
+        self.assertIsNone(client._identity)
+
+    def test_relay_client_loads_identity_from_path(self):
+        """When identity_path is set, RelayClient loads identity for signing."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p, _ = self._make_temp_identity(Path(d))
+            client = RelayClient("http://127.0.0.1:9999", token="mytoken",
+                                 identity_path=str(p))
+        self.assertIsNotNone(client._identity)
+        self.assertEqual(client._identity["alg"], "ed25519")
+
+
 if __name__ == "__main__":
     unittest.main()
