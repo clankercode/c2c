@@ -41,7 +41,9 @@ echo ""
 
 # Classify commits into relay-critical vs local-only
 # Relay-critical = touches relay server code, Python relay connector, opencode plugin,
-# c2c_start.ml (managed client launch), or is explicitly a relay fix.
+# or is explicitly a relay fix.
+# Note: c2c_start.ml is NOT relay-critical — Railway runs `c2c relay serve`, not
+# `c2c start`. Changes to the client launcher only affect local agent machines.
 RELAY_CRITICAL=()
 LOCAL_ONLY=()
 
@@ -51,10 +53,10 @@ while IFS= read -r line; do
   # Check which files the commit touches
   files=$(git diff-tree --no-commit-id -r --name-only "$sha" 2>/dev/null || true)
   is_critical=0
-  if echo "$files" | grep -qE "ocaml/relay\.ml|c2c_relay_connector\.py|c2c_relay_server\.py|\.opencode/plugins/c2c\.ts|ocaml/c2c_start\.ml|ocaml/relay_signed_ops"; then
+  if echo "$files" | grep -qE "ocaml/relay\.ml|c2c_relay_connector\.py|c2c_relay_server\.py|\.opencode/plugins/c2c\.ts|ocaml/relay_signed_ops"; then
     is_critical=1
   fi
-  if echo "$msg" | grep -qiE "relay|deploy|prod|fix\(relay|feat\(relay|feat\(plugin|fix\(plugin|fix\(start"; then
+  if echo "$msg" | grep -qiE "relay|deploy|prod|fix\(relay|feat\(relay|feat\(plugin|fix\(plugin"; then
     is_critical=1
   fi
   if [[ $is_critical -eq 1 ]]; then
