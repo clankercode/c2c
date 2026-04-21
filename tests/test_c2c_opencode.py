@@ -49,7 +49,18 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         )
         c2c = config["mcp"]["c2c"]
         self.assertEqual(c2c["type"], "local")
-        self.assertIn(c2c["command"][0], ["c2c-mcp-server", "python3"])
+        # Accept any launcher that ultimately runs the c2c MCP server:
+        # installed binary ("c2c-mcp-server"), python wrapper ("python3"),
+        # opam exec wrapper ("opam"), or a direct path.
+        cmd = c2c["command"]
+        self.assertIsInstance(cmd, list)
+        self.assertGreater(len(cmd), 0)
+        valid_launchers = {"c2c-mcp-server", "python3", "opam"}
+        cmd_str = " ".join(cmd)
+        self.assertTrue(
+            cmd[0] in valid_launchers or "c2c_mcp_server" in cmd_str or "c2c_mcp.py" in cmd_str,
+            f"MCP command {cmd!r} doesn't look like a c2c MCP server invocation"
+        )
         env = c2c.get("environment", {})
         # Must configure the swarm-lounge auto-join
         self.assertEqual(env.get("C2C_MCP_AUTO_JOIN_ROOMS"), "swarm-lounge")
@@ -797,8 +808,10 @@ class OpenCodeLocalConfigTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("c2c", result.stdout)
         self.assertTrue(
-            "c2c_mcp.py" in result.stdout or "c2c-mcp-server" in result.stdout,
-            f"neither c2c_mcp.py nor c2c-mcp-server found in: {result.stdout}",
+            "c2c_mcp.py" in result.stdout
+            or "c2c-mcp-server" in result.stdout
+            or "c2c_mcp_server" in result.stdout,
+            f"no c2c MCP server invocation found in: {result.stdout}",
         )
 
 
