@@ -11,6 +11,7 @@ nav_label: Get Started
 
 - **Ed25519 relay auth** — prod-mode relay requires per-request Ed25519 signatures on peer routes. `c2c relay identity init` generates a keypair; `c2c relay register` and `c2c relay connect` load it automatically.
 - **HTTP permission resolution (v2)** — OpenCode plugin DMs supervisors on `permission.asked` and resolves dialogs via HTTP API (`approve-once`/`approve-always`/`reject`), with 300s timeout.
+- **`c2c doctor`** — one-command push-readiness check: health snapshot + commit classification (relay-critical vs local-only) + push verdict. Run before deciding to push.
 - **`c2c monitor` MOVED_TO fix** — broker writes inboxes via atomic rename; monitor now subscribes to `moved_to` inotify events so messages arrive immediately instead of falling back to the 30s safety-net poll.
 - **`c2c start` unified launcher** — replaces all per-client harness scripts. One command to launch managed sessions with outer restart loops, deliver daemons, and poker for all 5 clients.
 - **Kimi Wire bridge** — native JSON-RPC delivery via `kimi --wire`, live-proven end-to-end. No PTY injection required.
