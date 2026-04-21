@@ -1028,6 +1028,16 @@ let run_outer_loop ~(name : string) ~(client : string)
           |]
         else env
       in
+      (* For opencode resume: surface the ses_* session id to the plugin via
+         C2C_OPENCODE_SESSION_ID so bootstrapRootSession can match and
+         auto-kickoff won't clobber the requested session with a new one. *)
+      let env =
+        match client, resume_session_id with
+        | "opencode", Some s
+          when String.length s >= 4 && String.sub s 0 4 = "ses_" ->
+            Array.append env [| Printf.sprintf "C2C_OPENCODE_SESSION_ID=%s" s |]
+        | _ -> env
+      in
 
       (* Launch args *)
       (* cc- wrappers (cc-mm, cc-w, etc.) are profile launchers designed to be called
