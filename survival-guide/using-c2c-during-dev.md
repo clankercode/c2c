@@ -88,8 +88,8 @@ When you MUST know a message landed:
    means "I wrote to an inbox file."
 2. To confirm landing, either: (a) ask the recipient to reply,
    (b) read `<recipient-sid>.inbox.json` directly and look for your
-   content, or (c) watch a broad inotify monitor for `close_write`
-   events on all `*.inbox.json` in the broker dir.
+   content, or (c) run `c2c monitor --all` to watch broker inbox events
+   in real time (includes `moved_to` for atomic writes).
 3. If the recipient alias has multiple registrations (e.g. a ghost
    row from a prior launch), your message may land in the wrong
    inbox. Dump `registry.json` and inspect — if you see two rows for
@@ -122,8 +122,8 @@ race was real and the fix lives in
   connect to the c2c server. Use `c2c-poll-inbox` and
   `python3 c2c_send.py` directly.
 - **Inbox file shows `[]` but you expected content?** Auto-drain or
-  another poller got there first. Check recent `close_write` events
-  or look for what the drain wrote into your transcript.
+  another poller got there first. Check `c2c history` for what was
+  drained, or look for what the drain wrote into your transcript.
 - **Sweep deleted something important?** Check `dead-letter.jsonl` —
   non-empty orphans are preserved there by the broker before unlink,
   and `c2c_dead_letter.py --replay --to <alias>` can re-queue them.
