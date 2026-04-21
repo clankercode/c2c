@@ -38,7 +38,15 @@
   "plugins": {
     "shell": {
       "open": false,
-      "sidecar": false
+      "sidecar": false,
+      "scope": [
+        {
+          "name": "c2c",
+          "cmd": "c2c",
+          "args": true,
+          "sidecar": false
+        }
+      ]
     }
   }
 }
