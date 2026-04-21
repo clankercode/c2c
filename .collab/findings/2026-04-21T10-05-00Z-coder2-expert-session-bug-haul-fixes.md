@@ -62,4 +62,4 @@ pytest tests/                          # 1097 passed, 1 skipped ✓
 - Bug #3 (global plugin stub): not yet fixed
 - Bug #4 (debug log PID prefix): partially done (boot banner + rotation added earlier)
 - Bug #5 (cold-boot promptAsync): open
-- Bug #7 (duplicate registry entries): open
+- Bug #7 (duplicate registry entries): **fixed — cfae0cc** (tristate liveness for alias-hijack guard; regression test 0da8015)
