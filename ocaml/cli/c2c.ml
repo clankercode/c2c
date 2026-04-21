@@ -2224,6 +2224,34 @@ let monitor_cmd =
     (* Snapshot: alias → session_id. Used to diff registry changes. *)
     let known_peers : (string, string) Hashtbl.t = Hashtbl.create 16 in
     List.iter (fun (a, s) -> Hashtbl.replace known_peers a s) (read_registry_aliases ());
+    (* Snapshot: room_id → alias set. Used to diff room membership changes. *)
+    let known_room_members : (string, (string, unit) Hashtbl.t) Hashtbl.t =
+      Hashtbl.create 4
+    in
+    let read_room_members room_id =
+      let path = broker_root // "rooms" // room_id // "members.json" in
+      try
+        let ic = open_in path in
+        let content = really_input_string ic (in_channel_length ic) in
+        close_in ic;
+        (match Yojson.Safe.from_string content with
+         | `List members ->
+             List.filter_map (fun m -> match m with
+               | `Assoc fields -> (match List.assoc_opt "alias" fields with
+                   | Some (`String a) -> Some a | _ -> None)
+               | _ -> None) members
+         | _ -> [])
+      with _ -> []
+    in
+    (try
+       let rooms_dir = broker_root // "rooms" in
+       if Sys.file_exists rooms_dir then
+         Array.iter (fun room_id ->
+           let tbl : (string, unit) Hashtbl.t = Hashtbl.create 4 in
+           List.iter (fun a -> Hashtbl.replace tbl a ()) (read_room_members room_id);
+           Hashtbl.replace known_room_members room_id tbl
+         ) (Sys.readdir rooms_dir)
+     with _ -> ());
     (* Archive mode watches <broker_root>/archive/*.jsonl (append-only).
        Each drained message is a full JSON object on its own line. We track
        per-file read offsets so we only emit newly-appended lines. This avoids
@@ -2279,12 +2307,18 @@ let monitor_cmd =
     (* Belt-and-braces startup orphan check: if the parent already died before
        we enter the inotify loop, exit immediately rather than loop forever. *)
     (if Unix.getppid () = 1 then exit 0);
-    let cmd = Printf.sprintf
-      (* moved_to: atomic inbox writes land via tmp+rename — without this
-         event, new-message sends are completely missed and callers fall
-         back to their safety-net poll (~30s latency). *)
-      "inotifywait -m -q -e close_write,modify,delete,moved_to --format '%%e %%f' %s"
-      (Filename.quote watch_dir)
+    let cmd =
+      if archive then
+        (* Archive: flat dir, original space-delimited format. *)
+        Printf.sprintf
+          "inotifywait -m -q -e close_write,modify,delete,moved_to --format '%%e %%f' %s"
+          (Filename.quote watch_dir)
+      else
+        (* Live: recursive so rooms/<id>/members.json is caught.
+           Tab-delimited with %w%f = full path avoids space-in-path ambiguity. *)
+        Printf.sprintf
+          "inotifywait -m -r -q -e close_write,modify,delete,moved_to --format '%%e\t%%w%%f' %s"
+          (Filename.quote watch_dir)
     in
     let ic = Unix.open_process_in cmd in
     Fun.protect ~finally:(fun () -> ignore (Unix.close_process_in ic)) (fun () ->
@@ -2293,7 +2327,12 @@ let monitor_cmd =
            exit rather than accumulate as a zombie monitor process. *)
         (if Unix.getppid () = 1 then exit 0);
         let line = input_line ic in
-        let parts = String.split_on_char ' ' (String.trim line) in
+        (* Archive uses space-delimited "EVENT FILENAME"; live uses
+           tab-delimited "EVENT\tFULL_PATH" (recursive, full path). *)
+        let parts =
+          if archive then String.split_on_char ' ' (String.trim line)
+          else String.split_on_char '\t' (String.trim line)
+        in
         (match parts with
          | event :: filename :: _ when archive ->
              let n = String.length filename in
@@ -2340,7 +2379,9 @@ let monitor_cmd =
                       emit_messages ~my_alias ~all ~full_body msgs)
              end;
              ignore event
-         | event :: filename :: _ ->
+         | event :: full_path :: _ ->
+             (* In live mode filename is a full path; basename is used for routing. *)
+             let filename = Filename.basename full_path in
              let n = String.length filename in
              let is_inbox = n > 11 && String.sub filename (n - 11) 11 = ".inbox.json" in
              let is_lock  = n >= 5  && String.sub filename (n - 5) 5 = ".lock" in
@@ -2447,6 +2488,49 @@ let monitor_cmd =
                (* Update snapshot. *)
                Hashtbl.reset known_peers;
                List.iter (fun (a, s) -> Hashtbl.replace known_peers a s) new_regs
+             end else if filename = "members.json"
+                      && Filename.basename (Filename.dirname (Filename.dirname full_path)) = "rooms"
+             then begin
+               (* Room membership changed — extract room_id, diff, emit events. *)
+               let room_id = Filename.basename (Filename.dirname full_path) in
+               let new_members = read_room_members room_id in
+               let new_tbl : (string, unit) Hashtbl.t = Hashtbl.create 4 in
+               List.iter (fun a -> Hashtbl.replace new_tbl a ()) new_members;
+               let prev_tbl =
+                 try Hashtbl.find known_room_members room_id
+                 with Not_found ->
+                   let t : (string, unit) Hashtbl.t = Hashtbl.create 4 in
+                   Hashtbl.replace known_room_members room_id t; t
+               in
+               let ts () = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+               List.iter (fun a ->
+                 if not (Hashtbl.mem prev_tbl a) then begin
+                   if json then begin
+                     print_string (Yojson.Safe.to_string
+                       (`Assoc [ "event_type", `String "room.join"
+                               ; "room_id",    `String room_id
+                               ; "alias",      `String a
+                               ; "monitor_ts", `String (ts ()) ]));
+                     print_newline ()
+                   end else
+                     Printf.printf "%s 🚪  ROOM   %s joined %s\n%!" (now_hms ()) a room_id
+                 end
+               ) new_members;
+               Hashtbl.iter (fun a () ->
+                 if not (Hashtbl.mem new_tbl a) then begin
+                   if json then begin
+                     print_string (Yojson.Safe.to_string
+                       (`Assoc [ "event_type", `String "room.leave"
+                               ; "room_id",    `String room_id
+                               ; "alias",      `String a
+                               ; "monitor_ts", `String (ts ()) ]));
+                     print_newline ()
+                   end else
+                     Printf.printf "%s 🚪  ROOM   %s left %s\n%!" (now_hms ()) a room_id
+                 end
+               ) prev_tbl;
+               Hashtbl.reset prev_tbl;
+               List.iter (fun a -> Hashtbl.replace prev_tbl a ()) new_members
              end
          | _ -> ()
         )
