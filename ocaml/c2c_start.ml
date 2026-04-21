@@ -2,6 +2,10 @@
 
 let ( // ) = Filename.concat
 
+(* setpgid(2) binding — OCaml 5.x's Unix module omits this call.
+   Implementation in ocaml/cli/c2c_posix_stubs.c. *)
+external setpgid : int -> int -> unit = "caml_c2c_setpgid"
+
 (* ---------------------------------------------------------------------------
  * Client configurations
  * --------------------------------------------------------------------------- *)
@@ -813,6 +817,10 @@ let run_outer_loop ~(name : string) ~(client : string)
             | 0 ->
                 (try ignore (Sys.signal Sys.sigchld Sys.Signal_default) with _ -> ());
                 (try ignore (Sys.signal Sys.sigpipe Sys.Signal_default) with _ -> ());
+                (* Place child in its own process group (PGID = child PID) so that
+                   kill(-PGID) at cleanup time takes down all descendants atomically:
+                   node/bun, the c2c monitor spawned by the plugin, etc. *)
+                (try setpgid 0 0 with _ -> ());
                 (* Redirect child stderr through the tee pipe *)
                 (try Unix.dup2 tee_write_fd Unix.stderr with _ -> ());
                 (try Unix.close tee_write_fd with _ -> ());
