@@ -540,6 +540,13 @@ let cleanup_stale_opentui_zig_cache () : int =
 
 let build_env ?(broker_root_override : string option = None) (name : string) (alias_override : string option) : string array =
   let br = Option.value broker_root_override ~default:(broker_root ()) in
+  (* Resolve the absolute path of this c2c binary so the plugin always uses the
+     correct OCaml binary even when a Python ./c2c shim exists in the project CWD
+     (avoids fork-bomb: plugin runC2c() would otherwise resolve bare "c2c" via PATH
+     which could pick up ./c2c if CWD is in PATH). *)
+  let c2c_bin =
+    (try Unix.readlink "/proc/self/exe" with Unix.Unix_error _ -> Sys.argv.(0))
+  in
   let additions = [
     "C2C_MCP_SESSION_ID", name;
     "C2C_INSTANCE_NAME", name;
@@ -551,6 +558,9 @@ let build_env ?(broker_root_override : string option = None) (name : string) (al
        clients that don't declare experimental.claude/channel in initialize,
        so harmless where unsupported. *)
     "C2C_MCP_CHANNEL_DELIVERY", "1";
+    (* Pin the c2c binary used by the plugin to the running binary's absolute
+       path so a CWD-relative ./c2c shim can never be accidentally preferred. *)
+    "C2C_CLI_COMMAND", c2c_bin;
   ] in
   (* Strip any existing copies of overridden keys from the inherited env, then
      append our authoritative values. This avoids the duplicate-key bug where
