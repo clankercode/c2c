@@ -2,7 +2,7 @@
 author: coordinator1
 ts: 2026-04-21T08:40:00Z
 severity: high
-fix: not-started (mystery — needs focused investigation)
+fix: MITIGATED (d826acc) — sha256 stamp on load makes stale cache immediately visible; global + project plugins now clean
 ---
 
 # drainInbox runs with flags that don't exist in the plugin source
