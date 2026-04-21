@@ -199,8 +199,10 @@ def main(argv: list[str] | None = None) -> int:
         import c2c_wake_peer
         return c2c_wake_peer.main(remainder)
     if subcommand in ("start", "stop", "restart", "instances"):
-        import c2c_start
-        return c2c_start.main([subcommand, *remainder])
+        import shutil, subprocess
+        c2c_bin = shutil.which("c2c") or "c2c"
+        result = subprocess.run([c2c_bin, subcommand, *remainder])
+        return result.returncode
     if subcommand == "watch":
         return c2c_watch.main(remainder)
     if subcommand == "whoami":
