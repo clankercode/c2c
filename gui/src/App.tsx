@@ -230,11 +230,16 @@ export function App() {
 
   const statusColor = { connecting: "#f9e2af", live: "#a6e3a1", error: "#f38ba8" }[status];
 
-  function handleWizardComplete(alias: string) {
+  async function handleWizardComplete(alias: string) {
     setMyAlias(alias);
     setAliasInput(alias);
     localStorage.setItem(ALIAS_KEY, alias);
     setShowWizard(false);
+    // Auto-join the default social room on first registration
+    const { joinRoom } = await import("./useSend");
+    joinRoom("swarm-lounge", alias).then(res => {
+      if (res.ok) setRooms(prev => new Set([...prev, "swarm-lounge"]));
+    });
   }
 
   return (
