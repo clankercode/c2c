@@ -6,7 +6,7 @@ import { ComposeBar } from "./ComposeBar";
 import { Sidebar } from "./Sidebar";
 import { registerAlias } from "./useSend";
 import { loadHistory, loadRoomHistory, loadPeerHistory } from "./useHistory";
-import { discoverPeers, discoverRooms } from "./useDiscovery";
+import { discoverPeers, discoverRooms, fetchHealth, HealthInfo } from "./useDiscovery";
 import { WelcomeWizard } from "./components/WelcomeWizard";
 
 const MAX_EVENTS = 1000;
@@ -33,12 +33,14 @@ export function App() {
   const [showWizard, setShowWizard] = useState(() => !localStorage.getItem(ALIAS_KEY));
   const [aliasStatus, setAliasStatus] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [health, setHealth] = useState<HealthInfo | null>(null);
   const childRef = useRef<Child | null>(null);
 
   async function refreshBroker() {
     setRefreshing(true);
     try {
-      const [ps, rs] = await Promise.all([discoverPeers(), discoverRooms()]);
+      const [ps, rs, h] = await Promise.all([discoverPeers(), discoverRooms(), fetchHealth()]);
+      if (h) setHealth(h);
       setPeers(prev => {
         const alive = new Set(ps.filter(p => p.alive).map(p => p.alias));
         const dead = new Set(ps.filter(p => !p.alive).map(p => p.alias));
@@ -209,6 +211,26 @@ export function App() {
         <span style={{ fontSize: 11, color: "#585b70" }}>swarm monitor</span>
         <span style={{ marginLeft: "auto", fontSize: 11, color: statusColor }}>● {status}</span>
         <span style={{ fontSize: 11, color: "#585b70" }}>{events.length} events</span>
+        {health && (
+          <>
+            <span style={{ fontSize: 11, color: "#585b70" }}>
+              {health.alive}/{health.registrations} peers · {health.rooms} rooms
+            </span>
+            {health.relay && (
+              <span
+                title={health.relay.message}
+                style={{
+                  fontSize: 11,
+                  color: health.relay.status === "green" ? "#a6e3a1"
+                       : health.relay.status === "yellow" ? "#f9e2af"
+                       : "#f38ba8",
+                }}
+              >
+                ⬡ relay {health.relay.status}
+              </span>
+            )}
+          </>
+        )}
         <button
           onClick={() => refreshBroker()}
           disabled={refreshing}
