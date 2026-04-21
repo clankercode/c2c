@@ -57,11 +57,13 @@ def _run_c2c_start(
     instance_name: str,
     extra_args: list[str],
     timeout: int = 10,
+    extra_env: dict | None = None,
 ) -> subprocess.CompletedProcess:
     env = {
         **os.environ,
         "C2C_INSTANCES_DIR": str(tmp_path / "instances"),
         "PATH": str(fake_bin_dir) + ":" + os.environ.get("PATH", ""),
+        **(extra_env or {}),
     }
     return subprocess.run(
         [C2C_BIN, "start", "opencode", "-n", instance_name] + extra_args,
@@ -137,6 +139,9 @@ def test_session_id_set_correctly_without_duplicates(tmp_path: Path) -> None:
         fake_bin_dir=fake_bin.parent,
         instance_name="dedup-test",
         extra_args=["-s", DEDUP_SES_ID],
+        # Explicitly inject a parent C2C_MCP_SESSION_ID to exercise the dedup path.
+        # Without this the test relies on ambient env and is flaky in CI/managed sessions.
+        extra_env={"C2C_MCP_SESSION_ID": "inherited-parent-session"},
     )
     lines = result.stderr.splitlines()
     session_id_lines = [l for l in lines if l.startswith("C2C_MCP_SESSION_ID=")]
