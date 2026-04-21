@@ -454,6 +454,131 @@ class Ed25519SigningTests(unittest.TestCase):
                                extra["identity_pk"], extra["timestamp"], extra["nonce"]])
         pub.verify(sig, blob.encode())  # raises if invalid
 
+    def test_register_includes_signed_fields_when_identity_present(self):
+        """register() body includes identity_pk + signature when identity is loaded."""
+        import io, tempfile
+        from unittest.mock import patch, MagicMock
+
+        with tempfile.TemporaryDirectory() as d:
+            p, identity = self._make_temp_identity(Path(d))
+            client = RelayClient("http://127.0.0.1:9999", token="tok",
+                                 identity_path=str(p))
+
+        captured = {}
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["body"] = json.loads(req.data.decode())
+            resp = MagicMock()
+            resp.read.return_value = b'{"ok": true}'
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            client.register("n1", "s1", "my-alias")
+
+        body = captured.get("body", {})
+        self.assertIn("identity_pk", body)
+        self.assertIn("signature", body)
+        self.assertIn("nonce", body)
+        self.assertIn("timestamp", body)
+        self.assertEqual(body["identity_pk"], identity["public_key"])
+
+    def test_heartbeat_uses_ed25519_auth_when_identity_present(self):
+        """heartbeat() Authorization header is Ed25519 when identity is loaded."""
+        import tempfile
+        from unittest.mock import patch, MagicMock
+
+        with tempfile.TemporaryDirectory() as d:
+            p, _ = self._make_temp_identity(Path(d))
+            client = RelayClient("http://127.0.0.1:9999", token="tok",
+                                 identity_path=str(p))
+
+        captured = {}
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["auth"] = req.get_header("Authorization")
+            resp = MagicMock()
+            resp.read.return_value = b'{"ok": true}'
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            client.heartbeat("n1", "s1", alias="my-alias")
+
+        auth = captured.get("auth", "")
+        self.assertTrue(auth.startswith("Ed25519 "), f"Expected Ed25519 header, got: {auth}")
+
+    def test_send_uses_ed25519_auth_when_identity_present(self):
+        """send() Authorization header is Ed25519 when identity is loaded."""
+        import tempfile
+        from unittest.mock import patch, MagicMock
+
+        with tempfile.TemporaryDirectory() as d:
+            p, _ = self._make_temp_identity(Path(d))
+            client = RelayClient("http://127.0.0.1:9999", token="tok",
+                                 identity_path=str(p))
+
+        captured = {}
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["auth"] = req.get_header("Authorization")
+            resp = MagicMock()
+            resp.read.return_value = b'{"ok": true}'
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            client.send("sender", "target", "hello world")
+
+        auth = captured.get("auth", "")
+        self.assertTrue(auth.startswith("Ed25519 "), f"Expected Ed25519 header, got: {auth}")
+
+    def test_poll_inbox_uses_ed25519_auth_when_identity_present(self):
+        """poll_inbox() Authorization header is Ed25519 when identity is loaded."""
+        import tempfile
+        from unittest.mock import patch, MagicMock
+
+        with tempfile.TemporaryDirectory() as d:
+            p, _ = self._make_temp_identity(Path(d))
+            client = RelayClient("http://127.0.0.1:9999", token="tok",
+                                 identity_path=str(p))
+
+        captured = {}
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["auth"] = req.get_header("Authorization")
+            resp = MagicMock()
+            resp.read.return_value = b'{"ok": true, "messages": []}'
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            client.poll_inbox("n1", "s1", alias="my-alias")
+
+        auth = captured.get("auth", "")
+        self.assertTrue(auth.startswith("Ed25519 "), f"Expected Ed25519 header, got: {auth}")
+
+    def test_heartbeat_uses_bearer_when_no_identity(self):
+        """heartbeat() uses Bearer when no identity is loaded."""
+        from unittest.mock import patch, MagicMock
+
+        client = RelayClient("http://127.0.0.1:9999", token="my-bearer-tok")
+
+        captured = {}
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["auth"] = req.get_header("Authorization")
+            resp = MagicMock()
+            resp.read.return_value = b'{"ok": true}'
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            client.heartbeat("n1", "s1", alias="my-alias")
+
+        auth = captured.get("auth", "")
+        self.assertEqual(auth, "Bearer my-bearer-tok")
+
 
 if __name__ == "__main__":
     unittest.main()
