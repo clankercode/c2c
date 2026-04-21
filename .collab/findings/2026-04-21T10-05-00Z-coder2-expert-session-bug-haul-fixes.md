@@ -59,7 +59,7 @@ pytest tests/                          # 1097 passed, 1 skipped ✓
 ## Remaining open items from bug haul
 
 - Bug #2 (hostname-based default aliases): not yet implemented
-- Bug #3 (global plugin stub): not yet fixed
+- Bug #3 (global plugin stub): **fixed — `6e1fd30`** (`c2c install opencode` guards against stub-sized source with `>= 1024` check; global plugin now 31KB real plugin). Verified 2026-04-21 by planner1.
 - Bug #4 (debug log PID prefix): partially done (boot banner + rotation added earlier)
-- Bug #5 (cold-boot promptAsync): open
+- Bug #5 (cold-boot promptAsync): open — retry loop in `4488394` partially mitigates but still reproduces; needs deeper audit
 - Bug #7 (duplicate registry entries): **fixed — cfae0cc** (tristate liveness for alias-hijack guard; regression test 0da8015)
