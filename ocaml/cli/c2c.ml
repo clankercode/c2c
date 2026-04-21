@@ -1333,7 +1333,14 @@ let register_cmd =
                Pass --session-id ID to specify explicitly.\n%!";
             exit 1)
   in
-  let pid = Some (Unix.getppid ()) in
+  (* Prefer C2C_MCP_CLIENT_PID (set by managed launchers to the outer loop PID)
+     over getppid(), so `c2c register` from inside a managed session pins
+     liveness to the durable outer process rather than a transient shell. *)
+  let pid =
+    match Sys.getenv_opt "C2C_MCP_CLIENT_PID" with
+    | Some s -> (match int_of_string_opt (String.trim s) with Some p -> Some p | None -> Some (Unix.getppid ()))
+    | None -> Some (Unix.getppid ())
+  in
   let pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid in
   C2c_mcp.Broker.register broker ~session_id ~alias ~pid ~pid_start_time;
   let output_mode = if json then Json else Human in
