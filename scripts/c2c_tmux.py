@@ -272,6 +272,14 @@ def cmd_launch(args: argparse.Namespace) -> int:
 
     if args.cwd:
         tmux("send-keys", "-t", pane, f"cd {shlex.quote(args.cwd)}", "Enter", capture=False)
+    # Pre-seed a role file so `c2c start` doesn't block on the interactive
+    # role prompt. Targets the workdir the client will actually run in
+    # (args.cwd if set, else the caller's cwd).
+    if args.role and args.name:
+        role_dir = Path(args.cwd) if args.cwd else Path.cwd()
+        roles = role_dir / ".c2c" / "roles"
+        roles.mkdir(parents=True, exist_ok=True)
+        (roles / f"{args.name}.md").write_text(args.role.rstrip() + "\n")
     tmux("send-keys", "-t", pane, shell_cmd, "Enter", capture=False)
     print(f"launched on {pane} ({placement}): {shell_cmd}")
     if args.name:
@@ -374,6 +382,7 @@ def build_parser() -> argparse.ArgumentParser:
     lc.add_argument("client", help="claude | codex | opencode | kimi | crush")
     lc.add_argument("-n", "--name", help="alias to pass to `c2c start -n <name>`")
     lc.add_argument("--auto", action="store_true", help="forward --auto (kickoff prompt)")
+    lc.add_argument("--role", help="pre-seed .c2c/roles/<name>.md so `c2c start` skips the role prompt")
     lc.add_argument("--cwd", help="cd into this dir before running c2c start")
     lc.add_argument("--split", choices=("h", "v"), help="force split of active pane (h|v) instead of reusing an idle pane")
     lc.add_argument("--new-window", action="store_true", help="force fresh tmux window instead of reusing an idle pane")
