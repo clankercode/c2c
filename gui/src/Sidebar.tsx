@@ -1,6 +1,7 @@
 interface Props {
   peers: string[];
   rooms: string[];
+  roomMembers?: Map<string, Set<string>>;
   selectedRoom?: string | null;
   selectedPeer?: string | null;
   unreadRooms?: Set<string>;
@@ -41,7 +42,7 @@ const ITEM_PEER_ACTIVE_STYLE: React.CSSProperties = {
   color: "#cba6f7",
 };
 
-export function Sidebar({ peers, rooms, selectedRoom, selectedPeer, unreadRooms = new Set(), unreadPeers = new Set(), onSelect }: Props) {
+export function Sidebar({ peers, rooms, roomMembers = new Map(), selectedRoom, selectedPeer, unreadRooms = new Set(), unreadPeers = new Set(), onSelect }: Props) {
   return (
     <div style={{
       width: 160,
@@ -62,7 +63,14 @@ export function Sidebar({ peers, rooms, selectedRoom, selectedPeer, unreadRooms 
               onClick={() => onSelect(r, true)}
               title={r}
             >
-              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>🏠 {r}</span>
+              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
+                🏠 {r}
+                {roomMembers.has(r) && (
+                  <span style={{ color: "#45475a", fontSize: 10, marginLeft: 4 }}>
+                    {roomMembers.get(r)!.size}
+                  </span>
+                )}
+              </span>
               {unreadRooms.has(r) && (
                 <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#f38ba8", flexShrink: 0, display: "inline-block" }} />
               )}

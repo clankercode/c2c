@@ -16,6 +16,7 @@ export function App() {
   const [status, setStatus] = useState<"connecting" | "live" | "error">("connecting");
   const [peers, setPeers] = useState<Set<string>>(new Set());
   const [rooms, setRooms] = useState<Set<string>>(new Set());
+  const [roomMembers, setRoomMembers] = useState<Map<string, Set<string>>>(new Map());
   const [composeTo, setComposeTo] = useState("");
   const [composeIsRoom, setComposeIsRoom] = useState(false);
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
@@ -59,8 +60,16 @@ export function App() {
               const alias = (event as { alias: string }).alias;
               setPeers(prev => { const s = new Set(prev); s.delete(alias); return s; });
             } else if (event.event_type === "room.join") {
-              const room_id = (event as { room_id: string }).room_id;
+              const room_id = (event as { room_id: string; alias: string }).room_id;
+              const alias = (event as { room_id: string; alias: string }).alias;
               setRooms(prev => new Set([...prev, room_id]));
+              setRoomMembers(prev => {
+                const next = new Map(prev);
+                const members = new Set(next.get(room_id) ?? []);
+                members.add(alias);
+                next.set(room_id, members);
+                return next;
+              });
             } else if (event.event_type === "room.leave") {
               // Keep room in list even if it's empty (alias may rejoin)
             } else if (event.event_type === "message") {
@@ -112,6 +121,13 @@ export function App() {
       if (cancelled) return;
       setPeers(new Set(ps.filter(p => p.alive).map(p => p.alias)));
       setRooms(new Set(rs.map(r => r.room_id)));
+      const memberMap = new Map<string, Set<string>>();
+      rs.forEach(r => {
+        if ((r as { alive_members?: string[] }).alive_members) {
+          memberMap.set(r.room_id, new Set((r as { alive_members: string[] }).alive_members));
+        }
+      });
+      if (memberMap.size > 0) setRoomMembers(memberMap);
     });
 
     // Load recent history before starting the live monitor.
@@ -205,6 +221,7 @@ export function App() {
         <Sidebar
           peers={[...peers]}
           rooms={[...rooms]}
+          roomMembers={roomMembers}
           selectedRoom={selectedRoom}
           selectedPeer={selectedPeer}
           unreadRooms={unreadRooms}

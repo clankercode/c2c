@@ -9,6 +9,7 @@ export interface RoomInfo {
   room_id: string;
   member_count: number;
   alive_count: number;
+  alive_members?: string[];
 }
 
 export async function discoverPeers(): Promise<PeerInfo[]> {
@@ -27,12 +28,13 @@ export async function discoverRooms(): Promise<RoomInfo[]> {
     const result = await Command.create("c2c", ["room", "list", "--json"]).execute();
     if (result.code !== 0) return [];
     const entries = JSON.parse(result.stdout) as Array<{
-      room_id: string; member_count: number; alive_count: number;
+      room_id: string; member_count: number; alive_count: number; alive_members?: string[];
     }>;
     return entries.map(e => ({
       room_id: e.room_id,
       member_count: e.member_count ?? 0,
       alive_count: e.alive_count ?? 0,
+      alive_members: e.alive_members,
     }));
   } catch {
     return [];
