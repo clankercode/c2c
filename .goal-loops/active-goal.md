@@ -256,6 +256,23 @@ These are Max's target experiences, verbatim:
   restarts lose history. Max: add Railway volume at /data, set
   `C2C_RELAY_PERSIST_DIR=/data` env var.
 
+### Recent Completions (later 2026-04-21, planner1 session — awaiting push)
+
+- **Provisional sweep (#52)** ✓: two-phase registration with provisional sweep; sessions that
+  register but never poll_inbox are swept after C2C_PROVISIONAL_SWEEP_TIMEOUT seconds.
+  Human client_type exempt. confirmed_at tracks first poll (63951aa, coder2-expert).
+- **poll-inbox / peek-inbox / history alias fallback** ✓: when C2C_MCP_SESSION_ID drifts from
+  registry (managed harness assigns different session_id), CLI falls back to
+  C2C_MCP_AUTO_REGISTER_ALIAS lookup. Regression test added (68283ef, 6521294, planner1).
+- **whoami alias fallback** ✓: same mismatch handled in whoami (68a7f79, planner1).
+- **GUI registerAlias fix** ✓: was passing alias as positional arg; fixed to --alias/--session-id
+  flags (1194ba3, planner1).
+- **Double plugin load guard** ✓: global plugin defers to project-level if .opencode/plugins/c2c.ts
+  exists in cwd. Implemented as Option C (isGlobalPlugin check, planner1, in prior session).
+- **GUI feature-complete** ✓: filter tabs, search, click-to-expand, room/peer history,
+  unread indicators, compose bar, desktop notifications, room member count (multiple commits,
+  planner1). Needs webkit2gtk-4.1 to build.
+
 ### Recent Completions (later 2026-04-21, coordinator1 session — awaiting push)
 
 - **Ed25519 relay connector tests** ✓: 8 new mock-based tests for all signed

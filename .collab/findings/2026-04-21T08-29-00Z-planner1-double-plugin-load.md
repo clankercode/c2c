@@ -2,7 +2,7 @@
 author: planner1
 ts: 2026-04-21T08:29:00Z
 severity: medium
-status: documented — needs fix
+status: FIXED — Option C implemented in c2c.ts (committed at 6a01836 or earlier; guard present in current HEAD)
 ---
 
 # Double Plugin Load: global + project c2c.ts both fire
