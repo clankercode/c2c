@@ -94,6 +94,24 @@ let t_admin_no_token_configured_allows () =
   Alcotest.(check bool) "/gc + no auth allowed when token=None (dev)" true
     (allowed (decide ~path:"/gc" ~token:None ()))
 
+(* --- Bootstrap route: /register must bypass outer auth (adb152f) ---
+   /register uses in-body Ed25519 proof; handle_register does its own
+   crypto verification. The outer auth_decision must always allow it
+   through — otherwise new registrations fail in prod mode before the
+   body is even inspected. *)
+
+let t_register_allowed_no_auth_prod () =
+  Alcotest.(check bool) "/register allowed with no auth in prod mode" true
+    (allowed (decide ~path:"/register" ~token:(Some "t0p") ~auth:None ~ed:false ()))
+
+let t_register_allowed_with_ed25519_prod () =
+  Alcotest.(check bool) "/register allowed with Ed25519 header in prod mode" true
+    (allowed (decide ~path:"/register" ~token:(Some "t0p") ~auth:ed_hdr ~ed:true ()))
+
+let t_register_allowed_dev_mode () =
+  Alcotest.(check bool) "/register allowed in dev mode (no token)" true
+    (allowed (decide ~path:"/register" ~token:None ~auth:None ~ed:false ()))
+
 let () =
   Alcotest.run "relay_auth_matrix" [
     "unauth", [
@@ -107,6 +125,14 @@ let () =
         t_peer_no_auth_rejected_when_token_set;
       Alcotest.test_case "no auth allowed (dev, no token)" `Quick
         t_peer_no_auth_allowed_in_dev_mode;
+    ];
+    "bootstrap", [
+      Alcotest.test_case "/register allowed no auth prod mode" `Quick
+        t_register_allowed_no_auth_prod;
+      Alcotest.test_case "/register allowed Ed25519 prod mode" `Quick
+        t_register_allowed_with_ed25519_prod;
+      Alcotest.test_case "/register allowed dev mode" `Quick
+        t_register_allowed_dev_mode;
     ];
     "admin", [
       Alcotest.test_case "/gc Bearer ok" `Quick t_admin_gc_bearer_ok;
