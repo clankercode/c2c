@@ -1205,9 +1205,11 @@ let test_tools_call_register_alias_rename_notifies_rooms () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-renamed"
-        ~alias:"old-alias" ~pid:None ~pid_start_time:None ();
+        ~alias:"old-alias" ~pid:None ~pid_start_time:None
+        ~client_type:(Some "human") ();
       C2c_mcp.Broker.register broker ~session_id:"session-peer"
-        ~alias:"peer-alias" ~pid:None ~pid_start_time:None ();
+        ~alias:"peer-alias" ~pid:None ~pid_start_time:None
+        ~client_type:(Some "human") ();
       ignore
         (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
            ~alias:"old-alias" ~session_id:"session-renamed");
@@ -3094,6 +3096,9 @@ let test_join_room_broadcasts_system_message_to_all_members () =
         ~alias:"alice" ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker ~session_id:"session-b"
         ~alias:"bob" ~pid:None ~pid_start_time:None ();
+      (* Confirm both sessions so they are non-provisional and join broadcasts fire *)
+      C2c_mcp.Broker.confirm_registration broker ~session_id:"session-a";
+      C2c_mcp.Broker.confirm_registration broker ~session_id:"session-b";
       let _ =
         C2c_mcp.Broker.join_room broker ~room_id:"lobby"
           ~alias:"alice" ~session_id:"session-a"
@@ -3141,6 +3146,7 @@ let test_join_room_idempotent_does_not_rebroadcast () =
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"session-a"
         ~alias:"alice" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.confirm_registration broker ~session_id:"session-a";
       let _ =
         C2c_mcp.Broker.join_room broker ~room_id:"lobby"
           ~alias:"alice" ~session_id:"session-a"
@@ -3170,6 +3176,8 @@ let test_join_room_idempotent_non_tail_member_does_not_rebroadcast () =
         ~alias:"alice" ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker ~session_id:"session-b"
         ~alias:"bob" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.confirm_registration broker ~session_id:"session-a";
+      C2c_mcp.Broker.confirm_registration broker ~session_id:"session-b";
       let _ =
         C2c_mcp.Broker.join_room broker ~room_id:"lobby"
           ~alias:"alice" ~session_id:"session-a"
@@ -3258,6 +3266,8 @@ let test_send_room_appends_history_and_fans_out () =
         ~alias:"storm-ember" ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker ~session_id:"session-b"
         ~alias:"storm-storm" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.confirm_registration broker ~session_id:"session-a";
+      C2c_mcp.Broker.confirm_registration broker ~session_id:"session-b";
       (* Both join the room. *)
       let _ =
         C2c_mcp.Broker.join_room broker ~room_id:"chat"
@@ -3553,6 +3563,7 @@ let test_tools_call_join_room_backfills_recent_history () =
           (* First member joins and seeds three messages into history. *)
           C2c_mcp.Broker.register broker ~session_id:"session-firstmember"
             ~alias:"first-member" ~pid:None ~pid_start_time:None ();
+          C2c_mcp.Broker.confirm_registration broker ~session_id:"session-firstmember";
           let _ =
             C2c_mcp.Broker.join_room broker ~room_id:"backfill-room"
               ~alias:"first-member" ~session_id:"session-firstmember"
@@ -4541,13 +4552,15 @@ let test_register_rename_fans_out_peer_renamed_notification () =
             (List.map (fun m -> m.C2c_mcp.rm_alias) members)))
 
 let test_register_new_peer_broadcasts_peer_register_to_swarm_lounge () =
-  (* When a brand-new session registers, a peer_register event should
-     be broadcast to swarm-lounge so existing members are notified. *)
+  (* Provisional sessions defer peer_register until first poll_inbox confirms them.
+     A brand-new session registers (provisional, no pid) → no broadcast yet.
+     On first poll_inbox, confirm_registration fires the deferred broadcast. *)
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      (* Existing peer in swarm-lounge *)
+      (* Existing peer: confirm so join_room broadcasts, then drain setup messages *)
       C2c_mcp.Broker.register broker ~session_id:"session-existing"
         ~alias:"existing-peer" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.confirm_registration broker ~session_id:"session-existing";
       ignore
         (C2c_mcp.Broker.join_room broker ~room_id:"swarm-lounge"
            ~alias:"existing-peer" ~session_id:"session-existing");
@@ -4559,7 +4572,7 @@ let test_register_new_peer_broadcasts_peer_register_to_swarm_lounge () =
           Unix.putenv "C2C_MCP_SESSION_ID" "";
           Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "")
         (fun () ->
-          let request =
+          let register_req =
             `Assoc
               [ ("jsonrpc", `String "2.0")
               ; ("id", `Int 1)
@@ -4571,29 +4584,58 @@ let test_register_new_peer_broadcasts_peer_register_to_swarm_lounge () =
                    ])
               ]
           in
-          ignore (Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request));
+          ignore (Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir register_req));
+          (* After register only: provisional session → broadcast NOT yet emitted *)
+          let history_after_register =
+            C2c_mcp.Broker.read_room_history broker ~room_id:"swarm-lounge" ~limit:20 ()
+          in
+          let found_before_confirm =
+            List.exists
+              (fun m ->
+                try
+                  let s = m.C2c_mcp.rm_content in
+                  let idx = String.index s '{' in
+                  let j = Yojson.Safe.from_string (String.sub s idx (String.length s - idx)) in
+                  Yojson.Safe.Util.(member "type" j |> to_string) = "peer_register"
+                  && Yojson.Safe.Util.(member "alias" j |> to_string) = "new-peer"
+                with _ -> false)
+              history_after_register
+          in
+          check bool "peer_register NOT in swarm-lounge before poll_inbox" false found_before_confirm;
+          (* poll_inbox triggers confirm_registration → deferred broadcast fires *)
+          let poll_req =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 2)
+              ; ("method", `String "tools/call")
+              ; ("params",
+                 `Assoc
+                   [ ("name", `String "poll_inbox")
+                   ; ("arguments", `Assoc [])
+                   ])
+              ]
+          in
+          ignore (Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir poll_req));
           let lounge_history =
-            C2c_mcp.Broker.read_room_history broker ~room_id:"swarm-lounge"
-              ~limit:20 ()
+            C2c_mcp.Broker.read_room_history broker ~room_id:"swarm-lounge" ~limit:20 ()
           in
           let found_register =
             List.exists
               (fun m ->
-                let open Yojson.Safe in
                 try
                   let s = m.C2c_mcp.rm_content in
                   let idx = String.index s '{' in
-                  let j = from_string (String.sub s idx (String.length s - idx)) in
-                  Util.(member "type" j |> to_string) = "peer_register"
-                  && Util.(member "alias" j |> to_string) = "new-peer"
+                  let j = Yojson.Safe.from_string (String.sub s idx (String.length s - idx)) in
+                  Yojson.Safe.Util.(member "type" j |> to_string) = "peer_register"
+                  && Yojson.Safe.Util.(member "alias" j |> to_string) = "new-peer"
                 with _ -> false)
               lounge_history
           in
-          check bool "peer_register in swarm-lounge history" true found_register;
+          check bool "peer_register in swarm-lounge history after poll_inbox" true found_register;
           let existing_inbox =
             C2c_mcp.Broker.read_inbox broker ~session_id:"session-existing"
           in
-          check (list string) "existing peer notified via inbox fanout"
+          check (list string) "existing peer notified via inbox fanout after poll_inbox"
             [ "new-peer registered {\"type\":\"peer_register\",\"alias\":\"new-peer\"}" ]
             (List.map (fun m -> m.C2c_mcp.content) existing_inbox)))
 

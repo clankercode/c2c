@@ -434,6 +434,16 @@ module Broker = struct
     | _ ->
         reg.pid = None && reg.confirmed_at = None
 
+  (* True for any non-human session that has never called poll_inbox (confirmed_at=None).
+     Used to gate noisy social broadcasts (peer_register, room-join) so they fire
+     only when a session is confirmed alive, not speculatively on startup.
+     Broader than is_provisional: includes sessions that have a PID but haven't
+     polled yet (e.g. opencode started via c2c start but not yet interactive). *)
+  let is_unconfirmed reg =
+    match reg.client_type with
+    | Some "human" -> false
+    | _ -> reg.confirmed_at = None
+
   let provisional_sweep_timeout () =
     match Sys.getenv_opt "C2C_PROVISIONAL_SWEEP_TIMEOUT" with
     | Some v -> (try float_of_string v with _ -> 1800.0)
@@ -1047,25 +1057,6 @@ module Broker = struct
         ; preserved_messages = !preserved
         })
 
-  (* Promote a provisional registration to confirmed on first poll_inbox call.
-     Sets confirmed_at to now if it is currently None. No-op for already-confirmed
-     or non-existent sessions. *)
-  let confirm_registration t ~session_id =
-    with_registry_lock t (fun () ->
-        let regs = load_registrations t in
-        let changed = ref false in
-        let regs' =
-          List.map
-            (fun reg ->
-              if reg.session_id = session_id && reg.confirmed_at = None then begin
-                changed := true;
-                { reg with confirmed_at = Some (Unix.gettimeofday ()) }
-              end else
-                reg)
-            regs
-        in
-        if !changed then save_registrations t regs')
-
   (* Scan dead-letter.jsonl for records belonging to this session and return
      them for redelivery, removing matched records from the file.
      Called on re-registration so a session that was swept between outer-loop
@@ -1400,7 +1391,13 @@ module Broker = struct
           if updated <> members then save_room_members t ~room_id updated;
           (updated, updated <> members))
     in
-    if should_broadcast then broadcast_room_join t ~room_id ~alias;
+    let unconfirmed =
+      let regs = load_registrations t in
+      match List.find_opt (fun r -> r.session_id = session_id) regs with
+      | Some reg -> is_unconfirmed reg
+      | None -> false
+    in
+    if should_broadcast && not unconfirmed then broadcast_room_join t ~room_id ~alias;
     updated
 
   let leave_room t ~room_id ~alias =
@@ -1780,6 +1777,63 @@ module Broker = struct
         []
         entries
       |> List.rev
+    end
+
+  (* Promote an unconfirmed registration to confirmed on first poll_inbox call.
+     If the session was previously unconfirmed (confirmed_at=None, non-human),
+     emits the deferred peer_register broadcast and any room-join broadcasts that
+     were suppressed at register/join time. No-op for already-confirmed sessions.
+     Defined after my_rooms, send_room, broadcast_room_join to avoid forward refs. *)
+  let confirm_registration t ~session_id =
+    let was_unconfirmed = ref false in
+    let promo_alias = ref "" in
+    with_registry_lock t (fun () ->
+        let regs = load_registrations t in
+        let changed = ref false in
+        let regs' =
+          List.map
+            (fun reg ->
+              if reg.session_id = session_id && reg.confirmed_at = None then begin
+                changed := true;
+                if is_unconfirmed reg then begin
+                  was_unconfirmed := true;
+                  promo_alias := reg.alias
+                end;
+                { reg with confirmed_at = Some (Unix.gettimeofday ()) }
+              end else
+                reg)
+            regs
+        in
+        if !changed then save_registrations t regs');
+    if !was_unconfirmed then begin
+      let alias = !promo_alias in
+      let social_rooms =
+        let auto_rooms =
+          match Sys.getenv_opt "C2C_MCP_AUTO_JOIN_ROOMS" with
+          | Some v ->
+              String.split_on_char ',' v
+              |> List.map String.trim
+              |> List.filter (fun s -> s <> "" && valid_room_id s)
+          | None -> []
+        in
+        List.sort_uniq String.compare ("swarm-lounge" :: auto_rooms)
+      in
+      let peer_reg_content =
+        Printf.sprintf
+          "%s registered {\"type\":\"peer_register\",\"alias\":\"%s\"}"
+          alias alias
+      in
+      List.iter
+        (fun room_id ->
+          try ignore (send_room t ~from_alias:room_system_alias ~room_id ~content:peer_reg_content)
+          with _ -> ())
+        social_rooms;
+      let joined = my_rooms t ~session_id in
+      List.iter
+        (fun ri ->
+          try broadcast_room_join t ~room_id:ri.ri_room_id ~alias
+          with _ -> ())
+        joined
     end
 end
 
@@ -2359,7 +2413,16 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
               that fires when auto_join_rooms_startup runs — that event says
               "alias joined room <id>"; this one says "alias registered" and
               fires even if the session never joins any rooms. *)
-           (if is_new_registration then begin
+           (* Unconfirmed sessions (confirmed_at=None, non-human) defer peer_register
+              until first poll_inbox. Includes sessions with a PID that haven't polled yet
+              (e.g. opencode started via c2c start but not yet interactive). *)
+           let new_reg_unconfirmed =
+             match List.find_opt (fun r -> r.session_id = session_id)
+                     (Broker.list_registrations broker) with
+             | Some reg -> Broker.is_unconfirmed reg
+             | None -> false
+           in
+           (if is_new_registration && not new_reg_unconfirmed then begin
              let social_rooms =
                let auto_rooms =
                  match Sys.getenv_opt "C2C_MCP_AUTO_JOIN_ROOMS" with
@@ -2369,9 +2432,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                      |> List.filter (fun s -> s <> "" && Broker.valid_room_id s)
                  | None -> []
                in
-               (* Always include swarm-lounge; deduplicate *)
-               let all = "swarm-lounge" :: auto_rooms in
-               List.sort_uniq String.compare all
+               List.sort_uniq String.compare ("swarm-lounge" :: auto_rooms)
              in
              let content =
                Printf.sprintf

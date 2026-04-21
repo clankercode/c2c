@@ -91,9 +91,11 @@ module Broker : sig
   val set_dnd : t -> session_id:string -> dnd:bool -> ?until:float -> unit -> bool option
   val confirm_registration : t -> session_id:string -> unit
   (** [confirm_registration t ~session_id] sets confirmed_at to now for the
-      session if it is currently None. No-op for already-confirmed sessions. *)
+      session if it is currently None, then emits deferred social broadcasts
+      (peer_register + room-join) if the session was previously unconfirmed. *)
   val is_provisional : registration -> bool
   val is_provisional_expired : registration -> bool
+  val is_unconfirmed : registration -> bool
 end
 
 (* Native OCaml relay modules *)

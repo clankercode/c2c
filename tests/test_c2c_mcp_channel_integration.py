@@ -727,7 +727,10 @@ class TestE2ESessionLifecycle:
             for n in channel_notifs:
                 assert "id" not in n
 
-            # Step 5: poll_inbox should return empty (watcher already drained)
+            # Step 5: poll_inbox should return empty of user messages (watcher
+            # already drained those). The first poll_inbox also confirms the
+            # session, which may emit deferred peer_register/room-join broadcasts
+            # from c2c-system — filter those out when asserting emptiness.
             send_jsonrpc(proc, {
                 "jsonrpc": "2.0", "id": 5,
                 "method": "tools/call",
@@ -736,8 +739,12 @@ class TestE2ESessionLifecycle:
             poll_resp = read_jsonrpc(proc)
             poll_text = poll_resp["result"]["content"][0]["text"]
             poll_messages = json.loads(poll_text)
-            assert poll_messages == [], (
-                f"Inbox should be empty after watcher drain, got: {poll_messages}"
+            user_messages = [
+                m for m in poll_messages
+                if m.get("from_alias") != "c2c-system"
+            ]
+            assert user_messages == [], (
+                f"Inbox should have no user messages after watcher drain, got: {poll_messages}"
             )
 
             # Step 6: Verify archive exists and has the messages
@@ -747,9 +754,12 @@ class TestE2ESessionLifecycle:
                 if archive_path.exists():
                     lines = archive_path.read_text().strip().splitlines()
                     archived = [json.loads(l) for l in lines]
-                    assert len(archived) == 2
-                    assert archived[0]["from_alias"] == "peer-alpha"
-                    assert archived[1]["from_alias"] == "peer-beta"
+                    # Filter out deferred c2c-system broadcasts (peer_register,
+                    # room-join) that fire on first poll_inbox / confirm step.
+                    user_archived = [a for a in archived if a.get("from_alias") != "c2c-system"]
+                    assert len(user_archived) == 2
+                    assert user_archived[0]["from_alias"] == "peer-alpha"
+                    assert user_archived[1]["from_alias"] == "peer-beta"
 
             # Step 7: Verify room membership (auto-joined test-room)
             send_jsonrpc(proc, {
