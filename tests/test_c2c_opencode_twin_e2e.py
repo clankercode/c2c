@@ -120,6 +120,43 @@ def _statefile_has_session(alias: str) -> bool:
         return False
 
 
+_LEAK_NEEDLES = ("opencode", "c2c start", "run-opencode-inst", "c2c_deliver_inbox", "inotifywait")
+
+
+def _opencode_procs_in(workdir: Path) -> list[tuple[int, str, str]]:
+    """Scan /proc for processes anchored to workdir whose cmdline looks
+    opencode-related. Returns (pid, cwd, cmdline) tuples."""
+    hits: list[tuple[int, str, str]] = []
+    wd = str(workdir.resolve())
+    self_pid = os.getpid()
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return hits
+    for name in entries:
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        if pid == self_pid:
+            continue
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            continue
+        if not (cwd == wd or cwd.startswith(wd + "/")):
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                cmd = fh.read().replace(b"\x00", b" ").decode(errors="replace").strip()
+        except OSError:
+            continue
+        if not cmd:
+            continue
+        if any(n in cmd for n in _LEAK_NEEDLES):
+            hits.append((pid, cwd, cmd))
+    return hits
+
+
 def _instance_dir(alias: str) -> Path:
     base = Path(os.path.expanduser("~/.local/share/c2c/instances"))
     return base / alias
@@ -317,3 +354,16 @@ def test_opencode_twin_e2e(tmp_path: Path, tmux_session) -> None:
     # Cleanup: stop both agents.
     for alias in (alias_a, alias_b):
         subprocess.run([C2C_BIN, "stop", alias], capture_output=True, text=True, check=False)
+
+    # Post-cleanup: no opencode-related processes should remain anchored to
+    # this workdir. Leaks here (orphan `c2c start`, `run-opencode-inst`,
+    # `node opencode`, `opencode` TUI, or stray `inotifywait` watchers)
+    # would otherwise accumulate across test runs and corrupt later shared
+    # state — catch them now rather than discover them via `ps ax` later.
+    assert _wait_for(
+        lambda: not _opencode_procs_in(workdir),
+        timeout=15.0,
+    ), (
+        "opencode-related processes still anchored to workdir after cleanup:\n"
+        + "\n".join(f"  pid={p} cwd={c} cmd={cmd}" for p, c, cmd in _opencode_procs_in(workdir))
+    )
