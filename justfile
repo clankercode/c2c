@@ -124,6 +124,14 @@ status:
 clean:
     opam exec -- dune clean
 
+# GUI dev server (requires webkit2gtk-4.1: sudo pacman -S webkit2gtk-4.1)
+gui-dev:
+    cd gui && bun run tauri dev
+
+# GUI TypeScript type-check
+gui-check:
+    cd gui && ./node_modules/.bin/tsc --noEmit
+
 # Stage and commit all staged changes with a message
 # Usage: just gc "fix: something"
 gc *MSG:
