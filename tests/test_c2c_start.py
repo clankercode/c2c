@@ -1377,5 +1377,98 @@ class PollInboxAliasFallbackTests(unittest.TestCase):
         self.assertEqual(msgs, [], f"expected [] without alias env, got: {msgs}")
 
 
+class C2CStartKickoffPromptTests(unittest.TestCase):
+    """Tests for --auto kickoff prompt and role file behaviors."""
+
+    CLI_TIMEOUT = 10
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self.broker_root = self.tmp_path / "broker"
+        self.broker_root.mkdir(parents=True)
+        self.instances_dir = self.tmp_path / "instances"
+        self.instances_dir.mkdir()
+        # Create .opencode dir so kickoff-prompt.txt write succeeds
+        (self.tmp_path / ".opencode").mkdir()
+        # Stub opencode binary that exits 0
+        stub = self.tmp_path / "opencode"
+        stub.write_text("#!/bin/sh\nexit 0\n")
+        stub.chmod(0o755)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run_start_auto(self, name: str, role: str | None = None) -> tuple[int, str, str]:
+        from conftest import spawn_tracked
+        env = {
+            **os.environ,
+            "PATH": str(self.tmp_path) + ":" + os.environ.get("PATH", ""),
+            "C2C_MCP_BROKER_ROOT": str(self.broker_root),
+            "C2C_INSTANCES_DIR": str(self.instances_dir),
+            "GIT_DIR": str(self.tmp_path / "no-such-git"),
+        }
+        if role is not None:
+            roles_dir = self.tmp_path / ".c2c" / "roles"
+            roles_dir.mkdir(parents=True, exist_ok=True)
+            (roles_dir / f"{name}.md").write_text(role)
+        proc = spawn_tracked(
+            [str(CLI_EXE), "start", "opencode", "--auto", "-n", name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            cwd=str(self.tmp_path),
+        )
+        try:
+            stdout, stderr = proc.communicate(timeout=self.CLI_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            self.fail(f"c2c start timed out")
+        return proc.returncode, stdout, stderr
+
+    def test_auto_writes_kickoff_prompt_file(self):
+        """--auto must write .opencode/kickoff-prompt.txt before launching."""
+        self._run_start_auto("kp-test-agent")
+        kp = self.tmp_path / ".opencode" / "kickoff-prompt.txt"
+        self.assertTrue(kp.exists(), "kickoff-prompt.txt must be written with --auto")
+
+    def test_kickoff_prompt_contains_alias(self):
+        """kickoff-prompt.txt must mention the agent's alias."""
+        self._run_start_auto("kp-alias-agent")
+        kp = (self.tmp_path / ".opencode" / "kickoff-prompt.txt").read_text()
+        self.assertIn("kp-alias-agent", kp)
+
+    def test_kickoff_prompt_contains_role_when_set(self):
+        """kickoff-prompt.txt must include the role when a role file exists."""
+        self._run_start_auto("kp-role-agent", role="senior planner and coordinator")
+        kp = (self.tmp_path / ".opencode" / "kickoff-prompt.txt").read_text()
+        self.assertIn("senior planner and coordinator", kp)
+
+    def test_no_kickoff_prompt_without_auto(self):
+        """Without --auto and no role, kickoff-prompt.txt must not be written."""
+        from conftest import spawn_tracked
+        env = {
+            **os.environ,
+            "PATH": str(self.tmp_path) + ":" + os.environ.get("PATH", ""),
+            "C2C_MCP_BROKER_ROOT": str(self.broker_root),
+            "C2C_INSTANCES_DIR": str(self.instances_dir),
+            "GIT_DIR": str(self.tmp_path / "no-such-git"),
+        }
+        proc = spawn_tracked(
+            [str(CLI_EXE), "start", "opencode", "-n", "no-auto-agent"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=env, cwd=str(self.tmp_path),
+        )
+        try:
+            proc.communicate(timeout=self.CLI_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+        kp = self.tmp_path / ".opencode" / "kickoff-prompt.txt"
+        self.assertFalse(kp.exists(), "kickoff-prompt.txt must not be written without --auto")
+
+
 if __name__ == "__main__":
     unittest.main()
