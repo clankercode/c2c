@@ -60,6 +60,6 @@ pytest tests/                          # 1097 passed, 1 skipped ✓
 
 - Bug #2 (hostname-based default aliases): **already fixed** — `c2c_start.ml:default_name` and `c2c.ml:default_alias_for_client` both use `generate_alias()` (random word pair from `alias_words[]`), not hostname. Verified 2026-04-21 by planner1.
 - Bug #3 (global plugin stub): **fixed — `6e1fd30`** (`c2c install opencode` guards against stub-sized source with `>= 1024` check; global plugin now 31KB real plugin). Verified 2026-04-21 by planner1.
-- Bug #4 (debug log PID prefix): partially done (boot banner + rotation added earlier)
+- Bug #4 (debug log PID prefix): **fully done** — `[pid=N]` on every log line (c2c.ts:745), boot banner with pid+sha256 (line 171), log rotation on init (line 164). "Partially done" was stale.
 - Bug #5 (cold-boot promptAsync): **fixed — `014a295`** — single 3s retry replaced with exponential-backoff loop (3s→6s→12s, up to 3 retries, 21s total budget). Needs live E2E validation.
 - Bug #7 (duplicate registry entries): **fixed — cfae0cc** (tristate liveness for alias-hijack guard; regression test 0da8015)
