@@ -430,6 +430,83 @@ let remove_pidfile (path : string) =
   try Sys.remove path with Unix.Unix_error _ | Sys_error _ -> ()
 
 (* ---------------------------------------------------------------------------
+ * Instance lock  — prevents two concurrent `c2c start` for the same name.
+ * Uses POSIX advisory record locks (lockf F_TLOCK via OCaml Unix.lockf).
+ * The kernel releases the lock automatically on process exit / crash, so
+ * no stale-lock cleanup is needed.
+ * --------------------------------------------------------------------------- *)
+
+(** Registry precheck: if the alias/session-id is already alive in the broker
+    registry, print a human-readable FATAL message and exit 1.  Called before
+    the flock so the common-case error says "alias foo is alive" rather than
+    the more opaque "lock held". *)
+let check_registry_alias_alive ~(broker_root : string) ~(name : string) : unit =
+  let reg_path = broker_root // "registry.json" in
+  if not (Sys.file_exists reg_path) then ()
+  else begin
+    match (try Some (Yojson.Safe.from_file reg_path) with _ -> None) with
+    | None -> ()
+    | Some (`List regs) ->
+        let alive_entry =
+          List.find_opt (fun r ->
+            match r with
+            | `Assoc fields ->
+                let sid   = (match List.assoc_opt "session_id" fields with Some (`String s) -> s | _ -> "") in
+                let alias = (match List.assoc_opt "alias"      fields with Some (`String a) -> a | _ -> "") in
+                (sid = name || alias = name) &&
+                (match List.assoc_opt "pid" fields with Some (`Int p) -> pid_alive p | _ -> false)
+            | _ -> false) regs
+        in
+        (match alive_entry with
+         | None -> ()
+         | Some (`Assoc fields) ->
+             let alias = (match List.assoc_opt "alias" fields with Some (`String a) -> a | _ -> name) in
+             let pid_s = (match List.assoc_opt "pid" fields with Some (`Int p) -> string_of_int p | _ -> "unknown") in
+             Printf.eprintf
+               "FATAL: alias '%s' is already alive in registry (pid %s).\n\
+                \  Stop it first:  c2c stop %s\n%!"
+               alias pid_s name;
+             exit 1
+         | _ -> ())
+    | _ -> ()
+  end
+
+(** Acquire an exclusive POSIX advisory lock on `outer_pid_path name`.
+    Writes our PID into the file.  Returns the open fd — caller MUST keep it
+    referenced for the lifetime of the outer process (closing it releases the
+    lock; the kernel does so automatically on process exit).
+    On conflict, prints FATAL and exits 1 immediately. *)
+let acquire_instance_lock ~(name : string) : Unix.file_descr =
+  let path = outer_pid_path name in
+  mkdir_p (Filename.dirname path);
+  let fd = Unix.openfile path [ Unix.O_RDWR; Unix.O_CREAT ] 0o644 in
+  match Unix.lockf fd Unix.F_TLOCK 0 with
+  | () ->
+      (* Lock acquired: truncate and write our PID. *)
+      Unix.ftruncate fd 0;
+      let s = string_of_int (Unix.getpid ()) ^ "\n" in
+      ignore (Unix.write_substring fd s 0 (String.length s));
+      fd
+  | exception Unix.Unix_error ((Unix.EAGAIN | Unix.EACCES | Unix.EWOULDBLOCK), _, _) ->
+      (* Another process holds the lock — read their PID for diagnostics. *)
+      let existing_pid =
+        try
+          ignore (Unix.lseek fd 0 Unix.SEEK_SET);
+          let buf = Bytes.create 32 in
+          let n = Unix.read fd buf 0 32 in
+          int_of_string_opt (String.trim (Bytes.sub_string buf 0 n))
+        with _ -> None
+      in
+      Unix.close fd;
+      Printf.eprintf
+        "FATAL: instance '%s' already running (pid %s).\n\
+         \  Stop it first:  c2c stop %s\n%!"
+        name
+        (Option.fold ~none:"unknown" ~some:string_of_int existing_pid)
+        name;
+      exit 1
+
+(* ---------------------------------------------------------------------------
  * Cleanup stale OpenUI Zig cache
  * --------------------------------------------------------------------------- *)
 
@@ -856,7 +933,12 @@ let run_outer_loop ~(name : string) ~(client : string)
 
       let inst_dir = instance_dir name in
       mkdir_p inst_dir;
-      write_pid (outer_pid_path name) (Unix.getpid ());
+      (* Registry precheck: human-readable "alias alive" error before flock. *)
+      check_registry_alias_alive ~broker_root ~name;
+      (* Exclusive instance lock: prevents two concurrent starts for the same
+         name; kernel releases on exit so no stale-lock cleanup needed.
+         _lock_fd must stay in scope to hold the lock for the outer lifetime. *)
+      let _lock_fd = acquire_instance_lock ~name in
 
       let deliver_pid = ref None in
       let poker_pid = ref None in
