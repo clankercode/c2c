@@ -27,6 +27,18 @@ BROKER_ROOT = REPO_ROOT / ".git" / "c2c" / "mcp"
 PLUGIN_SRC = REPO_ROOT / ".opencode" / "plugins" / "c2c.ts"
 PLUGIN_PACKAGE_JSON = {"dependencies": {"@opencode-ai/plugin": "1.4.3"}}
 GLOBAL_PLUGIN_DIR = Path.home() / ".config" / "opencode" / "plugins"
+C2C_CLI_PATH = Path.home() / ".local" / "bin" / "c2c"
+
+
+def resolve_c2c_bin() -> str:
+    """Return absolute path of the c2c binary, for C2C_CLI_COMMAND."""
+    bin_path = shutil.which("c2c", path=str(Path.home() / ".local" / "bin"))
+    if bin_path:
+        return bin_path
+    fallback = Path.home() / ".local" / "bin" / "c2c"
+    if fallback.exists():
+        return str(fallback)
+    return "c2c"
 
 
 def derive_session_id(target_dir: Path) -> str:
@@ -51,6 +63,11 @@ def build_config() -> dict:
                     # Per-instance identity is set in the process env by build_env.
                     "C2C_MCP_AUTO_DRAIN_CHANNEL": "0",
                     "C2C_MCP_AUTO_JOIN_ROOMS": "swarm-lounge",
+                    # Pin the c2c binary to an absolute path so a CWD-relative
+                    # ./c2c shim can never be accidentally preferred (fork-bomb
+                    # prevention). Matches the C2C_CLI_COMMAND set by build_env
+                    # for managed sessions started via `c2c start opencode`.
+                    "C2C_CLI_COMMAND": resolve_c2c_bin(),
                 },
                 "enabled": True,
             }
