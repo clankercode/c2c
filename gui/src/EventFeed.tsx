@@ -116,8 +116,17 @@ interface Props {
 
 export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", focusHistoryEvents = [], onClearFocus }: Props) {
   const [filter, setFilter] = useState<Filter>("all");
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const listRef = useRef<HTMLDivElement>(null);
   const prevLenRef = useRef(0);
+
+  function toggleExpand(i: number) {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i); else next.add(i);
+      return next;
+    });
+  }
 
   let visible: C2cEvent[];
   if (selectedRoom) {
@@ -180,22 +189,47 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
             {focusLabel ? `No messages with ${selectedRoom ?? selectedPeer} yet.` : "No events match filter."}
           </div>
         ) : (
-          visible.map((e, i) => (
-            <div
-              key={i}
-              style={{
-                padding: "3px 8px",
-                borderBottom: "1px solid #1e1e2e",
-                opacity: (e as { _historical?: boolean })._historical ? 0.65 : 1,
-              }}
-            >
-              <span style={{ color: "#45475a", marginRight: 8, fontSize: 11 }}>
-                {new Date(parseFloat(e.monitor_ts) * 1000).toLocaleTimeString()}
-              </span>
-              <span style={{ marginRight: 6 }}>{eventIcon(e)}</span>
-              <span style={{ color: eventColor(e) }}>{eventLabel(e)}</span>
-            </div>
-          ))
+          visible.map((e, i) => {
+            const isMsg = e.event_type === "message";
+            const isExpanded = expanded.has(i);
+            const m = isMsg ? (e as MessageEvent) : null;
+            const isTruncated = isMsg && m!.content.length > 120;
+            return (
+              <div
+                key={i}
+                onClick={() => isMsg && isTruncated && toggleExpand(i)}
+                style={{
+                  padding: "3px 8px",
+                  borderBottom: "1px solid #1e1e2e",
+                  opacity: (e as { _historical?: boolean })._historical ? 0.65 : 1,
+                  cursor: isMsg && isTruncated ? "pointer" : "default",
+                  background: isExpanded ? "#1e1e2e" : "transparent",
+                }}
+              >
+                <span style={{ color: "#45475a", marginRight: 8, fontSize: 11 }}>
+                  {new Date(parseFloat(e.monitor_ts) * 1000).toLocaleTimeString()}
+                </span>
+                <span style={{ marginRight: 6 }}>{eventIcon(e)}</span>
+                <span style={{ color: eventColor(e) }}>
+                  {isMsg && m ? (
+                    isExpanded ? (
+                      <>
+                        <span style={{ color: "#89b4fa" }}>{m.from_alias} → {m.to_alias}: </span>
+                        <span style={{ whiteSpace: "pre-wrap" }}>{m.content}</span>
+                      </>
+                    ) : (
+                      eventLabel(e)
+                    )
+                  ) : (
+                    eventLabel(e)
+                  )}
+                </span>
+                {isMsg && isTruncated && !isExpanded && (
+                  <span style={{ color: "#45475a", fontSize: 10, marginLeft: 6 }}>▸</span>
+                )}
+              </div>
+            );
+          })
         )}
       </div>
     </div>
