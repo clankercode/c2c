@@ -465,6 +465,7 @@ let build_env ?(broker_root_override : string option = None) (name : string) (al
   let br = Option.value broker_root_override ~default:(broker_root ()) in
   let additions = [
     "C2C_MCP_SESSION_ID", name;
+    "C2C_INSTANCE_NAME", name;
     "C2C_MCP_AUTO_REGISTER_ALIAS", Option.value alias_override ~default:name;
     "C2C_MCP_BROKER_ROOT", br;
     "C2C_MCP_AUTO_JOIN_ROOMS", "swarm-lounge";
