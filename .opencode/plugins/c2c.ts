@@ -306,6 +306,12 @@ const C2CDelivery: Plugin = async (ctx) => {
     prompt: {
       has_text: boolean | null;
     };
+    pendingQuestion: {
+      id: string;
+      text: string;
+      header: string;
+      options: string[];
+    } | null;
   };
   type StateSnapshotEnvelope = {
     event: "state.snapshot";
@@ -341,6 +347,7 @@ const C2CDelivery: Plugin = async (ctx) => {
     prompt: {
       has_text: null,
     },
+    pendingQuestion: null,
   };
   let stateWriterProc: ReturnType<typeof spawn> | null = null;
   let stateWriterAvailable = false;
