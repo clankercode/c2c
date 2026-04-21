@@ -1877,6 +1877,7 @@ module Relay_client : sig
   val heartbeat : t -> node_id:string -> session_id:string -> Yojson.Safe.t Lwt.t
   val heartbeat_signed : t -> node_id:string -> session_id:string -> auth_header:string -> Yojson.Safe.t Lwt.t
   val list_peers : t -> ?include_dead:bool -> unit -> Yojson.Safe.t Lwt.t
+  val list_peers_signed : t -> ?include_dead:bool -> auth_header:string -> unit -> Yojson.Safe.t Lwt.t
   val send :
     t -> from_alias:string -> to_alias:string -> content:string ->
     ?message_id:string -> unit -> Yojson.Safe.t Lwt.t
@@ -2043,6 +2044,12 @@ end = struct
 
   let list_peers t ?(include_dead = false) () =
     if include_dead then get t "/list?include_dead=1" else get t "/list"
+
+  let list_peers_signed t ?(include_dead = false) ~auth_header () =
+    if include_dead then
+      request t ~meth:`GET ~path:"/list?include_dead=1" ~auth_override:auth_header ()
+    else
+      request t ~meth:`GET ~path:"/list" ~auth_override:auth_header ()
 
   let poll_inbox_signed t ~node_id ~session_id ~auth_header =
     let body = `Assoc [

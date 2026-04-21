@@ -2787,7 +2787,14 @@ let relay_list_cmd =
       exit 1
   | Some url ->
       let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
-      let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.list_peers client ~include_dead:dead ()) in
+      let alias = Option.value ~default:"anon" (env_auto_alias ()) in
+      let result = (match Relay_identity.load () with
+        | Ok id ->
+            let path = if dead then "/list" else "/list" in
+            let auth = Relay_signed_ops.sign_request id ~alias ~meth:"GET" ~path ~body_str:"" () in
+            Lwt_main.run (C2c_mcp.Relay.Relay_client.list_peers_signed client ~include_dead:dead ~auth_header:auth ())
+        | Error _ ->
+            Lwt_main.run (C2c_mcp.Relay.Relay_client.list_peers client ~include_dead:dead ())) in
       print_endline (Yojson.Safe.pretty_to_string result);
       (match result with
        | `Assoc fields ->

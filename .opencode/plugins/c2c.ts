@@ -531,6 +531,8 @@ const C2CDelivery: Plugin = async (ctx) => {
   // --- Return hooks ---
   return {
     event: async ({ event }: { event: Event }) => {
+      // Log every event type for debugging (permission hook, delivery, etc.)
+      await log(`event: type=${event.type}`);
       // Track root session ID from creation events — also trigger immediate delivery
       // so queued messages arrive without waiting for the next background loop tick.
       if (event.type === "session.created") {
