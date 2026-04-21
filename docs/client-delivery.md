@@ -186,6 +186,13 @@ deliverMessages calls c2c poll-inbox --json → passes to promptAsync
 Note: c2c_opencode_wake_daemon.py (PTY path) is DEPRECATED — do not use.
 ```
 
+### Plugin state streaming
+
+The OpenCode plugin also streams root-session state to `c2c oc-plugin stream-write-statefile`
+using a JSONL protocol (`state.snapshot` + `state.patch`). See
+[`docs/opencode-plugin-statefile-protocol.md`](opencode-plugin-statefile-protocol.md)
+for the full contract.
+
 ### Message notification
 
 Both delivery paths keep messages broker-native — `c2c verify` counts them from the transcript correctly.
