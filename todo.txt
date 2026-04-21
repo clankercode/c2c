@@ -1,4 +1,5 @@
-- [ ] `c2c start` should error if started from within a c2c session. It's okay for it to be spawned in tmux or whatever, but should not be run directly from an agent's bash tool. c2c should error with a message explainign this. 
-- [ ] similar to joining, when an agent leaves/disconnects it should notify the room, too
-- [ ] to autostart opencode wiht a prompt and have it execute, use `opencode --prompt '<the prompt>'`
-- [ ] opencode still doesn't launch/resume right; use --prompt for new sessions, but need to use plugin injection for existing sessions. 
+- [x] `c2c start` should error if started from within a c2c session. (commit 3460531, guard confirmed by galaxy-coder)
+- [x] similar to joining, when an agent leaves/disconnects it should notify the room, too (commit 5c09856)
+- [x] to autostart opencode with a prompt, use `c2c start opencode --kickoff-prompt '<prompt>'` (commit 0caafc4)
+- [x] opencode launch/resume: --kickoff-prompt for new sessions, plugin injection for existing sessions. (confirmed by galaxy-coder)
+- [x] session conflict: refresh_opencode_identity wrote to shared .opencode/c2c-plugin.json; now writes to instances/<name>/c2c-plugin.json per-instance (commit 0caafc4)
