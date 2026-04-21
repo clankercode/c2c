@@ -579,6 +579,81 @@ class Ed25519SigningTests(unittest.TestCase):
         auth = captured.get("auth", "")
         self.assertEqual(auth, "Bearer my-bearer-tok")
 
+    def test_join_room_uses_ed25519_auth_when_identity_present(self):
+        """join_room() Authorization header is Ed25519 when identity is loaded (fix: 970940f)."""
+        import tempfile
+        from unittest.mock import patch, MagicMock
+
+        with tempfile.TemporaryDirectory() as d:
+            p, _ = self._make_temp_identity(Path(d))
+            client = RelayClient("http://127.0.0.1:9999", token="tok",
+                                 identity_path=str(p))
+
+        captured = {}
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["auth"] = req.get_header("Authorization")
+            resp = MagicMock()
+            resp.read.return_value = b'{"ok": true}'
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            client.join_room("my-alias", "swarm-lounge")
+
+        auth = captured.get("auth", "")
+        self.assertTrue(auth.startswith("Ed25519 "), f"Expected Ed25519 header, got: {auth}")
+
+    def test_leave_room_uses_ed25519_auth_when_identity_present(self):
+        """leave_room() Authorization header is Ed25519 when identity is loaded (fix: 970940f)."""
+        import tempfile
+        from unittest.mock import patch, MagicMock
+
+        with tempfile.TemporaryDirectory() as d:
+            p, _ = self._make_temp_identity(Path(d))
+            client = RelayClient("http://127.0.0.1:9999", token="tok",
+                                 identity_path=str(p))
+
+        captured = {}
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["auth"] = req.get_header("Authorization")
+            resp = MagicMock()
+            resp.read.return_value = b'{"ok": true}'
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            client.leave_room("my-alias", "swarm-lounge")
+
+        auth = captured.get("auth", "")
+        self.assertTrue(auth.startswith("Ed25519 "), f"Expected Ed25519 header, got: {auth}")
+
+    def test_send_room_uses_ed25519_auth_when_identity_present(self):
+        """send_room() Authorization header is Ed25519 when identity is loaded (fix: 970940f)."""
+        import tempfile
+        from unittest.mock import patch, MagicMock
+
+        with tempfile.TemporaryDirectory() as d:
+            p, _ = self._make_temp_identity(Path(d))
+            client = RelayClient("http://127.0.0.1:9999", token="tok",
+                                 identity_path=str(p))
+
+        captured = {}
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["auth"] = req.get_header("Authorization")
+            resp = MagicMock()
+            resp.read.return_value = b'{"ok": true}'
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            client.send_room("my-alias", "swarm-lounge", "hello world")
+
+        auth = captured.get("auth", "")
+        self.assertTrue(auth.startswith("Ed25519 "), f"Expected Ed25519 header, got: {auth}")
+
 
 if __name__ == "__main__":
     unittest.main()
