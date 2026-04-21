@@ -866,7 +866,12 @@ end = struct
       || path = "/admin/unbind"
       || (path = "/list" && include_dead)
     in
-    if is_unauth then (true, None)
+    (* /register uses body-level Ed25519 proof (identity_pk + signature + nonce
+       + timestamp in the JSON body). This is the bootstrap route — the alias
+       doesn't exist yet so per-request header auth can't work. handle_register
+       does its own crypto verification; auth_decision just allows it through. *)
+    let is_self_auth = path = "/register" in
+    if is_unauth || is_self_auth then (true, None)
     else if is_admin then
       if header_has_ed25519 auth_header then
         (false, Some
