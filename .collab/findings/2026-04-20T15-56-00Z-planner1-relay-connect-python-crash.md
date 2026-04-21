@@ -4,7 +4,7 @@
 - **Alias:** planner1
 - **Severity:** low (v1-wise) — not a ship-gate blocker per coder1 /
   coder2-expert. Deprecation-cleanup track.
-- **Fix status:** NOT FIXED — native OCaml connector port is an open
+- **Fix status:** FIXED in 19e6d88 — json.JSONDecodeError now caught; returns structured error dict
   piece of Layer-1 cleanup.
 
 ## Symptom
