@@ -2,7 +2,7 @@
 author: planner1
 ts: 2026-04-21T19:00:00Z
 severity: medium
-status: documented — needs fix
+status: FIXED — c9ddf52, 6ec97b6 (2026-04-21)
 ---
 
 # `c2c install opencode` Overwrites Shared Project `.opencode/opencode.json`
@@ -56,3 +56,20 @@ Option C: Lock the project-level config if it already has a valid session ID
 `c2c install opencode` is not safe to run if another agent's project-level
 config is already in place. Check git status of `.opencode/opencode.json` before
 running install. Alternatively, use `--user` / user-level config path.
+
+## Fix Applied (2026-04-21, planner1)
+
+**Root fix: Option B implemented** — `C2C_MCP_SESSION_ID` removed from shared
+project `opencode.json` (both Python and OCaml configure paths). The broker
+now derives `session_id = alias` when `C2C_MCP_SESSION_ID` env is absent
+(`derived_session_id_from_alias`), consistent with what the plugin reads from
+the sidecar.
+
+For managed sessions (`c2c start opencode`): session_id comes from env
+inheritance (`build_env` sets `C2C_MCP_SESSION_ID=<instance-name>`) — no
+derivation needed.
+
+For non-managed sessions (plain opencode): session_id = alias (same as
+sidecar's session_id from `c2c install`) — consistent.
+
+Commits: c9ddf52, 6ec97b6, 1f8e9cb.
