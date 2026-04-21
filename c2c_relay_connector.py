@@ -60,6 +60,7 @@ from c2c_relay_contract import derive_node_id
 
 _UNIT_SEP = "\x1f"
 _REQUEST_SIGN_CTX = "c2c/v1/request"
+_REGISTER_SIGN_CTX = "c2c/v1/register"
 
 # Routes that use Bearer (admin) — everything else is a peer route needing Ed25519.
 _ADMIN_PATHS = {"/gc", "/dead_letter", "/admin/unbind"}
@@ -108,6 +109,42 @@ def _sign_peer_request(identity: dict, alias: str, method: str, path: str,
     blob = _UNIT_SEP.join([_REQUEST_SIGN_CTX, method.upper(), path, "", body_hash, ts, nonce])
     sig = priv.sign(blob.encode())
     return f"Ed25519 alias={alias},ts={ts},nonce={nonce},sig={_b64url_nopad(sig)}"
+
+
+def _sign_register_body(identity: dict, alias: str, relay_url: str) -> dict:
+    """Build extra body fields for a signed /register request (body-level proof).
+
+    Returns a dict with identity_pk, signature, nonce, timestamp fields that
+    should be merged into the register request body. The relay's handle_register
+    will verify this proof and bind the identity_pk to the alias for future
+    Ed25519 peer route auth.
+
+    Canonical blob (matching OCaml relay_signed_ops.sign_register):
+      "c2c/v1/register" + \\x1f + alias + \\x1f + relay_url.lower() + \\x1f
+        + pk_b64 + \\x1f + ts + \\x1f + nonce
+    """
+    pk_b64 = identity.get("public_key", "")
+    sk_b64 = identity.get("private_key", "")
+    if not pk_b64 or not sk_b64:
+        raise ValueError("identity missing public_key or private_key")
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    sk_bytes = base64.urlsafe_b64decode(sk_b64 + "==")
+    priv = Ed25519PrivateKey.from_private_bytes(sk_bytes)
+
+    import datetime
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    nonce = _b64url_nopad(secrets.token_bytes(16))
+
+    blob = _UNIT_SEP.join([_REGISTER_SIGN_CTX, alias,
+                           relay_url.lower().rstrip("/"), pk_b64, ts, nonce])
+    sig = priv.sign(blob.encode())
+    return {
+        "identity_pk": pk_b64,
+        "signature": _b64url_nopad(sig),
+        "nonce": nonce,
+        "timestamp": ts,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -183,10 +220,17 @@ class RelayClient:
 
     def register(self, node_id: str, session_id: str, alias: str,
                  client_type: str = "unknown", ttl: float = 300.0) -> dict:
-        return self._request("POST", "/register", {
+        body: dict = {
             "node_id": node_id, "session_id": session_id, "alias": alias,
-            "client_type": client_type, "ttl": ttl,
-        })
+            "client_type": client_type, "ttl": int(ttl),
+        }
+        if self._identity:
+            try:
+                extra = _sign_register_body(self._identity, alias, self.base_url)
+                body.update(extra)
+            except Exception:
+                pass  # unsigned register — falls back to legacy (no pk binding)
+        return self._request("POST", "/register", body)
 
     def heartbeat(self, node_id: str, session_id: str, alias: Optional[str] = None) -> dict:
         return self._request("POST", "/heartbeat",

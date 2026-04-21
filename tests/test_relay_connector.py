@@ -428,6 +428,32 @@ class Ed25519SigningTests(unittest.TestCase):
         self.assertIsNotNone(client._identity)
         self.assertEqual(client._identity["alg"], "ed25519")
 
+    def test_sign_register_body_has_required_fields(self):
+        from c2c_relay_connector import _sign_register_body
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p, identity = self._make_temp_identity(Path(d))
+            extra = _sign_register_body(identity, "my-agent", "https://relay.example.com")
+        for field in ("identity_pk", "signature", "nonce", "timestamp"):
+            self.assertIn(field, extra)
+        self.assertEqual(extra["identity_pk"], identity["public_key"])
+
+    def test_sign_register_body_signature_verifies(self):
+        from c2c_relay_connector import _sign_register_body, _b64url_nopad, _UNIT_SEP, _REGISTER_SIGN_CTX
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        import base64, tempfile
+        alias = "my-agent"
+        relay_url = "https://relay.example.com"
+        with tempfile.TemporaryDirectory() as d:
+            p, identity = self._make_temp_identity(Path(d))
+            extra = _sign_register_body(identity, alias, relay_url)
+        pk_bytes = base64.urlsafe_b64decode(identity["public_key"] + "==")
+        pub = Ed25519PublicKey.from_public_bytes(pk_bytes)
+        sig = base64.urlsafe_b64decode(extra["signature"] + "==")
+        blob = _UNIT_SEP.join([_REGISTER_SIGN_CTX, alias, relay_url.lower().rstrip("/"),
+                               extra["identity_pk"], extra["timestamp"], extra["nonce"]])
+        pub.verify(sig, blob.encode())  # raises if invalid
+
 
 if __name__ == "__main__":
     unittest.main()
