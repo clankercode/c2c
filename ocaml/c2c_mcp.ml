@@ -2047,11 +2047,20 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
         | Some pid -> Some pid
         | None -> Some (Unix.getppid ())
       in
-      (* Detect alias rename before registering so we can notify rooms. *)
+      (* Detect alias rename before registering so we can notify rooms.
+         A rename is genuine only when the same process (matched by PID) is
+         re-registering under a new alias.  If the PID differs — or is absent
+         on the old registration — this is a new session reusing the same
+         session_id (common with `c2c start`), not an intentional rename.
+         Requiring pid match prevents spurious peer_renamed events when e.g.
+         c2c start relaunches an instance under the same name. *)
       let old_alias_opt =
         let existing =
           List.find_opt
-            (fun reg -> reg.session_id = session_id && reg.alias <> alias)
+            (fun reg ->
+              reg.session_id = session_id
+              && reg.alias <> alias
+              && reg.pid = pid)   (* same process = intentional rename *)
             (Broker.list_registrations broker)
         in
         match existing with

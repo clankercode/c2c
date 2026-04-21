@@ -74,6 +74,7 @@ def start_server(
     auto_register_alias: str = "",
     auto_join_rooms: str = "",
     watcher_delay: str = "0",
+    client_pid: int | None = None,
 ) -> subprocess.Popen:
     """Start the MCP server as a subprocess.
 
@@ -81,6 +82,9 @@ def start_server(
     existing tests observe near-immediate channel delivery. Delay-
     specific tests (TestWatcherDrainDelay) pass an explicit non-zero
     value.
+
+    client_pid: if set, overrides C2C_MCP_CLIENT_PID so the register
+    tool uses this PID for rename-guard comparisons.
     """
     env = {
         **os.environ,
@@ -92,6 +96,8 @@ def start_server(
         "C2C_MCP_AUTO_JOIN_ROOMS": auto_join_rooms,
         "C2C_MCP_INBOX_WATCHER_DELAY": watcher_delay,
     }
+    if client_pid is not None:
+        env["C2C_MCP_CLIENT_PID"] = str(client_pid)
     return spawn_tracked(
         [str(MCP_SERVER_EXE)],
         stdin=subprocess.PIPE,
@@ -793,5 +799,164 @@ class TestChannelDeliveryDisabled:
                 f"Should not emit notifications when delivery disabled: {channel_notifs}"
             )
         finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
+
+def _call_register(proc: subprocess.Popen, alias: str) -> dict:
+    """Call register tool and return the JSON-RPC response."""
+    send_jsonrpc(proc, {
+        "jsonrpc": "2.0", "id": 99,
+        "method": "tools/call",
+        "params": {"name": "register", "arguments": {"alias": alias}},
+    })
+    return read_jsonrpc(proc)
+
+
+def _poll_room_history(proc: subprocess.Popen, room_id: str, limit: int = 20) -> list[dict]:
+    """Return parsed room history messages."""
+    send_jsonrpc(proc, {
+        "jsonrpc": "2.0", "id": 88,
+        "method": "tools/call",
+        "params": {"name": "room_history", "arguments": {"room_id": room_id, "limit": limit}},
+    })
+    resp = read_jsonrpc(proc)
+    text = resp.get("result", {}).get("content", [{}])[0].get("text", "[]")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return []
+
+
+class TestPeerRenameGuard:
+    """Verify peer_renamed is only emitted for same-PID re-registration.
+
+    Background: 'c2c start' sets C2C_MCP_SESSION_ID=<instance_name>, so
+    two unrelated processes can share a session_id.  Without a PID check,
+    either process re-registering under a different alias would emit a
+    spurious peer_renamed notification to every room member.  The fix
+    requires that the incoming PID (C2C_MCP_CLIENT_PID) matches the
+    existing registration's PID before treating it as a rename.
+    """
+
+    def test_no_peer_renamed_when_pid_differs(self, broker_dir: Path) -> None:
+        """New process reuses same session_id but has different PID — no rename."""
+        room = "rename-guard-test"
+        own_pid = os.getpid()
+
+        # Observer joins the room so it would receive any peer_renamed messages.
+        obs = start_server(
+            str(broker_dir), "session-obs",
+            channel_delivery=False,
+            auto_register_alias="obs-watcher",
+            auto_join_rooms=room,
+        )
+        time.sleep(0.2)
+
+        # First process: session "shared-id", PID=own_pid, alias "alice", joins room.
+        proc_a = start_server(
+            str(broker_dir), "shared-id",
+            channel_delivery=False,
+            auto_register_alias="alice",
+            auto_join_rooms=room,
+            client_pid=own_pid,
+        )
+        time.sleep(0.2)
+
+        try:
+            initialize_server(obs)
+            initialize_server(proc_a)
+            time.sleep(0.1)
+
+            # Second process: same session_id "shared-id", DIFFERENT PID (proc_b's own pid).
+            # This simulates c2c start relaunching the same named instance.
+            proc_b = start_server(
+                str(broker_dir), "shared-id",
+                channel_delivery=False,
+                auto_register_alias="bob",
+                client_pid=None,  # falls back to getppid() → different from own_pid
+            )
+            try:
+                initialize_server(proc_b)
+                time.sleep(0.2)
+                # Register "bob" explicitly (auto_register may have already done it,
+                # but this ensures the tool call path is exercised with proc_b's PID).
+                _call_register(proc_b, "bob")
+                time.sleep(0.3)
+
+                # Observer polls inbox: should NOT contain any peer_renamed.
+                send_jsonrpc(obs, {
+                    "jsonrpc": "2.0", "id": 77,
+                    "method": "tools/call",
+                    "params": {"name": "poll_inbox", "arguments": {}},
+                })
+                poll_resp = read_jsonrpc(obs)
+                poll_text = poll_resp.get("result", {}).get("content", [{}])[0].get("text", "[]")
+                messages = json.loads(poll_text)
+                renamed_msgs = [
+                    m for m in messages
+                    if isinstance(m.get("content"), str) and "peer_renamed" in m["content"]
+                ]
+                # Also check room history.
+                history = _poll_room_history(obs, room)
+                renamed_in_history = [
+                    h for h in history
+                    if isinstance(h.get("content"), str) and "peer_renamed" in h["content"]
+                ]
+                assert not renamed_msgs, f"Spurious peer_renamed in inbox: {renamed_msgs}"
+                assert not renamed_in_history, f"Spurious peer_renamed in room history: {renamed_in_history}"
+            finally:
+                proc_b.terminate()
+                proc_b.wait(timeout=5)
+        finally:
+            obs.terminate()
+            obs.wait(timeout=5)
+            proc_a.terminate()
+            proc_a.wait(timeout=5)
+
+    def test_peer_renamed_fires_when_same_pid_reregisters(self, broker_dir: Path) -> None:
+        """Same process registers under a new alias — peer_renamed must fire."""
+        room = "rename-same-pid-test"
+        own_pid = os.getpid()
+
+        obs = start_server(
+            str(broker_dir), "session-obs2",
+            channel_delivery=False,
+            auto_register_alias="obs2",
+            auto_join_rooms=room,
+        )
+        time.sleep(0.2)
+
+        # Agent: same PID for both registration calls.
+        proc = start_server(
+            str(broker_dir), "agent-session",
+            channel_delivery=False,
+            auto_register_alias="agent-old",
+            auto_join_rooms=room,
+            client_pid=own_pid,
+        )
+        time.sleep(0.2)
+
+        try:
+            initialize_server(obs)
+            initialize_server(proc)
+            time.sleep(0.1)
+
+            # Re-register with a new alias, same PID → should be a rename.
+            _call_register(proc, "agent-new")
+            time.sleep(0.3)
+
+            # Room history should contain a peer_renamed message.
+            history = _poll_room_history(obs, room)
+            renamed_in_history = [
+                h for h in history
+                if isinstance(h.get("content"), str) and "peer_renamed" in h["content"]
+            ]
+            assert renamed_in_history, (
+                f"Expected peer_renamed in room history but got: {history}"
+            )
+        finally:
+            obs.terminate()
+            obs.wait(timeout=5)
             proc.terminate()
             proc.wait(timeout=5)
