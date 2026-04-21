@@ -184,6 +184,11 @@ describe('c2c plugin unit tests', () => {
     process.env.C2C_PLUGIN_DELIVER_ON_IDLE = '1';
     // Skip cold-boot delay so session.created tests complete without timeout
     process.env.C2C_PLUGIN_COLD_BOOT_DELAY_MS = '0';
+    // Isolate from shell environment: clear any C2C_KICKOFF_PROMPT_PATH and
+    // C2C_AUTO_KICKOFF that would cause the plugin to read the host instance's
+    // kickoff file instead of treating the test as kickoff-incapable.
+    delete process.env.C2C_KICKOFF_PROMPT_PATH;
+    delete process.env.C2C_AUTO_KICKOFF;
   });
 
   afterEach(() => {
