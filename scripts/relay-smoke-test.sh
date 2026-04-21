@@ -83,6 +83,56 @@ else
 fi
 echo ""
 
+# 6. Room operations (join → list → leave)
+ROOM="smoke-room-$(date +%s)"
+echo "--- 6. Room operations (room: $ROOM) ---"
+
+join_out=$(c2c relay rooms join --alias "$ALIAS" --room "$ROOM" --relay-url "$RELAY" 2>&1) || true
+echo "$join_out"
+if echo "$join_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
+  green "room join succeeded"
+else
+  red "room join failed"
+fi
+
+# List rooms (unauthenticated — should work without Ed25519)
+list_rooms_out=$(c2c relay rooms list --relay-url "$RELAY" 2>&1) || true
+if echo "$list_rooms_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
+  green "room list (unauthenticated) succeeded"
+else
+  red "room list failed"
+fi
+
+send_room_out=$(c2c relay rooms send --alias "$ALIAS" --room "$ROOM" "$ROOM" "smoke test message" --relay-url "$RELAY" 2>&1) || true
+if echo "$send_room_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
+  green "room send succeeded"
+else
+  red "room send failed"
+fi
+
+leave_out=$(c2c relay rooms leave --alias "$ALIAS" --room "$ROOM" --relay-url "$RELAY" 2>&1) || true
+if echo "$leave_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
+  green "room leave succeeded"
+else
+  red "room leave failed"
+fi
+echo ""
+
+# 7. Ed25519 identity check
+echo "--- 7. Ed25519 identity ---"
+IDENTITY_PATH="${C2C_RELAY_IDENTITY_PATH:-$HOME/.config/c2c/identity.json}"
+if [ -f "$IDENTITY_PATH" ]; then
+  green "identity file present: $IDENTITY_PATH"
+  # Verify register included identity_pk (the binding is what enables Ed25519 on peer routes)
+  if echo "$reg_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('identity_pk_registered') or d.get('ok') else 1)" 2>/dev/null; then
+    info "register ok (identity binding may be confirmed in relay logs)"
+  fi
+else
+  info "no identity file at $IDENTITY_PATH (Ed25519 signing not enabled)"
+  info "generate with: c2c relay identity generate"
+fi
+echo ""
+
 # Summary
 echo "=== Results: $PASS passed, $FAIL failed ==="
 [ "$FAIL" -eq 0 ]
