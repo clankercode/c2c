@@ -5367,6 +5367,18 @@ let doctor = Cmdliner.Cmd.v (Cmdliner.Cmd.info "doctor"
 
 (* --- subcommand: start ---------------------------------------------------- *)
 
+let default_kickoff_prompt ~name ~alias =
+  Printf.sprintf
+    "You have been started as a c2c swarm agent.\n\
+     Instance: %s  Alias: %s\n\n\
+     Getting started:\n\
+     1. Poll your inbox:  use the MCP poll_inbox tool (or: c2c poll-inbox)\n\
+     2. See active peers: c2c list\n\
+     3. Post in the lounge: send_room swarm-lounge with a hello message\n\
+     4. Read CLAUDE.md for the mission brief and open tasks\n\n\
+     The swarm coordinates via c2c instant messaging. You are now part of it."
+    name alias
+
 let start_cmd =
   let client =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"CLIENT" ~doc:"Client to start (claude, codex, kimi, opencode, crush).")
@@ -5386,12 +5398,20 @@ let start_cmd =
   let one_hr_cache =
     Cmdliner.Arg.(value & flag & info [ "1hr-cache" ] ~doc:"Set ENABLE_PROMPT_CACHING_1H=1 (claude only; default off — 1h cache writes cost 2x, only worth it if you hit the cache).")
   in
+  let auto_flag =
+    Cmdliner.Arg.(value & flag & info [ "auto" ] ~doc:"Write a getting-started kickoff prompt that the plugin delivers on first session.idle. OpenCode only.")
+  in
+  let kickoff_prompt_opt =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "kickoff-prompt" ] ~docv:"TEXT" ~doc:"Custom kickoff prompt text (implies --auto). OpenCode only.")
+  in
   let+ client = client
   and+ name_opt = name
   and+ alias_opt = alias
   and+ bin_opt = bin
   and+ session_id_opt = session_id
-  and+ one_hr_cache = one_hr_cache in
+  and+ one_hr_cache = one_hr_cache
+  and+ auto_flag = auto_flag
+  and+ kickoff_prompt_text = kickoff_prompt_opt in
   let name = match name_opt with
     | Some n -> n
     | None ->
@@ -5399,7 +5419,14 @@ let start_cmd =
         Printf.eprintf "[c2c start] no -n given; auto-picked name=%s. Pass -n NAME to override.\n%!" n;
         n
   in
-  exit (C2c_start.cmd_start ~client ~name ~extra_args:[] ?binary_override:bin_opt ?alias_override:alias_opt ?session_id_override:session_id_opt ~one_hr_cache ())
+  let effective_alias = Option.value alias_opt ~default:name in
+  let kickoff_prompt =
+    match kickoff_prompt_text with
+    | Some t -> Some t
+    | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:effective_alias)
+    | None -> None
+  in
+  exit (C2c_start.cmd_start ~client ~name ~extra_args:[] ?binary_override:bin_opt ?alias_override:alias_opt ?session_id_override:session_id_opt ~one_hr_cache ?kickoff_prompt ())
 
 let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Start a managed c2c instance.") start_cmd
 

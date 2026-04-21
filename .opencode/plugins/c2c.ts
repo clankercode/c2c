@@ -897,6 +897,41 @@ const C2CDelivery: Plugin = async (ctx) => {
     if (failed.length === 0) pendingToastShown = false;
   }
 
+  // ---------------------------------------------------------------------------
+  // Kickoff prompt — one-shot getting-started message written by c2c start --auto
+  // ---------------------------------------------------------------------------
+
+  const kickoffPromptPath = path.join(process.cwd(), ".opencode", "kickoff-prompt.txt");
+  let kickoffDelivered = false;
+
+  /** Deliver .opencode/kickoff-prompt.txt then delete it. No-op if absent or already delivered. */
+  async function deliverKickoffPrompt(targetSessionId: string): Promise<void> {
+    if (kickoffDelivered) return;
+    let text: string;
+    try {
+      text = fs.readFileSync(kickoffPromptPath, "utf-8").trim();
+    } catch {
+      kickoffDelivered = true; // file absent — mark done
+      return;
+    }
+    if (!text) { kickoffDelivered = true; return; }
+    await log(`kickoff: delivering prompt (${text.length} chars) to ${targetSessionId}`);
+    const callArgs = {
+      path: { id: targetSessionId },
+      body: { parts: [{ type: "text", text }] },
+      url: "/session/{id}/prompt_async",
+    };
+    try {
+      await (ctx.client.session as any).promptAsync(callArgs);
+      kickoffDelivered = true;
+      await log("kickoff: delivered");
+      try { fs.unlinkSync(kickoffPromptPath); } catch { /* best-effort */ }
+    } catch (err) {
+      await log(`kickoff: promptAsync error: ${err}`);
+      // leave file in place and kickoffDelivered=false — retry on next idle
+    }
+  }
+
   /** Try to deliver to the best-known session ID. */
   async function tryDeliver(): Promise<void> {
     const sid = activeSessionId;
@@ -1232,6 +1267,7 @@ const C2CDelivery: Plugin = async (ctx) => {
         // Only deliver for the root session (avoid interfering with sub-agents)
         if (activeSessionId && idleSessionId !== activeSessionId) return;
         activeSessionId = idleSessionId;
+        await deliverKickoffPrompt(idleSessionId);
         await deliverMessages(idleSessionId);
       }
     },

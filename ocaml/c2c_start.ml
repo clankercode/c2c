@@ -896,7 +896,8 @@ let run_outer_loop ~(name : string) ~(client : string)
          if n > 0 then Printf.printf "[c2c-start/%s] cleaned %d stale /tmp/.fea*.so file(s)\n" name n
        with _ -> ());
 
-      Printf.printf "[c2c-start/%s] iter 1: launching %s\n%!" name client;
+      Printf.printf "[c2c-start/%s] iter 1: launching %s (outer pid=%d)\n%!"
+        name client (Unix.getpid ());
 
       let start_time = Unix.gettimeofday () in
 
@@ -1117,7 +1118,8 @@ let run_outer_loop ~(name : string) ~(client : string)
        | None -> ());
 
       let elapsed = Unix.gettimeofday () -. start_time in
-      Printf.printf "[c2c-start/%s] inner exited code=%d after %.1fs\n%!" name exit_code elapsed;
+      Printf.printf "[c2c-start/%s] inner exited code=%d after %.1fs (pid=%d)\n%!"
+        name exit_code elapsed child_pid_opt;
 
       (* Exit 109 from opencode = DB lock contention (multiple opencode instances
          sharing the same ~/.local/share/opencode/opencode.db). Surfaces as a
