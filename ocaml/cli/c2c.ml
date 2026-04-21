@@ -6352,8 +6352,9 @@ let oc_plugin_group =
     [ Cmdliner.Cmd.v
         (Cmdliner.Cmd.info "stream-write-statefile"
            ~doc:"Read a JSON state snapshot from stdin and write it atomically \
-                 to ~/.local/share/c2c/instances/$C2C_INSTANCE_NAME/oc-plugin-state.json \
-                 (or ~/.local/share/c2c/oc-plugin-state.json if C2C_INSTANCE_NAME is unset).")
+                 to the instance statefile. Path: \
+                 ~/.local/share/c2c/instances/NAME/oc-plugin-state.json when \
+                 C2C_INSTANCE_NAME is set, else ~/.local/share/c2c/oc-plugin-state.json.")
         oc_plugin_stream_write_statefile_cmd ]
 
 (* --- main entry point ----------------------------------------------------- *)
