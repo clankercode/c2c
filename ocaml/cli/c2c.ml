@@ -726,7 +726,14 @@ let check_relay_http () =
         | "prod" -> " prod mode"
         | _ -> ""  (* field absent in older relay versions — suppress *)
       in
-      (`Green, Printf.sprintf "relay: reachable — %s @ %s%s (%s)" version git_hash auth_str url)
+      let local_hash = Option.value (git_shorthash ()) ~default:"?" in
+      let stale_warn =
+        if git_hash <> "?" && local_hash <> "?" && git_hash <> local_hash then
+          Printf.sprintf " ⚠ stale deploy (deployed: %s, local: %s)" git_hash local_hash
+        else ""
+      in
+      let color = if stale_warn <> "" then `Yellow else `Green in
+      (color, Printf.sprintf "relay: reachable — %s @ %s%s%s (%s)" version git_hash auth_str stale_warn url)
     else (`Red, Printf.sprintf "relay: error response from %s" url)
   with exn ->
     (`Red, Printf.sprintf "relay: unreachable (%s)" (Printexc.to_string exn))
