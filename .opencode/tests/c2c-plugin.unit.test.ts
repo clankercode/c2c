@@ -455,10 +455,13 @@ describe('c2c plugin unit tests', () => {
 
     // Pump microtasks so the fire-and-forget async runs through selectSupervisors + send DM.
     for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+    // Flush fake setImmediate queue so spawn completes.
+    await vi.advanceTimersByTimeAsync(1);
 
     // Supervisor reply lands on the next session.idle drain.
     await fireEvent(hooks, sessionIdle('root-session'));
     for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+    await vi.advanceTimersByTimeAsync(1);
 
     expect(ctx.client.postSessionIdPermissionsPermissionId).toHaveBeenCalledTimes(1);
     const call = ctx.client.postSessionIdPermissionsPermissionId.mock.calls[0]![0];

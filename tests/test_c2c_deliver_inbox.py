@@ -436,6 +436,18 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
             spool_path = broker_root.parent / "codex-xml" / "codex-local.spool.json"
             self.assertEqual(json.loads(spool_path.read_text(encoding="utf-8")), [])
 
+    def test_xml_message_payload_escapes_message_body(self):
+        payload = c2c_deliver_inbox.xml_message_payload(
+            {
+                "from_alias": "storm-echo",
+                "to_alias": "codex",
+                "content": "5 < 6 & 7",
+            }
+        )
+
+        self.assertIn("5 &lt; 6 &amp; 7", payload)
+        self.assertNotIn("5 < 6 & 7</c2c>", payload)
+
     def test_deliver_once_xml_output_keeps_spool_on_write_failure(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             broker_root = Path(temp_dir) / "mcp-broker"

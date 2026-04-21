@@ -90,7 +90,7 @@ def _xml_attr(value: object) -> str:
 def xml_message_payload(message: dict[str, Any]) -> str:
     sender = _xml_attr(message.get("from_alias") or "unknown")
     alias = _xml_attr(message.get("to_alias") or "")
-    content = str(message.get("content") or "")
+    content = html.escape(str(message.get("content") or ""))
     return (
         f'<message type="user"><c2c event="message" from="{sender}" alias="{alias}" '
         'source="broker" action_after="continue">'
