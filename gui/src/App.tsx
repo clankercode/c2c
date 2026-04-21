@@ -346,6 +346,10 @@ export function App() {
           unreadPeers={unreadPeers}
           myAlias={myAlias}
           onRoomJoined={roomId => setRooms(prev => new Set([...prev, roomId]))}
+          onRoomLeft={roomId => {
+            setRooms(prev => { const s = new Set(prev); s.delete(roomId); return s; });
+            if (selectedRoom === roomId) { setSelectedRoom(null); setFocusHistoryEvents([]); }
+          }}
           onSelect={(target, isRoom) => {
             setComposeTo(target);
             setComposeIsRoom(isRoom);

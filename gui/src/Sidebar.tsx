@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { joinRoom } from "./useSend";
+import { joinRoom, leaveRoom } from "./useSend";
 
 interface Props {
   peers: string[];
@@ -12,6 +12,7 @@ interface Props {
   myAlias?: string;
   onSelect: (target: string, isRoom: boolean) => void;
   onRoomJoined?: (roomId: string) => void;
+  onRoomLeft?: (roomId: string) => void;
 }
 
 const SECTION_STYLE: React.CSSProperties = {
@@ -47,10 +48,19 @@ const ITEM_PEER_ACTIVE_STYLE: React.CSSProperties = {
   color: "#cba6f7",
 };
 
-export function Sidebar({ peers, rooms, roomMembers = new Map(), selectedRoom, selectedPeer, unreadRooms = new Set(), unreadPeers = new Set(), myAlias = "", onSelect, onRoomJoined }: Props) {
+export function Sidebar({ peers, rooms, roomMembers = new Map(), selectedRoom, selectedPeer, unreadRooms = new Set(), unreadPeers = new Set(), myAlias = "", onSelect, onRoomJoined, onRoomLeft }: Props) {
   const [joinInput, setJoinInput] = useState("");
   const [joining, setJoining] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
+  const [leavingRoom, setLeavingRoom] = useState<string | null>(null);
+
+  async function handleLeave(rid: string) {
+    if (leavingRoom) return;
+    setLeavingRoom(rid);
+    const res = await leaveRoom(rid, myAlias);
+    setLeavingRoom(null);
+    if (res.ok) onRoomLeft?.(rid);
+  }
 
   async function handleJoin() {
     const rid = joinInput.trim();
@@ -101,6 +111,21 @@ export function Sidebar({ peers, rooms, roomMembers = new Map(), selectedRoom, s
                   </span>
                   {unreadRooms.has(r) && (
                     <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#f38ba8", flexShrink: 0, display: "inline-block" }} />
+                  )}
+                  {isActive && (
+                    <button
+                      onClick={e => { e.stopPropagation(); handleLeave(r); }}
+                      disabled={leavingRoom === r}
+                      title="Leave room"
+                      style={{
+                        background: "transparent", border: "none",
+                        color: "#45475a", fontSize: 10,
+                        padding: "0 2px", cursor: "pointer", flexShrink: 0,
+                        lineHeight: 1,
+                      }}
+                    >
+                      {leavingRoom === r ? "…" : "✕"}
+                    </button>
                   )}
                 </div>
                 {/* Expanded member list when this room is active */}

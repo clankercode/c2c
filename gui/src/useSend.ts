@@ -41,6 +41,24 @@ export async function joinRoom(
   }
 }
 
+export async function leaveRoom(
+  roomId: string,
+  alias: string,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const args = alias
+      ? ["room", "leave", "--alias", alias, roomId]
+      : ["room", "leave", roomId];
+    const result = await Command.create("c2c", args).execute();
+    if (result.code !== 0) {
+      return { ok: false, error: result.stderr || `exit ${result.code}` };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
 export async function registerAlias(
   alias: string,
 ): Promise<{ ok: boolean; error?: string }> {
