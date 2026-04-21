@@ -21,6 +21,11 @@ export function App() {
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
   const [selectedPeer, setSelectedPeer] = useState<string | null>(null);
   const [focusHistoryEvents, setFocusHistoryEvents] = useState<C2cEvent[]>([]);
+  const [unreadRooms, setUnreadRooms] = useState<Set<string>>(new Set());
+  const [unreadPeers, setUnreadPeers] = useState<Set<string>>(new Set());
+  const selectedRoomRef = useRef<string | null>(null);
+  const selectedPeerRef = useRef<string | null>(null);
+  const myAliasRef = useRef<string>("");
   const [myAlias, setMyAlias] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "");
   const [aliasInput, setAliasInput] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "");
   const [aliasStatus, setAliasStatus] = useState<string | null>(null);
@@ -58,6 +63,22 @@ export function App() {
               setRooms(prev => new Set([...prev, room_id]));
             } else if (event.event_type === "room.leave") {
               // Keep room in list even if it's empty (alias may rejoin)
+            } else if (event.event_type === "message") {
+              const m = event as { to_alias: string; from_alias: string };
+              const me = myAliasRef.current;
+              if (m.to_alias === me || m.from_alias === me) {
+                // DM to/from me
+                const peer = m.from_alias === me ? m.to_alias : m.from_alias;
+                if (selectedPeerRef.current !== peer) {
+                  setUnreadPeers(prev => new Set([...prev, peer]));
+                }
+              } else {
+                // Room message — to_alias is the room id
+                const roomId = m.to_alias;
+                if (selectedRoomRef.current !== roomId) {
+                  setUnreadRooms(prev => new Set([...prev, roomId]));
+                }
+              }
             }
           } catch {
             // ignore non-JSON lines
@@ -95,6 +116,11 @@ export function App() {
       childRef.current?.kill().catch(() => {});
     };
   }, []);
+
+  // Keep refs in sync so the event handler closure sees current values
+  useEffect(() => { selectedRoomRef.current = selectedRoom; }, [selectedRoom]);
+  useEffect(() => { selectedPeerRef.current = selectedPeer; }, [selectedPeer]);
+  useEffect(() => { myAliasRef.current = myAlias; }, [myAlias]);
 
   async function applyAlias() {
     const a = aliasInput.trim();
@@ -170,6 +196,8 @@ export function App() {
           rooms={[...rooms]}
           selectedRoom={selectedRoom}
           selectedPeer={selectedPeer}
+          unreadRooms={unreadRooms}
+          unreadPeers={unreadPeers}
           onSelect={(target, isRoom) => {
             setComposeTo(target);
             setComposeIsRoom(isRoom);
@@ -177,10 +205,12 @@ export function App() {
             if (isRoom) {
               setSelectedRoom(target);
               setSelectedPeer(null);
+              setUnreadRooms(prev => { const s = new Set(prev); s.delete(target); return s; });
               loadRoomHistory(target, 100).then(hist => setFocusHistoryEvents(hist));
             } else {
               setSelectedPeer(target);
               setSelectedRoom(null);
+              setUnreadPeers(prev => { const s = new Set(prev); s.delete(target); return s; });
               loadPeerHistory(target, myAlias, 100).then(hist => setFocusHistoryEvents(hist));
             }
           }}

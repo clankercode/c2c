@@ -3,6 +3,8 @@ interface Props {
   rooms: string[];
   selectedRoom?: string | null;
   selectedPeer?: string | null;
+  unreadRooms?: Set<string>;
+  unreadPeers?: Set<string>;
   onSelect: (target: string, isRoom: boolean) => void;
 }
 
@@ -22,6 +24,9 @@ const ITEM_STYLE: React.CSSProperties = {
   whiteSpace: "nowrap",
   overflow: "hidden",
   textOverflow: "ellipsis",
+  display: "flex",
+  alignItems: "center",
+  gap: 4,
 };
 
 const ITEM_ACTIVE_STYLE: React.CSSProperties = {
@@ -36,7 +41,7 @@ const ITEM_PEER_ACTIVE_STYLE: React.CSSProperties = {
   color: "#cba6f7",
 };
 
-export function Sidebar({ peers, rooms, selectedRoom, selectedPeer, onSelect }: Props) {
+export function Sidebar({ peers, rooms, selectedRoom, selectedPeer, unreadRooms = new Set(), unreadPeers = new Set(), onSelect }: Props) {
   return (
     <div style={{
       width: 160,
@@ -57,7 +62,10 @@ export function Sidebar({ peers, rooms, selectedRoom, selectedPeer, onSelect }: 
               onClick={() => onSelect(r, true)}
               title={r}
             >
-              🏠 {r}
+              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>🏠 {r}</span>
+              {unreadRooms.has(r) && (
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#f38ba8", flexShrink: 0, display: "inline-block" }} />
+              )}
             </div>
           ))}
         </>
@@ -73,7 +81,10 @@ export function Sidebar({ peers, rooms, selectedRoom, selectedPeer, onSelect }: 
               onClick={() => onSelect(p, false)}
               title={p}
             >
-              👤 {p}
+              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>👤 {p}</span>
+              {unreadPeers.has(p) && (
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#f38ba8", flexShrink: 0, display: "inline-block" }} />
+              )}
             </div>
           ))}
         </>
