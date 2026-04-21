@@ -785,6 +785,18 @@ let check_plugin_installs () =
    else
      add (`Yellow, "opencode: plugin not installed (run: c2c install opencode)"));
 
+  (* GUI: check if webkit2gtk-4.1 is available (required to build/run Tauri GUI) *)
+  let webkit_available =
+    (* Try pkg-config first; fall back to checking for the library file directly *)
+    Sys.command "pkg-config --exists webkit2gtk-4.1 2>/dev/null" = 0
+    || (match Sys.command "ldconfig -p 2>/dev/null | grep -q webkit2gtk-4.1" with
+       | 0 -> true | _ -> false)
+  in
+  (if webkit_available then
+     add (`Green, "gui: webkit2gtk-4.1 available (can build/run Tauri GUI)")
+   else
+     add (`Yellow, "gui: webkit2gtk-4.1 missing — install: sudo pacman -S webkit2gtk-4.1"));
+
   List.rev !results
 
 (* Scan for running deprecated PTY-based wake daemons.
@@ -6581,29 +6593,94 @@ let oc_plugin_stream_write_statefile_cmd =
           mkdir_p base_dir;
           Filename.concat base_dir "oc-plugin-state.json"
     in
-    (* Read one JSON line from stdin. *)
-    let line = try input_line stdin with End_of_file -> "" in
-    if String.trim line = "" then ()
-    else begin
-      (* Validate + normalise JSON. *)
-      let json =
-        try Some (Yojson.Safe.from_string line)
-        with _ -> None
-      in
-      match json with
-      | None -> () (* malformed — silently ignore per plugin contract *)
-      | Some j ->
-          let payload = Yojson.Safe.to_string j in
-          (* Atomic write: tmp → rename(2). *)
-          let tmp = statefile ^ ".tmp" in
-          (try
-            let oc = open_out tmp in
-            output_string oc payload;
-            output_char oc '\n';
-            close_out oc;
-            Unix.rename tmp statefile
-          with _ -> ())
-    end) $ Cmdliner.Term.const ())
+    (* Atomic write helper *)
+    let write_json j =
+      let payload = Yojson.Safe.to_string j in
+      let tmp = statefile ^ ".tmp" in
+      (try
+        let oc = open_out tmp in
+        output_string oc payload;
+        output_char oc '\n';
+        close_out oc;
+        Unix.rename tmp statefile
+      with _ -> ())
+    in
+    (* Read existing statefile JSON (for patch merging). *)
+    let read_existing () =
+      try
+        let ic = open_in statefile in
+        let raw = In_channel.input_all ic in
+        close_in ic;
+        (match Yojson.Safe.from_string (String.trim raw) with
+         | `Assoc _ as j -> Some j
+         | _ -> None)
+      with _ -> None
+    in
+    (* Deep-merge patch into existing state.snapshot envelope.
+       Only top-level `state` fields are patched; nested merging is one level deep. *)
+    let apply_patch existing_env patch_fields =
+      match existing_env with
+      | `Assoc env_fields ->
+          let existing_state =
+            match List.assoc_opt "state" env_fields with
+            | Some (`Assoc sf) -> sf
+            | _ -> []
+          in
+          (* Merge: for each field in patch, if both are Assoc, merge one level deep *)
+          let merged_state = List.fold_left (fun acc (k, v) ->
+            let existing_v = List.assoc_opt k acc in
+            let merged_v = match existing_v, v with
+              | Some (`Assoc old_fields), `Assoc new_fields ->
+                  (* One level deep merge *)
+                  let merged = List.fold_left (fun a (kk, vv) ->
+                    (kk, vv) :: List.filter (fun (x, _) -> x <> kk) a
+                  ) old_fields new_fields in
+                  `Assoc merged
+              | _ -> v
+            in
+            (k, merged_v) :: List.filter (fun (x, _) -> x <> k) acc
+          ) existing_state patch_fields in
+          `Assoc (List.map (fun (k, v) ->
+            if k = "state" then (k, `Assoc merged_state) else (k, v)
+          ) env_fields)
+      | _ -> existing_env
+    in
+    (* Persistent loop: read one JSON line per iteration until EOF. *)
+    (try
+      while true do
+        let line = input_line stdin in
+        let trimmed = String.trim line in
+        if trimmed <> "" then begin
+          match (try Some (Yojson.Safe.from_string trimmed) with _ -> None) with
+          | None -> () (* malformed line — silently skip *)
+          | Some (`Assoc fields as j) ->
+              let event_type =
+                match List.assoc_opt "event" fields with
+                | Some (`String s) -> s
+                | _ -> ""
+              in
+              (match event_type with
+               | "state.snapshot" -> write_json j
+               | "state.patch" ->
+                   let patch_fields =
+                     match List.assoc_opt "patch" fields with
+                     | Some (`Assoc pf) -> pf
+                     | _ -> []
+                   in
+                   if patch_fields = [] then ()
+                   else begin
+                     let merged = match read_existing () with
+                       | Some existing -> apply_patch existing patch_fields
+                       | None -> j (* no existing state — write patch as-is *)
+                     in
+                     write_json merged
+                   end
+               | _ -> () (* unknown event type — ignore *)
+              )
+          | Some _ -> () (* not an object — ignore *)
+        end
+      done
+    with End_of_file | Sys_error _ -> ())) $ Cmdliner.Term.const ())
 
 let oc_plugin_group =
   Cmdliner.Cmd.group
