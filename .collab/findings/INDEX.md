@@ -126,7 +126,7 @@ informational architecture notes.
 | [permission-hook-wrong-shape](./2026-04-21T09-33-00Z-planner1-permission-hook-wrong-shape.md) | Permission hook emitted wrong event shape — supervisor DM never fired | HIGH / FIXED |
 | [permission-hook-silent](./2026-04-21T11-57-00Z-coordinator1-permission-hook-silent.md) | `permission.hook` hook fires but plugin wasn't logging event receipt | MEDIUM / FIXED (`6828ce6`) |
 | [permission-event-type-mismatch](./2026-04-21T12-10-00Z-coder2-expert-permission-event-type-mismatch.md) | Plugin got `permission.updated` not `permission.asked` for bash:ask config — broken async DM | MEDIUM / FIXED (`6828ce6`) |
-| [opencode-afk-wake-gap](./2026-04-21T06-10-00Z-opencode-test-opencode-afk-wake-gap.md) | OpenCode AFK wake gap observed during opencode-test session | INFO |
+| [opencode-afk-wake-gap](./2026-04-21T06-10-00Z-opencode-test-opencode-afk-wake-gap.md) | OpenCode AFK wake gap — both gaps now resolved + validated (oc-e2e-test, 2026-04-21) | RESOLVED |
 
 #### Relay / Auth
 

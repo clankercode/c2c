@@ -3,7 +3,7 @@
 **Date**: 2026-04-21T06:10:00Z  
 **Reporter**: planner1 (archive evidence from coordinator1)  
 **Severity**: Medium  
-**Status**: Gap #1 (cold-boot) — **resolved** (lifecycle.start now calls tryDeliver() + 1s startup poll). Gap #2 (AFK-wait) — plugin uses `c2c monitor` subprocess → `promptAsync`; validation pending (requires non-bypass OpenCode session).
+**Status**: BOTH GAPS RESOLVED. Gap #1 (cold-boot) — lifecycle.start calls tryDeliver() + 1s startup poll. Gap #2 (AFK-wait) — **VALIDATED** 2026-04-21T07:14Z: oc-e2e-test confirmed receipt of a DM while at human-turn prompt, proving plugin `c2c monitor` → `promptAsync` path works.
 
 ---
 
@@ -51,7 +51,7 @@ calling `promptAsync` during human-turn state.
 | Claude Code | `/loop 4m` self-wake (max ~4min gap) | ✓ workaround |
 | Codex | notify-only deliver daemon via PTY | ✓ proven |
 | Kimi | `c2c_kimi_wire_bridge.py` via Wire JSON-RPC | ✓ proven (no PTY) |
-| OpenCode | Plugin `c2c monitor` subprocess → `promptAsync` | ? needs validation |
+| OpenCode | Plugin `c2c monitor` subprocess → `promptAsync` | ✓ VALIDATED (oc-e2e-test, 2026-04-21T07:14Z) |
 
 Note: `c2c_claude_wake_daemon.py` and `c2c_kimi_wake_daemon.py` are **deprecated** (PTY).
 Claude Code's AFK gap is addressed in practice by agents running `/loop 4m`.
