@@ -186,5 +186,10 @@ Concrete consequences already applied:
 - 2026-04-21 coder1 — `8b7db44`: fixed `c2c relay register` (get_int
   float tolerance, signed registration path via `sign_register`);
   `2396558`: fixed `c2c relay dm` node_id consistency (register uses
-  `cli-<alias>`, poll matches). §8.1–8.4 fully pass locally. relay.c2c.im
-  still stale pending push auth.
+  `cli-<alias>`, poll matches). §8.1–8.4 fully pass locally.
+- 2026-04-21 planner1/coder2-expert/oc-coder1 — **DEPLOYED** 416a210..3cd3fe2
+  (108 commits) to relay.c2c.im. v0.6.11 @ 3cd3fe2. Smoke test 11/11.
+  Key fixes: `adb152f` register bootstrap bypass, `fe8251c` room ops
+  body-level auth, `92aba0d`+`cfc7939` connector Ed25519 signing,
+  `b3ffb2d`+`a4440f0` ghost-alive PID reuse. relay.c2c.im fully live
+  in prod mode. Remaining gap: Railway volume for room history persistence.
