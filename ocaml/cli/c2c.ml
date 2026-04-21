@@ -5433,7 +5433,7 @@ let prompt_for_role ~alias =
     let trimmed = String.trim line in
     if trimmed <> "" then begin
       write_role ~alias ~content:trimmed;
-      Printf.eprintf "[c2c start] Role saved to .c2c/roles/%s.md\n%!" (alias ^ ".md");
+      Printf.eprintf "[c2c start] Role saved to .c2c/roles/%s.md\n%!" alias;
       Some trimmed
     end else None
   end else None
