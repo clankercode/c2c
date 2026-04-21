@@ -248,6 +248,10 @@ These are Max's target experiences, verbatim:
   (416a210..3cd3fe2). relay.c2c.im v0.6.11 @ 3cd3fe2 passing 11/11 smoke test.
   Register bootstrap (adb152f) + room ops auth (fe8251c) + all connector signing
   fixes deployed. Ghost-alive PID reuse fix deployed (b3ffb2d + a4440f0).
+- **2nd relay push** ✓ LIVE 2026-04-21T~18:00Z: 68 commits pushed (3cd3fe2..64cfadb).
+  Includes name sanitization (7dc48f8), GUI (multiple commits), deferrable msgs,
+  statefile hook, peer_register broadcast, OpenCode session preflight, OCaml tests.
+  relay.c2c.im now @ 64cfadb, 11/11 smoke test passing.
   **Remaining gap: Railway volume mount** — room history is in-memory only;
   restarts lose history. Max: add Railway volume at /data, set
   `C2C_RELAY_PERSIST_DIR=/data` env var.
