@@ -87,17 +87,6 @@ export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoo
             <option key={t.value} value={t.value}>{t.label}</option>
           ))}
         </select>
-        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-          <input
-            type="checkbox"
-            id="is-room"
-            checked={isRoom}
-            onChange={e => setIsRoom(e.target.checked)}
-          />
-          <label htmlFor="is-room" style={{ fontSize: 11, color: "#585b70", cursor: "pointer" }}>
-            room
-          </label>
-        </div>
       </div>
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
