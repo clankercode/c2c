@@ -1056,7 +1056,12 @@ const C2CDelivery: Plugin = async (ctx) => {
           // Persist the TUI-generated ses_* ID for the instance so that a
           // subsequent `c2c start opencode -n <name>` can pass --session
           // and resume this exact conversation instead of a fresh one.
-          if (sessionId && info.id.startsWith("ses")) {
+          // Guard: only capture on the FIRST root session of this plugin run
+          // (turn_count === 0). If turns have already happened, we have an
+          // established session — overwriting would clobber the real session ID
+          // with a mid-run spurious one (root cause of #58 TUI divergence).
+          const isFirstSession = pluginState.agent.turn_count === 0;
+          if (sessionId && info.id.startsWith("ses") && isFirstSession) {
             try {
               const instDir = path.join(
                 process.env.HOME || "",
@@ -1068,6 +1073,8 @@ const C2CDelivery: Plugin = async (ctx) => {
             } catch (err) {
               await log(`session id capture error: ${err}`);
             }
+          } else if (sessionId && !isFirstSession) {
+            await log(`skipped opencode-session.txt overwrite for ${info.id} (turn_count=${pluginState.agent.turn_count} — real session already established)`);
           }
           // Delay before first promptAsync: calling it too soon after session.created
           // can succeed silently but the session may not yet be ready to surface the
