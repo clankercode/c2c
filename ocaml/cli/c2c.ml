@@ -351,11 +351,18 @@ let whoami_cmd =
       Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID.\n%!";
       exit 1
   | Some sid ->
+      let regs = C2c_mcp.Broker.list_registrations broker in
       let alias =
-        List.find_opt
-          (fun (r : C2c_mcp.registration) -> r.session_id = sid)
-          (C2c_mcp.Broker.list_registrations broker)
-        |> Option.map (fun (r : C2c_mcp.registration) -> r.alias)
+        match List.find_opt (fun (r : C2c_mcp.registration) -> r.session_id = sid) regs with
+        | Some r -> Some r.alias
+        | None ->
+            (* fall back: resolve by C2C_MCP_AUTO_REGISTER_ALIAS when session_id drifted *)
+            (match env_auto_alias () with
+             | None -> None
+             | Some a ->
+                 (match List.find_opt (fun (r : C2c_mcp.registration) -> r.alias = a) regs with
+                  | Some r -> Some r.alias
+                  | None -> None))
       in
       match output_mode with
       | Json ->
