@@ -3,7 +3,7 @@
 **Date**: 2026-04-21T18:15:00Z
 **Reporter**: planner1
 **Severity**: High (missed DMs for duration of session)
-**Status**: Mitigated (manually drained); root cause documented
+**Status**: **FIXED** in `68283ef` — `poll-inbox`, `peek-inbox`, `history` now fall back to alias lookup
 
 ---
 
