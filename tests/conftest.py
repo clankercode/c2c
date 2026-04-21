@@ -24,22 +24,28 @@ import pytest
 
 # ---------------------------------------------------------------------------
 # Patterns we care about for leak detection.
-# Each entry is a (label, pattern, live_limit) tuple:
+# Each entry is a (label, pattern, live_limit, exe_names) tuple:
 #   label       — human name shown in error messages
-#   pattern     — pgrep -f pattern
+#   pattern     — pgrep -f pattern (broad initial match)
 #   live_limit  — max allowed pre-existing matches before pre-flight refuses
 #                 the run. Use None to skip pre-flight for this pattern
 #                 (still tracked for post-test leak detection).
+#   exe_names   — frozenset of /proc/<pid>/exe basenames that count as a real
+#                 match; None means accept any exe (no anchor).
+#
+# The exe_names anchor prevents dune build jobs, opam wrappers, and test-
+# harness invocations that merely mention the binary name in their argv from
+# being counted as leaked managed processes.
 #
 # IMPORTANT: Do NOT set a limit for "c2c-start" — live swarm agents run as
 # `c2c start <client>` managed instances and are not test pollution. The
 # post-test baseline-diff approach (see _process_leak_guard below) already
 # catches newly leaked instances without tripping on legitimate live peers.
 # ---------------------------------------------------------------------------
-_LEAK_PATTERNS: list[tuple[str, str, int | None]] = [
-    ("opencode",       r"\.opencode.*--log-level",  3),
-    ("c2c-mcp-server", r"c2c_mcp_server\.exe",      1),
-    ("c2c-start",      r"c2c start ",               None),  # live swarm; no pre-flight limit
+_LEAK_PATTERNS: list[tuple[str, str, int | None, frozenset[str] | None]] = [
+    ("opencode",       r"\.opencode.*--log-level",  3,    frozenset({"opencode"})),
+    ("c2c-mcp-server", r"c2c_mcp_server\.exe",      1,    frozenset({"c2c_mcp_server.exe"})),
+    ("c2c-start",      r"c2c start ",               None, frozenset({"c2c", "c2c.exe"})),
 ]
 
 
@@ -51,37 +57,36 @@ def _read_cmdline(pid: int) -> str:
     return raw.replace(b"\0", b" ").decode("utf-8", errors="replace").strip()
 
 
-def _is_real_mcp_server_process(pid: int) -> bool:
-    cmdline = _read_cmdline(pid)
-    if not cmdline:
-        return False
-    parts = cmdline.split()
-    if not parts:
-        return False
-    exe = os.path.basename(parts[0])
-    if exe != "c2c_mcp_server.exe":
-        return False
-    # Exclude dune/opam/bash wrapper/build jobs that merely mention the target path.
-    return not any(part in {"dune", "opam", "bash", "sh"} for part in parts[:2])
+def _read_exe_name(pid: int) -> str:
+    """Return basename of /proc/<pid>/exe symlink target, or '' on error."""
+    try:
+        return os.path.basename(os.readlink(f"/proc/{pid}/exe"))
+    except OSError:
+        return ""
 
 
-def _pgrep_pids(pattern: str) -> FrozenSet[int]:
-    """Return frozenset of PIDs matching *pattern* via pgrep -f."""
+def _pgrep_pids(pattern: str, exe_names: frozenset[str] | None = None) -> FrozenSet[int]:
+    """Return frozenset of PIDs matching *pattern* via pgrep -f.
+
+    If *exe_names* is given, only include PIDs whose /proc/<pid>/exe
+    basename is in that set — this anchors the match to the real binary
+    and prevents dune build jobs from being counted as leaked processes.
+    """
     try:
         out = subprocess.run(
             ["pgrep", "-f", pattern],
             capture_output=True, text=True, check=False
         ).stdout
-        pids = frozenset(int(p) for p in out.split() if p.strip().isdigit())
-        if pattern == r"c2c_mcp_server\.exe":
-            return frozenset(pid for pid in pids if _is_real_mcp_server_process(pid))
-        return pids
+        pids = (int(p) for p in out.split() if p.strip().isdigit())
+        if exe_names is not None:
+            return frozenset(pid for pid in pids if _read_exe_name(pid) in exe_names)
+        return frozenset(pids)
     except FileNotFoundError:
         return frozenset()
 
 
 def _snapshot_all() -> dict[str, FrozenSet[int]]:
-    return {label: _pgrep_pids(pat) for label, pat, _ in _LEAK_PATTERNS}
+    return {label: _pgrep_pids(pat, exe_names) for label, pat, _, exe_names in _LEAK_PATTERNS}
 
 
 # ---------------------------------------------------------------------------
@@ -94,10 +99,10 @@ def pytest_configure(config: pytest.Config) -> None:
         return
 
     problems: list[str] = []
-    for label, pat, limit in _LEAK_PATTERNS:
+    for label, pat, limit, exe_names in _LEAK_PATTERNS:
         if limit is None:
             continue  # no pre-flight check for this pattern (live swarm ok)
-        pids = _pgrep_pids(pat)
+        pids = _pgrep_pids(pat, exe_names)
         if len(pids) > limit:
             problems.append(
                 f"  {label}: {len(pids)} running (limit {limit}), PIDs: "
@@ -145,7 +150,7 @@ def _process_leak_guard(request: pytest.FixtureRequest) -> None:  # type: ignore
 
     after = _snapshot_all()
     leaked: list[str] = []
-    for label, pat, _ in _LEAK_PATTERNS:
+    for label, pat, _, _exe in _LEAK_PATTERNS:
         new_pids = after.get(label, frozenset()) - before.get(label, frozenset())
         if new_pids:
             # Filter out our own pytest process.
