@@ -1185,5 +1185,86 @@ class C2CStartRegistryCleanupRegressionTests(unittest.TestCase):
         self.assertEqual(peer["pid_start_time"], 8888)
 
 
+@_CLI_SKIP
+class C2CStartNameValidationTests(unittest.TestCase):
+    """Instance name validation: `c2c start` must reject names with slashes, leading dots, etc.
+
+    Regression for the crinkle documented in
+    .collab/findings/2026-04-21T14-50-00Z-coordinator1-managed-session-crinkles.md
+    where `c2c start opencode -n foo/bar` created a nested directory instead of failing.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self.broker_root = self.tmp_path / "broker"
+        self.broker_root.mkdir(parents=True)
+        self.instances_dir = self.tmp_path / "instances"
+        self.instances_dir.mkdir(parents=True)
+        self.stub = self.tmp_path / "opencode"
+        self.stub.write_text("#!/bin/sh\nexit 0\n")
+        self.stub.chmod(0o755)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run(self, name: str) -> tuple[int, str, str]:
+        from conftest import spawn_tracked
+        env = {
+            **os.environ,
+            "PATH": str(self.tmp_path) + ":" + os.environ.get("PATH", ""),
+            "C2C_MCP_BROKER_ROOT": str(self.broker_root),
+            "C2C_INSTANCES_DIR": str(self.instances_dir),
+        }
+        proc = spawn_tracked(
+            [str(CLI_EXE), "start", "opencode", "-n", name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            stdout, stderr = proc.communicate(timeout=CLI_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            self.fail(f"timed out with name={name!r}")
+        return proc.returncode, stdout, stderr
+
+    def test_slash_in_name_rejected(self):
+        """Names containing '/' must be rejected with a non-zero exit and error message."""
+        rc, _out, stderr = self._run("foo/bar")
+        self.assertNotEqual(rc, 0, "expected non-zero exit for name with slash")
+        self.assertIn("foo/bar", stderr, f"invalid name not echoed in stderr: {stderr!r}")
+
+    def test_leading_dot_rejected(self):
+        """Names starting with '.' must be rejected."""
+        rc, _out, stderr = self._run(".hidden")
+        self.assertNotEqual(rc, 0, "expected non-zero exit for name starting with dot")
+
+    def test_empty_name_rejected(self):
+        """Empty name must be rejected."""
+        rc, _out, stderr = self._run("")
+        self.assertNotEqual(rc, 0, "expected non-zero exit for empty name")
+
+    def test_valid_name_accepted(self):
+        """Simple alphanumeric names with hyphens/dots/underscores must be accepted."""
+        rc, _out, _err = self._run("my-valid.instance_1")
+        # stub exits 0, so c2c start should also exit 0
+        self.assertEqual(rc, 0, "valid name was unexpectedly rejected")
+
+    def test_name_too_long_rejected(self):
+        """Names over 64 characters must be rejected."""
+        long_name = "a" * 65
+        rc, _out, stderr = self._run(long_name)
+        self.assertNotEqual(rc, 0, "expected non-zero exit for name exceeding 64 chars")
+
+    def test_no_nested_dir_created_for_slash_name(self):
+        """A name with '/' must not create nested directories under instances dir."""
+        self._run("foo/bar")
+        nested = self.instances_dir / "foo" / "bar"
+        self.assertFalse(nested.exists(), f"nested dir was created: {nested}")
+
+
 if __name__ == "__main__":
     unittest.main()
