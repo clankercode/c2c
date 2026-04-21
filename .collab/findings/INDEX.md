@@ -132,7 +132,7 @@ informational architecture notes.
 
 | Finding | Topic | Status |
 |---------|-------|--------|
-| [deployed-relay-stale-binary](./2026-04-21T02-04-00Z-planner1-deployed-relay-stale-binary.md) | relay.c2c.im missing current endpoints — stale Railway binary | HIGH / deploy pending |
+| [deployed-relay-stale-binary](./2026-04-21T02-04-00Z-planner1-deployed-relay-stale-binary.md) | relay.c2c.im missing current endpoints — stale Railway binary | RESOLVED 3cd3fe2 2026-04-21T13:52Z |
 | [relay-auth-prod-design](./2026-04-21T08-15-00Z-planner1-relay-auth-prod-design.md) | Design: moving relay.c2c.im from dev to prod Ed25519 mode | DESIGN / SHIPPED |
 | [relay-connector-ed25519-gap](./2026-04-21T12-00-00Z-coder2-expert-relay-connector-ed25519-gap.md) | Relay connector peer routes lacked Ed25519 auth in prod mode | HIGH / FIXED (`92aba0d`) |
 | [connector-register-no-pk-binding](./2026-04-21T12-15-00Z-coder2-expert-connector-register-no-pk-binding.md) | Python relay connector `/register` lacked identity_pk binding | MEDIUM / FIXED (`cfc7939`) |

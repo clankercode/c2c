@@ -73,3 +73,17 @@ can only demo TLS+health, not the ship-gate criteria from
 - `.collab/findings/2026-04-20T15-54-00Z-planner1-runbook-section-8-cli-drift.md`
 - `.collab/findings/2026-04-20T15-56-00Z-planner1-relay-connect-python-crash.md`
 - `docs/c2c-research/relay-railway-deploy.md`
+
+---
+
+## RESOLVED 2026-04-21T13:52Z
+
+Push `416a210..3cd3fe2` (108 commits) landed on Railway in ~2 minutes.
+Relay is now `v0.6.11 @ 3cd3fe2`. Smoke test `11/11` confirmed by
+coder2-expert on second run (first run hit Railway rollover window).
+
+Key fixes now live:
+- `adb152f` — `/register` bootstrap bypass (no header Ed25519 required)
+- `fe8251c` — room ops (join/leave/send) body-level auth bypass
+- `92aba0d` + `cfc7939` — connector Ed25519 signing for peer routes
+- `b3ffb2d` + `a4440f0` — ghost-alive PID reuse fix
