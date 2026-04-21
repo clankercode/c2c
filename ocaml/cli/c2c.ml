@@ -1656,11 +1656,16 @@ let rooms_join_cmd =
     Cmdliner.Arg.(value & opt int 20 & info [ "history-limit" ] ~docv:"N"
       ~doc:"Recent messages to show after joining (default 20, max 200, 0 to skip).")
   in
+  let alias_flag =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS"
+      ~doc:"Your alias (overrides registry lookup). Required when C2C_MCP_SESSION_ID is unset.")
+  in
   let+ json = json_flag
   and+ room_id = room_id
-  and+ history_limit = history_limit in
+  and+ history_limit = history_limit
+  and+ alias_opt = alias_flag in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let alias = resolve_alias broker in
+  let alias = Option.value alias_opt ~default:(resolve_alias broker) in
   let session_id = resolve_session_id_for_inbox broker in
   let output_mode = if json then Json else Human in
   (try
@@ -1703,10 +1708,15 @@ let rooms_leave_cmd =
   let room_id =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOM" ~doc:"Room ID.")
   in
+  let alias_flag =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS"
+      ~doc:"Your alias (overrides registry lookup). Required when C2C_MCP_SESSION_ID is unset.")
+  in
   let+ json = json_flag
-  and+ room_id = room_id in
+  and+ room_id = room_id
+  and+ alias_opt = alias_flag in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let alias = resolve_alias broker in
+  let alias = Option.value alias_opt ~default:(resolve_alias broker) in
   let output_mode = if json then Json else Human in
   (try
      let members =
@@ -5572,8 +5582,57 @@ let start_cmd =
 
 let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Start a managed c2c instance.") start_cmd
 
-(* --- subcommand: stop ----------------------------------------------------- *)
+(* --- subcommand: gui ------------------------------------------------------ *)
 
+let find_gui_binary () =
+  (* 1. c2c-gui in PATH *)
+  match Sys.getenv_opt "PATH" with
+  | Some path_env ->
+      let dirs = String.split_on_char ':' path_env in
+      (match List.find_opt (fun d -> Sys.file_exists (d // "c2c-gui")) dirs with
+      | Some d -> Some (d // "c2c-gui")
+      | None ->
+          (* 2. Relative to the c2c binary itself (e.g. ~/.local/bin/c2c → ~/.local/bin/c2c-gui) *)
+          let self = Sys.executable_name in
+          let sibling = Filename.dirname self // "c2c-gui" in
+          if Sys.file_exists sibling then Some sibling else None)
+  | None -> None
+
+let gui_cmd =
+  let detach =
+    Cmdliner.Arg.(value & flag & info [ "detach"; "d" ] ~doc:"Detach from terminal (run in background).")
+  in
+  let+ detach = detach in
+  match find_gui_binary () with
+  | None ->
+      Printf.eprintf "c2c gui: c2c-gui binary not found.\n";
+      Printf.eprintf "  Build it with: cd gui && cargo tauri build\n";
+      Printf.eprintf "  Or install the .deb/.rpm from gui/src-tauri/target/release/bundle/\n";
+      exit 1
+  | Some bin ->
+      if detach then begin
+        (match Unix.fork () with
+        | 0 ->
+            Unix.setsid () |> ignore;
+            Unix.execv bin [| bin |]
+        | _ -> exit 0)
+      end else begin
+        let pid = Unix.create_process bin [| bin |] Unix.stdin Unix.stdout Unix.stderr in
+        let _, status = Unix.waitpid [] pid in
+        exit (match status with
+          | Unix.WEXITED code -> code
+          | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> 1)
+      end
+
+let gui = Cmdliner.Cmd.v
+  (Cmdliner.Cmd.info "gui"
+     ~doc:"Launch the c2c desktop GUI."
+     ~man:[ `S "DESCRIPTION"
+          ; `P "Launches the c2c-gui Tauri desktop application. Searches for the \
+                c2c-gui binary in PATH and alongside the c2c binary. Use \
+                $(b,--detach) to run it in the background."
+          ])
+  gui_cmd
 
 (* --- subcommand: stop ----------------------------------------------------- *)
 
@@ -7202,4 +7261,4 @@ let () =
           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
           ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
           ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-          ; serve; mcp; start; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; help ]))
+          ; serve; mcp; start; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; help ]))
