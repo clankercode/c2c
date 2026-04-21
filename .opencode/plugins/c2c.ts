@@ -438,7 +438,7 @@ const C2CDelivery: Plugin = async (ctx) => {
     } catch {
       stateWriterAvailable = false;
       stateWriterProc = null;
-      // TODO: add reconnect/backoff once the OCaml sink exists and the contract stabilizes.
+      setTimeout(() => void spawnStateWriter(), 10_000);
     }
   }
 
@@ -478,15 +478,18 @@ const C2CDelivery: Plugin = async (ctx) => {
       });
       proc.on("close", (code) => {
         stateWriterAvailable = false;
-        if (stateWriterProc === proc) stateWriterProc = null;
-        void log(`state writer exited: code=${code}`);
+        if (stateWriterProc === proc) {
+          stateWriterProc = null;
+          void log(`state writer exited: code=${code} — reconnecting in 10s`);
+          setTimeout(() => void spawnStateWriter(), 10_000);
+        }
       });
       writeStateSnapshot();
     } catch {
       stateWriterAvailable = false;
       stateWriterProc = null;
-      await log("state writer spawn failed");
-      // TODO: add reconnect/backoff once the OCaml sink exists and the contract stabilizes.
+      await log("state writer spawn failed — reconnecting in 30s");
+      setTimeout(() => void spawnStateWriter(), 30_000);
     }
   }
 
