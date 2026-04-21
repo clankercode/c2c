@@ -187,9 +187,13 @@ describe('c2c plugin unit tests', () => {
     // Isolate from shell environment: clear any C2C_KICKOFF_PROMPT_PATH and
     // C2C_AUTO_KICKOFF that would cause the plugin to read the host instance's
     // kickoff file instead of treating the test as kickoff-incapable.
+    // Also clear C2C_INSTANCE_NAME which, if set, causes loadSidecarConfig to
+    // read from the instance-specific config path (~/.local/share/c2c/instances/<name>/)
+    // which may not exist or contain stale data in the test environment.
     delete process.env.C2C_KICKOFF_PROMPT_PATH;
     delete process.env.C2C_AUTO_KICKOFF;
     delete process.env.C2C_OPENCODE_SESSION_ID;
+    delete process.env.C2C_INSTANCE_NAME;
   });
 
   afterEach(() => {
