@@ -52,9 +52,19 @@ PTY-based wake daemons depend on Linux `/proc` and a PTY helper with `cap_sys_pt
 
 ## OpenCode Plugin Delivery Is Proven
 
-The TypeScript plugin path (`.opencode/plugins/c2c.ts`) is live-proven and the primary delivery path. On 2026-04-14, Codex sent `PLUGIN_ENVELOPE_FIX_SMOKE` to `opencode-local`; the plugin delivered through `client.session.promptAsync` and OpenCode replied with `PLUGIN_ENVELOPE_FIX_SMOKE_ACK`. Plugin now uses `c2c monitor` subprocess for real-time wake.
+The TypeScript plugin path (`.opencode/plugins/c2c.ts`) is live-proven and the primary delivery path. Plugin uses a `c2c monitor` subprocess for near-real-time wake: the monitor watches the broker inbox directory with `inotifywait` and calls `promptAsync` when a new message arrives.
+
+**Permission resolution (v2):** The plugin's `permission.ask` hook is not wired in current OpenCode builds. Instead, on `permission.asked` events, the plugin DMs supervisors with the permission ID and resolves the dialog via the OpenCode HTTP API (`postSessionIdPermissionsPermissionId`) after receiving an `approve-once`/`approve-always`/`reject` reply within 300s. On timeout, the TUI dialog stays open for the operator.
 
 **Note:** `c2c_opencode_wake_daemon.py` is deprecated — do not use.
+
+---
+
+## ~~`c2c monitor` Missed Atomic Inbox Writes~~ (Fixed)
+
+~~The broker writes inboxes via `tmp + rename(2)` (atomic). `inotifywait` was only subscribed to `close_write,modify,delete` events — missing the `moved_to` event that atomic renames generate. Every send fell back to the 30s safety-net poll, causing up to 30s delivery latency on OpenCode sessions.~~
+
+**Fixed (2026-04-21):** Monitor now subscribes to `close_write,modify,delete,moved_to`. New messages arrive near-instantly via the inotify event rather than waiting for the safety-net poll.
 
 ---
 
