@@ -3,3 +3,4 @@
 - [x] to autostart opencode with a prompt, use `c2c start opencode --kickoff-prompt '<prompt>'` (commit 0caafc4)
 - [x] opencode launch/resume: --kickoff-prompt for new sessions, plugin injection for existing sessions. (confirmed by galaxy-coder)
 - [x] session conflict: refresh_opencode_identity wrote to shared .opencode/c2c-plugin.json; now writes to instances/<name>/c2c-plugin.json per-instance (commit 0caafc4)
+- [x] approval DMs for permissions, before sending, need to reload from conf each time (in case it updated) (commit efa1a09)
