@@ -1159,7 +1159,9 @@ const C2CDelivery: Plugin = async (ctx) => {
         // instead POST tui.session.select to the running opencode's HTTP API.
         // The runtime accepts a broader event set than the SDK types expose.
         try {
-          const resp = await fetch(new URL("/tui/publish", ctx.serverUrl), {
+          const publishUrl = new URL("/tui/publish", ctx.serverUrl);
+          await log(`auto-kickoff: tui.session.select POST to ${publishUrl.toString()}`);
+          const resp = await fetch(publishUrl, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ type: "tui.session.select", properties: { sessionID: sid } }),
@@ -1222,12 +1224,20 @@ const C2CDelivery: Plugin = async (ctx) => {
             await new Promise<void>(resolve => setTimeout(resolve, coldBootDelayMs));
           }
           await deliverMessages(info.id);
-          // If messages remain in spool after the first attempt, retry once more after 3s.
-          const afterSpool = readSpool();
-          if (afterSpool.length > 0) {
-            await log(`cold-boot: ${afterSpool.length} message(s) still in spool after first attempt — retrying in 3s`);
-            setTimeout(() => deliverMessages(info.id).catch(() => {}), 3000);
-          }
+          // Exponential-backoff retry: if spool still has messages after first attempt,
+          // retry up to 3 more times (3s → 6s → 12s). Each attempt re-checks the spool
+          // so concurrent background-loop delivery won't double-deliver.
+          // Bug #5: single 3s retry wasn't enough for slow-initialising sessions.
+          void (async () => {
+            const maxRetries = 3;
+            for (let r = 1; r <= maxRetries; r++) {
+              if (readSpool().length === 0) break;
+              const retryDelayMs = 3000 * Math.pow(2, r - 1); // 3s, 6s, 12s
+              await log(`cold-boot: spool not empty after attempt ${r} — retrying in ${retryDelayMs}ms`);
+              await new Promise<void>(resolve => setTimeout(resolve, retryDelayMs));
+              await deliverMessages(info.id).catch(() => {});
+            }
+          })();
         }
         return;
       }
