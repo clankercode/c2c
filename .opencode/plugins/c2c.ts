@@ -561,10 +561,13 @@ const C2CDelivery: Plugin = async (ctx) => {
         return;
       }
 
-      // Notify supervisor on permission.asked (v1: notification-only, no dialog mutation)
-      // Bus publishes "permission.asked"; the hooks["permission.ask"] below intercepts pre-dialog.
-      if (event.type === "permission.asked") {
-        const perm = (event as any).properties?.permission ?? (event as any).properties ?? {};
+      // Notify supervisor on permission events (v1: notification-only, no dialog mutation).
+      // OpenCode publishes "permission.updated" in the external SDK Event stream and
+      // "permission.asked" on the internal bus. Config-declared bash:ask appears to only
+      // fire "permission.updated" via the SDK subscription path; runtime-ask fires both.
+      // Check both to cover all cases.
+      if (event.type === "permission.updated" || event.type === "permission.asked") {
+        const perm = (event as any).properties ?? {};
         const permId: string = perm.id || "";
         if (permId) {
           if (seenPermissionIds.includes(permId)) return;
@@ -613,6 +616,7 @@ const C2CDelivery: Plugin = async (ctx) => {
     },
 
     "permission.ask": async (input: any, output: { status: "ask" | "deny" | "allow" }) => {
+        await log(`permission.ask hook fired: id=${input.id || "?"} type=${input.type || "?"} title=${input.title || "?"}`);
         const permId: string = input.id || "";
         const title: string = input.title || "unknown";
         const type: string = input.type || "unknown";
