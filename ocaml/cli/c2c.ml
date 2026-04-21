@@ -728,9 +728,18 @@ let check_relay_http () =
       in
       let local_hash = Option.value (git_shorthash ()) ~default:"?" in
       let stale_warn =
-        if git_hash <> "?" && local_hash <> "?" && git_hash <> local_hash then
-          Printf.sprintf " ⚠ stale deploy (deployed: %s, local: %s)" git_hash local_hash
-        else ""
+        if git_hash <> "?" && local_hash <> "?" && git_hash <> local_hash then begin
+          let commits_ahead =
+            let cmd = Printf.sprintf "git rev-list --count %s..HEAD 2>/dev/null" git_hash in
+            match Unix.open_process_in cmd with
+            | ic ->
+                let n = try String.trim (input_line ic) with End_of_file -> "" in
+                ignore (Unix.close_process_in ic);
+                (match int_of_string_opt n with Some k when k > 0 -> Printf.sprintf " (%d commits)" k | _ -> "")
+            | exception _ -> ""
+          in
+          Printf.sprintf " ⚠ stale deploy (deployed: %s, local: %s)%s" git_hash local_hash commits_ahead
+        end else ""
       in
       let color = if stale_warn <> "" then `Yellow else `Green in
       (color, Printf.sprintf "relay: reachable — %s @ %s%s%s (%s)" version git_hash auth_str stale_warn url)
@@ -2831,29 +2840,42 @@ let relay_rooms_cmd =
   and+ limit = limit
   and+ alias = alias
   and+ words = words in
-  let run_alias_op op_name client_fn =
-    match resolve_relay_url relay_url, room, alias with
-    | None, _, _ ->
-        Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
-        exit 1
-    | _, None, _ ->
-        Printf.eprintf "error: --room required for 'rooms %s'.\n%!" op_name;
-        exit 1
-    | _, _, None ->
-        Printf.eprintf "error: --alias required for 'rooms %s'.\n%!" op_name;
-        exit 1
-    | Some url, Some room_id, Some alias ->
-        let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
-        let result = Lwt_main.run (client_fn client ~alias ~room_id) in
-        print_endline (Yojson.Safe.pretty_to_string result);
-        (match result with
-         | `Assoc fields ->
-             (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
-         | _ -> exit 1)
-  in
   match subcmd with
-  | "join" -> run_alias_op "join" C2c_mcp.Relay.Relay_client.join_room
-  | "leave" -> run_alias_op "leave" C2c_mcp.Relay.Relay_client.leave_room
+  | "join" | "leave" ->
+      let sign_ctx = if subcmd = "join" then C2c_mcp.Relay.room_join_sign_ctx
+                     else C2c_mcp.Relay.room_leave_sign_ctx in
+      (match resolve_relay_url relay_url, room, alias with
+       | None, _, _ ->
+           Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+           exit 1
+       | _, None, _ ->
+           Printf.eprintf "error: --room required for 'rooms %s'.\n%!" subcmd;
+           exit 1
+       | _, _, None ->
+           Printf.eprintf "error: --alias required for 'rooms %s'.\n%!" subcmd;
+           exit 1
+       | Some url, Some room_id, Some alias ->
+           let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+           let result =
+             match Relay_identity.load () with
+             | Ok id ->
+                 let p = Relay_signed_ops.sign_room_op id ~ctx:sign_ctx ~room_id ~alias in
+                 let fn = if subcmd = "join" then C2c_mcp.Relay.Relay_client.join_room_signed
+                          else C2c_mcp.Relay.Relay_client.leave_room_signed in
+                 Lwt_main.run (fn client ~alias ~room_id
+                   ~identity_pk:p.Relay_signed_ops.identity_pk_b64
+                   ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
+                   ~sig_:p.Relay_signed_ops.sig_b64)
+             | Error _ ->
+                 let fn = if subcmd = "join" then C2c_mcp.Relay.Relay_client.join_room
+                          else C2c_mcp.Relay.Relay_client.leave_room in
+                 Lwt_main.run (fn client ~alias ~room_id)
+           in
+           print_endline (Yojson.Safe.pretty_to_string result);
+           (match result with
+            | `Assoc fields ->
+                (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
+            | _ -> exit 1))
   | "send" ->
       (match resolve_relay_url relay_url, room, alias, words with
        | None, _, _, _ ->
