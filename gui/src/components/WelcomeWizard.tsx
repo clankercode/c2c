@@ -30,7 +30,7 @@ export function WelcomeWizard({ open, onComplete, onSkip }: Props) {
   async function handleRegister() {
     const a = alias.trim();
     if (!ALIAS_RE.test(a)) {
-      setError("2–32 characters, letters/digits/- only");
+      setError("2–32 chars, letters/digits/hyphens/underscores only");
       return;
     }
     setError(null);
@@ -87,7 +87,7 @@ export function WelcomeWizard({ open, onComplete, onSkip }: Props) {
                 />
                 {error && <p className="text-xs text-[#f38ba8]">{error}</p>}
                 <p className="text-xs text-[#585b70]">
-                  1–64 chars: letters, digits, hyphens, underscores, dots (no leading dot).
+                  2–32 chars: letters, digits, hyphens, underscores.
                 </p>
               </div>
               <Button className="w-full" onClick={handleRegister} disabled={!alias.trim()}>
