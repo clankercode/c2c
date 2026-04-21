@@ -1,6 +1,7 @@
 interface Props {
   peers: string[];
   rooms: string[];
+  selectedRoom?: string | null;
   onSelect: (target: string, isRoom: boolean) => void;
 }
 
@@ -22,7 +23,13 @@ const ITEM_STYLE: React.CSSProperties = {
   textOverflow: "ellipsis",
 };
 
-export function Sidebar({ peers, rooms, onSelect }: Props) {
+const ITEM_ACTIVE_STYLE: React.CSSProperties = {
+  ...ITEM_STYLE,
+  background: "#313244",
+  color: "#89dceb",
+};
+
+export function Sidebar({ peers, rooms, selectedRoom, onSelect }: Props) {
   return (
     <div style={{
       width: 160,
@@ -39,7 +46,7 @@ export function Sidebar({ peers, rooms, onSelect }: Props) {
           {rooms.map(r => (
             <div
               key={r}
-              style={ITEM_STYLE}
+              style={selectedRoom === r ? ITEM_ACTIVE_STYLE : ITEM_STYLE}
               onClick={() => onSelect(r, true)}
               title={r}
             >

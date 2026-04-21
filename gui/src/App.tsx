@@ -5,7 +5,7 @@ import { EventFeed } from "./EventFeed";
 import { ComposeBar } from "./ComposeBar";
 import { Sidebar } from "./Sidebar";
 import { registerAlias } from "./useSend";
-import { loadHistory } from "./useHistory";
+import { loadHistory, loadRoomHistory } from "./useHistory";
 import { discoverPeers, discoverRooms } from "./useDiscovery";
 
 const MAX_EVENTS = 1000;
@@ -18,6 +18,8 @@ export function App() {
   const [rooms, setRooms] = useState<Set<string>>(new Set());
   const [composeTo, setComposeTo] = useState("");
   const [composeIsRoom, setComposeIsRoom] = useState(false);
+  const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
+  const [roomHistoryEvents, setRoomHistoryEvents] = useState<C2cEvent[]>([]);
   const [myAlias, setMyAlias] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "");
   const [aliasInput, setAliasInput] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "");
   const [aliasStatus, setAliasStatus] = useState<string | null>(null);
@@ -165,9 +167,18 @@ export function App() {
         <Sidebar
           peers={[...peers]}
           rooms={[...rooms]}
+          selectedRoom={selectedRoom}
           onSelect={(target, isRoom) => {
             setComposeTo(target);
             setComposeIsRoom(isRoom);
+            if (isRoom) {
+              setSelectedRoom(target);
+              setRoomHistoryEvents([]);
+              loadRoomHistory(target, 100).then(hist => setRoomHistoryEvents(hist));
+            } else {
+              setSelectedRoom(null);
+              setRoomHistoryEvents([]);
+            }
           }}
         />
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -176,7 +187,12 @@ export function App() {
               Waiting for swarm events…
             </div>
           ) : (
-            <EventFeed events={events} />
+            <EventFeed
+              events={events}
+              selectedRoom={selectedRoom}
+              roomHistoryEvents={roomHistoryEvents}
+              onClearRoom={() => { setSelectedRoom(null); setRoomHistoryEvents([]); }}
+            />
           )}
         </div>
       </div>
