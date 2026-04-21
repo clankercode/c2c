@@ -126,6 +126,23 @@ class HealthTests(RelayServerTestCase):
 
 
 # ---------------------------------------------------------------------------
+# Unauthenticated read-only routes (consistent with OCaml relay auth_decision)
+# ---------------------------------------------------------------------------
+
+class UnauthReadOnlyTests(RelayServerTestCase):
+    def test_list_rooms_no_auth(self):
+        no_auth = RelayClient(f"http://127.0.0.1:{self.server.server_address[1]}")
+        r = no_auth.get("/list_rooms")
+        self.assertTrue(r["ok"])
+        self.assertIn("rooms", r)
+
+    def test_room_history_no_auth(self):
+        no_auth = RelayClient(f"http://127.0.0.1:{self.server.server_address[1]}")
+        r = no_auth.post("/room_history", {"room_id": "nonexistent", "limit": 10})
+        self.assertIn("history", r)
+
+
+# ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
 
