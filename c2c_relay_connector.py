@@ -209,7 +209,10 @@ class RelayClient:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as exc:
             try:
-                return json.loads(exc.read())
+                body = exc.read()
+                return json.loads(body)
+            except (json.JSONDecodeError, ValueError):
+                return {"ok": False, "error_code": str(exc.code), "error": body.decode("utf-8", errors="replace")}
             finally:
                 exc.close()
         except (urllib.error.URLError, OSError) as exc:
