@@ -13,14 +13,15 @@ import { registerAlias } from "@/useSend";
 
 type Step = "name" | "registering" | "done";
 
-const ALIAS_RE = /^[a-zA-Z0-9_-]{2,32}$/;
+const ALIAS_RE = /^(?!\.)[A-Za-z0-9._-]{1,64}$/;
 
 interface Props {
   open: boolean;
   onComplete: (alias: string) => void;
+  onSkip?: () => void;
 }
 
-export function WelcomeWizard({ open, onComplete }: Props) {
+export function WelcomeWizard({ open, onComplete, onSkip }: Props) {
   const [step, setStep] = useState<Step>("name");
   const [alias, setAlias] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -86,12 +87,20 @@ export function WelcomeWizard({ open, onComplete }: Props) {
                 />
                 {error && <p className="text-xs text-[#f38ba8]">{error}</p>}
                 <p className="text-xs text-[#585b70]">
-                  Letters, digits, hyphens, underscores — 2–32 chars.
+                  1–64 chars: letters, digits, hyphens, underscores, dots (no leading dot).
                 </p>
               </div>
               <Button className="w-full" onClick={handleRegister} disabled={!alias.trim()}>
                 Register →
               </Button>
+              {onSkip && (
+                <button
+                  onClick={onSkip}
+                  className="w-full text-xs text-[#45475a] hover:text-[#585b70] py-1 transition-colors"
+                >
+                  Skip — use read-only mode
+                </button>
+              )}
             </div>
           )}
 

@@ -72,6 +72,7 @@ export function App() {
           if (!trimmed) return;
           try {
             const event: C2cEvent = JSON.parse(trimmed);
+            if (event.event_type === "monitor.ready") { setStatus("live"); return; }
             setEvents(prev => {
               const next = [...prev, event];
               return next.length > MAX_EVENTS ? next.slice(-MAX_EVENTS) : next;
@@ -197,7 +198,7 @@ export function App() {
       display: "flex", flexDirection: "column", height: "100vh",
       background: "#1e1e2e", color: "#cdd6f4",
     }}>
-      <WelcomeWizard open={showWizard} onComplete={handleWizardComplete} />
+      <WelcomeWizard open={showWizard} onComplete={handleWizardComplete} onSkip={() => setShowWizard(false)} />
       {/* Header */}
       <div style={{
         padding: "6px 16px", background: "#181825",
