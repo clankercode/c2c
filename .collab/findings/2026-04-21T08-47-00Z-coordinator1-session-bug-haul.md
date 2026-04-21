@@ -2,7 +2,7 @@
 author: coordinator1
 ts: 2026-04-21T08:47:00Z
 severity: mixed (see per-entry)
-fix: mixed (some dispatched, some open)
+fix: mostly FIXED — bugs 1-6,8-10 resolved; bug 7 in-progress (planner1)
 ---
 
 # Session bug haul — consolidated log so we don't re-discover later
