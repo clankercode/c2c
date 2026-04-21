@@ -539,7 +539,6 @@ let cleanup_stale_opentui_zig_cache () : int =
  * --------------------------------------------------------------------------- *)
 
 let build_env ?(broker_root_override : string option = None) (name : string) (alias_override : string option) : string array =
-  let env = Array.copy (Unix.environment ()) in
   let br = Option.value broker_root_override ~default:(broker_root ()) in
   let additions = [
     "C2C_MCP_SESSION_ID", name;
@@ -553,23 +552,19 @@ let build_env ?(broker_root_override : string option = None) (name : string) (al
        so harmless where unsupported. *)
     "C2C_MCP_CHANNEL_DELIVERY", "1";
   ] in
-  let merged =
-    let existing = Array.to_list env in
-    let updated =
-      List.fold_left
-        (fun acc (k, v) ->
-          let rec update = function
-            | [] -> [ (k, Printf.sprintf "%s=%s" k v) ]
-            | (k', v') :: _ when k' = k -> (k, Printf.sprintf "%s=%s" k v) :: acc
-            | h :: tl -> h :: update tl
-          in
-          update acc)
-        (List.map (fun e -> try let i = String.index e '=' in (String.sub e 0 i, e) with _ -> (e, e)) existing)
-        additions
-    in
-    Array.of_list (List.rev_map snd updated)
+  (* Strip any existing copies of overridden keys from the inherited env, then
+     append our authoritative values. This avoids the duplicate-key bug where
+     both the parent's C2C_MCP_SESSION_ID and the child's appear in the array
+     (previously a buggy in-place replacement left both copies). *)
+  let override_keys = List.map fst additions in
+  let env_key e =
+    try String.sub e 0 (String.index e '=') with Not_found -> e
   in
-  merged
+  let filtered = Array.to_list (Unix.environment ())
+    |> List.filter (fun e -> not (List.mem (env_key e) override_keys))
+  in
+  let new_entries = List.map (fun (k, v) -> Printf.sprintf "%s=%s" k v) additions in
+  Array.of_list (filtered @ new_entries)
 
 (* ---------------------------------------------------------------------------
  * OpenCode identity files refresh
