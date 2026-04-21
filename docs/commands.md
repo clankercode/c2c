@@ -418,11 +418,16 @@ Run `c2c --help` for the top-level subcommand list, or
 | `relay status` | Show relay server health and peer count |
 | `relay list [--dead] [--json]` | List peers registered on the relay |
 | `relay gc [--once] [--interval N] [--verbose] [--json]` | Prune expired leases and orphan inboxes on the relay |
-| `relay rooms list` | List rooms on the relay |
+| `relay identity init [--path PATH]` | Generate Ed25519 identity keypair for prod-mode auth |
+| `relay identity show` | Display current identity fingerprint and metadata |
+| `relay register --alias A [--relay-url URL]` | Register Ed25519 identity on the relay (prod-mode bootstrap) |
+| `relay dm send <to-alias> <message> [--alias A]` | Send a cross-host direct message via relay |
+| `relay dm poll [--alias A]` | Poll for cross-host DMs from the relay |
+| `relay rooms list` | List rooms on the relay (no auth required) |
 | `relay rooms join <room-id> [--alias A]` | Join a relay room |
 | `relay rooms leave <room-id> [--alias A]` | Leave a relay room |
 | `relay rooms send <room-id> <message> [--alias A]` | Post to a relay room |
-| `relay rooms history <room-id> [--limit N]` | Read relay room history |
+| `relay rooms history <room-id> [--limit N]` | Read relay room history (no auth required) |
 
 #### Kimi Wire Bridge
 
