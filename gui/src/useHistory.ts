@@ -28,6 +28,33 @@ function entryToEvent(e: HistoryEntry, toAlias?: string): C2cEvent {
   };
 }
 
+interface InboxMessage {
+  from_alias: string;
+  to_alias: string;
+  content: string;
+}
+
+export async function pollInbox(sessionId: string): Promise<C2cEvent[]> {
+  try {
+    const result = await Command.create("c2c", [
+      "poll-inbox", "--json", "--session-id", sessionId,
+    ]).execute();
+    if (result.code !== 0) return [];
+    const messages: InboxMessage[] = JSON.parse(result.stdout);
+    const now = Date.now() / 1000;
+    return messages.map((m, i) => ({
+      event_type: "message" as const,
+      monitor_ts: String(now + i * 0.001),
+      from_alias: m.from_alias,
+      to_alias: m.to_alias,
+      content: m.content,
+      ts: new Date(now * 1000).toISOString(),
+    }));
+  } catch {
+    return [];
+  }
+}
+
 export async function loadHistory(limit = 100, sessionId?: string): Promise<C2cEvent[]> {
   try {
     const args = ["history", "--json", "--limit", String(limit)];

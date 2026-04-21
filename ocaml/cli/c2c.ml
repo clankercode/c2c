@@ -382,10 +382,18 @@ let poll_inbox_cmd =
   let peek =
     Cmdliner.Arg.(value & flag & info [ "peek"; "p" ] ~doc:"Peek without draining.")
   in
+  let session_id_flag =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "session-id"; "s" ] ~docv:"ID"
+      ~doc:"Session ID whose inbox to drain. Overrides C2C_MCP_SESSION_ID.")
+  in
   let+ json = json_flag
-  and+ peek = peek in
+  and+ peek = peek
+  and+ session_id_opt = session_id_flag in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let session_id = resolve_session_id_for_inbox broker in
+  let session_id = match session_id_opt with
+    | Some sid -> sid
+    | None -> resolve_session_id_for_inbox broker
+  in
   let messages =
     if peek then
       C2c_mcp.Broker.read_inbox broker ~session_id

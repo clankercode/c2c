@@ -5,7 +5,7 @@ import { EventFeed } from "./EventFeed";
 import { ComposeBar } from "./ComposeBar";
 import { Sidebar } from "./Sidebar";
 import { registerAlias } from "./useSend";
-import { loadHistory, loadRoomHistory, loadPeerHistory } from "./useHistory";
+import { loadHistory, loadRoomHistory, loadPeerHistory, pollInbox } from "./useHistory";
 import { discoverPeers, discoverRooms, fetchHealth, HealthInfo } from "./useDiscovery";
 import { WelcomeWizard } from "./components/WelcomeWizard";
 
@@ -36,6 +36,8 @@ export function App() {
   const [health, setHealth] = useState<HealthInfo | null>(null);
   const childRef = useRef<Child | null>(null);
   const cancelledRef = useRef(false);
+  const reconnectAttemptRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   async function startMonitor() {
     setStatus("connecting");
@@ -157,13 +159,18 @@ export function App() {
     // seed but before/between monitor events (e.g. restarts, alias changes).
     const refreshTimer = setInterval(() => refreshBroker(), 60_000);
 
-    // Load recent history before starting the live monitor.
+    // Load recent history + drain inbox, then start the live monitor.
     const storedAlias = localStorage.getItem(ALIAS_KEY) ?? undefined;
-    loadHistory(100, storedAlias).then(hist => {
-      if (!cancelledRef.current && hist.length > 0) {
-        setEvents(hist);
-      }
-      if (!cancelledRef.current) startMonitor();
+    Promise.all([
+      loadHistory(100, storedAlias),
+      storedAlias ? pollInbox(storedAlias) : Promise.resolve([] as import("./types").C2cEvent[]),
+    ]).then(([hist, inbox]) => {
+      if (cancelledRef.current) return;
+      const combined = [...hist, ...inbox].sort(
+        (a, b) => parseFloat(a.monitor_ts) - parseFloat(b.monitor_ts)
+      );
+      if (combined.length > 0) setEvents(combined);
+      startMonitor();
     });
 
     return () => {
