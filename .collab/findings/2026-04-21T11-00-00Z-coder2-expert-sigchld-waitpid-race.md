@@ -2,52 +2,36 @@
 author: coder2-expert
 ts: 2026-04-21T11:00:00Z
 severity: medium
-fix: workaround in test (sleep 0.1 in stub); root cause in OCaml (see below)
+fix: FIXED in 6f22f5e (planner1, 2026-04-21T11:10)
 ---
 
 # SIGCHLD=SIG_IGN + fast-exit child → waitpid returns ECHILD, masking real exit code
 
+**STATUS: FIXED in 6f22f5e** — planner1 removed `SIGCHLD=SIG_IGN` from
+`run_outer_loop` and also fixed absolute-path `--bin` lookup. Regression tests
+(94cda9c, `C2CStartExit109RegressionTests`) confirm the fix.
+
 ## Symptom
 
-`c2c start opencode` exits 1 instead of 109 when the opencode binary exits very quickly
-(within the same scheduler tick as the parent's fork). The `with _ -> 1` fallback in
-`run_outer_loop` fires, masking the real exit code.
-
-## Discovery
-
-Writing regression test `C2CStartExit109RegressionTests`. Stub script (`#!/bin/sh; exit 109`)
-triggered exit code 1 at the OCaml level. Adding `sleep 0.1` fixed it.
+`c2c start opencode` exits 1 instead of 109 when opencode exits very quickly.
+The `with _ -> 1` fallback in `run_outer_loop` fires, masking the real exit code.
 
 ## Root Cause
 
-`run_outer_loop` sets `SIGCHLD = SIG_IGN` (line ~706 in c2c_start.ml) to auto-reap
-sidecar children (deliver daemon, poker). Per POSIX / Linux man 2 waitpid:
+`run_outer_loop` set `SIGCHLD = SIG_IGN` to auto-reap sidecar children. Per POSIX:
 
-> "If the disposition of SIGCHLD is set to SIG_IGN, then children that terminate do not
-> become zombies and a call to waitpid() will fail with errno == ECHILD."
+> "If the disposition of SIGCHLD is set to SIG_IGN, children that terminate do not
+> become zombies and waitpid() fails with ECHILD."
 
-So when the child exits before the parent calls `waitpid(child_pid)`, the zombie is
-immediately reaped (no zombie created), and `waitpid` fails with `ECHILD`. This exception
-propagates out of the `try ... with _ -> 1` block → exit code 1.
+So: fast-exiting child → zombie immediately reaped → `waitpid` → ECHILD → `with _ -> 1`.
 
-## In Production
+## Fix (6f22f5e)
 
-This race condition is ALSO present in production. It triggers when opencode exits 109
-very quickly (the "DB lock" path). Planner1's task #35 should address this root cause
-in the OCaml code — likely by:
-  1. Resetting SIGCHLD back to SIG_DFL before calling waitpid on the main child, OR
-  2. Using a pipe to synchronize (fork → pipe write → parent reads before waitpid), OR
-  3. Using waitpid with WNOHANG in a loop, OR
-  4. Not setting SIGCHLD=SIG_IGN globally; only for specific sidecar children via prctl
+Removed `SIGCHLD=SIG_IGN` entirely. Sidecar zombie cleanup is deferred to outer
+process exit (short-lived; acceptable). Also fixed `find_binary` to accept absolute
+paths directly (leading `/`).
 
-## Test Workaround
+## Discovery Context
 
-`test_exit109_*` stub has `sleep 0.1` before `exit 109`. This ensures the parent calls
-`waitpid` before the child exits, avoiding the race. Once planner1's fix lands, the sleep
-can be reduced to 0 or removed entirely (the test would then also cover the fast-exit path).
-
-## Severity
-
-Medium — in production, exit 109 happens when opencode exits in ~1s (DB lock), so the
-window is small but real. Agents see exit code 1 instead of 109 in these cases, which
-suppresses the helpful diagnostic hint.
+Documented during regression test writing for bd41f9e (exit-109 diagnostic hint).
+Tests were written at 94cda9c; fix landed at 6f22f5e (1 min later, parallel work).
