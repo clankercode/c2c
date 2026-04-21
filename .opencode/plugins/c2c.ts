@@ -312,6 +312,13 @@ const C2CDelivery: Plugin = async (ctx) => {
       header: string;
       options: string[];
     } | null;
+    context_usage: {
+      tokens_input: number;
+      tokens_output: number;
+      tokens_cache_read: number;
+      cost_usd: number;
+      completed_turns: number;
+    };
   };
   type StateSnapshotEnvelope = {
     event: "state.snapshot";
@@ -348,6 +355,13 @@ const C2CDelivery: Plugin = async (ctx) => {
       has_text: null,
     },
     pendingQuestion: null,
+    context_usage: {
+      tokens_input: 0,
+      tokens_output: 0,
+      tokens_cache_read: 0,
+      cost_usd: 0,
+      completed_turns: 0,
+    },
   };
   let stateWriterProc: ReturnType<typeof spawn> | null = null;
   let stateWriterAvailable = false;
@@ -639,6 +653,24 @@ const C2CDelivery: Plugin = async (ctx) => {
 
     if (event.type === "permission.asked" || event.type === "permission.updated") {
       applyPermissionState(event);
+      return;
+    }
+
+    if (event.type === "message.updated") {
+      const info = (event as any).properties?.info;
+      if (info?.role === "assistant" && typeof info?.time?.completed === "number") {
+        const tokens = info.tokens ?? {};
+        const prev = pluginState.context_usage;
+        const next = {
+          tokens_input: tokens.input ?? 0,
+          tokens_output: tokens.output ?? 0,
+          tokens_cache_read: tokens.cache?.read ?? 0,
+          cost_usd: prev.cost_usd + (typeof info.cost === "number" ? info.cost : 0),
+          completed_turns: prev.completed_turns + 1,
+        };
+        pluginState.context_usage = next;
+        writeStatePatch({ context_usage: next });
+      }
       return;
     }
 
