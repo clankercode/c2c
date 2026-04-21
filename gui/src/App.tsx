@@ -32,7 +32,30 @@ export function App() {
   const [aliasInput, setAliasInput] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "");
   const [showWizard, setShowWizard] = useState(() => !localStorage.getItem(ALIAS_KEY));
   const [aliasStatus, setAliasStatus] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const childRef = useRef<Child | null>(null);
+
+  async function refreshBroker() {
+    setRefreshing(true);
+    try {
+      const [ps, rs] = await Promise.all([discoverPeers(), discoverRooms()]);
+      setPeers(prev => {
+        const alive = new Set(ps.filter(p => p.alive).map(p => p.alias));
+        const dead = new Set(ps.filter(p => !p.alive).map(p => p.alias));
+        const merged = new Set([...prev, ...alive]);
+        dead.forEach(a => merged.delete(a));
+        return merged;
+      });
+      setRooms(prev => new Set([...prev, ...rs.map(r => r.room_id)]));
+      setRoomMembers(prev => {
+        const next = new Map(prev);
+        rs.forEach(r => { if (r.alive_members) next.set(r.room_id, new Set(r.alive_members)); });
+        return next;
+      });
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -119,18 +142,11 @@ export function App() {
     }
 
     // Seed peers and rooms from local broker before monitor arms.
-    Promise.all([discoverPeers(), discoverRooms()]).then(([ps, rs]) => {
-      if (cancelled) return;
-      setPeers(new Set(ps.filter(p => p.alive).map(p => p.alias)));
-      setRooms(new Set(rs.map(r => r.room_id)));
-      const memberMap = new Map<string, Set<string>>();
-      rs.forEach(r => {
-        if ((r as { alive_members?: string[] }).alive_members) {
-          memberMap.set(r.room_id, new Set((r as { alive_members: string[] }).alive_members));
-        }
-      });
-      if (memberMap.size > 0) setRoomMembers(memberMap);
-    });
+    refreshBroker();
+
+    // Periodic re-discovery: picks up peers that registered after the initial
+    // seed but before/between monitor events (e.g. restarts, alias changes).
+    const refreshTimer = setInterval(() => refreshBroker(), 60_000);
 
     // Load recent history before starting the live monitor.
     loadHistory(100).then(hist => {
@@ -142,6 +158,7 @@ export function App() {
 
     return () => {
       cancelled = true;
+      clearInterval(refreshTimer);
       childRef.current?.kill().catch(() => {});
     };
   }, []);
@@ -191,6 +208,18 @@ export function App() {
         <span style={{ fontSize: 11, color: "#585b70" }}>swarm monitor</span>
         <span style={{ marginLeft: "auto", fontSize: 11, color: statusColor }}>● {status}</span>
         <span style={{ fontSize: 11, color: "#585b70" }}>{events.length} events</span>
+        <button
+          onClick={() => refreshBroker()}
+          disabled={refreshing}
+          title="Refresh peer/room list from broker"
+          style={{
+            background: "transparent", border: "1px solid #45475a",
+            borderRadius: 4, color: refreshing ? "#45475a" : "#89dceb",
+            padding: "2px 6px", fontSize: 11, cursor: "pointer",
+          }}
+        >
+          {refreshing ? "…" : "⟳"}
+        </button>
 
         {/* Alias setup */}
         <div style={{ display: "flex", gap: 4, alignItems: "center" }}>

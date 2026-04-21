@@ -56,26 +56,62 @@ export function Sidebar({ peers, rooms, roomMembers = new Map(), selectedRoom, s
       {rooms.length > 0 && (
         <>
           <div style={SECTION_STYLE}>Rooms</div>
-          {rooms.map(r => (
-            <div
-              key={r}
-              style={selectedRoom === r ? ITEM_ACTIVE_STYLE : ITEM_STYLE}
-              onClick={() => onSelect(r, true)}
-              title={r}
-            >
-              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
-                🏠 {r}
-                {roomMembers.has(r) && (
-                  <span style={{ color: "#45475a", fontSize: 10, marginLeft: 4 }}>
-                    {roomMembers.get(r)!.size}
+          {rooms.map(r => {
+            const isActive = selectedRoom === r;
+            const members = roomMembers.get(r);
+            return (
+              <div key={r}>
+                <div
+                  style={isActive ? ITEM_ACTIVE_STYLE : ITEM_STYLE}
+                  onClick={() => onSelect(r, true)}
+                  title={r}
+                >
+                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
+                    🏠 {r}
+                    {members && (
+                      <span style={{ color: "#45475a", fontSize: 10, marginLeft: 4 }}>
+                        {members.size}
+                      </span>
+                    )}
                   </span>
+                  {unreadRooms.has(r) && (
+                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#f38ba8", flexShrink: 0, display: "inline-block" }} />
+                  )}
+                </div>
+                {/* Expanded member list when this room is active */}
+                {isActive && members && members.size > 0 && (
+                  <div style={{ paddingLeft: 16, paddingBottom: 4 }}>
+                    {[...members].map(m => (
+                      <div
+                        key={m}
+                        style={{
+                          fontSize: 11,
+                          color: "#89b4fa",
+                          padding: "1px 10px",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 4,
+                          cursor: "pointer",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                        onClick={() => onSelect(m, false)}
+                        title={`DM ${m}`}
+                      >
+                        <span style={{
+                          width: 5, height: 5, borderRadius: "50%",
+                          background: "#a6e3a1", flexShrink: 0,
+                          display: "inline-block",
+                        }} />
+                        {m}
+                      </div>
+                    ))}
+                  </div>
                 )}
-              </span>
-              {unreadRooms.has(r) && (
-                <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#f38ba8", flexShrink: 0, display: "inline-block" }} />
-              )}
-            </div>
-          ))}
+              </div>
+            );
+          })}
         </>
       )}
 
