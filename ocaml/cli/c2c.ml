@@ -6615,6 +6615,66 @@ let oc_plugin_group =
                  C2C_INSTANCE_NAME is set, else ~/.local/share/c2c/oc-plugin-state.json.")
         oc_plugin_stream_write_statefile_cmd ]
 
+(* --- subcommand group: cc-plugin ------------------------------------------ *)
+(* Claude Code plugin sink commands. The PostToolUse inbox hook writes
+   statefile state automatically; this group exposes the write path for
+   future hooks or scripts that need to emit explicit state (e.g. idle signal). *)
+
+let cc_plugin_write_statefile_cmd =
+  Cmdliner.Term.(const (fun () ->
+    (* Same path logic as oc-plugin: prefer $C2C_INSTANCE_NAME, else base dir. *)
+    let home = Sys.getenv_opt "HOME" |> Option.value ~default:"/tmp" in
+    let base_dir = Filename.concat home ".local/share/c2c" in
+    let mkdir_p dir =
+      let parts = String.split_on_char '/' dir in
+      ignore (List.fold_left (fun acc part ->
+        if part = "" then acc
+        else
+          let p = if acc = "" then "/" ^ part else acc ^ "/" ^ part in
+          (try Unix.mkdir p 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+          p
+      ) "" parts)
+    in
+    let statefile =
+      match Sys.getenv_opt "C2C_INSTANCE_NAME" with
+      | Some name when String.trim name <> "" ->
+          let inst_dir = Filename.concat (Filename.concat base_dir "instances") (String.trim name) in
+          mkdir_p inst_dir;
+          Filename.concat inst_dir "oc-plugin-state.json"
+      | _ ->
+          mkdir_p base_dir;
+          Filename.concat base_dir "oc-plugin-state.json"
+    in
+    let line = try input_line stdin with End_of_file -> "" in
+    if String.trim line = "" then ()
+    else begin
+      let json = try Some (Yojson.Safe.from_string line) with _ -> None in
+      match json with
+      | None -> ()
+      | Some j ->
+          let payload = Yojson.Safe.to_string j in
+          let tmp = statefile ^ ".tmp" in
+          (try
+            let oc = open_out tmp in
+            output_string oc payload;
+            output_char oc '\n';
+            close_out oc;
+            Unix.rename tmp statefile
+          with _ -> ())
+    end) $ Cmdliner.Term.const ())
+
+let cc_plugin_group =
+  Cmdliner.Cmd.group
+    (Cmdliner.Cmd.info "cc-plugin"
+       ~doc:"Claude Code plugin sink commands (called by the PostToolUse hook \
+             and any Claude Code statefile emitters).")
+    [ Cmdliner.Cmd.v
+        (Cmdliner.Cmd.info "write-statefile"
+           ~doc:"Read a JSON state snapshot from stdin and write it atomically \
+                 to the instance statefile (same path as oc-plugin). Called by \
+                 hooks or scripts that need to emit explicit Claude Code state.")
+        cc_plugin_write_statefile_cmd ]
+
 (* --- main entry point ----------------------------------------------------- *)
 
 (* Cmdliner renders help through groff/grotty, which emits ANSI SGR escapes,
@@ -6863,4 +6923,4 @@ let () =
           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
           ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
           ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-          ; serve; mcp; start; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; supervisor_group; help ]))
+          ; serve; mcp; start; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; help ]))
