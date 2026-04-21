@@ -748,6 +748,34 @@ let run_outer_loop ~(name : string) ~(client : string)
         remove_pidfile (inner_pid_path name);
         remove_pidfile (deliver_pid_path name);
         remove_pidfile (poker_pid_path name);
+        (* Clear pid from registration so the entry shows Unknown instead of
+           ghost-alive if the PID is later reused by an unrelated process.
+           Done inline (not via C2c_mcp.Broker) to avoid a compile-time
+           cycle: c2c_mcp.mli re-exports C2c_start, so C2c_start cannot
+           depend on C2c_mcp. *)
+        (try
+           let reg_path = Filename.concat broker_root "registry.json" in
+           if Sys.file_exists reg_path then begin
+             let json = Yojson.Safe.from_file reg_path in
+             let updated = match json with
+               | `List regs ->
+                   `List (List.map (fun r ->
+                     match r with
+                     | `Assoc fields ->
+                         let sid = match List.assoc_opt "session_id" fields with
+                           | Some (`String s) -> s | _ -> "" in
+                         if sid = name then
+                           `Assoc (List.filter (fun (k, _) ->
+                             k <> "pid" && k <> "pid_start_time") fields)
+                         else r
+                     | _ -> r) regs)
+               | _ -> json
+             in
+             let tmp = reg_path ^ ".clear_pid.tmp" in
+             Yojson.Safe.to_file tmp updated;
+             Unix.rename tmp reg_path
+           end
+         with _ -> ());
         code
       in
 
