@@ -186,8 +186,13 @@ export function App() {
     // seed but before/between monitor events (e.g. restarts, alias changes).
     const refreshTimer = setInterval(() => refreshBroker(), 60_000);
 
-    // Load recent history + drain inbox, then start the live monitor.
+    // If we have a stored alias, ensure we're joined to the default social room.
     const storedAlias = localStorage.getItem(ALIAS_KEY) ?? undefined;
+    if (storedAlias) {
+      joinRoom("swarm-lounge", storedAlias).then(res => {
+        if (res.ok) setRooms(prev => new Set([...prev, "swarm-lounge"]));
+      });
+    }
     Promise.all([
       loadHistory(100, storedAlias),
       storedAlias ? pollInbox(storedAlias) : Promise.resolve([] as import("./types").C2cEvent[]),
