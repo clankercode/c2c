@@ -52,11 +52,16 @@ export function App() {
         if (!trimmed) return;
         try {
           const event: C2cEvent = JSON.parse(trimmed);
-          if (event.event_type === "monitor.ready") { setStatus("live"); return; }
+          if (event.event_type === "monitor.ready") {
+            reconnectAttemptRef.current = 0;
+            setStatus("live");
+            return;
+          }
           setEvents(prev => {
             const next = [...prev, event];
             return next.length > MAX_EVENTS ? next.slice(-MAX_EVENTS) : next;
           });
+          reconnectAttemptRef.current = 0;
           setStatus("live");
 
           if (event.event_type === "peer.alive") {
@@ -105,17 +110,39 @@ export function App() {
       });
 
       cmd.stderr.on("data", () => { /* suppress */ });
-      cmd.on("close", () => { if (!cancelledRef.current) setStatus("error"); });
-      cmd.on("error", () => { if (!cancelledRef.current) setStatus("error"); });
+      function scheduleReconnect() {
+        if (cancelledRef.current) return;
+        setStatus("error");
+        const attempt = ++reconnectAttemptRef.current;
+        const delay = Math.min(3000 * Math.pow(2, attempt - 1), 30000);
+        reconnectTimerRef.current = setTimeout(() => {
+          if (!cancelledRef.current) startMonitor();
+        }, delay);
+      }
+
+      cmd.on("close", scheduleReconnect);
+      cmd.on("error", scheduleReconnect);
 
       const child = await cmd.spawn();
       childRef.current = child;
     } catch {
-      if (!cancelledRef.current) setStatus("error");
+      if (!cancelledRef.current) {
+        setStatus("error");
+        const attempt = ++reconnectAttemptRef.current;
+        const delay = Math.min(3000 * Math.pow(2, attempt - 1), 30000);
+        reconnectTimerRef.current = setTimeout(() => {
+          if (!cancelledRef.current) startMonitor();
+        }, delay);
+      }
     }
   }
 
   async function handleReconnect() {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    reconnectAttemptRef.current = 0;
     childRef.current?.kill().catch(() => {});
     childRef.current = null;
     await startMonitor();
@@ -176,6 +203,7 @@ export function App() {
     return () => {
       cancelledRef.current = true;
       clearInterval(refreshTimer);
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       childRef.current?.kill().catch(() => {});
     };
   }, []);
@@ -226,14 +254,14 @@ export function App() {
         {status === "error" ? (
           <button
             onClick={handleReconnect}
-            title="Click to reconnect monitor"
+            title="Auto-reconnecting — click to retry now"
             style={{
               marginLeft: "auto", background: "transparent", border: "1px solid #f38ba8",
               borderRadius: 4, color: "#f38ba8", padding: "2px 6px",
               fontSize: 11, cursor: "pointer",
             }}
           >
-            ● error · reconnect
+            ● error · retry now
           </button>
         ) : (
           <span style={{ marginLeft: "auto", fontSize: 11, color: statusColor }}>● {status}</span>
