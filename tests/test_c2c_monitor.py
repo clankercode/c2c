@@ -165,6 +165,8 @@ class MonitorJsonTests(unittest.TestCase):
         self.assertEqual(dead[0]["alias"], "alice")
 
     def test_room_join_on_members_write(self):
+        # Pre-create the room dir so inotifywait watches it before members.json lands.
+        _write_members(self.broker_root, "lobby", [])
         proc = self._start_monitor()
         _write_members(self.broker_root, "lobby", [
             {"alias": "bob", "session_id": "sid-bob", "joined_at": 1.0}
@@ -190,6 +192,8 @@ class MonitorJsonTests(unittest.TestCase):
         self.assertEqual(leaves[0]["room_id"], "lobby")
 
     def test_multiple_room_joins(self):
+        # Pre-create so inotifywait watches the dir before members.json is written.
+        _write_members(self.broker_root, "swarm-lounge", [])
         proc = self._start_monitor()
         _write_members(self.broker_root, "swarm-lounge", [
             {"alias": "agent1", "session_id": "sid-1", "joined_at": 1.0},
