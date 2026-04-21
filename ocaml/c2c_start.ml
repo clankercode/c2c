@@ -1077,16 +1077,22 @@ let run_outer_loop ~(name : string) ~(client : string)
                       wants to suspend. Reclaim the TTY, stop ourselves so
                       the shell sees a suspended job, then on SIGCONT hand
                       the TTY back, resume the child, and keep waiting. *)
+                   Printf.eprintf
+                     "[c2c-start/%s] child stopped (SIGTSTP=%d); suspending outer\n%!"
+                     name sig_n;
                    (try tcsetpgrp Unix.stdin (Unix.getpid ()) with _ -> ());
                    (try Unix.kill (Unix.getpid ()) Sys.sigstop with _ -> ());
                    (try tcsetpgrp Unix.stdin child_pid_opt with _ -> ());
                    (try Unix.kill (- child_pid_opt) Sys.sigcont with _ -> ());
                    wait_for_child ()
-               | _, Unix.WSTOPPED _ ->
+               | _, Unix.WSTOPPED sig_n ->
                    (* SIGTTIN/SIGTTOU/SIGSTOP etc — not a user suspend.
                       Resume the child and keep waiting; don't propagate
                       the stop to ourselves (would strand the outer on
                       clean-exit paths like opencode's Ctrl-D shutdown). *)
+                   Printf.eprintf
+                     "[c2c-start/%s] child stopped (sig=%d, not SIGTSTP=%d); SIGCONTing, not suspending\n%!"
+                     name sig_n Sys.sigtstp;
                    (try Unix.kill (- child_pid_opt) Sys.sigcont with _ -> ());
                    wait_for_child ()
                | _, Unix.WEXITED n -> n
