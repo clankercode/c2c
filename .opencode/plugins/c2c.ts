@@ -507,6 +507,53 @@ const C2CDelivery: Plugin = async (ctx) => {
     }
   }
 
+  /**
+   * Detect conflicting alive OpenCode instances. Throws FATAL if another
+   * c2c-managed OpenCode process (same broker) is alive and would compete
+   * for the same session pool — preventing the cross-contamination bug where
+   * bootstrapRootSession() adopts a peer's session.
+   * See finding: 2026-04-21T09-00-00Z-coordinator1-oc-focus-test-session-cross-contamination.md
+   */
+  async function checkConflictingInstances(): Promise<void> {
+    const home = process.env.HOME || "";
+    const instancesDir = path.join(home, ".local", "share", "c2c", "instances");
+    let entries: string[];
+    try { entries = fs.readdirSync(instancesDir); } catch { return; }
+
+    for (const name of entries) {
+      if (name === sessionId) continue;
+      let theirState: any;
+      let theirConfig: any;
+      try {
+        const stateRaw = fs.readFileSync(path.join(instancesDir, name, "oc-plugin-state.json"), "utf-8");
+        const parsed = JSON.parse(stateRaw);
+        theirState = parsed.state ?? parsed;
+      } catch { continue; }
+      try {
+        theirConfig = JSON.parse(fs.readFileSync(path.join(instancesDir, name, "config.json"), "utf-8"));
+      } catch { theirConfig = {}; }
+
+      const theirPid: number | undefined = theirState.opencode_pid;
+      if (!theirPid) continue;
+      if (!fs.existsSync(`/proc/${theirPid}`)) continue; // dead process
+
+      const theirBrokerRoot: string = theirConfig.broker_root ?? theirState.broker_root ?? "";
+      if (brokerRoot && theirBrokerRoot && theirBrokerRoot !== brokerRoot) continue; // different project
+
+      const theirAlias: string = theirState.c2c_session_id ?? name;
+      const theirRootOcSession: string = theirState.root_opencode_session_id ?? "";
+
+      const conflict = !configuredOpenCodeSessionId   // auto-kickoff: any alive peer is a conflict
+        || (configuredOpenCodeSessionId && theirRootOcSession === configuredOpenCodeSessionId); // resume: exact session clash
+
+      if (conflict) {
+        const msg = `FATAL: conflicting c2c opencode instance '${theirAlias}' (pid ${theirPid}) owns session ${theirRootOcSession || "unknown"}. Stop it first: c2c stop ${theirAlias}`;
+        await log(msg);
+        throw new Error(msg);
+      }
+    }
+  }
+
   /** On resume (session.created missed), bootstrap root from HTTP session list. */
   async function bootstrapRootSession(): Promise<void> {
     if (pluginState.root_opencode_session_id) return;
@@ -520,7 +567,14 @@ const C2CDelivery: Plugin = async (ctx) => {
       const candidate = configuredOpenCodeSessionId
         ? roots.find((s: any) => s.id === configuredOpenCodeSessionId)  // exact match only; no fallback to roots[0]
         : (process.env.C2C_AUTO_KICKOFF === "1" ? undefined : roots[0]); // auto-kickoff: never adopt stale session, let session.create() fire
-      if (!candidate?.id) return;
+      if (!candidate?.id) {
+        if (roots.length > 0) {
+          const skipped = roots.map((s: any) => s.id).join(", ");
+          const reason = configuredOpenCodeSessionId ? "configured-id-mismatch" : "auto-kickoff";
+          await log(`SKIP-ADOPT: would have adopted [${skipped}]; reason=${reason}; see finding 2026-04-21T09-00-00Z-coordinator1-oc-focus-test-session-cross-contamination.md`);
+        }
+        return;
+      }
       pluginState.root_opencode_session_id = candidate.id;
       if (!activeSessionId) activeSessionId = candidate.id;
       await log(`bootstrapped root session from HTTP list: ${candidate.id}`);
@@ -1072,6 +1126,7 @@ const C2CDelivery: Plugin = async (ctx) => {
   await log(`plugin loaded (session=${sessionId}, interval=${pollIntervalMs}ms, idleOnly=${idleOnlyMode}, sha256=${pluginHash})`);
   await log(`API introspect: session methods=[${sessionMethods}] app methods=[${appMethods}]`);
   await spawnStateWriter();
+  await checkConflictingInstances();
   void bootstrapRootSession();
   startBackgroundLoop();
 
