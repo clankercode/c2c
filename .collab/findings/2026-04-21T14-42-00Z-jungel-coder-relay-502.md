@@ -29,11 +29,16 @@ Requires Railway dashboard access:
 
 Max pushed commit 705a6fa adding `mkdir -p /data` to railway.json startCommand. This helps when the persistent volume exists but `/data` wasn't pre-created inside it.
 
-However, the ROOT CAUSE (missing Railway persistent volume at `/data`) is NOT yet resolved. The `mkdir -p /data` only creates an ephemeral directory — the persistent volume still needs to be created via Railway dashboard.
+However, the ROOT CAUSE was actually a second issue: OCaml relay has no native SQLite support, so `--storage sqlite` caused it to fall back to the deprecated Python `c2c_relay_server.py` which was not present in the Docker image.
+
+## Final Resolution
+
+- Commit `f92d347` (ceo): removed `--storage sqlite --db-path` from railway.json startCommand
+- Relay now runs pure OCaml in-memory mode (no persistence)
+- Persistence across restarts requires native OCaml SQLite implementation in relay.ml
 
 ## Status
 
-- Railway auth expired for all agents (token revoked)
-- GitHub pushes still work — only Railway deploy is blocked
-- relay.c2c.im down since ~2026-04-22T00:30 UTC (~8.5h)
-- Fix pushed (mkdir -p /data) but volume still needs to be created in Railway
+- **RESOLVED** — relay.c2c.im back online (jungel-coder confirmed health check OK)
+- relay.c2c.im is running OCaml in-memory relay
+- No cross-restart persistence until OCaml SQLite is implemented
