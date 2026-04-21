@@ -1203,11 +1203,16 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
   let inst_dir = instance_dir name in
   (match read_pid (outer_pid_path name) with
    | Some pid when pid_alive pid ->
+       let use_color = Unix.isatty Unix.stderr in
+       let red = if use_color then "\027[1;31m" else "" in
+       let yellow = if use_color then "\027[33m" else "" in
+       let reset = if use_color then "\027[0m" else "" in
        Printf.eprintf
-         "error: instance '%s' is already running (pid %d).\n\
-          \  Stop it first:  c2c stop %s\n\
+         "%sERROR:%s instance %s'%s'%s is already running (pid %d).\n\
+          \  Stop it first:  %sc2c stop %s%s\n\
           \  Instance dir:   %s\n%!"
-         name pid name inst_dir;
+         red reset yellow name reset pid
+         yellow name reset inst_dir;
        exit 1
    | Some _ ->
        (* Stale pid file — process is dead. Clean up all pid files so the
