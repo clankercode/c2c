@@ -2304,7 +2304,8 @@ let monitor_cmd =
                           let m_with_ts = match m with
                             | `Assoc fields ->
                                 let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
-                                `Assoc (("monitor_ts", `String ts) :: fields)
+                                `Assoc (("event_type", `String "message")
+                                        :: ("monitor_ts", `String ts) :: fields)
                             | _ -> m
                           in
                           print_string (Yojson.Safe.to_string m_with_ts);
@@ -2324,8 +2325,17 @@ let monitor_cmd =
                let is_delete = String.length event_up >= 6
                                && String.sub event_up 0 6 = "DELETE" in
                if is_delete then begin
-                 if sweeps then
-                   Printf.printf "%s 🗑️  SWEEP  %s (inbox deleted)\n%!" (now_hms ()) alias
+                 if sweeps then begin
+                   if json then begin
+                     let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+                     print_string (Yojson.Safe.to_string
+                       (`Assoc [ "event_type", `String "sweep"
+                               ; "alias",      `String alias
+                               ; "monitor_ts", `String ts ]));
+                     print_newline ()
+                   end else
+                     Printf.printf "%s 🗑️  SWEEP  %s (inbox deleted)\n%!" (now_hms ()) alias
+                 end
                end else begin
                  let inbox_path = Filename.concat broker_root filename in
                  let msgs = read_inbox_file inbox_path in
@@ -2347,8 +2357,17 @@ let monitor_cmd =
                  in
                  (match msgs with
                   | [] ->
-                      if drains then
-                        Printf.printf "%s 📤  DRAIN  %s (inbox cleared)\n%!" (now_hms ()) alias
+                      if drains then begin
+                        if json then begin
+                          let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+                          print_string (Yojson.Safe.to_string
+                            (`Assoc [ "event_type", `String "drain"
+                                    ; "alias",      `String alias
+                                    ; "monitor_ts", `String ts ]));
+                          print_newline ()
+                        end else
+                          Printf.printf "%s 📤  DRAIN  %s (inbox cleared)\n%!" (now_hms ()) alias
+                      end
                   | msgs ->
                       if json then begin
                         let is_mine = match my_alias with
@@ -2358,7 +2377,8 @@ let monitor_cmd =
                             let m_with_ts = match m with
                               | `Assoc fields ->
                                   let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
-                                  `Assoc (("monitor_ts", `String ts) :: fields)
+                                  `Assoc (("event_type", `String "message")
+                                          :: ("monitor_ts", `String ts) :: fields)
                               | _ -> m
                             in
                             print_string (Yojson.Safe.to_string m_with_ts);
