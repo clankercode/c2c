@@ -1027,10 +1027,8 @@ class C2CConfigureOpencodeTests(unittest.TestCase):
                 c2c["environment"]["C2C_MCP_BROKER_ROOT"],
                 str(REPO / ".git" / "c2c" / "mcp"),
             )
-            self.assertEqual(
-                c2c["environment"]["C2C_MCP_SESSION_ID"],
-                f"opencode-{target.name}",
-            )
+            self.assertNotIn("C2C_MCP_SESSION_ID", c2c["environment"],
+                             "SESSION_ID must not be in shared project config (multi-agent collision)")
             self.assertEqual(c2c["environment"]["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
             self.assertEqual(
                 c2c["environment"]["C2C_MCP_AUTO_REGISTER_ALIAS"],
@@ -1081,7 +1079,8 @@ class C2CConfigureOpencodeTests(unittest.TestCase):
                 Path(payload["config_path"]).read_text(encoding="utf-8")
             )
             env = config["mcp"]["c2c"]["environment"]
-            self.assertEqual(env["C2C_MCP_SESSION_ID"], f"opencode-{target.name}")
+            self.assertNotIn("C2C_MCP_SESSION_ID", env,
+                             "SESSION_ID must not be in shared project config (multi-agent collision)")
             self.assertEqual(env["C2C_MCP_AUTO_REGISTER_ALIAS"], "opencode-primary")
             sidecar = json.loads(
                 (target / ".opencode" / "c2c-plugin.json").read_text(encoding="utf-8")
