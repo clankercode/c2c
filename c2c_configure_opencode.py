@@ -33,7 +33,7 @@ def derive_session_id(target_dir: Path) -> str:
     return f"opencode-{target_dir.name}"
 
 
-def build_config(session_id: str, alias: str) -> dict:
+def build_config() -> dict:
     return {
         "$schema": "https://opencode.ai/config.json",
         "mcp": {
@@ -42,11 +42,13 @@ def build_config(session_id: str, alias: str) -> dict:
                 "command": ["python3", str(C2C_MCP_PATH)],
                 "environment": {
                     "C2C_MCP_BROKER_ROOT": str(BROKER_ROOT),
-                    # C2C_MCP_SESSION_ID intentionally omitted: the broker
-                    # derives session_id from C2C_MCP_AUTO_REGISTER_ALIAS when
-                    # the env var is absent. This avoids last-writer-wins
-                    # collision when multiple agents share the project config.
-                    "C2C_MCP_AUTO_REGISTER_ALIAS": alias,
+                    # C2C_MCP_SESSION_ID and C2C_MCP_AUTO_REGISTER_ALIAS are
+                    # intentionally omitted from the shared project config.
+                    # Two concurrent `c2c start opencode` in the same workdir
+                    # would race to write different aliases; OpenCode overrides
+                    # inherited env with opencode.json values, causing the last
+                    # writer's alias to win for both sessions (#60).
+                    # Per-instance identity is set in the process env by build_env.
                     "C2C_MCP_AUTO_DRAIN_CHANNEL": "0",
                     "C2C_MCP_AUTO_JOIN_ROOMS": "swarm-lounge",
                 },
@@ -143,7 +145,7 @@ def write_config(
     session_id = derive_session_id(target_dir)
     resolved_alias = alias if alias else session_id
     config_path.write_text(
-        json.dumps(build_config(session_id, resolved_alias), indent=2) + "\n",
+        json.dumps(build_config(), indent=2) + "\n",
         encoding="utf-8",
     )
     write_plugin_sidecar(config_dir, session_id, resolved_alias)
