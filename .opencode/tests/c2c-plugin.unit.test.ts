@@ -744,6 +744,51 @@ describe('c2c plugin unit tests', () => {
     delete process.env.C2C_PERMISSION_TIMEOUT_MS;
   });
 
+  // ---------------------------------------------------------------------------
+  // bootstrapRootSession cross-contamination regression (#58 reopen)
+  // Two concurrent --auto instances must NOT steal each other's session.
+  // ---------------------------------------------------------------------------
+
+  it('#58 cross-contamination: C2C_AUTO_KICKOFF=1 skips bootstrap even when session.list returns sessions', async () => {
+    process.env.C2C_AUTO_KICKOFF = '1';
+    const ctx = makeCtx();
+    (ctx.client.session.list as any).mockResolvedValue({
+      data: [{ id: 'ses-other-instance', time: { updated: 9999, created: 8000 } }],
+    });
+    await C2CDelivery(ctx as any);
+    // pump microtasks so void bootstrapRootSession() fully resolves
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+
+    // No root should have been adopted — the session belongs to a sibling instance
+    const events = stateEvents();
+    const rootPatch = events.find(
+      (e) => e.event === 'state.patch' && e.patch?.root_opencode_session_id,
+    );
+    expect(rootPatch).toBeUndefined();
+    delete process.env.C2C_AUTO_KICKOFF;
+  });
+
+  it('#58 cross-contamination: exact configuredOpenCodeSessionId required — no fallback to roots[0]', async () => {
+    process.env.C2C_OPENCODE_SESSION_ID = 'ses-mine';
+    const ctx = makeCtx();
+    // session.list returns two sessions, neither matches 'ses-mine'
+    (ctx.client.session.list as any).mockResolvedValue({
+      data: [
+        { id: 'ses-theirs-1', time: { updated: 9999, created: 8000 } },
+        { id: 'ses-theirs-2', time: { updated: 8000, created: 7000 } },
+      ],
+    });
+    await C2CDelivery(ctx as any);
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+
+    const events = stateEvents();
+    const rootPatch = events.find(
+      (e) => e.event === 'state.patch' && e.patch?.root_opencode_session_id,
+    );
+    expect(rootPatch).toBeUndefined();
+    delete process.env.C2C_OPENCODE_SESSION_ID;
+  });
+
   it('disables delivery when C2C_MCP_SESSION_ID not set', async () => {
     delete process.env.C2C_MCP_SESSION_ID;
     const ctx = makeCtx();
