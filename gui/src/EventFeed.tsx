@@ -116,6 +116,7 @@ interface Props {
 
 export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", focusHistoryEvents = [], onClearFocus }: Props) {
   const [filter, setFilter] = useState<Filter>("all");
+  const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const listRef = useRef<HTMLDivElement>(null);
   const prevLenRef = useRef(0);
@@ -137,6 +138,12 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
     visible = dedupeAndSort(focusHistoryEvents, livePeerEvents);
   } else {
     visible = events.filter(e => matchesFilter(e, filter)).slice().reverse();
+  }
+
+  // Apply search filter across all modes
+  if (search.trim()) {
+    const q = search.trim().toLowerCase();
+    visible = visible.filter(e => eventLabel(e).toLowerCase().includes(q));
   }
 
   // Auto-scroll to top when new live events arrive (global feed is newest-first)
@@ -177,8 +184,24 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
             </button>
           ))
         )}
-        <span style={{ marginLeft: "auto", fontSize: 11, color: "#45475a" }}>
-          {visible.length}{!focusLabel && ` / ${events.length}`}
+        <input
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="search…"
+          style={{
+            marginLeft: "auto",
+            background: "#1e1e2e",
+            border: "1px solid #313244",
+            borderRadius: 4,
+            color: "#cdd6f4",
+            padding: "1px 6px",
+            fontSize: 11,
+            outline: "none",
+            width: 100,
+          }}
+        />
+        <span style={{ fontSize: 11, color: "#45475a", flexShrink: 0 }}>
+          {visible.length}{!focusLabel && !search && ` / ${events.length}`}
         </span>
       </div>
 
