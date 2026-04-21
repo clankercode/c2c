@@ -1,8 +1,10 @@
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -862,6 +864,106 @@ class C2CStartConstantsTests(unittest.TestCase):
         )
         self.assertNotIn("--resume", args)
         self.assertNotIn("--session-id", args)
+
+
+CLI_EXE = Path(__file__).resolve().parents[1] / "_build" / "default" / "ocaml" / "cli" / "c2c.exe"
+_CLI_BUILT = CLI_EXE.exists()
+_CLI_SKIP = unittest.skipUnless(_CLI_BUILT, "OCaml CLI binary not built — run `just build-cli`")
+
+CLI_TIMEOUT = 10.0  # seconds; exit-109 path should complete in <3s
+
+
+@_CLI_SKIP
+class C2CStartExit109RegressionTests(unittest.TestCase):
+    """Regression: `c2c start opencode --bin <stub>` propagates exit 109 with diagnostic.
+
+    If opencode exits 109 (SQLite DB lock contention), c2c start must:
+      1. Propagate exit code 109 to the caller.
+      2. Print the diagnostic hint to stderr.
+      3. Complete within CLI_TIMEOUT seconds (no hang).
+
+    This class locks down bd41f9e so the behaviour can't quietly regress.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self.broker_root = self.tmp_path / "broker"
+        self.broker_root.mkdir(parents=True)
+        # Stub opencode binary named "opencode" so find_binary() resolves it.
+        # Prepend self.tmp_path to PATH so it wins over any real opencode.
+        # The 0.1s sleep is required: run_outer_loop sets SIGCHLD=SIG_IGN to
+        # auto-reap sidecar children. On Linux with SIGCHLD=SIG_IGN, an
+        # instantaneously-exiting child is reaped before waitpid() runs, causing
+        # ECHILD → the `with _ -> 1` fallback fires, masking the real exit code.
+        # A brief delay lets waitpid() win the race without changing test semantics.
+        self.stub = self.tmp_path / "opencode"
+        self.stub.write_text("#!/bin/sh\nsleep 0.1\nexit 109\n")
+        self.stub.chmod(0o755)
+        # Use a unique suffix so cmd_start doesn't reload a cached broker_root
+        # from a previous test run's config.json at ~/.local/share/c2c/instances/.
+        import uuid
+        self._run_id = uuid.uuid4().hex[:8]
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run_c2c_start(self, name: str) -> tuple[int, str, str]:
+        """Run `c2c start opencode --bin <stub>` and return (returncode, stdout, stderr)."""
+        from conftest import spawn_tracked
+        env = {
+            **os.environ,
+            # Prepend tmp dir so stub "opencode" shadows any real binary.
+            "PATH": str(self.tmp_path) + ":" + os.environ.get("PATH", ""),
+            "C2C_MCP_BROKER_ROOT": str(self.broker_root),
+            # Suppress sidecar processes so the test is fast and contained.
+            "C2C_START_NO_DELIVER": "1",
+            "C2C_START_NO_POKER": "1",
+            "C2C_START_NO_WIRE": "1",
+        }
+        proc = spawn_tracked(
+            [str(CLI_EXE), "start", "opencode", "-n", name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            stdout, stderr = proc.communicate(timeout=CLI_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            self.fail(f"c2c start timed out after {CLI_TIMEOUT}s (stdout={stdout!r})")
+        return proc.returncode, stdout, stderr
+
+    def test_exit109_propagated(self):
+        """c2c start propagates exit code 109 from opencode."""
+        rc, _out, _err = self._run_c2c_start(f"t109-prop-{self._run_id}")
+        self.assertEqual(rc, 109, f"expected exit 109, got {rc}")
+
+    def test_exit109_prints_hint(self):
+        """c2c start emits a diagnostic hint on stderr when opencode exits 109."""
+        _rc, _out, stderr = self._run_c2c_start(f"t109-hint-{self._run_id}")
+        self.assertIn("109", stderr, f"hint missing in stderr: {stderr!r}")
+        self.assertIn("lock", stderr.lower(), f"lock hint missing in stderr: {stderr!r}")
+
+    def test_exit109_completes_fast(self):
+        """c2c start does not hang when opencode exits 109 — must complete in <CLI_TIMEOUT."""
+        start = time.monotonic()
+        self._run_c2c_start(f"t109-fast-{self._run_id}")
+        elapsed = time.monotonic() - start
+        self.assertLess(elapsed, CLI_TIMEOUT, f"took {elapsed:.1f}s — possible hang")
+
+    def test_exit109_logs_death_record(self):
+        """c2c start records a death entry in deaths.jsonl on exit 109."""
+        name = f"t109-death-{self._run_id}"
+        self._run_c2c_start(name)
+        # deaths.jsonl lives at <broker_root>/deaths.jsonl (see deaths_jsonl_path in c2c_start.ml)
+        deaths_file = self.broker_root / "deaths.jsonl"
+        self.assertTrue(deaths_file.exists(), f"deaths.jsonl not found at {deaths_file}")
+        entries = [json.loads(l) for l in deaths_file.read_text().splitlines() if l.strip()]
+        self.assertTrue(any(e.get("exit_code") == 109 for e in entries),
+                        f"no exit_code=109 in deaths.jsonl: {entries}")
 
 
 if __name__ == "__main__":
