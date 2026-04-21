@@ -402,29 +402,26 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             broker_root = Path(temp_dir) / "mcp-broker"
             broker_root.mkdir()
+            (broker_root / "codex-local.inbox.json").write_text(
+                json.dumps(
+                    [{"from_alias": "storm-echo", "to_alias": "codex", "content": "hello"}]
+                ),
+                encoding="utf-8",
+            )
             read_fd, write_fd = os.pipe()
             try:
-                with (
-                    mock.patch(
-                        "c2c_deliver_inbox.c2c_poll_inbox.poll_inbox",
-                        return_value=(
-                            "file",
-                            [{"from_alias": "storm-echo", "to_alias": "codex", "content": "hello"}],
-                        ),
-                    ),
-                ):
-                    result = c2c_deliver_inbox.deliver_once(
-                        session_id="codex-local",
-                        broker_root=broker_root,
-                        client="codex",
-                        terminal_pid=12345,
-                        pts="9",
-                        dry_run=False,
-                        timeout=0.1,
-                        file_fallback=True,
-                        notify_only=False,
-                        xml_output_fd=write_fd,
-                    )
+                result = c2c_deliver_inbox.deliver_once(
+                    session_id="codex-local",
+                    broker_root=broker_root,
+                    client="codex",
+                    terminal_pid=12345,
+                    pts="9",
+                    dry_run=False,
+                    timeout=0.1,
+                    file_fallback=True,
+                    notify_only=False,
+                    xml_output_fd=write_fd,
+                )
                 os.close(write_fd)
                 payload = os.read(read_fd, 4096).decode("utf-8")
             finally:
@@ -435,6 +432,10 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
             self.assertIn('<c2c event="message" from="storm-echo" alias="codex"', payload)
             spool_path = broker_root.parent / "codex-xml" / "codex-local.spool.json"
             self.assertEqual(json.loads(spool_path.read_text(encoding="utf-8")), [])
+            self.assertEqual(
+                json.loads((broker_root / "codex-local.inbox.json").read_text(encoding="utf-8")),
+                [],
+            )
 
     def test_xml_message_payload_escapes_message_body(self):
         payload = c2c_deliver_inbox.xml_message_payload(
@@ -452,20 +453,49 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             broker_root = Path(temp_dir) / "mcp-broker"
             broker_root.mkdir()
+            (broker_root / "codex-local.inbox.json").write_text(
+                json.dumps(
+                    [{"from_alias": "storm-echo", "to_alias": "codex", "content": "hello"}]
+                ),
+                encoding="utf-8",
+            )
             read_fd, write_fd = os.pipe()
             os.close(read_fd)
             os.close(write_fd)
 
-            with (
-                mock.patch(
-                    "c2c_deliver_inbox.c2c_poll_inbox.poll_inbox",
-                    return_value=(
-                        "file",
-                        [{"from_alias": "storm-echo", "to_alias": "codex", "content": "hello"}],
-                    ),
-                ),
+            with self.assertRaises(OSError):
+                c2c_deliver_inbox.deliver_once(
+                    session_id="codex-local",
+                    broker_root=broker_root,
+                    client="codex",
+                    terminal_pid=12345,
+                    pts="9",
+                    dry_run=False,
+                    timeout=0.1,
+                    file_fallback=True,
+                    notify_only=False,
+                    xml_output_fd=write_fd,
+                )
+
+            spool_path = broker_root.parent / "codex-xml" / "codex-local.spool.json"
+            spooled = json.loads(spool_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(spooled), 1)
+            self.assertEqual(spooled[0]["content"], "hello")
+
+    def test_deliver_once_xml_output_preserves_inbox_when_spool_write_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            broker_root = Path(temp_dir) / "mcp-broker"
+            broker_root.mkdir()
+            inbox_path = broker_root / "codex-local.inbox.json"
+            message = {"from_alias": "storm-echo", "to_alias": "codex", "content": "hello"}
+            inbox_path.write_text(json.dumps([message]), encoding="utf-8")
+
+            with mock.patch.object(
+                c2c_deliver_inbox.C2CSpool,
+                "replace",
+                side_effect=OSError("disk full"),
             ):
-                with self.assertRaises(OSError):
+                with self.assertRaisesRegex(OSError, "disk full"):
                     c2c_deliver_inbox.deliver_once(
                         session_id="codex-local",
                         broker_root=broker_root,
@@ -476,13 +506,10 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
                         timeout=0.1,
                         file_fallback=True,
                         notify_only=False,
-                        xml_output_fd=write_fd,
+                        xml_output_fd=1,
                     )
 
-            spool_path = broker_root.parent / "codex-xml" / "codex-local.spool.json"
-            spooled = json.loads(spool_path.read_text(encoding="utf-8"))
-            self.assertEqual(len(spooled), 1)
-            self.assertEqual(spooled[0]["content"], "hello")
+            self.assertEqual(json.loads(inbox_path.read_text(encoding="utf-8")), [message])
 
 
 if __name__ == "__main__":

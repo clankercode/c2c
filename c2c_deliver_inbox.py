@@ -122,6 +122,38 @@ class C2CSpool:
         self.replace([])
 
 
+def stage_inbox_into_xml_spool(
+    *, broker_root: Path, session_id: str, spool: C2CSpool
+) -> list[dict[str, Any]]:
+    path = c2c_poll_inbox.inbox_path(broker_root, session_id)
+    with c2c_poll_inbox.inbox_lock(broker_root, session_id):
+        if not path.exists():
+            c2c_poll_inbox.atomic_write_json(path, [])
+            return spool.read()
+        raw = path.read_text(encoding="utf-8").strip()
+        if not raw:
+            return spool.read()
+        loaded = json.loads(raw)
+        if not isinstance(loaded, list):
+            raise ValueError(f"inbox is not a JSON list: {path}")
+        fresh = [item for item in loaded if isinstance(item, dict)]
+        if not fresh:
+            return spool.read()
+
+        # Persist into the delivery spool before clearing the inbox so a spool
+        # write failure cannot lose drained broker messages.
+        staged = spool.read()
+        spool.replace([*staged, *fresh])
+        try:
+            c2c_poll_inbox.append_archive(broker_root, session_id, fresh)
+        except Exception:
+            # Best-effort rollback keeps the spool aligned with the still-live inbox.
+            spool.replace(staged)
+            raise
+        c2c_poll_inbox.atomic_write_json(path, [])
+        return [*staged, *fresh]
+
+
 def deliver_xml_messages(*, fd: int, messages: list[dict[str, Any]]) -> None:
     payload = "".join(xml_message_payload(message) for message in messages).encode("utf-8")
     view = memoryview(payload)
@@ -418,16 +450,11 @@ def deliver_once(
             spool = C2CSpool(default_xml_spool_path(broker_root, session_id))
             messages = spool.read()
             if not messages:
-                _source, fresh = c2c_poll_inbox.poll_inbox(
+                messages = stage_inbox_into_xml_spool(
                     broker_root=broker_root,
                     session_id=session_id,
-                    timeout=timeout,
-                    force_file=file_fallback,
-                    allow_file_fallback=True,
+                    spool=spool,
                 )
-                if fresh:
-                    spool.append(fresh)
-                messages = spool.read()
             delivered = 0
             if messages:
                 deliver_xml_messages(fd=xml_output_fd, messages=messages)

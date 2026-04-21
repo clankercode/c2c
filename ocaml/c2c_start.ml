@@ -1268,18 +1268,37 @@ let run_outer_loop ~(name : string) ~(client : string)
                | Some (_read_fd, write_fd) ->
                    let fd4 : Unix.file_descr = Obj.magic 4 in
                    (try Unix.dup2 write_fd fd4 with _ -> ());
-                   Some "4"
+                   Some ("4", fd4)
                | None -> None
              in
-             match start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt:(Some pid) ?xml_output_fd () with
-             | Some p -> deliver_pid := Some p; write_pid (deliver_pid_path name) p
-             | None ->
-                 (match xml_output_fd with
-                 | Some _ ->
-                      (match start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt:(Some pid) () with
-                       | Some p -> deliver_pid := Some p; write_pid (deliver_pid_path name) p
-                       | None -> ())
-                  | None -> ()));
+             begin
+               match
+                 start_deliver_daemon
+                   ~name
+                   ~client
+                   ~broker_root
+                   ?child_pid_opt:(Some pid)
+                   ?xml_output_fd:(Option.map fst xml_output_fd)
+                   ()
+               with
+               | Some p ->
+                   deliver_pid := Some p;
+                   write_pid (deliver_pid_path name) p
+               | None ->
+                   (match xml_output_fd with
+                    | Some _ ->
+                        (match
+                           start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt:(Some pid) ()
+                         with
+                         | Some p ->
+                             deliver_pid := Some p;
+                             write_pid (deliver_pid_path name) p
+                         | None -> ())
+                    | None -> ());
+               match xml_output_fd with
+               | Some (_, fd4) -> (try Unix.close fd4 with _ -> ())
+               | None -> ()
+             end);
           (match codex_xml_pipe with
            | Some (read_fd, write_fd) ->
                (try Unix.close read_fd with _ -> ());
