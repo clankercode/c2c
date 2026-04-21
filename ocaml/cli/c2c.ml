@@ -6288,6 +6288,100 @@ let screen_cmd =
 
 let screen = Cmdliner.Cmd.v (Cmdliner.Cmd.info "screen" ~doc:"Capture PTY screen content as text.") screen_cmd
 
+(* --- c2c statefile --------------------------------------------------------- *)
+(* Read or tail the oc-plugin state snapshot written by stream-write-statefile.
+   Path resolution order (same as the sink):
+     1. --instance NAME  → ~/.local/share/c2c/instances/<NAME>/oc-plugin-state.json
+     2. $C2C_INSTANCE_NAME
+     3. ~/.local/share/c2c/oc-plugin-state.json (fallback) *)
+
+let statefile_cmd =
+  let open Cmdliner in
+  let tail_flag =
+    Arg.(value & flag & info ["tail"; "t"] ~doc:"Watch for updates; print each new snapshot as it arrives (like tail -f).")
+  in
+  let instance_arg =
+    Arg.(value & opt (some string) None & info ["instance"; "i"] ~docv:"NAME"
+           ~doc:"Instance name (same as C2C_INSTANCE_NAME). Selects the per-instance statefile.")
+  in
+  let json_flag =
+    Arg.(value & flag & info ["json"] ~doc:"Pretty-print the JSON payload (default: compact single line).")
+  in
+  Term.(const (fun tail instance json_pretty () ->
+    let home = Sys.getenv_opt "HOME" |> Option.value ~default:"/tmp" in
+    let base_dir = Filename.concat home ".local/share/c2c" in
+    let name =
+      match instance with
+      | Some n when String.trim n <> "" -> Some (String.trim n)
+      | _ -> (match Sys.getenv_opt "C2C_INSTANCE_NAME" with
+              | Some n when String.trim n <> "" -> Some (String.trim n)
+              | _ -> None)
+    in
+    let statefile =
+      match name with
+      | Some n -> Filename.concat (Filename.concat (Filename.concat base_dir "instances") n) "oc-plugin-state.json"
+      | None   -> Filename.concat base_dir "oc-plugin-state.json"
+    in
+    let format_json raw =
+      if json_pretty then
+        match (try Some (Yojson.Safe.from_string raw) with _ -> None) with
+        | Some j -> Yojson.Safe.pretty_to_string j
+        | None   -> raw
+      else
+        match (try Some (Yojson.Safe.from_string raw) with _ -> None) with
+        | Some j -> Yojson.Safe.to_string j
+        | None   -> raw
+    in
+    let print_file () =
+      match (try Some (In_channel.input_all (open_in statefile)) with _ -> None) with
+      | None     -> Printf.eprintf "statefile not found: %s\n%!" statefile; exit 1
+      | Some raw -> print_string (format_json (String.trim raw)); print_newline ()
+    in
+    if not tail then
+      print_file ()
+    else begin
+      (* Tail mode: poll the file and print on change.
+         We use mtime polling (inotifywait not always available). *)
+      let last_mtime = ref 0.0 in
+      let last_content = ref "" in
+      Printf.eprintf "Watching %s (Ctrl-C to stop)\n%!" statefile;
+      while true do
+        (try
+          let st = Unix.stat statefile in
+          let mt = st.Unix.st_mtime in
+          if mt <> !last_mtime then begin
+            last_mtime := mt;
+            let raw =
+              try String.trim (In_channel.input_all (open_in statefile))
+              with _ -> ""
+            in
+            if raw <> "" && raw <> !last_content then begin
+              last_content := raw;
+              print_string (format_json raw);
+              print_newline ();
+              flush stdout
+            end
+          end
+        with _ -> ());
+        Unix.sleepf 0.25
+      done
+    end) $ tail_flag $ instance_arg $ json_flag $ Term.const ())
+
+let statefile_top =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "statefile"
+       ~doc:"Read or watch the OpenCode plugin state snapshot."
+       ~man:[ `S "DESCRIPTION";
+              `P "Reads the JSON state snapshot written by the c2c OpenCode plugin \
+                  ($(b,.opencode/plugins/c2c.ts)) via $(b,c2c oc-plugin stream-write-statefile).";
+              `P "Without $(b,--tail), prints the current snapshot and exits.";
+              `P "With $(b,--tail), watches the file and prints each new snapshot as the \
+                  plugin updates it (approximately every agent step).";
+              `P "Use $(b,--instance NAME) or $(b,C2C_INSTANCE_NAME) to select the \
+                  per-instance statefile (written by managed sessions started with \
+                  $(b,c2c start opencode))."; ])
+    statefile_cmd
+
 (* --- subcommand group: oc-plugin ------------------------------------------ *)
 (* Sink commands for the OpenCode TypeScript plugin (c2c.ts).
    The plugin pipes state snapshots via stdin; these commands persist them
@@ -6524,4 +6618,4 @@ let () =
           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
           ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
           ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-          ; serve; mcp; start; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; oc_plugin_group; help ]))
+          ; serve; mcp; start; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; help ]))
