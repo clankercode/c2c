@@ -198,6 +198,42 @@ class MonitorJsonTests(unittest.TestCase):
             self.assertIn("event_type", e, f"event missing event_type: {e}")
             self.assertIn("monitor_ts", e, f"event missing monitor_ts: {e}")
 
+    def test_message_event_on_inbox_write(self):
+        """Writing a message to an inbox.json must emit a message event in --json mode."""
+        proc = self._start_monitor()
+        inbox_path = self.broker_root / "sender1.inbox.json"
+        msg = {
+            "from_alias": "sender1",
+            "to_alias": "receiver1",
+            "content": "hello from monitor test",
+            "deferrable": False,
+        }
+        tmp = self.broker_root / "sender1.inbox.json.tmp"
+        tmp.write_text(json.dumps([msg]), encoding="utf-8")
+        tmp.rename(inbox_path)
+        events = self._collect_events(proc, n=1)
+        msgs = [e for e in events if e.get("event_type") == "message"]
+        self.assertTrue(msgs, f"expected message event, got: {events}")
+        self.assertEqual(msgs[0]["from_alias"], "sender1")
+        self.assertEqual(msgs[0]["content"], "hello from monitor test")
+        self.assertIn("monitor_ts", msgs[0])
+
+    def test_drain_event_on_inbox_clear(self):
+        """Replacing inbox with [] must emit a drain event for the session alias."""
+        inbox_path = self.broker_root / "agent1.inbox.json"
+        inbox_path.write_text(json.dumps([
+            {"from_alias": "x", "to_alias": "agent1", "content": "hi", "deferrable": False}
+        ]))
+        proc = self._start_monitor()
+        tmp = self.broker_root / "agent1.inbox.json.tmp"
+        tmp.write_text("[]", encoding="utf-8")
+        tmp.rename(inbox_path)
+        events = self._collect_events(proc, n=1)
+        drains = [e for e in events if e.get("event_type") == "drain"]
+        self.assertTrue(drains, f"expected drain event, got: {events}")
+        self.assertEqual(drains[0]["alias"], "agent1")
+        self.assertIn("monitor_ts", drains[0])
+
 
 if __name__ == "__main__":
     unittest.main()
