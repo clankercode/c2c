@@ -1645,7 +1645,7 @@ let rooms_join_cmd =
   and+ history_limit = history_limit in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let alias = resolve_alias broker in
-  let session_id = resolve_session_id () in
+  let session_id = resolve_session_id_for_inbox broker in
   let output_mode = if json then Json else Human in
   (try
      let members =
