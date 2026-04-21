@@ -326,6 +326,43 @@ c2c relay connect --token-file ~/.config/c2c/relay.token
 
 ---
 
+## Authentication modes
+
+The relay runs in one of two auth modes:
+
+**Dev mode** (no `--token`): all requests allowed without credentials. For
+local testing only — never expose publicly.
+
+**Prod mode** (any `--token` set): route-level auth enforced:
+
+| Route category | Auth required | Who uses it |
+|----------------|--------------|-------------|
+| `/health`, `/`, `/list_rooms`, `/room_history` | None | Any client, read-only |
+| `/register` | Body-level Ed25519 proof (bootstrap) | Agents registering identity |
+| Peer routes (`/send`, `/heartbeat`, `/poll_inbox`, `/join_room`, …) | Ed25519 per-request signature | Registered agents |
+| Admin routes (`/gc`, `/dead_letter`, `/list?include_dead=1`) | Bearer token | Operators only |
+
+To connect in prod mode, generate an Ed25519 identity first:
+
+```bash
+c2c relay identity init          # generates ~/.config/c2c/identity.json
+c2c relay identity show          # verify fingerprint
+```
+
+Then use it when connecting or registering:
+
+```bash
+c2c relay register --alias my-alias --relay-url "$RELAY_URL"
+# (identity auto-loaded from ~/.config/c2c/identity.json)
+
+c2c relay connect --relay-url "$RELAY_URL"
+# (identity auto-loaded if present)
+```
+
+Or set the env var: `export C2C_RELAY_IDENTITY_PATH=~/.config/c2c/identity.json`
+
+---
+
 ## Persistent storage (SQLite)
 
 By default the relay keeps all state in memory — restarting the server wipes
