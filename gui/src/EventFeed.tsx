@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { C2cEvent, MessageEvent } from "./types";
 
 type Filter = "all" | "messages" | "peers" | "rooms";
@@ -70,6 +70,24 @@ function isRoomEvent(e: C2cEvent, roomId: string): boolean {
   return false;
 }
 
+function isPeerEvent(e: C2cEvent, peer: string, myAlias: string): boolean {
+  if (e.event_type !== "message") return false;
+  const m = e as MessageEvent;
+  return (m.from_alias === peer && m.to_alias === myAlias) ||
+         (m.from_alias === myAlias && m.to_alias === peer);
+}
+
+function dedupeAndSort(history: C2cEvent[], live: C2cEvent[]): C2cEvent[] {
+  const seenKeys = new Set(live.map(e => `${e.monitor_ts}-${(e as MessageEvent).content ?? ""}`));
+  const dedupedHistory = history.filter(e => {
+    const k = `${e.monitor_ts}-${(e as MessageEvent).content ?? ""}`;
+    return !seenKeys.has(k);
+  });
+  return [...dedupedHistory, ...live].sort(
+    (a, b) => parseFloat(b.monitor_ts) - parseFloat(a.monitor_ts)
+  );
+}
+
 const FILTER_BTN: React.CSSProperties = {
   background: "transparent",
   border: "1px solid #45475a",
@@ -90,43 +108,52 @@ const FILTER_BTN_ACTIVE: React.CSSProperties = {
 interface Props {
   events: C2cEvent[];
   selectedRoom?: string | null;
-  roomHistoryEvents?: C2cEvent[];
-  onClearRoom?: () => void;
+  selectedPeer?: string | null;
+  myAlias?: string;
+  focusHistoryEvents?: C2cEvent[];
+  onClearFocus?: () => void;
 }
 
-export function EventFeed({ events, selectedRoom, roomHistoryEvents = [], onClearRoom }: Props) {
+export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", focusHistoryEvents = [], onClearFocus }: Props) {
   const [filter, setFilter] = useState<Filter>("all");
+  const listRef = useRef<HTMLDivElement>(null);
+  const prevLenRef = useRef(0);
 
   let visible: C2cEvent[];
   if (selectedRoom) {
     const liveRoomEvents = events.filter(e => isRoomEvent(e, selectedRoom) && !(e as { _historical?: boolean })._historical);
-    const seenKeys = new Set(liveRoomEvents.map(e => `${e.monitor_ts}-${(e as MessageEvent).content ?? ""}`));
-    const dedupedHistory = roomHistoryEvents.filter(e => {
-      const k = `${e.monitor_ts}-${(e as MessageEvent).content ?? ""}`;
-      return !seenKeys.has(k);
-    });
-    visible = [...dedupedHistory, ...liveRoomEvents].slice().sort(
-      (a, b) => parseFloat(b.monitor_ts) - parseFloat(a.monitor_ts)
-    );
+    visible = dedupeAndSort(focusHistoryEvents, liveRoomEvents);
+  } else if (selectedPeer) {
+    const livePeerEvents = events.filter(e => isPeerEvent(e, selectedPeer, myAlias) && !(e as { _historical?: boolean })._historical);
+    visible = dedupeAndSort(focusHistoryEvents, livePeerEvents);
   } else {
     visible = events.filter(e => matchesFilter(e, filter)).slice().reverse();
   }
 
+  // Auto-scroll to top when new live events arrive (global feed is newest-first)
+  useEffect(() => {
+    if (!selectedRoom && !selectedPeer && events.length > prevLenRef.current) {
+      listRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+    }
+    prevLenRef.current = events.length;
+  }, [events.length, selectedRoom, selectedPeer]);
+
+  const focusLabel = selectedRoom ? `🏠 ${selectedRoom}` : selectedPeer ? `👤 ${selectedPeer}` : null;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
-      {/* Filter / room bar */}
+      {/* Filter / focus bar */}
       <div style={{
         display: "flex", gap: 4, padding: "4px 8px",
         background: "#11111b", borderBottom: "1px solid #1e1e2e",
         alignItems: "center",
       }}>
-        {selectedRoom ? (
+        {focusLabel ? (
           <>
-            <span style={{ fontSize: 11, color: "#89dceb", fontWeight: 700 }}>🏠 {selectedRoom}</span>
-            <button
-              onClick={onClearRoom}
-              style={{ ...FILTER_BTN, marginLeft: 4 }}
-            >
+            <span style={{ fontSize: 11, color: selectedRoom ? "#89dceb" : "#cba6f7", fontWeight: 700 }}>
+              {focusLabel}
+            </span>
+            <button onClick={onClearFocus} style={{ ...FILTER_BTN, marginLeft: 4 }}>
               ✕ all events
             </button>
           </>
@@ -142,15 +169,15 @@ export function EventFeed({ events, selectedRoom, roomHistoryEvents = [], onClea
           ))
         )}
         <span style={{ marginLeft: "auto", fontSize: 11, color: "#45475a" }}>
-          {visible.length}{!selectedRoom && ` / ${events.length}`}
+          {visible.length}{!focusLabel && ` / ${events.length}`}
         </span>
       </div>
 
-      {/* Event list */}
-      <div style={{ fontFamily: "monospace", fontSize: "13px", overflowY: "auto", flex: 1 }}>
+      {/* Event list — newest on top in all modes */}
+      <div ref={listRef} style={{ fontFamily: "monospace", fontSize: "13px", overflowY: "auto", flex: 1 }}>
         {visible.length === 0 ? (
           <div style={{ padding: 16, color: "#45475a" }}>
-            {selectedRoom ? `No messages in ${selectedRoom} yet.` : "No events match filter."}
+            {focusLabel ? `No messages with ${selectedRoom ?? selectedPeer} yet.` : "No events match filter."}
           </div>
         ) : (
           visible.map((e, i) => (

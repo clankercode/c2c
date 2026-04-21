@@ -2,6 +2,7 @@ interface Props {
   peers: string[];
   rooms: string[];
   selectedRoom?: string | null;
+  selectedPeer?: string | null;
   onSelect: (target: string, isRoom: boolean) => void;
 }
 
@@ -29,7 +30,13 @@ const ITEM_ACTIVE_STYLE: React.CSSProperties = {
   color: "#89dceb",
 };
 
-export function Sidebar({ peers, rooms, selectedRoom, onSelect }: Props) {
+const ITEM_PEER_ACTIVE_STYLE: React.CSSProperties = {
+  ...ITEM_STYLE,
+  background: "#313244",
+  color: "#cba6f7",
+};
+
+export function Sidebar({ peers, rooms, selectedRoom, selectedPeer, onSelect }: Props) {
   return (
     <div style={{
       width: 160,
@@ -62,7 +69,7 @@ export function Sidebar({ peers, rooms, selectedRoom, onSelect }: Props) {
           {peers.map(p => (
             <div
               key={p}
-              style={ITEM_STYLE}
+              style={selectedPeer === p ? ITEM_PEER_ACTIVE_STYLE : ITEM_STYLE}
               onClick={() => onSelect(p, false)}
               title={p}
             >

@@ -5,7 +5,7 @@ import { EventFeed } from "./EventFeed";
 import { ComposeBar } from "./ComposeBar";
 import { Sidebar } from "./Sidebar";
 import { registerAlias } from "./useSend";
-import { loadHistory, loadRoomHistory } from "./useHistory";
+import { loadHistory, loadRoomHistory, loadPeerHistory } from "./useHistory";
 import { discoverPeers, discoverRooms } from "./useDiscovery";
 
 const MAX_EVENTS = 1000;
@@ -19,7 +19,8 @@ export function App() {
   const [composeTo, setComposeTo] = useState("");
   const [composeIsRoom, setComposeIsRoom] = useState(false);
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
-  const [roomHistoryEvents, setRoomHistoryEvents] = useState<C2cEvent[]>([]);
+  const [selectedPeer, setSelectedPeer] = useState<string | null>(null);
+  const [focusHistoryEvents, setFocusHistoryEvents] = useState<C2cEvent[]>([]);
   const [myAlias, setMyAlias] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "");
   const [aliasInput, setAliasInput] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "");
   const [aliasStatus, setAliasStatus] = useState<string | null>(null);
@@ -168,16 +169,19 @@ export function App() {
           peers={[...peers]}
           rooms={[...rooms]}
           selectedRoom={selectedRoom}
+          selectedPeer={selectedPeer}
           onSelect={(target, isRoom) => {
             setComposeTo(target);
             setComposeIsRoom(isRoom);
+            setFocusHistoryEvents([]);
             if (isRoom) {
               setSelectedRoom(target);
-              setRoomHistoryEvents([]);
-              loadRoomHistory(target, 100).then(hist => setRoomHistoryEvents(hist));
+              setSelectedPeer(null);
+              loadRoomHistory(target, 100).then(hist => setFocusHistoryEvents(hist));
             } else {
+              setSelectedPeer(target);
               setSelectedRoom(null);
-              setRoomHistoryEvents([]);
+              loadPeerHistory(target, myAlias, 100).then(hist => setFocusHistoryEvents(hist));
             }
           }}
         />
@@ -190,8 +194,10 @@ export function App() {
             <EventFeed
               events={events}
               selectedRoom={selectedRoom}
-              roomHistoryEvents={roomHistoryEvents}
-              onClearRoom={() => { setSelectedRoom(null); setRoomHistoryEvents([]); }}
+              selectedPeer={selectedPeer}
+              myAlias={myAlias}
+              focusHistoryEvents={focusHistoryEvents}
+              onClearFocus={() => { setSelectedRoom(null); setSelectedPeer(null); setFocusHistoryEvents([]); }}
             />
           )}
         </div>

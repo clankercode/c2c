@@ -47,3 +47,23 @@ export async function loadRoomHistory(roomId: string, limit = 50): Promise<C2cEv
     return [];
   }
 }
+
+export async function loadPeerHistory(peerAlias: string, myAlias: string, limit = 50): Promise<C2cEvent[]> {
+  try {
+    const result = await Command.create("c2c", [
+      "history", "--json", "--limit", String(limit),
+    ]).execute();
+    if (result.code !== 0) return [];
+    const entries: HistoryEntry[] = JSON.parse(result.stdout);
+    return entries
+      .map(e => entryToEvent(e))
+      .filter(e => {
+        if (e.event_type !== "message") return false;
+        const m = e as { from_alias: string; to_alias: string };
+        return (m.from_alias === peerAlias && m.to_alias === myAlias) ||
+               (m.from_alias === myAlias && m.to_alias === peerAlias);
+      });
+  } catch {
+    return [];
+  }
+}
