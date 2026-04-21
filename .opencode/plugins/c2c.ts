@@ -1247,7 +1247,9 @@ const C2CDelivery: Plugin = async (ctx) => {
               const retryDelayMs = 3000 * Math.pow(2, r - 1); // 3s, 6s, 12s
               await log(`cold-boot: spool not empty after attempt ${r} — retrying in ${retryDelayMs}ms`);
               await new Promise<void>(resolve => setTimeout(resolve, retryDelayMs));
-              await deliverMessages(info.id).catch(() => {});
+              // In idle-only mode, session.idle is the sole delivery trigger — do not
+              // call deliverMessages here (would double-deliver with session.idle).
+              if (!idleOnlyMode) await deliverMessages(info.id).catch(() => {});
             }
           })();
         }

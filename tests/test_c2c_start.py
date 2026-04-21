@@ -957,11 +957,12 @@ class C2CStartExit109RegressionTests(unittest.TestCase):
 
     def _run_c2c_start(self, name: str) -> tuple[int, str, str]:
         """Run `c2c start opencode --bin <stub>` and return (returncode, stdout, stderr)."""
-        from conftest import spawn_tracked
+        from conftest import spawn_tracked, clean_c2c_start_env
+        base_env = clean_c2c_start_env(os.environ)
         env = {
-            **os.environ,
+            **base_env,
             # Prepend tmp dir so stub "opencode" shadows any real binary.
-            "PATH": str(self.tmp_path) + ":" + os.environ.get("PATH", ""),
+            "PATH": str(self.tmp_path) + ":" + base_env.get("PATH", ""),
             "C2C_MCP_BROKER_ROOT": str(self.broker_root),
             # Redirect instance state to temp dir so no stale entries accumulate
             # in ~/.local/share/c2c/instances/ after tests run.
@@ -1063,10 +1064,11 @@ class C2CStartOpencodeSessionPreflightTests(unittest.TestCase):
     def _run_start_with_session(self, ses_id: str, session_ids: list) -> tuple[int, str, str]:
         stub = self._make_opencode_stub(session_ids)
         name = f"preflight-{self._run_id}"
-        from conftest import spawn_tracked
+        from conftest import spawn_tracked, clean_c2c_start_env
+        base_env = clean_c2c_start_env(os.environ)
         env = {
-            **os.environ,
-            "PATH": str(self.tmp_path) + ":" + os.environ.get("PATH", ""),
+            **base_env,
+            "PATH": str(self.tmp_path) + ":" + base_env.get("PATH", ""),
             "C2C_MCP_BROKER_ROOT": str(self.broker_root),
             "C2C_INSTANCES_DIR": str(self.instances_dir),
             "GIT_DIR": str(self.tmp_path / "no-such-git"),
@@ -1157,11 +1159,11 @@ class C2CStartRegistryCleanupRegressionTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_clean_exit_strips_only_managed_pid_fields_and_preserves_mode(self):
-        from conftest import spawn_tracked
-
+        from conftest import spawn_tracked, clean_c2c_start_env
+        base_env = clean_c2c_start_env(os.environ)
         env = {
-            **os.environ,
-            "PATH": str(self.tmp_path) + ":" + os.environ.get("PATH", ""),
+            **base_env,
+            "PATH": str(self.tmp_path) + ":" + base_env.get("PATH", ""),
             "C2C_MCP_BROKER_ROOT": str(self.broker_root),
             "C2C_INSTANCES_DIR": str(self.instances_dir),
             "GIT_DIR": str(self.tmp_path / "no-such-git"),
@@ -1217,10 +1219,11 @@ class C2CStartNameValidationTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _run(self, name: str) -> tuple[int, str, str]:
-        from conftest import spawn_tracked
+        from conftest import spawn_tracked, clean_c2c_start_env
+        base_env = clean_c2c_start_env(os.environ)
         env = {
-            **os.environ,
-            "PATH": str(self.tmp_path) + ":" + os.environ.get("PATH", ""),
+            **base_env,
+            "PATH": str(self.tmp_path) + ":" + base_env.get("PATH", ""),
             "C2C_MCP_BROKER_ROOT": str(self.broker_root),
             "C2C_INSTANCES_DIR": str(self.instances_dir),
             # Prevent git rev-parse from finding the real repo, so
@@ -1400,10 +1403,11 @@ class C2CStartKickoffPromptTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _run_start_auto(self, name: str, role: str | None = None) -> tuple[int, str, str]:
-        from conftest import spawn_tracked
+        from conftest import spawn_tracked, clean_c2c_start_env
+        base_env = clean_c2c_start_env(os.environ)
         env = {
-            **os.environ,
-            "PATH": str(self.tmp_path) + ":" + os.environ.get("PATH", ""),
+            **base_env,
+            "PATH": str(self.tmp_path) + ":" + base_env.get("PATH", ""),
             "C2C_MCP_BROKER_ROOT": str(self.broker_root),
             "C2C_INSTANCES_DIR": str(self.instances_dir),
             "GIT_DIR": str(self.tmp_path / "no-such-git"),
@@ -1522,9 +1526,11 @@ class C2CStartInstallPromptTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _base_env(self):
+        from conftest import clean_c2c_start_env
+        base_env = clean_c2c_start_env(os.environ)
         env = {
-            **os.environ,
-            "PATH": str(self.tmp_path) + ":" + os.environ.get("PATH", ""),
+            **base_env,
+            "PATH": str(self.tmp_path) + ":" + base_env.get("PATH", ""),
             "C2C_MCP_BROKER_ROOT": str(self.broker_root),
             "C2C_INSTANCES_DIR": str(self.instances_dir),
         }

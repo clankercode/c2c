@@ -202,6 +202,28 @@ def spawn_tracked(cmd: list[str], **kwargs: Any) -> subprocess.Popen:
     return proc
 
 
+C2C_SESSION_VARS = [
+    "C2C_MCP_SESSION_ID",
+    "C2C_MCP_AUTO_REGISTER_ALIAS",
+    "C2C_INSTANCE_NAME",
+    "C2C_WRAPPER_SELF",
+    "C2C_OPENCODE_SESSION_ID",
+]
+
+
+def clean_c2c_start_env(base_env: dict[str, str]) -> dict[str, str]:
+    """Return a copy of base_env with c2c session vars removed.
+
+    This prevents the nested-session guardrail (which blocks 'c2c start' when
+    C2C_MCP_SESSION_ID is already set) from firing in test subprocesses that
+    inherit the parent shell's c2c session environment.
+    """
+    env = dict(base_env)
+    for var in C2C_SESSION_VARS:
+        env.pop(var, None)
+    return env
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _pgid_cleanup_guard() -> None:  # type: ignore[return]
     """Kill every pgid registered via spawn_tracked() at session end."""

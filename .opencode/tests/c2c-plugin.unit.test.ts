@@ -189,6 +189,7 @@ describe('c2c plugin unit tests', () => {
     // kickoff file instead of treating the test as kickoff-incapable.
     delete process.env.C2C_KICKOFF_PROMPT_PATH;
     delete process.env.C2C_AUTO_KICKOFF;
+    delete process.env.C2C_OPENCODE_SESSION_ID;
   });
 
   afterEach(() => {
