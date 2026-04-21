@@ -9,6 +9,9 @@ type registration =
   ; registered_at : float option
   ; canonical_alias : string option
   (** Fully-qualified form: "<alias>#<repo>@<host>". None for pre-Phase-1 rows. *)
+  ; dnd : bool
+  ; dnd_since : float option
+  ; dnd_until : float option
   }
 type message = { from_alias : string; to_alias : string; content : string }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
@@ -78,6 +81,8 @@ module Broker : sig
   val read_room_members : t -> room_id:string -> room_member list
   val evict_dead_from_rooms : t -> dead_session_ids:string list -> dead_aliases:string list -> (string * string) list
   val prune_rooms : t -> (string * string) list
+  val is_dnd : t -> session_id:string -> bool
+  val set_dnd : t -> session_id:string -> dnd:bool -> ?until:float -> unit -> bool option
 end
 
 (* Native OCaml relay modules *)

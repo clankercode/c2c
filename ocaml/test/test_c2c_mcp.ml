@@ -1852,6 +1852,9 @@ let test_start_time_mismatch_is_not_alive () =
     ; pid_start_time = Some bogus_start_time
     ; registered_at = None
     ; canonical_alias = None
+    ; dnd = false
+    ; dnd_since = None
+    ; dnd_until = None
     }
   in
   check bool "mismatched start_time → not alive" false
@@ -1867,6 +1870,9 @@ let test_start_time_match_is_alive () =
     ; pid_start_time = start
     ; registered_at = None
     ; canonical_alias = None
+    ; dnd = false
+    ; dnd_since = None
+    ; dnd_until = None
     }
   in
   check bool "matching start_time → alive" true
@@ -1882,6 +1888,9 @@ let test_start_time_none_falls_back_to_proc_exists () =
     ; pid_start_time = None
     ; registered_at = None
     ; canonical_alias = None
+    ; dnd = false
+    ; dnd_since = None
+    ; dnd_until = None
     }
   in
   check bool "pid exists + no stored start_time → alive" true

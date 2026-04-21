@@ -7,6 +7,11 @@ type registration =
   ; canonical_alias : string option
   (** Fully-qualified form: "<alias>#<repo>@<host>". None for registrations
       created before this field was added (Phase 0 compatibility). *)
+  ; dnd : bool
+  (** Do-Not-Disturb: when true, channel-push delivery is suppressed.
+      poll_inbox is never gated — the agent can always explicitly drain. *)
+  ; dnd_since : float option  (** When DND was last enabled. *)
+  ; dnd_until : float option  (** Auto-expire epoch (None = manual off only). *)
   }
 type message = { from_alias : string; to_alias : string; content : string }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
@@ -63,6 +68,7 @@ let server_features =
   ; "room_join_system_broadcast"
   ; "room_invite"
   ; "room_visibility"
+  ; "dnd"
   ]
 
 let server_info =
@@ -187,7 +193,7 @@ module Broker = struct
       cleanup_tmp ();
       raise e
 
-  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias } =
+  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until } =
     let base =
       [ ("session_id", `String session_id); ("alias", `String alias) ]
     in
@@ -206,10 +212,25 @@ module Broker = struct
       | Some ts -> with_pst @ [ ("registered_at", `Float ts) ]
       | None -> with_pst
     in
-    let fields =
+    let with_ca =
       match canonical_alias with
       | Some ca -> with_ra @ [ ("canonical_alias", `String ca) ]
       | None -> with_ra
+    in
+    (* Only persist DND when enabled — keeps registry compact for normal case. *)
+    let with_dnd =
+      if dnd then with_ca @ [ ("dnd", `Bool true) ]
+      else with_ca
+    in
+    let with_dnd_since =
+      match dnd_since with
+      | Some ts when dnd -> with_dnd @ [ ("dnd_since", `Float ts) ]
+      | _ -> with_dnd
+    in
+    let fields =
+      match dnd_until with
+      | Some ts when dnd -> with_dnd_since @ [ ("dnd_until", `Float ts) ]
+      | _ -> with_dnd_since
     in
     `Assoc fields
 
@@ -238,12 +259,19 @@ module Broker = struct
       try match j |> member name with `String s -> Some s | _ -> None
       with _ -> None
     in
+    let bool_member_default name j default =
+      try match j |> member name with `Bool b -> b | _ -> default
+      with _ -> default
+    in
     { session_id = json |> member "session_id" |> to_string
     ; alias = json |> member "alias" |> to_string
     ; pid = int_opt_member "pid" json
     ; pid_start_time = int_opt_member "pid_start_time" json
     ; registered_at = float_opt_member "registered_at" json
     ; canonical_alias = str_opt "canonical_alias" json
+    ; dnd = bool_member_default "dnd" json false
+    ; dnd_since = float_opt_member "dnd_since" json
+    ; dnd_until = float_opt_member "dnd_until" json
     }
 
   let message_to_json { from_alias; to_alias; content } =
@@ -447,6 +475,41 @@ module Broker = struct
     let rec find p = if is_prime p then p else find (p + 1) in
     find (n + 1)
 
+  (** Check whether *session_id* is currently in DND mode (considering auto-expire). *)
+  let is_dnd t ~session_id =
+    let now = Unix.gettimeofday () in
+    match List.find_opt (fun r -> r.session_id = session_id) (list_registrations t) with
+    | None -> false
+    | Some r ->
+        if not r.dnd then false
+        else begin
+          (* Auto-expire check: if dnd_until is set and has passed, DND is cleared. *)
+          match r.dnd_until with
+          | Some until when now >= until -> false
+          | _ -> true
+        end
+
+  (** Set or clear DND for *session_id*. Returns the new dnd state, or None if
+      the session is not registered. When [until] is given, DND auto-expires at
+      that epoch. [until = None] means no auto-expire (manual off only). *)
+  let set_dnd t ~session_id ~dnd ?until () =
+    with_registry_lock t (fun () ->
+      let regs = load_registrations t in
+      match List.find_opt (fun r -> r.session_id = session_id) regs with
+      | None -> None
+      | Some existing ->
+          let now = Unix.gettimeofday () in
+          let updated = { existing with
+            dnd
+          ; dnd_since = (if dnd then Some now else None)
+          ; dnd_until  = (if dnd then until else None)
+          } in
+          let new_regs =
+            List.map (fun r -> if r.session_id = session_id then updated else r) regs
+          in
+          save_registrations t new_regs;
+          Some dnd)
+
   (* Suggest a free alias by appending the next prime suffix.
      Runs under the registry lock (regs is already loaded).
      Returns Some candidate on success, None when all max_tries primes are taken
@@ -499,9 +562,18 @@ module Broker = struct
         in
         (* Same-session re-registration (alias changed or pid/registered_at
            refresh): update in-place by replacing the old entry in [rest]. *)
-        let new_reg = { session_id; alias; pid; pid_start_time
-                      ; registered_at = Some (Unix.gettimeofday ())
-                      ; canonical_alias = Some (compute_canonical_alias ~alias ~broker_root:(root t)) }
+        (* Look up old entry to preserve DND state across re-registration. *)
+        let old_dnd_state =
+          match List.find_opt (fun reg -> reg.session_id = session_id) rest with
+          | Some r -> (r.dnd, r.dnd_since, r.dnd_until)
+          | None -> (false, None, None)
+        in
+        let new_reg =
+          let (dnd, dnd_since, dnd_until) = old_dnd_state in
+          { session_id; alias; pid; pid_start_time
+          ; registered_at = Some (Unix.gettimeofday ())
+          ; canonical_alias = Some (compute_canonical_alias ~alias ~broker_root:(root t))
+          ; dnd; dnd_since; dnd_until }
         in
         let kept =
           match
@@ -1741,6 +1813,17 @@ let tool_definitions =
       ~description:"Change a room's visibility mode. public = anyone can join; invite_only = only invited aliases can join. Only existing room members can change visibility."
       ~required:["room_id"; "visibility"]
       ~properties:[ prop "room_id" "Room to modify."; prop "visibility" "Either 'public' or 'invite_only'."; prop "alias" "Legacy fallback sender alias (deprecated)." ]
+  ; tool_definition ~name:"set_dnd"
+      ~description:"Enable or disable Do-Not-Disturb for this session. When DND is on, channel-push delivery (notifications/claude/channel) is suppressed — inbox still accumulates messages, poll_inbox always works. Optional `until_epoch` sets an auto-expire Unix timestamp; omit for manual-off only. Returns JSON {ok:true,dnd:bool}."
+      ~required:["on"]
+      ~properties:
+        [ prop "on" "true to enable DND, false to disable."
+        ; prop "until_epoch" "Optional float Unix timestamp to auto-expire DND (e.g. Unix.gettimeofday()+3600 for 1h)."
+        ]
+  ; tool_definition ~name:"dnd_status"
+      ~description:"Check current Do-Not-Disturb status for this session. Returns JSON {dnd:bool, dnd_since?:float, dnd_until?:float}."
+      ~required:[]
+      ~properties:[]
   ]
 
 let string_member name json =
@@ -2048,19 +2131,22 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
         | None -> Some (Unix.getppid ())
       in
       (* Detect alias rename before registering so we can notify rooms.
-         A rename is genuine only when the same process (matched by PID) is
-         re-registering under a new alias.  If the PID differs — or is absent
-         on the old registration — this is a new session reusing the same
-         session_id (common with `c2c start`), not an intentional rename.
-         Requiring pid match prevents spurious peer_renamed events when e.g.
-         c2c start relaunches an instance under the same name. *)
+         A rename is genuine when the same process (matched by PID) re-registers
+         under a new alias.  When both the old and new registration have a real
+         PID set, they must agree — a differing PID means a new process reused
+         the same session_id (common with `c2c start`), not an intentional rename.
+         When the old registration has pid=None (legacy / no-PID registration),
+         we allow the rename so that pre-PID entries are not permanently frozen. *)
       let old_alias_opt =
         let existing =
           List.find_opt
             (fun reg ->
               reg.session_id = session_id
               && reg.alias <> alias
-              && reg.pid = pid)   (* same process = intentional rename *)
+              && (match reg.pid, pid with
+                  | Some old_pid, Some new_pid -> old_pid = new_pid
+                  | None, _ -> true   (* legacy no-PID row — allow rename *)
+                  | Some _, None -> false))   (* new has no pid — can't confirm same process *)
             (Broker.list_registrations broker)
         in
         match existing with
@@ -2235,15 +2321,24 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
             | None ->
                 Broker.enqueue_message broker ~from_alias ~to_alias ~content;
                 let ts = Unix.gettimeofday () in
-                let receipt =
-                  `Assoc
-                    [ ("queued", `Bool true)
-                    ; ("ts", `Float ts)
-                    ; ("from_alias", `String from_alias)
-                    ; ("to_alias", `String to_alias)
-                    ]
-                  |> Yojson.Safe.to_string
+                let recipient_dnd =
+                  match Broker.list_registrations broker
+                        |> List.find_opt (fun r -> r.alias = to_alias) with
+                  | Some r -> Broker.is_dnd broker ~session_id:r.session_id
+                  | None -> false
                 in
+                let receipt_fields =
+                  [ ("queued", `Bool true)
+                  ; ("ts", `Float ts)
+                  ; ("from_alias", `String from_alias)
+                  ; ("to_alias", `String to_alias)
+                  ]
+                in
+                let receipt_fields =
+                  if recipient_dnd then receipt_fields @ [("recipient_dnd", `Bool true)]
+                  else receipt_fields
+                in
+                let receipt = `Assoc receipt_fields |> Yojson.Safe.to_string in
                 Lwt.return (tool_result ~content:receipt ~is_error:false)))
   | "send_all" ->
       let content = string_member "content" arguments in
@@ -2499,6 +2594,60 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                        ])
                    evicted) )
           ]
+        |> Yojson.Safe.to_string
+      in
+      Lwt.return (tool_result ~content ~is_error:false)
+  | "set_dnd" ->
+      let session_id = resolve_session_id arguments in
+      let on =
+        try
+          match Yojson.Safe.Util.member "on" arguments with
+          | `Bool b -> b
+          | _ -> false
+        with _ -> false
+      in
+      let until_epoch =
+        try
+          match Yojson.Safe.Util.member "until_epoch" arguments with
+          | `Float f -> Some f
+          | `Int i -> Some (float_of_int i)
+          | _ -> None
+        with _ -> None
+      in
+      let new_dnd = Broker.set_dnd broker ~session_id ~dnd:on ?until:until_epoch () in
+      let content =
+        (match new_dnd with
+         | None ->
+             `Assoc [ ("ok", `Bool false); ("error", `String "session not registered") ]
+         | Some dnd_val ->
+             `Assoc [ ("ok", `Bool true); ("dnd", `Bool dnd_val) ])
+        |> Yojson.Safe.to_string
+      in
+      Lwt.return (tool_result ~content ~is_error:false)
+  | "dnd_status" ->
+      let session_id = resolve_session_id arguments in
+      let reg_opt =
+        Broker.list_registrations broker
+        |> List.find_opt (fun r -> r.session_id = session_id)
+      in
+      let content =
+        (match reg_opt with
+         | None ->
+             `Assoc [ ("dnd", `Bool false) ]
+         | Some reg ->
+             let dnd_active = Broker.is_dnd broker ~session_id in
+             let fields = [ ("dnd", `Bool dnd_active) ] in
+             let fields =
+               match reg.dnd_since with
+               | Some ts when dnd_active -> fields @ [ ("dnd_since", `Float ts) ]
+               | _ -> fields
+             in
+             let fields =
+               match reg.dnd_until with
+               | Some ts when dnd_active -> fields @ [ ("dnd_until", `Float ts) ]
+               | _ -> fields
+             in
+             `Assoc fields)
         |> Yojson.Safe.to_string
       in
       Lwt.return (tool_result ~content ~is_error:false)
