@@ -1070,30 +1070,8 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
        client (String.concat ", " (List.sort String.compare supported_clients));
      exit 1);
 
-  (* Validate instance name: only [A-Za-z0-9._-], 1..64 chars, no leading dot.
-     Rejects '/', '#', '@', whitespace, and other shell/broker-hostile chars
-     that can create nested dirs or collide with alias@repo#host syntax. *)
-  let name_ok n =
-    let len = String.length n in
-    if len = 0 || len > 64 then false
-    else if n.[0] = '.' then false
-    else begin
-      let ok = ref true in
-      String.iter (fun c ->
-        let good =
-          (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-          || (c >= '0' && c <= '9')
-          || c = '-' || c = '_' || c = '.'
-        in
-        if not good then ok := false
-      ) n;
-      !ok
-    end
-  in
-  if not (name_ok name) then begin
-    Printf.eprintf
-      "error: invalid instance name '%s'. Allowed chars: [A-Za-z0-9._-], 1..64, no leading dot.\n%!"
-      name;
+  if not (C2c_name.is_valid name) then begin
+    Printf.eprintf "error: %s\n%!" (C2c_name.error_message "instance name" name);
     exit 1
   end;
 

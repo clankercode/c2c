@@ -315,6 +315,10 @@ end = struct
 
   let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = 300.0) ?(identity_pk = "") () =
     with_lock t (fun () ->
+      if not (C2c_name.is_valid alias) then
+        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk () in
+        ("invalid_alias", dummy)
+      else
       let allow_state =
         match Hashtbl.find_opt t.allowed_identities alias with
         | None -> `Unlisted

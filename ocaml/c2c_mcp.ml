@@ -2036,6 +2036,11 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
           ~content:(Printf.sprintf
             "register rejected: '%s' is a reserved system alias and cannot be registered" alias)
           ~is_error:true)
+      else if not (C2c_name.is_valid alias) then
+        Lwt.return (tool_result
+          ~content:(Printf.sprintf "register rejected: %s"
+            (C2c_name.error_message "alias" alias))
+          ~is_error:true)
       else
       let pid =
         match current_client_pid () with
