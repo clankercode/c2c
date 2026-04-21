@@ -170,7 +170,7 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   `run-*-inst-outer` scripts, the outer loop stays alive and will relaunch in
   seconds. Sweep sees the dead PID and drops the registration + inbox, so messages
   go to dead-letter until the managed session re-registers and auto-redelivers them.
-  Manual replay is also available with filtered `c2c dead-letter --replay`.
+  Manual replay is also available with filtered `./c2c dead-letter --replay` (Python shim only; the installed OCaml binary does not support `--replay`).
   Before sweeping, verify no outer loops are running:
   ```bash
   pgrep -a -f "run-(kimi|codex|opencode|crush|claude)-inst-outer"
