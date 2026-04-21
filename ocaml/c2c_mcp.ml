@@ -2046,12 +2046,12 @@ let current_session_id () =
   | Some value when String.trim value <> "" -> Some value
   | _ -> None
 
-(* Derive a process-unique session_id from alias + parent PID when
-   C2C_MCP_SESSION_ID is not set. Enables auto-registration without
-   requiring the shared project opencode.json to be patched per-instance.
-   Format: "<alias>-pid<ppid>" — readable and collision-resistant. *)
-let derived_session_id_from_alias alias =
-  Printf.sprintf "%s-pid%d" alias (Unix.getppid ())
+(* Derive a session_id from the alias when C2C_MCP_SESSION_ID is not set.
+   Uses alias as-is so the plugin (which reads the same alias from the
+   sidecar or env) passes a consistent session_id in MCP tool calls.
+   Managed sessions (c2c start) always inherit C2C_MCP_SESSION_ID via env,
+   so this fallback only fires for plain opencode runs without that env var. *)
+let derived_session_id_from_alias alias = alias
 
 let auto_register_alias () =
   match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
