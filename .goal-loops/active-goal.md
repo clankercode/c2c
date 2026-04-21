@@ -246,6 +246,31 @@ These are Max's target experiences, verbatim:
   + Railway rebuild (~15min) before `c2c relay register` works in prod.
   Steps 2-4 implemented: identity in c2c init ✓, auto-sign register ✓, health auth_mode ✓.
 
+### Recent Completions (later 2026-04-21, coordinator1 session — awaiting push)
+
+- **Ed25519 relay connector tests** ✓: 8 new mock-based tests for all signed
+  request paths: register (identity_pk binding), heartbeat, send, poll_inbox,
+  join_room, leave_room, send_room. Bearer fallback also covered.
+  1119 Python tests total (3a70a97, 3c90eaf).
+- **`c2c doctor` command** ✓: `c2c doctor` runs health check + git commit
+  classification (relay-critical vs local-only) + push verdict. Max can run
+  one command to decide if a push is warranted. Backed by `scripts/c2c-doctor.sh`
+  (20d0e89, 4eac5b6, eb43918).
+- **Plugin symlink** ✓: `run-opencode-inst.d/plugins/c2c.ts` is now a symlink to
+  `../../.opencode/plugins/c2c.ts`. The two files can never drift again (ce35bcd).
+- **Smoke test sections 6-7** ✓: relay-smoke-test.sh now tests room operations
+  (join → list_rooms → send_room → leave) and Ed25519 identity check (cdc452e).
+- **Relay /list_rooms + /room_history unauthenticated** ✓: OCaml auth_decision
+  exempts both read-only room endpoints. Python relay server matches.
+  Tests for both (af2a5f5, 8397422, 56e8f86, 6bdc269).
+- **Permission HTTP resolve v2** ✓: plugin resolves permission dialogs via
+  `client.postSessionIdPermissionsPermissionId` HTTP call instead of dead
+  `permission.ask` hook (535b3bf, Max). Integration harness mock added (b7d2310).
+- **Plugin sha256 load stamp** ✓: plugin logs sha256 of itself on load so stale
+  bun JIT cache is immediately visible in debug log (d826acc).
+- **stale relay_rooms_cmd comment** ✓: OCaml fallback comment updated to reflect
+  current state (join/leave/send/history all in OCaml) (d741f67).
+
 ### Recent Completions (2026-04-21, coder2-expert + planner1 session — awaiting push)
 
 - **relay /register prod-mode auth fix** ✓: `auth_decision` now exempts `/register`
