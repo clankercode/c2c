@@ -3912,7 +3912,7 @@ let setup_kimi ~output_mode ~root ~alias_val ~server_path =
 
 (* --- setup: OpenCode (JSON + plugin) --- *)
 
-let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt =
+let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt ?(force=false) () =
   let target_dir = match target_dir_opt with
     | Some d -> d
     | None -> Sys.getcwd ()
@@ -3923,12 +3923,38 @@ let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt =
   end;
   let config_dir = target_dir // ".opencode" in
   let config_path = config_dir // "opencode.json" in
+  (* Guard: if config already exists and has a c2c mcp entry, warn and skip unless --force. *)
+  if (not force) && Sys.file_exists config_path then begin
+    (try
+       match json_read_file config_path with
+       | `Assoc fields ->
+           (match List.assoc_opt "mcp" fields with
+            | Some (`Assoc m) when List.mem_assoc "c2c" m ->
+                Printf.eprintf
+                  "warning: %s already has a c2c MCP entry.\n\
+                   Use --force to overwrite, or edit manually to change alias/session.\n\
+                   Skipping opencode.json write; updating plugin and sidecar only.\n%!"
+                  config_path
+            | _ -> ())
+       | _ -> ()
+     with _ -> ())
+  end;
   let dir_name = Filename.basename (
     let n = String.length target_dir in
     if n > 1 && target_dir.[n-1] = '/' then String.sub target_dir 0 (n-1)
     else target_dir) in
   let session_id = Printf.sprintf "opencode-%s" dir_name in
   (try Unix.mkdir config_dir 0o755 with Unix.Unix_error _ -> ());
+  let should_write_config =
+    force || not (Sys.file_exists config_path) ||
+    (try
+       match json_read_file config_path with
+       | `Assoc fields -> not (match List.assoc_opt "mcp" fields with
+           | Some (`Assoc m) -> List.mem_assoc "c2c" m | _ -> false)
+       | _ -> true
+     with _ -> true)
+  in
+  if not should_write_config then () else
   let config =
     `Assoc
       [ ("$schema", `String "https://opencode.ai/config.json")
@@ -4401,7 +4427,7 @@ let do_install_client ?(channel_delivery=false) ~output_mode ~client ~alias_opt 
   | "claude" -> setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery
   | "codex" -> setup_codex ~output_mode ~root ~alias_val ~server_path
   | "kimi" -> setup_kimi ~output_mode ~root ~alias_val ~server_path
-  | "opencode" -> setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt
+  | "opencode" -> setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt ~force ()
   | "crush" -> setup_crush ~output_mode ~root ~alias_val ~server_path
   | _ ->
       (match output_mode with
