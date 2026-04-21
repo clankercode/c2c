@@ -2,7 +2,7 @@
 author: planner1
 ts: 2026-04-20T21:45:00Z
 severity: info
-status: design — mostly done, missing polish items spec'd below
+status: IMPLEMENTED — --since, tail --follow, --history-limit, pretty format all in OCaml CLI
 ---
 
 # Room History Persistence — Design Doc
