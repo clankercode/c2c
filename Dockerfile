@@ -73,4 +73,12 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 # sh -c so $PORT expands at launch. --token-file is picked up from
 # /run/secrets/relay_token when Railway mounts a file secret; fall
 # back to RELAY_TOKEN env var if only that is set.
-CMD ["sh", "-c", "if [ -f /run/secrets/relay_token ]; then exec c2c relay serve --listen 0.0.0.0:${PORT} --token-file /run/secrets/relay_token; elif [ -n \"${RELAY_TOKEN:-}\" ]; then exec c2c relay serve --listen 0.0.0.0:${PORT} --token \"${RELAY_TOKEN}\"; else exec c2c relay serve --listen 0.0.0.0:${PORT}; fi"]
+CMD ["sh", "-c", "\
+  persist_flag=${C2C_RELAY_PERSIST_DIR:+--persist-dir ${C2C_RELAY_PERSIST_DIR}}; \
+  if [ -f /run/secrets/relay_token ]; then \
+    exec c2c relay serve --listen 0.0.0.0:${PORT} --token-file /run/secrets/relay_token ${persist_flag}; \
+  elif [ -n \"${RELAY_TOKEN:-}\" ]; then \
+    exec c2c relay serve --listen 0.0.0.0:${PORT} --token \"${RELAY_TOKEN}\" ${persist_flag}; \
+  else \
+    exec c2c relay serve --listen 0.0.0.0:${PORT} ${persist_flag}; \
+  fi"]
