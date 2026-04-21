@@ -3717,7 +3717,7 @@ let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt =
               global plugin so ~/.config/opencode/plugins/c2c.ts gets the real
               content with self-detect defer logic. Idempotent if already correct. *)
            let global_note =
-             if src = local_plugin then begin
+             if src = local_plugin && file_size local_plugin >= 1024 then begin
                (try
                   let gdir = Filename.dirname global_plugin_path in
                   (try Unix.mkdir gdir 0o755 with Unix.Unix_error _ -> ());
