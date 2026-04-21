@@ -14,10 +14,11 @@ See task #34 in coordinator1's dispatch (2026-04-21).
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import warnings
-from typing import FrozenSet
+from typing import Any, FrozenSet
 
 import pytest
 
@@ -133,3 +134,41 @@ def _process_leak_guard(request: pytest.FixtureRequest) -> None:  # type: ignore
         # A warning is enough: the operator sees it in the summary.
         print("\n\nWARNING: " + msg, file=sys.stderr)
         warnings.warn(msg, stacklevel=1)
+
+
+# ---------------------------------------------------------------------------
+# pgid-based subprocess tracking.
+#
+# Use spawn_tracked() instead of subprocess.Popen() for any long-lived child
+# processes (MCP servers, sleepers, integration harnesses).  Each call records
+# the child's pgid; the session fixture kills the whole group on teardown so
+# processes leaked by a crashed test body are still reaped.
+# ---------------------------------------------------------------------------
+
+_tracked_pgids: list[int] = []
+
+
+def spawn_tracked(cmd: list[str], **kwargs: Any) -> subprocess.Popen:
+    """Spawn *cmd* in a new session (new pgid) and register it for cleanup.
+
+    Forces ``start_new_session=True``; do not also pass ``preexec_fn``.
+    Returns the Popen object so callers can still do per-test cleanup.
+    """
+    kwargs["start_new_session"] = True
+    proc = subprocess.Popen(cmd, **kwargs)
+    try:
+        _tracked_pgids.append(os.getpgid(proc.pid))
+    except OSError:
+        pass
+    return proc
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _pgid_cleanup_guard() -> None:  # type: ignore[return]
+    """Kill every pgid registered via spawn_tracked() at session end."""
+    yield
+    for pgid in _tracked_pgids:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except OSError:
+            pass

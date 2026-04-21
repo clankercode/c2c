@@ -11,6 +11,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from conftest import spawn_tracked
+
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
@@ -90,7 +92,7 @@ def start_server(
         "C2C_MCP_AUTO_JOIN_ROOMS": auto_join_rooms,
         "C2C_MCP_INBOX_WATCHER_DELAY": watcher_delay,
     }
-    proc = subprocess.Popen(
+    return spawn_tracked(
         [str(MCP_SERVER_EXE)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -99,7 +101,6 @@ def start_server(
         text=True,
         bufsize=1,
     )
-    return proc
 
 
 @pytest.fixture

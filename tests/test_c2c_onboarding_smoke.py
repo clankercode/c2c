@@ -25,6 +25,8 @@ import time
 import unittest
 from pathlib import Path
 
+from conftest import spawn_tracked
+
 REPO = Path(__file__).resolve().parent.parent
 SERVER = REPO / "_build" / "default" / "ocaml" / "server" / "c2c_mcp_server.exe"
 
@@ -66,7 +68,7 @@ def _spawn_server(
     env.pop("C2C_MCP_AUTO_REGISTER_ALIAS", None)
     if extra_env:
         env.update(extra_env)
-    return subprocess.Popen(
+    return spawn_tracked(
         [str(SERVER)],
         cwd=REPO,
         stdin=subprocess.PIPE,
