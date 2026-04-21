@@ -518,8 +518,8 @@ const C2CDelivery: Plugin = async (ctx) => {
         .filter((s: any) => !s.parentID && s.id)
         .sort((a: any, b: any) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0));
       const candidate = configuredOpenCodeSessionId
-        ? (roots.find((s: any) => s.id === configuredOpenCodeSessionId) ?? roots[0])
-        : roots[0];
+        ? roots.find((s: any) => s.id === configuredOpenCodeSessionId)  // exact match only; no fallback to roots[0]
+        : (process.env.C2C_AUTO_KICKOFF === "1" ? undefined : roots[0]); // auto-kickoff: never adopt stale session, let session.create() fire
       if (!candidate?.id) return;
       pluginState.root_opencode_session_id = candidate.id;
       if (!activeSessionId) activeSessionId = candidate.id;
