@@ -64,13 +64,19 @@ export function App() {
             } else if (event.event_type === "room.leave") {
               // Keep room in list even if it's empty (alias may rejoin)
             } else if (event.event_type === "message") {
-              const m = event as { to_alias: string; from_alias: string };
+              const m = event as { to_alias: string; from_alias: string; content?: string };
               const me = myAliasRef.current;
               if (m.to_alias === me || m.from_alias === me) {
                 // DM to/from me
                 const peer = m.from_alias === me ? m.to_alias : m.from_alias;
                 if (selectedPeerRef.current !== peer) {
                   setUnreadPeers(prev => new Set([...prev, peer]));
+                  if (m.from_alias !== me && Notification.permission === "granted") {
+                    new Notification(`DM from ${m.from_alias}`, {
+                      body: (m.content ?? "").slice(0, 80),
+                      tag: `dm-${m.from_alias}`,
+                    });
+                  }
                 }
               } else {
                 // Room message — to_alias is the room id
@@ -94,6 +100,11 @@ export function App() {
       } catch {
         if (!cancelled) setStatus("error");
       }
+    }
+
+    // Request notification permission for desktop alerts on new DMs
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
     }
 
     // Seed peers and rooms from local broker before monitor arms.
