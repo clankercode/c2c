@@ -60,6 +60,8 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
 ## Development Rules
 
 - **Testing against live agents: use tmux + `scripts/*`, not ad-hoc spawns.**
+  Convenience c2c tmux script ./scripts/c2c_tmux.py
+    usage: c2c_tmux [-h] {list,peek,capture,send,enter,keys,exec,layout,whoami} ..
   Live-peer tests (cross-client sends, wake paths, permission flows) must
   drive real sessions in tmux panes — `scripts/c2c-swarm.sh`,
   `scripts/c2c-tmux-enter.sh`, `scripts/c2c-tmux-exec.sh`,
@@ -67,6 +69,8 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   tmux hides TTY/pgroup bugs and makes failures unreproducible. Check
   `ls scripts/` before writing a new harness; extend an existing script
   rather than forking one-off launchers.
+
+**If it's not tested in the wild, it's not done! Extreme dogfooding mindset!**
 
 - **Push only when you actually need to deploy — coordinator1 is the gate.**
   Do NOT run `git push` yourself. Pushing to `origin/master` triggers a
@@ -263,6 +267,8 @@ situational-awareness, not a task queue. Requires `inotify-tools` (`inotifywait`
 - **`C2C_MCP_INBOX_WATCHER_DELAY`**: float seconds the background channel-notification watcher sleeps after detecting new inbox content before draining (default 30.0). Gives preferred delivery paths (Claude Code PostToolUse hook, Codex PTY sentinel, OpenCode plugin) time to drain first; if they win the race, `drain_inbox` returns `[]` and no channel notification is emitted. Set to `0` in integration tests to get near-immediate delivery.
 
 ## Python Scripts
+TODO: Remove this section when deprecated. 
+
 
 ```
 c2c_start.py <start|stop|restart|instances> [client] [-n NAME] [--json]  # Unified managed-instance launcher. `c2c start <client>` replaces all run-*-inst-outer scripts. Launches client with deliver daemon and poker; prints resume command on exit (does NOT loop). State at ~/.local/share/c2c/instances/<name>/. Also accessible as c2c start/stop/restart/instances.
