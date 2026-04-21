@@ -95,15 +95,28 @@ def _alive(broker_root: Path, alias: str) -> bool:
         return False
 
 
-def _debug_log_has(instance_dir: Path, needle: str) -> bool:
-    log = instance_dir / ".opencode" / "c2c-debug.log"
+def _debug_log_has(workdir: Path, needle: str) -> bool:
+    # The plugin writes c2c-debug.log relative to the opencode process cwd,
+    # which is the project workdir (not the per-instance state dir).
+    log = workdir / ".opencode" / "c2c-debug.log"
     if not log.exists():
-        # When `c2c start` runs with cwd=instance_dir the plugin writes
-        # c2c-debug.log relative to that cwd.
         return False
     try:
         return needle in log.read_text(errors="replace")
     except OSError:
+        return False
+
+
+def _statefile_has_session(alias: str) -> bool:
+    """True when the plugin statefile shows an adopted root session."""
+    sf = Path(os.path.expanduser(f"~/.local/share/c2c/instances/{alias}/oc-plugin-state.json"))
+    if not sf.exists():
+        return False
+    try:
+        import json as _json
+        data = _json.loads(sf.read_text())
+        return bool(data.get("state", {}).get("root_opencode_session_id"))
+    except Exception:
         return False
 
 
@@ -180,16 +193,21 @@ def test_opencode_twin_e2e(tmp_path: Path, tmux_session) -> None:
     assert ok_a, f"agent {alias_a} never registered alive in {broker_root}"
     assert ok_b, f"agent {alias_b} never registered alive in {broker_root}"
 
-    # (4) wait for each plugin to see session.created (= plugin adopted a
-    # session, so the TUI isn't stuck on the opening screen)
+    # Per-alias instance dirs (for opencode-session.txt / stderr.log / etc).
     inst_a = _instance_dir(alias_a)
     inst_b = _instance_dir(alias_b)
+
+    # (4) wait for each plugin to adopt a root session — gold signal is
+    # root_opencode_session_id populated in the per-instance statefile.
+    # (The c2c-debug.log lives in the project workdir, one per workdir, so
+    # it's shared between both agents; the statefile is per-alias and
+    # authoritative.)
     assert _wait_for(
-        lambda: _debug_log_has(inst_a, "session.created") or _debug_log_has(inst_a, "promptAsync"),
+        lambda: _statefile_has_session(alias_a),
         timeout=90.0,
     ), f"{alias_a} plugin never adopted a session; TUI likely stuck on opening screen"
     assert _wait_for(
-        lambda: _debug_log_has(inst_b, "session.created") or _debug_log_has(inst_b, "promptAsync"),
+        lambda: _statefile_has_session(alias_b),
         timeout=90.0,
     ), f"{alias_b} plugin never adopted a session; TUI likely stuck on opening screen"
 
@@ -207,20 +225,22 @@ def test_opencode_twin_e2e(tmp_path: Path, tmux_session) -> None:
         )
 
     # (5) send a DM from the harness to agent_b and assert plugin
-    # delivery via promptAsync in its debug log.
-    before = ""
-    log_b = inst_b / ".opencode" / "c2c-debug.log"
-    if log_b.exists():
-        before = log_b.read_text(errors="replace")
+    # delivery via promptAsync in the project's shared debug log.
+    log_b = workdir / ".opencode" / "c2c-debug.log"
+    before = log_b.read_text(errors="replace") if log_b.exists() else ""
+    # Explicitly point c2c at the test workdir's broker — the CLI's
+    # git-common-dir cache may resolve to the outer repo otherwise.
+    send_env = {**os.environ, "C2C_MCP_BROKER_ROOT": str(broker_root)}
     subprocess.run(
         [C2C_BIN, "send", alias_b, f"test-ping-{os.getpid()}"],
         check=True,
         capture_output=True,
         text=True,
         cwd=workdir,
+        env=send_env,
     )
     assert _wait_for(
-        lambda: _debug_log_has(inst_b, f"test-ping-{os.getpid()}")
+        lambda: _debug_log_has(workdir, f"test-ping-{os.getpid()}")
         or (log_b.exists() and "promptAsync RESULT" in log_b.read_text(errors="replace")[len(before):]),
         timeout=45.0,
     ), f"agent {alias_b} plugin never delivered the test DM; log tail:\n{log_b.read_text()[-800:] if log_b.exists() else '(missing)'}"
