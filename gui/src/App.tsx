@@ -35,6 +35,89 @@ export function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [health, setHealth] = useState<HealthInfo | null>(null);
   const childRef = useRef<Child | null>(null);
+  const cancelledRef = useRef(false);
+
+  async function startMonitor() {
+    setStatus("connecting");
+    try {
+      const cmd = Command.create("c2c", [
+        "monitor", "--all", "--json", "--drains", "--sweeps",
+      ]);
+
+      cmd.stdout.on("data", (line: string) => {
+        if (cancelledRef.current) return;
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        try {
+          const event: C2cEvent = JSON.parse(trimmed);
+          if (event.event_type === "monitor.ready") { setStatus("live"); return; }
+          setEvents(prev => {
+            const next = [...prev, event];
+            return next.length > MAX_EVENTS ? next.slice(-MAX_EVENTS) : next;
+          });
+          setStatus("live");
+
+          if (event.event_type === "peer.alive") {
+            const alias = (event as { alias: string }).alias;
+            setPeers(prev => new Set([...prev, alias]));
+          } else if (event.event_type === "peer.dead") {
+            const alias = (event as { alias: string }).alias;
+            setPeers(prev => { const s = new Set(prev); s.delete(alias); return s; });
+          } else if (event.event_type === "room.join") {
+            const room_id = (event as { room_id: string; alias: string }).room_id;
+            const alias = (event as { room_id: string; alias: string }).alias;
+            setRooms(prev => new Set([...prev, room_id]));
+            setRoomMembers(prev => {
+              const next = new Map(prev);
+              const members = new Set(next.get(room_id) ?? []);
+              members.add(alias);
+              next.set(room_id, members);
+              return next;
+            });
+          } else if (event.event_type === "room.leave") {
+            // Keep room in list even if it's empty (alias may rejoin)
+          } else if (event.event_type === "message") {
+            const m = event as { to_alias: string; from_alias: string; content?: string };
+            const me = myAliasRef.current;
+            if (m.to_alias === me || m.from_alias === me) {
+              const peer = m.from_alias === me ? m.to_alias : m.from_alias;
+              if (selectedPeerRef.current !== peer) {
+                setUnreadPeers(prev => new Set([...prev, peer]));
+                if (m.from_alias !== me && Notification.permission === "granted") {
+                  new Notification(`DM from ${m.from_alias}`, {
+                    body: (m.content ?? "").slice(0, 80),
+                    tag: `dm-${m.from_alias}`,
+                  });
+                }
+              }
+            } else {
+              const roomId = m.to_alias;
+              if (selectedRoomRef.current !== roomId) {
+                setUnreadRooms(prev => new Set([...prev, roomId]));
+              }
+            }
+          }
+        } catch {
+          // ignore non-JSON lines
+        }
+      });
+
+      cmd.stderr.on("data", () => { /* suppress */ });
+      cmd.on("close", () => { if (!cancelledRef.current) setStatus("error"); });
+      cmd.on("error", () => { if (!cancelledRef.current) setStatus("error"); });
+
+      const child = await cmd.spawn();
+      childRef.current = child;
+    } catch {
+      if (!cancelledRef.current) setStatus("error");
+    }
+  }
+
+  async function handleReconnect() {
+    childRef.current?.kill().catch(() => {});
+    childRef.current = null;
+    await startMonitor();
+  }
 
   async function refreshBroker() {
     setRefreshing(true);
@@ -60,84 +143,7 @@ export function App() {
   }
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function startMonitor() {
-      try {
-        const cmd = Command.create("c2c", [
-          "monitor", "--all", "--json", "--drains", "--sweeps",
-        ]);
-
-        cmd.stdout.on("data", (line: string) => {
-          if (cancelled) return;
-          const trimmed = line.trim();
-          if (!trimmed) return;
-          try {
-            const event: C2cEvent = JSON.parse(trimmed);
-            if (event.event_type === "monitor.ready") { setStatus("live"); return; }
-            setEvents(prev => {
-              const next = [...prev, event];
-              return next.length > MAX_EVENTS ? next.slice(-MAX_EVENTS) : next;
-            });
-            setStatus("live");
-
-            if (event.event_type === "peer.alive") {
-              const alias = (event as { alias: string }).alias;
-              setPeers(prev => new Set([...prev, alias]));
-            } else if (event.event_type === "peer.dead") {
-              const alias = (event as { alias: string }).alias;
-              setPeers(prev => { const s = new Set(prev); s.delete(alias); return s; });
-            } else if (event.event_type === "room.join") {
-              const room_id = (event as { room_id: string; alias: string }).room_id;
-              const alias = (event as { room_id: string; alias: string }).alias;
-              setRooms(prev => new Set([...prev, room_id]));
-              setRoomMembers(prev => {
-                const next = new Map(prev);
-                const members = new Set(next.get(room_id) ?? []);
-                members.add(alias);
-                next.set(room_id, members);
-                return next;
-              });
-            } else if (event.event_type === "room.leave") {
-              // Keep room in list even if it's empty (alias may rejoin)
-            } else if (event.event_type === "message") {
-              const m = event as { to_alias: string; from_alias: string; content?: string };
-              const me = myAliasRef.current;
-              if (m.to_alias === me || m.from_alias === me) {
-                // DM to/from me
-                const peer = m.from_alias === me ? m.to_alias : m.from_alias;
-                if (selectedPeerRef.current !== peer) {
-                  setUnreadPeers(prev => new Set([...prev, peer]));
-                  if (m.from_alias !== me && Notification.permission === "granted") {
-                    new Notification(`DM from ${m.from_alias}`, {
-                      body: (m.content ?? "").slice(0, 80),
-                      tag: `dm-${m.from_alias}`,
-                    });
-                  }
-                }
-              } else {
-                // Room message — to_alias is the room id
-                const roomId = m.to_alias;
-                if (selectedRoomRef.current !== roomId) {
-                  setUnreadRooms(prev => new Set([...prev, roomId]));
-                }
-              }
-            }
-          } catch {
-            // ignore non-JSON lines
-          }
-        });
-
-        cmd.stderr.on("data", () => { /* suppress */ });
-        cmd.on("close", () => { if (!cancelled) setStatus("error"); });
-        cmd.on("error", () => { if (!cancelled) setStatus("error"); });
-
-        const child = await cmd.spawn();
-        childRef.current = child;
-      } catch {
-        if (!cancelled) setStatus("error");
-      }
-    }
+    cancelledRef.current = false;
 
     // Request notification permission for desktop alerts on new DMs
     if ("Notification" in window && Notification.permission === "default") {
@@ -154,14 +160,14 @@ export function App() {
     // Load recent history before starting the live monitor.
     const storedAlias = localStorage.getItem(ALIAS_KEY) ?? undefined;
     loadHistory(100, storedAlias).then(hist => {
-      if (!cancelled && hist.length > 0) {
+      if (!cancelledRef.current && hist.length > 0) {
         setEvents(hist);
       }
-      if (!cancelled) startMonitor();
+      if (!cancelledRef.current) startMonitor();
     });
 
     return () => {
-      cancelled = true;
+      cancelledRef.current = true;
       clearInterval(refreshTimer);
       childRef.current?.kill().catch(() => {});
     };
@@ -210,7 +216,21 @@ export function App() {
       }}>
         <span style={{ fontWeight: 700, letterSpacing: 1, fontSize: 14 }}>c2c</span>
         <span style={{ fontSize: 11, color: "#585b70" }}>swarm monitor</span>
-        <span style={{ marginLeft: "auto", fontSize: 11, color: statusColor }}>● {status}</span>
+        {status === "error" ? (
+          <button
+            onClick={handleReconnect}
+            title="Click to reconnect monitor"
+            style={{
+              marginLeft: "auto", background: "transparent", border: "1px solid #f38ba8",
+              borderRadius: 4, color: "#f38ba8", padding: "2px 6px",
+              fontSize: 11, cursor: "pointer",
+            }}
+          >
+            ● error · reconnect
+          </button>
+        ) : (
+          <span style={{ marginLeft: "auto", fontSize: 11, color: statusColor }}>● {status}</span>
+        )}
         <span style={{ fontSize: 11, color: "#585b70" }}>{events.length} events</span>
         {health && (
           <>
