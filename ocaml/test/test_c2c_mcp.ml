@@ -1021,6 +1021,58 @@ let test_tools_call_register_rejects_alias_hijack () =
           in
           check bool "thief not registered" true (thief = None)))
 
+(* A pidless (legacy) stale entry with Unknown liveness must NOT block a new
+   session from claiming the same alias.  registration_is_alive returns true
+   for pid=None; the alias_hijack_conflict guard must use the tristate
+   registration_liveness_state instead so Unknown entries are evicted, not
+   treated as permanently Alive. *)
+let test_tools_call_register_allows_takeover_of_pidless_stale_alias () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Register alias with pid=None — legacy pidless row, liveness=Unknown *)
+      C2c_mcp.Broker.register broker ~session_id:"session-stale"
+        ~alias:"drifting-elk" ~pid:None ~pid_start_time:None;
+      (* A new session tries to claim the same alias *)
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-new";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 180)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "register")
+                    ; ("arguments", `Assoc [ ("alias", `String "drifting-elk") ])
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          (match response with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let is_error =
+                 json |> member "result" |> member "isError" |> to_bool_option
+                 |> Option.value ~default:false
+               in
+               check bool "pidless stale alias should not block new session" false is_error);
+          (* stale session evicted, new session holds alias *)
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          let open C2c_mcp in
+          check bool "stale session evicted" true
+            (List.for_all (fun r -> r.session_id <> "session-stale") regs);
+          let new_reg =
+            List.find_opt (fun r -> r.session_id = "session-new") regs
+          in
+          check bool "new session registered" true (new_reg <> None);
+          check string "new session holds alias" "drifting-elk"
+            (Option.get new_reg).alias))
+
 (* When all prime-suffixed alias candidates are also alive, the broker returns
    collision_exhausted=true in the structured error rather than looping forever. *)
 let test_tools_call_register_alias_collision_exhausted () =
@@ -4776,6 +4828,8 @@ let () =
              test_tools_call_register_no_alias_falls_back_to_env
          ; test_case "tools/call register rejects alias hijack from alive session" `Quick
              test_tools_call_register_rejects_alias_hijack
+         ; test_case "tools/call register allows takeover of pidless stale alias (Bug #7)" `Quick
+             test_tools_call_register_allows_takeover_of_pidless_stale_alias
          ; test_case "tools/call register returns collision_exhausted when all primes taken" `Quick
              test_tools_call_register_alias_collision_exhausted
          ; test_case "tools/call register allows own alias refresh" `Quick
