@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { registerAlias } from "@/useSend";
+import { registerAlias, joinRoom } from "@/useSend";
 
 type Step = "name" | "registering" | "done";
 
@@ -38,6 +38,8 @@ export function WelcomeWizard({ open, onComplete, onSkip }: Props) {
     const res = await registerAlias(a);
     if (res.ok) {
       setRegisteredAlias(a);
+      // Best-effort join; ignore errors — user can join manually via sidebar
+      await joinRoom("swarm-lounge", a).catch(() => {});
       setStep("done");
     } else {
       setError(res.error ?? "Registration failed — try a different alias");
