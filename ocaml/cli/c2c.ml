@@ -2526,7 +2526,7 @@ let monitor_cmd =
                                ; "monitor_ts", `String (ts ()) ]));
                      print_newline ()
                    end else
-                     Printf.printf "%s 🚪  ROOM   %s left %s\n%!" (now_hms ()) a room_id
+                     Printf.printf "%s 👋  ROOM   %s left %s\n%!" (now_hms ()) a room_id
                  end
                ) prev_tbl;
                Hashtbl.reset prev_tbl;
