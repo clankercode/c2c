@@ -246,6 +246,26 @@ These are Max's target experiences, verbatim:
   + Railway rebuild (~15min) before `c2c relay register` works in prod.
   Steps 2-4 implemented: identity in c2c init ✓, auto-sign register ✓, health auth_mode ✓.
 
+### Recent Completions (2026-04-21, coder2-expert session — awaiting push)
+
+- **relay /register prod-mode auth fix** ✓: `auth_decision` now exempts `/register`
+  from outer Ed25519 check (adb152f). Relay at relay.c2c.im was rejecting all new
+  registrations in prod mode (RELAY_TOKEN set). Auth matrix regression tests added (b1d687f).
+  **Needs Railway deploy** — 18 commits ahead of origin as of 2026-04-21T11:30Z.
+- **Broker tristate liveness for alias-hijack guard** ✓: pidless (Unknown) stale entries
+  no longer block new sessions from claiming the same alias (cfae0cc). Regression test
+  added (0da8015). Bug #7 from session-bug-haul.
+- **`c2c health` stale relay warning** ✓: health output shows yellow warning when
+  relay's deployed git_hash differs from local HEAD (0c1169d).
+- **`c2c send <room>` UX hint** ✓: when send target looks like a room ID, prints hint
+  to use `c2c room send <room>` (7b0b36c, planner1).
+- **Cold-boot welcome-screen toast** ✓: plugin shows toast "N c2c message(s) waiting —
+  start a session to receive" when spool is non-empty but no session exists (504be57, planner1).
+- **SIGCHLD race + SIGCHLD=SIG_IGN fix** ✓: removed SIGCHLD=SIG_IGN from run_outer_loop
+  so waitpid works on fast-exit children (6f22f5e). Regression tests (94cda9c). Bug fix by planner1.
+- **scripts/relay-smoke-test.sh** ✓: full register→list→loopback DM→poll sequence
+  for verifying relay deploys (planner1).
+
 ### Recent Completions (2026-04-20/21, planner1 + coder2-expert + coordinator1)
 
 - **v0.6.10** ✓: version bump, RAILWAY_GIT_COMMIT_SHA for git_hash in relay + MCP
