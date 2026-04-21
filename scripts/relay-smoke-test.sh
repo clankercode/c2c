@@ -12,8 +12,8 @@ ALIAS="smoke-$(date +%s)"
 PASS=0
 FAIL=0
 
-green() { printf '\033[32m✓ %s\033[0m\n' "$*"; ((PASS++)); }
-red()   { printf '\033[31m✗ %s\033[0m\n' "$*"; ((FAIL++)); }
+green() { printf '\033[32m✓ %s\033[0m\n' "$*"; ((PASS++)) || true; }
+red()   { printf '\033[31m✗ %s\033[0m\n' "$*"; ((FAIL++)) || true; }
 info()  { printf '  %s\n' "$*"; }
 
 echo "=== c2c Relay Smoke Test ==="
@@ -50,9 +50,9 @@ else
 fi
 echo ""
 
-# 3. List (should see our alias)
+# 3. List (C2C_MCP_AUTO_REGISTER_ALIAS tells the CLI which alias to sign as for the peer route)
 echo "--- 3. List ---"
-list_out=$(c2c relay list --relay-url "$RELAY" --alias "$ALIAS" 2>&1) || true
+list_out=$(C2C_MCP_AUTO_REGISTER_ALIAS="$ALIAS" c2c relay list --relay-url "$RELAY" 2>&1) || true
 echo "$list_out"
 if echo "$list_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
   green "list succeeded"

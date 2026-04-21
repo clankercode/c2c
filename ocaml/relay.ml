@@ -873,8 +873,19 @@ end = struct
     (* /register uses body-level Ed25519 proof (identity_pk + signature + nonce
        + timestamp in the JSON body). This is the bootstrap route — the alias
        doesn't exist yet so per-request header auth can't work. handle_register
-       does its own crypto verification; auth_decision just allows it through. *)
-    let is_self_auth = path = "/register" in
+       does its own crypto verification; auth_decision just allows it through.
+       Room mutation routes (join_room, leave_room, send_room, set_room_visibility,
+       send_room_invite) similarly carry body-level Ed25519 proof via verify_room_op_proof
+       and also accept an unsigned legacy path. They do their own auth at the handler
+       level; bypassing header auth here lets signed AND unsigned bodies through. *)
+    let is_self_auth =
+      path = "/register"
+      || path = "/join_room"
+      || path = "/leave_room"
+      || path = "/send_room"
+      || path = "/set_room_visibility"
+      || path = "/send_room_invite"
+    in
     if is_unauth || is_self_auth then (true, None)
     else if is_admin then
       if header_has_ed25519 auth_header then

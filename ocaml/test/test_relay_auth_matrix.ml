@@ -120,6 +120,32 @@ let t_register_allowed_dev_mode () =
   Alcotest.(check bool) "/register allowed in dev mode (no token)" true
     (allowed (decide ~path:"/register" ~token:None ~auth:None ~ed:false ()))
 
+(* --- Room mutation routes: body-level self-auth (like /register) ---
+   /join_room, /leave_room, /send_room, /set_room_visibility, /send_room_invite
+   carry Ed25519 proof in the JSON body via verify_room_op_proof. They must be
+   allowed through auth_decision (no header auth required) so the body-level
+   verification in the handler can run. Unsigned bodies use the legacy path. *)
+
+let t_join_room_no_header_auth_allowed () =
+  Alcotest.(check bool) "/join_room allowed without Ed25519 header (body-auth)" true
+    (allowed (decide ~path:"/join_room" ~token:(Some "t0p") ~auth:None ~ed:false ()))
+
+let t_leave_room_no_header_auth_allowed () =
+  Alcotest.(check bool) "/leave_room allowed without Ed25519 header (body-auth)" true
+    (allowed (decide ~path:"/leave_room" ~token:(Some "t0p") ~auth:None ~ed:false ()))
+
+let t_send_room_no_header_auth_allowed () =
+  Alcotest.(check bool) "/send_room allowed without Ed25519 header (body-auth)" true
+    (allowed (decide ~path:"/send_room" ~token:(Some "t0p") ~auth:None ~ed:false ()))
+
+let t_set_room_visibility_no_header_auth_allowed () =
+  Alcotest.(check bool) "/set_room_visibility allowed without Ed25519 header (body-auth)" true
+    (allowed (decide ~path:"/set_room_visibility" ~token:(Some "t0p") ~auth:None ~ed:false ()))
+
+let t_send_room_invite_no_header_auth_allowed () =
+  Alcotest.(check bool) "/send_room_invite allowed without Ed25519 header (body-auth)" true
+    (allowed (decide ~path:"/send_room_invite" ~token:(Some "t0p") ~auth:None ~ed:false ()))
+
 let () =
   Alcotest.run "relay_auth_matrix" [
     "unauth", [
@@ -143,6 +169,18 @@ let () =
         t_register_allowed_with_ed25519_prod;
       Alcotest.test_case "/register allowed dev mode" `Quick
         t_register_allowed_dev_mode;
+    ];
+    "room_self_auth", [
+      Alcotest.test_case "/join_room no header allowed" `Quick
+        t_join_room_no_header_auth_allowed;
+      Alcotest.test_case "/leave_room no header allowed" `Quick
+        t_leave_room_no_header_auth_allowed;
+      Alcotest.test_case "/send_room no header allowed" `Quick
+        t_send_room_no_header_auth_allowed;
+      Alcotest.test_case "/set_room_visibility no header allowed" `Quick
+        t_set_room_visibility_no_header_auth_allowed;
+      Alcotest.test_case "/send_room_invite no header allowed" `Quick
+        t_send_room_invite_no_header_auth_allowed;
     ];
     "admin", [
       Alcotest.test_case "/gc Bearer ok" `Quick t_admin_gc_bearer_ok;
