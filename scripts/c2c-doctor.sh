@@ -58,8 +58,9 @@ while IFS= read -r line; do
   # Check which files the commit touches
   files=$(git diff-tree --no-commit-id -r --name-only "$sha" 2>/dev/null || true)
   is_critical=0
-  # File-based: only relay server code and connector scripts are relay-critical
-  if echo "$files" | grep -qE "ocaml/relay\.ml|c2c_relay_connector\.py|c2c_relay_server\.py|ocaml/relay_signed_ops"; then
+  # File-based: only relay SERVER code is relay-critical (deployed on Railway).
+  # c2c_relay_connector.py is the CLIENT connector used by agents — not deployed.
+  if echo "$files" | grep -qE "ocaml/relay\.ml|c2c_relay_server\.py|ocaml/relay_signed_ops|^railway\.json|^Dockerfile"; then
     is_critical=1
   fi
   # Message-based: only explicit relay/deploy scope prefixes (not plain "relay" in body).
