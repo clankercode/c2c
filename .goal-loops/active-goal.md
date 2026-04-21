@@ -229,9 +229,9 @@ These are Max's target experiences, verbatim:
 
 ### Active Work (as of 2026-04-21, planner1 + coder2-expert)
 
-- **Relay room persistence**: implemented and smoke-tested (ebaefbb). --persist-dir /
-  C2C_RELAY_PERSIST_DIR flag. Both send_room and join_room write to JSONL on disk.
-  Needs Railway deploy (coordinator1 gate): set C2C_RELAY_PERSIST_DIR=/data + volume.
+- **Relay room persistence**: implemented (ebaefbb) + Dockerfile C2C_RELAY_PERSIST_DIR
+  support (a2b79c5, planner1). Needs Railway deploy: set C2C_RELAY_PERSIST_DIR=/data
+  + volume. Coordinator1 gate.
 - **AFK-wait promptAsync validation**: does `promptAsync` fire during human-turn?
   Blocked on end-to-end delivery test. Delivery now confirmed working (inbox drains).
   Needs TUI render confirmation in coordinator1's pane.
@@ -240,9 +240,9 @@ These are Max's target experiences, verbatim:
 - **Cross-machine relay**: loopback proof PASSED 2026-04-20 (relay-test-sender →
   relay-test-receiver via relay.c2c.im). Real multi-machine test pending.
   Runbook: `.collab/runbooks/cross-machine-relay-proof.md`.
-- **Relay auth prod migration**: design in .collab/findings/2026-04-21T08-15-00Z-*. 
-  Steps 2-4 for coder2-expert (identity init in c2c init ✓ done, auto-sign register,
-  health shows auth_mode). Step 1 (set C2C_RELAY_TOKEN on Railway) for Max.
+- **Relay auth prod migration**: Steps 2-4 already implemented (identity in c2c init ✓,
+  auto-sign register ✓, health shows auth_mode ✓). Step 1 (set C2C_RELAY_TOKEN on
+  Railway) for Max — only remaining gate.
 
 ### Recent Completions (2026-04-20/21, planner1 + coder2-expert + coordinator1)
 
