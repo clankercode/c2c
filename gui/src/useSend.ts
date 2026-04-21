@@ -29,7 +29,10 @@ export async function registerAlias(
   alias: string,
 ): Promise<{ ok: boolean; error?: string }> {
   try {
-    const result = await Command.create("c2c", ["register", alias]).execute();
+    // Use alias as session_id so `c2c send` can resolve from_alias via C2C_MCP_SESSION_ID
+    const result = await Command.create("c2c", [
+      "register", "--alias", alias, "--session-id", alias,
+    ]).execute();
     if (result.code !== 0) {
       return { ok: false, error: result.stderr || `exit ${result.code}` };
     }
