@@ -59,6 +59,15 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
 
 ## Development Rules
 
+- **Testing against live agents: use tmux + `scripts/*`, not ad-hoc spawns.**
+  Live-peer tests (cross-client sends, wake paths, permission flows) must
+  drive real sessions in tmux panes — `scripts/c2c-swarm.sh`,
+  `scripts/c2c-tmux-enter.sh`, `scripts/c2c-tmux-exec.sh`,
+  `scripts/tmux-layout.sh`, `scripts/tui-snapshot.sh`. Spawning peers outside
+  tmux hides TTY/pgroup bugs and makes failures unreproducible. Check
+  `ls scripts/` before writing a new harness; extend an existing script
+  rather than forking one-off launchers.
+
 - **Push only when you actually need to deploy — coordinator1 is the gate.**
   Do NOT run `git push` yourself. Pushing to `origin/master` triggers a
   Railway Docker build (~10-15min, real $) and a GitHub Pages rebuild. The
