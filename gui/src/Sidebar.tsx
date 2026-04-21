@@ -1,3 +1,6 @@
+import { useState } from "react";
+import { joinRoom } from "./useSend";
+
 interface Props {
   peers: string[];
   rooms: string[];
@@ -6,7 +9,9 @@ interface Props {
   selectedPeer?: string | null;
   unreadRooms?: Set<string>;
   unreadPeers?: Set<string>;
+  myAlias?: string;
   onSelect: (target: string, isRoom: boolean) => void;
+  onRoomJoined?: (roomId: string) => void;
 }
 
 const SECTION_STYLE: React.CSSProperties = {
@@ -42,7 +47,27 @@ const ITEM_PEER_ACTIVE_STYLE: React.CSSProperties = {
   color: "#cba6f7",
 };
 
-export function Sidebar({ peers, rooms, roomMembers = new Map(), selectedRoom, selectedPeer, unreadRooms = new Set(), unreadPeers = new Set(), onSelect }: Props) {
+export function Sidebar({ peers, rooms, roomMembers = new Map(), selectedRoom, selectedPeer, unreadRooms = new Set(), unreadPeers = new Set(), myAlias = "", onSelect, onRoomJoined }: Props) {
+  const [joinInput, setJoinInput] = useState("");
+  const [joining, setJoining] = useState(false);
+  const [joinError, setJoinError] = useState<string | null>(null);
+
+  async function handleJoin() {
+    const rid = joinInput.trim();
+    if (!rid || joining) return;
+    setJoining(true);
+    setJoinError(null);
+    const res = await joinRoom(rid, myAlias);
+    setJoining(false);
+    if (res.ok) {
+      setJoinInput("");
+      onRoomJoined?.(rid);
+      onSelect(rid, true);
+    } else {
+      setJoinError(res.error ?? "join failed");
+    }
+  }
+
   return (
     <div style={{
       width: 160,
@@ -139,6 +164,62 @@ export function Sidebar({ peers, rooms, roomMembers = new Map(), selectedRoom, s
           No peers yet
         </div>
       )}
+
+      {/* Spacer + join room footer */}
+      <div style={{ flex: 1 }} />
+      <div style={{
+        borderTop: "1px solid #313244",
+        padding: "6px 8px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+      }}>
+        <div style={{ fontSize: 10, color: "#585b70", textTransform: "uppercase", letterSpacing: 1 }}>
+          Join room
+        </div>
+        <div style={{ display: "flex", gap: 4 }}>
+          <input
+            value={joinInput}
+            onChange={e => { setJoinInput(e.target.value); setJoinError(null); }}
+            onKeyDown={e => e.key === "Enter" && handleJoin()}
+            placeholder="room-id"
+            disabled={joining}
+            style={{
+              flex: 1,
+              background: "#1e1e2e",
+              border: "1px solid #45475a",
+              borderRadius: 3,
+              color: "#cdd6f4",
+              padding: "2px 5px",
+              fontSize: 11,
+              outline: "none",
+              minWidth: 0,
+            }}
+          />
+          <button
+            onClick={handleJoin}
+            disabled={!joinInput.trim() || joining}
+            style={{
+              background: joining ? "#45475a" : "#89b4fa",
+              border: "none",
+              borderRadius: 3,
+              color: "#11111b",
+              padding: "2px 6px",
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: "pointer",
+              flexShrink: 0,
+            }}
+          >
+            {joining ? "…" : "+"}
+          </button>
+        </div>
+        {joinError && (
+          <div style={{ fontSize: 10, color: "#f38ba8", wordBreak: "break-word" }}>
+            {joinError}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

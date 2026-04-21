@@ -266,6 +266,8 @@ export function App() {
           selectedPeer={selectedPeer}
           unreadRooms={unreadRooms}
           unreadPeers={unreadPeers}
+          myAlias={myAlias}
+          onRoomJoined={roomId => setRooms(prev => new Set([...prev, roomId]))}
           onSelect={(target, isRoom) => {
             setComposeTo(target);
             setComposeIsRoom(isRoom);

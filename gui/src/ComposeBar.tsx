@@ -75,18 +75,22 @@ export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoo
       alignItems: "flex-end",
     }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 160 }}>
-        <label style={{ fontSize: 10, color: "#585b70" }}>to</label>
-        <select
+        <label style={{ fontSize: 10, color: "#585b70" }}>
+          to
+          {isRoom && to && <span style={{ marginLeft: 6, color: "#89dceb" }}>🏠 room</span>}
+          {!isRoom && to && <span style={{ marginLeft: 6, color: "#cba6f7" }}>👤 peer</span>}
+        </label>
+        <datalist id="compose-targets">
+          {targets.map(t => <option key={t.value} value={t.value} />)}
+        </datalist>
+        <input
+          list="compose-targets"
           value={to}
           onChange={e => onTargetChange(e.target.value)}
+          placeholder="alias or room-id"
+          autoComplete="off"
           style={{ ...INPUT_STYLE, minWidth: 140 }}
-        >
-          <option value="">— pick target —</option>
-          {targets.length === 0 && <option disabled>no peers yet</option>}
-          {targets.map(t => (
-            <option key={t.value} value={t.value}>{t.label}</option>
-          ))}
-        </select>
+        />
       </div>
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
