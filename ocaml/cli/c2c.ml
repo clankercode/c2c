@@ -2976,8 +2976,7 @@ let relay_rooms_cmd =
                 (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
             | _ -> exit 1))
   | _ ->
-      (* join / leave / send / history still require CLI args not plumbed here
-         — fall back to Python until we grow them on the OCaml side. *)
+      (* invite/uninvite/set-visibility not yet ported to OCaml — fall back to Python. *)
       (match find_python_script "c2c_relay_rooms.py" with
        | None ->
            Printf.eprintf "error: cannot find c2c_relay_rooms.py. Run from inside the c2c git repo.\n%!";
