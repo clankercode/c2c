@@ -702,8 +702,10 @@ let run_outer_loop ~(name : string) ~(client : string)
       Printf.eprintf "error: '%s' not found in PATH. Install %s first.\n%!" binary client;
       exit 2
   | Some binary_path ->
-      (* Auto-reap children *)
-      (try ignore (Sys.signal Sys.sigchld Sys.Signal_ignore) with _ -> ());
+      (* Leave SIGCHLD at default so waitpid works for the managed inner child.
+         Sidecar children (deliver, poker, wire) are started with their own
+         process groups; they will eventually become zombies until the outer
+         process itself exits, which is acceptable — the outer loop is short-lived. *)
 
       let inst_dir = instance_dir name in
       mkdir_p inst_dir;

@@ -892,13 +892,8 @@ class C2CStartExit109RegressionTests(unittest.TestCase):
         self.broker_root.mkdir(parents=True)
         # Stub opencode binary named "opencode" so find_binary() resolves it.
         # Prepend self.tmp_path to PATH so it wins over any real opencode.
-        # The 0.1s sleep is required: run_outer_loop sets SIGCHLD=SIG_IGN to
-        # auto-reap sidecar children. On Linux with SIGCHLD=SIG_IGN, an
-        # instantaneously-exiting child is reaped before waitpid() runs, causing
-        # ECHILD → the `with _ -> 1` fallback fires, masking the real exit code.
-        # A brief delay lets waitpid() win the race without changing test semantics.
         self.stub = self.tmp_path / "opencode"
-        self.stub.write_text("#!/bin/sh\nsleep 0.1\nexit 109\n")
+        self.stub.write_text("#!/bin/sh\nexit 109\n")
         self.stub.chmod(0o755)
         # Use a unique suffix so cmd_start doesn't reload a cached broker_root
         # from a previous test run's config.json at ~/.local/share/c2c/instances/.
