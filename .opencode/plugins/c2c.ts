@@ -27,6 +27,7 @@
 import type { Plugin } from "@opencode-ai/plugin";
 import type { Event, EventSessionIdle, EventSessionCreated } from "@opencode-ai/sdk";
 import { spawn } from "child_process";
+import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -522,7 +523,11 @@ const C2CDelivery: Plugin = async (ctx) => {
   // Introspect available API methods to diagnose promptAsync availability.
   const sessionMethods = Object.keys(ctx.client.session as any).join(",");
   const appMethods = Object.keys(ctx.client.app as any).join(",");
-  await log(`plugin loaded (session=${sessionId}, interval=${pollIntervalMs}ms, idleOnly=${idleOnlyMode})`);
+  // Log a sha256 of the plugin file itself so stale bun JIT cache is immediately detectable.
+  const pluginFilePath = new URL(import.meta.url).pathname;
+  let pluginHash = "?";
+  try { pluginHash = crypto.createHash("sha256").update(fs.readFileSync(pluginFilePath)).digest("hex").slice(0, 12); } catch { /**/ }
+  await log(`plugin loaded (session=${sessionId}, interval=${pollIntervalMs}ms, idleOnly=${idleOnlyMode}, sha256=${pluginHash})`);
   await log(`API introspect: session methods=[${sessionMethods}] app methods=[${appMethods}]`);
   startBackgroundLoop();
 
