@@ -59,6 +59,24 @@ class ConfigureOpenCodeSidecarTests(unittest.TestCase):
             "opencode-my-project",
         )
 
+    def test_no_overwrite_without_force(self):
+        """write_config must refuse to overwrite an existing opencode.json without force."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "myproject"
+            target.mkdir()
+
+            # First write — sets alias=first
+            write_config(target, force=False, alias="first", install_plugin_flag=False)
+
+            # Second write without force — must raise SystemExit
+            with self.assertRaises(SystemExit):
+                write_config(target, force=False, alias="second", install_plugin_flag=False)
+
+            # Sidecar should still reflect the original alias
+            sidecar = target / ".opencode" / "c2c-plugin.json"
+            data = json.loads(sidecar.read_text(encoding="utf-8"))
+            self.assertEqual(data["alias"], "first", "second write should not have overwritten alias")
+
 
 if __name__ == "__main__":
     unittest.main()
