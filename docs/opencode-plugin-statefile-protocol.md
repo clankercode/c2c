@@ -82,7 +82,8 @@ Example:
     },
     "prompt": {
       "has_text": null
-    }
+    },
+    "pendingQuestion": null
   }
 }
 ```
@@ -146,6 +147,7 @@ v1 intentionally avoids arrays.
 - `opencode_pid: number`
 - `plugin_started_at: string`
 - `state_last_updated_at: string`
+- `pendingQuestion: null | { id: string, text: string, header: string, options: string[] }`
 
 All timestamps are ISO 8601 UTC strings with millisecond precision.
 
@@ -175,6 +177,18 @@ v1 counter meanings:
 ### `prompt`
 
 - `has_text: boolean | null`
+
+### `pendingQuestion`
+
+- `null` when no human question is pending
+- otherwise `{ id: string, text: string, header: string, options: string[] }`
+
+v1 emission rule:
+
+- the plugin emits a fresh `state.snapshot` when `question.asked` creates a pending
+  question
+- the plugin emits another `state.snapshot` when that pending question is cleared by
+  answer, reject, or timeout
 
 ## Root-Session Rules
 
@@ -231,13 +245,13 @@ fragments in v1.
 | `session.idle` | Sets idle state, increments turn/step counts, and may bootstrap root if attaching late |
 | `permission.asked` | Sets permission focus and root-scoped step metadata when event belongs to the root session |
 | `permission.updated` | Same as `permission.asked` |
+| `question.asked` | Captures the first pending question into `pendingQuestion` and emits a full replacement snapshot |
 
 ### Observed but not part of the v1 state contract
 
 These events may still be consumed by other plugin logic, but they do not currently
 extend the published state schema:
 
-- `question.asked`
 - `question.replied`
 - `message.updated`
 - `message.part.updated`
@@ -255,6 +269,7 @@ confirmed in code/tests.
 - omitted patch fields mean unchanged
 - `prompt.has_text` starts as `null`, not `false`
 - `provider_id` and `model_id` remain `null` unless explicit upstream fields are observed
+- `pendingQuestion` starts as `null` and returns to `null` after answer, reject, or timeout
 
 ## Failure Behavior
 

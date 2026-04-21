@@ -599,6 +599,52 @@ describe('c2c plugin unit tests', () => {
     delete process.env.C2C_PERMISSION_TIMEOUT_MS;
   });
 
+  it('question.asked: snapshots pendingQuestion when opened and clears it after reply', async () => {
+    queueSpawn({ messages: [] });
+    spawnQueue.push({
+      stdout: JSON.stringify({ sessions: [{ alias: 'coordinator1', alive: true, last_seen: Date.now() / 1000 }] }),
+      stderr: '', code: 0,
+    });
+    spawnQueue.push({ stdout: '', stderr: '', code: 0 });
+    queueSpawn({
+      messages: [{ from_alias: 'coordinator1', to_alias: 'test-session', content: 'question:q-state:answer:yes please' }],
+    });
+
+    const ctx = makeCtx();
+    process.env.C2C_PERMISSION_TIMEOUT_MS = '10000';
+    const hooks = await C2CDelivery(ctx as any);
+    await fireEvent(hooks, sessionCreated('root-session'));
+
+    await fireEvent(hooks, {
+      type: 'question.asked',
+      properties: {
+        id: 'q-state',
+        sessionID: 'root-session',
+        questions: [{ question: 'Proceed?', header: 'Confirm', options: [{ value: 'yes please' }, { value: 'no' }] }],
+      },
+    });
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+
+    const openedSnapshot = stateEvents().find((e) =>
+      e.event === 'state.snapshot' && e.state?.pendingQuestion?.id === 'q-state'
+    );
+    expect(openedSnapshot).toBeDefined();
+    expect(openedSnapshot!.state.pendingQuestion).toEqual({
+      id: 'q-state',
+      text: 'Proceed?',
+      header: 'Confirm',
+      options: ['yes please', 'no'],
+    });
+
+    await fireEvent(hooks, sessionIdle('root-session'));
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+
+    const snapshots = stateEvents().filter((e) => e.event === 'state.snapshot');
+    expect(snapshots.at(-1)!.state.pendingQuestion).toBeNull();
+
+    delete process.env.C2C_PERMISSION_TIMEOUT_MS;
+  });
+
   it('question.asked: auto-rejects via HTTP on timeout', async () => {
     queueSpawn({ messages: [] }); // cold-boot
     spawnQueue.push({ // liveness query
@@ -657,6 +703,43 @@ describe('c2c plugin unit tests', () => {
     // Only one DM send spawned, not two.
     const sendCalls = spawnCalls.filter((c) => c.args[0] === 'send');
     expect(sendCalls.length).toBe(1);
+
+    delete process.env.C2C_PERMISSION_TIMEOUT_MS;
+  });
+
+  it('question.asked: sets pendingQuestion in state snapshot', async () => {
+    queueSpawn({ messages: [] }); // cold-boot
+    spawnQueue.push({ // liveness query
+      stdout: JSON.stringify({ sessions: [{ alias: 'coordinator1', alive: true, last_seen: Date.now() / 1000 }] }),
+      stderr: '', code: 0,
+    });
+    spawnQueue.push({ stdout: '', stderr: '', code: 0 }); // DM send
+
+    const ctx = makeCtx();
+    process.env.C2C_PERMISSION_TIMEOUT_MS = '10000';
+    const hooks = await C2CDelivery(ctx as any);
+    await fireEvent(hooks, sessionCreated('root-session'));
+
+    const snapshotsBefore = stateEvents().filter((e: any) => e.event === 'state.snapshot').length;
+
+    await fireEvent(hooks, {
+      type: 'question.asked',
+      properties: {
+        id: 'q-pq-test',
+        sessionID: 'root-session',
+        questions: [{ question: 'Allow this?', header: 'Permission', options: [{ value: 'yes' }] }],
+      },
+    });
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+
+    const allSnapshots = stateEvents().filter((e: any) => e.event === 'state.snapshot');
+    const newSnapshots = allSnapshots.slice(snapshotsBefore);
+    expect(newSnapshots.length).toBeGreaterThan(0);
+    const pq = newSnapshots[newSnapshots.length - 1].state?.pendingQuestion;
+    expect(pq).toBeTruthy();
+    expect(pq?.id).toBe('q-pq-test');
+    expect(pq?.text).toBe('Allow this?');
+    expect(pq?.header).toBe('Permission');
 
     delete process.env.C2C_PERMISSION_TIMEOUT_MS;
   });
