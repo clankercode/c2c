@@ -77,14 +77,15 @@ function isPeerEvent(e: C2cEvent, peer: string, myAlias: string): boolean {
          (m.from_alias === myAlias && m.to_alias === peer);
 }
 
-function dedupeAndSort(history: C2cEvent[], live: C2cEvent[]): C2cEvent[] {
+function dedupeAndSort(history: C2cEvent[], live: C2cEvent[], ascending = false): C2cEvent[] {
   const seenKeys = new Set(live.map(e => `${e.monitor_ts}-${(e as MessageEvent).content ?? ""}`));
   const dedupedHistory = history.filter(e => {
     const k = `${e.monitor_ts}-${(e as MessageEvent).content ?? ""}`;
     return !seenKeys.has(k);
   });
+  const sign = ascending ? 1 : -1;
   return [...dedupedHistory, ...live].sort(
-    (a, b) => parseFloat(b.monitor_ts) - parseFloat(a.monitor_ts)
+    (a, b) => sign * (parseFloat(a.monitor_ts) - parseFloat(b.monitor_ts))
   );
 }
 
@@ -129,13 +130,14 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
     });
   }
 
+  const isFocused = !!(selectedRoom || selectedPeer);
   let visible: C2cEvent[];
   if (selectedRoom) {
     const liveRoomEvents = events.filter(e => isRoomEvent(e, selectedRoom) && !(e as { _historical?: boolean })._historical);
-    visible = dedupeAndSort(focusHistoryEvents, liveRoomEvents);
+    visible = dedupeAndSort(focusHistoryEvents, liveRoomEvents, true);
   } else if (selectedPeer) {
     const livePeerEvents = events.filter(e => isPeerEvent(e, selectedPeer, myAlias) && !(e as { _historical?: boolean })._historical);
-    visible = dedupeAndSort(focusHistoryEvents, livePeerEvents);
+    visible = dedupeAndSort(focusHistoryEvents, livePeerEvents, true);
   } else {
     visible = events.filter(e => matchesFilter(e, filter)).slice().reverse();
   }
@@ -146,13 +148,22 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
     visible = visible.filter(e => eventLabel(e).toLowerCase().includes(q));
   }
 
-  // Auto-scroll to top when new live events arrive (global feed is newest-first)
+  // Auto-scroll: global feed → top (newest first); focused chat → bottom (oldest first)
   useEffect(() => {
-    if (!selectedRoom && !selectedPeer && events.length > prevLenRef.current) {
-      listRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+    const el = listRef.current;
+    if (!el) return;
+    const len = selectedRoom ? events.filter(e => isRoomEvent(e, selectedRoom)).length
+              : selectedPeer ? events.filter(e => isPeerEvent(e, selectedPeer, myAlias)).length
+              : events.length;
+    if (len > prevLenRef.current) {
+      if (selectedRoom || selectedPeer) {
+        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      } else {
+        el.scrollTo({ top: 0, behavior: "smooth" });
+      }
     }
-    prevLenRef.current = events.length;
-  }, [events.length, selectedRoom, selectedPeer]);
+    prevLenRef.current = len;
+  }, [events, selectedRoom, selectedPeer, myAlias]);
 
   const focusLabel = selectedRoom ? `🏠 ${selectedRoom}` : selectedPeer ? `👤 ${selectedPeer}` : null;
 
@@ -205,7 +216,7 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
         </span>
       </div>
 
-      {/* Event list — newest on top in all modes */}
+      {/* Event list — global: newest-first log lines; focused: oldest-first chat bubbles */}
       <div ref={listRef} style={{ fontFamily: "monospace", fontSize: "13px", overflowY: "auto", flex: 1 }}>
         {visible.length === 0 ? (
           <div style={{ padding: 16, color: "#45475a" }}>
@@ -214,8 +225,52 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
         ) : (
           visible.map((e, i) => {
             const isMsg = e.event_type === "message";
-            const isExpanded = expanded.has(i);
             const m = isMsg ? (e as MessageEvent) : null;
+            const isMine = isMsg && m!.from_alias === myAlias;
+            const ts = (() => {
+              const d = new Date(parseFloat(e.monitor_ts) * 1000);
+              const now = new Date();
+              return d.toDateString() === now.toDateString()
+                ? d.toLocaleTimeString()
+                : d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString();
+            })();
+            const isHistorical = !!(e as { _historical?: boolean })._historical;
+
+            // Focused chat view: bubble layout, oldest-first
+            if (isFocused && isMsg && m) {
+              return (
+                <div key={i} style={{
+                  padding: "4px 10px",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: isMine ? "flex-end" : "flex-start",
+                  opacity: isHistorical ? 0.6 : 1,
+                }}>
+                  <div style={{ display: "flex", gap: 6, alignItems: "baseline", marginBottom: 2 }}>
+                    {!isMine && <span style={{ fontSize: 11, fontWeight: 700, color: "#89b4fa" }}>{m.from_alias}</span>}
+                    <span style={{ fontSize: 10, color: "#45475a" }}>{ts}</span>
+                    {isMine && <span style={{ fontSize: 11, fontWeight: 700, color: "#cba6f7" }}>{m.from_alias}</span>}
+                  </div>
+                  <div style={{
+                    background: isMine ? "#313244" : "#1e1e2e",
+                    border: `1px solid ${isMine ? "#45475a" : "#313244"}`,
+                    borderRadius: isMine ? "10px 10px 2px 10px" : "10px 10px 10px 2px",
+                    padding: "5px 10px",
+                    maxWidth: "70%",
+                    color: "#cdd6f4",
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                    fontFamily: "monospace",
+                    fontSize: 13,
+                  }}>
+                    {m.content}
+                  </div>
+                </div>
+              );
+            }
+
+            // Global feed: compact log line, newest-first
+            const isExpanded = expanded.has(i);
             const isTruncated = isMsg && m!.content.length > 120;
             return (
               <div
@@ -224,21 +279,12 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
                 style={{
                   padding: "3px 8px",
                   borderBottom: "1px solid #1e1e2e",
-                  opacity: (e as { _historical?: boolean })._historical ? 0.65 : 1,
+                  opacity: isHistorical ? 0.65 : 1,
                   cursor: isMsg && isTruncated ? "pointer" : "default",
                   background: isExpanded ? "#1e1e2e" : "transparent",
                 }}
               >
-                <span style={{ color: "#45475a", marginRight: 8, fontSize: 11 }}>
-                  {(() => {
-                    const d = new Date(parseFloat(e.monitor_ts) * 1000);
-                    const now = new Date();
-                    const sameDay = d.toDateString() === now.toDateString();
-                    return sameDay
-                      ? d.toLocaleTimeString()
-                      : d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString();
-                  })()}
-                </span>
+                <span style={{ color: "#45475a", marginRight: 8, fontSize: 11 }}>{ts}</span>
                 <span style={{ marginRight: 6 }}>{eventIcon(e)}</span>
                 <span style={{ color: eventColor(e) }}>
                   {isMsg && m ? (
@@ -247,12 +293,8 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
                         <span style={{ color: "#89b4fa" }}>{m.from_alias} → {m.to_alias}: </span>
                         <span style={{ whiteSpace: "pre-wrap" }}>{m.content}</span>
                       </>
-                    ) : (
-                      eventLabel(e)
-                    )
-                  ) : (
-                    eventLabel(e)
-                  )}
+                    ) : eventLabel(e)
+                  ) : eventLabel(e)}
                 </span>
                 {isMsg && isTruncated && !isExpanded && (
                   <span style={{ color: "#45475a", fontSize: 10, marginLeft: 6 }}>▸</span>
