@@ -177,6 +177,30 @@ let resolve_session_id () =
         "error: cannot determine session ID. Set C2C_MCP_SESSION_ID.\n%!";
       exit 1
 
+(* Like resolve_session_id but falls back to alias-based lookup when the
+   session_id in the env doesn't match any registration. This handles the case
+   where C2C_MCP_SESSION_ID was set by the harness to one value (e.g. "planner1")
+   but the actual broker registration used a different session_id (e.g. "opencode-c2c")
+   because the MCP server registered under a different identifier. *)
+let resolve_session_id_for_inbox broker =
+  let sid = resolve_session_id () in
+  let regs = C2c_mcp.Broker.list_registrations broker in
+  let has_direct = List.exists (fun (r : C2c_mcp.registration) -> r.session_id = sid) regs in
+  if has_direct then sid
+  else begin
+    (* Fall back: look for a registration whose alias matches C2C_MCP_AUTO_REGISTER_ALIAS *)
+    match env_auto_alias () with
+    | None -> sid (* no fallback available, use original sid *)
+    | Some alias ->
+        (match List.find_opt (fun (r : C2c_mcp.registration) -> r.alias = alias) regs with
+         | None -> sid
+         | Some r ->
+             Printf.eprintf
+               "info: C2C_MCP_SESSION_ID=%s not in registry; using session_id=%s (alias=%s)\n%!"
+               sid r.session_id alias;
+             r.session_id)
+  end
+
 (* --- output helpers -------------------------------------------------------- *)
 
 type output_mode = Human | Json
@@ -354,7 +378,7 @@ let poll_inbox_cmd =
   let+ json = json_flag
   and+ peek = peek in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let session_id = resolve_session_id () in
+  let session_id = resolve_session_id_for_inbox broker in
   let messages =
     if peek then
       C2c_mcp.Broker.read_inbox broker ~session_id
@@ -629,7 +653,7 @@ let history_cmd =
   let+ json = json_flag
   and+ limit = limit in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let session_id = resolve_session_id () in
+  let session_id = resolve_session_id_for_inbox broker in
   let entries = C2c_mcp.Broker.read_archive broker ~session_id ~limit in
   let output_mode = if json then Json else Human in
   match output_mode with
@@ -3501,7 +3525,7 @@ let poll_inbox = Cmdliner.Cmd.v (Cmdliner.Cmd.info "poll-inbox" ~doc:"Drain (or 
 let peek_inbox_cmd =
   let+ json = json_flag in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let session_id = resolve_session_id () in
+  let session_id = resolve_session_id_for_inbox broker in
   let messages = C2c_mcp.Broker.read_inbox broker ~session_id in
   let output_mode = if json then Json else Human in
   match output_mode with
