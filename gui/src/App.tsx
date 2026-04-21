@@ -5,6 +5,7 @@ import { EventFeed } from "./EventFeed";
 import { ComposeBar } from "./ComposeBar";
 import { registerAlias } from "./useSend";
 import { loadHistory } from "./useHistory";
+import { discoverPeers, discoverRooms } from "./useDiscovery";
 
 const MAX_EVENTS = 1000;
 const ALIAS_KEY = "c2c-gui-my-alias";
@@ -67,6 +68,13 @@ export function App() {
         if (!cancelled) setStatus("error");
       }
     }
+
+    // Seed peers and rooms from local broker before monitor arms.
+    Promise.all([discoverPeers(), discoverRooms()]).then(([ps, rs]) => {
+      if (cancelled) return;
+      setPeers(new Set(ps.filter(p => p.alive).map(p => p.alias)));
+      setRooms(new Set(rs.map(r => r.room_id)));
+    });
 
     // Load recent history before starting the live monitor.
     loadHistory(100).then(hist => {
