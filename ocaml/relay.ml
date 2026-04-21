@@ -1121,26 +1121,12 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
     | `Ok (expired, pruned) -> respond_ok (json_of_gc_result (expired, pruned))
 
   (* Parse an RFC 3339 / ISO 8601 UTC timestamp like "2026-04-21T00:05:30Z"
-     into Unix epoch seconds. Returns None on malformed input. *)
+     into Unix epoch seconds. Returns None on malformed input.
+     Uses Ptime.of_rfc3339 to avoid timezone arithmetic bugs from mktime. *)
   let parse_rfc3339_utc s =
-    try
-      Scanf.sscanf s "%4d-%2d-%2dT%2d:%2d:%2dZ"
-        (fun y mo d h mi se ->
-          let tm = Unix.{
-            tm_year = y - 1900; tm_mon = mo - 1; tm_mday = d;
-            tm_hour = h; tm_min = mi; tm_sec = se;
-            tm_wday = 0; tm_yday = 0; tm_isdst = false;
-          } in
-          (* gmtime-inverse: use Unix.mktime on UTC by subtracting local offset *)
-          let local_epoch, _ = Unix.mktime tm in
-          let utc_tm = Unix.gmtime local_epoch in
-          let drift =
-            (utc_tm.tm_hour - tm.tm_hour) * 3600
-            + (utc_tm.tm_min - tm.tm_min) * 60
-            + (utc_tm.tm_sec - tm.tm_sec)
-          in
-          Some (local_epoch -. float_of_int drift))
-    with _ -> None
+    match Ptime.of_rfc3339 s with
+    | Ok (t, _, _) -> Some (Ptime.to_float_s t)
+    | Error _ -> None
 
   let decode_b64url s =
     Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet s
