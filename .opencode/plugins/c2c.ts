@@ -11,7 +11,7 @@
  *   C2C_PLUGIN_POLL_INTERVAL_MS — safety-net poll interval in ms (default: 30000; primary wake is c2c monitor)
  *   C2C_PLUGIN_DELIVER_ON_IDLE  — "1" = only deliver on session.idle (default: "0")
  *   C2C_PERMISSION_SUPERVISOR   — alias to DM on permission.ask (default: "coordinator1")
- *   C2C_PERMISSION_TIMEOUT_MS   — ms to await supervisor reply before falling back to dialog (default: 120000)
+ *   C2C_PERMISSION_TIMEOUT_MS   — ms to await supervisor reply before falling back to dialog (default: 300000 = 5 min; covers supervisor compaction windows)
  *
  * Delivery strategy:
  *   - Primary: poll on session.idle events (agent is between tool calls)
@@ -207,7 +207,7 @@ const C2CDelivery: Plugin = async (ctx) => {
     return permissionSupervisors;
   };
   const permissionTimeoutMs: number = parseInt(
-    process.env.C2C_PERMISSION_TIMEOUT_MS || "120000", 10
+    process.env.C2C_PERMISSION_TIMEOUT_MS || "300000", 10
   );
 
   // Track the active root session (set from session events)

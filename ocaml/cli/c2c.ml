@@ -2255,7 +2255,10 @@ let monitor_cmd =
        we enter the inotify loop, exit immediately rather than loop forever. *)
     (if Unix.getppid () = 1 then exit 0);
     let cmd = Printf.sprintf
-      "inotifywait -m -q -e close_write,modify,delete --format '%%e %%f' %s"
+      (* moved_to: atomic inbox writes land via tmp+rename — without this
+         event, new-message sends are completely missed and callers fall
+         back to their safety-net poll (~30s latency). *)
+      "inotifywait -m -q -e close_write,modify,delete,moved_to --format '%%e %%f' %s"
       (Filename.quote watch_dir)
     in
     let ic = Unix.open_process_in cmd in
