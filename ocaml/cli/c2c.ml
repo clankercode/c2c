@@ -3832,6 +3832,7 @@ let setup_codex ~output_mode ~root ~alias_val ~server_path =
   Buffer.add_string buf "\n[mcp_servers.c2c.env]\n";
   Buffer.add_string buf (Printf.sprintf "C2C_MCP_BROKER_ROOT = \"%s\"\n" root);
   Buffer.add_string buf (Printf.sprintf "C2C_MCP_SESSION_ID = \"%s\"\n" alias_val);
+  Buffer.add_string buf (Printf.sprintf "C2C_MCP_AUTO_REGISTER_ALIAS = \"%s\"\n" alias_val);
   Buffer.add_string buf "C2C_MCP_AUTO_JOIN_ROOMS = \"swarm-lounge\"\n";
   List.iter (fun tool ->
     Buffer.add_string buf (Printf.sprintf "\n[mcp_servers.c2c.tools.%s]\n" tool);
@@ -3877,6 +3878,7 @@ let setup_kimi ~output_mode ~root ~alias_val ~server_path =
       ; ("env", `Assoc
           [ ("C2C_MCP_BROKER_ROOT", `String root)
           ; ("C2C_MCP_SESSION_ID", `String alias_val)
+          ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
           ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
           ])
       ]
@@ -4346,6 +4348,7 @@ let setup_crush ~output_mode ~root ~alias_val ~server_path =
       ; ("env", `Assoc
           [ ("C2C_MCP_BROKER_ROOT", `String root)
           ; ("C2C_MCP_SESSION_ID", `String alias_val)
+          ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
           ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
           ])
       ]
