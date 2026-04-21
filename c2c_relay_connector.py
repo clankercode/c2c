@@ -265,10 +265,12 @@ class RelayClient:
         return r.get("history", [])
 
     def join_room(self, alias: str, room_id: str) -> dict:
-        return self._request("POST", "/join_room", {"alias": alias, "room_id": room_id})
+        return self._request("POST", "/join_room", {"alias": alias, "room_id": room_id},
+                             alias=alias)
 
     def leave_room(self, alias: str, room_id: str) -> dict:
-        return self._request("POST", "/leave_room", {"alias": alias, "room_id": room_id})
+        return self._request("POST", "/leave_room", {"alias": alias, "room_id": room_id},
+                             alias=alias)
 
     def send_room(self, from_alias: str, room_id: str, content: str,
                   message_id: Optional[str] = None) -> dict:
@@ -277,7 +279,7 @@ class RelayClient:
         }
         if message_id:
             body["message_id"] = message_id
-        return self._request("POST", "/send_room", body)
+        return self._request("POST", "/send_room", body, alias=from_alias)
 
     def gc(self) -> dict:
         return self._request("GET", "/gc")
