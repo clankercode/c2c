@@ -2060,16 +2060,19 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
               (Broker.my_rooms broker ~session_id)
       in
       let pid_start_time = Broker.capture_pid_start_time pid in
-      (* Guard: refuse to evict an alive registration that owns this alias under
-         a different session_id. An agent re-registering its own alias (same
+      (* Guard: refuse to evict a CONFIRMED-alive registration that owns this alias
+         under a different session_id. An agent re-registering its own alias (same
          session_id, e.g. after a PID change) is always allowed. This prevents
-         confused or malicious agents from hijacking another agent's alias. *)
+         confused or malicious agents from hijacking another agent's alias.
+         Use registration_liveness_state (tristate) so that pidless/Unknown entries
+         do NOT block — registration_is_alive returns true for pid=None, which would
+         permanently strand an alias held by a stale pidless row. *)
       let alias_hijack_conflict =
         List.find_opt
           (fun reg ->
             reg.alias = alias
             && reg.session_id <> session_id
-            && Broker.registration_is_alive reg)
+            && Broker.registration_liveness_state reg = Broker.Alive)
           (Broker.list_registrations broker)
       in
       (match alias_hijack_conflict with
