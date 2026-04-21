@@ -68,7 +68,7 @@ function loadRepoConfig(): Record<string, unknown> {
 }
 
 /** Resolve supervisor aliases from env > sidecar > repo.json > default. */
-function resolvePermissionSupervisors(sidecar: Record<string, unknown>): string[] {
+function resolvePermissionSupervisors(): string[] {
   // C2C_PERMISSION_SUPERVISOR: single alias override (highest priority)
   const envSingle = process.env.C2C_PERMISSION_SUPERVISOR;
   if (envSingle) return [envSingle];
@@ -76,6 +76,8 @@ function resolvePermissionSupervisors(sidecar: Record<string, unknown>): string[
   const envList = process.env.C2C_SUPERVISORS;
   if (envList) return envList.split(",").map((s) => s.trim()).filter(Boolean);
   // Sidecar: supervisors array (c2c init --supervisor writes here)
+  // Reload each time so config changes after startup are picked up.
+  const sidecar = loadSidecarConfig();
   const sidecarSups = sidecar.supervisors;
   if (Array.isArray(sidecarSups) && sidecarSups.length > 0) {
     const names = sidecarSups.filter((s): s is string => typeof s === "string");
@@ -191,7 +193,7 @@ const C2CDelivery: Plugin = async (ctx) => {
     process.env.C2C_OPENCODE_SESSION_ID || sidecar.opencode_session_id || "";
   const pollIntervalMs: number = parseInt(process.env.C2C_PLUGIN_POLL_INTERVAL_MS || "30000", 10);
   const idleOnlyMode: boolean = (process.env.C2C_PLUGIN_DELIVER_ON_IDLE || "0") === "1";
-  const permissionSupervisors: string[] = resolvePermissionSupervisors(sidecar);
+  const permissionSupervisors: string[] = resolvePermissionSupervisors();
   const supervisorStrategy: string =
     (sidecar.supervisor_strategy as string) ||
     (loadRepoConfig().supervisor_strategy as string) ||
