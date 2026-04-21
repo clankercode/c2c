@@ -1030,10 +1030,8 @@ class C2CConfigureOpencodeTests(unittest.TestCase):
             self.assertNotIn("C2C_MCP_SESSION_ID", c2c["environment"],
                              "SESSION_ID must not be in shared project config (multi-agent collision)")
             self.assertEqual(c2c["environment"]["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
-            self.assertEqual(
-                c2c["environment"]["C2C_MCP_AUTO_REGISTER_ALIAS"],
-                f"opencode-{target.name}",
-            )
+            self.assertNotIn("C2C_MCP_AUTO_REGISTER_ALIAS", c2c["environment"],
+                             "AUTO_REGISTER_ALIAS must not be in shared project config (multi-agent collision)")
             self.assertEqual(
                 c2c["environment"]["C2C_MCP_AUTO_JOIN_ROOMS"],
                 "swarm-lounge",
