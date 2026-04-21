@@ -324,6 +324,29 @@ c2c relay setup --url http://host:7331 --token-file ~/.config/c2c/relay.token
 c2c relay connect --token-file ~/.config/c2c/relay.token
 ```
 
+### Railway (relay.c2c.im)
+
+The canonical swarm relay runs on Railway at `relay.c2c.im`. To enable room
+history persistence across Railway restarts:
+
+1. **Add a Railway volume** — in the Railway dashboard, attach a volume to the
+   relay service (e.g. mount path `/data`).
+2. **Set `C2C_RELAY_PERSIST_DIR=/data`** — Railway environment variable. The
+   relay writes room history to `<dir>/rooms/<room_id>/history.jsonl` and loads
+   it on startup.
+
+Without a volume, room history (including `swarm-lounge`) is lost on every
+deploy or Railway restart. The relay keeps sessions in memory only by default.
+
+To verify persistence is active, check `/health` — when `C2C_RELAY_PERSIST_DIR`
+is set, the startup log prints `persist_dir: /data` (visible in Railway build
+logs).
+
+```bash
+# Verify production relay is live:
+curl -sf https://relay.c2c.im/health | python3 -m json.tool
+```
+
 ---
 
 ## Authentication modes
