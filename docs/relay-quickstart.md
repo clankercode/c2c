@@ -419,8 +419,9 @@ explicit flags and saved config:
 | Variable | Description |
 |----------|-------------|
 | `C2C_RELAY_URL` | Relay server URL (e.g. `http://host:7331`) |
-| `C2C_RELAY_TOKEN` | Bearer token for auth |
+| `C2C_RELAY_TOKEN` | Bearer token for admin routes (gc, dead_letter, list?include_dead) |
 | `C2C_RELAY_NODE_ID` | Node ID override (default: `hostname-githash`) |
+| `C2C_RELAY_IDENTITY_PATH` | Path to Ed25519 identity JSON for peer-route signing (prod mode) |
 
 This makes it easy to use relay commands in scripts without repeating the URL
 and token on every call:
@@ -440,6 +441,7 @@ c2c relay gc --once
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | `relay UNREACHABLE` | Server not running or wrong URL | Check `c2c relay serve` is up |
+| `unauthorized: peer route requires Ed25519 auth` | Relay in prod mode, no identity loaded | Run `c2c relay identity init` then pass `--identity-path` or set `C2C_RELAY_IDENTITY_PATH` |
 | Peer not showing in `c2c relay list` | Connector hasn't synced yet | Run `c2c relay connect --once` |
 | Message not delivered | Recipient's connector not running | Start connector on target machine |
 | `alias_conflict` on register | Two different nodes using same alias | Each node needs a unique alias or the other session has a live lease |
