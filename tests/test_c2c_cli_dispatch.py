@@ -217,6 +217,13 @@ class C2CCLIDispatchTests(unittest.TestCase):
         self.assertEqual(result, 0)
         poll_main.assert_called_once_with(["--json"])
 
+    def test_c2c_peek_inbox_subcommand_dispatches_to_recovery_poller_with_peek(self):
+        with mock.patch("c2c_cli.c2c_poll_inbox.main", return_value=0) as poll_main:
+            result = c2c_cli.main(["peek-inbox", "--session-id", "demo", "--json"])
+
+        self.assertEqual(result, 0)
+        poll_main.assert_called_once_with(["--peek", "--session-id", "demo", "--json"])
+
     def test_c2c_send_all_subcommand_dispatches_to_broadcast_client(self):
         with mock.patch("c2c_cli.c2c_send_all.main", return_value=0) as send_all_main:
             result = c2c_cli.main(

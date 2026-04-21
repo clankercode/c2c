@@ -25,7 +25,6 @@ REPO_ROOT = Path(__file__).resolve().parent
 C2C_MCP_PATH = REPO_ROOT / "c2c_mcp.py"
 BROKER_ROOT = REPO_ROOT / ".git" / "c2c" / "mcp"
 PLUGIN_SRC = REPO_ROOT / ".opencode" / "plugins" / "c2c.ts"
-PLUGIN_TUI_SRC = REPO_ROOT / ".opencode" / "plugins" / "c2c-tui.ts"
 PLUGIN_PACKAGE_JSON = {"dependencies": {"@opencode-ai/plugin": "1.4.3"}}
 GLOBAL_PLUGIN_DIR = Path.home() / ".config" / "opencode" / "plugins"
 
@@ -75,9 +74,6 @@ def install_plugin(config_dir: Path, *, force: bool) -> tuple[bool, str]:
         return False, f"plugin already exists at {dest} (use --force to overwrite)"
 
     shutil.copy2(str(PLUGIN_SRC), str(dest))
-    # Also install the TUI companion plugin if present
-    if PLUGIN_TUI_SRC.exists():
-        shutil.copy2(str(PLUGIN_TUI_SRC), str(plugins_dir / "c2c-tui.ts"))
 
     # Write/merge package.json for the plugin dependency
     pkg_path = config_dir / "package.json"
@@ -111,8 +107,6 @@ def install_plugin_global(*, force: bool) -> tuple[bool, str]:
         return False, f"global plugin already exists at {dest} (use --force to overwrite)"
 
     shutil.copy2(str(PLUGIN_SRC), str(dest))
-    if PLUGIN_TUI_SRC.exists():
-        shutil.copy2(str(PLUGIN_TUI_SRC), str(GLOBAL_PLUGIN_DIR / "c2c-tui.ts"))
     return True, str(dest)
 
 
