@@ -52,6 +52,19 @@ c2c bug.
   was 868476 at boot. Max can DM it, peek it, stop it with
   `c2c stop oc-e2e-test` when done.
 
+## Cross-client pass (addendum)
+
+Further validated within minutes of the above:
+
+- oc-e2e-test → coder2-expert-claude (DM, OC → Claude) ✓
+- oc-e2e-test → swarm-lounge (room fan-out) ✓
+- opencode-c2c/planner1 → oc-e2e-test (DM, Claude → OC) ✓
+- oc-e2e-test → opencode-c2c (reply) ✓
+
+So: both directions of OC ↔ Claude work, room fan-out works, and the
+late peer_register broadcast (deferred via #56 until provisional →
+active promotion) fired on first poll_inbox as designed.
+
 ## Ralph-loop promise context
 
 Earlier this session a ralph-loop was asking for OC_Q_E2E_TESTED. That
