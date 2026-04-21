@@ -1470,5 +1470,179 @@ class C2CStartKickoffPromptTests(unittest.TestCase):
         self.assertFalse(kp.exists(), "kickoff-prompt.txt must not be written without --auto")
 
 
+@unittest.skipUnless(_CLI_BUILT, "c2c.exe not built")
+class C2CStartInstallPromptTests(unittest.TestCase):
+    """Tests for the 'opencode.json missing → prompt to run install' feature (#59)."""
+
+    CLI_TIMEOUT = 10
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self.broker_root = self.tmp_path / "broker"
+        self.broker_root.mkdir(parents=True)
+        self.instances_dir = self.tmp_path / "instances"
+        self.instances_dir.mkdir()
+        # .opencode dir WITHOUT opencode.json — triggers the install check
+        (self.tmp_path / ".opencode").mkdir()
+        # Stub opencode binary that exits immediately
+        stub = self.tmp_path / "opencode"
+        stub.write_text("#!/bin/sh\nexit 0\n")
+        stub.chmod(0o755)
+        # Marker file used by the fake `c2c` wrapper to confirm install was called
+        self.install_marker = self.tmp_path / "install-called"
+        # Stub c2c script: when called as 'c2c install opencode', writes the marker;
+        # otherwise falls through to the real c2c binary so broker ops still work.
+        real_c2c = str(CLI_EXE)
+        stub_c2c = self.tmp_path / "c2c"
+        stub_c2c.write_text(
+            "#!/bin/sh\n"
+            f"if [ \"$1\" = 'install' ] && [ \"$2\" = 'opencode' ]; then\n"
+            f"  touch {self.install_marker}\n"
+            "  exit 0\n"
+            "fi\n"
+            f"exec {real_c2c} \"$@\"\n"
+        )
+        stub_c2c.chmod(0o755)
+        # Initialize a bare git repo so resolve_repo_root returns a non-empty path.
+        # Without this, project_dir="" and the install check is skipped entirely.
+        subprocess.run(["git", "init", "-q", str(self.tmp_path)], check=True)
+        # Pre-seed role files so prompt_for_role skips the interactive role prompt
+        # on TTY tests. Otherwise 'n' or 'y' would be consumed by the role prompt
+        # before reaching the install prompt.
+        roles_dir = self.tmp_path / ".c2c" / "roles"
+        roles_dir.mkdir(parents=True, exist_ok=True)
+        for alias in ("install-nontty", "install-noprompt", "install-skip",
+                      "install-yes", "install-already"):
+            (roles_dir / f"{alias}.md").write_text("test agent")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _base_env(self):
+        env = {
+            **os.environ,
+            "PATH": str(self.tmp_path) + ":" + os.environ.get("PATH", ""),
+            "C2C_MCP_BROKER_ROOT": str(self.broker_root),
+            "C2C_INSTANCES_DIR": str(self.instances_dir),
+        }
+        # Remove any inherited GIT_DIR/GIT_WORK_TREE so the subprocess uses
+        # the git repo we initialized in setUp rather than any parent repo.
+        env.pop("GIT_DIR", None)
+        env.pop("GIT_WORK_TREE", None)
+        return env
+
+    def test_non_tty_silently_runs_install(self):
+        """Non-TTY stdin (pipe) must silently run c2c install opencode."""
+        from conftest import spawn_tracked
+        proc = spawn_tracked(
+            [str(CLI_EXE), "start", "opencode", "-n", "install-nontty"],
+            stdin=subprocess.DEVNULL,   # not a TTY → silent install
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=self._base_env(), cwd=str(self.tmp_path),
+        )
+        try:
+            _, stderr = proc.communicate(timeout=self.CLI_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            proc.kill(); proc.communicate()
+            self.fail("c2c start timed out")
+        self.assertTrue(self.install_marker.exists(),
+                        f"install marker missing — install was not called. stderr: {stderr}")
+        self.assertIn("opencode.json not found", stderr)
+
+    def test_non_tty_no_interactive_prompt(self):
+        """Non-TTY stdin must NOT show 'Run it now?' prompt."""
+        from conftest import spawn_tracked
+        proc = spawn_tracked(
+            [str(CLI_EXE), "start", "opencode", "-n", "install-noprompt"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=self._base_env(), cwd=str(self.tmp_path),
+        )
+        try:
+            _, stderr = proc.communicate(timeout=self.CLI_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            proc.kill(); proc.communicate()
+            self.fail("c2c start timed out")
+        self.assertNotIn("Run it now?", stderr)
+
+    def test_tty_answer_n_skips_install(self):
+        """TTY stdin with 'n' answer must skip install and warn."""
+        import pty
+        master_fd, slave_fd = pty.openpty()
+        from conftest import spawn_tracked
+        try:
+            proc = spawn_tracked(
+                [str(CLI_EXE), "start", "opencode", "-n", "install-skip"],
+                stdin=slave_fd,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                env=self._base_env(), cwd=str(self.tmp_path),
+                close_fds=True,
+            )
+            os.close(slave_fd)
+            slave_fd = -1
+            os.write(master_fd, b"n\n")
+            try:
+                _, stderr = proc.communicate(timeout=self.CLI_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                proc.kill(); proc.communicate()
+                self.fail("c2c start timed out")
+        finally:
+            os.close(master_fd)
+            if slave_fd != -1:
+                os.close(slave_fd)
+        self.assertFalse(self.install_marker.exists(),
+                         "install must NOT be called when user answers 'n'")
+        self.assertIn("skipping install", stderr)
+
+    def test_tty_answer_y_runs_install(self):
+        """TTY stdin with 'y' answer must run c2c install opencode."""
+        import pty
+        master_fd, slave_fd = pty.openpty()
+        from conftest import spawn_tracked
+        try:
+            proc = spawn_tracked(
+                [str(CLI_EXE), "start", "opencode", "-n", "install-yes"],
+                stdin=slave_fd,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                env=self._base_env(), cwd=str(self.tmp_path),
+                close_fds=True,
+            )
+            os.close(slave_fd)
+            slave_fd = -1
+            os.write(master_fd, b"y\n")
+            try:
+                _, stderr = proc.communicate(timeout=self.CLI_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                proc.kill(); proc.communicate()
+                self.fail("c2c start timed out")
+        finally:
+            os.close(master_fd)
+            if slave_fd != -1:
+                os.close(slave_fd)
+        self.assertTrue(self.install_marker.exists(),
+                        f"install must be called when user answers 'y'. stderr: {stderr}")
+
+    def test_no_prompt_when_opencode_json_exists(self):
+        """When opencode.json already exists, no prompt and no install call."""
+        (self.tmp_path / ".opencode" / "opencode.json").write_text('{"mcp":{}}')
+        from conftest import spawn_tracked
+        proc = spawn_tracked(
+            [str(CLI_EXE), "start", "opencode", "-n", "install-already"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=self._base_env(), cwd=str(self.tmp_path),
+        )
+        try:
+            _, stderr = proc.communicate(timeout=self.CLI_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            proc.kill(); proc.communicate()
+            self.fail("c2c start timed out")
+        self.assertFalse(self.install_marker.exists(),
+                         "install must NOT be called when opencode.json already exists")
+        self.assertNotIn("Run it now?", stderr)
+        self.assertNotIn("opencode.json not found", stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
