@@ -138,6 +138,8 @@ describe('c2c plugin unit tests', () => {
     // spawnMonitor() does not consume spawn queue entries before drainInbox()
     // can use them. These unit tests drive delivery via event callbacks.
     process.env.C2C_PLUGIN_DELIVER_ON_IDLE = '1';
+    // Skip cold-boot delay so session.created tests complete without timeout
+    process.env.C2C_PLUGIN_COLD_BOOT_DELAY_MS = '0';
   });
 
   afterEach(() => {
@@ -145,6 +147,7 @@ describe('c2c plugin unit tests', () => {
     delete process.env.C2C_MCP_SESSION_ID;
     delete process.env.C2C_MCP_BROKER_ROOT;
     delete process.env.C2C_PLUGIN_DELIVER_ON_IDLE;
+    delete process.env.C2C_PLUGIN_COLD_BOOT_DELAY_MS;
   });
 
   it('formats message as correct c2c envelope', async () => {
