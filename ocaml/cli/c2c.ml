@@ -2639,6 +2639,10 @@ let relay_connect_cmd =
       let args = match interval with None -> args | Some v -> args @ [ "--interval"; string_of_int v ] in
       let args = if once then args @ [ "--once" ] else args in
       let args = if verbose then args @ [ "--verbose" ] else args in
+      let args = match Relay_identity.load () with
+        | Ok _ -> args @ [ "--identity-path"; Relay_identity.default_path () ]
+        | Error _ -> args
+      in
       Unix.execvp "python3" (Array.of_list args)
 
 let relay_setup_cmd =

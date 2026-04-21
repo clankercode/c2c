@@ -128,7 +128,11 @@ class RelayClient:
         self._ssl_context: Optional[ssl.SSLContext] = None
         if self.ca_bundle and self.base_url.startswith("https://"):
             self._ssl_context = ssl.create_default_context(cafile=self.ca_bundle)
-        self._identity = _load_identity(identity_path)
+        # Only load identity when explicitly requested (identity_path supplied or
+        # C2C_RELAY_IDENTITY_PATH env var set). Auto-loading would break tests that
+        # use the Python relay server stub which only accepts Bearer auth.
+        effective_path = identity_path or os.environ.get("C2C_RELAY_IDENTITY_PATH", "")
+        self._identity = _load_identity(effective_path) if effective_path else None
         self._alias: Optional[str] = None  # set by caller when known
 
     def _request(self, method: str, path: str, body: Optional[dict] = None,
@@ -140,14 +144,17 @@ class RelayClient:
 
         base_path = path.split("?")[0]
         effective_alias = alias or self._alias
+        is_admin = (
+            base_path in _ADMIN_PATHS
+            or (path.startswith("/list") and "include_dead" in path)
+        )
+        is_unauth = base_path in _UNAUTH_PATHS
         if auth_override:
             req.add_header("Authorization", auth_override)
-        elif base_path in _UNAUTH_PATHS or base_path in _SELF_AUTH_PATHS:
-            pass  # no auth header needed
-        elif base_path in _ADMIN_PATHS or (path.startswith("/list") and "include_dead" in path):
-            if self.token:
-                req.add_header("Authorization", f"Bearer {self.token}")
-        elif self._identity and effective_alias:
+        elif is_unauth:
+            pass  # /health, / — no auth
+        elif self._identity and effective_alias and not is_admin:
+            # Prod OCaml relay: peer routes need Ed25519, not Bearer.
             try:
                 auth = _sign_peer_request(self._identity, effective_alias, method, base_path, body_bytes)
                 req.add_header("Authorization", auth)
@@ -155,6 +162,7 @@ class RelayClient:
                 if self.token:
                     req.add_header("Authorization", f"Bearer {self.token}")
         elif self.token:
+            # Dev mode / Python relay / admin routes: Bearer token.
             req.add_header("Authorization", f"Bearer {self.token}")
 
         try:
@@ -433,6 +441,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--verbose", action="store_true", help="Log to stderr")
     parser.add_argument("--ca-bundle", default="",
                         help="PEM CA bundle for self-signed relay TLS (or C2C_RELAY_CA_BUNDLE)")
+    parser.add_argument("--identity-path", default="",
+                        help="Path to Ed25519 identity.json for peer-route signing "
+                             "(default: $C2C_RELAY_IDENTITY_PATH; omit to use Bearer-only auth)")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     # Load token
@@ -476,7 +487,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         or _os.environ.get("C2C_RELAY_CA_BUNDLE", "").strip()
         or None
     )
-    client = RelayClient(args.relay_url, token=token, ca_bundle=ca_bundle)
+    identity_path = (
+        args.identity_path.strip()
+        or _os.environ.get("C2C_RELAY_IDENTITY_PATH", "").strip()
+        or None
+    )
+    client = RelayClient(args.relay_url, token=token, ca_bundle=ca_bundle,
+                         identity_path=identity_path)
 
     # Health check
     health = client.health()
