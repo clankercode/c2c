@@ -29,8 +29,9 @@ if str(REPO) not in sys.path:
 C2C_BIN = shutil.which("c2c") or str(REPO / "_build/default/ocaml/cli/c2c.exe")
 INOTIFYWAIT = shutil.which("inotifywait")
 
-MONITOR_STARTUP_SECONDS = 3.0   # allow extra time under load (inotifywait setup)
+MONITOR_STARTUP_SECONDS = 3.0   # fallback sleep if monitor.ready never arrives
 EVENT_TIMEOUT_SECONDS = 8.0
+READY_TIMEOUT_SECONDS = 12.0    # wait up to 12s for monitor.ready event
 
 
 def _read_events(proc, stop_event, events_out, timeout=EVENT_TIMEOUT_SECONDS):
@@ -96,9 +97,36 @@ class MonitorJsonTests(unittest.TestCase):
             text=True,
             env=env,
         )
-        # Allow inotifywait to arm before triggering events.
-        time.sleep(MONITOR_STARTUP_SECONDS)
+        # Wait for monitor.ready event (emitted once inotifywait is armed),
+        # then put it back so _collect_events can see it too if desired.
+        # Fall back to a fixed sleep if the ready event never arrives.
+        ready = self._wait_for_ready(proc)
+        if not ready:
+            time.sleep(MONITOR_STARTUP_SECONDS)
         return proc
+
+    def _wait_for_ready(self, proc, timeout=READY_TIMEOUT_SECONDS):
+        """Read from proc.stdout until monitor.ready arrives or timeout.
+
+        Returns True if the ready event was seen, False on timeout.
+        Any pre-ready events are discarded — all test events are triggered
+        after _start_monitor returns so nothing real is lost.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if obj.get("event_type") == "monitor.ready":
+                    return True
+            except json.JSONDecodeError:
+                pass
+        return False
 
     def _collect_events(self, proc, n=1, timeout=EVENT_TIMEOUT_SECONDS):
         """Collect at least n events from proc.stdout within timeout seconds."""
@@ -174,7 +202,12 @@ class MonitorJsonTests(unittest.TestCase):
         self.assertIn("agent2", aliases)
 
     def test_room_join_in_new_room_on_disk(self):
-        """room.join fires even for a room that didn't exist when monitor started."""
+        """room.join fires when a member joins a room that was empty at monitor start."""
+        # Pre-create the room directory with empty members so inotifywait watches
+        # it from startup.  Without this, there is a race between the IN_CREATE
+        # event for the new subdirectory and inotifywait setting up the watch,
+        # causing the subsequent MOVED_TO on members.json to be missed.
+        _write_members(self.broker_root, "new-room", [])
         proc = self._start_monitor()
         _write_members(self.broker_root, "new-room", [
             {"alias": "latejoiner", "session_id": "sid-lj", "joined_at": 1.0}

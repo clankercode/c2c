@@ -2354,17 +2354,60 @@ let monitor_cmd =
       if archive then
         (* Archive: flat dir, original space-delimited format. *)
         Printf.sprintf
-          "inotifywait -m -q -e close_write,modify,delete,moved_to --format '%%e %%f' %s"
+          "inotifywait -m -e close_write,modify,delete,moved_to --format '%%e %%f' %s"
           (Filename.quote watch_dir)
       else
         (* Live: recursive so rooms/<id>/members.json is caught.
-           Tab-delimited with %w%f = full path avoids space-in-path ambiguity. *)
+           Tab-delimited with %w%f = full path avoids space-in-path ambiguity.
+           No -q: we read stderr to detect "Watches established." and emit a
+           monitor.ready event so tests/callers don't need a fixed sleep. *)
         Printf.sprintf
-          "inotifywait -m -r -q -e close_write,modify,delete,moved_to --format '%%e\t%%w%%f' %s"
+          "inotifywait -m -r -e close_write,modify,delete,moved_to --format '%%e\t%%w%%f' %s"
           (Filename.quote watch_dir)
     in
-    let ic = Unix.open_process_in cmd in
-    Fun.protect ~finally:(fun () -> ignore (Unix.close_process_in ic)) (fun () ->
+    let (ic, _oc, err_ic) = Unix.open_process_full cmd (Unix.environment ()) in
+    (* Drain inotifywait stderr in a background thread; set a flag once we see
+       "Watches established." so the main thread knows inotifywait is armed.
+       This replaces the fixed sleep in callers (tests, plugin) with a
+       deterministic signal, preventing the race where events are triggered
+       before inotifywait finishes setting up watches. *)
+    let ready_flag = Atomic.make false in
+    let str_contains haystack needle =
+      let hl = String.length haystack and nl = String.length needle in
+      if nl = 0 then true
+      else if nl > hl then false
+      else begin
+        let found = ref false in
+        let i = ref 0 in
+        while !i <= hl - nl && not !found do
+          if String.sub haystack !i nl = needle then found := true;
+          incr i
+        done;
+        !found
+      end
+    in
+    let _err_thread = Thread.create (fun () ->
+      (try while true do
+        let line = String.lowercase_ascii (input_line err_ic) in
+        if str_contains line "watches established" then
+          Atomic.set ready_flag true
+      done with End_of_file | Sys_error _ -> ());
+      (* Signal on EOF too so main thread never waits forever. *)
+      Atomic.set ready_flag true
+    ) () in
+    (* Poll ready_flag up to 10s with 50ms sleeps — no timed Condition needed. *)
+    let deadline = Unix.gettimeofday () +. 10.0 in
+    while not (Atomic.get ready_flag) && Unix.gettimeofday () < deadline do
+      Thread.delay 0.05
+    done;
+    if json then begin
+      let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+      print_string (Yojson.Safe.to_string
+        (`Assoc [ "event_type", `String "monitor.ready"
+                ; "monitor_ts", `String ts ]));
+      print_newline ()
+    end;
+    Fun.protect ~finally:(fun () -> ignore (Unix.close_process_full (ic, _oc, err_ic))) (fun () ->
       try while true do
         (* If our parent died (reparented to init/PID 1), we are an orphan —
            exit rather than accumulate as a zombie monitor process. *)
