@@ -137,7 +137,7 @@ if [ -f "$IDENTITY_PATH" ]; then
   fi
 else
   info "no identity file at $IDENTITY_PATH (Ed25519 signing not enabled)"
-  info "generate with: c2c relay identity generate"
+  info "generate with: c2c relay identity init"
 fi
 echo ""
 
