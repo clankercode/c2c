@@ -890,13 +890,15 @@ class C2CStartExit109RegressionTests(unittest.TestCase):
         self.tmp_path = Path(self.tmp.name)
         self.broker_root = self.tmp_path / "broker"
         self.broker_root.mkdir(parents=True)
+        # Instance state goes into the temp dir (C2C_INSTANCES_DIR) so tests
+        # don't leave stale entries in ~/.local/share/c2c/instances/.
+        self.instances_dir = self.tmp_path / "instances"
+        self.instances_dir.mkdir(parents=True)
         # Stub opencode binary named "opencode" so find_binary() resolves it.
         # Prepend self.tmp_path to PATH so it wins over any real opencode.
         self.stub = self.tmp_path / "opencode"
         self.stub.write_text("#!/bin/sh\nexit 109\n")
         self.stub.chmod(0o755)
-        # Use a unique suffix so cmd_start doesn't reload a cached broker_root
-        # from a previous test run's config.json at ~/.local/share/c2c/instances/.
         import uuid
         self._run_id = uuid.uuid4().hex[:8]
 
@@ -911,10 +913,9 @@ class C2CStartExit109RegressionTests(unittest.TestCase):
             # Prepend tmp dir so stub "opencode" shadows any real binary.
             "PATH": str(self.tmp_path) + ":" + os.environ.get("PATH", ""),
             "C2C_MCP_BROKER_ROOT": str(self.broker_root),
-            # Suppress sidecar processes so the test is fast and contained.
-            "C2C_START_NO_DELIVER": "1",
-            "C2C_START_NO_POKER": "1",
-            "C2C_START_NO_WIRE": "1",
+            # Redirect instance state to temp dir so no stale entries accumulate
+            # in ~/.local/share/c2c/instances/ after tests run.
+            "C2C_INSTANCES_DIR": str(self.instances_dir),
         }
         proc = spawn_tracked(
             [str(CLI_EXE), "start", "opencode", "-n", name],

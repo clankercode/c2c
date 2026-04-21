@@ -91,7 +91,10 @@ let latest_opencode_log () : string option =
         Some (dir // latest)
     with _ -> None
 
-let instances_dir = Filename.concat (home_dir ()) ".local" // "share" // "c2c" // "instances"
+let instances_dir =
+  match Sys.getenv_opt "C2C_INSTANCES_DIR" with
+  | Some d when String.trim d <> "" -> String.trim d
+  | _ -> Filename.concat (home_dir ()) ".local" // "share" // "c2c" // "instances"
 
 let rec mkdir_p dir =
   if Sys.file_exists dir then ()
