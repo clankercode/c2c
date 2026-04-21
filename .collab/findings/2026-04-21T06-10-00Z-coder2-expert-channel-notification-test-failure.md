@@ -61,24 +61,22 @@ stdio buffer or arrives after the timeout window closes.
 **Alternative**: both notifications are emitted but JSON framing causes the second to
 be parsed as part of the first (unlikely — they're line-delimited).
 
-## Fix Status
+## Root Cause (confirmed)
 
-Not fixed. This needs either:
-1. An explicit `flush` after each `emit_notification` write, or
-2. A longer timeout in `read_all_jsonrpc`, or  
-3. A loop in the test that retries until N messages accumulate
+Both notifications ARE written to the OS pipe (confirmed via `os.read` debug). The issue is
+Python's `BufferedReader` reads a large chunk when the first notification arrives, potentially
+pre-buffering the second notification. Then `select.select([proc.stdout], ...)` sees an empty
+OS-level pipe and returns "not ready", even though Python's internal buffer has msg2.
 
-Option 1 (flush in OCaml) is the cleanest — `emit_notification` should `flush stdout`
-after each JSON-RPC write to avoid buffering races with the test reader.
+## Fix Status: FIXED (commit 605895c by planner1)
 
-Look for the write call in `c2c_mcp_server.ml` around `write_message` / `output_string`.
+**Fix**: Added `Lwt_unix.sleep 0.01` (10ms) between notifications in `emit_all` in
+`ocaml/server/c2c_mcp_server.ml`. This ensures notifications arrive in separate OS pipe
+writes, preventing Python from pre-buffering multiple notifications in a single chunk.
+The 10ms gap gives the test's `select` loop time to observe each notification separately.
+
+All 1097 tests pass after the fix.
 
 ## Severity
 
-Low — no production impact (real MCP clients use line-buffered stdio or async IO).
-Test-only race. Does block `just test` from going green.
-
-## Suggested Fix Location
-
-`ocaml/server/c2c_mcp_server.ml` — after `output_string` / `Buffer.output_buffer` call
-in `write_message` (or equivalent), add `flush stdout` / `Out_channel.flush stdout`.
+Resolved. Was test-only (no production impact).
