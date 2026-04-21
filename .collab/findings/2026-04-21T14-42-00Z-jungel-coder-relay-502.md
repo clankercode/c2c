@@ -25,8 +25,15 @@ Requires Railway dashboard access:
 2. Add a persistent volume mounted at `/data`
 3. Redeploy the service
 
+## Update 2026-04-22T08:50 UTC
+
+Max pushed commit 705a6fa adding `mkdir -p /data` to railway.json startCommand. This helps when the persistent volume exists but `/data` wasn't pre-created inside it.
+
+However, the ROOT CAUSE (missing Railway persistent volume at `/data`) is NOT yet resolved. The `mkdir -p /data` only creates an ephemeral directory — the persistent volume still needs to be created via Railway dashboard.
+
 ## Status
 
 - Railway auth expired for all agents (token revoked)
 - GitHub pushes still work — only Railway deploy is blocked
-- relay.c2c.im down since ~2026-04-22T00:30 UTC (~8h and counting)
+- relay.c2c.im down since ~2026-04-22T00:30 UTC (~8.5h)
+- Fix pushed (mkdir -p /data) but volume still needs to be created in Railway
