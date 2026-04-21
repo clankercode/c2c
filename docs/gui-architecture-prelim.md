@@ -226,6 +226,10 @@ Planner1's canonical-alias work (`alias#repo@host`) is the substrate.
   ScrollArea + react-window virtualization is the default answer.
   Will need a perf pass once swarm-lounge has months of history.
 
+## Answers from Max
+
+* in progress *
+
 ## Rough milestones (order, not dates)
 
 1. `gui/` cargo workspace + Tauri scaffolding.
