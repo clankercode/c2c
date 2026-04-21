@@ -913,15 +913,27 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
          Printf.eprintf "error: --session-id must be a valid UUID, e.g. 550e8400-e29b-41d4-a716-446655440000\n%!";
          exit 1));
 
-  (* Check duplicate running *)
+  let inst_dir = instance_dir name in
   (match read_pid (outer_pid_path name) with
    | Some pid when pid_alive pid ->
-       Printf.eprintf "error: instance '%s' is already running (pid %d). Use 'c2c stop %s' first.\n%!"
-         name pid name;
+       Printf.eprintf
+         "error: instance '%s' is already running (pid %d).\n\
+          \  Stop it first:  c2c stop %s\n\
+          \  Instance dir:   %s\n%!"
+         name pid name inst_dir;
        exit 1
-   | _ -> ());
-
-  remove_pidfile (outer_pid_path name);
+   | Some _ ->
+       (* Stale pid file — process is dead. Clean up all pid files so the
+          restart doesn't see phantom sidecar PIDs. *)
+       Printf.eprintf
+         "note: stale instance '%s' (dead process); cleaning up pid files in %s\n%!"
+         name inst_dir;
+       List.iter remove_pidfile
+         [ outer_pid_path name; inner_pid_path name
+         ; deliver_pid_path name; poker_pid_path name ]
+   | None ->
+       (* No pid file at all — fresh start or already cleaned up. *)
+       ());
 
   (* Resume: inherit saved settings *)
   let existing = load_config_opt name in

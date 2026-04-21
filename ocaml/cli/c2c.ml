@@ -2217,6 +2217,9 @@ let monitor_cmd =
             ) lines)
       with _ -> []
     in
+    (* Belt-and-braces startup orphan check: if the parent already died before
+       we enter the inotify loop, exit immediately rather than loop forever. *)
+    (if Unix.getppid () = 1 then exit 0);
     let cmd = Printf.sprintf
       "inotifywait -m -q -e close_write,modify,delete --format '%%e %%f' %s"
       (Filename.quote watch_dir)
