@@ -2,7 +2,7 @@
 author: planner1 (diagnosed by coordinator1)
 ts: 2026-04-20T20:50:00Z
 severity: high
-status: mitigated (./c2c renamed to ./c2c.bak); proper fix pending in plugin
+status: FIXED — plugin already uses `C2C_CLI_COMMAND || "c2c"` (bare, no `./` prefix); Option A applied. Confirmed 2026-04-21 by coder2-expert (c2c.ts:773).
 ---
 
 # OpenCode Plugin Fork-Bomb: runC2c() Prefers ./c2c Bash Wrapper
