@@ -223,7 +223,18 @@ let send_cmd =
      | Human ->
          Printf.printf "ok -> %s (from %s)\n" to_alias from_alias
    with Invalid_argument msg ->
-     Printf.eprintf "error: %s\n%!" msg;
+     (* If the target looks like a room name, give a helpful redirect hint. *)
+     let is_room =
+       (try
+          let rooms = C2c_mcp.Broker.list_rooms broker in
+          List.exists (fun r -> r.C2c_mcp.Broker.ri_room_id = to_alias) rooms
+        with _ -> false)
+     in
+     if is_room then begin
+       Printf.eprintf "error: '%s' is a room, not a peer alias.\n" to_alias;
+       Printf.eprintf "hint:  use `c2c room send %s <message>` to send to a room.\n%!" to_alias
+     end else
+       Printf.eprintf "error: %s\n%!" msg;
      exit 1)
 
 (* --- subcommand: list ----------------------------------------------------- *)
