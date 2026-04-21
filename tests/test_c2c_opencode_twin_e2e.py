@@ -115,13 +115,20 @@ def _instance_dir(alias: str) -> Path:
 @pytest.fixture
 def tmux_session():
     session = f"c2c-oc-twin-{os.getpid()}"
-    _tmux("new-session", "-d", "-s", session, "-x", "220", "-y", "60", "bash", check=False)
-    yield session
+    # Use -P -F to grab the actual pane id — user's tmux may have
+    # `base-index 1` in ~/.tmux.conf which breaks `:0.0` assumptions.
+    res = _tmux(
+        "new-session", "-d", "-s", session, "-x", "220", "-y", "60",
+        "-P", "-F", "#{pane_id}", "bash",
+    )
+    pane0 = res.stdout.strip()
+    yield session, pane0
     _tmux("kill-session", "-t", session, check=False)
 
 
-def test_opencode_twin_e2e(tmp_path: Path, tmux_session: str) -> None:
+def test_opencode_twin_e2e(tmp_path: Path, tmux_session) -> None:
     assert TMUX_BIN and OC_BIN and C2C_BIN
+    session_name, pane0 = tmux_session
 
     # (1) fresh workdir with git
     workdir = tmp_path / "project"
@@ -132,6 +139,14 @@ def test_opencode_twin_e2e(tmp_path: Path, tmux_session: str) -> None:
     alias_a = f"twin-a-{os.getpid()}"
     alias_b = f"twin-b-{os.getpid()}"
 
+    # Pre-seed role files so `c2c start` skips the interactive role prompt
+    # (it blocks on stdin when Unix.isatty is true, which it is inside a
+    # tmux pane).
+    roles_dir = workdir / ".c2c" / "roles"
+    roles_dir.mkdir(parents=True, exist_ok=True)
+    (roles_dir / f"{alias_a}.md").write_text("test-agent\n")
+    (roles_dir / f"{alias_b}.md").write_text("test-agent\n")
+
     # Broker root — c2c uses git-common-dir/c2c/mcp.
     git_common = subprocess.run(
         ["git", "rev-parse", "--git-common-dir"], cwd=workdir, capture_output=True, text=True, check=True
@@ -139,10 +154,19 @@ def test_opencode_twin_e2e(tmp_path: Path, tmux_session: str) -> None:
     broker_root = (Path(workdir) / git_common / "c2c" / "mcp").resolve()
     broker_root.mkdir(parents=True, exist_ok=True)
 
-    pane0 = f"{tmux_session}:0.0"
+    # `c2c start` does NOT write .opencode/opencode.json (only `c2c install`
+    # does — see .collab/findings/2026-04-21T15-50-00Z). Without that,
+    # opencode boots with no c2c MCP and never registers. Do the install
+    # inline so this test mirrors a real bash user who ran
+    # `c2c install opencode` first.
+    subprocess.run(
+        [C2C_BIN, "install", "opencode", "--target-dir", str(workdir)],
+        check=True, capture_output=True, text=True,
+    )
+
     _tmux("send-keys", "-t", pane0, f"cd {workdir}", "Enter")
-    _tmux("split-window", "-h", "-t", f"{tmux_session}:0", "bash")
-    pane1 = f"{tmux_session}:0.1"
+    split = _tmux("split-window", "-h", "-t", pane0, "-P", "-F", "#{pane_id}", "bash")
+    pane1 = split.stdout.strip()
     _tmux("send-keys", "-t", pane1, f"cd {workdir}", "Enter")
     time.sleep(0.3)
 
