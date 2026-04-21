@@ -584,7 +584,7 @@ let build_env ?(broker_root_override : string option = None) (name : string) (al
  * Called by start_inner when client = "opencode".
  * --------------------------------------------------------------------------- *)
 
-let refresh_opencode_identity ~name ~alias ~broker_root ~project_dir =
+let refresh_opencode_identity ~name ~alias ~broker_root ~project_dir ~instances_dir =
   let ( // ) = Filename.concat in
   let config_dir = project_dir // ".opencode" in
   (* Patch opencode.json mcp.c2c.environment with identity vars. *)
@@ -642,8 +642,11 @@ let refresh_opencode_identity ~name ~alias ~broker_root ~project_dir =
         Unix.rename tmp config_path
       with _ -> ())
     with _ -> ()));
-  (* Update sidecar c2c-plugin.json with current identity. *)
-  let sidecar_path = config_dir // "c2c-plugin.json" in
+  (* Update sidecar c2c-plugin.json with current identity.
+     Write to per-instance path (instances/<name>/) to avoid concurrent
+     instances in the same project dir from clobbering each other's identity.
+     The plugin reads from the same path (with project-level fallback). *)
+  let sidecar_path = instances_dir // name // "c2c-plugin.json" in
   (try
     let existing = if Sys.file_exists sidecar_path then
       (match Yojson.Safe.from_file sidecar_path with `Assoc p -> p | _ -> [])
@@ -1112,7 +1115,7 @@ let run_outer_loop ~(name : string) ~(client : string)
                 "  [c2c start] skipping install — \
                  session may not auto-register without opencode.json\n%!"
           end);
-          refresh_opencode_identity ~name ~alias ~broker_root ~project_dir
+          refresh_opencode_identity ~name ~alias ~broker_root ~project_dir ~instances_dir
         end
       end);
 

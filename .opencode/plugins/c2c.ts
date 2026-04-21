@@ -35,8 +35,18 @@ import * as path from "path";
 // Sidecar config loader
 // ---------------------------------------------------------------------------
 
-/** Read .opencode/c2c-plugin.json relative to the CWD, returning {} on miss. */
+/** Read c2c-plugin.json — per-instance path first, then project-level. */
 function loadSidecarConfig(): Record<string, unknown> {
+  // Per-instance path: written by c2c wrapper to isolate concurrent instances.
+  const instanceName = process.env.C2C_INSTANCE_NAME;
+  if (instanceName) {
+    try {
+      const perInstance = path.join(process.env.HOME ?? "/home", ".local", "share", "c2c", "instances", instanceName, "c2c-plugin.json");
+      const raw = fs.readFileSync(perInstance, "utf-8");
+      return JSON.parse(raw) as Record<string, unknown>;
+    } catch { /* fall through to project-level */ }
+  }
+  // Project-level fallback.
   try {
     const sidecar = path.join(process.cwd(), ".opencode", "c2c-plugin.json");
     const raw = fs.readFileSync(sidecar, "utf-8");
@@ -1221,7 +1231,11 @@ const C2CDelivery: Plugin = async (ctx) => {
           if (coldBootDelayMs > 0) {
             await new Promise<void>(resolve => setTimeout(resolve, coldBootDelayMs));
           }
-          await deliverMessages(info.id);
+          // Also deliver kickoff prompt — session.created does not call deliverKickoffPrompt
+          // (only session.idle does), so a session that never fires idle would miss the kickoff.
+          // Do NOT call deliverMessages here — session.idle handles that, and the auto-kickoff
+          // timeout path (line ~1137) also retries delivery as a safety net if idle never fires.
+          await deliverKickoffPrompt(info.id);
           // Exponential-backoff retry: if spool still has messages after first attempt,
           // retry up to 3 more times (3s → 6s → 12s). Each attempt re-checks the spool
           // so concurrent background-loop delivery won't double-deliver.
