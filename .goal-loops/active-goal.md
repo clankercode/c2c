@@ -246,12 +246,12 @@ These are Max's target experiences, verbatim:
   + Railway rebuild (~15min) before `c2c relay register` works in prod.
   Steps 2-4 implemented: identity in c2c init ✓, auto-sign register ✓, health auth_mode ✓.
 
-### Recent Completions (2026-04-21, coder2-expert session — awaiting push)
+### Recent Completions (2026-04-21, coder2-expert + planner1 session — awaiting push)
 
 - **relay /register prod-mode auth fix** ✓: `auth_decision` now exempts `/register`
   from outer Ed25519 check (adb152f). Relay at relay.c2c.im was rejecting all new
   registrations in prod mode (RELAY_TOKEN set). Auth matrix regression tests added (b1d687f).
-  **Needs Railway deploy** — 18 commits ahead of origin as of 2026-04-21T11:30Z.
+  **Needs Railway deploy** — 33 commits ahead of origin as of 2026-04-21T12:00Z.
 - **Broker tristate liveness for alias-hijack guard** ✓: pidless (Unknown) stale entries
   no longer block new sessions from claiming the same alias (cfae0cc). Regression test
   added (0da8015). Bug #7 from session-bug-haul.
@@ -265,6 +265,16 @@ These are Max's target experiences, verbatim:
   so waitpid works on fast-exit children (6f22f5e). Regression tests (94cda9c). Bug fix by planner1.
 - **scripts/relay-smoke-test.sh** ✓: full register→list→loopback DM→poll sequence
   for verifying relay deploys (planner1).
+- **Relay connector Ed25519 signing** ✓: `c2c_relay_connector.py` now signs heartbeat/
+  poll_inbox/send with Ed25519 in prod mode when `--identity-path` or
+  `C2C_RELAY_IDENTITY_PATH` is set. OCaml `c2c relay dm poll` + `c2c relay list` also
+  use signed variants. `Relay_client`: `heartbeat_signed`, `poll_inbox_signed`,
+  `list_peers_signed` variants added. 6 new Python signing unit tests (92aba0d,
+  7edabfe, 41dc704, 74070c3).
+- **Plugin permission event fix** ✓: event handler now checks both `"permission.updated"`
+  (SDK external Event type) and `"permission.asked"` (opencode internal bus) to cover
+  config-declared and runtime bash:ask paths. Added hook-entry logging (6828ce6).
+  Needs oc-coder1 restart to validate.
 
 ### Recent Completions (2026-04-20/21, planner1 + coder2-expert + coordinator1)
 
