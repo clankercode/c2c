@@ -64,9 +64,10 @@ ses_2526b83…` hung with no error. `c2c stop oc-coder1` unstuck it.
 `ses_*` id doesn't exist; managed wake path doesn't recognize this
 state, so the outer sits waiting.
 
-**Fix.** Task #47 — pre-flight `opencode session list` in
-`c2c start opencode` when `-s` is provided. Fail fast with a clear
-error. Not yet implemented.
+**Fix.** Task #47 — implemented by planner1 (24cd973, 2026-04-21).
+`c2c start opencode -s ses_*` now runs `opencode session list --format json`
+before launching; exits 1 with "not found" + hint if the session is missing.
+3 tests added (C2CStartOpencodeSessionPreflightTests). All passing.
 
 **Severity.** Medium — confusing but recoverable once you know to
 `c2c stop`.
