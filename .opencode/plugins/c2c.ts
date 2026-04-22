@@ -324,6 +324,22 @@ const C2CDelivery: Plugin = async (ctx) => {
     at: string;
     details: Record<string, unknown> | null;
   };
+  const EMA_ALPHA = 0.2;
+  function updateEmaOnIdle(idleEma: number | null, occupiedSince: string | null, busySeconds: number): { idleEma: number | null; occupiedSince: null } {
+    if (occupiedSince === null) return { idleEma, occupiedSince: null };
+    const busyFraction = Math.max(0, Math.min(1, busySeconds / 60));
+    const newEma = idleEma === null
+      ? EMA_ALPHA * busyFraction + (1 - EMA_ALPHA) * 0.5
+      : EMA_ALPHA * busyFraction + (1 - EMA_ALPHA) * idleEma;
+    return { idleEma: newEma, occupiedSince: null };
+  }
+  function updateEmaOnBusy(idleEma: number | null, occupiedSince: string | null, idleSeconds: number): { idleEma: number | null; occupiedSince: string } {
+    const idleFraction = Math.max(0, Math.min(1, idleSeconds / 60));
+    const newEma = idleEma === null
+      ? EMA_ALPHA * (1 - idleFraction) + (1 - EMA_ALPHA) * 0.5
+      : EMA_ALPHA * (1 - idleFraction) + (1 - EMA_ALPHA) * idleEma;
+    return { idleEma: newEma, occupiedSince: new Date().toISOString() };
+  }
   type PluginState = {
     c2c_session_id: string;
     c2c_alias: string | null;
@@ -333,6 +349,8 @@ const C2CDelivery: Plugin = async (ctx) => {
     state_last_updated_at: string;
     agent: {
       is_idle: boolean | null;
+      idle_ema: number | null;
+      occupied_since: string | null;
       turn_count: number;
       step_count: number;
       last_step: LastStep | null;
@@ -381,6 +399,8 @@ const C2CDelivery: Plugin = async (ctx) => {
     state_last_updated_at: pluginStartedAt,
     agent: {
       is_idle: null,
+      idle_ema: null,
+      occupied_since: null,
       turn_count: 0,
       step_count: 0,
       last_step: null,
@@ -663,6 +683,10 @@ const C2CDelivery: Plugin = async (ctx) => {
     // new session starts blank — root cause of #58 TUI divergence.
     kickoffDelivered = false;
     pluginState.root_opencode_session_id = info.id;
+    const now = Date.now();
+    const idleResult = updateEmaOnBusy(pluginState.agent.idle_ema, pluginState.agent.occupied_since, 0);
+    pluginState.agent.idle_ema = idleResult.idleEma;
+    pluginState.agent.occupied_since = idleResult.occupiedSince;
     pluginState.agent.is_idle = false;
     pluginState.agent.step_count += 1;
     pluginState.agent.last_step = makeLastStep("session.created", compactSessionDetails(info.id));
@@ -672,6 +696,8 @@ const C2CDelivery: Plugin = async (ctx) => {
       root_opencode_session_id: info.id,
       agent: {
         is_idle: false,
+        idle_ema: pluginState.agent.idle_ema,
+        occupied_since: pluginState.agent.occupied_since,
         step_count: pluginState.agent.step_count,
         last_step: pluginState.agent.last_step,
       },
@@ -686,6 +712,13 @@ const C2CDelivery: Plugin = async (ctx) => {
     if (!belongsToTrackedRoot(event)) return;
 
     const sessionID = eventSessionId(event);
+    const now = Date.now();
+    const busySeconds = pluginState.agent.occupied_since !== null
+      ? (now - new Date(pluginState.agent.occupied_since).getTime()) / 1000
+      : 0;
+    const idleResult = updateEmaOnIdle(pluginState.agent.idle_ema, pluginState.agent.occupied_since, busySeconds);
+    pluginState.agent.idle_ema = idleResult.idleEma;
+    pluginState.agent.occupied_since = idleResult.occupiedSince;
     pluginState.agent.is_idle = true;
     pluginState.agent.turn_count += 1;
     pluginState.agent.step_count += 1;
@@ -696,6 +729,8 @@ const C2CDelivery: Plugin = async (ctx) => {
       root_opencode_session_id: pluginState.root_opencode_session_id,
       agent: {
         is_idle: true,
+        idle_ema: pluginState.agent.idle_ema,
+        occupied_since: pluginState.agent.occupied_since,
         turn_count: pluginState.agent.turn_count,
         step_count: pluginState.agent.step_count,
         last_step: pluginState.agent.last_step,
@@ -715,6 +750,13 @@ const C2CDelivery: Plugin = async (ctx) => {
     }
     if (!sessionID || sessionID !== pluginState.root_opencode_session_id) return;
 
+    const now = Date.now();
+    const idleSeconds = pluginState.agent.occupied_since !== null
+      ? (now - new Date(pluginState.agent.occupied_since).getTime()) / 1000
+      : 0;
+    const busyResult = updateEmaOnBusy(pluginState.agent.idle_ema, pluginState.agent.occupied_since, idleSeconds);
+    pluginState.agent.idle_ema = busyResult.idleEma;
+    pluginState.agent.occupied_since = busyResult.occupiedSince;
     pluginState.agent.is_idle = false;
     pluginState.agent.step_count += 1;
     pluginState.agent.last_step = makeLastStep(event.type, compactPermissionDetails(event));
@@ -726,6 +768,8 @@ const C2CDelivery: Plugin = async (ctx) => {
       root_opencode_session_id: pluginState.root_opencode_session_id,
       agent: {
         is_idle: false,
+        idle_ema: pluginState.agent.idle_ema,
+        occupied_since: pluginState.agent.occupied_since,
         step_count: pluginState.agent.step_count,
         last_step: pluginState.agent.last_step,
       },
@@ -748,16 +792,31 @@ const C2CDelivery: Plugin = async (ctx) => {
       if (!sessionID) return;
       if (configuredOpenCodeSessionId && sessionID !== configuredOpenCodeSessionId) return;
       if (status?.type === "busy") {
+        const now = Date.now();
+        const idleSeconds = pluginState.agent.occupied_since !== null
+          ? (now - new Date(pluginState.agent.occupied_since).getTime()) / 1000
+          : 0;
+        const busyResult = updateEmaOnBusy(pluginState.agent.idle_ema, pluginState.agent.occupied_since, idleSeconds);
+        pluginState.agent.idle_ema = busyResult.idleEma;
+        pluginState.agent.occupied_since = busyResult.occupiedSince;
         pluginState.agent.is_idle = false;
         pluginState.agent.last_step = makeLastStep("session.status.busy", compactSessionDetails(sessionID));
         writeStatePatch({
           agent: {
             is_idle: false,
+            idle_ema: pluginState.agent.idle_ema,
+            occupied_since: pluginState.agent.occupied_since,
             last_step: pluginState.agent.last_step,
           },
         });
       } else if (status?.type === "idle") {
-        // session.status idle is more granular than session.idle; treat same as idle
+        const now = Date.now();
+        const busySeconds = pluginState.agent.occupied_since !== null
+          ? (now - new Date(pluginState.agent.occupied_since).getTime()) / 1000
+          : 0;
+        const idleResult = updateEmaOnIdle(pluginState.agent.idle_ema, pluginState.agent.occupied_since, busySeconds);
+        pluginState.agent.idle_ema = idleResult.idleEma;
+        pluginState.agent.occupied_since = idleResult.occupiedSince;
         pluginState.agent.is_idle = true;
         pluginState.agent.turn_count += 1;
         pluginState.agent.step_count += 1;
@@ -765,6 +824,8 @@ const C2CDelivery: Plugin = async (ctx) => {
         writeStatePatch({
           agent: {
             is_idle: true,
+            idle_ema: pluginState.agent.idle_ema,
+            occupied_since: pluginState.agent.occupied_since,
             turn_count: pluginState.agent.turn_count,
             step_count: pluginState.agent.step_count,
             last_step: pluginState.agent.last_step,
@@ -787,12 +848,21 @@ const C2CDelivery: Plugin = async (ctx) => {
     if (event.type === "message.part.updated") {
       const part = (event as any).properties?.part;
       if (part?.type === "step-start") {
+        const now = Date.now();
+        const idleSeconds = pluginState.agent.occupied_since !== null
+          ? (now - new Date(pluginState.agent.occupied_since).getTime()) / 1000
+          : 0;
+        const busyResult = updateEmaOnBusy(pluginState.agent.idle_ema, pluginState.agent.occupied_since, idleSeconds);
+        pluginState.agent.idle_ema = busyResult.idleEma;
+        pluginState.agent.occupied_since = busyResult.occupiedSince;
         pluginState.agent.is_idle = false;
         pluginState.agent.step_count += 1;
         pluginState.agent.last_step = makeLastStep("step.start", compactSessionDetails(part.sessionID));
         writeStatePatch({
           agent: {
             is_idle: false,
+            idle_ema: pluginState.agent.idle_ema,
+            occupied_since: pluginState.agent.occupied_since,
             step_count: pluginState.agent.step_count,
             last_step: pluginState.agent.last_step,
           },
@@ -806,10 +876,20 @@ const C2CDelivery: Plugin = async (ctx) => {
           },
         });
       } else if (part?.type === "tool") {
-        // Tool is active — mark busy if not already
         if (pluginState.agent.is_idle) {
+          const now = Date.now();
+          const idleSeconds = pluginState.agent.occupied_since !== null
+            ? (now - new Date(pluginState.agent.occupied_since).getTime()) / 1000
+            : 0;
+          const busyResult = updateEmaOnBusy(pluginState.agent.idle_ema, pluginState.agent.occupied_since, idleSeconds);
+          pluginState.agent.idle_ema = busyResult.idleEma;
+          pluginState.agent.occupied_since = busyResult.occupiedSince;
           pluginState.agent.is_idle = false;
-          writeStatePatch({ agent: { is_idle: false } });
+          writeStatePatch({ agent: {
+            is_idle: false,
+            idle_ema: pluginState.agent.idle_ema,
+            occupied_since: pluginState.agent.occupied_since,
+          } });
         }
       }
       return;
