@@ -200,6 +200,8 @@ const C2CDelivery: Plugin = async (ctx) => {
   const brokerRoot: string = process.env.C2C_MCP_BROKER_ROOT || sidecar.broker_root || "";
   const configuredOpenCodeSessionId: string =
     process.env.C2C_OPENCODE_SESSION_ID || sidecar.opencode_session_id || "";
+  const c2cAlias: string =
+    (sidecar.alias as string | undefined) || sessionId || "";
   const pollIntervalMs: number = parseInt(process.env.C2C_PLUGIN_POLL_INTERVAL_MS || "30000", 10);
   const idleOnlyMode: boolean = (process.env.C2C_PLUGIN_DELIVER_ON_IDLE || "0") === "1";
   const permissionSupervisors: string[] = resolvePermissionSupervisors();
@@ -1361,16 +1363,16 @@ const C2CDelivery: Plugin = async (ctx) => {
         const timeoutSec = Math.round(permissionTimeoutMs / 1000);
         const summary = summarizePermission(perm as Record<string, unknown>);
         const instanceName: string = process.env.C2C_INSTANCE_NAME || "";
-        const from = instanceName || sessionId || sid;
+        const from = instanceName || c2cAlias || sid;
         const msg = [
           `PERMISSION REQUEST from ${from}:`,
           `  action: ${summary}`,
           `  id: ${permId}`,
           `  session: ${sid}`,
           `Reply within ${timeoutSec}s:`,
-          `  c2c send ${sessionId} "permission:${permId}:approve-once"`,
-          `  c2c send ${sessionId} "permission:${permId}:approve-always"`,
-          `  c2c send ${sessionId} "permission:${permId}:reject"`,
+          `  c2c send ${c2cAlias} "permission:${permId}:approve-once"`,
+          `  c2c send ${c2cAlias} "permission:${permId}:approve-always"`,
+          `  c2c send ${c2cAlias} "permission:${permId}:reject"`,
           `(timeout → auto-reject; late replies will be NACK'd)`,
         ].join("\n");
 
@@ -1475,8 +1477,8 @@ const C2CDelivery: Plugin = async (ctx) => {
         }
         lines.push(`  id: ${qId}`, `  session: ${sid}`);
         lines.push(`Reply within ${timeoutSec}s:`);
-        lines.push(`  c2c send ${sessionId} "question:${qId}:answer:<your answer>"`);
-        lines.push(`  c2c send ${sessionId} "question:${qId}:reject"`);
+        lines.push(`  c2c send ${c2cAlias} "question:${qId}:answer:<your answer>"`);
+        lines.push(`  c2c send ${c2cAlias} "question:${qId}:reject"`);
 
         void (async () => {
           const supervisors = await selectSupervisors();
