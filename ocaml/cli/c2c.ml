@@ -3377,6 +3377,16 @@ match storage with
      | Some d -> Printf.eprintf "  persist-dir=%s\n%!" d
      | None -> Printf.eprintf "  persist-dir=none (in-memory only)\n%!");
     let relay = Relay.InMemoryRelay.create ?persist_dir () in
+    let remote_polling_stop = match remote_broker_ssh_target, remote_broker_root with
+      | Some ssh_target, Some broker_root ->
+          let broker_id = Option.value remote_broker_id ~default:"default" in
+          let broker = { Relay_remote_broker.id = broker_id; ssh_target; broker_root } in
+          Printf.eprintf "  remote-broker: polling %s:%s\n%!" ssh_target broker_root;
+          Some (Relay_remote_broker.start_polling ~broker ~interval:5.0
+            ~on_fetch:(fun n -> Printf.eprintf "  [remote-broker] fetched %d messages\n%!" n))
+      | _ -> None
+    in
+    let _ = remote_polling_stop in
     let module Server = Relay.Relay_server(Relay.InMemoryRelay) in
     Lwt_main.run (Server.start_server ~host ~port ~relay ~token ~verbose ~gc_interval ?tls:tls_cfg ~allowlist ())
 

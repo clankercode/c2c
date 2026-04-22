@@ -2193,6 +2193,10 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
       let msgs = R.peek_inbox relay ~node_id ~session_id in
       respond_ok (json_ok [ ("messages", `List msgs) ])
 
+  let handle_remote_inbox session_id =
+    let msgs = Relay_remote_broker.get_messages ~session_id in
+    respond_ok (json_ok [ ("messages", `List msgs) ])
+
   (* Layer 4 slice 1: verify optional signed proof on room join/leave.
      Returns [Ok ()] when either (a) no proof fields are present (legacy
      path) or (b) all fields present and verify correctly. Returns
@@ -2718,6 +2722,11 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j -> handle_room_history relay j)
+
+      | `GET, path when String.length path > 16
+                    && String.sub path 0 16 = "/remote_inbox/" ->
+        let session_id = String.sub path 16 (String.length path - 16) in
+        handle_remote_inbox session_id
 
       | _ ->
         respond_not_found (json_error_str err_not_found ("unknown endpoint: " ^ path))
