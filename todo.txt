@@ -36,9 +36,7 @@ by deleting — git history keeps them if anyone needs to look back.
 - [x] add to c2c agent metadata (visible to other agents) a field for type (codex/claude/opencode/etc) — commit 44ffa2d: all configure scripts + c2c_start now set C2C_MCP_CLIENT_TYPE for all 5 client types
 - [x] the c2c resume line printed should include `-s <session_id>` as a workaround while session id persistence (and thus autoresumption) is not working properly. (commit c8af2f1)
 - [x] codex-headless Task 1: CLI alias and client list. (commit 94f2e45 + 75c2143)
-  Blocker: `ocaml/cli/c2c.ml` and start surfaces do not accept `codex-headless` yet, and the fast tests are missing.
 - [x] codex-headless Task 2: launcher entry and opaque resume ids. (commit 94f2e45 — Python side; OCaml placeholder config in place)
-  Blocker: managed start still assumes UUID-style resume ids and has no `codex-turn-start-bridge` launch path.
 - [x] codex-headless Task 3: thread-id handoff and lazy persistence. (commit 3d91280 + f2ddb7b)
   `c2c start codex-headless` now probes `--thread-id-fd`, persists opaque bridge thread ids lazily, and reuses them on resume.
 - [x] codex-headless Task 4: single-writer durable XML queue. (commit f2ddb7b)
@@ -46,7 +44,6 @@ by deleting — git history keeps them if anyone needs to look back.
 - [x] codex-headless Task 5: bridge stdin wiring and minimal console. (commit f2ddb7b)
   Headless launches now reserve bridge-owned stdin via named FIFO delivery; no PTY fallback path remains on the managed bridge transport.
 - [x] codex-headless Task 6: docs and regression coverage. (commit 6842b6e — commands.md, client-delivery.md, overview.md updated; test_start_help_mentions_codex_headless passes)
-  Blocker: public docs and quick tests do not describe or verify the unblocker headless path yet.
 - [x] codex-headless Task 7: tmux smoke coverage. (commit 4c9d60c + f2ddb7b)
   Capability-gated live tmux coverage now exercises startup plus first-message thread-id persistence on the landed Codex binaries.
 - [x] FOLLOW-UP (after current terminal E2E work): the new Codex binaries have landed. Revisit the blocked Codex / codex-headless plan items that were gated on missing binary support, then re-plan and implement the newly unblocked slices (especially updated TUI XML / bridge capability paths and their live tests). (implemented by f2ddb7b and verified live on 2026-04-22)
@@ -89,7 +86,6 @@ by deleting — git history keeps them if anyone needs to look back.
 - [x] `c2c start` should error if an agent runs it from their session directly. (commit 7dbe1f4)
 - [x] review all c2c commands for safety tier classification. Tier1: safe for agents (messaging, queries). Tier2: safe with care (lifecycle). Tier3: unsafe for agents (systemic). Tier4: internal plumbing. Implemented: `commands_man()` for tier-grouped help, `filter_commands()` to hide Tier3+4 when C2C_MCP_SESSION_ID is set, `command_tier_map()` for per-command classification. Compile-time GADT enforcement deferred to v2. jungel-coder 2026-04-22.
 - [x] (screenshot updated 7f1465d) BUG (c2c envelope): the `<c2c event="message" ...>` envelope needs an explicit field for reply medium (almost always `c2c_send`, but could be room, email, webhook, out-of-band, etc. in future). Current envelope has `from`/`alias`/`source`/`action_after` but no `reply_via` — recipients infer they should use `c2c_send` from convention, which is fragile and makes non-c2c-sourced messages (e.g. relay-bridged, mobile-app) ambiguous. Proposed shape: `reply_via="c2c_send" to="<alias>"` attribute. Screenshot example: `tmp/screenshots/c2c-reply-text.png`. Filed by Max 2026-04-22. (Originally committed as 0335e64, orphaned by a rebase — re-added here.)
-
 - [x] (dogfooded + PostCompact hook added) FEATURE (statefile: Claude Code): complete compacting-status integration for Claude Code. Path: plugin-handled. Claude PreCompact hook at `~/.claude/hooks/c2c-precompact.sh` (shipped this hour by galaxy-coder) calls `c2c set-compact`; PostCompact equivalent calls `c2c clear-compact`. Dogfood verification: end-to-end live test currently in progress by galaxy-coder as of 2026-04-22 21:13 local. Close this once the dogfood finding is filed green. Filed 2026-04-22 by Max.
 - [x] FEATURE (statefile: Codex headless): NOT FEASIBLE — Codex headless has no in-process compaction mechanism (no PreCompact/PostCompact hooks, no session.compacted event, no thread_id recycling signal). `codex-turn-start-bridge` exposes no compaction-related flags or hooks. Unlike Claude Code (item 78) and OpenCode (item 93), there is no lifecycle event to hook into. Kimi + Crush deferred until we have a first-class story. Filed 2026-04-23 by Lyra-Quill. Research: jungle-coder + ceo confirmation.
 - [x] BUG (CLI): `-h` does not produce help on any `c2c` subcommand — only `--help` works. Should be an alias for `--help` on every command (root + all subgroups + all leaves). Standard Unix convention. Fix likely in the cmdliner setup to add `-h` as an alias for the help flag across the tree. Filed by Max 2026-04-22.
