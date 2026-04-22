@@ -969,9 +969,10 @@ let health_cmd =
     Sys.file_exists (C2c_mcp.Broker.dead_letter_path broker)
   in
   let regs = C2c_mcp.Broker.list_registrations broker in
-  let alive_count =
-    List.filter C2c_mcp.Broker.registration_is_alive regs |> List.length
-  in
+  let liveness_counts = List.map C2c_mcp.Broker.registration_liveness_state regs in
+  let alive_count   = List.filter (( = ) C2c_mcp.Broker.Alive)   liveness_counts |> List.length in
+  let unknown_count = List.filter (( = ) C2c_mcp.Broker.Unknown) liveness_counts |> List.length in
+  let dead_count    = List.filter (( = ) C2c_mcp.Broker.Dead)    liveness_counts |> List.length in
   let rooms = C2c_mcp.Broker.list_rooms broker in
   let pty_cap = check_pty_inject_capability () in
   let pty_cap_str = match pty_cap with
@@ -1009,6 +1010,8 @@ let health_cmd =
           ; ("dead_letter_exists", `Bool dead_letter_exists)
           ; ("registrations", `Int (List.length regs))
           ; ("alive", `Int alive_count)
+          ; ("unknown", `Int unknown_count)
+          ; ("dead", `Int dead_count)
           ; ("rooms", `Int (List.length rooms))
           ; ("pty_inject_cap", `String (match pty_cap with `Ok -> "ok" | `Missing_cap _ -> "missing" | `Unknown -> "unknown"))
           ; ("stale_deprecated_daemons", stale_json)
@@ -1022,8 +1025,8 @@ let health_cmd =
       Printf.printf "root exists:    %s\n" (string_of_bool root_exists);
       Printf.printf "registry:       %s\n" (string_of_bool registry_exists);
       Printf.printf "dead-letter:    %s\n" (string_of_bool dead_letter_exists);
-      Printf.printf "registrations:  %d (%d alive)\n"
-        (List.length regs) alive_count;
+      Printf.printf "registrations:  %d (%d alive, %d unknown, %d dead)\n"
+        (List.length regs) alive_count unknown_count dead_count;
       Printf.printf "rooms:          %d\n" (List.length rooms);
       Printf.printf "pty-inject cap: %s\n" pty_cap_str;
       let (sup_col, sup_msg) = supervisor_check in
