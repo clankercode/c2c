@@ -25,3 +25,7 @@ end
 module Claude_renderer : sig
   val render : t -> string
 end
+
+module Codex_renderer : sig
+  val render : t -> string
+end

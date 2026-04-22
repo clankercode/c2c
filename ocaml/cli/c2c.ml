@@ -6060,12 +6060,14 @@ let agent_file_path ~client ~name =
   match client with
   | "opencode" -> ".opencode" // "agents" // (name ^ ".md")
   | "claude" -> ".claude" // "agents" // (name ^ ".md")
+  | "codex" -> ".codex" // "agents" // (name ^ ".md")
   | _ -> ".c2c" // "agents" // (name ^ ".md")
 
 let render_role_for_client (r : C2c_role.t) ~client =
   match client with
   | "opencode" -> Some (C2c_role.OpenCode_renderer.render r)
   | "claude" -> Some (C2c_role.Claude_renderer.render r)
+  | "codex" -> Some (C2c_role.Codex_renderer.render r)
   | _ -> None
 
 let write_agent_file ~client ~name ~content =
@@ -6775,7 +6777,7 @@ let roles_compile_term =
   in
   let client =
     Cmdliner.Arg.(value & opt (some string) (Some "opencode") & info [ "client"; "c" ]
-      ~docv:"CLIENT" ~doc:"Target client for rendering (opencode, claude).")
+      ~docv:"CLIENT" ~doc:"Target client for rendering (opencode, claude, codex, or 'all' for every supported client).")
   in
   let dry_run =
     Cmdliner.Arg.(value & flag & info [ "dry-run" ] ~doc:"Print output to stdout instead of writing files.")
@@ -6804,31 +6806,37 @@ let roles_compile_term =
   let n_roles = List.length roles in
   let subtitle = if n_roles = 1 then "1 role" else Printf.sprintf "%d roles" n_roles in
   Banner.print_banner ~subtitle:("roles compile  |  " ^ subtitle) "c2c roles";
+  let client_str = Option.value client ~default:"opencode" in
+  let targets =
+    if client_str = "all" then ["opencode"; "claude"; "codex"]
+    else [client_str]
+  in
   List.iter (fun (name, path) ->
     try
       let role = C2c_role.parse_file path in
-      let client_str = Option.value client ~default:"opencode" in
-      match render_role_for_client role ~client:client_str with
-      | Some rendered ->
-          if dry_run then
-            (Printf.printf "=== %s (%s) ===\n%s\n\n" name client_str rendered; flush stdout)
-          else
-             (let out_path = agent_file_path ~client:client_str ~name in
-              let dir = Filename.dirname out_path in
-              mkdir_p dir;
-              let lock_path = out_path ^ ".lock" in
-              let fd = Unix.openfile lock_path [Unix.O_RDWR; Unix.O_CREAT; Unix.O_TRUNC] 0o644 in
-              Fun.protect ~finally:(fun () -> Unix.close fd)
-                (fun () ->
-                  Unix.lockf fd Unix.F_LOCK 0;
-                  Fun.protect ~finally:(fun () -> Unix.lockf fd Unix.F_ULOCK 0)
-                    (fun () ->
-                      let oc = open_out out_path in
-                      Fun.protect ~finally:(fun () -> close_out oc)
-                        (fun () -> output_string oc rendered; output_char oc '\n');
-                      Printf.printf "  [roles compile] %s -> %s\n" path out_path)))
-      | None ->
-          Printf.eprintf "  [roles compile] skip %s: client '%s' not supported\n" name client_str
+      List.iter (fun target ->
+        match render_role_for_client role ~client:target with
+        | Some rendered ->
+            if dry_run then
+              (Printf.printf "=== %s (%s) ===\n%s\n\n" name target rendered; flush stdout)
+            else
+               (let out_path = agent_file_path ~client:target ~name in
+                let dir = Filename.dirname out_path in
+                mkdir_p dir;
+                let lock_path = out_path ^ ".lock" in
+                let fd = Unix.openfile lock_path [Unix.O_RDWR; Unix.O_CREAT; Unix.O_TRUNC] 0o644 in
+                Fun.protect ~finally:(fun () -> Unix.close fd)
+                  (fun () ->
+                    Unix.lockf fd Unix.F_LOCK 0;
+                    Fun.protect ~finally:(fun () -> Unix.lockf fd Unix.F_ULOCK 0)
+                      (fun () ->
+                        let oc = open_out out_path in
+                        Fun.protect ~finally:(fun () -> close_out oc)
+                          (fun () -> output_string oc rendered; output_char oc '\n');
+                        Printf.printf "  [roles compile] %s -> %s\n" path out_path)))
+        | None ->
+            Printf.eprintf "  [roles compile] skip %s: client '%s' not supported\n" name target
+      ) targets
     with Sys_error msg ->
       Printf.eprintf "  [roles compile] skip %s: %s\n" name msg
   ) roles;
