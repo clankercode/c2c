@@ -613,7 +613,7 @@ let list_cmd =
               match C2c_mcp.Broker.registration_liveness_state r with
               | C2c_mcp.Broker.Alive -> "alive"
               | C2c_mcp.Broker.Dead -> "dead "
-              | C2c_mcp.Broker.Unknown -> "???  "
+              | C2c_mcp.Broker.Unknown -> "??? (unknown client_type)"
             in
             let pid_str =
               match r.pid with
