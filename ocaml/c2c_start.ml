@@ -869,14 +869,16 @@ let prepare_launch_args ~(name : string) ~(client : string)
         (* Use --session-id <uuid> to create a brand-new session with a known id,
            or --resume <sid> to reattach an existing one. --session-id errors out
            if a session with that id already exists; --resume errors out if it
-           doesn't. So probe ~/.claude/projects/*/<uuid>.jsonl to pick. *)
+           doesn't. So probe ~/.claude/projects/*/<uuid>.jsonl to pick.
+           --dangerously-load-development-channels enables Claude Code to process
+           notifications/claude/channel from the c2c broker as <channel> tags. *)
         (match resume_session_id with
          | Some sid ->
              let flag =
                if claude_session_exists sid then "--resume" else "--session-id"
              in
-             [ flag; sid; "--name"; name ]
-         | None -> [ "--name"; name ])
+             [ flag; sid; "--name"; name; "--dangerously-load-development-channels" ]
+         | None -> [ "--name"; name; "--dangerously-load-development-channels" ])
     | "opencode" ->
         (* OpenCode rejects UUIDs — session IDs must start with "ses". Only
            pass --session when resuming a prior OpenCode-generated ID.
