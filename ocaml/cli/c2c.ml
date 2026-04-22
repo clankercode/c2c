@@ -175,6 +175,7 @@ let rec command_tier_map () : (string * safety) list =
   ; "doctor", Tier1
   ; "verify", Tier1
   ; "status", Tier1
+  ; "commands", Tier1
   ; "start", Tier2
   ; "stop", Tier2
   ; "restart", Tier2
