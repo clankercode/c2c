@@ -6307,16 +6307,6 @@ let agent_refine_term =
       Printf.printf "  set explicitly with: c2c config generation-client <claude|opencode|codex>\n%!";
       "opencode"
   in
-  let role_designer_path =
-    let p1 = Filename.concat (Sys.getcwd ()) ".c2c/roles/role-designer.md" in
-    let p2 = Filename.concat (Sys.getcwd ()) ".c2c/roles/builtins/role-designer.md" in
-    if Sys.file_exists p1 then p1
-    else if Sys.file_exists p2 then p2
-    else begin
-      Printf.eprintf "error: role-designer.md not found at %s or %s.\n%!" p1 p2;
-      exit 1
-    end
-  in
   let read_all path =
     let ic = open_in path in
     Fun.protect ~finally:(fun () -> close_in_noerr ic) @@ fun () ->
@@ -6325,7 +6315,16 @@ let agent_refine_term =
       really_input ic buf 0 n;
       Bytes.to_string buf
   in
-  let role_designer_body = read_all role_designer_path in
+  (* Prefer a user override at .c2c/roles/role-designer.md (e.g. a symlink to
+     an experimental variant), then the on-disk canonical builtin, and finally
+     the compile-time-embedded content so the binary works in any checkout. *)
+  let role_designer_body =
+    let p1 = Filename.concat (Sys.getcwd ()) ".c2c/roles/role-designer.md" in
+    let p2 = Filename.concat (Sys.getcwd ()) ".c2c/roles/builtins/role-designer.md" in
+    if Sys.file_exists p1 then read_all p1
+    else if Sys.file_exists p2 then read_all p2
+    else Role_designer_embedded.content
+  in
   let draft_body = read_all role_file_path in
   let prompt = Printf.sprintf
     "%s\n\n---\n\nWe are refining a role named `%s`. Here is the current draft at %s:\n\n---\n%s\n---\n\nInterview me about this agent and refine the role file in place. When I say \"done\", save it and exit.\n"
