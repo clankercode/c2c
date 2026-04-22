@@ -288,8 +288,12 @@ const C2CDelivery: Plugin = async (ctx) => {
 
   // Dedup window for permission notifications: track last 10 seen permission IDs.
   const seenPermissionIds: string[] = [];
-  // Pending async permission approvals (v2): permId → resolve function.
-  const pendingPermissions = new Map<string, (reply: string) => void>();
+  // Pending async permission approvals (v2): permId → {resolve, expectedSenderAlias}.
+  // Security: expectedSenderAlias prevents alias-spoofing replies.
+  const pendingPermissions = new Map<string, {
+    resolve: (reply: string) => void;
+    expectedSenderAlias: string;
+  }>();
   // Dedup window for question.asked events.
   const seenQuestionIds: string[] = [];
   // Pending question replies: questionId → resolve({answer, rejected}).
@@ -974,10 +978,11 @@ const C2CDelivery: Plugin = async (ctx) => {
     });
   }
 
-  /** Await a supervisor permission reply; resolves with decision string or "timeout". */
-  function waitForPermissionReply(permId: string, timeoutMs: number): Promise<string> {
+  /** Await a supervisor permission reply; resolves with decision string or "timeout".
+   *  Security: expectedSenderAlias is verified on reply delivery to prevent alias spoofing. */
+  function waitForPermissionReply(permId: string, timeoutMs: number, expectedSenderAlias: string): Promise<string> {
     return new Promise((resolve) => {
-      pendingPermissions.set(permId, resolve);
+      pendingPermissions.set(permId, { resolve, expectedSenderAlias });
       setTimeout(async () => {
         if (!pendingPermissions.has(permId)) return;
         const decision = await peekInboxForPermission(permId);
@@ -1028,10 +1033,15 @@ const C2CDelivery: Plugin = async (ctx) => {
             await log(`late permission reply DM error: ${err}`);
           }
         } else if (pendingPermissions.has(permReply.permId)) {
-          const resolve = pendingPermissions.get(permReply.permId)!;
-          pendingPermissions.delete(permReply.permId);
-          resolve(permReply.decision);
-          await log(`permission reply from ${msg.from_alias}: ${permReply.permId} → ${permReply.decision}`);
+          const { resolve, expectedSenderAlias } = pendingPermissions.get(permReply.permId)!;
+          // Security: verify reply comes from the expected supervisor, not an imposter.
+          if (msg.from_alias !== expectedSenderAlias) {
+            await log(`SECURITY: permission reply for ${permReply.permId} from ${msg.from_alias} != expected ${expectedSenderAlias} — dropping, spoof attempt?`);
+          } else {
+            pendingPermissions.delete(permReply.permId);
+            resolve(permReply.decision);
+            await log(`permission reply from ${msg.from_alias}: ${permReply.permId} → ${permReply.decision}`);
+          }
         } else {
           await log(`permission reply ${permReply.permId} skipped (not pending or already resolved)`);
         }
@@ -1390,7 +1400,7 @@ const C2CDelivery: Plugin = async (ctx) => {
           const minutes = Math.round(permissionTimeoutMs / 60000);
           const who = supervisors.length === 1 ? supervisors[0] : `${supervisors.length} supervisors`;
           void toast(`c2c · awaiting approval from ${who} (${minutes}m)`);
-          const reply = await waitForPermissionReply(permId, permissionTimeoutMs);
+          const reply = await waitForPermissionReply(permId, permissionTimeoutMs, from);
           const timedOut = reply === "timeout";
           const response =
             reply === "approve-once" ? "once" :
