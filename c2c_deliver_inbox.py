@@ -14,7 +14,7 @@ from typing import Any
 import c2c_inject
 import c2c_poll_inbox
 import c2c_poker
-import c2c_pts_inject
+
 
 KIMI_SUBMIT_DELAY = 1.5
 
