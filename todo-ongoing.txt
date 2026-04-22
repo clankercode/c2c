@@ -88,4 +88,4 @@ Goal: enable a remote node to receive c2c messages through a relay server withou
 
 Status: **active** — jungle-coder analyzed OCaml relay surface. Gap: no `c2c relay poll-inbox --url` for polling a remote broker. Decision made (CEO 2026-04-23): **Option A** (broker-extend) — relay acts as message ferry for broker JSON files. Simpler than relay-native inbox. Option B (relay-native inbox) deferred to v2.
 
-Next: design broker-extend transport; implement `c2c relay poll-inbox --url`. Owner: TBD.
+Next: design broker-extend transport; implement `c2c relay poll-inbox --url`. Owner: jungle-coder.
