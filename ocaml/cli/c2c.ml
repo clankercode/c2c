@@ -8742,8 +8742,8 @@ let print_enriched_landing () =
     let status =
       match on_path, configured with
       | false, _ -> "not on PATH"
-      | true, true -> "configured"
-      | true, false -> "on PATH, not configured"
+      | true, true -> "configured (c2c MCP ready)"
+      | true, false -> "on PATH, not configured — run 'c2c install' to set up"
     in
     Printf.printf "  %-10s %s\n" c status
   ) clients;
