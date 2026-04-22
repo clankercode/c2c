@@ -5715,11 +5715,16 @@ let agent_new_term =
     Cmdliner.Arg.(value & opt (some string) (Some "subagent") & info [ "role"; "r" ]
       ~docv:"TYPE" ~doc:"Role type: subagent, primary, or all.")
   in
+  let rec mkdir_p dir =
+    if dir = "/" || dir = "." || dir = "" then ()
+    else if Sys.file_exists dir then ()
+    else begin mkdir_p (Filename.dirname dir); try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> () end
+  in
   let+ name = name
   and+ description = description
   and+ role_type = role_type in
   let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
-  (try Unix.mkdir roles_dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  mkdir_p roles_dir;
   let path = Filename.concat roles_dir (name ^ ".md") in
   if Sys.file_exists path then begin
     Printf.eprintf "error: role already exists: %s\n%!" path;
@@ -5729,13 +5734,21 @@ let agent_new_term =
     "---\n\
      description: %s\n\
      role: %s\n\
-     model:\n\
+     # model: claude-sonnet-4-7   # optional; omit if you don't need a specific model\n\
      c2c:\n\
+     #   alias: %s              # your c2c messaging alias (defaults to instance name)\n\
+     #   auto_join_rooms: [swarm-lounge]  # rooms to auto-join on startup\n\
      opencode:\n\
+     #   theme: tron            # optional; one of the 11 curated themes\n\
+     #   permission:\n\
+     #     bash: {\"*\": \"deny\", \"just *\": \"allow\"}\n\
+     claude:\n\
+     #   tools: [Read, Bash, Edit, Task]   # optional; restrict available tools\n\
      ---\n\
      You are a %s agent.\n"
     (match description with Some d when d <> "" -> d | _ -> "TODO: describe this agent's purpose")
     (Option.value role_type ~default:"subagent")
+    name
     name
   in
   let oc = open_out path in

@@ -62,24 +62,40 @@ let starts_with s c =
 let parse_yaml_entries fm_lines =
   let entries = ref [] in
   let current_section = ref "" in
+  let current_list_key = ref "" in
+  let list_items = ref [] in
+  let flush_list () =
+    if !current_list_key <> "" && !list_items <> [] then
+      entries := (!current_list_key, "[" ^ String.concat ", " (List.rev !list_items) ^ "]") :: !entries;
+    current_list_key := "";
+    list_items := []
+  in
   List.iter (fun line ->
     let line = String.trim line in
     if line = "" || starts_with line '#' then ()
-    else if starts_with line '-' then ()
-    else
+    else if starts_with line '-' then (
+      (* multi-line list item: accumulate under current_list_key *)
+      let item = String.trim (String.sub line 1 (String.length line - 1)) in
+      list_items := item :: !list_items
+    ) else
       match String.index_opt line ':' with
       | None -> ()
       | Some colon_pos ->
+          flush_list ();
           let key = String.sub line 0 colon_pos in
           let rest = String.trim (String.sub line (colon_pos + 1) (String.length line - colon_pos - 1)) in
-          if rest = "" || starts_with rest '[' || starts_with rest '{' then
-            (* section header *)
+          if rest = "" then
             current_section := key
           else
-            (* scalar entry *)
             let full_key = if !current_section = "" then key else !current_section ^ "." ^ key in
-            entries := (full_key, trim_quotes rest) :: !entries
+            if starts_with rest '[' then
+              (* inline flow sequence: parse immediately and store *)
+              let items = parse_list rest in
+              entries := (full_key, "[" ^ String.concat ", " items ^ "]") :: !entries
+            else
+              entries := (full_key, trim_quotes rest) :: !entries
   ) fm_lines;
+  flush_list ();
   List.rev !entries
 
 let assoc_find k alist = try Some (List.assoc k alist) with Not_found -> None
