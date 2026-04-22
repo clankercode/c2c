@@ -5933,6 +5933,42 @@ let roles_compile_term =
 
 let roles_compile = Cmdliner.Cmd.v (Cmdliner.Cmd.info "roles" ~doc:"Compile canonical role(s) to client agent files.") roles_compile_term
 
+let roles_validate_term =
+  let+ () = Cmdliner.Term.const () in
+  let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
+  let roles =
+    try
+      Array.to_list (Sys.readdir roles_dir)
+      |> List.filter (fun f -> String.ends_with ~suffix:".md" f)
+      |> List.map (fun f -> (String.sub f 0 (String.length f - 3), Filename.concat roles_dir f))
+    with Sys_error _ ->
+      Printf.eprintf "error: roles directory not found: %s\n%!" roles_dir;
+      exit 1
+  in
+  let n_ok = ref 0 in
+  let n_warn = ref 0 in
+  let n_err = ref 0 in
+  List.iter (fun (name, path) ->
+    try
+      let role = C2c_role.parse_file path in
+      let has_issues = ref false in
+      if role.C2c_role.description = "" then
+        (Printf.eprintf "  %s: missing description\n%!" name; has_issues := true);
+      if role.C2c_role.role = "" || role.C2c_role.role = "subagent" then
+        (Printf.eprintf "  %s: role is empty or default 'subagent'\n%!" name; has_issues := true);
+      if role.C2c_role.body = "" then
+        (Printf.eprintf "  %s: body is empty\n%!" name; has_issues := true);
+      if !has_issues then incr n_warn
+      else incr n_ok
+    with Sys_error msg ->
+      Printf.eprintf "  %s: error reading: %s\n%!" name msg;
+      incr n_err
+  ) roles;
+  Printf.printf "[roles validate] %d ok, %d warnings, %d errors\n%!" !n_ok !n_warn !n_err;
+  if !n_err > 0 then exit 1
+
+let roles_validate = Cmdliner.Cmd.v (Cmdliner.Cmd.info "roles-validate" ~doc:"Validate canonical role files for completeness.") roles_validate_term
+
 (* --- subcommand: gui ------------------------------------------------------ *)
 
 let find_gui_binary () =
@@ -7693,4 +7729,4 @@ let () =
            [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
            ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
            ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-            ; serve; mcp; start; agent_group; roles_compile; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; help ]))
+            ; serve; mcp; start; agent_group; roles_compile; roles_validate; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; help ]))

@@ -167,7 +167,7 @@ let parse_string ?(snippets_dir = ".c2c/snippets") ?(filename = "(string)") cont
   let find_section sec =
     List.filter (fun (k, _) -> String.length k > String.length sec + 1 &&
                                String.sub k 0 (String.length sec + 1) = sec ^ ".") entries
-    |> List.map (fun (k, v) -> (String.sub k (String.length sec + 1) (String.length k - String.length sec - 1), v))
+    |> List.map (fun (k, v) -> (k, v))
   in
   let body = String.concat "\n" body_lines |> String.trim in
   lint_body_injection body ~filename;
@@ -219,18 +219,29 @@ module OpenCode_renderer = struct
     lines := ("description: " ^ yaml_scalar r.description) :: !lines;
     lines := ("role: " ^ r.role) :: !lines;
     (match r.model with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
-    if r.opencode <> [] then begin
-      lines := "opencode:" :: !lines;
-      List.iter (fun (k, v) ->
-        lines := ("  " ^ k ^ ": " ^ yaml_scalar v) :: !lines
-      ) r.opencode;
-    end;
     if r.c2c_alias <> None || r.c2c_auto_join_rooms <> [] then begin
       lines := "c2c:" :: !lines;
       (match r.c2c_alias with Some a -> lines := ("  alias: " ^ a) :: !lines | None -> ());
       if r.c2c_auto_join_rooms <> [] then
         lines := ("  auto_join_rooms: [" ^ String.concat ", " r.c2c_auto_join_rooms ^ "]") :: !lines;
     end;
+    let rec emit_entries current_section entries =
+      match entries with
+      | [] -> ()
+      | (k, v) :: rest ->
+          let dot_idx = String.index_opt k '.' in
+          let section = match dot_idx with Some i -> String.sub k 0 i | None -> k in
+          if section <> current_section then (
+            lines := (section ^ ":") :: !lines;
+            emit_entries section ((k, v) :: rest)
+          ) else (
+            let field_name = match dot_idx with Some i -> String.sub k (i + 1) (String.length k - i - 1) | None -> k in
+            lines := ("  " ^ field_name ^ ": " ^ yaml_scalar v) :: !lines;
+            emit_entries current_section rest
+          )
+    in
+    let all_entries = r.opencode @ r.claude @ r.codex @ r.kimi in
+    emit_entries "" all_entries;
     let fm = String.concat "\n" (List.rev !lines) in
     "---\n" ^ fm ^ "\n---\n\n" ^ r.body
 end
