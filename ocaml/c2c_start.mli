@@ -169,6 +169,7 @@ val run_outer_loop :
   broker_root:string ->
   ?binary_override:string ->
   ?alias_override:string ->
+  ?session_id:string ->
   ?resume_session_id:string ->
   ?one_hr_cache:bool ->
   ?kickoff_prompt:string ->

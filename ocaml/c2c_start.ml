@@ -965,8 +965,9 @@ let start_wire_daemon ~(name : string) ~(alias : string)
 let run_outer_loop ~(name : string) ~(client : string)
     ~(extra_args : string list) ~(broker_root : string)
     ?(binary_override : string option) ?(alias_override : string option)
-    ?(resume_session_id : string option) ?(one_hr_cache = false)
-    ?(kickoff_prompt : string option) () : int =
+    ?(session_id : string option) ?(resume_session_id : string option)
+    ?(one_hr_cache = false) ?(kickoff_prompt : string option) () : int =
+  let session_id = Option.value session_id ~default:name in
   let cfg =
     try Stdlib.Hashtbl.find clients client
     with Not_found ->
@@ -1424,7 +1425,7 @@ let run_outer_loop ~(name : string) ~(client : string)
         record_death ~broker_root ~name ~client ~exit_code ~duration_s:elapsed ~inst_dir;
 
       let resume_cmd =
-        Printf.sprintf "c2c start %s -n %s" client name
+        Printf.sprintf "c2c start %s -n %s -s %s" client name session_id
         ^ (match binary_override with None -> "" | Some b -> Printf.sprintf " --bin %s" b)
       in
       print_endline ("\nresume via: " ^ resume_cmd);
@@ -1636,7 +1637,8 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
   write_config cfg;
 
   run_outer_loop ~name ~client ~extra_args ~broker_root
-    ?binary_override ?alias_override ~resume_session_id:cfg.resume_session_id
+    ?binary_override ?alias_override ~session_id:cfg.session_id
+    ~resume_session_id:cfg.resume_session_id
     ~one_hr_cache ?kickoff_prompt ()
 
 (* Signal the managed inner client so the outer loop relaunches it. Designed
