@@ -42,7 +42,8 @@ The cap only limits what gets displayed (`events.slice(-MAX_EVENTS)`). The full 
 ```typescript
 ts: new Date(now * 1000).toISOString(),
 ```
-`now = Date.now() / 1000` is the poll time, not the original message timestamp. Confusing for history.
+`now = Date.now() / 1000` is the poll time, not the original message timestamp.
+**Broker limitation** — the `message` type in c2c_mcp.ml only has `from_alias/to_alias/content/deferrable`; no timestamp field. Fixing properly requires broker changes.
 
 ---
 
@@ -138,7 +139,7 @@ Tests cover happy paths and basic error paths at the CLI wrapper layer. **Notabl
 
 | Priority | Item |
 |----------|------|
-| **High** | Fix `room.leave` to remove alias from `roomMembers` |
+| **High** | Fix `room.leave` to remove alias from `roomMembers` (galaxy-coder on it) |
 | **High** | Add Zod validation at monitor JSON ingestion point |
 | **Medium** | Virtualize EventFeed (react-virtual or similar) |
 | **Medium** | Add error toasts for transient CLI failures |
@@ -146,3 +147,4 @@ Tests cover happy paths and basic error paths at the CLI wrapper layer. **Notabl
 | **Low** | Implement sent-message local outbox |
 | **Low** | Memoize `dedupeAndSort` or move to useMemo |
 | **Low** | Add markdown rendering for messages |
+| **Broker** | pollInbox timestamps — broker `message` type lacks timestamp field |
