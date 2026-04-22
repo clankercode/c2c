@@ -37,6 +37,22 @@ let room_send_sign_ctx = "c2c/v1/room-send"
 let relay_err_unsupported_enc = "unsupported_enc"
 let relay_err_not_invited = "not_invited"
 let relay_err_not_a_member = "not_a_member"
+let relay_err_unsigned_room_op = "unsigned_room_op"
+
+(* Gate for Phase 2 migration: when C2C_REQUIRE_SIGNED_ROOM_OPS=1,
+   room ops (join/leave/send/invite/uninvite/set_visibility) require
+   body-level Ed25519 proof and reject unsigned requests.
+   Default (unset or "0"): legacy behavior — accept unsigned.
+   Migration path:
+     Phase 1: server ships with gate off; OCaml CLI updated to sign.
+     Phase 2: Python relay client updated to sign.
+     Phase 3: gate defaults to "1" (require signed).
+   Operators can set C2C_REQUIRE_SIGNED_ROOM_OPS=0 on the server to
+   temporarily revert if needed during the transition. *)
+let require_signed_room_ops () =
+  match Sys.getenv_opt "C2C_REQUIRE_SIGNED_ROOM_OPS" with
+  | Some "1" -> true
+  | _ -> false
 
 (* Layer 4 slice 5: signed invite / uninvite / set_visibility. *)
 let room_invite_sign_ctx = "c2c/v1/room-invite"
@@ -2220,7 +2236,12 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
       Res.Error (relay_err_missing_proof_field,
         "identity_pk, sig, nonce, and ts must all be present together")
     else if not has_proof then
-      Res.Ok ()  (* legacy unsigned path — accept *)
+      if require_signed_room_ops () then
+        Res.Error (relay_err_unsigned_room_op,
+          "unsigned room op rejected; client must upgrade to sign room ops "
+          ^ "and/or set C2C_REQUIRE_SIGNED_ROOM_OPS=0 on the server")
+      else
+        Res.Ok ()  (* legacy unsigned path — accept *)
     else
       match decode_b64url identity_pk_b64 with
       | Res.Error _ -> Res.Error (err_bad_request, "identity_pk not base64url-nopad")
