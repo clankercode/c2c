@@ -15,26 +15,33 @@ class TmuxDriver:
 
     def start(self, spec: TerminalStartSpec) -> TerminalHandle:
         shell_cmd = " ".join(shlex.quote(part) for part in spec.command)
-        result = subprocess.run(
+        command = [
+            "tmux",
+            "new-session",
+            "-d",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-x",
+            str(spec.cols),
+            "-y",
+            str(spec.rows),
+        ]
+        for key, value in spec.env.items():
+            command.extend(["-e", f"{key}={value}"])
+        command.extend(
             [
-                "tmux",
-                "new-session",
-                "-d",
-                "-P",
-                "-F",
-                "#{pane_id}",
-                "-x",
-                str(spec.cols),
-                "-y",
-                str(spec.rows),
                 "bash",
                 "-lc",
                 f"cd {shlex.quote(str(spec.cwd))} && {shell_cmd}",
-            ],
+            ]
+        )
+        result = subprocess.run(
+            command,
             capture_output=True,
             text=True,
             check=True,
-            env={**os.environ, **spec.env},
+            env=os.environ.copy(),
         )
         return TerminalHandle(backend="tmux", target=result.stdout.strip())
 

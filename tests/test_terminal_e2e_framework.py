@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 import shutil
+import shlex
 from unittest import mock
 
 import pytest
@@ -344,11 +345,11 @@ def test_scenario_fixture_provides_workdir_and_artifacts(scenario) -> None:
 def test_tmux_driver_start_uses_new_session_and_returns_pane_handle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], dict[str, object]]] = []
     completed = mock.Mock(stdout="%42\n")
 
     def fake_run(cmd: list[str], **kwargs: object) -> mock.Mock:
-        calls.append(cmd)
+        calls.append((cmd, kwargs))
         return completed
 
     monkeypatch.setattr("tests.e2e.framework.tmux_driver.subprocess.run", fake_run)
@@ -358,14 +359,23 @@ def test_tmux_driver_start_uses_new_session_and_returns_pane_handle(
         TerminalStartSpec(
             command=["bash", "-lc", "echo hi"],
             cwd=tmp_path,
-            env={},
+            env={"C2C_TEST_ENV": "alpha", "C2C_OTHER": "beta"},
             title="demo",
+            cols=111,
+            rows=37,
         )
     )
 
     assert handle.backend == "tmux"
     assert handle.target == "%42"
-    assert calls[0][:2] == ["tmux", "new-session"]
+    cmd, kwargs = calls[0]
+    assert cmd[:6] == ["tmux", "new-session", "-d", "-P", "-F", "#{pane_id}"]
+    assert ["-x", "111"] == cmd[6:8]
+    assert ["-y", "37"] == cmd[8:10]
+    assert ["-e", "C2C_TEST_ENV=alpha", "-e", "C2C_OTHER=beta"] == cmd[10:14]
+    assert cmd[14:16] == ["bash", "-lc"]
+    assert cmd[16] == f"cd {shlex.quote(str(tmp_path))} && bash -lc 'echo hi'"
+    assert "env" not in kwargs or kwargs["env"].get("C2C_TEST_ENV") != "alpha"
 
 
 def test_tmux_driver_enter_uses_repo_helper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
