@@ -66,7 +66,7 @@ Project Folder: **todo**
 
 Goal: every deprecated / broken / superseded script lives under `deprecated/` (or similar), not mixed in with live tooling. The repo root + `scripts/` + `c2c_*.py` collection are currently polluted with shims kept for historical reasons. Moving them out improves discoverability, shrinks what new agents have to grep through, and makes the OCaml-port progress legible at a glance.
 
-Status: **done** — c2c_inject_parts.py moved to deprecated/; c2c_pts_inject.py already has DEPRECATED docstring (used as fallback by c2c_deliver_inbox); c2c_pty_inject.py marked ACTIVE (production backend for PTY injection, used by c2c_poker/claude_send_msg/c2c_restart_me).
+Status: **done** — c2c_inject_parts.py in deprecated/; c2c_pts_inject.py DEPRECATED (zero live callers — dead import removed from c2c_deliver_inbox; kept in root for test coverage); c2c_pty_inject.py marked ACTIVE (production backend for PTY injection).
 
 ### Terminal E2E framework
 
