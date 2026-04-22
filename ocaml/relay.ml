@@ -2241,7 +2241,8 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
           "unsigned room op rejected; client must upgrade to sign room ops "
           ^ "and/or set C2C_REQUIRE_SIGNED_ROOM_OPS=0 on the server")
       else
-        Res.Ok ()  (* legacy unsigned path — accept *)
+        (Logs.warn (fun m -> m "unsigned room op %s for %S (no identity loaded — this is safe in dev but indicates a client gap in prod)" sign_ctx alias);
+         Res.Ok ())  (* legacy unsigned path — accept *)
     else
       match decode_b64url identity_pk_b64 with
       | Res.Error _ -> Res.Error (err_bad_request, "identity_pk not base64url-nopad")
