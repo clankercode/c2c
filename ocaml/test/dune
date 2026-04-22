@@ -31,7 +31,7 @@
 (test
  (name test_c2c_name)
  (modules test_c2c_name)
- (libraries c2c_mcp))
+ (libraries c2c_mcp alcotest))
 
 (test
  (name test_c2c_role)

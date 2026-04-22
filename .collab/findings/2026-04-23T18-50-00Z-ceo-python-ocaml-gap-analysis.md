@@ -104,7 +104,7 @@
 
 | Priority | Script | Verdict | Effort | Status |
 |----------|--------|---------|--------|--------|
-| 1 | `c2c_relay_rooms.py` (3 subcommands) | PORT to OCaml | Low | Pending |
+| 1 | `c2c_relay_rooms.py` (3 subcommands) | PORT to OCaml | Low | ✅ Done `5dc11c8` |
 | 2 | `c2c_mcp.py` | REPLACE with shell script | Low | Pending |
 | 3 | `c2c_deliver_inbox.py` | KEEP (live Python CLI dispatch + tests) | N/A | No action |
 | 4 | `c2c_poker.py` | KEEP (OCaml spawns it, c2c_deliver_inbox imports it) | N/A | No action |
@@ -112,8 +112,18 @@
 | 6 | `c2c_claude_wake_daemon.py` | Already in deprecated/ | Done | No action needed |
 | 7 | `c2c_pts_inject.py` | KEEP (imported by live c2c_deliver_inbox.py) | N/A | No action |
 | 8 | `c2c_wire_daemon.py` | KEEP (live Python CLI wire-daemon dispatch + tests) | N/A | No action |
-| 9 | `c2c_relay_connector.py` | PORT to OCaml | Medium | Pending |
+| 9 | `c2c_relay_connector.py` | PORT to OCaml | Medium | ✅ Done `78c65ad` + `e0cb42b` |
 | 10 | `c2c_setcap.py` | KEEP-PYTHON | N/A | No action |
+
+### Post-port follow-up improvements (non-blocking)
+
+These are minor gaps identified after the core port was verified complete:
+
+| Item | Description | Priority |
+|------|-------------|----------|
+| F1 | Signal handling in OCaml run loop (graceful SIGTERM/SIGINT) — Python has this | Medium |
+| F2 | TLS/CA bundle support (`--ca-bundle` arg) for corporate proxies | Low |
+| F3 | `node_id` derivation: hostname+git-hash (matches Python) vs current "unknown-node" fallback | Low |
 
 ---
 
