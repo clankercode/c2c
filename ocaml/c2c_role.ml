@@ -125,7 +125,27 @@ let resolve_includes t snippets_dir =
                    else combined_snippets ^ "\n\n" ^ t.body in
     { t with body = new_body }
 
-let parse_string ?(snippets_dir = ".c2c/snippets") content =
+let lint_body_injection (body : string) ~(filename : string) =
+  let open_tag = "<c2c " in
+  let close_tag = "</c2c>" in
+  let rec scan line_num lines =
+    match lines with
+    | [] -> ()
+    | line :: rest ->
+        let trimmed = String.trim line in
+        if String.length trimmed >= String.length open_tag &&
+           String.sub trimmed 0 (String.length open_tag) = open_tag then
+          Printf.eprintf "warning: %s:%d: possible c2c event injection detected\n%!"
+            filename line_num
+        else if String.length trimmed >= String.length close_tag &&
+                String.sub trimmed 0 (String.length close_tag) = close_tag then
+          Printf.eprintf "warning: %s:%d: possible c2c event injection detected (closing tag)\n%!"
+            filename line_num;
+        scan (line_num + 1) rest
+  in
+  scan 1 (String.split_on_char '\n' body)
+
+let parse_string ?(snippets_dir = ".c2c/snippets") ?(filename = "(string)") content =
   let fm_lines, body_lines = split_frontmatter content in
   let entries = parse_yaml_entries fm_lines in
   let find k = assoc_find k entries in
@@ -134,6 +154,8 @@ let parse_string ?(snippets_dir = ".c2c/snippets") content =
                                String.sub k 0 (String.length sec + 1) = sec ^ ".") entries
     |> List.map (fun (k, v) -> (String.sub k (String.length sec + 1) (String.length k - String.length sec - 1), v))
   in
+  let body = String.concat "\n" body_lines |> String.trim in
+  lint_body_injection body ~filename;
   let t = {
     description = (match find "description" with Some v -> v | None -> "");
     role = (match find "role" with Some v -> v | None -> "subagent");
@@ -150,7 +172,7 @@ let parse_string ?(snippets_dir = ".c2c/snippets") content =
     claude = find_section "claude";
     codex = find_section "codex";
     kimi = find_section "kimi";
-    body = String.concat "\n" body_lines |> String.trim;
+    body;
   } in
   resolve_includes t snippets_dir
 
@@ -166,7 +188,7 @@ let parse_file path =
     else
       Filename.concat role_dir ".c2c/snippets"
   in
-  parse_string ~snippets_dir content
+  parse_string ~snippets_dir ~filename:path content
 
 (* Renderers *)
 

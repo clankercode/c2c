@@ -15,7 +15,7 @@ type t = {
 }
 
 val empty : t
-val parse_string : ?snippets_dir:string -> string -> t
+val parse_string : ?snippets_dir:string -> ?filename:string -> string -> t
 val parse_file : string -> t
 
 module OpenCode_renderer : sig
