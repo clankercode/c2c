@@ -220,11 +220,16 @@ let rec command_tier_map () : (string * safety) list =
   ; "diag", Tier3
   ; "smoke-test", Tier3
   ; "inject", Tier4
-  ; "hook", Tier4
+  (* hook, oc-plugin, cc-plugin: internal plumbing invoked by plugin subprocesses
+     (OC plugin via spawn, CC via PostToolUse hook). They MUST remain invokable
+     even inside agent sessions — the plugin running inside every managed session
+     sets C2C_MCP_SESSION_ID and would otherwise be blocked from draining its own
+     inbox. Tier1 so the filter accepts them unconditionally. *)
+  ; "hook", Tier1
   ; "serve", Tier4
   ; "mcp", Tier4
-  ; "oc-plugin", Tier4
-  ; "cc-plugin", Tier4
+  ; "oc-plugin", Tier1
+  ; "cc-plugin", Tier1
   ; "state-read", Tier4
   ; "state-write", Tier4
   ; "wire-daemon-start", Tier4
@@ -6620,7 +6625,7 @@ let agent_refine_term =
   in
   let argv = match client with
     | "claude" -> [| "claude"; "--append-system-prompt"; prompt |]
-    | "opencode" -> [| "opencode"; "run"; "-p"; prompt |]
+    | "opencode" -> [| "opencode"; "--prompt"; prompt |]
     | "codex" -> [| "codex"; "exec"; prompt |]
     | other ->
       Printf.eprintf "error: unknown generation_client '%s' (expected claude|opencode|codex)\n%!" other;
