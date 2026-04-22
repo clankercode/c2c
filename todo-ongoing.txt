@@ -36,9 +36,9 @@ Project Folder: **todo**
 
 Goal: deprecate all Python in the c2c runtime. Every `c2c` feature should be pure OCaml. Python only for test scaffolding / one-shot scripts.
 
-Status: **active** — CLI surface, broker, MCP server, relay, agent-file parser/renderer, Banner all OCaml. Deprecated scripts (wake_daemon, inject) moved to `deprecated/`. Core runtime (c2c_mcp, c2c_broker_gc, all c2c_relay*.py) fully ported.
+Status: **active** — CLI surface, broker, MCP server, relay, agent-file parser/renderer, Banner all OCaml. Deprecated scripts (wake_daemon, inject) moved to `deprecated/`. Core runtime (c2c_mcp, c2c_broker_gc, all c2c_relay*.py) fully ported. Poker wrapper (c2c_poker.ml) done; delivers via Python backend.
 
-Next: port `c2c_start.py` (managed-instance harness) — primary remaining Python runtime piece. Owner: jungle-coder. Secondary: configure_*.py scripts (client setup, can remain Python).
+Next: port remaining `c2c_start.py` sidecars — wire daemon (OCaml c2c_wire_bridge.ml exists but not wired as default), deliver daemon (c2c-inbox-hook-ocaml exists but not wired as default). Also: remote relay transport v1 spec written (`.collab/remote-relay-transport/design-v1.md`), owner: jungle-coder. Secondary: configure_*.py scripts (client setup, can remain Python).
 
 ### Sitrep discipline
 
