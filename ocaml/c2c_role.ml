@@ -65,6 +65,18 @@ let split_frontmatter content =
 let starts_with s c =
   String.length s > 0 && s.[0] = c
 
+let is_section_key fm_lines idx =
+  let n = List.length fm_lines in
+  let rec skip_empty acc =
+    if acc >= n then None
+    else let line = List.nth fm_lines acc in
+         if line = "" || starts_with (String.trim line) '#' then skip_empty (acc + 1)
+         else Some line
+  in
+  match skip_empty (idx + 1) with
+  | None -> false
+  | Some next -> starts_with next ' ' || starts_with next '\t'
+
 let parse_yaml_entries fm_lines =
   let entries = ref [] in
   let current_section = ref "" in
@@ -76,12 +88,13 @@ let parse_yaml_entries fm_lines =
     current_list_key := "";
     list_items := []
   in
-  List.iter (fun line ->
-    let line = String.trim line in
+  let n = List.length fm_lines in
+  for i = 0 to n - 1 do
+    let raw_line = List.nth fm_lines i in
+    let line = String.trim raw_line in
     if line = "" || starts_with line '#' then ()
     else if starts_with line '-' then (
-      (* multi-line list item: accumulate under current_list_key *)
-      let item = String.trim (String.sub line 1 (String.length line - 1)) in
+      let item = String.sub raw_line 1 (String.length raw_line - 1) |> String.trim in
       list_items := item :: !list_items
     ) else
       match String.index_opt line ':' with
@@ -89,17 +102,20 @@ let parse_yaml_entries fm_lines =
       | Some colon_pos ->
           flush_list ();
           let key = String.sub line 0 colon_pos in
-          let rest = String.trim (String.sub line (colon_pos + 1) (String.length line - colon_pos - 1)) in
+          let rest_trimmed = String.trim (String.sub line (colon_pos + 1) (String.length line - colon_pos - 1)) in
+          let is_root = raw_line.[0] <> ' ' && raw_line.[0] <> '\t' in
+          if is_root then current_section := "";
           let full_key = if !current_section = "" then key else !current_section ^ "." ^ key in
-          if rest = "" then
+          if rest_trimmed = "" && is_section_key fm_lines i then
+            current_section := full_key
+          else if rest_trimmed = "" then
             entries := (full_key, "") :: !entries
-          else if starts_with rest '[' then
-            (* inline flow sequence: parse immediately and store *)
-            let vals = parse_list rest in
+          else if starts_with rest_trimmed '[' then
+            let vals = parse_list rest_trimmed in
             entries := (full_key, "[" ^ String.concat ", " vals ^ "]") :: !entries
           else
-            entries := (full_key, trim_quotes rest) :: !entries
-  ) fm_lines;
+            entries := (full_key, trim_quotes rest_trimmed) :: !entries
+  done;
   flush_list ();
   List.rev !entries
 
