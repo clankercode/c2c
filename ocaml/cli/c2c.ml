@@ -6632,6 +6632,18 @@ let agent_refine_term =
       exit 1
   in
   Printf.printf "executing: %s (role=%s, file=%s)\n%!" argv.(0) name role_file_path;
+  (* Print the argv before exec so we can debug bad flag shapes (e.g. an
+     `opencode run` vs `opencode --prompt` mismatch). Prompt is long and
+     would drown the output — truncate the last arg to 120 chars. *)
+  let truncate_for_debug s =
+    if String.length s <= 120 then s
+    else String.sub s 0 117 ^ "..."
+  in
+  let debug_argv = Array.mapi (fun i a ->
+    if i = Array.length argv - 1 then truncate_for_debug a else a) argv in
+  Printf.printf "argv:";
+  Array.iter (fun a -> Printf.printf " %s" (Filename.quote a)) debug_argv;
+  Printf.printf "\n%!";
   try Unix.execvp argv.(0) argv with
   | Unix.Unix_error (e, _, _) ->
     Printf.eprintf "error: failed to exec %s: %s\n%!" argv.(0) (Unix.error_message e);
