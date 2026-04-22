@@ -2,3 +2,4 @@
 # Generated/edited by `c2c config ...`.
 
 generation_client = "opencode"
+enable_channels = true

@@ -14,6 +14,43 @@ external tcsetpgrp : Unix.file_descr -> int -> unit = "caml_c2c_tcsetpgrp"
 external getpgrp : unit -> int = "caml_c2c_getpgrp"
 
 (* ---------------------------------------------------------------------------
+ * Repo-level .c2c/config.toml reader
+ * --------------------------------------------------------------------------- *)
+
+let repo_config_path () =
+  Filename.concat (Sys.getcwd ()) (".c2c" // "config.toml")
+
+let repo_config_enable_channels () : bool =
+  let path = repo_config_path () in
+  if not (Sys.file_exists path) then false
+  else
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) @@ fun () ->
+    let rec loop () =
+      match try Some (input_line ic) with End_of_file -> None with
+      | None -> false
+      | Some line ->
+        let trimmed = String.trim line in
+        if trimmed = "" || String.length trimmed > 0 && trimmed.[0] = '#' then loop ()
+        else if String.length trimmed >= 15 &&
+                String.sub trimmed 0 15 = "enable_channels" &&
+                (String.length trimmed = 15 ||
+                 String.get trimmed 15 = ' ' ||
+                 String.get trimmed 15 = '=') then
+          let rest =
+            let i = try String.index trimmed '=' with Not_found -> 15 in
+            String.trim (String.sub trimmed (i + 1) (String.length trimmed - i - 1))
+          in
+          let v = if String.length rest >= 2 && rest.[0] = '"' && rest.[String.length rest - 1] = '"'
+            then String.sub rest 1 (String.length rest - 2)
+            else rest
+          in
+          v = "true" || v = "1" || v = "yes" || v = "on"
+        else loop ()
+    in
+    loop ()
+
+(* ---------------------------------------------------------------------------
  * Client configurations
  * --------------------------------------------------------------------------- *)
 
@@ -872,16 +909,19 @@ let prepare_launch_args ~(name : string) ~(client : string)
            doesn't. So probe ~/.claude/projects/*/<uuid>.jsonl to pick.
            --dangerously-load-development-channels enables Claude Code to process
            notifications/claude/channel from the c2c broker as <channel> tags.
-           --channels c2c opts in to the c2c channel for push delivery. *)
+           --channels c2c opts in to the c2c channel for push delivery when
+           enable_channels=true in .c2c/config.toml. *)
+        let ch_args = if repo_config_enable_channels ()
+          then ["--channels"; "c2c"] else [] in
         (match resume_session_id with
          | Some sid ->
              let flag =
                if claude_session_exists sid then "--resume" else "--session-id"
              in
              [ flag; sid; "--name"; name;
-               "--dangerously-load-development-channels"; "--channels"; "c2c" ]
+               "--dangerously-load-development-channels" ] @ ch_args
          | None -> [ "--name"; name;
-                     "--dangerously-load-development-channels"; "--channels"; "c2c" ])
+                     "--dangerously-load-development-channels" ] @ ch_args)
     | "opencode" ->
         (* OpenCode rejects UUIDs — session IDs must start with "ses". Only
            pass --session when resuming a prior OpenCode-generated ID.
