@@ -1788,6 +1788,7 @@ end = struct
       || path = "/dead_letter"
       || path = "/admin/unbind"
       || (path = "/list" && include_dead)
+      || (String.length path > 14 && String.sub path 0 14 = "/remote_inbox/")
     in
     (* /register uses body-level Ed25519 proof (identity_pk + signature + nonce
        + timestamp in the JSON body). This is the bootstrap route — the alias

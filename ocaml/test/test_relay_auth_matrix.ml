@@ -102,6 +102,28 @@ let t_admin_no_token_configured_allows () =
   Alcotest.(check bool) "/gc + no auth allowed when token=None (dev)" true
     (allowed (decide ~path:"/gc" ~token:None ()))
 
+(* --- /remote_inbox/ is an admin route (Bearer required) --- *)
+
+let t_remote_inbox_bearer_ok () =
+  Alcotest.(check bool) "/remote_inbox/<id> + Bearer ok" true
+    (allowed (decide ~path:"/remote_inbox/test-session" ~auth:bearer ()))
+
+let t_remote_inbox_ed25519_rejected () =
+  let r = decide ~path:"/remote_inbox/test-session" ~auth:ed_hdr ~ed:true () in
+  Alcotest.(check bool) "/remote_inbox/<id> + Ed25519 rejected" false (allowed r);
+  Alcotest.(check bool) "error names Bearer requirement" true
+    (let m = msg r in
+     try ignore (Str.search_forward (Str.regexp_string "Bearer") m 0); true
+     with Not_found -> false)
+
+let t_remote_inbox_no_auth_rejected () =
+  Alcotest.(check bool) "/remote_inbox/<id> + no auth rejected" false
+    (allowed (decide ~path:"/remote_inbox/test-session" ()))
+
+let t_remote_inbox_no_token_dev_allows () =
+  Alcotest.(check bool) "/remote_inbox/<id> + no auth allowed when token=None (dev)" true
+    (allowed (decide ~path:"/remote_inbox/test-session" ~token:None ()))
+
 (* --- Bootstrap route: /register must bypass outer auth (adb152f) ---
    /register uses in-body Ed25519 proof; handle_register does its own
    crypto verification. The outer auth_decision must always allow it
@@ -193,5 +215,13 @@ let () =
       Alcotest.test_case "/gc no auth rejected" `Quick t_admin_no_auth_rejected;
       Alcotest.test_case "/gc no token configured allows" `Quick
         t_admin_no_token_configured_allows;
+      Alcotest.test_case "/remote_inbox/<id> Bearer ok" `Quick
+        t_remote_inbox_bearer_ok;
+      Alcotest.test_case "/remote_inbox/<id> Ed25519 rejected" `Quick
+        t_remote_inbox_ed25519_rejected;
+      Alcotest.test_case "/remote_inbox/<id> no auth rejected" `Quick
+        t_remote_inbox_no_auth_rejected;
+      Alcotest.test_case "/remote_inbox/<id> no token (dev) allows" `Quick
+        t_remote_inbox_no_token_dev_allows;
     ];
   ]

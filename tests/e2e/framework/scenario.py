@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -163,9 +164,12 @@ class Scenario:
         if from_agent is not None:
             command.extend(["--from", from_agent.name])
         command.extend([to_agent.name, text])
+        env = dict(os.environ)
+        env["C2C_MCP_BROKER_ROOT"] = str(self.broker_root())
         subprocess.run(
             command,
             cwd=self.workdir,
+            env=env,
             check=True,
             capture_output=True,
             text=True,

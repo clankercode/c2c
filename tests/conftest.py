@@ -24,7 +24,7 @@ from typing import Any, FrozenSet
 import pytest
 
 from tests.e2e.framework.artifacts import ArtifactCollector
-from tests.e2e.framework.client_adapters import CodexAdapter, CodexHeadlessAdapter, ClaudeAdapter, OpenCodeAdapter
+from tests.e2e.framework.client_adapters import CodexAdapter, CodexHeadlessAdapter, ClaudeAdapter, KimiAdapter, OpenCodeAdapter
 from tests.e2e.framework.fake_pty_driver import FakePtyDriver
 from tests.e2e.framework.scenario import Scenario
 from tests.e2e.framework.tmux_driver import TmuxDriver
@@ -271,6 +271,7 @@ def scenario(request: pytest.FixtureRequest, tmp_path: Path) -> Scenario:
             "codex-headless": CodexHeadlessAdapter(Path.cwd()),
             "opencode": OpenCodeAdapter(Path.cwd()),
             "claude": ClaudeAdapter(Path.cwd()),
+            "kimi": KimiAdapter(Path.cwd()),
         },
     )
     sc.refresh_capabilities()

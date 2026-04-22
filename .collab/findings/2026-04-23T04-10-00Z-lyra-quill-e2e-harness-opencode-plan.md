@@ -2,7 +2,7 @@
 
 **Date**: 2026-04-23
 **Author**: Lyra-Quill
-**Status**: completed (OpenCode), in_progress (Claude)
+**Status**: completed (OpenCode, Kimi), blocked (Claude)
 
 ## Background
 
@@ -169,3 +169,50 @@ Delivery path for Claude Code:
 - The smoke test sends DMs via broker controller (no PTY needed for send), but recipient
   needs to be awake to poll inbox. The PostToolUse hook handles delivery when the
   recipient is actively processing tool calls.
+
+## KimiAdapter design
+
+```python
+class KimiAdapter:
+    client_name = "kimi"
+    default_backend = "tmux"
+
+    def build_launch(self, scenario, config):
+        return {
+            "command": ["c2c", "start", "kimi", "-n", config.name],
+            "cwd": scenario.workdir,
+            "env": dict(config.env),
+            "title": config.name,
+        }
+
+    def is_ready(self, scenario, agent):
+        if not scenario.drivers[agent.backend].is_alive(agent.handle):
+            return False
+        return _has_live_pid(_instance_dir(agent.name) / "inner.pid")
+
+    def probe_capabilities(self, scenario):
+        return {"kimi_binary": shutil.which("kimi") is not None}
+```
+
+## Kimi smoke test design
+
+```
+test_kimi_smoke_send_receive (env var: C2C_TEST_KIMI_E2E=1)
+
+1. scenario.start_agent("kimi", name="kimi-sender-<suffix>", auto=True)
+   — pre-seed role file at workdir/.c2c/roles/<name>.md to skip role prompt
+2. scenario.start_agent("kimi", name="kimi-receiver-<suffix>", auto=True)
+3. scenario.wait_for_init(timeout=120s)
+4. scenario.wait_for(lambda: _registered(receiver, scenario), timeout=60s)
+5. scenario.assert_agent(receiver).registered_alive()
+6. message = f"kimi-e2e-ping-{suffix}"
+7. scenario.send_dm(sender, receiver, message)
+8. scenario.wait_for(lambda: scenario.broker_inbox_contains(receiver, message), timeout=90s)
+9. teardown via _cleanup_scenario_agents
+```
+
+Key notes:
+- Kimi starts without interactive prompts (unlike Claude) — just pre-seed role file
+- send_dm must pass C2C_MCP_BROKER_ROOT env so c2c send uses the LOCAL broker
+  where instances register (scenario.send_dm now sets this)
+- Kimi uses PTY deliver daemon for inbox → TUI injection, same as Claude/Codex
