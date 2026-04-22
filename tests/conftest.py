@@ -247,11 +247,7 @@ def _cleanup_scenario_agents(sc: Scenario) -> None:
         except Exception as exc:
             cleanup_failures.append(f"{agent.name}: {exc}")
     if cleanup_failures:
-        warnings.warn(
-            "best-effort cleanup hit stop failures: " + ", ".join(cleanup_failures),
-            RuntimeWarning,
-            stacklevel=2,
-        )
+        raise AssertionError("scenario cleanup failed: " + "; ".join(cleanup_failures))
 
 
 @pytest.fixture

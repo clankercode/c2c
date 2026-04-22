@@ -73,6 +73,8 @@ class Scenario:
         extra_args: list[str] | None = None,
         env: dict[str, str] | None = None,
     ) -> StartedAgent:
+        if name in self.agents:
+            raise ValueError(f"duplicate agent name: {name}")
         config = AgentConfig(
             client=client,
             name=name,

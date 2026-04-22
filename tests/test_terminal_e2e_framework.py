@@ -7,7 +7,7 @@ import pytest
 from tests import conftest as conftest_module
 from tests.e2e.framework.artifacts import ArtifactCollector
 from tests.e2e.framework.scenario import Scenario
-from tests.e2e.framework.terminal_driver import TerminalCapture, TerminalHandle
+from tests.e2e.framework.terminal_driver import TerminalCapture, TerminalHandle, TerminalStartSpec
 
 
 def test_artifact_collector_creates_run_dir_and_timeline(tmp_path: Path) -> None:
@@ -212,6 +212,16 @@ class DummyAdapter:
         return {"dummy_ready": True}
 
 
+class LaunchSpecAdapter(DummyAdapter):
+    def build_launch(self, scenario: Scenario, config: object) -> dict[str, object]:
+        return {
+            "command": ["python3", "-c", "print('custom ready')"],
+            "cwd": scenario.workdir / "client-cwd",
+            "env": {"SCENARIO_TEST": "1"},
+            "title": f"session-{getattr(config, 'name')}",
+        }
+
+
 def test_scenario_comment_writes_timeline(tmp_path: Path) -> None:
     scenario = Scenario(
         test_name="test_demo",
@@ -241,6 +251,48 @@ def test_scenario_start_agent_tracks_started_agent(tmp_path: Path) -> None:
     assert agent.client == "dummy"
     assert agent.name == "dummy-a"
     assert agent.handle.target == "dummy-1"
+
+
+def test_scenario_start_agent_rejects_duplicate_agent_names(tmp_path: Path) -> None:
+    driver = DummyDriver()
+    scenario = Scenario(
+        test_name="test_demo",
+        workdir=tmp_path / "work",
+        artifacts=ArtifactCollector(tmp_path / "artifacts", "test_demo"),
+        drivers={"dummy": driver},
+        adapters={"dummy": DummyAdapter()},
+    )
+    scenario.artifacts.start_run()
+    original = scenario.start_agent("dummy", name="dummy-a")
+
+    with pytest.raises(ValueError, match="duplicate agent name: dummy-a"):
+        scenario.start_agent("dummy", name="dummy-a")
+
+    assert scenario.agents["dummy-a"] is original
+    assert len(driver.started) == 1
+
+
+def test_scenario_start_agent_passes_terminal_start_spec_to_driver(tmp_path: Path) -> None:
+    driver = DummyDriver()
+    scenario = Scenario(
+        test_name="test_demo",
+        workdir=tmp_path / "work",
+        artifacts=ArtifactCollector(tmp_path / "artifacts", "test_demo"),
+        drivers={"dummy": driver},
+        adapters={"dummy": LaunchSpecAdapter()},
+    )
+    scenario.artifacts.start_run()
+    scenario.start_agent("dummy", name="dummy-a")
+
+    assert len(driver.started) == 1
+    spec = driver.started[0]
+    assert isinstance(spec, TerminalStartSpec)
+    assert spec.command == ["python3", "-c", "print('custom ready')"]
+    assert spec.cwd == scenario.workdir / "client-cwd"
+    assert spec.env == {"SCENARIO_TEST": "1"}
+    assert spec.title == "session-dummy-a"
+    assert spec.cols == 220
+    assert spec.rows == 60
 
 
 def test_scenario_require_binary_raises_for_missing_binary(
@@ -274,7 +326,7 @@ def test_cleanup_scenario_agents_continues_after_stop_failure(tmp_path: Path) ->
     failing_agent = scenario.start_agent("dummy", name="dummy-a", backend="failing")
     healthy_agent = scenario.start_agent("dummy", name="dummy-b", backend="healthy")
 
-    with pytest.warns(RuntimeWarning, match="best-effort cleanup"):
+    with pytest.raises(AssertionError, match="scenario cleanup failed: dummy-a: cannot stop dummy-1"):
         conftest_module._cleanup_scenario_agents(scenario)
 
     assert failing_driver.stopped == [failing_agent.handle]
