@@ -62,6 +62,14 @@ and `c2c instances` output.
 `EXTRA_ARGS` are forwarded to `codex-turn-start-bridge`, not to the underlying
 `codex` binary named by `--codex-bin`.
 
+V1 should reserve ownership of bridge-critical flags to `c2c`. In particular,
+managed launch should control:
+
+- `--stdin-format`
+- `--codex-bin`
+- `--thread-id`
+- `--approval-policy`
+
 ### Install Surface
 
 `codex-headless` does not need separate install semantics.
@@ -115,7 +123,8 @@ Everything that enters the managed Codex session uses the same XML user-message
 lane:
 
 - inbound c2c broker messages
-- local operator steering lines
+- local operator steering lines, after they have been handed to the same
+  durable writer path
 
 Each delivered message becomes one XML frame:
 
@@ -131,6 +140,25 @@ or, for local steering:
 
 There is no second steering protocol and no PTY injection path.
 
+### Single Writer Ownership
+
+Only one component may write to bridge stdin.
+
+For `codex-headless`, the durable XML writer must remain the sole owner of the
+bridge stdin file descriptor for the lifetime of the managed session. That
+writer is responsible for serializing both:
+
+- broker-delivered messages
+- operator steering messages
+
+The operator console must not write directly to bridge stdin. Instead it should
+enqueue operator messages into a per-instance queue or spool that the durable
+writer drains in order.
+
+This preserves the same crash-safety property the current Codex XML path already
+has: messages are staged durably before the live inbox or pending queue is
+cleared.
+
 ## Minimal Operator Console
 
 `c2c start codex-headless` should expose a deliberately small operator console.
@@ -138,7 +166,8 @@ There is no second steering protocol and no PTY injection path.
 Required behavior:
 
 - accept simple terminal input from the operator
-- convert ordinary input lines into XML user messages on bridge stdin
+- convert ordinary input lines into queued user messages for the durable XML
+  writer
 - stream any bridge-emitted stdout/stderr to the terminal
 
 Required local commands:
@@ -167,6 +196,22 @@ stream for operators. So v1 should make only the following guarantee:
 Readable live agent-output logging is a follow-up unless the bridge gains a
 machine-readable event or text-output surface.
 
+## Approval Model
+
+The current bridge rejects interactive server requests and exits non-zero when
+they occur. So `codex-headless` cannot rely on interactive approval UX in v1.
+
+V1 contract:
+
+- managed `codex-headless` launch must use an explicit non-interactive approval
+  policy compatible with bridge operation
+- the default for `c2c start codex-headless` should be `--approval-policy never`
+- there is no approval prompt surface in the headless console
+
+This keeps the headless path honest about what it can support today. A later
+version may relax this if the bridge grows an approval-response surface that
+`c2c` can drive safely.
+
 ## Resume Model
 
 `codex-headless` resume must be thread-based, not `resume --last`.
@@ -186,6 +231,13 @@ On later restart:
 
 For `codex-headless`, managed `resume_session_id` should store the Codex
 `thread_id`.
+
+This requires a targeted change in `c2c_start` state handling:
+
+- `codex-headless` must not use UUID-only validation for `resume_session_id`
+- saved headless resume ids must be treated as opaque thread identifiers
+- migration/repair logic that currently regenerates non-UUID values must exclude
+  `codex-headless`
 
 ## Required Upstream Contract
 
@@ -219,6 +271,7 @@ Startup checks:
 - `codex` exists for `--codex-bin`
 - bridge supports `--stdin-format xml`
 - bridge exposes the required thread-id handoff surface
+- managed launch can enforce the non-interactive approval policy required by v1
 
 Failure policy:
 
@@ -229,6 +282,9 @@ Failure policy:
 - there is no PTY fallback and no silent downgrade to polling-only managed mode
 - XML write failures use the existing durable spool/retry semantics already used
   by the Codex XML delivery path
+- bridge stdin must stay open for the full managed-session lifetime; accidental
+  stdin closure is a fatal session error because the bridge exits once stdin
+  closes and its queues drain
 - if the bridge exits, the managed outer process cleans up sidecars/pipes,
   preserves state, and prints the normal resume guidance
 
@@ -247,11 +303,17 @@ Expected OCaml-side changes:
   - launch args
   - XML transport style
   - resume behavior
+- carve `codex-headless` out of UUID-only `resume_session_id` validation and
+  saved-state repair logic
 - add a headless console loop that:
   - reads operator stdin
-  - serializes user lines into XML
+  - enqueues user lines for the durable XML writer
   - preserves local commands
+- extend the durable XML writer path so one writer owns bridge stdin and drains:
+  - broker inbox spool
+  - operator steering queue
 - persist returned thread-id handoff in managed instance state
+- force or default the bridge launch approval policy to `never` in v1
 
 The Python delivery daemon should not gain a second protocol. It should continue
 to emit the same XML user-message frames; only the destination transport differs:
@@ -276,9 +338,10 @@ Add unit/CLI coverage for:
 Add delivery coverage for:
 
 - broker message becomes one XML frame for `codex-headless`
-- manual steering line uses the same XML message path
+- manual steering line reaches the same durable writer path and XML message lane
 - spool survives retry/restart
 - thread-id handoff is persisted and reused
+- operator queue and broker spool preserve ordering across restart
 
 ### Live Tests
 
@@ -288,6 +351,8 @@ Add tmux-driven managed-session tests for:
 - sending a DM reaches the managed session without manual `poll_inbox`
 - local operator input is accepted and serialized through the same XML lane
 - restart resumes the same Codex thread once thread-id handoff exists
+- headless launch uses the required non-interactive approval policy
+- accidental stdin/writer closure is treated as a managed-session failure
 - bridge-emitted output is surfaced if the bridge later exposes a readable stream
 
 ## Acceptance Criteria
