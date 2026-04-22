@@ -2844,45 +2844,53 @@ let relay_serve_cmd =
     | None, Some _ ->
         Printf.eprintf "error: --tls-key requires --tls-cert\n%!"; exit 1
   in
-  (match storage with
-   | Some "sqlite" ->
-       Printf.eprintf "error: --storage sqlite is not yet implemented (OCaml SQLite backend pending)\n%!";
-       exit 1
-   | _ -> ());
-  Printf.printf "storage: memory\n%!";
-      let allowlist = match allowed_identities with
-        | None -> []
-        | Some path ->
-          (try
-            let json = Yojson.Safe.from_file path in
-            match json with
-            | `Assoc pairs ->
-              List.map (fun (alias, v) -> match v with
-                | `String pk_b64 -> (alias, pk_b64)
-                | _ ->
-                  Printf.eprintf "error: --allowed-identities entry for %S must be a string\n%!" alias;
-                  exit 1) pairs
-            | _ ->
-              Printf.eprintf "error: --allowed-identities file must be a JSON object { alias: pk_b64, ... }\n%!";
-              exit 1
-          with
-          | Sys_error msg ->
-            Printf.eprintf "error reading --allowed-identities: %s\n%!" msg; exit 1
-          | Yojson.Json_error msg ->
-            Printf.eprintf "error parsing --allowed-identities: %s\n%!" msg; exit 1)
-      in
-      let persist_dir = match persist_dir with
-        | Some d -> Some d
-        | None -> Sys.getenv_opt "C2C_RELAY_PERSIST_DIR"
-      in
-      Version.banner ~role:"relay-server" ~git_hash:(Option.value (git_shorthash ()) ~default:"unknown");
-      Printf.eprintf "  listen=%s:%d\n%!" host port;
-      (match persist_dir with
-       | Some d -> Printf.eprintf "  persist-dir=%s\n%!" d
-       | None -> Printf.eprintf "  persist-dir=none (in-memory only)\n%!");
-      let relay = Relay.InMemoryRelay.create ?persist_dir () in
-      let module Server = Relay.Relay_server(Relay.InMemoryRelay) in
-      Lwt_main.run (Server.start_server ~host ~port ~relay ~token ~verbose ~gc_interval ?tls:tls_cfg ~allowlist ())
+  let allowlist = match allowed_identities with
+  | None -> []
+  | Some path ->
+    (try
+      let json = Yojson.Safe.from_file path in
+      match json with
+      | `Assoc pairs ->
+        List.map (fun (alias, v) -> match v with
+          | `String pk_b64 -> (alias, pk_b64)
+          | _ ->
+            Printf.eprintf "error: --allowed-identities entry for %S must be a string\n%!" alias;
+            exit 1) pairs
+      | _ ->
+        Printf.eprintf "error: --allowed-identities file must be a JSON object { alias: pk_b64, ... }\n%!";
+        exit 1
+    with
+    | Sys_error msg ->
+      Printf.eprintf "error reading --allowed-identities: %s\n%!" msg; exit 1
+    | Yojson.Json_error msg ->
+      Printf.eprintf "error parsing --allowed-identities: %s\n%!" msg; exit 1)
+in
+let persist_dir = match persist_dir with
+  | Some d -> Some d
+  | None -> Sys.getenv_opt "C2C_RELAY_PERSIST_DIR"
+in
+Version.banner ~role:"relay-server" ~git_hash:(Option.value (git_shorthash ()) ~default:"unknown");
+Printf.eprintf "  listen=%s:%d\n%!" host port;
+match storage with
+| Some "sqlite" ->
+    Printf.printf "storage: sqlite\n%!";
+    (match persist_dir with
+     | Some d -> Printf.eprintf "  persist-dir=%s\n%!" d
+     | None -> Printf.eprintf "  persist-dir=%s\n%!" (Filename.concat (Sys.getcwd()) ""));
+    (match db_path with
+     | Some p -> Printf.eprintf "  db-path=%s\n%!" p
+     | None -> ());
+    let relay = Relay.SqliteRelay.create ?persist_dir () in
+    let module Server = Relay.Relay_server(Relay.SqliteRelay) in
+    Lwt_main.run (Server.start_server ~host ~port ~relay ~token ~verbose ~gc_interval ?tls:tls_cfg ~allowlist ())
+| _ ->
+    Printf.printf "storage: memory\n%!";
+    (match persist_dir with
+     | Some d -> Printf.eprintf "  persist-dir=%s\n%!" d
+     | None -> Printf.eprintf "  persist-dir=none (in-memory only)\n%!");
+    let relay = Relay.InMemoryRelay.create ?persist_dir () in
+    let module Server = Relay.Relay_server(Relay.InMemoryRelay) in
+    Lwt_main.run (Server.start_server ~host ~port ~relay ~token ~verbose ~gc_interval ?tls:tls_cfg ~allowlist ())
 
 let relay_connect_cmd =
   let relay_url =
