@@ -392,22 +392,39 @@ let sync (t : t) : sync_result Lwt.t =
   }
 
 (* ---------------------------------------------------------------------------
- * Run loop (slice 2+)
+ * Run loop with graceful signal handling
  * --------------------------------------------------------------------------- *)
 
 let run (t : t) : unit =
+  let shutdown = ref false in
+  let install_signal sig_name =
+    Sys.signal sig_name (Sys.Signal_handle (fun _ ->
+      if not !shutdown then begin
+        shutdown := true;
+        if t.verbose then
+          Printf.printf "[relay-connector] received signal, shutting down...\n%!"
+      end))
+  in
+  let _ = install_signal Sys.sigterm in
+  let _ = install_signal Sys.sigint in
   let rec loop () =
-    if t.verbose then
-      Printf.printf "[relay-connector] syncing...\n%!";
-    (try
-      ignore (Lwt_main.run (sync t))
-     with exn ->
-       if t.verbose then
-         Printf.eprintf "[relay-connector] sync error: %s\n%!" (Printexc.to_string exn));
-    if t.verbose then
-      Printf.printf "[relay-connector] sleep %.0fs\n%!" t.interval;
-    Unix.sleepf t.interval;
-    loop ()
+    if !shutdown then (
+      if t.verbose then Printf.printf "[relay-connector] shutdown complete\n%!";
+    ) else (
+      if t.verbose then
+        Printf.printf "[relay-connector] syncing...\n%!";
+      (try
+        ignore (Lwt_main.run (sync t))
+      with exn ->
+        if t.verbose then
+          Printf.eprintf "[relay-connector] sync error: %s\n%!" (Printexc.to_string exn));
+      if not !shutdown then begin
+        if t.verbose then
+          Printf.printf "[relay-connector] sleep %.0fs\n%!" t.interval;
+        Unix.sleepf t.interval;
+        loop ()
+      end
+    )
   in
   loop ()
 
