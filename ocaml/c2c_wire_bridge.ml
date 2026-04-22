@@ -250,11 +250,21 @@ let run_once_live ~broker_root ~session_id ~alias ~command ~work_dir =
        Unix.close child_stdout_w;
        let ic = Unix.in_channel_of_descr child_stdout_r in
        let oc = Unix.out_channel_of_descr child_stdin_w in
-       Fun.protect
-         ~finally:(fun () ->
-            (try close_in_noerr ic  with _ -> ());
-            (try close_out_noerr oc with _ -> ());
-            (try ignore (Unix.waitpid [] pid) with _ -> ()))
+        Fun.protect
+          ~finally:(fun () ->
+             (try close_in_noerr ic  with _ -> ());
+             (try close_out_noerr oc with _ -> ());
+              (try
+                 let deadline = Unix.gettimeofday () +. 15. in
+                 let rec wait_loop () =
+                   if Unix.gettimeofday () >= deadline then
+                     (try (Unix.kill pid Sys.sigkill; ignore (Unix.waitpid [] pid)) with _ -> ())
+                   else
+                     match Unix.waitpid [Unix.WNOHANG] pid with
+                     | 0, _ -> Unix.sleepf 0.5; wait_loop ()
+                     | _, _ -> ()
+                 in wait_loop ()
+               with _ -> ()))
          (fun () ->
             let wc = wire_create ic oc in
             wire_initialize wc;
