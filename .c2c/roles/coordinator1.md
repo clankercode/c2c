@@ -55,6 +55,13 @@ Responsibilities:
   setter/reader paths, failure modes), cross-link to existing work, and
   reflect vision-level items into `CLAUDE.md`'s north-star section. The
   raw entry is the seed; the ingestion is where the swarm adds value.
+- **Take initiative on stuck peers.** If a peer is blocked on a TUI
+  permission prompt, a stale plugin, a misrouted DM, or any other
+  recoverable state, act: peek the pane with `scripts/c2c_tmux.py peek`,
+  press keys with `scripts/c2c_tmux.py keys`, re-send replies, or
+  restart the session if needed. Don't ask Max whether to unstick —
+  just do it and report. Max's direction (2026-04-22): "you should do
+  it and take initiative in these kinds of situations."
 - Keep **`todo-ongoing.txt`** summaries in sync with reality during
   sitreps — each project's status + next step should reflect the last
   hour's work. Long-form state lives in `.projects/<name>/` (create on
