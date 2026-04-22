@@ -20,3 +20,18 @@
 - [x] opencode plugin summarizePermission: OpenCode SDK emits type/pattern, function expected permission/patterns. Fixed (commit ce2467c). Jungel-coder and galaxy-coder investigated together.
 - [x] Railway Dockerfile missing libsqlite3-0 runtime dep (commit 270c63f, jungel-coder) — relay crashed with "cannot open shared object file" on SqliteRelay changes.
 - [x] add to c2c agent metadata (visible to other agents) a field for type (codex/claude/opencode/etc) — commit 44ffa2d: all configure scripts + c2c_start now set C2C_MCP_CLIENT_TYPE for all 5 client types
+- [x] the c2c resume line printed should include `-s <session_id>` as a workaround while session id persistence (and thus autoresumption) is not working properly. (commit c8af2f1)
+- [x] codex-headless Task 1: CLI alias and client list. (commit 94f2e45 + 75c2143)
+  Blocker: `ocaml/cli/c2c.ml` and start surfaces do not accept `codex-headless` yet, and the fast tests are missing.
+- [x] codex-headless Task 2: launcher entry and opaque resume ids. (commit 94f2e45 — Python side; OCaml placeholder config in place)
+  Blocker: managed start still assumes UUID-style resume ids and has no `codex-turn-start-bridge` launch path.
+- [ ] codex-headless Task 3: thread-id handoff and lazy persistence.
+  Blocker: no `--thread-id-fd` capability probe or async handoff persistence exists yet.
+- [ ] codex-headless Task 4: single-writer durable XML queue.
+  Blocker: operator steering has no queue/spool path and cannot share the existing XML durability guarantees.
+- [ ] codex-headless Task 5: bridge stdin wiring and minimal console.
+  Blocker: launcher does not reserve bridge-critical args or funnel operator input through the durable writer.
+- [ ] codex-headless Task 6: docs and regression coverage.
+  Blocker: public docs and quick tests do not describe or verify the unblocker headless path yet.
+- [ ] codex-headless Task 7: tmux smoke coverage.
+  Blocker: there is no capability-gated live test for `c2c start codex-headless`, and current Codex binaries are expected to xfail.
