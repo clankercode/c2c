@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+import pytest
+
 from .artifacts import ArtifactCollector
 from .terminal_driver import TerminalDriver, TerminalHandle, TerminalStartSpec
 
@@ -56,7 +58,8 @@ class Scenario:
         self.drivers = drivers
         self.adapters = adapters
         self.agents: dict[str, StartedAgent] = {}
-        self._capability_cache: dict[str, dict[str, bool]] = {}
+        self._adapter_capability_cache: dict[str, dict[str, bool]] = {}
+        self._capability_cache: dict[str, bool] = {}
         self.workdir.mkdir(parents=True, exist_ok=True)
 
     def comment(self, text: str) -> None:
@@ -126,9 +129,26 @@ class Scenario:
         self.wait_for(_ready, timeout=timeout)
 
     def probe_capabilities(self, client: str) -> dict[str, bool]:
-        if client not in self._capability_cache:
-            self._capability_cache[client] = self.adapters[client].probe_capabilities(self)
-        return dict(self._capability_cache[client])
+        if client not in self._adapter_capability_cache:
+            self._adapter_capability_cache[client] = self.adapters[client].probe_capabilities(self)
+        return dict(self._adapter_capability_cache[client])
+
+    def require_capability(self, name: str) -> None:
+        if not self._capability_cache.get(name, False):
+            raise AssertionError(f"required capability missing: {name}")
+
+    def xfail_unless(self, name: str, reason: str) -> None:
+        if not self._capability_cache.get(name, False):
+            pytest.xfail(reason)
+
+    def refresh_capabilities(self) -> dict[str, bool]:
+        merged: dict[str, bool] = {}
+        for client in self.adapters:
+            client_caps = self.adapters[client].probe_capabilities(self)
+            self._adapter_capability_cache[client] = dict(client_caps)
+            merged.update(client_caps)
+        self._capability_cache = merged
+        return dict(merged)
 
     def require_binary(self, name: str) -> None:
         if shutil.which(name) is None:
