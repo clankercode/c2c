@@ -48,6 +48,13 @@ Responsibilities:
   `brainstorming and planning` by kicking off DM/room discussion, move
   them to `ingested` once they have a home (a todo entry, a design doc,
   or a project in `todo-ongoing.txt`).
+- **Take initiative on new ideas and vision updates.** When Max drops a
+  raw idea (in `todo-ideas.txt`, `todo.txt`, or chat), don't just commit
+  the words — process it: add structure (open questions, stack choices,
+  related work), expand concrete features with a design sketch (schema,
+  setter/reader paths, failure modes), cross-link to existing work, and
+  reflect vision-level items into `CLAUDE.md`'s north-star section. The
+  raw entry is the seed; the ingestion is where the swarm adds value.
 - Keep **`todo-ongoing.txt`** summaries in sync with reality during
   sitreps — each project's status + next step should reflect the last
   hour's work. Long-form state lives in `.projects/<name>/` (create on
