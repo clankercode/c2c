@@ -19,9 +19,26 @@ just test-ts
 ```bash
 just test-ts              # unit + smoke
 just install-all          # rebuild c2c binary (plugin spawns `c2c` subcommands)
-# Then restart a fresh OpenCode session and tail .opencode/c2c-debug.log
+# Then restart a fresh OpenCode session (see below) and tail .opencode/c2c-debug.log
 # — you should see `plugin loaded (...)` within seconds.
 ```
+
+## Restarting a managed OpenCode session
+
+**Do NOT run `./restart-self`** — it kills the `c2c start` supervisor process,
+which tears down the entire tmux pane and loses your session.
+
+Safe restart recipe from INSIDE the session:
+```
+/exit
+```
+Then from an external terminal:
+```bash
+c2c start opencode -n <your-name> -s <your-session-id>
+```
+
+Your session ID is shown in `~/.local/share/c2c/instances/<your-name>/opencode-session.txt`.
+Alternatively, use `c2c instances` to find running instances and their session IDs.
 
 ## Red flags while editing
 

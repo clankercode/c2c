@@ -51,6 +51,15 @@ def proc_comm(pid: int) -> str | None:
         return None
 
 
+def proc_cmdline(pid: int) -> list[str]:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_text(encoding="utf-8").split("\0")
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return []
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Self-restart a run-claude-inst session.")
     parser.add_argument(
@@ -103,6 +112,19 @@ def main(argv: list[str]) -> int:
             file=sys.stderr,
         )
         return 3
+
+    cmdline = proc_cmdline(pid)
+    cmdline_str = " ".join(cmdline)
+
+    if "c2c start" in cmdline_str or "c2c_start" in cmdline_str:
+        print(
+            f"[restart-self] pid {pid} is a managed-session supervisor (c2c start).\n"
+            "Sending SIGTERM to the supervisor kills the entire tmux pane and loses your session.\n"
+            "Safe restart from INSIDE the session: /exit\n"
+            "Then from an external terminal: c2c start opencode -n <name> -s <session>",
+            file=sys.stderr,
+        )
+        return 5
 
     if args.expect_comm and args.expect_comm not in comm:
         print(
