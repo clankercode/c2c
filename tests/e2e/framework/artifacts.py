@@ -14,6 +14,7 @@ class ArtifactCollector:
     def start_run(self) -> Path:
         if self.run_dir is not None:
             raise RuntimeError("start_run() may only be called once per collector")
+        self._require_safe_fragment(self.test_name, "test_name")
         run_id = time.strftime("%Y%m%d-%H%M%S")
         base_dir = self.root / self.test_name
         suffix = 1
@@ -36,11 +37,13 @@ class ArtifactCollector:
             fh.write(json.dumps(entry, default=self._json_default) + "\n")
 
     def write_text(self, name: str, text: str) -> Path:
+        self._require_safe_fragment(name, "artifact name")
         path = self._require_run_dir() / name
         path.write_text(text, encoding="utf-8")
         return path
 
     def compare_golden(self, stem: str, actual: str, golden_path: Path) -> None:
+        self._require_safe_fragment(stem, "artifact stem")
         expected = golden_path.read_text(encoding="utf-8")
         if actual != expected:
             self.write_text(f"{stem}.actual.txt", actual)
@@ -56,3 +59,14 @@ class ArtifactCollector:
         if isinstance(value, Path):
             return str(value)
         raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
+
+    @staticmethod
+    def _require_safe_fragment(fragment: str, label: str) -> None:
+        path = Path(fragment)
+        if (
+            path.is_absolute()
+            or len(path.parts) != 1
+            or fragment in {"", ".", ".."}
+            or any(part in {"", ".", ".."} for part in path.parts)
+        ):
+            raise ValueError(f"unsafe path fragment for {label}: {fragment!r}")

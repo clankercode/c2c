@@ -103,6 +103,24 @@ def test_artifact_collector_serializes_path_payload_values(tmp_path: Path) -> No
     assert payload["artifact"] == str(tmp_path / "screen.txt")
 
 
+def test_artifact_collector_rejects_traversal_test_name(tmp_path: Path) -> None:
+    collector = ArtifactCollector(root=tmp_path, test_name="../escape")
+
+    with pytest.raises(ValueError, match="unsafe path fragment"):
+        collector.start_run()
+
+
+def test_artifact_collector_rejects_slash_and_absolute_artifact_names(tmp_path: Path) -> None:
+    collector = ArtifactCollector(root=tmp_path, test_name="test_demo")
+    collector.start_run()
+
+    with pytest.raises(ValueError, match="unsafe path fragment"):
+        collector.write_text("nested/screen.txt", "body")
+
+    with pytest.raises(ValueError, match="unsafe path fragment"):
+        collector.write_text(str(Path("/abs.txt")), "body")
+
+
 def test_terminal_types_keep_backend_and_target_explicit() -> None:
     handle = TerminalHandle(
         backend="fake-pty",
