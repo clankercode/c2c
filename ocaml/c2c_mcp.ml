@@ -23,7 +23,7 @@ type registration =
   (** Set when the agent is actively compacting/summarizing. Send-side
       checks this and returns a warning; message is still queued. *)
   }
-type message = { from_alias : string; to_alias : string; content : string; deferrable : bool }
+type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 type room_visibility = Public | Invite_only
@@ -346,14 +346,15 @@ module Broker = struct
     ; compacting = compacting_of_json json
     }
 
-  let message_to_json { from_alias; to_alias; content; deferrable } =
+  let message_to_json { from_alias; to_alias; content; deferrable; reply_via } =
     let base =
       [ ("from_alias", `String from_alias)
       ; ("to_alias", `String to_alias)
       ; ("content", `String content)
       ]
     in
-    `Assoc (if deferrable then base @ [("deferrable", `Bool true)] else base)
+    let with_deferrable = if deferrable then base @ [("deferrable", `Bool true)] else base in
+    `Assoc (match reply_via with None -> with_deferrable | Some rv -> with_deferrable @ [("reply_via", `String rv)])
 
   let message_of_json json =
     let open Yojson.Safe.Util in
@@ -364,6 +365,10 @@ module Broker = struct
         (match json |> member "deferrable" with
          | `Bool b -> b
          | _ -> false)
+    ; reply_via =
+        (match json |> member "reply_via" with
+         | `String s -> Some s
+         | _ -> None)
     }
 
   let load_registrations t =
@@ -853,7 +858,7 @@ module Broker = struct
             with_inbox_lock t ~session_id (fun () ->
                 let current = load_inbox t ~session_id in
                 let next =
-                  current @ [ { from_alias; to_alias; content; deferrable } ]
+                  current @ [ { from_alias; to_alias; content; deferrable; reply_via = None } ]
                 in
                 save_inbox t ~session_id next))
 
@@ -888,7 +893,7 @@ module Broker = struct
                         let current = load_inbox t ~session_id in
                         let next =
                           current
-                          @ [ { from_alias; to_alias = reg.alias; content; deferrable = false } ]
+                          @ [ { from_alias; to_alias = reg.alias; content; deferrable = false; reply_via = None } ]
                         in
                         save_inbox t ~session_id next);
                     sent := reg.alias :: !sent
@@ -1474,7 +1479,7 @@ module Broker = struct
                     with_inbox_lock t ~session_id (fun () ->
                         let current = load_inbox t ~session_id in
                         let next =
-                          current @ [ { from_alias; to_alias = tagged_to; content; deferrable = false } ]
+                          current @ [ { from_alias; to_alias = tagged_to; content; deferrable = false; reply_via = None } ]
                         in
                         save_inbox t ~session_id next);
                     delivered := m.rm_alias :: !delivered
@@ -2772,6 +2777,17 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                   | Some r -> Broker.is_dnd broker ~session_id:r.session_id
                   | None -> false
                 in
+                let recipient_compacting =
+                  match Broker.list_registrations broker
+                        |> List.find_opt (fun r -> r.alias = to_alias) with
+                  | Some r ->
+                      (match Broker.is_compacting broker ~session_id:r.session_id with
+                       | Some c ->
+                           let dur = Unix.gettimeofday () -. c.started_at in
+                           Some (dur, c.reason)
+                       | None -> None)
+                  | None -> None
+                in
                 let receipt_fields =
                   [ ("queued", `Bool true)
                   ; ("ts", `Float ts)
@@ -2782,6 +2798,14 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                 let receipt_fields =
                   if recipient_dnd then receipt_fields @ [("recipient_dnd", `Bool true)]
                   else receipt_fields
+                in
+                let receipt_fields =
+                  match recipient_compacting with
+                  | Some (dur, reason) ->
+                      let reason_str = match reason with Some r -> " (" ^ r ^ ")" | None -> "" in
+                      let warning = Printf.sprintf "recipient compacting for %.0fs%s" dur reason_str in
+                      receipt_fields @ [("compacting_warning", `String warning)]
+                  | None -> receipt_fields
                 in
                 let receipt_fields =
                   if deferrable then receipt_fields @ [("deferrable", `Bool true)]

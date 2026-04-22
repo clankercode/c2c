@@ -250,17 +250,33 @@ let send_cmd =
   (try
      C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content ();
      let ts = Unix.gettimeofday () in
+     let compacting_warning =
+       match C2c_mcp.Broker.list_registrations broker
+             |> List.find_opt (fun r -> r.C2c_mcp.registration.alias = to_alias) with
+       | Some r ->
+           (match C2c_mcp.Broker.is_compacting broker ~session_id:r.C2c_mcp.registration.session_id with
+            | Some c ->
+                let dur = Unix.gettimeofday () -. c.C2c_mcp.compacting.started_at in
+                let reason_str = match c.C2c_mcp.compacting.reason with Some r -> " (" ^ r ^ ")" | None -> "" in
+                Some (Printf.sprintf "recipient compacting for %.0fs%s" dur reason_str)
+            | None -> None)
+       | None -> None
+     in
      match output_mode with
      | Json ->
-         print_json
-           (`Assoc
-             [ ("queued", `Bool true)
-             ; ("ts", `Float ts)
-             ; ("from_alias", `String from_alias)
-             ; ("to_alias", `String to_alias)
-             ])
+         let fields =
+           [ ("queued", `Bool true)
+           ; ("ts", `Float ts)
+           ; ("from_alias", `String from_alias)
+           ; ("to_alias", `String to_alias)
+           ]
+         in
+         let fields = match compacting_warning with Some w -> fields @ [("compacting_warning", `String w)] | None -> fields in
+         print_json (`Assoc fields)
      | Human ->
-         Printf.printf "ok -> %s (from %s)\n" to_alias from_alias
+         Printf.printf "ok -> %s (from %s)" to_alias from_alias;
+         (match compacting_warning with Some w -> Printf.printf " [%s]" w | None -> ());
+         print_newline ()
    with Invalid_argument msg ->
      (* If the target looks like a room name, give a helpful redirect hint. *)
      let is_room =
@@ -2899,9 +2915,10 @@ let hook_cmd =
          let buf = Buffer.create 256 in
          List.iter
            (fun (m : C2c_mcp.message) ->
-             Buffer.add_string buf
-               (Printf.sprintf "<c2c event=\"message\" from=\"%s\" alias=\"%s\" action_after=\"continue\">%s</c2c>\n"
-                  m.from_alias m.to_alias m.content))
+              Buffer.add_string buf
+                (let reply_via = Option.value m.reply_via ~default:"c2c_send" in
+                 Printf.sprintf "<c2c event=\"message\" from=\"%s\" alias=\"%s\" source=\"broker\" reply_via=\"%s\" action_after=\"continue\">%s</c2c>\n"
+                   m.from_alias m.to_alias reply_via m.content))
            messages;
          let json : Yojson.Safe.t =
            `Assoc [
@@ -7022,7 +7039,8 @@ let wire_daemon_format_prompt_cmd =
             Some C2c_mcp.{ from_alias = get_str "from_alias"
                           ; to_alias   = get_str "to_alias"
                           ; content    = get_str "content"
-                          ; deferrable = false }
+                          ; deferrable = false
+                          ; reply_via = None }
         | _ -> None) items
     | _ -> []
   in
@@ -7047,7 +7065,8 @@ let wire_daemon_spool_write_cmd =
             Some C2c_mcp.{ from_alias = get_str "from_alias"
                           ; to_alias   = get_str "to_alias"
                           ; content    = get_str "content"
-                          ; deferrable = false }
+                          ; deferrable = false
+                          ; reply_via = None }
         | _ -> None) items
     | _ -> []
   in

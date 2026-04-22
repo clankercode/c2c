@@ -93,7 +93,7 @@ def xml_message_payload(message: dict[str, Any]) -> str:
     content = html.escape(str(message.get("content") or ""))
     return (
         f'<message type="user"><c2c event="message" from="{sender}" alias="{alias}" '
-        'source="broker" action_after="continue">'
+        'source="broker" reply_via="c2c_send" action_after="continue">'
         f"{content}</c2c></message>\n"
     )
 

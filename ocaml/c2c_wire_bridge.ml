@@ -30,10 +30,12 @@ let xml_escape s =
   Buffer.contents buf
 
 let format_envelope (msg : C2c_mcp.message) =
+  let reply_via = xml_escape (Option.value msg.reply_via ~default:"c2c_send") in
   Printf.sprintf
-    "<c2c event=\"message\" from=\"%s\" alias=\"%s\" source=\"broker\" action_after=\"continue\">\n%s\n</c2c>"
+    "<c2c event=\"message\" from=\"%s\" alias=\"%s\" source=\"broker\" reply_via=\"%s\" action_after=\"continue\">\n%s\n</c2c>"
     (xml_escape msg.from_alias)
     (xml_escape msg.to_alias)
+    reply_via
     msg.content
 
 let format_prompt messages =
@@ -73,7 +75,7 @@ let spool_read sp =
               let to_alias   = str "to_alias" in
               let content    = str "content" in
               if from_alias = "" && content = "" then None
-              else Some C2c_mcp.{ from_alias; to_alias; content; deferrable = false })
+              else Some C2c_mcp.{ from_alias; to_alias; content; deferrable = false; reply_via = None })
             items
       | _ -> []
       | exception _ -> []

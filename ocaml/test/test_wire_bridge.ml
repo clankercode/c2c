@@ -3,8 +3,8 @@
     These tests verify that the OCaml envelope formatting produces output
     identical to the Python reference implementation. *)
 
-let msg ?(from_alias="") ?(to_alias="") content =
-  C2c_mcp.{ from_alias; to_alias; content; deferrable = false }
+let msg ?(from_alias="") ?(to_alias="") ?(reply_via=None) content =
+  C2c_mcp.{ from_alias; to_alias; content; deferrable = false; reply_via }
 
 (* ---------------------------------------------------------------------------
  * format_envelope parity (vs Python format_c2c_envelope)
@@ -14,7 +14,7 @@ let test_envelope_basic () =
   let m = msg ~from_alias:"alice" ~to_alias:"bob" "hello world" in
   let got = C2c_wire_bridge.format_envelope m in
   let expected =
-    "<c2c event=\"message\" from=\"alice\" alias=\"bob\" source=\"broker\" action_after=\"continue\">\nhello world\n</c2c>"
+    "<c2c event=\"message\" from=\"alice\" alias=\"bob\" source=\"broker\" reply_via=\"c2c_send\" action_after=\"continue\">\nhello world\n</c2c>"
   in
   Alcotest.(check string) "basic envelope" expected got
 
