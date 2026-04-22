@@ -63,12 +63,12 @@ let () =
     { binary = "crush"; deliver_client = "crush";
       needs_deliver = true; needs_wire_daemon = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] };
-  (* codex-headless: uses codex-turn-start-bridge binary. Full bridge stdin wiring,
-     thread-id handoff, and operator queue are Task 2+ concerns — these placeholder
-     flags will be replaced when the bridge launch path is implemented. *)
+  (* codex-headless: minimal unblocker for broker-driven XML delivery.
+     We wire the bridge behind a c2c-owned stdin pipe and use the deliver daemon
+     to feed that pipe. Richer operator steering / queue management remains future work. *)
   Stdlib.Hashtbl.add clients "codex-headless"
     { binary = "codex-turn-start-bridge"; deliver_client = "codex-headless";
-      needs_deliver = false; needs_wire_daemon = false; needs_poker = false;
+      needs_deliver = true; needs_wire_daemon = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] }
 
 let supported_clients = Stdlib.Hashtbl.fold (fun k _ acc -> k :: acc) clients []
@@ -180,6 +180,68 @@ let clear_registration_pid ~(broker_root : string) ~(session_id : string) : unit
         | _ -> json
       in
       write_json_file_atomic reg_path updated)
+
+let read_pid_start_time (pid : int) : int option =
+  let path = Printf.sprintf "/proc/%d/stat" pid in
+  try
+    let ic = open_in path in
+    Fun.protect
+      ~finally:(fun () -> try close_in ic with _ -> ())
+      (fun () ->
+        let line = input_line ic in
+        match String.rindex_opt line ')' with
+        | None -> None
+        | Some idx ->
+            let tail = String.sub line (idx + 2) (String.length line - idx - 2) in
+            let parts = String.split_on_char ' ' tail in
+            (match List.nth_opt parts 19 with
+             | Some token ->
+                 (try Some (int_of_string token) with _ -> None)
+             | None -> None))
+  with Sys_error _ | End_of_file -> None
+
+let eager_register_managed_alias ~(broker_root : string) ~(session_id : string)
+    ~(alias : string) ~(pid : int) ~(client_type : string) : unit =
+  let reg_path = broker_root // "registry.json" in
+  let lock_path = broker_root // "registry.json.lock" in
+  let pid_start_time = read_pid_start_time pid in
+  let now = Unix.gettimeofday () in
+  let row =
+    `Assoc
+      ([ ("session_id", `String session_id)
+       ; ("alias", `String alias)
+       ; ("pid", `Int pid)
+       ; ("registered_at", `Float now)
+       ; ("client_type", `String client_type) ]
+       @ (match pid_start_time with
+          | Some n -> [ ("pid_start_time", `Int n) ]
+          | None -> []))
+  in
+  with_file_lock lock_path (fun () ->
+    let regs =
+      match (try Yojson.Safe.from_file reg_path with _ -> `List []) with
+      | `List items -> items
+      | _ -> []
+    in
+    let kept =
+      List.filter
+        (function
+          | `Assoc fields ->
+              let sid =
+                match List.assoc_opt "session_id" fields with
+                | Some (`String s) -> s
+                | _ -> ""
+              in
+              let existing_alias =
+                match List.assoc_opt "alias" fields with
+                | Some (`String s) -> s
+                | _ -> ""
+              in
+              sid <> session_id && existing_alias <> alias
+          | _ -> false)
+        regs
+    in
+    write_json_file_atomic reg_path (`List (row :: kept)))
 
 let instance_dir name = instances_dir // name
 let config_path name = instance_dir name // "config.json"
@@ -1293,7 +1355,8 @@ let run_outer_loop ~(name : string) ~(client : string)
       let child_pid_opt =
         try
           let codex_xml_pipe =
-            if client = "codex" && List.mem "--xml-input-fd" launch_args then
+            if (client = "codex" && List.mem "--xml-input-fd" launch_args)
+               || client = "codex-headless" then
               Some (Unix.pipe ~cloexec:false ())
             else None
           in
@@ -1326,8 +1389,14 @@ let run_outer_loop ~(name : string) ~(client : string)
                  | None -> ());
                 (match codex_xml_pipe with
                  | Some (read_fd, write_fd) ->
-                     let fd3 : Unix.file_descr = Obj.magic 3 in
-                     (try Unix.dup2 read_fd fd3 with _ -> ());
+                     (* Minimal headless unblocker: the bridge reads XML from a
+                        c2c-owned pipe on stdin so the deliver daemon can write the
+                        first broker message before any operator console exists. *)
+                     if client = "codex-headless" then
+                       (try Unix.dup2 read_fd Unix.stdin with _ -> ())
+                     else
+                       let fd3 : Unix.file_descr = Obj.magic 3 in
+                       (try Unix.dup2 read_fd fd3 with _ -> ());
                      (try Unix.close read_fd with _ -> ());
                      (try Unix.close write_fd with _ -> ())
                  | None -> ());
@@ -1350,6 +1419,15 @@ let run_outer_loop ~(name : string) ~(client : string)
              SIGTERM handler so `c2c stop` can kill the whole inner pgid. *)
           inner_child_pid := Some pid;
           write_pid (inner_pid_path name) pid;
+          (if client = "codex-headless" then
+             (try
+                eager_register_managed_alias
+                  ~broker_root
+                  ~session_id:name
+                  ~alias:(Option.value alias_override ~default:name)
+                  ~pid
+                  ~client_type:"codex-headless"
+              with _ -> ()));
           (match thread_id_pipe with
            | Some (read_fd, write_fd) ->
                (* In XML mode the bridge does not start/resume a thread until it sees the first
