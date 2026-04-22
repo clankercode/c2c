@@ -1859,7 +1859,7 @@ let test_start_time_mismatch_is_not_alive () =
     ; dnd = false
     ; dnd_since = None
     ; dnd_until = None
-    ; client_type = None
+    ; client_type = None; plugin_version = None
     ; confirmed_at = None
     ; compacting = None
     }
@@ -1880,7 +1880,7 @@ let test_start_time_match_is_alive () =
     ; dnd = false
     ; dnd_since = None
     ; dnd_until = None
-    ; client_type = None
+    ; client_type = None; plugin_version = None
     ; confirmed_at = None
     ; compacting = None
     }
@@ -1901,7 +1901,7 @@ let test_start_time_none_falls_back_to_proc_exists () =
     ; dnd = false
     ; dnd_since = None
     ; dnd_until = None
-    ; client_type = None
+    ; client_type = None; plugin_version = None
     ; confirmed_at = None
     ; compacting = None
     }
