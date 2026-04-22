@@ -45,6 +45,22 @@ def derive_session_id(target_dir: Path) -> str:
     return f"opencode-{target_dir.name}"
 
 
+def extract_plugin_version() -> str:
+    """Extract PLUGIN_VERSION from c2c.ts for C2C_MCP_PLUGIN_VERSION."""
+    if not PLUGIN_SRC.exists():
+        return "unknown"
+    try:
+        content = PLUGIN_SRC.read_text()
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("const PLUGIN_VERSION") and "=" in stripped:
+                version = stripped.split("=")[1].strip().strip('";')
+                return version
+    except Exception:
+        pass
+    return "unknown"
+
+
 def build_config() -> dict:
     return {
         "$schema": "https://opencode.ai/config.json",
@@ -64,6 +80,7 @@ def build_config() -> dict:
                     "C2C_MCP_AUTO_DRAIN_CHANNEL": "0",
                     "C2C_MCP_AUTO_JOIN_ROOMS": "swarm-lounge",
                     "C2C_MCP_CLIENT_TYPE": "opencode",
+                    "C2C_MCP_PLUGIN_VERSION": extract_plugin_version(),
                     # Pin the c2c binary to an absolute path so a CWD-relative
                     # ./c2c shim can never be accidentally preferred (fork-bomb
                     # prevention). Matches the C2C_CLI_COMMAND set by build_env

@@ -32,6 +32,12 @@ import * as fs from "fs";
 import * as path from "path";
 
 // ---------------------------------------------------------------------------
+// Plugin version — bump on behavioral changes only (not comment fixes).
+// Semver: major.minor.patch. Breaking plugin/broker protocol → major++.
+// ---------------------------------------------------------------------------
+const PLUGIN_VERSION = "1.0.0";
+
+// ---------------------------------------------------------------------------
 // Sidecar config loader
 // ---------------------------------------------------------------------------
 
