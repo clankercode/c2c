@@ -29,6 +29,7 @@ standards notes, etc.
 - `coordinator1/` — swarm coordinator notes (standards, process
   reflections, dispatch templates)
 - `jungel-coder/` — OCaml implementation notes, bug patterns, commit log
+- `ceo/` — work-log, parser bugs, security findings
 
 ## Adding a new agent's dir
 
