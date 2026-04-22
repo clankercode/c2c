@@ -6061,6 +6061,7 @@ let agent_file_path ~client ~name =
   | "opencode" -> ".opencode" // "agents" // (name ^ ".md")
   | "claude" -> ".claude" // "agents" // (name ^ ".md")
   | "codex" -> ".codex" // "agents" // (name ^ ".md")
+  | "kimi" -> ".kimi" // "agents" // (name ^ ".md")
   | _ -> ".c2c" // "agents" // (name ^ ".md")
 
 let render_role_for_client (r : C2c_role.t) ~client =
@@ -6068,6 +6069,7 @@ let render_role_for_client (r : C2c_role.t) ~client =
   | "opencode" -> Some (C2c_role.OpenCode_renderer.render r)
   | "claude" -> Some (C2c_role.Claude_renderer.render r)
   | "codex" -> Some (C2c_role.Codex_renderer.render r)
+  | "kimi" -> Some (C2c_role.Kimi_renderer.render r)
   | _ -> None
 
 let write_agent_file ~client ~name ~content =
@@ -6777,7 +6779,7 @@ let roles_compile_term =
   in
   let client =
     Cmdliner.Arg.(value & opt (some string) (Some "opencode") & info [ "client"; "c" ]
-      ~docv:"CLIENT" ~doc:"Target client for rendering (opencode, claude, codex, or 'all' for every supported client).")
+      ~docv:"CLIENT" ~doc:"Target client for rendering (opencode, claude, codex, kimi, or 'all' for every supported client).")
   in
   let dry_run =
     Cmdliner.Arg.(value & flag & info [ "dry-run" ] ~doc:"Print output to stdout instead of writing files.")
@@ -6808,7 +6810,7 @@ let roles_compile_term =
   Banner.print_banner ~subtitle:("roles compile  |  " ^ subtitle) "c2c roles";
   let client_str = Option.value client ~default:"opencode" in
   let targets =
-    if client_str = "all" then ["opencode"; "claude"; "codex"]
+    if client_str = "all" then ["opencode"; "claude"; "codex"; "kimi"]
     else [client_str]
   in
   List.iter (fun (name, path) ->

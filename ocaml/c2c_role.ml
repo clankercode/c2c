@@ -313,3 +313,28 @@ module Codex_renderer = struct
     let fm = String.concat "\n" (List.rev !lines) in
     "---\n" ^ fm ^ "\n---\n\n" ^ r.body
 end
+
+module Kimi_renderer = struct
+  let render r =
+    let lines = ref [] in
+    lines := ("description: " ^ yaml_scalar r.description) :: !lines;
+    lines := ("role: " ^ r.role) :: !lines;
+    (match r.model with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
+    if r.c2c_alias <> None || r.c2c_auto_join_rooms <> [] then begin
+      lines := "# c2c:" :: !lines;
+      (match r.c2c_alias with Some a -> lines := ("#   alias: " ^ a) :: !lines | None -> ());
+      if r.c2c_auto_join_rooms <> [] then
+        lines := ("#   auto_join_rooms: [" ^ String.concat ", " r.c2c_auto_join_rooms ^ "]") :: !lines;
+    end;
+    if r.kimi <> [] then begin
+      lines := "kimi:" :: !lines;
+      List.iter (fun (k, v) ->
+        let field_name = if String.length k > 5 && String.sub k 0 5 = "kimi." then
+                          String.sub k 5 (String.length k - 5)
+                        else k in
+        lines := ("  " ^ field_name ^ ": " ^ yaml_scalar v) :: !lines
+      ) r.kimi;
+    end;
+    let fm = String.concat "\n" (List.rev !lines) in
+    "---\n" ^ fm ^ "\n---\n\n" ^ r.body
+end
