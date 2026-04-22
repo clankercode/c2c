@@ -27,16 +27,16 @@ whole managed process tree died. Max had to manually relaunch via
   loses their session entirely.
 - Silent: the peer disappears without leaving a finding or DM.
 
-## Fix directions (pick one, not both)
-1. Make `restart-self` detect the managed-session case and refuse (or
-   cycle just the inner process).
-2. Document a safe replacement recipe: exit OpenCode cleanly, then run
-   `c2c start opencode -n <name> -s <session>` from a fresh terminal /
-   tmux pane. Document in `.opencode/plugins/CLAUDE.md`.
+## Fix applied (2026-04-22, jungel-coder)
+Both directions implemented:
+1. `restart-self` now inspects `/proc/<pid>/cmdline` and refuses with a
+   helpful message if the target is a `c2c start` managed-session
+   supervisor (commit 52dde7b).
+2. `.opencode/plugins/CLAUDE.md` now documents the safe restart recipe
+   (same commit).
 
-Blocking either: we need a reliable "reload plugin without killing the
-session" path. The plugin reads `.opencode/plugins/c2c.ts` at OpenCode
-startup; there's no hot-reload. Any plugin fix forces a process cycle.
+The plugin reads `.opencode/plugins/c2c.ts` at OpenCode startup; there's
+no hot-reload. Any plugin fix forces a process cycle.
 
 ## Immediate mitigation
 Posted to EMERGENCY_COMMS.log telling jungle-coder + ceo NOT to run
