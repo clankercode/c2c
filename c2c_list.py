@@ -198,6 +198,8 @@ def list_broker_peers() -> list[dict]:
         except (ValueError, TypeError):
             registered_at = None
         session_id = str(registration.get("session_id", ""))
+        # Use registered client_type if available; fall back to inference from alias/session_id
+        client_type = str(registration.get("client_type", "")) or _infer_client_type(alias, session_id)
         # Prefer registered_at for last_seen; fall back to inbox mtime
         last_seen = _registered_ago(registered_at) or _last_seen_str(broker_root, session_id)
         rows.append(
@@ -207,7 +209,7 @@ def list_broker_peers() -> list[dict]:
                 "pid": pid or None,
                 "alive": _pid_alive(pid, pid_start_time),
                 "rooms": _peer_rooms(broker_root, alias),
-                "client_type": _infer_client_type(alias, session_id),
+                "client_type": client_type,
                 "last_seen": last_seen,
                 "registered_at": registered_at,
             }

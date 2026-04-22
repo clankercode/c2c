@@ -2082,6 +2082,11 @@ let current_client_pid () =
          with _ -> None)
   | None -> None
 
+let current_client_type () =
+  match Sys.getenv_opt "C2C_MCP_CLIENT_TYPE" with
+  | Some value when String.trim value <> "" -> Some (String.trim value)
+  | _ -> None
+
 let auto_register_startup ~broker_root =
   match auto_register_alias () with
   | None -> ()
@@ -2170,7 +2175,8 @@ let auto_register_startup ~broker_root =
          && not same_pid_alive_different_session
       then begin
         let pid_start_time = Broker.capture_pid_start_time pid in
-        Broker.register broker ~session_id ~alias ~pid ~pid_start_time ();
+        let client_type = current_client_type () in
+        Broker.register broker ~session_id ~alias ~pid ~pid_start_time ~client_type ();
         ignore (Broker.redeliver_dead_letter_for_session broker ~session_id ~alias)
       end
   end

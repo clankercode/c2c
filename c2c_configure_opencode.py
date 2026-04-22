@@ -63,6 +63,7 @@ def build_config() -> dict:
                     # Per-instance identity is set in the process env by build_env.
                     "C2C_MCP_AUTO_DRAIN_CHANNEL": "0",
                     "C2C_MCP_AUTO_JOIN_ROOMS": "swarm-lounge",
+                    "C2C_MCP_CLIENT_TYPE": "opencode",
                     # Pin the c2c binary to an absolute path so a CWD-relative
                     # ./c2c shim can never be accidentally preferred (fork-bomb
                     # prevention). Matches the C2C_CLI_COMMAND set by build_env

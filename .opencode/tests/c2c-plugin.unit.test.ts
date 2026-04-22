@@ -417,9 +417,8 @@ describe('c2c plugin unit tests', () => {
       properties: {
         id: 'perm-root',
         sessionID: 'root-session',
-        title: 'bash',
-        type: 'bash',
-        pattern: 'echo hi',
+        permission: 'bash',
+        patterns: ['echo hi'],
       },
     });
     for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
@@ -432,7 +431,7 @@ describe('c2c plugin unit tests', () => {
     expect(permissionPatch.patch.tui_focus.details).toEqual({
       id: 'perm-root',
       permission: 'bash',
-      patterns: null,
+      patterns: 'echo hi',
     });
   });
 
