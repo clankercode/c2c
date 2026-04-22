@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Kimi Wire Bridge: deliver c2c inbox messages through Kimi's Wire JSON-RPC protocol.
 
+.. deprecated::
+    OCaml `c2c_wire_bridge.ml` + `c2c_wire_daemon.ml` are the canonical
+    implementations. The OCaml `c2c wire-daemon` subcommand is primary.
+    This Python version is retained only for the Python CLI's wire-daemon
+    subcommand (c2c_cli.py dispatch). Delete when Python CLI is retired.
+
 The Kimi Wire protocol (`kimi --wire`) exposes a newline-delimited JSON-RPC 2.0
 interface over stdin/stdout.  This bridge:
 
