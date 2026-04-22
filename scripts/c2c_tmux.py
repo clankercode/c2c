@@ -38,6 +38,26 @@ from typing import Iterator, NamedTuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ENTER_HELPER = SCRIPT_DIR / "c2c-tmux-enter.sh"
+ALIAS_CACHE_PATH = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "c2c" / "tmux-aliases.json"
+
+
+def _load_alias_cache() -> dict[str, str]:
+    try:
+        return json.loads(ALIAS_CACHE_PATH.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_alias_cache(cache: dict[str, str]) -> None:
+    ALIAS_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ALIAS_CACHE_PATH.write_text(json.dumps(cache, indent=2, sort_keys=True))
+
+
+def _remember_alias(alias: str, target: str) -> None:
+    cache = _load_alias_cache()
+    if cache.get(alias) != target:
+        cache[alias] = target
+        _save_alias_cache(cache)
 
 
 # ---------------------------------------------------------------- tmux helpers
@@ -110,11 +130,26 @@ def enumerate_swarm() -> list[Pane]:
     return [q for q in (_enrich(p) for p in _iter_panes()) if q.alias]
 
 
-def target_for_alias(alias: str) -> str:
+def target_for_alias(alias: str, allow_cache: bool = True) -> tuple[str, bool]:
+    """Return (target, is_live). Falls back to cache when alive lookup fails."""
     for p in enumerate_swarm():
         if p.alias == alias:
-            return p.target
-    sys.exit(f"c2c_tmux: no alias '{alias}' found; try `{sys.argv[0]} list`")
+            _remember_alias(alias, p.target)
+            return p.target, True
+    if allow_cache:
+        cache = _load_alias_cache()
+        cached = cache.get(alias)
+        if cached:
+            print(
+                f"c2c_tmux: alias '{alias}' not live in any pane — using last-known target {cached} "
+                f"(pane may be reused or empty; verify before acting)",
+                file=sys.stderr,
+            )
+            return cached, False
+    sys.exit(
+        f"c2c_tmux: no alias '{alias}' found (no live pane, no cache entry); try "
+        f"`{sys.argv[0]} list`"
+    )
 
 
 def alias_is_alive(alias: str) -> bool:
@@ -132,42 +167,81 @@ def alias_is_alive(alias: str) -> bool:
 
 def cmd_list(args: argparse.Namespace) -> int:
     panes = enumerate_swarm()
-    if not panes:
-        print("(no swarm panes found)")
-        return 0
-    w = max((len(p.alias or "") for p in panes), default=8)
-    print(f"{'ALIAS':<{w}}  TARGET           PANE_PID   CLIENT_PID")
+    live_aliases = {p.alias for p in panes if p.alias}
+    # Update cache for all live panes.
     for p in panes:
-        print(f"{p.alias:<{w}}  {p.target:<15}  {p.pane_pid:<9}  {p.client_pid or '-'}")
+        if p.alias:
+            _remember_alias(p.alias, p.target)
+    cache = _load_alias_cache()
+    cached_only = {a: t for a, t in cache.items() if a not in live_aliases}
+
+    w = max(
+        [len(a) for a in live_aliases | cached_only.keys()] + [5],
+        default=8,
+    )
+    if panes:
+        print(f"{'ALIAS':<{w}}  TARGET           PANE_PID   CLIENT_PID")
+        for p in panes:
+            print(f"{p.alias:<{w}}  {p.target:<15}  {p.pane_pid:<9}  {p.client_pid or '-'}")
+    else:
+        print("(no live swarm panes)")
+
+    if cached_only and args.show_cached:
+        print()
+        print(f"{'ALIAS':<{w}}  LAST_TARGET      STATUS")
+        for a, t in sorted(cached_only.items()):
+            print(f"{a:<{w}}  {t:<15}  cached (not live)")
+    elif cached_only:
+        print(f"\n({len(cached_only)} cached aliases not live; `list --show-cached` to see)")
     return 0
 
 
 def cmd_peek(args: argparse.Namespace) -> int:
-    target = target_for_alias(args.alias)
+    target, live = target_for_alias(args.alias)
+    tag = "live" if live else "CACHED"
+    print(f"-- peek {args.alias} @ {target} ({tag}) --", file=sys.stderr)
     out = tmux("capture-pane", "-t", target, "-p").stdout
     lines = out.rstrip("\n").splitlines()
     for line in lines[-args.lines:]:
         print(line)
-    return 0
+    return 0 if live else 2
 
 
 def cmd_capture(args: argparse.Namespace) -> int:
     target = args.target
     if not any(c in target for c in ":%."):
-        target = target_for_alias(target)
+        target, live = target_for_alias(target)
+        tag = "live" if live else "CACHED"
+        print(f"-- capture {args.target} @ {target} ({tag}) --", file=sys.stderr)
     out = tmux("capture-pane", "-t", target, "-p", "-S", f"-{args.lines}").stdout
     sys.stdout.write(out)
     return 0
 
 
 def cmd_send(args: argparse.Namespace) -> int:
-    target = target_for_alias(args.alias)
+    target, live = target_for_alias(args.alias)
+    if not live:
+        print(
+            f"c2c_tmux: refusing to send to CACHED target {target} (pane may belong to another process). "
+            f"Use `c2c_tmux list` to confirm.",
+            file=sys.stderr,
+        )
+        return 2
+    print(f"-- send {args.alias} @ {target} --", file=sys.stderr)
     tmux("send-keys", "-t", target, args.text, capture=False)
     return _send_enter(target)
 
 
 def cmd_enter(args: argparse.Namespace) -> int:
-    target = target_for_alias(args.alias)
+    target, live = target_for_alias(args.alias)
+    if not live:
+        print(
+            f"c2c_tmux: refusing to enter CACHED target {target}. "
+            f"Use `c2c_tmux list` to confirm.",
+            file=sys.stderr,
+        )
+        return 2
+    print(f"-- enter {args.alias} @ {target} --", file=sys.stderr)
     return _send_enter(target)
 
 
@@ -179,7 +253,15 @@ def _send_enter(target: str) -> int:
 
 
 def cmd_keys(args: argparse.Namespace) -> int:
-    target = target_for_alias(args.alias)
+    target, live = target_for_alias(args.alias)
+    if not live:
+        print(
+            f"c2c_tmux: refusing to send keys to CACHED target {target}. "
+            f"Use `c2c_tmux list` to confirm.",
+            file=sys.stderr,
+        )
+        return 2
+    print(f"-- keys {args.alias} @ {target} : {' '.join(args.keys)} --", file=sys.stderr)
     tmux("send-keys", "-t", target, *args.keys, capture=False)
     return 0
 
@@ -356,7 +438,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="c2c_tmux", description=__doc__.splitlines()[0])
     sp = p.add_subparsers(dest="cmd", required=True)
 
-    sp.add_parser("list", help="enumerate swarm panes by alias").set_defaults(func=cmd_list)
+    ls = sp.add_parser("list", help="enumerate swarm panes by alias")
+    ls.add_argument("--show-cached", action="store_true", help="include cached aliases no longer live")
+    ls.set_defaults(func=cmd_list)
 
     pk = sp.add_parser("peek", help="tail a pane's visible scrollback")
     pk.add_argument("alias")
