@@ -10,6 +10,7 @@ interface Props {
   unreadRooms?: Set<string>;
   unreadPeers?: Set<string>;
   myAlias?: string;
+  mySessionId?: string;
   onSelect: (target: string, isRoom: boolean) => void;
   onRoomJoined?: (roomId: string) => void;
   onRoomLeft?: (roomId: string) => void;
@@ -48,7 +49,7 @@ const ITEM_PEER_ACTIVE_STYLE: React.CSSProperties = {
   color: "#cba6f7",
 };
 
-export function Sidebar({ peers, rooms, roomMembers = new Map(), selectedRoom, selectedPeer, unreadRooms = new Set(), unreadPeers = new Set(), myAlias = "", onSelect, onRoomJoined, onRoomLeft }: Props) {
+export function Sidebar({ peers, rooms, roomMembers = new Map(), selectedRoom, selectedPeer, unreadRooms = new Set(), unreadPeers = new Set(), myAlias = "", mySessionId, onSelect, onRoomJoined, onRoomLeft }: Props) {
   const [joinInput, setJoinInput] = useState("");
   const [joining, setJoining] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
@@ -57,7 +58,7 @@ export function Sidebar({ peers, rooms, roomMembers = new Map(), selectedRoom, s
   async function handleLeave(rid: string) {
     if (leavingRoom) return;
     setLeavingRoom(rid);
-    const res = await leaveRoom(rid, myAlias);
+    const res = await leaveRoom(rid, myAlias, mySessionId);
     setLeavingRoom(null);
     if (res.ok) onRoomLeft?.(rid);
   }
@@ -67,7 +68,7 @@ export function Sidebar({ peers, rooms, roomMembers = new Map(), selectedRoom, s
     if (!rid || joining) return;
     setJoining(true);
     setJoinError(null);
-    const res = await joinRoom(rid, myAlias);
+    const res = await joinRoom(rid, myAlias, mySessionId);
     setJoining(false);
     if (res.ok) {
       setJoinInput("");

@@ -379,6 +379,7 @@ export function App() {
           unreadRooms={unreadRooms}
           unreadPeers={unreadPeers}
           myAlias={myAlias}
+          mySessionId={mySessionId}
           onRoomJoined={roomId => setRooms(prev => new Set([...prev, roomId]))}
           onRoomLeft={roomId => {
             setRooms(prev => { const s = new Set(prev); s.delete(roomId); return s; });
