@@ -48,6 +48,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgmp10 \
         libssl3 \
         libev4 \
+        libsqlite3-0 \
         tini \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --home /var/lib/c2c --shell /usr/sbin/nologin c2c \
