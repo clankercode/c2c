@@ -1,4 +1,4 @@
-let version = "0.7.0"
+let version = "0.8.0"
 
 let build_date =
   match Sys.getenv_opt "BUILD_DATE" with
