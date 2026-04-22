@@ -212,8 +212,9 @@ let rec command_tier_map () : (string * safety) list =
   ; "relay-dm", Tier3
   ; "relay-status", Tier3
   ; "relay-list", Tier3
-  ; "relay-rooms", Tier3
-  ; "setcap", Tier3
+   ; "relay-rooms", Tier3
+   ; "relay-poll-inbox", Tier3
+   ; "setcap", Tier3
   ; "install", Tier3
   ; "gui", Tier3
   ; "diag", Tier3
@@ -3953,6 +3954,59 @@ let relay_gc_cmd =
         Lwt_main.run (loop ())
       end
 
+(* c2c relay poll-inbox — poll a remote relay's /remote_inbox/<session_id> endpoint.
+   Used by a remote node to receive messages ferried through the relay from a remote broker. *)
+let relay_poll_inbox_cmd =
+  let relay_url =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL (or C2C_RELAY_URL).")
+  in
+  let token =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token.")
+  in
+  let session_id =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "session-id" ] ~docv:"ID" ~doc:"Session ID to poll (required).")
+  in
+  let+ relay_url = relay_url
+  and+ token = token
+  and+ session_id = session_id in
+  match resolve_relay_url relay_url with
+  | None ->
+      Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+      exit 1
+  | Some url ->
+      let session_id = match session_id with
+        | Some s -> s
+        | None ->
+            Printf.eprintf "error: --session-id required.\n%!";
+            exit 1
+      in
+      let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+      let path = "/remote_inbox/" ^ session_id in
+      let result = Lwt_main.run (Relay.Relay_client.request client ~meth:`GET ~path ()) in
+      (match result with
+       | `Assoc fields ->
+           (match List.assoc_opt "messages" fields with
+            | Some (`List msgs) ->
+                if msgs = [] then exit 0
+                else begin
+                  List.iter (fun msg ->
+                    match msg with
+                    | `Assoc msg_fields ->
+                        let from_alias = match List.assoc_opt "from_alias" msg_fields with Some (`String s) -> s | _ -> "?" in
+                        let content = match List.assoc_opt "content" msg_fields with Some (`String s) -> s | _ -> "" in
+                        let ts = match List.assoc_opt "ts" msg_fields with Some (`Float f) -> string_of_float f | _ -> "?" in
+                        Printf.printf "[%s] %s: %s\n%!" ts from_alias content
+                    | _ -> ())
+                    msgs;
+                  exit 0
+                end
+            | _ ->
+                Printf.eprintf "error: unexpected response shape: %s\n%!" (Yojson.Safe.to_string result);
+                exit 1)
+       | _ ->
+           Printf.eprintf "error: unexpected response: %s\n%!" (Yojson.Safe.to_string result);
+           exit 1)
+
 (* --- relay identity (Layer 3 slice 6) ------------------------------------- *)
 (* Wraps Relay_identity (ocaml/relay_identity.ml) with init/show/fingerprint
    subcommands for managing ~/.config/c2c/identity.json. See
@@ -4091,15 +4145,16 @@ let relay_setup = Cmdliner.Cmd.v (Cmdliner.Cmd.info "setup" ~doc:"Configure rela
 let relay_status = Cmdliner.Cmd.v (Cmdliner.Cmd.info "status" ~doc:"Show relay health.") relay_status_cmd
 let relay_list = Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List relay peers.") relay_list_cmd
 let relay_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "rooms" ~doc:"Manage relay rooms.") relay_rooms_cmd
-let relay_gc = Cmdliner.Cmd.v (Cmdliner.Cmd.info "gc" ~doc:"Run relay garbage collection.") relay_gc_cmd
-let relay_register = Cmdliner.Cmd.v (Cmdliner.Cmd.info "register" ~doc:"Register Ed25519 identity on the relay.") relay_register_cmd
-let relay_dm = Cmdliner.Cmd.v (Cmdliner.Cmd.info "dm" ~doc:"Send or receive cross-host direct messages.") relay_dm_cmd
+ let relay_gc = Cmdliner.Cmd.v (Cmdliner.Cmd.info "gc" ~doc:"Run relay garbage collection.") relay_gc_cmd
+ let relay_poll_inbox = Cmdliner.Cmd.v (Cmdliner.Cmd.info "poll-inbox" ~doc:"Poll a remote relay's /remote_inbox/<session_id> endpoint.") relay_poll_inbox_cmd
+ let relay_register = Cmdliner.Cmd.v (Cmdliner.Cmd.info "register" ~doc:"Register Ed25519 identity on the relay.") relay_register_cmd
+ let relay_dm = Cmdliner.Cmd.v (Cmdliner.Cmd.info "dm" ~doc:"Send or receive cross-host direct messages.") relay_dm_cmd
 
-let relay_group =
+ let relay_group =
   Cmdliner.Cmd.group
     ~default:relay_status_cmd
     (Cmdliner.Cmd.info "relay" ~doc:"Cross-machine relay: serve, connect, setup, status, list, rooms, gc, identity, register, dm.")
-    [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_identity; relay_register; relay_dm ]
+    [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_poll_inbox; relay_identity; relay_register; relay_dm ]
 
 (* --- main entry point ----------------------------------------------------- *)
 
@@ -8752,7 +8807,7 @@ let commands_man is_agent =
          'c2c start' to restart instead."
     ; `P "$(b,relay), $(b,relay-serve), $(b,relay-gc), $(b,relay-setup), \
          $(b,relay-connect), $(b,relay-register), $(b,relay-dm), \
-         $(b,relay-status), $(b,relay-list), $(b,relay-rooms) — relay infrastructure"
+          $(b,relay-status), $(b,relay-list), $(b,relay-rooms), $(b,relay-poll-inbox) — relay infrastructure"
     ; `P "$(b,setcap) — grants PTY injection capability (requires sudo)"
     ; `P "$(b,smoke-test), $(b,diag), $(b,install), $(b,gui) — system operations"
     ; `P "== TIER 4: INTERNAL (plumbing, never shown in agent help) =="
