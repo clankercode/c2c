@@ -276,22 +276,22 @@ generation-client [CLIENT]
 
 ## Summary
 
-| # | Severity | Issue |
-|---|----------|-------|
-| B1 | BLOCKER | `c2c whoami` "no session ID" error is not actionable |
-| B2 | BLOCKER | `c2c --help` has no Getting Started path |
-| B3 | BLOCKER | `c2c` pty-inject warning uses hardcoded linuxbrew path |
-| B4 | BLOCKER | `c2c start` CLIENT argument has no guidance |
-| A1 | ANNOYANCE | `c2c list` shows `???` with no explanation |
-| A2 | ANNOYANCE | `c2c rooms visibility` doesn't document valid values |
-| A3 | ANNOYANCE | `c2c install` TUI has no preview/dry-run |
-| A4 | ANNOYANCE | `c2c roles --agent` is unexplained |
-| A5 | ANNOYANCE | `c2c relay` serve/connect/setup not contextualized |
-| A6 | ANNOYANCE | TIER system in `--help` is unexplained |
-| A7 | ANNOYANCE | `c2c doctor` "stale deploy" verdict is self-contradictory |
-| A8 | ANNOYANCE | `c2c` (no args) "configured" status unexplained |
-| P1 | POLISH | Exit codes 123/124/125 unexplained |
-| P2 | POLISH | `generation-client` purpose vague |
+| # | Severity | Status | Issue |
+|---|----------|--------|-------|
+| B1 | BLOCKER | ✅ FIXED `2cadd77` | `c2c whoami` "no session ID" error is not actionable |
+| B2 | BLOCKER | ✅ FIXED `0158416` | `c2c --help` has no Getting Started path |
+| B3 | BLOCKER | ✅ FIXED `1b032df` | `c2c` pty-inject warning misleading (only Codex needs cap) |
+| B4 | BLOCKER | ⏳ DEFERRED | `c2c start` CLIENT argument has no guidance |
+| A1 | ANNOYANCE | ⏳ PENDING | `c2c list` shows `???` with no explanation |
+| A2 | ANNOYANCE | ⏳ PENDING | `c2c rooms visibility` doesn't document valid values |
+| A3 | ANNOYANCE | ⏳ PENDING | `c2c install` TUI has no preview/dry-run |
+| A4 | ANNOYANCE | ⏳ PENDING | `c2c roles --agent` is unexplained |
+| A5 | ANNOYANCE | ⏳ PENDING | `c2c relay` serve/connect/setup not contextualized |
+| A6 | ANNOYANCE | ⏳ PENDING | TIER system in `--help` is unexplained |
+| A7 | ANNOYANCE | ⏳ PENDING | `c2c doctor` "stale deploy" verdict is self-contradictory |
+| A8 | ANNOYANCE | ⏳ PENDING | `c2c` (no args) "configured" status unexplained |
+| P1 | POLISH | ⏳ PENDING | Exit codes 123/124/125 unexplained |
+| P2 | POLISH | ⏳ PENDING | `generation-client` purpose vague |
 | P3 | POLISH | `--mcp-server` flag unexplained |
 | P4 | POLISH | `--from` alias could be misread as impersonation |
 
