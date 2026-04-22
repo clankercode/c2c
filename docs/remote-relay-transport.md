@@ -62,6 +62,10 @@ c2c relay poll-inbox --relay-url http://relay-host:7331 --session-id my-session
 - Read access to the remote broker's `inbox/` directory
 - SSH host key already known (or use `StrictHostKeyChecking=no` for first-time hosts)
 
+## Operator Runbook
+
+For step-by-step deployment instructions, troubleshooting, and rollback procedures, see the [Remote Relay Operator Runbook](../.collab/runbooks/remote-relay-operator.html).
+
 ## v2 Direction
 
 - Multiple remote brokers per relay
