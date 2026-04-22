@@ -59,6 +59,9 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
 
 ## Development Rules
 
+- do not run `c2c start <coding-cli>` directly from your bash tools. This 
+  produces undefined results. Please run instances in tmux if you need to test
+  them. Also check if you are running in tmux already. 
 - **Testing against live agents: use tmux + `scripts/*`, not ad-hoc spawns.**
   Convenience c2c tmux script ./scripts/c2c_tmux.py
     usage: c2c_tmux [-h] {list,peek,capture,send,enter,keys,exec,layout,whoami} ..
