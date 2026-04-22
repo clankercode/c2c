@@ -191,6 +191,20 @@ Dead registrations: 10 stale test aliases; no sweep pending.
 - galaxy-coder restarted mid-session; some handoff context may be lost.
 ```
 
+## Mid-sitrep sweeps (mandatory)
+
+During sitrep authoring, also sweep two companion docs:
+
+- **`todo-ideas.txt`** — new ideas added by Max or peers. Promote `new`
+  items to `brainstorming and planning` by starting a DM/room thread.
+  Mark items `ingested` once they have a concrete home; remove them from
+  the file (git history preserves).
+- **`todo-ongoing.txt`** — update the current-state summary + next-step
+  line for each active project so the file stays aligned with reality.
+
+If either doc gained a new entry since the previous sitrep, call that
+out in the sitrep's "Recent activity" section.
+
 ## Post-sitrep actions (mandatory)
 
 Writing the sitrep is only the visibility step. Every hour, once the

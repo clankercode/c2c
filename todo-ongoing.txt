@@ -1,16 +1,71 @@
 # Ongoing TODOs
 
-This doc keeps track of long term ongoing tasks and projects. It should be updated as progress is made. Each long term project should have an folder under .projects/ where we keep track of logging the specifics of what we've done, decisions made, tasks remaining, etc. Each section here in this document should be a short summary of recent progress and the current state of the task/project. Next steps can be documented too, though the full future steps / plans / etc go in the project folder. Each summary should also include a short goal statement (though longer and more detailed goals go in the project folder).
+This doc keeps track of long term ongoing tasks and projects. It should be updated as progress is made. Each long term project should have an folder under `.projects/` where we keep track of logging the specifics of what we've done, decisions made, tasks remaining, etc. Each section here in this document should be a short summary of recent progress and the current state of the task/project. Next steps can be documented too, though the full future steps / plans / etc go in the project folder. Each summary should also include a short goal statement (though longer and more detailed goals go in the project folder).
+
+## Maintenance
+
+- **Edit cadence**: touched by whichever agent ships a change that affects a project's state. coordinator1 sweeps during sitreps to ensure summaries reflect reality.
+- **Statuses**: `active` (work in flight) · `blocked` (waiting on external / human) · `paused` (deprioritized) · `done`.
+- **Entry shape**: goal, status, folder link (or `**todo**` if the folder doesn't exist yet), current state in ≤3 sentences, next step.
 
 ## Projects/Tasks
 
-### OCaml Port
+### Agent-file epic
+
+Project Folder: `.collab/agent-files/` (design doc v7 lives here)
+
+Goal: single canonical role file (`.c2c/roles/<name>.md`) compiles on-the-fly into each client's native agent format (OpenCode, Claude, Codex, Kimi) at launch. c2c becomes the hub for multi-client persona parity.
+
+Status: **active** — v1.0 shipped, v1.1 mostly complete. 4 canonical roles seeded (coordinator1/ceo/galaxy-coder/jungle-coder) plus 2 authored by ceo (security-review/qa). Parser, renderers (opencode/claude), `c2c agent new|list|delete|rename`, `c2c roles [--dry-run]`, `c2c start --agent`, Banner.ml with 11 themes, `include:` snippets, `compatible_clients`+`required_capabilities`, body injection lint, `c2c roles validate` all live.
+
+Next: live Stage 4-7 testing by Max (end-to-end launch on OpenCode / Claude, visual polish). Then Codex + Kimi renderers (format research needed). Missing roles to author: dogfood-hunter, release-manager, gui-tester.
+
+### Codex-headless integration
+
+Project Folder: **todo** (design lives in commit messages + todo.txt Task 1-7 entries)
+
+Goal: Codex as a first-class c2c peer — install path, alias, launcher, lazy thread-id persistence, durable XML steering queue, bridge stdin wiring, live tests.
+
+Status: **partially blocked** — Tasks 1, 2, 6 landed. Tasks 3-5, 7 were upstream-blocked on missing `codex-turn-start-bridge --thread-id-fd`. New Codex binaries have since landed (see FOLLOW-UP in todo.txt); ready to unblock.
+
+Next: revisit blocked tasks, re-plan against the new binaries, implement newly-unblocked slices (updated TUI XML / bridge capability paths + live tests).
+
+### OCaml port
 
 Project Folder: **todo**
 
-Goal: deprecate all python that is a part of the c2c runtime. All `c2c` features should be part of the OCaml build, natively. 
+Goal: deprecate all Python in the c2c runtime. Every `c2c` feature should be pure OCaml. Python only for test scaffolding / one-shot scripts.
 
-Status: **todo**
+Status: **active** — CLI surface, broker, MCP server, relay, agent-file parser/renderer, Banner all OCaml. Remaining Python touches the runtime in some managed-instance / harness paths (`c2c_start.py` notably).
 
+Next: audit remaining `c2c_*.py` scripts, classify runtime vs tooling vs prototype, port runtime pieces incrementally.
 
+### Sitrep discipline
 
+Project Folder: `.sitreps/PROTOCOL.md`
+
+Goal: coordinator1 produces an hourly UTC snapshot of swarm state so new session starts have zero ramp-up and Max can check in without polling.
+
+Status: **active** — protocol drafted, `c2c_sitrep.py` scaffolder live, first two sitreps produced (`08.md`, `09.md`), hourly cron armed (with 15min max jitter). Per-agent personal-logs convention at `.c2c/personal-logs/<alias>/` established.
+
+Next: swap `CronCreate` for `Monitor` + `heartbeat` once Max lands the scheduling syntax.
+
+### Security: permission/question alias-hijack
+
+Project Folder: `.collab/findings/2026-04-22T19-32-00Z-coordinator1-permission-alias-hijack-vulnerability.md`
+
+Goal: close the relay-spoofing / stale-alias routing vector. Bind permission/question IDs to canonical_alias; resolve reply-to at send-time; broker refuses mismatched-canonical sends; alias reuse refused while prior owner has pending state.
+
+Status: **active** — finding filed, in-flight patch partially visible in `.opencode/plugins/c2c.ts` (expectedSenderAlias binding). No commit yet.
+
+Next: finish the plugin-side verification; add broker-side canonical matching; add tests.
+
+### Terminal E2E framework
+
+Project Folder: **todo** (docs at `docs/terminal-e2e-framework-{plan,design}.md`)
+
+Goal: capability-gated live tests for `c2c start <client>` that can launch real client processes in tmux panes, inject input, assert outputs.
+
+Status: **active** — design + plan docs committed. Tests landed incrementally (`tests/test_terminal_e2e_framework.py`, `tests/e2e/framework/artifacts.py`).
+
+Next: continued incremental hardening; will unblock codex-headless Task 7 (tmux smoke coverage).

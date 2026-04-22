@@ -44,6 +44,14 @@ Responsibilities:
 - Keep long-form personal notes (reflections, standards reminders, draft
   dispatch templates) under `.c2c/personal-logs/coordinator1/` per the
   swarm convention. Reread when sloppy.
+- Sweep **`todo-ideas.txt`** at each sitrep — promote `new` ideas to
+  `brainstorming and planning` by kicking off DM/room discussion, move
+  them to `ingested` once they have a home (a todo entry, a design doc,
+  or a project in `todo-ongoing.txt`).
+- Keep **`todo-ongoing.txt`** summaries in sync with reality during
+  sitreps — each project's status + next step should reflect the last
+  hour's work. Long-form state lives in `.projects/<name>/` (create on
+  demand).
 - Gate pushes to `origin/master` — Railway deploys are cheap but slow; push only
   when relay-server code changes or a user-facing fix needs to go live.
 - Escalate architectural decisions to Max with specific questions, not open

@@ -1,17 +1,48 @@
 # Ideas (not yet ingested)
 
-This file is for ideas we haven't processed yet. Moslty it will be Max posting stuff here for processing later. Ideas should be handled intelligently, and ideas/input sought from agents. Make it a communal process. 
+This file is for ideas we haven't processed yet. Mostly it will be Max posting stuff here for processing later. Ideas should be handled intelligently, and ideas/input sought from agents. Make it a communal process.
 
-It should be committed to git regularly so it's obvious when there's new stuff to ingest. 
+It should be committed to git regularly so it's obvious when there's new stuff to ingest.
 
-Valid Status Values: new | brainstorming and planning | ingested
+## Statuses
 
-**todo: more handling instrucitons? better/more detailed process? template?**
+- `new` — just arrived, not yet discussed
+- `brainstorming and planning` — swarm is exploring shape; comments being gathered
+- `ingested` — moved into active scope (added to `todo.txt` / `todo-ongoing.txt` / a design doc); can be deleted from here
+
+## Handling process
+
+1. **coordinator1 sweeps this file** at each sitrep — promotes `new` items to `brainstorming and planning` by starting a short discussion (DM/room) with relevant peers.
+2. **Authors add context**: each idea should gain a few bullets (use-case, rough scope, blockers) as agents discuss.
+3. **Promote to ingested**: when the idea has a concrete home (a todo entry, a design doc, a project in `todo-ongoing.txt`), mark `ingested` and remove from this file (preserved in git history).
+4. **Kill ideas that don't fit**: if the swarm decides an idea is out of scope, mark `ingested` with a note explaining why (so it doesn't re-surface).
+
+## Entry template
+
+```
+---
+
+Idea: <one-line summary>
+
+Submitted by: <alias> · <UTC timestamp>
+Status: new | brainstorming and planning | ingested
+Related: <links to todos, findings, design docs as discussion accretes>
+
+<context, details, open questions>
+```
 
 ---
 
-Idea: use c2c relay to communicate with remote node capable of doing GUI work. Can sync code over network or via git. We need c2c relay to be in a state where we can give Max a small set of commands to run to get things set up. Should be runnable from a bash script. 
+Idea: Use c2c relay to communicate with a remote node capable of doing GUI work. Can sync code over network or via git. We need c2c relay to be in a state where we can give Max a small set of commands to run to get things set up. Should be runnable from a bash script.
 
+Submitted by: max · (timestamp lost during initial scaffold)
 Status: new
+Related: (none yet)
+
+Open questions: which GUI workloads? (Tauri dev server? Playwright? full X11 over SSH?) What's the minimal relay state needed to unblock? Does this overlap with the security/alias-hijack work before remote relay is production-safe?
+
+---
+
+Idea:
 
 ---
