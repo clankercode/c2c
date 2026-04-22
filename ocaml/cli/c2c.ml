@@ -157,6 +157,8 @@ let rec command_tier_map () : (string * safety) list =
   ; "send-all", Tier1
   ; "sweep", Tier1
   ; "sweep-dryrun", Tier1
+  ; "monitor", Tier1
+  ; "screen", Tier1
   ; "history", Tier1
   ; "health", Tier1
   ; "dead-letter", Tier1
@@ -176,6 +178,7 @@ let rec command_tier_map () : (string * safety) list =
   ; "verify", Tier1
   ; "status", Tier1
   ; "commands", Tier1
+  ; "monitor", Tier1      (* read-only inbox/archive event stream — required by agent recovery-snippet *)
   ; "start", Tier2
   ; "stop", Tier2
   ; "restart", Tier2
@@ -266,7 +269,7 @@ let filter_commands ~cmds =
   let get_tier cmd_name =
     match List.assoc_opt cmd_name tier_map with
     | Some t -> t
-    | None -> Tier4
+    | None -> Tier2  (* unknown / newly-added commands default to visible-with-care, not hidden-from-agents. prevents regressions like monitor-silently-removed 2026-04-22. *)
   in
   List.filter
     (fun cmd ->
