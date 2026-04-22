@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     if client == "opencode":
         import c2c_configure_opencode
         return c2c_configure_opencode.main(remainder)
-    if client == "codex":
+    if client == "codex" or client == "codex-headless":
         import c2c_configure_codex
         return c2c_configure_codex.main(remainder)
     if client == "kimi":
@@ -53,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         f"c2c setup: unknown client '{client}'\n"
-        "Supported: claude-code, opencode, codex, kimi, crush",
+        "Supported: claude-code, opencode, codex, codex-headless, kimi, crush",
         file=sys.stderr,
     )
     return 2

@@ -41,6 +41,9 @@ class C2CStartUnitTests(unittest.TestCase):
             self.c2c_start.default_name("kimi"),
         )
 
+    def test_supported_clients_include_codex_headless(self):
+        self.assertIn("codex-headless", self.c2c_start.SUPPORTED_CLIENTS)
+
     def test_invalid_client_rejected(self):
         broker_root = Path(self.temp_dir.name)
         buf = io.StringIO()
@@ -722,14 +725,114 @@ class C2CStartOuterLoopBehaviorTests(unittest.TestCase):
         self.assertEqual(call_kwargs["resume_session_id"], "550e8400-e29b-41d4-a716-446655440000")
 
 
+class C2CStartCodexHeadlessTests(unittest.TestCase):
+    """Task 2: codex-headless launcher entry and opaque resume ids."""
+
+    def setUp(self):
+        import c2c_start
+
+        self.c2c_start = c2c_start
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.instances_dir = Path(self.temp_dir.name) / "instances"
+        self._orig_instances_dir = c2c_start.INSTANCES_DIR
+        c2c_start.INSTANCES_DIR = self.instances_dir
+
+    def tearDown(self):
+        self.c2c_start.INSTANCES_DIR = self._orig_instances_dir
+        self.temp_dir.cleanup()
+
+    def test_cmd_start_initial_headless_config_uses_empty_resume_id(self):
+        """First start of codex-headless stores empty resume_session_id."""
+        broker_root = Path(self.temp_dir.name) / "broker"
+        with mock.patch.object(self.c2c_start, "run_outer_loop", return_value=0):
+            rc = self.c2c_start.cmd_start(
+                "codex-headless", "headless-proof", [], broker_root
+            )
+        self.assertEqual(rc, 0)
+        cfg = self.c2c_start.load_instance_config("headless-proof")
+        self.assertEqual(cfg["resume_session_id"], "")
+
+    def test_codex_headless_launch_args_force_bridge_flags(self):
+        """codex-headless prepare_launch_args includes bridge flags."""
+        broker_root = Path(self.temp_dir.name) / "broker"
+        args = self.c2c_start.prepare_launch_args(
+            "headless-proof",
+            "codex-headless",
+            ["--model", "gpt-5"],
+            broker_root,
+            resume_session_id="thread-abc",
+        )
+        self.assertEqual(
+            args,
+            [
+                "--stdin-format", "xml",
+                "--codex-bin", "codex",
+                "--approval-policy", "never",
+                "--thread-id", "thread-abc",
+                "--model", "gpt-5",
+            ],
+        )
+
+    def test_codex_headless_session_id_override_accepts_opaque_thread_id(self):
+        """codex-headless accepts opaque thread id via --session-id."""
+        broker_root = Path(self.temp_dir.name) / "broker"
+        with mock.patch.object(
+            self.c2c_start, "run_outer_loop", return_value=0
+        ) as mock_loop:
+            rc = self.c2c_start.cmd_start(
+                "codex-headless",
+                "headless-proof",
+                [],
+                broker_root,
+                session_id_override="thread-opaque-123",
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            mock_loop.call_args.kwargs["resume_session_id"], "thread-opaque-123"
+        )
+
+    def test_saved_headless_resume_id_is_not_regenerated_as_uuid(self):
+        """Saved opaque resume id is preserved, not replaced with a UUID."""
+        inst_dir = self.instances_dir / "headless-proof"
+        inst_dir.mkdir(parents=True, exist_ok=True)
+        (inst_dir / "config.json").write_text(
+            json.dumps({
+                "name": "headless-proof",
+                "client": "codex-headless",
+                "session_id": "headless-proof",
+                "resume_session_id": "thread-still-opaque",
+                "alias": "headless-proof",
+                "extra_args": [],
+                "created_at": 0,
+                "broker_root": str(Path(self.temp_dir.name) / "broker"),
+                "auto_join_rooms": "swarm-lounge",
+            }),
+            encoding="utf-8",
+        )
+        with mock.patch.object(
+            self.c2c_start, "run_outer_loop", return_value=0
+        ) as mock_loop:
+            rc = self.c2c_start.cmd_start(
+                "codex-headless",
+                "headless-proof",
+                [],
+                Path(self.temp_dir.name) / "broker",
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            mock_loop.call_args.kwargs["resume_session_id"], "thread-still-opaque"
+        )
+
+
 class C2CStartConstantsTests(unittest.TestCase):
     """Task 1: constants, SUPPORTED_CLIENTS, and public helper API."""
 
-    def test_client_configs_has_all_five_clients(self):
+    def test_client_configs_has_all_six_clients(self):
         from c2c_start import CLIENT_CONFIGS
 
         self.assertEqual(
-            set(CLIENT_CONFIGS.keys()), {"claude", "codex", "opencode", "kimi", "crush"}
+            set(CLIENT_CONFIGS.keys()),
+            {"claude", "codex", "opencode", "kimi", "crush", "codex-headless"},
         )
 
     def test_supported_clients_matches_configs(self):

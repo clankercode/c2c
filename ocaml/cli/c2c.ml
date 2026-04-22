@@ -3871,6 +3871,10 @@ let json_write_file path json =
   Unix.rename tmp path
 
 let default_alias_for_client client =
+  let client = match String.lowercase_ascii client with
+    | "codex-headless" -> "codex"
+    | other -> other
+  in
   let suffix = C2c_start.generate_alias () in
   Printf.sprintf "%s-%s" client suffix
 
@@ -3884,7 +3888,7 @@ let c2c_tools_list = [
   "sweep"; "tail_log";
 ]
 
-let setup_codex ~output_mode ~root ~alias_val ~server_path =
+let setup_codex ~output_mode ~root ~alias_val ~server_path ~client =
   let config_path = Filename.concat (Sys.getenv "HOME") (".codex" // "config.toml") in
   let existing =
     if Sys.file_exists config_path then
@@ -3936,7 +3940,7 @@ let setup_codex ~output_mode ~root ~alias_val ~server_path =
   | Json ->
       print_json (`Assoc
         [ ("ok", `Bool true)
-        ; ("client", `String "codex")
+        ; ("client", `String client)
         ; ("alias", `String alias_val)
         ; ("broker_root", `String root)
         ; ("config", `String config_path)
@@ -4499,7 +4503,13 @@ let resolve_mcp_server_paths ~output_mode =
   in
   (server_path, mcp_command)
 
+let canonical_install_client client =
+  match String.lowercase_ascii client with
+  | "codex-headless" -> "codex"
+  | other -> other
+
 let do_install_client ?(channel_delivery=false) ~output_mode ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force () =
+  let client = canonical_install_client client in
   let root =
     match broker_root_opt with
     | Some r -> r
@@ -4514,22 +4524,23 @@ let do_install_client ?(channel_delivery=false) ~output_mode ~client ~alias_opt 
         a
   in
   let (server_path, mcp_command) = resolve_mcp_server_paths ~output_mode in
-  match String.lowercase_ascii client with
+  match client with
   | "claude" -> setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery
-  | "codex" -> setup_codex ~output_mode ~root ~alias_val ~server_path
+  | "codex" -> setup_codex ~output_mode ~root ~alias_val ~server_path ~client
   | "kimi" -> setup_kimi ~output_mode ~root ~alias_val ~server_path
   | "opencode" -> setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt ~force ()
   | "crush" -> setup_crush ~output_mode ~root ~alias_val ~server_path
   | _ ->
       (match output_mode with
-       | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String (Printf.sprintf "unknown client '%s'. Use: claude, codex, kimi, opencode, crush" client)) ])
+       | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String (Printf.sprintf "unknown client '%s'. Use: claude, codex, codex-headless, kimi, opencode, crush" client)) ])
        | Human ->
-           Printf.eprintf "error: unknown client '%s'. Use: claude, codex, kimi, opencode, crush\n%!" client;
+           Printf.eprintf "error: unknown client '%s'. Use: claude, codex, codex-headless, kimi, opencode, crush\n%!" client;
            exit 1)
 
 (* --- install: detection + TUI --------------------------------------------- *)
 
 let known_clients = [ "claude"; "codex"; "opencode"; "kimi"; "crush" ]
+let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "crush" ]
 
 let self_installed_path () =
   let home = try Sys.getenv "HOME" with Not_found -> "" in
@@ -4551,25 +4562,25 @@ let client_configured client =
                 | _ -> false)
            | _ -> false
          with _ -> false)
-  | "codex" ->
-      let p = home // ".codex" // "config.toml" in
-      if not (Sys.file_exists p) then false
-      else
-        (try
-           let ic = open_in p in
-           let s =
-             Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
-               really_input_string ic (in_channel_length ic))
-           in
-           let needle = "[mcp_servers.c2c]" in
-           let nl = String.length needle and hl = String.length s in
-           let rec loop i =
-             i <= hl - nl
-             && (String.sub s i nl = needle || loop (i + 1))
-           in
-           loop 0
-         with _ -> false)
-  | "kimi" ->
+   | "codex" | "codex-headless" ->
+       let p = home // ".codex" // "config.toml" in
+       if not (Sys.file_exists p) then false
+       else
+         (try
+            let ic = open_in p in
+            let s =
+              Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+                really_input_string ic (in_channel_length ic))
+            in
+            let needle = "[mcp_servers.c2c]" in
+            let nl = String.length needle and hl = String.length s in
+            let rec loop i =
+              i <= hl - nl
+              && (String.sub s i nl = needle || loop (i + 1))
+            in
+            loop 0
+          with _ -> false)
+   | "kimi" ->
       let p = home // ".kimi" // "mcp.json" in
       if not (Sys.file_exists p) then false
       else
@@ -4830,13 +4841,13 @@ let valid_strategies = [ "first-alive"; "round-robin"; "broadcast" ]
 (* --- subcommand: init ---------------------------------------------------- *)
 
 let detect_client () =
-  (match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
-   | Some sid ->
-       let clients = [ "opencode"; "claude"; "codex"; "kimi"; "crush" ] in
-       List.find_opt (fun c ->
-         let cl = String.length c in
-         String.length sid >= cl && String.sub sid 0 cl = c) clients
-   | None -> None)
+   (match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+    | Some sid ->
+        let clients = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "crush" ] in
+        List.find_opt (fun c ->
+          let cl = String.length c in
+          String.length sid >= cl && String.sub sid 0 cl = c) clients
+    | None -> None)
   |> (function
       | Some _ as v -> v
       | None ->
@@ -4851,7 +4862,7 @@ let init_cmd =
   let open Cmdliner in
   let client_opt =
     Arg.(value & opt (some string) None & info ["client"; "c"] ~docv:"CLIENT"
-           ~doc:"Client to configure: claude, opencode, codex, kimi. Auto-detected when omitted.")
+           ~doc:"Client to configure: claude, opencode, codex, codex-headless, kimi. Auto-detected when omitted.")
   in
   let alias_opt_arg =
     Arg.(value & opt (some string) None & info ["alias"; "a"] ~docv:"ALIAS"
@@ -4899,13 +4910,14 @@ let init_cmd =
                Printf.printf "No client detected. Specify one with --client:\n";
                Printf.printf "  c2c init --client opencode\n";
                Printf.printf "  c2c init --client claude\n";
-               Printf.printf "  c2c init --client codex\n"
+               Printf.printf "  c2c init --client codex\n";
+               Printf.printf "  c2c init --client codex-headless\n"
            | Json -> ());
           `No_client
       | Some client ->
           (try
              do_install_client ~output_mode ~client ~alias_opt ~broker_root_opt:(Some root) ~target_dir_opt:None ~force:false ();
-             `Ok client
+             `Ok (canonical_install_client client)
            with e -> `Error (Printexc.to_string e))
   in
 
@@ -5056,7 +5068,7 @@ let install =
             $(b,c) to customize, or $(b,n) to abort."
       ; `P "Use the subcommands for scriptable (non-interactive) installs: \
             $(b,c2c install self) installs only the binary; \
-            $(b,c2c install claude|codex|opencode|kimi|crush) configures one \
+            $(b,c2c install claude|codex|codex-headless|opencode|kimi|crush) configures one \
             client; $(b,c2c install all) does the same as the TUI's default \
             path without prompting."
       ]
@@ -5065,7 +5077,7 @@ let install =
     ([ install_self_subcmd
      ; install_all_subcmd
      ]
-     @ List.map install_client_subcmd known_clients)
+     @ List.map install_client_subcmd install_subcommand_clients)
 
 (* --- subcommand: serve (MCP server mode) ---------------------------------- *)
 
@@ -5543,7 +5555,7 @@ let default_kickoff_prompt ~name ~alias ?role () =
 
 let start_cmd =
   let client =
-    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"CLIENT" ~doc:"Client to start (claude, codex, kimi, opencode, crush).")
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"CLIENT" ~doc:"Client to start (claude, codex, codex-headless, kimi, opencode, crush).")
   in
   let name =
     Cmdliner.Arg.(value & opt (some string) None & info [ "name"; "n" ] ~docv:"NAME" ~doc:"Instance name (default: auto-generated).")

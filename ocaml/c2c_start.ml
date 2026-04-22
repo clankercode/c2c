@@ -62,6 +62,13 @@ let () =
   Stdlib.Hashtbl.add clients "crush"
     { binary = "crush"; deliver_client = "crush";
       needs_deliver = true; needs_wire_daemon = false; needs_poker = false;
+      poker_event = None; poker_from = None; extra_env = [] };
+  (* codex-headless: uses codex-turn-start-bridge binary. Full bridge stdin wiring,
+     thread-id handoff, and operator queue are Task 2+ concerns — these placeholder
+     flags will be replaced when the bridge launch path is implemented. *)
+  Stdlib.Hashtbl.add clients "codex-headless"
+    { binary = "codex-turn-start-bridge"; deliver_client = "codex-headless";
+      needs_deliver = false; needs_wire_daemon = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] }
 
 let supported_clients = Stdlib.Hashtbl.fold (fun k _ acc -> k :: acc) clients []

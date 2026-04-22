@@ -73,6 +73,13 @@ CLIENT_CONFIGS: dict[str, dict[str, Any]] = {
         "needs_poker": False,
         "extra_env": {"C2C_MCP_CLIENT_TYPE": "crush"},
     },
+    "codex-headless": {
+        "binary": "codex-turn-start-bridge",
+        "deliver_client": "codex",
+        "needs_poker": False,
+        "needs_pty": False,
+        "extra_env": {"C2C_MCP_CLIENT_TYPE": "codex-headless"},
+    },
 }
 
 SUPPORTED_CLIENTS: set[str] = set(CLIENT_CONFIGS.keys())
@@ -364,6 +371,10 @@ def prepare_launch_args(
             args.append("--continue")
     elif client == "codex" and resume_session_id:
         args.extend(["resume", "--last"])
+    elif client == "codex-headless":
+        args.extend(["--stdin-format", "xml", "--codex-bin", "codex", "--approval-policy", "never"])
+        if resume_session_id:
+            args.extend(["--thread-id", resume_session_id])
     if client == "codex" and codex_xml_input_fd is not None:
         args = ["--xml-input-fd", str(codex_xml_input_fd), *args]
 
@@ -885,7 +896,7 @@ def cmd_start(
         return 1
 
     # Validate --session-id before any side effects. OpenCode accepts ses_* IDs;
-    # claude/codex expect a UUID.
+    # claude/codex expect a UUID; codex-headless accepts any opaque thread ID.
     if session_id_override is not None:
         if client == "opencode":
             if not session_id_override.startswith("ses"):
@@ -895,7 +906,7 @@ def cmd_start(
                 else:
                     print(f"error: {msg}", file=sys.stderr)
                 return 1
-        else:
+        elif client != "codex-headless":
             try:
                 uuid.UUID(session_id_override)
             except ValueError:
@@ -949,10 +960,14 @@ def cmd_start(
     # Stable session UUID: generated once on first start, reused on resume
     # so the client can --resume by it. Only used by clients that support
     # session resumption (claude, codex, opencode).
+    # codex-headless uses an opaque thread ID instead, stored empty on first start.
     # CLI --session-id override takes precedence; falls back to saved value.
     resume_session_id = session_id_override or (existing.get("resume_session_id") if existing else None)
     if resume_session_id is None:
-        resume_session_id = str(uuid.uuid4())
+        if client == "codex-headless":
+            resume_session_id = ""
+        else:
+            resume_session_id = str(uuid.uuid4())
 
     # Write instance config.
     cfg: dict[str, Any] = {
