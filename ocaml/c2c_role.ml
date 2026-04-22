@@ -90,16 +90,15 @@ let parse_yaml_entries fm_lines =
           flush_list ();
           let key = String.sub line 0 colon_pos in
           let rest = String.trim (String.sub line (colon_pos + 1) (String.length line - colon_pos - 1)) in
+          let full_key = if !current_section = "" then key else !current_section ^ "." ^ key in
           if rest = "" then
-            current_section := if !current_section = "" then key else !current_section ^ "." ^ key
+            entries := (full_key, "") :: !entries
+          else if starts_with rest '[' then
+            (* inline flow sequence: parse immediately and store *)
+            let vals = parse_list rest in
+            entries := (full_key, "[" ^ String.concat ", " vals ^ "]") :: !entries
           else
-            let full_key = if !current_section = "" then key else !current_section ^ "." ^ key in
-            if starts_with rest '[' then
-              (* inline flow sequence: parse immediately and store *)
-              let vals = parse_list rest in
-              entries := (full_key, "[" ^ String.concat ", " vals ^ "]") :: !entries
-            else
-              entries := (full_key, trim_quotes rest) :: !entries
+            entries := (full_key, trim_quotes rest) :: !entries
   ) fm_lines;
   flush_list ();
   List.rev !entries
