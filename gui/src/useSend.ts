@@ -5,6 +5,7 @@ export async function sendMessage(
   message: string,
   isRoom: boolean,
   myAlias: string,
+  _sessionId?: string,
 ): Promise<{ ok: boolean; error?: string }> {
   if (!toAlias.trim() || !message.trim()) {
     return { ok: false, error: "target and message required" };
@@ -26,6 +27,7 @@ export async function sendMessage(
 export async function joinRoom(
   roomId: string,
   alias: string,
+  _sessionId?: string,
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     const args = alias
@@ -44,6 +46,7 @@ export async function joinRoom(
 export async function leaveRoom(
   roomId: string,
   alias: string,
+  _sessionId?: string,
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     const args = alias
@@ -61,10 +64,11 @@ export async function leaveRoom(
 
 export async function registerAlias(
   alias: string,
+  sessionId: string,
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     const result = await Command.create("c2c", [
-      "register", "--alias", alias, "--session-id", alias,
+      "register", "--alias", alias, "--session-id", sessionId,
     ]).execute();
     if (result.code !== 0) {
       return { ok: false, error: result.stderr || `exit ${result.code}` };

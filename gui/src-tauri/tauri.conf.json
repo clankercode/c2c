@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "c2c — Swarm Chat",
+        "title": "c2c — Swarm Monitor",
         "width": 1100,
         "height": 700,
         "resizable": true,
@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://relay.c2c.im; font-src 'self'"
     }
   },
   "bundle": {

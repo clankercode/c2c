@@ -17,15 +17,21 @@ const ALIAS_RE = /^(?!\.)[A-Za-z0-9._-]{1,64}$/;
 
 interface Props {
   open: boolean;
-  onComplete: (alias: string) => void;
+  preGeneratedSessionId?: string;
+  onComplete: (alias: string, sessionId: string) => void;
   onSkip?: () => void;
 }
 
-export function WelcomeWizard({ open, onComplete, onSkip }: Props) {
+function generateSessionId(): string {
+  return "gui-" + Math.random().toString(36).slice(2, 11) + "-" + Math.random().toString(36).slice(2, 11);
+}
+
+export function WelcomeWizard({ open, preGeneratedSessionId, onComplete, onSkip }: Props) {
   const [step, setStep] = useState<Step>("name");
   const [alias, setAlias] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [registeredAlias, setRegisteredAlias] = useState("");
+  const [registeredSessionId, setRegisteredSessionId] = useState("");
 
   async function handleRegister() {
     const a = alias.trim();
@@ -35,11 +41,13 @@ export function WelcomeWizard({ open, onComplete, onSkip }: Props) {
     }
     setError(null);
     setStep("registering");
-    const res = await registerAlias(a);
+    const sid = preGeneratedSessionId ?? generateSessionId();
+    const res = await registerAlias(a, sid);
     if (res.ok) {
       setRegisteredAlias(a);
+      setRegisteredSessionId(sid);
       // Best-effort join; ignore errors — user can join manually via sidebar
-      await joinRoom("swarm-lounge", a).catch(() => {});
+      await joinRoom("swarm-lounge", a, sid).catch(() => {});
       setStep("done");
     } else {
       setError(res.error ?? "Registration failed — try a different alias");
@@ -48,7 +56,7 @@ export function WelcomeWizard({ open, onComplete, onSkip }: Props) {
   }
 
   function handleDone() {
-    onComplete(registeredAlias);
+    onComplete(registeredAlias, registeredSessionId);
   }
 
   return (

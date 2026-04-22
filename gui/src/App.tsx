@@ -11,6 +11,11 @@ import { WelcomeWizard } from "./components/WelcomeWizard";
 
 const MAX_EVENTS = 1000;
 const ALIAS_KEY = "c2c-gui-my-alias";
+const SESSION_ID_KEY = "c2c-gui-my-session-id";
+
+function generateSessionId(): string {
+  return "gui-" + Math.random().toString(36).slice(2, 11) + "-" + Math.random().toString(36).slice(2, 11);
+}
 
 export function App() {
   const [events, setEvents] = useState<C2cEvent[]>([]);
@@ -28,7 +33,9 @@ export function App() {
   const selectedRoomRef = useRef<string | null>(null);
   const selectedPeerRef = useRef<string | null>(null);
   const myAliasRef = useRef<string>("");
+  const mySessionIdRef = useRef<string>("");
   const [myAlias, setMyAlias] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "");
+  const [mySessionId, setMySessionId] = useState<string>(() => localStorage.getItem(SESSION_ID_KEY) ?? "");
   const [aliasInput, setAliasInput] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "");
   const [showWizard, setShowWizard] = useState(() => !localStorage.getItem(ALIAS_KEY));
   const [aliasStatus, setAliasStatus] = useState<string | null>(null);
@@ -188,14 +195,15 @@ export function App() {
 
     // If we have a stored alias, ensure we're joined to the default social room.
     const storedAlias = localStorage.getItem(ALIAS_KEY) ?? undefined;
+    const storedSessionId = localStorage.getItem(SESSION_ID_KEY) ?? undefined;
     if (storedAlias) {
-      joinRoom("swarm-lounge", storedAlias).then(res => {
+      joinRoom("swarm-lounge", storedAlias, storedSessionId).then(res => {
         if (res.ok) setRooms(prev => new Set([...prev, "swarm-lounge"]));
       });
     }
     Promise.all([
-      loadHistory(100, storedAlias),
-      storedAlias ? pollInbox(storedAlias) : Promise.resolve([] as import("./types").C2cEvent[]),
+      loadHistory(100, storedSessionId),
+      storedSessionId ? pollInbox(storedSessionId) : Promise.resolve([] as import("./types").C2cEvent[]),
     ]).then(([hist, inbox]) => {
       if (cancelledRef.current) return;
       const combined = [...hist, ...inbox].sort(
@@ -217,15 +225,19 @@ export function App() {
   useEffect(() => { selectedRoomRef.current = selectedRoom; }, [selectedRoom]);
   useEffect(() => { selectedPeerRef.current = selectedPeer; }, [selectedPeer]);
   useEffect(() => { myAliasRef.current = myAlias; }, [myAlias]);
+  useEffect(() => { mySessionIdRef.current = mySessionId; }, [mySessionId]);
 
   async function applyAlias() {
     const a = aliasInput.trim();
     if (!a) return;
     setAliasStatus("registering…");
-    const res = await registerAlias(a);
+    let sid = localStorage.getItem(SESSION_ID_KEY) ?? generateSessionId();
+    const res = await registerAlias(a, sid);
     if (res.ok) {
       setMyAlias(a);
+      setMySessionId(sid);
       localStorage.setItem(ALIAS_KEY, a);
+      localStorage.setItem(SESSION_ID_KEY, sid);
       setAliasStatus("✓ registered as " + a);
     } else {
       setAliasStatus("error: " + (res.error ?? "unknown"));
@@ -235,13 +247,15 @@ export function App() {
 
   const statusColor = { connecting: "#f9e2af", live: "#a6e3a1", error: "#f38ba8" }[status];
 
-  function handleWizardComplete(alias: string) {
+  function handleWizardComplete(alias: string, sessionId: string) {
     setMyAlias(alias);
+    setMySessionId(sessionId);
     setAliasInput(alias);
     localStorage.setItem(ALIAS_KEY, alias);
+    localStorage.setItem(SESSION_ID_KEY, sessionId);
     setShowWizard(false);
     // Auto-join the default social room on first registration
-    joinRoom("swarm-lounge", alias).then(res => {
+    joinRoom("swarm-lounge", alias, sessionId).then(res => {
       if (res.ok) setRooms(prev => new Set([...prev, "swarm-lounge"]));
     });
   }
@@ -383,7 +397,7 @@ export function App() {
               setSelectedPeer(target);
               setSelectedRoom(null);
               setUnreadPeers(prev => { const s = new Set(prev); s.delete(target); return s; });
-              loadPeerHistory(target, myAlias, 100).then(hist => setFocusHistoryEvents(hist));
+              loadPeerHistory(target, mySessionId, 100).then(hist => setFocusHistoryEvents(hist));
             }
           }}
         />
@@ -410,6 +424,7 @@ export function App() {
         peers={[...peers]}
         rooms={[...rooms]}
         myAlias={myAlias}
+        mySessionId={mySessionId}
         initialTo={composeTo}
         initialIsRoom={composeIsRoom}
       />
