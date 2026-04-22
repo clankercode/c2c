@@ -14,20 +14,24 @@ class ArtifactCollector:
     def start_run(self) -> Path:
         run_id = time.strftime("%Y%m%d-%H%M%S")
         base_dir = self.root / self.test_name
-        run_dir = base_dir / run_id
         suffix = 1
-        while run_dir.exists():
-            run_dir = base_dir / f"{run_id}-{suffix}"
-            suffix += 1
-        run_dir.mkdir(parents=True, exist_ok=False)
-        self.run_dir = run_dir
-        (self.run_dir / "timeline.jsonl").write_text("", encoding="utf-8")
-        return self.run_dir
+        base_dir.mkdir(parents=True, exist_ok=True)
+        while True:
+            run_dir = base_dir / run_id if suffix == 1 else base_dir / f"{run_id}-{suffix - 1}"
+            try:
+                run_dir.mkdir(parents=True, exist_ok=False)
+            except FileExistsError:
+                suffix += 1
+                continue
+            self.run_dir = run_dir
+            (self.run_dir / "timeline.jsonl").write_text("", encoding="utf-8")
+            return self.run_dir
 
     def append_event(self, event: str, payload: dict[str, object]) -> None:
         path = self._require_run_dir() / "timeline.jsonl"
         with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"event": event, **{k: v for k, v in payload.items() if k != "event"}}) + "\n")
+            entry = {"event": event, **{k: v for k, v in payload.items() if k != "event"}}
+            fh.write(json.dumps(entry, default=self._json_default) + "\n")
 
     def write_text(self, name: str, text: str) -> Path:
         path = self._require_run_dir() / name
@@ -44,3 +48,9 @@ class ArtifactCollector:
         if self.run_dir is None:
             raise RuntimeError("start_run() must be called first")
         return self.run_dir
+
+    @staticmethod
+    def _json_default(value: object) -> object:
+        if isinstance(value, Path):
+            return str(value)
+        raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")

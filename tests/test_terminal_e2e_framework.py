@@ -65,6 +65,43 @@ def test_artifact_collector_event_field_wins_over_payload_event(tmp_path: Path) 
     assert set(payload) == {"event", "extra"}
 
 
+def test_artifact_collector_retries_when_mkdir_collides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.e2e.framework import artifacts as artifacts_module
+
+    monkeypatch.setattr(artifacts_module.time, "strftime", lambda _fmt: "20260422-123456")
+
+    original_mkdir = artifacts_module.Path.mkdir
+    seen_first_target = {"value": False}
+
+    def fake_mkdir(self: Path, *args: object, **kwargs: object) -> None:
+        if self.name == "20260422-123456" and not seen_first_target["value"]:
+            seen_first_target["value"] = True
+            raise FileExistsError
+        return original_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(artifacts_module.Path, "mkdir", fake_mkdir)
+
+    collector = ArtifactCollector(root=tmp_path, test_name="test_demo")
+    run_dir = collector.start_run()
+
+    assert run_dir.name == "20260422-123456-1"
+    assert run_dir.exists()
+
+
+def test_artifact_collector_serializes_path_payload_values(tmp_path: Path) -> None:
+    collector = ArtifactCollector(root=tmp_path, test_name="test_demo")
+    collector.start_run()
+
+    collector.append_event("paths", {"artifact": tmp_path / "screen.txt"})
+
+    line = (collector.run_dir / "timeline.jsonl").read_text(encoding="utf-8").strip()
+    payload = json.loads(line)
+    assert payload["event"] == "paths"
+    assert payload["artifact"] == str(tmp_path / "screen.txt")
+
+
 def test_terminal_types_keep_backend_and_target_explicit() -> None:
     handle = TerminalHandle(
         backend="fake-pty",
