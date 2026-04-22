@@ -2178,6 +2178,25 @@ let auto_register_startup ~broker_root =
         let client_type = current_client_type () in
         Broker.register broker ~session_id ~alias ~pid ~pid_start_time ~client_type ();
         ignore (Broker.redeliver_dead_letter_for_session broker ~session_id ~alias)
+      end else begin
+        (* Log which guard triggered and by which registration, for debugging. *)
+        (match List.find_opt (fun reg -> reg.session_id = session_id && reg.alias <> alias && Broker.registration_is_alive reg) existing with
+         | Some reg -> Printf.eprintf "[auto_register_startup] hijack_guard: skipping — found alive registration alias=%S session_id=%S pid=%s\n%!"
+           reg.alias reg.session_id (match reg.pid with None -> "none" | Some p -> string_of_int p)
+         | None -> ());
+        (match List.find_opt (fun reg -> reg.alias = alias && reg.session_id <> session_id && reg.pid <> pid && Broker.registration_is_alive reg) existing with
+         | Some reg -> Printf.eprintf "[auto_register_startup] alias_occupied_guard: skipping — alias=%S already held by session_id=%S pid=%s\n%!"
+           alias reg.session_id (match reg.pid with None -> "none" | Some p -> string_of_int p)
+         | None -> ());
+        (match List.find_opt (fun reg -> reg.session_id = session_id && reg.alias = alias && reg.pid <> None && reg.pid <> pid && Broker.registration_is_alive reg) existing with
+         | Some reg -> Printf.eprintf "[auto_register_startup] same_session_alive_different_pid: skipping — session_id=%S alias=%S pid=%s\n%!"
+           reg.session_id reg.alias (match reg.pid with None -> "none" | Some p -> string_of_int p)
+         | None -> ());
+        (match List.find_opt (fun reg -> reg.pid = pid && reg.session_id <> session_id && reg.alias <> alias && Broker.registration_is_alive reg) existing with
+         | Some reg -> Printf.eprintf "[auto_register_startup] same_pid_alive_different_session: skipping — pid=%s has alive registration alias=%S session_id=%S\n%!"
+           (match pid with None -> "none" | Some p -> string_of_int p) reg.alias reg.session_id
+         | None -> ());
+        ()
       end
   end
 
