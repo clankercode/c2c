@@ -1,0 +1,16 @@
+# Ongoing TODOs
+
+This doc keeps track of long term ongoing tasks and projects. It should be updated as progress is made. Each long term project should have an folder under .projects/ where we keep track of logging the specifics of what we've done, decisions made, tasks remaining, etc. Each section here in this document should be a short summary of recent progress and the current state of the task/project. Next steps can be documented too, though the full future steps / plans / etc go in the project folder. Each summary should also include a short goal statement (though longer and more detailed goals go in the project folder).
+
+## Projects/Tasks
+
+### OCaml Port
+
+Project Folder: **todo**
+
+Goal: deprecate all python that is a part of the c2c runtime. All `c2c` features should be part of the OCaml build, natively. 
+
+Status: **todo**
+
+
+

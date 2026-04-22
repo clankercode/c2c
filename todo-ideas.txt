@@ -1,0 +1,17 @@
+# Ideas (not yet ingested)
+
+This file is for ideas we haven't processed yet. Moslty it will be Max posting stuff here for processing later. Ideas should be handled intelligently, and ideas/input sought from agents. Make it a communal process. 
+
+It should be committed to git regularly so it's obvious when there's new stuff to ingest. 
+
+Valid Status Values: new | brainstorming and planning | ingested
+
+**todo: more handling instrucitons? better/more detailed process? template?**
+
+---
+
+Idea: use c2c relay to communicate with remote node capable of doing GUI work. Can sync code over network or via git. We need c2c relay to be in a state where we can give Max a small set of commands to run to get things set up. Should be runnable from a bash script. 
+
+Status: new
+
+---

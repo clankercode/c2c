@@ -1,0 +1,251 @@
+# Role Generation + Testing Queue
+
+Purpose: track missing-role candidates to author, document the testing
+process for the agent-file epic MVP, and capture expectations at each
+test stage. Companion to the main `todo.txt` epic entry.
+
+---
+
+## Missing roles to author (canonical `.c2c/roles/<name>.md`)
+
+Priority order; highest-impact first.
+
+- [ ] **security-review** — hunts PTY/permission/broker-state/credential
+      surface bugs. Complements existing swarm focus (fast ships) with a
+      red-team lens. Theme: red palette (see fork-themes-doc example for
+      `security.md`). Consumer: Claude Code subagent, dispatched
+      on-demand via Task tool.
+
+- [ ] **qa** — owns the test matrix (OCaml `just test-ocaml`, Python
+      `just test`, TypeScript plugin tests, GUI Tauri, relay smoke).
+      Catches regressions before coordinator1 notices. Theme:
+      ffx-bevelle (clinical, precise). Consumer: Claude Code / OpenCode
+      subagent, invoked pre-push and post-MVP landings.
+
+- [ ] **dogfood-hunter** — daily driver using c2c for real work, files
+      findings fast. Relieves coordinator1 of ad-hoc bug-hunting.
+      Theme: er-frenzy or er-shabriri (frantic, detail-focused).
+      Consumer: OpenCode primary agent, runs interactively.
+
+- [ ] **release-manager** — owns push/deploy with coordinator1, runs
+      relay-smoke-test.sh after Railway deploys, drafts release notes
+      for the website, checks git state before tags. Theme:
+      lotr-forge (steady, crafted). Consumer: Claude Code subagent.
+
+- [ ] **gui-tester** (optional, later) — dev-server + click-through +
+      visual-regression for the c2c GUI (Tauri+Vite+shadcn). Complements
+      galaxy-coder (who owns impl). Theme: tokyo-night or ffx-zanarkand.
+      Only needed if galaxy-coder is stretched.
+
+---
+
+## Testing process for agent-file epic
+
+The epic ships in stages. At each stage, the expected behavior is
+spelled out below so we can verify independently (Max + swarm dogfood).
+
+### Stage 1 — Parser & renderer fidelity (blocks all downstream)
+
+**What**: `c2c_role.ml` parses canonical `.c2c/roles/<name>.md` and
+renderers emit correct per-client agent files with ALL fields preserved.
+
+**Fixtures**:
+- `.c2c/roles/coordinator1.md` (already seeded; has `c2c.auto_join_rooms`,
+  `claude.tools`, `opencode.theme`)
+- `.c2c/roles/ceo.md`, `.c2c/roles/galaxy-coder.md`,
+  `.c2c/roles/jungle-coder.md` (seeded)
+
+**Expected**:
+- `c2c roles --dry-run <name>` for opencode target includes ALL
+  `c2c:` fields including arrays (`auto_join_rooms`)
+- `c2c roles --client claude --dry-run <name>` includes ALL `claude:`
+  fields including arrays (`tools`)
+- No silent field drops. No YAML syntax errors in output.
+- Body passes through verbatim (no markdown munging).
+
+**Current status** (2026-04-22, b748257 + 426c852):
+- ❌ Arrays dropped (todo.txt line 45) — ceo traced to `c2c_role.ml:68`
+  and `:75`
+- Text fields pass through correctly
+- Body passthrough looks correct
+
+**Exit criteria**: all seeded fixtures render losslessly for both
+opencode and claude targets.
+
+### Stage 2 — `c2c agent new` template quality
+
+**What**: creating a new role via `c2c agent new <name>` produces a
+useful starter template (not empty YAML keys).
+
+**Expected**:
+- Output file has **either** no empty keys OR commented example stubs
+- Template includes a placeholder body with a prompt-ish sentence
+  (currently "You are a `<name>` agent." — OK but could be richer)
+- File is valid YAML that `c2c_role.ml` can re-parse without warnings
+
+**Current status**: ❌ sparse template with empty `model:`, `c2c:`,
+`opencode:` keys (todo.txt line 46).
+
+**Exit criteria**: `c2c agent new foo && c2c roles --dry-run foo` round-trips
+without warnings and produces sensible commented guidance for editors.
+
+### Stage 3 — Banner rendering
+
+**What**: substantial commands print a themed ASCII-art banner header
+on invocation (per Max's direction).
+
+**Expected**:
+- `c2c agent new <name>` shows a banner with the command name,
+  timestamp, and product tagline before any other output.
+- `c2c start <client> --agent <name>` shows a banner themed by the
+  role's `opencode.theme` or falls back to `default`.
+- `c2c roles --dry-run` shows a banner before the per-role output blocks.
+- Banner uses accent+muted colors from the theme. 11 themes wired.
+
+**Current status**: ❌ Banner.ml exists but is never invoked — output
+is plain `=== name (client) ===` text (todo.txt line 47).
+
+**Exit criteria**: each substantial command prints the themed banner;
+screenshot or recorded terminal matches Max's taste bar.
+
+### Stage 4 — End-to-end launch (OpenCode)
+
+**What**: `c2c start opencode --agent <name>` successfully launches
+OpenCode with the agent active, correct theme, correct room joins,
+correct alias.
+
+**Expected**:
+- `.opencode/agent/<name>.md` is written (gitignored)
+- OpenCode starts and the agent is selected (TUI shows it)
+- Theme overlay applies (TUI visual check)
+- Agent registers to broker with the right alias
+- Auto-joins the rooms listed in `c2c.auto_join_rooms`
+
+**Current status**: 🟡 mechanism exists per b748257 commit message;
+untested end-to-end. Gated on Stage 1 (arrays drop would break room
+auto-join).
+
+**Exit criteria**: Max confirms live session launches cleanly with
+correct theme and that `c2c list` shows the new alias in the expected
+rooms.
+
+### Stage 5 — End-to-end launch (Claude Code)
+
+**What**: same as Stage 4 but for Claude Code target.
+
+**Expected**:
+- `.claude/agents/<name>.md` written
+- Claude Code (if launched via `c2c start claude --agent ...`) picks up
+  the subagent file and makes it dispatchable via the Task tool
+- Tools list (`claude.tools`) respected
+
+**Current status**: untested. Claude Code doesn't have a
+`c2c start claude --agent` launch UI yet — needs wiring.
+
+**Exit criteria**: same as Stage 4 but for Claude.
+
+### Stage 6 — Role migration
+
+**What**: the 9 existing `.c2c/roles/*.md` files (1-line role
+descriptions) are expanded into full canonical schema with useful
+body/theme/tools.
+
+**Expected**:
+- 4 of 9 already seeded by coordinator1 (coordinator1, ceo,
+  galaxy-coder, jungle-coder)
+- Remaining: tauri-expert, fresh-oc, oc-bootstrap-test, oc-e2e-test,
+  oc-focus-test, oc-tui-e2e (6 test-artifact roles)
+- Test-artifact roles can either be deleted (stale test scaffolds) OR
+  get minimal canonical templates
+
+**Exit criteria**: `ls .c2c/roles/` is all canonical schema; no stale
+1-line files.
+
+### Stage 7 — Human-in-loop polish review (Max)
+
+**What**: Max drives substantial commands and assesses the UX/visual
+bar ("cargo init quality"). Shakes out anything the swarm missed.
+
+**Inputs for Max**:
+- `c2c agent new my-test-role -d "description"` — check banner, file
+  output, immediate next-step guidance
+- `c2c roles --dry-run coordinator1` — check banner + rendered output
+- `c2c start opencode --agent coordinator1` — check launch, theme, feel
+- Pick 2-3 more roles from the 11-theme subset, launch, eyeball
+- Report back on anything that feels off
+
+**Exit criteria**: Max gives thumbs up; any polish gaps logged as v1.1
+todos. Epic MVP is "done".
+
+### Stage 8 — Expand client renderers (post-MVP)
+
+Once stages 1-7 are green, add:
+- Codex renderer (format research needed — what does Codex's per-agent
+  persona file look like? Does it exist?)
+- Kimi renderer (similar question)
+- Keep OpenCode + Claude as the reference pair
+
+---
+
+## Schema v1.1 extensions (post-MVP, Max 2026-04-22)
+
+Add to canonical `.c2c/roles/<name>.md` frontmatter:
+
+- [ ] **`compatible_clients: [opencode, claude]`** — whitelist of
+      clients this agent supports. Launcher rejects mismatches:
+      `c2c start codex --agent visual-analyst` aborts with clear error
+      if `codex` isn't listed. Default: all clients if omitted.
+
+- [ ] **Per-client `model:` override** — `opencode.model:
+      anthropic/claude-sonnet-4-20250514` and `claude.model: opus`
+      already possible per OpenCode's schema; formalize as first-class
+      v1.1 field + document in docs/agent-files.md.
+
+- [ ] **`required_capabilities: [vision, tools, reasoning]`** —
+      declarative capability requirements. Launcher checks client's
+      configured model against this list before launch; aborts early
+      if mismatch. Useful for: visual-analyst (vision), code-agents
+      (tools), planner roles (reasoning). Schema: free-form strings;
+      launcher maps to per-model capability tables.
+
+Use case driver: Max noted that we "often want a specific model for a
+specific thing (like we need multimodal ones for visual analysis)".
+Without this, users launch vision-requiring agents with non-vision
+clients and hit runtime errors — bad UX. Compile-time rejection is
+better.
+
+- [ ] **`include: [<snippet>, ...]`** — snippet imports. Max 2026-04-22:
+      "our agent files should support importing/including snippets. like
+      we can have a default snippet about how to use c2c, and what are
+      good monitors or scheduled tasks to set up." Proposal:
+      ```yaml
+      ---
+      description: My agent
+      include: [c2c-basics, monitors-setup]
+      ---
+      body goes here
+      ```
+      Loader resolves each name to `.c2c/snippets/<name>.md`, concatenates
+      (prepend-to-body or inject-at-marker, TBD) into the compiled output's
+      body. Allows DRY'ing common stanzas across many roles (how to use
+      c2c, how to arm monitors, push discipline, finding-log conventions).
+      Schema location: top-level frontmatter field (not per-client).
+      Expansion happens before per-client rendering so all clients get
+      the same body. Initial snippet set: `c2c-basics.md` (DMs + rooms +
+      poll_inbox), `monitors-setup.md` (c2c monitor --all + heartbeat +
+      ScheduleWakeup patterns), `push-policy.md` (coordinator gate). We
+      already have 4 canonical roles that could refactor to use these
+      once the loader lands.
+
+---
+
+## Notes
+
+- Test fixtures live at `.c2c/roles/*.md`. We can add more canonical
+  files as needed — they're committed, cheap, and double as both
+  examples and test coverage.
+- Bug pace is fast; expect more issues during Stage 4-5 end-to-end
+  runs. Keep todo.txt as the live tracker; `todo-role-gen-test.txt`
+  (this file) is for the role-generation-specific process.
+- Max's testing help is most useful at Stages 3 (banner polish), 4-5
+  (end-to-end feel), and 7 (final sign-off).
