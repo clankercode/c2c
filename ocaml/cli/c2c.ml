@@ -6681,27 +6681,43 @@ let agent_refine_term =
     "%s\n\n---\n\nWe are refining a role named `%s`. Here is the current draft at %s:\n\n---\n%s\n---\n\nInterview me about this agent and refine the role file in place. When I say \"done\", save it and exit.\n"
     role_designer_body name role_file_path draft_body
   in
-  let argv = match client with
-    | "claude" -> [| "claude"; "--append-system-prompt"; prompt |]
-    | "opencode" -> [| "opencode"; "--prompt"; prompt |]
-    | "codex" -> [| "codex"; "exec"; prompt |]
+  (* opencode's --prompt flag is finicky for large prompts and can trigger its
+     help page. Workaround: write the prompt to a temp file and redirect it
+     via stdin. claude/codex still receive the prompt as an argv argument. *)
+  let argv, stdin_file = match client with
+    | "claude" -> ([| "claude"; "--append-system-prompt"; prompt |], None)
+    | "opencode" ->
+      let p = Filename.concat (Sys.getcwd ()) ".c2c/agent-refine-last-prompt.md" in
+      let oc = open_out p in
+      output_string oc prompt;
+      close_out oc;
+      ([| "opencode" |], Some p)
+    | "codex" -> ([| "codex"; "exec"; prompt |], None)
     | other ->
       Printf.eprintf "error: unknown generation_client '%s' (expected claude|opencode|codex)\n%!" other;
       exit 1
   in
   Printf.printf "executing: %s (role=%s, file=%s)\n%!" argv.(0) name role_file_path;
-  (* Print the argv before exec so we can debug bad flag shapes (e.g. an
-     `opencode run` vs `opencode --prompt` mismatch). Prompt is long and
-     would drown the output — truncate the last arg to 120 chars. *)
   let truncate_for_debug s =
     if String.length s <= 120 then s
     else String.sub s 0 117 ^ "..."
   in
   let debug_argv = Array.mapi (fun i a ->
-    if i = Array.length argv - 1 then truncate_for_debug a else a) argv in
+    if i = Array.length argv - 1 && Option.is_none stdin_file
+    then truncate_for_debug a
+    else a) argv in
   Printf.printf "argv:";
   Array.iter (fun a -> Printf.printf " %s" (Filename.quote a)) debug_argv;
+  (match stdin_file with
+   | Some p -> Printf.printf "  < %s" p
+   | None -> ());
   Printf.printf "\n%!";
+  (match stdin_file with
+   | Some p ->
+       let fd = Unix.openfile p [Unix.O_RDONLY] 0 in
+       Unix.dup2 fd Unix.stdin;
+       Unix.close fd
+   | None -> ());
   try Unix.execvp argv.(0) argv with
   | Unix.Unix_error (e, _, _) ->
     Printf.eprintf "error: failed to exec %s: %s\n%!" argv.(0) (Unix.error_message e);
