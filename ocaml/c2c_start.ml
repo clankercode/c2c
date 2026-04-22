@@ -202,6 +202,10 @@ let read_pid_start_time (pid : int) : int option =
 
 let eager_register_managed_alias ~(broker_root : string) ~(session_id : string)
     ~(alias : string) ~(pid : int) ~(client_type : string) : unit =
+  (* Managed codex-headless needs broker reachability before the bridge has
+     produced a thread id. Ensure the broker dir exists before taking the
+     registry lock so the eager registration path can bootstrap cleanly. *)
+  mkdir_p broker_root;
   let reg_path = broker_root // "registry.json" in
   let lock_path = broker_root // "registry.json.lock" in
   let pid_start_time = read_pid_start_time pid in
