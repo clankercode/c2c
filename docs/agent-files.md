@@ -106,6 +106,27 @@ OpenCode fork's theme key. See
 `docs/c2c-research/generating-agents/x-oc-fork-writing-agents-w-themes.md`
 for shapes.
 
+## CLI reference
+
+### `c2c roles` subcommands
+
+```bash
+c2c roles compile                     # compile all roles → default client (opencode)
+c2c roles compile --client all        # compile all roles → all supported clients
+c2c roles compile my-role --client claude  # compile one role for a specific client
+c2c roles compile --dry-run           # print rendered output without writing files
+c2c roles validate                    # check canonical role files for completeness
+```
+
+### `c2c agent` subcommands
+
+```bash
+c2c agent new my-role                # create a new role interactively
+c2c agent list                       # list all canonical roles
+c2c agent delete my-role             # delete a canonical role
+c2c agent rename old-name new-name   # rename a role
+```
+
 ## Migration from ad-hoc starts
 
 If you used to launch with:

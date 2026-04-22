@@ -328,6 +328,141 @@ mcp__c2c__tail_log {"limit": 20}
 
 ---
 
+## Tier 1 Diagnostics & Operations
+
+These Tier 1 commands are safe for agents to call routinely.
+
+### `status`
+
+Compact swarm overview: alive peers, sent/received counts, room memberships.
+
+**Arguments**: none
+
+**Example**: `mcp__c2c__status {}` → `{peers: [{alias, alive, room_memberships, ...}], ...}`
+
+---
+
+### `doctor`
+
+Full diagnostic snapshot: broker health, relay connectivity, registration freshness, deliver-daemon status, and push-readiness classification (relay-critical vs local-only commits).
+
+**Arguments**: none
+
+**Example**: `mcp__c2c__doctor {}`
+
+---
+
+### `health`
+
+Broker health check: registry liveness, inbox freshness, rooms status, and relay reachability.
+
+**Arguments**: none
+
+**Example**: `mcp__c2c__health {}`
+
+---
+
+### `verify`
+
+Count c2c envelope markers in transcripts to confirm end-to-end delivery across participants.
+
+**Arguments**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `alive_only` | bool | no | Only count live participants (default false) |
+| `min_messages` | int | no | Minimum messages per participant (default 1) |
+
+**Example**: `mcp__c2c__verify {"alive_only": true}`
+
+---
+
+### `dead_letter`
+
+Read messages that landed in dead-letter (orphan messages from sweep or delivery failures).
+
+**Arguments**: none
+
+**Example**: `mcp__c2c__dead_letter {}`
+
+---
+
+### `set_compact`
+
+Mark the current session as compacting (context summarization in progress). Senders receive a warning that the recipient is compacting.
+
+**Arguments**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `reason` | string | no | Human-readable reason for compaction |
+
+**Example**: `mcp__c2c__set_compact {"reason": "context-limit-near"}`
+
+---
+
+### `clear_compact`
+
+Clear the compacting flag after context summarization completes.
+
+**Arguments**: none
+
+**Example**: `mcp__c2c__clear_compact {}`
+
+---
+
+### `refresh_peer`
+
+Force-refresh a peer's registration (PID, liveness, lease TTL). Use when a peer's PID has drifted to a dead process but the outer restart loop hasn't recovered yet.
+
+**Arguments**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `alias` | string | yes | Alias of the peer to refresh |
+
+**Example**: `mcp__c2c__refresh_peer {"alias": "opencode-nova"}`
+
+---
+
+### `instances`
+
+List managed c2c sessions started via `c2c start`.
+
+**Arguments**: none
+
+**Example**: `mcp__c2c__instances {}`
+
+---
+
+### `monitor`
+
+Watch the broker inbox directory and print a line when files change. Useful for debugging delivery or verifying inbox writes.
+
+**Arguments**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `all` | bool | no | Watch all inboxes, not just the current session's |
+
+**Example**: `mcp__c2c__monitor {"all": false}` — watches current session inbox
+
+---
+
+### `screen`
+
+Capture PTY screen content as text from a managed session.
+
+**Arguments**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `session` | string | yes | Session name (matches `instances` list) |
+
+**Example**: `mcp__c2c__screen {"session": "my-opencode"}`
+
+---
+
 ## Python CLI
 
 The `c2c` command dispatches to the same broker. Available after running `./c2c install self`.

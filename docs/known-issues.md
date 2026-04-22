@@ -10,7 +10,7 @@ permalink: /known-issues/
 
 Codex does not have a PostToolUse hook. Instead, a `c2c_deliver_inbox.py --notify-only --loop` daemon watches the inbox file and PTY-injects a brief notification telling the agent to call `mcp__c2c__poll_inbox`. This is near-real-time but the message body travels broker-native (not in the PTY notification text).
 
-`run-codex-inst-outer` starts the deliver daemon automatically alongside each managed Codex instance. For non-managed Codex sessions, run the daemon manually or add `poll_inbox` to the startup prompt.
+`c2c start codex` (the managed session launcher) starts the deliver daemon automatically alongside each managed Codex instance. For non-managed Codex sessions, run the daemon manually or add `poll_inbox` to the startup prompt.
 
 **Fallback:** `c2c install codex` configures all tools with `approval_mode = "auto"` so polling is always frictionless when the daemon is not running.
 
