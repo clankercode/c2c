@@ -1256,7 +1256,9 @@ let check_relay_http () =
             | ic ->
                 let n = try String.trim (input_line ic) with End_of_file -> "" in
                 ignore (Unix.close_process_in ic);
-                (match int_of_string_opt n with Some k when k > 0 -> Printf.sprintf " (%d commits)" k | _ -> "")
+                (match int_of_string_opt n with Some k when k > 0 ->
+                   Printf.sprintf " (%d commit%s — run 'c2c doctor' for classification)" k (if k=1 then "" else "s")
+                 | _ -> "")
             | exception _ -> ""
           in
           Printf.sprintf " ⚠ stale deploy (deployed: %s, local: %s)%s" git_hash local_hash commits_ahead
