@@ -88,6 +88,12 @@ def _persisted_thread_id(alias: str) -> str | None:
     return trimmed or None
 
 
+def _send_initial_user_turn(scenario: Scenario, agent, text: str) -> None:
+    driver = scenario.drivers[agent.backend]
+    driver.send_text(agent.handle, text)
+    driver.send_key(agent.handle, "Enter")
+
+
 def test_codex_headless_bridge_startup_smoke(scenario: Scenario) -> None:
     _init_git_repo(scenario.workdir)
     scenario.refresh_capabilities()
@@ -101,6 +107,9 @@ def test_codex_headless_bridge_startup_smoke(scenario: Scenario) -> None:
 
     agent = scenario.start_agent("codex-headless", name=alias)
     scenario.wait_for_init(agent, timeout=90.0)
+
+    bootstrap_message = f"headless-bootstrap-{_unique_suffix()}"
+    _send_initial_user_turn(scenario, agent, bootstrap_message)
     scenario.wait_for(lambda: _registered(agent, scenario), timeout=60.0)
 
     scenario.assert_agent(agent).alive()
@@ -125,7 +134,11 @@ def test_codex_headless_xml_delivery_persists_thread_id(scenario: Scenario) -> N
 
     agent = scenario.start_agent("codex-headless", name=alias)
     scenario.wait_for_init(agent, timeout=90.0)
+
+    bootstrap_message = f"headless-bootstrap-{_unique_suffix()}"
+    _send_initial_user_turn(scenario, agent, bootstrap_message)
     scenario.wait_for(lambda: _registered(agent, scenario), timeout=60.0)
+    scenario.wait_for(lambda: _persisted_thread_id(alias) is not None, timeout=30.0)
 
     message = f"headless-xml-ping-{_unique_suffix()}"
     scenario.send_dm(None, agent, message)
@@ -135,7 +148,6 @@ def test_codex_headless_xml_delivery_persists_thread_id(scenario: Scenario) -> N
         timeout=90.0,
     )
 
-    scenario.wait_for(lambda: _persisted_thread_id(alias) is not None, timeout=30.0)
     thread_id = _persisted_thread_id(alias)
     assert thread_id is not None
     assert thread_id != alias
