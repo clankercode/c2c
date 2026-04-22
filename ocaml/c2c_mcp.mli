@@ -26,6 +26,19 @@ type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : 
 type room_visibility = Public | Invite_only
 type room_meta = { visibility : room_visibility; invited_members : string list }
 
+type pending_kind = | Permission | Question
+val pending_kind_to_string : pending_kind -> string
+val pending_kind_of_string : string -> pending_kind
+type pending_permission =
+  { perm_id : string
+  ; kind : pending_kind
+  ; requester_session_id : string
+  ; requester_alias : string
+  ; supervisors : string list
+  ; created_at : float
+  ; expires_at : float
+  }
+
 module C2c_start : module type of C2c_start
 
 module Broker : sig
@@ -104,6 +117,10 @@ module Broker : sig
   val is_provisional : registration -> bool
   val is_provisional_expired : registration -> bool
   val is_unconfirmed : registration -> bool
+  val open_pending_permission : t -> pending_permission -> unit
+  val find_pending_permission : t -> string -> pending_permission option
+  val remove_pending_permission : t -> string -> unit
+  val pending_permission_exists_for_alias : t -> string -> bool
 end
 
 (* Native OCaml relay modules *)

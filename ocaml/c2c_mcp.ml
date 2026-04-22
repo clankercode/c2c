@@ -2151,6 +2151,16 @@ let tool_definitions =
         [ prop "perm_id" "Permission/request ID from the reply."
         ; prop "reply_from_alias" "Alias the reply claims to be from."
         ]
+  ; tool_definition ~name:"set_compact"
+      ~description:"Mark this session as compacting (context summarization in progress). Set by PreCompact hooks so senders receive a warning. Returns {compacting: {started_at, reason}}."
+      ~required:[]
+      ~properties:
+        [ prop "reason" "Optional human-readable reason for compaction (e.g. 'context-limit-near')."
+        ]
+  ; tool_definition ~name:"clear_compact"
+      ~description:"Clear the compacting flag for this session. Called by PostCompact hooks after context summarization completes."
+      ~required:[]
+      ~properties:[]
   ]
 
 let string_member name json =
@@ -3358,7 +3368,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
   | "check_pending_reply" ->
       let perm_id = string_member "perm_id" arguments in
       let reply_from_alias = string_member "reply_from_alias" arguments in
-      match Broker.find_pending_permission broker perm_id with
+      (match Broker.find_pending_permission broker perm_id with
       | None ->
           let content =
             `Assoc
@@ -3389,7 +3399,41 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                 ]
             |> Yojson.Safe.to_string
             in
-            Lwt.return (tool_result ~content ~is_error:false)
+            Lwt.return (tool_result ~content ~is_error:false))
+  | "set_compact" ->
+      (match current_session_id () with
+       | None ->
+           Lwt.return (tool_result ~content:"{\"error\": \"no session ID; set C2C_MCP_SESSION_ID\"}" ~is_error:true)
+       | Some session_id ->
+           let reason = optional_string_member "reason" arguments in
+           let compacting = Broker.set_compacting broker ~session_id ?reason () in
+           let content =
+             match compacting with
+             | None ->
+                 `Assoc [ ("compacting", `Null) ]
+                 |> Yojson.Safe.to_string
+             | Some c ->
+                 `Assoc
+                   [ ("compacting",
+                      `Assoc
+                        [ ("started_at", `Float c.started_at)
+                        ; ("reason", match c.reason with Some r -> `String r | None -> `Null)
+                        ])
+                   ]
+                 |> Yojson.Safe.to_string
+           in
+           Lwt.return (tool_result ~content ~is_error:false))
+  | "clear_compact" ->
+      (match current_session_id () with
+       | None ->
+           Lwt.return (tool_result ~content:"{\"error\": \"no session ID; set C2C_MCP_SESSION_ID\"}" ~is_error:true)
+       | Some session_id ->
+           let ok = Broker.clear_compacting broker ~session_id in
+           let content =
+             `Assoc [ ("ok", `Bool ok) ]
+             |> Yojson.Safe.to_string
+           in
+           Lwt.return (tool_result ~content ~is_error:false))
   | _ -> Lwt.return (tool_result ~content:("unknown tool: " ^ tool_name) ~is_error:true)
 
 (* Append one structured line to <broker_root>/broker.log for every

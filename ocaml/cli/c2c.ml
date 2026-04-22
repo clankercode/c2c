@@ -436,6 +436,126 @@ let clear_compact_cmd =
       else Printf.eprintf "error: session not registered or no compacting flag to clear\n%!";
       if not ok then exit 1
 
+(* --- subcommand: open-pending-reply --------------------------------------- *)
+(* Called by plugin before sending a permission/question request to supervisors. *)
+
+let open_pending_reply_cmd =
+  let perm_id =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"PERM_ID"
+      ~doc:"Unique permission request ID.")
+  in
+  let kind =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "kind"; "k" ]
+      ~docv:"KIND" ~doc:"Kind: 'permission' or 'question' (default: permission).")
+  in
+  let supervisors =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "supervisors"; "s" ]
+      ~docv:"SUPERVISORS" ~doc:"Comma-separated list of supervisor aliases.")
+  in
+  let+ json = json_flag
+  and+ perm_id = perm_id
+  and+ kind = kind
+  and+ supervisors = supervisors in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  let session_id =
+    match env_session_id () with
+    | Some s -> s
+    | None ->
+        Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID.\n%!";
+        exit 1
+  in
+  let alias =
+    match List.find_opt (fun (r : C2c_mcp.registration) -> r.session_id = session_id)
+            (C2c_mcp.Broker.list_registrations broker) with
+    | Some reg -> reg.alias
+    | None ->
+        Printf.eprintf "error: session not registered.\n%!";
+        exit 1
+  in
+  let kind_val = match kind with
+    | Some "question" -> C2c_mcp.Question
+    | _ -> C2c_mcp.Permission
+  in
+  let supervisors_list = match supervisors with
+    | Some s ->
+        String.split_on_char ',' s
+        |> List.map String.trim
+        |> List.filter (fun x -> x <> "")
+    | None -> []
+  in
+  let ttl_seconds =
+    match Sys.getenv_opt "C2C_PERMISSION_TTL" with
+    | Some v ->
+        (try float_of_string (String.trim v) with _ -> 600.0)
+    | None -> 600.0
+  in
+  let now = Unix.gettimeofday () in
+  let pending : C2c_mcp.pending_permission =
+    { perm_id; kind = kind_val; requester_session_id = session_id
+    ; requester_alias = alias; supervisors = supervisors_list
+    ; created_at = now; expires_at = now +. ttl_seconds }
+  in
+  C2c_mcp.Broker.open_pending_permission broker pending;
+  if json then
+    print_json (`Assoc [
+      ("ok", `Bool true);
+      ("perm_id", `String perm_id);
+      ("kind", `String (C2c_mcp.pending_kind_to_string kind_val));
+      ("ttl_seconds", `Float ttl_seconds);
+      ("expires_at", `Float pending.expires_at)
+    ])
+  else
+    Printf.printf "pending reply opened: perm_id=%s kind=%s ttl=%.0fs\n"
+      perm_id (C2c_mcp.pending_kind_to_string kind_val) ttl_seconds
+
+(* --- subcommand: check-pending-reply ------------------------------------- *)
+(* Called by plugin when receiving a reply from a supervisor. *)
+
+let check_pending_reply_cmd =
+  let perm_id =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"PERM_ID"
+      ~doc:"Unique permission request ID.")
+  in
+  let reply_from =
+    Cmdliner.Arg.(required & pos 1 (some string) None & info [] ~docv:"REPLY_FROM"
+      ~doc:"Alias the reply is from.")
+  in
+  let+ json = json_flag
+  and+ perm_id = perm_id
+  and+ reply_from = reply_from in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  match C2c_mcp.Broker.find_pending_permission broker perm_id with
+  | None ->
+      if json then
+        print_json (`Assoc [
+          ("valid", `Bool false);
+          ("requester_session_id", `Null);
+          ("error", `String "unknown permission ID")
+        ])
+      else
+        Printf.eprintf "error: unknown permission ID\n%!";
+      exit 1
+  | Some pending ->
+      if List.mem reply_from pending.supervisors then
+        if json then
+          print_json (`Assoc [
+            ("valid", `Bool true);
+            ("requester_session_id", `String pending.requester_session_id);
+            ("error", `Null)
+          ])
+        else
+          Printf.printf "valid: reply from %s is authorized for perm_id=%s\n"
+            reply_from perm_id
+      else
+        if json then
+          print_json (`Assoc [
+            ("valid", `Bool false);
+            ("requester_session_id", `Null);
+            ("error", `String ("reply from non-supervisor: " ^ reply_from))
+          ])
+        else
+          Printf.eprintf "error: reply from non-supervisor: %s\n%!" reply_from
+
 (* --- subcommand: poll-inbox ----------------------------------------------- *)
 
 let poll_inbox_cmd =
@@ -3663,6 +3783,8 @@ let list = Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List registered C2C pe
 let whoami = Cmdliner.Cmd.v (Cmdliner.Cmd.info "whoami" ~doc:"Show current c2c identity.") whoami_cmd
 let set_compact = Cmdliner.Cmd.v (Cmdliner.Cmd.info "set-compact" ~doc:"Mark this session as compacting (context summarization in progress).") set_compact_cmd
 let clear_compact = Cmdliner.Cmd.v (Cmdliner.Cmd.info "clear-compact" ~doc:"Clear the compacting flag for this session.") clear_compact_cmd
+let open_pending_reply = Cmdliner.Cmd.v (Cmdliner.Cmd.info "open-pending-reply" ~doc:"Open a pending permission reply slot before sending a permission request to supervisors.") open_pending_reply_cmd
+let check_pending_reply = Cmdliner.Cmd.v (Cmdliner.Cmd.info "check-pending-reply" ~doc:"Check if a permission reply is valid (called when receiving a reply).") check_pending_reply_cmd
 let poll_inbox = Cmdliner.Cmd.v (Cmdliner.Cmd.info "poll-inbox" ~doc:"Drain (or peek at) your inbox.") poll_inbox_cmd
 (* peek-inbox is an alias for poll-inbox --peek *)
 let peek_inbox_cmd =
@@ -7773,7 +7895,7 @@ let () =
                ; `P "$(b,rooms) — manage N:N chat rooms"
                ; `P "$(b,relay) — cross-machine relay: serve, connect, setup, status, list, rooms, gc"
                ])
-            [ send; list; whoami; set_compact; clear_compact; poll_inbox; peek_inbox; send_all; sweep
-            ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
-            ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-             ; serve; mcp; start; agent_group; roles_compile; roles_validate; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; help ]))
+             [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; send_all; sweep
+             ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
+             ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
+              ; serve; mcp; start; agent_group; roles_compile; roles_validate; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; help ]))

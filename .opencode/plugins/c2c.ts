@@ -1036,9 +1036,25 @@ const C2CDelivery: Plugin = async (ctx) => {
           }
         } else if (pendingPermissions.has(permReply.permId)) {
           const { resolve, supervisors } = pendingPermissions.get(permReply.permId)!;
+          // M4: verify with broker before trusting the reply
+          let brokerValidationPassed: boolean | null = null;
+          try {
+            const brokerResult = await runC2c(["check-pending-reply", permReply.permId, msg.from_alias, "--json"]);
+            const parsed = JSON.parse(brokerResult);
+            if (parsed.valid === true) {
+              brokerValidationPassed = true;
+            } else if (parsed.valid === false) {
+              brokerValidationPassed = false;
+              await log(`M4: broker rejected reply for ${permReply.permId} from ${msg.from_alias}: ${parsed.error}`);
+            }
+          } catch (err) {
+            await log(`M4: check-pending-reply error: ${err} — falling back to plugin-side check`);
+          }
           // Security: verify reply comes from one of the supervisors we asked, not an imposter.
           if (!supervisors.includes(msg.from_alias)) {
             await log(`SECURITY: permission reply for ${permReply.permId} from ${msg.from_alias} not in supervisors [${supervisors.join(", ")}] — dropping spoof attempt?`);
+          } else if (brokerValidationPassed === false) {
+            await log(`M4: broker validation failed for ${permReply.permId} — dropping reply`);
           } else {
             pendingPermissions.delete(permReply.permId);
             resolve(permReply.decision);
@@ -1391,6 +1407,13 @@ const C2CDelivery: Plugin = async (ctx) => {
         // Fire-and-forget: wait for a reply in the background and resolve via HTTP.
         void (async () => {
           const supervisors = await selectSupervisors();
+          // M2: open pending reply slot BEFORE sending permission requests
+          try {
+            await runC2c(["open-pending-reply", permId, "--kind", "permission", "--supervisors", supervisors.join(",")]);
+            await log(`M2: opened pending reply slot for ${permId}`);
+          } catch (err) {
+            await log(`M2: open-pending-reply error: ${err} — continuing without broker tracking`);
+          }
           for (const supervisor of supervisors) {
             try {
               await runC2c(["send", supervisor, msg]);
