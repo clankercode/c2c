@@ -1,3 +1,6 @@
+import io
+import importlib.machinery
+import importlib.util
 import json
 import os
 import shutil
@@ -24,6 +27,14 @@ AGENT_TWO_SESSION_ID = "fa68bd5b-0529-4292-bc27-d617f6840ce7"
 
 def run_cli(command, *args, env=None):
     return run_cli_in_root(REPO, command, *args, env=env)
+
+
+def load_repo_c2c_module():
+    loader = importlib.machinery.SourceFileLoader("repo_c2c_entry", str(REPO / "c2c"))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
 
 
 def run_cli_in_root(root, command, *args, env=None):
@@ -260,6 +271,27 @@ class C2CCLITests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["client"], "codex")
+
+    def test_start_help_mentions_codex_headless(self):
+        result = self.invoke_cli("c2c", "start", "--help", env=self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("codex-headless", result.stdout)
+
+    def test_repo_c2c_install_errors_cleanly_without_native_cli(self):
+        c2c_entry = load_repo_c2c_module()
+        stderr = io.StringIO()
+
+        with (
+            mock.patch.object(c2c_entry, "find_native_c2c", return_value=None),
+            mock.patch.object(c2c_entry.sys, "argv", ["c2c", "install", "codex-headless"]),
+            mock.patch("sys.stderr", stderr),
+            mock.patch.object(c2c_entry.subprocess, "run") as run_mock,
+        ):
+            rc = c2c_entry.main()
+
+        self.assertEqual(rc, 1)
+        self.assertIn("native c2c CLI not found", stderr.getvalue())
+        run_mock.assert_not_called()
 
     def test_register_is_idempotent_for_same_live_session(self):
         first = self.invoke_cli("c2c-register", "agent-one", "--json")

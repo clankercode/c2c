@@ -20,6 +20,16 @@ NATIVE_FIRST_SUBCOMMANDS = {
 }
 
 
+def points_back_to_repo_shim(candidate: Path, this_script: Path) -> bool:
+    if candidate == this_script:
+        return True
+    try:
+        content = candidate.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return str(this_script) in content
+
+
 def find_native_c2c() -> str | None:
     candidates = [
         SCRIPT_DIR / "_build" / "default" / "ocaml" / "cli" / "c2c.exe",
@@ -35,7 +45,7 @@ def find_native_c2c() -> str | None:
             resolved = candidate.resolve()
         except FileNotFoundError:
             continue
-        if not resolved.exists() or resolved == this_script:
+        if not resolved.exists() or points_back_to_repo_shim(resolved, this_script):
             continue
         return str(resolved)
     return None
@@ -58,7 +68,13 @@ def main() -> int:
         subcmd = args[0]
 
     native_c2c = find_native_c2c()
-    if subcmd in NATIVE_FIRST_SUBCOMMANDS and native_c2c is not None:
+    if subcmd in NATIVE_FIRST_SUBCOMMANDS:
+        if native_c2c is None:
+            print(
+                "error: native c2c CLI not found. Build it with `just build-cli` or install it with `just install-all`.",
+                file=sys.stderr,
+            )
+            return 1
         result = subprocess.run([native_c2c] + args)
         return result.returncode
 
@@ -67,8 +83,15 @@ def main() -> int:
         result = subprocess.run([sys.executable, str(cli)] + args)
         return result.returncode
 
+    if native_c2c is None:
+        print(
+            "error: native c2c CLI not found. Build it with `just build-cli` or install it with `just install-all`.",
+            file=sys.stderr,
+        )
+        return 1
+
     # Fall through to the native CLI for commands the Python shim never owned.
-    result = subprocess.run([native_c2c or "c2c"] + args)
+    result = subprocess.run([native_c2c] + args)
     return result.returncode
 
 if __name__ == "__main__":
