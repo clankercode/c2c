@@ -14,8 +14,11 @@ type registration =
   ; dnd_since : float option  (** When DND was last enabled. *)
   ; dnd_until : float option  (** Auto-expire epoch (None = manual off only). *)
   ; client_type : string option
-  (** "human" exempts from provisional sweep; None = agent (default). *)
-  ; confirmed_at : float option
+   (** "human" exempts from provisional sweep; None = agent (default). *)
+   ; plugin_version : string option
+   (** Version string of the c2c plugin/hook running this session.
+       Used to detect stale plugins that may have known bugs. *)
+   ; confirmed_at : float option
   (** Epoch of first poll_inbox call. None = session registered but never
       drained — still "provisional". Provisional + pid=None sessions are
       eligible for sweep after C2C_PROVISIONAL_SWEEP_TIMEOUT seconds. *)
@@ -244,7 +247,7 @@ module Broker = struct
       cleanup_tmp ();
       raise e
 
-  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; confirmed_at; compacting } =
+  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; compacting } =
     let base =
       [ ("session_id", `String session_id); ("alias", `String alias) ]
     in
@@ -288,10 +291,15 @@ module Broker = struct
       | Some ct -> with_dnd_until @ [ ("client_type", `String ct) ]
       | None -> with_dnd_until
     in
+    let with_plugin_version =
+      match plugin_version with
+      | Some pv -> with_client_type @ [ ("plugin_version", `String pv) ]
+      | None -> with_client_type
+    in
     let with_confirmed =
       match confirmed_at with
-      | Some ts -> with_client_type @ [ ("confirmed_at", `Float ts) ]
-      | None -> with_client_type
+      | Some ts -> with_plugin_version @ [ ("confirmed_at", `Float ts) ]
+      | None -> with_plugin_version
     in
     let fields =
       match compacting with
@@ -349,6 +357,7 @@ module Broker = struct
     ; dnd_since = float_opt_member "dnd_since" json
     ; dnd_until = float_opt_member "dnd_until" json
     ; client_type = str_opt "client_type" json
+    ; plugin_version = str_opt "plugin_version" json
     ; confirmed_at = float_opt_member "confirmed_at" json
     ; compacting = compacting_of_json json
     }
@@ -762,7 +771,7 @@ module Broker = struct
     with_registry_lock t (fun () ->
       suggest_alias_prime (load_registrations t) ~base_alias:alias)
 
-  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) () =
+  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) () =
     if List.mem alias reserved_system_aliases then
       invalid_arg (Printf.sprintf
         "register rejected: '%s' is a reserved system alias" alias);
@@ -783,24 +792,29 @@ module Broker = struct
         in
         (* Same-session re-registration (alias changed or pid/registered_at
            refresh): update in-place by replacing the old entry in [rest]. *)
-        (* Look up old entry to preserve DND state + confirmed_at + client_type + compacting
+        (* Look up old entry to preserve DND state + confirmed_at + client_type + plugin_version + compacting
            across re-registration. *)
         let old_state =
           match List.find_opt (fun reg -> reg.session_id = session_id) rest with
-          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.compacting)
-          | None -> (false, None, None, None, client_type, None)
+          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting)
+          | None -> (false, None, None, None, client_type, None, None)
         in
         let new_reg =
-          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_compacting) = old_state in
+          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting) = old_state in
           let effective_client_type = match client_type with
             | Some _ -> client_type
             | None -> old_client_type
+          in
+          let effective_plugin_version = match plugin_version with
+            | Some _ -> plugin_version
+            | None -> old_plugin_version
           in
           { session_id; alias; pid; pid_start_time
           ; registered_at = Some (Unix.gettimeofday ())
           ; canonical_alias = Some (compute_canonical_alias ~alias ~broker_root:(root t))
           ; dnd; dnd_since; dnd_until
           ; client_type = effective_client_type
+          ; plugin_version = effective_plugin_version
           ; confirmed_at = old_confirmed_at
           ; compacting = old_compacting }
         in
@@ -2274,6 +2288,11 @@ let current_client_type () =
   | Some value when String.trim value <> "" -> Some (String.trim value)
   | _ -> None
 
+let current_plugin_version () =
+  match Sys.getenv_opt "C2C_MCP_PLUGIN_VERSION" with
+  | Some value when String.trim value <> "" -> Some (String.trim value)
+  | _ -> None
+
 let auto_register_startup ~broker_root =
   match auto_register_alias () with
   | None -> ()
@@ -2363,7 +2382,8 @@ let auto_register_startup ~broker_root =
       then begin
         let pid_start_time = Broker.capture_pid_start_time pid in
         let client_type = current_client_type () in
-        Broker.register broker ~session_id ~alias ~pid ~pid_start_time ~client_type ();
+        let plugin_version = current_plugin_version () in
+        Broker.register broker ~session_id ~alias ~pid ~pid_start_time ~client_type ~plugin_version ();
         ignore (Broker.redeliver_dead_letter_for_session broker ~session_id ~alias)
       end else begin
         (* Log which guard triggered and by which registration, for debugging. *)
@@ -2636,8 +2656,9 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                    alias)
                 ~is_error:true)
             else begin
+              let plugin_version = optional_string_member "plugin_version" arguments in
               Broker.register broker ~session_id ~alias ~pid ~pid_start_time
-                ~client_type ();
+                ~client_type ~plugin_version ();
               List.iter
                 (fun room_id ->
                   try

@@ -14,8 +14,11 @@ type registration =
   ; dnd_since : float option
   ; dnd_until : float option
   ; client_type : string option
-  (** "human" exempts from provisional sweep; None = agent (default). *)
-  ; confirmed_at : float option
+   (** "human" exempts from provisional sweep; None = agent (default). *)
+   ; plugin_version : string option
+   (** Version string of the c2c plugin/hook running this session.
+       Used to detect stale plugins that may have known bugs. *)
+   ; confirmed_at : float option
   (** Epoch of first poll_inbox call. None = session registered but never
       drained — still "provisional". *)
   ; compacting : compacting option
@@ -58,7 +61,7 @@ module Broker : sig
       is available (up to 5 tries: primes 2,3,5,7,11), or [None] when all
       candidates are exhausted (ALIAS_COLLISION_EXHAUSTED). *)
 
-  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> unit -> unit
+  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> ?plugin_version:string option -> unit -> unit
   val list_registrations : t -> registration list
   val save_registrations : t -> registration list -> unit
   val with_registry_lock : t -> (unit -> 'a) -> 'a
