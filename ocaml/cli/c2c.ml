@@ -3428,7 +3428,7 @@ let relay_connect_cmd =
   and+ interval = interval
   and+ once = once
   and+ verbose = verbose in
-  let use_ocaml = Sys.getenv_opt "C2C_RELAY_CONNECTOR_BACKEND" = Some "ocaml" in
+  let use_python = Sys.getenv_opt "C2C_RELAY_CONNECTOR_BACKEND" = Some "python" in
   let effective_broker_root = match broker_root with
     | Some b -> b
     | None -> resolve_broker_root ()
@@ -3449,7 +3449,7 @@ let relay_connect_cmd =
     | None, None -> None
   in
   let effective_interval = float_of_int (Option.value interval ~default:30) in
-  if use_ocaml then
+  if not use_python then
     exit (C2c_relay_connector.start
       ~relay_url:(Option.value relay_url ~default:"http://localhost:7331")
       ~token:effective_token
@@ -8862,6 +8862,7 @@ let supervisor_group =
 let commands_man is_agent =
   if is_agent then
     [ `S "COMMANDS"
+    ; `P "TIER LEGEND: Tier 1 = routine use, Tier 2 = lifecycle/setup (use with care), Tier 3 = system (hidden from agents), Tier 4 = internal plumbing."
     ; `P "== TIER 1: SAFE (messaging and queries) =="
     ; `P "$(b,send) $(b,list) $(b,whoami) $(b,poll-inbox) $(b,peek-inbox) \
          $(b,send-all) $(b,history) $(b,health) $(b,dead-letter) \
@@ -8884,6 +8885,7 @@ let commands_man is_agent =
     ]
   else
     [ `S "COMMANDS"
+    ; `P "TIER LEGEND: Tier 1 = routine use, Tier 2 = lifecycle/setup (use with care), Tier 3 = system infrastructure (do NOT run inside an agent), Tier 4 = internal plumbing."
     ; `P "== TIER 1: SAFE (agents can use freely) =="
     ; `P "$(b,send), $(b,list), $(b,whoami), $(b,poll-inbox), $(b,peek-inbox), \
          $(b,send-all), $(b,history), $(b,health), $(b,status), $(b,verify), \
