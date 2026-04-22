@@ -25,7 +25,7 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin";
-import type { Event, EventSessionIdle, EventSessionCreated, EventSessionCompacted } from "@opencode-ai/sdk";
+import type { Event, EventSessionIdle, EventSessionCreated, EventSessionCompacted, EventSessionStatus } from "@opencode-ai/sdk";
 import { spawn } from "child_process";
 import * as crypto from "crypto";
 import * as fs from "fs";
@@ -663,6 +663,7 @@ const C2CDelivery: Plugin = async (ctx) => {
     // new session starts blank — root cause of #58 TUI divergence.
     kickoffDelivered = false;
     pluginState.root_opencode_session_id = info.id;
+    pluginState.agent.is_idle = false;
     pluginState.agent.step_count += 1;
     pluginState.agent.last_step = makeLastStep("session.created", compactSessionDetails(info.id));
     pluginState.tui_focus = { ty: "prompt", details: null };
@@ -670,6 +671,7 @@ const C2CDelivery: Plugin = async (ctx) => {
     writeStatePatch({
       root_opencode_session_id: info.id,
       agent: {
+        is_idle: false,
         step_count: pluginState.agent.step_count,
         last_step: pluginState.agent.last_step,
       },
@@ -739,6 +741,39 @@ const C2CDelivery: Plugin = async (ctx) => {
       return;
     }
 
+    if (event.type === "session.status") {
+      const props = (event as any).properties;
+      const status = props?.status;
+      const sessionID = props?.sessionID || activeSessionId || "";
+      if (!sessionID) return;
+      if (configuredOpenCodeSessionId && sessionID !== configuredOpenCodeSessionId) return;
+      if (status?.type === "busy") {
+        pluginState.agent.is_idle = false;
+        pluginState.agent.last_step = makeLastStep("session.status.busy", compactSessionDetails(sessionID));
+        writeStatePatch({
+          agent: {
+            is_idle: false,
+            last_step: pluginState.agent.last_step,
+          },
+        });
+      } else if (status?.type === "idle") {
+        // session.status idle is more granular than session.idle; treat same as idle
+        pluginState.agent.is_idle = true;
+        pluginState.agent.turn_count += 1;
+        pluginState.agent.step_count += 1;
+        pluginState.agent.last_step = makeLastStep("session.status.idle", compactSessionDetails(sessionID));
+        writeStatePatch({
+          agent: {
+            is_idle: true,
+            turn_count: pluginState.agent.turn_count,
+            step_count: pluginState.agent.step_count,
+            last_step: pluginState.agent.last_step,
+          },
+        });
+      }
+      return;
+    }
+
     if (event.type === "session.idle") {
       applyIdleState(event);
       return;
@@ -746,6 +781,37 @@ const C2CDelivery: Plugin = async (ctx) => {
 
     if (event.type === "permission.asked" || event.type === "permission.updated") {
       applyPermissionState(event);
+      return;
+    }
+
+    if (event.type === "message.part.updated") {
+      const part = (event as any).properties?.part;
+      if (part?.type === "step-start") {
+        pluginState.agent.is_idle = false;
+        pluginState.agent.step_count += 1;
+        pluginState.agent.last_step = makeLastStep("step.start", compactSessionDetails(part.sessionID));
+        writeStatePatch({
+          agent: {
+            is_idle: false,
+            step_count: pluginState.agent.step_count,
+            last_step: pluginState.agent.last_step,
+          },
+        });
+      } else if (part?.type === "step-finish") {
+        pluginState.agent.last_step = makeLastStep("step.finish", compactSessionDetails(part.sessionID));
+        writeStatePatch({
+          agent: {
+            step_count: pluginState.agent.step_count,
+            last_step: pluginState.agent.last_step,
+          },
+        });
+      } else if (part?.type === "tool") {
+        // Tool is active — mark busy if not already
+        if (pluginState.agent.is_idle) {
+          pluginState.agent.is_idle = false;
+          writeStatePatch({ agent: { is_idle: false } });
+        }
+      }
       return;
     }
 
