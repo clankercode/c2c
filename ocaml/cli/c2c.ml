@@ -391,6 +391,51 @@ let whoami_cmd =
             (Option.value alias ~default:"(not registered)")
             sid
 
+(* --- subcommand: set-compact --------------------------------------------- *)
+
+let set_compact_cmd =
+  let reason =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "reason"; "r" ]
+      ~docv:"REASON" ~doc:"Human-readable reason for compaction (e.g. context-limit-near).")
+  in
+  let+ json = json_flag
+  and+ reason_opt = reason in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  match env_session_id () with
+  | None ->
+      Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID.\n%!";
+      exit 1
+  | Some sid ->
+      let result = C2c_mcp.Broker.set_compacting broker ~session_id:sid ?reason:reason_opt () in
+      match result with
+      | None ->
+          if json then print_json (`Assoc [("ok", `Bool false); ("error", `String "session not registered")])
+          else Printf.eprintf "error: session not registered\n%!";
+          exit 1
+      | Some c ->
+          if json then
+            print_json (`Assoc [("ok", `Bool true); ("started_at", `Float c.started_at)])
+          else
+            Printf.printf "compacting set (started_at=%.0f%s)\n"
+              c.started_at
+              (match c.reason with Some r -> ", reason=" ^ r | None -> "")
+
+(* --- subcommand: clear-compact -------------------------------------------- *)
+
+let clear_compact_cmd =
+  let+ json = json_flag in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  match env_session_id () with
+  | None ->
+      Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID.\n%!";
+      exit 1
+  | Some sid ->
+      let ok = C2c_mcp.Broker.clear_compacting broker ~session_id:sid in
+      if json then print_json (`Assoc [("ok", `Bool ok)])
+      else if ok then Printf.printf "compacting cleared\n%!"
+      else Printf.eprintf "error: session not registered or no compacting flag to clear\n%!";
+      if not ok then exit 1
+
 (* --- subcommand: poll-inbox ----------------------------------------------- *)
 
 let poll_inbox_cmd =
@@ -3616,6 +3661,8 @@ let relay_group =
 let send = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send" ~doc:"Send a message to a registered peer alias.") send_cmd
 let list = Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List registered C2C peers.") list_cmd
 let whoami = Cmdliner.Cmd.v (Cmdliner.Cmd.info "whoami" ~doc:"Show current c2c identity.") whoami_cmd
+let set_compact = Cmdliner.Cmd.v (Cmdliner.Cmd.info "set-compact" ~doc:"Mark this session as compacting (context summarization in progress).") set_compact_cmd
+let clear_compact = Cmdliner.Cmd.v (Cmdliner.Cmd.info "clear-compact" ~doc:"Clear the compacting flag for this session.") clear_compact_cmd
 let poll_inbox = Cmdliner.Cmd.v (Cmdliner.Cmd.info "poll-inbox" ~doc:"Drain (or peek at) your inbox.") poll_inbox_cmd
 (* peek-inbox is an alias for poll-inbox --peek *)
 let peek_inbox_cmd =
@@ -7726,7 +7773,7 @@ let () =
                ; `P "$(b,rooms) — manage N:N chat rooms"
                ; `P "$(b,relay) — cross-machine relay: serve, connect, setup, status, list, rooms, gc"
                ])
-           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
-           ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
-           ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-            ; serve; mcp; start; agent_group; roles_compile; roles_validate; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; help ]))
+            [ send; list; whoami; set_compact; clear_compact; poll_inbox; peek_inbox; send_all; sweep
+            ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
+            ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
+             ; serve; mcp; start; agent_group; roles_compile; roles_validate; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; help ]))

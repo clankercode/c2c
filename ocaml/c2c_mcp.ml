@@ -394,6 +394,30 @@ module Broker = struct
     let now = Unix.gettimeofday () in
     List.filter (fun p -> p.expires_at > now) (load_pending_permissions t)
 
+  (** Persist a new pending permission entry. Callers must hold registry lock. *)
+  let open_pending_permission t p =
+    let entries = get_active_pending_permissions t in
+    save_pending_permissions t (p :: entries)
+
+  (** Find a pending permission by perm_id. Returns None if not found or expired. *)
+  let find_pending_permission t perm_id =
+    let now = Unix.gettimeofday () in
+    List.find_opt (fun p -> p.perm_id = perm_id && p.expires_at > now)
+      (load_pending_permissions t)
+
+  (** Remove a pending permission by perm_id. No-op if not found. *)
+  let remove_pending_permission t perm_id =
+    let entries = List.filter (fun p -> p.perm_id <> perm_id)
+      (get_active_pending_permissions t) in
+    save_pending_permissions t entries
+
+  (** Check if any active pending permission exists for a given alias.
+      Used by M4 alias-reuse guard. *)
+  let pending_permission_exists_for_alias t alias =
+    let now = Unix.gettimeofday () in
+    List.exists (fun p -> p.requester_alias = alias && p.expires_at > now)
+      (load_pending_permissions t)
+
   let create ~root = { root }
   let root t = t.root
 
@@ -2112,6 +2136,21 @@ let tool_definitions =
       ~description:"Check current Do-Not-Disturb status for this session. Returns JSON {dnd:bool, dnd_since?:float, dnd_until?:float}."
       ~required:[]
       ~properties:[]
+  ; tool_definition ~name:"open_pending_reply"
+      ~description:"Open a pending reply tracking entry when sending a permission or question request to supervisors. Records the perm_id, kind (permission/question), supervisors list, and TTL for validation when replies arrive."
+      ~required:["perm_id"; "kind"; "supervisors"]
+      ~properties:
+        [ prop "perm_id" "Unique permission/request ID."
+        ; prop "kind" "Type: 'permission' or 'question'."
+        ; arr_prop "supervisors" "List of supervisor aliases that can answer."
+        ]
+  ; tool_definition ~name:"check_pending_reply"
+      ~description:"Validate that a received reply is authorized for a pending permission/request."
+      ~required:["perm_id"; "reply_from_alias"]
+      ~properties:
+        [ prop "perm_id" "Permission/request ID from the reply."
+        ; prop "reply_from_alias" "Alias the reply claims to be from."
+        ]
   ]
 
 let string_member name json =
@@ -2562,89 +2601,93 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                      ])
            in
            Lwt.return (tool_result ~content ~is_error:true)
-       | None ->
-           Broker.register broker ~session_id ~alias ~pid ~pid_start_time
-             ~client_type ();
-           List.iter
-             (fun room_id ->
-               try
-                 ignore
-                   (Broker.rename_room_member_alias broker ~room_id ~session_id
-                      ~new_alias:alias)
-               with _ -> ())
-             rooms_to_notify;
-           (* Fan out peer-renamed notification to rooms the session was in.
-              Message is human-readable first so agents see it naturally;
-              JSON suffix lets tooling parse structured metadata. *)
-           (match old_alias_opt with
-            | None -> ()
-            | Some old_alias ->
+        | None ->
+            let prior_owner_has_pending =
+              Broker.pending_permission_exists_for_alias broker alias
+              && List.exists
+                   (fun reg ->
+                     reg.alias = alias
+                     && reg.session_id <> session_id
+                     && Option.is_some reg.pid
+                     && Broker.registration_is_alive reg)
+                   (Broker.list_registrations broker)
+            in
+            if prior_owner_has_pending then
+              Lwt.return (tool_result
+                ~content:(Printf.sprintf
+                  "register rejected: alias '%s' has pending permission state \
+                   from a prior owner who is still alive. \
+                   Wait for the pending reply to arrive or timeout before claiming this alias."
+                  alias)
+                ~is_error:true)
+            else begin
+              Broker.register broker ~session_id ~alias ~pid ~pid_start_time
+                ~client_type ();
+              List.iter
+                (fun room_id ->
+                  try
+                    ignore
+                      (Broker.rename_room_member_alias broker ~room_id ~session_id
+                         ~new_alias:alias)
+                  with _ -> ())
+                rooms_to_notify;
+              (match old_alias_opt with
+               | None -> ()
+               | Some old_alias ->
+                   let content =
+                     Printf.sprintf
+                       "%s renamed to %s {\"type\":\"peer_renamed\",\"old_alias\":\"%s\",\"new_alias\":\"%s\"}"
+                       old_alias alias old_alias alias
+                   in
+                   List.iter
+                     (fun room_id ->
+                       (try
+                          ignore
+                            (Broker.send_room broker ~from_alias:"c2c-system"
+                               ~room_id ~content)
+                        with _ -> ()))
+                     rooms_to_notify);
+              let new_reg_unconfirmed =
+                match List.find_opt (fun r -> r.session_id = session_id)
+                        (Broker.list_registrations broker) with
+                | Some reg -> Broker.is_unconfirmed reg
+                | None -> false
+              in
+              (if is_new_registration && not new_reg_unconfirmed then begin
+                let social_rooms =
+                  let auto_rooms =
+                    match Sys.getenv_opt "C2C_MCP_AUTO_JOIN_ROOMS" with
+                    | Some v ->
+                        String.split_on_char ',' v
+                        |> List.map String.trim
+                        |> List.filter (fun s -> s <> "" && Broker.valid_room_id s)
+                    | None -> []
+                  in
+                  List.sort_uniq String.compare ("swarm-lounge" :: auto_rooms)
+                in
                 let content =
                   Printf.sprintf
-                    "%s renamed to %s {\"type\":\"peer_renamed\",\"old_alias\":\"%s\",\"new_alias\":\"%s\"}"
-                    old_alias alias old_alias alias
+                    "%s registered {\"type\":\"peer_register\",\"alias\":\"%s\"}"
+                    alias alias
                 in
                 List.iter
                   (fun room_id ->
-                    (try
-                       ignore
-                         (Broker.send_room broker ~from_alias:"c2c-system"
-                            ~room_id ~content)
-                     with _ -> ()))
-                  rooms_to_notify);
-           (* Emit peer_register event when a brand-new session registers.
-              Broadcasts to swarm-lounge (the default social room) and any
-              other rooms the session is already in (edge case: manual join
-              before explicit register). This is distinct from the join event
-              that fires when auto_join_rooms_startup runs — that event says
-              "alias joined room <id>"; this one says "alias registered" and
-              fires even if the session never joins any rooms. *)
-           (* Unconfirmed sessions (confirmed_at=None, non-human) defer peer_register
-              until first poll_inbox. Includes sessions with a PID that haven't polled yet
-              (e.g. opencode started via c2c start but not yet interactive). *)
-           let new_reg_unconfirmed =
-             match List.find_opt (fun r -> r.session_id = session_id)
-                     (Broker.list_registrations broker) with
-             | Some reg -> Broker.is_unconfirmed reg
-             | None -> false
-           in
-           (if is_new_registration && not new_reg_unconfirmed then begin
-             let social_rooms =
-               let auto_rooms =
-                 match Sys.getenv_opt "C2C_MCP_AUTO_JOIN_ROOMS" with
-                 | Some v ->
-                     String.split_on_char ',' v
-                     |> List.map String.trim
-                     |> List.filter (fun s -> s <> "" && Broker.valid_room_id s)
-                 | None -> []
-               in
-               List.sort_uniq String.compare ("swarm-lounge" :: auto_rooms)
-             in
-             let content =
-               Printf.sprintf
-                 "%s registered {\"type\":\"peer_register\",\"alias\":\"%s\"}"
-                 alias alias
-             in
-             List.iter
-               (fun room_id ->
-                 try ignore (Broker.send_room broker ~from_alias:"c2c-system" ~room_id ~content)
-                 with _ -> ())
-               social_rooms
-           end);
-           (* Auto-redeliver any dead-letter messages addressed to this session.
-              This recovers messages that were swept while the managed harness was
-              between outer-loop iterations. *)
-           let redelivered =
-             Broker.redeliver_dead_letter_for_session broker ~session_id ~alias
-           in
-           let response_content =
-             if redelivered > 0 then
-               Printf.sprintf "registered %s (redelivered %d dead-letter message%s)"
-                 alias redelivered (if redelivered = 1 then "" else "s")
-             else
-               "registered " ^ alias
-           in
-           Lwt.return (tool_result ~content:response_content ~is_error:false))
+                    try ignore (Broker.send_room broker ~from_alias:"c2c-system" ~room_id ~content)
+                    with _ -> ())
+                  social_rooms
+              end);
+              let redelivered =
+                Broker.redeliver_dead_letter_for_session broker ~session_id ~alias
+              in
+              let response_content =
+                if redelivered > 0 then
+                  Printf.sprintf "registered %s (redelivered %d dead-letter message%s)"
+                    alias redelivered (if redelivered = 1 then "" else "s")
+                else
+                  "registered " ^ alias
+              in
+              Lwt.return (tool_result ~content:response_content ~is_error:false)
+            end)
   | "list" ->
       let registrations = Broker.list_registrations broker in
       let content =
@@ -3266,8 +3309,87 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                         | Invite_only -> `String "invite_only")
                     ]
                   |> Yojson.Safe.to_string
-                in
-                Lwt.return (tool_result ~content ~is_error:false)))
+                 in
+                 Lwt.return (tool_result ~content ~is_error:false)))
+  | "open_pending_reply" ->
+      let perm_id = string_member "perm_id" arguments in
+      let kind_str = string_member "kind" arguments in
+      let kind = pending_kind_of_string kind_str in
+      let supervisors =
+        let open Yojson.Safe.Util in
+        match arguments |> member "supervisors" with
+        | `List items ->
+            List.filter_map
+              (fun item -> match item with `String s -> Some s | _ -> None)
+              items
+        | _ -> []
+      in
+      let session_id = resolve_session_id arguments in
+      let alias =
+        match List.find_opt (fun r -> r.session_id = session_id)
+                (Broker.list_registrations broker) with
+        | Some reg -> reg.alias
+        | None -> ""
+      in
+      let ttl_seconds =
+        match Sys.getenv_opt "C2C_PERMISSION_TTL" with
+        | Some v ->
+            (try float_of_string v with _ -> 600.0)
+        | None -> 600.0
+      in
+      let now = Unix.gettimeofday () in
+      let pending : pending_permission =
+        { perm_id; kind; requester_session_id = session_id
+        ; requester_alias = alias; supervisors
+        ; created_at = now; expires_at = now +. ttl_seconds }
+      in
+      Broker.open_pending_permission broker pending;
+      let content =
+        `Assoc
+          [ ("ok", `Bool true)
+          ; ("perm_id", `String perm_id)
+          ; ("kind", `String (pending_kind_to_string kind))
+          ; ("ttl_seconds", `Float ttl_seconds)
+          ; ("expires_at", `Float pending.expires_at)
+          ]
+        |> Yojson.Safe.to_string
+      in
+      Lwt.return (tool_result ~content ~is_error:false)
+  | "check_pending_reply" ->
+      let perm_id = string_member "perm_id" arguments in
+      let reply_from_alias = string_member "reply_from_alias" arguments in
+      match Broker.find_pending_permission broker perm_id with
+      | None ->
+          let content =
+            `Assoc
+              [ ("valid", `Bool false)
+              ; ("requester_session_id", `Null)
+              ; ("error", `String "unknown permission ID")
+              ]
+            |> Yojson.Safe.to_string
+          in
+          Lwt.return (tool_result ~content ~is_error:false)
+      | Some pending ->
+          if List.mem reply_from_alias pending.supervisors then
+            let content =
+              `Assoc
+                [ ("valid", `Bool true)
+                ; ("requester_session_id", `String pending.requester_session_id)
+                ; ("error", `Null)
+                ]
+              |> Yojson.Safe.to_string
+            in
+            Lwt.return (tool_result ~content ~is_error:false)
+          else
+            let content =
+              `Assoc
+                [ ("valid", `Bool false)
+                ; ("requester_session_id", `Null)
+                ; ("error", `String ("reply from non-supervisor: " ^ reply_from_alias))
+                ]
+            |> Yojson.Safe.to_string
+            in
+            Lwt.return (tool_result ~content ~is_error:false)
   | _ -> Lwt.return (tool_result ~content:("unknown tool: " ^ tool_name) ~is_error:true)
 
 (* Append one structured line to <broker_root>/broker.log for every
