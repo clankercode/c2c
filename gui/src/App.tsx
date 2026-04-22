@@ -197,7 +197,7 @@ export function App() {
     const storedAlias = localStorage.getItem(ALIAS_KEY) ?? undefined;
     const storedSessionId = localStorage.getItem(SESSION_ID_KEY) ?? undefined;
     if (storedAlias) {
-      joinRoom("swarm-lounge", storedAlias, storedSessionId).then(res => {
+      joinRoom("swarm-lounge", storedAlias).then(res => {
         if (res.ok) setRooms(prev => new Set([...prev, "swarm-lounge"]));
       });
     }
@@ -255,7 +255,7 @@ export function App() {
     localStorage.setItem(SESSION_ID_KEY, sessionId);
     setShowWizard(false);
     // Auto-join the default social room on first registration
-    joinRoom("swarm-lounge", alias, sessionId).then(res => {
+    joinRoom("swarm-lounge", alias).then(res => {
       if (res.ok) setRooms(prev => new Set([...prev, "swarm-lounge"]));
     });
   }
@@ -379,7 +379,6 @@ export function App() {
           unreadRooms={unreadRooms}
           unreadPeers={unreadPeers}
           myAlias={myAlias}
-          mySessionId={mySessionId}
           onRoomJoined={roomId => setRooms(prev => new Set([...prev, roomId]))}
           onRoomLeft={roomId => {
             setRooms(prev => { const s = new Set(prev); s.delete(roomId); return s; });
@@ -398,7 +397,7 @@ export function App() {
               setSelectedPeer(target);
               setSelectedRoom(null);
               setUnreadPeers(prev => { const s = new Set(prev); s.delete(target); return s; });
-              loadPeerHistory(target, mySessionId, 100).then(hist => setFocusHistoryEvents(hist));
+              loadPeerHistory(target, myAlias, 100).then(hist => setFocusHistoryEvents(hist));
             }
           }}
         />
@@ -421,14 +420,13 @@ export function App() {
       </div>
 
       {/* Compose bar */}
-      <ComposeBar
-        peers={[...peers]}
-        rooms={[...rooms]}
-        myAlias={myAlias}
-        mySessionId={mySessionId}
-        initialTo={composeTo}
-        initialIsRoom={composeIsRoom}
-      />
+        <ComposeBar
+          peers={[...peers]}
+          rooms={[...rooms]}
+          myAlias={myAlias}
+          initialTo={composeTo}
+          initialIsRoom={composeIsRoom}
+        />
     </div>
   );
 }
