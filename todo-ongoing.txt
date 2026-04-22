@@ -36,9 +36,9 @@ Project Folder: **todo**
 
 Goal: deprecate all Python in the c2c runtime. Every `c2c` feature should be pure OCaml. Python only for test scaffolding / one-shot scripts.
 
-Status: **active** — CLI surface, broker, MCP server, relay, agent-file parser/renderer, Banner all OCaml. Deprecated scripts (wake_daemon, inject) moved to `deprecated/`. Core runtime (c2c_mcp, c2c_broker_gc, all c2c_relay*.py) fully ported. Poker wrapper (c2c_poker.ml) done; delivers via Python backend. Wire daemon now wired to OCaml c2c_wire_bridge.ml (cycle fixed by galaxy-coder a59867a).
+Status: **active** — CLI surface, broker, MCP server, relay, agent-file parser/renderer, Banner all OCaml. Deprecated scripts (wake_daemon, inject) moved to `deprecated/`. Core runtime (c2c_mcp, c2c_broker_gc, all c2c_relay*.py) fully ported. Poker wrapper (c2c_poker.ml) done; delivers via Python backend. Wire daemon OCaml-native (galaxy-coder 3c6e5b7). Remote relay transport v1 done: GET /remote_inbox/<session_id> endpoint + --remote-broker-* flags wired.
 
-Next: remote relay transport v1 — `relay_remote_broker.ml` scaffold exists, needs relay HTTP endpoint + CLI wiring. Secondary: configure_*.py scripts (client setup, can remain Python).
+Next: smoke test remote relay with live SSH target; persistent relay.toml config for remote broker settings.
 
 ### Sitrep discipline
 
@@ -84,6 +84,6 @@ Project Folder: **todo**
 
 Goal: enable a remote node to receive c2c messages through a relay server without requiring the local broker's file system.
 
-Status: **active** — jungle-coder analyzed OCaml relay surface. Gap: no `c2c relay poll-inbox --url` for polling a remote broker. Decision made (CEO 2026-04-23): **Option A** (broker-extend) — relay acts as message ferry for broker JSON files. Simpler than relay-native inbox. Option B (relay-native inbox) deferred to v2.
+Status: **active** — SSH polling scaffold (relay_remote_broker.ml) exists; GET /remote_inbox/<session_id> endpoint added; --remote-broker-ssh-target/--remote-broker-root/--remote-broker-id flags wired in relay serve. Polling thread starts alongside HTTP server.
 
-Next: design broker-extend transport; implement `c2c relay poll-inbox --url`. Owner: jungle-coder.
+Next: smoke test remote relay with a live SSH target; add configuration file support (relay.toml) for persistent remote broker settings.
