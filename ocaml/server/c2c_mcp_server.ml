@@ -28,7 +28,7 @@ let inbox_watcher_delay_seconds () =
       match float_of_string_opt (String.trim value) with
       | Some n -> n
       | None -> 30.0)
-  | None -> 30.0
+  | None -> 5.0
 
 let assoc_opt name = function
   | `Assoc fields -> List.assoc_opt name fields
