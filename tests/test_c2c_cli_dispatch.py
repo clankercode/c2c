@@ -346,23 +346,6 @@ class C2CCLIDispatchTests(unittest.TestCase):
                 msg=f"register failed: {reg_result.stderr}",
             )
 
-            result = subprocess.run(
-                [c2c_bin, "send", "some-alias", "hello", "--dry-run", "--json"],
-                capture_output=True,
-                text=True,
-                timeout=CLI_TIMEOUT_SECONDS,
-                env=env,
-            )
-            self.assertEqual(
-                result.returncode,
-                0,
-                msg=f"c2c send --dry-run failed with C2C_MCP_SESSION_ID set: {result.stderr}",
-            )
-            self.assertEqual(
-                reg_result.returncode, 0,
-                msg=f"register failed: {reg_result.stderr}",
-            )
-
             # Register a second alias under a *different* session_id so the
             # broker has a distinct recipient (same session_id would trigger
             # the send-to-self guard).
