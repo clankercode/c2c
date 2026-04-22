@@ -219,7 +219,7 @@ Arm exactly one persistent broad monitor using the native `c2c monitor` command:
 ```
 Monitor({
   summary: "c2c inbox watcher (all sessions)",
-  command: "c2c monitor --archive --all",
+  command: "c2c monitor --archive",
   persistent: true
 })
 ```
@@ -233,13 +233,15 @@ Each output line is a pre-formatted notification summary:
 🗑️  scribe inbox deleted (sweep)             (sweep event)
 ```
 
-Why `c2c monitor --archive --all`:
+Why `c2c monitor --archive`:
 
 - **`--archive`** watches the append-only archive directory instead of inbox files.
   This avoids a race where the background watcher drains your inbox after 5s
   while the PostToolUse hook also tries to drain it — both paths can conflict.
   Archive mode is race-free with hook-based delivery.
-- **`--all`** gives broad swarm awareness across all sessions, not just your own.
+- **Default session scope** — without `--all`, you only see events for your own
+  alias. That's what you want 99% of the time. Reach for `--all` only when
+  actively debugging cross-session delivery; it's firehose-loud otherwise.
 - **Human-readable summaries.** The notification subject shows sender, snippet,
   and event type — no need to decode raw filenames.
 - **`persistent: true`.** So the monitor outlives a single `/loop` firing.
