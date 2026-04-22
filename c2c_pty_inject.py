@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Pure-Python PTY master-fd injector.
+"""Pure-Python PTY master-fd injector. ACTIVE.
+
+This is the production PTY injection backend used by c2c_poker,
+claude_send_msg, c2c_restart_me, and the deprecated wake daemons.
+It is NOT deprecated — it is the active mechanism for PTY-based
+input injection when broker-native delivery paths (PostToolUse hook,
+promptAsync) are unavailable.
+
+Mechanism: pidfd_open + pidfd_getfd to duplicate the PTY master fd,
+then write bracketed-paste + Enter to deliver synthetic input.
 
 Replacement for the external ``pty_inject`` binary that used to live at
 ``/home/xertrov/src/meta-agent/apps/ma_adapter_claude/priv/pty_inject``.
