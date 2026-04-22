@@ -6424,27 +6424,33 @@ let agent_new_interactive ?(client="opencode") name =
       |> List.filter (fun f -> Filename.check_suffix f ".md")
     else []
   in
-  if snippets = [] then print_endline "  (no snippets found)"
-  else begin
-    List.iteri (fun i s -> Printf.printf "  [%d] %s\n" i s) snippets;
-    print_string "Snippets [Enter to skip]: ";
-    flush stdout;
-    let line = String.trim (input_line stdin) in
-    if line <> "" then begin
-      let nums = List.filter_map int_of_string_opt (String.split_on_char ',' line) in
-      let selected = List.filter_map (fun n -> if n >= 0 && n < List.length snippets then Some (List.nth snippets n) else None) nums in
-      if selected <> [] then begin
-        print_endline "Included snippets:";
-        List.iter (fun s -> print_endline ("  - " ^ s)) selected
+  let selected_snippets =
+    if snippets = [] then begin
+      print_endline "  (no snippets found)";
+      []
+    end else begin
+      List.iteri (fun i s -> Printf.printf "  [%d] %s\n" i s) snippets;
+      print_string "Snippets [Enter to skip]: ";
+      flush stdout;
+      let line = String.trim (input_line stdin) in
+      if line = "" then []
+      else begin
+        let nums = List.filter_map int_of_string_opt (String.split_on_char ',' line) in
+        let names = List.filter_map (fun n -> if n >= 0 && n < List.length snippets then Some (List.nth snippets n) else None) nums in
+        if names <> [] then begin
+          print_endline "Included snippets:";
+          List.iter (fun s -> print_endline ("  - " ^ s)) names
+        end;
+        names
       end
     end
-  end;
+  in
   print_newline ();
   let auto_join_rooms = if role = "primary" then "swarm-lounge" else "" in
   let rooms_input = prompt_choice ~prompt:("Auto-join rooms [" ^ (if auto_join_rooms <> "" then auto_join_rooms else "none") ^ "]: ") ~options:[auto_join_rooms;""] () in
   let auto_join_rooms = if rooms_input = "" then auto_join_rooms else rooms_input in
   print_newline ();
-  (description, role, compatible_clients, theme, auto_join_rooms)
+  (description, role, compatible_clients, theme, auto_join_rooms, selected_snippets)
 
 let agent_new_term =
   let name =
@@ -6477,13 +6483,14 @@ let agent_new_term =
         Printf.eprintf "error: NAME is required (or run with no arguments for interactive mode)\n%!";
         exit 1
   in
-  let (description, role, compatible_clients, theme, auto_join_rooms) =
+  let (description, role, compatible_clients, theme, auto_join_rooms, selected_snippets) =
     if not interactive then
       ( Option.value description ~default:"TODO: describe this agent's purpose",
         Option.value role_type ~default:"subagent",
         ["all"],
         theme,
-        "" )
+        "",
+        [] )
     else
       agent_new_interactive name
   in
@@ -6500,12 +6507,16 @@ let agent_new_term =
   let theme_yaml =
     match theme with Some t -> "  theme: " ^ t ^ "\n" | None -> ""
   in
+  let include_yaml =
+    if selected_snippets = [] then "  include: []\n"
+    else "  include: [" ^ String.concat ", " selected_snippets ^ "]\n"
+  in
   let tmpl = Printf.sprintf
     "---\n\
      description: %s\n\
      role: %s\n\
      compatible_clients: [%s]\n\
-     include: []\n\
+     %s\
      required_capabilities: []\n\
      c2c:\n\
      %s\
@@ -6519,6 +6530,7 @@ let agent_new_term =
     description
     role
     (String.concat ", " compatible_clients)
+    include_yaml
     auto_join_yaml
     theme_yaml
     name
