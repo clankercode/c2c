@@ -1110,24 +1110,14 @@ let start_poker ~(name : string) ~(client : string)
 
 let start_wire_daemon ~(name : string) ~(alias : string)
     ~(broker_root : string) () : int option =
-  match wire_bridge_script_path ~broker_root with
-  | None -> None
-  | Some script ->
-      let args =
-        [ "python3"; script
-        ; "--session-id"; name
-        ; "--alias"; alias
-        ; "--broker-root"; broker_root
-        ; "--loop"
-        ; "--interval"; "5"
-        ]
-      in
-      (try
-         let pid = Unix.create_process_env "python3" (Array.of_list args)
-             (Unix.environment ()) Unix.stdin Unix.stdout Unix.stderr
-         in
-         Some pid
-       with Unix.Unix_error _ -> None)
+  let command = "kimi" in
+  let work_dir = Sys.getcwd () in
+  let interval = 5.0 in
+  let (_status, _action) =
+    C2c_wire_daemon.start_daemon
+      ~session_id:name ~alias ~broker_root ~command ~work_dir ~interval
+  in
+  _status.C2c_wire_daemon.pid
 
 let start_headless_thread_id_watcher ~(name : string) ~(path : string) : Thread.t =
   Thread.create
