@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """c2c relay configuration helpers — Phase 5.
 
+.. deprecated::
+    OCaml relay configuration is embedded in the OCaml broker (see
+    ocaml/c2c_mcp.ml and ocaml/relay.ml). This Python module is retained
+    only for existing Python-based relay CLI workflows.
+
 Persists relay connection settings (URL + token) so operators don't need to
 pass --relay-url / --token on every `c2c relay` command.
 

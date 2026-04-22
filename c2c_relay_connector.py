@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """c2c relay connector — Phase 3 of the cross-machine broker.
 
+.. deprecated::
+    This module is superseded by the OCaml relay implementation
+    (ocaml/relay.ml). It remains functional but is no longer actively
+    developed. Use ``c2c relay connect`` which forwards to this only
+    when the OCaml relay is unavailable.
+
 Bridges a local broker root to a remote relay server.
 
 Responsibilities:

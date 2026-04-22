@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """c2c relay rooms — CLI wrapper for relay server room operations.
 
+.. deprecated::
+    OCaml relay (ocaml/relay.ml) provides room operations natively via
+    the MCP protocol. This Python wrapper is retained for existing CLI
+    workflows only. Prefer direct OCaml relay access.
+
 Commands mirror `c2c room` but route through the relay instead of the local
 filesystem, so agents on different machines can interact with shared rooms.
 

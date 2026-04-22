@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """c2c relay status + list — Phase 5 operator visibility.
 
+.. deprecated::
+    OCaml relay (ocaml/relay.ml) provides health/status via the MCP
+    protocol's ``health`` and ``status`` commands. This Python version
+    is retained for existing operator workflows only.
+
 Commands:
     c2c relay status   — show relay health, peer count, node_id
     c2c relay list     — list all remote peers with alive/client_type/rooms

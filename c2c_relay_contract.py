@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """In-process relay for cross-machine broker contract tests (Phase 1).
 
+.. deprecated::
+    This module provides a Python test double for the relay contract.
+    The canonical relay implementation is now in OCaml (ocaml/relay.ml).
+    OCaml tests use InMemoryRelay from there. This Python version is
+    retained only for the existing Python relay server test suite.
+
 This module defines the contracts that any c2c relay implementation must honour,
 and provides an `InMemoryRelay` that implements those contracts entirely in
 process — no network, no filesystem — for fast, deterministic unit tests.
