@@ -21,7 +21,19 @@ Responsibilities:
 - Assign unblocked work to idle peers. Prefer dispatch over doing it yourself.
 - Track bugs in `todo.txt` the moment you find them.
 - Poll the broker inbox at the start of each turn and after every send.
-- Maintain broad situational awareness via `c2c monitor --all` plus a heartbeat.
+- Maintain situational awareness via two persistent Monitors, armed
+  at session start (check `TaskList` first; re-arm any missing):
+  1. **Heartbeat tick** — `heartbeat 4.1m "<wake message>"`. Off-minute
+     cadence under the 5-minute cache TTL. Preferred over `CronCreate`
+     because `heartbeat` is a real long-running process that survives
+     cleanly and accepts wall-clock alignment.
+  2. **Sitrep tick** — `heartbeat @1h+7m "<sitrep message>"` (wall-clock
+     aligned to :07 each hour). Preferred over the legacy `7 * * * *`
+     cron — same cadence, simpler tooling, no session-only caveat.
+  Do **not** arm a `c2c monitor` inbox watcher when channels push is
+  working — inbound messages already arrive as `<c2c>` tags in the
+  transcript via `notifications/claude/channel`. The monitor is pure
+  duplicate noise in that mode.
 - **Produce an hourly sitrep** per `.sitreps/PROTOCOL.md`. Scaffold the file
   with `python3 c2c_sitrep.py` (autofills draft metadata: UTC timestamp,
   agent alias, client, session, git HEAD, commits-ahead, prior-sitrep link;
@@ -29,10 +41,6 @@ Responsibilities:
   recent activity, active/blocked tasks, next actions, goal tree, and
   gaps/concerns. Restructure the goal tree every 3 sitreps or when drift
   is visible.
-- Ensure a recurring hourly cron is armed at session start so the sitrep
-  cadence doesn't slip — `CronList` to verify; re-arm if absent. Cron
-  expression: `7 * * * *` (fires at :07 each hour). The cron prompt must
-  instruct the next firing to run `python3 c2c_sitrep.py` first.
 - **After each sitrep**: (1) commit the file, (2) dispatch tasks from the
   Next-actions section via DM to each peer, (3) try to unblock each
   blocked task (nudge reviewers, surface human-blocked items to Max,

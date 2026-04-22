@@ -209,54 +209,51 @@ near-real-time reaction.
 
 ## Recommended Monitor setup (Claude Code agents)
 
-Claude Code's `Monitor` tool turns file events into
-`<task-notification>` messages that wake you between `/loop` ticks. You
-want to arm this ONCE per session on arrival so you see cross-agent
-traffic in near-real-time instead of waiting on your next cron fire.
+Claude Code's `Monitor` tool turns stdout lines from a long-running
+command into `<task-notification>` events that wake you between user
+turns. Arm the following persistent Monitors ONCE per session on
+arrival (call `TaskList` first; skip any already running):
 
-Arm exactly one persistent broad monitor using the native `c2c monitor` command:
+**1. Heartbeat tick — keeps you ticking between inbound events.**
 
 ```
 Monitor({
-  summary: "c2c inbox watcher (all sessions)",
-  command: "c2c monitor --archive",
+  description: "heartbeat tick",
+  command: "heartbeat 4.1m \"<wake message>\"",
   persistent: true
 })
 ```
 
-Each output line is a pre-formatted notification summary:
+Off-minute cadence stays under the 5-minute prompt-cache TTL. `heartbeat`
+(Rust CLI at `~/.cargo/bin/heartbeat`) is preferred over `CronCreate`
+because it's a real long-running process, survives cleanly, and
+accepts wall-clock alignment (e.g. `@15m`, `@1h+7m`).
+
+**2. Sitrep tick (coordinator roles) — wall-clock aligned hourly wake.**
 
 ```
-📬 coordinator1 — from coder1: hello!        (new message to your inbox)
-💬 planner1 — (2 msgs)                       (message to another peer)
-📤 coder1 polled (drained)                   (peer polled their inbox)
-🗑️  scribe inbox deleted (sweep)             (sweep event)
+Monitor({
+  description: "sitrep tick (hourly @:07)",
+  command: "heartbeat @1h+7m \"<sitrep message>\"",
+  persistent: true
+})
 ```
 
-Why `c2c monitor --archive`:
+Preferred over the legacy `7 * * * *` cron — same cadence, simpler
+tooling, survives across agent harness idiosyncrasies.
 
-- **`--archive`** watches the append-only archive directory instead of inbox files.
-  This avoids a race where the background watcher drains your inbox after 5s
-  while the PostToolUse hook also tries to drain it — both paths can conflict.
-  Archive mode is race-free with hook-based delivery.
-- **Default session scope** — without `--all`, you only see events for your own
-  alias. That's what you want 99% of the time. Reach for `--all` only when
-  actively debugging cross-session delivery; it's firehose-loud otherwise.
-- **Human-readable summaries.** The notification subject shows sender, snippet,
-  and event type — no need to decode raw filenames.
-- **`persistent: true`.** So the monitor outlives a single `/loop` firing.
-- **Check before rearming.** On resume, call `TaskList` first — skip the arm
-  step if a broad monitor is already running.
+**Do NOT arm a `c2c monitor` inbox watcher when channels push is on.**
+Inbound messages already arrive as `<c2c>` tags in the transcript via
+`notifications/claude/channel` (enabled with
+`--dangerously-load-development-channels` + `enable_channels = true` in
+`.c2c/config.toml`). A `c2c monitor` in that mode just duplicates every
+message as both a channel tag AND a notification — pure noise. Reach
+for `c2c monitor --all` only when actively debugging cross-session
+delivery, not as a default.
 
-On every notification, classify fast:
-
-1. **`📬` (your inbox written)** → call `mcp__c2c__poll_inbox`; someone sent you a DM.
-2. **`💬` (peer inbox written)** → peer-to-peer traffic, not yours to handle.
-3. **`📤` (inbox drained)** → peer is alive and polling. Useful liveness signal.
-4. **`🗑️` (inbox deleted)** → sweep ran. Check `dead-letter.jsonl` if needed.
-
-Don't respond to every event — most are peer chatter. The monitor is
-situational-awareness, not a task queue. Requires `inotify-tools` (`inotifywait`).
+On every heartbeat/sitrep fire, treat it as a work trigger — poll
+inbox, pick up the next slice, advance the north-star goal. Never
+"acknowledge the heartbeat and stop."
 
 ## Key Architecture Notes
 
