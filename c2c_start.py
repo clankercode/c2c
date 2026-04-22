@@ -372,6 +372,8 @@ def prepare_launch_args(
     elif client == "codex" and resume_session_id:
         args.extend(["resume", "--last"])
     elif client == "codex-headless":
+        # Keep headless on approval-policy=never until the bridge exposes a
+        # machine-readable approval handoff. See APPROVAL_FLOW_REQ.md.
         args.extend(["--stdin-format", "xml", "--codex-bin", "codex", "--approval-policy", "never"])
         if resume_session_id:
             args.extend(["--thread-id", resume_session_id])
@@ -484,6 +486,14 @@ def save_instance_config(name: str, cfg: dict[str, Any]) -> None:
     path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
 
+def persist_headless_thread_id(name: str, thread_id: str) -> None:
+    cfg = load_instance_config(name)
+    if cfg is None:
+        return
+    cfg["resume_session_id"] = thread_id
+    save_instance_config(name, cfg)
+
+
 # ---------------------------------------------------------------------------
 # Instance enumeration
 # ---------------------------------------------------------------------------
@@ -592,7 +602,7 @@ def _start_deliver_daemon(
         return None
 
 
-def _codex_supports_xml_input_fd(binary_path: str) -> bool:
+def _command_help_contains(binary_path: str, flag: str) -> bool:
     try:
         result = subprocess.run(
             [binary_path, "--help"],
@@ -603,7 +613,15 @@ def _codex_supports_xml_input_fd(binary_path: str) -> bool:
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
-    return "--xml-input-fd" in (result.stdout or "") or "--xml-input-fd" in (result.stderr or "")
+    return flag in (result.stdout or "") or flag in (result.stderr or "")
+
+
+def _codex_supports_xml_input_fd(binary_path: str) -> bool:
+    return _command_help_contains(binary_path, "--xml-input-fd")
+
+
+def bridge_supports_thread_id_fd(binary_path: str) -> bool:
+    return _command_help_contains(binary_path, "--thread-id-fd")
 
 
 def _start_poker(name: str, client: str, child_pid: int | None = None) -> subprocess.Popen | None:
@@ -906,7 +924,15 @@ def cmd_start(
                 else:
                     print(f"error: {msg}", file=sys.stderr)
                 return 1
-        elif client != "codex-headless":
+        elif client == "codex-headless":
+            if not session_id_override.strip():
+                msg = "--session-id for codex-headless must be a non-empty thread id"
+                if json_out:
+                    print(json.dumps({"ok": False, "error": msg}))
+                else:
+                    print(f"error: {msg}", file=sys.stderr)
+                return 1
+        else:
             try:
                 uuid.UUID(session_id_override)
             except ValueError:
@@ -957,10 +983,33 @@ def cmd_start(
         if saved_root:
             broker_root = Path(saved_root).resolve()
 
+    binary = binary_override or CLIENT_CONFIGS[client]["binary"]
+    binary_path = _find_binary(binary)
+    if client == "codex-headless":
+        if binary_path is None:
+            msg = f"c2c start: '{binary}' not found in PATH"
+            if json_out:
+                print(json.dumps({"ok": False, "error": msg}))
+            else:
+                print(msg, file=sys.stderr)
+            return 2
+        if not bridge_supports_thread_id_fd(binary_path):
+            msg = (
+                "codex-headless requires codex-turn-start-bridge with "
+                "--thread-id-fd support for lazy thread-id persistence"
+            )
+            if json_out:
+                print(json.dumps({"ok": False, "error": msg}))
+            else:
+                print(f"error: {msg}", file=sys.stderr)
+            return 1
+
     # Stable session UUID: generated once on first start, reused on resume
     # so the client can --resume by it. Only used by clients that support
     # session resumption (claude, codex, opencode).
-    # codex-headless uses an opaque thread ID instead, stored empty on first start.
+    # codex-headless stores the Codex bridge thread id here. It is opaque and
+    # intentionally not UUID-validated like Claude/Codex TUI resume ids.
+    # The empty string sentinel means "no thread id yet" on first headless start.
     # CLI --session-id override takes precedence; falls back to saved value.
     resume_session_id = session_id_override or (existing.get("resume_session_id") if existing else None)
     if resume_session_id is None:
@@ -988,11 +1037,15 @@ def cmd_start(
     if json_out:
         print(json.dumps({"ok": True, "name": name, "client": client}))
 
+    launch_resume_session_id = resume_session_id
+    if client == "codex-headless" and not resume_session_id.strip():
+        launch_resume_session_id = None
+
     return run_outer_loop(
         name, client, extra_args, broker_root,
         binary_override=binary_override,
         alias_override=alias_override,
-        resume_session_id=resume_session_id,
+        resume_session_id=launch_resume_session_id,
         is_resume=existing is not None,
     )
 

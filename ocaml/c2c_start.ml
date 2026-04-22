@@ -422,6 +422,12 @@ let load_config (name : string) : instance_config =
       Printf.eprintf "error: config not found for instance '%s'\n%!" name;
       exit 1
 
+let persist_headless_thread_id ~(name : string) ~(thread_id : string) : unit =
+  match load_config_opt name with
+  | None -> ()
+  | Some cfg ->
+      write_config { cfg with resume_session_id = thread_id }
+
 (* ---------------------------------------------------------------------------
  * Process utilities
  * --------------------------------------------------------------------------- *)
@@ -763,7 +769,8 @@ let claude_session_exists uuid =
 let prepare_launch_args ~(name : string) ~(client : string)
     ~(extra_args : string list) ~(broker_root : string)
     ?(alias_override : string option) ?(resume_session_id : string option)
-    ?(binary_override : string option) ?(codex_xml_input_fd : string option) () : string list =
+    ?(binary_override : string option) ?(codex_xml_input_fd : string option)
+    ?(thread_id_fd : string option) () : string list =
   let args =
     match client with
     | "claude" ->
@@ -792,6 +799,19 @@ let prepare_launch_args ~(name : string) ~(client : string)
         [ "--log-level"; "INFO" ] @ session_arg
     | "codex" ->
         (match resume_session_id with Some _ -> [ "resume"; "--last" ] | None -> [])
+    | "codex-headless" ->
+        [ "--stdin-format"; "xml";
+          "--codex-bin"; "codex";
+          (* Keep headless on approval-policy=never until the bridge exposes a
+             machine-readable approval handoff. See APPROVAL_FLOW_REQ.md in the
+             Codex fork. *)
+          "--approval-policy"; "never" ]
+        @ (match resume_session_id with
+           | Some sid when String.trim sid <> "" -> [ "--thread-id"; sid ]
+           | _ -> [])
+        @ (match thread_id_fd with
+           | Some fd -> [ "--thread-id-fd"; fd ]
+           | None -> [])
     | _ -> []
   in
   let args =
@@ -856,7 +876,7 @@ let deliver_script_path ~(broker_root : string) : string option =
       let p = dir // "c2c_deliver_inbox.py" in
       if Sys.file_exists p then Some p else None
 
-let codex_supports_xml_input_fd (binary_path : string) : bool =
+let command_help_contains (binary_path : string) (needle : string) : bool =
   let contains needle haystack =
     let nlen = String.length needle
     and hlen = String.length haystack in
@@ -876,11 +896,17 @@ let codex_supports_xml_input_fd (binary_path : string) : bool =
         (try
            while not !found do
              let line = input_line ic in
-             if contains "--xml-input-fd" line then found := true
+             if contains needle line then found := true
            done
          with End_of_file -> ());
         !found)
   with _ -> false
+
+let codex_supports_xml_input_fd (binary_path : string) : bool =
+  command_help_contains binary_path "--xml-input-fd"
+
+let bridge_supports_thread_id_fd (binary_path : string) : bool =
+  command_help_contains binary_path "--thread-id-fd"
 
 let poker_script_path ~(broker_root : string) : string option =
   match resolve_repo_root ~broker_root with
@@ -965,6 +991,26 @@ let start_wire_daemon ~(name : string) ~(alias : string)
          Some pid
        with Unix.Unix_error _ -> None)
 
+let start_headless_thread_id_watcher ~(name : string) ~(read_fd : Unix.file_descr) : Thread.t =
+  Thread.create
+    (fun () ->
+      let ic = Unix.in_channel_of_descr read_fd in
+      Fun.protect ~finally:(fun () -> try close_in ic with _ -> ())
+        (fun () ->
+          try
+            let line = input_line ic in
+            match Yojson.Safe.from_string line with
+            | `Assoc fields ->
+                (match List.assoc_opt "thread_id" fields with
+                 | Some (`String thread_id) when String.trim thread_id <> "" ->
+                     persist_headless_thread_id ~name ~thread_id
+                 | _ -> ())
+            | _ -> ()
+          with
+          | End_of_file -> ()
+          | Yojson.Json_error _ -> ()))
+    ()
+
 (* ---------------------------------------------------------------------------
  * Outer loop
  * --------------------------------------------------------------------------- *)
@@ -986,6 +1032,12 @@ let run_outer_loop ~(name : string) ~(client : string)
       Printf.eprintf "error: '%s' not found in PATH. Install %s first.\n%!" binary client;
       exit 2
   | Some binary_path ->
+      if client = "codex-headless" && not (bridge_supports_thread_id_fd binary_path) then begin
+        Printf.eprintf
+          "error: codex-headless requires codex-turn-start-bridge with \
+           --thread-id-fd support for lazy thread-id persistence\n%!";
+        exit 1
+      end;
       (* Leave SIGCHLD at default so waitpid works for the managed inner child.
          Sidecar children (deliver, poker, wire) are started with their own
          process groups; they will eventually become zombies until the outer
@@ -1108,11 +1160,15 @@ let run_outer_loop ~(name : string) ~(client : string)
           if client = "codex" && codex_supports_xml_input_fd binary_path then Some "3"
           else None
         in
+        let thread_id_fd =
+          if client = "codex-headless" then Some "5" else None
+        in
         if is_cc_wrapper binary_path then
           []
         else
           prepare_launch_args ~name ~client ~extra_args ~broker_root
-            ?alias_override ?resume_session_id ?binary_override ?codex_xml_input_fd ()
+            ?alias_override ?resume_session_id ?binary_override ?codex_xml_input_fd
+            ?thread_id_fd ()
       in
       let cmd = binary_path :: launch_args in
 
@@ -1236,6 +1292,10 @@ let run_outer_loop ~(name : string) ~(client : string)
               Some (Unix.pipe ~cloexec:false ())
             else None
           in
+          let thread_id_pipe =
+            if client = "codex-headless" then Some (Unix.pipe ~cloexec:false ())
+            else None
+          in
           let pid = match Unix.fork () with
             | 0 ->
                 (try ignore (Sys.signal Sys.sigchld Sys.Signal_default) with _ -> ());
@@ -1266,6 +1326,13 @@ let run_outer_loop ~(name : string) ~(client : string)
                      (try Unix.close read_fd with _ -> ());
                      (try Unix.close write_fd with _ -> ())
                  | None -> ());
+                (match thread_id_pipe with
+                 | Some (read_fd, write_fd) ->
+                     let fd5 : Unix.file_descr = Obj.magic 5 in
+                     (try Unix.dup2 write_fd fd5 with _ -> ());
+                     (try Unix.close read_fd with _ -> ());
+                     (try Unix.close write_fd with _ -> ())
+                 | None -> ());
                 (try Unix.close outer_stderr_fd with _ -> ());
                 (try Unix.execvpe binary_path (Array.of_list cmd) env
                  with e ->
@@ -1278,6 +1345,14 @@ let run_outer_loop ~(name : string) ~(client : string)
              SIGTERM handler so `c2c stop` can kill the whole inner pgid. *)
           inner_child_pid := Some pid;
           write_pid (inner_pid_path name) pid;
+          (match thread_id_pipe with
+           | Some (read_fd, write_fd) ->
+               (* In XML mode the bridge does not start/resume a thread until it sees the first
+                  <message>. So headless startup cannot wait for a thread-id handoff here; we
+                  persist it lazily when the bridge emits it after the first real input. *)
+               ignore (start_headless_thread_id_watcher ~name ~read_fd);
+               (try Unix.close write_fd with _ -> ())
+           | None -> ());
           (* Start deliver daemon (PTY notify path, used for Codex). *)
           (if !deliver_pid = None && cfg.needs_deliver then
              let xml_output_fd =
@@ -1511,8 +1586,8 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
    | None, Some _, Some _ -> ()  (* alias + wrapper_self → OK (managed client) *)
    | Some _, Some _, Some _ -> ());
 
-  (* Validate --session-id. OpenCode accepts ses_* session IDs from its TUI;
-     claude/codex/other clients expect a UUID. *)
+  (* Validate --session-id. OpenCode accepts ses_* session IDs from its TUI.
+     codex-headless stores opaque bridge thread ids here, not UUIDs. *)
   (match session_id_override with
    | None -> ()
    | Some sid when client = "opencode" ->
@@ -1534,9 +1609,14 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
            Printf.eprintf
              "error: opencode session '%s' not found.\n\
               \  List sessions:  opencode session list\n\
-              \  Omit -s to start a fresh session.\n%!"
+             \  Omit -s to start a fresh session.\n%!"
              sid;
            exit 1)
+   | Some sid when client = "codex-headless" ->
+       if String.trim sid = "" then begin
+         Printf.eprintf "error: --session-id for codex-headless must be a non-empty thread id\n%!";
+         exit 1
+       end
    | Some sid ->
        (match Uuidm.of_string sid with
         | Some _ -> ()
@@ -1602,12 +1682,15 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
              with _ -> None)
           else None
         in
-        (* Validate saved resume_session_id is a valid UUID; if not (e.g. corrupted
-           by an earlier bug that stored the instance name), generate a fresh one. *)
+        (* codex-headless stores the Codex bridge thread id here. It is opaque and
+           intentionally not UUID-validated like Claude/Codex TUI resume ids. *)
         let rs_valid =
-          match Uuidm.of_string ex.resume_session_id with
-          | Some _ -> Some ex.resume_session_id
-          | None -> None
+          if client = "codex-headless" then
+            Some ex.resume_session_id
+          else
+            match Uuidm.of_string ex.resume_session_id with
+            | Some _ -> Some ex.resume_session_id
+            | None -> None
         in
         let rs =
           match session_id_override with
@@ -1623,12 +1706,29 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
         (bo, ao, ea, rs, ex.broker_root)
     | None ->
         let rs =
-          match session_id_override with
-          | Some s -> s
-          | None -> Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
+          match client, session_id_override with
+          | "codex-headless", None -> ""
+          | "codex-headless", Some sid -> sid
+          | _, Some s -> s
+          | _, None -> Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
         in
         (binary_override, alias_override, extra_args, Some rs, broker_root ())
   in
+
+  let binary_to_check =
+    match binary_override with
+    | Some b -> b
+    | None ->
+        let client_cfg = Stdlib.Hashtbl.find clients client in
+        client_cfg.binary
+  in
+  (match client, find_binary binary_to_check with
+   | "codex-headless", Some binary_path when not (bridge_supports_thread_id_fd binary_path) ->
+       Printf.eprintf
+         "error: codex-headless requires codex-turn-start-bridge with \
+          --thread-id-fd support for lazy thread-id persistence\n%!";
+       exit 1
+   | _ -> ());
 
   let cfg : instance_config = {
     name; client; session_id = name;
@@ -1643,9 +1743,17 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
   in
   write_config cfg;
 
+  (* The persisted empty string sentinel means "no thread id yet" for a fresh
+     headless launch and must not become `--thread-id ""` on argv. *)
+  let launch_resume_session_id =
+    match client, cfg.resume_session_id with
+    | "codex-headless", sid when String.trim sid = "" -> None
+    | _, sid -> Some sid
+  in
+
   run_outer_loop ~name ~client ~extra_args ~broker_root
     ?binary_override ?alias_override ~session_id:cfg.session_id
-    ~resume_session_id:cfg.resume_session_id
+    ?resume_session_id:launch_resume_session_id
     ~one_hr_cache ?kickoff_prompt ()
 
 (* Signal the managed inner client so the outer loop relaunches it. Designed

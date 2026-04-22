@@ -744,7 +744,12 @@ class C2CStartCodexHeadlessTests(unittest.TestCase):
     def test_cmd_start_initial_headless_config_uses_empty_resume_id(self):
         """First start of codex-headless stores empty resume_session_id."""
         broker_root = Path(self.temp_dir.name) / "broker"
-        with mock.patch.object(self.c2c_start, "run_outer_loop", return_value=0):
+        with (
+            mock.patch.object(
+                self.c2c_start, "bridge_supports_thread_id_fd", return_value=True
+            ),
+            mock.patch.object(self.c2c_start, "run_outer_loop", return_value=0),
+        ):
             rc = self.c2c_start.cmd_start(
                 "codex-headless", "headless-proof", [], broker_root
             )
@@ -776,9 +781,14 @@ class C2CStartCodexHeadlessTests(unittest.TestCase):
     def test_codex_headless_session_id_override_accepts_opaque_thread_id(self):
         """codex-headless accepts opaque thread id via --session-id."""
         broker_root = Path(self.temp_dir.name) / "broker"
-        with mock.patch.object(
-            self.c2c_start, "run_outer_loop", return_value=0
-        ) as mock_loop:
+        with (
+            mock.patch.object(
+                self.c2c_start, "bridge_supports_thread_id_fd", return_value=True
+            ),
+            mock.patch.object(
+                self.c2c_start, "run_outer_loop", return_value=0
+            ) as mock_loop,
+        ):
             rc = self.c2c_start.cmd_start(
                 "codex-headless",
                 "headless-proof",
@@ -809,9 +819,14 @@ class C2CStartCodexHeadlessTests(unittest.TestCase):
             }),
             encoding="utf-8",
         )
-        with mock.patch.object(
-            self.c2c_start, "run_outer_loop", return_value=0
-        ) as mock_loop:
+        with (
+            mock.patch.object(
+                self.c2c_start, "bridge_supports_thread_id_fd", return_value=True
+            ),
+            mock.patch.object(
+                self.c2c_start, "run_outer_loop", return_value=0
+            ) as mock_loop,
+        ):
             rc = self.c2c_start.cmd_start(
                 "codex-headless",
                 "headless-proof",
@@ -822,6 +837,52 @@ class C2CStartCodexHeadlessTests(unittest.TestCase):
         self.assertEqual(
             mock_loop.call_args.kwargs["resume_session_id"], "thread-still-opaque"
         )
+
+    def test_codex_headless_requires_thread_id_handoff_capability(self):
+        broker_root = Path(self.temp_dir.name) / "broker"
+        with mock.patch.object(
+            self.c2c_start, "bridge_supports_thread_id_fd", return_value=False
+        ):
+            buf = io.StringIO()
+            with mock.patch("sys.stderr", buf):
+                rc = self.c2c_start.cmd_start(
+                    "codex-headless", "headless-proof", [], broker_root
+                )
+        self.assertEqual(rc, 1)
+        self.assertIn("--thread-id-fd", buf.getvalue())
+
+    def test_codex_headless_start_does_not_block_waiting_for_first_thread_id(self):
+        broker_root = Path(self.temp_dir.name) / "broker"
+        with (
+            mock.patch.object(
+                self.c2c_start, "bridge_supports_thread_id_fd", return_value=True
+            ),
+            mock.patch.object(
+                self.c2c_start, "run_outer_loop", return_value=0
+            ) as mock_loop,
+        ):
+            rc = self.c2c_start.cmd_start(
+                "codex-headless", "headless-proof", [], broker_root
+            )
+        self.assertEqual(rc, 0)
+        self.assertIsNone(mock_loop.call_args.kwargs["resume_session_id"])
+
+    def test_persist_headless_thread_id_updates_config(self):
+        cfg = {
+            "name": "headless-proof",
+            "client": "codex-headless",
+            "session_id": "headless-proof",
+            "resume_session_id": "",
+            "alias": "headless-proof",
+            "extra_args": [],
+            "created_at": 0,
+            "broker_root": str(Path(self.temp_dir.name) / "broker"),
+            "auto_join_rooms": "swarm-lounge",
+        }
+        self.c2c_start.save_instance_config("headless-proof", cfg)
+        self.c2c_start.persist_headless_thread_id("headless-proof", "thread-new")
+        saved = self.c2c_start.load_instance_config("headless-proof")
+        self.assertEqual(saved["resume_session_id"], "thread-new")
 
 
 class C2CStartConstantsTests(unittest.TestCase):

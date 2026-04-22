@@ -102,12 +102,18 @@ val prepare_launch_args :
   ?resume_session_id:string ->
   ?binary_override:string ->
   ?codex_xml_input_fd:string ->
+  ?thread_id_fd:string ->
   unit ->
   string list
 (** [prepare_launch_args] returns client args, adding managed per-instance
     config where needed. Handles --session-id, --resume for claude, --session
     for opencode, resume --last for codex, optional --xml-input-fd for Codex,
-    and --mcp-config-file for kimi. *)
+    optional --thread-id/--thread-id-fd for codex-headless, and
+    --mcp-config-file for kimi. *)
+
+val bridge_supports_thread_id_fd : string -> bool
+(** [bridge_supports_thread_id_fd binary_path] returns whether the Codex
+    headless bridge advertises [--thread-id-fd] in its help output. *)
 
 (** {1 Configuration persistence} *)
 
@@ -119,6 +125,10 @@ val load_config : string -> instance_config
 
 val load_config_opt : string -> instance_config option
 (** [load_config_opt name] loads instance config.json; returns [None] if absent. *)
+
+val persist_headless_thread_id : name:string -> thread_id:string -> unit
+(** [persist_headless_thread_id ~name ~thread_id] updates the managed instance
+    config with the lazily handed-off Codex thread id, if the config exists. *)
 
 (** {1 Process utilities} *)
 
