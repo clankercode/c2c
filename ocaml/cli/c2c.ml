@@ -665,6 +665,13 @@ let send_all_cmd =
 
 let sweep_cmd =
   let+ json = json_flag in
+  let outer_loops_running =
+    Sys.command "pgrep -c -f 'run-(kimi|codex|opencode|crush|claude)-inst-outer' > /dev/null 2>&1" = 0
+  in
+  if outer_loops_running then begin
+    Printf.eprintf "warning: managed client outer loops detected. Sweep may drop live sessions.\n";
+    Printf.eprintf "  Use 'c2c instances' or 'c2c list' to check before proceeding.\n%!";
+  end;
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let result = C2c_mcp.Broker.sweep broker in
   let output_mode = if json then Json else Human in
