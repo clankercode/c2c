@@ -6422,7 +6422,44 @@ let agent_new_term =
   Fun.protect ~finally:(fun () -> close_out oc)
     (fun () -> output_string oc tmpl);
   Banner.print_banner ?theme_name:theme ~subtitle:("agent new  |  " ^ name) "c2c agent";
-  Printf.printf "  created: %s\n" path
+  Printf.printf "  created: %s\n" path;
+  (* Offer the user a chance to hand-edit the draft before the next step
+     (`c2c agent refine`). Interactive only — non-interactive / flag-driven
+     runs stay CI-safe. Path is always printed so GUI editor users can copy
+     it even if they skip. *)
+  if interactive then begin
+    Printf.printf "  path: %s\n" path;
+    let editor =
+      match Sys.getenv_opt "VISUAL" with
+      | Some v when String.trim v <> "" -> Some v
+      | _ ->
+        match Sys.getenv_opt "EDITOR" with
+        | Some v when String.trim v <> "" -> Some v
+        | _ ->
+          if Sys.command "command -v nano >/dev/null 2>&1" = 0 then Some "nano"
+          else if Sys.command "command -v vi >/dev/null 2>&1" = 0 then Some "vi"
+          else None
+    in
+    let editor_label = match editor with
+      | Some e -> e
+      | None -> "(none found — open the path above in a GUI editor)"
+    in
+    print_newline ();
+    let open_it = prompt_choice
+        ~default:0
+        ~prompt:(Printf.sprintf "Open in %s now? [0=yes, 1=skip]: " editor_label)
+        ~options:["yes"; "skip"] () in
+    if open_it = "yes" then begin
+      match editor with
+      | Some ed ->
+        let rc = Sys.command (Printf.sprintf "%s %s" ed (Filename.quote path)) in
+        if rc <> 0 then
+          Printf.eprintf "note: editor exited with code %d\n%!" rc
+      | None ->
+        Printf.printf "  no editor found. Open %s in a GUI editor.\n" path
+    end;
+    Printf.printf "\n  next: c2c agent refine %s  (hand off to role-designer)\n" name
+  end
 
 let agent_new_cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "new" ~doc:"Create a new canonical role file.") agent_new_term
 let agent_list_cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List all canonical role files.") agent_list_term
@@ -8515,7 +8552,7 @@ let () =
     [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; send_all; sweep
     ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
     ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-    ; serve; mcp; start; agent_group; config_group; roles_compile; roles_validate; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; help ]
+    ; serve; mcp; start; agent_group; config_group; roles_compile; roles_validate; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in
   exit

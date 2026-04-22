@@ -4,6 +4,7 @@
 let content = {role_designer_src|---
 description: Role designer — interviews stakeholders and authors agent role files for the c2c swarm.
 role: subagent
+include: [recovery]
 c2c:
   alias: role-designer
 opencode:
