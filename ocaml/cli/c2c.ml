@@ -5700,6 +5700,53 @@ let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Start a managed c2c 
 
 (* --- subcommand: roles ----------------------------------------------------- *)
 
+(* --- subcommand: agent ----------------------------------------------------- *)
+
+let agent_new_term =
+  let name =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME"
+      ~doc:"Role name (creates .c2c/roles/<NAME>.md).")
+  in
+  let description =
+    Cmdliner.Arg.(value & opt (some string) (Some "") & info [ "description"; "d" ]
+      ~docv:"TEXT" ~doc:"Role description.")
+  in
+  let role_type =
+    Cmdliner.Arg.(value & opt (some string) (Some "subagent") & info [ "role"; "r" ]
+      ~docv:"TYPE" ~doc:"Role type: subagent, primary, or all.")
+  in
+  let+ name = name
+  and+ description = description
+  and+ role_type = role_type in
+  let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
+  (try Unix.mkdir roles_dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  let path = Filename.concat roles_dir (name ^ ".md") in
+  if Sys.file_exists path then begin
+    Printf.eprintf "error: role already exists: %s\n%!" path;
+    exit 1
+  end;
+  let tmpl = Printf.sprintf
+    "---\n\
+     description: %s\n\
+     role: %s\n\
+     model:\n\
+     c2c:\n\
+     opencode:\n\
+     ---\n\
+     You are a %s agent.\n"
+    (match description with Some d when d <> "" -> d | _ -> "TODO: describe this agent's purpose")
+    (Option.value role_type ~default:"subagent")
+    name
+  in
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc tmpl);
+  Printf.printf "  created: %s\n" path
+
+let agent_new = Cmdliner.Cmd.v (Cmdliner.Cmd.info "agent" ~doc:"Create new canonical role files.") agent_new_term
+
+(* --- subcommand: roles ----------------------------------------------------- *)
+
 let roles_compile_term =
   let name_arg =
     Cmdliner.Arg.(value & pos 0 (some string) None & info [] ~docv:"NAME"
@@ -7513,4 +7560,4 @@ let () =
            [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
            ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
            ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-           ; serve; mcp; start; roles_compile; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; help ]))
+            ; serve; mcp; start; agent_new; roles_compile; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; help ]))
