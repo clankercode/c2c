@@ -160,3 +160,32 @@ class OpenCodeAdapter:
 
     def probe_capabilities(self, scenario: Scenario | None) -> dict[str, bool]:
         return {"opencode_binary": shutil.which("opencode") is not None}
+
+
+class ClaudeAdapter:
+    client_name = "claude"
+    default_backend = "tmux"
+
+    def __init__(self, repo_root: Path) -> None:
+        self.repo_root = repo_root
+
+    def build_launch(self, scenario: Scenario, config: AgentConfig) -> dict[str, object]:
+        command = ["c2c", "start", self.client_name, "-n", config.name]
+        if config.auto:
+            command.append("--auto")
+        if config.extra_args:
+            command.extend(["--", *config.extra_args])
+        return {
+            "command": command,
+            "cwd": scenario.workdir,
+            "env": dict(config.env),
+            "title": config.name,
+        }
+
+    def is_ready(self, scenario: Scenario, agent: StartedAgent) -> bool:
+        if not scenario.drivers[agent.backend].is_alive(agent.handle):
+            return False
+        return _has_live_pid(_instance_dir(agent.name) / "inner.pid")
+
+    def probe_capabilities(self, scenario: Scenario | None) -> dict[str, bool]:
+        return {"claude_binary": shutil.which("claude") is not None}
