@@ -108,8 +108,15 @@ let jsonrpc_error ~id ~code ~message =
     ]
 
 (* Continuous inbox delivery: background thread that watches the inbox file and emits
-   notifications for new messages while the session runs. *)
-let start_inbox_watcher ~broker_root ~session_id ~emit_notification =
+   notifications for new messages while the session runs. The watcher only drains
+   when channel_capable_ref is true — i.e. the client negotiated
+   experimental.claude/channel in its initialize request. This prevents the
+   background watcher from silently draining messages for clients (e.g. Claude Code
+   standard) that do not support the notifications/claude/channel notification
+   method, which would otherwise cause messages to vanish from the agent's
+   perspective. *)
+let start_inbox_watcher ~broker_root ~session_id ~emit_notification
+    ~channel_capable_ref =
   let open Lwt.Syntax in
   let inbox_path = Filename.concat broker_root (session_id ^ ".inbox.json") in
   let stat_size () =
@@ -127,33 +134,34 @@ let start_inbox_watcher ~broker_root ~session_id ~emit_notification =
              If the hook already drained, drain_inbox returns [] and we emit
              nothing. *)
           let* () = if delay > 0.0 then Lwt_unix.sleep delay else Lwt.return_unit in
-          let broker = C2c_mcp.Broker.create ~root:broker_root in
-          (* Push path: skip if DND; drain only non-deferrable messages *)
-          let messages =
-            if C2c_mcp.Broker.is_dnd broker ~session_id then []
-            else C2c_mcp.Broker.drain_inbox_push broker ~session_id
-          in
-          let rec emit_all = function
-            | [] -> Lwt.return_unit
-            | msg :: rest ->
-                let* () = emit_notification msg in
-                (* 10ms yield lets the pipe buffer flush between notifications so
-                   the consumer's select() sees each one in a separate iteration. *)
-                let* () = Lwt_unix.sleep 0.01 in
-                emit_all rest
-          in
-          let* () = emit_all messages in
-          (* Use post-drain file size, not pre-drain — avoids missing shorter
-             subsequent messages when the previous batch was larger. *)
-          let post_drain_size = stat_size () in
-          loop post_drain_size
+          (* Only drain when the client can actually receive channel notifications.
+             For non-channel-capable clients (e.g. standard Claude Code), leaving
+             messages in the inbox is correct — they will be retrieved via
+             poll_inbox or the PostToolUse hook on the next tool call. *)
+          if !channel_capable_ref then
+            let broker = C2c_mcp.Broker.create ~root:broker_root in
+            let messages =
+              if C2c_mcp.Broker.is_dnd broker ~session_id then []
+              else C2c_mcp.Broker.drain_inbox_push broker ~session_id
+            in
+            let rec emit_all = function
+              | [] -> Lwt.return_unit
+              | msg :: rest ->
+                  let* () = emit_notification msg in
+                  let* () = Lwt_unix.sleep 0.01 in
+                  emit_all rest
+            in
+            let* () = emit_all messages in
+            let post_drain_size = stat_size () in
+            loop post_drain_size
+          else
+            loop current_size
         else
           loop current_size)
       (fun exn ->
         let* () =
           Lwt_io.eprintlf "c2c inbox watcher: %s" (Printexc.to_string exn)
         in
-        (* Continue watching after transient errors *)
         loop last_size)
   in
   loop (stat_size ())
@@ -161,7 +169,7 @@ let start_inbox_watcher ~broker_root ~session_id ~emit_notification =
 let emit_notification msg =
   write_message (C2c_mcp.channel_notification msg)
 
-let rec loop ~broker_root ~channel_capable =
+let rec loop ~broker_root ~channel_capable_ref =
   let open Lwt.Syntax in
   let* msg = read_message () in
   match msg with
@@ -171,13 +179,14 @@ let rec loop ~broker_root ~channel_capable =
       match json with
       | Error () ->
           let* () = write_message (jsonrpc_error ~id:`Null ~code:(-32700) ~message:"Parse error") in
-          loop ~broker_root ~channel_capable
+          loop ~broker_root ~channel_capable_ref
       | Ok request ->
-          let channel_capable = next_channel_capability ~current:channel_capable request in
+          let new_capable = next_channel_capability ~current:!channel_capable_ref request in
+          channel_capable_ref := new_capable;
           let* response = C2c_mcp.handle_request ~broker_root request in
           let* () = match response with None -> Lwt.return_unit | Some resp -> write_message resp in
           let* () =
-            match (auto_drain_channel_enabled (), channel_capable, session_id ()) with
+            match (auto_drain_channel_enabled (), new_capable, session_id ()) with
             | false, _, _ -> Lwt.return_unit
             | true, false, _ -> Lwt.return_unit
             | true, true, None -> Lwt.return_unit
@@ -192,7 +201,7 @@ let rec loop ~broker_root ~channel_capable =
                 in
                 emit queued
           in
-          loop ~broker_root ~channel_capable)
+          loop ~broker_root ~channel_capable_ref)
 
 let server_banner () =
   Version.banner ~role:"mcp-server" ~git_hash:C2c_mcp.server_git_hash
@@ -202,9 +211,11 @@ let () =
   let root = broker_root () in
   C2c_mcp.auto_register_startup ~broker_root:root;
   C2c_mcp.auto_join_rooms_startup ~broker_root:root;
-  (* Start background inbox watcher if channel delivery is enabled and we have a session_id *)
+  let channel_capable_ref = ref false in
   (match (channel_delivery_enabled (), session_id ()) with
    | true, Some sid ->
-       Lwt.async (fun () -> start_inbox_watcher ~broker_root:root ~session_id:sid ~emit_notification)
+       Lwt.async (fun () ->
+         start_inbox_watcher ~broker_root:root ~session_id:sid
+           ~emit_notification ~channel_capable_ref)
    | _, _ -> ());
-  Lwt_main.run (loop ~broker_root:root ~channel_capable:false)
+  Lwt_main.run (loop ~broker_root:root ~channel_capable_ref)
