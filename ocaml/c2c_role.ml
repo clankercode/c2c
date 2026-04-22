@@ -87,7 +87,7 @@ let parse_yaml_entries fm_lines =
           let key = String.sub line 0 colon_pos in
           let rest = String.trim (String.sub line (colon_pos + 1) (String.length line - colon_pos - 1)) in
           if rest = "" then
-            current_section := key
+            current_section := if !current_section = "" then key else !current_section ^ "." ^ key
           else
             let full_key = if !current_section = "" then key else !current_section ^ "." ^ key in
             if starts_with rest '[' then
