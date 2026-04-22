@@ -31,7 +31,8 @@
   Blocker: operator steering has no queue/spool path and cannot share the existing XML durability guarantees.
 - [ ] codex-headless Task 5: bridge stdin wiring and minimal console.
   Blocker: launcher does not reserve bridge-critical args or funnel operator input through the durable writer.
-- [ ] codex-headless Task 6: docs and regression coverage.
+- [x] codex-headless Task 6: docs and regression coverage. (commit 6842b6e — commands.md, client-delivery.md, overview.md updated; test_start_help_mentions_codex_headless passes)
   Blocker: public docs and quick tests do not describe or verify the unblocker headless path yet.
 - [ ] codex-headless Task 7: tmux smoke coverage.
   Blocker: there is no capability-gated live test for `c2c start codex-headless`, and current Codex binaries are expected to xfail.
+- [ ] when running c2c start claude ... from an existing session, -s does not seem to work (in such cases we should not be using it with --session-id, only --resume)
