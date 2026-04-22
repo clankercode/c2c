@@ -247,22 +247,28 @@ const C2CDelivery: Plugin = async (ctx) => {
     }
   }
 
-  /** Returns supervisor(s) to notify for this request. */
+  /** Returns supervisor(s) to notify for this request, excluding self. */
   const selectSupervisors = async (): Promise<string[]> => {
-    if (supervisorStrategy === "broadcast") return permissionSupervisors;
+    const myAlias = pluginState.c2c_alias;
+    const allSups = permissionSupervisors.filter(alias => alias !== myAlias);
+    if (allSups.length === 0) {
+      await log(`selectSupervisors: all supervisors filtered out (including self) — nothing to notify`);
+      return [];
+    }
+    if (supervisorStrategy === "broadcast") return allSups;
     if (supervisorStrategy === "round-robin") {
-      return [permissionSupervisors[supervisorIndex++ % permissionSupervisors.length]];
+      return [allSups[supervisorIndex++ % allSups.length]];
     }
     // first-alive: query broker liveness, pick first live+fresh supervisor
     const liveness = await querySupervisorLiveness();
-    const live = permissionSupervisors.filter(alias => {
+    const live = allSups.filter(alias => {
       const s = liveness.get(alias);
       return s && s.alive && s.lastSeenAge < staleThresholdS;
     });
     if (live.length > 0) return [live[0]];
     // Fallback: broadcast to all (none are live/fresh)
-    await log(`supervisor liveness: no live supervisor — broadcasting to all ${permissionSupervisors.length}`);
-    return permissionSupervisors;
+    await log(`supervisor liveness: no live supervisor — broadcasting to all ${allSups.length}`);
+    return allSups;
   };
   const permissionTimeoutMs: number = parseInt(
     process.env.C2C_PERMISSION_TIMEOUT_MS || "600000", 10
