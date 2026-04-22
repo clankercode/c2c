@@ -6169,10 +6169,7 @@ let agent_list_cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List all can
 let agent_delete_cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "delete" ~doc:"Delete a canonical role file.") agent_delete_term
 let agent_rename_cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "rename" ~doc:"Rename a canonical role file.") agent_rename_term
 
-let agent_group =
-  Cmdliner.Cmd.group ~default:agent_list_term
-    (Cmdliner.Cmd.info "agent" ~doc:"Manage canonical role files.")
-    [agent_new_cmd; agent_list_cmd; agent_delete_cmd; agent_rename_cmd]
+(* agent_group defined below, after agent_refine_cmd is in scope. *)
 
 (* --- subcommand: config ---------------------------------------------------- *)
 (* Per-repo c2c config at .c2c/config.toml. Minimal hand-rolled reader/writer —
@@ -6270,6 +6267,82 @@ let config_group =
   Cmdliner.Cmd.group ~default:config_show_term
     (Cmdliner.Cmd.info "config" ~doc:"Manage .c2c/config.toml — per-repo c2c configuration.")
     [config_show_cmd; config_generation_client_cmd]
+
+(* --- subcommand: agent refine (Phase 2 of the wizard) ---------------------- *)
+(* Launches the user's configured generation_client (claude|opencode|codex)
+   directly — NOT via `c2c start` — with a pre-seeded prompt combining the
+   canonical role-designer persona + the current role file. Interactive
+   human-agent refinement; execvp replaces this process entirely. *)
+
+let agent_refine_term =
+  let name_arg =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME"
+      ~doc:"Role name — reads .c2c/roles/<NAME>.md and refines it interactively.")
+  in
+  let+ name = name_arg in
+  let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
+  let role_file_path = Filename.concat roles_dir (name ^ ".md") in
+  if not (Sys.file_exists role_file_path) then begin
+    Printf.eprintf "error: role file not found: %s\n%!" role_file_path;
+    Printf.eprintf "  create it first with: c2c agent new %s\n%!" name;
+    exit 1
+  end;
+  let client =
+    match List.assoc_opt "generation_client" (config_read ()) with
+    | Some v -> v
+    | None ->
+      Printf.printf "note: generation_client not set in .c2c/config.toml; defaulting to opencode.\n";
+      Printf.printf "  set explicitly with: c2c config generation-client <claude|opencode|codex>\n%!";
+      "opencode"
+  in
+  let role_designer_path =
+    let p1 = Filename.concat (Sys.getcwd ()) ".c2c/roles/role-designer.md" in
+    let p2 = Filename.concat (Sys.getcwd ()) ".c2c/roles/builtins/role-designer.md" in
+    if Sys.file_exists p1 then p1
+    else if Sys.file_exists p2 then p2
+    else begin
+      Printf.eprintf "error: role-designer.md not found at %s or %s.\n%!" p1 p2;
+      exit 1
+    end
+  in
+  let read_all path =
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) @@ fun () ->
+      let n = in_channel_length ic in
+      let buf = Bytes.create n in
+      really_input ic buf 0 n;
+      Bytes.to_string buf
+  in
+  let role_designer_body = read_all role_designer_path in
+  let draft_body = read_all role_file_path in
+  let prompt = Printf.sprintf
+    "%s\n\n---\n\nWe are refining a role named `%s`. Here is the current draft at %s:\n\n---\n%s\n---\n\nInterview me about this agent and refine the role file in place. When I say \"done\", save it and exit.\n"
+    role_designer_body name role_file_path draft_body
+  in
+  let argv = match client with
+    | "claude" -> [| "claude"; "--append-system-prompt"; prompt |]
+    | "opencode" -> [| "opencode"; "run"; "-p"; prompt |]
+    | "codex" -> [| "codex"; "exec"; prompt |]
+    | other ->
+      Printf.eprintf "error: unknown generation_client '%s' (expected claude|opencode|codex)\n%!" other;
+      exit 1
+  in
+  Printf.printf "executing: %s (role=%s, file=%s)\n%!" argv.(0) name role_file_path;
+  try Unix.execvp argv.(0) argv with
+  | Unix.Unix_error (e, _, _) ->
+    Printf.eprintf "error: failed to exec %s: %s\n%!" argv.(0) (Unix.error_message e);
+    exit 1
+
+let agent_refine_cmd =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "refine"
+      ~doc:"Launch the configured generation_client to interactively refine an existing role file (Phase 2 of the agent wizard).")
+    agent_refine_term
+
+let agent_group =
+  Cmdliner.Cmd.group ~default:agent_list_term
+    (Cmdliner.Cmd.info "agent" ~doc:"Manage canonical role files.")
+    [agent_new_cmd; agent_list_cmd; agent_delete_cmd; agent_rename_cmd; agent_refine_cmd]
 
 (* --- subcommand: roles ----------------------------------------------------- *)
 
@@ -8119,6 +8192,9 @@ let supervisor_group =
 
 let () =
   sanitize_help_env ();
+  for i = 0 to Array.length Sys.argv - 1 do
+    if Sys.argv.(i) = "-h" then Sys.argv.(i) <- "--help"
+  done;
   exit
     (Cmdliner.Cmd.eval
        (Cmdliner.Cmd.group ~default:default_term
