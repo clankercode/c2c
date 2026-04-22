@@ -6,6 +6,7 @@ type t = {
   model : string option;
   c2c_alias : string option;
   c2c_auto_join_rooms : string list;
+  include_ : string list;
   opencode : (string * string) list;
   claude : (string * string) list;
   codex : (string * string) list;
@@ -19,6 +20,7 @@ let empty = {
   model = None;
   c2c_alias = None;
   c2c_auto_join_rooms = [];
+  include_ = [];
   opencode = [];
   claude = [];
   codex = [];
@@ -90,8 +92,8 @@ let parse_yaml_entries fm_lines =
             let full_key = if !current_section = "" then key else !current_section ^ "." ^ key in
             if starts_with rest '[' then
               (* inline flow sequence: parse immediately and store *)
-              let items = parse_list rest in
-              entries := (full_key, "[" ^ String.concat ", " items ^ "]") :: !entries
+              let vals = parse_list rest in
+              entries := (full_key, "[" ^ String.concat ", " vals ^ "]") :: !entries
             else
               entries := (full_key, trim_quotes rest) :: !entries
   ) fm_lines;
@@ -100,7 +102,26 @@ let parse_yaml_entries fm_lines =
 
 let assoc_find k alist = try Some (List.assoc k alist) with Not_found -> None
 
-let parse_string content =
+let load_snippet snippets_dir name =
+  let path = Filename.concat snippets_dir (name ^ ".md") in
+  if Sys.file_exists path then
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in ic)
+      (fun () -> really_input_string ic (in_channel_length ic))
+  else
+    ""
+
+let resolve_includes t snippets_dir =
+  if t.include_ = [] then t
+  else
+    let snippet_bodies = List.map (load_snippet snippets_dir) t.include_ in
+    let combined_snippets = String.concat "\n\n" (List.filter ((<>) "") snippet_bodies) in
+    let new_body = if combined_snippets = "" then t.body
+                   else if t.body = "" then combined_snippets
+                   else combined_snippets ^ "\n\n" ^ t.body in
+    { t with body = new_body }
+
+let parse_string ?(snippets_dir = ".c2c/snippets") content =
   let fm_lines, body_lines = split_frontmatter content in
   let entries = parse_yaml_entries fm_lines in
   let find k = assoc_find k entries in
@@ -109,26 +130,35 @@ let parse_string content =
                                String.sub k 0 (String.length sec + 1) = sec ^ ".") entries
     |> List.map (fun (k, v) -> (String.sub k (String.length sec + 1) (String.length k - String.length sec - 1), v))
   in
-  {
+  let t = {
     description = (match find "description" with Some v -> v | None -> "");
     role = (match find "role" with Some v -> v | None -> "subagent");
     model = find "model";
     c2c_alias = find "c2c.alias";
     c2c_auto_join_rooms =
       (match find "c2c.auto_join_rooms" with Some v -> parse_list v | None -> []);
+    include_ = (match find "include" with Some v -> parse_list v | None -> []);
     opencode = find_section "opencode";
     claude = find_section "claude";
     codex = find_section "codex";
     kimi = find_section "kimi";
     body = String.concat "\n" body_lines |> String.trim;
-  }
+  } in
+  resolve_includes t snippets_dir
 
 let parse_file path =
   let ic = open_in path in
   let content = Fun.protect ~finally:(fun () -> close_in ic)
     (fun () -> really_input_string ic (in_channel_length ic))
   in
-  parse_string content
+  let role_dir = Filename.dirname path in
+  let snippets_dir =
+    if Filename.basename role_dir = "roles" then
+      Filename.concat (Filename.dirname role_dir) "snippets"
+    else
+      Filename.concat role_dir ".c2c/snippets"
+  in
+  parse_string ~snippets_dir content
 
 (* Renderers *)
 

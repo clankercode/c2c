@@ -4,6 +4,7 @@ type t = {
   model : string option;
   c2c_alias : string option;
   c2c_auto_join_rooms : string list;
+  include_ : string list;
   opencode : (string * string) list;
   claude : (string * string) list;
   codex : (string * string) list;
@@ -12,7 +13,7 @@ type t = {
 }
 
 val empty : t
-val parse_string : string -> t
+val parse_string : ?snippets_dir:string -> string -> t
 val parse_file : string -> t
 
 module OpenCode_renderer : sig
