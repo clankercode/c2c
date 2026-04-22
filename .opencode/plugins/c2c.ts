@@ -946,9 +946,9 @@ const C2CDelivery: Plugin = async (ctx) => {
         const tokens = info.tokens ?? {};
         const prev = pluginState.context_usage;
         const next = {
-          tokens_input: tokens.input ?? 0,
-          tokens_output: tokens.output ?? 0,
-          tokens_cache_read: tokens.cache?.read ?? 0,
+          tokens_input: prev.tokens_input + (tokens.input ?? 0),
+          tokens_output: prev.tokens_output + (tokens.output ?? 0),
+          tokens_cache_read: prev.tokens_cache_read + (tokens.cache?.read ?? 0),
           cost_usd: prev.cost_usd + (typeof info.cost === "number" ? info.cost : 0),
           completed_turns: prev.completed_turns + 1,
         };
