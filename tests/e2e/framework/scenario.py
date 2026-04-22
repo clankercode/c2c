@@ -159,8 +159,12 @@ class Scenario:
 
     def send_dm(self, from_agent: StartedAgent | None, to_agent: StartedAgent, text: str) -> None:
         # Deterministic controller-side broker injection for terminal E2E tests.
+        command = ["c2c", "send"]
+        if from_agent is not None:
+            command.extend(["--from", from_agent.name])
+        command.extend([to_agent.name, text])
         subprocess.run(
-            ["c2c", "send", to_agent.name, text],
+            command,
             cwd=self.workdir,
             check=True,
             capture_output=True,

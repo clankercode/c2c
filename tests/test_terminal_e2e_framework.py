@@ -323,7 +323,7 @@ def test_scenario_capture_returns_text_and_writes_artifact(tmp_path: Path) -> No
     assert artifact_path.read_text(encoding="utf-8") == "READY\n"
 
 
-def test_scenario_send_dm_invokes_c2c_send_and_records_timeline(
+def test_scenario_send_dm_invokes_c2c_send_with_from_agent_and_records_timeline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     scenario = Scenario(
@@ -346,12 +346,44 @@ def test_scenario_send_dm_invokes_c2c_send_and_records_timeline(
 
     scenario.send_dm(sender, recipient, "hello there")
 
-    assert calls == [(["c2c", "send", "dummy-b", "hello there"], scenario.workdir)]
+    assert calls == [
+        (["c2c", "send", "--from", "dummy-a", "dummy-b", "hello there"], scenario.workdir)
+    ]
     timeline = (scenario.artifacts.run_dir / "timeline.jsonl").read_text(encoding="utf-8")
     assert '"event": "dm.sent"' in timeline
     assert '"from_agent": "dummy-a"' in timeline
     assert '"to_agent": "dummy-b"' in timeline
     assert '"text": "hello there"' in timeline
+
+
+def test_scenario_send_dm_preserves_controller_side_send_when_from_agent_is_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scenario = Scenario(
+        test_name="test_demo",
+        workdir=tmp_path / "work",
+        artifacts=ArtifactCollector(tmp_path / "artifacts", "test_demo"),
+        drivers={"dummy": DummyDriver()},
+        adapters={"dummy": DummyAdapter()},
+    )
+    scenario.artifacts.start_run()
+    recipient = scenario.start_agent("dummy", name="dummy-b")
+    calls: list[tuple[list[str], Path]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> mock.Mock:
+        calls.append((cmd, kwargs["cwd"]))
+        return mock.Mock(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr("tests.e2e.framework.scenario.subprocess.run", fake_run)
+
+    scenario.send_dm(None, recipient, "controller message")
+
+    assert calls == [(["c2c", "send", "dummy-b", "controller message"], scenario.workdir)]
+    timeline = (scenario.artifacts.run_dir / "timeline.jsonl").read_text(encoding="utf-8")
+    assert '"event": "dm.sent"' in timeline
+    assert '"from_agent": null' in timeline
+    assert '"to_agent": "dummy-b"' in timeline
+    assert '"text": "controller message"' in timeline
 
 
 def test_scenario_broker_root_resolves_git_common_dir_once(
