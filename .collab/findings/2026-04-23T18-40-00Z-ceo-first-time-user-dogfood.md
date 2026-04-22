@@ -282,14 +282,14 @@ generation-client [CLIENT]
 | B2 | BLOCKER | ✅ FIXED `0158416` | `c2c --help` has no Getting Started path |
 | B3 | BLOCKER | ✅ FIXED `1b032df` | `c2c` pty-inject warning misleading (only Codex needs cap) |
 | B4 | BLOCKER | ⏳ DEFERRED | `c2c start` CLIENT argument has no guidance |
-| A1 | ANNOYANCE | ⏳ PENDING | `c2c list` shows `???` with no explanation |
+| A1 | ANNOYANCE | ✅ FIXED `e31c358` | `c2c list` shows `???` with no explanation |
 | A2 | ANNOYANCE | ⏳ PENDING | `c2c rooms visibility` doesn't document valid values |
 | A3 | ANNOYANCE | ⏳ PENDING | `c2c install` TUI has no preview/dry-run |
 | A4 | ANNOYANCE | ⏳ PENDING | `c2c roles --agent` is unexplained |
 | A5 | ANNOYANCE | ⏳ PENDING | `c2c relay` serve/connect/setup not contextualized |
-| A6 | ANNOYANCE | ⏳ PENDING | TIER system in `--help` is unexplained |
-| A7 | ANNOYANCE | ⏳ PENDING | `c2c doctor` "stale deploy" verdict is self-contradictory |
-| A8 | ANNOYANCE | ⏳ PENDING | `c2c` (no args) "configured" status unexplained |
+| A6 | ANNOYANCE | ✅ FIXED `151e328` | TIER system in `--help` is unexplained |
+| A7 | ANNOYANCE | ✅ FIXED `63e3ace` | `c2c doctor` "stale deploy" verdict is self-contradictory |
+| A8 | ANNOYANCE | ✅ FIXED `4ca4da5` | `c2c` (no args) "configured" status unexplained |
 | P1 | POLISH | ⏳ PENDING | Exit codes 123/124/125 unexplained |
 | P2 | POLISH | ⏳ PENDING | `generation-client` purpose vague |
 | P3 | POLISH | `--mcp-server` flag unexplained |
