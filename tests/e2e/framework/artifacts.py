@@ -12,6 +12,8 @@ class ArtifactCollector:
         self.run_dir: Path | None = None
 
     def start_run(self) -> Path:
+        if self.run_dir is not None:
+            raise RuntimeError("start_run() may only be called once per collector")
         run_id = time.strftime("%Y%m%d-%H%M%S")
         base_dir = self.root / self.test_name
         suffix = 1

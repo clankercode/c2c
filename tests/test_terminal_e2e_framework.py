@@ -22,9 +22,10 @@ def test_artifact_collector_creates_distinct_run_dir_for_same_second_retry(
 
     monkeypatch.setattr(artifacts_module.time, "strftime", lambda _fmt: "20260422-123456")
 
-    collector = ArtifactCollector(root=tmp_path, test_name="test_demo")
-    first = collector.start_run()
-    second = collector.start_run()
+    first_collector = ArtifactCollector(root=tmp_path, test_name="test_demo")
+    second_collector = ArtifactCollector(root=tmp_path, test_name="test_demo")
+    first = first_collector.start_run()
+    second = second_collector.start_run()
 
     assert first != second
     assert first.exists()
@@ -125,3 +126,15 @@ def test_artifact_collector_requires_start_run_before_appending(tmp_path: Path) 
 
     with pytest.raises(RuntimeError, match="start_run\\(\\) must be called first"):
         collector.append_event("ready", {})
+
+
+def test_framework_package_exports_smoke() -> None:
+    from tests.e2e.framework import ArtifactCollector as ExportedCollector
+    from tests.e2e.framework import TerminalCapture as ExportedCapture
+    from tests.e2e.framework import TerminalHandle as ExportedHandle
+    from tests.e2e.framework import TerminalDriver as ExportedDriver
+
+    assert ExportedCollector is ArtifactCollector
+    assert ExportedHandle.__name__ == "TerminalHandle"
+    assert ExportedCapture.__name__ == "TerminalCapture"
+    assert ExportedDriver.__name__ == "TerminalDriver"
