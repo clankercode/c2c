@@ -213,14 +213,22 @@ module SqliteRelay = struct
   let get_lease_row_fields row =
     match row with
     | [alias; node_id; session_id; client_type; registered_at; last_seen; ttl; identity_pk] ->
+      let alias = match alias with Some s -> s | None -> "" in
+      let node_id = match node_id with Some s -> s | None -> "" in
+      let session_id = match session_id with Some s -> s | None -> "" in
+      let client_type = match client_type with Some s -> s | None -> "unknown" in
+      let registered_at = match registered_at with Some s -> float_of_string s | None -> 0.0 in
+      let last_seen = match last_seen with Some s -> float_of_string s | None -> 0.0 in
+      let ttl = match ttl with Some s -> float_of_string s | None -> 300.0 in
+      let identity_pk = match identity_pk with Some s -> s | None -> "" in
       (alias,
        Lease.make
          ~node_id
          ~session_id
          ~alias
-         ~client_type:(match client_type with Some s -> s | None -> "unknown")
-         ~ttl:(float_of_string ttl)
-         ~identity_pk:(match identity_pk with Some s -> s | None -> "")
+         ~client_type
+         ~ttl
+         ~identity_pk
          ())
     | _ -> failwith "Invalid lease row"
 
