@@ -397,7 +397,7 @@ export function App() {
               setSelectedPeer(target);
               setSelectedRoom(null);
               setUnreadPeers(prev => { const s = new Set(prev); s.delete(target); return s; });
-              loadPeerHistory(target, myAlias, 100).then(hist => setFocusHistoryEvents(hist));
+              loadPeerHistory(target, mySessionIdRef.current, myAlias, 100).then(hist => setFocusHistoryEvents(hist));
             }
           }}
         />
