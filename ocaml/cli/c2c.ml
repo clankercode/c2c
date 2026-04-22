@@ -5,6 +5,7 @@
 let ( // ) = Filename.concat
 open Cmdliner.Term.Syntax
 open C2c_mcp
+module Relay = Relay
 
 (* --- Command safety tiers ----------------------------------------------- *)
 
@@ -1231,8 +1232,8 @@ let check_supervisor_config () =
 let check_relay_http () =
   let url = match Sys.getenv_opt "C2C_RELAY_URL" with Some v when v <> "" -> v | _ -> "https://relay.c2c.im" in
   try
-    let client = C2c_mcp.Relay.Relay_client.make ~timeout:5.0 url in
-    let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.health client) in
+    let client = Relay.Relay_client.make ~timeout:5.0 url in
+    let result = Lwt_main.run (Relay.Relay_client.health client) in
     let version = Yojson.Safe.Util.(result |> member "version" |> to_string_option |> Option.value ~default:"?") in
     let git_hash = Yojson.Safe.Util.(result |> member "git_hash" |> to_string_option |> Option.value ~default:"?") in
     let auth_mode = Yojson.Safe.Util.(result |> member "auth_mode" |> to_string_option |> Option.value ~default:"unknown") in
@@ -3524,8 +3525,8 @@ let relay_status_cmd =
       Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
       exit 1
   | Some url ->
-      let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
-      let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.health client) in
+      let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+      let result = Lwt_main.run (Relay.Relay_client.health client) in
       print_endline (Yojson.Safe.pretty_to_string result);
       (match result with
        | `Assoc fields ->
@@ -3550,16 +3551,16 @@ let relay_list_cmd =
       Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
       exit 1
   | Some url ->
-      let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+      let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
       let result = (match Relay_identity.load () with
         | Ok id when not dead ->
             (* /list (no include_dead) is a peer route: requires Ed25519 in prod mode *)
             let alias = Option.value ~default:"anon" (env_auto_alias ()) in
             let auth = Relay_signed_ops.sign_request id ~alias ~meth:"GET" ~path:"/list" ~body_str:"" () in
-            Lwt_main.run (C2c_mcp.Relay.Relay_client.list_peers_signed client ~auth_header:auth ())
+            Lwt_main.run (Relay.Relay_client.list_peers_signed client ~auth_header:auth ())
         | _ ->
             (* /list?include_dead=1 is an admin route (Bearer only); also fallback when no identity *)
-            Lwt_main.run (C2c_mcp.Relay.Relay_client.list_peers client ~include_dead:dead ())) in
+            Lwt_main.run (Relay.Relay_client.list_peers client ~include_dead:dead ())) in
       print_endline (Yojson.Safe.pretty_to_string result);
       (match result with
        | `Assoc fields ->
@@ -3597,8 +3598,8 @@ let relay_rooms_cmd =
   and+ words = words in
   match subcmd with
   | "join" | "leave" ->
-      let sign_ctx = if subcmd = "join" then C2c_mcp.Relay.room_join_sign_ctx
-                     else C2c_mcp.Relay.room_leave_sign_ctx in
+      let sign_ctx = if subcmd = "join" then Relay.room_join_sign_ctx
+                     else Relay.room_leave_sign_ctx in
       (match resolve_relay_url relay_url, room, alias with
        | None, _, _ ->
            Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
@@ -3610,20 +3611,20 @@ let relay_rooms_cmd =
            Printf.eprintf "error: --alias required for 'rooms %s'.\n%!" subcmd;
            exit 1
        | Some url, Some room_id, Some alias ->
-           let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+           let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
            let result =
              match Relay_identity.load () with
              | Ok id ->
                  let p = Relay_signed_ops.sign_room_op id ~ctx:sign_ctx ~room_id ~alias in
-                 let fn = if subcmd = "join" then C2c_mcp.Relay.Relay_client.join_room_signed
-                          else C2c_mcp.Relay.Relay_client.leave_room_signed in
+                 let fn = if subcmd = "join" then Relay.Relay_client.join_room_signed
+                          else Relay.Relay_client.leave_room_signed in
                  Lwt_main.run (fn client ~alias ~room_id
                    ~identity_pk:p.Relay_signed_ops.identity_pk_b64
                    ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
                    ~sig_:p.Relay_signed_ops.sig_b64)
              | Error _ ->
-                 let fn = if subcmd = "join" then C2c_mcp.Relay.Relay_client.join_room
-                          else C2c_mcp.Relay.Relay_client.leave_room in
+                 let fn = if subcmd = "join" then Relay.Relay_client.join_room
+                          else Relay.Relay_client.leave_room in
                  Lwt_main.run (fn client ~alias ~room_id)
            in
            print_endline (Yojson.Safe.pretty_to_string result);
@@ -3647,7 +3648,7 @@ let relay_rooms_cmd =
            exit 1
        | Some url, Some room_id, Some from_alias, ws ->
            let content = String.concat " " ws in
-           let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+           let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
            (* L4/4: sign the send with the local identity when available.
               Falls back to legacy unsigned path if no identity is on disk
               (spec soft-rollout). *)
@@ -3659,11 +3660,11 @@ let relay_rooms_cmd =
                      ~room_id ~from_alias ~content
                  in
                  Lwt_main.run
-                   (C2c_mcp.Relay.Relay_client.send_room_signed client
+                   (Relay.Relay_client.send_room_signed client
                       ~from_alias ~room_id ~content ~envelope ())
              | Error _ ->
                  Lwt_main.run
-                   (C2c_mcp.Relay.Relay_client.send_room client
+                   (Relay.Relay_client.send_room client
                       ~from_alias ~room_id ~content ())
            in
            print_endline (Yojson.Safe.pretty_to_string result);
@@ -3680,8 +3681,8 @@ let relay_rooms_cmd =
            Printf.eprintf "error: --room required for 'rooms history'.\n%!";
            exit 1
        | Some url, Some room_id ->
-           let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
-           let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.room_history client ~room_id ~limit ()) in
+           let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+           let result = Lwt_main.run (Relay.Relay_client.room_history client ~room_id ~limit ()) in
            (* L4/3 client verify: annotate each history entry with sig_ok. *)
            let annotate entry =
              match entry with
@@ -3723,8 +3724,8 @@ let relay_rooms_cmd =
            Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
            exit 1
        | Some url ->
-           let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
-           let result = Lwt_main.run (C2c_mcp.Relay.Relay_client.list_rooms client) in
+           let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+           let result = Lwt_main.run (Relay.Relay_client.list_rooms client) in
            print_endline (Yojson.Safe.pretty_to_string result);
            (match result with
             | `Assoc fields ->
@@ -3759,20 +3760,20 @@ let relay_register_cmd =
       Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
       exit 1
   | Some url ->
-      let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+      let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
       let node_id = Printf.sprintf "cli-%s" alias in
       let session_id = node_id in
       let result = (match Relay_identity.load () with
         | Ok id ->
             let p = Relay_signed_ops.sign_register id ~alias ~relay_url:url in
-            Lwt_main.run (C2c_mcp.Relay.Relay_client.register_signed client
+            Lwt_main.run (Relay.Relay_client.register_signed client
               ~node_id ~session_id ~alias ~client_type:"cli"
               ~identity_pk_b64:p.Relay_signed_ops.identity_pk_b64
               ~sig_b64:p.Relay_signed_ops.sig_b64
               ~nonce:p.Relay_signed_ops.nonce
               ~ts:p.Relay_signed_ops.ts ())
         | Error _ ->
-            Lwt_main.run (C2c_mcp.Relay.Relay_client.register client
+            Lwt_main.run (Relay.Relay_client.register client
               ~node_id ~session_id ~alias ~client_type:"cli" ~identity_pk:"" ()))
       in
       print_endline (Yojson.Safe.pretty_to_string result);
@@ -3805,7 +3806,7 @@ let relay_dm_cmd =
       Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
       exit 1
   | Some url ->
-      let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+      let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
       (match subcmd with
        | "send" ->
            (match words with
@@ -3829,10 +3830,10 @@ let relay_dm_cmd =
                   | Ok id ->
                       let auth = Relay_signed_ops.sign_request id ~alias:from_alias
                         ~meth:"POST" ~path:"/send" ~body_str () in
-                      Lwt_main.run (C2c_mcp.Relay.Relay_client.send_signed client
+                      Lwt_main.run (Relay.Relay_client.send_signed client
                         ~from_alias ~to_alias ~content ~auth_header:auth ())
                   | Error _ ->
-                      Lwt_main.run (C2c_mcp.Relay.Relay_client.send client
+                      Lwt_main.run (Relay.Relay_client.send client
                         ~from_alias ~to_alias ~content ())) in
                 print_endline (Yojson.Safe.pretty_to_string result);
                 (match result with
@@ -3855,10 +3856,10 @@ let relay_dm_cmd =
              | Ok id ->
                  let auth = Relay_signed_ops.sign_request id ~alias:from_alias
                    ~meth:"POST" ~path:"/poll_inbox" ~body_str () in
-                 Lwt_main.run (C2c_mcp.Relay.Relay_client.poll_inbox_signed client
+                 Lwt_main.run (Relay.Relay_client.poll_inbox_signed client
                    ~node_id ~session_id:node_id ~auth_header:auth)
              | Error _ ->
-                 Lwt_main.run (C2c_mcp.Relay.Relay_client.poll_inbox client
+                 Lwt_main.run (Relay.Relay_client.poll_inbox client
                    ~node_id ~session_id:node_id)) in
            print_endline (Yojson.Safe.pretty_to_string result);
            (match result with
@@ -3895,10 +3896,10 @@ let relay_gc_cmd =
       Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
       exit 1
   | Some url ->
-      let client = C2c_mcp.Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+      let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
       let run_once () =
         let open Lwt.Infix in
-        C2c_mcp.Relay.Relay_client.gc client >>= fun result ->
+        Relay.Relay_client.gc client >>= fun result ->
         if verbose || once then print_endline (Yojson.Safe.pretty_to_string result);
         let ok = match result with
           | `Assoc fields ->

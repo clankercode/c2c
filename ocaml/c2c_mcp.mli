@@ -42,8 +42,6 @@ type pending_permission =
   ; expires_at : float
   }
 
-module C2c_start : module type of C2c_start
-
 module Broker : sig
   type t
   val create : root:string -> t
@@ -127,7 +125,6 @@ module Broker : sig
 end
 
 (* Native OCaml relay modules *)
-module Relay : module type of Relay
 
 val channel_notification : message -> Yojson.Safe.t
 val auto_register_startup : broker_root:string -> unit
