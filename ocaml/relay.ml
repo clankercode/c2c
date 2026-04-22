@@ -159,9 +159,9 @@ end = struct
   let identity_pk t = t.identity_pk
 end
 
-(* --- InMemoryRelay --- *)
+(* --- RELAY signature — satisfied by both InMemoryRelay and SqliteRelay --- *)
 
-module InMemoryRelay : sig
+module type RELAY = sig
   type t
   val create : ?dedup_window:int -> ?persist_dir:string -> unit -> t
   val register : t -> node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> unit -> (string * RegistrationLease.t)
@@ -194,7 +194,11 @@ module InMemoryRelay : sig
   val invite_to_room : t -> room_id:string -> identity_pk_b64:string -> unit
   val uninvite_from_room : t -> room_id:string -> identity_pk_b64:string -> unit
   val is_room_member_alias : t -> room_id:string -> alias:string -> bool
-end = struct
+end
+
+(* --- InMemoryRelay --- *)
+
+module InMemoryRelay : RELAY = struct
   type t = {
     mutex : Mutex.t;
     leases : (string, RegistrationLease.t) Hashtbl.t;
@@ -769,11 +773,11 @@ end = struct
     )
 end
 
-(* --- Relay_server HTTP layer --- *)
+(* --- Relay_server HTTP layer (functor over RELAY backend) --- *)
 
-module Relay_server : sig
+module Relay_server(R : RELAY) : sig
   val make_callback :
-    InMemoryRelay.t ->
+    R.t ->
     string option ->
     Conduit_lwt_unix.flow ->
     Cohttp.Request.t ->
@@ -794,12 +798,12 @@ module Relay_server : sig
   val start_server :
     host:string ->
     port:int ->
+    relay:R.t ->
     token:string option ->
     ?verbose:bool ->
     ?gc_interval:float ->
     ?tls:[ `Cert_key of string * string ] ->
     ?allowlist:(string * string) list ->
-    ?persist_dir:string ->
     unit ->
     unit Lwt.t
 end = struct
@@ -1158,15 +1162,15 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
     ])
 
   let handle_list relay ~include_dead =
-    let peers = InMemoryRelay.list_peers relay ~include_dead |> List.map RegistrationLease.to_json in
+    let peers = R.list_peers relay ~include_dead |> List.map RegistrationLease.to_json in
     respond_ok (json_ok [ ("peers", `List peers) ])
 
   let handle_dead_letter relay =
-    let dl = InMemoryRelay.dead_letter relay in
+    let dl = R.dead_letter relay in
     respond_ok (json_ok [ ("dead_letter", `List dl) ])
 
   let handle_list_rooms relay =
-    let rooms = InMemoryRelay.list_rooms relay in
+    let rooms = R.list_rooms relay in
     respond_ok (json_ok [ ("rooms", `List rooms) ])
 
   let handle_admin_unbind relay body =
@@ -1174,12 +1178,12 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
     if alias = "" then
       respond_bad_request (json_error_str err_bad_request "alias is required")
     else
-      let removed = InMemoryRelay.unbind_alias relay ~alias in
+      let removed = R.unbind_alias relay ~alias in
       Printf.printf "audit: admin_unbind alias=%s removed=%b\n%!" alias removed;
       respond_ok (`Assoc [("ok", `Bool true); ("removed", `Bool removed); ("alias", `String alias)])
 
   let handle_gc relay =
-    match InMemoryRelay.gc relay with
+    match R.gc relay with
     | `Ok (expired, pruned) -> respond_ok (json_of_gc_result (expired, pruned))
 
   (* Parse an RFC 3339 / ISO 8601 UTC timestamp like "2026-04-21T00:05:30Z"
@@ -1243,7 +1247,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
                   (Printf.sprintf "timestamp skew %.1fs outside [-%.0f, +%.0f]"
                      skew register_ts_past_window register_ts_future_window))
               else
-                match InMemoryRelay.check_register_nonce relay ~nonce:nonce_b64 ~ts:ts_client with
+                match R.check_register_nonce relay ~nonce:nonce_b64 ~ts:ts_client with
                 | Error code ->
                   respond_bad_request (json_error_str code "nonce already seen within TTL")
                 | Ok () ->
@@ -1257,14 +1261,14 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
                       "Ed25519 signature does not verify against identity_pk")
                   else
                     let result =
-                      InMemoryRelay.register relay ~node_id ~session_id ~alias
+                      R.register relay ~node_id ~session_id ~alias
                         ~client_type ~ttl ~identity_pk ()
                     in
                     respond_ok (json_of_register_result result)
       else
         (* Legacy path — no identity_pk supplied, behaves exactly as before. *)
         let result =
-          InMemoryRelay.register relay ~node_id ~session_id ~alias ~client_type ~ttl ()
+          R.register relay ~node_id ~session_id ~alias ~client_type ~ttl ()
         in
         respond_ok (json_of_register_result result)
 
@@ -1274,7 +1278,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
     if node_id = "" || session_id = "" then
       respond_bad_request (json_error_str err_bad_request "node_id and session_id are required")
     else
-      let result = InMemoryRelay.heartbeat relay ~node_id ~session_id in
+      let result = R.heartbeat relay ~node_id ~session_id in
       respond_ok (json_of_heartbeat_result result)
 
   let handle_send relay body =
@@ -1285,7 +1289,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
       respond_bad_request (json_error_str err_bad_request "from_alias, to_alias, and content are required")
     else
       let message_id = get_opt_string body "message_id" in
-      let result = InMemoryRelay.send relay ~from_alias ~to_alias ~content ~message_id in
+      let result = R.send relay ~from_alias ~to_alias ~content ~message_id in
       respond_ok (json_of_send_result result)
 
   let handle_send_all relay body =
@@ -1295,7 +1299,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
       respond_bad_request (json_error_str err_bad_request "from_alias and content are required")
     else
       let message_id = get_opt_string body "message_id" in
-      match InMemoryRelay.send_all relay ~from_alias ~content ~message_id with
+      match R.send_all relay ~from_alias ~content ~message_id with
       | `Ok (ts, delivered, skipped) -> respond_ok (json_of_send_all_result (ts, delivered, skipped))
 
   let handle_poll_inbox relay body =
@@ -1304,7 +1308,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
     if node_id = "" || session_id = "" then
       respond_bad_request (json_error_str err_bad_request "node_id and session_id are required")
     else
-      let msgs = InMemoryRelay.poll_inbox relay ~node_id ~session_id in
+      let msgs = R.poll_inbox relay ~node_id ~session_id in
       respond_ok (json_ok [ ("messages", `List msgs) ])
 
   let handle_peek_inbox relay body =
@@ -1313,7 +1317,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
     if node_id = "" || session_id = "" then
       respond_bad_request (json_error_str err_bad_request "node_id and session_id are required")
     else
-      let msgs = InMemoryRelay.peek_inbox relay ~node_id ~session_id in
+      let msgs = R.peek_inbox relay ~node_id ~session_id in
       respond_ok (json_ok [ ("messages", `List msgs) ])
 
   (* Layer 4 slice 1: verify optional signed proof on room join/leave.
@@ -1359,11 +1363,11 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
               Error (relay_err_timestamp_out_of_window,
                 Printf.sprintf "ts skew %.1fs outside window" skew)
             else
-              match InMemoryRelay.check_register_nonce relay ~nonce:nonce_b64 ~ts:ts_client with
+              match R.check_register_nonce relay ~nonce:nonce_b64 ~ts:ts_client with
               | Error code -> Error (code, "nonce already seen within TTL")
               | Ok () ->
                 (* Bind identity_pk to alias: must match any existing binding. *)
-                (match InMemoryRelay.identity_pk_of relay ~alias with
+                (match R.identity_pk_of relay ~alias with
                  | Some bound when bound <> identity_pk ->
                    Error (relay_err_alias_identity_mismatch,
                      "identity_pk does not match registered binding")
@@ -1393,17 +1397,17 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
           respond_unauthorized (json_error_str code msg)
       | Ok () ->
         (* L4/5 ACL: if room is invite-only, require identity_pk ∈ invited. *)
-        let visibility = InMemoryRelay.room_visibility_of relay ~room_id in
+        let visibility = R.room_visibility_of relay ~room_id in
         let pk_b64 = get_opt_string body "identity_pk" |> Option.value ~default:"" in
         let admitted =
           visibility <> "invite"
-          || (pk_b64 <> "" && InMemoryRelay.is_invited relay ~room_id ~identity_pk_b64:pk_b64)
+          || (pk_b64 <> "" && R.is_invited relay ~room_id ~identity_pk_b64:pk_b64)
         in
         if not admitted then
           respond_unauthorized (json_error_str relay_err_not_invited
             (Printf.sprintf "room %S is invite-only and caller is not on the list" room_id))
         else
-        let result = InMemoryRelay.join_room relay ~alias ~room_id in
+        let result = R.join_room relay ~alias ~room_id in
         respond_ok (match result with
           | `Ok -> json_of_room_join_result `Ok
           | `Error (code, msg) -> json_error code msg [])
@@ -1429,11 +1433,11 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
         else
           respond_unauthorized (json_error_str code msg)
       | Ok () ->
-        if not (InMemoryRelay.is_room_member_alias relay ~room_id ~alias) then
+        if not (R.is_room_member_alias relay ~room_id ~alias) then
           respond_unauthorized (json_error_str relay_err_not_a_member
             (Printf.sprintf "alias %S is not a member of room %S" alias room_id))
         else begin
-          InMemoryRelay.set_room_visibility relay ~room_id ~visibility;
+          R.set_room_visibility relay ~room_id ~visibility;
           respond_ok (`Assoc [
             ("ok", `Bool true);
             ("room_id", `String room_id);
@@ -1457,16 +1461,16 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
         else
           respond_unauthorized (json_error_str code msg)
       | Ok () ->
-        if not (InMemoryRelay.is_room_member_alias relay ~room_id ~alias) then
+        if not (R.is_room_member_alias relay ~room_id ~alias) then
           respond_unauthorized (json_error_str relay_err_not_a_member
             (Printf.sprintf "alias %S is not a member of room %S" alias room_id))
         else begin
           (match op with
            | `Invite ->
-             InMemoryRelay.invite_to_room relay ~room_id ~identity_pk_b64:target_pk
+             R.invite_to_room relay ~room_id ~identity_pk_b64:target_pk
            | `Uninvite ->
-             InMemoryRelay.uninvite_from_room relay ~room_id ~identity_pk_b64:target_pk);
-          let invites = InMemoryRelay.room_invites_of relay ~room_id in
+             R.uninvite_from_room relay ~room_id ~identity_pk_b64:target_pk);
+          let invites = R.room_invites_of relay ~room_id in
           respond_ok (`Assoc [
             ("ok", `Bool true);
             ("room_id", `String room_id);
@@ -1494,7 +1498,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
         else
           respond_unauthorized (json_error_str code msg)
       | Ok () ->
-        let result = InMemoryRelay.leave_room relay ~alias ~room_id in
+        let result = R.leave_room relay ~alias ~room_id in
         respond_ok (json_of_room_join_result result)
 
   (* Layer 4 slice 2: verify optional signed envelope on /send_room.
@@ -1553,10 +1557,10 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
                     Error (relay_err_timestamp_out_of_window,
                       Printf.sprintf "ts skew %.1fs outside window" skew)
                   else
-                    match InMemoryRelay.check_register_nonce relay ~nonce ~ts:ts_client with
+                    match R.check_register_nonce relay ~nonce ~ts:ts_client with
                     | Error code -> Error (code, "nonce already seen within TTL")
                     | Ok () ->
-                      (match InMemoryRelay.identity_pk_of relay ~alias:from_alias with
+                      (match R.identity_pk_of relay ~alias:from_alias with
                        | Some bound when bound <> sender_pk ->
                          Error (relay_err_alias_identity_mismatch,
                            "sender_pk does not match registered binding")
@@ -1597,7 +1601,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
              | Some e -> Some e | None -> None)
           | _ -> None
         in
-        match InMemoryRelay.send_room relay ~from_alias ~room_id ~content
+        match R.send_room relay ~from_alias ~room_id ~content
                 ~message_id ?envelope () with
         | `Ok (ts, delivered, skipped) -> respond_ok (json_of_send_room_result (ts, delivered, skipped))
 
@@ -1607,7 +1611,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
       respond_bad_request (json_error_str err_bad_request "room_id is required")
     else
       let limit = get_int body "limit" 50 in
-      let history = InMemoryRelay.room_history relay ~room_id ~limit in
+      let history = R.room_history relay ~room_id ~limit in
       respond_ok (json_ok [ ("room_id", `String room_id); ("history", `List history) ])
 
   (* --- Main callback factory --- *)
@@ -1647,10 +1651,10 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
                Error (relay_err_timestamp_out_of_window,
                  Printf.sprintf "request ts skew %.1fs outside window" skew)
              else
-               match InMemoryRelay.check_request_nonce relay ~nonce ~ts:ts_client with
+               match R.check_request_nonce relay ~nonce ~ts:ts_client with
                | Error code -> Error (code, "request nonce replay")
                | Ok () ->
-                 match InMemoryRelay.identity_pk_of relay ~alias with
+                 match R.identity_pk_of relay ~alias with
                  | None ->
                    Error (err_unauthorized,
                      Printf.sprintf "alias %S has no identity binding" alias)
@@ -1849,16 +1853,15 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
 
   let rec gc_loop relay gc_interval =
     Lwt_unix.sleep gc_interval >>= fun () ->
-    (try ignore (InMemoryRelay.gc relay :> _) with
+    (try ignore (R.gc relay :> _) with
      | _ -> ());
     gc_loop relay gc_interval
 
   (* --- Server startup --- *)
 
-  let start_server ~host ~port ~token ?(verbose=false) ?(gc_interval=0.0) ?tls ?(allowlist=[]) ?persist_dir () =
-    let relay = InMemoryRelay.create ?persist_dir () in
+  let start_server ~host ~port ~relay ~token ?(verbose=false) ?(gc_interval=0.0) ?tls ?(allowlist=[]) () =
     List.iter (fun (alias, identity_pk_b64) ->
-      InMemoryRelay.set_allowed_identity relay ~alias ~identity_pk_b64)
+      R.set_allowed_identity relay ~alias ~identity_pk_b64)
       allowlist;
     (match allowlist with
      | [] -> ()

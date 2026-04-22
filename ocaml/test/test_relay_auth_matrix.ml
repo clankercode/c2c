@@ -6,11 +6,11 @@
    Admin routes: /gc, /dead_letter, /list?include_dead=1 — Bearer only.
    Unauth: /, /health — always allowed. *)
 
-open Relay.Relay_server
+module RS = Relay.Relay_server(Relay.InMemoryRelay)
 
 let decide ?(path="/send") ?(include_dead=false) ?(token=Some "t0p")
            ?(auth=None) ?(ed=false) () =
-  auth_decision ~path ~include_dead ~token ~auth_header:auth
+  RS.auth_decision ~path ~include_dead ~token ~auth_header:auth
     ~ed25519_verified:ed
 
 let allowed (ok, _) = ok

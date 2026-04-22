@@ -2823,31 +2823,23 @@ let relay_serve_cmd =
     | Some i -> float_of_int i
     | None -> 0.0
   in
-  (* Storage check: sqlite falls back to Python, memory/native uses native OCaml relay *)
-  match storage with
-  | Some "sqlite" ->
-      (* Fall back to Python for sqlite storage *)
-      (match find_python_script "c2c_relay_server.py" with
-       | None ->
-           Printf.eprintf "error: cannot find c2c_relay_server.py. Run from inside the c2c git repo.\n%!";
-           exit 1
-       | Some script ->
-           let args = [ "python3"; script ] in
-           let args = match db_path with None -> args | Some v -> args @ [ "--db-path"; v ] in
-           let args = if verbose then args @ [ "--verbose" ] else args in
-           Unix.execvp "python3" (Array.of_list args))
-  | _ ->
-      (* Native OCaml relay server *)
-      let tls_cfg =
-        match tls_cert, tls_key with
-        | Some c, Some k -> Some (`Cert_key (c, k))
-        | None, None -> None
-        | Some _, None ->
-            Printf.eprintf "error: --tls-cert requires --tls-key\n%!"; exit 1
-        | None, Some _ ->
-            Printf.eprintf "error: --tls-key requires --tls-cert\n%!"; exit 1
-      in
-      Printf.printf "storage: memory\n%!";
+  (* Storage backend selection. InMemoryRelay is the default. SqliteRelay is
+     planned (OCaml-native, replacing the deprecated Python fallback). *)
+  let tls_cfg =
+    match tls_cert, tls_key with
+    | Some c, Some k -> Some (`Cert_key (c, k))
+    | None, None -> None
+    | Some _, None ->
+        Printf.eprintf "error: --tls-cert requires --tls-key\n%!"; exit 1
+    | None, Some _ ->
+        Printf.eprintf "error: --tls-key requires --tls-cert\n%!"; exit 1
+  in
+  (match storage with
+   | Some "sqlite" ->
+       Printf.eprintf "error: --storage sqlite is not yet implemented (OCaml SQLite backend pending)\n%!";
+       exit 1
+   | _ -> ());
+  Printf.printf "storage: memory\n%!";
       let allowlist = match allowed_identities with
         | None -> []
         | Some path ->
@@ -2878,7 +2870,9 @@ let relay_serve_cmd =
       (match persist_dir with
        | Some d -> Printf.eprintf "  persist-dir=%s\n%!" d
        | None -> Printf.eprintf "  persist-dir=none (in-memory only)\n%!");
-      Lwt_main.run (Relay.Relay_server.start_server ~host ~port ~token ~verbose ~gc_interval ?tls:tls_cfg ~allowlist ?persist_dir ())
+      let relay = Relay.InMemoryRelay.create ?persist_dir () in
+      let module Server = Relay.Relay_server(Relay.InMemoryRelay) in
+      Lwt_main.run (Server.start_server ~host ~port ~relay ~token ~verbose ~gc_interval ?tls:tls_cfg ~allowlist ())
 
 let relay_connect_cmd =
   let relay_url =
