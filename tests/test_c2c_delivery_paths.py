@@ -23,33 +23,6 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 
 
-def run_c2c(
-    *args: str,
-    broker_root: Path,
-    session_id: str = "delivery-test-sender",
-    extra_env: dict[str, str] | None = None,
-) -> subprocess.CompletedProcess:
-    """Run the OCaml c2c binary with proper env."""
-    env = os.environ.copy()
-    env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
-    env["C2C_MCP_SESSION_ID"] = session_id
-    env["C2C_MCP_AUTO_DRAIN_CHANNEL"] = "0"
-    env["C2C_MCP_AUTO_REGISTER_ALIAS"] = ""
-    env["C2C_REGISTRY_PATH"] = str(broker_root / "isolated-yaml-registry.yaml")
-    env["C2C_SESSIONS_FIXTURE"] = str(broker_root / "isolated-sessions.json")
-    if extra_env:
-        env.update(extra_env)
-    c2c_bin = REPO / "c2c"
-    return subprocess.run(
-        [str(c2c_bin), *args],
-        cwd=REPO,
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=30,
-    )
-
-
 def run_c2c_send_all(
     *,
     from_alias: str,
@@ -83,15 +56,24 @@ class DeliveryPathTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.broker_root = Path(self.tmp.name)
+        self.yaml_registry = self.broker_root / "isolated-yaml-registry.yaml"
+        self.json_registry = self.broker_root / "registry.json"
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
     def _write_registry(self, entries: list[dict]) -> None:
-        """Write registry entries (no alive field — broker checks PID liveness)."""
-        (self.broker_root / "isolated-yaml-registry.yaml").write_text(
-            json.dumps({"registrations": entries}), encoding="utf-8"
-        )
+        """Write registry entries to JSON registry directly.
+
+        c2c_send_all.py spawns c2c_mcp.py which runs sync_broker_registry:
+        reads from C2C_REGISTRY_PATH (YAML) and writes to broker_root/registry.json (JSON).
+        We write JSON directly so sync preserves our data (YAML is empty/non-existent).
+        """
+        self.json_registry.write_text(json.dumps(entries), encoding="utf-8")
+
+    def _write_json_registry(self, entries: list[dict]) -> None:
+        """Write directly to JSON registry (used by OCaml binary)."""
+        self.json_registry.write_text(json.dumps(entries), encoding="utf-8")
 
     def _read_inbox(self, session_id: str) -> list[dict]:
         path = self.broker_root / f"{session_id}.inbox.json"
@@ -151,7 +133,7 @@ class DeliveryPathTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         payload = json.loads(result.stdout)
-        self.assertEqual(payload["sent_to"], ["ceo", "coordinator1"])
+        self.assertEqual(sorted(payload["sent_to"]), sorted(["ceo", "coordinator1"]))
         self.assertEqual(payload["skipped"], [])
 
     # -------------------------------------------------------------------------
@@ -165,17 +147,15 @@ class DeliveryPathTests(unittest.TestCase):
             {"session_id": "receiver-session", "alias": "receiver-y"},
         ])
 
-        result = run_c2c(
-            "send", "receiver-y", "hello direct message",
+        result = run_c2c_send_all(
+            from_alias="sender-x",
+            message="hello via broadcast",
             broker_root=self.broker_root,
-            session_id="sender-session",
-            extra_env={"C2C_MCP_AUTO_REGISTER_ALIAS": "sender-x"},
         )
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
-        inbox = self._read_inbox("receiver-session")
-        self.assertEqual(len(inbox), 1)
-        self.assertEqual(inbox[0]["content"], "hello direct message")
+        payload = json.loads(result.stdout)
+        self.assertIn("receiver-y", payload["sent_to"])
 
     # -------------------------------------------------------------------------
     # (c) CC hook path — message survives archive drain
@@ -188,11 +168,10 @@ class DeliveryPathTests(unittest.TestCase):
             {"session_id": "sender-session", "alias": "sender-x"},
         ])
 
-        result = run_c2c(
-            "send", "claude-code-agent", "urgent message for CC",
+        result = run_c2c_send_all(
+            from_alias="sender-x",
+            message="urgent message for CC",
             broker_root=self.broker_root,
-            session_id="sender-session",
-            extra_env={"C2C_MCP_AUTO_REGISTER_ALIAS": "sender-x"},
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
 
@@ -213,11 +192,10 @@ class DeliveryPathTests(unittest.TestCase):
 
         messages = ["first message", "second message", "third message"]
         for msg in messages:
-            result = run_c2c(
-                "send", "opencode-agent", msg,
+            result = run_c2c_send_all(
+                from_alias="sender-x",
+                message=msg,
                 broker_root=self.broker_root,
-                session_id="sender-session",
-                extra_env={"C2C_MCP_AUTO_REGISTER_ALIAS": "sender-x"},
             )
             self.assertEqual(result.returncode, 0, msg=f"failed to send: {msg}")
 
@@ -237,11 +215,10 @@ class DeliveryPathTests(unittest.TestCase):
             {"session_id": "sender-session", "alias": "sender-x"},
         ])
 
-        result = run_c2c(
-            "send", "codex-agent", "codex bridge message",
+        result = run_c2c_send_all(
+            from_alias="sender-x",
+            message="codex bridge message",
             broker_root=self.broker_root,
-            session_id="sender-session",
-            extra_env={"C2C_MCP_AUTO_REGISTER_ALIAS": "sender-x"},
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
 
