@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 import shutil
+from unittest import mock
 
 import pytest
 
@@ -8,6 +9,7 @@ from tests import conftest as conftest_module
 from tests.e2e.framework.artifacts import ArtifactCollector
 from tests.e2e.framework.scenario import Scenario
 from tests.e2e.framework.terminal_driver import TerminalCapture, TerminalHandle, TerminalStartSpec
+from tests.e2e.framework.tmux_driver import TmuxDriver
 
 
 def test_artifact_collector_creates_run_dir_and_timeline(tmp_path: Path) -> None:
@@ -337,3 +339,40 @@ def test_scenario_fixture_provides_workdir_and_artifacts(scenario) -> None:
     assert scenario.workdir.exists()
     assert scenario.artifacts.run_dir is not None
     assert scenario.artifacts.run_dir.exists()
+
+
+def test_tmux_driver_start_uses_new_session_and_returns_pane_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    completed = mock.Mock(stdout="%42\n")
+    monkeypatch.setattr("tests.e2e.framework.tmux_driver.subprocess.run", lambda *a, **k: completed)
+
+    driver = TmuxDriver(repo_root=tmp_path)
+    handle = driver.start(
+        TerminalStartSpec(
+            command=["bash", "-lc", "echo hi"],
+            cwd=tmp_path,
+            env={},
+            title="demo",
+        )
+    )
+
+    assert handle.backend == "tmux"
+    assert handle.target == "%42"
+
+
+def test_tmux_driver_enter_uses_repo_helper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> mock.Mock:
+        calls.append(cmd)
+        return mock.Mock(stdout="")
+
+    monkeypatch.setattr("tests.e2e.framework.tmux_driver.subprocess.run", fake_run)
+
+    driver = TmuxDriver(repo_root=tmp_path)
+    handle = TerminalHandle(backend="tmux", target="%99", process_pid=999)
+    driver.send_key(handle, "Enter")
+
+    assert calls[0][0] == str(tmp_path / "scripts" / "c2c-tmux-enter.sh")
+    assert calls[0][1] == "%99"
