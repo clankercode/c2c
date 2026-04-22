@@ -60,6 +60,16 @@ Status: **active** — finding filed, in-flight patch partially visible in `.ope
 
 Next: finish the plugin-side verification; add broker-side canonical matching; add tests.
 
+### Deprecated script cleanup
+
+Project Folder: **todo**
+
+Goal: every deprecated / broken / superseded script lives under `deprecated/` (or similar), not mixed in with live tooling. The repo root + `scripts/` + `c2c_*.py` collection are currently polluted with shims kept for historical reasons. Moving them out improves discoverability, shrinks what new agents have to grep through, and makes the OCaml-port progress legible at a glance.
+
+Status: **active** — ongoing long-term goal per Max 2026-04-22. No folder created yet.
+
+Next: first pass — audit `c2c_*.py` scripts flagged as DEPRECATED in their docstrings (c2c_opencode_wake_daemon.py, c2c_claude_wake_daemon.py, c2c_kimi_wake_daemon.py, c2c_crush_wake_daemon.py, c2c_inject.py per CLAUDE.md) and move to `deprecated/`. Update any remaining references (docs, tests, harness scripts). Pairs with the OCaml-port project — as OCaml surfaces land, their Python predecessors can migrate.
+
 ### Terminal E2E framework
 
 Project Folder: **todo** (docs at `docs/terminal-e2e-framework-{plan,design}.md`)
