@@ -1,6 +1,7 @@
 val server_version : string
 val server_git_hash : string
 
+type compacting = { started_at : float; reason : string option }
 type registration =
   { session_id : string
   ; alias : string
@@ -17,6 +18,7 @@ type registration =
   ; confirmed_at : float option
   (** Epoch of first poll_inbox call. None = session registered but never
       drained — still "provisional". *)
+  ; compacting : compacting option
   }
 type message = { from_alias : string; to_alias : string; content : string; deferrable : bool }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
@@ -89,6 +91,12 @@ module Broker : sig
   val prune_rooms : t -> (string * string) list
   val is_dnd : t -> session_id:string -> bool
   val set_dnd : t -> session_id:string -> dnd:bool -> ?until:float -> unit -> bool option
+  val is_compacting : t -> session_id:string -> compacting option
+  val set_compacting : t -> session_id:string -> ?reason:string -> unit -> compacting option
+  val clear_compacting : t -> session_id:string -> bool
+  val clear_stale_compacting : t -> int
+  (** [clear_stale_compacting] removes compacting flags older than 5 minutes.
+      Returns the number of stale flags cleared. *)
   val confirm_registration : t -> session_id:string -> unit
   (** [confirm_registration t ~session_id] sets confirmed_at to now for the
       session if it is currently None, then emits deferred social broadcasts

@@ -1,3 +1,4 @@
+type compacting = { started_at : float; reason : string option }
 type registration =
   { session_id : string
   ; alias : string
@@ -18,12 +19,53 @@ type registration =
   (** Epoch of first poll_inbox call. None = session registered but never
       drained — still "provisional". Provisional + pid=None sessions are
       eligible for sweep after C2C_PROVISIONAL_SWEEP_TIMEOUT seconds. *)
+  ; compacting : compacting option
+  (** Set when the agent is actively compacting/summarizing. Send-side
+      checks this and returns a warning; message is still queued. *)
   }
 type message = { from_alias : string; to_alias : string; content : string; deferrable : bool }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 type room_visibility = Public | Invite_only
 type room_meta = { visibility : room_visibility; invited_members : string list }
+
+(** Pending reply tracking for alias-hijack mitigation (M2/M4).
+    Ephemeral entries with TTL — entries older than TTL are ignored on access. *)
+type pending_kind = Permission | Question
+type pending_permission =
+  { perm_id : string
+  ; kind : pending_kind
+  ; requester_session_id : string
+  ; requester_alias : string
+  ; supervisors : string list
+  ; created_at : float
+  ; expires_at : float
+  }
+
+let pending_kind_to_string = function Permission -> "permission" | Question -> "question"
+let pending_kind_of_string = function "question" -> Question | _ -> Permission
+
+let pending_permission_to_json p =
+  `Assoc
+    [ ("perm_id", `String p.perm_id)
+    ; ("kind", `String (pending_kind_to_string p.kind))
+    ; ("requester_session_id", `String p.requester_session_id)
+    ; ("requester_alias", `String p.requester_alias)
+    ; ("supervisors", `List (List.map (fun s -> `String s) p.supervisors))
+    ; ("created_at", `Float p.created_at)
+    ; ("expires_at", `Float p.expires_at)
+    ]
+
+let pending_permission_of_json json =
+  let open Yojson.Safe.Util in
+  { perm_id = json |> member "perm_id" |> to_string
+  ; kind = json |> member "kind" |> to_string |> pending_kind_of_string
+  ; requester_session_id = json |> member "requester_session_id" |> to_string
+  ; requester_alias = json |> member "requester_alias" |> to_string
+  ; supervisors = json |> member "supervisors" |> to_list |> List.map Yojson.Safe.Util.to_string
+  ; created_at = json |> member "created_at" |> to_float
+  ; expires_at = json |> member "expires_at" |> to_float
+  }
 
 let server_version = Version.version
 
@@ -282,6 +324,14 @@ module Broker = struct
       try match j |> member name with `Bool b -> b | _ -> default
       with _ -> default
     in
+    let compacting_of_json j =
+      match j |> member "compacting" with
+      | `Null -> None
+      | `Assoc _ ->
+          Some { started_at = j |> member "compacting" |> member "started_at" |> to_float;
+                 reason = str_opt "reason" (j |> member "compacting") }
+      | _ -> None
+    in
     { session_id = json |> member "session_id" |> to_string
     ; alias = json |> member "alias" |> to_string
     ; pid = int_opt_member "pid" json
@@ -293,6 +343,7 @@ module Broker = struct
     ; dnd_until = float_opt_member "dnd_until" json
     ; client_type = str_opt "client_type" json
     ; confirmed_at = float_opt_member "confirmed_at" json
+    ; compacting = compacting_of_json json
     }
 
   let message_to_json { from_alias; to_alias; content; deferrable } =
@@ -324,6 +375,24 @@ module Broker = struct
   let save_registrations t regs =
     ensure_root t;
     write_json_file (registry_path t) (`List (List.map registration_to_json regs))
+
+  let pending_permissions_path t = Filename.concat t.root "pending_permissions.json"
+
+  let load_pending_permissions t =
+    ensure_root t;
+    match read_json_file (pending_permissions_path t) ~default:(`List []) with
+    | `List items -> List.map pending_permission_of_json items
+    | _ -> []
+
+  let save_pending_permissions t entries =
+    ensure_root t;
+    write_json_file (pending_permissions_path t)
+      (`List (List.map pending_permission_to_json entries))
+
+  (** Remove expired entries on every access (lazy eviction). Callers get a clean list. *)
+  let get_active_pending_permissions t =
+    let now = Unix.gettimeofday () in
+    List.filter (fun p -> p.expires_at > now) (load_pending_permissions t)
 
   let create ~root = { root }
   let root t = t.root
@@ -570,6 +639,62 @@ module Broker = struct
           save_registrations t new_regs;
           Some dnd)
 
+  let compacting_stale_after = 300.0
+
+  let is_compacting t ~session_id =
+    let now = Unix.gettimeofday () in
+    match List.find_opt (fun r -> r.session_id = session_id) (list_registrations t) with
+    | None -> None
+    | Some r ->
+        match r.compacting with
+        | None -> None
+        | Some c ->
+            if now -. c.started_at > compacting_stale_after then None
+            else Some c
+
+  let set_compacting t ~session_id ?reason () =
+    with_registry_lock t (fun () ->
+      let regs = load_registrations t in
+      match List.find_opt (fun r -> r.session_id = session_id) regs with
+      | None -> None
+      | Some existing ->
+          let now = Unix.gettimeofday () in
+          let updated = { existing with compacting = Some { started_at = now; reason } } in
+          let new_regs =
+            List.map (fun r -> if r.session_id = session_id then updated else r) regs
+          in
+          save_registrations t new_regs;
+          Some { started_at = now; reason })
+
+  let clear_compacting t ~session_id =
+    with_registry_lock t (fun () ->
+      let regs = load_registrations t in
+      match List.find_opt (fun r -> r.session_id = session_id) regs with
+      | None -> false
+      | Some existing ->
+          let updated = { existing with compacting = None } in
+          let new_regs =
+            List.map (fun r -> if r.session_id = session_id then updated else r) regs
+          in
+          save_registrations t new_regs;
+          true)
+
+  let clear_stale_compacting t =
+    let now = Unix.gettimeofday () in
+    with_registry_lock t (fun () ->
+      let regs = load_registrations t in
+      let to_clear, to_keep =
+        List.partition (fun r ->
+          match r.compacting with
+          | None -> false
+          | Some c -> now -. c.started_at > compacting_stale_after) regs
+      in
+      if to_clear = [] then 0
+      else begin
+        save_registrations t to_keep;
+        List.length to_clear
+      end)
+
   (* Suggest a free alias by appending the next prime suffix.
      Runs under the registry lock (regs is already loaded).
      Returns Some candidate on success, None when all max_tries primes are taken
@@ -622,15 +747,15 @@ module Broker = struct
         in
         (* Same-session re-registration (alias changed or pid/registered_at
            refresh): update in-place by replacing the old entry in [rest]. *)
-        (* Look up old entry to preserve DND state + confirmed_at + client_type
+        (* Look up old entry to preserve DND state + confirmed_at + client_type + compacting
            across re-registration. *)
         let old_state =
           match List.find_opt (fun reg -> reg.session_id = session_id) rest with
-          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type)
-          | None -> (false, None, None, None, client_type)
+          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.compacting)
+          | None -> (false, None, None, None, client_type, None)
         in
         let new_reg =
-          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type) = old_state in
+          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_compacting) = old_state in
           let effective_client_type = match client_type with
             | Some _ -> client_type
             | None -> old_client_type
@@ -640,7 +765,8 @@ module Broker = struct
           ; canonical_alias = Some (compute_canonical_alias ~alias ~broker_root:(root t))
           ; dnd; dnd_since; dnd_until
           ; client_type = effective_client_type
-          ; confirmed_at = old_confirmed_at }
+          ; confirmed_at = old_confirmed_at
+          ; compacting = old_compacting }
         in
         let kept =
           match

@@ -1843,8 +1843,6 @@ let test_registration_persists_pid_start_time () =
       check bool "start_time persisted" true (reg.pid_start_time = Some 9999))
 
 let test_start_time_mismatch_is_not_alive () =
-  (* Simulate pid reuse: use the current process's pid (definitely live) with
-     a stored start_time that can't match the current one. *)
   let me = Unix.getpid () in
   let bogus_start_time =
     match C2c_mcp.Broker.read_pid_start_time me with
@@ -1863,6 +1861,7 @@ let test_start_time_mismatch_is_not_alive () =
     ; dnd_until = None
     ; client_type = None
     ; confirmed_at = None
+    ; compacting = None
     }
   in
   check bool "mismatched start_time → not alive" false
@@ -1883,6 +1882,7 @@ let test_start_time_match_is_alive () =
     ; dnd_until = None
     ; client_type = None
     ; confirmed_at = None
+    ; compacting = None
     }
   in
   check bool "matching start_time → alive" true
@@ -1903,6 +1903,7 @@ let test_start_time_none_falls_back_to_proc_exists () =
     ; dnd_until = None
     ; client_type = None
     ; confirmed_at = None
+    ; compacting = None
     }
   in
   check bool "pid exists + no stored start_time → alive" true
