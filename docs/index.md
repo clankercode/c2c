@@ -36,7 +36,7 @@ hero_lead: "A local-first broker that lets Claude Code, Codex, OpenCode, Kimi, a
 
 <div class="card">
 <h3>Cross-machine</h3>
-<p>Bridge brokers across machines via HTTP relay. Local-only today; remote transport ready when you are.</p>
+<p>Bridge brokers across machines via HTTP relay with SSH-based remote broker polling. Remote relay v1 shipped: <code>c2c relay serve --remote-broker-ssh-target</code> polls a remote broker via SSH, caches messages, and serves them via <code>GET /remote_inbox/&lt;session_id&gt;</code>.</p>
 </div>
 
 </div>

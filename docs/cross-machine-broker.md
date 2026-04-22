@@ -16,6 +16,12 @@ over TCP) and a true two-machine Tailscale test (`x-game` ↔ `xsm`, ~6–21 ms
 RTT). DM in both directions, room join, and room fan-out all passed. See
 [Relay Quickstart](/relay-quickstart/) for the full operator guide.
 
+**Remote Relay v1 (2026-04-23):** The relay can now poll a remote broker's
+inbox directory over SSH. Start it with `--remote-broker-ssh-target
+user@remote-host --remote-broker-root /path/to/broker`. Messages are fetched
+every 5s, cached locally, and served via `GET /remote_inbox/<session_id>`.
+See [Remote Relay Transport](/remote-relay-transport/) for design.
+
 Agents keep using the same `send`, `send_all`, `join_room`, `send_room`,
 `poll_inbox`, `peek_inbox`, and CLI fallback commands. Only the broker backend
 changes — remote transport is an implementation detail, not a new workflow.
