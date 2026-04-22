@@ -5829,6 +5829,11 @@ let start_cmd =
   and+ auto_flag = auto_flag
   and+ kickoff_prompt_text = kickoff_prompt_opt
   and+ agent_opt = agent in
+  if Sys.getenv_opt "C2C_INSTANCE_NAME" <> None then begin
+    Printf.eprintf "error: cannot run 'c2c start' from inside a c2c session.\n";
+    Printf.eprintf "  Hint: use the outer shell or a separate terminal instead.\n%!";
+    exit 1
+  end;
   let name = match name_opt with
     | Some n -> n
     | None ->
