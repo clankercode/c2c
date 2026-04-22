@@ -89,7 +89,19 @@ export function App() {
               return next;
             });
           } else if (event.event_type === "room.leave") {
-            // Keep room in list even if it's empty (alias may rejoin)
+            const room_id = (event as { room_id: string; alias: string }).room_id;
+            const alias = (event as { room_id: string; alias: string }).alias;
+            setRoomMembers(prev => {
+              const next = new Map(prev);
+              const members = next.get(room_id);
+              if (members) {
+                members.delete(alias);
+                if (members.size === 0) {
+                  next.delete(room_id);
+                }
+              }
+              return next;
+            });
           } else if (event.event_type === "message") {
             const m = event as { to_alias: string; from_alias: string; content?: string };
             const me = myAliasRef.current;
