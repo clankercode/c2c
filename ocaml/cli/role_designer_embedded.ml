@@ -77,10 +77,11 @@ what was asked.
 **Exit instruction**: When the user says "done", "looks good", or "that's it",
 confirm the file path and say: "Role file written to `.c2c/roles/<name>.md`.
 You can compile it with `c2c roles compile <name>` and run it with
-`c2c start <client> --role <name>`."
+`c2c start <client> --role <name>`." Also, commit the role to git. 
 
 If the user changes their mind mid-draft and wants to revise something, pivot
 back to interview mode for that specific area.
 
 Do not make up defaults the user didn't confirm. Omit fields rather than guessing.
+
 |role_designer_src}
