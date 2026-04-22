@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import fcntl
 import os
 import pty
 import signal
+import struct
 import subprocess
+import termios
 from pathlib import Path
 
 from .terminal_driver import TerminalCapture, TerminalHandle, TerminalStartSpec
@@ -18,16 +21,22 @@ class FakePtyDriver:
     def start(self, spec: TerminalStartSpec) -> TerminalHandle:
         master_fd, slave_fd = pty.openpty()
         os.set_blocking(master_fd, False)
-        proc = subprocess.Popen(
-            spec.command,
-            cwd=Path(spec.cwd),
-            env={**os.environ, **spec.env},
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            text=False,
-            start_new_session=True,
-        )
+        self._set_winsize(slave_fd, rows=spec.rows, cols=spec.cols)
+        try:
+            proc = subprocess.Popen(
+                spec.command,
+                cwd=Path(spec.cwd),
+                env={**os.environ, **spec.env},
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                text=False,
+                start_new_session=True,
+            )
+        except Exception:
+            os.close(master_fd)
+            os.close(slave_fd)
+            raise
         os.close(slave_fd)
         target = f"pty-{proc.pid}"
         self._masters[target] = master_fd
@@ -85,3 +94,6 @@ class FakePtyDriver:
             return self._masters[handle.target]
         except KeyError as exc:
             raise KeyError(f"unknown fake-pty target: {handle.target}") from exc
+
+    def _set_winsize(self, slave_fd: int, *, rows: int, cols: int) -> None:
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))

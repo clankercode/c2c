@@ -438,7 +438,7 @@ def test_fake_pty_driver_round_trips_input(tmp_path: Path) -> None:
             raise AssertionError(driver.capture(handle).text)
 
         assert driver.is_alive(handle) is True
-    finally:
+
         driver.send_text(handle, "/quit")
         driver.send_key(handle, "Enter")
 
@@ -448,9 +448,94 @@ def test_fake_pty_driver_round_trips_input(tmp_path: Path) -> None:
             if "BYE" in capture.text:
                 break
             time.sleep(0.05)
-
+        else:
+            raise AssertionError(driver.capture(handle).text)
+    finally:
         driver.stop(handle)
-        assert driver.is_alive(handle) is False
+
+    assert driver.is_alive(handle) is False
+
+
+def test_fake_pty_driver_closes_openpty_fds_when_launch_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.e2e.framework import fake_pty_driver as fake_pty_driver_module
+    from tests.e2e.framework.fake_pty_driver import FakePtyDriver
+
+    closed: list[int] = []
+
+    monkeypatch.setattr(fake_pty_driver_module.pty, "openpty", lambda: (11, 12))
+    monkeypatch.setattr(fake_pty_driver_module.os, "set_blocking", lambda _fd, _flag: None)
+    monkeypatch.setattr(fake_pty_driver_module.os, "close", lambda fd: closed.append(fd))
+    monkeypatch.setattr(fake_pty_driver_module.fcntl, "ioctl", lambda *args: None)
+
+    def fake_popen(*args: object, **kwargs: object) -> object:
+        raise OSError("boom")
+
+    monkeypatch.setattr(fake_pty_driver_module.subprocess, "Popen", fake_popen)
+
+    driver = FakePtyDriver()
+
+    with pytest.raises(OSError, match="boom"):
+        driver.start(
+            TerminalStartSpec(
+                command=["/missing"],
+                cwd=Path.cwd(),
+                env={},
+                title="broken",
+            )
+        )
+
+    assert closed == [11, 12]
+
+
+def test_fake_pty_driver_start_sets_winsize_from_terminal_spec(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.e2e.framework import fake_pty_driver as fake_pty_driver_module
+    from tests.e2e.framework.fake_pty_driver import FakePtyDriver
+
+    ioctl_calls: list[tuple[int, int, bytes]] = []
+    closed: list[int] = []
+
+    class FakeProc:
+        pid = 321
+
+        def poll(self) -> int:
+            return 0
+
+    monkeypatch.setattr(fake_pty_driver_module.pty, "openpty", lambda: (21, 22))
+    monkeypatch.setattr(fake_pty_driver_module.os, "set_blocking", lambda _fd, _flag: None)
+    monkeypatch.setattr(fake_pty_driver_module.os, "close", lambda fd: closed.append(fd))
+    monkeypatch.setattr(fake_pty_driver_module.subprocess, "Popen", lambda *args, **kwargs: FakeProc())
+
+    def fake_ioctl(fd: int, op: int, arg: bytes) -> None:
+        ioctl_calls.append((fd, op, arg))
+
+    monkeypatch.setattr(fake_pty_driver_module.fcntl, "ioctl", fake_ioctl, raising=False)
+
+    driver = FakePtyDriver()
+    handle = driver.start(
+        TerminalStartSpec(
+            command=["/fake"],
+            cwd=Path.cwd(),
+            env={},
+            title="sized-child",
+            cols=111,
+            rows=37,
+        )
+    )
+
+    try:
+        assert ioctl_calls == [
+            (
+                22,
+                fake_pty_driver_module.termios.TIOCSWINSZ,
+                fake_pty_driver_module.struct.pack("HHHH", 37, 111, 0, 0),
+            )
+        ]
+        assert handle.process_pid == 321
+    finally:
+        driver.stop(handle)
+    assert closed == [22, 21]
 
 
 @pytest.mark.skipif(
