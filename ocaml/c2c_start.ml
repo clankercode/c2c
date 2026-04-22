@@ -919,9 +919,9 @@ let prepare_launch_args ~(name : string) ~(client : string)
                if claude_session_exists sid then "--resume" else "--session-id"
              in
              [ flag; sid; "--name"; name;
-               "--dangerously-load-development-channels" ] @ ch_args
+               "--dangerously-load-development-channels"; "server:c2c"; "--channels"; "c2c" ] @ ch_args
          | None -> [ "--name"; name;
-                     "--dangerously-load-development-channels" ] @ ch_args)
+                     "--dangerously-load-development-channels"; "server:c2c"; "--channels"; "c2c" ] @ ch_args)
     | "opencode" ->
         (* OpenCode rejects UUIDs — session IDs must start with "ses". Only
            pass --session when resuming a prior OpenCode-generated ID.
