@@ -5,13 +5,16 @@
 
 set -e
 
-HELP_TEXT=$(c2c --help 2>&1)
+# Extract TIER 2 command names from --help (help text uses ANSI bold, not backticks).
+# The TIER 2 section ends at the "Tier 3 and 4 commands hidden" line.
+TIER2_COMMANDS=$(c2c --help 2>&1 | \
+  sed -n '/== TIER 2: LIFECYCLE/,/Tier 3 and 4 commands hidden/p' | \
+  sed 's/\x1b\[[0-9;]*m/ /g' | \
+  awk '{for(i=1;i<=NF;i++) if($i ~ /^[a-z]+-[a-z0-9_]+$/) print $i}' | \
+  sort -u)
 
-# Extract all bold command names from the help text (lines with == TIER == sections)
-TIER2_COMMANDS=$(echo "$HELP_TEXT" | awk '/== TIER 2: LIFECYCLE/,/== TIER 3:/' | grep -oE '`[a-z][-a-z0-9_]+`' | tr -d '`' | sort -u)
-
-# Get registered commands (excluding subcommands which use dashes-separated group names)
-REGISTERED=$(c2c commands 2>/dev/null | grep -v "^#" | tr ' ' '\n' | grep -v "^$" | sort -u)
+# Get registered commands — first field of each non-comment, non-empty line.
+REGISTERED=$(c2c commands 2>/dev/null | awk 'NF && !/^#/ {print $1}' | grep -E '^[a-z][-a-z0-9_]*$' | sort -u)
 
 # Extract fake subcommand names (hyphenated names that are actually subcommands of groups)
 FAKE_COMMANDS=$(echo "$TIER2_COMMANDS" | grep -E '^[a-z]+-[a-z]+(-[a-z]+)?$')
