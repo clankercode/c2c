@@ -18,9 +18,13 @@ import signal
 import subprocess
 import sys
 import warnings
+from pathlib import Path
 from typing import Any, FrozenSet
 
 import pytest
+
+from tests.e2e.framework.artifacts import ArtifactCollector
+from tests.e2e.framework.scenario import Scenario
 
 # ---------------------------------------------------------------------------
 # Patterns we care about for leak detection.
@@ -233,3 +237,20 @@ def _pgid_cleanup_guard() -> None:  # type: ignore[return]
             os.killpg(pgid, signal.SIGKILL)
         except OSError:
             pass
+
+
+@pytest.fixture
+def scenario(request: pytest.FixtureRequest, tmp_path: Path) -> Scenario:
+    artifact_root = Path(".artifacts") / "e2e"
+    artifacts = ArtifactCollector(artifact_root, request.node.name)
+    artifacts.start_run()
+    sc = Scenario(
+        test_name=request.node.name,
+        workdir=tmp_path / "workdir",
+        artifacts=artifacts,
+        drivers={},
+        adapters={},
+    )
+    yield sc
+    for agent in list(sc.agents.values()):
+        sc.drivers[agent.backend].stop(agent.handle)

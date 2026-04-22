@@ -4,6 +4,7 @@ import json
 import pytest
 
 from tests.e2e.framework.artifacts import ArtifactCollector
+from tests.e2e.framework.scenario import Scenario
 from tests.e2e.framework.terminal_driver import TerminalCapture, TerminalHandle
 
 
@@ -156,3 +157,83 @@ def test_framework_package_exports_smoke() -> None:
     assert ExportedHandle.__name__ == "TerminalHandle"
     assert ExportedCapture.__name__ == "TerminalCapture"
     assert ExportedDriver.__name__ == "TerminalDriver"
+
+
+class DummyDriver:
+    def __init__(self) -> None:
+        self.started: list[object] = []
+
+    def start(self, spec: object) -> TerminalHandle:
+        self.started.append(spec)
+        return TerminalHandle(backend="dummy", target="dummy-1", process_pid=111)
+
+    def send_text(self, handle: TerminalHandle, text: str) -> None:
+        return None
+
+    def send_key(self, handle: TerminalHandle, key: str) -> None:
+        return None
+
+    def capture(self, handle: TerminalHandle) -> TerminalCapture:
+        return TerminalCapture(text="READY\n", raw="READY\r\n")
+
+    def is_alive(self, handle: TerminalHandle) -> bool:
+        return True
+
+    def stop(self, handle: TerminalHandle) -> None:
+        return None
+
+
+class DummyAdapter:
+    client_name = "dummy"
+    default_backend = "dummy"
+
+    def build_launch(self, scenario: Scenario, config: object) -> dict[str, object]:
+        return {
+            "command": ["python3", "-c", "print('ready')"],
+            "cwd": scenario.workdir,
+            "env": {},
+            "title": getattr(config, "name"),
+        }
+
+    def is_ready(self, scenario: Scenario, agent: object) -> bool:
+        return True
+
+    def probe_capabilities(self, scenario: Scenario) -> dict[str, bool]:
+        return {"dummy_ready": True}
+
+
+def test_scenario_comment_writes_timeline(tmp_path: Path) -> None:
+    scenario = Scenario(
+        test_name="test_demo",
+        workdir=tmp_path / "work",
+        artifacts=ArtifactCollector(tmp_path / "artifacts", "test_demo"),
+        drivers={"dummy": DummyDriver()},
+        adapters={"dummy": DummyAdapter()},
+    )
+    scenario.artifacts.start_run()
+    scenario.comment("hello world")
+
+    timeline = (scenario.artifacts.run_dir / "timeline.jsonl").read_text(encoding="utf-8")
+    assert "hello world" in timeline
+
+
+def test_scenario_start_agent_tracks_started_agent(tmp_path: Path) -> None:
+    scenario = Scenario(
+        test_name="test_demo",
+        workdir=tmp_path / "work",
+        artifacts=ArtifactCollector(tmp_path / "artifacts", "test_demo"),
+        drivers={"dummy": DummyDriver()},
+        adapters={"dummy": DummyAdapter()},
+    )
+    scenario.artifacts.start_run()
+    agent = scenario.start_agent("dummy", name="dummy-a")
+
+    assert agent.client == "dummy"
+    assert agent.name == "dummy-a"
+    assert agent.handle.target == "dummy-1"
+
+
+def test_scenario_fixture_provides_workdir_and_artifacts(scenario) -> None:
+    assert scenario.workdir.exists()
+    assert scenario.artifacts.run_dir is not None
+    assert scenario.artifacts.run_dir.exists()
