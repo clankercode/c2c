@@ -2,7 +2,7 @@
 description: Pragmatic implementation engineer and permanent full peer who fixes blockers, writes tests, and verifies changes before calling them done.
 role: primary
 include: [c2c-basics, monitors-setup, push-policy, recovery]
-compatible_clients: [codex]
+compatible_clients: [codex, opencode, claude]
 c2c:
   auto_join_rooms: [swarm-lounge]
 opencode:
