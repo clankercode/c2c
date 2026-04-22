@@ -5715,6 +5715,10 @@ let agent_new_term =
     Cmdliner.Arg.(value & opt (some string) (Some "subagent") & info [ "role"; "r" ]
       ~docv:"TYPE" ~doc:"Role type: subagent, primary, or all.")
   in
+  let theme =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "theme"; "t" ]
+      ~docv:"THEME" ~doc:"Banner theme (exp33-gilded, ffx-yuna, lotr-forge, etc.).")
+  in
   let rec mkdir_p dir =
     if dir = "/" || dir = "." || dir = "" then ()
     else if Sys.file_exists dir then ()
@@ -5722,7 +5726,8 @@ let agent_new_term =
   in
   let+ name = name
   and+ description = description
-  and+ role_type = role_type in
+  and+ role_type = role_type
+  and+ theme = theme in
   let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
   mkdir_p roles_dir;
   let path = Filename.concat roles_dir (name ^ ".md") in
@@ -5754,6 +5759,7 @@ let agent_new_term =
   let oc = open_out path in
   Fun.protect ~finally:(fun () -> close_out oc)
     (fun () -> output_string oc tmpl);
+  Banner.print_banner ?theme_name:theme ~subtitle:("agent new  |  " ^ name) "c2c agent";
   Printf.printf "  created: %s\n" path
 
 let agent_new = Cmdliner.Cmd.v (Cmdliner.Cmd.info "agent" ~doc:"Create new canonical role files.") agent_new_term
@@ -5775,6 +5781,11 @@ let roles_compile_term =
   let+ name_opt = name_arg
   and+ client = client
   and+ dry_run = dry_run in
+  let rec mkdir_p dir =
+    if dir = "/" || dir = "." || dir = "" then ()
+    else if Sys.file_exists dir then ()
+    else begin mkdir_p (Filename.dirname dir); try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> () end
+  in
   let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
   let roles =
     match name_opt with
@@ -5788,6 +5799,9 @@ let roles_compile_term =
           Printf.eprintf "error: roles directory not found: %s\n%!" roles_dir;
           exit 1)
   in
+  let n_roles = List.length roles in
+  let subtitle = if n_roles = 1 then "1 role" else Printf.sprintf "%d roles" n_roles in
+  Banner.print_banner ~subtitle:("roles compile  |  " ^ subtitle) "c2c roles";
   List.iter (fun (name, path) ->
     try
       let role = C2c_role.parse_file path in
@@ -5797,9 +5811,9 @@ let roles_compile_term =
           if dry_run then
             (Printf.printf "=== %s (%s) ===\n%s\n\n" name client_str rendered; flush stdout)
           else
-            (let out_path = agent_file_path ~client:client_str ~name in
-             let dir = Filename.dirname out_path in
-             (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+             (let out_path = agent_file_path ~client:client_str ~name in
+              let dir = Filename.dirname out_path in
+              mkdir_p dir;
              let oc = open_out out_path in
              Fun.protect ~finally:(fun () -> close_out oc)
                (fun () -> output_string oc rendered; output_char oc '\n');
