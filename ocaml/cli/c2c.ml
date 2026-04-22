@@ -3250,6 +3250,18 @@ let relay_serve_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "persist-dir" ] ~docv:"DIR"
       ~doc:"Directory for persistent room history storage (or C2C_RELAY_PERSIST_DIR). Room messages are written to <dir>/rooms/<room_id>/history.jsonl and loaded on startup.")
   in
+  let remote_broker_ssh_target =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "remote-broker-ssh-target" ] ~docv:"USER@HOST"
+      ~doc:"SSH target for remote broker polling (e.g. user@broker-host.example.com).")
+  in
+  let remote_broker_root =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "remote-broker-root" ] ~docv:"PATH"
+      ~doc:"Remote broker root path (e.g. /home/user/.local/share/c2c). Used with --remote-broker-ssh-target.")
+  in
+  let remote_broker_id =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "remote-broker-id" ] ~docv:"ID"
+      ~doc:"Identifier for this remote broker (default: \"default\"). Used with --remote-broker-ssh-target.")
+  in
   let+ listen = listen
   and+ token = token
   and+ token_file = token_file
@@ -3260,7 +3272,10 @@ let relay_serve_cmd =
   and+ tls_cert = tls_cert
   and+ tls_key = tls_key
   and+ allowed_identities = allowed_identities
-  and+ persist_dir = persist_dir in
+  and+ persist_dir = persist_dir
+  and+ remote_broker_ssh_target = remote_broker_ssh_target
+  and+ remote_broker_root = remote_broker_root
+  and+ remote_broker_id = remote_broker_id in
   (* Parse listen address (default 127.0.0.1:7331) *)
   let host, port = match listen with
     | None -> ("127.0.0.1", 7331)
@@ -3344,6 +3359,16 @@ match storage with
      | Some p -> Printf.eprintf "  db-path=%s\n%!" p
      | None -> ());
     let relay = Relay.SqliteRelay.create ?persist_dir () in
+    let remote_polling_stop = match remote_broker_ssh_target, remote_broker_root with
+      | Some ssh_target, Some broker_root ->
+          let broker_id = Option.value remote_broker_id ~default:"default" in
+          let broker = { Relay_remote_broker.id = broker_id; ssh_target; broker_root } in
+          Printf.eprintf "  remote-broker: polling %s:%s\n%!" ssh_target broker_root;
+          Some (Relay_remote_broker.start_polling ~broker ~interval:5.0
+            ~on_fetch:(fun n -> Printf.eprintf "  [remote-broker] fetched %d messages\n%!" n))
+      | _ -> None
+    in
+    let _ = remote_polling_stop in
     let module Server = Relay.Relay_server(Relay.SqliteRelay) in
     Lwt_main.run (Server.start_server ~host ~port ~relay ~token ~verbose ~gc_interval ?tls:tls_cfg ~allowlist ())
 | _ ->
@@ -8451,10 +8476,10 @@ let cc_plugin_group =
         ~doc:"Claude Code plugin sink commands (called by the PostToolUse hook, \
               PreCompact/PostCompact hooks, and any Claude Code statefile emitters).")
     [ Cmdliner.Cmd.v
-        (Cmdliner.Cmd.info "write-statefile"
-           ~doc:"Read a JSON state snapshot from stdin and write it atomically \
-                 to the instance statefile (same path as oc-plugin). Called by \
-                 hooks or scripts that need to emit explicit Claude Code state.")
+         (Cmdliner.Cmd.info "write-statefile"
+            ~doc:"Write a JSON state snapshot received on stdin atomically \
+                  to the instance statefile (same path as oc-plugin). Called by \
+                  hooks or scripts that need to emit explicit Claude Code state.")
         cc_plugin_write_statefile_cmd ]
 
 (* --- main entry point ----------------------------------------------------- *)
