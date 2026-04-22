@@ -1816,6 +1816,16 @@ let cmd_stop (name : string) : int =
       Printf.eprintf "error: instance '%s' is not running.\n%!" name;
       1
 
+let read_kickoff_prompt_opt (name : string) : string option =
+  let path = instance_dir name // "kickoff-prompt.txt" in
+  if Sys.file_exists path then
+    try
+      let ic = open_in path in
+      Fun.protect ~finally:(fun () -> close_in ic)
+        (fun () -> let content = really_input_string ic (in_channel_length ic) in Some content)
+    with _ -> None
+  else None
+
 let cmd_restart (name : string) : int =
   match load_config_opt name with
   | None ->
@@ -1823,11 +1833,13 @@ let cmd_restart (name : string) : int =
       exit 1
   | Some cfg ->
       ignore (cmd_stop name);
+      let kickoff_prompt = read_kickoff_prompt_opt name in
       run_outer_loop ~name ~client:cfg.client ~extra_args:cfg.extra_args
         ~broker_root:cfg.broker_root
         ?binary_override:cfg.binary_override
         ?alias_override:(Some cfg.alias)
-        ?resume_session_id:(Some cfg.resume_session_id) ()
+        ?resume_session_id:(Some cfg.resume_session_id)
+        ?kickoff_prompt ()
 
 let cmd_instances () : int =
   if not (Sys.file_exists instances_dir) then
