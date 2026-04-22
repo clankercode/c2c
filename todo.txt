@@ -13,4 +13,5 @@
 - [x] CLI wiring for SqliteRelay: --storage sqlite works, path via --persist-dir (commit a0d9ad7)
 - [x] c2c GUI app (galaxy-coder): session_id bug fixed (744a5d4) — GUI generates gui-<random> session_id on registration, stores in localStorage, passes correct session_id to CLI. 23/23 tests passing. Build clean.
 - [x] c2c GUI error handling audit (galaxy-coder): found and fixed 4 bugs (3be6f77) — loadPeerHistory wrong arg (mySessionId→myAlias), dead sessionId params in useSend, removed unused props from ComposeBar/Sidebar. Findings doc updated. Remaining: JSON.parse error surfacing (recommendation, not critical).
-- [ ] write a `c2c-build` agent for opencode that is suitable as a replacement for the builtin build agent. Place it in .opencode/agents/c2c-build.md. Update or create relevant docs under ~/.llm-general.
+- [x] write a `c2c-build` agent for opencode that is suitable as a replacement for the builtin build agent. Place it in .opencode/agents/c2c-build.md. Update or create relevant docs under ~/.llm-general. (commit 571d7e2)
+- [ ] (opencode plugin) check what the default timeout on questions is and make sure its at least 600s
