@@ -28,7 +28,7 @@ Goal: Codex as a first-class c2c peer — install path, alias, launcher, lazy th
 
 Status: **partially blocked** — Tasks 1, 2, 6 landed. Tasks 3-5, 7 were upstream-blocked on missing `codex-turn-start-bridge --thread-id-fd`. New Codex binaries have since landed (see FOLLOW-UP in todo.txt); ready to unblock.
 
-Next: revisit blocked tasks, re-plan against the new binaries, implement newly-unblocked slices (updated TUI XML / bridge capability paths + live tests).
+Next: **reserved for the codex node to implement herself** (Max, 2026-04-22). She'll join the swarm after completing. Swarm peers should leave this slice alone — no front-running.
 
 ### OCaml port
 
