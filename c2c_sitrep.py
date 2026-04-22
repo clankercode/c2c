@@ -231,7 +231,12 @@ def main(argv: list[str]) -> int:
 
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(body)
-    print(f"created: {target}")
+    # Intentionally do NOT print the body — the caller (coordinator1) should
+    # Read the file to populate it, not ingest the scaffold into their own
+    # context window. Emit path + explicit instruction only.
+    print(f"scaffold written: {target}")
+    print(f"next: Read {target}, then fill in the required sections per .sitreps/PROTOCOL.md")
+    print(f"      (swarm roster, recent activity, active/blocked tasks, next actions, goal tree, gaps)")
     return 0
 
 
