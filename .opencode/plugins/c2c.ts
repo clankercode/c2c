@@ -114,12 +114,16 @@ function resolvePermissionSupervisors(): string[] {
  *   metadata.command > metadata.input > patterns (joined) > permission
  */
 export function summarizePermission(perm: Record<string, unknown>): string {
-  const permission = typeof perm.permission === "string" && perm.permission ? perm.permission : "unknown";
+  const permission = typeof perm.permission === "string" && perm.permission
+    ? perm.permission
+    : typeof perm.type === "string" && perm.type
+      ? perm.type
+      : "unknown";
   const meta = (typeof perm.metadata === "object" && perm.metadata !== null)
     ? (perm.metadata as Record<string, unknown>)
     : {};
 
-  const rawPatterns = perm.patterns;
+  const rawPatterns = perm.patterns ?? (typeof perm.pattern === "string" ? [perm.pattern] : []);
   const patternsStr: string = Array.isArray(rawPatterns)
     ? (rawPatterns as string[]).join(" ")
     : typeof rawPatterns === "string" ? rawPatterns : "";
