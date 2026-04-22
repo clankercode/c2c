@@ -194,11 +194,9 @@ let rec command_tier_map () : (string * safety) list =
   ; "rooms-tail", Tier2
   ; "rooms-delete", Tier2
   ; "agent", Tier2
-  ; "roles-compile", Tier2
   ; "roles-validate", Tier2
   ; "config", Tier2
   ; "config-show", Tier2
-  ; "config-generation-client", Tier2
   ; "wire-daemon", Tier2
   ; "wire-daemon-list", Tier2
   ; "wire-daemon-status", Tier2
@@ -8692,8 +8690,8 @@ let commands_man is_agent =
     ; `P "$(b,rooms-send) $(b,rooms-join) $(b,rooms-leave) $(b,rooms-list) \
          $(b,rooms-members) $(b,rooms-history) $(b,rooms-invite) \
          $(b,rooms-visibility) $(b,rooms-delete)"
-    ; `P "$(b,agent) $(b,roles-compile) $(b,roles-validate) — role file management"
-    ; `P "$(b,config) $(b,config-show) $(b,config-generation-client)"
+    ; `P "$(b,agent) $(b,roles) $(b,compile) $(b,roles-validate) — role file management"
+    ; `P "$(b,config) $(b,config-show) $(b,generation-client)"
     ; `P "$(b,wire-daemon) $(b,wire-daemon-list) $(b,wire-daemon-status)"
     ; `P "$(b,init) $(b,repo)"
     ; `P "$(b,Tier 3 and 4 commands hidden when running as an agent.)"
@@ -8709,8 +8707,8 @@ let commands_man is_agent =
          $(b,instances), $(b,doctor), $(b,rooms), $(b,monitor), $(b,screen)"
     ; `P "== TIER 2: LIFECYCLE AND SETUP (safe with care) =="
     ; `P "$(b,start), $(b,stop), $(b,restart), $(b,init), $(b,install), \
-         $(b,agent), $(b,roles-compile), $(b,roles-validate), \
-         $(b,config), $(b,config-show), $(b,config-generation-client), \
+         $(b,agent), $(b,roles), $(b,compile), $(b,roles-validate), \
+          $(b,config), $(b,config-show), $(b,generation-client), \
          $(b,wire-daemon), $(b,wire-daemon-list), $(b,wire-daemon-status), \
          $(b,repo)"
     ; `P "== TIER 3: SYSTEM (do NOT run from inside an agent) =="
