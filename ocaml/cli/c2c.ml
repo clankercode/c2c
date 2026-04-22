@@ -4539,7 +4539,7 @@ let do_install_client ?(channel_delivery=false) ~output_mode ~client ~alias_opt 
 
 (* --- install: detection + TUI --------------------------------------------- *)
 
-let known_clients = [ "claude"; "codex"; "opencode"; "kimi"; "crush" ]
+let known_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "crush" ]
 let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "crush" ]
 
 let self_installed_path () =

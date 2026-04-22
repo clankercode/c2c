@@ -237,6 +237,30 @@ class C2CCLITests(unittest.TestCase):
         self.assertNotIn("C2C_MCP_SESSION_ID", config_text)
         self.assertNotIn("C2C_MCP_AUTO_REGISTER_ALIAS", config_text)
 
+    def test_install_codex_headless_aliases_to_codex_setup(self):
+        home_dir = Path(self.temp_dir.name) / "home"
+        broker_root = Path(self.temp_dir.name) / "broker"
+        home_dir.mkdir(parents=True, exist_ok=True)
+        broker_root.mkdir(parents=True, exist_ok=True)
+
+        env = dict(self.env)
+        env["HOME"] = str(home_dir)
+
+        result = self.invoke_cli(
+            "c2c",
+            "install",
+            "codex-headless",
+            "--broker-root",
+            str(broker_root),
+            "--json",
+            env=env,
+        )
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["client"], "codex")
+
     def test_register_is_idempotent_for_same_live_session(self):
         first = self.invoke_cli("c2c-register", "agent-one", "--json")
         second = self.invoke_cli("c2c-register", "agent-one", "--json")

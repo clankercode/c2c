@@ -1,17 +1,50 @@
 #!/usr/bin/env python3
 """Thin shim: delegates to c2c_cli.py (Python subcommands) or the OCaml binary."""
-import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
+# Transitional bridge while repo-root wrappers still exist: prefer the native
+# implementation for commands that have moved there, but never recurse back into
+# this shim if `c2c` on PATH points at the checkout script.
+NATIVE_FIRST_SUBCOMMANDS = {
+    "init",
+    "install",
+    "start",
+    "stop",
+    "restart",
+    "instances",
+}
+
+
+def find_native_c2c() -> str | None:
+    candidates = [
+        SCRIPT_DIR / "_build" / "default" / "ocaml" / "cli" / "c2c.exe",
+        Path.home() / ".local" / "bin" / "c2c",
+    ]
+    which_c2c = shutil.which("c2c")
+    if which_c2c:
+        candidates.append(Path(which_c2c))
+
+    this_script = Path(__file__).resolve()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except FileNotFoundError:
+            continue
+        if not resolved.exists() or resolved == this_script:
+            continue
+        return str(resolved)
+    return None
+
 # Subcommands handled by the Python CLI
 PYTHON_SUBCOMMANDS = {
     "broker-gc", "configure-claude-code", "configure-codex", "configure-crush",
     "configure-kimi", "configure-opencode", "dead-letter", "deliver-inbox",
-    "health", "history", "inject", "init", "install", "list", "mcp",
+    "health", "history", "inject", "list", "mcp",
     "peek-inbox", "poker-sweep", "poll-inbox", "prune", "refresh-peer",
     "register", "relay", "restart-me", "room", "send", "send-all",
     "setup", "verify", "wake-peer", "whoami", "wire-daemon",
@@ -24,13 +57,18 @@ def main() -> int:
     else:
         subcmd = args[0]
 
+    native_c2c = find_native_c2c()
+    if subcmd in NATIVE_FIRST_SUBCOMMANDS and native_c2c is not None:
+        result = subprocess.run([native_c2c] + args)
+        return result.returncode
+
     if subcmd in PYTHON_SUBCOMMANDS:
         cli = SCRIPT_DIR / "c2c_cli.py"
         result = subprocess.run([sys.executable, str(cli)] + args)
         return result.returncode
 
-    # Fall through to OCaml binary on PATH
-    result = subprocess.run(["c2c"] + args)
+    # Fall through to the native CLI for commands the Python shim never owned.
+    result = subprocess.run([native_c2c or "c2c"] + args)
     return result.returncode
 
 if __name__ == "__main__":
