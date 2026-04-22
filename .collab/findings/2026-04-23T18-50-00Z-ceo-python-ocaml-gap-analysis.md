@@ -52,10 +52,10 @@
 | Field | Value |
 |-------|-------|
 | **Called by** | `c2c start kimi` — OCaml generates Kimi MCP config pointing to `c2c_mcp.py` (c2c_start.ml:856-872) |
-| **Role** | Bootstrapper: syncs registry, sets env vars, auto-registers, spawns OCaml `c2c-mcp-server.exe` |
-| **OCaml equiv** | OCaml binary IS `c2c-mcp-server.exe`; bootstrapper logic is trivial env setup |
-| **Verdict** | **REPLACE with shell script or direct OCaml invocation** |
-| **Effort** | Low — Python code is just `sync_broker_registry()` + env vars + `exec c2c-mcp-server.exe`. Can be a 10-line shell script. |
+| **Role** | Bootstrapper: syncs registry, sets env vars, auto-registers, checks if OCaml binary is fresh, builds if stale, then execs it |
+| **OCaml equiv** | None — OCaml binary doesn't do self-build-check |
+| **Verdict** | **KEEP-PYTHON** (non-trivial: registry sync + fresh-build detection can't be shell-replaced) |
+| **Effort** | N/A |
 
 ### 5. `c2c_deliver_inbox.py`
 
