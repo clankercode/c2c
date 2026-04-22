@@ -84,6 +84,6 @@ Project Folder: **todo**
 
 Goal: enable a remote node to receive c2c messages through a relay server without requiring the local broker's file system.
 
-Status: **active** — SSH polling scaffold (relay_remote_broker.ml) exists; GET /remote_inbox/<session_id> endpoint added; --remote-broker-ssh-target/--remote-broker-root/--remote-broker-id flags wired in relay serve. Polling thread starts alongside HTTP server.
+Status: **v1 shipped** — Full e2e verified (25dc1b1): fake broker → SSH poll (5s) → relay cache → GET /remote_inbox/<session_id> → message delivered. Bugs fixed: off-by-one path length (14 not 13), SSH ls color codes (--color=never). CLI: c2c relay serve --remote-broker-ssh-target/--root/--id and c2c relay poll-inbox --relay-url --session-id. Regression tests in test_relay_remote_broker.ml.
 
-Next: smoke test remote relay with a live SSH target; add configuration file support (relay.toml) for persistent remote broker settings.
+Next: relay.toml persistent config for remote broker settings; multi-broker support (v2).
