@@ -63,7 +63,8 @@ export async function loadHistory(limit = 100, sessionId?: string): Promise<C2cE
     if (result.code !== 0) return [];
     const entries: HistoryEntry[] = JSON.parse(result.stdout);
     return entries.map(e => entryToEvent(e));
-  } catch {
+  } catch (err) {
+    console.error("[c2c/gui] loadHistory JSON.parse error:", err, "(CLI may have output non-JSON)");
     return [];
   }
 }
@@ -76,7 +77,8 @@ export async function loadRoomHistory(roomId: string, limit = 50): Promise<C2cEv
     if (result.code !== 0) return [];
     const entries: HistoryEntry[] = JSON.parse(result.stdout);
     return entries.map(e => entryToEvent(e, roomId));
-  } catch {
+  } catch (err) {
+    console.error("[c2c/gui] loadRoomHistory JSON.parse error:", err, "(CLI may have output non-JSON)");
     return [];
   }
 }
@@ -96,7 +98,8 @@ export async function loadPeerHistory(peerAlias: string, mySessionId: string, my
         return (m.from_alias === peerAlias && m.to_alias === myAlias) ||
                (m.from_alias === myAlias && m.to_alias === peerAlias);
       });
-  } catch {
+  } catch (err) {
+    console.error("[c2c/gui] loadPeerHistory JSON.parse error:", err, "(CLI may have output non-JSON)");
     return [];
   }
 }

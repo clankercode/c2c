@@ -18,7 +18,8 @@ export async function discoverPeers(): Promise<PeerInfo[]> {
     if (result.code !== 0) return [];
     const entries = JSON.parse(result.stdout) as Array<{ alias: string; alive: boolean }>;
     return entries.map(e => ({ alias: e.alias, alive: e.alive ?? false }));
-  } catch {
+  } catch (err) {
+    console.error("[c2c/gui] discoverPeers JSON.parse error:", err, "(CLI may have output non-JSON)");
     return [];
   }
 }
@@ -44,7 +45,8 @@ export async function fetchHealth(): Promise<HealthInfo | null> {
       rooms: data.rooms ?? 0,
       relay: data.relay ?? null,
     };
-  } catch {
+  } catch (err) {
+    console.error("[c2c/gui] fetchHealth JSON.parse error:", err, "(CLI may have output non-JSON)");
     return null;
   }
 }
@@ -62,7 +64,8 @@ export async function discoverRooms(): Promise<RoomInfo[]> {
       alive_count: e.alive_count ?? 0,
       alive_members: e.alive_members,
     }));
-  } catch {
+  } catch (err) {
+    console.error("[c2c/gui] discoverRooms JSON.parse error:", err, "(CLI may have output non-JSON)");
     return [];
   }
 }
