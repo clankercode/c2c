@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Protocol
 
 
-@dataclass(frozen=True)
+@dataclass
 class TerminalHandle:
     backend: str
     target: str
@@ -19,7 +19,7 @@ class TerminalCapture:
     raw: str
 
 
-@dataclass(frozen=True)
+@dataclass
 class TerminalStartSpec:
     command: list[str]
     cwd: Path
@@ -41,4 +41,3 @@ class TerminalDriver(Protocol):
     def is_alive(self, handle: TerminalHandle) -> bool: ...
 
     def stop(self, handle: TerminalHandle) -> None: ...
-

@@ -1,11 +1,12 @@
 from pathlib import Path
+import json
 import sys
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
-import pytest
 
 from tests.e2e.framework.artifacts import ArtifactCollector
 from tests.e2e.framework.terminal_driver import TerminalCapture, TerminalHandle
@@ -17,6 +18,24 @@ def test_artifact_collector_creates_run_dir_and_timeline(tmp_path: Path) -> None
 
     assert run_dir.parent == tmp_path / "test_demo"
     assert (run_dir / "timeline.jsonl").exists()
+
+
+def test_artifact_collector_creates_distinct_run_dir_for_same_second_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "tests.e2e.framework.artifacts.time.strftime",
+        lambda _fmt: "20260422-123456",
+    )
+
+    collector = ArtifactCollector(root=tmp_path, test_name="test_demo")
+    first = collector.start_run()
+    second = collector.start_run()
+
+    assert first != second
+    assert first.exists()
+    assert second.exists()
+    assert first.parent == second.parent == tmp_path / "test_demo"
 
 
 def test_artifact_collector_writes_actual_on_golden_mismatch(tmp_path: Path) -> None:
@@ -32,6 +51,26 @@ def test_artifact_collector_writes_actual_on_golden_mismatch(tmp_path: Path) -> 
     assert (collector.run_dir / "screen.actual.txt").exists()
 
 
+def test_artifact_collector_requires_start_run_before_writing(tmp_path: Path) -> None:
+    collector = ArtifactCollector(root=tmp_path, test_name="test_demo")
+
+    with pytest.raises(RuntimeError, match="start_run\\(\\) must be called first"):
+        collector.write_text("screen.txt", "body")
+
+
+def test_artifact_collector_event_field_wins_over_payload_event(tmp_path: Path) -> None:
+    collector = ArtifactCollector(root=tmp_path, test_name="test_demo")
+    collector.start_run()
+
+    collector.append_event("ready", {"event": "payload", "extra": 1})
+
+    line = (collector.run_dir / "timeline.jsonl").read_text(encoding="utf-8").strip()
+    payload = json.loads(line)
+    assert payload["event"] == "ready"
+    assert payload["extra"] == 1
+    assert set(payload) == {"event", "extra"}
+
+
 def test_terminal_types_keep_backend_and_target_explicit() -> None:
     handle = TerminalHandle(
         backend="fake-pty",
@@ -45,4 +84,13 @@ def test_terminal_types_keep_backend_and_target_explicit() -> None:
 
     assert handle.backend == "fake-pty"
     assert handle.target == "pty-1"
+    handle.metadata["role"] = "driver"
+    assert handle.metadata["role"] == "driver"
     assert capture.text == "READY\n"
+
+
+def test_artifact_collector_requires_start_run_before_appending(tmp_path: Path) -> None:
+    collector = ArtifactCollector(root=tmp_path, test_name="test_demo")
+
+    with pytest.raises(RuntimeError, match="start_run\\(\\) must be called first"):
+        collector.append_event("ready", {})
