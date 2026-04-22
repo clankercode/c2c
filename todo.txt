@@ -39,17 +39,17 @@ by deleting — git history keeps them if anyone needs to look back.
   Blocker: `ocaml/cli/c2c.ml` and start surfaces do not accept `codex-headless` yet, and the fast tests are missing.
 - [x] codex-headless Task 2: launcher entry and opaque resume ids. (commit 94f2e45 — Python side; OCaml placeholder config in place)
   Blocker: managed start still assumes UUID-style resume ids and has no `codex-turn-start-bridge` launch path.
-- [ ] codex-headless Task 3: thread-id handoff and lazy persistence.
-  Blocker: no `--thread-id-fd` capability probe or async handoff persistence exists yet.
-- [ ] codex-headless Task 4: single-writer durable XML queue.
-  Blocker: operator steering has no queue/spool path and cannot share the existing XML durability guarantees.
-- [ ] codex-headless Task 5: bridge stdin wiring and minimal console.
-  Blocker: launcher does not reserve bridge-critical args or funnel operator input through the durable writer.
+- [x] codex-headless Task 3: thread-id handoff and lazy persistence. (commit 3d91280 + f2ddb7b)
+  `c2c start codex-headless` now probes `--thread-id-fd`, persists opaque bridge thread ids lazily, and reuses them on resume.
+- [x] codex-headless Task 4: single-writer durable XML queue. (commit f2ddb7b)
+  Managed headless delivery now stages broker messages through the durable XML spool and writes them through the named-pipe bridge path.
+- [x] codex-headless Task 5: bridge stdin wiring and minimal console. (commit f2ddb7b)
+  Headless launches now reserve bridge-owned stdin via named FIFO delivery; no PTY fallback path remains on the managed bridge transport.
 - [x] codex-headless Task 6: docs and regression coverage. (commit 6842b6e — commands.md, client-delivery.md, overview.md updated; test_start_help_mentions_codex_headless passes)
   Blocker: public docs and quick tests do not describe or verify the unblocker headless path yet.
-- [ ] codex-headless Task 7: tmux smoke coverage.
-  Blocker: there is no capability-gated live test for `c2c start codex-headless`, and current Codex binaries are expected to xfail.
-- [ ] FOLLOW-UP (after current terminal E2E work): the new Codex binaries have landed. Revisit the blocked Codex / codex-headless plan items that were gated on missing binary support, then re-plan and implement the newly unblocked slices (especially updated TUI XML / bridge capability paths and their live tests).
+- [x] codex-headless Task 7: tmux smoke coverage. (commit 4c9d60c + f2ddb7b)
+  Capability-gated live tmux coverage now exercises startup plus first-message thread-id persistence on the landed Codex binaries.
+- [x] FOLLOW-UP (after current terminal E2E work): the new Codex binaries have landed. Revisit the blocked Codex / codex-headless plan items that were gated on missing binary support, then re-plan and implement the newly unblocked slices (especially updated TUI XML / bridge capability paths and their live tests). (implemented by f2ddb7b and verified live on 2026-04-22)
 - [ ] EPIC: OpenCode agent-file system. Leads: coordinator1 (design doc), jungel-coder (OCaml implementation), galaxy-coder (renderer templates), coordinator1 (docs + migration). Shape evolved: c2c as hub compile model. Canonical: `.c2c/roles/<name>.md` (YAML frontmatter + body). Compile on-the-fly to `.opencode/agent/<name>.md`, `.claude/agents/<name>.md`, etc. Git policy: compiled artifacts are NOT checked in (gitignored). Implementation: pure OCaml. Design doc: `.collab/agent-files/design-doc-v1.md` (v7, schema locked). **v1.1 DONE** — all blockers closed. Residual: `c2c roles compile` subgroup refactor (cosmetic), missing-role authoring (dogfood-hunter, release-manager, gui-tester), Codex/Kimi renderers (post-v1.1).
 - [x] when running c2c start claude ... from an existing session, -s does not seem to work (in such cases we should not be using it with --session-id, only --resume)
 - [x] PERF/UX: `send_room` broadcast delivery is slow to idle opencode peers (~30s per observation). Root cause: plugin's `C2C_MCP_INBOX_WATCHER_DELAY` defaults to 30s to let preferred paths (PostToolUse, PTY sentinel) win first. Idle agents have no preferred path, so they wait the full delay. Active agents get faster delivery via tool-call hooks. Fix: reduce default from 30s to 5s (commit 6ccc205). 5s is short enough to keep idle agents responsive while still giving active agents' preferred paths time to win the race. Reported by Max 2026-04-22 09:39 UTC. Blocks production-feel for relay.
