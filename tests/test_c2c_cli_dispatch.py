@@ -310,6 +310,89 @@ class C2CCLIDispatchTests(unittest.TestCase):
             self.assertFalse(c2c_cli.auto_approve_enabled())
 
 
+    def test_send_works_with_agent_session_id(self):
+        """Regression: c2c send must succeed when C2C_MCP_SESSION_ID is set.
+
+        send is Tier1 — the tier filter only hides Tier3+ commands from agent
+        sessions. This test verifies the tier classification is correct and
+        that managed peers can still message each other even when they have
+        their own C2C_MCP_SESSION_ID set.
+        """
+        c2c_bin = shutil.which("c2c")
+        if not c2c_bin:
+            self.skipTest("c2c binary not found in PATH")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            broker_root = Path(tmp) / "broker"
+            broker_root.mkdir()
+            registry_path = broker_root / "registry.json"
+            registry_path.write_text("[]", encoding="utf-8")
+
+            env = os.environ.copy()
+            env.update(self.env)
+            env["C2C_MCP_SESSION_ID"] = "test-agent-session"
+            env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
+            env["C2C_SEND_MESSAGE_FIXTURE"] = "1"
+
+            reg_result = subprocess.run(
+                [c2c_bin, "register", "--alias", "test-agent", "--json"],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+                env=env,
+            )
+            self.assertEqual(
+                reg_result.returncode, 0,
+                msg=f"register failed: {reg_result.stderr}",
+            )
+
+            result = subprocess.run(
+                [c2c_bin, "send", "some-alias", "hello", "--dry-run", "--json"],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+                env=env,
+            )
+            self.assertEqual(
+                result.returncode,
+                0,
+                msg=f"c2c send --dry-run failed with C2C_MCP_SESSION_ID set: {result.stderr}",
+            )
+            self.assertEqual(
+                reg_result.returncode, 0,
+                msg=f"register failed: {reg_result.stderr}",
+            )
+
+            # Register a second alias under a *different* session_id so the
+            # broker has a distinct recipient (same session_id would trigger
+            # the send-to-self guard).
+            peer_env = env.copy()
+            peer_env["C2C_MCP_SESSION_ID"] = "test-peer-session"
+            reg_result2 = subprocess.run(
+                [c2c_bin, "register", "--alias", "peer", "--json"],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+                env=peer_env,
+            )
+            self.assertEqual(
+                reg_result2.returncode, 0,
+                msg=f"register peer failed: {reg_result2.stderr}",
+            )
+
+            result = subprocess.run(
+                [c2c_bin, "send", "peer", "hello", "--json"],
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT_SECONDS,
+                env=env,
+            )
+            self.assertEqual(
+                result.returncode,
+                0,
+                msg=f"c2c send failed with C2C_MCP_SESSION_ID set: {result.stderr}",
+            )
+
     def test_plugin_commands_callable_with_agent_session_id(self):
         """Regression: oc-plugin, cc-plugin, hook must be callable when
         C2C_MCP_SESSION_ID is set (Tier1 after fix).
