@@ -665,6 +665,11 @@ let build_env ?(broker_root_override : string option = None)
        clients that don't declare experimental.claude/channel in initialize,
        so harmless where unsupported. *)
     "C2C_MCP_CHANNEL_DELIVERY", "1";
+    (* Force notifications/claude/channel push delivery regardless of client capability.
+       Claude Code doesn't declare experimental.claude/channel, so without this
+       the watcher would leave messages in the inbox. Harmless on clients that
+       don't handle the notification (they just ignore it). *)
+    "C2C_MCP_FORCE_CHANNEL_DELIVERY", "1";
     (* Pin the c2c binary used by the plugin to the running binary's absolute
        path so a CWD-relative ./c2c shim can never be accidentally preferred. *)
     "C2C_CLI_COMMAND", c2c_bin;

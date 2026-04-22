@@ -22,6 +22,17 @@ let auto_drain_channel_enabled () =
       not (List.mem normalized [ "0"; "false"; "no"; "off" ])
   | None -> channel_delivery_enabled ()
 
+(* Force channel-capable mode regardless of client capability negotiation.
+   When set, the inbox watcher drains and emits notifications/claude/channel
+   even if the client never declared experimental.claude/channel. Use for
+   Claude Code sessions where we want push delivery. *)
+let force_channel_delivery_enabled () =
+  match Sys.getenv_opt "C2C_MCP_FORCE_CHANNEL_DELIVERY" with
+  | Some value ->
+      let normalized = String.lowercase_ascii (String.trim value) in
+      not (List.mem normalized [ "0"; "false"; "no"; "off" ])
+  | None -> false
+
 let inbox_watcher_delay_seconds () =
   match Sys.getenv_opt "C2C_MCP_INBOX_WATCHER_DELAY" with
   | Some value -> (
@@ -182,6 +193,7 @@ let rec loop ~broker_root ~channel_capable_ref =
           loop ~broker_root ~channel_capable_ref
       | Ok request ->
           let new_capable = next_channel_capability ~current:!channel_capable_ref request in
+          let new_capable = new_capable || force_channel_delivery_enabled () in
           channel_capable_ref := new_capable;
           let* response = C2c_mcp.handle_request ~broker_root request in
           let* () = match response with None -> Lwt.return_unit | Some resp -> write_message resp in
@@ -211,7 +223,7 @@ let () =
   let root = broker_root () in
   C2c_mcp.auto_register_startup ~broker_root:root;
   C2c_mcp.auto_join_rooms_startup ~broker_root:root;
-  let channel_capable_ref = ref false in
+  let channel_capable_ref = ref (force_channel_delivery_enabled ()) in
   (match (channel_delivery_enabled (), session_id ()) with
    | true, Some sid ->
        Lwt.async (fun () ->
