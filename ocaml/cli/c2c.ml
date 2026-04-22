@@ -202,23 +202,23 @@ let rec command_tier_map () : (string * safety) list =
   ; "wire-daemon-status", Tier2
   ; "init", Tier2
   ; "repo", Tier2
-  ; "restart-self", Tier3
-  ; "relay", Tier3
-  ; "relay-serve", Tier3
-  ; "relay-gc", Tier3
-  ; "relay-setup", Tier3
-  ; "relay-connect", Tier3
-  ; "relay-register", Tier3
-  ; "relay-dm", Tier3
-  ; "relay-status", Tier3
-  ; "relay-list", Tier3
-   ; "relay-rooms", Tier3
-   ; "relay-poll-inbox", Tier3
+   ; "restart-self", Tier3
+   ; "relay", Tier2
+   ; "relay-serve", Tier3
+   ; "relay-gc", Tier3
+   ; "relay-setup", Tier2
+   ; "relay-connect", Tier3
+   ; "relay-register", Tier2
+   ; "relay-dm", Tier2
+   ; "relay-status", Tier2
+   ; "relay-list", Tier2
+    ; "relay-rooms", Tier2
+    ; "relay-poll-inbox", Tier2
    ; "setcap", Tier3
-  ; "install", Tier2
-  ; "gui", Tier3
-  ; "diag", Tier3
-  ; "smoke-test", Tier3
+   ; "install", Tier2
+   ; "gui", Tier3
+   ; "diag", Tier3
+   ; "smoke-test", Tier3
   ; "inject", Tier4
   (* hook, oc-plugin, cc-plugin: internal plumbing invoked by plugin subprocesses
      (OC plugin via spawn, CC via PostToolUse hook). They MUST remain invokable
@@ -5426,7 +5426,10 @@ let install_common_args () =
   let force =
     Cmdliner.Arg.(value & flag & info [ "force"; "f" ] ~doc:"Overwrite existing configuration.")
   in
-  (alias, broker_root, target_dir, force)
+  let dry_run =
+    Cmdliner.Arg.(value & flag & info [ "dry-run"; "n" ] ~doc:"Show what would be written without writing anything.")
+  in
+  (alias, broker_root, target_dir, force, dry_run)
 
 let install_self_subcmd =
   let dest =
@@ -5448,28 +5451,30 @@ let install_self_subcmd =
     term
 
 let install_client_subcmd client =
-  let (alias, broker_root, target_dir, force) = install_common_args () in
+  let (alias, broker_root, target_dir, force, dry_run) = install_common_args () in
   let term =
     let+ json = json_flag
     and+ alias_opt = alias
     and+ broker_root_opt = broker_root
     and+ target_dir_opt = target_dir
-    and+ force = force in
+    and+ force = force
+    and+ dry_run = dry_run in
     let output_mode = if json then Json else Human in
     let channel_delivery =
       if client = "claude" && output_mode = Human then prompt_channel_delivery () else false
     in
-    do_install_client ~channel_delivery ~output_mode ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force ()
+    do_install_client ~channel_delivery ~output_mode ~dry_run ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force ()
   in
   let doc = Printf.sprintf "Configure %s for c2c messaging." client in
   Cmdliner.Cmd.v (Cmdliner.Cmd.info client ~doc) term
 
 let install_all_subcmd =
-  let (alias, broker_root, _target_dir, _force) = install_common_args () in
+  let (alias, broker_root, _, _, dry_run) = install_common_args () in
   let term =
     let+ json = json_flag
     and+ alias_opt = alias
-    and+ broker_root_opt = broker_root in
+    and+ broker_root_opt = broker_root
+    and+ dry_run = dry_run in
     let output_mode = if json then Json else Human in
     let (self, clients) = detect_installation () in
     if not self then begin
@@ -5479,7 +5484,7 @@ let install_all_subcmd =
     List.iter (fun (c, on_path, configured) ->
       if on_path && not configured then begin
         if output_mode = Human then Printf.printf "\n→ Configuring %s...\n" c;
-        do_install_client ~output_mode ~client:c ~alias_opt ~broker_root_opt
+        do_install_client ~output_mode ~dry_run ~client:c ~alias_opt ~broker_root_opt
           ~target_dir_opt:None ~force:false ()
       end
     ) clients;
@@ -5491,10 +5496,11 @@ let install_all_subcmd =
     term
 
 let install_default_term =
-  let (alias, broker_root, _target_dir, _force) = install_common_args () in
+  let (alias, broker_root, _, _, dry_run) = install_common_args () in
   let+ alias_opt = alias
-  and+ broker_root_opt = broker_root in
-  run_install_tui ~alias_opt ~broker_root_opt
+  and+ broker_root_opt = broker_root
+  and+ dry_run = dry_run in
+  run_install_tui ~alias_opt ~broker_root_opt ~dry_run
 
 (* --- repo config helpers (also used by init_cmd + repo subcommand) ------- *)
 
@@ -5593,7 +5599,7 @@ let init_cmd =
           `No_client
       | Some client ->
           (try
-             do_install_client ~output_mode ~client ~alias_opt ~broker_root_opt:(Some root) ~target_dir_opt:None ~force:false ();
+             do_install_client ~output_mode ~dry_run:false ~client ~alias_opt ~broker_root_opt:(Some root) ~target_dir_opt:None ~force:false ();
              `Ok (canonical_install_client client)
            with e -> `Error (Printexc.to_string e))
   in
