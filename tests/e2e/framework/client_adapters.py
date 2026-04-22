@@ -49,7 +49,10 @@ def compile_role(workdir: Path, alias: str, client: str) -> Path:
     roles_dir = workdir / ".c2c" / "roles"
     roles_dir.mkdir(parents=True, exist_ok=True)
     role_file = roles_dir / f"{alias}.md"
-    role_file.write_text("test-agent\n", encoding="utf-8")
+    role_file.write_text(
+        "---\nrole: subagent\ndescription: smoke-test\n---\n\nYou are a test agent.\n",
+        encoding="utf-8",
+    )
     result = subprocess.run(
         ["c2c", "roles", "compile", alias, "--client", client],
         cwd=workdir,

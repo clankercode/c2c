@@ -62,28 +62,34 @@ def _init_git_repo(path: Path) -> None:
 def _create_opencode_json(workdir: Path, broker_root: Path) -> None:
     """Create .opencode/opencode.json so c2c start opencode doesn't prompt.
 
-    The OCaml c2c binary calls `c2c install opencode` (a Tier 3 command) when
-    .opencode/opencode.json is missing. Since Tier 3 commands are hidden from
-    agent sessions, the call silently fails and the interactive "Run it now?"
-    prompt blocks startup. Pre-creating the file bypasses this.
+    Uses the same JSON structure that 'c2c install opencode' writes, so OpenCode's
+    c2c plugin accepts it. The 'c2c start opencode' flow calls 'c2c install
+    opencode' (Tier 2, non-interactive) which would create this file, but only
+    when the server binary is reachable from CWD (needs _build/ or OPAM_SWITCH_PREFIX).
+    Pre-creating with the correct format bypasses the install call and avoids a
+    broken-server-path config that OpenCode would reject.
     """
     mcp_bin = shutil.which("c2c-mcp-server")
     if not mcp_bin:
-        mcp_bin = str(Path(__file__).resolve().parents[1] / "_build" / "default" / "ocaml" / "server" / "c2c_mcp_server.exe")
+        mcp_bin = "/home/xertrov/.local/bin/c2c-mcp-server"
     oc_dir = workdir / ".opencode"
     oc_dir.mkdir(parents=True, exist_ok=True)
+    c2c_bin = shutil.which("c2c") or "/home/xertrov/.local/bin/c2c"
     config = {
+        "$schema": "https://opencode.ai/config.json",
         "mcp": {
             "c2c": {
-                "type": "stdio",
-                "command": [mcp_bin],
-                "env": {
+                "type": "local",
+                "command": ["opam", "exec", "--", mcp_bin],
+                "environment": {
                     "C2C_MCP_BROKER_ROOT": str(broker_root),
                     "C2C_MCP_AUTO_JOIN_ROOMS": "swarm-lounge",
                     "C2C_MCP_AUTO_DRAIN_CHANNEL": "0",
+                    "C2C_CLI_COMMAND": c2c_bin,
                 },
+                "enabled": True,
             }
-        }
+        },
     }
     (oc_dir / "opencode.json").write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
@@ -150,6 +156,7 @@ def test_opencode_smoke_with_agent(scenario: Scenario) -> None:
     agent = scenario.start_agent("opencode", name=agent_alias, role=agent_alias)
 
     scenario.wait_for_init(agent, timeout=90.0)
+
     scenario.wait_for(
         lambda: _registered(agent, scenario),
         timeout=60.0,
