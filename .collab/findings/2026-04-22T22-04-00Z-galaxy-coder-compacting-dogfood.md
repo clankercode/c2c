@@ -1,4 +1,14 @@
-# Dogfood Finding: compacting-status End-to-End Works (with Persistence Bug Found)
+# Dogfood Finding: compacting-status End-to-End Verified (item 94 CLOSED)
+
+**UPDATE 2026-04-23**: coordinator1 confirmed send-side warning receipt during live dogfood:
+```
+{"queued":true,"ts":1776867276.74621,"from_alias":"coordinator1","to_alias":"galaxy-coder","compacting_warning":"recipient compacting for 46s (dogfood-test)"}
+```
+Full flow: set-compact → registry persists → send-side receives warning → clear-compact clears warning. Item 94 VERIFIED CLOSED.
+
+---
+
+Original finding (2026-04-22):
 
 ## Timestamp
 2026-04-22T22-04-00Z
