@@ -131,6 +131,7 @@ class Scenario:
     def probe_capabilities(self, client: str) -> dict[str, bool]:
         if client not in self._adapter_capability_cache:
             self._adapter_capability_cache[client] = self.adapters[client].probe_capabilities(self)
+        self._capability_cache.update(self._adapter_capability_cache[client])
         return dict(self._adapter_capability_cache[client])
 
     def require_capability(self, name: str) -> None:

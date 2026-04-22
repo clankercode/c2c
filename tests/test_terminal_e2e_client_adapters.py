@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest import mock
 
@@ -133,7 +134,7 @@ def test_codex_headless_adapter_builds_managed_launch_command(tmp_path: Path) ->
     assert launch["env"] == {"C2C_TEST_ENV": "1"}
 
 
-def test_codex_adapter_ready_when_driver_alive_and_instance_dir_exists(tmp_path: Path) -> None:
+def test_codex_adapter_ready_requires_live_inner_pid(tmp_path: Path) -> None:
     from tests.e2e.framework.client_adapters import CodexAdapter
 
     adapter = CodexAdapter(tmp_path)
@@ -141,12 +142,24 @@ def test_codex_adapter_ready_when_driver_alive_and_instance_dir_exists(tmp_path:
     scenario = mock.Mock(drivers={"tmux": _ReadyDriver(alive=True)})
     instance_dir = tmp_path / ".local" / "share" / "c2c" / "instances" / agent.name
     instance_dir.mkdir(parents=True)
+    inner_pid = instance_dir / "inner.pid"
 
-    with mock.patch("tests.e2e.framework.client_adapters.Path.home", return_value=tmp_path):
+    with (
+        mock.patch("tests.e2e.framework.client_adapters.Path.home", return_value=tmp_path),
+        mock.patch("tests.e2e.framework.client_adapters.os.kill", side_effect=ProcessLookupError),
+    ):
+        assert adapter.is_ready(scenario, agent) is False
+        inner_pid.write_text("4242\n", encoding="utf-8")
+        assert adapter.is_ready(scenario, agent) is False
+
+    with (
+        mock.patch("tests.e2e.framework.client_adapters.Path.home", return_value=tmp_path),
+        mock.patch("tests.e2e.framework.client_adapters.os.kill", return_value=None),
+    ):
         assert adapter.is_ready(scenario, agent) is True
 
 
-def test_codex_headless_adapter_ready_requires_config_json(tmp_path: Path) -> None:
+def test_codex_headless_adapter_ready_requires_config_json_and_live_inner_pid(tmp_path: Path) -> None:
     from tests.e2e.framework.client_adapters import CodexHeadlessAdapter
 
     adapter = CodexHeadlessAdapter(tmp_path)
@@ -154,11 +167,45 @@ def test_codex_headless_adapter_ready_requires_config_json(tmp_path: Path) -> No
     scenario = mock.Mock(drivers={"tmux": _ReadyDriver(alive=True)})
     instance_dir = tmp_path / ".local" / "share" / "c2c" / "instances" / agent.name
     instance_dir.mkdir(parents=True)
+    inner_pid = instance_dir / "inner.pid"
 
-    with mock.patch("tests.e2e.framework.client_adapters.Path.home", return_value=tmp_path):
+    with (
+        mock.patch("tests.e2e.framework.client_adapters.Path.home", return_value=tmp_path),
+        mock.patch("tests.e2e.framework.client_adapters.os.kill", return_value=None),
+    ):
         assert adapter.is_ready(scenario, agent) is False
         (instance_dir / "config.json").write_text("{}", encoding="utf-8")
+        assert adapter.is_ready(scenario, agent) is False
+        inner_pid.write_text("9898\n", encoding="utf-8")
         assert adapter.is_ready(scenario, agent) is True
+
+
+def test_capability_probe_returns_false_on_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.e2e.framework.client_adapters import CodexAdapter
+
+    def fake_run(*args: object, **kwargs: object) -> mock.Mock:
+        raise subprocess.TimeoutExpired(cmd=["codex", "--help"], timeout=1.0)
+
+    monkeypatch.setattr("tests.e2e.framework.client_adapters.subprocess.run", fake_run)
+
+    adapter = CodexAdapter(tmp_path)
+
+    assert adapter.probe_capabilities(None) == {"codex_xml_fd": False}
+
+
+def test_headless_capability_probe_returns_false_on_subprocess_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.e2e.framework.client_adapters import CodexHeadlessAdapter
+
+    def fake_run(*args: object, **kwargs: object) -> mock.Mock:
+        raise OSError("wedged binary")
+
+    monkeypatch.setattr("tests.e2e.framework.client_adapters.subprocess.run", fake_run)
+
+    adapter = CodexHeadlessAdapter(tmp_path)
+
+    assert adapter.probe_capabilities(None) == {"codex_headless_thread_id_fd": False}
 
 
 def test_scenario_refresh_capabilities_merges_adapter_results(tmp_path: Path) -> None:
@@ -194,6 +241,28 @@ def test_scenario_require_capability_raises_for_missing_capability(tmp_path: Pat
 
     with pytest.raises(AssertionError, match="required capability missing: codex_xml_fd"):
         scenario.require_capability("codex_xml_fd")
+
+
+def test_scenario_probe_capabilities_populates_require_and_xfail_contract(tmp_path: Path) -> None:
+    scenario = Scenario(
+        test_name="test_demo",
+        workdir=tmp_path / "work",
+        artifacts=mock.Mock(),
+        drivers={"fake-pty": _ReadyDriver()},
+        adapters={
+            "codex": _CapabilityAdapter({"codex_xml_fd": True}),
+            "headless": _CapabilityAdapter({"codex_headless_thread_id_fd": False}),
+        },
+    )
+
+    caps = scenario.probe_capabilities("codex")
+
+    assert caps == {"codex_xml_fd": True}
+    scenario.require_capability("codex_xml_fd")
+
+    scenario.probe_capabilities("headless")
+    with pytest.raises(pytest.xfail.Exception):
+        scenario.xfail_unless("codex_headless_thread_id_fd", reason="missing binary support")
 
 
 def test_scenario_xfail_unless_marks_missing_capability(tmp_path: Path) -> None:

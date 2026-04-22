@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -10,6 +11,9 @@ if TYPE_CHECKING:
     from .scenario import Scenario, StartedAgent
 
 
+_HELP_PROBE_TIMEOUT_SECONDS = 2.0
+
+
 def _help_contains(binary: str, flag: str) -> bool:
     try:
         result = subprocess.run(
@@ -17,10 +21,27 @@ def _help_contains(binary: str, flag: str) -> bool:
             capture_output=True,
             text=True,
             check=False,
+            timeout=_HELP_PROBE_TIMEOUT_SECONDS,
         )
-    except FileNotFoundError:
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
         return False
     return flag in (result.stdout + result.stderr)
+
+
+def _instance_dir(name: str) -> Path:
+    return Path.home() / ".local" / "share" / "c2c" / "instances" / name
+
+
+def _has_live_pid(pidfile: Path) -> bool:
+    try:
+        pid = int(pidfile.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 class CodexAdapter:
@@ -47,8 +68,7 @@ class CodexAdapter:
         driver = scenario.drivers[agent.backend]
         if not driver.is_alive(agent.handle):
             return False
-        instance_dir = Path.home() / ".local" / "share" / "c2c" / "instances" / agent.name
-        return instance_dir.exists()
+        return _has_live_pid(_instance_dir(agent.name) / "inner.pid")
 
     def probe_capabilities(self, scenario: Scenario | None) -> dict[str, bool]:
         return {"codex_xml_fd": _help_contains("codex", "--xml-input-fd")}
@@ -78,8 +98,8 @@ class CodexHeadlessAdapter:
         driver = scenario.drivers[agent.backend]
         if not driver.is_alive(agent.handle):
             return False
-        instance_dir = Path.home() / ".local" / "share" / "c2c" / "instances" / agent.name
-        return (instance_dir / "config.json").exists()
+        instance_dir = _instance_dir(agent.name)
+        return (instance_dir / "config.json").exists() and _has_live_pid(instance_dir / "inner.pid")
 
     def probe_capabilities(self, scenario: Scenario | None) -> dict[str, bool]:
         return {
