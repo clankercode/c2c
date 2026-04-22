@@ -261,7 +261,10 @@ module Claude_renderer = struct
     if r.claude <> [] then begin
       lines := "claude:" :: !lines;
       List.iter (fun (k, v) ->
-        lines := ("  " ^ k ^ ": " ^ yaml_scalar v) :: !lines
+        let field_name = if String.length k > 7 && String.sub k 0 7 = "claude." then
+                          String.sub k 7 (String.length k - 7)
+                        else k in
+        lines := ("  " ^ field_name ^ ": " ^ yaml_scalar v) :: !lines
       ) r.claude;
     end;
     let fm = String.concat "\n" (List.rev !lines) in
