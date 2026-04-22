@@ -73,4 +73,5 @@ run-codex-inst.d
 c2c-site-current.*
 .codex
 c2c_relay.db
+# E2E terminal artifacts
 .artifacts/e2e/
