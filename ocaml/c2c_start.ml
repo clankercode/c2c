@@ -1684,7 +1684,7 @@ let run_outer_loop ~(name : string) ~(client : string)
         Printf.eprintf
           "hint: opencode exited 109 — likely database lock contention.\n\
            \  There are ~%d other opencode process(es) sharing ~/.local/share/opencode/opencode.db.\n\
-           \  Fix: stop orphan instances first.\n\
+           \  Fix: stop other (unmanaged) opencode instances first.\n\
            \    pgrep -a opencode          # list running instances\n\
            \    pkill -f '.opencode'       # kill all (use with care)\n\
            \    c2c instances              # check c2c-managed instances\n%!"

@@ -1261,7 +1261,7 @@ let check_relay_http () =
                  | _ -> "")
             | exception _ -> ""
           in
-          Printf.sprintf " ⚠ stale deploy (deployed: %s, local: %s)%s" git_hash local_hash commits_ahead
+          Printf.sprintf " ⚠ relay behind local (deployed: %s, local: %s)%s" git_hash local_hash commits_ahead
         end else ""
       in
       let color = if stale_warn <> "" then `Yellow else `Green in
