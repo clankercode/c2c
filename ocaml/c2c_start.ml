@@ -871,14 +871,17 @@ let prepare_launch_args ~(name : string) ~(client : string)
            if a session with that id already exists; --resume errors out if it
            doesn't. So probe ~/.claude/projects/*/<uuid>.jsonl to pick.
            --dangerously-load-development-channels enables Claude Code to process
-           notifications/claude/channel from the c2c broker as <channel> tags. *)
+           notifications/claude/channel from the c2c broker as <channel> tags.
+           --channels c2c opts in to the c2c channel for push delivery. *)
         (match resume_session_id with
          | Some sid ->
              let flag =
                if claude_session_exists sid then "--resume" else "--session-id"
              in
-             [ flag; sid; "--name"; name; "--dangerously-load-development-channels" ]
-         | None -> [ "--name"; name; "--dangerously-load-development-channels" ])
+             [ flag; sid; "--name"; name;
+               "--dangerously-load-development-channels"; "--channels"; "c2c" ]
+         | None -> [ "--name"; name;
+                     "--dangerously-load-development-channels"; "--channels"; "c2c" ])
     | "opencode" ->
         (* OpenCode rejects UUIDs — session IDs must start with "ses". Only
            pass --session when resuming a prior OpenCode-generated ID.
