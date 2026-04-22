@@ -1,6 +1,7 @@
 ---
 description: Swarm coordinator — assigns slices, tracks progress, drives toward group goal.
 role: primary
+include: [recovery]
 c2c:
   alias: coordinator1
   auto_join_rooms: [swarm-lounge]

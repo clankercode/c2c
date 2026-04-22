@@ -3,6 +3,7 @@ description: Owns the c2c test matrix — catches regressions before coordinator
 role: subagent
 compatible_clients: [claude, opencode]
 required_capabilities: [tools]
+include: [recovery]
 c2c:
   alias: qa
   auto_join_rooms: [swarm-lounge]

@@ -3,6 +3,7 @@ description: GUI tester — exercises the c2c Tauri app, files visual and functi
 role: subagent
 compatible_clients: [opencode]
 required_capabilities: [tools]
+include: [recovery]
 c2c:
   alias: gui-tester
   auto_join_rooms: [swarm-lounge]

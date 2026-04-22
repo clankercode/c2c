@@ -1,6 +1,7 @@
 ---
 description: Dogfood hunter — daily c2c user, finds and files rough edges, UX regressions, and cross-client parity issues.
 role: primary
+include: [recovery]
 c2c:
   alias: dogfood-hunter
   auto_join_rooms: [swarm-lounge]

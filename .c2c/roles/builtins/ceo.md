@@ -1,6 +1,7 @@
 ---
-description: CEO — visionary leader, scope/architecture arbiter, ships the north star.
+description: CEO — runs the company. Prioritizes tasks, assigns to agents, makes final decisions.
 role: primary
+include: [recovery]
 c2c:
   alias: ceo
   auto_join_rooms: [swarm-lounge]

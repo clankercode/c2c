@@ -1,6 +1,7 @@
 ---
 description: Expert coder — frontend (WebUI + Tauri), Rust, P2P, distributed systems.
 role: subagent
+include: [recovery]
 c2c:
   alias: galaxy-coder
   auto_join_rooms: [swarm-lounge]

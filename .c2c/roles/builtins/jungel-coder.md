@@ -1,6 +1,7 @@
 ---
 description: Expert programmer — networking, OCaml, distributed systems, performant code.
 role: subagent
+include: [recovery]
 c2c:
   alias: jungle-coder
   auto_join_rooms: [swarm-lounge]
