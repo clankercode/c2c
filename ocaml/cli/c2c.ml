@@ -212,6 +212,16 @@ let print_json json =
   Yojson.Safe.pretty_to_channel stdout json;
   print_newline ()
 
+let current_c2c_command () =
+  let fallback =
+    if Array.length Sys.argv > 0 then Sys.argv.(0) else "c2c"
+  in
+  let resolved =
+    try Unix.readlink "/proc/self/exe"
+    with Unix.Unix_error _ -> fallback
+  in
+  if Filename.is_relative resolved then Sys.getcwd () // resolved else resolved
+
 (* --- subcommand: send ----------------------------------------------------- *)
 
 let send_cmd =
@@ -4038,6 +4048,7 @@ let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt ?(
                   [ ("C2C_MCP_BROKER_ROOT", `String root)
                   ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
                   ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+                  ; ("C2C_CLI_COMMAND", `String (current_c2c_command ()))
                   ])
               ; ("enabled", `Bool true)
               ])
@@ -6942,6 +6953,81 @@ let oc_plugin_stream_write_statefile_cmd =
       done
     with End_of_file | Sys_error _ -> ())) $ Cmdliner.Term.const ())
 
+let oc_plugin_message_json (msg : C2c_mcp.message) =
+  `Assoc
+    [ ("from_alias", `String msg.from_alias)
+    ; ("to_alias", `String msg.to_alias)
+    ; ("content", `String msg.content)
+    ]
+
+let oc_plugin_drain_inbox_to_spool_cmd =
+  let open Cmdliner in
+  let spool_path_arg =
+    Arg.(required & opt (some string) None & info [ "spool-path" ] ~docv:"PATH"
+      ~doc:"Path to the durable OpenCode plugin spool JSON file.")
+  in
+  let broker_root_arg =
+    Arg.(value & opt (some string) None & info [ "broker-root" ] ~docv:"DIR"
+      ~doc:"Broker root override. Defaults to C2C_MCP_BROKER_ROOT or repo-local broker root.")
+  in
+  let session_id_arg =
+    Arg.(value & opt (some string) None & info [ "session-id" ] ~docv:"ID"
+      ~doc:"Session ID override. Defaults to C2C_MCP_SESSION_ID / alias-resolved inbox session.")
+  in
+  let+ spool_path = spool_path_arg
+  and+ broker_root_opt = broker_root_arg
+  and+ session_id_opt = session_id_arg
+  and+ json = json_flag in
+  let output_mode = if json then Json else Human in
+  let broker_root =
+    match broker_root_opt with
+    | Some root when String.trim root <> "" -> String.trim root
+    | _ -> resolve_broker_root ()
+  in
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  let session_id =
+    match session_id_opt with
+    | Some sid when String.trim sid <> "" -> String.trim sid
+    | _ -> resolve_session_id_for_inbox broker
+  in
+  let spool = C2c_wire_bridge.spool_of_path spool_path in
+  let inbox_path = broker_root // (session_id ^ ".inbox.json") in
+  let handle_error msg =
+    Printf.eprintf "error: %s\n%!" msg;
+    (match output_mode with
+     | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
+     | Human -> ());
+    exit 1
+  in
+  try
+    let pending =
+      let queued = C2c_wire_bridge.spool_read spool in
+      C2c_mcp.Broker.with_inbox_lock broker ~session_id (fun () ->
+        let fresh = C2c_mcp.Broker.read_inbox broker ~session_id in
+        match fresh with
+        | [] -> queued
+        | _ ->
+            let combined = queued @ fresh in
+            C2c_wire_bridge.spool_write spool combined;
+            C2c_mcp.Broker.append_archive broker ~session_id ~messages:fresh;
+            json_write_file inbox_path (`List []);
+            combined)
+    in
+    match output_mode with
+    | Json ->
+        print_json (`Assoc
+          [ ("ok", `Bool true)
+          ; ("session_id", `String session_id)
+          ; ("spool_path", `String spool_path)
+          ; ("count", `Int (List.length pending))
+          ; ("messages", `List (List.map oc_plugin_message_json pending))
+          ])
+    | Human ->
+        Printf.printf "staged %d OpenCode message(s) into %s\n"
+          (List.length pending) spool_path
+  with exn ->
+    handle_error (Printexc.to_string exn)
+
 let oc_plugin_group =
   Cmdliner.Cmd.group
     (Cmdliner.Cmd.info "oc-plugin"
@@ -6952,7 +7038,12 @@ let oc_plugin_group =
                  to the instance statefile. Path: \
                  ~/.local/share/c2c/instances/NAME/oc-plugin-state.json when \
                  C2C_INSTANCE_NAME is set, else ~/.local/share/c2c/oc-plugin-state.json.")
-        oc_plugin_stream_write_statefile_cmd ]
+        oc_plugin_stream_write_statefile_cmd
+    ; Cmdliner.Cmd.v
+        (Cmdliner.Cmd.info "drain-inbox-to-spool"
+           ~doc:"Drain broker inbox messages into the OpenCode spool file before delivery.")
+        oc_plugin_drain_inbox_to_spool_cmd
+    ]
 
 (* --- subcommand group: cc-plugin ------------------------------------------ *)
 (* Claude Code plugin sink commands. The PostToolUse inbox hook writes

@@ -20,8 +20,20 @@ type FakeProc = EventEmitter & {
 };
 
 const spawnQueue: Array<{ stdout: string; stderr: string; code: number }> = [];
-const spawnCalls: Array<{ command: string; args: string[] }> = [];
+const spawnCalls: Array<{ command: string; args: string[]; env: NodeJS.ProcessEnv | undefined }> = [];
 const stateWriterLines: string[] = [];
+let fakeSidecarConfig: Record<string, unknown> | null = null;
+const fakePeerInstances = new Map<string, { state: Record<string, unknown>; config: Record<string, unknown> }>();
+const fakeAlivePids = new Set<number>();
+const fakeTempFiles = new Map<string, string>();
+
+function setFakePeerInstance(
+  name: string,
+  state: Record<string, unknown>,
+  config: Record<string, unknown> = {},
+): void {
+  fakePeerInstances.set(name, { state, config });
+}
 
 function createFakeProc(out: { stdout: string; stderr: string; code: number }): FakeProc {
   const proc = new EventEmitter() as FakeProc;
@@ -65,8 +77,8 @@ function createPersistentProc(): FakeProc {
 }
 
 vi.mock('child_process', () => ({
-  spawn: vi.fn((command: string, args: string[]) => {
-    spawnCalls.push({ command, args });
+  spawn: vi.fn((command: string, args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
+    spawnCalls.push({ command, args, env: options?.env });
     if (args[0] === 'oc-plugin' && args[1] === 'stream-write-statefile') {
       return createPersistentProc();
     }
@@ -85,6 +97,22 @@ vi.mock('fs', async (importOriginal) => {
     watch: vi.fn(() => ({ close: vi.fn() })),
     readFileSync: vi.fn((p: any, enc?: any) => {
       const ps = String(p);
+      const stateMatch = ps.match(/\/instances\/([^/]+)\/oc-plugin-state\.json$/);
+      if (stateMatch) {
+        const entry = fakePeerInstances.get(stateMatch[1]);
+        if (entry) return JSON.stringify(entry.state);
+      }
+      const configMatch = ps.match(/\/instances\/([^/]+)\/config\.json$/);
+      if (configMatch) {
+        const entry = fakePeerInstances.get(configMatch[1]);
+        if (entry) return JSON.stringify(entry.config);
+      }
+      if (ps.endsWith('.opencode/c2c-plugin.json') && fakeSidecarConfig) {
+        return JSON.stringify(fakeSidecarConfig);
+      }
+      if (ps.match(/\/instances\/[^/]+\/c2c-plugin\.json$/) && fakeSidecarConfig) {
+        return JSON.stringify(fakeSidecarConfig);
+      }
       if (ps.endsWith('c2c-plugin-spool.json')) {
         if (fakeSpoolState.data === null) throw new Error('ENOENT');
         return fakeSpoolState.data;
@@ -94,19 +122,52 @@ vi.mock('fs', async (importOriginal) => {
       }
       return orig.readFileSync(p, enc);
     }),
+    readdirSync: vi.fn((p: any) => {
+      const ps = String(p);
+      if (ps.endsWith('.local/share/c2c/instances')) {
+        return [...fakePeerInstances.keys()];
+      }
+      return orig.readdirSync(p);
+    }),
     writeFileSync: vi.fn((p: any, content: any) => {
       const ps = String(p);
       if (ps.endsWith('c2c-plugin-spool.json')) {
         fakeSpoolState.data = String(content);
+        return;
+      }
+      if (ps.includes('c2c-plugin-spool.json.tmp-')) {
+        fakeTempFiles.set(ps, String(content));
+      }
+    }),
+    renameSync: vi.fn((src: any, dst: any) => {
+      const srcPath = String(src);
+      const dstPath = String(dst);
+      if (dstPath.endsWith('c2c-plugin-spool.json')) {
+        const content = fakeTempFiles.get(srcPath);
+        if (content !== undefined) {
+          fakeTempFiles.delete(srcPath);
+          fakeSpoolState.data = content;
+        }
       }
     }),
     unlinkSync: vi.fn((p: any) => {
       const ps = String(p);
       if (ps.endsWith('c2c-plugin-spool.json')) {
         fakeSpoolState.data = null;
+        return;
+      }
+      if (ps.includes('c2c-plugin-spool.json.tmp-')) {
+        fakeTempFiles.delete(ps);
       }
     }),
-    existsSync: vi.fn(() => false),
+    existsSync: vi.fn((p: any) => {
+      const ps = String(p);
+      if (ps.startsWith('/proc/')) {
+        const pid = Number(ps.slice('/proc/'.length));
+        return fakeAlivePids.has(pid);
+      }
+      return false;
+    }),
   };
 });
 
@@ -175,6 +236,10 @@ describe('c2c plugin unit tests', () => {
     spawnCalls.length = 0;
     stateWriterLines.length = 0;
     fakeSpoolState.data = null;
+    fakeSidecarConfig = null;
+    fakePeerInstances.clear();
+    fakeAlivePids.clear();
+    fakeTempFiles.clear();
     process.env.C2C_MCP_SESSION_ID = 'test-session';
     process.env.C2C_MCP_BROKER_ROOT = '/tmp/broker';
     process.env.C2C_PERMISSION_SUPERVISOR = 'coordinator1';
@@ -266,6 +331,27 @@ describe('c2c plugin unit tests', () => {
     expect(events[2].patch.agent.turn_count).toBe(1);
     expect(events[2].patch.agent.step_count).toBe(2);
     expect(events[2].patch.tui_focus.ty).toBe('prompt');
+  });
+
+  it('passes sidecar-derived session_id and broker_root to spawned c2c commands', async () => {
+    delete process.env.C2C_MCP_SESSION_ID;
+    delete process.env.C2C_MCP_BROKER_ROOT;
+    fakeSidecarConfig = {
+      session_id: 'sidecar-session',
+      broker_root: '/tmp/sidecar-broker',
+    };
+    queueSpawn({ messages: [] });
+    const ctx = makeCtx();
+    const hooks = await C2CDelivery(ctx as any);
+    await fireEvent(hooks, sessionCreated('root-session'));
+    await fireEvent(hooks, sessionIdle('root-session'));
+
+    const drainSpawn = spawnCalls.find((c) =>
+      c.args[0] === 'oc-plugin' && c.args[1] === 'drain-inbox-to-spool'
+    );
+    expect(drainSpawn).toBeDefined();
+    expect(drainSpawn!.env?.C2C_MCP_SESSION_ID).toBe('sidecar-session');
+    expect(drainSpawn!.env?.C2C_MCP_BROKER_ROOT).toBe('/tmp/sidecar-broker');
   });
 
   it('bootstraps root state from first session.idle when session.created was missed', async () => {
@@ -370,8 +456,11 @@ describe('c2c plugin unit tests', () => {
     expect(spooled).toHaveLength(1);
     expect(spooled[0].content).toBe('msg1');
 
-    // Queue empty inbox for the retry round; spool should supply the message.
-    queueSpawn({ messages: [] });
+    // The OCaml drain helper returns the current staged pending set, including
+    // retry-spooled messages from the previous failed delivery.
+    queueSpawn({
+      messages: [{ from_alias: 'alice', to_alias: 'bob', content: 'msg1' }],
+    });
     await fireEvent(hooks, sessionIdle('root'));
 
     expect(ctx.client.session.promptAsync).toHaveBeenCalledTimes(2);
@@ -779,6 +868,52 @@ describe('c2c plugin unit tests', () => {
     );
     expect(rootPatch).toBeUndefined();
     delete process.env.C2C_AUTO_KICKOFF;
+  });
+
+  it('does not hard-fail on an alive same-broker peer when auto-kickoff is enabled', async () => {
+    process.env.C2C_AUTO_KICKOFF = '1';
+    fakeAlivePids.add(4242);
+    fakeSidecarConfig = {
+      session_id: 'sidecar-session',
+      broker_root: '/tmp/broker',
+    };
+    setFakePeerInstance(
+      'peer-instance',
+      {
+        opencode_pid: 4242,
+        c2c_session_id: 'peer-alias',
+        broker_root: '/tmp/broker',
+        root_opencode_session_id: 'ses-peer-root',
+      },
+      { broker_root: '/tmp/broker' },
+    );
+    const ctx = makeCtx();
+
+    await expect(C2CDelivery(ctx as any)).resolves.toBeDefined();
+    delete process.env.C2C_AUTO_KICKOFF;
+  });
+
+  it('still fails on an explicit resume session clash', async () => {
+    process.env.C2C_OPENCODE_SESSION_ID = 'ses-clash';
+    fakeAlivePids.add(4242);
+    fakeSidecarConfig = {
+      session_id: 'sidecar-session',
+      broker_root: '/tmp/broker',
+    };
+    setFakePeerInstance(
+      'peer-instance',
+      {
+        opencode_pid: 4242,
+        c2c_session_id: 'peer-alias',
+        broker_root: '/tmp/broker',
+        root_opencode_session_id: 'ses-clash',
+      },
+      { broker_root: '/tmp/broker' },
+    );
+    const ctx = makeCtx();
+
+    await expect(C2CDelivery(ctx as any)).rejects.toThrow(/conflicting c2c opencode instance/);
+    delete process.env.C2C_OPENCODE_SESSION_ID;
   });
 
   it('#58 cross-contamination: exact configuredOpenCodeSessionId required — no fallback to roots[0]', async () => {

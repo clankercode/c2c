@@ -492,7 +492,7 @@ const C2CDelivery: Plugin = async (ctx) => {
     try {
       const proc = spawn(command, ["oc-plugin", "stream-write-statefile"], {
         cwd: process.cwd(),
-        env: process.env,
+        env: childProcessEnv(),
         shell: false,
       });
       stateWriterProc = proc;
@@ -555,8 +555,7 @@ const C2CDelivery: Plugin = async (ctx) => {
       const theirAlias: string = theirState.c2c_session_id ?? name;
       const theirRootOcSession: string = theirState.root_opencode_session_id ?? "";
 
-      const conflict = !configuredOpenCodeSessionId   // auto-kickoff: any alive peer is a conflict
-        || (configuredOpenCodeSessionId && theirRootOcSession === configuredOpenCodeSessionId); // resume: exact session clash
+      const conflict = Boolean(configuredOpenCodeSessionId && theirRootOcSession === configuredOpenCodeSessionId);
 
       if (conflict) {
         const msg = `FATAL: conflicting c2c opencode instance '${theirAlias}' (pid ${theirPid}) owns session ${theirRootOcSession || "unknown"}. Stop it first: c2c stop ${theirAlias}`;
@@ -770,6 +769,21 @@ const C2CDelivery: Plugin = async (ctx) => {
     }
   }
 
+  function childProcessEnv(): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    const inheritedSessionId = process.env.C2C_MCP_SESSION_ID || process.env.C2C_SESSION_ID || sessionId;
+    const inheritedBrokerRoot = process.env.C2C_MCP_BROKER_ROOT || process.env.C2C_BROKER_ROOT || brokerRoot;
+    if (inheritedSessionId) {
+      if (!env.C2C_MCP_SESSION_ID) env.C2C_MCP_SESSION_ID = inheritedSessionId;
+      if (!env.C2C_SESSION_ID) env.C2C_SESSION_ID = inheritedSessionId;
+    }
+    if (inheritedBrokerRoot) {
+      if (!env.C2C_MCP_BROKER_ROOT) env.C2C_MCP_BROKER_ROOT = inheritedBrokerRoot;
+      if (!env.C2C_BROKER_ROOT) env.C2C_BROKER_ROOT = inheritedBrokerRoot;
+    }
+    return env;
+  }
+
   async function toast(msg: string, variant: "info" | "warning" | "error" = "info"): Promise<void> {
     try {
       await ctx.client.tui.showToast({
@@ -792,7 +806,7 @@ const C2CDelivery: Plugin = async (ctx) => {
       let settled = false;
       const proc = spawn(command, args, {
         cwd: process.cwd(),
-        env: process.env,
+        env: childProcessEnv(),
         shell: false,
       });
       const timer = setTimeout(() => {
@@ -844,31 +858,47 @@ const C2CDelivery: Plugin = async (ctx) => {
   }
 
   function writeSpool(msgs: Msg[]): void {
-    try {
-      if (msgs.length === 0) {
+    const spoolDir = path.dirname(spoolPath);
+    fs.mkdirSync(spoolDir, { recursive: true });
+    if (msgs.length === 0) {
+      try {
         fs.unlinkSync(spoolPath);
-      } else {
-        fs.writeFileSync(spoolPath, JSON.stringify(msgs), "utf-8");
+      } catch (err: any) {
+        if (err?.code !== "ENOENT") throw err;
       }
-    } catch {
-      // Spool write failure is non-fatal — best-effort persistence.
+      return;
+    }
+
+    const tmpPath = `${spoolPath}.tmp-${process.pid}`;
+    try {
+      fs.writeFileSync(tmpPath, JSON.stringify(msgs), "utf-8");
+      fs.renameSync(tmpPath, spoolPath);
+    } catch (err) {
+      try { fs.unlinkSync(tmpPath); } catch { /* best-effort */ }
+      throw err;
     }
   }
 
-  /** Extract Msg[] from the poll-inbox --json envelope (or bare array). */
+  /** Extract Msg[] from the oc-plugin drain helper JSON envelope (or bare array). */
   function parsePollResult(stdout: string): Msg[] {
     if (!stdout) return [];
     const parsed = JSON.parse(stdout);
-    // poll-inbox --json emits {"session_id":...,"messages":[...]} - unwrap it.
+    // oc-plugin drain helper emits {"ok":true,"messages":[...]}.
     // Bare arrays are accepted too for forward-compat.
     const msgs: unknown = Array.isArray(parsed) ? parsed : (parsed as any).messages ?? [];
     return Array.isArray(msgs) ? (msgs as Msg[]) : [];
   }
 
-  /** Drain inbox using the c2c CLI and return parsed messages. */
+  /** Stage pending messages into the durable OCaml-managed spool and return them. */
   async function drainInbox(): Promise<Msg[]> {
     try {
-      const stdout = (await runC2c(["poll-inbox", "--json"])).trim();
+      const stdout = (await runC2c([
+        "oc-plugin",
+        "drain-inbox-to-spool",
+        "--spool-path",
+        spoolPath,
+        "--json",
+      ])).trim();
       const msgs = parsePollResult(stdout);
       await log(`drainInbox: got ${msgs.length} message(s)`);
       return msgs;
@@ -929,17 +959,11 @@ const C2CDelivery: Plugin = async (ctx) => {
   /** Deliver drained messages to the active session via promptAsync. */
   async function deliverMessages(targetSessionId: string): Promise<void> {
     await log(`deliverMessages: targetSessionId=${JSON.stringify(targetSessionId)}`);
-    // Drain spool first (messages from failed previous delivery cycle).
-    const spooled = readSpool();
-    const fresh = await drainInbox();
-    const messages = [...spooled, ...fresh];
-    await log(`deliverMessages: spooled=${spooled.length} fresh=${fresh.length} total=${messages.length}`);
+    const messages = await drainInbox();
+    await log(`deliverMessages: pending=${messages.length}`);
     if (messages.length === 0) return;
 
-    // Persist combined set before delivery so nothing is lost on failure.
-    writeSpool(messages);
-
-    await log(`delivering ${messages.length} message(s) to session ${targetSessionId}${spooled.length ? ` (${spooled.length} from spool)` : ""}`);
+    await log(`delivering ${messages.length} message(s) to session ${targetSessionId}`);
 
     const failed: Msg[] = [];
     for (const msg of messages) {
@@ -994,8 +1018,13 @@ const C2CDelivery: Plugin = async (ctx) => {
         await toast(`c2c: delivery error from ${msg.from_alias}`, "error");
       }
     }
-    // Update spool: clear if all delivered, write failures if any.
-    writeSpool(failed);
+    // Update spool atomically: keep failed messages, or clear on full success.
+    try {
+      writeSpool(failed);
+    } catch (err) {
+      await log(`writeSpool error: ${err}`);
+      await toast("c2c: failed to update retry spool", "error");
+    }
     // Reset toast debounce so a future batch of messages shows a fresh toast.
     if (failed.length === 0) pendingToastShown = false;
   }
@@ -1085,7 +1114,7 @@ const C2CDelivery: Plugin = async (ctx) => {
       const command = process.env.C2C_CLI_COMMAND || "c2c";
       const args = ["monitor"];
       if (sessionId) args.push("--alias", sessionId);
-      const proc = spawn(command, args, { cwd: process.cwd(), env: process.env, shell: false });
+      const proc = spawn(command, args, { cwd: process.cwd(), env: childProcessEnv(), shell: false });
       activeMonitorProc = proc;
       let buf = "";
       proc.stdout?.on("data", (chunk: Buffer) => {

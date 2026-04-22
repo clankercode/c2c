@@ -1,15 +1,14 @@
 """
 Tests for OpenCode plugin conflict detection (checkConflictingInstances).
 
-Verifies that when two c2c-managed OpenCode instances share the same broker
-and one is alive, the second one's plugin startup throws FATAL rather than
-silently adopting the peer's session (the cross-contamination bug fixed in
-7b063ac; see finding 2026-04-21T09-00-00Z-coordinator1-oc-focus-test-...md).
+The plugin must allow multiple same-broker OpenCode peers to coexist during
+auto-kickoff, while still rejecting an explicit resume/session clash where
+two managed peers target the same OpenCode root session ID.
 
 These tests exercise the logic by constructing mock instance dirs and checking
-the conflict-detection helper function embedded in the plugin.  We call a
-thin Python shim that reproduces the same filesystem scan + /proc liveness
-check that the TypeScript plugin performs.
+the conflict-detection helper function embedded in the plugin. We call a thin
+Python shim that reproduces the same filesystem scan + /proc liveness check
+that the TypeScript plugin performs.
 """
 from __future__ import annotations
 
@@ -79,9 +78,9 @@ def check_conflicting_instances(
         their_alias = their_state.get("c2c_session_id", name.name)
         their_root_oc_session = their_state.get("root_opencode_session_id", "")
 
-        conflict = (
-            (auto_kickoff and not configured_oc_session_id)
-            or (configured_oc_session_id and their_root_oc_session == configured_oc_session_id)
+        conflict = bool(
+            configured_oc_session_id
+            and their_root_oc_session == configured_oc_session_id
         )
 
         if conflict:
@@ -158,22 +157,16 @@ def test_no_conflict_when_peer_is_dead(tmp_path: Path) -> None:
     )
 
 
-def test_conflict_raised_for_alive_peer_in_auto_kickoff(tmp_path: Path) -> None:
+def test_no_conflict_for_alive_peer_in_auto_kickoff(tmp_path: Path) -> None:
     instances_dir = tmp_path / "instances"
     _write_instance(instances_dir, "oc-sitrep-demo", pid=_live_pid(), root_oc_session="ses_sitrep")
-    try:
-        check_conflicting_instances(
-            session_id="oc-focus-test",
-            broker_root="/tmp/broker",
-            configured_oc_session_id="",
-            auto_kickoff=True,
-            instances_dir=instances_dir,
-        )
-        assert False, "Should have raised ConflictError"
-    except ConflictError as e:
-        assert "oc-sitrep-demo" in str(e)
-        assert "ses_sitrep" in str(e)
-        assert "c2c stop oc-sitrep-demo" in str(e)
+    check_conflicting_instances(
+        session_id="oc-focus-test",
+        broker_root="/tmp/broker",
+        configured_oc_session_id="",
+        auto_kickoff=True,
+        instances_dir=instances_dir,
+    )
 
 
 def test_no_conflict_when_different_broker_root(tmp_path: Path) -> None:

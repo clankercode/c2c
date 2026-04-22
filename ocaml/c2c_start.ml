@@ -105,6 +105,16 @@ let rec mkdir_p dir =
     with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
   end
 
+let current_c2c_command () =
+  let fallback =
+    if Array.length Sys.argv > 0 then Sys.argv.(0) else "c2c"
+  in
+  let resolved =
+    try Unix.readlink "/proc/self/exe"
+    with Unix.Unix_error _ -> fallback
+  in
+  if Filename.is_relative resolved then Sys.getcwd () // resolved else resolved
+
 let with_file_lock (path : string) (f : unit -> 'a) : 'a =
   let fd = Unix.openfile path [ Unix.O_RDWR; Unix.O_CREAT ] 0o644 in
   Fun.protect
@@ -544,9 +554,7 @@ let build_env ?(broker_root_override : string option = None) (name : string) (al
      correct OCaml binary even when a Python ./c2c shim exists in the project CWD
      (avoids fork-bomb: plugin runC2c() would otherwise resolve bare "c2c" via PATH
      which could pick up ./c2c if CWD is in PATH). *)
-  let c2c_bin =
-    (try Unix.readlink "/proc/self/exe" with Unix.Unix_error _ -> Sys.argv.(0))
-  in
+  let c2c_bin = current_c2c_command () in
   let additions = [
     "C2C_WRAPPER_SELF", "1";  (* marks the wrapper process itself; bash subshells of the managed client don't inherit this *)
     "C2C_MCP_SESSION_ID", name;
@@ -603,6 +611,7 @@ let refresh_opencode_identity ~name ~alias ~broker_root ~project_dir ~instances_
         ("C2C_MCP_BROKER_ROOT", `String broker_root);
         ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge");
         ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0");
+        ("C2C_CLI_COMMAND", `String (current_c2c_command ()));
       ] in
       let merge_env env_obj new_pairs =
         let existing = match env_obj with `Assoc p -> p | _ -> [] in
