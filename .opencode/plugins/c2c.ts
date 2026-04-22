@@ -750,6 +750,16 @@ const C2CDelivery: Plugin = async (ctx) => {
       tui_focus: pluginState.tui_focus,
       prompt: pluginState.prompt,
     });
+    // Deliver kickoff prompt on session.created — this handles warm restarts
+    // where the kickoff file exists but session.idle may never fire (continuous
+    // activity). deliverKickoffPrompt guards against double-delivery via
+    // kickoffDelivered, so cold-boot path (which also calls it after
+    // coldBootDelayMs) is safe.
+    void (async () => {
+      const delayMs = parseInt(process.env.C2C_PLUGIN_COLD_BOOT_DELAY_MS || "1500", 10);
+      if (delayMs > 0) await new Promise<void>(resolve => setTimeout(resolve, delayMs));
+      await deliverKickoffPrompt(info.id);
+    })();
   }
 
   function applyIdleState(event: Event): void {
