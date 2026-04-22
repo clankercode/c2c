@@ -8382,8 +8382,8 @@ let oc_plugin_drain_inbox_to_spool_cmd =
 
 let oc_plugin_group =
   Cmdliner.Cmd.group
-    (Cmdliner.Cmd.info "oc-plugin"
-       ~doc:"OpenCode plugin sink commands (called by .opencode/plugins/c2c.ts).")
+     (Cmdliner.Cmd.info "oc-plugin"
+        ~doc:"OpenCode plugin sink commands (called by the OpenCode c2c plugin).")
     [ Cmdliner.Cmd.v
         (Cmdliner.Cmd.info "stream-write-statefile"
            ~doc:"Read a JSON state snapshot from stdin and write it atomically \
@@ -8447,9 +8447,9 @@ let cc_plugin_write_statefile_cmd =
 
 let cc_plugin_group =
   Cmdliner.Cmd.group
-    (Cmdliner.Cmd.info "cc-plugin"
-       ~doc:"Claude Code plugin sink commands (called by the PostToolUse hook \
-             and any Claude Code statefile emitters).")
+     (Cmdliner.Cmd.info "cc-plugin"
+        ~doc:"Claude Code plugin sink commands (called by the PostToolUse hook, \
+              PreCompact/PostCompact hooks, and any Claude Code statefile emitters).")
     [ Cmdliner.Cmd.v
         (Cmdliner.Cmd.info "write-statefile"
            ~doc:"Read a JSON state snapshot from stdin and write it atomically \
