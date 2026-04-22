@@ -32,7 +32,7 @@ type remote_broker = {
 let fetch_inbox ~(ssh_target : string) ~(broker_root : string)
     ~(session_id : string) : Yojson.Safe.t list =
   let cmd = Printf.sprintf
-      "ssh %s 'cat %s/inbox/%s.json 2>/dev/null' 2>/dev/null"
+      "ssh -o StrictHostKeyChecking=no %s 'cat %s/inbox/%s.json 2>/dev/null' 2>/dev/null"
       (shell_quote ssh_target)
       (shell_quote broker_root)
       (shell_quote session_id)
@@ -62,7 +62,7 @@ let fetch_inbox ~(ssh_target : string) ~(broker_root : string)
 
 let list_remote_sessions ~(ssh_target : string) ~(broker_root : string) : string list =
   let cmd = Printf.sprintf
-      "ssh %s 'ls -1 %s/inbox/*.json 2>/dev/null' 2>/dev/null | \
+      "ssh -o StrictHostKeyChecking=no %s 'ls -1 %s/inbox/*.json 2>/dev/null' 2>/dev/null | \
        sed 's|.*/||' | sed 's/\\.json$//'"
       (shell_quote ssh_target)
       (shell_quote broker_root)
