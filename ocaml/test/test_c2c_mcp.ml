@@ -5035,8 +5035,220 @@ let test_join_room_invite_only_rejects_uninvited_via_mcp () =
                let is_error =
                  json |> member "result" |> member "isError" |> to_bool_option
                  |> Option.value ~default:false
-               in
-               check bool "join_room rejected with isError=true" true is_error))
+                in
+                check bool "join_room rejected with isError=true" true is_error))
+
+(* === M2/M4: pending permission tracking === *)
+
+let test_open_pending_reply_via_mcp () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-requester";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-requester"
+            ~alias:"agent-a" ~pid:None ~pid_start_time:None ();
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 901)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "open_pending_reply")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("perm_id", `String "perm:abc:123")
+                          ; ("kind", `String "permission")
+                          ; ( "supervisors",
+                              `List [ `String "coordinator1"; `String "ceo" ] )
+                          ] )
+                    ] )
+              ]
+          in
+          let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+          match response with
+          | None -> fail "expected tools/call response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              check bool "not an error" false
+                (json |> member "result" |> member "isError" |> to_bool);
+              let content =
+                json |> member "result" |> member "content"
+                |> Yojson.Safe.Util.index 0 |> member "text" |> Yojson.Safe.Util.to_string
+                |> Yojson.Safe.from_string
+              in
+              check bool "ok is true" true (content |> member "ok" |> to_bool);
+              check string "perm_id matches" "perm:abc:123" (content |> member "perm_id" |> to_string);
+              check string "kind is permission" "permission" (content |> member "kind" |> to_string)))
+
+let test_check_pending_reply_valid_supervisor_via_mcp () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-requester";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-requester"
+            ~alias:"agent-a" ~pid:None ~pid_start_time:None ();
+          let open_req =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 901)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "open_pending_reply")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("perm_id", `String "perm:xyz:789")
+                          ; ("kind", `String "permission")
+                          ; ( "supervisors",
+                              `List [ `String "coordinator1"; `String "ceo" ] )
+                          ] )
+                    ] )
+              ]
+          in
+          let _ = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir open_req) in
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 902)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "check_pending_reply")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("perm_id", `String "perm:xyz:789")
+                          ; ("reply_from_alias", `String "coordinator1")
+                          ] )
+                    ] )
+              ]
+          in
+          let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+          match response with
+          | None -> fail "expected tools/call response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              check bool "not an error" false
+                (json |> member "result" |> member "isError" |> to_bool);
+              let content =
+                json |> member "result" |> member "content"
+                |> Yojson.Safe.Util.index 0 |> member "text" |> Yojson.Safe.Util.to_string
+                |> Yojson.Safe.from_string
+              in
+              check bool "valid is true" true (content |> member "valid" |> to_bool);
+              check string "requester_session_id matches" "session-requester"
+                (content |> member "requester_session_id" |> to_string)))
+
+let test_check_pending_reply_unknown_perm_id_via_mcp () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-requester";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-requester"
+            ~alias:"agent-a" ~pid:None ~pid_start_time:None ();
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 903)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "check_pending_reply")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("perm_id", `String "perm:unknown:999")
+                          ; ("reply_from_alias", `String "coordinator1")
+                          ] )
+                    ] )
+              ]
+          in
+          let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+          match response with
+          | None -> fail "expected tools/call response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              check bool "not an error" false
+                (json |> member "result" |> member "isError" |> to_bool);
+              let content =
+                json |> member "result" |> member "content"
+                |> Yojson.Safe.Util.index 0 |> member "text" |> Yojson.Safe.Util.to_string
+                |> Yojson.Safe.from_string
+              in
+              check bool "valid is false" false (content |> member "valid" |> to_bool);
+              check string "error is 'unknown permission ID'" "unknown permission ID"
+                (content |> member "error" |> to_string)))
+
+let test_check_pending_reply_non_supervisor_via_mcp () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-requester";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-requester"
+            ~alias:"agent-a" ~pid:None ~pid_start_time:None ();
+          let open_req =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 903)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "open_pending_reply")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("perm_id", `String "perm:def:456")
+                          ; ("kind", `String "question")
+                          ; ( "supervisors",
+                              `List [ `String "coordinator1" ] )
+                          ] )
+                    ] )
+              ]
+          in
+          let _ = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir open_req) in
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 904)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "check_pending_reply")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("perm_id", `String "perm:def:456")
+                          ; ("reply_from_alias", `String "attacker")
+                          ] )
+                    ] )
+              ]
+          in
+          let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+          match response with
+          | None -> fail "expected tools/call response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              check bool "not an error" false
+                (json |> member "result" |> member "isError" |> to_bool);
+              let content =
+                json |> member "result" |> member "content"
+                |> Yojson.Safe.Util.index 0 |> member "text" |> Yojson.Safe.Util.to_string
+                |> Yojson.Safe.from_string
+              in
+              check bool "valid is false" false (content |> member "valid" |> to_bool);
+              let error_str = content |> member "error" |> to_string in
+              check bool "error mentions non-supervisor" true
+                (string_contains error_str "reply from non-supervisor")))
+
+(* M4: alias-reuse guard test skipped — requires exposing pending_permission type
+   from broker interface, tracked separately for follow-up. *)
+(* TODO: re-add test_register_rejects_alias_with_pending_permission_from_alive_owner
+   once pending_permission type is exported from Broker module. *)
 
 let () =
   run "c2c_mcp"
@@ -5330,6 +5542,14 @@ let () =
              test_tools_call_send_room_invite_via_mcp
          ; test_case "tools/call set_room_visibility via MCP" `Quick
              test_tools_call_set_room_visibility_via_mcp
-         ; test_case "join_room invite_only rejects uninvited via MCP" `Quick
-             test_join_room_invite_only_rejects_uninvited_via_mcp
-         ] ) ]
+          ; test_case "join_room invite_only rejects uninvited via MCP" `Quick
+              test_join_room_invite_only_rejects_uninvited_via_mcp
+          ; test_case "open_pending_reply via MCP" `Quick
+              test_open_pending_reply_via_mcp
+          ; test_case "check_pending_reply valid supervisor via MCP" `Quick
+              test_check_pending_reply_valid_supervisor_via_mcp
+          ; test_case "check_pending_reply unknown perm_id via MCP" `Quick
+              test_check_pending_reply_unknown_perm_id_via_mcp
+          ; test_case "check_pending_reply non-supervisor via MCP" `Quick
+              test_check_pending_reply_non_supervisor_via_mcp
+          ] ) ]
