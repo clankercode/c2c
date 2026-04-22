@@ -55,19 +55,66 @@ import os
 import sys
 
 INBOX_PATH = os.environ["MOCK_C2C_INBOX_PATH"]
+SPOOL_PATH = os.environ.get("MOCK_C2C_SPOOL_PATH", "/tmp/c2c-spool.json")
 
-if len(sys.argv) >= 2 and sys.argv[1] == "poll-inbox":
+def _read_inbox():
     try:
         with open(INBOX_PATH, "r") as f:
             content = f.read().strip() or "[]"
-            messages = json.loads(content)
+            return json.loads(content)
     except FileNotFoundError:
-        messages = []
+        return []
+
+def _drain_inbox():
+    messages = _read_inbox()
     # Atomically drain: rewrite as empty list.
     with open(INBOX_PATH, "w") as f:
         f.write("[]")
+    return messages
+
+if len(sys.argv) >= 2 and sys.argv[1] == "poll-inbox":
+    messages = _drain_inbox()
     session_id = os.environ.get("C2C_MCP_SESSION_ID", "")
     print(json.dumps({"session_id": session_id, "messages": messages}))
+    sys.exit(0)
+
+if len(sys.argv) >= 3 and sys.argv[1] == "oc-plugin" and sys.argv[2] == "drain-inbox-to-spool":
+    # Parse --spool-path and --json flags.
+    args = sys.argv[3:]
+    spool_path = SPOOL_PATH
+    json_mode = False
+    i = 0
+    while i < len(args):
+        if args[i] == "--spool-path" and i + 1 < len(args):
+            spool_path = args[i + 1]
+            i += 2
+        elif args[i] == "--json":
+            json_mode = True
+            i += 1
+        else:
+            i += 1
+
+    messages = _drain_inbox()
+
+    # Write messages to spool (simulate spool append).
+    try:
+        spool = json.loads(open(spool_path).read()) if os.path.exists(spool_path) else []
+    except Exception:
+        spool = []
+    spool = spool + messages
+    with open(spool_path, "w") as f:
+        json.dump(spool, f)
+
+    if json_mode:
+        print(json.dumps({
+            "ok": True,
+            "session_id": os.environ.get("C2C_MCP_SESSION_ID", ""),
+            "spool_path": spool_path,
+            "count": len(messages),
+            "messages": messages,
+        }))
+    else:
+        print("staged %d OpenCode message(s) into %s" % (len(messages), spool_path))
     sys.exit(0)
 
 print("unknown mock c2c args: %s" % sys.argv[1:], file=sys.stderr)
@@ -171,6 +218,11 @@ class TestOpenCodePluginDelivery:
         session_id = "harness-session"
         inbox_path = broker_root / f"{session_id}.inbox.json"
         inbox_path.write_text("[]")
+
+        # The plugin writes its spool to process.cwd() / ".opencode" / "c2c-plugin-spool.json".
+        # Create .opencode so the plugin can write the spool file there.
+        opencode_dir = tmp_path / ".opencode"
+        opencode_dir.mkdir()
 
         mock_cli = _write_mock_cli(tmp_path)
         server, url = _start_mock_server()
