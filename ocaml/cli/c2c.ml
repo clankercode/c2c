@@ -4540,6 +4540,19 @@ let json_write_file path json =
     Yojson.Safe.pretty_to_channel oc json);
   Unix.rename tmp path
 
+let json_write_file_or_dryrun dry_run path json =
+  if dry_run then
+    let s = Yojson.Safe.to_string json in
+    Printf.printf "[DRY-RUN] would write %d bytes to %s\n%!" (String.length s) path
+  else
+    json_write_file path json
+
+let mkdir_or_dryrun dry_run dir =
+  if dry_run then
+    Printf.printf "[DRY-RUN] would create directory %s\n%!" dir
+  else
+    (try Unix.mkdir dir 0o755 with Unix.Unix_error _ -> ())
+
 let default_alias_for_client client =
   let client = match String.lowercase_ascii client with
     | "codex-headless" -> "codex"
@@ -4558,7 +4571,7 @@ let c2c_tools_list = [
   "sweep"; "tail_log";
 ]
 
-let setup_codex ~output_mode ~root ~alias_val ~server_path ~client =
+let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~client =
   let config_path = Filename.concat (Sys.getenv "HOME") (".codex" // "config.toml") in
   let existing =
     if Sys.file_exists config_path then
@@ -4600,12 +4613,16 @@ let setup_codex ~output_mode ~root ~alias_val ~server_path ~client =
     Buffer.add_string buf "approval_mode = \"auto\"\n"
   ) c2c_tools_list;
   let new_content = stripped ^ Buffer.contents buf in
-  (try Unix.mkdir (Filename.dirname config_path) 0o755 with Unix.Unix_error _ -> ());
-  let tmp = config_path ^ ".tmp" in
-  let oc = open_out tmp in
-  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
-    output_string oc new_content);
-  Unix.rename tmp config_path;
+  mkdir_or_dryrun dry_run (Filename.dirname config_path);
+  if dry_run then
+    Printf.printf "[DRY-RUN] would write %d bytes to %s\n%!" (String.length new_content) config_path
+  else begin
+    let tmp = config_path ^ ".tmp" in
+    let oc = open_out tmp in
+    Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+      output_string oc new_content);
+    Unix.rename tmp config_path
+  end;
   match output_mode with
   | Json ->
       print_json (`Assoc
@@ -4626,7 +4643,7 @@ let setup_codex ~output_mode ~root ~alias_val ~server_path ~client =
 
 (* --- setup: Kimi (JSON) --- *)
 
-let setup_kimi ~output_mode ~root ~alias_val ~server_path =
+let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path =
   let config_path = Filename.concat (Sys.getenv "HOME") (".kimi" // "mcp.json") in
   let existing =
     if Sys.file_exists config_path then json_read_file config_path
@@ -4655,8 +4672,8 @@ let setup_kimi ~output_mode ~root ~alias_val ~server_path =
                 @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", c2c_entry) ])) ])
     | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", c2c_entry) ]) ]
   in
-  (try Unix.mkdir (Filename.dirname config_path) 0o755 with Unix.Unix_error _ -> ());
-  json_write_file config_path config;
+  mkdir_or_dryrun dry_run (Filename.dirname config_path);
+  json_write_file_or_dryrun dry_run config_path config;
   match output_mode with
   | Json ->
       print_json (`Assoc
@@ -4676,7 +4693,7 @@ let setup_kimi ~output_mode ~root ~alias_val ~server_path =
 
 (* --- setup: OpenCode (JSON + plugin) --- *)
 
-let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt ?(force=false) () =
+let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ?(force=false) () =
   let target_dir = match target_dir_opt with
     | Some d -> d
     | None -> Sys.getcwd ()
@@ -4708,7 +4725,7 @@ let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt ?(
     if n > 1 && target_dir.[n-1] = '/' then String.sub target_dir 0 (n-1)
     else target_dir) in
   let session_id = Printf.sprintf "opencode-%s" dir_name in
-  (try Unix.mkdir config_dir 0o755 with Unix.Unix_error _ -> ());
+  mkdir_or_dryrun dry_run config_dir;
   let should_write_config =
     force || not (Sys.file_exists config_path) ||
     (try
@@ -4737,7 +4754,7 @@ let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt ?(
           ])
       ]
   in
-  json_write_file config_path config;
+  json_write_file_or_dryrun dry_run config_path config;
   let sidecar = config_dir // "c2c-plugin.json" in
   let sidecar_json =
     `Assoc
@@ -4746,21 +4763,29 @@ let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt ?(
       ; ("broker_root", `String root)
       ]
   in
-  json_write_file sidecar sidecar_json;
+  json_write_file_or_dryrun dry_run sidecar sidecar_json;
   (* Find plugin source: prefer CWD-relative (c2c dev repo), fall back to global install path. *)
   let home = try Sys.getenv "HOME" with Not_found -> "" in
   let global_plugin_path = home // ".config" // "opencode" // "plugins" // "c2c.ts" in
+  let file_size path =
+    try (Unix.stat path).Unix.st_size with Unix.Unix_error _ -> 0
+  in
   let copy_file ~src ~dst =
-    let ic = open_in_bin src in
-    let oc = open_out_bin (dst ^ ".tmp") in
-    Fun.protect ~finally:(fun () -> close_in ic; close_out oc) (fun () ->
-      let buf = Bytes.create 65536 in
-      let rec loop () =
-        let n = input ic buf 0 (Bytes.length buf) in
-        if n > 0 then (output oc buf 0 n; loop ())
-      in
-      loop ());
-    Unix.rename (dst ^ ".tmp") dst
+    let src_size = file_size src in
+    if dry_run then
+      Printf.printf "[DRY-RUN] would copy %d bytes from %s to %s\n%!" src_size src dst
+    else begin
+      let ic = open_in_bin src in
+      let oc = open_out_bin (dst ^ ".tmp") in
+      Fun.protect ~finally:(fun () -> close_in ic; close_out oc) (fun () ->
+        let buf = Bytes.create 65536 in
+        let rec loop () =
+          let n = input ic buf 0 (Bytes.length buf) in
+          if n > 0 then (output oc buf 0 n; loop ())
+        in
+        loop ());
+      Unix.rename (dst ^ ".tmp") dst
+    end
   in
   let file_size path =
     try (Unix.stat path).Unix.st_size with Unix.Unix_error _ -> 0
@@ -4778,7 +4803,7 @@ let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt ?(
         Printf.sprintf "plugin not found — run: c2c install opencode (from c2c repo, or copy .opencode/plugins/c2c.ts to %s)" global_plugin_path
     | Some src ->
         let plugins_dir = config_dir // "plugins" in
-        (try Unix.mkdir plugins_dir 0o755 with Unix.Unix_error _ -> ());
+        mkdir_or_dryrun dry_run plugins_dir;
         let dest = plugins_dir // "c2c.ts" in
         (try
            copy_file ~src ~dst:dest;
@@ -4789,7 +4814,7 @@ let setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt ?(
              if src = local_plugin && file_size local_plugin >= 1024 then begin
                (try
                   let gdir = Filename.dirname global_plugin_path in
-                  (try Unix.mkdir gdir 0o755 with Unix.Unix_error _ -> ());
+                  mkdir_or_dryrun dry_run gdir;
                   copy_file ~src ~dst:global_plugin_path;
                   " + global updated"
                 with _ -> " (global update failed)")
@@ -4926,7 +4951,7 @@ let which_binary name =
 
 (* --- install: claude (MCP server + PostToolUse hook) ---------------------- *)
 
-let setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery =
+let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery =
   let claude_dir = resolve_claude_dir () in
   let claude_json = Filename.concat claude_dir ".claude.json" in
   let config =
@@ -4956,7 +4981,7 @@ let setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_comm
         `Assoc (filtered @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", mcp_entry) ])) ])
     | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", mcp_entry) ]) ]
   in
-  json_write_file claude_json config;
+  json_write_file_or_dryrun dry_run claude_json config;
   let settings_path = Filename.concat claude_dir "settings.json" in
   let hook_script = Filename.concat claude_dir "hooks" // "c2c-inbox-check.sh" in
   let script_changed = ref false in
@@ -4966,7 +4991,7 @@ let setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_comm
        let rec mkdir_p d =
          if Sys.file_exists d then () else begin
            mkdir_p (Filename.dirname d);
-           Unix.mkdir d 0o755
+           mkdir_or_dryrun dry_run d
          end
        in
        mkdir_p dir
@@ -4982,10 +5007,14 @@ let setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_comm
        else ""
      in
      if existing <> hook_content then script_changed := true;
-     let oc = open_out hook_script in
-     output_string oc hook_content;
-     close_out oc;
-     Unix.chmod hook_script 0o755
+     if dry_run then
+       Printf.printf "[DRY-RUN] would write hook script to %s\n%!" hook_script
+     else begin
+       let oc = open_out hook_script in
+       output_string oc hook_content;
+       close_out oc;
+       Unix.chmod hook_script 0o755
+     end
    with Unix.Unix_error _ -> ());
   let hook_registered = ref false in
   let settings_changed = ref false in
@@ -5053,7 +5082,7 @@ let setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_comm
           `Assoc fields
     | _ -> `Assoc []
   in
-  if !settings_changed then json_write_file settings_path settings;
+  if !settings_changed then json_write_file_or_dryrun dry_run settings_path settings;
   let hook_status =
     if !hook_registered && not !settings_changed && not !script_changed then "already registered"
     else if !hook_registered && !script_changed && not !settings_changed then "script updated"
@@ -5095,7 +5124,7 @@ let setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_comm
 
 (* --- install: crush (JSON) --- *)
 
-let setup_crush ~output_mode ~root ~alias_val ~server_path =
+let setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path =
   let config_path = Filename.concat (Sys.getenv "HOME") (".config" // "crush" // "crush.json") in
   let existing =
     if Sys.file_exists config_path then json_read_file config_path
@@ -5128,12 +5157,12 @@ let setup_crush ~output_mode ~root ~alias_val ~server_path =
      let rec mkdir_p d =
        if Sys.file_exists d then () else begin
          mkdir_p (Filename.dirname d);
-         Unix.mkdir d 0o755
+         mkdir_or_dryrun dry_run d
        end
      in
      mkdir_p (Filename.dirname config_path)
    with Unix.Unix_error _ -> ());
-  json_write_file config_path config;
+  json_write_file_or_dryrun dry_run config_path config;
   match output_mode with
   | Json ->
       print_json (`Assoc
@@ -5188,7 +5217,7 @@ let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; 
 let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "crush" ]
 let start_client_list = String.concat ", " start_clients
 
-let do_install_client ?(channel_delivery=false) ~output_mode ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force () =
+let do_install_client ?(channel_delivery=false) ~output_mode ~dry_run ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force () =
   let client = canonical_install_client client in
   let root =
     match broker_root_opt with
@@ -5205,11 +5234,11 @@ let do_install_client ?(channel_delivery=false) ~output_mode ~client ~alias_opt 
   in
   let (server_path, mcp_command) = resolve_mcp_server_paths ~output_mode in
   match client with
-  | "claude" -> setup_claude ~output_mode ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery
-  | "codex" -> setup_codex ~output_mode ~root ~alias_val ~server_path ~client
-  | "kimi" -> setup_kimi ~output_mode ~root ~alias_val ~server_path
-  | "opencode" -> setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt ~force ()
-  | "crush" -> setup_crush ~output_mode ~root ~alias_val ~server_path
+  | "claude" -> setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery
+  | "codex" -> setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~client
+  | "kimi" -> setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path
+  | "opencode" -> setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~force ()
+  | "crush" -> setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path
   | _ ->
       let msg = Printf.sprintf "unknown client '%s'. Use: %s" client install_client_error_list in
       (match output_mode with
@@ -5328,7 +5357,7 @@ let prompt_channel_delivery () =
     \    it off and rely on the PostToolUse hook + poll_inbox instead.\n";
   prompt_yn ~default_yes:false "  Enable channel delivery?"
 
-let run_install_tui ~alias_opt ~broker_root_opt =
+let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
   let (self, clients) = detect_installation () in
   Printf.printf "c2c installer\n";
   Printf.printf "─────────────\n\n";
@@ -5404,7 +5433,7 @@ let run_install_tui ~alias_opt ~broker_root_opt =
         let channel_delivery =
           if c = "claude" then prompt_channel_delivery () else false
         in
-        do_install_client ~channel_delivery ~output_mode:Human ~client:c ~alias_opt
+        do_install_client ~channel_delivery ~output_mode:Human ~dry_run ~client:c ~alias_opt
           ~broker_root_opt ~target_dir_opt:None ~force:false ()
       end
     ) do_clients;
