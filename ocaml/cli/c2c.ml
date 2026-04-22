@@ -5991,32 +5991,141 @@ let agent_rename_term =
   Unix.rename old_path new_path;
   Printf.printf "renamed: %s -> %s\n" old_name new_name
 
+let is_interactive_stdin () =
+  Unix.isatty Unix.stdin
+
+let rec mkdir_p dir =
+  if dir = "/" || dir = "." || dir = "" then ()
+  else if Sys.file_exists dir then ()
+  else begin mkdir_p (Filename.dirname dir); try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> () end
+
+let rec prompt_nonempty ~prompt () =
+  print_string prompt;
+  flush stdout;
+  let line = input_line stdin in
+  let trimmed = String.trim line in
+  if trimmed = "" then prompt_nonempty ~prompt ()
+  else trimmed
+
+let rec prompt_choice ?(default=0) ~prompt ~options () =
+  print_string prompt;
+  flush stdout;
+  let line = String.trim (input_line stdin) in
+  if line = "" then List.nth options default
+  else
+    match int_of_string_opt line with
+    | None -> print_endline "Invalid number. Try again."; prompt_choice ~default ~prompt ~options ()
+    | Some n ->
+        if n < 0 || n >= List.length options then (
+          print_endline "Out of range. Try again."; prompt_choice ~default ~prompt ~options ()
+        ) else List.nth options n
+
+let prompt_multi_select ~prompt ~items () =
+  print_string prompt;
+  flush stdout;
+  let line = String.trim (input_line stdin) in
+  if line = "" then [] else
+    let nums = List.filter_map int_of_string_opt (String.split_on_char ',' line) in
+    List.filter_map (fun n -> if n >= 0 && n < List.length items then Some (List.nth items n) else None) nums
+
+let agent_new_interactive name =
+  print_newline ();
+  print_endline "=== c2c agent new — interactive mode ===";
+  print_endline "Press Enter to accept defaults in brackets.\n";
+  let description = prompt_nonempty ~prompt:"Description: " () in
+  print_newline ();
+  print_endline "Role type:";
+  print_endline "  [0] subagent  (default — helper agent, not a primary peer)";
+  print_endline "  [1] primary   (full peer — coordinator, CEO, etc.)";
+  print_endline "  [2] all";
+  let role = prompt_choice ~default:0 ~prompt:"Role type [0]: " ~options:["subagent";"primary";"all"] () in
+  print_newline ();
+  print_endline "Compatible clients (comma-separated numbers, e.g. 0,2,3):";
+  print_endline "  [0] all  (default — works on any client)";
+  print_endline "  [1] claude";
+  print_endline "  [2] opencode";
+  print_endline "  [3] codex";
+  print_endline "  [4] kimi";
+  let client_items = ["all";"claude";"opencode";"codex";"kimi"] in
+  let selected = prompt_multi_select ~prompt:"Clients [0]: " ~items:client_items () in
+  let compatible_clients = if selected = [] || selected = ["all"] then ["all"] else selected in
+  print_newline ();
+  print_endline "Available themes:";
+  let theme_options = [
+    "exp33-gilded"; "exp33-black"; "exp33-chroma";
+    "ffx-yuna"; "ffx-rikku"; "ffx-bevelle"; "ffx-zanarkand";
+    "lotr-forge";
+    "er-ranni"; "er-nightreign"; "er-melina";
+    "default";
+  ] in
+  List.iteri (fun i t -> Printf.printf "  [%d] %s\n" i t) theme_options;
+  print_endline "  [12] skip (no theme)";
+  let selected = prompt_choice ~default:12 ~prompt:"Theme [12]: " ~options:(theme_options @ ["skip"]) () in
+  let theme = if selected = "skip" then None else Some selected in
+  print_newline ();
+  print_endline "Available snippets (comma-separated numbers, or Enter to skip):";
+  let snippet_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "snippets" in
+  let snippets =
+    if Sys.file_exists snippet_dir then
+      Array.to_list (Sys.readdir snippet_dir)
+      |> List.filter (fun f -> Filename.check_suffix f ".md")
+    else []
+  in
+  if snippets = [] then print_endline "  (no snippets found)"
+  else begin
+    List.iteri (fun i s -> Printf.printf "  [%d] %s\n" i s) snippets;
+    print_string "Snippets [Enter to skip]: ";
+    flush stdout;
+    let line = String.trim (input_line stdin) in
+    if line <> "" then begin
+      let nums = List.filter_map int_of_string_opt (String.split_on_char ',' line) in
+      let selected = List.filter_map (fun n -> if n >= 0 && n < List.length snippets then Some (List.nth snippets n) else None) nums in
+      if selected <> [] then begin
+        print_endline "Included snippets:";
+        List.iter (fun s -> print_endline ("  - " ^ s)) selected
+      end
+    end
+  end;
+  print_newline ();
+  let auto_join_rooms = if role = "primary" then "swarm-lounge" else "" in
+  let rooms_input = prompt_choice ~prompt:("Auto-join rooms [" ^ (if auto_join_rooms <> "" then auto_join_rooms else "none") ^ "]: ") ~options:[auto_join_rooms;""] () in
+  let auto_join_rooms = if rooms_input = "" then auto_join_rooms else rooms_input in
+  print_newline ();
+  (description, role, compatible_clients, theme, auto_join_rooms)
+
 let agent_new_term =
   let name =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME"
       ~doc:"Role name (creates .c2c/roles/<NAME>.md).")
   in
   let description =
-    Cmdliner.Arg.(value & opt (some string) (Some "") & info [ "description"; "d" ]
-      ~docv:"TEXT" ~doc:"Role description.")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "description"; "d" ]
+      ~docv:"TEXT" ~doc:"Role description (required in interactive mode).")
   in
   let role_type =
-    Cmdliner.Arg.(value & opt (some string) (Some "subagent") & info [ "role"; "r" ]
+    Cmdliner.Arg.(value & opt (some string) None & info [ "role"; "r" ]
       ~docv:"TYPE" ~doc:"Role type: subagent, primary, or all.")
   in
   let theme =
     Cmdliner.Arg.(value & opt (some string) None & info [ "theme"; "t" ]
       ~docv:"THEME" ~doc:"Banner theme (exp33-gilded, ffx-yuna, lotr-forge, etc.).")
   in
-  let rec mkdir_p dir =
-    if dir = "/" || dir = "." || dir = "" then ()
-    else if Sys.file_exists dir then ()
-    else begin mkdir_p (Filename.dirname dir); try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> () end
-  in
   let+ name = name
   and+ description = description
   and+ role_type = role_type
   and+ theme = theme in
+  let any_flag_passed = description <> None || role_type <> None || theme <> None in
+  let interactive = (not any_flag_passed) && is_interactive_stdin () in
+  let (description, role, compatible_clients, theme, auto_join_rooms) =
+    if not interactive then
+      ( Option.value description ~default:"TODO: describe this agent's purpose",
+        Option.value role_type ~default:"subagent",
+        ["all"],
+        theme,
+        "" )
+    else
+      agent_new_interactive name
+  in
   let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
   mkdir_p roles_dir;
   let path = Filename.concat roles_dir (name ^ ".md") in
@@ -6024,25 +6133,29 @@ let agent_new_term =
     Printf.eprintf "error: role already exists: %s\n%!" path;
     exit 1
   end;
+  let auto_join_yaml =
+    if auto_join_rooms <> "" then "  auto_join_rooms: [" ^ auto_join_rooms ^ "]\n" else ""
+  in
+  let theme_yaml =
+    match theme with Some t -> "  theme: " ^ t ^ "\n" | None -> ""
+  in
   let tmpl = Printf.sprintf
     "---\n\
      description: %s\n\
      role: %s\n\
-     # model: claude-sonnet-4-7   # optional; omit if you don't need a specific model\n\
+     compatible_clients: [%s]\n\
      c2c:\n\
-     #   alias: %s              # your c2c messaging alias (defaults to instance name)\n\
-     #   auto_join_rooms: [swarm-lounge]  # rooms to auto-join on startup\n\
+     %s\
      opencode:\n\
-     #   theme: tron            # optional; one of the 11 curated themes\n\
-     #   permission:\n\
-     #     bash: {\"*\": \"deny\", \"just *\": \"allow\"}\n\
-     claude:\n\
-     #   tools: [Read, Bash, Edit, Task]   # optional; restrict available tools\n\
+     %s\
      ---\n\
-     You are a %s agent.\n"
-    (match description with Some d when d <> "" -> d | _ -> "TODO: describe this agent's purpose")
-    (Option.value role_type ~default:"subagent")
-    name
+     You are a %s agent.\n\
+     TODO: describe responsibilities.\n"
+    description
+    role
+    (String.concat ", " compatible_clients)
+    auto_join_yaml
+    theme_yaml
     name
   in
   let oc = open_out path in
@@ -6060,6 +6173,103 @@ let agent_group =
   Cmdliner.Cmd.group ~default:agent_list_term
     (Cmdliner.Cmd.info "agent" ~doc:"Manage canonical role files.")
     [agent_new_cmd; agent_list_cmd; agent_delete_cmd; agent_rename_cmd]
+
+(* --- subcommand: config ---------------------------------------------------- *)
+(* Per-repo c2c config at .c2c/config.toml. Minimal hand-rolled reader/writer —
+   flat "key = value" form only; no sections. Keys we understand today:
+     generation_client = claude | opencode | codex
+   Chosen deliberately small to match the broker's hand-rolled YAML approach
+   (no TOML library pulled in). *)
+
+let c2c_config_path () =
+  Filename.concat (Sys.getcwd ()) (Filename.concat ".c2c" "config.toml")
+
+let config_read () : (string * string) list =
+  let path = c2c_config_path () in
+  if not (Sys.file_exists path) then []
+  else
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) @@ fun () ->
+      let rec loop acc =
+        match try Some (input_line ic) with End_of_file -> None with
+        | None -> List.rev acc
+        | Some line ->
+          let trimmed = String.trim line in
+          if trimmed = "" || String.length trimmed > 0 && trimmed.[0] = '#' then loop acc
+          else match String.index_opt trimmed '=' with
+            | None -> loop acc
+            | Some i ->
+              let k = String.trim (String.sub trimmed 0 i) in
+              let v_raw = String.trim (String.sub trimmed (i+1) (String.length trimmed - i - 1)) in
+              let v =
+                let n = String.length v_raw in
+                if n >= 2 && v_raw.[0] = '"' && v_raw.[n-1] = '"' then String.sub v_raw 1 (n-2)
+                else v_raw
+              in
+              loop ((k, v) :: acc)
+      in
+      loop []
+
+let config_write (entries : (string * string) list) : unit =
+  let path = c2c_config_path () in
+  let dir = Filename.dirname path in
+  (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  let tmp = path ^ ".tmp" in
+  let oc = open_out tmp in
+  Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () ->
+    output_string oc "# c2c per-repo config (.c2c/config.toml)\n";
+    output_string oc "# Generated/edited by `c2c config ...`.\n\n";
+    List.iter (fun (k, v) ->
+      Printf.fprintf oc "%s = \"%s\"\n" k v
+    ) entries
+  );
+  Unix.rename tmp path
+
+let config_set (key : string) (value : string) : unit =
+  let existing = config_read () in
+  let without = List.filter (fun (k, _) -> k <> key) existing in
+  let updated = without @ [(key, value)] in
+  config_write updated
+
+let valid_generation_clients = ["claude"; "opencode"; "codex"]
+
+let config_show_term =
+  let+ () = Cmdliner.Term.const () in
+  let entries = config_read () in
+  if entries = [] then Printf.printf "(no config set — %s)\n" (c2c_config_path ())
+  else List.iter (fun (k, v) -> Printf.printf "%s = %s\n" k v) entries
+
+let config_generation_client_term =
+  let value =
+    Cmdliner.Arg.(value & pos 0 (some string) None & info [] ~docv:"CLIENT"
+      ~doc:("Set generation_client to one of: " ^ String.concat ", " valid_generation_clients ^
+            ". Omit to show current value."))
+  in
+  let+ value = value in
+  match value with
+  | None ->
+    (match List.assoc_opt "generation_client" (config_read ()) with
+     | Some v -> print_endline v
+     | None -> Printf.printf "(unset — default would be opencode when needed)\n")
+  | Some v ->
+    if not (List.mem v valid_generation_clients) then begin
+      Printf.eprintf "error: '%s' not one of %s\n%!" v (String.concat ", " valid_generation_clients);
+      exit 1
+    end;
+    config_set "generation_client" v;
+    Printf.printf "generation_client = %s\n  written: %s\n" v (c2c_config_path ())
+
+let config_show_cmd = Cmdliner.Cmd.v
+  (Cmdliner.Cmd.info "show" ~doc:"Show current c2c config values.") config_show_term
+let config_generation_client_cmd = Cmdliner.Cmd.v
+  (Cmdliner.Cmd.info "generation-client"
+    ~doc:"Show or set the generation_client preference (claude|opencode|codex).")
+  config_generation_client_term
+
+let config_group =
+  Cmdliner.Cmd.group ~default:config_show_term
+    (Cmdliner.Cmd.info "config" ~doc:"Manage .c2c/config.toml — per-repo c2c configuration.")
+    [config_show_cmd; config_generation_client_cmd]
 
 (* --- subcommand: roles ----------------------------------------------------- *)
 
@@ -7941,4 +8151,4 @@ let () =
              [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; send_all; sweep
              ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
              ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-              ; serve; mcp; start; agent_group; roles_compile; roles_validate; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; help ]))
+              ; serve; mcp; start; agent_group; config_group; roles_compile; roles_validate; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; help ]))
