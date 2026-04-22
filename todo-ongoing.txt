@@ -68,6 +68,8 @@ Goal: every deprecated / broken / superseded script lives under `deprecated/` (o
 
 Status: **done** — c2c_inject_parts.py in deprecated/; c2c_pts_inject.py DEPRECATED (zero live callers — dead import removed from c2c_deliver_inbox; kept in root for test coverage); c2c_pty_inject.py marked ACTIVE (production backend for PTY injection).
 
+Note: `c2c install --dry-run` (4ce2671, cde1bd0) is the recommended preview path before running any install command. Use it instead of manually tracing what files would be written.
+
 ### Terminal E2E framework
 
 Project Folder: **todo** (docs at `docs/terminal-e2e-framework-{plan,design}.md`)
