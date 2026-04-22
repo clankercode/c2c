@@ -1,7 +1,10 @@
-from pathlib import Path
 import json
+import os
 import shutil
 import shlex
+import sys
+import time
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -11,6 +14,10 @@ from tests.e2e.framework.artifacts import ArtifactCollector
 from tests.e2e.framework.scenario import Scenario
 from tests.e2e.framework.terminal_driver import TerminalCapture, TerminalHandle, TerminalStartSpec
 from tests.e2e.framework.tmux_driver import TmuxDriver
+
+FAKE_TERMINAL_CHILD = (
+    Path(__file__).resolve().parent / "e2e" / "fixtures" / "fake_terminal_child.py"
+)
 
 
 def test_artifact_collector_creates_run_dir_and_timeline(tmp_path: Path) -> None:
@@ -393,3 +400,81 @@ def test_tmux_driver_enter_uses_repo_helper(tmp_path: Path, monkeypatch: pytest.
 
     assert calls[0][0] == str(tmp_path / "scripts" / "c2c-tmux-enter.sh")
     assert calls[0][1] == "%99"
+
+
+def test_fake_pty_driver_round_trips_input(tmp_path: Path) -> None:
+    from tests.e2e.framework.fake_pty_driver import FakePtyDriver
+
+    driver = FakePtyDriver()
+    handle = driver.start(
+        TerminalStartSpec(
+            command=[sys.executable, str(FAKE_TERMINAL_CHILD)],
+            cwd=tmp_path,
+            env={},
+            title="fake-child",
+        )
+    )
+
+    try:
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            capture = driver.capture(handle)
+            if "READY" in capture.text:
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError(driver.capture(handle).text)
+
+        driver.send_text(handle, "hello")
+        driver.send_key(handle, "Enter")
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            capture = driver.capture(handle)
+            if "ECHO: hello" in capture.text:
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError(driver.capture(handle).text)
+
+        assert driver.is_alive(handle) is True
+    finally:
+        driver.send_text(handle, "/quit")
+        driver.send_key(handle, "Enter")
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            capture = driver.capture(handle)
+            if "BYE" in capture.text:
+                break
+            time.sleep(0.05)
+
+        driver.stop(handle)
+        assert driver.is_alive(handle) is False
+
+
+@pytest.mark.skipif(
+    os.environ.get("C2C_TEST_TMUX") != "1" or shutil.which("tmux") is None,
+    reason="set C2C_TEST_TMUX=1 and install tmux to run live tmux backend parity smoke",
+)
+def test_tmux_driver_can_run_same_fake_child(scenario) -> None:
+    driver = scenario.drivers["tmux"]
+    handle = driver.start(
+        TerminalStartSpec(
+            command=[sys.executable, str(FAKE_TERMINAL_CHILD)],
+            cwd=scenario.workdir,
+            env={},
+            title="tmux-fake-child",
+        )
+    )
+
+    try:
+        scenario.wait_for(lambda: "READY" in driver.capture(handle).text, timeout=5.0)
+        driver.send_text(handle, "hello")
+        driver.send_key(handle, "Enter")
+        scenario.wait_for(lambda: "ECHO: hello" in driver.capture(handle).text, timeout=5.0)
+    finally:
+        if driver.is_alive(handle):
+            driver.send_text(handle, "/quit")
+            driver.send_key(handle, "Enter")
+        driver.stop(handle)
