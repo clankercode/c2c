@@ -56,9 +56,9 @@ Project Folder: `.collab/findings/2026-04-22T19-32-00Z-coordinator1-permission-a
 
 Goal: close the relay-spoofing / stale-alias routing vector. Bind permission/question IDs to canonical_alias; resolve reply-to at send-time; broker refuses mismatched-canonical sends; alias reuse refused while prior owner has pending state.
 
-Status: **active** — finding filed, in-flight patch partially visible in `.opencode/plugins/c2c.ts` (expectedSenderAlias binding). No commit yet.
+Status: **done (v1)** — M2/M3/M4 all landed. M3 plugin-side expectedSenderAlias verification in `15713e9`. M4 broker-side alias-reuse guard in `e86101b` (strengthened against orphaned pending permissions). M2/M4 plugin wiring in `d116139`. Tests in `784dc0d`/`d7bf9d8`. RPC security docs in `dcca310`.
 
-Next: finish the plugin-side verification; add broker-side canonical matching; add tests.
+Next: monitor in dogfood use for any bypass paths; longer-term hardening (E2E-signed permission replies) tracked separately if it becomes needed.
 
 ### Deprecated script cleanup
 
@@ -66,9 +66,9 @@ Project Folder: **todo**
 
 Goal: every deprecated / broken / superseded script lives under `deprecated/` (or similar), not mixed in with live tooling. The repo root + `scripts/` + `c2c_*.py` collection are currently polluted with shims kept for historical reasons. Moving them out improves discoverability, shrinks what new agents have to grep through, and makes the OCaml-port progress legible at a glance.
 
-Status: **active** — ongoing long-term goal per Max 2026-04-22. No folder created yet.
+Status: **active** — deprecated/ directory created; wake_daemon + inject scripts moved. Remaining: c2c_inject_parts.py, c2c_pts_inject.py, c2c_pty_inject.py (still in root, not DEPRECATED-marked).
 
-Next: first pass — audit `c2c_*.py` scripts flagged as DEPRECATED in their docstrings (c2c_opencode_wake_daemon.py, c2c_claude_wake_daemon.py, c2c_kimi_wake_daemon.py, c2c_crush_wake_daemon.py, c2c_inject.py per CLAUDE.md) and move to `deprecated/`. Update any remaining references (docs, tests, harness scripts). Pairs with the OCaml-port project — as OCaml surfaces land, their Python predecessors can migrate.
+Next: mark remaining deprecated scripts with DEPRECATED docstrings or move to deprecated/.
 
 ### Terminal E2E framework
 
@@ -79,3 +79,13 @@ Goal: capability-gated live tests for `c2c start <client>` that can launch real 
 Status: **active** — design + plan docs committed. Tests landed incrementally (`tests/test_terminal_e2e_framework.py`, `tests/e2e/framework/artifacts.py`).
 
 Next: continued incremental hardening; will unblock codex-headless Task 7 (tmux smoke coverage).
+
+### Remote relay transport
+
+Project Folder: **todo**
+
+Goal: enable a remote node to receive c2c messages through a relay server without requiring the local broker's file system.
+
+Status: **active** — jungle-coder analyzed OCaml relay surface. Gap: no `c2c relay poll-inbox --url` for polling a remote broker. Decision made (CEO 2026-04-23): **Option A** (broker-extend) — relay acts as message ferry for broker JSON files. Simpler than relay-native inbox. Option B (relay-native inbox) deferred to v2.
+
+Next: design broker-extend transport; implement `c2c relay poll-inbox --url`. Owner: TBD.
