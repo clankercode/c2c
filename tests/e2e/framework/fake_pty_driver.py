@@ -21,8 +21,8 @@ class FakePtyDriver:
     def start(self, spec: TerminalStartSpec) -> TerminalHandle:
         master_fd, slave_fd = pty.openpty()
         os.set_blocking(master_fd, False)
-        self._set_winsize(slave_fd, rows=spec.rows, cols=spec.cols)
         try:
+            self._set_winsize(slave_fd, rows=spec.rows, cols=spec.cols)
             proc = subprocess.Popen(
                 spec.command,
                 cwd=Path(spec.cwd),

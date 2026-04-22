@@ -487,6 +487,38 @@ def test_fake_pty_driver_closes_openpty_fds_when_launch_fails(monkeypatch: pytes
     assert closed == [11, 12]
 
 
+def test_fake_pty_driver_closes_openpty_fds_when_winsize_setup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.e2e.framework import fake_pty_driver as fake_pty_driver_module
+    from tests.e2e.framework.fake_pty_driver import FakePtyDriver
+
+    closed: list[int] = []
+
+    monkeypatch.setattr(fake_pty_driver_module.pty, "openpty", lambda: (31, 32))
+    monkeypatch.setattr(fake_pty_driver_module.os, "set_blocking", lambda _fd, _flag: None)
+    monkeypatch.setattr(fake_pty_driver_module.os, "close", lambda fd: closed.append(fd))
+
+    def fake_set_winsize(self: FakePtyDriver, slave_fd: int, *, rows: int, cols: int) -> None:
+        raise OSError("winsize boom")
+
+    monkeypatch.setattr(FakePtyDriver, "_set_winsize", fake_set_winsize)
+
+    driver = FakePtyDriver()
+
+    with pytest.raises(OSError, match="winsize boom"):
+        driver.start(
+            TerminalStartSpec(
+                command=["/fake"],
+                cwd=Path.cwd(),
+                env={},
+                title="broken-winsize",
+            )
+        )
+
+    assert closed == [31, 32]
+
+
 def test_fake_pty_driver_start_sets_winsize_from_terminal_spec(
     monkeypatch: pytest.MonkeyPatch
 ) -> None:
