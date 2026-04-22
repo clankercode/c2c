@@ -5817,7 +5817,7 @@ let start_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "bin" ] ~docv:"PATH" ~doc:"Custom binary path or name to launch.")
   in
   let session_id =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "session-id"; "s" ] ~docv:"ID" ~doc:"Explicit session ID — UUID for claude/codex, ses_* for opencode (overrides auto-generated).")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "session-id"; "s" ] ~docv:"ID" ~doc:"Explicit session ID — UUID or named session for claude, UUID for codex, ses_* for opencode (overrides auto-generated).")
   in
   let one_hr_cache =
     Cmdliner.Arg.(value & flag & info [ "1hr-cache" ] ~doc:"Set ENABLE_PROMPT_CACHING_1H=1 (claude only; default off — 1h cache writes cost 2x, only worth it if you hit the cache).")

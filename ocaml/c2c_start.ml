@@ -1444,19 +1444,21 @@ let run_outer_loop ~(name : string) ~(client : string)
                      (* Minimal headless unblocker: the bridge reads XML from a
                         c2c-owned pipe on stdin so the deliver daemon can write the
                         first broker message before any operator console exists. *)
-                     if client = "codex-headless" then
-                       (try Unix.dup2 read_fd Unix.stdin with _ -> ())
-                     else
+                     if client = "codex-headless" then begin
+                       (try Unix.dup2 read_fd Unix.stdin with _ -> ());
+                       if read_fd <> Unix.stdin then (try Unix.close read_fd with _ -> ())
+                     end else begin
                        let fd3 : Unix.file_descr = Obj.magic 3 in
                        (try Unix.dup2 read_fd fd3 with _ -> ());
-                     (try Unix.close read_fd with _ -> ());
+                       if read_fd <> fd3 then (try Unix.close read_fd with _ -> ())
+                     end;
                      (try Unix.close write_fd with _ -> ())
                  | None -> ());
                 (match thread_id_handoff with
                  | Some (_path, handoff_fd) ->
                      let fd5 : Unix.file_descr = Obj.magic 5 in
                      (try Unix.dup2 handoff_fd fd5 with _ -> ());
-                     (try Unix.close handoff_fd with _ -> ())
+                     if handoff_fd <> fd5 then (try Unix.close handoff_fd with _ -> ())
                  | None -> ());
                 (try Unix.close outer_stderr_fd with _ -> ());
                 (try Unix.execvpe binary_path (Array.of_list cmd) env
@@ -1748,6 +1750,11 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
    | Some sid when client = "codex-headless" ->
        if String.trim sid = "" then begin
          Printf.eprintf "error: --session-id for codex-headless must be a non-empty thread id\n%!";
+         exit 1
+       end
+   | Some sid when client = "claude" ->
+       if String.trim sid = "" then begin
+         Printf.eprintf "error: --session-id for claude must be a non-empty session id\n%!";
          exit 1
        end
    | Some sid ->
