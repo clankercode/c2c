@@ -646,7 +646,8 @@ let whoami_cmd =
   let output_mode = if json then Json else Human in
   match env_session_id () with
   | None ->
-      Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID.\n%!";
+      Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID.\n\
+hint: Run 'c2c init' to register and get started, or pass --session-id explicitly.\n%!";
       exit 1
   | Some sid ->
       let regs = C2c_mcp.Broker.list_registrations broker in
@@ -686,7 +687,8 @@ let set_compact_cmd =
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   match env_session_id () with
   | None ->
-      Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID.\n%!";
+      Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID.\n\
+hint: Run 'c2c init' to register and get started, or pass --session-id explicitly.\n%!";
       exit 1
   | Some sid ->
       let result = C2c_mcp.Broker.set_compacting broker ~session_id:sid ?reason:reason_opt () in
@@ -710,7 +712,8 @@ let clear_compact_cmd =
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   match env_session_id () with
   | None ->
-      Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID.\n%!";
+      Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID.\n\
+hint: Run 'c2c init' to register and get started, or pass --session-id explicitly.\n%!";
       exit 1
   | Some sid ->
       let ok = C2c_mcp.Broker.clear_compacting broker ~session_id:sid in
@@ -744,7 +747,8 @@ let open_pending_reply_cmd =
     match env_session_id () with
     | Some s -> s
     | None ->
-        Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID.\n%!";
+        Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID.\n\
+hint: Run 'c2c init' to register and get started, or pass --session-id explicitly.\n%!";
         exit 1
   in
   let alias =
