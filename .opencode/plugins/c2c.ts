@@ -127,7 +127,7 @@ export function summarizePermission(perm: Record<string, unknown>): string {
   const metaAction: string = [meta.command, meta.input, meta.cmd]
     .filter((v): v is string => typeof v === "string" && v.length > 0)[0] ?? "";
 
-  const action = metaAction || patternsStr || permission;
+  const action = metaAction || patternsStr;
 
   switch (permission) {
     case "bash":

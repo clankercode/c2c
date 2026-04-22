@@ -431,8 +431,8 @@ describe('c2c plugin unit tests', () => {
     expect(permissionPatch.patch.tui_focus.ty).toBe('permission');
     expect(permissionPatch.patch.tui_focus.details).toEqual({
       id: 'perm-root',
-      title: 'bash',
-      type: 'bash',
+      permission: 'bash',
+      patterns: null,
     });
   });
 
@@ -957,53 +957,48 @@ describe('c2c plugin unit tests', () => {
 // ---------------------------------------------------------------------------
 
 describe('summarizePermission', () => {
-  it('formats bash permission with pattern', () => {
-    expect(summarizePermission({ type: 'bash', pattern: 'git push origin master' }))
+  it('formats bash permission with patterns', () => {
+    expect(summarizePermission({ permission: 'bash', patterns: ['git push origin master'] }))
       .toBe('bash: `git push origin master`');
   });
 
-  it('prefers metadata.command over pattern', () => {
+  it('prefers metadata.command over patterns', () => {
     expect(summarizePermission({
-      type: 'bash',
-      pattern: 'echo hi',
+      permission: 'bash',
+      patterns: ['echo hi'],
       metadata: { command: 'git push origin master' },
     })).toBe('bash: `git push origin master`');
   });
 
   it('falls back to metadata.input when command absent', () => {
     expect(summarizePermission({
-      type: 'bash',
+      permission: 'bash',
       metadata: { input: 'npm run build' },
     })).toBe('bash: `npm run build`');
   });
 
-  it('formats file permission with pattern', () => {
-    expect(summarizePermission({ type: 'file', pattern: '/etc/passwd' }))
+  it('formats file permission with patterns', () => {
+    expect(summarizePermission({ permission: 'file', patterns: ['/etc/passwd'] }))
       .toBe('file: /etc/passwd');
   });
 
   it('formats fs (alias) permission', () => {
-    expect(summarizePermission({ type: 'fs', pattern: '/home/user/.ssh/id_rsa' }))
+    expect(summarizePermission({ permission: 'fs', patterns: ['/home/user/.ssh/id_rsa'] }))
       .toBe('file: /home/user/.ssh/id_rsa');
   });
 
   it('formats network permission', () => {
-    expect(summarizePermission({ type: 'network', pattern: 'api.example.com' }))
+    expect(summarizePermission({ permission: 'network', patterns: ['api.example.com'] }))
       .toBe('network: api.example.com');
   });
 
-  it('handles pattern as string array', () => {
-    expect(summarizePermission({ type: 'bash', pattern: ['git', 'push'] }))
+  it('handles patterns as string array', () => {
+    expect(summarizePermission({ permission: 'bash', patterns: ['git', 'push'] }))
       .toBe('bash: `git push`');
   });
 
-  it('uses title when pattern is absent and title is not "unknown"', () => {
-    expect(summarizePermission({ type: 'bash', title: 'deploy script' }))
-      .toBe('bash: `deploy script`');
-  });
-
-  it('ignores title "unknown" and returns fallback', () => {
-    expect(summarizePermission({ type: 'bash', title: 'unknown' }))
+  it('uses permission as fallback when no patterns or metadata', () => {
+    expect(summarizePermission({ permission: 'bash' }))
       .toBe('bash: (unknown command)');
   });
 
@@ -1011,12 +1006,12 @@ describe('summarizePermission', () => {
     expect(summarizePermission({})).toBe('unknown');
   });
 
-  it('handles unknown type with action', () => {
-    expect(summarizePermission({ type: 'write', pattern: '/tmp/file.txt' }))
-      .toBe('write: /tmp/file.txt');
+  it('handles write permission with patterns', () => {
+    expect(summarizePermission({ permission: 'write', patterns: ['/tmp/file.txt'] }))
+      .toBe('file: /tmp/file.txt');
   });
 
-  it('handles unknown type with no action', () => {
-    expect(summarizePermission({ type: 'write' })).toBe('write');
+  it('handles write permission with no patterns', () => {
+    expect(summarizePermission({ permission: 'write' })).toBe('file access (unknown path)');
   });
 });
