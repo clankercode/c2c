@@ -1149,6 +1149,13 @@ let run_outer_loop ~(name : string) ~(client : string)
             (try Unix.kill p Sys.sigkill with Unix.Unix_error _ -> ())
       in
 
+      let kill_inner_target signal pid =
+        try
+          if client = "codex-headless" then Unix.kill pid signal
+          else Unix.kill (- pid) signal
+        with Unix.Unix_error _ -> ()
+      in
+
       let cleanup_and_exit code =
         (* Kill inner client's entire process group (opencode, node, c2c monitor, …)
            before cleaning up sidecars. The inner ran with setpgid 0 0 so its
@@ -1156,9 +1163,9 @@ let run_outer_loop ~(name : string) ~(client : string)
         (match !inner_child_pid with
          | None -> ()
          | Some p ->
-             (try Unix.kill (- p) Sys.sigterm with Unix.Unix_error _ -> ());
+             kill_inner_target Sys.sigterm p;
              Unix.sleepf 0.3;
-             (try Unix.kill (- p) Sys.sigkill with Unix.Unix_error _ -> ()));
+             kill_inner_target Sys.sigkill p);
         stop_sidecar !deliver_pid;
         stop_sidecar !poker_pid;
         stop_sidecar !wire_pid;
@@ -1382,16 +1389,19 @@ let run_outer_loop ~(name : string) ~(client : string)
             | 0 ->
                 (try ignore (Sys.signal Sys.sigchld Sys.Signal_default) with _ -> ());
                 (try ignore (Sys.signal Sys.sigpipe Sys.Signal_default) with _ -> ());
-                (* Place child in its own process group (PGID = child PID) so that
-                   kill(-PGID) at cleanup time takes down all descendants atomically:
-                   node/bun, the c2c monitor spawned by the plugin, etc. *)
-                (try setpgid 0 0 with _ -> ());
+                (* Interactive TUI clients run in their own process group so cleanup can
+                   take down descendants atomically. codex-headless stays in the pane's
+                   foreground group: isolating it into a fresh pgid under tmux can crash
+                   the bridge before broker-fed XML is processed. *)
+                (try if client <> "codex-headless" then setpgid 0 0 with _ -> ());
                 (* Hand the controlling TTY's foreground process group to
-                   the child's new pgid. Without this, opencode detects
-                   background-pg and exits 109 in a tmux pane. No-op when
-                   stdin isn't a tty (detached launch). *)
+                   the child's new pgid for interactive TUI clients only.
+                   codex-headless replaces stdin with a broker-owned pipe, so
+                   it must not participate in tty foreground handoff; under
+                   tmux that path can wedge or crash the bridge before the
+                   first XML message arrives. *)
                 (try
-                   if Unix.isatty Unix.stdin then
+                   if client <> "codex-headless" && Unix.isatty Unix.stdin then
                      tcsetpgrp Unix.stdin (Unix.getpid ())
                  with _ -> ());
                 (* Redirect child stderr through the tee pipe (only when
@@ -1552,12 +1562,10 @@ let run_outer_loop ~(name : string) ~(client : string)
                if Unix.isatty Unix.stdin then
                  tcsetpgrp Unix.stdin (getpgrp ())
              with _ -> ());
-             (* Reap grandchildren: child ran with setpgid 0 0, so its PGID == its PID.
-                Kill the whole process group (c2c monitor, node, bun, etc.) so orphans
-                don't accumulate on restart. *)
-             (try Unix.kill (- child_pid_opt) Sys.sigterm with Unix.Unix_error _ -> ());
+             (* Reap grandchildren for clients that run in their own process group. *)
+             kill_inner_target Sys.sigterm child_pid_opt;
              Unix.sleepf 0.5;
-             (try Unix.kill (- child_pid_opt) Sys.sigkill with Unix.Unix_error _ -> ());
+             kill_inner_target Sys.sigkill child_pid_opt;
              code
            with _ -> 1)
       in
@@ -1604,7 +1612,8 @@ let run_outer_loop ~(name : string) ~(client : string)
         record_death ~broker_root ~name ~client ~exit_code ~duration_s:elapsed ~inst_dir;
 
       let resume_cmd =
-        Printf.sprintf "c2c start %s -n %s -s %s" client name session_id
+        let sid = Option.value resume_session_id ~default:session_id in
+        Printf.sprintf "c2c start %s -n %s --resume %s" client name sid
         ^ (match binary_override with None -> "" | Some b -> Printf.sprintf " --bin %s" b)
       in
       print_endline ("\nresume via: " ^ resume_cmd);
@@ -1807,7 +1816,14 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
           | "codex-headless", None -> ""
           | "codex-headless", Some sid -> sid
           | _, Some s -> s
-          | _, None -> Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
+          | _, None ->
+            if client = "claude" then
+              (match Sys.getenv_opt "CLAUDE_SESSION_ID" with
+               | Some sid when claude_session_exists sid -> sid
+               | _ ->
+                   Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()))
+            else
+              Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
         in
         (binary_override, alias_override, extra_args, Some rs, broker_root ())
   in
