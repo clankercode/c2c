@@ -324,21 +324,66 @@ const C2CDelivery: Plugin = async (ctx) => {
     at: string;
     details: Record<string, unknown> | null;
   };
-  const EMA_ALPHA = 0.2;
-  function updateEmaOnIdle(idleEma: number | null, occupiedSince: string | null, busySeconds: number): { idleEma: number | null; occupiedSince: null } {
-    if (occupiedSince === null) return { idleEma, occupiedSince: null };
-    const busyFraction = Math.max(0, Math.min(1, busySeconds / 60));
-    const newEma = idleEma === null
-      ? EMA_ALPHA * busyFraction + (1 - EMA_ALPHA) * 0.5
-      : EMA_ALPHA * busyFraction + (1 - EMA_ALPHA) * idleEma;
-    return { idleEma: newEma, occupiedSince: null };
+  const RING_MAX = 120;
+  const RING_WINDOW_MS = 3600_000;
+  type IdleAccounting = {
+    prev_state: "active" | "idle" | null;
+    prev_ts_ms: number;
+    active_ms_lifetime: number;
+    idle_ms_lifetime: number;
+    ring: Array<{ ts_ms: number; new_state: "active" | "idle" }>;
+  };
+  let idleAccounting: IdleAccounting = {
+    prev_state: null,
+    prev_ts_ms: Date.now(),
+    active_ms_lifetime: 0,
+    idle_ms_lifetime: 0,
+    ring: [],
+  };
+  function computeActiveFractions(): { active_fraction_1h: number; active_fraction_lifetime: number } {
+    const now = Date.now();
+    let active_ms_ring = 0;
+    const cutoff = now - RING_WINDOW_MS;
+    const newRing: typeof idleAccounting.ring = [];
+    for (const entry of idleAccounting.ring) {
+      if (entry.ts_ms >= cutoff) {
+        newRing.push(entry);
+        active_ms_ring += entry.new_state === "active" ? 1000 : 0;
+      }
+    }
+    idleAccounting.ring = newRing;
+    let total_ring_ms = 0;
+    for (let i = 1; i < idleAccounting.ring.length; i++) {
+      const delta = idleAccounting.ring[i].ts_ms - idleAccounting.ring[i - 1].ts_ms;
+      total_ring_ms += idleAccounting.ring[i - 1].new_state === "active" ? delta : 0;
+    }
+    const active_fraction_1h = idleAccounting.ring.length >= 2
+      ? total_ring_ms / Math.min(now - idleAccounting.ring[0].ts_ms, RING_WINDOW_MS)
+      : idleAccounting.active_ms_lifetime / Math.max(idleAccounting.active_ms_lifetime + idleAccounting.idle_ms_lifetime, 1);
+    const total_lifetime = idleAccounting.active_ms_lifetime + idleAccounting.idle_ms_lifetime;
+    const active_fraction_lifetime = total_lifetime > 0 ? idleAccounting.active_ms_lifetime / total_lifetime : 0.5;
+    return {
+      active_fraction_1h: Math.max(0, Math.min(1, active_fraction_1h)),
+      active_fraction_lifetime: Math.max(0, Math.min(1, active_fraction_lifetime)),
+    };
   }
-  function updateEmaOnBusy(idleEma: number | null, occupiedSince: string | null, idleSeconds: number): { idleEma: number | null; occupiedSince: string } {
-    const idleFraction = Math.max(0, Math.min(1, idleSeconds / 60));
-    const newEma = idleEma === null
-      ? EMA_ALPHA * (1 - idleFraction) + (1 - EMA_ALPHA) * 0.5
-      : EMA_ALPHA * (1 - idleFraction) + (1 - EMA_ALPHA) * idleEma;
-    return { idleEma: newEma, occupiedSince: new Date().toISOString() };
+  function accountTransition(newState: "active" | "idle", ts_ms: number): void {
+    if (idleAccounting.prev_state === null) {
+      idleAccounting.prev_state = newState;
+      idleAccounting.prev_ts_ms = ts_ms;
+      return;
+    }
+    if (idleAccounting.prev_state === newState) return;
+    const delta_ms = ts_ms - idleAccounting.prev_ts_ms;
+    if (idleAccounting.prev_state === "active") {
+      idleAccounting.active_ms_lifetime += delta_ms;
+    } else {
+      idleAccounting.idle_ms_lifetime += delta_ms;
+    }
+    idleAccounting.ring.push({ ts_ms, new_state: newState });
+    if (idleAccounting.ring.length > RING_MAX) idleAccounting.ring.shift();
+    idleAccounting.prev_state = newState;
+    idleAccounting.prev_ts_ms = ts_ms;
   }
   type PluginState = {
     c2c_session_id: string;
@@ -349,8 +394,8 @@ const C2CDelivery: Plugin = async (ctx) => {
     state_last_updated_at: string;
     agent: {
       is_idle: boolean | null;
-      idle_ema: number | null;
-      occupied_since: string | null;
+      active_fraction_1h: number;
+      active_fraction_lifetime: number;
       turn_count: number;
       step_count: number;
       last_step: LastStep | null;
@@ -399,8 +444,8 @@ const C2CDelivery: Plugin = async (ctx) => {
     state_last_updated_at: pluginStartedAt,
     agent: {
       is_idle: null,
-      idle_ema: null,
-      occupied_since: null,
+      active_fraction_1h: 0.5,
+      active_fraction_lifetime: 0.5,
       turn_count: 0,
       step_count: 0,
       last_step: null,
@@ -684,10 +729,11 @@ const C2CDelivery: Plugin = async (ctx) => {
     kickoffDelivered = false;
     pluginState.root_opencode_session_id = info.id;
     const now = Date.now();
-    const idleResult = updateEmaOnBusy(pluginState.agent.idle_ema, pluginState.agent.occupied_since, 0);
-    pluginState.agent.idle_ema = idleResult.idleEma;
-    pluginState.agent.occupied_since = idleResult.occupiedSince;
+    accountTransition("active", now);
+    const fractions = computeActiveFractions();
     pluginState.agent.is_idle = false;
+    pluginState.agent.active_fraction_1h = fractions.active_fraction_1h;
+    pluginState.agent.active_fraction_lifetime = fractions.active_fraction_lifetime;
     pluginState.agent.step_count += 1;
     pluginState.agent.last_step = makeLastStep("session.created", compactSessionDetails(info.id));
     pluginState.tui_focus = { ty: "prompt", details: null };
@@ -696,8 +742,8 @@ const C2CDelivery: Plugin = async (ctx) => {
       root_opencode_session_id: info.id,
       agent: {
         is_idle: false,
-        idle_ema: pluginState.agent.idle_ema,
-        occupied_since: pluginState.agent.occupied_since,
+        active_fraction_1h: pluginState.agent.active_fraction_1h,
+        active_fraction_lifetime: pluginState.agent.active_fraction_lifetime,
         step_count: pluginState.agent.step_count,
         last_step: pluginState.agent.last_step,
       },
@@ -713,13 +759,11 @@ const C2CDelivery: Plugin = async (ctx) => {
 
     const sessionID = eventSessionId(event);
     const now = Date.now();
-    const busySeconds = pluginState.agent.occupied_since !== null
-      ? (now - new Date(pluginState.agent.occupied_since).getTime()) / 1000
-      : 0;
-    const idleResult = updateEmaOnIdle(pluginState.agent.idle_ema, pluginState.agent.occupied_since, busySeconds);
-    pluginState.agent.idle_ema = idleResult.idleEma;
-    pluginState.agent.occupied_since = idleResult.occupiedSince;
+    accountTransition("idle", now);
+    const fractions = computeActiveFractions();
     pluginState.agent.is_idle = true;
+    pluginState.agent.active_fraction_1h = fractions.active_fraction_1h;
+    pluginState.agent.active_fraction_lifetime = fractions.active_fraction_lifetime;
     pluginState.agent.turn_count += 1;
     pluginState.agent.step_count += 1;
     pluginState.agent.last_step = makeLastStep("session.idle", compactSessionDetails(sessionID));
@@ -729,8 +773,8 @@ const C2CDelivery: Plugin = async (ctx) => {
       root_opencode_session_id: pluginState.root_opencode_session_id,
       agent: {
         is_idle: true,
-        idle_ema: pluginState.agent.idle_ema,
-        occupied_since: pluginState.agent.occupied_since,
+        active_fraction_1h: pluginState.agent.active_fraction_1h,
+        active_fraction_lifetime: pluginState.agent.active_fraction_lifetime,
         turn_count: pluginState.agent.turn_count,
         step_count: pluginState.agent.step_count,
         last_step: pluginState.agent.last_step,
@@ -751,13 +795,11 @@ const C2CDelivery: Plugin = async (ctx) => {
     if (!sessionID || sessionID !== pluginState.root_opencode_session_id) return;
 
     const now = Date.now();
-    const idleSeconds = pluginState.agent.occupied_since !== null
-      ? (now - new Date(pluginState.agent.occupied_since).getTime()) / 1000
-      : 0;
-    const busyResult = updateEmaOnBusy(pluginState.agent.idle_ema, pluginState.agent.occupied_since, idleSeconds);
-    pluginState.agent.idle_ema = busyResult.idleEma;
-    pluginState.agent.occupied_since = busyResult.occupiedSince;
+    accountTransition("active", now);
+    const fractions = computeActiveFractions();
     pluginState.agent.is_idle = false;
+    pluginState.agent.active_fraction_1h = fractions.active_fraction_1h;
+    pluginState.agent.active_fraction_lifetime = fractions.active_fraction_lifetime;
     pluginState.agent.step_count += 1;
     pluginState.agent.last_step = makeLastStep(event.type, compactPermissionDetails(event));
     pluginState.tui_focus = {
@@ -768,12 +810,13 @@ const C2CDelivery: Plugin = async (ctx) => {
       root_opencode_session_id: pluginState.root_opencode_session_id,
       agent: {
         is_idle: false,
-        idle_ema: pluginState.agent.idle_ema,
-        occupied_since: pluginState.agent.occupied_since,
+        active_fraction_1h: pluginState.agent.active_fraction_1h,
+        active_fraction_lifetime: pluginState.agent.active_fraction_lifetime,
         step_count: pluginState.agent.step_count,
         last_step: pluginState.agent.last_step,
       },
       tui_focus: pluginState.tui_focus,
+      prompt: pluginState.prompt,
     });
   }
 
@@ -793,39 +836,35 @@ const C2CDelivery: Plugin = async (ctx) => {
       if (configuredOpenCodeSessionId && sessionID !== configuredOpenCodeSessionId) return;
       if (status?.type === "busy") {
         const now = Date.now();
-        const idleSeconds = pluginState.agent.occupied_since !== null
-          ? (now - new Date(pluginState.agent.occupied_since).getTime()) / 1000
-          : 0;
-        const busyResult = updateEmaOnBusy(pluginState.agent.idle_ema, pluginState.agent.occupied_since, idleSeconds);
-        pluginState.agent.idle_ema = busyResult.idleEma;
-        pluginState.agent.occupied_since = busyResult.occupiedSince;
+        accountTransition("active", now);
+        const fractions = computeActiveFractions();
         pluginState.agent.is_idle = false;
+        pluginState.agent.active_fraction_1h = fractions.active_fraction_1h;
+        pluginState.agent.active_fraction_lifetime = fractions.active_fraction_lifetime;
         pluginState.agent.last_step = makeLastStep("session.status.busy", compactSessionDetails(sessionID));
         writeStatePatch({
           agent: {
             is_idle: false,
-            idle_ema: pluginState.agent.idle_ema,
-            occupied_since: pluginState.agent.occupied_since,
+            active_fraction_1h: pluginState.agent.active_fraction_1h,
+            active_fraction_lifetime: pluginState.agent.active_fraction_lifetime,
             last_step: pluginState.agent.last_step,
           },
         });
       } else if (status?.type === "idle") {
         const now = Date.now();
-        const busySeconds = pluginState.agent.occupied_since !== null
-          ? (now - new Date(pluginState.agent.occupied_since).getTime()) / 1000
-          : 0;
-        const idleResult = updateEmaOnIdle(pluginState.agent.idle_ema, pluginState.agent.occupied_since, busySeconds);
-        pluginState.agent.idle_ema = idleResult.idleEma;
-        pluginState.agent.occupied_since = idleResult.occupiedSince;
+        accountTransition("idle", now);
+        const fractions = computeActiveFractions();
         pluginState.agent.is_idle = true;
+        pluginState.agent.active_fraction_1h = fractions.active_fraction_1h;
+        pluginState.agent.active_fraction_lifetime = fractions.active_fraction_lifetime;
         pluginState.agent.turn_count += 1;
         pluginState.agent.step_count += 1;
         pluginState.agent.last_step = makeLastStep("session.status.idle", compactSessionDetails(sessionID));
         writeStatePatch({
           agent: {
             is_idle: true,
-            idle_ema: pluginState.agent.idle_ema,
-            occupied_since: pluginState.agent.occupied_since,
+            active_fraction_1h: pluginState.agent.active_fraction_1h,
+            active_fraction_lifetime: pluginState.agent.active_fraction_lifetime,
             turn_count: pluginState.agent.turn_count,
             step_count: pluginState.agent.step_count,
             last_step: pluginState.agent.last_step,
@@ -849,20 +888,18 @@ const C2CDelivery: Plugin = async (ctx) => {
       const part = (event as any).properties?.part;
       if (part?.type === "step-start") {
         const now = Date.now();
-        const idleSeconds = pluginState.agent.occupied_since !== null
-          ? (now - new Date(pluginState.agent.occupied_since).getTime()) / 1000
-          : 0;
-        const busyResult = updateEmaOnBusy(pluginState.agent.idle_ema, pluginState.agent.occupied_since, idleSeconds);
-        pluginState.agent.idle_ema = busyResult.idleEma;
-        pluginState.agent.occupied_since = busyResult.occupiedSince;
+        accountTransition("active", now);
+        const fractions = computeActiveFractions();
         pluginState.agent.is_idle = false;
+        pluginState.agent.active_fraction_1h = fractions.active_fraction_1h;
+        pluginState.agent.active_fraction_lifetime = fractions.active_fraction_lifetime;
         pluginState.agent.step_count += 1;
         pluginState.agent.last_step = makeLastStep("step.start", compactSessionDetails(part.sessionID));
         writeStatePatch({
           agent: {
             is_idle: false,
-            idle_ema: pluginState.agent.idle_ema,
-            occupied_since: pluginState.agent.occupied_since,
+            active_fraction_1h: pluginState.agent.active_fraction_1h,
+            active_fraction_lifetime: pluginState.agent.active_fraction_lifetime,
             step_count: pluginState.agent.step_count,
             last_step: pluginState.agent.last_step,
           },
@@ -878,17 +915,15 @@ const C2CDelivery: Plugin = async (ctx) => {
       } else if (part?.type === "tool") {
         if (pluginState.agent.is_idle) {
           const now = Date.now();
-          const idleSeconds = pluginState.agent.occupied_since !== null
-            ? (now - new Date(pluginState.agent.occupied_since).getTime()) / 1000
-            : 0;
-          const busyResult = updateEmaOnBusy(pluginState.agent.idle_ema, pluginState.agent.occupied_since, idleSeconds);
-          pluginState.agent.idle_ema = busyResult.idleEma;
-          pluginState.agent.occupied_since = busyResult.occupiedSince;
+          accountTransition("active", now);
+          const fractions = computeActiveFractions();
           pluginState.agent.is_idle = false;
+          pluginState.agent.active_fraction_1h = fractions.active_fraction_1h;
+          pluginState.agent.active_fraction_lifetime = fractions.active_fraction_lifetime;
           writeStatePatch({ agent: {
             is_idle: false,
-            idle_ema: pluginState.agent.idle_ema,
-            occupied_since: pluginState.agent.occupied_since,
+            active_fraction_1h: pluginState.agent.active_fraction_1h,
+            active_fraction_lifetime: pluginState.agent.active_fraction_lifetime,
           } });
         }
       }
