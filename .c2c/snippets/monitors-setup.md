@@ -9,7 +9,7 @@ Arm exactly one persistent broad monitor using the native `c2c monitor` command:
 ```
 Monitor({
   summary: "c2c inbox watcher (all sessions)",
-  command: "c2c monitor --all",
+  command: "c2c monitor --archive --all",
   persistent: true
 })
 ```
