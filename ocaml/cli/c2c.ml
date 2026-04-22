@@ -6771,11 +6771,6 @@ let roles_compile_term =
   let+ name_opt = name_arg
   and+ client = client
   and+ dry_run = dry_run in
-  let rec mkdir_p dir =
-    if dir = "/" || dir = "." || dir = "" then ()
-    else if Sys.file_exists dir then ()
-    else begin mkdir_p (Filename.dirname dir); try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> () end
-  in
   let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
   let roles =
     match name_opt with
@@ -6788,6 +6783,11 @@ let roles_compile_term =
         with Sys_error _ ->
           Printf.eprintf "error: roles directory not found: %s\n%!" roles_dir;
           exit 1)
+  in
+  let rec mkdir_p d =
+    if d = "/" || d = "." || d = "" then ()
+    else if Sys.file_exists d then ()
+    else begin mkdir_p (Filename.dirname d); try Unix.mkdir d 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> () end
   in
   let n_roles = List.length roles in
   let subtitle = if n_roles = 1 then "1 role" else Printf.sprintf "%d roles" n_roles in
@@ -6822,7 +6822,7 @@ let roles_compile_term =
   ) roles;
   if not dry_run then Printf.printf "[roles compile] done.\n%!"
 
-let roles_compile = Cmdliner.Cmd.v (Cmdliner.Cmd.info "roles" ~doc:"Compile canonical role(s) to client agent files.") roles_compile_term
+let roles_compile_cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "compile" ~doc:"Compile canonical role(s) to client agent files.") roles_compile_term
 
 let roles_validate_term =
   let+ () = Cmdliner.Term.const () in
@@ -6858,7 +6858,58 @@ let roles_validate_term =
   Printf.printf "[roles validate] %d ok, %d warnings, %d errors\n%!" !n_ok !n_warn !n_err;
   if !n_err > 0 then exit 1
 
-let roles_validate = Cmdliner.Cmd.v (Cmdliner.Cmd.info "roles-validate" ~doc:"Validate canonical role files for completeness.") roles_validate_term
+let roles_validate_cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "validate" ~doc:"Validate canonical role files for completeness.") roles_validate_term
+
+let roles_default_term =
+  let+ () = Cmdliner.Term.const () in
+  let rec mkdir_p d =
+    if d = "/" || d = "." || d = "" then ()
+    else if Sys.file_exists d then ()
+    else begin mkdir_p (Filename.dirname d); try Unix.mkdir d 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> () end
+  in
+  let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
+  let roles =
+    try
+      Array.to_list (Sys.readdir roles_dir)
+      |> List.filter (fun f -> String.ends_with ~suffix:".md" f)
+      |> List.map (fun f -> (String.sub f 0 (String.length f - 3), Filename.concat roles_dir f))
+    with Sys_error _ ->
+      Printf.eprintf "error: roles directory not found: %s\n%!" roles_dir;
+      exit 1
+  in
+  let n_roles = List.length roles in
+  let subtitle = if n_roles = 1 then "1 role" else Printf.sprintf "%d roles" n_roles in
+  Banner.print_banner ~subtitle:("roles compile  |  " ^ subtitle) "c2c roles";
+  List.iter (fun (name, path) ->
+    try
+      let role = C2c_role.parse_file path in
+      match render_role_for_client role ~client:"opencode" with
+      | Some rendered ->
+          let out_path = agent_file_path ~client:"opencode" ~name in
+          let dir = Filename.dirname out_path in
+          mkdir_p dir;
+          let lock_path = out_path ^ ".lock" in
+          let fd = Unix.openfile lock_path [Unix.O_RDWR; Unix.O_CREAT; Unix.O_TRUNC] 0o644 in
+          Fun.protect ~finally:(fun () -> Unix.close fd)
+            (fun () ->
+              Unix.lockf fd Unix.F_LOCK 0;
+              Fun.protect ~finally:(fun () -> Unix.lockf fd Unix.F_ULOCK 0)
+                (fun () ->
+                  let oc = open_out out_path in
+                  Fun.protect ~finally:(fun () -> close_out oc)
+                    (fun () -> output_string oc rendered; output_char oc '\n');
+                  Printf.printf "  [roles compile] %s -> %s\n" path out_path))
+      | None ->
+          Printf.eprintf "  [roles compile] skip %s: client 'opencode' not supported\n" name
+    with Sys_error msg ->
+      Printf.eprintf "  [roles compile] skip %s: %s\n" name msg
+  ) roles;
+  Printf.printf "[roles compile] done.\n%!"
+
+let roles_group =
+  Cmdliner.Cmd.group ~default:roles_default_term
+    (Cmdliner.Cmd.info "roles" ~doc:"Manage and compile canonical role files.")
+    [roles_compile_cmd; roles_validate_cmd]
 
 (* --- subcommand: gui ------------------------------------------------------ *)
 
@@ -8667,7 +8718,7 @@ let () =
     [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; send_all; sweep
     ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
     ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-    ; serve; mcp; start; agent_group; config_group; roles_compile; roles_validate; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
+    ; serve; mcp; start; agent_group; config_group; roles_group; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in
   exit
