@@ -21,10 +21,14 @@ in `loadPeerHistory`/`loadHistory` is used for alias resolution. The CLI was
 getting an invalid session ID (the GUI's own session ID instead of an alias).
 Fix: Changed to `loadPeerHistory(target, myAlias, 100)`.
 
-### 3. `useHistory` — `loadHistory`, `loadRoomHistory`, `loadPeerHistory` JSON.parse throws
+### 3. `useHistory` — `loadHistory`, `loadRoomHistory`, `loadPeerHistory` JSON.parse throws ❌ FIXED (43b687d)
 All three functions `JSON.parse(result.stdout)` inside try/catch. If stdout contains
 CLI error text (not JSON), the parse throws and is caught, returning `[]` silently.
 This means history failures are completely silent — user sees no events but doesn't know why.
+
+**Fix:** Added `console.error` with descriptive prefix at each JSON.parse catch site so
+errors are visible in browser dev tools. Doesn't change return value (still `[]` on failure)
+but makes the failure observable.
 
 **Severity:** Medium — silent failures are worse than explicit errors.
 
