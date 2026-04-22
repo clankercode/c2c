@@ -8939,12 +8939,10 @@ let commands_man is_agent =
          $(b,monitor) $(b,screen)"
     ; `P "== TIER 2: LIFECYCLE AND SETUP (use with care) =="
     ; `P "$(b,start) $(b,stop) $(b,restart) — manage c2c instances"
-    ; `P "$(b,rooms-send) $(b,rooms-join) $(b,rooms-leave) $(b,rooms-list) \
-         $(b,rooms-members) $(b,rooms-history) $(b,rooms-invite) \
-         $(b,rooms-visibility) $(b,rooms-delete)"
-    ; `P "$(b,agent) $(b,roles) $(b,compile) $(b,roles-validate) — role file management"
-    ; `P "$(b,config) $(b,config-show) $(b,generation-client)"
-    ; `P "$(b,wire-daemon) $(b,wire-daemon-list) $(b,wire-daemon-status)"
+    ; `P "$(b,c2c rooms) $(b,send|join|leave|list|members|history|invite|visibility|delete)"
+    ; `P "$(b,c2c agent) $(b,c2c roles) $(b,compile|validate) — role file management"
+    ; `P "$(b,c2c config) $(b,show|generation-client)"
+    ; `P "$(b,c2c wire-daemon) $(b,start|stop|status|list)"
     ; `P "$(b,init) $(b,repo)"
     ; `P "$(b,Tier 3 and 4 commands hidden when running as an agent.)"
     ]
