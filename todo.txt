@@ -4,3 +4,9 @@
 - [x] opencode launch/resume: --kickoff-prompt for new sessions, plugin injection for existing sessions. (confirmed by galaxy-coder)
 - [x] session conflict: refresh_opencode_identity wrote to shared .opencode/c2c-plugin.json; now writes to instances/<name>/c2c-plugin.json per-instance (commit 0caafc4)
 - [x] approval DMs for permissions, before sending, need to reload from conf each time (in case it updated) (commit efa1a09)
+- [x] relay outage: OCaml relay fallback to Python was breaking Railway deploy; removed --storage sqlite from railway.json (commit f92d347, relay back online)
+- [x] RELAY functor extracted (commit 7cecf91): module type RELAY, Relay_server is now a functor, start_server takes relay:R.t parameter
+- [x] OCaml SqliteRelay implementation (jungel-coder, commit b2aab23): all 25 RELAY functions implemented, sqlite3 added to dune deps
+- [ ] CLI wiring for SqliteRelay (ceo): wire --storage sqlite + --db-path into c2c.ml
+- [x] opencode delivery hardening: childProcessEnv, conflict logic, atomic spool writes (commit 056bdb9 by ceo)
+- [x] findings archive: 110 April 13 files archived to findings-archive/ (commit 87e391a)
