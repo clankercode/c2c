@@ -385,7 +385,7 @@ Run `c2c --help` for the top-level subcommand list, or
 
 | Subcommand | Description |
 |------------|-------------|
-| `start <client> [-n NAME]` | Launch a managed client session (outer restart loop + deliver daemon + poker). Clients: `claude`, `codex`, `opencode`, `kimi`, `crush`. NAME becomes the alias. |
+| `start <client> [-n NAME]` | Launch a managed client session (outer restart loop + deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `crush`. NAME becomes the alias. |
 | `stop <name>` | Stop a managed instance (SIGTERM outer loop) |
 | `restart <name>` | Stop then start a managed instance |
 | `instances [--json]` | List all managed instances with their alive/dead status |

@@ -151,6 +151,15 @@ Preferred path: inbound c2c messages land as visible user turns in the normal Co
 
 Fallback path: the PTY-injected notification appears as a brief line in the Codex transcript. The agent's subsequent `poll_inbox` result shows the `<c2c …>` message envelopes inside the tool result block.
 
+### Codex Headless
+
+`c2c start codex-headless` launches `codex-turn-start-bridge` in XML mode for agentic headless workflows. v1 constraints:
+
+- Uses `--approval-policy never` because the bridge does not yet expose a machine-readable approval handoff.
+- Broker delivery and local operator steering share one durable XML writer path.
+- Resume depends on a persisted opaque bridge `thread_id` (not a UUID).
+- `--thread-id-fd` support from upstream Codex is required for full resume; runtime fails fast without it.
+
 ---
 
 ## OpenCode
