@@ -138,6 +138,11 @@ let env_auto_alias () =
   | Some v when String.trim v <> "" -> Some (String.trim v)
   | _ -> None
 
+let env_client_type () =
+  match Sys.getenv_opt "C2C_MCP_CLIENT_TYPE" with
+  | Some v when String.trim v <> "" -> Some (String.trim v)
+  | _ -> None
+
 let resolve_alias ?(override : string option = None) broker =
   match override with
   | Some a when String.trim a <> "" -> String.trim a
@@ -1420,7 +1425,7 @@ let register_cmd =
     | None -> Some (Unix.getppid ())
   in
   let pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid in
-  C2c_mcp.Broker.register broker ~session_id ~alias ~pid ~pid_start_time ();
+  C2c_mcp.Broker.register broker ~session_id ~alias ~pid ~pid_start_time ~client_type:(env_client_type ()) ();
   let output_mode = if json then Json else Human in
   match output_mode with
   | Json ->
@@ -4508,6 +4513,16 @@ let canonical_install_client client =
   | "codex-headless" -> "codex"
   | other -> other
 
+let known_clients = [ "claude"; "codex"; "opencode"; "kimi"; "crush" ]
+let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "crush" ]
+let install_client_error_list = String.concat ", " install_subcommand_clients
+let install_client_pipe_list = String.concat "|" install_subcommand_clients
+let init_configurable_clients = [ "claude"; "opencode"; "codex"; "codex-headless"; "kimi" ]
+let init_configurable_client_list = String.concat ", " init_configurable_clients
+let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "crush" ]
+let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "crush" ]
+let start_client_list = String.concat ", " start_clients
+
 let do_install_client ?(channel_delivery=false) ~output_mode ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force () =
   let client = canonical_install_client client in
   let root =
@@ -4531,16 +4546,14 @@ let do_install_client ?(channel_delivery=false) ~output_mode ~client ~alias_opt 
   | "opencode" -> setup_opencode ~output_mode ~root ~alias_val ~server_path ~target_dir_opt ~force ()
   | "crush" -> setup_crush ~output_mode ~root ~alias_val ~server_path
   | _ ->
+      let msg = Printf.sprintf "unknown client '%s'. Use: %s" client install_client_error_list in
       (match output_mode with
-       | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String (Printf.sprintf "unknown client '%s'. Use: claude, codex, codex-headless, kimi, opencode, crush" client)) ])
+       | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
        | Human ->
-           Printf.eprintf "error: unknown client '%s'. Use: claude, codex, codex-headless, kimi, opencode, crush\n%!" client;
+           Printf.eprintf "error: %s\n%!" msg;
            exit 1)
 
 (* --- install: detection + TUI --------------------------------------------- *)
-
-let known_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "crush" ]
- let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "crush" ]
 
 let self_installed_path () =
   let home = try Sys.getenv "HOME" with Not_found -> "" in
@@ -4843,10 +4856,9 @@ let valid_strategies = [ "first-alive"; "round-robin"; "broadcast" ]
 let detect_client () =
    (match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
     | Some sid ->
-        let clients = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "crush" ] in
         List.find_opt (fun c ->
           let cl = String.length c in
-          String.length sid >= cl && String.sub sid 0 cl = c) clients
+          String.length sid >= cl && String.sub sid 0 cl = c) detect_client_prefixes
     | None -> None)
   |> (function
       | Some _ as v -> v
@@ -4862,7 +4874,7 @@ let init_cmd =
   let open Cmdliner in
   let client_opt =
     Arg.(value & opt (some string) None & info ["client"; "c"] ~docv:"CLIENT"
-           ~doc:"Client to configure: claude, opencode, codex, codex-headless, kimi. Auto-detected when omitted.")
+           ~doc:(Printf.sprintf "Client to configure: %s. Auto-detected when omitted." init_configurable_client_list))
   in
   let alias_opt_arg =
     Arg.(value & opt (some string) None & info ["alias"; "a"] ~docv:"ALIAS"
@@ -4941,7 +4953,7 @@ let init_cmd =
   let _identity_init_rc = Sys.command "c2c relay identity init 2>/dev/null" in
   ignore _identity_init_rc;
 
-  C2c_mcp.Broker.register broker ~session_id ~alias ~pid:None ~pid_start_time:None ();
+  C2c_mcp.Broker.register broker ~session_id ~alias ~pid:None ~pid_start_time:None ~client_type:(env_client_type ()) ();
 
   let room_result =
     if String.trim room = "" then `Skipped
@@ -5066,11 +5078,12 @@ let install =
             Press $(b,Enter) to accept the defaults (install c2c binary + \
             configure every detected client that isn't already set up), \
             $(b,c) to customize, or $(b,n) to abort."
-      ; `P "Use the subcommands for scriptable (non-interactive) installs: \
+      ; `P
+          ("Use the subcommands for scriptable (non-interactive) installs: \
             $(b,c2c install self) installs only the binary; \
-            $(b,c2c install claude|codex|codex-headless|opencode|kimi|crush) configures one \
+            $(b,c2c install " ^ install_client_pipe_list ^ ") configures one \
             client; $(b,c2c install all) does the same as the TUI's default \
-            path without prompting."
+            path without prompting.")
       ]
   in
   Cmdliner.Cmd.group ~default:install_default_term info
@@ -5555,7 +5568,8 @@ let default_kickoff_prompt ~name ~alias ?role () =
 
 let start_cmd =
   let client =
-    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"CLIENT" ~doc:"Client to start (claude, codex, codex-headless, kimi, opencode, crush).")
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"CLIENT"
+      ~doc:(Printf.sprintf "Client to start (%s)." start_client_list))
   in
   let name =
     Cmdliner.Arg.(value & opt (some string) None & info [ "name"; "n" ] ~docv:"NAME" ~doc:"Instance name (default: auto-generated).")
@@ -7363,10 +7377,11 @@ let () =
                     $(b,serve), $(b,mcp), $(b,start), $(b,stop), \
                     $(b,restart), $(b,instances), $(b,hook), $(b,inject), \
                     $(b,wire-daemon), $(b,screen), $(b,help)"
-               ; `P "$(b,install) — install c2c + client integrations (TUI by default). \
+               ; `P
+                   ("$(b,install) — install c2c + client integrations (TUI by default). \
                      Use $(b,c2c install self) for binary-only, \
-                     $(b,c2c install claude|codex|codex-headless|opencode|kimi|crush) per-client, \
-                     or $(b,c2c install all) for non-interactive full setup."
+                     $(b,c2c install " ^ install_client_pipe_list ^ ") per-client, \
+                     or $(b,c2c install all) for non-interactive full setup.")
                ; `P "$(b,rooms) — manage N:N chat rooms"
                ; `P "$(b,relay) — cross-machine relay: serve, connect, setup, status, list, rooms, gc"
                ])
