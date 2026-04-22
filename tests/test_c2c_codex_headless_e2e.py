@@ -128,7 +128,7 @@ def test_codex_headless_xml_delivery_persists_thread_id(scenario: Scenario) -> N
     scenario.wait_for(lambda: _registered(agent, scenario), timeout=60.0)
 
     message = f"headless-xml-ping-{_unique_suffix()}"
-    scenario.send_dm(None, agent, message)
+    scenario.send_dm(agent, agent, message)
     scenario.wait_for(
         lambda: message in scenario.capture(agent)
         and not scenario.broker_inbox_contains(agent, message),
