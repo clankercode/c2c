@@ -102,23 +102,25 @@
 
 ## Migration Priority Order
 
-| Priority | Script | Verdict | Effort |
-|----------|--------|---------|--------|
-| 1 | `c2c_relay_rooms.py` (3 subcommands) | PORT to OCaml | Low |
-| 2 | `c2c_mcp.py` | REPLACE with shell script | Low |
-| 3 | `c2c_deliver_inbox.py` | DELETE (fallback, OCaml binary always installed) | Trivial |
-| 4 | `c2c_poker.py` | DELETE (fallback, OCaml poker always used) | Trivial |
-| 5 | `c2c_kimi_wire_bridge.py` | DELETE (dead code) | Trivial |
-| 6 | `c2c_claude_wake_daemon.py` | DELETE (dead code) | Trivial |
-| 7 | `c2c_pts_inject.py` | DELETE (deprecated) | Trivial |
-| 8 | `c2c_wire_daemon.py` | DELETE (superseded) | Trivial |
-| 9 | `c2c_relay_connector.py` | PORT to OCaml | Medium |
-| 10 | `c2c_setcap.py` | KEEP-PYTHON | N/A |
+| Priority | Script | Verdict | Effort | Status |
+|----------|--------|---------|--------|--------|
+| 1 | `c2c_relay_rooms.py` (3 subcommands) | PORT to OCaml | Low | Pending |
+| 2 | `c2c_mcp.py` | REPLACE with shell script | Low | Pending |
+| 3 | `c2c_deliver_inbox.py` | KEEP (live Python CLI dispatch + tests) | N/A | No action |
+| 4 | `c2c_poker.py` | KEEP (OCaml spawns it, c2c_deliver_inbox imports it) | N/A | No action |
+| 5 | `c2c_kimi_wire_bridge.py` | DEPRECATED (dead code, but imported by c2c_wire_daemon.py) | Trivial | ✅ Done `3370052` |
+| 6 | `c2c_claude_wake_daemon.py` | Already in deprecated/ | Done | No action needed |
+| 7 | `c2c_pts_inject.py` | KEEP (imported by live c2c_deliver_inbox.py) | N/A | No action |
+| 8 | `c2c_wire_daemon.py` | KEEP (live Python CLI wire-daemon dispatch + tests) | N/A | No action |
+| 9 | `c2c_relay_connector.py` | PORT to OCaml | Medium | Pending |
+| 10 | `c2c_setcap.py` | KEEP-PYTHON | N/A | No action |
 
 ---
 
 ## Notes
 
-- **OCaml binary is primary entry point** (`~/.local/bin/c2c` = OCaml). Python `c2c_cli.py` is legacy shim, NOT in PATH.
+- **OCaml binary is primary entry point** (`~/.local/bin/c2c` = OCaml). Python `c2c_cli.py` is legacy shim (NOT in PATH as `c2c`). It still has live dispatch to Python modules for wire-daemon, deliver-inbox, and relay subcommands.
 - **`c2c start <client>`** uses OCaml native for all clients. Python fallbacks only fire when OCaml binaries/scripts are missing from repo.
+- **Python CLI still live**: The Python `c2c_cli.py` dispatch has callers (OCaml c2c_start.ml spawns Python CLI for some operations, c2c_health.py imports Python modules). Many Python scripts are "load-bearing" for the Python CLI even if not for the OCaml binary.
+- **Truly dead code confirmed**: Only `c2c_kimi_wire_bridge.py` (never called from OCaml, only imported by Python wire_daemon). Added DEPRECATION marker; keep until Python CLI is retired.
 - **Configure scripts** (`c2c_configure_*.py`) not analyzed — these are operator setup tools, not runtime messaging infrastructure.
