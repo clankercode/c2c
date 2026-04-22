@@ -1,25 +1,75 @@
-let () =
-  let role = C2c_role.parse_string {|
+(* Test for c2c_role renderer regression coverage *)
+
+let input_yaml = {|
 ---
-description: Test role
-role: subagent
+description: Test role for regression
+role: primary
 c2c:
+  alias: test-agent
   auto_join_rooms: [swarm-lounge, dev-room]
+opencode:
+  theme: exp33-black
 claude:
   tools: [Read, Bash, Edit]
+codex:
+  option: value
+kimi:
+  setting: test
 ---
 
-You are a test.
-|} in
-  Printf.printf "description: %S\n" role.C2c_role.description;
-  Printf.printf "role: %S\n" role.C2c_role.role;
-  Printf.printf "c2c_auto_join_rooms: %d items\n" (List.length role.C2c_role.c2c_auto_join_rooms);
-  (match role.C2c_role.c2c_auto_join_rooms with
-   | [] -> Printf.printf "  (empty)\n"
-   | items -> List.iter (Printf.printf "  %S\n") items);
-  Printf.printf "claude: %d items\n" (List.length role.C2c_role.claude);
-  (match role.C2c_role.claude with
-   | [] -> Printf.printf "  (empty)\n"
-   | items -> List.iter (fun (k,v) -> Printf.printf "  %S=%S\n" k v) items);
-  let rendered = C2c_role.OpenCode_renderer.render role in
-  Printf.printf "OpenCode output:\n%s\n" rendered
+You are a test agent.
+|}
+
+let role_input = C2c_role.parse_string input_yaml
+
+let check_output ~msg ~pattern output =
+  Alcotest.(check bool) msg true (Str.string_match (Str.regexp_string pattern) output 0)
+
+let contains ~msg ~pattern output =
+  Alcotest.(check bool) msg true (try ignore (Str.search_forward (Str.regexp_string pattern) output 0); true with Not_found -> false)
+
+let test_opencode_renderer () =
+  let output = C2c_role.OpenCode_renderer.render role_input in
+  contains ~msg:"opencode: description field present" ~pattern:"description: Test role for regression" output;
+  contains ~msg:"opencode: role field present" ~pattern:"role: primary" output;
+  contains ~msg:"opencode: c2c section present" ~pattern:"c2c:" output;
+  contains ~msg:"opencode: opencode section present" ~pattern:"opencode:" output
+
+let test_claude_renderer () =
+  let output = C2c_role.Claude_renderer.render role_input in
+  contains ~msg:"claude: description field present" ~pattern:"description: Test role for regression" output;
+  contains ~msg:"claude: role field present" ~pattern:"role: primary" output;
+  contains ~msg:"claude: c2c commented" ~pattern:"# c2c:" output;
+  contains ~msg:"claude: claude section present" ~pattern:"claude:" output
+
+let test_codex_renderer () =
+  let output = C2c_role.Codex_renderer.render role_input in
+  contains ~msg:"codex: description field present" ~pattern:"description: Test role for regression" output;
+  contains ~msg:"codex: role field present" ~pattern:"role: primary" output;
+  contains ~msg:"codex: c2c commented" ~pattern:"# c2c:" output;
+  contains ~msg:"codex: codex section present" ~pattern:"codex:" output
+
+let test_kimi_renderer () =
+  let output = C2c_role.Kimi_renderer.render role_input in
+  contains ~msg:"kimi: description field present" ~pattern:"description: Test role for regression" output;
+  contains ~msg:"kimi: role field present" ~pattern:"role: primary" output;
+  contains ~msg:"kimi: c2c commented" ~pattern:"# c2c:" output;
+  contains ~msg:"kimi: kimi section present" ~pattern:"kimi:" output
+
+let test_roundtrip_opencode () =
+  let rendered = C2c_role.OpenCode_renderer.render role_input in
+  let re_parsed = C2c_role.parse_string rendered in
+  Alcotest.(check string) "roundtrip: description preserved" "Test role for regression" re_parsed.C2c_role.description;
+  Alcotest.(check string) "roundtrip: role preserved" "primary" re_parsed.C2c_role.role;
+  Alcotest.(check int) "roundtrip: c2c_auto_join_rooms count" 2 (List.length re_parsed.C2c_role.c2c_auto_join_rooms)
+
+let tests = [
+  "opencode_renderer", `Quick, test_opencode_renderer;
+  "claude_renderer",  `Quick, test_claude_renderer;
+  "codex_renderer",   `Quick, test_codex_renderer;
+  "kimi_renderer",    `Quick, test_kimi_renderer;
+  "roundtrip",        `Quick, test_roundtrip_opencode;
+]
+
+let () =
+  Alcotest.run "c2c_role" [ "renderers", tests ]
