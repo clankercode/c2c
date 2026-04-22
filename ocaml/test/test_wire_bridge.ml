@@ -77,32 +77,41 @@ let test_prompt_empty () =
  * Spool round-trip
  * --------------------------------------------------------------------------- *)
 
+let with_tmp_dir f =
+  let base = Filename.get_temp_dir_name () in
+  let name = Printf.sprintf "c2c-wire-bridge-%d-%d" (Unix.getpid ()) (Random.bits ()) in
+  let dir = Filename.concat base name in
+  Unix.mkdir dir 0o700;
+  Fun.protect
+    ~finally:(fun () ->
+      (try Sys.remove (Filename.concat dir "spool.json") with _ -> ());
+      (try Unix.rmdir dir with _ -> ()))
+    (fun () -> f dir)
+
 let test_spool_roundtrip () =
-  let dir = Filename.get_temp_dir_name () in
-  let path = Filename.concat dir (Printf.sprintf "test-spool-%d.json" (Random.int 100000)) in
-  let sp = C2c_wire_bridge.spool_of_path path in
-  let msgs =
-    [ msg ~from_alias:"alice" ~to_alias:"bob" "hello"
-    ; msg ~from_alias:"carol" ~to_alias:"bob" "world"
-    ]
-  in
-  C2c_wire_bridge.spool_write sp msgs;
-  let got = C2c_wire_bridge.spool_read sp in
-  (try Sys.remove path with _ -> ());
-  Alcotest.(check int) "roundtrip count" 2 (List.length got);
-  Alcotest.(check string) "first from_alias" "alice" (List.nth got 0).from_alias;
-  Alcotest.(check string) "second content"   "world" (List.nth got 1).content
+  with_tmp_dir (fun dir ->
+    let path = Filename.concat dir "spool.json" in
+    let sp = C2c_wire_bridge.spool_of_path path in
+    let msgs =
+      [ msg ~from_alias:"alice" ~to_alias:"bob" "hello"
+      ; msg ~from_alias:"carol" ~to_alias:"bob" "world"
+      ]
+    in
+    C2c_wire_bridge.spool_write sp msgs;
+    let got = C2c_wire_bridge.spool_read sp in
+    Alcotest.(check int) "roundtrip count" 2 (List.length got);
+    Alcotest.(check string) "first from_alias" "alice" (List.nth got 0).from_alias;
+    Alcotest.(check string) "second content"   "world" (List.nth got 1).content)
 
 let test_spool_clear () =
-  let dir = Filename.get_temp_dir_name () in
-  let path = Filename.concat dir (Printf.sprintf "test-spool-clear-%d.json" (Random.int 100000)) in
-  let sp = C2c_wire_bridge.spool_of_path path in
-  let msgs = [ msg ~from_alias:"x" ~to_alias:"y" "test" ] in
-  C2c_wire_bridge.spool_write sp msgs;
-  C2c_wire_bridge.spool_clear sp;
-  let got = C2c_wire_bridge.spool_read sp in
-  (try Sys.remove path with _ -> ());
-  Alcotest.(check int) "clear leaves empty spool" 0 (List.length got)
+  with_tmp_dir (fun dir ->
+    let path = Filename.concat dir "spool.json" in
+    let sp = C2c_wire_bridge.spool_of_path path in
+    let msgs = [ msg ~from_alias:"x" ~to_alias:"y" "test" ] in
+    C2c_wire_bridge.spool_write sp msgs;
+    C2c_wire_bridge.spool_clear sp;
+    let got = C2c_wire_bridge.spool_read sp in
+    Alcotest.(check int) "clear leaves empty spool" 0 (List.length got))
 
 let test_spool_missing_file () =
   let sp = C2c_wire_bridge.spool_of_path "/nonexistent/path/spool.json" in
