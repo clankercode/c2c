@@ -203,7 +203,6 @@ let rec command_tier_map () : (string * safety) list =
   ; "wire-daemon-status", Tier2
   ; "init", Tier2
   ; "repo", Tier2
-  ; "screen", Tier2
   ; "restart-self", Tier3
   ; "relay", Tier3
   ; "relay-serve", Tier3
@@ -8501,7 +8500,8 @@ let commands_man is_agent =
          $(b,set-compact) $(b,clear-compact) \
          $(b,open-pending-reply) $(b,check-pending-reply) \
          $(b,rooms) $(b,register) $(b,refresh-peer) \
-         $(b,instances) $(b,doctor) $(b,verify) $(b,status)"
+         $(b,instances) $(b,doctor) $(b,verify) $(b,status) \
+         $(b,monitor) $(b,screen)"
     ; `P "== TIER 2: LIFECYCLE AND SETUP (use with care) =="
     ; `P "$(b,start) $(b,stop) $(b,restart) — manage c2c instances"
     ; `P "$(b,rooms-send) $(b,rooms-join) $(b,rooms-leave) $(b,rooms-list) \
@@ -8510,7 +8510,7 @@ let commands_man is_agent =
     ; `P "$(b,agent) $(b,roles-compile) $(b,roles-validate) — role file management"
     ; `P "$(b,config) $(b,config-show) $(b,config-generation-client)"
     ; `P "$(b,wire-daemon) $(b,wire-daemon-list) $(b,wire-daemon-status)"
-    ; `P "$(b,init) $(b,repo) $(b,screen)"
+    ; `P "$(b,init) $(b,repo)"
     ; `P "$(b,Tier 3 and 4 commands hidden when running as an agent.)"
     ]
   else
@@ -8521,13 +8521,13 @@ let commands_man is_agent =
          $(b,register), $(b,refresh-peer), $(b,tail-log), $(b,my-rooms), \
          $(b,dead-letter), $(b,prune-rooms), $(b,set-compact), $(b,clear-compact), \
          $(b,open-pending-reply), $(b,check-pending-reply), \
-         $(b,instances), $(b,doctor), $(b,rooms)"
+         $(b,instances), $(b,doctor), $(b,rooms), $(b,monitor), $(b,screen)"
     ; `P "== TIER 2: LIFECYCLE AND SETUP (safe with care) =="
     ; `P "$(b,start), $(b,stop), $(b,restart), $(b,init), $(b,install), \
          $(b,agent), $(b,roles-compile), $(b,roles-validate), \
          $(b,config), $(b,config-show), $(b,config-generation-client), \
          $(b,wire-daemon), $(b,wire-daemon-list), $(b,wire-daemon-status), \
-         $(b,repo), $(b,screen)"
+         $(b,repo)"
     ; `P "== TIER 3: SYSTEM (do NOT run from inside an agent) =="
     ; `P "$(b,restart-self) — signals the inner client; running inside a managed \
          session kills the supervisor and loses your session. Use /exit + external \
