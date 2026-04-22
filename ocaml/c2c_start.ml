@@ -938,12 +938,18 @@ let is_cc_wrapper_str (name : string) : bool =
  * Sidecar script paths
  * --------------------------------------------------------------------------- *)
 
-let deliver_script_path ~(broker_root : string) : string option =
-  match resolve_repo_root ~broker_root with
-  | "" -> None
-  | dir ->
-      let p = dir // "c2c_deliver_inbox.py" in
-      if Sys.file_exists p then Some p else None
+let deliver_command ~(broker_root : string) : (string * string list) option =
+  (* Prefer the installed sidecar entrypoint so managed sessions launched in
+     arbitrary target repos still find delivery tooling. Fall back to the
+     repo-local Python script for in-repo development. *)
+  match find_binary "c2c-deliver-inbox" with
+  | Some binary_path -> Some (binary_path, [])
+  | None ->
+      match resolve_repo_root ~broker_root with
+      | "" -> None
+      | dir ->
+          let p = dir // "c2c_deliver_inbox.py" in
+          if Sys.file_exists p then Some ("python3", [ p ]) else None
 
 let command_help_contains (binary_path : string) (needle : string) : bool =
   let contains needle haystack =
@@ -998,18 +1004,20 @@ let wire_bridge_script_path ~(broker_root : string) : string option =
 let start_deliver_daemon ~(name : string) ~(client : string)
     ~(broker_root : string) ?(child_pid_opt : int option)
     ?(xml_output_fd : string option) () : int option =
-  match deliver_script_path ~broker_root with
+  match deliver_command ~broker_root with
   | None -> None
-  | Some script ->
+  | Some (command, prefix_args) ->
       let args =
-        [ "python3"; script; "--client"; client; "--session-id"; name;
+        prefix_args
+        @ [ "--client"; client; "--session-id"; name;
           "--loop"; "--broker-root"; broker_root ]
         @ (match xml_output_fd with None -> [ "--notify-only" ] | Some _ -> [])
         @ (match xml_output_fd with None -> [] | Some fd -> [ "--xml-output-fd"; fd ])
         @ (match child_pid_opt with None -> [] | Some p -> [ "--pid"; string_of_int p ])
       in
       try
-        let pid = Unix.create_process_env "python3" (Array.of_list args)
+        let argv = Array.of_list (command :: args) in
+        let pid = Unix.create_process_env command argv
             (Unix.environment ()) Unix.stdin Unix.stdout Unix.stderr
         in
         ignore pid;
