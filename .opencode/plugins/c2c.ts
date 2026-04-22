@@ -894,6 +894,27 @@ const C2CDelivery: Plugin = async (ctx) => {
     return Array.isArray(msgs) ? (msgs as Msg[]) : [];
   }
 
+  /** Peek at inbox without draining — returns any permission reply for permId, or null. */
+  async function peekInboxForPermission(permId: string): Promise<string | null> {
+    try {
+      const stdout = (await runC2c([
+        "peek-inbox",
+        "--json",
+      ])).trim();
+      const parsed = JSON.parse(stdout);
+      const msgs: Msg[] = Array.isArray(parsed) ? parsed : (parsed as any).messages ?? [];
+      for (const msg of msgs) {
+        const reply = extractPermissionReply(msg.content);
+        if (reply && reply.permId === permId) {
+          return reply.decision;
+        }
+      }
+    } catch {
+      // ignore errors, will fall through to timeout
+    }
+    return null;
+  }
+
   /** Stage pending messages into the durable OCaml-managed spool and return them. */
   async function drainInbox(): Promise<Msg[]> {
     try {
@@ -945,8 +966,13 @@ const C2CDelivery: Plugin = async (ctx) => {
   function waitForPermissionReply(permId: string, timeoutMs: number): Promise<string> {
     return new Promise((resolve) => {
       pendingPermissions.set(permId, resolve);
-      setTimeout(() => {
-        if (pendingPermissions.has(permId)) {
+      setTimeout(async () => {
+        if (!pendingPermissions.has(permId)) return;
+        const decision = await peekInboxForPermission(permId);
+        if (decision) {
+          pendingPermissions.delete(permId);
+          resolve(decision);
+        } else {
           pendingPermissions.delete(permId);
           resolve("timeout");
         }
@@ -973,12 +999,30 @@ const C2CDelivery: Plugin = async (ctx) => {
     const failed: Msg[] = [];
     for (const msg of messages) {
       // Intercept structured permission replies before normal delivery.
+      // Always filter permission replies — they are handled by the permission system
+      // and should NEVER appear in chat, regardless of whether they were pending,
+      // timed-out, or resolved via peekInboxForPermission (item 18 race fix).
       const permReply = extractPermissionReply(msg.content);
-      if (permReply && pendingPermissions.has(permReply.permId)) {
-        const resolve = pendingPermissions.get(permReply.permId)!;
-        pendingPermissions.delete(permReply.permId);
-        resolve(permReply.decision);
-        await log(`permission reply from ${msg.from_alias}: ${permReply.permId} → ${permReply.decision}`);
+      if (permReply) {
+        // Late reply: request already timed-out — NACK to supervisor.
+        if (timedOutPermissions.has(permReply.permId)) {
+          const entry = timedOutPermissions.get(permReply.permId)!;
+          const lateBySec = Math.round((Date.now() - entry.timedOutAtMs) / 1000);
+          const notice = `permission ${permReply.permId}: your reply \"${permReply.decision}\" arrived ${lateBySec}s after the timeout — request was already auto-rejected. Bump C2C_PERMISSION_TIMEOUT_MS on the requester to widen the window.`;
+          try {
+            await runC2c(["send", msg.from_alias || "coordinator1", notice]);
+            await log(`late permission reply → ${msg.from_alias}: ${permReply.permId} (${lateBySec}s late)`);
+          } catch (err) {
+            await log(`late permission reply DM error: ${err}`);
+          }
+        } else if (pendingPermissions.has(permReply.permId)) {
+          const resolve = pendingPermissions.get(permReply.permId)!;
+          pendingPermissions.delete(permReply.permId);
+          resolve(permReply.decision);
+          await log(`permission reply from ${msg.from_alias}: ${permReply.permId} → ${permReply.decision}`);
+        } else {
+          await log(`permission reply ${permReply.permId} skipped (not pending or already resolved)`);
+        }
         continue;
       }
       // Intercept question replies before normal delivery.
@@ -988,21 +1032,6 @@ const C2CDelivery: Plugin = async (ctx) => {
         pendingQuestions.delete(qReply.qId);
         resolve({ answer: qReply.answer, rejected: qReply.rejected });
         await log(`question reply from ${msg.from_alias}: ${qReply.qId} → ${qReply.rejected ? "reject" : `"${qReply.answer}"`}`);
-        continue;
-      }
-      // Late reply: request already timed-out and was auto-rejected. Let the
-      // supervisor know so they aren't left wondering why their decision had
-      // no effect.
-      if (permReply && timedOutPermissions.has(permReply.permId)) {
-        const entry = timedOutPermissions.get(permReply.permId)!;
-        const lateBySec = Math.round((Date.now() - entry.timedOutAtMs) / 1000);
-        const notice = `permission ${permReply.permId}: your reply \"${permReply.decision}\" arrived ${lateBySec}s after the timeout — request was already auto-rejected. Bump C2C_PERMISSION_TIMEOUT_MS on the requester to widen the window.`;
-        try {
-          await runC2c(["send", msg.from_alias || "coordinator1", notice]);
-          await log(`late permission reply → ${msg.from_alias}: ${permReply.permId} (${lateBySec}s late)`);
-        } catch (err) {
-          await log(`late permission reply DM error: ${err}`);
-        }
         continue;
       }
       const envelope = formatEnvelope(msg);
