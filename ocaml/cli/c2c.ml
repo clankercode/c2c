@@ -6,6 +6,23 @@ let ( // ) = Filename.concat
 open Cmdliner.Term.Syntax
 open C2c_mcp
 
+(* --- Command safety tiers ----------------------------------------------- *)
+
+type safety =
+  | Tier1  (* safe for agents: read-only queries, messaging, polling *)
+  | Tier2  (* safe with care: side effects, process lifecycle *)
+  | Tier3  (* unsafe for agents: systemic impact, requires external context *)
+  | Tier4  (* internal plumbing: never shown without --all *)
+
+let safety_to_string = function
+  | Tier1 -> "tier1" | Tier2 -> "tier2" | Tier3 -> "tier3" | Tier4 -> "tier4"
+
+let safety_to_label = function
+  | Tier1 -> "TIER 1 — SAFE FOR AGENTS (messaging, queries)"
+  | Tier2 -> "TIER 2 — SAFE WITH CARE (lifecycle, side effects)"
+  | Tier3 -> "TIER 3 — UNSAFE FOR AGENTS (systemic, requires operator)"
+  | Tier4 -> "TIER 4 — INTERNAL (hidden without --all)"
+
 (* Resolve the Claude config dir.
    Prefers CLAUDE_CONFIG_DIR if set, otherwise resolves ~/.claude as a symlink
    (so profile dirs like ~/.claude-mm/ work via the symlink). *)
@@ -126,6 +143,136 @@ let resolve_broker_root () =
       | Some git_dir -> abs_path git_dir // "c2c" // "mcp"
       | None -> fallback_broker_root ())
 
+(* --- command safety tiers map (for filtering) -------------------------------- *)
+
+(* Map from command name to safety tier.
+   This is used by filter_commands to determine which commands to hide
+   when running inside an agent session. *)
+let rec command_tier_map () : (string * safety) list =
+  [ "send", Tier1
+  ; "list", Tier1
+  ; "whoami", Tier1
+  ; "poll-inbox", Tier1
+  ; "peek-inbox", Tier1
+  ; "send-all", Tier1
+  ; "sweep", Tier1
+  ; "sweep-dryrun", Tier1
+  ; "history", Tier1
+  ; "health", Tier1
+  ; "dead-letter", Tier1
+  ; "tail-log", Tier1
+  ; "set-compact", Tier1
+  ; "clear-compact", Tier1
+  ; "open-pending-reply", Tier1
+  ; "check-pending-reply", Tier1
+  ; "prune-rooms", Tier1
+  ; "rooms", Tier1
+  ; "room", Tier1
+  ; "my-rooms", Tier1
+  ; "register", Tier1
+  ; "refresh-peer", Tier1
+  ; "instances", Tier1
+  ; "doctor", Tier1
+  ; "verify", Tier1
+  ; "status", Tier1
+  ; "start", Tier2
+  ; "stop", Tier2
+  ; "restart", Tier2
+  ; "rooms-send", Tier2
+  ; "rooms-visibility", Tier2
+  ; "rooms-invite", Tier2
+  ; "rooms-join", Tier2
+  ; "rooms-leave", Tier2
+  ; "rooms-list", Tier2
+  ; "rooms-members", Tier2
+  ; "rooms-history", Tier2
+  ; "rooms-tail", Tier2
+  ; "rooms-delete", Tier2
+  ; "agent", Tier2
+  ; "roles-compile", Tier2
+  ; "roles-validate", Tier2
+  ; "config", Tier2
+  ; "config-show", Tier2
+  ; "config-generation-client", Tier2
+  ; "wire-daemon", Tier2
+  ; "wire-daemon-list", Tier2
+  ; "wire-daemon-status", Tier2
+  ; "init", Tier2
+  ; "repo", Tier2
+  ; "screen", Tier2
+  ; "restart-self", Tier3
+  ; "relay", Tier3
+  ; "relay-serve", Tier3
+  ; "relay-gc", Tier3
+  ; "relay-setup", Tier3
+  ; "relay-connect", Tier3
+  ; "relay-register", Tier3
+  ; "relay-dm", Tier3
+  ; "relay-status", Tier3
+  ; "relay-list", Tier3
+  ; "relay-rooms", Tier3
+  ; "setcap", Tier3
+  ; "install", Tier3
+  ; "gui", Tier3
+  ; "diag", Tier3
+  ; "smoke-test", Tier3
+  ; "inject", Tier4
+  ; "hook", Tier4
+  ; "serve", Tier4
+  ; "mcp", Tier4
+  ; "oc-plugin", Tier4
+  ; "cc-plugin", Tier4
+  ; "state-read", Tier4
+  ; "state-write", Tier4
+  ; "wire-daemon-start", Tier4
+  ; "wire-daemon-stop", Tier4
+  ; "wire-daemon-format-prompt", Tier4
+  ; "wire-daemon-spool-write", Tier4
+  ; "wire-daemon-spool-read", Tier4
+  ; "supervisor", Tier4
+  ; "supervisor-answer", Tier4
+  ; "supervisor-question-reject", Tier4
+  ; "supervisor-approve", Tier4
+  ; "supervisor-reject", Tier4
+  ; "room-send", Tier4
+  ; "room-join", Tier4
+  ; "room-leave", Tier4
+  ; "room-list", Tier4
+  ; "room-members", Tier4
+  ; "room-history", Tier4
+  ; "room-tail", Tier4
+  ; "room-delete", Tier4
+  ; "room-visibility", Tier4
+  ; "room-invite", Tier4
+  ]
+
+(* Returns true when running inside a c2c agent session *)
+let is_agent_session () =
+  match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+  | Some id when String.trim id <> "" -> true
+  | _ -> false
+
+(* Hide tier-3 and tier-4 commands when running as an agent *)
+let tier_visible tier =
+  match tier with
+  | Tier1 | Tier2 -> true
+  | Tier3 | Tier4 -> not (is_agent_session ())
+
+(* Filter a command list: keep only commands whose tier is visible.
+   Command name is extracted from the cmd's info. *)
+let filter_commands ~cmds =
+  let tier_map = command_tier_map () in
+  let get_tier cmd_name =
+    match List.assoc_opt cmd_name tier_map with
+    | Some t -> t
+    | None -> Tier4
+  in
+  List.filter
+    (fun cmd ->
+      let cmd_name = Cmdliner.Cmd.name cmd in
+      tier_visible (get_tier cmd_name))
+    cmds
+
 (* --- session / alias resolution ------------------------------------------- *)
 
 let env_session_id () =
@@ -226,6 +373,107 @@ let current_c2c_command () =
     with Unix.Unix_error _ -> fallback
   in
   if Filename.is_relative resolved then Sys.getcwd () // resolved else resolved
+
+(* --- subcommand: commands (audit by safety tier) --------------------------- *)
+
+let commands_by_safety_cmd =
+  let show_all =
+    Cmdliner.Arg.(value & flag & info [ "all" ] ~doc:"Include tier-4 internal commands.")
+  in
+  let+ show_all = show_all in
+  let tier1 = [
+    ("list", "List registered c2c peers");
+    ("whoami", "Show current c2c identity");
+    ("poll-inbox", "Drain (or peek at) your inbox");
+    ("peek-inbox", "Peek at your inbox without draining");
+    ("send", "Send a message to a registered peer alias");
+    ("send-all", "Broadcast a message to all peers");
+    ("rooms", "Manage persistent N:N rooms (list/join/leave/send/history/tail/invite/members/visibility)");
+    ("my-rooms", "List rooms you are a member of");
+    ("history", "Show archived inbox messages");
+    ("dead-letter", "Show dead-letter entries");
+    ("tail-log", "Show recent broker RPC log entries");
+    ("health", "Show broker health diagnostics");
+    ("status", "Show compact swarm overview");
+    ("verify", "Verify c2c message exchange progress");
+    ("prune-rooms", "Evict dead members from all rooms");
+    ("instances", "List managed c2c instances");
+    ("doctor", "Health snapshot + push-pending analysis");
+    ("set-compact", "Mark this session as compacting");
+    ("clear-compact", "Clear the compacting flag");
+    ("open-pending-reply", "Open a pending permission reply slot");
+    ("check-pending-reply", "Check if a permission reply is valid");
+  ] in
+  let tier2 = [
+    ("start", "Start a managed c2c instance");
+    ("stop", "Stop a managed c2c instance");
+    ("restart", "Restart a managed c2c instance");
+    ("register", "Register an alias for the current session");
+    ("rooms send", "Send a message to a room");
+    ("rooms invite", "Invite an alias to a room");
+    ("rooms visibility", "Get or set room visibility");
+    ("agent list", "List all canonical role files");
+    ("agent new", "Create a new canonical role file");
+    ("agent delete", "Delete a canonical role file");
+    ("agent rename", "Rename a canonical role file");
+    ("roles compile", "Compile canonical role(s) to client agent files");
+    ("roles validate", "Validate canonical role files for completeness");
+    ("config show", "Show current c2c config values");
+    ("config generation-client", "Show generation-client config");
+    ("wire-daemon list", "List all wire-daemon state files");
+    ("wire-daemon status", "Show status of a wire-daemon");
+  ] in
+  let tier3 = [
+    ("relay serve", "Start relay server (background, requires operator)");
+    ("relay gc", "Run relay garbage collection");
+    ("relay setup", "Configure relay connection");
+    ("relay connect", "Run the relay connector");
+    ("relay register", "Register Ed25519 identity on relay");
+    ("relay dm", "Send/receive cross-host direct messages");
+    ("relay status", "Show relay health");
+    ("relay rooms", "Manage relay rooms");
+    ("relay list", "List relay peers");
+    ("setcap", "Grant PTY injection capability (requires sudo)");
+    ("inject", "Inject messages or keycodes into a live session (deprecated)");
+    ("smoke-test", "Run an end-to-end broker smoke test");
+    ("diag", "Show diagnostic info for a managed instance");
+    ("gui", "Launch the c2c TUI");
+    ("install", "Install c2c + client integrations");
+    ("init", "Generate a new Ed25519 identity keypair");
+    ("hook", "PostToolUse hook: drain inbox and emit messages");
+    ("wire-daemon start", "Start a wire-daemon for a session");
+    ("wire-daemon stop", "Stop a running wire-daemon");
+  ] in
+  let tier4 = [
+    ("serve", "Run the MCP server (JSON-RPC over stdio)");
+    ("mcp", "Alias for serve");
+    ("oc-plugin stream-write-statefile", "[internal] Stream statefile writes");
+    ("oc-plugin drain-inbox-to-spool", "[internal] Drain inbox to spool");
+    ("cc-plugin write-statefile", "[internal] Write Claude Code statefile");
+    ("wire-daemon format-prompt", "[diagnostic] Format broker messages as Wire prompt text");
+    ("wire-daemon spool-write", "[diagnostic] Write messages to a spool file");
+    ("wire-daemon spool-read", "[diagnostic] Read messages from a spool file");
+    ("statefile", "Read/write broker statefile");
+    ("supervisor", "Supervisor subcommands");
+    ("refresh-peer", "Refresh a stale broker registration");
+    ("repo", "Per-repo config management");
+  ] in
+  let print_section title cmds =
+    Printf.printf "\n== %s ==\n\n" title;
+    List.iter (fun (name, desc) -> Printf.printf "  %-30s %s\n" name desc) cmds
+  in
+  Printf.printf "c2c commands by safety tier\n";
+  print_section (safety_to_label Tier1) tier1;
+  print_section (safety_to_label Tier2) tier2;
+  print_section (safety_to_label Tier3) tier3;
+  if show_all then print_section (safety_to_label Tier4) tier4
+
+let commands_by_safety =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "commands"
+       ~doc:"List all c2c commands grouped by safety tier."
+       ~man:[ `P "Useful for auditing which commands are safe to run inside an agent session." ])
+    commands_by_safety_cmd
 
 (* --- subcommand: send ----------------------------------------------------- *)
 
@@ -8201,11 +8449,75 @@ let supervisor_group =
         supervisor_reject_permission_cmd
     ]
 
+(* Build tier-grouped COMMANDS man page text *)
+let commands_man is_agent =
+  if is_agent then
+    [ `S "COMMANDS"
+    ; `P "== TIER 1: SAFE (messaging and queries) =="
+    ; `P "$(b,send) $(b,list) $(b,whoami) $(b,poll-inbox) $(b,peek-inbox) \
+         $(b,send-all) $(b,history) $(b,health) $(b,dead-letter) \
+         $(b,tail-log) $(b,my-rooms) $(b,prune-rooms) \
+         $(b,set-compact) $(b,clear-compact) \
+         $(b,open-pending-reply) $(b,check-pending-reply) \
+         $(b,rooms) $(b,register) $(b,refresh-peer) \
+         $(b,instances) $(b,doctor) $(b,verify) $(b,status)"
+    ; `P "== TIER 2: LIFECYCLE AND SETUP (use with care) =="
+    ; `P "$(b,start) $(b,stop) $(b,restart) — manage c2c instances"
+    ; `P "$(b,rooms-send) $(b,rooms-join) $(b,rooms-leave) $(b,rooms-list) \
+         $(b,rooms-members) $(b,rooms-history) $(b,rooms-invite) \
+         $(b,rooms-visibility) $(b,rooms-delete)"
+    ; `P "$(b,agent) $(b,roles-compile) $(b,roles-validate) — role file management"
+    ; `P "$(b,config) $(b,config-show) $(b,config-generation-client)"
+    ; `P "$(b,wire-daemon) $(b,wire-daemon-list) $(b,wire-daemon-status)"
+    ; `P "$(b,init) $(b,repo) $(b,screen)"
+    ; `P "$(b,Tier 3 and 4 commands hidden when running as an agent.)"
+    ]
+  else
+    [ `S "COMMANDS"
+    ; `P "== TIER 1: SAFE (agents can use freely) =="
+    ; `P "$(b,send), $(b,list), $(b,whoami), $(b,poll-inbox), $(b,peek-inbox), \
+         $(b,send-all), $(b,history), $(b,health), $(b,status), $(b,verify), \
+         $(b,register), $(b,refresh-peer), $(b,tail-log), $(b,my-rooms), \
+         $(b,dead-letter), $(b,prune-rooms), $(b,set-compact), $(b,clear-compact), \
+         $(b,open-pending-reply), $(b,check-pending-reply), \
+         $(b,instances), $(b,doctor), $(b,rooms)"
+    ; `P "== TIER 2: LIFECYCLE AND SETUP (safe with care) =="
+    ; `P "$(b,start), $(b,stop), $(b,restart), $(b,init), $(b,install), \
+         $(b,agent), $(b,roles-compile), $(b,roles-validate), \
+         $(b,config), $(b,config-show), $(b,config-generation-client), \
+         $(b,wire-daemon), $(b,wire-daemon-list), $(b,wire-daemon-status), \
+         $(b,repo), $(b,screen)"
+    ; `P "== TIER 3: SYSTEM (do NOT run from inside an agent) =="
+    ; `P "$(b,restart-self) — signals the inner client; running inside a managed \
+         session kills the supervisor and loses your session. Use /exit + external \
+         'c2c start' to restart instead."
+    ; `P "$(b,relay), $(b,relay-serve), $(b,relay-gc), $(b,relay-setup), \
+         $(b,relay-connect), $(b,relay-register), $(b,relay-dm), \
+         $(b,relay-status), $(b,relay-list), $(b,relay-rooms) — relay infrastructure"
+    ; `P "$(b,setcap) — grants PTY injection capability (requires sudo)"
+    ; `P "$(b,smoke-test), $(b,diag), $(b,install), $(b,gui) — system operations"
+    ; `P "== TIER 4: INTERNAL (plumbing, never shown in agent help) =="
+    ; `P "$(b,serve), $(b,mcp), $(b,hook), $(b,inject), $(b,oc-plugin), \
+         $(b,cc-plugin), $(b,state-read), $(b,state-write), \
+         $(b,wire-daemon-start), $(b,wire-daemon-stop), \
+         $(b,wire-daemon-format-prompt), $(b,wire-daemon-spool-write), \
+         $(b,wire-daemon-spool-read), $(b,supervisor)"
+    ]
+
 let () =
   sanitize_help_env ();
   for i = 0 to Array.length Sys.argv - 1 do
     if Sys.argv.(i) = "-h" then Sys.argv.(i) <- "--help"
   done;
+  let is_agent = is_agent_session () in
+  let tier_grouped_man = commands_man is_agent in
+  let all_cmds =
+    [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; send_all; sweep
+    ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
+    ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
+    ; serve; mcp; start; agent_group; config_group; roles_compile; roles_validate; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; help ]
+  in
+  let visible_cmds = filter_commands ~cmds:all_cmds in
   exit
     (Cmdliner.Cmd.eval
        (Cmdliner.Cmd.group ~default:default_term
@@ -8213,29 +8525,7 @@ let () =
              ~version:(version_string ())
              ~doc:"c2c — peer-to-peer messaging for AI agents"
              ~man:
-               [ `S "DESCRIPTION"
-               ; `P
-                   "c2c is a peer-to-peer messaging broker between AI coding \
-                    sessions. Use subcommands to interact with the broker."
-               ; `S "COMMANDS"
-               ; `P
-                   "$(b,send), $(b,list), $(b,whoami), $(b,poll-inbox), \
-                    $(b,send-all), $(b,sweep), $(b,sweep-dryrun), $(b,history), \
-                    $(b,health), $(b,status), $(b,verify), $(b,register), \
-                    $(b,refresh-peer), $(b,tail-log), $(b,my-rooms), $(b,dead-letter), \
-                    $(b,prune-rooms), $(b,smoke-test), $(b,init), $(b,install), \
-                    $(b,serve), $(b,mcp), $(b,start), $(b,stop), \
-                    $(b,restart), $(b,instances), $(b,hook), $(b,inject), \
-                    $(b,wire-daemon), $(b,screen), $(b,help)"
-               ; `P
-                   ("$(b,install) — install c2c + client integrations (TUI by default). \
-                     Use $(b,c2c install self) for binary-only, \
-                     $(b,c2c install " ^ install_client_pipe_list ^ ") per-client, \
-                     or $(b,c2c install all) for non-interactive full setup.")
-               ; `P "$(b,rooms) — manage N:N chat rooms"
-               ; `P "$(b,relay) — cross-machine relay: serve, connect, setup, status, list, rooms, gc"
-               ])
-             [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; send_all; sweep
-             ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
-             ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-              ; serve; mcp; start; agent_group; config_group; roles_compile; roles_validate; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; help ]))
+               ([ `S "DESCRIPTION"
+               ; `P "c2c is a peer-to-peer messaging broker between AI coding sessions. Use subcommands to interact with the broker."
+               ] @ tier_grouped_man))
+             visible_cmds))
