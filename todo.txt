@@ -120,3 +120,6 @@ by deleting — git history keeps them if anyone needs to look back.
 - [x] the role snippets aren't injected into the compiled agent files. (jungle-coder) — agent_new_interactive now captures selected_snippets and writes `include: [...]` to the role file. Also: `c2c roles` refactored into a Cmdliner.Cmd.group with `compile` and `validate` subcommands (was previously a flat `c2c roles` / `c2c roles-validate`).
 
 - [ ] BUG (statefile token counts): `c2c statefile` reports `tokens_input: 189` and `tokens_output: 58` for Lyra-Quill, but the agent has 288 steps and 16 turns. These numbers are clearly wrong — likely counting only the current turn rather than accumulating across the session. Filed 2026-04-23 by Lyra-Quill.
+
+- [ ] FEATURE: `c2c start codex --agent <name>` should work — Codex supports agent files. Currently `c2c start codex --agent coder` errors with "unknown flag --agent". Need to add Codex renderer + agent file writing support.
+- [ ] FEATURE: `c2c start claude --agent <name>` should work — Claude Code supports agent files. Currently errors with "unknown flag --agent". Need to add Claude renderer + agent file writing support.
