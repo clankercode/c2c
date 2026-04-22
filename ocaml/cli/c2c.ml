@@ -3603,7 +3603,7 @@ let relay_list_cmd =
 
 let relay_rooms_cmd =
   let subcmd =
-    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"list|join|leave|send|history" ~doc:"Rooms subcommand.")
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"list|join|leave|send|history|invite|uninvite|set-visibility" ~doc:"Rooms subcommand.")
   in
   let relay_url =
     Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL.")
@@ -3618,7 +3618,13 @@ let relay_rooms_cmd =
     Cmdliner.Arg.(value & opt int 50 & info [ "limit" ] ~docv:"N" ~doc:"Max messages for history (default 50).")
   in
   let alias =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Alias (required for join/leave/send).")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Alias (required for join/leave/send/invite/uninvite).")
+  in
+  let invitee_pk =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "invitee-pk" ] ~docv:"PK" ~doc:"Base64url invitee identity public key (required for invite/uninvite).")
+  in
+  let visibility =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "visibility" ] ~docv:"public|invite_only" ~doc:"Room visibility (required for set-visibility).")
   in
   let words =
     Cmdliner.Arg.(value & pos_right 0 string [] & info [] ~docv:"WORDS" ~doc:"Message body for 'send' (joined with spaces).")
@@ -3629,6 +3635,8 @@ let relay_rooms_cmd =
   and+ room = room
   and+ limit = limit
   and+ alias = alias
+  and+ invitee_pk = invitee_pk
+  and+ visibility = visibility
   and+ words = words in
   match subcmd with
   | "join" | "leave" ->
@@ -3760,22 +3768,72 @@ let relay_rooms_cmd =
        | Some url ->
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
            let result = Lwt_main.run (Relay.Relay_client.list_rooms client) in
+            print_endline (Yojson.Safe.pretty_to_string result);
+            (match result with
+             | `Assoc fields ->
+                 (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
+             | _ -> exit 1))
+  | "invite" | "uninvite" ->
+      (match resolve_relay_url relay_url, room, alias, invitee_pk with
+       | None, _, _, _ ->
+           Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+           exit 1
+       | _, None, _, _ ->
+           Printf.eprintf "error: --room required for 'rooms %s'.\n%!" subcmd;
+           exit 1
+       | _, _, None, _ ->
+           Printf.eprintf "error: --alias required for 'rooms %s'.\n%!" subcmd;
+           exit 1
+       | _, _, _, None ->
+           Printf.eprintf "error: --invitee-pk required for 'rooms %s'.\n%!" subcmd;
+           exit 1
+       | Some url, Some room_id, Some from_alias, Some invitee_pk_val ->
+           let sign_ctx = if subcmd = "invite" then Relay.room_invite_sign_ctx
+                          else Relay.room_uninvite_sign_ctx in
+           let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+           let result =
+             match Relay_identity.load () with
+             | Ok id ->
+                 let p = Relay_signed_ops.sign_room_op id ~ctx:sign_ctx ~room_id ~alias:from_alias in
+                 let fn = if subcmd = "invite"
+                          then Relay.Relay_client.invite_room_signed
+                          else Relay.Relay_client.uninvite_room_signed in
+                 Lwt_main.run (fn client ~alias:from_alias ~room_id ~invitee_pk:invitee_pk_val
+                   ~identity_pk:p.Relay_signed_ops.identity_pk_b64
+                   ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
+                   ~sig_:p.Relay_signed_ops.sig_b64)
+             | Error _ ->
+                 let fn = if subcmd = "invite"
+                          then Relay.Relay_client.invite_room
+                          else Relay.Relay_client.uninvite_room in
+                 Lwt_main.run (fn client ~alias:from_alias ~room_id ~invitee_pk:invitee_pk_val)
+           in
            print_endline (Yojson.Safe.pretty_to_string result);
            (match result with
             | `Assoc fields ->
                 (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
             | _ -> exit 1))
-  | _ ->
-      (* invite/uninvite/set-visibility not yet ported to OCaml — fall back to Python. *)
-      (match find_python_script "c2c_relay_rooms.py" with
-       | None ->
-           Printf.eprintf "error: cannot find c2c_relay_rooms.py. Run from inside the c2c git repo.\n%!";
+  | "set-visibility" ->
+      (match resolve_relay_url relay_url, room, visibility with
+       | None, _, _ ->
+           Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
            exit 1
-       | Some script ->
-           let args = [ "python3"; script; subcmd ] in
-           let args = match relay_url with None -> args | Some v -> args @ [ "--relay-url"; v ] in
-           let args = match token with None -> args | Some v -> args @ [ "--token"; v ] in
-           Unix.execvp "python3" (Array.of_list args))
+       | _, None, _ ->
+           Printf.eprintf "error: --room required for 'rooms set-visibility'.\n%!";
+           exit 1
+       | _, _, None ->
+           Printf.eprintf "error: --visibility required for 'rooms set-visibility'.\n%!";
+           exit 1
+       | Some url, Some room_id, Some visibility_val ->
+           let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+           let result = Lwt_main.run
+             (Relay.Relay_client.set_room_visibility client ~room_id ~visibility:visibility_val)
+           in
+           print_endline (Yojson.Safe.pretty_to_string result);
+           (match result with
+            | `Assoc fields ->
+                (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
+            | _ -> exit 1))
 
 (* c2c relay register — bind Ed25519 identity on the relay (§8.2) *)
 let relay_register_cmd =

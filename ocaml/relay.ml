@@ -2723,9 +2723,9 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j -> handle_room_history relay j)
 
-      | `GET, path when String.length path > 16
-                    && String.sub path 0 16 = "/remote_inbox/" ->
-        let session_id = String.sub path 16 (String.length path - 16) in
+      | `GET, path when String.length path > 13
+                    && String.sub path 0 13 = "/remote_inbox/" ->
+        let session_id = String.sub path 13 (String.length path - 13) in
         handle_remote_inbox session_id
 
       | _ ->
@@ -2846,6 +2846,11 @@ module Relay_client : sig
     t -> from_alias:string -> room_id:string -> content:string ->
     envelope:Yojson.Safe.t -> ?message_id:string -> unit ->
     Yojson.Safe.t Lwt.t
+  val invite_room : t -> alias:string -> room_id:string -> invitee_pk:string -> Yojson.Safe.t Lwt.t
+  val invite_room_signed : t -> alias:string -> room_id:string -> invitee_pk:string -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
+  val uninvite_room : t -> alias:string -> room_id:string -> invitee_pk:string -> Yojson.Safe.t Lwt.t
+  val uninvite_room_signed : t -> alias:string -> room_id:string -> invitee_pk:string -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
+  val set_room_visibility : t -> room_id:string -> visibility:string -> Yojson.Safe.t Lwt.t
   val gc : t -> Yojson.Safe.t Lwt.t
 end = struct
 
@@ -3094,6 +3099,48 @@ end = struct
       | None -> base
     in
     post t "/send_room" (`Assoc body)
+
+  let invite_room t ~alias ~room_id ~invitee_pk =
+    post t "/invite_room" (`Assoc [
+      ("alias", `String alias);
+      ("room_id", `String room_id);
+      ("invitee_pk", `String invitee_pk);
+    ])
+
+  let invite_room_signed t ~alias ~room_id ~invitee_pk ~identity_pk ~ts ~nonce ~sig_ =
+    post t "/invite_room" (`Assoc [
+      ("alias", `String alias);
+      ("room_id", `String room_id);
+      ("invitee_pk", `String invitee_pk);
+      ("identity_pk", `String identity_pk);
+      ("ts", `String ts);
+      ("nonce", `String nonce);
+      ("sig", `String sig_);
+    ])
+
+  let uninvite_room t ~alias ~room_id ~invitee_pk =
+    post t "/uninvite_room" (`Assoc [
+      ("alias", `String alias);
+      ("room_id", `String room_id);
+      ("invitee_pk", `String invitee_pk);
+    ])
+
+  let uninvite_room_signed t ~alias ~room_id ~invitee_pk ~identity_pk ~ts ~nonce ~sig_ =
+    post t "/uninvite_room" (`Assoc [
+      ("alias", `String alias);
+      ("room_id", `String room_id);
+      ("invitee_pk", `String invitee_pk);
+      ("identity_pk", `String identity_pk);
+      ("ts", `String ts);
+      ("nonce", `String nonce);
+      ("sig", `String sig_);
+    ])
+
+  let set_room_visibility t ~room_id ~visibility =
+    post t "/set_room_visibility" (`Assoc [
+      ("room_id", `String room_id);
+      ("visibility", `String visibility);
+    ])
 
   let gc t = get t "/gc"
 
