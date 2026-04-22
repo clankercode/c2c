@@ -6216,6 +6216,18 @@ let stop_cmd =
   let+ json = json_flag
   and+ name = name in
   let output_mode = if json then Json else Human in
+  let self_check =
+    match Sys.getenv_opt "C2C_INSTANCE_NAME" with
+    | Some self_name when self_name = name ->
+        Some "cannot stop your own session"
+    | _ -> None
+  in
+  if self_check <> None then begin
+    (match output_mode with
+     | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String (Option.value self_check ~default:"")) ])
+     | Human -> Printf.eprintf "error: %s\n%!" (Option.value self_check ~default:""));
+    exit 1
+  end;
   let inst_path = instances_dir () // name in
   if not (Sys.file_exists inst_path) then begin
     (match output_mode with
