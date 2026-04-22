@@ -147,7 +147,7 @@ describe("useHistory", () => {
         stderr: "",
       });
 
-      const result = await loadPeerHistory("alice", "gui-me", 50);
+      const result = await loadPeerHistory("alice", "gui-session-123", "gui-me", 50);
       expect(result).toHaveLength(2);
       expect(result[0].content).toBe("direct to me");
       expect(result[1].content).toBe("my reply to alice");
