@@ -2,6 +2,8 @@
 (* relay_sqlite.ml — SQLite-backed relay implementing the RELAY signature *)
 
 open Lwt.Infix
+module R = Result
+open Sqlite3
 
 (* Error codes — must match relay.ml *)
 let relay_err_unknown_alias = "unknown_alias"
@@ -368,13 +370,13 @@ module SqliteRelay = struct
     Sqlite3.bind_double del_stmt 1 cutoff |> ignore;
     Sqlite3.step del_stmt |> ignore;
     let has_row = exec_prepared conn "SELECT nonce FROM register_nonces WHERE nonce = ?" [`Text nonce] in
-    if has_row then Error relay_err_nonce_replay
+    if has_row then R.Error relay_err_nonce_replay
     else (
       let ins_stmt = Sqlite3.prepare conn "INSERT INTO register_nonces (nonce, ts) VALUES (?, ?)" in
       Sqlite3.bind_text ins_stmt 1 nonce |> ignore;
       Sqlite3.bind_double ins_stmt 2 ts |> ignore;
       Sqlite3.step ins_stmt |> ignore;
-      Ok ()
+      R.Ok ()
     )
 
   let check_register_nonce t ~nonce ~ts =
@@ -390,13 +392,13 @@ module SqliteRelay = struct
       Sqlite3.bind_double del_stmt 1 cutoff |> ignore;
       Sqlite3.step del_stmt |> ignore;
       let has_row = exec_prepared conn "SELECT nonce FROM request_nonces WHERE nonce = ?" [`Text nonce] in
-      if has_row then Error relay_err_nonce_replay
+      if has_row then R.Error relay_err_nonce_replay
       else (
         let ins_stmt = Sqlite3.prepare conn "INSERT INTO request_nonces (nonce, ts) VALUES (?, ?)" in
         Sqlite3.bind_text ins_stmt 1 nonce |> ignore;
         Sqlite3.bind_double ins_stmt 2 ts |> ignore;
         Sqlite3.step ins_stmt |> ignore;
-        Ok ()
+        R.Ok ()
       )
     )
 
@@ -531,7 +533,7 @@ module SqliteRelay = struct
   let send t ~from_alias ~to_alias ~content ?(message_id=None) =
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
-      let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.create `V4) in
+      let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.v `V4) in
       let ts = Unix.gettimeofday () in
       let has_row = exec_prepared conn "SELECT alias, last_seen, ttl FROM leases WHERE alias = ?" [`Text to_alias] in
       if not has_row then
@@ -627,7 +629,7 @@ module SqliteRelay = struct
       let now = Unix.gettimeofday () in
       let sent_to = ref [] in
       let skipped = ref [] in
-      let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.create `V4) in
+      let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.v `V4) in
       let stmt = Sqlite3.prepare conn "SELECT alias, last_seen, ttl, node_id, session_id FROM leases WHERE alias != ?" in
       Sqlite3.bind_text stmt 1 from_alias |> ignore;
       let rec loop () =
@@ -686,7 +688,7 @@ module SqliteRelay = struct
   let send_room t ~from_alias ~room_id ~content ?(message_id=None) ?(envelope=None) () =
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
-      let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.create `V4) in
+      let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.v `V4) in
       let ts = Unix.gettimeofday () in
       let delivered_to = ref [] in
       let skipped = ref [] in
