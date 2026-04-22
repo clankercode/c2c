@@ -2784,7 +2784,10 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                            (2) call whoami to see your current identity."
                           from_alias conflict.session_id)
                      ~is_error:true)
-            | None ->
+             | None ->
+                if from_alias = to_alias then
+                  Lwt.return (tool_result ~content:"error: cannot send a message to yourself" ~is_error:true)
+                else
                 let deferrable =
                   try match Yojson.Safe.Util.member "deferrable" arguments with
                     | `Bool b -> b | _ -> false

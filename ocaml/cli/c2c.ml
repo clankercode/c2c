@@ -247,6 +247,10 @@ let send_cmd =
   let from_alias = resolve_alias ~override:from_override broker in
   let content = String.concat " " message in
   let output_mode = if json then Json else Human in
+  if from_alias = to_alias then (
+    Printf.eprintf "error: cannot send a message to yourself (%s)\n%!" from_alias;
+    exit 1
+  );
   (try
      C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content ();
      let ts = Unix.gettimeofday () in
