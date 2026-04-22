@@ -11,3 +11,4 @@
 - [x] OCaml SqliteRelay implementation: compiles successfully (commit 44d1237 fixes Error shadowing, Uuidm deprecation)
 - [ ] CLI wiring for SqliteRelay (ceo): wire --storage sqlite + --db-path into c2c.ml
 - [ ] c2c GUI app (galaxy-coder): session_id bug fixed (744a5d4) — GUI now generates gui-<random> session_id on registration, stores in localStorage, passes correct session_id to CLI commands. CSP hardening added. Build passes, TypeScript clean, Rust compiles.
+- [ ] c2c GUI error handling audit (galaxy-coder): systematic audit of all useSend/useHistory/useDiscovery calls for silent CLI failures; add GUI tests for critical paths.
