@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -126,3 +127,7 @@ class Scenario:
         if client not in self._capability_cache:
             self._capability_cache[client] = self.adapters[client].probe_capabilities(self)
         return dict(self._capability_cache[client])
+
+    def require_binary(self, name: str) -> None:
+        if shutil.which(name) is None:
+            raise AssertionError(f"required binary missing: {name}")

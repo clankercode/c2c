@@ -239,6 +239,21 @@ def _pgid_cleanup_guard() -> None:  # type: ignore[return]
             pass
 
 
+def _cleanup_scenario_agents(sc: Scenario) -> None:
+    cleanup_failures: list[str] = []
+    for agent in list(sc.agents.values()):
+        try:
+            sc.drivers[agent.backend].stop(agent.handle)
+        except Exception as exc:
+            cleanup_failures.append(f"{agent.name}: {exc}")
+    if cleanup_failures:
+        warnings.warn(
+            "best-effort cleanup hit stop failures: " + ", ".join(cleanup_failures),
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+
 @pytest.fixture
 def scenario(request: pytest.FixtureRequest, tmp_path: Path) -> Scenario:
     artifact_root = Path(".artifacts") / "e2e"
@@ -252,5 +267,4 @@ def scenario(request: pytest.FixtureRequest, tmp_path: Path) -> Scenario:
         adapters={},
     )
     yield sc
-    for agent in list(sc.agents.values()):
-        sc.drivers[agent.backend].stop(agent.handle)
+    _cleanup_scenario_agents(sc)

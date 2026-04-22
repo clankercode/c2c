@@ -1,8 +1,10 @@
 from pathlib import Path
 import json
+import shutil
 
 import pytest
 
+from tests import conftest as conftest_module
 from tests.e2e.framework.artifacts import ArtifactCollector
 from tests.e2e.framework.scenario import Scenario
 from tests.e2e.framework.terminal_driver import TerminalCapture, TerminalHandle
@@ -162,6 +164,7 @@ def test_framework_package_exports_smoke() -> None:
 class DummyDriver:
     def __init__(self) -> None:
         self.started: list[object] = []
+        self.stopped: list[TerminalHandle] = []
 
     def start(self, spec: object) -> TerminalHandle:
         self.started.append(spec)
@@ -180,7 +183,14 @@ class DummyDriver:
         return True
 
     def stop(self, handle: TerminalHandle) -> None:
+        self.stopped.append(handle)
         return None
+
+
+class FailingStopDriver(DummyDriver):
+    def stop(self, handle: TerminalHandle) -> None:
+        self.stopped.append(handle)
+        raise RuntimeError(f"cannot stop {handle.target}")
 
 
 class DummyAdapter:
@@ -231,6 +241,44 @@ def test_scenario_start_agent_tracks_started_agent(tmp_path: Path) -> None:
     assert agent.client == "dummy"
     assert agent.name == "dummy-a"
     assert agent.handle.target == "dummy-1"
+
+
+def test_scenario_require_binary_raises_for_missing_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scenario = Scenario(
+        test_name="test_demo",
+        workdir=tmp_path / "work",
+        artifacts=ArtifactCollector(tmp_path / "artifacts", "test_demo"),
+        drivers={"dummy": DummyDriver()},
+        adapters={"dummy": DummyAdapter()},
+    )
+
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+    with pytest.raises(AssertionError, match="required binary missing: missing-binary"):
+        scenario.require_binary("missing-binary")
+
+
+def test_cleanup_scenario_agents_continues_after_stop_failure(tmp_path: Path) -> None:
+    failing_driver = FailingStopDriver()
+    healthy_driver = DummyDriver()
+    scenario = Scenario(
+        test_name="test_demo",
+        workdir=tmp_path / "work",
+        artifacts=ArtifactCollector(tmp_path / "artifacts", "test_demo"),
+        drivers={"failing": failing_driver, "healthy": healthy_driver},
+        adapters={"dummy": DummyAdapter()},
+    )
+    scenario.artifacts.start_run()
+    failing_agent = scenario.start_agent("dummy", name="dummy-a", backend="failing")
+    healthy_agent = scenario.start_agent("dummy", name="dummy-b", backend="healthy")
+
+    with pytest.warns(RuntimeWarning, match="best-effort cleanup"):
+        conftest_module._cleanup_scenario_agents(scenario)
+
+    assert failing_driver.stopped == [failing_agent.handle]
+    assert healthy_driver.stopped == [healthy_agent.handle]
 
 
 def test_scenario_fixture_provides_workdir_and_artifacts(scenario) -> None:
