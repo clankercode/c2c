@@ -283,10 +283,11 @@ generation-client [CLIENT]
 | B3 | BLOCKER | ✅ FIXED `1b032df` | `c2c` pty-inject warning misleading (only Codex needs cap) |
 | B4 | BLOCKER | ⏳ DEFERRED | `c2c start` CLIENT argument has no guidance |
 | A1 | ANNOYANCE | ✅ FIXED `e31c358` | `c2c list` shows `???` with no explanation |
-| A2 | ANNOYANCE | ⏳ PENDING | `c2c rooms visibility` doesn't document valid values |
+| A2 | ANNOYANCE | ✅ FIXED `1fe8a2a` | `c2c rooms visibility` doesn't document valid values |
 | A3 | ANNOYANCE | ⏳ PENDING | `c2c install` TUI has no preview/dry-run |
-| A4 | ANNOYANCE | ⏳ PENDING | `c2c roles --agent` is unexplained |
-| A5 | ANNOYANCE | ⏳ PENDING | `c2c relay` serve/connect/setup not contextualized |
+| A4 | ANNOYANCE | ✅ FIXED `1fe8a2a` | `c2c roles --agent` is unexplained |
+| A5 | ANNOYANCE | ✅ FIXED `1fe8a2a` | `c2c relay` serve/connect/setup not contextualized |
+| A9 | ANNOYANCE | ✅ FIXED `1fe8a2a` | `c2c commands` shows Tier 3 commands unreachable in agent sessions |
 | A6 | ANNOYANCE | ✅ FIXED `151e328` | TIER system in `--help` is unexplained |
 | A7 | ANNOYANCE | ✅ FIXED `63e3ace` | `c2c doctor` "stale deploy" verdict is self-contradictory |
 | A8 | ANNOYANCE | ✅ FIXED `4ca4da5` | `c2c` (no args) "configured" status unexplained |
