@@ -65,6 +65,7 @@ def build_toml_block(broker_root: Path, alias: str) -> str:
         "[mcp_servers.c2c.env]",
         f'C2C_MCP_BROKER_ROOT = "{broker_root}"',
         'C2C_MCP_AUTO_JOIN_ROOMS = "swarm-lounge"',
+        'C2C_MCP_CLIENT_TYPE = "codex"',
         "",
     ]
     for tool in C2C_TOOLS:

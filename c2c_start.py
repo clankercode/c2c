@@ -42,13 +42,13 @@ CLIENT_CONFIGS: dict[str, dict[str, Any]] = {
         "poker_event": "heartbeat",
         "poker_from": "claude-poker",
         "needs_pty": True,
-        "extra_env": {},
+        "extra_env": {"C2C_MCP_CLIENT_TYPE": "claude-code"},
     },
     "codex": {
         "binary": "codex",
         "deliver_client": "codex",
         "needs_poker": False,
-        "extra_env": {},
+        "extra_env": {"C2C_MCP_CLIENT_TYPE": "codex"},
     },
     "opencode": {
         "binary": "opencode",
@@ -57,7 +57,7 @@ CLIENT_CONFIGS: dict[str, dict[str, Any]] = {
         # TypeScript plugin (c2c.ts) handles delivery via c2c monitor → promptAsync.
         # PTY-based deliver daemon is deprecated for OpenCode.
         "skip_deliver": True,
-        "extra_env": {},
+        "extra_env": {"C2C_MCP_CLIENT_TYPE": "opencode"},
     },
     "kimi": {
         "binary": "kimi",
@@ -65,13 +65,13 @@ CLIENT_CONFIGS: dict[str, dict[str, Any]] = {
         "needs_poker": True,
         "poker_event": "heartbeat",
         "poker_from": "kimi-poker",
-        "extra_env": {},
+        "extra_env": {"C2C_MCP_CLIENT_TYPE": "kimi"},
     },
     "crush": {
         "binary": "crush",
         "deliver_client": "crush",
         "needs_poker": False,
-        "extra_env": {},
+        "extra_env": {"C2C_MCP_CLIENT_TYPE": "crush"},
     },
 }
 
@@ -327,6 +327,7 @@ def _build_kimi_mcp_config(name: str, broker_root: Path, alias_override: str | N
                     "C2C_MCP_AUTO_REGISTER_ALIAS": alias,
                     "C2C_MCP_AUTO_JOIN_ROOMS": "swarm-lounge",
                     "C2C_MCP_AUTO_DRAIN_CHANNEL": "0",
+                    "C2C_MCP_CLIENT_TYPE": "kimi",
                 },
             }
         }

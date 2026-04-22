@@ -112,6 +112,7 @@ def build_mcp_entry(
     if alias:
         env["C2C_MCP_AUTO_REGISTER_ALIAS"] = alias
     env["C2C_MCP_AUTO_JOIN_ROOMS"] = "swarm-lounge"
+    env["C2C_MCP_CLIENT_TYPE"] = "claude-code"
 
     if ocaml:
         if not OCAML_MCP_EXE.exists():
