@@ -54,7 +54,7 @@ let split_frontmatter content =
   let rec skip_leading_empty = function
     | [] -> []
     | "" :: rest -> skip_leading_empty rest
-    | l :: _ as all -> l :: all
+    | l :: _ as all -> all
   in
   let lines = skip_leading_empty lines in
   let rec find_end acc = function
@@ -83,6 +83,18 @@ let is_section_key fm_lines idx =
   | None -> false
   | Some next -> starts_with next ' ' || starts_with next '\t'
 
+let is_list_section_key fm_lines idx =
+  let n = List.length fm_lines in
+  let rec skip_empty acc =
+    if acc >= n then None
+    else let line = List.nth fm_lines acc in
+         if line = "" || starts_with (String.trim line) '#' then skip_empty (acc + 1)
+         else Some line
+  in
+  match skip_empty (idx + 1) with
+  | None -> false
+  | Some next -> starts_with (String.trim next) '-' 
+
 let parse_yaml_entries fm_lines =
   let entries = ref [] in
   let current_section = ref "" in
@@ -110,9 +122,9 @@ let parse_yaml_entries fm_lines =
           let key = String.sub line 0 colon_pos in
           let rest_trimmed = String.trim (String.sub line (colon_pos + 1) (String.length line - colon_pos - 1)) in
           let is_root = raw_line.[0] <> ' ' && raw_line.[0] <> '\t' in
-          if is_root then current_section := "";
+          if is_root && not (is_list_section_key fm_lines i) then current_section := "";
           let full_key = if !current_section = "" then key else !current_section ^ "." ^ key in
-          if rest_trimmed = "" && is_section_key fm_lines i then
+          if rest_trimmed = "" && is_section_key fm_lines i && not (is_list_section_key fm_lines i) then
             current_section := full_key
           else if rest_trimmed = "" then
             entries := (full_key, "") :: !entries
