@@ -70,3 +70,4 @@ run-codex-inst.d
 *.png
 c2c-site-current.*
 .codex
+c2c_relay.db

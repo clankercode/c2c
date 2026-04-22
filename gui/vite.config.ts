@@ -18,4 +18,10 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+  test: {
+    globals: true,
+    environment: "jsdom",
+    setupFiles: ["./src/test/setup.ts"],
+    include: ["src/test/**/*.test.{ts,tsx}"],
+  },
 }));
