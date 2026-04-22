@@ -66,7 +66,7 @@ Snippets live alongside canonical roles — committed to git.
 
 Arm a persistent inbox monitor:
 ```
-c2c monitor --all
+c2c monitor --archive --all
 ```
 
 Heartbeat every 4.1 minutes:
