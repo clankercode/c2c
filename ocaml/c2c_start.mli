@@ -158,12 +158,13 @@ val start_deliver_daemon :
   broker_root:string ->
   ?child_pid_opt:int ->
   ?xml_output_fd:string ->
+  ?xml_output_path:string ->
   unit ->
   int option
 (** [start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt ()] spawns
     c2c_deliver_inbox.py and returns its PID, or [None] if the script is not
-    found. Without [xml_output_fd] it uses the notify-only PTY path; with
-    [xml_output_fd] it uses the Codex XML sideband path. *)
+    found. Without XML output settings it uses the notify-only PTY path; with
+    [xml_output_fd] or [xml_output_path] it uses the Codex XML sideband path. *)
 
 val start_poker :
   name:string -> client:string -> broker_root:string -> ?child_pid_opt:int -> unit -> int option

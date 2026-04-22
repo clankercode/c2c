@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -12,6 +14,7 @@ if TYPE_CHECKING:
 
 
 _HELP_PROBE_TIMEOUT_SECONDS = 2.0
+_CODEX_HEADLESS_READY_GRACE_SECONDS = 1.0
 
 
 def _help_contains(binary: str, flag: str) -> bool:
@@ -99,7 +102,26 @@ class CodexHeadlessAdapter:
         if not driver.is_alive(agent.handle):
             return False
         instance_dir = _instance_dir(agent.name)
-        return (instance_dir / "config.json").exists() and _has_live_pid(instance_dir / "inner.pid")
+        config_path = instance_dir / "config.json"
+        inner_pid = instance_dir / "inner.pid"
+        deliver_pid = instance_dir / "deliver.pid"
+        handoff_path = instance_dir / "thread-id-handoff.jsonl"
+        fifo_path = instance_dir / "xml-input.fifo"
+        meta_path = instance_dir / "meta.json"
+        if not config_path.exists() or not handoff_path.exists() or not fifo_path.exists():
+            return False
+        if not _has_live_pid(inner_pid) or not _has_live_pid(deliver_pid):
+            return False
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            start_ts = float(meta["start_ts"])
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            return False
+        # Headless is only really ready once the bridge, fifo, and deliver
+        # daemon have all settled. Without a short grace period the first DM
+        # can race startup and make the live tmux tests flaky even though the
+        # managed path itself works.
+        return time.time() - start_ts >= _CODEX_HEADLESS_READY_GRACE_SECONDS
 
     def probe_capabilities(self, scenario: Scenario | None) -> dict[str, bool]:
         return {

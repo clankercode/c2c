@@ -162,6 +162,18 @@ def deliver_xml_messages(*, fd: int, messages: list[dict[str, Any]]) -> None:
         view = view[written:]
 
 
+def deliver_xml_messages_to_path(*, path: Path, messages: list[dict[str, Any]]) -> None:
+    payload = "".join(xml_message_payload(message) for message in messages).encode("utf-8")
+    fd = os.open(path, os.O_WRONLY)
+    try:
+        view = memoryview(payload)
+        while view:
+            written = os.write(fd, view)
+            view = view[written:]
+    finally:
+        os.close(fd)
+
+
 def notify_payload(*, session_id: str, count: int, client: str = "generic") -> str:
     noun = "message" if count == 1 else "messages"
     if client == "crush":
@@ -428,6 +440,7 @@ def deliver_once(
     submit_delay: float | None = None,
     suppress_notify: bool = False,
     xml_output_fd: int | None = None,
+    xml_output_path: Path | None = None,
 ) -> dict[str, Any]:
     notified = False
     delivered = None
@@ -445,7 +458,7 @@ def deliver_once(
                 submit_delay=submit_delay,
             )
     else:
-        if xml_output_fd is not None:
+        if xml_output_fd is not None or xml_output_path is not None:
             source = "xml"
             spool = C2CSpool(default_xml_spool_path(broker_root, session_id))
             messages = spool.read()
@@ -457,7 +470,10 @@ def deliver_once(
                 )
             delivered = 0
             if messages:
-                deliver_xml_messages(fd=xml_output_fd, messages=messages)
+                if xml_output_fd is not None:
+                    deliver_xml_messages(fd=xml_output_fd, messages=messages)
+                else:
+                    deliver_xml_messages_to_path(path=xml_output_path, messages=messages)
                 delivered = len(messages)
                 spool.clear()
             return build_result(
@@ -521,6 +537,7 @@ def run_loop(
     max_iterations: int | None,
     watched_pid: int | None,
     xml_output_fd: int | None = None,
+    xml_output_path: Path | None = None,
 ) -> dict[str, Any]:
     iterations = 0
     total_delivered = 0
@@ -555,6 +572,7 @@ def run_loop(
             submit_delay=submit_delay,
             suppress_notify=suppress_notify,
             xml_output_fd=xml_output_fd,
+            xml_output_path=xml_output_path,
         )
         if notify_only and last_result.get("notified"):
             last_notify_at = time.monotonic()
@@ -644,6 +662,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="write Codex XML user-turn frames to this inherited fd instead of PTY injection",
     )
+    parser.add_argument(
+        "--xml-output-path",
+        type=Path,
+        default=None,
+        help="write Codex XML user-turn frames by opening this fifo/path for write",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(raw_argv)
 
@@ -674,8 +698,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.pidfile:
         write_pidfile(args.pidfile)
 
+    if args.xml_output_fd is not None and args.xml_output_path is not None:
+        parser.error("--xml-output-fd and --xml-output-path are mutually exclusive")
+
     try:
-        if args.xml_output_fd is None:
+        if args.xml_output_fd is None and args.xml_output_path is None:
             terminal_pid, pts, _transcript = c2c_inject.resolve_session_info(args)
         else:
             terminal_pid = args.terminal_pid or args.pid or 0
@@ -697,6 +724,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_iterations=args.max_iterations,
                 watched_pid=watched_pid,
                 xml_output_fd=args.xml_output_fd,
+                xml_output_path=args.xml_output_path,
             )
         else:
             result = deliver_once(
@@ -711,6 +739,7 @@ def main(argv: list[str] | None = None) -> int:
                 notify_only=args.notify_only,
                 submit_delay=args.submit_delay,
                 xml_output_fd=args.xml_output_fd,
+                xml_output_path=args.xml_output_path,
             )
     except Exception as exc:
         print(f"[c2c-deliver-inbox] {exc}", file=sys.stderr)

@@ -112,6 +112,20 @@ let rec mkdir_p dir =
     with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
   end
 
+let ensure_fifo path =
+  (try
+     if Sys.file_exists path then
+       match (Unix.stat path).Unix.st_kind with
+       | Unix.S_FIFO -> ()
+       | _ ->
+           Sys.remove path;
+           Unix.mkfifo path 0o600
+     else
+       Unix.mkfifo path 0o600
+   with
+   | Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+   | Sys_error _ -> ())
+
 let current_c2c_command () =
   let fallback =
     if Array.length Sys.argv > 0 then Sys.argv.(0) else "c2c"
@@ -257,6 +271,7 @@ let poker_pid_path name = instance_dir name // "poker.pid"
 let stderr_log_path name = instance_dir name // "stderr.log"
 let client_log_path name = instance_dir name // "client.log"
 let headless_thread_id_handoff_path name = instance_dir name // "thread-id-handoff.jsonl"
+let headless_xml_fifo_path name = instance_dir name // "xml-input.fifo"
 let deaths_jsonl_path broker_root = broker_root // "deaths.jsonl"
 
 (* Tee stderr to inst_dir/stderr.log with 2 MB ring rotation.
@@ -1006,7 +1021,7 @@ let wire_bridge_script_path ~(broker_root : string) : string option =
 
 let start_deliver_daemon ~(name : string) ~(client : string)
     ~(broker_root : string) ?(child_pid_opt : int option)
-    ?(xml_output_fd : string option) () : int option =
+    ?(xml_output_fd : string option) ?(xml_output_path : string option) () : int option =
   match deliver_command ~broker_root with
   | None -> None
   | Some (command, prefix_args) ->
@@ -1014,8 +1029,11 @@ let start_deliver_daemon ~(name : string) ~(client : string)
         prefix_args
         @ [ "--client"; client; "--session-id"; name;
           "--loop"; "--broker-root"; broker_root ]
-        @ (match xml_output_fd with None -> [ "--notify-only" ] | Some _ -> [])
+        @ (match xml_output_fd, xml_output_path with
+           | None, None -> [ "--notify-only" ]
+           | _ -> [])
         @ (match xml_output_fd with None -> [] | Some fd -> [ "--xml-output-fd"; fd ])
+        @ (match xml_output_path with None -> [] | Some path -> [ "--xml-output-path"; path ])
         @ (match child_pid_opt with None -> [] | Some p -> [ "--pid"; string_of_int p ])
       in
       try
@@ -1279,7 +1297,39 @@ let run_outer_loop ~(name : string) ~(client : string)
             ?alias_override ?resume_session_id ?binary_override ?codex_xml_input_fd
             ?thread_id_fd ()
       in
-      let cmd = binary_path :: launch_args in
+      let headless_xml_fifo =
+        if client = "codex-headless" then
+          let path = headless_xml_fifo_path name in
+          (* Managed headless launches looked healthy while the bridge still
+             ignored broker-fed XML over an anonymous stdin pipe. A named fifo
+             keeps the transport aligned with the direct bridge probes that do
+             emit thread-id handoff correctly, and gives the deliver sidecar a
+             stable reopenable path owned by c2c. *)
+          ensure_fifo path;
+          Some path
+        else None
+      in
+      let thread_id_handoff_path_opt =
+        if client = "codex-headless" then
+          let path = headless_thread_id_handoff_path name in
+          let oc = open_out path in
+          close_out oc;
+          Some path
+        else None
+      in
+      let cmd =
+        match client, headless_xml_fifo, thread_id_handoff_path_opt with
+        | "codex-headless", Some fifo_path, Some handoff_path ->
+            [ "/bin/bash"; "-lc";
+              "bridge=\"$1\"; fifo=\"$2\"; handoff=\"$3\"; shift 3; \
+               exec \"$bridge\" \"$@\" < \"$fifo\" 5> \"$handoff\"";
+              "c2c-codex-headless";
+              binary_path;
+              fifo_path;
+              handoff_path ]
+            @ launch_args
+        | _ -> binary_path :: launch_args
+      in
 
       (* Write meta.json with launch metadata *)
       let meta_path = meta_json_path name in
@@ -1397,20 +1447,8 @@ let run_outer_loop ~(name : string) ~(client : string)
       let child_pid_opt =
         try
           let codex_xml_pipe =
-            if (client = "codex" && List.mem "--xml-input-fd" launch_args)
-               || client = "codex-headless" then
+            if client = "codex" && List.mem "--xml-input-fd" launch_args then
               Some (Unix.pipe ~cloexec:false ())
-            else None
-          in
-          let thread_id_handoff =
-            if client = "codex-headless" then
-              let path = headless_thread_id_handoff_path name in
-              let fd =
-                Unix.openfile path
-                  [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ]
-                  0o600
-              in
-              Some (path, fd)
             else None
           in
           let pid = match Unix.fork () with
@@ -1441,27 +1479,13 @@ let run_outer_loop ~(name : string) ~(client : string)
                  | None -> ());
                 (match codex_xml_pipe with
                  | Some (read_fd, write_fd) ->
-                     (* Minimal headless unblocker: the bridge reads XML from a
-                        c2c-owned pipe on stdin so the deliver daemon can write the
-                        first broker message before any operator console exists. *)
-                     if client = "codex-headless" then begin
-                       (try Unix.dup2 read_fd Unix.stdin with _ -> ());
-                       if read_fd <> Unix.stdin then (try Unix.close read_fd with _ -> ())
-                     end else begin
-                       let fd3 : Unix.file_descr = Obj.magic 3 in
-                       (try Unix.dup2 read_fd fd3 with _ -> ());
-                       if read_fd <> fd3 then (try Unix.close read_fd with _ -> ())
-                     end;
+                     let fd3 : Unix.file_descr = Obj.magic 3 in
+                     (try Unix.dup2 read_fd fd3 with _ -> ());
+                     if read_fd <> fd3 then (try Unix.close read_fd with _ -> ());
                      (try Unix.close write_fd with _ -> ())
                  | None -> ());
-                (match thread_id_handoff with
-                 | Some (_path, handoff_fd) ->
-                     let fd5 : Unix.file_descr = Obj.magic 5 in
-                     (try Unix.dup2 handoff_fd fd5 with _ -> ());
-                     if handoff_fd <> fd5 then (try Unix.close handoff_fd with _ -> ())
-                 | None -> ());
                 (try Unix.close outer_stderr_fd with _ -> ());
-                (try Unix.execvpe binary_path (Array.of_list cmd) env
+                (try Unix.execvpe (List.hd cmd) (Array.of_list cmd) env
                  with e ->
                    Printf.eprintf "exec %s failed: %s\n%!" binary_path (Printexc.to_string e);
                    exit 127)
@@ -1481,23 +1505,23 @@ let run_outer_loop ~(name : string) ~(client : string)
                   ~pid
                   ~client_type:"codex-headless"
               with _ -> ()));
-          (match thread_id_handoff with
-           | Some (path, handoff_fd) ->
+          (match thread_id_handoff_path_opt with
+           | Some path ->
                (* In XML mode the bridge does not start/resume a thread until it sees the first
                   <message>. So headless startup cannot wait for a thread-id handoff here; we
                   persist it lazily when the bridge emits it after the first real input. *)
-               ignore (start_headless_thread_id_watcher ~name ~path);
-               (try Unix.close handoff_fd with _ -> ())
+               ignore (start_headless_thread_id_watcher ~name ~path)
            | None -> ());
           (* Start deliver daemon (PTY notify path, used for Codex). *)
           (if !deliver_pid = None && cfg.needs_deliver then
-             let xml_output_fd =
-               match codex_xml_pipe with
-               | Some (_read_fd, write_fd) ->
+             let xml_output_fd, xml_output_path =
+               match client, codex_xml_pipe, headless_xml_fifo with
+               | "codex-headless", _, Some path -> (None, Some path)
+               | _, Some (_read_fd, write_fd), _ ->
                    let fd4 : Unix.file_descr = Obj.magic 4 in
                    (try Unix.dup2 write_fd fd4 with _ -> ());
-                   Some ("4", fd4)
-               | None -> None
+                   (Some ("4", fd4), None)
+               | _ -> (None, None)
              in
              begin
                match
@@ -1507,6 +1531,7 @@ let run_outer_loop ~(name : string) ~(client : string)
                    ~broker_root
                    ?child_pid_opt:(Some pid)
                    ?xml_output_fd:(Option.map fst xml_output_fd)
+                   ?xml_output_path
                    ()
                with
                | Some p ->

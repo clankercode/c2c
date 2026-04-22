@@ -159,7 +159,7 @@ def test_codex_adapter_ready_requires_live_inner_pid(tmp_path: Path) -> None:
         assert adapter.is_ready(scenario, agent) is True
 
 
-def test_codex_headless_adapter_ready_requires_config_json_and_live_inner_pid(tmp_path: Path) -> None:
+def test_codex_headless_adapter_ready_requires_sidecars_and_startup_grace(tmp_path: Path) -> None:
     from tests.e2e.framework.client_adapters import CodexHeadlessAdapter
 
     adapter = CodexHeadlessAdapter(tmp_path)
@@ -168,15 +168,28 @@ def test_codex_headless_adapter_ready_requires_config_json_and_live_inner_pid(tm
     instance_dir = tmp_path / ".local" / "share" / "c2c" / "instances" / agent.name
     instance_dir.mkdir(parents=True)
     inner_pid = instance_dir / "inner.pid"
+    deliver_pid = instance_dir / "deliver.pid"
+    meta_path = instance_dir / "meta.json"
 
     with (
         mock.patch("tests.e2e.framework.client_adapters.Path.home", return_value=tmp_path),
         mock.patch("tests.e2e.framework.client_adapters.os.kill", return_value=None),
+        mock.patch("tests.e2e.framework.client_adapters.time.time", return_value=100.0),
     ):
         assert adapter.is_ready(scenario, agent) is False
         (instance_dir / "config.json").write_text("{}", encoding="utf-8")
         assert adapter.is_ready(scenario, agent) is False
         inner_pid.write_text("9898\n", encoding="utf-8")
+        assert adapter.is_ready(scenario, agent) is False
+        deliver_pid.write_text("9899\n", encoding="utf-8")
+        assert adapter.is_ready(scenario, agent) is False
+        (instance_dir / "thread-id-handoff.jsonl").write_text("", encoding="utf-8")
+        assert adapter.is_ready(scenario, agent) is False
+        (instance_dir / "xml-input.fifo").write_text("", encoding="utf-8")
+        assert adapter.is_ready(scenario, agent) is False
+        meta_path.write_text('{"start_ts": 99.5}', encoding="utf-8")
+        assert adapter.is_ready(scenario, agent) is False
+        meta_path.write_text('{"start_ts": 98.0}', encoding="utf-8")
         assert adapter.is_ready(scenario, agent) is True
 
 
