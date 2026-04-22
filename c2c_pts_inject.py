@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Direct PTY-slave writer.
+"""Direct PTY-slave writer. DEPRECATED.
 
 Writes plain text directly to /dev/pts/<N>, followed by CR+LF.  This
 is useful only when intentionally writing display output to a terminal. It is
 not a reliable input injection path for interactive TUIs: keyboard input
 arrives through the PTY master side, while writing to the slave can make text
 appear without delivering it to the program's stdin.
+
+DEPRECATED: c2c_deliver_inbox.py still imports this, but the PTY master
+path via pty_inject/c2c_pty_inject.py is the preferred injection method.
+This file is kept for diagnostics and will be removed once the last caller
+is migrated.
 """
 from __future__ import annotations
 
