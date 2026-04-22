@@ -137,21 +137,8 @@ Wait ~30s for stability before restarting the next agent. Confirm swarm relay is
 
 1. ✅ **jungel-coder** (one-L, alias `jungel-coder`) — No restart needed; morning start already had a33c264
 2. ✅ **galaxy-coder** (window 2) — Restarted via `c2c_tmux.py launch --new-window`. Registered successfully.
-3. ⏳ **ceo** (me) — Needs restart for plugin update. Must be done by another agent (`c2c stop ceo && c2c_tmux.py launch opencode -n ceo --new-window`).
-4. ❌ **jungle-coder** (two-Ls, instance `jungle-coder`) — MCP server registration bug. Server process runs but `auto_register_startup` silently skips registration. NOT restarted. Root cause unknown.
-
-## Known Issues
-
-### jungle-coder (two-Ls) MCP Registration Bug
-
-The MCP server process spawns correctly (confirmed via `pgrep -P <node_pid>` showing `c2c_mcp_server.exe` as child), has all correct env vars (`C2C_MCP_AUTO_REGISTER_ALIAS=jungle-coder`, `C2C_MCP_SESSION_ID=jungle-coder`, `C2C_MCP_BROKER_ROOT=/home/xertrov/src/c2c/.git/c2c/mcp`), but the broker log shows no `register` call ever made. `auto_register_startup` appears to silently skip.
-
-Possible causes:
-- One of the guard conditions in `auto_register_startup` (c2c_mcp.ml:2090) is triggering
-- The OCaml MCP server binary may have a bug introduced in a recent commit
-- Registration is failing silently somewhere in the OCaml code path
-
-To investigate: run the MCP server with logging, check `broker.log` for any errors around the registration attempt.
+3. ✅ **ceo** (me) — Restarted by galaxy-coder (`c2c stop ceo && c2c_tmux.py launch opencode -n ceo --new-window`). Registered successfully.
+4. ❌ **jungle-coder** (two-Ls, instance `jungle-coder`) — MCP server registration bug. Root cause found: the one-L instance (jungel-coder) had `session_id=jungle-coder` which triggered the `hijack_guard` in `auto_register_startup`. The guard worked correctly. Fix: kill the one-L first before starting the two-L. NOT restarted.
 
 ## Safety Rules
 
