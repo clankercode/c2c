@@ -1452,7 +1452,7 @@ const C2CDelivery: Plugin = async (ctx) => {
           qProps.questions || [];
         const sid: string = qProps.sessionID || activeSessionId || sessionId || "unknown";
         const instanceName: string = process.env.C2C_INSTANCE_NAME || "";
-        const from = instanceName || sessionId || sid;
+        const from = instanceName || c2cAlias || sid;
         const timeoutSec = Math.round(permissionTimeoutMs / 1000); // reuses C2C_PERMISSION_TIMEOUT_MS
 
         // Capture in statefile so observer pane shows pending question.
