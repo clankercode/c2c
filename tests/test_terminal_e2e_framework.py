@@ -1,32 +1,10 @@
 from pathlib import Path
 import json
-import importlib.util
-import sys
 
 import pytest
 
-_FRAMEWORK_DIR = Path(__file__).resolve().parent / "e2e" / "framework"
-
-_artifacts_spec = importlib.util.spec_from_file_location(
-    "tests.e2e.framework.artifacts",
-    _FRAMEWORK_DIR / "artifacts.py",
-)
-assert _artifacts_spec is not None and _artifacts_spec.loader is not None
-_artifacts_module = importlib.util.module_from_spec(_artifacts_spec)
-sys.modules[_artifacts_spec.name] = _artifacts_module
-_artifacts_spec.loader.exec_module(_artifacts_module)
-ArtifactCollector = _artifacts_module.ArtifactCollector
-
-_driver_spec = importlib.util.spec_from_file_location(
-    "tests.e2e.framework.terminal_driver",
-    _FRAMEWORK_DIR / "terminal_driver.py",
-)
-assert _driver_spec is not None and _driver_spec.loader is not None
-_driver_module = importlib.util.module_from_spec(_driver_spec)
-sys.modules[_driver_spec.name] = _driver_module
-_driver_spec.loader.exec_module(_driver_module)
-TerminalCapture = _driver_module.TerminalCapture
-TerminalHandle = _driver_module.TerminalHandle
+from tests.e2e.framework.artifacts import ArtifactCollector
+from tests.e2e.framework.terminal_driver import TerminalCapture, TerminalHandle
 
 
 def test_artifact_collector_creates_run_dir_and_timeline(tmp_path: Path) -> None:
@@ -40,7 +18,9 @@ def test_artifact_collector_creates_run_dir_and_timeline(tmp_path: Path) -> None
 def test_artifact_collector_creates_distinct_run_dir_for_same_second_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(_artifacts_module.time, "strftime", lambda _fmt: "20260422-123456")
+    from tests.e2e.framework import artifacts as artifacts_module
+
+    monkeypatch.setattr(artifacts_module.time, "strftime", lambda _fmt: "20260422-123456")
 
     collector = ArtifactCollector(root=tmp_path, test_name="test_demo")
     first = collector.start_run()
