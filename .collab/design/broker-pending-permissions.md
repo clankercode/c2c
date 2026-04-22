@@ -14,11 +14,11 @@ The alias-hijack vulnerability allows an attacker who steals an alias (between w
 
 ## Threat Model
 
-1. Agent A (`session_a`, alias `jungle-coder`) sends permission request to `coordinator1`
-2. `coordinator1` replies `permission:xyz:approve-once` → broker → alias `jungle-coder`
+1. Agent A (`session_a`, alias `jungel-coder`) sends permission request to `coordinator1`
+2. `coordinator1` replies `permission:xyz:approve-once` → broker → alias `jungel-coder`
 3. Agent A dies; `sweep` removes registration
-4. Agent B (`session_b`) starts, registers as alias `jungle-coder`
-5. Broker resolves alias `jungle-coder` → `session_b`
+4. Agent B (`session_b`) starts, registers as alias `jungel-coder`
+5. Broker resolves alias `jungel-coder` → `session_b`
 6. Reply intended for Agent A is delivered to Agent B
 
 **Note**: This requires the alias to be free when the reply arrives. With the current 1800s provisional sweep TTL, the window is ~30 minutes. M4 (block alias reuse while prior owner has pending state) eliminates this window entirely.

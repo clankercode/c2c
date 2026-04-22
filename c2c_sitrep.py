@@ -8,7 +8,7 @@ Usage:
     c2c_sitrep.py                          # create sitrep for current UTC hour
     c2c_sitrep.py --hour 09                # create sitrep for 09 UTC today
     c2c_sitrep.py --date 2026-04-22 --hour 08
-    c2c_sitrep.py --agent jungle-coder     # override drafting agent
+    c2c_sitrep.py --agent jungel-coder     # override drafting agent
     c2c_sitrep.py --force                  # overwrite existing file
 
 Errors if the target file already exists (unless --force).
@@ -130,7 +130,7 @@ Dead registrations: _count_.
 ## 3. Active tasks
 
 - **coordinator1**:
-- **jungle-coder**:
+- **jungel-coder**:
 - **galaxy-coder**:
 - **ceo**:
 
@@ -144,7 +144,7 @@ Dead registrations: _count_.
 ## 5. Next actions per agent
 
 - **coordinator1**:
-- **jungle-coder**:
+- **jungel-coder**:
 - **galaxy-coder**:
 - **ceo**:
 
