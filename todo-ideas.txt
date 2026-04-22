@@ -36,8 +36,8 @@ Related: <links to todos, findings, design docs as discussion accretes>
 Idea: Use c2c relay to communicate with a remote node capable of doing GUI work. Can sync code over network or via git. We need c2c relay to be in a state where we can give Max a small set of commands to run to get things set up. Should be runnable from a bash script.
 
 Submitted by: max · (timestamp lost during initial scaffold)
-Status: new
-Related: (none yet)
+Status: brainstorming and planning
+Related: swarm-lounge discussion opened 2026-04-23 by coordinator1
 
 Open questions: which GUI workloads? (Tauri dev server? Playwright? full X11 over SSH?) What's the minimal relay state needed to unblock? Does this overlap with the security/alias-hijack work before remote relay is production-safe?
 
