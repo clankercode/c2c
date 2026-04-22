@@ -2622,25 +2622,18 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                      ; ("holder_session_id", `String conflict.session_id)
                      ])
            in
-           Lwt.return (tool_result ~content ~is_error:true)
-        | None ->
-            let prior_owner_has_pending =
-              Broker.pending_permission_exists_for_alias broker alias
-              && List.exists
-                   (fun reg ->
-                     reg.alias = alias
-                     && reg.session_id <> session_id
-                     && Option.is_some reg.pid
-                     && Broker.registration_is_alive reg)
-                   (Broker.list_registrations broker)
-            in
-            if prior_owner_has_pending then
-              Lwt.return (tool_result
-                ~content:(Printf.sprintf
-                  "register rejected: alias '%s' has pending permission state \
-                   from a prior owner who is still alive. \
-                   Wait for the pending reply to arrive or timeout before claiming this alias."
-                  alias)
+            Lwt.return (tool_result ~content ~is_error:true)
+         | None ->
+             let prior_owner_has_pending =
+               Broker.pending_permission_exists_for_alias broker alias
+             in
+             if prior_owner_has_pending then
+               Lwt.return (tool_result
+                 ~content:(Printf.sprintf
+                   "register rejected: alias '%s' has pending permission state \
+                    from a prior owner. \
+                    Wait for the pending reply to arrive or for it to timeout before claiming this alias."
+                   alias)
                 ~is_error:true)
             else begin
               Broker.register broker ~session_id ~alias ~pid ~pid_start_time
