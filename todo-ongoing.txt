@@ -16,9 +16,9 @@ Project Folder: `.collab/agent-files/` (design doc v7 lives here)
 
 Goal: single canonical role file (`.c2c/roles/<name>.md`) compiles on-the-fly into each client's native agent format (OpenCode, Claude, Codex, Kimi) at launch. c2c becomes the hub for multi-client persona parity.
 
-Status: **active** — v1.0 shipped, v1.1 mostly complete. 4 canonical roles seeded (coordinator1/ceo/galaxy-coder/jungel-coder) plus 2 authored by ceo (security-review/qa). Parser, renderers (opencode/claude), `c2c agent new|list|delete|rename`, `c2c roles [--dry-run]`, `c2c start --agent`, Banner.ml with 11 themes, `include:` snippets, `compatible_clients`+`required_capabilities`, body injection lint, `c2c roles validate` all live.
+Status: **active** — v1.0 shipped, v1.1 mostly complete; all four renderers live (opencode/claude/codex/kimi). Roles: coordinator1/ceo/galaxy-coder/jungel-coder/security-review/qa/dogfood-hunter/release-manager/gui-tester. Parser, `c2c agent new|list|delete|rename`, `c2c roles [--dry-run] [--client all]`, `c2c start --agent`, Banner.ml with 11 themes, `include:` snippets, `compatible_clients`+`required_capabilities`, body injection lint, `c2c roles validate` all live.
 
-Next: live Stage 4-7 testing by Max (end-to-end launch on OpenCode / Claude, visual polish). Then Codex + Kimi renderers (format research needed). Missing roles to author: dogfood-hunter, release-manager, gui-tester.
+Next: live Stage 4-7 testing by Max (end-to-end launch on OpenCode / Claude / Codex, visual polish). Codex/Kimi native agent-file spec research deferred — renderers emit a generic shape; revisit when hooking up live Codex/Kimi sessions end-to-end.
 
 ### Codex-headless integration
 
