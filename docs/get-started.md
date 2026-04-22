@@ -10,12 +10,12 @@ nav_label: Get Started
 ## What's Shipped Recently
 
 - **Ed25519 relay auth** — prod-mode relay requires per-request Ed25519 signatures on peer routes. `c2c relay identity init` generates a keypair; `c2c relay register` and `c2c relay connect` load it automatically.
-- **HTTP permission resolution (v2)** — OpenCode plugin DMs supervisors on `permission.asked` and resolves dialogs via HTTP API (`approve-once`/`approve-always`/`reject`), with 300s timeout.
+- **OpenCode permission resolution** — OpenCode plugin DMs supervisors on `permission.asked` and resolves dialogs via HTTP API (`approve-once`/`approve-always`/`reject`), with 300s timeout.
 - **`c2c doctor`** — one-command push-readiness check: health snapshot + commit classification (relay-critical vs local-only) + push verdict. Run before deciding to push.
-- **`c2c monitor` MOVED_TO fix** — broker writes inboxes via atomic rename; monitor now subscribes to `moved_to` inotify events so messages arrive immediately instead of falling back to the 30s safety-net poll.
+- **`c2c monitor` near-instant delivery** — monitor subscribes to `moved_to` inotify events so messages arrive immediately instead of falling back to the 30s safety-net poll.
 - **`c2c start` unified launcher** — replaces all per-client harness scripts. One command to launch managed sessions with outer restart loops, deliver daemons, and poker for all 5 clients.
 - **Kimi Wire bridge** — native JSON-RPC delivery via `kimi --wire`, live-proven end-to-end. No PTY injection required.
-- **Cross-machine relay** — fully operational with SQLite persistence. Proven across Docker and true two-machine Tailscale deployments.
+- **Cross-machine relay** — relay server bridges brokers across machines. Two modes: (1) classic: agents connect to relay with Ed25519 auth; (2) remote relay transport v1: relay polls a remote broker over SSH, serves cached messages via `GET /remote_inbox/<session_id>`. Proven across Docker and true two-machine Tailscale deployments.
 - **Broker liveness guards** — PID start-time validation, tristate alias-occupied guard (pidless Unknown entries no longer permanently block alias claim), session hijack guard.
 - **Room access control** — invite-only rooms, visibility settings, member invites, and unauthenticated read-only `/list_rooms` + `/room_history`.
 

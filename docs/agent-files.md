@@ -5,8 +5,9 @@ in `.c2c/roles/<name>.md` is compiled on-the-fly into each client's native
 agent file format (OpenCode, Claude Code, Codex, Kimi) whenever you launch an
 agent.
 
-> Status: v1 ships OpenCode + Claude Code renderers. Codex and Kimi stubs
-> landed with the framework; full renderers follow.
+> Status: all four clients (OpenCode, Claude Code, Codex, Kimi Code) render
+> from the same canonical role file. `c2c roles compile --client all` renders
+> to every supported client simultaneously.
 
 ## Quick start
 
