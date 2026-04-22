@@ -5714,6 +5714,77 @@ let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Start a managed c2c 
 
 (* --- subcommand: agent ----------------------------------------------------- *)
 
+let agent_list_term =
+  let rec mkdir_p dir =
+    if dir = "/" || dir = "." || dir = "" then ()
+    else if Sys.file_exists dir then ()
+    else begin mkdir_p (Filename.dirname dir); try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> () end
+  in
+  let+ () = Cmdliner.Term.const () in
+  let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
+  mkdir_p roles_dir;
+  match Array.to_list (Sys.readdir roles_dir) |> List.filter (fun f -> String.ends_with ~suffix:".md" f) with
+  | [] -> Printf.printf "  (no roles found)\n"
+  | files ->
+      List.sort String.compare files
+      |> List.iter (fun f ->
+        let name = String.sub f 0 (String.length f - 3) in
+        let path = Filename.concat roles_dir f in
+        let size = (Unix.stat path).Unix.st_size in
+        Printf.printf "  %s  (%d bytes)\n" name size)
+
+let agent_delete_term =
+  let name =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME"
+      ~doc:"Role name to delete.")
+  in
+  let force =
+    Cmdliner.Arg.(value & flag & info [ "force"; "f" ]
+      ~doc:"Skip confirmation prompt.")
+  in
+  let+ name = name
+  and+ force = force in
+  let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
+  let path = Filename.concat roles_dir (name ^ ".md") in
+  if not (Sys.file_exists path) then begin
+    Printf.eprintf "error: role not found: %s\n%!" path;
+    exit 1
+  end;
+  if not force then begin
+    Printf.printf "Delete role '%s'? [y/N] " name;
+    flush stdout;
+    match input_line stdin with
+    | "y" | "Y" -> ()
+    | _ -> Printf.printf "aborted.\n"; exit 0
+  end;
+  Unix.unlink path;
+  Printf.printf "deleted: %s\n" path
+
+let agent_rename_term =
+  let old_name =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"OLD"
+      ~doc:"Current role name.")
+  in
+  let new_name =
+    Cmdliner.Arg.(required & pos 1 (some string) None & info [] ~docv:"NEW"
+      ~doc:"New role name.")
+  in
+  let+ old_name = old_name
+  and+ new_name = new_name in
+  let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
+  let old_path = Filename.concat roles_dir (old_name ^ ".md") in
+  let new_path = Filename.concat roles_dir (new_name ^ ".md") in
+  if not (Sys.file_exists old_path) then begin
+    Printf.eprintf "error: role not found: %s\n%!" old_path;
+    exit 1
+  end;
+  if Sys.file_exists new_path then begin
+    Printf.eprintf "error: role already exists: %s\n%!" new_path;
+    exit 1
+  end;
+  Unix.rename old_path new_path;
+  Printf.printf "renamed: %s -> %s\n" old_name new_name
+
 let agent_new_term =
   let name =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME"
@@ -5774,7 +5845,15 @@ let agent_new_term =
   Banner.print_banner ?theme_name:theme ~subtitle:("agent new  |  " ^ name) "c2c agent";
   Printf.printf "  created: %s\n" path
 
-let agent_new = Cmdliner.Cmd.v (Cmdliner.Cmd.info "agent" ~doc:"Create new canonical role files.") agent_new_term
+let agent_new_cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "new" ~doc:"Create a new canonical role file.") agent_new_term
+let agent_list_cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List all canonical role files.") agent_list_term
+let agent_delete_cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "delete" ~doc:"Delete a canonical role file.") agent_delete_term
+let agent_rename_cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "rename" ~doc:"Rename a canonical role file.") agent_rename_term
+
+let agent_group =
+  Cmdliner.Cmd.group ~default:agent_list_term
+    (Cmdliner.Cmd.info "agent" ~doc:"Manage canonical role files.")
+    [agent_new_cmd; agent_list_cmd; agent_delete_cmd; agent_rename_cmd]
 
 (* --- subcommand: roles ----------------------------------------------------- *)
 
@@ -7606,4 +7685,4 @@ let () =
            [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
            ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
            ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-            ; serve; mcp; start; agent_new; roles_compile; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; help ]))
+            ; serve; mcp; start; agent_group; roles_compile; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; help ]))
