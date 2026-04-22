@@ -275,9 +275,9 @@ TODO: Remove this section when deprecated.
 
 
 ```
-c2c_start.py <start|stop|restart|instances> [client] [-n NAME] [--json]  # Unified managed-instance launcher. `c2c start <client>` replaces all run-*-inst-outer scripts. Launches client with deliver daemon and poker; prints resume command on exit (does NOT loop). State at ~/.local/share/c2c/instances/<name>/. Also accessible as c2c start/stop/restart/instances.
-c2c_cli.py <install|list|mcp|register|send|verify|whoami> [args]  # Main CLI entry point, dispatches to subcommands
-c2c_install.py [--json]                                            # Installs c2c wrapper scripts into ~/.local/bin. Resolves install path via git-common-dir so worktree installs point at main repo.
+c2c_start.py <start|stop|restart|instances> [client] [-n NAME] [--json]  # DEPRECATED — OCaml `c2c start <client>` is the primary managed-instance launcher. Python version retained only for legacy Python CLI dispatch (c2c_cli.py). Use `c2c start/stop/restart/instances` (OCaml) for all workflows.
+c2c_cli.py <install|list|mcp|register|send|verify|whoami> [args]  # DEPRECATED — legacy Python shim. OCaml `c2c` (at ~/.local/bin/c2c) is the primary CLI. Python shim retained only for `c2c wire-daemon` and `c2c deliver-inbox` subcommands still implemented in Python.
+c2c_install.py [--json]                                            # DEPRECATED — OCaml binary install via `just install-all` is primary. Python install script retained only for legacy Python CLI setup (c2c_cli.py dependencies).
 c2c_configure_claude_code.py [--broker-root DIR] [--session-id ID] [--alias NAME] [--force] [--json]  # Writes mcpServers.c2c into ~/.claude.json AND registers PostToolUse inbox hook in ~/.claude/settings.json (one-command Claude Code self-config)
 c2c_configure_codex.py [--broker-root DIR] [--alias NAME] [--force] [--json]  # Appends/replaces [mcp_servers.c2c] in ~/.codex/config.toml with all tools auto-approved
 c2c_configure_opencode.py [--target-dir DIR] [--alias NAME] [--install-global-plugin] [--json]  # Writes .opencode/opencode.json + installs c2c TypeScript delivery plugin. --install-global-plugin also copies to ~/.config/opencode/plugins/.
@@ -285,7 +285,7 @@ c2c_configure_kimi.py [--alias NAME] [--no-alias] [--json]        # Writes ~/.ki
 c2c_configure_crush.py [--alias NAME] [--no-alias] [--json]       # (Experimental/unsupported) Writes ~/.config/crush/crush.json for Crush MCP setup.
 c2c_deliver_inbox.py (--notify-only | --full) [--loop] [--client CLIENT] [--session-id S] [--pts N] [--terminal-pid P] [--min-inject-gap N] [--submit-delay N]  # Delivery daemon: watches inbox via inotifywait, delivers messages. --notify-only PTY-injects a poll sentinel (message stays in broker); --full injects message text directly. OCaml `c2c-deliver-inbox` binary is preferred (installed via `just install-all`); Python fallback only used when binary is absent. --loop runs continuously. Used by managed harnesses (run-codex-inst-outer, run-kimi-inst-outer).
 c2c_inject.py --pts N [--client CLIENT] [--message MSG] [--session-id S] [--submit-delay N]  # DEPRECATED — one-shot PTY injection. PTY injection is unreliable; use broker-native delivery paths instead.
-c2c_broker_gc.py [--once] [--interval N] [--ttl N] [--dead-letter-ttl N]  # GC daemon: sweeps dead registrations, prunes dead-letter entries. DO NOT run during active swarm — check for outer loops first.
+c2c_broker_gc.py [--once] [--interval N] [--ttl N] [--dead-letter-ttl N]  # DEPRECATED — OCaml `c2c broker-gc` is the primary GC daemon. Python version retained only for legacy Python CLI dispatch. DO NOT run during active swarm — check for outer loops first.
 c2c_health.py [--json] [--session-id S]                           # Diagnostic: checks broker root, registry, rooms, PostToolUse hook, outer loops, relay. Also accessible via c2c health.
 c2c_history.py [--session-id S] [--limit N] [--list-sessions] [--json]  # Read the c2c message archive for a session. Archives are append-only JSONL files at <broker_root>/archive/<session_id>.jsonl written by poll_inbox before draining. Useful for reviewing past messages without MCP. Also accessible via `c2c history`.
 c2c_kimi_prefill.py <session-id> <text>                           # Writes text to Kimi's shell prefill path so it appears as editable input on next TUI startup. Used by run-kimi-inst to inject the startup prompt.
@@ -307,8 +307,8 @@ c2c_claude_wake_daemon.py [--claude-session NAME_OR_ID | --pid N | --terminal-pi
 c2c_pts_inject.py                                                  # Direct /dev/pts/<N> display-side writer. Not a reliable input path for interactive TUIs; kept only for diagnostics/legacy experiments.
 c2c_kimi_wake_daemon.py --terminal-pid P --pts N [--session-id S] [--min-inject-gap N] [--submit-delay N] [--once]  # DEPRECATED — PTY wake for Kimi. Use c2c_kimi_wire_bridge.py (Wire JSON-RPC, no PTY) instead.
 c2c_crush_wake_daemon.py --terminal-pid P --pts N [--session-id S] [--min-inject-gap N] [--once]  # DEPRECATED — PTY wake for Crush. Unreliable (no compaction). Crush is not a first-class peer.
-c2c_sweep_dryrun.py [--json] [--root DIR]                          # Read-only sweep preview: shows what would be dropped without touching files. Safe to run anytime — use this instead of mcp__c2c__sweep when outer loops are running, to see pending cleanup without disrupting managed sessions.
-c2c_refresh_peer.py <alias> [--pid PID] [--dry-run] [--json]  # Operator escape hatch: fixes stale registrations when a managed client's PID drifts to a dead process. Use: c2c refresh-peer opencode-local --pid $(pgrep -n opencode)
+c2c_sweep_dryrun.py [--json] [--root DIR]                          # DEPRECATED — OCaml `c2c sweep-dryrun` is primary. Python version retained only for legacy Python CLI dispatch.
+c2c_refresh_peer.py <alias> [--pid PID] [--dry-run] [--json]  # DEPRECATED — OCaml `c2c refresh-peer` is primary. Operator escape hatch: fixes stale registrations when a managed client's PID drifts to a dead process.
 relay.py                                                           # DEPRECATED — legacy PTY-based relay, superseded by OCaml relay.ml
 c2c_relay.py                                                       # DEPRECATED — legacy file-based relay, superseded by OCaml relay.ml
 c2c_auto_relay.py                                                  # DEPRECATED — legacy auto-relay, superseded by OCaml relay.ml
