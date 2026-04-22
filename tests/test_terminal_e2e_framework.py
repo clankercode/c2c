@@ -344,8 +344,14 @@ def test_scenario_fixture_provides_workdir_and_artifacts(scenario) -> None:
 def test_tmux_driver_start_uses_new_session_and_returns_pane_handle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    calls: list[list[str]] = []
     completed = mock.Mock(stdout="%42\n")
-    monkeypatch.setattr("tests.e2e.framework.tmux_driver.subprocess.run", lambda *a, **k: completed)
+
+    def fake_run(cmd: list[str], **kwargs: object) -> mock.Mock:
+        calls.append(cmd)
+        return completed
+
+    monkeypatch.setattr("tests.e2e.framework.tmux_driver.subprocess.run", fake_run)
 
     driver = TmuxDriver(repo_root=tmp_path)
     handle = driver.start(
@@ -359,6 +365,7 @@ def test_tmux_driver_start_uses_new_session_and_returns_pane_handle(
 
     assert handle.backend == "tmux"
     assert handle.target == "%42"
+    assert calls[0][:2] == ["tmux", "new-session"]
 
 
 def test_tmux_driver_enter_uses_repo_helper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
