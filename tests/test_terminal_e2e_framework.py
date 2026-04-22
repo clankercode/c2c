@@ -1,9 +1,14 @@
 from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import pytest
 
-from e2e.framework.artifacts import ArtifactCollector
-from e2e.framework.terminal_driver import TerminalCapture, TerminalHandle
+from tests.e2e.framework.artifacts import ArtifactCollector
+from tests.e2e.framework.terminal_driver import TerminalCapture, TerminalHandle
 
 
 def test_artifact_collector_creates_run_dir_and_timeline(tmp_path: Path) -> None:
