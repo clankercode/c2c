@@ -5661,8 +5661,16 @@ let start_cmd =
     | Some agent_name ->
         let role_path = agent_role_path agent_name in
         (try
-          let role = C2c_role.parse_file role_path in
-      match render_role_for_client role ~client with
+           let role = C2c_role.parse_file role_path in
+           if role.C2c_role.compatible_clients <> [] &&
+              not (List.mem client role.C2c_role.compatible_clients) then
+             (Printf.eprintf "error: role '%s' is not compatible with client '%s'.\n" agent_name client;
+              Printf.eprintf "  compatible clients: %s\n%!" (String.concat ", " role.C2c_role.compatible_clients);
+              exit 1);
+           (* TODO: required_capabilities pre-flight check — needs per-client
+              capability table (vision, tools, reasoning etc.) on the model used.
+              Tracked as v1.2 item; for now the check is a no-op. *)
+           match render_role_for_client role ~client with
            | Some rendered ->
                write_agent_file ~client ~name ~content:rendered;
                let kickoff = Some rendered in

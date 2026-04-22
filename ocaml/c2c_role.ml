@@ -7,6 +7,8 @@ type t = {
   c2c_alias : string option;
   c2c_auto_join_rooms : string list;
   include_ : string list;
+  compatible_clients : string list;
+  required_capabilities : string list;
   opencode : (string * string) list;
   claude : (string * string) list;
   codex : (string * string) list;
@@ -21,6 +23,8 @@ let empty = {
   c2c_alias = None;
   c2c_auto_join_rooms = [];
   include_ = [];
+  compatible_clients = [];
+  required_capabilities = [];
   opencode = [];
   claude = [];
   codex = [];
@@ -138,6 +142,10 @@ let parse_string ?(snippets_dir = ".c2c/snippets") content =
     c2c_auto_join_rooms =
       (match find "c2c.auto_join_rooms" with Some v -> parse_list v | None -> []);
     include_ = (match find "include" with Some v -> parse_list v | None -> []);
+    compatible_clients =
+      (match find "compatible_clients" with Some v -> parse_list v | None -> []);
+    required_capabilities =
+      (match find "required_capabilities" with Some v -> parse_list v | None -> []);
     opencode = find_section "opencode";
     claude = find_section "claude";
     codex = find_section "codex";

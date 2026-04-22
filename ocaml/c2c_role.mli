@@ -5,6 +5,8 @@ type t = {
   c2c_alias : string option;
   c2c_auto_join_rooms : string list;
   include_ : string list;
+  compatible_clients : string list;
+  required_capabilities : string list;
   opencode : (string * string) list;
   claude : (string * string) list;
   codex : (string * string) list;
