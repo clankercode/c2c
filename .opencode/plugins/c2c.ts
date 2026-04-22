@@ -25,7 +25,7 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin";
-import type { Event, EventSessionIdle, EventSessionCreated } from "@opencode-ai/sdk";
+import type { Event, EventSessionIdle, EventSessionCreated, EventSessionCompacted } from "@opencode-ai/sdk";
 import { spawn } from "child_process";
 import * as crypto from "crypto";
 import * as fs from "fs";
@@ -1552,6 +1552,21 @@ const C2CDelivery: Plugin = async (ctx) => {
             void toast(`c2c · question reply failed — use TUI`, "error");
           }
         })();
+        return;
+      }
+
+      // Clear compacting flag when OpenCode finishes context compaction
+      if (event.type === "session.compacted") {
+        const e = event as EventSessionCompacted;
+        const compactedSessionId: string = (e as any).properties?.sessionID || activeSessionId || "";
+        if (!compactedSessionId) return;
+        if (configuredOpenCodeSessionId && compactedSessionId !== configuredOpenCodeSessionId) return;
+        try {
+          await runC2c(["clear-compact"]);
+          await log(`session.compacted: cleared compacting flag for ${compactedSessionId}`);
+        } catch (err) {
+          await log(`session.compacted: clear-compact failed: ${err}`);
+        }
         return;
       }
 
