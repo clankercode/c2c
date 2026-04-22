@@ -244,7 +244,7 @@ module Broker = struct
       cleanup_tmp ();
       raise e
 
-  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; confirmed_at } =
+  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; confirmed_at; compacting } =
     let base =
       [ ("session_id", `String session_id); ("alias", `String alias) ]
     in
@@ -288,10 +288,17 @@ module Broker = struct
       | Some ct -> with_dnd_until @ [ ("client_type", `String ct) ]
       | None -> with_dnd_until
     in
-    let fields =
+    let with_confirmed =
       match confirmed_at with
       | Some ts -> with_client_type @ [ ("confirmed_at", `Float ts) ]
       | None -> with_client_type
+    in
+    let fields =
+      match compacting with
+      | Some c ->
+          let reason_json = match c.reason with Some r -> `String r | None -> `Null in
+          with_confirmed @ [ ("compacting", `Assoc [ ("started_at", `Float c.started_at); ("reason", reason_json) ]) ]
+      | None -> with_confirmed
     in
     `Assoc fields
 

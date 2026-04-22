@@ -251,13 +251,13 @@ let send_cmd =
      C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content ();
      let ts = Unix.gettimeofday () in
      let compacting_warning =
-       match C2c_mcp.Broker.list_registrations broker
-             |> List.find_opt (fun r -> r.C2c_mcp.registration.alias = to_alias) with
+       let regs = C2c_mcp.Broker.list_registrations broker in
+       match List.find_opt (fun (r : C2c_mcp.registration) -> r.alias = to_alias) regs with
        | Some r ->
-           (match C2c_mcp.Broker.is_compacting broker ~session_id:r.C2c_mcp.registration.session_id with
+           (match C2c_mcp.Broker.is_compacting broker ~session_id:r.session_id with
             | Some c ->
-                let dur = Unix.gettimeofday () -. c.C2c_mcp.compacting.started_at in
-                let reason_str = match c.C2c_mcp.compacting.reason with Some r -> " (" ^ r ^ ")" | None -> "" in
+                let dur = Unix.gettimeofday () -. c.started_at in
+                let reason_str = match c.reason with Some r -> " (" ^ r ^ ")" | None -> "" in
                 Some (Printf.sprintf "recipient compacting for %.0fs%s" dur reason_str)
             | None -> None)
        | None -> None
