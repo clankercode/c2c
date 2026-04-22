@@ -1099,26 +1099,14 @@ let start_deliver_daemon ~(name : string) ~(client : string)
 
 let start_poker ~(name : string) ~(client : string)
     ~(broker_root : string) ?(child_pid_opt : int option) () : int option =
-  match poker_script_path ~broker_root with
-  | None -> None
-  | Some script ->
-      let cfg = try Some (Stdlib.Hashtbl.find clients client) with Not_found -> None in
-      (match cfg with
-       | None | Some { needs_poker = false; _ } -> None
-       | Some cfg ->
-           let args =
-             (match child_pid_opt with
-              | None -> [ "python3"; script; "--claude-session"; name; "--interval"; "600" ]
-              | Some p -> [ "python3"; script; "--pid"; string_of_int p; "--interval"; "600" ])
-             @ (match cfg.poker_event with None -> [] | Some e -> [ "--event"; e ])
-           in
-           try
-             let pid = Unix.create_process_env "python3" (Array.of_list args)
-                 (Unix.environment ()) Unix.stdin Unix.stdout Unix.stderr
-             in
-             ignore pid;
-             Some pid
-           with Unix.Unix_error _ -> None)
+  let cfg = try Some (Stdlib.Hashtbl.find clients client) with Not_found -> None in
+  match cfg with
+  | None | Some { needs_poker = false; _ } -> None
+  | Some cfg ->
+      let pid = match child_pid_opt with None -> 0 | Some p -> p in
+      let sender = match cfg.poker_from with None -> "c2c-poker" | Some s -> s in
+      let event = match cfg.poker_event with None -> "heartbeat" | Some e -> e in
+      C2c_poker.start ~name ~pid ~interval:600.0 ~event ~sender ~alias:"" ~broker_root
 
 let start_wire_daemon ~(name : string) ~(alias : string)
     ~(broker_root : string) () : int option =
