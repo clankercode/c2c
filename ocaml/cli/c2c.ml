@@ -473,7 +473,7 @@ let commands_by_safety_cmd =
   Printf.printf "c2c commands by safety tier\n";
   print_section (safety_to_label Tier1) tier1;
   print_section (safety_to_label Tier2) tier2;
-  print_section (safety_to_label Tier3) tier3;
+  if not (is_agent_session ()) then print_section (safety_to_label Tier3) tier3;
   if show_all then print_section (safety_to_label Tier4) tier4
 
 let commands_by_safety =
@@ -2565,7 +2565,7 @@ let rooms_history = Cmdliner.Cmd.v (Cmdliner.Cmd.info "history" ~doc:"Show room 
 let rooms_tail = Cmdliner.Cmd.v (Cmdliner.Cmd.info "tail" ~doc:"Tail room history; follow new messages as they arrive.") rooms_tail_cmd
 let rooms_invite = Cmdliner.Cmd.v (Cmdliner.Cmd.info "invite" ~doc:"Invite an alias to a room.") rooms_invite_cmd
 let rooms_members = Cmdliner.Cmd.v (Cmdliner.Cmd.info "members" ~doc:"List room members.") rooms_members_cmd
-let rooms_visibility = Cmdliner.Cmd.v (Cmdliner.Cmd.info "visibility" ~doc:"Get or set room visibility.") rooms_visibility_cmd
+let rooms_visibility = Cmdliner.Cmd.v (Cmdliner.Cmd.info "visibility" ~doc:"Get or set room visibility (public or invite_only).") rooms_visibility_cmd
 
 let rooms_group =
   Cmdliner.Cmd.group
@@ -4249,7 +4249,12 @@ let relay_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "rooms" ~doc:"Manage relay r
  let relay_group =
   Cmdliner.Cmd.group
     ~default:relay_status_cmd
-    (Cmdliner.Cmd.info "relay" ~doc:"Cross-machine relay: serve, connect, setup, status, list, rooms, gc, identity, register, dm.")
+    (Cmdliner.Cmd.info "relay"
+       ~doc:"Cross-machine relay: serve, connect, setup, status, list, rooms, gc, identity, register, dm."
+       ~man:[ `S "DESCRIPTION"
+            ; `P "The relay connects brokers across machines. Use $(b,c2c relay setup) to configure your connection, $(b,c2c relay connect) to start the connector daemon, or $(b,c2c relay serve) to run a relay server (operators only)."
+            ; `P "Common workflow: run $(b,c2c relay setup) once, then $(b,c2c relay connect) to keep your broker connected to the relay."
+            ])
     [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_poll_inbox; relay_identity; relay_register; relay_dm ]
 
 (* --- main entry point ----------------------------------------------------- *)
@@ -7029,7 +7034,18 @@ let roles_compile_term =
   ) roles;
   if not dry_run then Printf.printf "[roles compile] done.\n%!"
 
-let roles_compile_cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "compile" ~doc:"Compile canonical role(s) to client agent files.") roles_compile_term
+let roles_compile_cmd = Cmdliner.Cmd.v
+  (Cmdliner.Cmd.info "compile"
+     ~doc:"Compile canonical role(s) to client agent files."
+     ~man:[ `S "DESCRIPTION"
+          ; `P "Canonical role files live in $(b,.c2c/roles/). Use $(b,c2c roles compile) to compile them to client-specific agent files (e.g. $(b,.opencode/agents/<name>.md))."
+          ; `S "EXAMPLES"
+          ; `P "$(b,c2c roles compile)  — compile all roles to default client (opencode)"
+          ; `P "$(b,c2c roles compile --client opencode)  — compile all roles for OpenCode"
+          ; `P "$(b,c2c roles compile my-role --client claude)  — compile one role for Claude"
+          ; `P "$(b,c2c roles validate)  — check role files for completeness"
+          ])
+  roles_compile_term
 
 let roles_validate_term =
   let+ () = Cmdliner.Term.const () in
