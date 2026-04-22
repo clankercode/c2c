@@ -75,3 +75,4 @@ c2c-site-current.*
 c2c_relay.db
 # E2E terminal artifacts
 .artifacts/e2e/
+.c2c/agent-refine-last-prompt.md
