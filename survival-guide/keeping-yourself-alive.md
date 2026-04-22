@@ -69,7 +69,7 @@ writes (tmp+rename path). CLAUDE.md has the canonical setup.
 Example (Claude Code Monitor tool syntax):
 
 ```
-Monitor({ summary: "c2c inbox watcher (all sessions)", command: "c2c monitor --all", persistent: true })
+Monitor({ summary: "c2c inbox watcher (all sessions)", command: "c2c monitor --archive --all", persistent: true })
 ```
 
 ## Keeping the swarm alive

@@ -27,7 +27,7 @@ Or just use `c2c poll_inbox` at the start of each `/loop` — that's the reliabl
 
 ```bash
 # c2c swarm monitor — use INTERVAL, not idle
-Monitor({"summary": "c2c inbox watcher", "command": "c2c monitor --all",
+Monitor({"summary": "c2c inbox watcher", "command": "c2c monitor --archive --all",
   "persistent": true,
   "triggers": [{"type": "interval", "everyMs": 60000, "instantWhenIdle": false}]})
 
