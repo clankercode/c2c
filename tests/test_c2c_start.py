@@ -1149,7 +1149,7 @@ class C2CStartExit109RegressionTests(unittest.TestCase):
 
     def _run_c2c_start(self, name: str) -> tuple[int, str, str]:
         """Run `c2c start opencode --bin <stub>` and return (returncode, stdout, stderr)."""
-        from conftest import spawn_tracked, clean_c2c_start_env
+        from tests.conftest import spawn_tracked, clean_c2c_start_env
         base_env = clean_c2c_start_env(os.environ)
         env = {
             **base_env,
@@ -1256,7 +1256,7 @@ class C2CStartOpencodeSessionPreflightTests(unittest.TestCase):
     def _run_start_with_session(self, ses_id: str, session_ids: list) -> tuple[int, str, str]:
         stub = self._make_opencode_stub(session_ids)
         name = f"preflight-{self._run_id}"
-        from conftest import spawn_tracked, clean_c2c_start_env
+        from tests.conftest import spawn_tracked, clean_c2c_start_env
         base_env = clean_c2c_start_env(os.environ)
         env = {
             **base_env,
@@ -1351,7 +1351,7 @@ class C2CStartRegistryCleanupRegressionTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_clean_exit_strips_only_managed_pid_fields_and_preserves_mode(self):
-        from conftest import spawn_tracked, clean_c2c_start_env
+        from tests.conftest import spawn_tracked, clean_c2c_start_env
         base_env = clean_c2c_start_env(os.environ)
         env = {
             **base_env,
@@ -1411,7 +1411,7 @@ class C2CStartNameValidationTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _run(self, name: str) -> tuple[int, str, str]:
-        from conftest import spawn_tracked, clean_c2c_start_env
+        from tests.conftest import spawn_tracked, clean_c2c_start_env
         base_env = clean_c2c_start_env(os.environ)
         env = {
             **base_env,
@@ -1516,7 +1516,7 @@ class PollInboxAliasFallbackTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _poll(self) -> tuple[int, str, str]:
-        from conftest import spawn_tracked
+        from tests.conftest import spawn_tracked
         env = {
             **os.environ,
             "C2C_MCP_BROKER_ROOT": str(self.broker_root),
@@ -1550,7 +1550,7 @@ class PollInboxAliasFallbackTests(unittest.TestCase):
 
     def test_no_fallback_when_no_alias_env(self):
         """Without C2C_MCP_AUTO_REGISTER_ALIAS, poll-inbox must NOT fall back — returns []."""
-        from conftest import spawn_tracked
+        from tests.conftest import spawn_tracked
         env = {
             **os.environ,
             "C2C_MCP_BROKER_ROOT": str(self.broker_root),
@@ -1595,7 +1595,7 @@ class C2CStartKickoffPromptTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _run_start_auto(self, name: str, role: str | None = None) -> tuple[int, str, str]:
-        from conftest import spawn_tracked, clean_c2c_start_env
+        from tests.conftest import spawn_tracked, clean_c2c_start_env
         base_env = clean_c2c_start_env(os.environ)
         env = {
             **base_env,
@@ -1646,7 +1646,7 @@ class C2CStartKickoffPromptTests(unittest.TestCase):
 
     def test_no_kickoff_prompt_without_auto(self):
         """Without --auto and no role, kickoff-prompt.txt must not be written."""
-        from conftest import spawn_tracked
+        from tests.conftest import spawn_tracked
         env = {
             **os.environ,
             "PATH": str(self.tmp_path) + ":" + os.environ.get("PATH", ""),
@@ -1718,7 +1718,7 @@ class C2CStartInstallPromptTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _base_env(self):
-        from conftest import clean_c2c_start_env
+        from tests.conftest import clean_c2c_start_env
         base_env = clean_c2c_start_env(os.environ)
         env = {
             **base_env,
@@ -1734,7 +1734,7 @@ class C2CStartInstallPromptTests(unittest.TestCase):
 
     def test_non_tty_silently_runs_install(self):
         """Non-TTY stdin (pipe) must silently run c2c install opencode."""
-        from conftest import spawn_tracked
+        from tests.conftest import spawn_tracked
         proc = spawn_tracked(
             [str(CLI_EXE), "start", "opencode", "-n", "install-nontty"],
             stdin=subprocess.DEVNULL,   # not a TTY → silent install
@@ -1752,7 +1752,7 @@ class C2CStartInstallPromptTests(unittest.TestCase):
 
     def test_non_tty_no_interactive_prompt(self):
         """Non-TTY stdin must NOT show 'Run it now?' prompt."""
-        from conftest import spawn_tracked
+        from tests.conftest import spawn_tracked
         proc = spawn_tracked(
             [str(CLI_EXE), "start", "opencode", "-n", "install-noprompt"],
             stdin=subprocess.DEVNULL,
@@ -1770,7 +1770,7 @@ class C2CStartInstallPromptTests(unittest.TestCase):
         """TTY stdin with 'n' answer must skip install and warn."""
         import pty
         master_fd, slave_fd = pty.openpty()
-        from conftest import spawn_tracked
+        from tests.conftest import spawn_tracked
         try:
             proc = spawn_tracked(
                 [str(CLI_EXE), "start", "opencode", "-n", "install-skip"],
@@ -1799,7 +1799,7 @@ class C2CStartInstallPromptTests(unittest.TestCase):
         """TTY stdin with 'y' answer must run c2c install opencode."""
         import pty
         master_fd, slave_fd = pty.openpty()
-        from conftest import spawn_tracked
+        from tests.conftest import spawn_tracked
         try:
             proc = spawn_tracked(
                 [str(CLI_EXE), "start", "opencode", "-n", "install-yes"],
@@ -1826,7 +1826,7 @@ class C2CStartInstallPromptTests(unittest.TestCase):
     def test_no_prompt_when_opencode_json_exists(self):
         """When opencode.json already exists, no prompt and no install call."""
         (self.tmp_path / ".opencode" / "opencode.json").write_text('{"mcp":{}}')
-        from conftest import spawn_tracked
+        from tests.conftest import spawn_tracked
         proc = spawn_tracked(
             [str(CLI_EXE), "start", "opencode", "-n", "install-already"],
             stdin=subprocess.DEVNULL,

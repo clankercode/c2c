@@ -11,7 +11,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from conftest import spawn_tracked
+from tests.conftest import spawn_tracked
 
 import pytest
 

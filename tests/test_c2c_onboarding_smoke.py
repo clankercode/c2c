@@ -25,7 +25,7 @@ import time
 import unittest
 from pathlib import Path
 
-from conftest import spawn_tracked
+from tests.conftest import spawn_tracked
 
 REPO = Path(__file__).resolve().parent.parent
 SERVER = REPO / "_build" / "default" / "ocaml" / "server" / "c2c_mcp_server.exe"
