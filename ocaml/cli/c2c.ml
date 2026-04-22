@@ -6149,22 +6149,80 @@ let start_cmd =
           Printf.eprintf "error: role file not found: %s\n%!" role_path;
           exit 1)
     | None ->
-        (* Legacy path: load plain-text role from .c2c/roles/<effective_alias>.md *)
-        let role =
-          match read_role ~alias:effective_alias with
-          | Some r -> Some r
-          | None -> prompt_for_role ~alias:effective_alias
-        in
-        let kickoff_prompt =
-          match kickoff_prompt_text with
-          | Some t -> Some t
-          | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role ())
-          | None ->
-              (match role with
-               | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role ())
-               | None -> None)
-        in
-        (kickoff_prompt, alias_opt, None)
+        (* Auto-inference: if .c2c/roles/<name>.md exists as a structured role,
+           auto-apply --agent=<name> (silent, no banner). Explicit --agent always wins. *)
+        let role_path = role_file_path ~alias:name in
+        if Sys.file_exists role_path then
+          (try
+             let role = C2c_role.parse_file role_path in
+             if role.C2c_role.compatible_clients <> [] &&
+                not (List.mem client role.C2c_role.compatible_clients) then
+                (Printf.eprintf "error: role '%s' is not compatible with client '%s'.\n" name client;
+                 Printf.eprintf "  compatible clients: %s\n%!" (String.concat ", " role.C2c_role.compatible_clients);
+                 exit 1);
+             (match render_role_for_client role ~client with
+              | Some rendered ->
+                  write_agent_file ~client ~name ~content:rendered;
+                  let kickoff = Some rendered in
+                  let alias_override = role.C2c_role.c2c_alias in
+                  let auto_join_rooms =
+                    if role.C2c_role.c2c_auto_join_rooms <> []
+                    then Some (String.concat ", " role.C2c_role.c2c_auto_join_rooms)
+                    else None
+                  in
+                  (kickoff, alias_override, auto_join_rooms)
+              | None ->
+                  (* Role file exists but not supported for this client — fall through
+                     to legacy plain-text path so user can still start without the role. *)
+                  let role =
+                    match read_role ~alias:effective_alias with
+                    | Some r -> Some r
+                    | None -> prompt_for_role ~alias:effective_alias
+                  in
+                  let kickoff_prompt =
+                    match kickoff_prompt_text with
+                    | Some t -> Some t
+                    | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role ())
+                    | None ->
+                        (match role with
+                         | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role ())
+                         | None -> None)
+                  in
+                  (kickoff_prompt, alias_opt, None))
+           with Sys_error _ ->
+             (* Role file exists but can't be read as structured role — fall through. *)
+             let role =
+               match read_role ~alias:effective_alias with
+               | Some r -> Some r
+               | None -> prompt_for_role ~alias:effective_alias
+             in
+             let kickoff_prompt =
+               match kickoff_prompt_text with
+               | Some t -> Some t
+               | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role ())
+               | None ->
+                   (match role with
+                    | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role ())
+                    | None -> None)
+             in
+             (kickoff_prompt, alias_opt, None))
+        else
+          (* No structured role file — legacy plain-text path. *)
+          let role =
+            match read_role ~alias:effective_alias with
+            | Some r -> Some r
+            | None -> prompt_for_role ~alias:effective_alias
+          in
+          let kickoff_prompt =
+            match kickoff_prompt_text with
+            | Some t -> Some t
+            | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role ())
+            | None ->
+                (match role with
+                 | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role ())
+                 | None -> None)
+          in
+          (kickoff_prompt, alias_opt, None)
   in
   exit (C2c_start.cmd_start ~client ~name ~extra_args:[]
       ?binary_override:bin_opt
