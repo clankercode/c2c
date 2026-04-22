@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libssl-dev \
         libev-dev \
         zlib1g-dev \
+        libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/*
 USER opam
 
@@ -28,7 +29,7 @@ USER opam
 WORKDIR /home/opam/c2c
 RUN opam update -y \
  && opam install --yes \
-        dune cmdliner yojson lwt logs cohttp-lwt-unix uuidm \
+        dune cmdliner yojson lwt logs cohttp-lwt-unix uuidm sqlite3 \
         base64 digestif mirage-crypto-ec mirage-crypto-rng \
         mirage-crypto-rng-lwt \
         tls-lwt ca-certs \
