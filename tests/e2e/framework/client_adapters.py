@@ -36,6 +36,43 @@ def _instance_dir(name: str) -> Path:
     return Path.home() / ".local" / "share" / "c2c" / "instances" / name
 
 
+def compile_role(workdir: Path, alias: str, client: str) -> Path:
+    """Compile a minimal canonical role to a client-specific agent file.
+
+    Writes a bare-bones role to .c2c/roles/<alias>.md then runs
+    ``c2c roles compile <alias> --client <client>`` to render the
+    client-specific agent file.
+
+    Returns the Path of the compiled agent file on success.
+    Raises RuntimeError if the compiled file is not created.
+    """
+    roles_dir = workdir / ".c2c" / "roles"
+    roles_dir.mkdir(parents=True, exist_ok=True)
+    role_file = roles_dir / f"{alias}.md"
+    role_file.write_text("test-agent\n", encoding="utf-8")
+    result = subprocess.run(
+        ["c2c", "roles", "compile", alias, "--client", client],
+        cwd=workdir,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    client_dir_map = {
+        "opencode": workdir / ".opencode" / "agents",
+        "kimi": workdir / ".kimi" / "agents",
+        "claude": workdir / ".claude" / "agents",
+        "codex": workdir / ".codex" / "agents",
+    }
+    agent_file = client_dir_map.get(client, workdir) / f"{alias}.md"
+    if not agent_file.exists():
+        raise RuntimeError(
+            f"compile_role: {agent_file} not created after "
+            f"'c2c roles compile {alias} --client {client}'\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+    return agent_file
+
+
 def _has_live_pid(pidfile: Path) -> bool:
     try:
         pid = int(pidfile.read_text(encoding="utf-8").strip())
@@ -142,6 +179,8 @@ class OpenCodeAdapter:
 
     def build_launch(self, scenario: Scenario, config: AgentConfig) -> dict[str, object]:
         command = ["c2c", "start", self.client_name, "-n", config.name]
+        if config.role:
+            command.extend(["--agent", config.role])
         if config.auto:
             command.append("--auto")
         if config.extra_args:
@@ -200,6 +239,8 @@ class KimiAdapter:
 
     def build_launch(self, scenario: Scenario, config: AgentConfig) -> dict[str, object]:
         command = ["c2c", "start", self.client_name, "-n", config.name]
+        if config.role:
+            command.extend(["--agent", config.role])
         if config.auto:
             command.append("--auto")
         if config.extra_args:

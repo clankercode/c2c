@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.e2e.framework.client_adapters import compile_role
 from tests.e2e.framework.scenario import Scenario
 
 
@@ -97,3 +98,33 @@ def test_kimi_smoke_send_receive(scenario: Scenario) -> None:
         lambda: scenario.broker_inbox_contains(receiver, message),
         timeout=90.0,
     )
+
+
+def test_kimi_smoke_with_agent(scenario: Scenario) -> None:
+    """Launch Kimi with --agent flag, verify compiled role file is picked up.
+
+    AC:
+    - C2C_TEST_KIMI_E2E=1 pytest ...::test_kimi_smoke_with_agent passes
+    - Role file is generated at .kimi/agents/<name>.md before client startup
+    - Test is capability-gated (skip if kimi binary absent)
+    """
+    _init_git_repo(scenario.workdir)
+    scenario.refresh_capabilities()
+
+    suffix = _unique_suffix()
+    agent_alias = f"kimi-agent-{suffix}"
+    agent_file = scenario.workdir / ".kimi" / "agents" / f"{agent_alias}.md"
+
+    compile_role(scenario.workdir, agent_alias, "kimi")
+    assert agent_file.exists(), f"compiled role not found at {agent_file}"
+
+    agent = scenario.start_agent("kimi", name=agent_alias, role=agent_alias, auto=True)
+
+    scenario.wait_for_init(agent, timeout=120.0)
+    scenario.wait_for(
+        lambda: _registered(agent, scenario),
+        timeout=60.0,
+    )
+
+    scenario.assert_agent(agent).alive()
+    scenario.assert_agent(agent).registered_alive()

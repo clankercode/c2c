@@ -22,6 +22,7 @@ class AgentConfig:
     auto: bool = False
     backend: str | None = None
     model: str | None = None
+    role: str | None = None
     extra_args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
 
@@ -98,6 +99,7 @@ class Scenario:
         auto: bool = False,
         backend: str | None = None,
         model: str | None = None,
+        role: str | None = None,
         extra_args: list[str] | None = None,
         env: dict[str, str] | None = None,
     ) -> StartedAgent:
@@ -109,6 +111,7 @@ class Scenario:
             auto=auto,
             backend=backend,
             model=model,
+            role=role,
             extra_args=list(extra_args or []),
             env=dict(env or {}),
         )

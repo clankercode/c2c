@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.e2e.framework.client_adapters import compile_role
 from tests.e2e.framework.scenario import Scenario
 
 
@@ -125,3 +126,34 @@ def test_opencode_smoke_send_receive(scenario: Scenario) -> None:
         lambda: scenario.broker_inbox_contains(receiver, message),
         timeout=90.0,
     )
+
+
+def test_opencode_smoke_with_agent(scenario: Scenario) -> None:
+    """Launch OpenCode with --agent flag, verify compiled role file is picked up.
+
+    AC:
+    - C2C_TEST_OPENCODE_E2E=1 pytest ...::test_opencode_smoke_with_agent passes
+    - Role file is generated at .opencode/agents/<name>.md before client startup
+    - Test is capability-gated (skip if opencode binary absent)
+    """
+    _init_git_repo(scenario.workdir)
+    _create_opencode_json(scenario.workdir, scenario.broker_root())
+    scenario.refresh_capabilities()
+
+    suffix = _unique_suffix()
+    agent_alias = f"oc-agent-{suffix}"
+    agent_file = scenario.workdir / ".opencode" / "agents" / f"{agent_alias}.md"
+
+    compile_role(scenario.workdir, agent_alias, "opencode")
+    assert agent_file.exists(), f"compiled role not found at {agent_file}"
+
+    agent = scenario.start_agent("opencode", name=agent_alias, role=agent_alias)
+
+    scenario.wait_for_init(agent, timeout=90.0)
+    scenario.wait_for(
+        lambda: _registered(agent, scenario),
+        timeout=60.0,
+    )
+
+    scenario.assert_agent(agent).alive()
+    scenario.assert_agent(agent).registered_alive()
