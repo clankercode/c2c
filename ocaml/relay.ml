@@ -2723,9 +2723,9 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j -> handle_room_history relay j)
 
-      | `GET, path when String.length path > 13
-                    && String.sub path 0 13 = "/remote_inbox/" ->
-        let session_id = String.sub path 13 (String.length path - 13) in
+      | `GET, path when String.length path > 14
+                    && String.sub path 0 14 = "/remote_inbox/" ->
+        let session_id = String.sub path 14 (String.length path - 14) in
         handle_remote_inbox session_id
 
       | _ ->

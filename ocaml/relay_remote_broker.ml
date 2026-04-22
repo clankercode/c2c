@@ -62,7 +62,7 @@ let fetch_inbox ~(ssh_target : string) ~(broker_root : string)
 
 let list_remote_sessions ~(ssh_target : string) ~(broker_root : string) : string list =
   let cmd = Printf.sprintf
-      "ssh -o StrictHostKeyChecking=no %s 'ls -1 %s/inbox/*.json 2>/dev/null' 2>/dev/null | \
+      "ssh -o StrictHostKeyChecking=no %s 'ls --color=never -1 %s/inbox/*.json 2>/dev/null' 2>/dev/null | \
        sed 's|.*/||' | sed 's/\\.json$//'"
       (shell_quote ssh_target)
       (shell_quote broker_root)
