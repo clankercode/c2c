@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import shutil
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -193,6 +193,21 @@ class Scenario:
             return False
         payload = json.loads(inbox.read_text(encoding="utf-8") or "[]")
         return text in json.dumps(payload)
+
+    def managed_inner_cmdline(self, agent: StartedAgent) -> str:
+        inner_pid_path = Path.home() / ".local" / "share" / "c2c" / "instances" / agent.name / "inner.pid"
+        try:
+            pid = int(inner_pid_path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError) as exc:
+            raise AssertionError(f"could not read inner pid for {agent.name}: {inner_pid_path}") from exc
+        try:
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError as exc:
+            raise AssertionError(f"could not read inner cmdline for {agent.name} pid {pid}") from exc
+        cmdline = raw.replace(b"\0", b" ").decode("utf-8", errors="replace").strip()
+        if not cmdline:
+            raise AssertionError(f"inner cmdline empty for {agent.name} pid {pid}")
+        return cmdline
 
     def assert_agent(self, agent: StartedAgent) -> ScenarioAgentAssertion:
         return ScenarioAgentAssertion(self, agent)

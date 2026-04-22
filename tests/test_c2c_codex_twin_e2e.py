@@ -55,6 +55,14 @@ def _unique_suffix() -> str:
     return f"{os.getpid()}-{time.time_ns()}"
 
 
+def _registered(agent, scenario: Scenario) -> bool:
+    try:
+        scenario.assert_agent(agent).registered_alive()
+    except AssertionError:
+        return False
+    return True
+
+
 def test_codex_twin_fallback_notify_path(scenario: Scenario) -> None:
     _init_git_repo(scenario.workdir)
     scenario.refresh_capabilities()
@@ -68,6 +76,7 @@ def test_codex_twin_fallback_notify_path(scenario: Scenario) -> None:
     a = scenario.start_agent("codex", name=alias_a, auto=True)
     b = scenario.start_agent("codex", name=alias_b, auto=True)
     scenario.wait_for_init(a, b, timeout=120.0)
+    scenario.wait_for(lambda: all(_registered(agent, scenario) for agent in (a, b)), timeout=60.0)
 
     scenario.comment(
         "Stock Codex should still be launchable, broker-alive, and able to accept fallback inbox traffic."
@@ -102,6 +111,12 @@ def test_codex_twin_xml_user_turn_delivery(scenario: Scenario) -> None:
     a = scenario.start_agent("codex", name=alias_a, auto=True)
     b = scenario.start_agent("codex", name=alias_b, auto=True)
     scenario.wait_for_init(a, b, timeout=120.0)
+    scenario.wait_for(
+        lambda: all(_registered(agent, scenario) for agent in (a, b)),
+        timeout=60.0,
+    )
+
+    assert "--xml-input-fd" in scenario.managed_inner_cmdline(b)
 
     message = f"xml-turn-ping-{os.getpid()}"
     scenario.send_dm(a, b, message)
