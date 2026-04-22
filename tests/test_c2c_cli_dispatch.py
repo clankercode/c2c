@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -307,6 +308,52 @@ class C2CCLIDispatchTests(unittest.TestCase):
     def test_auto_approve_is_disabled_by_default(self):
         with mock.patch.dict(os.environ, {}, clear=False):
             self.assertFalse(c2c_cli.auto_approve_enabled())
+
+
+    def test_plugin_commands_callable_with_agent_session_id(self):
+        """Regression: oc-plugin, cc-plugin, hook must be callable when
+        C2C_MCP_SESSION_ID is set (Tier1 after fix).
+
+        Before the fix (0c10946), these were Tier4 and the tier filter removed
+        them from cmdliner when C2C_MCP_SESSION_ID was set — causing every
+        managed OC session to fail inbox delivery silently.
+
+        See: .collab/findings/2026-04-23T14-12-00Z-coordinator1-oc-plugin-tier4-blocked-delivery.md
+        """
+        c2c_bin = shutil.which("c2c")
+        if not c2c_bin:
+            self.skipTest("c2c binary not found in PATH")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            broker_root = Path(tmp) / "broker"
+            broker_root.mkdir()
+            registry_path = broker_root / "registry.json"
+            registry_path.write_text("[]", encoding="utf-8")
+
+            env = os.environ.copy()
+            env.update(self.env)
+            env["C2C_MCP_SESSION_ID"] = "test-agent-session"
+            env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
+
+            for args in [
+                ["oc-plugin", "drain-inbox-to-spool", "--help"],
+                ["oc-plugin", "stream-write-statefile", "--help"],
+                ["cc-plugin", "write-statefile", "--help"],
+                ["hook", "--help"],
+            ]:
+                with self.subTest(args=args):
+                    result = subprocess.run(
+                        [c2c_bin, *args],
+                        capture_output=True,
+                        text=True,
+                        timeout=CLI_TIMEOUT_SECONDS,
+                        env=env,
+                    )
+                    self.assertEqual(
+                        result.returncode,
+                        0,
+                        msg=f"{args} failed with C2C_MCP_SESSION_ID set: {result.stderr}",
+                    )
 
 
 if __name__ == "__main__":
