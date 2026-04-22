@@ -48,6 +48,7 @@ type sync_result = {
 type t = {
   relay_url : string;
   token : string option;
+  identity : Relay_identity.t option;
   broker_root : string;
   node_id : string;
   heartbeat_ttl : float;
@@ -165,6 +166,13 @@ let write_outbox broker_root entries =
 
 (* ---------------------------------------------------------------------------
  * HTTP client (inline — minimal, matches Relay_client in relay.ml)
+ *
+ * Auth strategy (matching Python connector):
+ * - Admin paths (/gc, /dead_letter, /admin/unbind) → Bearer token
+ * - Unauth paths (/health, /) → no auth
+ * - Peer routes with identity available → Ed25519 Authorization header
+ * - Otherwise → Bearer token
+ * - /register: body-level Ed25519 proof when identity available
  * --------------------------------------------------------------------------- *)
 
 module Relay_client = struct
@@ -173,15 +181,16 @@ module Relay_client = struct
     base_url : string;
     token : string option;
     timeout : float;
+    identity : Relay_identity.t option;
   }
 
-  let make ?token ?(timeout = 10.0) base_url =
+  let make ?token ?(timeout = 10.0) ?identity base_url =
     let base_url = match String.length base_url with
       | 0 -> base_url
       | n when base_url.[n-1] = '/' -> String.sub base_url 0 (n-1)
       | _ -> base_url
     in
-    { base_url; token; timeout }
+    { base_url; token; timeout; identity }
 
   let connection_error msg =
     `Assoc [
@@ -190,16 +199,53 @@ module Relay_client = struct
       ("error", `String msg);
     ]
 
-  let request t ~meth ~path ?body () =
+  let admin_paths = ["/gc"; "/dead_letter"; "/admin/unbind"]
+
+  let is_admin_path path =
+    List.mem path admin_paths
+    || (String.length path > 14 && String.sub path 0 14 = "/remote_inbox/")
+    || (String.length path >= 5 && String.sub path 0 5 = "/list")
+
+  let is_unauth_path path =
+    path = "/health" || path = "/"
+
+  let sign_request t ~alias ~meth ~path ~body_str () =
+    match t.identity with
+    | None -> None
+    | Some identity ->
+        Some (Relay_signed_ops.sign_request identity ~alias ~meth ~path ~body_str ())
+
+  let request t ~meth ~path ?body ?(alias : string option) () =
     let uri = Uri.of_string (t.base_url ^ path) in
+    let base_path = match String.index_opt path '?' with
+      | Some idx -> String.sub path 0 idx
+      | None -> path
+    in
     let headers =
-      let base = Cohttp.Header.init_with "Content-Type" "application/json" in
-      match t.token with
-      | Some tok -> Cohttp.Header.add base "Authorization" ("Bearer " ^ tok)
-      | None -> base
+      Cohttp.Header.init_with "Content-Type" "application/json"
     in
     let body_str = Yojson.Safe.to_string (Option.value body ~default:(`Assoc [])) in
     let body_payload = Cohttp_lwt.Body.of_string body_str in
+    let headers =
+      if is_unauth_path base_path then headers
+      else if is_admin_path base_path then
+        (match t.token with
+         | Some tok -> Cohttp.Header.add headers "Authorization" ("Bearer " ^ tok)
+         | None -> headers)
+      else
+        match alias with
+        | Some a ->
+            (match sign_request t ~alias:a ~meth:(Cohttp.Code.string_of_method meth) ~path:base_path ~body_str () with
+             | Some auth -> Cohttp.Header.add headers "Authorization" auth
+             | None ->
+                 (match t.token with
+                  | Some tok -> Cohttp.Header.add headers "Authorization" ("Bearer " ^ tok)
+                  | None -> headers))
+        | None ->
+            (match t.token with
+             | Some tok -> Cohttp.Header.add headers "Authorization" ("Bearer " ^ tok)
+             | None -> headers)
+    in
     Lwt.catch
       (fun () ->
         Cohttp_lwt_unix.Client.call ~headers ~body:body_payload meth uri
@@ -209,22 +255,40 @@ module Relay_client = struct
         with _ -> Lwt.return (connection_error "invalid_json_response"))
       (fun exn -> Lwt.return (connection_error (Printexc.to_string exn)))
 
-  let post t path body = request t ~meth:`POST ~path ~body ()
+  let post t path ?alias body = request t ~meth:`POST ~path ?alias ~body ()
   let get t path = request t ~meth:`GET ~path ()
 
   let health t = get t "/health"
 
   let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = 300.0) () =
-    post t "/register" (`Assoc [
+    let body = `Assoc [
       ("node_id", `String node_id);
       ("session_id", `String session_id);
       ("alias", `String alias);
       ("client_type", `String client_type);
       ("ttl", `Int (int_of_float ttl));
-    ])
+    ] in
+    let body =
+      match t.identity with
+      | None -> body
+      | Some identity ->
+          let proof = Relay_signed_ops.sign_register identity ~alias ~relay_url:t.base_url in
+          let open Yojson.Safe.Util in
+          let base_list = to_assoc body in
+          `Assoc (
+            base_list @
+            [
+              ("identity_pk", `String proof.identity_pk_b64);
+              ("signature", `String proof.sig_b64);
+              ("nonce", `String proof.nonce);
+              ("timestamp", `String proof.ts);
+            ]
+          )
+    in
+    post t "/register" ~alias body
 
-  let heartbeat t ~node_id ~session_id =
-    post t "/heartbeat" (`Assoc [
+  let heartbeat t ~node_id ~session_id ?(alias : string option) () =
+    post t "/heartbeat" ?alias (`Assoc [
       ("node_id", `String node_id);
       ("session_id", `String session_id);
     ])
@@ -239,10 +303,10 @@ module Relay_client = struct
       | Some mid -> ("message_id", `String mid) :: base
       | None -> base
     in
-    post t "/send" (`Assoc body)
+    post t "/send" ~alias:from_alias (`Assoc body)
 
-  let poll_inbox t ~node_id ~session_id =
-    post t "/poll_inbox" (`Assoc [
+  let poll_inbox t ~node_id ~session_id ?(alias : string option) () =
+    post t "/poll_inbox" ?alias (`Assoc [
       ("node_id", `String node_id);
       ("session_id", `String session_id);
     ])
@@ -264,7 +328,7 @@ let json_list_member ~key json =
   | _ -> []
 
 let sync (t : t) : sync_result Lwt.t =
-  let client = Relay_client.make ?token:t.token t.relay_url in
+  let client = Relay_client.make ?token:t.token ?identity:t.identity t.relay_url in
   let regs = read_local_registrations t.broker_root in
   let outbox = read_outbox t.broker_root in
 
@@ -272,7 +336,7 @@ let sync (t : t) : sync_result Lwt.t =
   let registered, heartbeated, new_registered =
     List.fold_left (fun (registered, heartbeated, reg_list) (session_id, alias, client_type) ->
       if List.mem session_id t.registered then
-        let json = Lwt_main.run (Relay_client.heartbeat client ~node_id:t.node_id ~session_id) in
+        let json = Lwt_main.run (Relay_client.heartbeat client ~node_id:t.node_id ~session_id ~alias ()) in
         if json_bool_member ~key:"ok" json then
           (registered, alias :: heartbeated, reg_list)
         else
@@ -306,9 +370,9 @@ let sync (t : t) : sync_result Lwt.t =
 
   (* 3. Poll inbound for registered sessions *)
   let inbound_delivered =
-    List.fold_left (fun delivered (session_id, _alias, _) ->
+    List.fold_left (fun delivered (session_id, alias, _) ->
       if List.mem session_id t.registered then
-        let json = Lwt_main.run (Relay_client.poll_inbox client ~node_id:t.node_id ~session_id) in
+        let json = Lwt_main.run (Relay_client.poll_inbox client ~node_id:t.node_id ~session_id ~alias ()) in
         let msgs = json_list_member ~key:"messages" json in
         if msgs <> [] then
           delivered + append_to_local_inbox t.broker_root session_id msgs
@@ -351,7 +415,7 @@ let run (t : t) : unit =
  * Entry point (slice 1 stub)
  * --------------------------------------------------------------------------- *)
 
-let start ~relay_url ~token ~broker_root ~node_id
+let start ~relay_url ~token ~identity ~broker_root ~node_id
     ~(heartbeat_ttl : float) ~(interval : float) ~(verbose : bool) ~(once : bool) : int =
   if not (is_ocaml_backend ()) then begin
     Printf.eprintf "[relay-connector] Python backend not enabled; \
@@ -359,7 +423,7 @@ let start ~relay_url ~token ~broker_root ~node_id
     1
   end else begin
     let t = {
-      relay_url; token; broker_root; node_id;
+      relay_url; token; identity; broker_root; node_id;
       heartbeat_ttl; interval; verbose;
       registered = [];
     } in

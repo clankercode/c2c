@@ -3451,10 +3451,22 @@ let relay_connect_cmd =
     | None, None -> None
   in
   let effective_interval = float_of_int (Option.value interval ~default:30) in
+  let effective_identity_path = match Sys.getenv_opt "C2C_RELAY_IDENTITY_PATH" with
+    | Some p -> Some p
+    | None ->
+        (match Relay_identity.default_path () with
+         | p when Sys.file_exists p -> Some p
+         | _ -> None)
+  in
+  let effective_identity = match effective_identity_path with
+    | Some p -> (match Relay_identity.load ~path:p () with | Ok id -> Some id | Error _ -> None)
+    | None -> None
+  in
   if not use_python then
     exit (C2c_relay_connector.start
       ~relay_url:(Option.value relay_url ~default:"http://localhost:7331")
       ~token:effective_token
+      ~identity:effective_identity
       ~broker_root:effective_broker_root
       ~node_id:effective_node_id
       ~heartbeat_ttl:300.0
