@@ -5569,6 +5569,30 @@ let default_kickoff_prompt ~name ~alias ?role () =
      The swarm coordinates via c2c instant messaging. You are now part of it."
     name alias role_section
 
+let agent_file_path ~client ~name =
+  match client with
+  | "opencode" -> ".opencode" // "agent" // (name ^ ".md")
+  | "claude" -> ".claude" // "agents" // (name ^ ".md")
+  | _ -> ".c2c" // "agents" // (name ^ ".md")
+
+let render_role_for_client (r : C2c_role.t) ~client =
+  match client with
+  | "opencode" -> Some (C2c_role.OpenCode_renderer.render r)
+  | "claude" -> Some (C2c_role.Claude_renderer.render r)
+  | _ -> None
+
+let write_agent_file ~client ~name ~content =
+  let path = agent_file_path ~client ~name in
+  let dir = Filename.dirname path in
+  (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc content; output_char oc '\n');
+  Printf.eprintf "[c2c start] wrote compiled agent file: %s\n%!" path
+
+let get_opencode_theme (r : C2c_role.t) : string option =
+  List.assoc_opt "theme" r.C2c_role.opencode
+
 let start_cmd =
   let client =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"CLIENT"
@@ -5595,6 +5619,9 @@ let start_cmd =
   let kickoff_prompt_opt =
     Cmdliner.Arg.(value & opt (some string) None & info [ "kickoff-prompt" ] ~docv:"TEXT" ~doc:"Custom kickoff prompt text (implies --auto). OpenCode only.")
   in
+  let agent =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "agent"; "a" ] ~docv:"NAME" ~doc:"Start from canonical role at .c2c/roles/<NAME>.md (compiled to client format on launch).")
+  in
   let+ client = client
   and+ name_opt = name
   and+ alias_opt = alias
@@ -5602,7 +5629,8 @@ let start_cmd =
   and+ session_id_opt = session_id
   and+ one_hr_cache = one_hr_cache
   and+ auto_flag = auto_flag
-  and+ kickoff_prompt_text = kickoff_prompt_opt in
+  and+ kickoff_prompt_text = kickoff_prompt_opt
+  and+ agent_opt = agent in
   let name = match name_opt with
     | Some n -> n
     | None ->
@@ -5611,25 +5639,119 @@ let start_cmd =
         n
   in
   let effective_alias = Option.value alias_opt ~default:name in
-  (* Load saved role or prompt on first launch if stdin is a TTY. *)
-  let role =
-    match read_role ~alias:effective_alias with
-    | Some r -> Some r
-    | None -> prompt_for_role ~alias:effective_alias
+  (* Agent-file path: canonical .c2c/roles/<agent>.md *)
+  let agent_role_path agent_name =
+    Filename.concat (Sys.getcwd ()) ".c2c" // "roles" // (agent_name ^ ".md")
   in
-  let kickoff_prompt =
-    match kickoff_prompt_text with
-    | Some t -> Some t
-    | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role ())
+  (* --agent mode: load canonical role, render for client, write compiled file *)
+  let (kickoff_prompt, alias_override, auto_join_rooms) =
+    match agent_opt with
+    | Some agent_name ->
+        let role_path = agent_role_path agent_name in
+        (try
+          let role = C2c_role.parse_file role_path in
+      match render_role_for_client role ~client with
+           | Some rendered ->
+               write_agent_file ~client ~name ~content:rendered;
+               let kickoff = Some rendered in
+               let alias_override = role.C2c_role.c2c_alias in
+               let auto_join_rooms =
+                 if role.C2c_role.c2c_auto_join_rooms <> []
+                 then Some (String.concat ", " role.C2c_role.c2c_auto_join_rooms)
+                 else None
+               in
+               let theme = get_opencode_theme role in
+               let subtitle = Printf.sprintf "%s  |  %s" client name in
+               Banner.print_banner ?theme_name:theme ~subtitle (Printf.sprintf "c2c start --agent %s" agent_name);
+               (kickoff, alias_override, auto_join_rooms)
+          | None ->
+              Printf.eprintf "error: --agent is not supported for client '%s' yet.\n%!" client;
+              exit 1
+        with Sys_error _ ->
+          Printf.eprintf "error: role file not found: %s\n%!" role_path;
+          exit 1)
     | None ->
-        (* Even without --auto, if a role is set, write a role-seeded kickoff prompt. *)
-        (match role with
-         | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role ())
-         | None -> None)
+        (* Legacy path: load plain-text role from .c2c/roles/<effective_alias>.md *)
+        let role =
+          match read_role ~alias:effective_alias with
+          | Some r -> Some r
+          | None -> prompt_for_role ~alias:effective_alias
+        in
+        let kickoff_prompt =
+          match kickoff_prompt_text with
+          | Some t -> Some t
+          | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role ())
+          | None ->
+              (match role with
+               | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role ())
+               | None -> None)
+        in
+        (kickoff_prompt, alias_opt, None)
   in
-  exit (C2c_start.cmd_start ~client ~name ~extra_args:[] ?binary_override:bin_opt ?alias_override:alias_opt ?session_id_override:session_id_opt ~one_hr_cache ?kickoff_prompt ())
+  exit (C2c_start.cmd_start ~client ~name ~extra_args:[]
+      ?binary_override:bin_opt
+      ?alias_override
+      ?session_id_override:session_id_opt
+      ~one_hr_cache
+      ?kickoff_prompt
+      ?auto_join_rooms ())
 
 let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Start a managed c2c instance.") start_cmd
+
+(* --- subcommand: roles ----------------------------------------------------- *)
+
+let roles_compile_term =
+  let name_arg =
+    Cmdliner.Arg.(value & pos 0 (some string) None & info [] ~docv:"NAME"
+      ~doc:"Role name to compile (reads .c2c/roles/<NAME>.md). Omit to compile all roles.")
+  in
+  let client =
+    Cmdliner.Arg.(value & opt (some string) (Some "opencode") & info [ "client"; "c" ]
+      ~docv:"CLIENT" ~doc:"Target client for rendering (opencode, claude).")
+  in
+  let dry_run =
+    Cmdliner.Arg.(value & flag & info [ "dry-run" ] ~doc:"Print output to stdout instead of writing files.")
+  in
+  let+ name_opt = name_arg
+  and+ client = client
+  and+ dry_run = dry_run in
+  let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
+  let roles =
+    match name_opt with
+    | Some n -> [(n, Filename.concat roles_dir (n ^ ".md"))]
+    | None ->
+        (try
+          Array.to_list (Sys.readdir roles_dir)
+          |> List.filter (fun f -> String.ends_with ~suffix:".md" f)
+          |> List.map (fun f -> (String.sub f 0 (String.length f - 3), Filename.concat roles_dir f))
+        with Sys_error _ ->
+          Printf.eprintf "error: roles directory not found: %s\n%!" roles_dir;
+          exit 1)
+  in
+  List.iter (fun (name, path) ->
+    try
+      let role = C2c_role.parse_file path in
+      let client_str = Option.value client ~default:"opencode" in
+      match render_role_for_client role ~client:client_str with
+      | Some rendered ->
+          if dry_run then
+            (Printf.printf "=== %s (%s) ===\n%s\n\n" name client_str rendered; flush stdout)
+          else
+            (let out_path = agent_file_path ~client:client_str ~name in
+             let dir = Filename.dirname out_path in
+             (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+             let oc = open_out out_path in
+             Fun.protect ~finally:(fun () -> close_out oc)
+               (fun () -> output_string oc rendered; output_char oc '\n');
+             Printf.printf "  [roles compile] %s -> %s\n" path out_path)
+      | None ->
+          Printf.eprintf "  [roles compile] skip %s: client '%s' not supported\n" name client_str
+    with Sys_error msg ->
+      Printf.eprintf "  [roles compile] skip %s: %s\n" name msg
+  ) roles;
+  if not dry_run then Printf.printf "[roles compile] done.\n%!"
+
+let roles_compile = Cmdliner.Cmd.v (Cmdliner.Cmd.info "roles" ~doc:"Compile canonical role(s) to client agent files.") roles_compile_term
 
 (* --- subcommand: gui ------------------------------------------------------ *)
 
@@ -7388,7 +7510,7 @@ let () =
                ; `P "$(b,rooms) — manage N:N chat rooms"
                ; `P "$(b,relay) — cross-machine relay: serve, connect, setup, status, list, rooms, gc"
                ])
-          [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
-          ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
-          ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-          ; serve; mcp; start; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; help ]))
+           [ send; list; whoami; poll_inbox; peek_inbox; send_all; sweep
+           ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
+           ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
+           ; serve; mcp; start; roles_compile; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; help ]))

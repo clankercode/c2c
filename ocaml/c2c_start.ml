@@ -561,8 +561,11 @@ let cleanup_stale_opentui_zig_cache () : int =
  * Build environment
  * --------------------------------------------------------------------------- *)
 
-let build_env ?(broker_root_override : string option = None) (name : string) (alias_override : string option) : string array =
+let build_env ?(broker_root_override : string option = None)
+    ?(auto_join_rooms_override : string option = None)
+    (name : string) (alias_override : string option) : string array =
   let br = Option.value broker_root_override ~default:(broker_root ()) in
+  let rooms = Option.value auto_join_rooms_override ~default:"swarm-lounge" in
   (* Resolve the absolute path of this c2c binary so the plugin always uses the
      correct OCaml binary even when a Python ./c2c shim exists in the project CWD
      (avoids fork-bomb: plugin runC2c() would otherwise resolve bare "c2c" via PATH
@@ -574,7 +577,7 @@ let build_env ?(broker_root_override : string option = None) (name : string) (al
     "C2C_INSTANCE_NAME", name;
     "C2C_MCP_AUTO_REGISTER_ALIAS", Option.value alias_override ~default:name;
     "C2C_MCP_BROKER_ROOT", br;
-    "C2C_MCP_AUTO_JOIN_ROOMS", "swarm-lounge";
+    "C2C_MCP_AUTO_JOIN_ROOMS", rooms;
     "C2C_MCP_AUTO_DRAIN_CHANNEL", "0";
     (* Managed sessions opt in to experimental channel-delivery. No-op on
        clients that don't declare experimental.claude/channel in initialize,
@@ -1019,7 +1022,8 @@ let run_outer_loop ~(name : string) ~(client : string)
     ~(extra_args : string list) ~(broker_root : string)
     ?(binary_override : string option) ?(alias_override : string option)
     ?(session_id : string option) ?(resume_session_id : string option)
-    ?(one_hr_cache = false) ?(kickoff_prompt : string option) () : int =
+    ?(one_hr_cache = false) ?(kickoff_prompt : string option)
+    ?(auto_join_rooms : string option) () : int =
   let session_id = Option.value session_id ~default:name in
   let cfg =
     try Stdlib.Hashtbl.find clients client
@@ -1114,7 +1118,8 @@ let run_outer_loop ~(name : string) ~(client : string)
       let start_time = Unix.gettimeofday () in
 
       (* Build env *)
-      let env = build_env ~broker_root_override:(Some broker_root) name alias_override in
+      let env = build_env ~broker_root_override:(Some broker_root)
+          ~auto_join_rooms_override:auto_join_rooms name alias_override in
       let env =
         Array.append env
           (Array.of_list
@@ -1520,7 +1525,7 @@ let run_outer_loop ~(name : string) ~(client : string)
 let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?(binary_override : string option) ?(alias_override : string option)
     ?(session_id_override : string option) ?(one_hr_cache = false)
-    ?(kickoff_prompt : string option) () : int =
+    ?(kickoff_prompt : string option) ?(auto_join_rooms : string option) () : int =
   if not (Stdlib.Hashtbl.mem clients client) then
     (Printf.eprintf "error: unknown client: '%s'. Choose from: %s\n%!"
        client (String.concat ", " (List.sort String.compare supported_clients));
@@ -1737,7 +1742,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     extra_args;
     created_at = (match existing with Some ex -> ex.created_at | None -> Unix.gettimeofday ());
     broker_root;
-    auto_join_rooms = "swarm-lounge";
+    auto_join_rooms = Option.value auto_join_rooms ~default:"swarm-lounge";
     binary_override;
   }
   in
@@ -1754,7 +1759,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
   run_outer_loop ~name ~client ~extra_args ~broker_root
     ?binary_override ?alias_override ~session_id:cfg.session_id
     ?resume_session_id:launch_resume_session_id
-    ~one_hr_cache ?kickoff_prompt ()
+    ~one_hr_cache ?kickoff_prompt ?auto_join_rooms ()
 
 (* Signal the managed inner client so the outer loop relaunches it. Designed
    to be callable by an agent running *inside* that client, so the outer

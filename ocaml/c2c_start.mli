@@ -85,11 +85,11 @@ val broker_root : unit -> string
 
 (** {1 Environment building} *)
 
-val build_env : ?broker_root_override:string option -> string -> string option -> string array
-(** [build_env ?broker_root_override name alias_override] builds the environment array for a managed
+val build_env : ?broker_root_override:string option -> ?auto_join_rooms_override:string option -> string -> string option -> string array
+(** [build_env ?broker_root_override ?auto_join_rooms_override name alias_override] builds the environment array for a managed
     client subprocess. Sets C2C_MCP_SESSION_ID, C2C_MCP_AUTO_REGISTER_ALIAS,
-    C2C_MCP_BROKER_ROOT, C2C_MCP_AUTO_JOIN_ROOMS, C2C_MCP_AUTO_DRAIN_CHANNEL=0,
-    and C2C_MCP_CLIENT_PID. *)
+    C2C_MCP_BROKER_ROOT, C2C_MCP_AUTO_JOIN_ROOMS (defaults to "swarm-lounge"),
+    C2C_MCP_AUTO_DRAIN_CHANNEL=0, and C2C_MCP_CLIENT_PID. *)
 
 (** {1 Launch argument preparation} *)
 
@@ -183,6 +183,7 @@ val run_outer_loop :
   ?resume_session_id:string ->
   ?one_hr_cache:bool ->
   ?kickoff_prompt:string ->
+  ?auto_join_rooms:string ->
   unit ->
   int
 (** [run_outer_loop] runs the outer restart loop for the given instance
@@ -201,6 +202,7 @@ val cmd_start :
   ?session_id_override:string ->
   ?one_hr_cache:bool ->
   ?kickoff_prompt:string ->
+  ?auto_join_rooms:string ->
   unit ->
   int
 (** [cmd_start] validates and starts a managed instance. Returns 0 on success,

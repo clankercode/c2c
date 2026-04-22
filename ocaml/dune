@@ -1,7 +1,7 @@
 (library
  (name c2c_mcp)
  (wrapped false)
- (modules Version C2c_name c2c_mcp C2c_start Relay Relay_sqlite Relay_identity Relay_signed_ops C2c_wire_bridge C2c_wire_daemon)
+  (modules Version C2c_name c2c_role Banner c2c_mcp C2c_start Relay Relay_sqlite Relay_identity Relay_signed_ops C2c_wire_bridge C2c_wire_daemon)
  (foreign_stubs (language c) (names c2c_posix_stubs))
 (libraries yojson logs lwt.unix cohttp-lwt-unix uuidm sqlite3
              base64 digestif.ocaml mirage-crypto-ec mirage-crypto-rng.unix
