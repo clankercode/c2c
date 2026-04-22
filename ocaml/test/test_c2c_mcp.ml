@@ -5250,11 +5250,10 @@ let test_check_pending_reply_non_supervisor_via_mcp () =
    The prior owner may be alive or dead; the pending state is the blocker. *)
 let test_register_rejects_alias_with_pending_permission_from_alive_owner () =
   with_temp_dir (fun dir ->
-      let live_pid = Unix.getpid () in
       let broker = C2c_mcp.Broker.create ~root:dir in
-      (* session-owner registers "test-alias" with a live PID *)
+      (* session-owner registers "test-alias" without a PID (simulates dead owner) *)
       C2c_mcp.Broker.register broker ~session_id:"session-owner"
-        ~alias:"test-alias" ~pid:(Some live_pid) ~pid_start_time:None ();
+        ~alias:"test-alias" ~pid:None ~pid_start_time:None ();
       (* Open a pending permission for "test-alias" from session-owner *)
       Unix.putenv "C2C_MCP_SESSION_ID" "session-owner";
       Fun.protect ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
@@ -5323,15 +5322,16 @@ let test_register_rejects_alias_with_pending_permission_from_alive_owner () =
                check bool "error mentions the alias" true
                  (string_contains text "test-alias");
                (* session-owner still registered *)
-               let regs = C2c_mcp.Broker.list_registrations broker in
-               let owner =
-                 List.find_opt (fun r -> r.session_id = "session-owner") regs
+                let regs = C2c_mcp.Broker.list_registrations broker in
+                let open C2c_mcp in
+                let owner =
+                  List.find_opt (fun r -> r.session_id = "session-owner") regs
                in
                check bool "owner registration preserved" true (owner <> None);
                let thief =
                  List.find_opt (fun r -> r.session_id = "session-thief") regs
                in
-               check bool "thief not registered" true (thief = None)))
+               check bool "thief not registered" true (thief = None))))
 
 let () =
   run "c2c_mcp"
