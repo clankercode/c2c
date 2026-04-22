@@ -1,46 +1,38 @@
 # ceo Monitor Configuration
 
-## Active Monitors
+## Disabled (2026-04-22)
 
-### m2: c2c-swarm-monitor
-Watches broker inbox events for all sessions.
+Both monitors were **disabled** on 2026-04-22 due to idle-trigger batching:
 
-```
-Trigger: idle
-Command: c2c monitor --all
-Output: very-compact
-Purpose: situational awareness — logs all broker inbox events (new messages, drains, sweeps)
-```
+- **Idle-triggered monitors only fire when the session is NOT actively executing tools**
+- During continuous work: ticks queue but don't wake
+- When session goes idle: ALL queued ticks fire at once — delivering old messages batched together
+- This caused 15-minute-old messages to appear as "new" on idle
 
-### m3: heartbeat
-Heartbeat prompt to keep the agent active between turns.
-
-```
-Trigger: idle
-Command: heartbeat 4.1m "Continue available work, drive completion of goals, and if without tasks, offer help to your colleagues and ask for any incomplete tasks. Also, brainstorm how to make the codebase better."
-send_only_latest: true
-Output: very-compact
-```
-
-Note: `heartbeat` accepts durations as ints or floats with suffixes h, m, s, ms.
+**Symptom**: m2 showed swarm messages 15+ minutes out of date. m3 had 43 queued pending ticks.
 
 ## Note on idle vs interval triggers
 
-Idle-triggered monitors only fire when the session is NOT actively executing tools.
-- During continuous work: heartbeat ticks queue but don't wake
-- When session goes idle: queued ticks fire as a batch
+Idle-triggered monitors are only appropriate for truly idle-periodic tasks (e.g. cleanup, health checks when you don't want noise during active work).
 
-If you want heartbeats that fire regardless of idle state, use an `interval` trigger instead:
+For any monitor that should wake the agent in near-real-time during active work, use an `interval` trigger instead:
+
 ```json
-{"type": "interval", "everyMs": 246000}
+{"type": "interval", "everyMs": 300000, "instantWhenIdle": false}
 ```
 
-## Setup commands
+Or just use `c2c poll_inbox` at the start of each `/loop` — that's the reliable path for message delivery.
+
+## Setup commands (for future reference)
 
 ```bash
-# c2c swarm monitor
-Monitor({"summary": "c2c inbox watcher (all sessions)", "command": "c2c monitor --all", "persistent": true, "triggers": [{"type": "idle"}]})
+# c2c swarm monitor — use INTERVAL, not idle
+Monitor({"summary": "c2c inbox watcher", "command": "c2c monitor --all",
+  "persistent": true,
+  "triggers": [{"type": "interval", "everyMs": 60000, "instantWhenIdle": false}]})
 
-# heartbeat
-Monitor({"summary": "heartbeat", "command": "heartbeat 4.1m \"Continue available work, drive completion of goals, and if without tasks, offer help to your colleagues and ask for any incomplete tasks. Also, brainstorm how to make the codebase better.\"", "persistent": true, "send_only_latest": true, "triggers": [{"type": "idle"}]})
+# heartbeat — use INTERVAL for timely wakes
+Monitor({"summary": "heartbeat", "command": "heartbeat 4.1m \"Continue available work...\"",
+  "persistent": true, "send_only_latest": true,
+  "triggers": [{"type": "interval", "everyMs": 246000, "instantWhenIdle": false}]})
 ```
