@@ -157,7 +157,8 @@ class Scenario:
         self.artifacts.write_text(f"{agent.name}.capture.txt", capture.text)
         return capture.text
 
-    def send_dm(self, from_agent: StartedAgent, to_agent: StartedAgent, text: str) -> None:
+    def send_dm(self, from_agent: StartedAgent | None, to_agent: StartedAgent, text: str) -> None:
+        # Deterministic controller-side broker injection for terminal E2E tests.
         subprocess.run(
             ["c2c", "send", to_agent.name, text],
             cwd=self.workdir,
@@ -167,7 +168,11 @@ class Scenario:
         )
         self.artifacts.append_event(
             "dm.sent",
-            {"from_agent": from_agent.name, "to_agent": to_agent.name, "text": text},
+            {
+                "from_agent": None if from_agent is None else from_agent.name,
+                "to_agent": to_agent.name,
+                "text": text,
+            },
         )
 
     def broker_root(self) -> Path:

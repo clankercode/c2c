@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -50,12 +51,17 @@ def _write_role_file(workdir: Path, alias: str) -> None:
     (roles_dir / f"{alias}.md").write_text("test-agent\n", encoding="utf-8")
 
 
+def _unique_suffix() -> str:
+    return f"{os.getpid()}-{time.time_ns()}"
+
+
 def test_codex_twin_fallback_notify_path(scenario: Scenario) -> None:
     _init_git_repo(scenario.workdir)
     scenario.refresh_capabilities()
 
-    alias_a = f"codex-a-{os.getpid()}"
-    alias_b = f"codex-b-{os.getpid()}"
+    suffix = _unique_suffix()
+    alias_a = f"codex-a-{suffix}"
+    alias_b = f"codex-b-{suffix}"
     _write_role_file(scenario.workdir, alias_a)
     _write_role_file(scenario.workdir, alias_b)
 
@@ -73,6 +79,8 @@ def test_codex_twin_fallback_notify_path(scenario: Scenario) -> None:
         timeout=20.0,
     )
 
+    scenario.assert_agent(a).alive()
+    scenario.assert_agent(b).alive()
     scenario.assert_agent(a).registered_alive()
     scenario.assert_agent(b).registered_alive()
 
@@ -85,8 +93,9 @@ def test_codex_twin_xml_user_turn_delivery(scenario: Scenario) -> None:
         reason="updated Codex binary with --xml-input-fd not present yet",
     )
 
-    alias_a = f"codex-xml-a-{os.getpid()}"
-    alias_b = f"codex-xml-b-{os.getpid()}"
+    suffix = _unique_suffix()
+    alias_a = f"codex-xml-a-{suffix}"
+    alias_b = f"codex-xml-b-{suffix}"
     _write_role_file(scenario.workdir, alias_a)
     _write_role_file(scenario.workdir, alias_b)
 
@@ -96,4 +105,8 @@ def test_codex_twin_xml_user_turn_delivery(scenario: Scenario) -> None:
 
     message = f"xml-turn-ping-{os.getpid()}"
     scenario.send_dm(a, b, message)
-    scenario.wait_for(lambda: message in scenario.capture(b), timeout=90.0)
+    scenario.wait_for(
+        lambda: message in scenario.capture(b)
+        and not scenario.broker_inbox_contains(b, message),
+        timeout=90.0,
+    )
