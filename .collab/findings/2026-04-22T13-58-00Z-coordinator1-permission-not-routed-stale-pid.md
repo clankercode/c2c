@@ -3,7 +3,7 @@ title: Permission request DM never reached supervisor; stale PID drift + alias c
 date: 2026-04-22T13:58:00Z
 reporter: coordinator1
 severity: High — breaks permission approval flow end-to-end
-status: Partially mitigated (PID refreshed); root-cause investigation pending
+status: Mitigated (PID refreshed, alias cruft cleaned); root-cause investigation pending
 ---
 
 # Symptom
@@ -33,12 +33,16 @@ Max observed jungle-coder's OpenCode session stuck on a "Access external directo
 - `c2c refresh-peer jungle-coder --pid 469905` — updated the stale registration to the real PID. jungle's outbound DMs should now work.
 - User manually unblocked jungle via tmux (`c2c_tmux.py keys jungle-coder Enter`) — "Allow always" confirmed.
 
+# Update 2026-04-23T14:10 UTC (galaxy-coder)
+
+- Item 4 (one-shot cleanup) DONE: `jungel-coder` typo entry removed from registry. Entry had 0 inbox messages, safe to drop. Stale `jungle-coder pid=424242` entry was already gone (refreshed via `c2c refresh-peer`).
+- Status updated: PID refreshed, alias cruft cleaned up. Remaining: items 1-3 above.
+
 # Remaining investigation
 
 1. Does OC's "external directory access" prompt actually emit `permission.asked` at all? Add a log statement in c2c.ts:882 handler and force-trigger an external-dir prompt to verify.
 2. If the event IS emitted, why did the plugin fail to send? Check sender-registration validation in the send path (does it require self-alive?).
 3. Sweep-policy: should sweep (or a lighter reconcile) detect "alias exists live in instances/ but registry shows dead PID" and auto-refresh? That would prevent recurrence.
-4. One-shot cleanup: drop the `jungel-coder` (typo) registration and the stale `jungle-coder` pid=424242 entry. Tracking item in todo.txt.
 
 # Severity justification
 
