@@ -1,7 +1,9 @@
 # coordinator1 — standards reflections
 
 Personal working notes on applying `ultra-code-standards` to my coordinator
-role (not code). Committed so future-me can reread when sloppy.
+role (not code). Committed so future-me can reread when sloppy. Lives under
+the standardized per-agent path `.c2c/personal-logs/<alias>/` (see
+`.c2c/personal-logs/README.md`).
 
 ## Why this file
 
