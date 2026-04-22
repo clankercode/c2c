@@ -17,6 +17,6 @@
 - [x] opencode plugin permission reply: galaxy-coder's instance registers as "current-session" but c2c plugin permission requests route to "galaxy-coder" (the session_id). Routing works correctly — broker maps session_id→alias. Confirmed by galaxy-coder in testing (2026-04-22).
 - [x] opencode plugin permission timeout race (commit a33c264, jungel-coder): waitForPermissionReply now peeks inbox before declaring timeout — catches replies that arrived but weren't delivered yet. Late reply NACK handling preserved.
 - [x] opencode plugin permission responses leak into chat (commit a33c264, jungel-coder): deliverMessages filters ALL permission replies before reaching promptAsync. Prevents leaked permission responses from appearing in chat.
-- [ ] opencode plugin summarizePermission test bugs: tests use `type` field but function expects `permission` field. Tests are wrong, not the function. Separate issue to fix (jungel-coder noted).
+- [x] opencode plugin summarizePermission test bugs: investigated — tests actually use `permission` field correctly. vi.mock framework issue in test file is a separate issue.
 - [x] Railway Dockerfile missing libsqlite3-0 runtime dep (commit 270c63f, jungel-coder) — relay crashed with "cannot open shared object file" on SqliteRelay changes.
-- [ ] add to c2c agent metadata (visible to other agents) a field for type (codex/claude/opencode/etc)
+- [x] add to c2c agent metadata (visible to other agents) a field for type (codex/claude/opencode/etc) — commit 44ffa2d: all configure scripts + c2c_start now set C2C_MCP_CLIENT_TYPE for all 5 client types
