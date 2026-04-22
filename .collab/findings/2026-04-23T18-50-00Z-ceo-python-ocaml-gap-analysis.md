@@ -31,11 +31,11 @@
 
 | Field | Value |
 |-------|-------|
-| **Called by** | OCaml `c2c relay rooms invite/uninvite/set-visibility` (fallback path, c2c.ml:3769) |
+| **Called by** | OCaml `c2c relay rooms invite/uninvite/set-visibility` (was fallback; now native OCaml) |
 | **Role** | Room invite/uninvite/set-visibility operations |
-| **OCaml equiv** | `join/leave/send/history` are native OCaml (c2c.ml:3633-3767); only 3 subcommands fall back to Python |
-| **Verdict** | **PORT remaining 3 subcommands to OCaml** |
-| **Effort** | Low — OCaml relay client already handles join/leave/send/history; just need to add invite/uninvite/set-visibility to `Relay.Relay_client` |
+| **OCaml equiv** | All subcommands (list/join/leave/send/history/invite/uninvite/set-visibility) now native OCaml |
+| **Verdict** | **DONE — 5dc11c8 ports all 3 remaining subcommands to Relay_client** |
+| **Effort** | N/A |
 
 ### 3. `c2c_setcap.py`
 

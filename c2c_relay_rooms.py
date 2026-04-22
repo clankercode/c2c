@@ -2,9 +2,11 @@
 """c2c relay rooms — CLI wrapper for relay server room operations.
 
 .. deprecated::
-    OCaml relay (ocaml/relay.ml) provides room operations natively via
-    the MCP protocol. This Python wrapper is retained for existing CLI
-    workflows only. Prefer direct OCaml relay access.
+    All room operations (list, join, leave, send, history, invite,
+    uninvite, set-visibility) are fully implemented in the OCaml relay
+    client (ocaml/relay.ml). Use ``c2c relay rooms <subcommand>`` which
+    now routes to native OCaml. This Python version is retained only for
+    existing Python CLI workflows and will be removed when those are retired.
 
 Commands mirror `c2c room` but route through the relay instead of the local
 filesystem, so agents on different machines can interact with shared rooms.
