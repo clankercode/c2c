@@ -37,12 +37,19 @@ let is_ocaml_backend () =
  * Types
  * --------------------------------------------------------------------------- *)
 
+type sync_error = {
+  err_op : string;
+  err_detail : string;
+  err_ts : float;
+}
+
 type sync_result = {
   registered : string list;
   heartbeated : string list;
   outbox_forwarded : int;
   outbox_failed : int;
   inbound_delivered : int;
+  last_error : sync_error option;
 }
 
 type t = {
@@ -333,54 +340,66 @@ let sync (t : t) : sync_result Lwt.t =
   let outbox = read_outbox t.broker_root in
 
   (* 1. Register / heartbeat each local session *)
-  let registered, heartbeated, new_registered =
-    List.fold_left (fun (registered, heartbeated, reg_list) (session_id, alias, client_type) ->
+  let registered, heartbeated, new_registered, reg_errors =
+    List.fold_left (fun (registered, heartbeated, reg_list, errs) (session_id, alias, client_type) ->
       if List.mem session_id t.registered then
         let json = Lwt_main.run (Relay_client.heartbeat client ~node_id:t.node_id ~session_id ~alias ()) in
         if json_bool_member ~key:"ok" json then
-          (registered, alias :: heartbeated, reg_list)
+          (registered, alias :: heartbeated, reg_list, errs)
         else
-          (registered, heartbeated, reg_list)
+          let detail = Yojson.Safe.to_string json in
+          (registered, heartbeated, reg_list, ("heartbeat", detail) :: errs)
       else
         let json = Lwt_main.run (Relay_client.register client
           ~node_id:t.node_id ~session_id ~alias ~client_type ~ttl:t.heartbeat_ttl ()) in
         if json_bool_member ~key:"ok" json then
-          (alias :: registered, heartbeated, session_id :: reg_list)
+          (alias :: registered, heartbeated, session_id :: reg_list, errs)
         else
-          (registered, heartbeated, reg_list)
-    ) ([], [], t.registered) regs
+          let detail = Yojson.Safe.to_string json in
+          (registered, heartbeated, reg_list, ("register", detail) :: errs)
+    ) ([], [], t.registered, []) regs
   in
   t.registered <- new_registered;
 
   (* 2. Forward outbox entries *)
-  let outbox_forwarded, outbox_failed, remaining_outbox =
-    List.fold_left (fun (fwd, failed, remaining) entry ->
+  let outbox_forwarded, outbox_failed, remaining_outbox, send_errors =
+    List.fold_left (fun (fwd, failed, remaining, errs) entry ->
       let json = Lwt_main.run (Relay_client.send client
         ~from_alias:entry.ob_from
         ~to_alias:entry.ob_to
         ~content:entry.ob_content
         ?message_id:entry.ob_msg_id ()) in
       if json_bool_member ~key:"ok" json then
-        (fwd + 1, failed, remaining)
+        (fwd + 1, failed, remaining, errs)
       else
-        (fwd, failed + 1, entry :: remaining)
-    ) (0, 0, []) outbox
+        let detail = Yojson.Safe.to_string json in
+        (fwd, failed + 1, entry :: remaining, ("send", detail) :: errs)
+    ) (0, 0, [], []) outbox
   in
   write_outbox t.broker_root (List.rev remaining_outbox);
 
   (* 3. Poll inbound for registered sessions *)
-  let inbound_delivered =
-    List.fold_left (fun delivered (session_id, alias, _) ->
+  let inbound_delivered, poll_errors =
+    List.fold_left (fun (delivered, errs) (session_id, alias, _) ->
       if List.mem session_id t.registered then
         let json = Lwt_main.run (Relay_client.poll_inbox client ~node_id:t.node_id ~session_id ~alias ()) in
         let msgs = json_list_member ~key:"messages" json in
         if msgs <> [] then
-          delivered + append_to_local_inbox t.broker_root session_id msgs
+          delivered + append_to_local_inbox t.broker_root session_id msgs, errs
+        else if json_bool_member ~key:"ok" json then
+          delivered, errs
         else
-          delivered
+          let detail = Yojson.Safe.to_string json in
+          delivered, ("poll_inbox", detail) :: errs
       else
-        delivered
-    ) 0 regs
+        delivered, errs
+    ) (0, []) regs
+  in
+
+  let last_error = match reg_errors @ send_errors @ poll_errors with
+    | [] -> None
+    | (op, detail) :: _ ->
+        Some { err_op = op; err_detail = detail; err_ts = Unix.gettimeofday () }
   in
 
   Lwt.return {
@@ -389,6 +408,7 @@ let sync (t : t) : sync_result Lwt.t =
     outbox_forwarded;
     outbox_failed;
     inbound_delivered;
+    last_error;
   }
 
 (* ---------------------------------------------------------------------------
@@ -409,18 +429,28 @@ let run (t : t) : unit =
   let _ = install_signal Sys.sigint in
   let rec loop () =
     if !shutdown then (
-      if t.verbose then Printf.printf "[relay-connector] shutdown complete\n%!";
+      Printf.printf "[relay-connector] shutdown complete\n%!";
     ) else (
-      if t.verbose then
-        Printf.printf "[relay-connector] syncing...\n%!";
       (try
-        ignore (Lwt_main.run (sync t))
+        let result = Lwt_main.run (sync t) in
+        let err_str = match result.last_error with
+          | None -> ""
+          | Some e ->
+              Printf.sprintf " [%s: %s]" e.err_op
+                (if String.length e.err_detail > 80 then
+                  String.sub e.err_detail 0 80 ^ "..."
+                else e.err_detail)
+        in
+        Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d inbound=%d%s\n%!"
+          (List.length result.registered)
+          (List.length result.heartbeated)
+          result.outbox_forwarded
+          result.outbox_failed
+          result.inbound_delivered
+          err_str
       with exn ->
-        if t.verbose then
-          Printf.eprintf "[relay-connector] sync error: %s\n%!" (Printexc.to_string exn));
+        Printf.eprintf "[relay-connector] sync exception: %s\n%!" (Printexc.to_string exn));
       if not !shutdown then begin
-        if t.verbose then
-          Printf.printf "[relay-connector] sleep %.0fs\n%!" t.interval;
         Unix.sleepf t.interval;
         loop ()
       end
@@ -439,6 +469,12 @@ let start ~relay_url ~token ~identity ~broker_root ~node_id
       set C2C_RELAY_CONNECTOR_BACKEND=python to use Python implementation\n%!";
     1
   end else begin
+    let identity_tag = match identity with
+      | Some _ -> "Ed25519-signed"
+      | None -> "token-only"
+    in
+    Printf.printf "[relay-connector] starting — relay=%s node=%s auth=%s interval=%.0fs\n%!"
+      relay_url node_id identity_tag interval;
     let t = {
       relay_url; token; identity; broker_root; node_id;
       heartbeat_ttl; interval; verbose;
@@ -447,18 +483,20 @@ let start ~relay_url ~token ~identity ~broker_root ~node_id
     if once then begin
       match Lwt_main.run (sync t) with
       | result ->
-          if verbose then begin
-            Printf.printf "[relay-connector] sync result: registered=%d heartbeated=%d outbox_forwarded=%d outbox_failed=%d inbound_delivered=%d\n%!"
-              (List.length result.registered)
-              (List.length result.heartbeated)
-              result.outbox_forwarded
-              result.outbox_failed
-              result.inbound_delivered
-          end;
+          let err_str = match result.last_error with
+            | None -> ""
+            | Some e -> Printf.sprintf " [%s: %s]" e.err_op e.err_detail
+          in
+          Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d inbound=%d%s\n%!"
+            (List.length result.registered)
+            (List.length result.heartbeated)
+            result.outbox_forwarded
+            result.outbox_failed
+            result.inbound_delivered
+            err_str;
           0
       | exception exn ->
-          if verbose then
-            Printf.eprintf "[relay-connector] sync error: %s\n%!" (Printexc.to_string exn);
+          Printf.eprintf "[relay-connector] sync exception: %s\n%!" (Printexc.to_string exn);
           1
     end else begin
       run t;
