@@ -8695,10 +8695,12 @@ let print_enriched_landing () =
    | `Ok -> ()
    | `Unknown -> ()
    | `Missing_cap py ->
-       Printf.printf
-         "  pty-inject:       MISSING cap_sys_ptrace — kimi/codex/opencode PTY wake will fail\n";
-       Printf.printf
-         "                    fix: sudo setcap cap_sys_ptrace=ep %s\n" py);
+        Printf.printf
+          "  pty-inject:       MISSING cap_sys_ptrace — Codex PTY notify daemon will fail\n";
+        Printf.printf
+          "                    fix: sudo setcap cap_sys_ptrace=ep %s\n" py;
+        Printf.printf
+          "                    (OpenCode + Kimi use non-PTY delivery — cap not required for them)\n");
   Printf.printf "\nClients\n";
   List.iter (fun (c, on_path, configured) ->
     let status =
