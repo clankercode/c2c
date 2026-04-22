@@ -5584,11 +5584,23 @@ let render_role_for_client (r : C2c_role.t) ~client =
 let write_agent_file ~client ~name ~content =
   let path = agent_file_path ~client ~name in
   let dir = Filename.dirname path in
-  (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
-  let oc = open_out path in
-  Fun.protect ~finally:(fun () -> close_out oc)
-    (fun () -> output_string oc content; output_char oc '\n');
-  Printf.eprintf "[c2c start] wrote compiled agent file: %s\n%!" path
+  let rec mkdir_p d =
+    if d = "/" || d = "." || d = "" then ()
+    else if Sys.file_exists d then ()
+    else begin mkdir_p (Filename.dirname d); try Unix.mkdir d 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> () end
+  in
+  mkdir_p dir;
+  let lock_path = path ^ ".lock" in
+  let fd = Unix.openfile lock_path [Unix.O_RDWR; Unix.O_CREAT; Unix.O_TRUNC] 0o644 in
+  Fun.protect ~finally:(fun () -> Unix.close fd)
+    (fun () ->
+      Unix.lockf fd Unix.F_LOCK 0;
+      Fun.protect ~finally:(fun () -> Unix.lockf fd Unix.F_ULOCK 0)
+        (fun () ->
+          let oc = open_out path in
+          Fun.protect ~finally:(fun () -> close_out oc)
+            (fun () -> output_string oc content; output_char oc '\n');
+          Printf.eprintf "[c2c start] wrote compiled agent file: %s\n%!" path))
 
 let get_opencode_theme (r : C2c_role.t) : string option =
   List.assoc_opt "theme" r.C2c_role.opencode
@@ -5814,10 +5826,17 @@ let roles_compile_term =
              (let out_path = agent_file_path ~client:client_str ~name in
               let dir = Filename.dirname out_path in
               mkdir_p dir;
-             let oc = open_out out_path in
-             Fun.protect ~finally:(fun () -> close_out oc)
-               (fun () -> output_string oc rendered; output_char oc '\n');
-             Printf.printf "  [roles compile] %s -> %s\n" path out_path)
+              let lock_path = out_path ^ ".lock" in
+              let fd = Unix.openfile lock_path [Unix.O_RDWR; Unix.O_CREAT; Unix.O_TRUNC] 0o644 in
+              Fun.protect ~finally:(fun () -> Unix.close fd)
+                (fun () ->
+                  Unix.lockf fd Unix.F_LOCK 0;
+                  Fun.protect ~finally:(fun () -> Unix.lockf fd Unix.F_ULOCK 0)
+                    (fun () ->
+                      let oc = open_out out_path in
+                      Fun.protect ~finally:(fun () -> close_out oc)
+                        (fun () -> output_string oc rendered; output_char oc '\n');
+                      Printf.printf "  [roles compile] %s -> %s\n" path out_path)))
       | None ->
           Printf.eprintf "  [roles compile] skip %s: client '%s' not supported\n" name client_str
     with Sys_error msg ->

@@ -51,7 +51,7 @@ run-opencode-inst.d/plugins/
 run-opencode-inst.d/package.json
 .opencode/c2c-plugin.json
 .opencode/c2c-plugin-spool.json
-.c2c/roles/
+.opencode/agent/
 .opencode/node_modules/
 .opencode/package-lock.json
 .opencode/bun.lock
@@ -65,6 +65,8 @@ run-crush-inst.d/*.pid
 run-crush-inst.d/*.log
 run-crush-inst.d/*.restart.json
 run-codex-inst.d
+.c2c/instances/
+.c2c/agents/
 .claude
 .playwright-mcp/
 *.png
