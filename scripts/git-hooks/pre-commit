@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Pre-commit hook for c2c.
+#
+# Guards against classes of breakage that were only caught by
+# humans-restarting-the-swarm incidents, not by local dev loops:
+#
+# 1. OpenCode plugin syntax errors. A single stray `}` in
+#    .opencode/plugins/c2c.ts silently disabled DMs, statefile
+#    updates, and permission relay across every managed peer on
+#    2026-04-22. `bun build` catches this in milliseconds.
+#
+# Installed by: just install-git-hooks
+#
+# Skip in emergencies: `git commit --no-verify` (but fix the root
+# cause before the next peer restart).
+
+set -euo pipefail
+
+staged_plugin=0
+while IFS= read -r f; do
+    case "$f" in
+        .opencode/plugins/*.ts) staged_plugin=1 ;;
+    esac
+done < <(git diff --cached --name-only --diff-filter=ACM)
+
+if [ "$staged_plugin" = "1" ]; then
+    if ! command -v bun >/dev/null 2>&1; then
+        echo "pre-commit: .opencode/plugins/*.ts staged but 'bun' not found on PATH — skipping syntax check" >&2
+        echo "            install bun or use --no-verify if this is an emergency" >&2
+        exit 1
+    fi
+    if ! bun build .opencode/plugins/c2c.ts --target=bun >/dev/null 2>&1; then
+        echo "pre-commit: .opencode/plugins/c2c.ts fails bun build" >&2
+        echo "            run: bun build .opencode/plugins/c2c.ts --target=bun" >&2
+        echo "            to see the error, or 'just test-ts' for the full suite" >&2
+        exit 1
+    fi
+fi
+
+exit 0

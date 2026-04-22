@@ -95,6 +95,19 @@ test-one *ARGS:
 check:
     git diff --check
 
+# Install repo git hooks (pre-commit: plugin syntax check).
+# Uses symlinks so edits in scripts/git-hooks/ apply immediately.
+install-git-hooks:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    hooks_dir="$(git rev-parse --git-path hooks)"
+    mkdir -p "$hooks_dir"
+    for src in scripts/git-hooks/*; do
+        name="$(basename "$src")"
+        ln -sfn "$(realpath "$src")" "$hooks_dir/$name"
+        echo "installed: $hooks_dir/$name → $src"
+    done
+
 # Install OCaml CLI binary to ~/.local/bin (build + copy)
 install-cli:
     opam exec -- dune build -j1 ./ocaml/cli/c2c.exe
