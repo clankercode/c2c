@@ -172,6 +172,12 @@ module Claude_renderer = struct
       if r.c2c_auto_join_rooms <> [] then
         lines := ("#   auto_join_rooms: [" ^ String.concat ", " r.c2c_auto_join_rooms ^ "]") :: !lines;
     end;
+    if r.claude <> [] then begin
+      lines := "claude:" :: !lines;
+      List.iter (fun (k, v) ->
+        lines := ("  " ^ k ^ ": " ^ yaml_scalar v) :: !lines
+      ) r.claude;
+    end;
     let fm = String.concat "\n" (List.rev !lines) in
     "---\n" ^ fm ^ "\n---\n\n" ^ r.body
 end
