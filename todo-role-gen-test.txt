@@ -115,7 +115,7 @@ OpenCode with the agent active, correct theme, correct room joins,
 correct alias.
 
 **Expected**:
-- `.opencode/agent/<name>.md` is written (gitignored)
+- `.opencode/agents/<name>.md` is written (gitignored)
 - OpenCode starts and the agent is selected (TUI shows it)
 - Theme overlay applies (TUI visual check)
 - Agent registers to broker with the right alias

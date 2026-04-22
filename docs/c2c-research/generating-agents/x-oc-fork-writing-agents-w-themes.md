@@ -8,7 +8,7 @@ Two places, same schema:
 
 - **Markdown files** (preferred for custom agents):
   - Global: `~/.config/opencode/agent/*.md` or `agents/`
-  - Per-project: `.opencode/agent/*.md` or `agents/`
+  - Per-project: `.opencode/agents/*.md` or `agents/`
   - The filename (minus `.md`) is the agent name.
 - **`opencode.json`** under the `agent` key, keyed by agent name.
 
@@ -16,7 +16,7 @@ Mode files (`mode/*.md` or `modes/*.md`) share the same schema — anything you 
 
 ## Minimal agent
 
-```markdown title=".opencode/agent/review.md"
+```markdown title=".opencode/agents/review.md"
 ---
 description: Reviews diffs for correctness and style
 mode: subagent
@@ -137,7 +137,7 @@ You are in planning mode...
 
 **Design-review agent that's legible on light and dark terminals:**
 
-```markdown title=".opencode/agent/design-review.md"
+```markdown title=".opencode/agents/design-review.md"
 ---
 description: Reviews visual design changes
 mode: primary
@@ -151,7 +151,7 @@ Focus on visual hierarchy, contrast, and spacing...
 
 **Security-review agent with a bespoke high-alert palette:**
 
-```markdown title=".opencode/agent/security.md"
+```markdown title=".opencode/agents/security.md"
 ---
 description: Red-team style security audit
 mode: primary

@@ -6031,7 +6031,7 @@ let default_kickoff_prompt ~name ~alias ?role () =
 
 let agent_file_path ~client ~name =
   match client with
-  | "opencode" -> ".opencode" // "agent" // (name ^ ".md")
+  | "opencode" -> ".opencode" // "agents" // (name ^ ".md")
   | "claude" -> ".claude" // "agents" // (name ^ ".md")
   | _ -> ".c2c" // "agents" // (name ^ ".md")
 
@@ -6696,7 +6696,7 @@ let agent_refine_term =
   close_out oc;
   let argv = match client with
     | "claude" -> [| "claude"; prompt |]
-    | "opencode" -> [| "opencode"; "--prompt"; "Run 'cat .c2c/agent-refine-last-prompt.md' and follow the instructions." |]
+    | "opencode" -> [| "opencode"; "--agent"; "role-designer";  "--prompt"; "Run 'cat .c2c/agent-refine-last-prompt.md' and follow the instructions." |]
     | "codex" -> [| "codex"; "exec"; prompt |]
     | other ->
       Printf.eprintf "error: unknown generation_client '%s' (expected claude|opencode|codex)\n%!" other;

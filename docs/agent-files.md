@@ -26,7 +26,7 @@ c2c start opencode --agent reviewer
 ```
 
 `c2c` reads `.c2c/roles/reviewer.md`, renders it to
-`.opencode/agent/reviewer.md` (gitignored), and launches OpenCode with
+`.opencode/agents/reviewer.md` (gitignored), and launches OpenCode with
 the agent active.
 
 ## Canonical schema

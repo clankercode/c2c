@@ -5245,10 +5245,93 @@ let test_check_pending_reply_non_supervisor_via_mcp () =
               check bool "error mentions non-supervisor" true
                 (string_contains error_str "reply from non-supervisor")))
 
-(* M4: alias-reuse guard test skipped — requires exposing pending_permission type
-   from broker interface, tracked separately for follow-up. *)
-(* TODO: re-add test_register_rejects_alias_with_pending_permission_from_alive_owner
-   once pending_permission type is exported from Broker module. *)
+(* M4: alias-reuse guard — registration is blocked when the alias has an
+   active pending permission from a prior owner, even if that owner is dead.
+   The prior owner may be alive or dead; the pending state is the blocker. *)
+let test_register_rejects_alias_with_pending_permission_from_alive_owner () =
+  with_temp_dir (fun dir ->
+      let live_pid = Unix.getpid () in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* session-owner registers "test-alias" with a live PID *)
+      C2c_mcp.Broker.register broker ~session_id:"session-owner"
+        ~alias:"test-alias" ~pid:(Some live_pid) ~pid_start_time:None ();
+      (* Open a pending permission for "test-alias" from session-owner *)
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-owner";
+      Fun.protect ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let open_perm_request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 55)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "open_pending_reply")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("perm_id", `String "perm-test-123")
+                          ; ("kind", `String "permission")
+                          ; ("supervisors", `List [`String "coordinator1"])
+                          ] )
+                    ] )
+              ]
+          in
+          let open_response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir open_perm_request)
+          in
+          check bool "open_pending_reply succeeded" true
+            (match open_response with
+             | Some json ->
+                 let open Yojson.Safe.Util in
+                 json |> member "result" |> member "isError" |> to_bool_option
+                 |> Option.value ~default:false
+                 |> not
+             | None -> false);
+          (* session-thief tries to claim the same alias — must be rejected *)
+          Unix.putenv "C2C_MCP_SESSION_ID" "session-thief";
+          let reg_request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 77)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "register")
+                    ; ( "arguments",
+                        `Assoc [ ("alias", `String "test-alias") ] )
+                    ] )
+              ]
+          in
+          let reg_response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir reg_request)
+          in
+          (match reg_response with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let is_error =
+                 json |> member "result" |> member "isError" |> to_bool_option
+                 |> Option.value ~default:false
+               in
+               check bool "register rejected with isError=true" true is_error;
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               check bool "error mentions pending permission" true
+                 (string_contains text "pending permission");
+               check bool "error mentions the alias" true
+                 (string_contains text "test-alias");
+               (* session-owner still registered *)
+               let regs = C2c_mcp.Broker.list_registrations broker in
+               let owner =
+                 List.find_opt (fun r -> r.session_id = "session-owner") regs
+               in
+               check bool "owner registration preserved" true (owner <> None);
+               let thief =
+                 List.find_opt (fun r -> r.session_id = "session-thief") regs
+               in
+               check bool "thief not registered" true (thief = None)))
 
 let () =
   run "c2c_mcp"
@@ -5314,10 +5397,12 @@ let () =
              test_tools_call_register_prefers_explicit_client_pid_env
          ; test_case "tools/call register no alias falls back to env" `Quick
              test_tools_call_register_no_alias_falls_back_to_env
-         ; test_case "tools/call register rejects alias hijack from alive session" `Quick
-             test_tools_call_register_rejects_alias_hijack
-         ; test_case "tools/call register allows takeover of pidless stale alias (Bug #7)" `Quick
-             test_tools_call_register_allows_takeover_of_pidless_stale_alias
+          ; test_case "tools/call register rejects alias hijack from alive session" `Quick
+              test_tools_call_register_rejects_alias_hijack
+          ; test_case "M4: register rejects alias with pending permission from prior owner" `Quick
+              test_register_rejects_alias_with_pending_permission_from_alive_owner
+          ; test_case "tools/call register allows takeover of pidless stale alias (Bug #7)" `Quick
+              test_tools_call_register_allows_takeover_of_pidless_stale_alias
          ; test_case "tools/call register returns collision_exhausted when all primes taken" `Quick
              test_tools_call_register_alias_collision_exhausted
          ; test_case "tools/call register allows own alias refresh" `Quick

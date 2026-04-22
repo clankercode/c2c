@@ -186,7 +186,7 @@ Dead registrations: 10 stale test aliases; no sweep pending.
 ## Gaps & concerns
 
 - Stage 4–7 of the agent-file epic need Max. Nudge at next session.
-- Compiled artifacts under `.opencode/agent/` are untracked until
+- Compiled artifacts under `.opencode/agents/` are untracked until
   gitignore fix lands; one false-commit risk each pane-launch.
 - galaxy-coder restarted mid-session; some handoff context may be lost.
 ```

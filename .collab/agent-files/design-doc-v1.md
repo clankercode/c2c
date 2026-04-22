@@ -58,7 +58,7 @@ Canonical role file (.c2c/roles/<name>.md)
         ↓
   Client_renderer (OpenCode | Claude | Codex | Kimi)
         ↓
-  Compiled agent file (written to .opencode/agent/<name>.md, etc.)
+  Compiled agent file (written to .opencode/agents/<name>.md, etc.)
 ```
 
 Each client renderer is a pure function `canonical_role -> string`:
@@ -94,7 +94,7 @@ Debug command: compile and print output without writing or launching.
 ## Directory Structure
 
 - `.c2c/roles/<name>.md` — canonical source (flat list, git-tracked)
-- `.opencode/agent/<name>.md` — compiled output (gitignored)
+- `.opencode/agents/<name>.md` — compiled output (gitignored)
 - `.claude/agents/<name>.md` — compiled output (gitignored)
 
 ## Migration: existing role files
