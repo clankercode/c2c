@@ -4540,7 +4540,7 @@ let do_install_client ?(channel_delivery=false) ~output_mode ~client ~alias_opt 
 (* --- install: detection + TUI --------------------------------------------- *)
 
 let known_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "crush" ]
-let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "crush" ]
+ let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "crush" ]
 
 let self_installed_path () =
   let home = try Sys.getenv "HOME" with Not_found -> "" in
@@ -7365,7 +7365,7 @@ let () =
                     $(b,wire-daemon), $(b,screen), $(b,help)"
                ; `P "$(b,install) — install c2c + client integrations (TUI by default). \
                      Use $(b,c2c install self) for binary-only, \
-                     $(b,c2c install claude|codex|opencode|kimi|crush) per-client, \
+                     $(b,c2c install claude|codex|codex-headless|opencode|kimi|crush) per-client, \
                      or $(b,c2c install all) for non-interactive full setup."
                ; `P "$(b,rooms) — manage N:N chat rooms"
                ; `P "$(b,relay) — cross-machine relay: serve, connect, setup, status, list, rooms, gc"
