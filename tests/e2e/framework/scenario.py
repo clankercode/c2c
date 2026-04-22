@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import subprocess
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -32,6 +34,27 @@ class StartedAgent:
     config: AgentConfig
 
 
+class ScenarioAgentAssertion:
+    def __init__(self, scenario: "Scenario", agent: StartedAgent) -> None:
+        self._scenario = scenario
+        self._agent = agent
+
+    def alive(self) -> None:
+        if not self._scenario.drivers[self._agent.backend].is_alive(self._agent.handle):
+            raise AssertionError(f"{self._agent.name} is not alive")
+
+    def registered_alive(self) -> None:
+        registry = self._scenario.broker_root() / "registry.json"
+        if not registry.exists():
+            raise AssertionError(f"broker registry missing: {registry}")
+        registrations = json.loads(registry.read_text(encoding="utf-8") or "[]")
+        rows = registrations if isinstance(registrations, list) else registrations.get("registrations", [])
+        for row in rows:
+            if row.get("alias") == self._agent.name and row.get("alive") is not False:
+                return
+        raise AssertionError(f"{self._agent.name} is not registered alive in broker registry")
+
+
 class Adapter(Protocol):
     client_name: str
     default_backend: str
@@ -60,6 +83,7 @@ class Scenario:
         self.agents: dict[str, StartedAgent] = {}
         self._adapter_capability_cache: dict[str, dict[str, bool]] = {}
         self._capability_cache: dict[str, bool] = {}
+        self._broker_root: Path | None = None
         self.workdir.mkdir(parents=True, exist_ok=True)
 
     def comment(self, text: str) -> None:
@@ -127,6 +151,46 @@ class Scenario:
             return all(self.adapters[agent.client].is_ready(self, agent) for agent in agents)
 
         self.wait_for(_ready, timeout=timeout)
+
+    def capture(self, agent: StartedAgent) -> str:
+        capture = self.drivers[agent.backend].capture(agent.handle)
+        self.artifacts.write_text(f"{agent.name}.capture.txt", capture.text)
+        return capture.text
+
+    def send_dm(self, from_agent: StartedAgent, to_agent: StartedAgent, text: str) -> None:
+        subprocess.run(
+            ["c2c", "send", to_agent.name, text],
+            cwd=self.workdir,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.artifacts.append_event(
+            "dm.sent",
+            {"from_agent": from_agent.name, "to_agent": to_agent.name, "text": text},
+        )
+
+    def broker_root(self) -> Path:
+        if self._broker_root is None:
+            git_common = subprocess.run(
+                ["git", "rev-parse", "--git-common-dir"],
+                cwd=self.workdir,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            self._broker_root = (self.workdir / git_common / "c2c" / "mcp").resolve()
+        return self._broker_root
+
+    def broker_inbox_contains(self, agent: StartedAgent, text: str) -> bool:
+        inbox = self.broker_root() / f"{agent.name}.inbox.json"
+        if not inbox.exists():
+            return False
+        payload = json.loads(inbox.read_text(encoding="utf-8") or "[]")
+        return text in json.dumps(payload)
+
+    def assert_agent(self, agent: StartedAgent) -> ScenarioAgentAssertion:
+        return ScenarioAgentAssertion(self, agent)
 
     def probe_capabilities(self, client: str) -> dict[str, bool]:
         if client not in self._adapter_capability_cache:

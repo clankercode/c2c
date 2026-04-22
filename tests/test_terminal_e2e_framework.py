@@ -305,6 +305,148 @@ def test_scenario_start_agent_passes_terminal_start_spec_to_driver(tmp_path: Pat
     assert spec.rows == 60
 
 
+def test_scenario_capture_returns_text_and_writes_artifact(tmp_path: Path) -> None:
+    scenario = Scenario(
+        test_name="test_demo",
+        workdir=tmp_path / "work",
+        artifacts=ArtifactCollector(tmp_path / "artifacts", "test_demo"),
+        drivers={"dummy": DummyDriver()},
+        adapters={"dummy": DummyAdapter()},
+    )
+    scenario.artifacts.start_run()
+    agent = scenario.start_agent("dummy", name="dummy-a")
+
+    captured = scenario.capture(agent)
+
+    assert captured == "READY\n"
+    artifact_path = scenario.artifacts.run_dir / "dummy-a.capture.txt"
+    assert artifact_path.read_text(encoding="utf-8") == "READY\n"
+
+
+def test_scenario_send_dm_invokes_c2c_send_and_records_timeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scenario = Scenario(
+        test_name="test_demo",
+        workdir=tmp_path / "work",
+        artifacts=ArtifactCollector(tmp_path / "artifacts", "test_demo"),
+        drivers={"dummy": DummyDriver()},
+        adapters={"dummy": DummyAdapter()},
+    )
+    scenario.artifacts.start_run()
+    sender = scenario.start_agent("dummy", name="dummy-a")
+    recipient = scenario.start_agent("dummy", name="dummy-b")
+    calls: list[tuple[list[str], Path]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> mock.Mock:
+        calls.append((cmd, kwargs["cwd"]))
+        return mock.Mock(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr("tests.e2e.framework.scenario.subprocess.run", fake_run)
+
+    scenario.send_dm(sender, recipient, "hello there")
+
+    assert calls == [(["c2c", "send", "dummy-b", "hello there"], scenario.workdir)]
+    timeline = (scenario.artifacts.run_dir / "timeline.jsonl").read_text(encoding="utf-8")
+    assert '"event": "dm.sent"' in timeline
+    assert '"from_agent": "dummy-a"' in timeline
+    assert '"to_agent": "dummy-b"' in timeline
+    assert '"text": "hello there"' in timeline
+
+
+def test_scenario_broker_root_resolves_git_common_dir_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scenario = Scenario(
+        test_name="test_demo",
+        workdir=tmp_path / "worktree",
+        artifacts=ArtifactCollector(tmp_path / "artifacts", "test_demo"),
+        drivers={"dummy": DummyDriver()},
+        adapters={"dummy": DummyAdapter()},
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> mock.Mock:
+        calls.append(cmd)
+        return mock.Mock(stdout="../.git-common\n", returncode=0)
+
+    monkeypatch.setattr("tests.e2e.framework.scenario.subprocess.run", fake_run)
+
+    first = scenario.broker_root()
+    second = scenario.broker_root()
+
+    expected = (scenario.workdir / "../.git-common" / "c2c" / "mcp").resolve()
+    assert first == expected
+    assert second == expected
+    assert calls == [["git", "rev-parse", "--git-common-dir"]]
+
+
+def test_scenario_broker_inbox_contains_matches_nested_json_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scenario = Scenario(
+        test_name="test_demo",
+        workdir=tmp_path / "work",
+        artifacts=ArtifactCollector(tmp_path / "artifacts", "test_demo"),
+        drivers={"dummy": DummyDriver()},
+        adapters={"dummy": DummyAdapter()},
+    )
+    scenario.artifacts.start_run()
+    agent = scenario.start_agent("dummy", name="dummy-b")
+    broker_root = tmp_path / "broker"
+    broker_root.mkdir(parents=True)
+    (broker_root / "dummy-b.inbox.json").write_text(
+        json.dumps([{"message": {"text": "hello there"}}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(scenario, "broker_root", lambda: broker_root)
+
+    assert scenario.broker_inbox_contains(agent, "hello there") is True
+    assert scenario.broker_inbox_contains(agent, "not present") is False
+
+
+def test_scenario_assert_agent_checks_liveness_and_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = DummyDriver()
+    scenario = Scenario(
+        test_name="test_demo",
+        workdir=tmp_path / "work",
+        artifacts=ArtifactCollector(tmp_path / "artifacts", "test_demo"),
+        drivers={"dummy": driver},
+        adapters={"dummy": DummyAdapter()},
+    )
+    scenario.artifacts.start_run()
+    agent = scenario.start_agent("dummy", name="dummy-a")
+    broker_root = tmp_path / "broker"
+    broker_root.mkdir(parents=True)
+    (broker_root / "registry.json").write_text(
+        json.dumps(
+            [
+                {"alias": "dummy-a", "alive": True},
+                {"alias": "dummy-b", "alive": False},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(scenario, "broker_root", lambda: broker_root)
+
+    scenario.assert_agent(agent).alive()
+    scenario.assert_agent(agent).registered_alive()
+
+    monkeypatch.setattr(driver, "is_alive", lambda _handle: False)
+    with pytest.raises(AssertionError, match="dummy-a is not alive"):
+        scenario.assert_agent(agent).alive()
+
+    monkeypatch.setattr(driver, "is_alive", lambda _handle: True)
+    (broker_root / "registry.json").write_text(
+        json.dumps([{"alias": "dummy-a", "alive": False}]),
+        encoding="utf-8",
+    )
+    with pytest.raises(AssertionError, match="dummy-a is not registered alive in broker registry"):
+        scenario.assert_agent(agent).registered_alive()
+
+
 def test_scenario_require_binary_raises_for_missing_binary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
