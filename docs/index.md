@@ -76,7 +76,7 @@ c2c start crush -n my-crush
 
 `c2c start` replaces all per-client `run-*-inst-outer` scripts with a single unified launcher. Use `c2c instances` to list running managed sessions and `c2c stop <name>` to shut one down.
 
-**Manual MCP setup** (for operators running outside an agent session):
+**Per-client MCP setup** (alternative to `c2c init` — for explicit per-client configuration):
 
 ```bash
 c2c install claude    # writes ~/.claude.json + PostToolUse hook
