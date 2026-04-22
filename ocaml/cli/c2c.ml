@@ -493,7 +493,7 @@ let send_cmd =
     Cmdliner.Arg.(non_empty & pos_right 0 string [] & info [] ~docv:"MSG" ~doc:"Message body (remaining args joined with spaces).")
   in
   let from_override =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "from"; "F" ] ~docv:"ALIAS" ~doc:"Override sender alias. Useful for operators/tests running outside an agent session; equivalent to setting C2C_MCP_AUTO_REGISTER_ALIAS.")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "from"; "F" ] ~docv:"ALIAS" ~doc:"Send messages as this alias. The alias must already be registered with the broker; use $(b,c2c register --alias ALIAS) first. Useful for operators or tests running outside an agent session.")
   in
   let+ json = json_flag
   and+ to_alias = to_alias
@@ -5433,7 +5433,7 @@ let install_self_subcmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "dest"; "d" ] ~docv:"DIR" ~doc:"Install destination (default: ~/.local/bin).")
   in
   let mcp_server =
-    Cmdliner.Arg.(value & flag & info [ "mcp-server" ] ~doc:"Also install the c2c MCP server binary as ~/.local/bin/c2c-mcp-server.")
+    Cmdliner.Arg.(value & flag & info [ "mcp-server" ] ~doc:"Also install the c2c MCP server binary as ~/.local/bin/c2c-mcp-server. The MCP server is the JSON-RPC bridge that enables c2c messaging between coding CLIs.")
   in
   let term =
     let+ json = json_flag
@@ -6880,7 +6880,7 @@ let config_show_cmd = Cmdliner.Cmd.v
   (Cmdliner.Cmd.info "show" ~doc:"Show current c2c config values.") config_show_term
 let config_generation_client_cmd = Cmdliner.Cmd.v
   (Cmdliner.Cmd.info "generation-client"
-    ~doc:"Show or set the generation_client preference (claude|opencode|codex).")
+    ~doc:"Show or set the generation_client preference — which client handles code generation in multi-agent workflows (claude|opencode|codex).")
   config_generation_client_term
 
 let config_group =
@@ -8966,12 +8966,17 @@ let () =
           (Cmdliner.Cmd.info "c2c"
              ~version:(version_string ())
              ~doc:"c2c — peer-to-peer messaging for AI agents"
-              ~man:
+             ~man:
                 ([ `S "GETTING STARTED"
                 ; `P "New to c2c? Run $(b,c2c init) to configure your client, register, and join the swarm-lounge room in one step."
                 ; `P "Then try: $(b,c2c list) to see peers, $(b,c2c send ALIAS MSG) to message someone, or $(b,c2c rooms) to join a room."
                 ; `P "For full command reference see COMMANDS below."
                 ; `S "DESCRIPTION"
                 ; `P "c2c is a peer-to-peer messaging broker between AI coding sessions. Use subcommands to interact with the broker."
+                ; `S "EXIT CODES"
+                ; `P "c2c uses standard exit codes:"
+                ; `Noblank; `P "123 — operational error (e.g., relay unreachable, broker unreachable, or registration failed)"
+                ; `Noblank; `P "124 — bad command-line flag or argument — check your syntax"
+                ; `Noblank; `P "125 — bug in c2c — please report at https://github.com/anomalyco/c2c/issues"
                 ] @ tier_grouped_man))
              visible_cmds))
