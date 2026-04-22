@@ -215,7 +215,7 @@ let rec command_tier_map () : (string * safety) list =
    ; "relay-rooms", Tier3
    ; "relay-poll-inbox", Tier3
    ; "setcap", Tier3
-  ; "install", Tier3
+  ; "install", Tier2
   ; "gui", Tier3
   ; "diag", Tier3
   ; "smoke-test", Tier3
