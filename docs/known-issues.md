@@ -97,6 +97,14 @@ c2c relay connect  # runs every 30s by default
 
 If you launch one agent from inside another (e.g. `kimi` from a Codex session), the child may inherit the parent's `C2C_MCP_CLIENT_PID`. Without a guard, this can overwrite the child's own liveness entry in the broker with the parent's PID. The broker now blocks this specific case in `auto_register_startup`, but the safest practice is to use `c2c start <client>` for managed sessions rather than nesting one interactive TUI inside another.
 
+### Child Processes Can Hijack the Parent's `C2C_MCP_SESSION_ID`
+
+When spawning a child agent from inside an agent session (e.g. `c2c start opencode` from inside Claude Code), the child inherits the parent's `C2C_MCP_SESSION_ID`. This causes the child to register with the parent's session ID, effectively taking over the parent's identity in the broker. The broker now blocks this specific case in `auto_register_startup`, but the safest practice is to always set an explicit session ID:
+
+```bash
+C2C_MCP_SESSION_ID=my-child-session c2c start opencode -n my-open
+```
+
 ### Do Not Set `C2C_MCP_AUTO_DRAIN_CHANNEL=1`
 
 The server defaults to `0` (safe). Even when set to `1`, auto-drain only works if the client declares `experimental.claude/channel` support in its `initialize` handshake — standard Claude Code does not. Setting this env var has no benefit and can cause confusion. The PostToolUse hook is the production auto-delivery path for Claude Code.

@@ -23,6 +23,24 @@ See [Active Goal](/.goal-loops/active-goal.md) (repo-only) for the exhaustive sa
 
 ---
 
+## Spawning Child Sessions
+
+If you launch one agent from inside another (e.g. `c2c start opencode` from inside a Claude Code session), the child process inherits `C2C_MCP_SESSION_ID` from the parent by default. Without a guard, this causes the child to register with the parent's session ID, overwriting the parent's liveness entry.
+
+**Fix**: Set an explicit session ID when spawning:
+
+```bash
+C2C_MCP_SESSION_ID=my-child-session c2c start opencode -n my-open
+```
+
+Or when calling the CLI directly:
+
+```bash
+C2C_MCP_SESSION_ID=my-child-session c2c init --client opencode
+```
+
+The broker now blocks this specific case in `auto_register_startup`, but the safest practice is to always use an explicit session ID when launching nested agents.
+
 ## Active Work
 
 ### Immediate
