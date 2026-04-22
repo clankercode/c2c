@@ -153,6 +153,92 @@ def _sign_register_body(identity: dict, alias: str, relay_url: str) -> dict:
     }
 
 
+# Room op sign contexts (matching Relay.room_*_sign_ctx in OCaml).
+_ROOM_JOIN_SIGN_CTX = "c2c/v1/room-join"
+_ROOM_LEAVE_SIGN_CTX = "c2c/v1/room-leave"
+_ROOM_SEND_SIGN_CTX = "c2c/v1/room-send"
+_ROOM_INVITE_SIGN_CTX = "c2c/v1/room-invite"
+_ROOM_UNINVITE_SIGN_CTX = "c2c/v1/room-uninvite"
+_ROOM_SET_VISIBILITY_SIGN_CTX = "c2c/v1/room-set-visibility"
+
+
+def _sign_room_op(identity: dict, ctx: str, room_id: str, alias: str) -> dict:
+    """Build body-level Ed25519 proof for a room mutation op.
+
+    Returns a dict with identity_pk, signature, nonce, timestamp fields that
+    should be merged into the request body. Mirrors OCaml
+    Relay_signed_ops.sign_room_op.
+
+    Canonical blob (matching relay_signed_ops.ml):
+      ctx + \\x1f + room_id + \\x1f + alias + \\x1f + pk_b64 + \\x1f + ts + \\x1f + nonce
+    """
+    pk_b64 = identity.get("public_key", "")
+    sk_b64 = identity.get("private_key", "")
+    if not pk_b64 or not sk_b64:
+        raise ValueError("identity missing public_key or private_key")
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    sk_bytes = base64.urlsafe_b64decode(sk_b64 + "==")
+    priv = Ed25519PrivateKey.from_private_bytes(sk_bytes)
+
+    import datetime
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    nonce = _b64url_nopad(secrets.token_bytes(16))
+
+    blob = _UNIT_SEP.join([ctx, room_id, alias, pk_b64, ts, nonce])
+    sig = priv.sign(blob.encode())
+    return {
+        "identity_pk": pk_b64,
+        "signature": _b64url_nopad(sig),
+        "nonce": nonce,
+        "timestamp": ts,
+    }
+
+
+def _sign_send_room(identity: dict, room_id: str, from_alias: str,
+                    content: str) -> dict:
+    """Build a signed §2 envelope for /send_room.
+
+    Returns the full envelope dict {ct, enc, sender_pk, sig, ts, nonce}
+    to attach as the "envelope" field in the send_room body.
+    Mirrors OCaml Relay_signed_ops.sign_send_room.
+
+    Canonical blob:
+      "c2c/v1/room-send" + \\x1f + room_id + \\x1f + from_alias + \\x1f
+      + pk_b64 + \\x1f + "none" + \\x1f + sha256(content) + \\x1f + ts + \\x1f + nonce
+    """
+    import hashlib
+    pk_b64 = identity.get("public_key", "")
+    sk_b64 = identity.get("private_key", "")
+    if not pk_b64 or not sk_b64:
+        raise ValueError("identity missing public_key or private_key")
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    sk_bytes = base64.urlsafe_b64decode(sk_b64 + "==")
+    priv = Ed25519PrivateKey.from_private_bytes(sk_bytes)
+
+    ct_bytes = content.encode("utf-8")
+    ct_b64 = _b64url_nopad(ct_bytes)
+    ct_hash = _b64url_nopad(hashlib.sha256(ct_bytes).digest())
+
+    import datetime
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    nonce = _b64url_nopad(secrets.token_bytes(16))
+    enc = "none"
+
+    blob = _UNIT_SEP.join([_ROOM_SEND_SIGN_CTX, room_id, from_alias,
+                           pk_b64, enc, ct_hash, ts, nonce])
+    sig = priv.sign(blob.encode())
+    return {
+        "ct": ct_b64,
+        "enc": enc,
+        "sender_pk": pk_b64,
+        "sig": _b64url_nopad(sig),
+        "ts": ts,
+        "nonce": nonce,
+    }
+
+
 # ---------------------------------------------------------------------------
 # HTTP relay client
 # ---------------------------------------------------------------------------
@@ -274,12 +360,24 @@ class RelayClient:
         return r.get("history", [])
 
     def join_room(self, alias: str, room_id: str) -> dict:
-        return self._request("POST", "/join_room", {"alias": alias, "room_id": room_id},
-                             alias=alias)
+        body: dict[str, Any] = {"alias": alias, "room_id": room_id}
+        if self._identity:
+            try:
+                body.update(_sign_room_op(self._identity, _ROOM_JOIN_SIGN_CTX,
+                                          room_id, alias))
+            except Exception:
+                pass  # unsigned — falls back to legacy
+        return self._request("POST", "/join_room", body, alias=alias)
 
     def leave_room(self, alias: str, room_id: str) -> dict:
-        return self._request("POST", "/leave_room", {"alias": alias, "room_id": room_id},
-                             alias=alias)
+        body: dict[str, Any] = {"alias": alias, "room_id": room_id}
+        if self._identity:
+            try:
+                body.update(_sign_room_op(self._identity, _ROOM_LEAVE_SIGN_CTX,
+                                          room_id, alias))
+            except Exception:
+                pass  # unsigned — falls back to legacy
+        return self._request("POST", "/leave_room", body, alias=alias)
 
     def send_room(self, from_alias: str, room_id: str, content: str,
                   message_id: Optional[str] = None) -> dict:
@@ -288,6 +386,13 @@ class RelayClient:
         }
         if message_id:
             body["message_id"] = message_id
+        # L4/2: sign the send envelope when identity is available.
+        if self._identity:
+            try:
+                body["envelope"] = _sign_send_room(self._identity, room_id,
+                                                    from_alias, content)
+            except Exception:
+                pass  # unsigned — falls back to legacy
         return self._request("POST", "/send_room", body, alias=from_alias)
 
     def gc(self) -> dict:
