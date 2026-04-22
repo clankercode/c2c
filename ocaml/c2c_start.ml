@@ -256,6 +256,7 @@ let deliver_pid_path name = instance_dir name // "deliver.pid"
 let poker_pid_path name = instance_dir name // "poker.pid"
 let stderr_log_path name = instance_dir name // "stderr.log"
 let client_log_path name = instance_dir name // "client.log"
+let headless_thread_id_handoff_path name = instance_dir name // "thread-id-handoff.jsonl"
 let deaths_jsonl_path broker_root = broker_root // "deaths.jsonl"
 
 (* Tee stderr to inst_dir/stderr.log with 2 MB ring rotation.
@@ -1070,24 +1071,44 @@ let start_wire_daemon ~(name : string) ~(alias : string)
          Some pid
        with Unix.Unix_error _ -> None)
 
-let start_headless_thread_id_watcher ~(name : string) ~(read_fd : Unix.file_descr) : Thread.t =
+let start_headless_thread_id_watcher ~(name : string) ~(path : string) : Thread.t =
   Thread.create
     (fun () ->
-      let ic = Unix.in_channel_of_descr read_fd in
-      Fun.protect ~finally:(fun () -> try close_in ic with _ -> ())
-        (fun () ->
+      let rec wait_for_line attempts_remaining =
+        if attempts_remaining <= 0 then ()
+        else if Sys.file_exists path then
           try
-            let line = input_line ic in
-            match Yojson.Safe.from_string line with
-            | `Assoc fields ->
-                (match List.assoc_opt "thread_id" fields with
-                 | Some (`String thread_id) when String.trim thread_id <> "" ->
-                     persist_headless_thread_id ~name ~thread_id
-                 | _ -> ())
-            | _ -> ()
+            let ic = open_in path in
+            Fun.protect ~finally:(fun () -> try close_in ic with _ -> ())
+              (fun () ->
+                let line = String.trim (input_line ic) in
+                if line = "" then (
+                  Unix.sleepf 0.1;
+                  wait_for_line (attempts_remaining - 1)
+                ) else
+                  match Yojson.Safe.from_string line with
+                  | `Assoc fields ->
+                      (match List.assoc_opt "thread_id" fields with
+                       | Some (`String thread_id) when String.trim thread_id <> "" ->
+                           persist_headless_thread_id ~name ~thread_id
+                       | _ -> ())
+                  | _ -> ())
           with
-          | End_of_file -> ()
-          | Yojson.Json_error _ -> ()))
+          | End_of_file ->
+              Unix.sleepf 0.1;
+              wait_for_line (attempts_remaining - 1)
+          | Sys_error _ | Yojson.Json_error _ ->
+              Unix.sleepf 0.1;
+              wait_for_line (attempts_remaining - 1)
+        else (
+          Unix.sleepf 0.1;
+          wait_for_line (attempts_remaining - 1)
+        )
+      in
+      (* Poll for up to ~2 minutes; the bridge only writes one line, so a
+         simple file-backed handoff is more robust than a long-lived sideband
+         pipe for the current headless unblocker path. *)
+      wait_for_line 1200)
     ()
 
 (* ---------------------------------------------------------------------------
@@ -1381,8 +1402,15 @@ let run_outer_loop ~(name : string) ~(client : string)
               Some (Unix.pipe ~cloexec:false ())
             else None
           in
-          let thread_id_pipe =
-            if client = "codex-headless" then Some (Unix.pipe ~cloexec:false ())
+          let thread_id_handoff =
+            if client = "codex-headless" then
+              let path = headless_thread_id_handoff_path name in
+              let fd =
+                Unix.openfile path
+                  [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ]
+                  0o600
+              in
+              Some (path, fd)
             else None
           in
           let pid = match Unix.fork () with
@@ -1424,12 +1452,11 @@ let run_outer_loop ~(name : string) ~(client : string)
                      (try Unix.close read_fd with _ -> ());
                      (try Unix.close write_fd with _ -> ())
                  | None -> ());
-                (match thread_id_pipe with
-                 | Some (read_fd, write_fd) ->
+                (match thread_id_handoff with
+                 | Some (_path, handoff_fd) ->
                      let fd5 : Unix.file_descr = Obj.magic 5 in
-                     (try Unix.dup2 write_fd fd5 with _ -> ());
-                     (try Unix.close read_fd with _ -> ());
-                     (try Unix.close write_fd with _ -> ())
+                     (try Unix.dup2 handoff_fd fd5 with _ -> ());
+                     (try Unix.close handoff_fd with _ -> ())
                  | None -> ());
                 (try Unix.close outer_stderr_fd with _ -> ());
                 (try Unix.execvpe binary_path (Array.of_list cmd) env
@@ -1452,13 +1479,13 @@ let run_outer_loop ~(name : string) ~(client : string)
                   ~pid
                   ~client_type:"codex-headless"
               with _ -> ()));
-          (match thread_id_pipe with
-           | Some (read_fd, write_fd) ->
+          (match thread_id_handoff with
+           | Some (path, handoff_fd) ->
                (* In XML mode the bridge does not start/resume a thread until it sees the first
                   <message>. So headless startup cannot wait for a thread-id handoff here; we
                   persist it lazily when the bridge emits it after the first real input. *)
-               ignore (start_headless_thread_id_watcher ~name ~read_fd);
-               (try Unix.close write_fd with _ -> ())
+               ignore (start_headless_thread_id_watcher ~name ~path);
+               (try Unix.close handoff_fd with _ -> ())
            | None -> ());
           (* Start deliver daemon (PTY notify path, used for Codex). *)
           (if !deliver_pid = None && cfg.needs_deliver then

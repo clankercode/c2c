@@ -6099,7 +6099,7 @@ let agent_new_interactive name =
 
 let agent_new_term =
   let name =
-    Cmdliner.Arg.(value & opt (some string) None & info [] ~docv:"NAME"
+    Cmdliner.Arg.(value & opt (some string) None & info [ "name" ] ~docv:"NAME"
       ~doc:"Role name (creates .c2c/roles/<NAME>.md). Omit to use interactive prompt.")
   in
   let description =
@@ -6126,43 +6126,6 @@ let agent_new_term =
     | None when interactive -> prompt_nonempty ~prompt:"Role name: " ()
     | None ->
         Printf.eprintf "error: NAME is required (or run with no arguments for interactive mode)\n%!";
-        exit 1
-  in
-  let (description, role, compatible_clients, theme, auto_join_rooms) =
-    if not interactive then
-      ( Option.value description ~default:"TODO: describe this agent's purpose",
-        Option.value role_type ~default:"subagent",
-        ["all"],
-        theme,
-        "" )
-    else
-      agent_new_interactive name
-  in
-  let description =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "description"; "d" ]
-      ~docv:"TEXT" ~doc:"Role description (required in interactive mode).")
-  in
-  let role_type =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "role"; "r" ]
-      ~docv:"TYPE" ~doc:"Role type: subagent, primary, or all.")
-  in
-  let theme =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "theme"; "t" ]
-      ~docv:"THEME" ~doc:"Banner theme (exp33-gilded, ffx-yuna, lotr-forge, etc.).")
-  in
-  let+ name = name
-  and+ description = description
-  and+ role_type = role_type
-  and+ theme = theme in
-  let any_flag_passed = description <> None || role_type <> None || theme <> None in
-  let interactive = (not any_flag_passed) && is_interactive_stdin () in
-  let name =
-    match name with
-    | Some n -> n
-    | None when interactive ->
-        prompt_nonempty ~prompt:"Role name: " ()
-    | None ->
-        Printf.eprintf "error: NAME is required (or run interactively without any flags)\n%!";
         exit 1
   in
   let (description, role, compatible_clients, theme, auto_join_rooms) =

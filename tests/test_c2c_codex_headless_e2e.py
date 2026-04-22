@@ -120,22 +120,28 @@ def test_codex_headless_xml_delivery_persists_thread_id(scenario: Scenario) -> N
         reason="updated codex-turn-start-bridge with --thread-id-fd not present yet",
     )
 
-    alias = f"codex-headless-xml-{_unique_suffix()}"
+    suffix = _unique_suffix()
+    alias = f"codex-headless-xml-{suffix}"
+    sender_alias = f"codex-headless-sender-{suffix}"
     _write_role_file(scenario.workdir, alias)
+    _write_role_file(scenario.workdir, sender_alias)
 
     agent = scenario.start_agent("codex-headless", name=alias)
-    scenario.wait_for_init(agent, timeout=90.0)
-    scenario.wait_for(lambda: _registered(agent, scenario), timeout=60.0)
+    sender = scenario.start_agent("codex-headless", name=sender_alias)
+    scenario.wait_for_init(agent, sender, timeout=90.0)
+    scenario.wait_for(
+        lambda: _registered(agent, scenario) and _registered(sender, scenario),
+        timeout=60.0,
+    )
 
     message = f"headless-xml-ping-{_unique_suffix()}"
-    scenario.send_dm(agent, agent, message)
+    scenario.send_dm(sender, agent, message)
     scenario.wait_for(
-        lambda: message in scenario.capture(agent)
-        and not scenario.broker_inbox_contains(agent, message),
+        lambda: not scenario.broker_inbox_contains(agent, message)
+        and _persisted_thread_id(alias) is not None,
         timeout=90.0,
     )
 
-    scenario.wait_for(lambda: _persisted_thread_id(alias) is not None, timeout=30.0)
     thread_id = _persisted_thread_id(alias)
     assert thread_id is not None
     assert thread_id != alias
