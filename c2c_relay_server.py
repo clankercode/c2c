@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """c2c relay server — Phase 2 of the cross-machine broker.
 
+.. deprecated::
+    The canonical relay server implementation is now in OCaml
+    (ocaml/relay.ml). This Python version is retained for the existing
+    Python test suite only. The OCaml relay is the production implementation.
+
 Runs a small HTTP relay that wraps a relay backend with Bearer-token auth.
 Agents on different machines connect via ``c2c relay connect`` (Phase 3).
 
