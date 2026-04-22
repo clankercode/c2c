@@ -1,0 +1,4 @@
+# c2c per-repo config (.c2c/config.toml)
+# Generated/edited by `c2c config ...`.
+
+generation_client = "opencode"
