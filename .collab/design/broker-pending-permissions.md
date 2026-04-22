@@ -124,8 +124,14 @@ Simpler: just let the reply arrive at the old session_id and get dead-lettered. 
 
 ## Questions / Open Issues
 
-1. **TTL**: 10 minutes seems reasonable for permission timeouts. Should it match `C2C_PERMISSION_TIMEOUT_MS` from the plugin?
-2. **Cleanup**: Should expired entries be deleted on every access (lazy) or on sweep (eager)?
-3. **Multi-supervisor**: If we ask `['coordinator1', 'cooder2']` and only one replies, should we close the pending entry after first valid reply? Yes.
-4. **Question permissions**: Should the same mechanism cover `question:${id}:*` messages too? Probably yes — same spoofing risk.
-5. **Compatibility**: What happens if a plugin that doesn't call `open_permission_request` receives a reply? It should fall through to the existing behavior (accept the reply). The broker's `check_permission_reply` is advisory until all clients are updated.
+~~1. **TTL**: 10 minutes seems reasonable for permission timeouts.~~ → **Use `C2C_PERMISSION_TIMEOUT_MS` if set, else 600s. Source from plugin env at call time.**
+~~2. **Cleanup**: lazy vs eager?~~ → **Both: lazy-evict-on-access for correctness (never return expired entries), piggyback eager sweep onto existing GC cycle for memory hygiene.**
+~~3. **Multi-supervisor close-after-first**~~ → **Yes, close after first valid reply — matches plugin promise resolution (resolve() fires once). Further replies are logged as potential spoofing.**
+~~4. **Question permissions**~~ → **Yes, generalize from day 1: `open_pending_reply(id, kind, supervisors)` with `kind: "permission" | "question"`. One RPC pair covers both surfaces.**
+~~5. **Compatibility fallthrough**~~ → **Advisory until all plugins updated. Add broker log line when unregistered perm_id receives a reply — enables observation of transition.**
+
+**§ Broker Envelope Validation**: Skip for v1. Explicit RPC calls are clearer, easier to test, don't require broker to parse message content. Revisit only if plugin churn is painful.
+
+## Status
+
+**Ready for implementation** (2026-04-22, reviewed by coordinator1)
