@@ -51,6 +51,12 @@ let parse_list s =
 
 let split_frontmatter content =
   let lines = String.split_on_char '\n' content in
+  let rec skip_leading_empty = function
+    | [] -> []
+    | "" :: rest -> skip_leading_empty rest
+    | l :: _ as all -> l :: all
+  in
+  let lines = skip_leading_empty lines in
   let rec find_end acc = function
     | [] -> (List.rev acc, [])
     | line :: rest ->
