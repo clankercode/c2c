@@ -5982,22 +5982,34 @@ let role_file_path ~alias =
 let read_role ~alias =
   let path = role_file_path ~alias in
   try
-    let ic = open_in path in
-    Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
-      let buf = Buffer.create 256 in
-      (try while true do Buffer.add_channel buf ic 1 done with End_of_file -> ());
-      let s = String.trim (Buffer.contents buf) in
-      if s = "" then None else Some s)
+    let role = C2c_role.parse_file path in
+    Some role
   with Sys_error _ -> None
 
-let write_role ~alias ~content =
+let yaml_scalar s =
+  if s = "" || String.length s > 0 && (String.contains s ':' || String.contains s '#' ||
+     String.contains s '"' || String.contains s '\'') then
+    "\"" ^ String.escaped s ^ "\""
+  else s
+
+let write_role ~alias ~(role : C2c_role.t) =
   let dir = roles_dir () in
   (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
   let path = role_file_path ~alias in
+  let fm =
+    Printf.sprintf
+      "---\n\
+       description: %s\n\
+       role: %s\n\
+       ---\n\
+       %s\n"
+      (yaml_scalar role.C2c_role.description)
+      role.C2c_role.role
+      role.C2c_role.body
+  in
   let oc = open_out path in
   Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
-    output_string oc content;
-    output_char oc '\n')
+    output_string oc fm)
 
 let prompt_for_role ~alias =
   if Unix.isatty Unix.stdin then begin
@@ -6007,9 +6019,24 @@ let prompt_for_role ~alias =
     let line = try input_line stdin with End_of_file -> "" in
     let trimmed = String.trim line in
     if trimmed <> "" then begin
-      write_role ~alias ~content:trimmed;
+      let role = { C2c_role.
+        description = "";
+        role = "subagent";
+        model = None;
+        c2c_alias = None;
+        c2c_auto_join_rooms = [];
+        include_ = [];
+        compatible_clients = [];
+        required_capabilities = [];
+        opencode = [];
+        claude = [];
+        codex = [];
+        kimi = [];
+        body = trimmed;
+      } in
+      write_role ~alias ~role;
       Printf.eprintf "[c2c start] Role saved to .c2c/roles/%s.md\n%!" alias;
-      Some trimmed
+      Some role
     end else None
   end else None
 
@@ -6167,55 +6194,55 @@ let start_cmd =
                 (Printf.eprintf "error: role '%s' is not compatible with client '%s'.\n" name client;
                  Printf.eprintf "  compatible clients: %s\n%!" (String.concat ", " role.C2c_role.compatible_clients);
                  exit 1);
-             (match render_role_for_client role ~client with
-              | Some rendered ->
-                  write_agent_file ~client ~name ~content:rendered;
-                  let kickoff = Some rendered in
-                  let alias_override = role.C2c_role.c2c_alias in
-                  let auto_join_rooms =
-                    if role.C2c_role.c2c_auto_join_rooms <> []
-                    then Some (String.concat ", " role.C2c_role.c2c_auto_join_rooms)
-                    else None
-                  in
-                  (kickoff, alias_override, auto_join_rooms)
-              | None ->
-                  (* Role file exists but not supported for this client — fall through
-                     to legacy plain-text path so user can still start without the role. *)
-                  let role =
-                    match read_role ~alias:effective_alias with
-                    | Some r -> Some r
-                    | None -> prompt_for_role ~alias:effective_alias
-                  in
-                  let kickoff_prompt =
-                    match kickoff_prompt_text with
-                    | Some t -> Some t
-                    | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role ())
+                  (match render_role_for_client role ~client with
+                   | Some rendered ->
+                       write_agent_file ~client ~name ~content:rendered;
+                       let kickoff = Some rendered in
+                       let alias_override = role.C2c_role.c2c_alias in
+                       let auto_join_rooms =
+                         if role.C2c_role.c2c_auto_join_rooms <> []
+                         then Some (String.concat ", " role.C2c_role.c2c_auto_join_rooms)
+                         else None
+                       in
+                       (kickoff, alias_override, auto_join_rooms)
                     | None ->
-                        (match role with
-                         | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role ())
-                         | None -> None)
-                  in
-                  (kickoff_prompt, alias_opt, None))
-           with Sys_error _ ->
-             (* Role file exists but can't be read as structured role — fall through. *)
-             let role =
-               match read_role ~alias:effective_alias with
-               | Some r -> Some r
-               | None -> prompt_for_role ~alias:effective_alias
-             in
-             let kickoff_prompt =
-               match kickoff_prompt_text with
-               | Some t -> Some t
-               | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role ())
-               | None ->
-                   (match role with
-                    | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role ())
-                    | None -> None)
-             in
-             (kickoff_prompt, alias_opt, None))
+                        (* Role file exists but not supported for this client — fall through
+                           to structured role path so user can still start with the role. *)
+                        let role_opt =
+                          match read_role ~alias:effective_alias with
+                          | Some r -> Some r
+                          | None -> prompt_for_role ~alias:effective_alias
+                        in
+                        let kickoff_prompt =
+                          match kickoff_prompt_text with
+                          | Some t -> Some t
+                          | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
+                          | None ->
+                              (match role_opt with
+                               | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
+                               | None -> None)
+                        in
+                        (kickoff_prompt, alias_opt, None))
+            with Sys_error _ ->
+              (* Role file exists but can't be read as structured role — fall through. *)
+              let role_opt =
+                match read_role ~alias:effective_alias with
+                | Some r -> Some r
+                | None -> prompt_for_role ~alias:effective_alias
+              in
+              let kickoff_prompt =
+                match kickoff_prompt_text with
+                | Some t -> Some t
+                | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
+                | None ->
+                    (match role_opt with
+                     | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
+                     | None -> None)
+              in
+              (kickoff_prompt, alias_opt, None))
         else
-          (* No structured role file — legacy plain-text path. *)
-          let role =
+          (* No structured role file — structured role path. *)
+          let role_opt =
             match read_role ~alias:effective_alias with
             | Some r -> Some r
             | None -> prompt_for_role ~alias:effective_alias
@@ -6223,10 +6250,10 @@ let start_cmd =
           let kickoff_prompt =
             match kickoff_prompt_text with
             | Some t -> Some t
-            | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role ())
+            | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
             | None ->
-                (match role with
-                 | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role ())
+                (match role_opt with
+                 | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
                  | None -> None)
           in
           (kickoff_prompt, alias_opt, None)
@@ -6353,17 +6380,18 @@ let prompt_multi_select ~prompt ~items () =
     let nums = List.filter_map int_of_string_opt (String.split_on_char ',' line) in
     List.filter_map (fun n -> if n >= 0 && n < List.length items then Some (List.nth items n) else None) nums
 
-let agent_new_interactive name =
+let agent_new_interactive ?(client="opencode") name =
   print_newline ();
   print_endline "=== c2c agent new — interactive mode ===";
   print_endline "Press Enter to accept defaults in brackets.\n";
   let description = prompt_nonempty ~prompt:"Description: " () in
   print_newline ();
   print_endline "Role type:";
-  print_endline "  [0] subagent  (default — helper agent, not a primary peer)";
-  print_endline "  [1] primary   (full peer — coordinator, CEO, etc.)";
+  print_endline "  [0] subagent  (helper agent, not a primary peer)";
+  print_endline "  [1] primary   (full peer — coordinator, CEO, etc.)  ← default for opencode";
   print_endline "  [2] all";
-  let role = prompt_choice ~default:0 ~prompt:"Role type [0]: " ~options:["subagent";"primary";"all"] () in
+  let role_default = if client = "opencode" then 1 else 0 in
+  let role = prompt_choice ~default:role_default ~prompt:(Printf.sprintf "Role type [%d]: " role_default) ~options:["subagent";"primary";"all"] () in
   print_newline ();
   print_endline "Compatible clients (comma-separated numbers, e.g. 0,2,3):";
   print_endline "  [0] all  (default — works on any client)";
@@ -6477,13 +6505,17 @@ let agent_new_term =
      description: %s\n\
      role: %s\n\
      compatible_clients: [%s]\n\
+     include: []\n\
+     required_capabilities: []\n\
      c2c:\n\
      %s\
      opencode:\n\
      %s\
      ---\n\
      You are a %s agent.\n\
-     TODO: describe responsibilities.\n"
+     Your responsibilities:\n\
+     - TODO: list primary responsibilities\n\
+     - TODO: add more as needed\n"
     description
     role
     (String.concat ", " compatible_clients)
