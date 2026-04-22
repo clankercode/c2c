@@ -43,6 +43,39 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
         self.assertEqual(result, 0)
         resolve.assert_not_called()
 
+    def test_main_xml_output_fd_accepts_codex_headless_client(self):
+        read_fd, write_fd = os.pipe()
+        try:
+            with (
+                mock.patch("c2c_deliver_inbox.c2c_inject.resolve_session_info") as resolve,
+                mock.patch(
+                    "c2c_deliver_inbox.deliver_once",
+                    return_value={"delivered": 0, "messages": [], "ok": True, "dry_run": False},
+                ) as deliver_once,
+                mock.patch("sys.stdout", new_callable=io.StringIO),
+            ):
+                result = c2c_deliver_inbox.main(
+                    [
+                        "--client",
+                        "codex-headless",
+                        "--pid",
+                        "12345",
+                        "--session-id",
+                        "codex-headless-local",
+                        "--xml-output-fd",
+                        str(write_fd),
+                        "--json",
+                    ]
+                )
+        finally:
+            os.close(read_fd)
+            os.close(write_fd)
+
+        self.assertEqual(result, 0)
+        resolve.assert_not_called()
+        self.assertEqual(deliver_once.call_args.kwargs["client"], "codex-headless")
+        self.assertEqual(deliver_once.call_args.kwargs["xml_output_fd"], write_fd)
+
     def test_loop_runs_until_max_iterations_and_sleeps_between_empty_polls(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             broker_root = Path(temp_dir) / "mcp-broker"

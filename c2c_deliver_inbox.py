@@ -630,7 +630,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--daemon-timeout", type=float, default=10.0)
     parser.add_argument(
         "--client",
-        choices=["claude", "codex", "opencode", "kimi", "crush", "generic"],
+        choices=["claude", "codex", "codex-headless", "opencode", "kimi", "crush", "generic"],
         default="generic",
     )
     parser.add_argument(
