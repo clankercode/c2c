@@ -105,36 +105,41 @@ function resolvePermissionSupervisors(): string[] {
  * Produce a human-readable one-line summary of a permission request so
  * supervisors can make an informed approve/reject decision.
  *
+ * OpenCode Permission.Request schema fields:
+ *   permission  — string e.g. "bash", "edit", "fs", "network"
+ *   patterns    — string[] e.g. ["git diff", "git add -A"]
+ *   metadata    — record<string, any> e.g. {command: "git diff"}
+ *
  * Priority for the action value:
- *   metadata.command > metadata.input > metadata.cmd > pattern (joined) > title > type
+ *   metadata.command > metadata.input > patterns (joined) > permission
  */
 export function summarizePermission(perm: Record<string, unknown>): string {
-  const type = typeof perm.type === "string" && perm.type ? perm.type : "unknown";
-  const title = typeof perm.title === "string" ? perm.title : "";
+  const permission = typeof perm.permission === "string" && perm.permission ? perm.permission : "unknown";
   const meta = (typeof perm.metadata === "object" && perm.metadata !== null)
     ? (perm.metadata as Record<string, unknown>)
     : {};
 
-  const rawPattern = perm.pattern;
-  const patternStr: string = Array.isArray(rawPattern)
-    ? rawPattern.join(" ")
-    : typeof rawPattern === "string" ? rawPattern : "";
+  const rawPatterns = perm.patterns;
+  const patternsStr: string = Array.isArray(rawPatterns)
+    ? (rawPatterns as string[]).join(" ")
+    : typeof rawPatterns === "string" ? rawPatterns : "";
 
   const metaAction: string = [meta.command, meta.input, meta.cmd]
     .filter((v): v is string => typeof v === "string" && v.length > 0)[0] ?? "";
 
-  const action = metaAction || patternStr || (title && title !== "unknown" ? title : "") || "";
+  const action = metaAction || patternsStr || permission;
 
-  switch (type) {
+  switch (permission) {
     case "bash":
       return action ? `bash: \`${action}\`` : "bash: (unknown command)";
-    case "file":
+    case "edit":
+    case "write":
     case "fs":
       return action ? `file: ${action}` : "file access (unknown path)";
     case "network":
       return action ? `network: ${action}` : "network access (unknown target)";
     default:
-      return action ? `${type}: ${action}` : type;
+      return action ? `${permission}: ${action}` : permission;
   }
 }
 
@@ -420,9 +425,9 @@ const C2CDelivery: Plugin = async (ctx) => {
   function compactPermissionDetails(event: Event): Record<string, unknown> | null {
     const props = (event as any).properties ?? {};
     const id = firstString(props.id, props.permissionID, props.permissionId) || null;
-    const title = firstString(props.title) || null;
-    const type = firstString(props.type) || null;
-    return { id, title, type };
+    const permission = firstString(props.permission) || null;
+    const patterns = Array.isArray(props.patterns) ? props.patterns.join(" ") : null;
+    return { id, permission, patterns };
   }
 
   function makeLastStep(eventType: string, details: Record<string, unknown> | null): LastStep {
