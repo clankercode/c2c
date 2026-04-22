@@ -656,8 +656,10 @@ let build_env ?(broker_root_override : string option = None)
   (* Strip any existing copies of overridden keys from the inherited env, then
      append our authoritative values. This avoids the duplicate-key bug where
      both the parent's C2C_MCP_SESSION_ID and the child's appear in the array
-     (previously a buggy in-place replacement left both copies). *)
-  let override_keys = List.map fst additions in
+     (previously a buggy in-place replacement left both copies).
+     Also strip CLAUDE_SESSION_ID: when starting a new managed session, the child
+     should create a fresh session rather than inheriting the parent's. *)
+  let override_keys = "CLAUDE_SESSION_ID" :: List.map fst additions in
   let env_key e =
     try String.sub e 0 (String.index e '=') with Not_found -> e
   in

@@ -785,6 +785,23 @@ const C2CDelivery: Plugin = async (ctx) => {
     } catch { /* non-fatal */ }
   }
 
+  // Structured rejection log: appends JSON events to ~/.local/share/c2c/plugin.log
+  // so operators can audit why permission replies were dropped.
+  const pluginLogPath = path.join(process.env.HOME ?? "/home", ".local", "share", "c2c", "plugin.log");
+  function rejectionLog(event: {
+    type: "permission_reply_dropped";
+    perm_id: string;
+    from_alias: string;
+    reason: "spoof_attempt" | "broker_validation_failed" | "not_pending" | "unknown";
+    detail?: string;
+    ts: string;
+  }): void {
+    try {
+      const entry = JSON.stringify(event) + "\n";
+      fs.appendFileSync(pluginLogPath, entry);
+    } catch { /* non-fatal */ }
+  }
+
   async function log(msg: string): Promise<void> {
     debugLog(msg);
     try {
@@ -1052,6 +1069,7 @@ const C2CDelivery: Plugin = async (ctx) => {
             } else if (parsed.valid === false) {
               brokerValidationPassed = false;
               await log(`M4: broker rejected reply for ${permReply.permId} from ${msg.from_alias}: ${parsed.error}`);
+              rejectionLog({ type: "permission_reply_dropped", perm_id: permReply.permId, from_alias: msg.from_alias, reason: "broker_validation_failed", detail: parsed.error ?? "unknown", ts: new Date().toISOString() });
             }
           } catch (err) {
             await log(`M4: check-pending-reply error: ${err} — falling back to plugin-side check`);
@@ -1059,6 +1077,8 @@ const C2CDelivery: Plugin = async (ctx) => {
           // Security: verify reply comes from one of the supervisors we asked, not an imposter.
           if (!supervisors.includes(msg.from_alias)) {
             await log(`SECURITY: permission reply for ${permReply.permId} from ${msg.from_alias} not in supervisors [${supervisors.join(", ")}] — dropping spoof attempt?`);
+            rejectionLog({ type: "permission_reply_dropped", perm_id: permReply.permId, from_alias: msg.from_alias, reason: "spoof_attempt", detail: `expected one of [${supervisors.join(", ")}]`, ts: new Date().toISOString() });
+          }
           } else if (brokerValidationPassed === false) {
             await log(`M4: broker validation failed for ${permReply.permId} — dropping reply`);
           } else {
@@ -1068,6 +1088,7 @@ const C2CDelivery: Plugin = async (ctx) => {
           }
         } else {
           await log(`permission reply ${permReply.permId} skipped (not pending or already resolved)`);
+          rejectionLog({ type: "permission_reply_dropped", perm_id: permReply.permId, from_alias: msg.from_alias, reason: "not_pending", detail: "not found in pendingPermissions map", ts: new Date().toISOString() });
         }
         continue;
       }
