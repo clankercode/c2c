@@ -10,4 +10,4 @@
 - [x] OpenCode hardening: childProcessEnv(), conflict logic, atomic spool writes (commit 056bdb9) — 37/37 TS tests pass
 - [ ] OCaml SqliteRelay implementation: BUILD ERRORS — jungel-coder needs to fix: (1) row parsing treats SQL TEXT as string option instead of Data.t, (2) client_type/identity_pk type mismatches, (3) Rc module not in scope (needs `open Sqlite3`)
 - [ ] CLI wiring for SqliteRelay (ceo): wire --storage sqlite + --db-path into c2c.ml, add SqliteRelay to dune modules once it compiles
-- [ ] c2c GUI app (galaxy-coder): Tauri+Rust+Vite+React in `gui/` — feature-complete by planner1, needs webkit2gtk-4.1 to build/run on this host; alternative: build on a host with webkit2gtk available
+- [ ] c2c GUI app (galaxy-coder): Tauri+Rust+Vite+React in `gui/` — feature-complete by planner1, webkit2gtk-4.1 installed, cargo check passes; headless env prevents runtime GTK init (code review + improvements unblocked)
