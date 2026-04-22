@@ -3428,25 +3428,57 @@ let relay_connect_cmd =
   and+ interval = interval
   and+ once = once
   and+ verbose = verbose in
-  match find_python_script "c2c_relay_connector.py" with
-  | None ->
-      Printf.eprintf "error: cannot find c2c_relay_connector.py. Run from inside the c2c git repo.\n%!";
-      exit 1
-  | Some script ->
-      let args = [ "python3"; script ] in
-      let args = match relay_url with None -> args | Some v -> args @ [ "--relay-url"; v ] in
-      let args = match token with None -> args | Some v -> args @ [ "--token"; v ] in
-      let args = match token_file with None -> args | Some v -> args @ [ "--token-file"; v ] in
-      let args = match node_id with None -> args | Some v -> args @ [ "--node-id"; v ] in
-      let args = match broker_root with None -> args | Some v -> args @ [ "--broker-root"; v ] in
-      let args = match interval with None -> args | Some v -> args @ [ "--interval"; string_of_int v ] in
-      let args = if once then args @ [ "--once" ] else args in
-      let args = if verbose then args @ [ "--verbose" ] else args in
-      let args = match Relay_identity.load () with
-        | Ok _ -> args @ [ "--identity-path"; Relay_identity.default_path () ]
-        | Error _ -> args
-      in
-      Unix.execvp "python3" (Array.of_list args)
+  let use_ocaml = Sys.getenv_opt "C2C_RELAY_CONNECTOR_BACKEND" = Some "ocaml" in
+  let effective_broker_root = match broker_root with
+    | Some b -> b
+    | None -> resolve_broker_root ()
+  in
+  let effective_node_id = match node_id with
+    | Some n -> n
+    | None -> "unknown-node"
+  in
+  let effective_token = match token, token_file with
+    | Some t, _ -> Some t
+    | None, Some f ->
+        (try
+          let ic = open_in f in
+          let content = Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+            let n = in_channel_length ic in really_input_string ic n) in
+          Some (String.trim content)
+         with _ -> None)
+    | None, None -> None
+  in
+  let effective_interval = float_of_int (Option.value interval ~default:30) in
+  if use_ocaml then
+    exit (C2c_relay_connector.start
+      ~relay_url:(Option.value relay_url ~default:"http://localhost:7331")
+      ~token:effective_token
+      ~broker_root:effective_broker_root
+      ~node_id:effective_node_id
+      ~heartbeat_ttl:300.0
+      ~interval:effective_interval
+      ~verbose
+      ~once)
+  else
+    match find_python_script "c2c_relay_connector.py" with
+    | None ->
+        Printf.eprintf "error: cannot find c2c_relay_connector.py. Run from inside the c2c git repo.\n%!";
+        exit 1
+    | Some script ->
+        let args = [ "python3"; script ] in
+        let args = match relay_url with None -> args | Some v -> args @ [ "--relay-url"; v ] in
+        let args = match token with None -> args | Some v -> args @ [ "--token"; v ] in
+        let args = match token_file with None -> args | Some v -> args @ [ "--token-file"; v ] in
+        let args = match node_id with None -> args | Some v -> args @ [ "--node-id"; v ] in
+        let args = match broker_root with None -> args | Some v -> args @ [ "--broker-root"; v ] in
+        let args = match interval with None -> args | Some v -> args @ [ "--interval"; string_of_int v ] in
+        let args = if once then args @ [ "--once" ] else args in
+        let args = if verbose then args @ [ "--verbose" ] else args in
+        let args = match Relay_identity.load () with
+          | Ok _ -> args @ [ "--identity-path"; Relay_identity.default_path () ]
+          | Error _ -> args
+        in
+        Unix.execvp "python3" (Array.of_list args)
 
 let relay_setup_cmd =
   let url =
@@ -8902,8 +8934,12 @@ let () =
           (Cmdliner.Cmd.info "c2c"
              ~version:(version_string ())
              ~doc:"c2c — peer-to-peer messaging for AI agents"
-             ~man:
-               ([ `S "DESCRIPTION"
-               ; `P "c2c is a peer-to-peer messaging broker between AI coding sessions. Use subcommands to interact with the broker."
-               ] @ tier_grouped_man))
+              ~man:
+                ([ `S "GETTING STARTED"
+                ; `P "New to c2c? Run $(b,c2c init) to configure your client, register, and join the swarm-lounge room in one step."
+                ; `P "Then try: $(b,c2c list) to see peers, $(b,c2c send ALIAS MSG) to message someone, or $(b,c2c rooms) to join a room."
+                ; `P "For full command reference see COMMANDS below."
+                ; `S "DESCRIPTION"
+                ; `P "c2c is a peer-to-peer messaging broker between AI coding sessions. Use subcommands to interact with the broker."
+                ] @ tier_grouped_man))
              visible_cmds))
