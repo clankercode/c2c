@@ -1145,7 +1145,7 @@ const C2CDelivery: Plugin = async (ctx) => {
             await log(`SECURITY: permission reply for ${permReply.permId} from ${msg.from_alias} not in supervisors [${supervisors.join(", ")}] — dropping spoof attempt?`);
             rejectionLog({ type: "permission_reply_dropped", perm_id: permReply.permId, from_alias: msg.from_alias, reason: "spoof_attempt", detail: `expected one of [${supervisors.join(", ")}]`, ts: new Date().toISOString() });
           }
-          } else if (brokerValidationPassed === false) {
+          else if (brokerValidationPassed === false) {
             await log(`M4: broker validation failed for ${permReply.permId} — dropping reply`);
           } else {
             pendingPermissions.delete(permReply.permId);
