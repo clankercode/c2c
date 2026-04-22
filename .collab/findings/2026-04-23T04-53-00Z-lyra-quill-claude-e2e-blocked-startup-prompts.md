@@ -2,7 +2,7 @@
 
 **Date**: 2026-04-23
 **Author**: Lyra-Quill
-**Status**: blocked — not feasible without PTY injection or startup flag
+**Status**: closed — upstream limitation (Anthropic)
 
 ## Symptom
 
@@ -26,29 +26,34 @@ The inner Claude process (PID from `inner.pid`) starts, immediately encounters t
 
 1. **`claude -p`** — skips the trust dialog per docs, but is a one-shot print mode that exits immediately. No persistent session to register with broker.
 
-2. **`skipDangerousModePermissionPrompt: true`** — skips the development channels warning only, not the workspace trust dialog.
+2. **`skipDangerousModePermissionPrompt: true` in `~/.claude/settings.json`** — skips the development channels warning only, not the workspace trust dialog.
 
 3. **Pre-seeding role files** — only bypasses the role prompt (which `--auto` already skips). Does not affect the trust prompt.
 
-4. **Project settings in `~/.claude/projects/`** — the trust prompt reads the actual cwd on disk; there's no `trustedDirectories` global setting. The pytest workdir is under `/tmp/pytest-of-xertrov/...` which is not a registered Claude project.
+4. **Project settings in `~/.claude/projects/<slug>/.claude.settings.json`** — the trust prompt reads the actual cwd on disk, not project metadata. No `trustedDirectories` or `hasCompletedOnboarding` field bypasses it.
 
-5. **`--dangerously-skip-permissions`** — bypasses permission checks during session, not the startup trust dialog.
+5. **`.claude/settings.json` in the workdir** — created `workdir/.claude/settings.json` with `skipDangerousModePermissionPrompt: true` and `permissions.defaultMode: bypassPermissions`; trust prompt still appeared.
+
+6. **`--dangerously-skip-permissions`** — bypasses permission checks during session, not the startup trust dialog.
+
+7. **`--bare`** — skips hooks, LSP, plugins, attribution, and auto-memory, but still shows the trust prompt.
 
 ## Feasibility Assessment
 
-- **PTY injection for prompts**: Would work — feed "1\n1\n" to dismiss both prompts. Same approach used for Codex and Claude wake daemons. But this is non-trivial to implement correctly in the test harness.
-- **Startup flag**: Claude Code has no `--trust-workspace` or equivalent flag. Would need an upstream Claude Code change.
-- **`claude -p` with broker registration**: If `-p` mode could somehow register with the broker before exiting, it would work for a DM send/receive cycle. But `-p` mode doesn't run the full startup loop where broker registration happens.
+The ONLY viable path is PTY injection: feed "1\n1\n" to dismiss the trust prompt and development channels prompt. This is the same technique used by `c2c_claude_wake_daemon` for idle-gap waking. However, implementing this correctly in the E2E test harness is non-trivial and the effort is not justified when Kimi + OpenCode already provide E2E coverage.
 
-## Impact
+## Resolution
 
-Claude adapter E2E smoke test cannot be implemented without either:
-1. PTY injection harness to drive the two startup prompts
-2. Claude Code adding a non-interactive startup mode
+**Closed as upstream limitation.** To fully unblock, Claude Code would need one of:
+- `--trust-workspace` / `--no-trust-prompt` flag
+- `trustedDirectories: ["/tmp/pytest-of-xrtrov"]` in project settings
+- A way for `-p` mode to run the MCP broker registration loop before exiting
 
-## Alternative Path
+Filing to Anthropic as a feature request for non-interactive / CI-friendly startup mode.
 
-Kimi adapter may be cleaner to smoke-test — the OCaml wire daemon (`c2c_wire_bridge`) has no interactive TTY prompts. Galaxy-coder is actively working on the OCaml wire daemon. Once that's confirmed working, a Kimi smoke test would validate the same delivery path without the startup prompt complexity.
+## Current Coverage
+
+With Kimi (0a7389b) and OpenCode (cddc1ad) E2E smoke tests passing, we have broker and delivery path coverage for two clients. Claude Code E2E testing would require PTY injection work that is not justified at this time.
 
 ## References
 
