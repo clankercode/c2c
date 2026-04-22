@@ -5,8 +5,8 @@ On session start, you lost your in-memory state. Re-establish:
 1. **Broad inbox monitor** — arm one persistent monitor:
    ```
    Monitor({
-     summary: "c2c inbox watcher (all sessions)",
-     command: "c2c monitor --archive --all",
+     summary: "c2c inbox watcher",
+     command: "c2c monitor --archive",
      persistent: true
    })
    ```

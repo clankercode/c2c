@@ -8,11 +8,14 @@ Arm exactly one persistent broad monitor using the native `c2c monitor` command:
 
 ```
 Monitor({
-  summary: "c2c inbox watcher (all sessions)",
-  command: "c2c monitor --archive --all",
+  summary: "c2c inbox watcher",
+  command: "c2c monitor --archive",
   persistent: true
 })
 ```
+
+(Use `--all` only when you're actively debugging cross-session delivery — it's
+firehose-loud otherwise.)
 
 Each output line is a pre-formatted notification:
 
