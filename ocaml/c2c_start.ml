@@ -909,19 +909,21 @@ let prepare_launch_args ~(name : string) ~(client : string)
            doesn't. So probe ~/.claude/projects/*/<uuid>.jsonl to pick.
            --dangerously-load-development-channels enables Claude Code to process
            notifications/claude/channel from the c2c broker as <channel> tags.
-           --channels c2c opts in to the c2c channel for push delivery when
-           enable_channels=true in .c2c/config.toml. *)
-        let ch_args = if repo_config_enable_channels ()
-          then ["--channels"; "c2c"] else [] in
+           The local `server:c2c` MCP server must be passed through the
+           development-channel flag. Do not also append `--channels` for the
+           same bare MCP server: local testing works with the development flag
+           alone, and extra `--channels` args are unnecessary friction. *)
+        let dev_channel_args =
+          [ "--dangerously-load-development-channels"; "server:c2c" ]
+        in
         (match resume_session_id with
          | Some sid ->
              let flag =
                if claude_session_exists sid then "--resume" else "--session-id"
              in
              [ flag; sid; "--name"; name;
-               "--channels"; "server:c2c"; " --dangerously-load-development-channels"; "server:c2c" ] @ ch_args
-         | None -> [ "--name"; name;
-                     "--channels"; "server:c2c"; " --dangerously-load-development-channels"; "server:c2c" ] @ ch_args)
+             ] @ dev_channel_args
+         | None -> [ "--name"; name ] @ dev_channel_args)
     | "opencode" ->
         (* OpenCode rejects UUIDs — session IDs must start with "ses". Only
            pass --session when resuming a prior OpenCode-generated ID.

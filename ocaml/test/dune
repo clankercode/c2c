@@ -36,4 +36,9 @@
 (test
  (name test_c2c_role)
  (modules test_c2c_role)
- (libraries c2c_mcp str))
+ (libraries c2c_mcp alcotest str unix))
+
+(test
+ (name test_c2c_start)
+ (modules test_c2c_start)
+ (libraries c2c_mcp alcotest unix))
