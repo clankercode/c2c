@@ -332,7 +332,8 @@ def cmd_launch(args: argparse.Namespace) -> int:
     if args.name:
         cmd.extend(["-n", args.name])
     if args.extra:
-        cmd.extend(args.extra)
+        for token in args.extra:
+            cmd.extend(shlex.split(token))
     shell_cmd = shlex.join(cmd)
 
     if args.name and alias_is_alive(args.name):
