@@ -382,6 +382,15 @@ let get_and_burn_pairing_token_db db ~binding_id =
   else
     Res.Error (Printf.sprintf "get_and_burn_pairing_token failed: %s" (Rc.to_string rc))
 
+let find_pairing_token_db db ~binding_id =
+  let now = Unix.gettimeofday () in
+  let sql = "SELECT 1 FROM pairing_tokens WHERE binding_id = ? AND used = 0 AND expires_at > ?" in
+  let stmt = Sqlite3.prepare db sql in
+  Sqlite3.bind_text stmt 1 binding_id |> ignore;
+  Sqlite3.bind_double stmt 2 now |> ignore;
+  let rc = Sqlite3.step stmt in
+  rc = Rc.ROW
+
 (* --- RELAY signature — satisfied by both InMemoryRelay and SqliteRelay --- *)
 
 module type RELAY = sig
@@ -427,6 +436,8 @@ module type RELAY = sig
   val store_pairing_token : t -> binding_id:string -> token_b64:string ->
     machine_ed25519_pubkey:string -> expires_at:float -> (unit, string) result
   val get_and_burn_pairing_token : t -> binding_id:string -> (string * string) option
+  val find_pairing_token : t -> binding_id:string -> bool
+    (* true if a valid (not expired) token for this binding_id already exists *)
   (* S5a: Observer binding management *)
   val add_observer_binding : t -> binding_id:string ->
     phone_ed25519_pubkey:string -> phone_x25519_pubkey:string -> unit
@@ -655,8 +666,16 @@ module InMemoryRelay : RELAY = struct
       if now > expires_at then
         (Hashtbl.remove t.pairing_tokens binding_id; None)
       else
-        (Hashtbl.remove t.pairing_tokens binding_id;
-         Some (token_b64, machine_ed25519_pubkey))
+         (Hashtbl.remove t.pairing_tokens binding_id;
+          Some (token_b64, machine_ed25519_pubkey))
+
+  let find_pairing_token t ~binding_id =
+    match Hashtbl.find_opt t.pairing_tokens binding_id with
+    | None -> false
+    | Some (_, _, expires_at) ->
+      let now = Unix.gettimeofday () in
+      if now > expires_at then (Hashtbl.remove t.pairing_tokens binding_id; false)
+      else true
 
   (* S5a: In-memory observer bindings *)
   let add_observer_binding t ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey =
@@ -2100,6 +2119,12 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
       | Res.Error _ -> None
     )
 
+  let find_pairing_token t ~binding_id =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      find_pairing_token_db conn ~binding_id
+    )
+
   (* S5a: Observer bindings — uses per-relay ObserverBindings instance *)
   let add_observer_binding t ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey =
     ObserverBindings.add t.observer_bindings ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey
@@ -2404,6 +2429,8 @@ end = struct
       || path = "/send_room"
       || path = "/set_room_visibility"
       || path = "/send_room_invite"
+      || path = "/mobile-pair/prepare"
+      || path = "/mobile-pair"
     in
     if is_unauth || is_self_auth then (true, None)
     else if is_admin then
@@ -2476,6 +2503,13 @@ end = struct
     Relay_identity.canonical_msg ~ctx:mobile_pair_token_sign_ctx
       [ binding_id; machine_ed25519_pubkey_b64; string_of_float issued_at;
         string_of_float expires_at; nonce ]
+
+  let is_valid_binding_id s =
+    let len = String.length s in
+    len >= 8 && len <= 64 &&
+    String.for_all (fun c ->
+      (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+      (c >= '0' && c <= '9') || c = '_' || c = '-') s
 
   (* --- Response helpers --- *)
 
@@ -2851,17 +2885,18 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
             | Some identity_pk ->
               (match binding_id_of_phone_pk ~phone_ed25519_pubkey:identity_pk with
                | Some binding_id ->
-                 let sq_msg = {
-                   Relay_short_queue.ts;
-                   from_alias;
-                   to_alias;
-                   room_id = None;
-                   content;
-                 } in
-                 Relay_short_queue.ShortQueue.push short_queue ~binding_id sq_msg
-               | None -> ())
-            | None -> ())
-         | `Error _ -> ());
+                  let sq_msg = {
+                    Relay_short_queue.ts;
+                    from_alias;
+                    to_alias;
+                    room_id = None;
+                    content;
+                  } in
+                  Relay_short_queue.ShortQueue.push short_queue ~binding_id sq_msg;
+                  push_to_observers ~binding_id sq_msg
+                | None -> ())
+             | None -> ())
+          | `Error _ -> ());
         respond_ok (json_of_send_result result)
 
   let handle_send_all relay ~verified_alias body =
@@ -2881,18 +2916,19 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
             | Some identity_pk ->
               (match binding_id_of_phone_pk ~phone_ed25519_pubkey:identity_pk with
                | Some binding_id ->
-                 let sq_msg = {
-                   Relay_short_queue.ts;
-                   from_alias;
-                   to_alias;
-                   room_id = None;
-                   content;
-                 } in
-                 Relay_short_queue.ShortQueue.push short_queue ~binding_id sq_msg
-               | None -> ())
-            | None -> ()
-          ) delivered;
-          respond_ok (json_of_send_all_result (ts, delivered, skipped))
+                  let sq_msg = {
+                    Relay_short_queue.ts;
+                    from_alias;
+                    to_alias;
+                    room_id = None;
+                    content;
+                  } in
+                  Relay_short_queue.ShortQueue.push short_queue ~binding_id sq_msg;
+                  push_to_observers ~binding_id sq_msg
+                | None -> ())
+             | None -> ()
+           ) delivered;
+           respond_ok (json_of_send_all_result (ts, delivered, skipped))
 
   let handle_poll_inbox relay ~verified_alias body =
     let node_id = get_string body "node_id" in
@@ -3219,18 +3255,19 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
             | Some identity_pk ->
               (match binding_id_of_phone_pk ~phone_ed25519_pubkey:identity_pk with
                | Some binding_id ->
-                 let sq_msg = {
-                   Relay_short_queue.ts;
-                   from_alias;
-                   to_alias;
-                   room_id = Some room_id;
-                   content;
-                 } in
-                 Relay_short_queue.ShortQueue.push short_queue ~binding_id sq_msg
-               | None -> ())
-            | None -> ()
-          ) delivered;
-          respond_ok (json_of_send_room_result (ts, delivered, skipped))
+                  let sq_msg = {
+                    Relay_short_queue.ts;
+                    from_alias;
+                    to_alias;
+                    room_id = Some room_id;
+                    content;
+                  } in
+                  Relay_short_queue.ShortQueue.push short_queue ~binding_id sq_msg;
+                  push_to_observers ~binding_id sq_msg
+                | None -> ())
+             | None -> ()
+           ) delivered;
+           respond_ok (json_of_send_room_result (ts, delivered, skipped))
 
   let handle_room_history relay body =
     let room_id = get_string body "room_id" in
@@ -3269,6 +3306,8 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
           else if nonce = "" then respond_bad_request (json_error_str err_bad_request "token missing nonce")
           else if now > expires_at then respond_bad_request (json_error_str err_bad_request "token expired")
           else if now < issued_at -. 5.0 then respond_bad_request (json_error_str err_bad_request "token issued_at in future")
+          else if expires_at -. issued_at > 300.0 then respond_bad_request (json_error_str err_bad_request "token TTL exceeds 300s server cap")
+          else if not (is_valid_binding_id binding_id) then respond_bad_request (json_error_str err_bad_request "binding_id must be 8-64 chars of [A-Za-z0-9_-]")
           else
             match decode_b64url sig_b64 with
             | Error _ -> respond_bad_request (json_error_str err_bad_request "token sig not base64url-nopad")
@@ -3278,15 +3317,20 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
               match decode_b64url machine_pk with
               | Error _ -> respond_bad_request (json_error_str err_bad_request "machine_ed25519_pubkey decode")
               | Ok pk_raw ->
-                if not (Relay_identity.verify ~pk:pk_raw ~msg:blob ~sig_:sig_raw) then
-                  respond_unauthorized (json_error_str relay_err_signature_invalid "token signature verification failed")
-                else
-                  match R.store_pairing_token relay ~binding_id ~token_b64 ~machine_ed25519_pubkey:machine_pk ~expires_at with
-                  | Error e -> respond_internal_error (json_error_str err_internal_error e)
-                  | Ok () ->
-                    Relay_ratelimit.structured_log ~event:"pair_requested"
-                      ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip) ~result:"ok" ();
-                    respond_ok (`Assoc ["binding_id", `String binding_id])
+                  if not (Relay_identity.verify ~pk:pk_raw ~msg:blob ~sig_:sig_raw) then
+                    respond_unauthorized (json_error_str relay_err_signature_invalid "token signature verification failed")
+                  else
+                    let is_rebind = R.find_pairing_token relay ~binding_id in
+                    match R.store_pairing_token relay ~binding_id ~token_b64 ~machine_ed25519_pubkey:machine_pk ~expires_at with
+                    | Error e -> respond_internal_error (json_error_str err_internal_error e)
+                    | Ok () ->
+                      let () = if is_rebind then
+                        Relay_ratelimit.structured_log ~event:"pair_rebound"
+                          ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip) ~result:"overwrite" ()
+                      in
+                      Relay_ratelimit.structured_log ~event:"pair_requested"
+                        ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip) ~result:"ok" ();
+                      respond_ok (`Assoc ["binding_id", `String binding_id])
 
   (* S5a: POST /mobile-pair — verify token sig, burn atomically, create binding *)
   let handle_mobile_pair relay body =
@@ -3316,6 +3360,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
         else if nonce = "" then respond_bad_request (json_error_str err_bad_request "token missing nonce")
         else if now > expires_at then respond_bad_request (json_error_str err_bad_request "token expired")
         else if now < issued_at -. 5.0 then respond_bad_request (json_error_str err_bad_request "token issued_at in future")
+        else if not (is_valid_binding_id binding_id) then respond_bad_request (json_error_str err_bad_request "binding_id must be 8-64 chars of [A-Za-z0-9_-]")
         else
           match decode_b64url sig_b64 with
           | Error _ -> respond_bad_request (json_error_str err_bad_request "token sig not base64url-nopad")

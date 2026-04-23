@@ -73,11 +73,16 @@
  (modules test_relay_short_queue)
  (libraries c2c_mcp alcotest unix))
 
+(test
+ (name test_relay_mobile_pair)
+ (modules test_relay_mobile_pair)
+ (libraries c2c_mcp alcotest base64 mirage-crypto-ec unix))
+
 ; test_relay.ml stale: references C2c_relay.RegistrationLease (wrong module
 ; name post-inline-merge) + uses `let R = ...` pattern syntax that isn't
-; OCaml. Needs a proper modernization pass as part of S-A4 (#100). Until
-; then, leaving the module unregistered — it cannot compile in current form.
-;(test
-; (name test_relay)
-; (modules test_relay)
-; (libraries c2c_mcp alcotest yojson unix))
+; S-A4: test_relay.ml updated to use Relay.* (was C2c_relay.*), local module
+; aliases replaced with fully-qualified paths. 18 tests now compile and run.
+(test
+ (name test_relay)
+ (modules test_relay)
+ (libraries c2c_mcp alcotest yojson unix))
