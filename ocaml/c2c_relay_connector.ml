@@ -114,6 +114,89 @@ let append_to_local_inbox broker_root session_id messages =
     List.length messages
 
 (* ---------------------------------------------------------------------------
+ * S5c Phase B: Pseudo-registration storage (separate from registry.json)
+ * Stored in pseudo_registrations.json — map of binding_id -> entry
+ * --------------------------------------------------------------------------- *)
+
+let pseudo_reg_path broker_root = broker_root // "pseudo_registrations.json"
+
+type pseudo_registration = {
+  pr_alias : string;
+  pr_ed25519_pubkey : string;
+  pr_x25519_pubkey : string;
+  pr_machine_ed25519_pubkey : string;
+  pr_provenance_sig : string;
+  pr_bound_at : float;
+}
+
+let read_pseudo_registrations broker_root =
+  let path = pseudo_reg_path broker_root in
+  if not (Sys.file_exists path) then []
+  else
+    try
+      let json = Yojson.Safe.from_file path in
+      let open Yojson.Safe.Util in
+      match json with
+      | `Assoc bindings ->
+          List.fold_left (fun acc (binding_id, entry) ->
+            match entry with
+            | `Assoc fields ->
+                let get_str key = match List.assoc_opt key fields with Some (`String s) -> s | _ -> "" in
+                let get_float key = match List.assoc_opt key fields with Some (`Float f) -> f | Some (`Int i) -> float_of_int i | _ -> 0.0 in
+                let pr = {
+                  pr_alias = get_str "alias";
+                  pr_ed25519_pubkey = get_str "ed25519_pubkey";
+                  pr_x25519_pubkey = get_str "x25519_pubkey";
+                  pr_machine_ed25519_pubkey = get_str "machine_ed25519_pubkey";
+                  pr_provenance_sig = get_str "provenance_sig";
+                  pr_bound_at = get_float "bound_at";
+                } in
+                (binding_id, pr) :: acc
+            | _ -> acc
+          ) [] bindings
+      | _ -> []
+    with _ -> []
+
+let write_pseudo_registrations broker_root entries =
+  let path = pseudo_reg_path broker_root in
+  let json = `Assoc (List.map (fun (binding_id, pr) ->
+    binding_id, `Assoc [
+      "alias", `String pr.pr_alias;
+      "ed25519_pubkey", `String pr.pr_ed25519_pubkey;
+      "x25519_pubkey", `String pr.pr_x25519_pubkey;
+      "machine_ed25519_pubkey", `String pr.pr_machine_ed25519_pubkey;
+      "provenance_sig", `String pr.pr_provenance_sig;
+      "bound_at", `Float pr.pr_bound_at;
+    ]
+  ) entries) in
+  let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+  let oc = open_out tmp in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () ->
+      Yojson.Safe.to_channel oc json ~std:false;
+      close_out oc;
+      Unix.rename tmp path)
+
+let upsert_pseudo_registration broker_root ~binding_id ~alias ~ed25519_pubkey ~x25519_pubkey ~machine_ed25519_pubkey ~provenance_sig ~bound_at =
+  let entries = read_pseudo_registrations broker_root in
+  let new_entry = {
+    pr_alias = alias;
+    pr_ed25519_pubkey = ed25519_pubkey;
+    pr_x25519_pubkey = x25519_pubkey;
+    pr_machine_ed25519_pubkey = machine_ed25519_pubkey;
+    pr_provenance_sig = provenance_sig;
+    pr_bound_at = bound_at;
+  } in
+  let entries = List.remove_assq binding_id entries in
+  let entries = (binding_id, new_entry) :: entries in
+  write_pseudo_registrations broker_root entries
+
+let remove_pseudo_registration broker_root ~binding_id =
+  let entries = read_pseudo_registrations broker_root in
+  let entries = List.remove_assq binding_id entries in
+  write_pseudo_registrations broker_root entries
+
+(* ---------------------------------------------------------------------------
  * Outbox (remote-outbox.jsonl)
  * --------------------------------------------------------------------------- *)
 
@@ -489,11 +572,9 @@ let handle_pseudo_registration broker_root json =
     let provenance_sig = json |> member "provenance_sig" |> to_string in
     let bound_at = json |> member "bound_at" |> to_float in
     Printf.printf "[broker-ws] pseudo_registration: alias=%s binding_id=%s\n%!" alias binding_id;
-    (* Upsert into registry - simplified, actual implementation below *)
-    Printf.printf "[broker-ws]   ed25519=%s x25519=%s machine=%s\n%!"
-      (String.sub ed25519_pubkey 0 8 ^ "...")
-      (String.sub x25519_pubkey 0 8 ^ "...")
-      (String.sub machine_ed25519_pubkey 0 8 ^ "...")
+    upsert_pseudo_registration broker_root ~binding_id ~alias ~ed25519_pubkey ~x25519_pubkey
+      ~machine_ed25519_pubkey ~provenance_sig ~bound_at;
+    Printf.printf "[broker-ws]   stored in pseudo_registrations.json\n%!"
   with e ->
     Printf.eprintf "[broker-ws] error handling pseudo_registration: %s\n%!" (Printexc.to_string e)
 
@@ -501,7 +582,9 @@ let handle_pseudo_unregistration broker_root json =
   let open Yojson.Safe.Util in
   try
     let binding_id = json |> member "binding_id" |> to_string in
-    Printf.printf "[broker-ws] pseudo_unregistration: binding_id=%s\n%!" binding_id
+    Printf.printf "[broker-ws] pseudo_unregistration: binding_id=%s\n%!" binding_id;
+    remove_pseudo_registration broker_root ~binding_id;
+    Printf.printf "[broker-ws]   removed from pseudo_registrations.json\n%!"
   with e ->
     Printf.eprintf "[broker-ws] error handling pseudo_unregistration: %s\n%!" (Printexc.to_string e)
 
