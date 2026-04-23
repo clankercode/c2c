@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# cc-quota: Extract and display Claude Code quota usage from statusline data
+# Supports piped statusline input, session env var, or standalone last.json fallback
+
+if [ ! -t 0 ]; then
+  input=$(cat)
+else
+  input=""
+fi
+session_id=$(echo "$input" | jq -r '.session_id // empty')
+
+if [ -z "$session_id" ]; then
+  session_id="${CLAUDE_SESSION_ID:-${C2C_MCP_SESSION_ID:-}}"
+fi
+
+CC_PROFILE=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+SL_OUT_DIR="$CC_PROFILE/sl_out"
+
+if [ -n "$session_id" ]; then
+  input_file="$SL_OUT_DIR/$session_id/input.json"
+else
+  input_file="$SL_OUT_DIR/last.json"
+fi
+
+if [ ! -f "$input_file" ]; then
+  echo "N/A: no statusline data found"
+  exit 0
+fi
+
+data=$(if [ "$input_file" = "$SL_OUT_DIR/last.json" ]; then
+  tail -1 "$input_file" 2>/dev/null
+else
+  cat "$input_file"
+fi)
+
+if [ -z "$data" ]; then
+  echo "N/A: no data in statusline file"
+  exit 0
+fi
+
+five_hour_pct=$(echo "$data" | jq -r '.rate_limits.five_hour.used_percentage | if . then floor else empty end // empty')
+five_hour_reset=$(echo "$data" | jq -r '.rate_limits.five_hour.resets_at // empty')
+seven_day_pct=$(echo "$data" | jq -r '.rate_limits.seven_day.used_percentage | if . then floor else empty end // empty')
+seven_day_reset=$(echo "$data" | jq -r '.rate_limits.seven_day.resets_at // empty')
+cost=$(echo "$data" | jq -r '.cost.total_cost_usd // empty')
+
+fmt_reset() {
+  local epoch=$1
+  local window_secs=$2
+  if [ -n "$epoch" ] && [ "$epoch" -gt 0 ] 2>/dev/null; then
+    reset_str=$(date -d "@$epoch" +"%H:%M" 2>/dev/null || date -r "$epoch" +"%H:%M" 2>/dev/null)
+    now_epoch=$(date +%s)
+    if [ "$epoch" -gt "$now_epoch" ] 2>/dev/null; then
+      remaining_secs=$(( epoch - now_epoch ))
+      hours=$(( remaining_secs / 3600 ))
+      mins=$(( (remaining_secs % 3600) / 60 ))
+      elapsed_secs=$(( window_secs - remaining_secs ))
+      elapsed_pct=$(( elapsed_secs * 100 / window_secs ))
+      if [ "$hours" -gt 0 ]; then
+        echo "${reset_str} (${hours}h${mins}m; ${elapsed_pct}% elapsed)"
+      else
+        echo "${reset_str} (${mins}m; ${elapsed_pct}% elapsed)"
+      fi
+    else
+      echo "${reset_str} (expired)"
+    fi
+  else
+    echo "never"
+  fi
+}
+
+if [ -n "$five_hour_pct" ]; then
+  reset_str=$(fmt_reset "$five_hour_reset" 18000)
+  echo "5h: ${five_hour_pct}% (resets at ${reset_str})"
+else
+  echo "N/A: five_hour quota not available"
+fi
+
+if [ -n "$seven_day_pct" ]; then
+  reset_str=$(fmt_reset "$seven_day_reset" 604800)
+  echo "7d: ${seven_day_pct}% (resets at ${reset_str})"
+fi
+
+if [ -n "$cost" ]; then
+  printf "cost: \$%.2f\n" "$cost"
+fi
