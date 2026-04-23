@@ -294,6 +294,26 @@ let test_send_room_without_envelope_legacy_history () =
       (List.assoc_opt "envelope" l <> None)
   | _ -> Alcotest.fail "unexpected shape"
 
+(* --- S4: WebSocket handshake RFC 6455 test vector --- *)
+(* RFC 6455 §4.2.2: key "dGhlIHNhbXBsZSBub25jZQ==" must produce
+   accept "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" *)
+
+let test_ws_handshake_rfc6455_vector () =
+  let key = "dGhlIHNhbXBsZSBub25jZQ==" in
+  let resp = Relay_ws_frame.make_handshake_response key in
+  let expected_accept = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" in
+  let resp_has_correct_accept =
+    try
+      let rec search i =
+        if i + String.length expected_accept > String.length resp then false
+        else if String.sub resp i (String.length expected_accept) = expected_accept then true
+        else search (i + 1)
+      in
+      search 0
+    with _ -> false
+  in
+  Alcotest.(check bool) "RFC 6455 test vector" true resp_has_correct_accept
+
 (* --- L4 slice 5: invited_members ACL --- *)
 
 let test_default_visibility_public () =
@@ -458,6 +478,7 @@ let tests = [
   "unbind_missing_alias_is_noop",  `Quick, test_unbind_missing_alias_is_noop;
   "send_room_persists_envelope",   `Quick, test_send_room_persists_envelope_in_history;
   "send_room_legacy_no_envelope",  `Quick, test_send_room_without_envelope_legacy_history;
+  "ws_handshake_rfc6455_vector",  `Quick, test_ws_handshake_rfc6455_vector;
 ]
 
 let () =

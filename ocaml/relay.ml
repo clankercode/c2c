@@ -2844,8 +2844,8 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
     let client_ip = get_client_ip conn in
     let rate_key = client_ip in
     let rate_limit_event, rate_limit_binding_prefix =
-      if String.length path > 11 && String.sub path 0 11 = "/observer/" then
-        ("observer_handshake", Some (Relay_ratelimit.prefix8 (String.sub path 11 (String.length path - 11))))
+      if String.length path > 10 && String.sub path 0 10 = "/observer/" then
+        ("observer_handshake", Some (Relay_ratelimit.prefix8 (String.sub path 10 (String.length path - 10))))
       else
         ("rate_limit_denied", None)
     in
