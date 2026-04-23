@@ -6862,7 +6862,7 @@ let rec prompt_choice ?(default=0) ~prompt ~options () =
           print_endline "Out of range. Try again."; prompt_choice ~default ~prompt ~options ()
         ) else List.nth options n
 
-let prompt_multi_select ~prompt ~items () =
+let rec prompt_multi_select ~prompt ~items () =
   print_string prompt;
   flush stdout;
   let line = String.trim (input_line stdin) in
