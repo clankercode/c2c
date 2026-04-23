@@ -666,8 +666,8 @@ module InMemoryRelay : RELAY = struct
       if now > expires_at then
         (Hashtbl.remove t.pairing_tokens binding_id; None)
       else
-         (Hashtbl.remove t.pairing_tokens binding_id;
-          Some (token_b64, machine_ed25519_pubkey))
+        (Hashtbl.remove t.pairing_tokens binding_id;
+         Some (token_b64, machine_ed25519_pubkey))
 
   let find_pairing_token t ~binding_id =
     match Hashtbl.find_opt t.pairing_tokens binding_id with
