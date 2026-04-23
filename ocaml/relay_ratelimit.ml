@@ -49,6 +49,10 @@ end = struct
   let last_seen t = t.last_seen
 end
 
+(* 8-char prefix helper — safe on strings shorter than 8 chars. *)
+let prefix8 s =
+  if String.length s >= 8 then String.sub s 0 8 else s
+
 (* Per-endpoint policies. Values are (capacity, refill_rate per second). *)
 let policy_of_endpoint path =
   let starts_with prefix s =
@@ -60,11 +64,9 @@ let policy_of_endpoint path =
   else if starts_with "/mobile-pair" path then
     Some (10.0, 0.167)   (* strict: 10/min ≈ 0.167/s *)
   else if starts_with "/device-pair" path then
-    Some (5.0, 0.083)    (* strict: 5/min ≈ 0.083/s; per user-code noted but
-                            keyed by IP only at this layer — per-user-code tracking
-                            requires code-level extraction and is a future extension *)
+    Some (5.0, 0.083)   (* strict: 5/min ≈ 0.083/s *)
   else if starts_with "/observer" path then
-    Some (20.0, 0.333)   (* strict: 20/min ≈ 0.333/s *)
+    Some (20.0, 0.333)  (* strict: 20/min ≈ 0.333/s *)
   else
     None
 
@@ -73,12 +75,13 @@ let policy_of_endpoint path =
 let structured_log ~event ?(binding_id_prefix="") ?(phone_pubkey_prefix="")
     ~source_ip_prefix ~result ?(reason="") () =
   let ts = Unix.gettimeofday () in
+  let reason = if String.length reason > 120 then String.sub reason 0 120 else reason in
   let fields = [
     "event", `String event;
     "ts", `Float ts;
-    "binding_id_prefix", `String binding_id_prefix;
-    "phone_pubkey_prefix", `String phone_pubkey_prefix;
-    "source_ip_prefix", `String source_ip_prefix;
+    "binding_id_prefix", `String (prefix8 binding_id_prefix);
+    "phone_pubkey_prefix", `String (prefix8 phone_pubkey_prefix);
+    "source_ip_prefix", `String (prefix8 source_ip_prefix);
     "result", `String result;
   ] in
   let fields = if reason <> "" then ("reason", `String reason) :: fields else fields in
@@ -115,6 +118,11 @@ module Make () = struct
               Hashtbl.add t.buckets key bucket;
               TokenBucket.allow bucket ~cost
         )
+
+  (* Composite-key check for /device-pair: rate-limit by IP + user-code.
+     [extra_id] is the user-code extracted by the route handler. *)
+  let check_composite t ~(key:string) ~(extra_id:string) ~(cost:int) ~(path:string) =
+    check t ~key:(key ^ "|" ^ extra_id) ~cost ~path
 
   let cleanup t ~older_than =
     with_lock t (fun () ->

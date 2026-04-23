@@ -2608,7 +2608,12 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
     let rate_key = client_ip in
     match Rate_limiter_inst.check rate_limiter ~key:rate_key ~cost:1 ~path with
     | `Deny retry_after ->
-        Logs.info (fun m -> m "rate_limit denied %s %s (retry after %.1fs)" (Cohttp.Code.string_of_method meth) path retry_after);
+        Relay_ratelimit.structured_log
+          ~event:"rate_limit_denied"
+          ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
+          ~result:"denied"
+          ~reason:(path ^ " retry_after=" ^ string_of_float retry_after)
+          ();
         respond_too_many_requests (`Assoc [
           "error", `String "rate_limit_exceeded";
           "retry_after", `Float retry_after

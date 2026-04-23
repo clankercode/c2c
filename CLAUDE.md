@@ -115,6 +115,19 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   unavailable — `dune install` does NOT reliably update the binary.
   Then run `./restart-self` to pick up the new binary, and call at least one
   new tool from your own session before marking the slice done.
+- **Run the `review-and-fix` skill after finishing a meaningful work unit,
+  before handing off or marking done.** The loop is only meaningful as a
+  git-visible sequence, so commit your work first (so the reviewer targets
+  a stable SHA), invoke the skill, and commit the fixes as a NEW commit
+  (never `--amend`). If the review returns FAIL, fix in a new commit then
+  re-invoke until PASS or a spec-level blocker surfaces. Skill sources:
+  `~/.claude/skills/review-and-fix/SKILL.md` (Claude Code),
+  `~/.codex/skills/review-and-fix/SKILL.md` (Codex — same format).
+  - When: after a meaningful slice, before returning/handing off
+  - Commit-before: reviewer needs a stable SHA to target
+  - Invoke: `Skill` tool, skill name `review-and-fix`
+  - On FAIL: new commit for the fix, then rereview
+  - Commit-after: the fix must be git-visible before the work is "done"
 - Always use subagent-driven development over inline execution.
 - Always populate the todo list with blockers for each task.
 - Do all available unblocked tasks in parallel at each step.
