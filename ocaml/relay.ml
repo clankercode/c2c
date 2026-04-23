@@ -2774,6 +2774,9 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
       let client_type = get_opt_string body "client_type" |> Option.value ~default:"unknown" in
       let ttl = float_of_int (get_int body "ttl" 300) in
       let identity_pk_b64 = get_opt_string body "identity_pk" |> Option.value ~default:"" in
+      let enc_pubkey_b64 = get_opt_string body "enc_pubkey" |> Option.value ~default:"" in
+      let signed_at = get_float body "signed_at" 0.0 in
+      let sig_b64 = get_opt_string body "sig_b64" |> Option.value ~default:"" in
       let signature_b64 = get_opt_string body "signature" |> Option.value ~default:"" in
       let nonce_b64 = get_opt_string body "nonce" |> Option.value ~default:"" in
       let timestamp_str = get_opt_string body "timestamp" |> Option.value ~default:"" in
@@ -2829,13 +2832,13 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
                   else
                     let result =
                       R.register relay ~node_id ~session_id ~alias
-                        ~client_type ~ttl ~identity_pk ()
+                        ~client_type ~ttl ~identity_pk ~enc_pubkey:enc_pubkey_b64 ~signed_at ~sig_b64:sig_b64 ()
                     in
                     respond_ok (json_of_register_result result)
       else
         (* Legacy path — no identity_pk supplied, behaves exactly as before. *)
         let result =
-          R.register relay ~node_id ~session_id ~alias ~client_type ~ttl ()
+          R.register relay ~node_id ~session_id ~alias ~client_type ~ttl ~enc_pubkey:enc_pubkey_b64 ~signed_at ~sig_b64:sig_b64 ()
         in
         respond_ok (json_of_register_result result)
 
