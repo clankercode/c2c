@@ -103,7 +103,7 @@ For `enc:"plain"`, `recipients` is `[{alias, nonce:null, ciphertext:<b64 plainte
 **BlockedBy**: none (can start immediately; doesn't require S1-S3)
 **Estimate**: ~3 days (revised up from 2d: per-frame bearer re-auth, nonce replay LRU, revocation hook, reconnect cursor, AND phone→broker envelope sig verification path).
 **[parallel with S1-S3]**
-**Lib**: `websocketaf` (integrates with existing conduit-lwt-unix/cohttp-lwt-unix stack; no extra C stubs).
+**Lib**: **`ocaml-websocket`** (vbmithr/ocaml-websocket) preferred — integrates with our existing cohttp-lwt-unix stack and supports OCaml 5.2. Fallback: manual RFC 6455 framing on `Conduit_lwt_unix.flow` in `ocaml/relay/ws_frame.ml` (~200 LOC server-side) if ocaml-websocket proves unusable. **Do NOT use `websocketaf`** — its dependency chain (httpaf <0.6, jbuilder) is incompatible with OCaml 5.2. Verified by jungle-coder 2026-04-23.
 
 - `wss://relay/observer/<machine_binding>` in `ocaml/relay/relay.ml`.
 - Auth: Bearer header = Ed25519-signed token `{binding, phone_pubkey, issued_at, nonce}` signed by phone's identity; relay verifies against stored binding.
