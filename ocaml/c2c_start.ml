@@ -999,12 +999,10 @@ let prepare_launch_args ~(name : string) ~(client : string)
            or --resume <sid> to reattach an existing one. --session-id errors out
            if a session with that id already exists; --resume errors out if it
            doesn't. So probe ~/.claude/projects/*/<uuid>.jsonl to pick.
-           --dangerously-load-development-channels enables Claude Code to process
-           notifications/claude/channel from the c2c broker as <channel> tags.
-           The local `server:c2c` MCP server must be passed through the
-           development-channel flag. Do not also append `--channels` for the
-           same bare MCP server: local testing works with the development flag
-           alone, and extra `--channels` args are unnecessary friction. *)
+           Both --dangerously-load-development-channels server:c2c AND
+           --channels server:c2c are required for channels to work in Claude.
+           The former enables Claude Code to process notifications/claude/channel
+           as <channel> tags; the latter registers the MCP server. *)
         let dev_channel_args =
           [ "--dangerously-load-development-channels"; "server:c2c"
           ; "--channels"; "server:c2c" ]
