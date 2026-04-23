@@ -161,6 +161,18 @@ val managed_capabilities :
 (** Return the union of static [probed_capabilities] and runtime capability
     observations for a managed instance. *)
 
+val should_enable_opencode_fallback :
+  ?startup_grace_s:float ->
+  ?opencode_plugin_freshness_window_s:float ->
+  name:string ->
+  start_time:float ->
+  now:float ->
+  unit ->
+  bool
+(** Return whether an OpenCode instance should engage non-plugin fallback
+    delivery yet. The fallback is suppressed during the initial startup grace
+    window, then enabled only when the plugin heartbeat is missing or stale. *)
+
 val missing_role_capabilities :
   client:string -> binary_path:string -> C2c_role.t -> string list
 (** Return role [required_capabilities] that are not satisfied by the probed

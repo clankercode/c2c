@@ -214,6 +214,74 @@ let test_runtime_capabilities_for_opencode_require_matching_session_id () =
   in
   check (list string) "mismatched session runtime capability set" [] caps
 
+let test_should_enable_opencode_fallback_respects_startup_grace () =
+  let name = Printf.sprintf "opencode-grace-%d" (Random.bits ()) in
+  with_instance_dir name @@ fun dir ->
+  let state_path = Filename.concat dir "oc-plugin-state.json" in
+  let json =
+    `Assoc
+      [ ("event", `String "state.snapshot")
+      ; ("ts", `String "2026-04-24T01:00:10.000Z")
+      ; ( "state",
+          `Assoc
+              [ ("c2c_session_id", `String name)
+              ; ("state_last_updated_at", `String "2026-04-24T01:00:10.000Z")
+              ; ( "activity_sources",
+                  `Assoc
+                    [ ( "plugin",
+                        `Assoc
+                          [ ("source_type", `String "plugin")
+                          ; ("first_active_at", `String "2026-04-24T01:00:00.000Z")
+                          ; ("last_active_at", `String "2026-04-24T01:00:10.000Z")
+                          ; ("heartbeat_interval_ms", `Int 10000)
+                          ] )
+                    ] )
+              ] )
+      ]
+  in
+  Yojson.Safe.to_file state_path json;
+  let should_enable =
+    C2c_start.should_enable_opencode_fallback ~name
+      ~start_time:((match Ptime.of_rfc3339 "2026-04-24T01:00:00.000Z" with Ok (t, _, _) -> Ptime.to_float_s t | Error _ -> failwith "bad test ts"))
+      ~now:((match Ptime.of_rfc3339 "2026-04-24T01:00:30.000Z" with Ok (t, _, _) -> Ptime.to_float_s t | Error _ -> failwith "bad test ts"))
+      ()
+  in
+  check bool "fallback suppressed during startup grace" false should_enable
+
+let test_should_enable_opencode_fallback_after_grace_when_plugin_stale () =
+  let name = Printf.sprintf "opencode-fallback-%d" (Random.bits ()) in
+  with_instance_dir name @@ fun dir ->
+  let state_path = Filename.concat dir "oc-plugin-state.json" in
+  let json =
+    `Assoc
+      [ ("event", `String "state.snapshot")
+      ; ("ts", `String "2026-04-24T01:00:00.000Z")
+      ; ( "state",
+          `Assoc
+              [ ("c2c_session_id", `String name)
+              ; ("state_last_updated_at", `String "2026-04-24T01:00:00.000Z")
+              ; ( "activity_sources",
+                  `Assoc
+                    [ ( "plugin",
+                        `Assoc
+                          [ ("source_type", `String "plugin")
+                          ; ("first_active_at", `String "2026-04-24T01:00:00.000Z")
+                          ; ("last_active_at", `String "2026-04-24T01:00:00.000Z")
+                          ; ("heartbeat_interval_ms", `Int 10000)
+                          ] )
+                    ] )
+              ] )
+      ]
+  in
+  Yojson.Safe.to_file state_path json;
+  let should_enable =
+    C2c_start.should_enable_opencode_fallback ~name
+      ~start_time:((match Ptime.of_rfc3339 "2026-04-24T01:00:00.000Z" with Ok (t, _, _) -> Ptime.to_float_s t | Error _ -> failwith "bad test ts"))
+      ~now:((match Ptime.of_rfc3339 "2026-04-24T01:01:30.000Z" with Ok (t, _, _) -> Ptime.to_float_s t | Error _ -> failwith "bad test ts"))
+      ()
+  in
+  check bool "fallback enabled after grace when plugin stale" true should_enable
+
 let test_missing_role_capabilities_reports_missing_codex_xml_fd () =
   let role =
     C2c_role.parse_string
@@ -342,6 +410,12 @@ let () =
         ; ( "runtime_capabilities_for_opencode_require_matching_session_id",
             `Quick,
             test_runtime_capabilities_for_opencode_require_matching_session_id )
+        ; ( "should_enable_opencode_fallback_respects_startup_grace",
+            `Quick,
+            test_should_enable_opencode_fallback_respects_startup_grace )
+        ; ( "should_enable_opencode_fallback_after_grace_when_plugin_stale",
+            `Quick,
+            test_should_enable_opencode_fallback_after_grace_when_plugin_stale )
         ; ( "missing_role_capabilities_reports_missing_codex_xml_fd",
             `Quick, test_missing_role_capabilities_reports_missing_codex_xml_fd )
         ; ( "missing_role_capabilities_satisfied_for_claude_channel",

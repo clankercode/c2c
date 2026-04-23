@@ -1236,6 +1236,14 @@ let managed_capabilities ?(now = Unix.gettimeofday ())
     (fun acc cap -> if List.mem cap acc then acc else acc @ [ cap ])
     static_caps runtime_caps
 
+let should_enable_opencode_fallback ?(startup_grace_s = 60.0)
+    ?(opencode_plugin_freshness_window_s = 60.0)
+    ~(name : string) ~(start_time : float) ~(now : float) () : bool =
+  now -. start_time >= startup_grace_s
+  && not
+       (opencode_plugin_active ~name ~now
+          ~freshness_window_s:opencode_plugin_freshness_window_s)
+
 let missing_role_capabilities ~(client : string) ~(binary_path : string)
     (role : C2c_role.t) : string list =
   C2c_capability.missing_required ~required:role.required_capabilities
@@ -1784,6 +1792,54 @@ let run_outer_loop ~(name : string) ~(client : string)
                | Some (_, fd4) -> (try Unix.close fd4 with _ -> ())
                | None -> ()
              end);
+          (if client = "opencode" && !deliver_pid = None then
+             let startup_grace_s =
+               match Sys.getenv_opt "C2C_OPENCODE_PLUGIN_GRACE_S" with
+               | Some s -> (try float_of_string s with _ -> 60.0)
+               | None -> 60.0
+             in
+             let heartbeat_stale_s =
+               match Sys.getenv_opt "C2C_OPENCODE_PLUGIN_STALE_S" with
+               | Some s -> (try float_of_string s with _ -> 60.0)
+               | None -> 60.0
+             in
+             let poll_interval_s =
+               match Sys.getenv_opt "C2C_OPENCODE_FALLBACK_CHECK_S" with
+               | Some s -> (try float_of_string s with _ -> 10.0)
+               | None -> 10.0
+             in
+             let child_pid_for_fallback = pid in
+             ignore (Thread.create
+               (fun () ->
+                 Unix.sleepf startup_grace_s;
+                 let rec loop () =
+                   if !deliver_pid <> None || not (pid_alive child_pid_for_fallback) then
+                     ()
+                   else if
+                     should_enable_opencode_fallback
+                       ~startup_grace_s
+                       ~opencode_plugin_freshness_window_s:heartbeat_stale_s
+                       ~name
+                       ~start_time
+                       ~now:(Unix.gettimeofday ())
+                       ()
+                   then
+                     match
+                       start_deliver_daemon ~name ~client ~broker_root
+                         ?child_pid_opt:(Some child_pid_for_fallback) ()
+                     with
+                     | Some p ->
+                         deliver_pid := Some p;
+                         write_pid (deliver_pid_path name) p
+                     | None -> ()
+                   else (
+                     Unix.sleepf poll_interval_s;
+                     loop ()
+                   )
+                 in
+                 loop ())
+               ())
+           );
           (match codex_xml_pipe with
            | Some (read_fd, write_fd) ->
                (try Unix.close read_fd with _ -> ());
