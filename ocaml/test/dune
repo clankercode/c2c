@@ -103,6 +103,11 @@
  (libraries c2c_mcp alcotest base64 mirage-crypto-ec unix str))
 
 (test
+ (name test_relay_device_pair)
+ (modules test_relay_device_pair)
+ (libraries c2c_mcp alcotest base64 mirage-crypto-ec unix))
+
+(test
  (name test_agent_refine)
  (modules test_agent_refine)
  (libraries c2c_mcp alcotest unix str))
