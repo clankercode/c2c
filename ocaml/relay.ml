@@ -1856,8 +1856,15 @@ end = struct
     count
 end
 
-module ObserverBindings_inst = ObserverBindings
-module NonceCache_inst = NonceCache
+let observer_bindings = ObserverBindings.create ()
+let get_observer_binding ~binding_id = ObserverBindings.get observer_bindings ~binding_id
+let add_observer_binding ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey =
+  ObserverBindings.add observer_bindings ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey
+
+let nonce_cache = NonceCache.create ()
+let is_nonce_seen ~phone_pubkey ~nonce = NonceCache.is_seen nonce_cache ~phone_pubkey ~nonce
+let record_nonce ~phone_pubkey ~nonce = NonceCache.record nonce_cache ~phone_pubkey ~nonce
+let cleanup_nonce_cache ~older_than = NonceCache.cleanup nonce_cache ~older_than
 
 module Relay_server(R : RELAY) : sig
   val make_callback :
@@ -2822,6 +2829,12 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
        with _ -> "unknown")
     | _ -> "unknown"
 
+  let get_fd_from_flow (flow:Conduit_lwt_unix.flow) =
+    match flow with
+    | TCP { fd } -> Some fd
+    | Domain_socket { fd } -> Some fd
+    | _ -> None
+
   let make_callback relay token conn req body ?(broker_root=None) ~rate_limiter =
     let open Cohttp in
     let open Cohttp_lwt_unix in
@@ -2910,17 +2923,75 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
       | `GET, path when String.length path > 11 && String.sub path 0 11 = "/observer/" ->
         let binding_id = String.sub path 11 (String.length path - 11) in
         let upgrade = Header.get (Request.headers req) "Upgrade" in
+        let sec_websocket_key = Header.get (Request.headers req) "Sec-WebSocket-Key" in
         let client_ip = get_client_ip conn in
         (match upgrade with
          | Some u when String.lowercase_ascii u = "websocket" ->
-           (* TODO S4: implement WebSocket upgrade
-              Steps: extract fd, verify bearer token, spawn ws_frame Session, return 101 *)
-           Relay_ratelimit.structured_log
-             ~event:"observer_handshake"
-             ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
-             ~binding_id_prefix:(Relay_ratelimit.prefix8 binding_id)
-             ~result:"not_implemented" ();
-           respond_json ~status:`Not_implemented (json_error_str "observer_not_implemented" "observer WebSocket endpoint not yet implemented")
+           (match sec_websocket_key with
+            | None ->
+              Relay_ratelimit.structured_log
+                ~event:"observer_handshake"
+                ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
+                ~binding_id_prefix:(Relay_ratelimit.prefix8 binding_id)
+                ~result:"missing_websocket_key" ();
+              respond_bad_request (json_error_str "missing_sec_websocket_key" "Sec-WebSocket-Key header required")
+            | Some ws_key ->
+              let bearer_token = auth_header in
+              let valid_binding =
+                match bearer_token with
+                | Some t when String.length t > 7 && String.sub t 0 7 = "Bearer " ->
+                  let token = String.sub t 7 (String.length t - 7) in
+                  token = binding_id && get_observer_binding ~binding_id <> None
+                | _ -> false
+              in
+              if not valid_binding then
+                (Relay_ratelimit.structured_log
+                  ~event:"observer_handshake"
+                  ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
+                  ~binding_id_prefix:(Relay_ratelimit.prefix8 binding_id)
+                  ~result:"invalid_bearer_token" ();
+                 respond_unauthorized (json_error_str "invalid_bearer_token" "Bearer token invalid or binding not found"))
+              else
+                match get_fd_from_flow conn with
+                | None ->
+                  Relay_ratelimit.structured_log
+                    ~event:"observer_handshake"
+                    ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
+                    ~binding_id_prefix:(Relay_ratelimit.prefix8 binding_id)
+                    ~result:"no_fd" ();
+                  respond_json ~status:`Internal_server_error (json_error_str "internal_error" "Could not extract connection fd")
+                | Some orig_fd ->
+                  let ws_accept = Relay_ws_frame.make_handshake_response ws_key in
+                  let fd_dup = Lwt_unix.unix_file_descr orig_fd |> Unix.dup in
+                  let fd_dup_lwt = Lwt_unix.of_unix_file_descr fd_dup in
+                  let (_:int) = Unix.write (Lwt_unix.unix_file_descr orig_fd) (Bytes.of_string ws_accept) 0 (String.length ws_accept) in
+                  Unix.close (Lwt_unix.unix_file_descr orig_fd);
+                  Relay_ratelimit.structured_log
+                    ~event:"observer_handshake"
+                    ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
+                    ~binding_id_prefix:(Relay_ratelimit.prefix8 binding_id)
+                    ~result:"upgraded" ();
+                  Lwt.async (fun () ->
+                    Lwt.catch (fun () ->
+                      let session = Relay_ws_frame.Session.of_fd fd_dup_lwt in
+                      let rec loop () =
+                        Relay_ws_frame.Session.recv session >>= fun msg ->
+                        match msg with
+                        | None -> Lwt.return_unit
+                        | Some (`Ping) -> loop ()
+                        | Some (`Close (_, _)) ->
+                            Relay_ws_frame.Session.close_with ~code:1000 ~reason:"normal" () session
+                        | Some (`Text _) | Some (`Binary _) ->
+                            Relay_ws_frame.Session.send_text session "observer_receipt" >>= fun () ->
+                            loop ()
+                      in
+                      loop ()
+                    ) (function
+                      | End_of_file -> Lwt.return_unit
+                      | e -> Lwt.return_unit
+                    )
+                  );
+                  respond_ok (`Assoc ["ok", `Bool true; "msg", `String "websocket_session_started"]))
          | _ ->
            respond_bad_request (json_error_str "observer_upgrade_required" "Upgrade: websocket header required"))
       | `GET, "/" ->
