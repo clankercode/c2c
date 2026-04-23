@@ -2927,7 +2927,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
       in
       match meth, path with
       (* === S4: Observer WebSocket endpoint === *)
-      | `GET, path when String.length path > 11 && String.sub path 0 11 = "/observer/" ->
+      | `GET, path when String.length path > 10 && String.sub path 0 10 = "/observer/" ->
         let binding_id = String.sub path 11 (String.length path - 11) in
         let upgrade = Header.get (Request.headers req) "Upgrade" in
         let sec_websocket_key = Header.get (Request.headers req) "Sec-WebSocket-Key" in

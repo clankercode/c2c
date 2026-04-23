@@ -128,7 +128,7 @@ let make_handshake_response (key:string) =
   let guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" in
   let combined = key ^ guid in
   let hash = Digestif.SHA1.to_raw_string (Digestif.SHA1.digest_string combined) in
-  let accept = Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet hash in
+  let accept = Base64.encode_string hash in
   Printf.sprintf
     "HTTP/1.1 101 Switching Protocols\r\n\
      Upgrade: websocket\r\n\
