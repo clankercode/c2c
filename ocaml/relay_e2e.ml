@@ -51,28 +51,54 @@ let random_nonce () =
   ensure_rng ();
   Mirage_crypto_rng.generate 24
 
+(* Canonical JSON — alpha-sorted keys for cross-platform determinism.
+   Spec §S3: signature is over canonical JSON of {from,to,room,ts,enc,recipients}.
+   Alpha-sorting ensures TS/Python clients that serialize with sorted keys
+   produce bit-identical output, so Ed25519 sig verification works everywhere. *)
+let sort_assoc (lst : (string * Yojson.Safe.t) list) : (string * Yojson.Safe.t) list =
+  List.sort (fun (a, _) (b, _) -> String.compare a b) lst
+
+let rec json_to_string_sorted (j : Yojson.Safe.t) : string =
+  match j with
+  | `Assoc fields ->
+    let sorted = sort_assoc fields in
+    let inner = List.map (fun (k, v) -> Printf.sprintf "%S:%s" k (json_to_string_sorted v)) sorted in
+    "{" ^ String.concat "," inner ^ "}"
+  | `List items ->
+    let inner = List.map json_to_string_sorted items in
+    "[" ^ String.concat "," inner ^ "]"
+  | `String s -> Printf.sprintf "%S" s
+  | `Null -> "null"
+  | `Int i -> string_of_int i
+  | `Intlit s -> s
+  | `Float f -> string_of_float f
+  | `Bool b -> string_of_bool b
+  | _ -> Yojson.Safe.to_string j
+
 let canonical_json (e : envelope) : string =
   let rncs =
     `List (
       List.map (fun r ->
-        `Assoc (
+        let fields =
           [ "alias", `String r.alias ]
-          @ (match r.nonce with Some n -> [ "nonce", `String n ] | None -> [])
+          @ (match r.nonce with Some n -> [ "nonce", `String n ] | None -> [ "nonce", `Null ])
           @ [ "ciphertext", `String r.ciphertext ]
-        )
+        in
+        `Assoc (sort_assoc fields)
       ) e.recipients
     )
   in
-  let json = `Assoc [
-    "from",      `String e.from_;
-    "to",        (match e.to_ with Some s -> `String s | None -> `Null);
-    "room",      (match e.room with Some s -> `String s | None -> `Null);
-    "ts",        `Intlit (Int64.to_string e.ts);
-    "enc",       `String e.enc;
-    "recipients", rncs;
-  ]
+  let fields =
+    sort_assoc [
+      "from",      `String e.from_;
+      "to",        (match e.to_ with Some s -> `String s | None -> `Null);
+      "room",      (match e.room with Some s -> `String s | None -> `Null);
+      "ts",        `Intlit (Int64.to_string e.ts);
+      "enc",       `String e.enc;
+      "recipients", rncs;
+    ]
   in
-  Yojson.Safe.to_string json
+  "{" ^ String.concat "," (List.map (fun (k, v) -> Printf.sprintf "%S:%s" k (json_to_string_sorted v)) fields) ^ "}"
 
 let sign_ed25519 ~sk_seed msg =
   match Mirage_crypto_ec.Ed25519.priv_of_octets sk_seed with
