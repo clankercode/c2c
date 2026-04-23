@@ -1414,13 +1414,12 @@ let run_outer_loop ~(name : string) ~(client : string)
           if client = "codex-headless" then Some "5" else None
         in
         if is_cc_wrapper binary_path then
-          (* cc-* wrappers manage their own session (--session-id / --resume) but
-             must still pass the c2c MCP channel allowlist through to the
-             underlying claude binary. Without these the wrapped claude rejects
-             notifications/claude/channel frames from the c2c broker and
-             channel-based delivery silently fails. *)
-          [ "--dangerously-load-development-channels"; "server:c2c"
-          ; "--channels"; "server:c2c" ]
+          (* cc-* wrappers supply their own session + channel flags.
+             Don't re-inject the dev-channel flags here — duplicating
+             creates parser confusion / ugly argv. Wrapper script is
+             responsible for passing --dangerously-load-development-channels
+             server:c2c --channels server:c2c through to claude. *)
+          []
         else
           prepare_launch_args ~name ~client ~extra_args ~broker_root
             ?alias_override ?resume_session_id ?binary_override ?codex_xml_input_fd
