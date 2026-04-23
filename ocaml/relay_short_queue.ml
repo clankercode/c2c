@@ -55,13 +55,13 @@ end = struct
       loop 0 []
     else
       let start = r.head in
-      let rec loop i acc =
-        if i = start then List.rev acc
+      let rec loop i count acc =
+        if count >= max_size then List.rev acc
         else
-          let idx = if i < 0 then max_size + i + 1 else i in
-          loop (i - 1) (r.msgs.(idx) :: acc)
+          let idx = ((i mod max_size) + max_size) mod max_size in
+          loop (i - 1) (count + 1) (r.msgs.(idx) :: acc)
       in
-      loop (start - 1) []
+      loop (start - 1) 0 []
 
   type t = {
     mutable rings : (string, ring) Hashtbl.t;

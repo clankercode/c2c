@@ -67,3 +67,8 @@
  (name test_relay_e2e)
  (modules test_relay_e2e)
  (libraries c2c_mcp alcotest base64 unix))
+
+(test
+ (name test_relay_short_queue)
+ (modules test_relay_short_queue)
+ (libraries c2c_mcp alcotest unix))
