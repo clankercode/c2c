@@ -980,15 +980,25 @@ let build_kimi_mcp_config (name : string) (br : string) (alias_override : string
  * --------------------------------------------------------------------------- *)
 
 let claude_session_exists uuid =
-  let root = home_dir () // ".claude" // "projects" in
-  if not (Sys.file_exists root) then false
-  else
-    try
-      let entries = Sys.readdir root in
-      Array.exists (fun slug ->
-        Sys.file_exists (root // slug // (uuid ^ ".jsonl"))
-      ) entries
-    with _ -> false
+  let probe_root root =
+    if not (Sys.file_exists root) then false
+    else
+      try
+        let entries = Sys.readdir root in
+        Array.exists (fun slug ->
+          Sys.file_exists (root // slug // (uuid ^ ".jsonl"))
+        ) entries
+      with _ -> false
+  in
+  let default_root = home_dir () // ".claude" // "projects" in
+  let custom_root =
+    try Some (Sys.getenv "CLAUDE_CONFIG_DIR" // ".claude" // "projects")
+    with Not_found -> None
+  in
+  probe_root default_root ||
+    (match custom_root with
+     | Some root -> probe_root root
+     | None -> false)
 
 (* ---------------------------------------------------------------------------
  * Launch argument preparation
