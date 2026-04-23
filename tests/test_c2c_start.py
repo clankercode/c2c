@@ -1475,6 +1475,59 @@ class C2CStartNameValidationTests(unittest.TestCase):
 
 
 @_CLI_SKIP
+class C2CStartModelValidationTests(unittest.TestCase):
+    """Regression: `c2c start --model` must fail early for malformed client-specific values."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self.instances_dir = self.tmp_path / "instances"
+        self.instances_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run(self, client: str, model: str) -> tuple[int, str, str]:
+        from tests.conftest import spawn_tracked, clean_c2c_start_env
+
+        base_env = clean_c2c_start_env(os.environ)
+        env = {
+            **base_env,
+            "C2C_INSTANCES_DIR": str(self.instances_dir),
+            "GIT_DIR": str(self.tmp_path / "no-such-git"),
+        }
+        proc = spawn_tracked(
+            [str(CLI_EXE), "start", client, "-n", f"model-{client}", "--model", model],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            cwd=str(self.tmp_path),
+        )
+        try:
+            stdout, stderr = proc.communicate(timeout=CLI_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            self.fail(f"c2c start timed out for client={client!r} model={model!r}")
+        return proc.returncode, stdout, stderr
+
+    def test_opencode_bare_model_rejected(self):
+        rc, _out, stderr = self._run("opencode", "MiniMax-M2.7-highspeed")
+        self.assertEqual(rc, 1, stderr)
+        self.assertIn("invalid --model for client 'opencode'", stderr)
+        self.assertIn("provider:model", stderr)
+
+    def test_single_provider_client_rejects_empty_model_suffix(self):
+        for client in ("claude", "codex", "codex-headless", "kimi", "crush"):
+            with self.subTest(client=client):
+                rc, _out, stderr = self._run(client, "anthropic:")
+                self.assertEqual(rc, 1, stderr)
+                self.assertIn(f"invalid --model for client '{client}'", stderr)
+                self.assertIn("empty model", stderr)
+
+
+@_CLI_SKIP
 class PollInboxAliasFallbackTests(unittest.TestCase):
     """Regression: `c2c poll-inbox` must fall back to alias-based session_id lookup.
 

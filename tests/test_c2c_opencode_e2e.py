@@ -175,3 +175,26 @@ def test_opencode_smoke_with_agent(scenario: Scenario) -> None:
 
     scenario.assert_agent(agent).alive()
     scenario.assert_agent(agent).registered_alive()
+
+
+def test_opencode_smoke_model_override_reaches_inner_cmdline(scenario: Scenario) -> None:
+    _init_git_repo(scenario.workdir)
+    _create_opencode_json(scenario.workdir, scenario.broker_root())
+    scenario.refresh_capabilities()
+
+    suffix = _unique_suffix()
+    agent_alias = f"oc-model-{suffix}"
+
+    compile_role(scenario.workdir, agent_alias, "opencode", model=OPENCODE_TEST_MODEL)
+    agent = scenario.start_agent(
+        "opencode",
+        name=agent_alias,
+        role=agent_alias,
+        model=OPENCODE_TEST_MODEL,
+    )
+
+    scenario.wait_for_init(agent, timeout=90.0)
+    scenario.wait_for(lambda: _registered(agent, scenario), timeout=60.0)
+
+    cmdline = scenario.managed_inner_cmdline(agent)
+    assert f"--model {OPENCODE_TEST_MODEL}" in cmdline, cmdline
