@@ -7163,11 +7163,21 @@ let agent_run_term =
     Cmdliner.Arg.(value & opt (some string) None & info [ "bin" ] ~docv:"PATH"
       ~doc:"Custom binary path or name (e.g. cc-mm).")
   in
+  let timeout_arg =
+    Cmdliner.Arg.(value & opt float 1800.0 & info [ "timeout"; "t" ] ~docv:"SECONDS"
+      ~doc:"Idle timeout — SIGTERM the instance if no broker activity for this many seconds. 0 disables. Default 1800 (30min).")
+  in
+  let dry_run_arg =
+    Cmdliner.Arg.(value & flag & info [ "dry-run" ]
+      ~doc:"Print resolved client, name, caller, kickoff prompt, and timeout without invoking c2c start.")
+  in
   let+ role = role_arg
   and+ prompt_opt = prompt_arg
   and+ name_opt = name_arg
   and+ client_opt = client_arg
-  and+ bin_opt = bin_arg in
+  and+ bin_opt = bin_arg
+  and+ timeout = timeout_arg
+  and+ dry_run = dry_run_arg in
   let role_path = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" // (role ^ ".md") in
   if not (Sys.file_exists role_path) then begin
     Printf.eprintf "error: role file not found: %s\n  create it first with: c2c agent new %s\n%!" role_path role;
@@ -7229,13 +7239,59 @@ let agent_run_term =
        ## Role briefing\n\n%s\n"
       role name caller caller user_prompt_section rendered
   in
-  write_agent_file ~client ~name ~content:rendered;
   let auto_join =
     if r.C2c_role.c2c_auto_join_rooms <> []
     then Some (String.concat "," r.C2c_role.c2c_auto_join_rooms)
     else None
   in
-  Printf.printf "c2c agent run: role=%s client=%s name=%s caller=%s\n%!" role client name caller;
+  if dry_run then begin
+    Printf.printf "c2c agent run [dry-run]:\n  role=%s\n  client=%s\n  name=%s\n  caller=%s\n  timeout=%.0fs\n  bin=%s\n  auto_join=%s\n\n--- kickoff prompt ---\n%s--- end prompt ---\n%!"
+      role client name caller timeout
+      (match bin_opt with Some b -> b | None -> "(default)")
+      (match auto_join with Some r -> r | None -> "(none)")
+      kickoff;
+    exit 0
+  end;
+  write_agent_file ~client ~name ~content:rendered;
+  Printf.printf "c2c agent run: role=%s client=%s name=%s caller=%s timeout=%.0fs\n%!" role client name caller timeout;
+  (* Idle-timeout watchdog: fork a child that SIGTERMs the outer.pid after
+     `timeout` seconds of no broker-inbox activity. Parent runs cmd_start
+     to completion; on return, terminates the watchdog. timeout=0 disables. *)
+  let watchdog_pid = ref None in
+  if timeout > 0.0 then begin
+    match Unix.fork () with
+    | 0 ->
+      (* child: watchdog. Never returns; only exits. *)
+      (try ignore (Unix.setsid ()) with _ -> ());
+      let broker_root = C2c_start.broker_root () in
+      let outer_pid_path = C2c_start.outer_pid_path name in
+      let inbox_path = Filename.concat broker_root (name ^ ".inbox.json") in
+      let archive_path = Filename.concat (Filename.concat broker_root "archive") (name ^ ".jsonl") in
+      let mtime_opt p = try Some (Unix.stat p).st_mtime with _ -> None in
+      let max_mtime () =
+        let candidates = [mtime_opt inbox_path; mtime_opt archive_path] in
+        List.fold_left (fun acc -> function Some m -> max acc m | None -> acc) 0.0 candidates
+      in
+      let start_time = Unix.gettimeofday () in
+      let tick = min 30.0 (max 5.0 (timeout /. 4.0)) in
+      let rec loop () =
+        Unix.sleepf tick;
+        match C2c_start.read_pid outer_pid_path with
+        | None -> exit 0
+        | Some pid when not (C2c_start.pid_alive pid) -> exit 0
+        | Some pid ->
+          let last = max_mtime () in
+          let effective = if last > 0.0 then last else start_time in
+          if Unix.gettimeofday () -. effective > timeout then begin
+            Printf.eprintf "[c2c agent run] idle timeout %.0fs reached; SIGTERM pid %d (name=%s)\n%!"
+              timeout pid name;
+            (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
+            exit 0
+          end else loop ()
+      in
+      loop ()
+    | pid -> watchdog_pid := Some pid
+  end;
   let rc =
     C2c_start.cmd_start ~client ~name ~extra_args:[]
       ?binary_override:bin_opt
@@ -7244,6 +7300,9 @@ let agent_run_term =
       ?auto_join_rooms:auto_join
       ()
   in
+  (match !watchdog_pid with
+   | Some pid -> (try Unix.kill pid Sys.sigterm with _ -> ())
+   | None -> ());
   exit rc
 
 let agent_run_cmd =
