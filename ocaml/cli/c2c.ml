@@ -182,6 +182,7 @@ let rec command_tier_map () : (string * safety) list =
   ; "monitor", Tier1      (* read-only inbox/archive event stream — required by agent recovery-snippet *)
   ; "start", Tier2
   ; "stop", Tier2
+  ; "agent", Tier2
   ; "restart", Tier2
   ; "rooms-send", Tier2
   ; "rooms-visibility", Tier2
@@ -424,6 +425,8 @@ let commands_by_safety_cmd =
     ("agent new", "Create a new canonical role file");
     ("agent delete", "Delete a canonical role file");
     ("agent rename", "Rename a canonical role file");
+    ("agent run", "Launch an ephemeral one-shot agent from a role");
+    ("agent refine", "Interactively refine an existing role file");
     ("roles compile", "Compile canonical role(s) to client agent files");
     ("roles validate", "Validate canonical role files for completeness");
     ("config show", "Show current c2c config values");
@@ -7139,10 +7142,120 @@ let agent_refine_cmd =
       ~doc:"Launch the configured generation_client to interactively refine an existing role file (Phase 2 of the agent wizard).")
     agent_refine_term
 
+let agent_run_term =
+  let role_arg =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROLE"
+      ~doc:"Role name — reads .c2c/roles/<ROLE>.md and launches an ephemeral managed peer with that role.")
+  in
+  let prompt_arg =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "prompt"; "p" ] ~docv:"TEXT"
+      ~doc:"Optional caller prompt folded into the kickoff template.")
+  in
+  let name_arg =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "name"; "n" ] ~docv:"NAME"
+      ~doc:"Explicit instance/alias name. Default: eph-<role>-<word>-<word>.")
+  in
+  let client_arg =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "client"; "c" ] ~docv:"CLIENT"
+      ~doc:"Client to launch (claude|opencode|codex|kimi). Default: first entry of role.compatible_clients, else generation_client from config.")
+  in
+  let bin_arg =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "bin" ] ~docv:"PATH"
+      ~doc:"Custom binary path or name (e.g. cc-mm).")
+  in
+  let+ role = role_arg
+  and+ prompt_opt = prompt_arg
+  and+ name_opt = name_arg
+  and+ client_opt = client_arg
+  and+ bin_opt = bin_arg in
+  let role_path = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" // (role ^ ".md") in
+  if not (Sys.file_exists role_path) then begin
+    Printf.eprintf "error: role file not found: %s\n  create it first with: c2c agent new %s\n%!" role_path role;
+    exit 1
+  end;
+  let r =
+    try C2c_role.parse_file role_path
+    with Sys_error e ->
+      Printf.eprintf "error: failed to read role file %s: %s\n%!" role_path e;
+      exit 1
+  in
+  let client = match client_opt with
+    | Some c -> c
+    | None ->
+      (match r.C2c_role.compatible_clients with
+       | c :: _ -> c
+       | [] ->
+         (match List.assoc_opt "generation_client" (config_read ()) with
+          | Some c -> c
+          | None ->
+            Printf.eprintf "error: role '%s' has no compatible_clients and generation_client is not set.\n  pass --client, or set: c2c config generation-client <client>\n%!" role;
+            exit 1))
+  in
+  if r.C2c_role.compatible_clients <> [] && not (List.mem client r.C2c_role.compatible_clients) then begin
+    Printf.eprintf "error: role '%s' is not compatible with client '%s' (compatible: %s)\n%!"
+      role client (String.concat ", " r.C2c_role.compatible_clients);
+    exit 1
+  end;
+  let name = match name_opt with
+    | Some n -> n
+    | None -> Printf.sprintf "eph-%s-%s" role (C2c_start.generate_alias ())
+  in
+  let caller =
+    match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
+    | Some a when a <> "" -> a
+    | _ -> (match Sys.getenv_opt "USER" with Some u -> u | None -> "unknown")
+  in
+  let rendered =
+    match render_role_for_client r ~client with
+    | Some s -> s
+    | None ->
+      Printf.eprintf "error: role rendering not supported for client '%s'\n%!" client;
+      exit 1
+  in
+  let user_prompt_section = match prompt_opt with
+    | Some p when p <> "" -> Printf.sprintf "\n## Caller prompt\n\n%s\n" p
+    | _ -> ""
+  in
+  let kickoff =
+    Printf.sprintf
+      "# Ephemeral c2c agent (role: %s)\n\n\
+       You are a short-lived, purpose-built c2c peer. Your alias is `%s`. Your caller session is `%s`.\n\n\
+       ## Lifecycle\n\n\
+       When your task is complete:\n\
+       1. Confirm completion with the caller (`c2c send %s \"done: <short summary>\"`).\n\
+       2. After the caller acknowledges, call the `stop_self` MCP tool (c2c server) to terminate cleanly.\n\n\
+       If you are unsure whether you are done, ASK the caller rather than stop_self-ing prematurely.\n\
+       %s\n\
+       ## Role briefing\n\n%s\n"
+      role name caller caller user_prompt_section rendered
+  in
+  write_agent_file ~client ~name ~content:rendered;
+  let auto_join =
+    if r.C2c_role.c2c_auto_join_rooms <> []
+    then Some (String.concat "," r.C2c_role.c2c_auto_join_rooms)
+    else None
+  in
+  Printf.printf "c2c agent run: role=%s client=%s name=%s caller=%s\n%!" role client name caller;
+  let rc =
+    C2c_start.cmd_start ~client ~name ~extra_args:[]
+      ?binary_override:bin_opt
+      ?alias_override:(Some name)
+      ?kickoff_prompt:(Some kickoff)
+      ?auto_join_rooms:auto_join
+      ()
+  in
+  exit rc
+
+let agent_run_cmd =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "run"
+      ~doc:"Launch a short-lived ephemeral managed peer from a role file. Auto-generates an eph-<role>-<word>-<word> name, composes a kickoff prompt template (caller, stop_self instructions, role body), and invokes c2c start.")
+    agent_run_term
+
 let agent_group =
   Cmdliner.Cmd.group ~default:agent_list_term
     (Cmdliner.Cmd.info "agent" ~doc:"Manage canonical role files.")
-    [agent_new_cmd; agent_list_cmd; agent_delete_cmd; agent_rename_cmd; agent_refine_cmd]
+    [agent_new_cmd; agent_list_cmd; agent_delete_cmd; agent_rename_cmd; agent_refine_cmd; agent_run_cmd]
 
 (* --- subcommand: roles ----------------------------------------------------- *)
 
