@@ -4013,6 +4013,125 @@ let relay_dm_cmd =
            Printf.eprintf "error: unknown dm subcommand: %s\n%!" other;
            exit 1)
 
+(* c2c relay mobile-pair — Issue a mobile pairing token via QR code flow (§S5a) *)
+let relay_mobile_pair_cmd =
+  let subcmd =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info []
+       ~docv:"prepare|confirm" ~doc:"Mobile-pair subcommand: prepare issues a pairing token; confirm completes binding.")
+  in
+  let relay_url =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ]
+       ~docv:"URL" ~doc:"Relay server URL.")
+  in
+  let token =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ]
+       ~docv:"TOKEN" ~doc:"Bearer token (admin relay only).")
+  in
+  let binding_id =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "binding-id" ]
+       ~docv:"ID" ~doc:"Binding ID (for confirm).")
+  in
+  let phone_ed_pk =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "phone-ed-pk" ]
+       ~docv:"B64" ~doc:"Phone Ed25519 pubkey base64url (for confirm).")
+  in
+  let phone_x_pk =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "phone-x-pk" ]
+       ~docv:"B64" ~doc:"Phone X25519 pubkey base64url (for confirm).")
+  in
+  let ttl =
+    Cmdliner.Arg.(value & opt (some float) None & info [ "ttl" ]
+       ~docv:"SECONDS" ~doc:"Token TTL in seconds (default: 300, max: 300).")
+  in
+  let+ subcmd = subcmd
+  and+ relay_url = relay_url
+  and+ token = token
+  and+ binding_id = binding_id
+  and+ phone_ed_pk = phone_ed_pk
+  and+ phone_x_pk = phone_x_pk
+  and+ ttl = ttl
+  and+ json = json_flag in
+  match resolve_relay_url relay_url with
+  | None ->
+      Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+      exit 1
+  | Some url ->
+      let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+      match subcmd with
+      | "prepare" ->
+          (match Relay_identity.load () with
+           | Error _ ->
+               Printf.eprintf "error: no identity.json found. Run 'c2c relay identity init' first.\n%!";
+               exit 1
+           | Ok id ->
+               let bid = match binding_id with
+                 | Some b -> b
+                 | None -> Uuidm.to_string (Uuidm.v `V4)
+               in
+               let now = Unix.gettimeofday () in
+               let ttl_val = match ttl with Some t -> t | None -> 300.0 in
+               let ttl_val = min ttl_val 300.0 in
+               let issued_at = now in
+               let expires_at = issued_at +. ttl_val in
+               let nonce = Uuidm.to_string (Uuidm.v `V4) in
+               let machine_pk_b64 =
+                 Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet id.Relay_identity.public_key
+               in
+               let blob = Relay_identity.canonical_msg ~ctx:Relay.mobile_pair_token_sign_ctx
+                 [ bid; machine_pk_b64; string_of_float issued_at;
+                   string_of_float expires_at; nonce ]
+               in
+               let sig_ = Relay_identity.sign id blob in
+               let sig_b64 =
+                 Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet sig_
+               in
+               let token_json = `Assoc [
+                 "binding_id", `String bid;
+                 "machine_ed25519_pubkey", `String machine_pk_b64;
+                 "issued_at", `Float issued_at;
+                 "expires_at", `Float expires_at;
+                 "nonce", `String nonce;
+                 "sig", `String sig_b64;
+               ] in
+               let token_b64 =
+                 Yojson.Safe.to_string token_json |>
+                 Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet
+               in
+               let result = Lwt_main.run
+                 (Relay.Relay_client.mobile_pair_prepare client
+                    ~machine_ed25519_pubkey:machine_pk_b64 ~token:token_b64)
+               in
+               if json then print_endline (Yojson.Safe.pretty_to_string result)
+               else (
+                 match List.assoc_opt "binding_id" (Yojson.Safe.Util.to_assoc result) with
+                 | Some (`String bid) ->
+                     Printf.printf "binding_id: %s\ntoken: %s\nnonce: %s\nttl: %.0f\n"
+                       bid token_b64 nonce ttl_val;
+                     Printf.printf "QR content: %s\n%!" token_b64
+                 | _ -> ()
+               );
+               exit 0)
+      | "confirm" ->
+          let ed_pk = phone_ed_pk in
+          let x_pk = phone_x_pk in
+          if ed_pk = None then (Printf.eprintf "error: --phone-ed-pk required for confirm.\n%!"; exit 1);
+          if x_pk = None then (Printf.eprintf "error: --phone-x-pk required for confirm.\n%!"; exit 1);
+          let ed_pk = Option.get ed_pk in
+          let x_pk = Option.get x_pk in
+          let result = Lwt_main.run
+            (Relay.Relay_client.mobile_pair_confirm client
+               ~token:"" ~phone_ed25519_pubkey:ed_pk ~phone_x25519_pubkey:x_pk)
+          in
+          if json then print_endline (Yojson.Safe.pretty_to_string result)
+          else print_endline (Yojson.Safe.pretty_to_string result);
+          (match result with
+           | `Assoc fields ->
+               (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
+           | _ -> exit 1)
+      | other ->
+          Printf.eprintf "error: unknown mobile-pair subcommand: %s (use prepare or confirm)\n%!" other;
+          exit 1
+
 let relay_gc_cmd =
   let relay_url =
     Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL.")
@@ -4258,17 +4377,18 @@ let relay_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "rooms" ~doc:"Manage relay r
  let relay_poll_inbox = Cmdliner.Cmd.v (Cmdliner.Cmd.info "poll-inbox" ~doc:"Poll a remote relay's /remote_inbox/<session_id> endpoint.") relay_poll_inbox_cmd
  let relay_register = Cmdliner.Cmd.v (Cmdliner.Cmd.info "register" ~doc:"Register Ed25519 identity on the relay.") relay_register_cmd
  let relay_dm = Cmdliner.Cmd.v (Cmdliner.Cmd.info "dm" ~doc:"Send or receive cross-host direct messages.") relay_dm_cmd
+ let relay_mobile_pair = Cmdliner.Cmd.v (Cmdliner.Cmd.info "mobile-pair" ~doc:"Mobile device pairing via QR token flow (§S5a).") relay_mobile_pair_cmd
 
  let relay_group =
   Cmdliner.Cmd.group
     ~default:relay_status_cmd
     (Cmdliner.Cmd.info "relay"
-       ~doc:"Cross-machine relay: serve, connect, setup, status, list, rooms, gc, identity, register, dm."
+       ~doc:"Cross-machine relay: serve, connect, setup, status, list, rooms, gc, identity, register, dm, mobile-pair."
        ~man:[ `S "DESCRIPTION"
-            ; `P "The relay connects brokers across machines. Use $(b,c2c relay setup) to configure your connection, $(b,c2c relay connect) to start the connector daemon, or $(b,c2c relay serve) to run a relay server (operators only)."
+            ; `P "The relay connects brokers across machines. Use $(b,c2c relay setup) once, then $(b,c2c relay connect) to keep your broker connected to the relay."
             ; `P "Common workflow: run $(b,c2c relay setup) once, then $(b,c2c relay connect) to keep your broker connected to the relay."
             ])
-    [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_poll_inbox; relay_identity; relay_register; relay_dm ]
+    [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_poll_inbox; relay_identity; relay_register; relay_dm; relay_mobile_pair ]
 
 (* --- main entry point ----------------------------------------------------- *)
 
