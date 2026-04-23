@@ -106,6 +106,14 @@ CREATE TABLE IF NOT EXISTS room_invites (
     identity_pk_b64 TEXT NOT NULL,
     PRIMARY KEY (room_id, identity_pk_b64)
 );
+
+CREATE TABLE IF NOT EXISTS pairing_tokens (
+    binding_id TEXT PRIMARY KEY,
+    token_b64 TEXT NOT NULL,
+    machine_ed25519_pubkey TEXT NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0,
+    expires_at REAL NOT NULL
+);
 |sql}
 
 (* Local Lease type mirroring RegistrationLease from relay.ml *)
@@ -211,6 +219,62 @@ module SqliteRelay = struct
   let with_lock t f =
     Mutex.lock t.mutex;
     Fun.protect ~finally:(fun () -> Mutex.unlock t.mutex) f
+
+  (* S5a: Pairing token management *)
+  let store_pairing_token t ~binding_id ~token_b64 ~machine_ed25519_pubkey ~expires_at =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let stmt = Sqlite3.prepare conn
+        "INSERT OR REPLACE INTO pairing_tokens (binding_id, token_b64, machine_ed25519_pubkey, used, expires_at) VALUES (?, ?, ?, 0, ?)"
+      in
+      Sqlite3.bind_text stmt 1 binding_id |> ignore;
+      Sqlite3.bind_text stmt 2 token_b64 |> ignore;
+      Sqlite3.bind_text stmt 3 machine_ed25519_pubkey |> ignore;
+      Sqlite3.bind_double stmt 4 expires_at |> ignore;
+      let rc = Sqlite3.step stmt in
+      Sqlite3.finalize stmt |> ignore;
+      if Rc.is_success rc then Ok ()
+      else Error (Printf.sprintf "store_pairing_token failed: %s" (Rc.to_string rc))
+    )
+
+  let get_and_burn_pairing_token t ~binding_id =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let now = Unix.gettimeofday () in
+      let select_sql = "SELECT token_b64, machine_ed25519_pubkey FROM pairing_tokens WHERE binding_id = ? AND used = 0 AND expires_at > ?" in
+      let stmt = Sqlite3.prepare conn select_sql in
+      Sqlite3.bind_text stmt 1 binding_id |> ignore;
+      Sqlite3.bind_double stmt 2 now |> ignore;
+      let rc = Sqlite3.step stmt in
+      if rc = Rc.ROW then begin
+        let token_b64 = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
+        let machine_ed25519_pubkey = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 1) in
+        Sqlite3.finalize stmt |> ignore;
+        let up_stmt = Sqlite3.prepare conn
+          "UPDATE pairing_tokens SET used = 1 WHERE binding_id = ? AND used = 0"
+        in
+        Sqlite3.bind_text up_stmt 1 binding_id |> ignore;
+        let rc = Sqlite3.step up_stmt in
+        Sqlite3.finalize up_stmt |> ignore;
+        if Rc.is_success rc then
+          Some (token_b64, machine_ed25519_pubkey)
+        else
+          None
+      end else begin
+        Sqlite3.finalize stmt |> ignore;
+        None
+      end
+    )
+
+  let delete_pairing_token t ~binding_id =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let stmt = Sqlite3.prepare conn "DELETE FROM pairing_tokens WHERE binding_id = ?" in
+      Sqlite3.bind_text stmt 1 binding_id |> ignore;
+      let _rc = Sqlite3.step stmt in
+      Sqlite3.finalize stmt |> ignore;
+      ()
+    )
 
   let get_lease_row_fields row =
     match row with
