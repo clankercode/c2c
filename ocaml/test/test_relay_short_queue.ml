@@ -96,10 +96,10 @@ let test_push_ring_overwrite () =
   done;
   let msgs = ShortQueue.get_after q ~binding_id:"b1" ~since_ts:0.0 in
   Alcotest.(check int) "max 1000 msgs in ring" 1000 (List.length msgs);
-  let newest = (List.hd msgs).ts in
-  let oldest = (List.hd (List.rev msgs)).ts in
-  Alcotest.(check bool) "newest is msg1005" true (newest = 1005.0);
-  Alcotest.(check bool) "oldest is msg6" true (oldest = 6.0)
+  let oldest = (List.hd msgs).ts in
+  let newest = (List.hd (List.rev msgs)).ts in
+  Alcotest.(check bool) "oldest is msg6" true (oldest = 6.0);
+  Alcotest.(check bool) "newest is msg1005" true (newest = 1005.0)
 
 let tests = [
   "push_and_get_after",       `Quick, test_push_and_get_after;
