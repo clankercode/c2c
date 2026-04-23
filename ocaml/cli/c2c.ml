@@ -6332,9 +6332,36 @@ let instances_cmd =
         let config =
           try Some (json_read_file config_path) with _ -> None
         in
+        let config_string name fields =
+          match List.assoc_opt name fields with Some (`String s) -> Some s | _ -> None
+        in
+        let config_float name fields =
+          match List.assoc_opt name fields with
+          | Some (`Float f) -> Some f
+          | Some (`Int n) -> Some (float_of_int n)
+          | _ -> None
+        in
         let client = match config with
           | Some (`Assoc fields) -> (match List.assoc_opt "client" fields with Some (`String c) -> c | _ -> "?")
           | _ -> "?"
+        in
+        let created_at = match config with
+          | Some (`Assoc fields) -> config_float "created_at" fields
+          | _ -> None
+        in
+        let binary_path =
+          match config with
+          | Some (`Assoc fields) ->
+              (match config_string "binary_override" fields with
+               | Some path -> path
+               | None ->
+                   (match Hashtbl.find_opt C2c_start.clients client with
+                    | Some cfg -> cfg.C2c_start.binary
+                    | None -> client))
+          | _ ->
+              (match Hashtbl.find_opt C2c_start.clients client with
+               | Some cfg -> cfg.C2c_start.binary
+               | None -> client)
         in
         let status, pid =
           let outer_pid_path = dir // "outer.pid" in
@@ -6353,10 +6380,14 @@ let instances_cmd =
             | None -> ("unknown", None)
           end else ("stopped", None)
         in
+        let delivery_mode =
+          C2c_start.delivery_mode ~client ~name ~binary_path ~start_time:created_at ()
+        in
         let fields : (string * Yojson.Safe.t) list =
           [ ("name", `String name)
           ; ("client", `String client)
           ; ("status", `String status)
+          ; ("delivery_mode", `String delivery_mode)
           ; ("outer_alive", `Bool (status = "running"))
           ; ("outer_pid", match pid with Some p -> `Int p | None -> `Null)
           ]
@@ -6376,8 +6407,9 @@ let instances_cmd =
               let name = match List.assoc_opt "name" fields with Some (`String s) -> s | _ -> "?" in
               let client = match List.assoc_opt "client" fields with Some (`String s) -> s | _ -> "?" in
               let status = match List.assoc_opt "status" fields with Some (`String s) -> s | _ -> "?" in
+              let delivery_mode = match List.assoc_opt "delivery_mode" fields with Some (`String s) -> s | _ -> "?" in
               let pid_str = match List.assoc_opt "pid" fields with Some (`Int n) -> Printf.sprintf " (pid %d)" n | _ -> "" in
-              Printf.printf "  %-20s %-10s %s%s\n" name client status pid_str
+              Printf.printf "  %-20s %-10s %-12s %s%s\n" name client status delivery_mode pid_str
           | _ -> ()
         ) instances
   end
