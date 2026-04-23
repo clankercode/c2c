@@ -1332,6 +1332,45 @@ let should_enable_opencode_fallback ?(startup_grace_s = 60.0)
        (opencode_plugin_active ~name ~now
           ~freshness_window_s:opencode_plugin_freshness_window_s)
 
+let delivery_mode ?(now = Unix.gettimeofday ()) ?(startup_grace_s = 60.0)
+    ?(opencode_plugin_freshness_window_s = 60.0) ?available_capabilities
+    ~(client : string) ~(name : string) ~(binary_path : string)
+    ~(start_time : float option) () : string =
+  let caps =
+    match available_capabilities with
+    | Some caps -> caps
+    | None ->
+        managed_capabilities ~now ~opencode_plugin_freshness_window_s
+          ~client ~name ~binary_path ()
+  in
+  let has cap = C2c_capability.has caps cap in
+  match client with
+  | "claude" ->
+      if has C2c_capability.Claude_channel then "channel_push" else "hook_poll"
+  | "opencode" ->
+      if has C2c_capability.Opencode_plugin_active then "plugin"
+      else
+        (match start_time with
+         | Some started_at when
+             not (should_enable_opencode_fallback ~startup_grace_s
+                    ~opencode_plugin_freshness_window_s
+                    ~name ~start_time:started_at ~now ()) ->
+             "plugin_grace"
+         | _ when has C2c_capability.Pty_inject -> "native_pty_fallback"
+         | _ -> "plugin_stale_no_fallback")
+  | "kimi" ->
+      if has C2c_capability.Kimi_wire then "wire" else "poll_only"
+  | "codex" ->
+      if has C2c_capability.Codex_xml_fd then "xml_fd"
+      else if has C2c_capability.Pty_inject then "pty_notify"
+      else "unavailable"
+  | "codex-headless" ->
+      if has C2c_capability.Codex_headless_thread_id_fd then "xml_fifo"
+      else "unavailable"
+  | "crush" ->
+      if has C2c_capability.Pty_inject then "pty_notify" else "unavailable"
+  | _ -> "unknown"
+
 let inject_message_via_c2c ~(client_pid : int) (msg : C2c_mcp.message) : bool =
   let command = current_c2c_command () in
   let argv =

@@ -312,6 +312,112 @@ let test_should_enable_opencode_fallback_after_grace_when_plugin_stale () =
   in
   check bool "fallback enabled after grace when plugin stale" true should_enable
 
+let test_delivery_mode_for_opencode_plugin_active () =
+  let name = Printf.sprintf "opencode-mode-plugin-%d" (Random.bits ()) in
+  with_instance_dir name @@ fun dir ->
+  let state_path = Filename.concat dir "oc-plugin-state.json" in
+  let json =
+    `Assoc
+      [ ("event", `String "state.snapshot")
+      ; ("ts", `String "2026-04-24T01:00:30.000Z")
+      ; ( "state",
+          `Assoc
+              [ ("c2c_session_id", `String name)
+              ; ("state_last_updated_at", `String "2026-04-24T01:00:30.000Z")
+              ; ( "activity_sources",
+                  `Assoc
+                    [ ( "plugin",
+                        `Assoc
+                          [ ("source_type", `String "plugin")
+                          ; ("first_active_at", `String "2026-04-24T01:00:00.000Z")
+                          ; ("last_active_at", `String "2026-04-24T01:00:30.000Z")
+                          ; ("heartbeat_interval_ms", `Int 10000)
+                          ] )
+                    ] )
+              ] )
+      ]
+  in
+  Yojson.Safe.to_file state_path json;
+  let mode =
+    C2c_start.delivery_mode ~client:"opencode" ~name ~binary_path:"/bin/true"
+      ~start_time:None
+      ~now:((match Ptime.of_rfc3339 "2026-04-24T01:01:00.000Z" with Ok (t, _, _) -> Ptime.to_float_s t | Error _ -> failwith "bad test ts"))
+      ()
+  in
+  check string "delivery mode plugin" "plugin" mode
+
+let test_delivery_mode_for_opencode_grace_window () =
+  let name = Printf.sprintf "opencode-mode-grace-%d" (Random.bits ()) in
+  with_instance_dir name @@ fun dir ->
+  let state_path = Filename.concat dir "oc-plugin-state.json" in
+  let json =
+    `Assoc
+      [ ("event", `String "state.snapshot")
+      ; ("ts", `String "2026-04-24T01:00:00.000Z")
+      ; ( "state",
+          `Assoc
+              [ ("c2c_session_id", `String name)
+              ; ("state_last_updated_at", `String "2026-04-24T01:00:00.000Z")
+              ; ( "activity_sources",
+                  `Assoc
+                    [ ( "plugin",
+                        `Assoc
+                          [ ("source_type", `String "plugin")
+                          ; ("first_active_at", `String "2026-04-24T01:00:00.000Z")
+                          ; ("last_active_at", `String "2026-04-24T01:00:00.000Z")
+                          ; ("heartbeat_interval_ms", `Int 600000)
+                          ] )
+                    ] )
+              ] )
+      ]
+  in
+  Yojson.Safe.to_file state_path json;
+  let mode =
+    C2c_start.delivery_mode ~client:"opencode" ~name ~binary_path:"/bin/true"
+      ~start_time:(Some (match Ptime.of_rfc3339 "2026-04-24T01:01:10.000Z" with Ok (t, _, _) -> Ptime.to_float_s t | Error _ -> failwith "bad test ts"))
+      ~now:((match Ptime.of_rfc3339 "2026-04-24T01:01:30.000Z" with Ok (t, _, _) -> Ptime.to_float_s t | Error _ -> failwith "bad test ts"))
+      ()
+  in
+  check string "delivery mode grace" "plugin_grace" mode
+
+let test_delivery_mode_for_opencode_native_fallback () =
+  let name = Printf.sprintf "opencode-mode-fallback-%d" (Random.bits ()) in
+  with_instance_dir name @@ fun dir ->
+  let state_path = Filename.concat dir "oc-plugin-state.json" in
+  let json =
+    `Assoc
+      [ ("event", `String "state.snapshot")
+      ; ("ts", `String "2026-04-24T01:00:00.000Z")
+      ; ( "state",
+          `Assoc
+              [ ("c2c_session_id", `String name)
+              ; ("state_last_updated_at", `String "2026-04-24T01:00:00.000Z")
+              ; ( "activity_sources",
+                  `Assoc
+                    [ ( "plugin",
+                        `Assoc
+                          [ ("source_type", `String "plugin")
+                          ; ("first_active_at", `String "2026-04-24T01:00:00.000Z")
+                          ; ("last_active_at", `String "2026-04-24T01:00:00.000Z")
+                          ; ("heartbeat_interval_ms", `Int 600000)
+                          ] )
+                    ] )
+              ] )
+      ]
+  in
+  Yojson.Safe.to_file state_path json;
+  let mode =
+    C2c_start.delivery_mode ~client:"opencode" ~name ~binary_path:"/bin/true"
+      ~start_time:(Some (match Ptime.of_rfc3339 "2026-04-24T01:00:00.000Z" with Ok (t, _, _) -> Ptime.to_float_s t | Error _ -> failwith "bad test ts"))
+      ~available_capabilities:
+        [ C2c_capability.to_string C2c_capability.Opencode_plugin
+        ; C2c_capability.to_string C2c_capability.Pty_inject
+        ]
+      ~now:((match Ptime.of_rfc3339 "2026-04-24T01:01:30.000Z" with Ok (t, _, _) -> Ptime.to_float_s t | Error _ -> failwith "bad test ts"))
+      ()
+  in
+  check string "delivery mode fallback" "native_pty_fallback" mode
+
 let test_missing_role_capabilities_reports_missing_codex_xml_fd () =
   let role =
     C2c_role.parse_string
@@ -452,6 +558,12 @@ let () =
         ; ( "should_enable_opencode_fallback_after_grace_when_plugin_stale",
             `Quick,
             test_should_enable_opencode_fallback_after_grace_when_plugin_stale )
+        ; ( "delivery_mode_for_opencode_plugin_active",
+            `Quick, test_delivery_mode_for_opencode_plugin_active )
+        ; ( "delivery_mode_for_opencode_grace_window",
+            `Quick, test_delivery_mode_for_opencode_grace_window )
+        ; ( "delivery_mode_for_opencode_native_fallback",
+            `Quick, test_delivery_mode_for_opencode_native_fallback )
         ; ( "missing_role_capabilities_reports_missing_codex_xml_fd",
             `Quick, test_missing_role_capabilities_reports_missing_codex_xml_fd )
         ; ( "missing_role_capabilities_satisfied_for_claude_channel",

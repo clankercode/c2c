@@ -189,6 +189,21 @@ val should_enable_opencode_fallback :
     delivery yet. The fallback is suppressed during the initial startup grace
     window, then enabled only when the plugin heartbeat is missing or stale. *)
 
+val delivery_mode :
+  ?now:float ->
+  ?startup_grace_s:float ->
+  ?opencode_plugin_freshness_window_s:float ->
+  ?available_capabilities:string list ->
+  client:string ->
+  name:string ->
+  binary_path:string ->
+  start_time:float option ->
+  unit ->
+  string
+(** Return the currently selected delivery mode label for a managed instance,
+    combining static launcher capabilities with runtime state such as the
+    OpenCode plugin heartbeat. *)
+
 val missing_role_capabilities :
   client:string -> binary_path:string -> C2c_role.t -> string list
 (** Return role [required_capabilities] that are not satisfied by the probed
