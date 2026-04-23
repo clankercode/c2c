@@ -33,7 +33,7 @@ type registration =
   (** Set when the agent is actively compacting/summarizing. Send-side
       checks this and returns a warning; message is still queued. *)
   }
-type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option }
+type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 type room_visibility = Public | Invite_only
@@ -374,7 +374,7 @@ module Broker = struct
     ; compacting = compacting_of_json json
     }
 
-  let message_to_json { from_alias; to_alias; content; deferrable; reply_via } =
+  let message_to_json { from_alias; to_alias; content; deferrable; reply_via; enc_status } =
     let base =
       [ ("from_alias", `String from_alias)
       ; ("to_alias", `String to_alias)
@@ -382,7 +382,10 @@ module Broker = struct
       ]
     in
     let with_deferrable = if deferrable then base @ [("deferrable", `Bool true)] else base in
-    `Assoc (match reply_via with None -> with_deferrable | Some rv -> with_deferrable @ [("reply_via", `String rv)])
+    let with_reply_via = match reply_via with None -> with_deferrable | Some rv -> with_deferrable @ [("reply_via", `String rv)] in
+    match enc_status with
+    | None -> `Assoc with_reply_via
+    | Some es -> `Assoc (with_reply_via @ [("enc_status", `String es)])
 
   let message_of_json json =
     let open Yojson.Safe.Util in
@@ -395,6 +398,10 @@ module Broker = struct
          | _ -> false)
     ; reply_via =
         (match json |> member "reply_via" with
+         | `String s -> Some s
+         | _ -> None)
+    ; enc_status =
+        (match json |> member "enc_status" with
          | `String s -> Some s
          | _ -> None)
     }
@@ -919,7 +926,7 @@ module Broker = struct
             with_inbox_lock t ~session_id (fun () ->
                 let current = load_inbox t ~session_id in
                 let next =
-                  current @ [ { from_alias; to_alias; content; deferrable; reply_via = None } ]
+                  current @ [ { from_alias; to_alias; content; deferrable; reply_via = None; enc_status = None } ]
                 in
                 save_inbox t ~session_id next))
 
@@ -954,7 +961,7 @@ module Broker = struct
                         let current = load_inbox t ~session_id in
                         let next =
                           current
-                          @ [ { from_alias; to_alias = reg.alias; content; deferrable = false; reply_via = None } ]
+                          @ [ { from_alias; to_alias = reg.alias; content; deferrable = false; reply_via = None; enc_status = None } ]
                         in
                         save_inbox t ~session_id next);
                     sent := reg.alias :: !sent
@@ -1540,7 +1547,7 @@ module Broker = struct
                     with_inbox_lock t ~session_id (fun () ->
                         let current = load_inbox t ~session_id in
                         let next =
-                          current @ [ { from_alias; to_alias = tagged_to; content; deferrable = false; reply_via = None } ]
+                          current @ [ { from_alias; to_alias = tagged_to; content; deferrable = false; reply_via = None; enc_status = None } ]
                         in
                         save_inbox t ~session_id next);
                     delivered := m.rm_alias :: !delivered
