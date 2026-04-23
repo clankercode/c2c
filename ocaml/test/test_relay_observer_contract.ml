@@ -112,11 +112,10 @@ let test_mobile_pair_full_round_trip () =
   Alcotest.(check bool) "binding found before confirm" true
     (Relay.InMemoryRelay.find_pairing_token r ~binding_id);
   let burned = Relay.InMemoryRelay.get_and_burn_pairing_token r ~binding_id in
-  (match burned with
-   | None -> Alcotest.fail "expected Some after burn"
-   | Some (t, p) ->
-     Alcotest.(check string) "burned token matches" token_b64 t;
-     Alcotest.(check string) "burned pk matches" machine_pk_b64 p);
+  Alcotest.(check bool) "burn returns Some" true (Option.is_some burned);
+  let (t, p) = Option.get burned in
+  Alcotest.(check string) "burned token matches" token_b64 t;
+  Alcotest.(check string) "burned pk matches" machine_pk_b64 p;
   Alcotest.(check bool) "binding consumed after burn" false
     (Relay.InMemoryRelay.find_pairing_token r ~binding_id);
   Relay.InMemoryRelay.add_observer_binding r ~binding_id
@@ -128,9 +127,9 @@ let test_mobile_pair_full_round_trip () =
   Alcotest.(check bool) "observer binding gone after revoke" true
     (Relay.InMemoryRelay.get_observer_binding r ~binding_id = None)
 
-(* ---- Revoke endpoint: binding not found returns not_found ---- *)
+(* ---- get_observer_binding on nonexistent binding returns None ---- *)
 
-let test_revoke_nonexistent_binding_returns_false () =
+let test_get_nonexistent_binding_returns_none () =
   let r = Relay.InMemoryRelay.create () in
   let existed = match Relay.InMemoryRelay.get_observer_binding r ~binding_id:"no-such-bind" with
     | None -> false | Some _ -> true in
@@ -138,7 +137,7 @@ let test_revoke_nonexistent_binding_returns_false () =
 
 (* ---- ObserverSessions wiring via InMemoryRelay ShortQueue ---- *)
 
-let test_short_queue_observer_binding_isolation () =
+let test_observer_binding_isolation () =
   let r = Relay.InMemoryRelay.create () in
   let (_, pk_raw) = gen_keypair () in
   let phone_ed = b64url_encode pk_raw in
@@ -179,12 +178,12 @@ let tests = [
   "mobile-pair round-trip", [
     Alcotest.test_case "prepare → confirm → revoke full flow" `Quick
       test_mobile_pair_full_round_trip;
-    Alcotest.test_case "revoke nonexistent returns false" `Quick
-      test_revoke_nonexistent_binding_returns_false;
+    Alcotest.test_case "get nonexistent binding returns None" `Quick
+      test_get_nonexistent_binding_returns_none;
   ];
   "observer binding isolation", [
     Alcotest.test_case "bindings are isolated per binding_id" `Quick
-      test_short_queue_observer_binding_isolation;
+      test_observer_binding_isolation;
   ];
 ]
 
