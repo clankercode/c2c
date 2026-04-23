@@ -187,34 +187,60 @@ The phone client stores:
 
 ## §4 — E2E Envelope Shape
 
-Once bound, messages between desktop and phone use the observer binding for E2E encryption key exchange.
+Once bound, messages between desktop and phone use the S3 signed envelope format with NaCl crypto_box encryption.
+
+**Envelope format v1** (spec M1-breakdown.md §S3):
+```json
+{
+  "from": "<canonical_alias>",
+  "to":   "<canonical_alias>" | null,
+  "room": "<room_id>" | null,
+  "ts":   <epoch_ms>,
+  "enc":  "box-x25519-v1" | "plain",
+  "recipients": [
+    { "alias": "<canonical>", "nonce": "<b64 24B nonce>", "ciphertext": "<b64 encrypted payload>" }
+  ],
+  "sig":  "<b64 Ed25519 signature of canonical JSON>"
+}
+```
+
+**Key fields**:
+- `from`: sender's canonical alias (phone alias, e.g. `max-phone`)
+- `to`: recipient alias, or `null` for room sends
+- `room`: room_id if room message, else `null`
+- `enc`: `"box-x25519-v1"` for encrypted, `"plain"` for unencrypted
+- `recipients[]`: one entry per intended recipient, each with per-recipient nonce + ciphertext
+- `sig`: Ed25519 signature over canonical JSON of `{from,to,room,ts,enc,recipients}` — sender signs regardless of encryption
+
+**Encryption algorithm**: NaCl crypto_box (X25519 → HSalsa20 → XSalsa20-Poly1305). Not Signal-style double-ratchet — single DH per message.
 
 ### 4.1 Desktop → Phone E2E send
 
-1. Look up `phone_x25519_pubkey` from the binding stored at `relay.py:inbox` (phone's pubkey was stored on confirm)
-2. Generate ephemeral X25519 keypair for this message
-3. ECDH: `ephemeral_x25519_privkey + phone_x25519_pubkey` → shared secret
-4. Derive symmetric key via HKDF
-5. Encrypt payload with AES-GCM
-6. Include `ephemeral_x25519_pubkey` in envelope header
+1. Look up `phone_x25519_pubkey` from the binding (stored during `/mobile-pair/confirm`)
+2. Generate fresh 24-byte nonce per recipient
+3. `crypto_box` per recipient: `Hacl.NaCl.box ~pt:body ~n:nonce ~pk:phone_x25519_pubkey ~sk:sender_x25519_privkey`
+4. Wrap in S3 envelope with `enc: "box-x25519-v1"`, sign with Ed25519 identity key
 
 **Envelope** (what gets stored in inbox):
 ```json
 {
-  "e2e": true,
-  "ephemeral_x25519_pubkey": "<base64url ephemeral pubkey>",
-  "nonce": "<base64url AES-GCM nonce>",
-  "ciphertext": "<base64url encrypted payload>",
-  "binding_id": "my-phone-01"
+  "from": "desktop-alias",
+  "to": "max-phone",
+  "room": null,
+  "ts": 1714000000.0,
+  "enc": "box-x25519-v1",
+  "recipients": [
+    { "alias": "max-phone", "nonce": "<b64 24B>", "ciphertext": "<b64>" }
+  ],
+  "sig": "<b64 Ed25519 sig>"
 }
 ```
 
 ### 4.2 Phone decryption
 
-1. ECDH: `phone_x25519_privkey + ephemeral_x25519_pubkey` → same shared secret
-2. Derive symmetric key via HKDF (must match sender's derivation)
-3. Decrypt `ciphertext` with `nonce` using AES-GCM
-4. Verify payload integrity via GCM tag
+1. Find own entry in `recipients[]` by matching own alias
+2. `crypto_box_open`: `Hacl.NaCl.box_open ~c:ciphertext ~n:nonce ~pk:sender_x25519_pubkey ~sk:phone_x25519_privkey`
+3. Verify outer `sig` against sender's Ed25519 pubkey (pinned via S2 TOFU)
 
 ### 4.3 Relay inbox storage
 
@@ -372,3 +398,51 @@ Revoke a binding. No auth required.
 - E2E encryption is end-to-end between desktop and phone — relay never sees plaintext
 - Token TTL is capped at 300s server-side to limit replay window
 - One-time use of tokens prevents replay attacks on the confirm step
+
+---
+
+## §9 — S5c: Relay-to-Broker Push (Observer WebSocket)
+
+After mobile pair confirm/revoke, the relay pushes notifications to connected observer WebSocket clients so the bound broker can update its registry.
+
+### 9.1 On pair confirm — `pseudo_registration` push
+
+After the binding is created in the relay's observer bindings store, the relay sends a `pseudo_registration` frame to all active observer WebSocket sessions for that binding_id:
+
+```json
+{
+  "type": "pseudo_registration",
+  "alias": "<phone_alias>",
+  "ed25519_pubkey": "<phone Ed25519 pubkey>",
+  "x25519_pubkey": "<phone X25519 pubkey>",
+  "machine_ed25519_pubkey": "<desktop machine Ed25519 pubkey>",
+  "binding_id": "<binding_id>",
+  "bound_at": <epoch_float>,
+  "provenance_sig": "<desktop-signed sig over above fields>"
+}
+```
+
+**Note**: Without the broker-side consumer of this push (S5c-broker, tracked separately as #104), the phone is **not** a reachable peer after pair. Desktop cannot `c2c send <phone-alias>` until the broker processes this frame. The phone shows as a peer in the relay's observer sessions but not in the broker's registry.
+
+### 9.2 On revoke — `pseudo_unregistration` push
+
+When a binding is revoked, the relay sends:
+
+```json
+{
+  "type": "pseudo_unregistration",
+  "binding_id": "<binding_id>"
+}
+```
+
+This tells the bound broker to remove the phone's pseudo-registration entry.
+
+### 9.3 Observer WebSocket frame format
+
+All observer WS frames are JSON text messages. The `type` field discriminates:
+- `replay` — reconnect cursor replay (contains `messages[]` array + optional `gap: true`)
+- `observer_pong` — response to ping
+- `observer_ack` — acknowledgment of unknown frame type
+- `pseudo_registration` — new phone binding pushed from relay
+- `pseudo_unregistration` — phone binding removed
+- `broker_offline` — broker unreachable (phone→relay buffering active)
