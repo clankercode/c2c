@@ -803,7 +803,7 @@ module InMemoryRelay : RELAY = struct
         | Some m -> m | None -> []
       in
       let removed = List.mem alias members in
-      let members' = if removed then List.filter ((!=) alias) members else members in
+      let members' = if removed then List.filter ((<>) alias) members else members in
       Hashtbl.replace t.rooms room_id members';
       if removed && members' <> [] then begin
         let ts = Unix.gettimeofday () in
@@ -1003,7 +1003,7 @@ module InMemoryRelay : RELAY = struct
       List.iter (fun alias ->
         Hashtbl.remove t.leases alias;
         Hashtbl.iter (fun _room_id members ->
-          Hashtbl.replace t.rooms _room_id (List.filter ((!=) alias) members)
+          Hashtbl.replace t.rooms _room_id (List.filter ((<>) alias) members)
         ) t.rooms
       ) !expired;
       let live_keys = ref [] in
@@ -3160,21 +3160,33 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
                         | Some (`Text raw) | Some (`Binary raw) ->
                           (match parse_observer_ws_msg raw with
                            | `Reconnect since_ts ->
-                             let msgs = Relay_short_queue.ShortQueue.get_after short_queue ~binding_id ~since_ts in
-                             let json_msgs = List.map (fun (m : Relay_short_queue.message) ->
+                             let sq_msgs = Relay_short_queue.ShortQueue.get_after short_queue ~binding_id ~since_ts in
+                             let sq_json_msgs = List.map (fun (m : Relay_short_queue.message) ->
                                `Assoc (
                                  ["ts", `Float m.ts;
                                   "from_alias", `String m.from_alias;
                                   "to_alias", `String m.to_alias]
                                    @ (match m.room_id with Some r -> ["room_id", `String r] | None -> [])
                                    @ ["content", `String m.content])
-                             ) msgs in
+                             ) sq_msgs in
                              let gap = match Relay_short_queue.ShortQueue.oldest_ts short_queue ~binding_id with
                                | Some oldest -> since_ts < oldest
                                | None -> false
                              in
-                             let gap_field = if gap then [("gap", `Bool true)] else [] in
-                             let response = `Assoc (["type", `String "replay"; "messages", `List json_msgs] @ gap_field) in
+                             let backfill_msgs, gap_flag =
+                               if gap then
+                                 match get_observer_binding ~binding_id with
+                                 | Some (phone_pk, _) ->
+                                   (match R.alias_of_identity_pk relay ~identity_pk:phone_pk with
+                                    | Some alias ->
+                                      let history = R.query_messages_since relay ~alias ~since_ts in
+                                      (history, [("gap", `Bool true)])
+                                    | None -> ([], [("gap", `Bool true)]))
+                                 | None -> ([], [("gap", `Bool true)])
+                               else ([], [])
+                             in
+                             let all_msgs = sq_json_msgs @ backfill_msgs in
+                             let response = `Assoc (["type", `String "replay"; "messages", `List all_msgs] @ gap_flag) in
                              Relay_ws_frame.Session.send_text session (Yojson.Safe.to_string response) >>= fun () ->
                              loop ()
                            | `Ping ->
