@@ -2,6 +2,7 @@ type t =
   | Claude_channel
   | Opencode_plugin
   | Opencode_plugin_active
+  | Pty_inject
   | Kimi_wire
   | Codex_xml_fd
   | Codex_headless_thread_id_fd
@@ -10,6 +11,7 @@ let to_string = function
   | Claude_channel -> "claude_channel"
   | Opencode_plugin -> "opencode_plugin"
   | Opencode_plugin_active -> "opencode_plugin_active"
+  | Pty_inject -> "pty_inject"
   | Kimi_wire -> "kimi_wire"
   | Codex_xml_fd -> "codex_xml_fd"
   | Codex_headless_thread_id_fd -> "codex_headless_thread_id_fd"
@@ -18,6 +20,7 @@ let all =
   [ Claude_channel
   ; Opencode_plugin
   ; Opencode_plugin_active
+  ; Pty_inject
   ; Kimi_wire
   ; Codex_xml_fd
   ; Codex_headless_thread_id_fd
@@ -28,6 +31,7 @@ let of_string value =
   | "claude_channel" -> Some Claude_channel
   | "opencode_plugin" -> Some Opencode_plugin
   | "opencode_plugin_active" -> Some Opencode_plugin_active
+  | "pty_inject" -> Some Pty_inject
   | "kimi_wire" -> Some Kimi_wire
   | "codex_xml_fd" -> Some Codex_xml_fd
   | "codex_headless_thread_id_fd" -> Some Codex_headless_thread_id_fd

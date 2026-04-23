@@ -97,6 +97,20 @@ val repo_config_pmodel_lookup : string -> pmodel option
 (** [repo_config_pmodel_lookup class_key] looks up a class (e.g. "coder",
     "coordinator") in the repo pmodel table. Returns [None] if absent. *)
 
+type pty_inject_capability = [ `Ok | `Missing_cap of string | `Unknown ]
+
+val check_pty_inject_capability :
+  ?python_path:string ->
+  ?yama_ptrace_scope:string ->
+  ?getcap_output:string ->
+  unit ->
+  pty_inject_capability
+(** Return whether PTY injection is available on this host. When Yama
+    ptrace_scope is 0, PTY injection is considered available without an
+    explicit cap. Otherwise the selected python interpreter must advertise
+    [cap_sys_ptrace] via [getcap]. Optional overrides exist for deterministic
+    tests. *)
+
 (** {1 Broker root} *)
 
 val broker_root : unit -> string

@@ -1161,14 +1161,80 @@ let codex_supports_xml_input_fd (binary_path : string) : bool =
 let bridge_supports_thread_id_fd (binary_path : string) : bool =
   command_help_contains binary_path "--thread-id-fd"
 
+type pty_inject_capability = [ `Ok | `Missing_cap of string | `Unknown ]
+
+let read_first_line command =
+  try
+    let ic = Unix.open_process_in command in
+    Fun.protect ~finally:(fun () -> ignore (Unix.close_process_in ic))
+      (fun () ->
+        try Some (String.trim (input_line ic))
+        with End_of_file -> Some "")
+  with _ -> None
+
+let check_pty_inject_capability ?python_path ?yama_ptrace_scope ?getcap_output () :
+    pty_inject_capability =
+  let py =
+    match python_path with
+    | Some path -> path
+    | None -> (
+        match read_first_line "command -v python3 2>/dev/null" with
+        | Some line when line <> "" -> line
+        | _ -> "python3")
+  in
+  let yama_value =
+    match yama_ptrace_scope with
+    | Some value -> Some value
+    | None ->
+        (try
+           let ic = open_in "/proc/sys/kernel/yama/ptrace_scope" in
+           Some
+             (Fun.protect ~finally:(fun () -> close_in ic)
+                (fun () -> String.trim (input_line ic)))
+         with _ -> None)
+  in
+  match yama_value with
+  | Some "0" -> `Ok
+  | Some _ | None ->
+      let line =
+        match getcap_output with
+        | Some value -> Some value
+        | None ->
+            read_first_line
+              (Printf.sprintf "getcap %s 2>/dev/null" (Filename.quote py))
+      in
+      let has_cap text =
+        let needle = "cap_sys_ptrace" in
+        let nl = String.length needle and ll = String.length text in
+        let rec loop i =
+          if i + nl > ll then false
+          else if String.sub text i nl = needle then true
+          else loop (i + 1)
+        in
+        loop 0
+      in
+      (match line with
+       | Some "" -> `Missing_cap py
+       | Some text when has_cap text -> `Ok
+       | Some _ -> `Missing_cap py
+       | None -> `Unknown)
+
 let probed_capabilities ~(client : string) ~(binary_path : string) : string list =
   let open C2c_capability in
   let add_if cap enabled acc =
     if enabled then to_string cap :: acc else acc
   in
+  let pty_inject_ok =
+    match check_pty_inject_capability () with
+    | `Ok -> true
+    | `Missing_cap _ | `Unknown -> false
+  in
   []
   |> add_if Claude_channel (client = "claude")
   |> add_if Opencode_plugin (client = "opencode")
+  |> add_if Pty_inject
+       (pty_inject_ok
+        && List.mem client [ "claude"; "codex"; "opencode"; "crush" ])
   |> add_if Kimi_wire (client = "kimi")
   |> add_if Codex_xml_fd (client = "codex" && codex_supports_xml_input_fd binary_path)
   |> add_if Codex_headless_thread_id_fd
@@ -1265,6 +1331,55 @@ let should_enable_opencode_fallback ?(startup_grace_s = 60.0)
   && not
        (opencode_plugin_active ~name ~now
           ~freshness_window_s:opencode_plugin_freshness_window_s)
+
+let inject_message_via_c2c ~(client_pid : int) (msg : C2c_mcp.message) : bool =
+  let command = current_c2c_command () in
+  let argv =
+    [| command
+     ; "inject"
+     ; "--pid"
+     ; string_of_int client_pid
+     ; "--client"
+     ; "opencode"
+     ; "--method"
+     ; "pty"
+     ; "--from"
+     ; msg.from_alias
+     ; "--alias"
+     ; msg.to_alias
+     ; msg.content
+    |]
+  in
+  let devnull = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 in
+  Fun.protect
+    ~finally:(fun () -> try Unix.close devnull with _ -> ())
+    (fun () ->
+      try
+        let pid =
+          Unix.create_process_env command argv (Unix.environment ())
+            Unix.stdin devnull devnull
+        in
+        match Unix.waitpid [] pid with
+        | _, Unix.WEXITED 0 -> true
+        | _, Unix.WEXITED _ | _, Unix.WSIGNALED _ | _, Unix.WSTOPPED _ -> false
+      with _ -> false)
+
+let try_opencode_native_fallback_once ~broker_root ~(name : string)
+    ~(client_pid : int) : bool =
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  C2c_mcp.Broker.with_inbox_lock broker ~session_id:name (fun () ->
+      let messages = C2c_mcp.Broker.read_inbox broker ~session_id:name in
+      match messages with
+      | [] -> true
+      | _ ->
+          let delivered =
+            List.for_all (inject_message_via_c2c ~client_pid) messages
+          in
+          if delivered then begin
+            C2c_mcp.Broker.append_archive broker ~session_id:name ~messages;
+            C2c_mcp.Broker.save_inbox broker ~session_id:name []
+          end;
+          delivered)
 
 let missing_role_capabilities ~(client : string) ~(binary_path : string)
     (role : C2c_role.t) : string list =
@@ -1814,7 +1929,7 @@ let run_outer_loop ~(name : string) ~(client : string)
                | Some (_, fd4) -> (try Unix.close fd4 with _ -> ())
                | None -> ()
              end);
-          (if client = "opencode" && !deliver_pid = None then
+          (if client = "opencode" then
              let startup_grace_s =
                match Sys.getenv_opt "C2C_OPENCODE_PLUGIN_GRACE_S" with
                | Some s -> (try float_of_string s with _ -> 60.0)
@@ -1830,12 +1945,13 @@ let run_outer_loop ~(name : string) ~(client : string)
                | Some s -> (try float_of_string s with _ -> 10.0)
                | None -> 10.0
              in
+             let pty_capability = check_pty_inject_capability () in
              let child_pid_for_fallback = pid in
              ignore (Thread.create
                (fun () ->
                  Unix.sleepf startup_grace_s;
                  let rec loop () =
-                   if !deliver_pid <> None || not (pid_alive child_pid_for_fallback) then
+                   if not (pid_alive child_pid_for_fallback) then
                      ()
                    else if
                      should_enable_opencode_fallback
@@ -1846,14 +1962,16 @@ let run_outer_loop ~(name : string) ~(client : string)
                        ~now:(Unix.gettimeofday ())
                        ()
                    then
-                     match
-                       start_deliver_daemon ~name ~client ~broker_root
-                         ?child_pid_opt:(Some child_pid_for_fallback) ()
-                     with
-                     | Some p ->
-                         deliver_pid := Some p;
-                         write_pid (deliver_pid_path name) p
-                     | None -> ()
+                     begin
+                       (match pty_capability with
+                        | `Ok ->
+                            ignore
+                              (try_opencode_native_fallback_once ~broker_root ~name
+                                 ~client_pid:child_pid_for_fallback)
+                        | `Missing_cap _ | `Unknown -> ());
+                       Unix.sleepf poll_interval_s;
+                       loop ()
+                     end
                    else (
                      Unix.sleepf poll_interval_s;
                      loop ()

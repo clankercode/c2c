@@ -113,6 +113,36 @@ let test_probed_capabilities_for_kimi_include_wire () =
   check (list string) "kimi capability set"
     [ "kimi_wire" ] caps
 
+let test_check_pty_inject_capability_ok_when_yama_zero () =
+  let result =
+    C2c_start.check_pty_inject_capability
+      ~python_path:"/usr/bin/python3"
+      ~yama_ptrace_scope:"0"
+      ()
+  in
+  check bool "yama zero => ok" true (match result with `Ok -> true | _ -> false)
+
+let test_check_pty_inject_capability_ok_when_getcap_has_ptrace () =
+  let result =
+    C2c_start.check_pty_inject_capability
+      ~python_path:"/usr/bin/python3"
+      ~yama_ptrace_scope:"1"
+      ~getcap_output:"/usr/bin/python3 cap_sys_ptrace=ep"
+      ()
+  in
+  check bool "getcap ptrace => ok" true (match result with `Ok -> true | _ -> false)
+
+let test_check_pty_inject_capability_missing_when_cap_absent () =
+  let result =
+    C2c_start.check_pty_inject_capability
+      ~python_path:"/usr/bin/python3"
+      ~yama_ptrace_scope:"1"
+      ~getcap_output:""
+      ()
+  in
+  check bool "missing cap => missing" true
+    (match result with `Missing_cap "/usr/bin/python3" -> true | _ -> false)
+
 let test_runtime_capabilities_for_opencode_include_plugin_active_when_fresh () =
   let name = Printf.sprintf "opencode-fresh-%d" (Random.bits ()) in
   with_instance_dir name @@ fun dir ->
@@ -401,6 +431,12 @@ let () =
             `Quick, test_probed_capabilities_for_opencode_include_plugin )
         ; ( "probed_capabilities_for_kimi_include_wire",
             `Quick, test_probed_capabilities_for_kimi_include_wire )
+        ; ( "check_pty_inject_capability_ok_when_yama_zero",
+            `Quick, test_check_pty_inject_capability_ok_when_yama_zero )
+        ; ( "check_pty_inject_capability_ok_when_getcap_has_ptrace",
+            `Quick, test_check_pty_inject_capability_ok_when_getcap_has_ptrace )
+        ; ( "check_pty_inject_capability_missing_when_cap_absent",
+            `Quick, test_check_pty_inject_capability_missing_when_cap_absent )
         ; ( "runtime_capabilities_for_opencode_include_plugin_active_when_fresh",
             `Quick,
             test_runtime_capabilities_for_opencode_include_plugin_active_when_fresh )
