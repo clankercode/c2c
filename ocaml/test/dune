@@ -59,6 +59,11 @@
  (libraries c2c_mcp alcotest unix))
 
 (test
+ (name test_relay_pubkey)
+ (modules test_relay_pubkey)
+ (libraries c2c_mcp alcotest unix))
+
+(test
  (name test_relay_e2e)
  (modules test_relay_e2e)
  (libraries c2c_mcp alcotest base64 unix))
