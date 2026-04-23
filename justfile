@@ -160,6 +160,24 @@ status:
 clean:
     opam exec -- dune clean
 
+# Local relay in docker-compose. See .collab/runbooks/local-relay.md.
+relay-up:
+    DOCKER_BUILDKIT=1 docker compose up -d --build
+    @echo "Waiting for relay to be healthy..."
+    @for i in 1 2 3 4 5 6 7 8 9 10; do \
+        if curl -fsS http://localhost:7331/health >/dev/null 2>&1; then echo "relay up at http://localhost:7331"; exit 0; fi; \
+        sleep 2; \
+    done; echo "relay did not become healthy within 20s; check 'just relay-logs'" >&2; exit 1
+
+relay-down:
+    docker compose down
+
+relay-reset:
+    docker compose down -v
+
+relay-logs:
+    docker compose logs -f relay
+
 # GUI dev server (requires webkit2gtk-4.1: sudo pacman -S webkit2gtk-4.1)
 gui-dev:
     cd gui && bun run tauri dev

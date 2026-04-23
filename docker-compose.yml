@@ -1,0 +1,46 @@
+# Local c2c relay for testing. See .collab/runbooks/local-relay.md.
+#
+# Quick start:
+#   DOCKER_BUILDKIT=1 docker compose up -d --build
+#   curl http://localhost:7331/health
+#   docker compose logs -f relay
+#   docker compose down
+#
+# Iterating on OCaml code:
+#   DOCKER_BUILDKIT=1 docker compose up --build relay
+# (Builder stage caches opam deps via BuildKit cache mount; source-only
+#  changes rebuild in seconds.)
+#
+# Data persists in the named volume `c2c-relay-data`. To reset:
+#   docker compose down -v
+
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_DATE: local
+    image: c2c-relay:local
+    container_name: c2c-relay-local
+    environment:
+      # Dev mode (no token). Set RELAY_TOKEN to test prod-mode Bearer auth.
+      # RELAY_TOKEN: "local-dev-token"
+      C2C_RELAY_PERSIST_DIR: /var/lib/c2c
+      PORT: "7331"
+    ports:
+      - "127.0.0.1:7331:7331"
+    volumes:
+      - c2c-relay-data:/var/lib/c2c
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -qO- http://127.0.0.1:7331/health | grep -q ok"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  c2c-relay-data:
+    # Persists leases, nonces, dedup, rooms across restarts.
+    # `docker compose down -v` wipes it.
