@@ -123,7 +123,7 @@ let b64url_nopad_encode s =
 
 module RegistrationLease : sig
   type t
-  val make : node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> ?enc_pubkey:string -> unit -> t
+  val make : node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> ?enc_pubkey:string -> ?signed_at:float -> ?sig_b64:string -> unit -> t
   val is_alive : t -> bool
   val touch : t -> unit
   val to_json : t -> Yojson.Safe.t
@@ -132,6 +132,8 @@ module RegistrationLease : sig
   val alias : t -> string
   val identity_pk : t -> string
   val enc_pubkey : t -> string
+  val signed_at : t -> float
+  val sig_b64 : t -> string
   val registered_at : t -> float
 end = struct
   type t = {
@@ -144,11 +146,12 @@ end = struct
     ttl : float;
     identity_pk : string;
     enc_pubkey : string;
+    signed_at : float;
+    sig_b64 : string;
   }
 
-  let make ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = 300.0) ?(identity_pk = "") ?(enc_pubkey = "") () =
-    let now = Unix.gettimeofday () in
-    { node_id; session_id; alias; client_type; registered_at = now; last_seen = now; ttl; identity_pk; enc_pubkey }
+  let make ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = 300.0) ?(identity_pk = "") ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") () =
+    { node_id; session_id; alias; client_type; registered_at = Unix.gettimeofday (); last_seen = Unix.gettimeofday (); ttl; identity_pk; enc_pubkey; signed_at; sig_b64 }
 
   let is_alive t =
     let now = Unix.gettimeofday () in
@@ -176,6 +179,14 @@ end = struct
       if t.enc_pubkey = "" then base
       else base @ [("enc_pubkey", `String (b64url_nopad_encode t.enc_pubkey))]
     in
+    let base =
+      if t.signed_at = 0.0 then base
+      else base @ [("signed_at", `Float t.signed_at)]
+    in
+    let base =
+      if t.sig_b64 = "" then base
+      else base @ [("sig_b64", `String t.sig_b64)]
+    in
     `Assoc base
 
   let node_id t = t.node_id
@@ -183,6 +194,8 @@ end = struct
   let alias t = t.alias
   let identity_pk t = t.identity_pk
   let enc_pubkey t = t.enc_pubkey
+  let signed_at t = t.signed_at
+  let sig_b64 t = t.sig_b64
   let registered_at t = t.registered_at
 end
 
@@ -202,7 +215,9 @@ CREATE TABLE IF NOT EXISTS leases (
     last_seen REAL NOT NULL,
     ttl REAL NOT NULL,
     identity_pk TEXT NOT NULL DEFAULT '',
-    enc_pubkey TEXT NOT NULL DEFAULT ''
+    enc_pubkey TEXT NOT NULL DEFAULT '',
+    signed_at REAL NOT NULL DEFAULT 0,
+    sig_b64 TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS inboxes (
@@ -330,6 +345,9 @@ module type RELAY = sig
   val create : ?dedup_window:int -> ?persist_dir:string -> unit -> t
   val register : t -> node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> unit -> (string * RegistrationLease.t)
   val identity_pk_of : t -> alias:string -> string option
+  val enc_pubkey_of : t -> alias:string -> string option
+  val signed_at_of : t -> alias:string -> float option
+  val sig_b64_of : t -> alias:string -> string option
   (* L3/5 identity bootstrapping. *)
   val set_allowed_identity : t -> alias:string -> identity_pk_b64:string -> unit
   val allowed_identity_of : t -> alias:string -> string option
@@ -555,6 +573,24 @@ module InMemoryRelay : RELAY = struct
     with_lock t (fun () ->
       match Hashtbl.find_opt t.leases alias with
       | Some lease -> Some (RegistrationLease.registered_at lease)
+      | None -> None
+    )
+
+  let signed_at_of t ~alias =
+    with_lock t (fun () ->
+      match Hashtbl.find_opt t.leases alias with
+      | Some lease ->
+        let sa = RegistrationLease.signed_at lease in
+        if sa = 0.0 then None else Some sa
+      | None -> None
+    )
+
+  let sig_b64_of t ~alias =
+    with_lock t (fun () ->
+      match Hashtbl.find_opt t.leases alias with
+      | Some lease ->
+        let sb = RegistrationLease.sig_b64 lease in
+        if sb = "" then None else Some sb
       | None -> None
     )
 
@@ -976,7 +1012,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
 
   let get_lease_row_fields row =
     match row with
-    | [alias; node_id; session_id; client_type; registered_at; last_seen; ttl; identity_pk; enc_pubkey] ->
+    | [alias; node_id; session_id; client_type; registered_at; last_seen; ttl; identity_pk; enc_pubkey; signed_at; sig_b64] ->
       let alias = match alias with Some s -> s | None -> "" in
       let node_id = match node_id with Some s -> s | None -> "" in
       let session_id = match session_id with Some s -> s | None -> "" in
@@ -986,6 +1022,8 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
       let ttl = match ttl with Some s -> float_of_string s | None -> 300.0 in
       let identity_pk = match identity_pk with Some s -> s | None -> "" in
       let enc_pubkey = match enc_pubkey with Some s -> s | None -> "" in
+      let signed_at = match signed_at with Some s -> float_of_string s | None -> 0.0 in
+      let sig_b64 = match sig_b64 with Some s -> s | None -> "" in
       (alias,
        RegistrationLease.make
          ~node_id
@@ -995,6 +1033,8 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
          ~ttl
          ~identity_pk
          ~enc_pubkey
+         ~signed_at
+         ~sig_b64
          ())
     | _ -> failwith "Invalid lease row"
 
@@ -1067,6 +1107,52 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
         if rc = Rc.ROW then
           let pk = Data.to_string_exn (column stmt 0) in
           if pk = "" then None else Some pk
+        else None
+    )
+
+  let enc_pubkey_of t ~alias =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let has_row = exec_prepared conn "SELECT enc_pubkey FROM leases WHERE alias = ?" [`Text alias] in
+      if not has_row then None
+      else
+        let stmt = prepare conn "SELECT enc_pubkey FROM leases WHERE alias = ?" in
+        bind_text stmt 1 alias |> ignore;
+        let rc = step stmt in
+        if rc = Rc.ROW then
+          let ek = Data.to_string_exn (column stmt 0) in
+          if ek = "" then None else Some ek
+        else None
+    )
+
+  let signed_at_of t ~alias =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let has_row = exec_prepared conn "SELECT signed_at FROM leases WHERE alias = ?" [`Text alias] in
+      if not has_row then None
+      else
+        let stmt = prepare conn "SELECT signed_at FROM leases WHERE alias = ?" in
+        bind_text stmt 1 alias |> ignore;
+        let rc = step stmt in
+        if rc = Rc.ROW then
+          let sa = Data.to_string_exn (column stmt 0) in
+          let sa_float = float_of_string sa in
+          if sa_float = 0.0 then None else Some sa_float
+        else None
+    )
+
+  let sig_b64_of t ~alias =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let has_row = exec_prepared conn "SELECT sig_b64 FROM leases WHERE alias = ?" [`Text alias] in
+      if not has_row then None
+      else
+        let stmt = prepare conn "SELECT sig_b64 FROM leases WHERE alias = ?" in
+        bind_text stmt 1 alias |> ignore;
+        let rc = step stmt in
+        if rc = Rc.ROW then
+          let sb = Data.to_string_exn (column stmt 0) in
+          if sb = "" then None else Some sb
         else None
     )
 
@@ -2091,57 +2177,34 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
     respond_ok (json_ok [ ("peers", `List peers) ])
 
   let handle_pubkey relay ~broker_root ~alias =
-    let identity_pk = R.identity_pk_of relay ~alias in
-    let enc_pubkey =
-      match broker_root with
-      | None -> None
-      | Some br ->
-        let registry_path = Filename.concat br "registry.json" in
-        (try
-          let ic = open_in registry_path in
-          let rec read_all acc =
-            try input_line ic :: acc with End_of_file -> close_in_noerr ic; List.rev acc
-          in
-          let lines = read_all [] in
-          let json_str = String.concat "\n" lines in
-          let json = Yojson.Safe.from_string json_str in
-          let rec find_enc_pubkey = function
-            | `Assoc fields ->
-              (match List.assoc "alias" fields, List.assoc "enc_pubkey" fields with
-               | `String a, `String ek when a = alias && ek <> "" -> Some ek
-               | _ -> None)
-            | `List items ->
-              let rec loop = function
-                | [] -> None
-                | item :: rest ->
-                  match find_enc_pubkey item with
-                  | Some _ as result -> result
-                  | None -> loop rest
-              in
-              loop items
-            | _ -> None
-          in
-          find_enc_pubkey json
-        with _ -> None)
-    in
-    match identity_pk, enc_pubkey with
-    | Some ipk, Some ek ->
-      respond_ok (json_ok [
-        ("alias", `String alias);
-        ("identity_pk", `String (b64url_nopad_encode ipk));
-        ("enc_pubkey", `String (b64url_nopad_encode ek));
-      ])
-    | None, _ ->
-      respond_not_found (json_error_str err_not_found ("unknown alias: " ^ alias))
-    | _, None ->
-      (match identity_pk with
-       | Some ipk ->
-         respond_ok (json_ok [
-           ("alias", `String alias);
-           ("identity_pk", `String (b64url_nopad_encode ipk));
-         ])
-       | None ->
-         respond_not_found (json_error_str err_not_found ("unknown alias: " ^ alias)))
+    if not (C2c_name.is_valid alias) then
+      respond_bad_request (json_error_str err_bad_request ("invalid alias format: " ^ alias))
+    else
+      let identity_pk = R.identity_pk_of relay ~alias in
+      let enc_pubkey = R.enc_pubkey_of relay ~alias in
+      let signed_at = R.signed_at_of relay ~alias in
+      let sig_b64 = R.sig_b64_of relay ~alias in
+      match identity_pk with
+      | None ->
+        respond_not_found (json_error_str err_not_found ("unknown alias: " ^ alias))
+      | Some ipk ->
+        let fields = [
+          ("alias", `String alias);
+          ("ed25519_pubkey", `String (b64url_nopad_encode ipk));
+        ] in
+        let fields = match enc_pubkey with
+          | Some ek -> fields @ [("x25519_pubkey", `String (b64url_nopad_encode ek))]
+          | None -> fields
+        in
+        let fields = match signed_at with
+          | Some sa -> fields @ [("signed_at", `Float sa)]
+          | None -> fields
+        in
+        let fields = match sig_b64 with
+          | Some sb -> fields @ [("signature", `String sb)]
+          | None -> fields
+        in
+        respond_ok (json_ok fields)
 
   let handle_dead_letter relay =
     let dl = R.dead_letter relay in
