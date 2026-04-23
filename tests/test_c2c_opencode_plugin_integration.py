@@ -53,9 +53,18 @@ MOCK_CLI_TEMPLATE = """#!/usr/bin/env python3
 import json
 import os
 import sys
+from pathlib import Path
 
 INBOX_PATH = os.environ["MOCK_C2C_INBOX_PATH"]
 SPOOL_PATH = os.environ.get("MOCK_C2C_SPOOL_PATH", "/tmp/c2c-spool.json")
+STATEFILE_PATH = os.environ.get("MOCK_C2C_STATEFILE_PATH", "/tmp/oc-plugin-state.json")
+
+def _deep_merge(dst, patch):
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(dst.get(key), dict):
+            _deep_merge(dst[key], value)
+        else:
+            dst[key] = value
 
 def _read_inbox():
     try:
@@ -71,6 +80,19 @@ def _drain_inbox():
     with open(INBOX_PATH, "w") as f:
         f.write("[]")
     return messages
+
+def _read_statefile():
+    try:
+        with open(STATEFILE_PATH, "r") as f:
+            content = f.read().strip()
+            return json.loads(content) if content else None
+    except FileNotFoundError:
+        return None
+
+def _write_statefile(payload):
+    path = Path(STATEFILE_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload))
 
 if len(sys.argv) >= 2 and sys.argv[1] == "poll-inbox":
     messages = _drain_inbox()
@@ -115,6 +137,26 @@ if len(sys.argv) >= 3 and sys.argv[1] == "oc-plugin" and sys.argv[2] == "drain-i
         }))
     else:
         print("staged %d OpenCode message(s) into %s" % (len(messages), spool_path))
+    sys.exit(0)
+
+if len(sys.argv) >= 3 and sys.argv[1] == "oc-plugin" and sys.argv[2] == "stream-write-statefile":
+    for raw_line in sys.stdin:
+        line = raw_line.strip()
+        if not line:
+            continue
+        event = json.loads(line)
+        if event.get("event") == "state.snapshot":
+            _write_statefile(event)
+            continue
+        if event.get("event") == "state.patch":
+            current = _read_statefile()
+            if current is None:
+                current = {"event": "state.snapshot", "ts": event.get("ts"), "state": {}}
+            current["ts"] = event.get("ts", current.get("ts"))
+            state = current.setdefault("state", {})
+            _deep_merge(state, event.get("patch", {}))
+            current["event"] = "state.snapshot"
+            _write_statefile(current)
     sys.exit(0)
 
 print("unknown mock c2c args: %s" % sys.argv[1:], file=sys.stderr)
@@ -296,6 +338,61 @@ class TestOpenCodePluginDelivery:
                 # Give it a beat; no delivery should happen.
                 time.sleep(0.5)
                 assert server.recorded_calls == []  # type: ignore[attr-defined]
+            finally:
+                _stop_harness(proc)
+        finally:
+            server.shutdown()
+
+    def test_plugin_heartbeat_keeps_statefile_fresh(self, tmp_path: Path) -> None:
+        broker_root = tmp_path / "broker"
+        broker_root.mkdir()
+        session_id = "heartbeat-session"
+        inbox_path = broker_root / f"{session_id}.inbox.json"
+        inbox_path.write_text("[]")
+        statefile_path = tmp_path / ".local" / "share" / "c2c" / "instances" / "heartbeat-test" / "oc-plugin-state.json"
+
+        mock_cli = _write_mock_cli(tmp_path)
+        server, url = _start_mock_server()
+        try:
+            proc = _start_harness(
+                tmp_path=tmp_path,
+                env_overrides={
+                    "C2C_MCP_SESSION_ID": session_id,
+                    "C2C_MCP_BROKER_ROOT": str(broker_root),
+                    "C2C_TEST_MOCK_SERVER_URL": url,
+                    "C2C_CLI_COMMAND": str(mock_cli),
+                    "MOCK_C2C_INBOX_PATH": str(inbox_path),
+                    "MOCK_C2C_STATEFILE_PATH": str(statefile_path),
+                    "C2C_PLUGIN_HEARTBEAT_INTERVAL_MS": "200",
+                    "C2C_TEST_TARGET_SESSION": "heartbeat-root",
+                    "C2C_TEST_HARNESS_TIMEOUT": "10",
+                },
+            )
+            try:
+                _wait_for_line(proc, "READY", timeout=10.0)
+
+                deadline = time.monotonic() + 5.0
+                first_snapshot = None
+                while time.monotonic() < deadline:
+                    if statefile_path.exists():
+                        first_snapshot = json.loads(statefile_path.read_text())
+                        break
+                    time.sleep(0.05)
+                assert first_snapshot is not None, "plugin did not write initial state snapshot"
+                assert first_snapshot["event"] == "state.snapshot"
+                assert first_snapshot["state"]["c2c_session_id"] == session_id
+                first_active = first_snapshot["state"]["activity_sources"]["plugin"]["last_active_at"]
+
+                deadline = time.monotonic() + 5.0
+                second_active = first_active
+                while time.monotonic() < deadline:
+                    snapshot = json.loads(statefile_path.read_text())
+                    second_active = snapshot["state"]["activity_sources"]["plugin"]["last_active_at"]
+                    if second_active != first_active:
+                        break
+                    time.sleep(0.05)
+
+                assert second_active != first_active, "plugin heartbeat did not refresh last_active_at"
             finally:
                 _stop_harness(proc)
         finally:
