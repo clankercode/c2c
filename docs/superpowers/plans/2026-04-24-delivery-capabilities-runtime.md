@@ -415,6 +415,83 @@ These are intentionally deferred:
 - strategy preference logic such as "prefer PTY wake when available even if
   channel push also exists"
 
+## Phase 2 follow-up: source-attributed runtime activity and fallback gating
+
+The next capability-system slice should distinguish:
+
+- static capability: what a client/build/plugin can do in principle
+- runtime activity: which delivery source is actually alive for this session
+
+This matters most for OpenCode plugin delivery. Presence of the plugin file is
+not enough. We need to know whether the plugin is actively servicing this
+instance before deciding to leave the inbox alone or engage a fallback path.
+
+### Statefile model change
+
+The per-instance statefile should track activity by source, not just a single
+last-updated timestamp.
+
+Desired shape:
+
+- keep the current overall state payload
+- add a source-indexed activity map such as:
+  - `plugin`
+  - `hook`
+  - `wire`
+  - `channel`
+  - later any other delivery/wake sources we add
+- each source entry should record at least:
+  - last active timestamp
+  - source name / type
+  - optional session or instance correlation data where relevant
+
+This lets the broker/launcher answer:
+
+- which source was last active
+- whether a given source is stale
+- whether fallback should engage yet
+
+### OpenCode plugin liveness contract
+
+For OpenCode, treat the plugin as runtime-active only when:
+
+1. the managed session start time is known
+2. the plugin statefile contains a `plugin` activity source
+3. that source has been updated after the current managed start
+4. that source remains fresh within a bounded staleness window
+
+Initial threshold:
+
+- if the plugin has not refreshed its source activity within 60 seconds of
+  managed startup, fallback delivery may engage
+
+This is intentionally a liveness heuristic, not just a static capability bit.
+
+### Plugin heartbeat/no-op updates
+
+The OpenCode plugin should fork an independent lightweight loop early in its
+startup path that periodically emits a no-op statefile update:
+
+- interval: every 10 seconds
+- effect: update the plugin source's `last_active_at`
+- non-effect: do not mutate agent/task/session state beyond source activity
+
+This ensures that:
+
+- plugin liveness remains visible even while the agent is idle
+- fallback can key off missed heartbeats instead of guessing from stale files
+- we do not need to abuse delivery actions as liveness pings
+
+### Decision rule
+
+The delivery chooser should eventually behave like this for OpenCode:
+
+- plugin active and fresh -> leave inbox alone for plugin delivery
+- plugin missing or stale beyond 60 seconds -> fallback path may engage
+
+This keeps the inbox intact when the preferred source is working, while still
+providing recovery when the preferred source dies silently.
+
 ## Definition of done
 
 This slice is done when all of the following are true:
