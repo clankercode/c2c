@@ -419,6 +419,15 @@ module type RELAY = sig
   val invite_to_room : t -> room_id:string -> identity_pk_b64:string -> unit
   val uninvite_from_room : t -> room_id:string -> identity_pk_b64:string -> unit
   val is_room_member_alias : t -> room_id:string -> alias:string -> bool
+  (* S5a: Pairing token management *)
+  val store_pairing_token : t -> binding_id:string -> token_b64:string ->
+    machine_ed25519_pubkey:string -> expires_at:float -> (unit, string) result
+  val get_and_burn_pairing_token : t -> binding_id:string -> (string * string) option
+  (* S5a: Observer binding management *)
+  val add_observer_binding : t -> binding_id:string ->
+    phone_ed25519_pubkey:string -> phone_x25519_pubkey:string -> unit
+  val get_observer_binding : t -> binding_id:string -> (string * string) option
+  val remove_observer_binding : t -> binding_id:string -> unit
 end
 
 (* --- InMemoryRelay --- *)
