@@ -346,6 +346,7 @@ module type RELAY = sig
   val register : t -> node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> unit -> (string * RegistrationLease.t)
   val identity_pk_of : t -> alias:string -> string option
   val alias_of_identity_pk : t -> identity_pk:string -> string option
+  val query_messages_since : t -> alias:string -> since_ts:float -> Yojson.Safe.t list
   val enc_pubkey_of : t -> alias:string -> string option
   val signed_at_of : t -> alias:string -> float option
   val sig_b64_of : t -> alias:string -> string option
@@ -568,6 +569,27 @@ module InMemoryRelay : RELAY = struct
         if pk = identity_pk then result := Some alias
       ) t.bindings;
       !result
+    )
+
+  let query_messages_since t ~alias ~since_ts =
+    with_lock t (fun () ->
+      let results = ref [] in
+      Hashtbl.iter (fun alias' lease ->
+        if alias' = alias then (
+          let key = (RegistrationLease.node_id lease, RegistrationLease.session_id lease) in
+          match Hashtbl.find_opt t.inboxes key with
+          | Some msgs ->
+            List.iter (fun msg ->
+              match msg with
+              | `Assoc fields ->
+                let ts = try List.assoc "ts" fields |> function `Float f -> f | `Int i -> float_of_int i | _ -> 0.0 with _ -> 0.0 in
+                if ts > since_ts then results := msg :: !results
+              | _ -> ()
+            ) msgs
+          | None -> ()
+        )
+      ) t.leases;
+      List.rev !results
     )
 
   let enc_pubkey_of t ~alias =
@@ -1133,6 +1155,41 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
           let alias = Data.to_string_exn (column stmt 0) in
           if alias = "" then None else Some alias
         else None
+    )
+
+  let query_messages_since t ~alias ~since_ts =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let msgs = ref [] in
+      let stmt = prepare conn
+        "SELECT message_id, from_alias, to_alias, content, ts FROM inboxes \
+         WHERE (to_alias = ? OR from_alias = ?) AND ts > ? \
+         ORDER BY ts ASC LIMIT 500"
+      in
+      bind_text stmt 1 alias |> ignore;
+      bind_text stmt 2 alias |> ignore;
+      bind_double stmt 3 since_ts |> ignore;
+      let rec loop () =
+        let rc = step stmt in
+        if rc = Rc.ROW then (
+          let message_id = Data.to_string_exn (column stmt 0) in
+          let from_alias = Data.to_string_exn (column stmt 1) in
+          let to_alias = Data.to_string_exn (column stmt 2) in
+          let content = Data.to_string_exn (column stmt 3) in
+          let ts = float_of_string (Data.to_string_exn (column stmt 4)) in
+          msgs := `Assoc [
+            ("message_id", `String message_id);
+            ("from_alias", `String from_alias);
+            ("to_alias", `String to_alias);
+            ("content", `String content);
+            ("ts", `Float ts)
+          ] :: !msgs;
+          loop ()
+        ) else if rc <> Rc.DONE then
+          failwith ("query_messages_since step failed: " ^ Rc.to_string rc)
+      in
+      loop ();
+      List.rev !msgs
     )
 
   let enc_pubkey_of t ~alias =
