@@ -71,7 +71,10 @@ run-codex-inst.d
 .playwright-mcp/
 *.png
 c2c-site-current.*
-.codex
+.codex/*
+!.codex/skills/
+.codex/skills/*
+!.codex/skills/review-and-fix/
 c2c_relay.db
 # E2E terminal artifacts
 .artifacts/e2e/
