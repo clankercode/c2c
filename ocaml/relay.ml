@@ -346,6 +346,7 @@ module type RELAY = sig
   val register : t -> node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> unit -> (string * RegistrationLease.t)
   val identity_pk_of : t -> alias:string -> string option
   val alias_of_identity_pk : t -> identity_pk:string -> string option
+  val alias_of_session : t -> node_id:string -> session_id:string -> string option
   val query_messages_since : t -> alias:string -> since_ts:float -> Yojson.Safe.t list
   val enc_pubkey_of : t -> alias:string -> string option
   val signed_at_of : t -> alias:string -> float option
@@ -571,6 +572,17 @@ module InMemoryRelay : RELAY = struct
       !result
     )
 
+  let alias_of_session t ~node_id ~session_id =
+    with_lock t (fun () ->
+      let result = ref None in
+      Hashtbl.iter (fun alias lease ->
+        if RegistrationLease.node_id lease = node_id &&
+           RegistrationLease.session_id lease = session_id then
+          result := Some alias
+      ) t.leases;
+      !result
+    )
+
   let query_messages_since t ~alias ~since_ts =
     with_lock t (fun () ->
       let results = ref [] in
@@ -686,6 +698,17 @@ module InMemoryRelay : RELAY = struct
           lease :: acc
         else acc
       ) t.leases []
+    )
+
+  let alias_of_session t ~node_id ~session_id =
+    with_lock t (fun () ->
+      let found = ref None in
+      Hashtbl.iter (fun alias lease ->
+        if RegistrationLease.node_id lease = node_id
+           && RegistrationLease.session_id lease = session_id then
+          found := Some alias
+      ) t.leases;
+      !found
     )
 
   let send t ~from_alias ~to_alias ~content ?(message_id = None) =
@@ -1205,6 +1228,20 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
           let ek = Data.to_string_exn (column stmt 0) in
           if ek = "" then None else Some ek
         else None
+    )
+
+  let alias_of_session t ~node_id ~session_id =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let stmt = prepare conn "SELECT alias FROM leases WHERE node_id = ? AND session_id = ? LIMIT 1" in
+      bind_text stmt 1 node_id |> ignore;
+      bind_text stmt 2 session_id |> ignore;
+      let result =
+        if step stmt = Rc.ROW then Some (Data.to_string_exn (column stmt 0))
+        else None
+      in
+      (try Sqlite3.finalize stmt |> ignore with _ -> ());
+      result
     )
 
   let signed_at_of t ~alias =
@@ -2558,44 +2595,82 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
         in
         respond_ok (json_of_register_result result)
 
-  let handle_heartbeat relay body =
+  (* S-A1: bind verified Ed25519 signer to body claims. When ~verified_alias
+     is [Some v], body [from_alias] on send-family routes must match [v];
+     body (node_id, session_id) on session-scoped routes must be owned by [v].
+     [None] = Bearer-admin or no identity — no body-binding check applied. *)
+  let reject_alias_mismatch ~verified ~claimed =
+    respond_json ~status:`Forbidden
+      (json_error_str relay_err_signature_invalid
+         (Printf.sprintf "verified signer %S does not match body from_alias %S"
+            verified claimed))
+
+  let reject_session_mismatch ~verified ~node_id ~session_id =
+    respond_json ~status:`Forbidden
+      (json_error_str relay_err_signature_invalid
+         (Printf.sprintf "verified signer %S does not own session (%s, %s)"
+            verified node_id session_id))
+
+  let handle_heartbeat relay ~verified_alias body =
     let node_id = get_string body "node_id" in
     let session_id = get_string body "session_id" in
     if node_id = "" || session_id = "" then
       respond_bad_request (json_error_str err_bad_request "node_id and session_id are required")
     else
-      let result = R.heartbeat relay ~node_id ~session_id in
-      respond_ok (json_of_heartbeat_result result)
+      match verified_alias with
+      | Some v ->
+        (match R.alias_of_session relay ~node_id ~session_id with
+         | Some owner when owner = v ->
+           let result = R.heartbeat relay ~node_id ~session_id in
+           respond_ok (json_of_heartbeat_result result)
+         | _ -> reject_session_mismatch ~verified:v ~node_id ~session_id)
+      | None ->
+        let result = R.heartbeat relay ~node_id ~session_id in
+        respond_ok (json_of_heartbeat_result result)
 
-  let handle_send relay body =
+  let handle_send relay ~verified_alias body =
     let from_alias = get_string body "from_alias" in
     let to_alias = get_string body "to_alias" in
     let content = get_string body "content" in
     if from_alias = "" || to_alias = "" || content = "" then
       respond_bad_request (json_error_str err_bad_request "from_alias, to_alias, and content are required")
     else
-      let message_id = get_opt_string body "message_id" in
-      let result = R.send relay ~from_alias ~to_alias ~content ~message_id in
-      respond_ok (json_of_send_result result)
+      match verified_alias with
+      | Some v when v <> from_alias -> reject_alias_mismatch ~verified:v ~claimed:from_alias
+      | _ ->
+        let message_id = get_opt_string body "message_id" in
+        let result = R.send relay ~from_alias ~to_alias ~content ~message_id in
+        respond_ok (json_of_send_result result)
 
-  let handle_send_all relay body =
+  let handle_send_all relay ~verified_alias body =
     let from_alias = get_string body "from_alias" in
     let content = get_string body "content" in
     if from_alias = "" || content = "" then
       respond_bad_request (json_error_str err_bad_request "from_alias and content are required")
     else
-      let message_id = get_opt_string body "message_id" in
-      match R.send_all relay ~from_alias ~content ~message_id with
-      | `Ok (ts, delivered, skipped) -> respond_ok (json_of_send_all_result (ts, delivered, skipped))
+      match verified_alias with
+      | Some v when v <> from_alias -> reject_alias_mismatch ~verified:v ~claimed:from_alias
+      | _ ->
+        let message_id = get_opt_string body "message_id" in
+        match R.send_all relay ~from_alias ~content ~message_id with
+        | `Ok (ts, delivered, skipped) -> respond_ok (json_of_send_all_result (ts, delivered, skipped))
 
-  let handle_poll_inbox relay body =
+  let handle_poll_inbox relay ~verified_alias body =
     let node_id = get_string body "node_id" in
     let session_id = get_string body "session_id" in
     if node_id = "" || session_id = "" then
       respond_bad_request (json_error_str err_bad_request "node_id and session_id are required")
     else
-      let msgs = R.poll_inbox relay ~node_id ~session_id in
-      respond_ok (json_ok [ ("messages", `List msgs) ])
+      match verified_alias with
+      | Some v ->
+        (match R.alias_of_session relay ~node_id ~session_id with
+         | Some owner when owner = v ->
+           let msgs = R.poll_inbox relay ~node_id ~session_id in
+           respond_ok (json_ok [ ("messages", `List msgs) ])
+         | _ -> reject_session_mismatch ~verified:v ~node_id ~session_id)
+      | None ->
+        let msgs = R.poll_inbox relay ~node_id ~session_id in
+        respond_ok (json_ok [ ("messages", `List msgs) ])
 
   let handle_peek_inbox relay body =
     let node_id = get_string body "node_id" in
@@ -3060,11 +3135,11 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
         ~meth:(meth_to_string meth) ~path ~query ~body_sha256_b64:body_sha256
     in
     let include_dead = query_bool "include_dead" in
-    let ed25519_verified, ed25519_err =
+    let verified_alias, ed25519_verified, ed25519_err =
       match ed25519_result with
-      | Ok (Some _) -> (true, None)
-      | Ok None -> (false, None)
-      | Error (code, msg) -> (false, Some (code, msg))
+      | Ok (Some a) -> (Some a, true, None)
+      | Ok None -> (None, false, None)
+      | Error (code, msg) -> (None, false, Some (code, msg))
     in
     let auth_ok, auth_err_msg =
       auth_decision ~path ~include_dead ~token ~auth_header ~ed25519_verified
@@ -3244,25 +3319,25 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_heartbeat relay j)
+         | Ok j -> handle_heartbeat relay ~verified_alias j)
 
       | `POST, "/send" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_send relay j)
+         | Ok j -> handle_send relay ~verified_alias j)
 
       | `POST, "/send_all" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_send_all relay j)
+         | Ok j -> handle_send_all relay ~verified_alias j)
 
       | `POST, "/poll_inbox" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_poll_inbox relay j)
+         | Ok j -> handle_poll_inbox relay ~verified_alias j)
 
       | `POST, "/peek_inbox" ->
         let json = parse_body () in
