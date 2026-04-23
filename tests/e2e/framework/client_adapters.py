@@ -43,7 +43,7 @@ def _instance_dir(name: str) -> Path:
     return Path.home() / ".local" / "share" / "c2c" / "instances" / name
 
 
-def compile_role(workdir: Path, alias: str, client: str) -> Path:
+def compile_role(workdir: Path, alias: str, client: str, *, model: str | None = None) -> Path:
     """Compile a minimal canonical role to a client-specific agent file.
 
     Writes a bare-bones role to .c2c/roles/<alias>.md then runs
@@ -56,10 +56,15 @@ def compile_role(workdir: Path, alias: str, client: str) -> Path:
     roles_dir = workdir / ".c2c" / "roles"
     roles_dir.mkdir(parents=True, exist_ok=True)
     role_file = roles_dir / f"{alias}.md"
-    role_file.write_text(
-        "---\nrole: subagent\ndescription: smoke-test\n---\n\nYou are a test agent.\n",
-        encoding="utf-8",
-    )
+    frontmatter = [
+        "---",
+        "role: subagent",
+        "description: smoke-test",
+    ]
+    if model:
+        frontmatter.append(f"model: {model}")
+    frontmatter.extend(["---", "", "You are a test agent.", ""])
+    role_file.write_text("\n".join(frontmatter), encoding="utf-8")
     result = subprocess.run(
         ["c2c", "roles", "compile", alias, "--client", client],
         cwd=workdir,

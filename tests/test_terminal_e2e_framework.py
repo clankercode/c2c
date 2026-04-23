@@ -340,14 +340,16 @@ def test_scenario_send_dm_invokes_c2c_send_with_from_agent_and_records_timeline(
 
     def fake_run(cmd: list[str], **kwargs: object) -> mock.Mock:
         calls.append((cmd, kwargs["cwd"]))
-        return mock.Mock(stdout="", stderr="", returncode=0)
+        stdout = ".git\n" if cmd[:3] == ["git", "rev-parse", "--git-common-dir"] else ""
+        return mock.Mock(stdout=stdout, stderr="", returncode=0)
 
     monkeypatch.setattr("tests.e2e.framework.scenario.subprocess.run", fake_run)
 
     scenario.send_dm(sender, recipient, "hello there")
 
     assert calls == [
-        (["c2c", "send", "--from", "dummy-a", "dummy-b", "hello there"], scenario.workdir)
+        (["git", "rev-parse", "--git-common-dir"], scenario.workdir),
+        (["c2c", "send", "--from", "dummy-a", "dummy-b", "hello there"], scenario.workdir),
     ]
     timeline = (scenario.artifacts.run_dir / "timeline.jsonl").read_text(encoding="utf-8")
     assert '"event": "dm.sent"' in timeline
@@ -372,13 +374,17 @@ def test_scenario_send_dm_preserves_controller_side_send_when_from_agent_is_none
 
     def fake_run(cmd: list[str], **kwargs: object) -> mock.Mock:
         calls.append((cmd, kwargs["cwd"]))
-        return mock.Mock(stdout="", stderr="", returncode=0)
+        stdout = ".git\n" if cmd[:3] == ["git", "rev-parse", "--git-common-dir"] else ""
+        return mock.Mock(stdout=stdout, stderr="", returncode=0)
 
     monkeypatch.setattr("tests.e2e.framework.scenario.subprocess.run", fake_run)
 
     scenario.send_dm(None, recipient, "controller message")
 
-    assert calls == [(["c2c", "send", "dummy-b", "controller message"], scenario.workdir)]
+    assert calls == [
+        (["git", "rev-parse", "--git-common-dir"], scenario.workdir),
+        (["c2c", "send", "dummy-b", "controller message"], scenario.workdir),
+    ]
     timeline = (scenario.artifacts.run_dir / "timeline.jsonl").read_text(encoding="utf-8")
     assert '"event": "dm.sent"' in timeline
     assert '"from_agent": null' in timeline

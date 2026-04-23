@@ -36,6 +36,7 @@ import pytest
 TMUX_BIN = shutil.which("tmux")
 OC_BIN = shutil.which("opencode")
 C2C_BIN = shutil.which("c2c")
+OPENCODE_TEST_MODEL = "minimax-coding-plan/MiniMax-M2.7-highspeed"
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("C2C_TEST_OC_TWIN_E2E") != "1"
@@ -162,6 +163,17 @@ def _instance_dir(alias: str) -> Path:
     return base / alias
 
 
+def _role_text() -> str:
+    return (
+        "---\n"
+        "role: subagent\n"
+        "description: smoke-test\n"
+        f"model: {OPENCODE_TEST_MODEL}\n"
+        "---\n\n"
+        "You are a test agent.\n"
+    )
+
+
 @pytest.fixture
 def tmux_session():
     session = f"c2c-oc-twin-{os.getpid()}"
@@ -194,8 +206,8 @@ def test_opencode_twin_e2e(tmp_path: Path, tmux_session) -> None:
     # tmux pane).
     roles_dir = workdir / ".c2c" / "roles"
     roles_dir.mkdir(parents=True, exist_ok=True)
-    (roles_dir / f"{alias_a}.md").write_text("test-agent\n")
-    (roles_dir / f"{alias_b}.md").write_text("test-agent\n")
+    (roles_dir / f"{alias_a}.md").write_text(_role_text(), encoding="utf-8")
+    (roles_dir / f"{alias_b}.md").write_text(_role_text(), encoding="utf-8")
 
     # Broker root — c2c uses git-common-dir/c2c/mcp.
     git_common = subprocess.run(

@@ -402,6 +402,148 @@ All sub-steps §8.0–§8.6 must pass without manual retry.
 
 ---
 
+## Appendix A. Opt-in live tmux E2E matrix
+
+These tests are skipped by default and only run when their explicit
+`C2C_TEST_*` environment gate is set. They launch real managed clients
+inside tmux, so they may consume real model/API quota and require
+client-specific local auth/config.
+
+### Common requirements
+
+- `tmux` on `PATH`
+- `c2c` on `PATH`
+- a writable temp workdir / pytest tmpdir
+- `--force-test-env` when running alongside a live swarm
+- local client auth/config already working for the target CLI
+
+Recommended form:
+
+```bash
+python3 -m pytest <test-file> -q --force-test-env
+```
+
+### OpenCode twin
+
+- File:
+  [tests/test_c2c_opencode_twin_e2e.py](/home/xertrov/src/c2c/tests/test_c2c_opencode_twin_e2e.py)
+- Gate:
+  `C2C_TEST_OC_TWIN_E2E=1`
+- Binaries:
+  `tmux`, `opencode`, `c2c`
+- Extra requirements:
+  working OpenCode credentials
+- Current assertions:
+  session adoption, DM delivery, resume, `delivery_mode=plugin`
+
+```bash
+C2C_TEST_OC_TWIN_E2E=1 \
+python3 -m pytest tests/test_c2c_opencode_twin_e2e.py -q --force-test-env
+```
+
+### OpenCode framework smoke
+
+- File:
+  [tests/test_c2c_opencode_e2e.py](/home/xertrov/src/c2c/tests/test_c2c_opencode_e2e.py)
+- Gate:
+  `C2C_TEST_OPENCODE_E2E=1`
+- Binaries:
+  `tmux`, `opencode`, `c2c`
+- Extra requirements:
+  working OpenCode credentials
+
+```bash
+C2C_TEST_OPENCODE_E2E=1 \
+python3 -m pytest tests/test_c2c_opencode_e2e.py -q --force-test-env
+```
+
+### Kimi framework smoke
+
+- File:
+  [tests/test_c2c_kimi_e2e.py](/home/xertrov/src/c2c/tests/test_c2c_kimi_e2e.py)
+- Gate:
+  `C2C_TEST_KIMI_E2E=1`
+- Binaries:
+  `tmux`, `kimi`, `c2c`
+- Extra requirements:
+  working Kimi credentials / launch config
+- Current assertions:
+  registration, role pickup, `delivery_mode=wire`
+
+```bash
+C2C_TEST_KIMI_E2E=1 \
+python3 -m pytest tests/test_c2c_kimi_e2e.py -q --force-test-env
+```
+
+### Codex twin
+
+- File:
+  [tests/test_c2c_codex_twin_e2e.py](/home/xertrov/src/c2c/tests/test_c2c_codex_twin_e2e.py)
+- Gate:
+  `C2C_TEST_CODEX_TWIN_E2E=1`
+- Binaries:
+  `tmux`, `codex`, `c2c`
+- Extra requirements:
+  Codex build with `--xml-input-fd`
+- Current assertions:
+  XML launch surface, XML delivery, `delivery_mode=xml_fd`
+
+```bash
+C2C_TEST_CODEX_TWIN_E2E=1 \
+python3 -m pytest tests/test_c2c_codex_twin_e2e.py -q --force-test-env
+```
+
+### Codex-headless
+
+- File:
+  [tests/test_c2c_codex_headless_e2e.py](/home/xertrov/src/c2c/tests/test_c2c_codex_headless_e2e.py)
+- Gate:
+  `C2C_TEST_CODEX_HEADLESS_E2E=1`
+- Binaries:
+  `tmux`, `codex`, `codex-turn-start-bridge`, `c2c`
+- Extra requirements:
+  updated bridge binary with `--thread-id-fd`
+- Current assertions:
+  thread-id handoff, XML delivery, `delivery_mode=xml_fifo`
+
+```bash
+C2C_TEST_CODEX_HEADLESS_E2E=1 \
+python3 -m pytest tests/test_c2c_codex_headless_e2e.py -q --force-test-env
+```
+
+### Cross-client OpenCode ↔ Kimi
+
+- File:
+  [tests/test_c2c_cross_client_e2e.py](/home/xertrov/src/c2c/tests/test_c2c_cross_client_e2e.py)
+- Gate:
+  `C2C_TEST_CROSS_CLIENT=1`
+- Binaries:
+  `tmux`, `opencode`, `kimi`, `c2c`
+- Extra requirements:
+  both OpenCode and Kimi launch successfully with local auth
+- Current status in this session:
+  failed on registration timeout before message exchange
+
+```bash
+C2C_TEST_CROSS_CLIENT=1 \
+python3 -m pytest tests/test_c2c_cross_client_e2e.py -q --force-test-env
+```
+
+### Claude framework smoke
+
+- File:
+  [tests/test_c2c_claude_e2e.py](/home/xertrov/src/c2c/tests/test_c2c_claude_e2e.py)
+- Gate:
+  `C2C_TEST_CLAUDE_E2E=1`
+- Binaries:
+  `tmux`, `claude`, `c2c`
+- Status:
+  blocked by Claude startup trust/development-channel prompts
+- Reference:
+  [2026-04-23T04-53-00Z-lyra-quill-claude-e2e-blocked-startup-prompts.md](/home/xertrov/src/c2c/.collab/findings/2026-04-23T04-53-00Z-lyra-quill-claude-e2e-blocked-startup-prompts.md)
+
+---
+
 ## §7. Cleanup / teardown
 
 ```bash

@@ -16,6 +16,7 @@ from tests.e2e.framework.scenario import Scenario
 TMUX_BIN = shutil.which("tmux")
 OPENCODE_BIN = shutil.which("opencode")
 C2C_BIN = shutil.which("c2c")
+OPENCODE_TEST_MODEL = "minimax-coding-plan/MiniMax-M2.7-highspeed"
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("C2C_TEST_OPENCODE_E2E") != "1"
@@ -97,7 +98,17 @@ def _create_opencode_json(workdir: Path, broker_root: Path) -> None:
 def _write_role_file(workdir: Path, alias: str) -> None:
     roles_dir = workdir / ".c2c" / "roles"
     roles_dir.mkdir(parents=True, exist_ok=True)
-    (roles_dir / f"{alias}.md").write_text("test-agent\n", encoding="utf-8")
+    (roles_dir / f"{alias}.md").write_text(
+        (
+            "---\n"
+            "role: subagent\n"
+            "description: smoke-test\n"
+            f"model: {OPENCODE_TEST_MODEL}\n"
+            "---\n\n"
+            "You are a test agent.\n"
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_opencode_smoke_send_receive(scenario: Scenario) -> None:
@@ -150,7 +161,7 @@ def test_opencode_smoke_with_agent(scenario: Scenario) -> None:
     agent_alias = f"oc-agent-{suffix}"
     agent_file = scenario.workdir / ".opencode" / "agents" / f"{agent_alias}.md"
 
-    compile_role(scenario.workdir, agent_alias, "opencode")
+    compile_role(scenario.workdir, agent_alias, "opencode", model=OPENCODE_TEST_MODEL)
     assert agent_file.exists(), f"compiled role not found at {agent_file}"
 
     agent = scenario.start_agent("opencode", name=agent_alias, role=agent_alias)
