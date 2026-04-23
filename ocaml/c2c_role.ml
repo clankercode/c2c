@@ -4,6 +4,16 @@ type t = {
   description : string;
   role : string;
   model : string option;
+  (* pmodel: optional per-role-file provider:model override. Wins over the
+     class-level [pmodel] table in .c2c/config.toml when set. Format is the
+     same as the config.toml values: "provider:model", or with a leading
+     ':' prefix char if the model itself contains colons.
+     Example frontmatter: pmodel: ":groq:openai/gpt-oss-120b" *)
+  pmodel : string option;
+  (* role_class: explicit declaration of which class-level pmodel bucket this
+     role falls into (coder, coordinator, orchestrator, reviewer, researcher,
+     release, qa, gui, …). When unset, resolvers fall back to "default". *)
+  role_class : string option;
   c2c_alias : string option;
   c2c_auto_join_rooms : string list;
   include_ : string list;
@@ -20,6 +30,8 @@ let empty = {
   description = "";
   role = "subagent";
   model = None;
+  pmodel = None;
+  role_class = None;
   c2c_alias = None;
   c2c_auto_join_rooms = [];
   include_ = [];
@@ -193,6 +205,8 @@ let parse_string ?(snippets_dir = ".c2c/snippets") ?(filename = "(string)") cont
     description = (match find "description" with Some v -> v | None -> "");
     role = (match find "role" with Some v -> v | None -> "subagent");
     model = find "model";
+    pmodel = find "pmodel";
+    role_class = find "role_class";
     c2c_alias = find "c2c.alias";
     c2c_auto_join_rooms =
       (match find "c2c.auto_join_rooms" with Some v -> parse_list v | None -> []);
@@ -222,6 +236,30 @@ let parse_file path =
       Filename.concat role_dir ".c2c/snippets"
   in
   parse_string ~snippets_dir ~filename:path content
+
+(* Resolve the effective provider:model pmodel for this role.
+   Resolution chain (highest → lowest precedence):
+     1. Role file frontmatter `pmodel: "..."` (t.pmodel)
+     2. [pmodel] table in .c2c/config.toml keyed by role_class
+        (t.role_class, looked up via class_lookup)
+     3. [pmodel] default key in .c2c/config.toml (class_lookup "default")
+     4. None (caller decides the built-in fallback).
+   `class_lookup` is typically `C2c_start.repo_config_pmodel_lookup` — passed
+   in as a callback so this module has no dependency on c2c_start. The
+   return values are raw pmodel strings (provider:model form, possibly with
+   leading ':'), just like the role-file field — parsing is the caller's job
+   (use C2c_start.parse_pmodel). *)
+let resolve_pmodel (t : t) ~(class_lookup : string -> string option) : string option =
+  match t.pmodel with
+  | Some _ as m -> m
+  | None ->
+    let from_class = match t.role_class with
+      | Some rc -> class_lookup rc
+      | None -> None
+    in
+    (match from_class with
+     | Some _ as m -> m
+     | None -> class_lookup "default")
 
 (* Renderers *)
 

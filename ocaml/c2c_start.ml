@@ -51,6 +51,98 @@ let repo_config_enable_channels () : bool =
     loop ()
 
 (* ---------------------------------------------------------------------------
+ * pmodel (provider:model) preferences
+ *
+ * Config shape (in .c2c/config.toml):
+ *
+ *     [pmodel]
+ *     default  = "anthropic:claude-opus-4-7"
+ *     review   = "anthropic:claude-sonnet-4-6"
+ *     planning = ":groq:openai/gpt-oss-120b"
+ *
+ * Parsing rule for a single value:
+ *   - If the string starts with a leading ':' (prefix char), strip it and
+ *     then split on the FIRST colon of the remainder. This lets the model
+ *     name itself contain colons (rare, but e.g. namespaced paths).
+ *   - Otherwise split on the FIRST colon.
+ *   - An empty provider, empty model, or missing colon is an error.
+ * --------------------------------------------------------------------------- *)
+
+type pmodel = { provider : string; model : string }
+
+(* parse_pmodel: see docs above. Returns Ok {provider; model} or Error msg.
+   The leading ':' prefix char signals "the model name may contain colons,
+   so don't naively split on the first one" — but we still split on the
+   first colon *after* the prefix. That is sufficient to separate provider
+   from model while allowing arbitrary colons in model. *)
+let parse_pmodel (s : string) : (pmodel, string) result =
+  let s = String.trim s in
+  if s = "" then Error "pmodel: empty value"
+  else
+    let body = if s.[0] = ':' then String.sub s 1 (String.length s - 1) else s in
+    match String.index_opt body ':' with
+    | None ->
+      Error (Printf.sprintf "pmodel: missing ':' separator in %S" s)
+    | Some i ->
+      let provider = String.sub body 0 i in
+      let model = String.sub body (i + 1) (String.length body - i - 1) in
+      if provider = "" then Error (Printf.sprintf "pmodel: empty provider in %S" s)
+      else if model = "" then Error (Printf.sprintf "pmodel: empty model in %S" s)
+      else Ok { provider; model }
+
+(* Minimal TOML-ish reader for the [pmodel] table: key = "value" lines.
+   We deliberately hand-roll (matches the style of repo_config_enable_channels
+   above) rather than pulling in a TOML dep. Returns a (key, raw_value) assoc. *)
+let read_pmodel_raw () : (string * string) list =
+  let path = repo_config_path () in
+  if not (Sys.file_exists path) then []
+  else
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) @@ fun () ->
+    let in_table = ref false in
+    let acc = ref [] in
+    (try
+      while true do
+        let line = input_line ic in
+        let t = String.trim line in
+        if t = "" || (String.length t > 0 && t.[0] = '#') then ()
+        else if String.length t > 0 && t.[0] = '[' then begin
+          (* new table header — we care only about exactly "[pmodel]" *)
+          in_table := (t = "[pmodel]")
+        end
+        else if !in_table then begin
+          match String.index_opt t '=' with
+          | None -> ()
+          | Some eq ->
+            let k = String.trim (String.sub t 0 eq) in
+            let v = String.trim (String.sub t (eq + 1) (String.length t - eq - 1)) in
+            (* strip surrounding double quotes if present *)
+            let v =
+              if String.length v >= 2 && v.[0] = '"' && v.[String.length v - 1] = '"'
+              then String.sub v 1 (String.length v - 2)
+              else v
+            in
+            if k <> "" then acc := (k, v) :: !acc
+        end
+      done;
+      assert false
+    with End_of_file -> List.rev !acc)
+
+(* repo_config_pmodel: returns (key, pmodel) pairs for keys that parse cleanly.
+   Malformed entries are silently skipped — callers that want strict
+   behavior can use read_pmodel_raw + parse_pmodel directly. *)
+let repo_config_pmodel () : (string * pmodel) list =
+  read_pmodel_raw ()
+  |> List.filter_map (fun (k, v) ->
+       match parse_pmodel v with
+       | Ok p -> Some (k, p)
+       | Error _ -> None)
+
+(* Convenience lookup by use-case key (e.g. "default", "review"). *)
+let repo_config_pmodel_lookup (use_case : string) : pmodel option =
+  List.assoc_opt use_case (repo_config_pmodel ())
+
+(* ---------------------------------------------------------------------------
  * Client configurations
  * --------------------------------------------------------------------------- *)
 

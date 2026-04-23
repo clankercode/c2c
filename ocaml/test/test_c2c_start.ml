@@ -61,6 +61,86 @@ let test_prepare_launch_args_claude_ignores_enable_channels_config () =
   check bool "does not add untagged channel name" false
     (has_adjacent_pair "--channels" "c2c" args)
 
+(* ------------------------------------------------------------------ *)
+(* pmodel parsing                                                      *)
+(* ------------------------------------------------------------------ *)
+
+let pmodel_testable =
+  Alcotest.testable
+    (fun ppf (p : C2c_start.pmodel) ->
+      Format.fprintf ppf "{provider=%s; model=%s}" p.provider p.model)
+    (fun (a : C2c_start.pmodel) (b : C2c_start.pmodel) ->
+      a.provider = b.provider && a.model = b.model)
+
+let ok_pmodel msg ~provider ~model actual =
+  match actual with
+  | Ok p ->
+    Alcotest.check pmodel_testable msg
+      C2c_start.{ provider; model } p
+  | Error e -> Alcotest.failf "%s: expected Ok but got Error %S" msg e
+
+let is_error = function Error _ -> true | Ok _ -> false
+
+let test_parse_pmodel_plain () =
+  ok_pmodel "openai:gpt-4o" ~provider:"openai" ~model:"gpt-4o"
+    (C2c_start.parse_pmodel "openai:gpt-4o")
+
+let test_parse_pmodel_prefix_colon () =
+  ok_pmodel ":groq:openai/gpt-oss-120b"
+    ~provider:"groq" ~model:"openai/gpt-oss-120b"
+    (C2c_start.parse_pmodel ":groq:openai/gpt-oss-120b")
+
+let test_parse_pmodel_anthropic () =
+  ok_pmodel "anthropic:claude-opus-4-7"
+    ~provider:"anthropic" ~model:"claude-opus-4-7"
+    (C2c_start.parse_pmodel "anthropic:claude-opus-4-7")
+
+let test_parse_pmodel_errors () =
+  check bool "empty string -> error" true
+    (is_error (C2c_start.parse_pmodel ""));
+  check bool "whitespace only -> error" true
+    (is_error (C2c_start.parse_pmodel "   "));
+  check bool "no colon -> error" true
+    (is_error (C2c_start.parse_pmodel "openai"));
+  check bool "empty provider -> error" true
+    (is_error (C2c_start.parse_pmodel ":gpt-4o"));
+  (* ":gpt-4o" has leading ':' prefix, stripped body is "gpt-4o",
+     which has no colon -> missing separator error. *)
+  check bool "empty model after colon -> error" true
+    (is_error (C2c_start.parse_pmodel "openai:"))
+
+let test_repo_config_pmodel_reads_table () =
+  with_temp_dir @@ fun dir ->
+  let c2c_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let config_path = Filename.concat c2c_dir "config.toml" in
+  let oc = open_out config_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc
+      "generation_client = \"opencode\"\n\
+       enable_channels = true\n\
+       \n\
+       [pmodel]\n\
+       default     = \"anthropic:claude-opus-4-7\"\n\
+       coder       = \"anthropic:claude-sonnet-4-6\"\n\
+       coordinator = \":groq:openai/gpt-oss-120b\"\n");
+  with_cwd dir @@ fun () ->
+  let pairs = C2c_start.repo_config_pmodel () in
+  check int "three entries" 3 (List.length pairs);
+  (match C2c_start.repo_config_pmodel_lookup "default" with
+   | Some (p : C2c_start.pmodel) ->
+     check string "default provider" "anthropic" p.provider;
+     check string "default model" "claude-opus-4-7" p.model
+   | None -> fail "default missing");
+  (match C2c_start.repo_config_pmodel_lookup "coordinator" with
+   | Some (p : C2c_start.pmodel) ->
+     check string "coordinator provider" "groq" p.provider;
+     check string "coordinator model" "openai/gpt-oss-120b" p.model
+   | None -> fail "coordinator missing");
+  (match C2c_start.repo_config_pmodel_lookup "nope" with
+   | Some _ -> fail "unset role should not resolve"
+   | None -> ())
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_start"
@@ -69,4 +149,13 @@ let () =
             `Quick, test_prepare_launch_args_claude_uses_development_channel_flag )
         ; ( "prepare_launch_args_claude_ignores_enable_channels_config",
             `Quick, test_prepare_launch_args_claude_ignores_enable_channels_config )
-        ] ) ]
+        ] )
+    ; ( "pmodel",
+        [ ("parse_pmodel_plain", `Quick, test_parse_pmodel_plain)
+        ; ("parse_pmodel_prefix_colon", `Quick, test_parse_pmodel_prefix_colon)
+        ; ("parse_pmodel_anthropic", `Quick, test_parse_pmodel_anthropic)
+        ; ("parse_pmodel_errors", `Quick, test_parse_pmodel_errors)
+        ; ("repo_config_pmodel_reads_table", `Quick,
+           test_repo_config_pmodel_reads_table)
+        ] )
+    ]

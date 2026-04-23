@@ -3,3 +3,32 @@
 
 generation_client = "opencode"
 enable_channels = true
+
+# Per-role provider:model preferences.
+#
+# Keys are ROLE TYPES (not instantiated aliases) — these should match the
+# role-file roots under `.c2c/roles/builtins/` (coordinator, coder,
+# orchestrator, reviewer, researcher, release, qa, gui, …). The special
+# key `default` is the fallback when a role has no explicit entry.
+#
+# Value format: "provider:model" (split on the FIRST colon).
+#   e.g. "openai:gpt-4o", "anthropic:claude-opus-4-7"
+#
+# Prefix-char form: when the model name itself contains a colon (for
+# example, groq serving "openai/gpt-oss-120b"), prefix the whole value
+# with a single leading ':' to mark that the *next* colon is the
+# provider/model separator:
+#   ":groq:openai/gpt-oss-120b" -> provider="groq", model="openai/gpt-oss-120b"
+# The leading ':' is consumed; the parser then splits on the first colon
+# after it. Without the leading ':', the first colon is always the
+# separator.
+[pmodel]
+default      = "anthropic:claude-opus-4-7"
+coder        = "anthropic:claude-sonnet-4-6"
+coordinator  = "anthropic:claude-opus-4-7"
+orchestrator = "anthropic:claude-opus-4-7"
+reviewer     = "anthropic:claude-opus-4-7"
+researcher   = "anthropic:claude-sonnet-4-6"
+release      = "anthropic:claude-opus-4-7"
+qa           = "anthropic:claude-sonnet-4-6"
+gui          = "anthropic:claude-sonnet-4-6"

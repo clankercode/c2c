@@ -97,5 +97,74 @@ let tests = [
   "roundtrip",                   `Quick, test_roundtrip_opencode;
 ]
 
+(* ---------- pmodel resolution ---------- *)
+
+let role_with_pmodel = {|
+---
+description: Role with pmodel override
+role: primary
+pmodel: ":groq:openai/gpt-oss-120b"
+role_class: coder
+---
+
+body
+|}
+
+let role_with_class_only = {|
+---
+description: Role with class only
+role: primary
+role_class: coder
+---
+
+body
+|}
+
+let role_with_neither = {|
+---
+description: Plain role
+role: primary
+---
+
+body
+|}
+
+(* Fake class lookup simulating a config.toml [pmodel] table. *)
+let class_lookup = function
+  | "coder" -> Some "anthropic:claude-sonnet-4-6"
+  | "default" -> Some "anthropic:claude-opus-4-7"
+  | _ -> None
+
+let test_resolve_pmodel_role_override_wins () =
+  let r = C2c_role.parse_string role_with_pmodel in
+  match C2c_role.resolve_pmodel r ~class_lookup with
+  | Some s -> Alcotest.(check string) "role override wins" ":groq:openai/gpt-oss-120b" s
+  | None -> Alcotest.fail "expected role-file pmodel to win"
+
+let test_resolve_pmodel_class_lookup () =
+  let r = C2c_role.parse_string role_with_class_only in
+  match C2c_role.resolve_pmodel r ~class_lookup with
+  | Some s -> Alcotest.(check string) "class lookup" "anthropic:claude-sonnet-4-6" s
+  | None -> Alcotest.fail "expected class-level pmodel"
+
+let test_resolve_pmodel_falls_back_to_default () =
+  let r = C2c_role.parse_string role_with_neither in
+  match C2c_role.resolve_pmodel r ~class_lookup with
+  | Some s -> Alcotest.(check string) "default fallback" "anthropic:claude-opus-4-7" s
+  | None -> Alcotest.fail "expected default fallback"
+
+let test_resolve_pmodel_none_when_lookup_empty () =
+  let r = C2c_role.parse_string role_with_neither in
+  match C2c_role.resolve_pmodel r ~class_lookup:(fun _ -> None) with
+  | Some _ -> Alcotest.fail "expected None when no class lookup matches"
+  | None -> ()
+
+let pmodel_tests = [
+  "resolve_pmodel_role_override_wins", `Quick, test_resolve_pmodel_role_override_wins;
+  "resolve_pmodel_class_lookup", `Quick, test_resolve_pmodel_class_lookup;
+  "resolve_pmodel_falls_back_to_default", `Quick, test_resolve_pmodel_falls_back_to_default;
+  "resolve_pmodel_none_when_lookup_empty", `Quick, test_resolve_pmodel_none_when_lookup_empty;
+]
+
 let () =
-  Alcotest.run "c2c_role" [ "renderers", tests ]
+  Alcotest.run "c2c_role" [ "renderers", tests; "pmodel", pmodel_tests ]
