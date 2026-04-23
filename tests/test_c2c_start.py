@@ -1210,6 +1210,95 @@ class C2CStartExit109RegressionTests(unittest.TestCase):
 
 
 @_CLI_SKIP
+class C2CGitShimRegressionTests(unittest.TestCase):
+    """Regression: managed-session git shim must not recurse back into c2c git."""
+
+    CLI_TIMEOUT = 3.0
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self.shim_dir = self.tmp_path / "shim"
+        self.real_dir = self.tmp_path / "real"
+        self.log_path = self.tmp_path / "real-git.log"
+        self.shim_dir.mkdir()
+        self.real_dir.mkdir()
+
+        self.real_git = self.real_dir / "git"
+        self.real_git.write_text(
+            "#!/bin/sh\n"
+            f"printf 'argv:%s\\n' \"$*\" > {self.log_path}\n"
+            f"printf 'author_name:%s\\n' \"${{GIT_AUTHOR_NAME-}}\" >> {self.log_path}\n"
+            f"printf 'author_email:%s\\n' \"${{GIT_AUTHOR_EMAIL-}}\" >> {self.log_path}\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        self.real_git.chmod(0o755)
+
+        self.shim_git = self.shim_dir / "git"
+        self.shim_git.write_text(
+            "#!/bin/sh\n"
+            f"exec {CLI_EXE} git -- \"$@\"\n",
+            encoding="utf-8",
+        )
+        self.shim_git.chmod(0o755)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run_git(self, *git_args: str) -> subprocess.CompletedProcess[str]:
+        from tests.conftest import clean_c2c_start_env
+
+        base_env = clean_c2c_start_env(os.environ)
+        env = {
+            **base_env,
+            "PATH": f"{self.shim_dir}:{self.real_dir}:{base_env.get('PATH', '')}",
+            "C2C_GIT_SHIM_DIR": str(self.shim_dir),
+            "C2C_MCP_AUTO_REGISTER_ALIAS": "shim-tester",
+        }
+        return subprocess.run(
+            [str(CLI_EXE), "git", *git_args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            cwd=self.tmp_path,
+            timeout=self.CLI_TIMEOUT,
+        )
+
+    def _log_lines(self) -> list[str]:
+        return self.log_path.read_text(encoding="utf-8").splitlines()
+
+    def test_git_subcommand_skips_managed_shim_and_reaches_real_git(self):
+        result = self._run_git("--", "status")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.log_path.exists(), "real git was never reached")
+        self.assertEqual(
+            self._log_lines(),
+            [
+                "argv:status",
+                "author_name:shim-tester",
+                "author_email:shim-tester@c2c.im",
+            ],
+        )
+
+    def test_git_subcommand_respects_explicit_author_without_env_injection(self):
+        result = self._run_git("--", "commit", "--author=Explicit <explicit@example.com>", "-m", "msg")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.log_path.exists(), "real git was never reached")
+        self.assertEqual(
+            self._log_lines(),
+            [
+                "argv:commit --author=Explicit <explicit@example.com> -m msg",
+                "author_name:",
+                "author_email:",
+            ],
+        )
+
+
+@_CLI_SKIP
 class C2CStartOpencodeSessionPreflightTests(unittest.TestCase):
     """Pre-flight: c2c start opencode -s ses_* must verify the session exists.
 

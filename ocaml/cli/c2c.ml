@@ -56,53 +56,19 @@ let broker_root_from_env () =
   | _ -> None
 
 let git_common_dir () =
-  match
-    Unix.open_process_in "git rev-parse --git-common-dir 2>/dev/null"
-  with
-  | ic ->
-      let line =
-        try
-          let l = input_line ic in
-          ignore (Unix.close_process_in ic);
-          String.trim l
-        with End_of_file ->
-          ignore (Unix.close_process_in ic);
-          ""
-      in
-      if line <> "" && Sys.is_directory line then Some line else None
+  match Git_helpers.git_common_dir () with
+  | Some line when Sys.is_directory line -> Some line
+  | _ -> None
 
 let git_repo_toplevel () =
-  match
-    Unix.open_process_in "git rev-parse --show-toplevel 2>/dev/null"
-  with
-  | ic ->
-      let line =
-        try
-          let l = input_line ic in
-          ignore (Unix.close_process_in ic);
-          String.trim l
-        with End_of_file ->
-          ignore (Unix.close_process_in ic);
-          ""
-      in
-      if line <> "" && Sys.is_directory line then Some line else None
+  match Git_helpers.git_repo_toplevel () with
+  | Some line when Sys.is_directory line -> Some line
+  | _ -> None
 
 let git_shorthash () =
-  match
-    Unix.open_process_in "git rev-parse --short HEAD 2>/dev/null"
-  with
-  | ic ->
-      let line =
-        try
-          let l = input_line ic in
-          ignore (Unix.close_process_in ic);
-          String.trim l
-        with End_of_file ->
-          ignore (Unix.close_process_in ic);
-          ""
-      in
-      if line <> "" && int_of_string_opt line = None then Some line else None
-  | exception _ -> None
+  match Git_helpers.git_shorthash () with
+  | Some line when int_of_string_opt line = None -> Some line
+  | _ -> None
 
 let version_string () =
   let base = Version.version in
@@ -1966,21 +1932,6 @@ let verify =
 
 (* --- subcommand: git ----------------------------------------------------- *)
 
-let find_real_git () =
-  let path = match Sys.getenv_opt "PATH" with
-    | Some p -> p
-    | None -> "/usr/local/bin:/usr/bin:/bin"
-  in
-  let dirs = String.split_on_char ':' path in
-  let rec search = function
-    | [] -> "/usr/bin/git"
-    | dir :: rest ->
-        let candidate = Filename.concat dir "git" in
-        if Sys.file_exists candidate && not (Sys.is_directory candidate) then candidate
-        else search rest
-  in
-  search dirs
-
 let has_author_flag args =
   List.exists (fun arg ->
     String.length arg >= 8 && String.sub arg 0 8 = "--author"
@@ -2006,7 +1957,7 @@ let git_cmd =
       Some (author_name, author_email)
     else None
   in
-  let git_path = find_real_git () in
+  let git_path = Git_helpers.find_real_git () in
   let argv = Array.of_list (git_path :: args) in
   let env_array = match env with
     | None -> [||]
