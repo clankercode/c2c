@@ -116,11 +116,14 @@ let room_system_alias = "c2c-system"
 let room_join_content alias room_id = alias ^ " joined room " ^ room_id
 let room_leave_content alias room_id = alias ^ " left room " ^ room_id
 
+let b64url_nopad_encode s =
+  Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet s
+
 (* --- RegistrationLease --- *)
 
 module RegistrationLease : sig
   type t
-  val make : node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> unit -> t
+  val make : node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> ?enc_pubkey:string -> unit -> t
   val is_alive : t -> bool
   val touch : t -> unit
   val to_json : t -> Yojson.Safe.t
@@ -128,6 +131,8 @@ module RegistrationLease : sig
   val session_id : t -> string
   val alias : t -> string
   val identity_pk : t -> string
+  val enc_pubkey : t -> string
+  val registered_at : t -> float
 end = struct
   type t = {
     node_id : string;
@@ -138,11 +143,12 @@ end = struct
     mutable last_seen : float;
     ttl : float;
     identity_pk : string;
+    enc_pubkey : string;
   }
 
-  let make ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = 300.0) ?(identity_pk = "") () =
+  let make ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = 300.0) ?(identity_pk = "") ?(enc_pubkey = "") () =
     let now = Unix.gettimeofday () in
-    { node_id; session_id; alias; client_type; registered_at = now; last_seen = now; ttl; identity_pk }
+    { node_id; session_id; alias; client_type; registered_at = now; last_seen = now; ttl; identity_pk; enc_pubkey }
 
   let is_alive t =
     let now = Unix.gettimeofday () in
@@ -150,9 +156,6 @@ end = struct
 
   let touch t =
     t.last_seen <- Unix.gettimeofday ()
-
-  let b64url_nopad_encode s =
-    Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet s
 
   let to_json t =
     let base = [
@@ -169,12 +172,18 @@ end = struct
       if t.identity_pk = "" then base
       else base @ [("identity_pk", `String (b64url_nopad_encode t.identity_pk))]
     in
+    let base =
+      if t.enc_pubkey = "" then base
+      else base @ [("enc_pubkey", `String (b64url_nopad_encode t.enc_pubkey))]
+    in
     `Assoc base
 
   let node_id t = t.node_id
   let session_id t = t.session_id
   let alias t = t.alias
   let identity_pk t = t.identity_pk
+  let enc_pubkey t = t.enc_pubkey
+  let registered_at t = t.registered_at
 end
 
 (* --- SqliteRelay helpers and DDL --- *)
@@ -192,7 +201,8 @@ CREATE TABLE IF NOT EXISTS leases (
     registered_at REAL NOT NULL,
     last_seen REAL NOT NULL,
     ttl REAL NOT NULL,
-    identity_pk TEXT NOT NULL DEFAULT ''
+    identity_pk TEXT NOT NULL DEFAULT '',
+    enc_pubkey TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS inboxes (
@@ -531,6 +541,22 @@ module InMemoryRelay : RELAY = struct
 
   let identity_pk_of t ~alias =
     with_lock t (fun () -> Hashtbl.find_opt t.bindings alias)
+
+  let enc_pubkey_of t ~alias =
+    with_lock t (fun () ->
+      match Hashtbl.find_opt t.leases alias with
+      | Some lease ->
+        let ek = RegistrationLease.enc_pubkey lease in
+        if ek = "" then None else Some ek
+      | None -> None
+    )
+
+  let registered_at_of t ~alias =
+    with_lock t (fun () ->
+      match Hashtbl.find_opt t.leases alias with
+      | Some lease -> Some (RegistrationLease.registered_at lease)
+      | None -> None
+    )
 
   let set_allowed_identity t ~alias ~identity_pk_b64 =
     with_lock t (fun () -> Hashtbl.replace t.allowed_identities alias identity_pk_b64)
@@ -950,7 +976,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
 
   let get_lease_row_fields row =
     match row with
-    | [alias; node_id; session_id; client_type; registered_at; last_seen; ttl; identity_pk] ->
+    | [alias; node_id; session_id; client_type; registered_at; last_seen; ttl; identity_pk; enc_pubkey] ->
       let alias = match alias with Some s -> s | None -> "" in
       let node_id = match node_id with Some s -> s | None -> "" in
       let session_id = match session_id with Some s -> s | None -> "" in
@@ -959,6 +985,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
       let last_seen = match last_seen with Some s -> float_of_string s | None -> 0.0 in
       let ttl = match ttl with Some s -> float_of_string s | None -> 300.0 in
       let identity_pk = match identity_pk with Some s -> s | None -> "" in
+      let enc_pubkey = match enc_pubkey with Some s -> s | None -> "" in
       (alias,
        RegistrationLease.make
          ~node_id
@@ -967,6 +994,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
          ~client_type
          ~ttl
          ~identity_pk
+         ~enc_pubkey
          ())
     | _ -> failwith "Invalid lease row"
 
@@ -1674,6 +1702,7 @@ module Relay_server(R : RELAY) : sig
     Conduit_lwt_unix.flow ->
     Cohttp.Request.t ->
     Cohttp_lwt.Body.t ->
+    ?broker_root:string option ->
     rate_limiter:Rate_limiter_inst.t ->
     Cohttp_lwt_unix.Server.response Lwt.t
 
@@ -1697,6 +1726,7 @@ module Relay_server(R : RELAY) : sig
     ?gc_interval:float ->
     ?tls:[ `Cert_key of string * string ] ->
     ?allowlist:(string * string) list ->
+    ?broker_root:string option ->
     unit ->
     unit Lwt.t
 end = struct
@@ -2059,6 +2089,59 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
   let handle_list relay ~include_dead =
     let peers = R.list_peers relay ~include_dead |> List.map RegistrationLease.to_json in
     respond_ok (json_ok [ ("peers", `List peers) ])
+
+  let handle_pubkey relay ~broker_root ~alias =
+    let identity_pk = R.identity_pk_of relay ~alias in
+    let enc_pubkey =
+      match broker_root with
+      | None -> None
+      | Some br ->
+        let registry_path = Filename.concat br "registry.json" in
+        (try
+          let ic = open_in registry_path in
+          let rec read_all acc =
+            try input_line ic :: acc with End_of_file -> close_in_noerr ic; List.rev acc
+          in
+          let lines = read_all [] in
+          let json_str = String.concat "\n" lines in
+          let json = Yojson.Safe.from_string json_str in
+          let rec find_enc_pubkey = function
+            | `Assoc fields ->
+              (match List.assoc "alias" fields, List.assoc "enc_pubkey" fields with
+               | `String a, `String ek when a = alias && ek <> "" -> Some ek
+               | _ -> None)
+            | `List items ->
+              let rec loop = function
+                | [] -> None
+                | item :: rest ->
+                  match find_enc_pubkey item with
+                  | Some _ as result -> result
+                  | None -> loop rest
+              in
+              loop items
+            | _ -> None
+          in
+          find_enc_pubkey json
+        with _ -> None)
+    in
+    match identity_pk, enc_pubkey with
+    | Some ipk, Some ek ->
+      respond_ok (json_ok [
+        ("alias", `String alias);
+        ("identity_pk", `String (b64url_nopad_encode ipk));
+        ("enc_pubkey", `String (b64url_nopad_encode ek));
+      ])
+    | None, _ ->
+      respond_not_found (json_error_str err_not_found ("unknown alias: " ^ alias))
+    | _, None ->
+      (match identity_pk with
+       | Some ipk ->
+         respond_ok (json_ok [
+           ("alias", `String alias);
+           ("identity_pk", `String (b64url_nopad_encode ipk));
+         ])
+       | None ->
+         respond_not_found (json_error_str err_not_found ("unknown alias: " ^ alias)))
 
   let handle_dead_letter relay =
     let dl = R.dead_letter relay in
@@ -2598,7 +2681,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
        with _ -> "unknown")
     | _ -> "unknown"
 
-  let make_callback relay token conn req body ~rate_limiter =
+  let make_callback relay token conn req body ?(broker_root=None) ~rate_limiter =
     let open Cohttp in
     let open Cohttp_lwt_unix in
     let uri = Request.uri req in
@@ -2700,6 +2783,10 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
 
       | `GET, "/gc" ->
         handle_gc relay
+
+      | `GET, path when String.length path > 8 && String.sub path 0 8 = "/pubkey/" ->
+        let alias = String.sub path 8 (String.length path - 8) in
+        handle_pubkey relay ~broker_root ~alias
 
       | `POST, "/admin/unbind" ->
         let json = parse_body () in
@@ -2822,7 +2909,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
 
   (* --- Server startup --- *)
 
-  let start_server ~host ~port ~relay ~token ?(verbose=false) ?(gc_interval=0.0) ?tls ?(allowlist=[]) () =
+  let start_server ~host ~port ~relay ~token ?(verbose=false) ?(gc_interval=0.0) ?tls ?(allowlist=[]) ?broker_root () =
     List.iter (fun (alias, identity_pk_b64) ->
       R.set_allowed_identity relay ~alias ~identity_pk_b64)
       allowlist;
@@ -2830,9 +2917,9 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
      | [] -> ()
      | _ ->
        Printf.printf "allowlist: %d pinned identities\n%!" (List.length allowlist));
-     let rate_limiter = Rate_limiter_inst.create ~gc_interval:300.0 () in
+      let rate_limiter = Rate_limiter_inst.create ~gc_interval:300.0 () in
     let callback (conn, _) req body =
-      make_callback relay token conn req body ~rate_limiter
+      make_callback relay token conn req body ~rate_limiter ?broker_root
     in
     let gc_thread =
       if gc_interval > 0.0 then
