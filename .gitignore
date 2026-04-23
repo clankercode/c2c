@@ -80,3 +80,4 @@ c2c_relay.db
 .artifacts/e2e/
 .c2c/agent-refine-last-prompt.md
 .opencode/agent.bak/
+.kimi/agents/
