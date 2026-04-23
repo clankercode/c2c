@@ -1964,6 +1964,72 @@ let verify =
     (Cmdliner.Cmd.info "verify" ~doc:"Verify c2c message exchange progress.")
     verify_cmd
 
+(* --- subcommand: git ----------------------------------------------------- *)
+
+let find_real_git () =
+  let path = match Sys.getenv_opt "PATH" with
+    | Some p -> p
+    | None -> "/usr/local/bin:/usr/bin:/bin"
+  in
+  let dirs = String.split_on_char ':' path in
+  let rec search = function
+    | [] -> "/usr/bin/git"
+    | dir :: rest ->
+        let candidate = Filename.concat dir "git" in
+        if Sys.file_exists candidate && not (Sys.is_directory candidate) then candidate
+        else search rest
+  in
+  search dirs
+
+let has_author_flag args =
+  List.exists (fun arg ->
+    String.length arg >= 8 && String.sub arg 0 8 = "--author"
+    || (String.length arg > 8 && String.sub arg 0 9 = "--author="))
+    args
+
+let git_cmd =
+  let+ () = Cmdliner.Term.const () in
+  let rec get_git_args = function
+    | [] -> []
+    | "-" :: rest -> rest
+    | arg :: rest ->
+        if String.length arg >= 2 && arg.[0] = '-' && arg.[1] = '-' then
+          arg :: get_git_args rest
+        else
+          arg :: rest
+  in
+  let rec find_git_subcommand = function
+    | [] -> []
+    | "git" :: rest -> get_git_args rest
+    | _ :: rest -> find_git_subcommand rest
+  in
+  let args = find_git_subcommand (Array.to_list Sys.argv) in
+  let args = if args = [] then ["--version"] else args in
+  let alias =
+    match env_auto_alias () with
+    | Some a -> a
+    | None ->
+        (match Relay_identity.load () with
+         | Ok id when id.alias_hint <> "" -> id.alias_hint
+         | _ -> "anonymous")
+  in
+  let attribution = C2c_start.repo_config_git_attribution () in
+  let args =
+    if attribution && not (has_author_flag args) then
+      let author_arg = Printf.sprintf "--author=%s <%s@c2c.im>" alias alias in
+      "--author" :: author_arg :: args
+    else args
+  in
+  let git_path = find_real_git () in
+  let argv = Array.of_list (git_path :: args) in
+  Unix.execv git_path argv
+
+let git =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "git"
+       ~doc:"Git wrapper that auto-injects --author for commits when git.attribution=true in .c2c/config.toml (default: on).")
+    git_cmd
+
 (* --- subcommand: register ------------------------------------------------- *)
 
 let register_cmd =
@@ -4248,16 +4314,18 @@ let relay_mobile_pair_cmd =
                  (Relay.Relay_client.mobile_pair_prepare client
                     ~machine_ed25519_pubkey:machine_pk_b64 ~token:token_b64)
                in
-               if json then print_endline (Yojson.Safe.pretty_to_string result)
-               else (
-                 match List.assoc_opt "binding_id" (Yojson.Safe.Util.to_assoc result) with
-                 | Some (`String bid) ->
-                     Printf.printf "binding_id: %s\ntoken: %s\nnonce: %s\nttl: %.0f\n"
-                       bid token_b64 nonce ttl_val;
-                     Printf.printf "QR content: %s\n%!" token_b64
-                 | _ -> ()
-               );
-               exit 0)
+                if json then print_endline (Yojson.Safe.pretty_to_string result)
+                else (
+                  match List.assoc_opt "binding_id" (Yojson.Safe.Util.to_assoc result) with
+                  | Some (`String bid) ->
+                      let broker_root = resolve_broker_root () in
+                      C2c_relay_connector.add_mobile_binding broker_root ~binding_id:bid;
+                      Printf.printf "binding_id: %s\ntoken: %s\nnonce: %s\nttl: %.0f\n"
+                        bid token_b64 nonce ttl_val;
+                      Printf.printf "QR content: %s\n%!" token_b64
+                  | _ -> ()
+                );
+                exit 0)
       | "confirm" ->
           let token_val = match token with Some t -> t | None -> "" in
           let ed_pk = phone_ed_pk in
@@ -9913,7 +9981,7 @@ let () =
   let tier_grouped_man = commands_man is_agent in
   let all_cmds =
     [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; send_all; sweep
-    ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
+    ; sweep_dryrun; history; health; setcap; status; verify; git; register; refresh_peer
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; smoke_test; init; install; completion_cmd
     ; serve; mcp; start; agent_group; config_group; roles_group; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
   in
