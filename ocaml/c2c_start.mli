@@ -105,11 +105,13 @@ val broker_root : unit -> string
 
 (** {1 Environment building} *)
 
-val build_env : ?broker_root_override:string option -> ?auto_join_rooms_override:string option -> string -> string option -> string array
-(** [build_env ?broker_root_override ?auto_join_rooms_override name alias_override] builds the environment array for a managed
+val build_env : ?broker_root_override:string option -> ?auto_join_rooms_override:string option -> ?role_class_opt:string option -> string -> string option -> string array
+(** [build_env ?broker_root_override ?auto_join_rooms_override ?role_class_opt name alias_override] builds the environment array for a managed
     client subprocess. Sets C2C_MCP_SESSION_ID, C2C_MCP_AUTO_REGISTER_ALIAS,
     C2C_MCP_BROKER_ROOT, C2C_MCP_AUTO_JOIN_ROOMS (defaults to "swarm-lounge"),
-    C2C_MCP_AUTO_DRAIN_CHANNEL=0, and C2C_MCP_CLIENT_PID. *)
+    C2C_MCP_AUTO_DRAIN_CHANNEL=0, and C2C_MCP_CLIENT_PID.
+    When C2C_AUTO_JOIN_ROLE_ROOM=1 is set and role_class_opt is provided,
+    appends the derived role room (e.g. "reviewers" from "reviewer") to C2C_MCP_AUTO_JOIN_ROOMS. *)
 
 (** {1 Launch argument preparation} *)
 

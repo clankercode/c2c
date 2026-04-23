@@ -234,9 +234,38 @@ let frontmatter_tests = [
   "load_snippet_md_suffix", `Quick, test_load_snippet_accepts_md_suffix;
 ]
 
+let test_role_class_to_room_reviewer () =
+  Alcotest.(check (option string)) "reviewer -> reviewers"
+    (Some "reviewers") (C2c_role.role_class_to_room "reviewer")
+
+let test_role_class_to_room_coder () =
+  Alcotest.(check (option string)) "coder -> coders"
+    (Some "coders") (C2c_role.role_class_to_room "coder")
+
+let test_role_class_to_room_empty () =
+  Alcotest.(check (option string)) "empty string -> None"
+    None (C2c_role.role_class_to_room "")
+
+let test_role_class_to_room_whitespace () =
+  Alcotest.(check (option string)) "whitespace only -> None"
+    None (C2c_role.role_class_to_room "   ")
+
+let test_role_class_to_room_security_review () =
+  Alcotest.(check (option string)) "security-review -> security-reviews"
+    (Some "security-reviews") (C2c_role.role_class_to_room "security-review")
+
+let role_class_tests = [
+  "reviewer",         `Quick, test_role_class_to_room_reviewer;
+  "coder",            `Quick, test_role_class_to_room_coder;
+  "empty_string",     `Quick, test_role_class_to_room_empty;
+  "whitespace",       `Quick, test_role_class_to_room_whitespace;
+  "security-review",  `Quick, test_role_class_to_room_security_review;
+]
+
 let () =
   Alcotest.run "c2c_role" [
     "renderers", tests;
     "pmodel", pmodel_tests;
     "frontmatter", frontmatter_tests;
+    "role_class", role_class_tests;
   ]

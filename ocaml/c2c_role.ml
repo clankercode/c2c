@@ -408,3 +408,8 @@ let render_for_client ?resolved_pmodel (r : t) ~(client : string) : string optio
   | "codex" -> Some (Codex_renderer.render ?resolved_pmodel r)
   | "kimi" -> Some (Kimi_renderer.render ?resolved_pmodel r)
   | _ -> None
+
+let role_class_to_room (role_class : string) : string option =
+  match String.trim role_class with
+  | "" -> None
+  | rc -> Some (rc ^ "s")

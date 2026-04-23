@@ -47,3 +47,5 @@ end
 module Kimi_renderer : sig
   val render : ?resolved_pmodel:string -> t -> string
 end
+
+val role_class_to_room : string -> string option

@@ -7320,9 +7320,21 @@ let run_ephemeral_agent
       role name caller confirm_line user_prompt_section idle_line rendered
   in
   let auto_join =
-    if r.C2c_role.c2c_auto_join_rooms <> []
-    then Some (String.concat "," r.C2c_role.c2c_auto_join_rooms)
-    else None
+    let base =
+      if r.C2c_role.c2c_auto_join_rooms <> []
+      then Some (String.concat "," r.C2c_role.c2c_auto_join_rooms)
+      else None
+    in
+    (* Derive role-specific room if C2C_AUTO_JOIN_ROLE_ROOM=1 is set.
+       This opt-in env var is written by `c2c install <client>`. *)
+    match Sys.getenv_opt "C2C_AUTO_JOIN_ROLE_ROOM", r.C2c_role.role_class with
+    | Some "1", Some rc when String.trim rc <> "" ->
+        (match C2c_role.role_class_to_room rc with
+         | Some rr ->
+             let base_str = Option.value base ~default:"swarm-lounge" in
+             Some (base_str ^ "," ^ rr)
+         | None -> base)
+    | _ -> base
   in
   if dry_run then begin
     Printf.printf "c2c agent run [dry-run]:\n  role=%s\n  client=%s\n  name=%s\n  caller=%s\n  timeout=%.0fs\n  bin=%s\n  auto_join=%s\n  pane=%b\n\n--- kickoff prompt ---\n%s--- end prompt ---\n%!"

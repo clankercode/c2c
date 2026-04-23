@@ -774,9 +774,21 @@ let cleanup_stale_opentui_zig_cache () : int =
 
 let build_env ?(broker_root_override : string option = None)
     ?(auto_join_rooms_override : string option = None)
+    ?(role_class_opt : string option = None)
     (name : string) (alias_override : string option) : string array =
   let br = Option.value broker_root_override ~default:(broker_root ()) in
-  let rooms = Option.value auto_join_rooms_override ~default:"swarm-lounge" in
+  let rooms_base = Option.value auto_join_rooms_override ~default:"swarm-lounge" in
+  (* Derive role-specific room from role_class if C2C_AUTO_JOIN_ROLE_ROOM=1 is set.
+     This is written by `c2c install <client>` to opt into the feature. *)
+  let rooms =
+    match Sys.getenv_opt "C2C_AUTO_JOIN_ROLE_ROOM", role_class_opt with
+    | Some "1", Some rc when String.trim rc <> "" ->
+        let role_room = C2c_role.role_class_to_room rc in
+        (match role_room with
+         | Some rr -> rooms_base ^ "," ^ rr
+         | None -> rooms_base)
+    | _ -> rooms_base
+  in
   (* Resolve the absolute path of this c2c binary so the plugin always uses the
      correct OCaml binary even when a Python ./c2c shim exists in the project CWD
      (avoids fork-bomb: plugin runC2c() would otherwise resolve bare "c2c" via PATH
