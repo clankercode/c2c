@@ -8080,7 +8080,8 @@ let wire_daemon_format_prompt_cmd =
                           ; to_alias   = get_str "to_alias"
                           ; content    = get_str "content"
                           ; deferrable = false
-                          ; reply_via = None }
+                          ; reply_via = None
+                          ; enc_status = None }
         | _ -> None) items
     | _ -> []
   in
@@ -8106,7 +8107,8 @@ let wire_daemon_spool_write_cmd =
                           ; to_alias   = get_str "to_alias"
                           ; content    = get_str "content"
                           ; deferrable = false
-                          ; reply_via = None }
+                          ; reply_via = None
+                          ; enc_status = None }
         | _ -> None) items
     | _ -> []
   in

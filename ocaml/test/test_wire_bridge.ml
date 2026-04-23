@@ -3,8 +3,8 @@
     These tests verify that the OCaml envelope formatting produces output
     identical to the Python reference implementation. *)
 
-let msg ?(from_alias="") ?(to_alias="") ?(reply_via=None) content =
-  C2c_mcp.{ from_alias; to_alias; content; deferrable = false; reply_via }
+let msg ?(from_alias="") ?(to_alias="") ?(reply_via=None) ?(enc_status=None) content =
+  C2c_mcp.{ from_alias; to_alias; content; deferrable = false; reply_via; enc_status }
 
 (* ---------------------------------------------------------------------------
  * format_envelope parity (vs Python format_c2c_envelope)
