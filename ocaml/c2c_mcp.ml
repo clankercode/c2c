@@ -3052,20 +3052,66 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       let session_id = resolve_session_id arguments in
       Broker.confirm_registration broker ~session_id;
       let messages = Broker.drain_inbox broker ~session_id in
-      let content =
-        `List
-          (List.map
-             (fun ({ from_alias; to_alias; content; deferrable } : message) ->
-               let base =
-                 [ ("from_alias", `String from_alias)
-                 ; ("to_alias", `String to_alias)
-                 ; ("content", `String content)
-                 ]
-               in
-               `Assoc (if deferrable then base @ [("deferrable", `Bool true)] else base))
-             messages)
-        |> Yojson.Safe.to_string
+      let process_msg ({ from_alias; to_alias; content; deferrable } : message) =
+        let sid = match current_session_id () with Some s -> s | None -> from_alias in
+        let our_x25519 = match Relay_enc.load_or_generate ~session_id:sid () with Ok k -> Some k | Error _ -> None in
+        let our_ed25519 = Some (Broker.load_or_create_ed25519_identity ()) in
+        let (decrypted, enc_status) =
+          match Yojson.Safe.from_string content with
+          | exception _ -> content, None
+          | env_json ->
+            match Relay_e2e.envelope_of_json env_json with
+            | exception _ -> content, None
+            | env ->
+              let ds = Broker.get_downgrade_state env.from_ in
+              let (status, ds) = Relay_e2e.decide_enc_status ds env in
+              Broker.set_downgrade_state env.from_ ds;
+              match env.enc with
+              | "plain" ->
+                (match Relay_e2e.find_my_recipient ~my_alias:to_alias env.recipients with
+                 | Some r -> r.ciphertext, Some (Relay_e2e.enc_status_to_string status)
+                 | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Not_for_me))
+              | "box-x25519-v1" ->
+                (match our_x25519, our_ed25519 with
+                 | Some x25519, Some _ ->
+                   (match Relay_e2e.find_my_recipient ~my_alias:to_alias env.recipients with
+                    | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Not_for_me)
+                    | Some recipient ->
+                      (match recipient.nonce with
+                       | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed)
+                       | Some nonce_b64 ->
+                         let sender_pk = match Broker.get_pinned_ed25519 env.from_ with
+                           | Some pk -> pk
+                           | None -> env.from_
+                         in
+                         (match Relay_e2e.decrypt_for_me
+                           ~ct_b64:recipient.ciphertext
+                           ~nonce_b64
+                           ~sender_pk_b64:sender_pk
+                           ~our_sk_seed:x25519.private_key_seed with
+                          | None ->
+                            (match Broker.get_pinned_ed25519 env.from_ with
+                             | Some pk when pk <> sender_pk -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
+                             | _ ->
+                               (match Broker.get_pinned_ed25519 env.from_ with None -> Broker.set_pinned_ed25519 env.from_ sender_pk | Some _ -> ());
+                               content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
+                          | Some pt ->
+                            let pinned_pk = Broker.get_pinned_ed25519 env.from_ in
+                            if pinned_pk <> None && pinned_pk <> Some sender_pk then
+                              content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
+                            else (
+                              (match Broker.get_pinned_ed25519 env.from_ with None -> Broker.set_pinned_ed25519 env.from_ sender_pk | Some _ -> ());
+                              (match Broker.get_pinned_x25519 env.from_ with None -> Broker.set_pinned_x25519 env.from_ env.from_ | Some _ -> ());
+                              pt, Some (Relay_e2e.enc_status_to_string status))))
+                 | _ -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
+              | _ -> content, None
+        in
+        let base = [ ("from_alias", `String from_alias); ("to_alias", `String to_alias); ("content", `String decrypted) ] in
+        let base = if deferrable then base @ [("deferrable", `Bool true)] else base in
+        let base = match enc_status with None -> base | Some es -> base @ [("enc_status", `String es)] in
+        `Assoc base
       in
+      let content = `List (List.map process_msg messages) |> Yojson.Safe.to_string in
       Lwt.return (tool_result ~content ~is_error:false)
   | "peek_inbox" ->
       (* Like poll_inbox but does not drain. Resolves session_id from
