@@ -1299,6 +1299,103 @@ class C2CGitShimRegressionTests(unittest.TestCase):
 
 
 @_CLI_SKIP
+class C2CStartManagedGitShimTests(unittest.TestCase):
+    """Managed-session shim: start must prepend a guarded git shim that reaches real git."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self.broker_root = self.tmp_path / "broker"
+        self.broker_root.mkdir(parents=True)
+        self.instances_dir = self.tmp_path / "instances"
+        self.instances_dir.mkdir(parents=True)
+        self.log_path = self.tmp_path / "real-git.log"
+        self.path_log = self.tmp_path / "opencode-path.log"
+
+        self.real_git = self.tmp_path / "git"
+        self.real_git.write_text(
+            "#!/bin/sh\n"
+            f"printf 'argv:%s\\n' \"$*\" > {self.log_path}\n"
+            f"printf 'author_name:%s\\n' \"${{GIT_AUTHOR_NAME-}}\" >> {self.log_path}\n"
+            f"printf 'author_email:%s\\n' \"${{GIT_AUTHOR_EMAIL-}}\" >> {self.log_path}\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        self.real_git.chmod(0o755)
+
+        self.opencode = self.tmp_path / "opencode"
+        self.opencode.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$PATH\" > {self.path_log}\n"
+            "git status\n",
+            encoding="utf-8",
+        )
+        self.opencode.chmod(0o755)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run_start(self, name: str) -> tuple[int, str, str]:
+        from tests.conftest import spawn_tracked, clean_c2c_start_env
+
+        base_env = clean_c2c_start_env(os.environ)
+        env = {
+            **base_env,
+            "PATH": str(self.tmp_path) + ":" + base_env.get("PATH", ""),
+            "C2C_MCP_BROKER_ROOT": str(self.broker_root),
+            "C2C_INSTANCES_DIR": str(self.instances_dir),
+            "GIT_DIR": str(self.tmp_path / "no-such-git"),
+        }
+        proc = spawn_tracked(
+            [str(CLI_EXE), "start", "opencode", "-n", name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            cwd=str(self.tmp_path),
+        )
+        try:
+            stdout, stderr = proc.communicate(timeout=CLI_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            self.fail(f"c2c start timed out after {CLI_TIMEOUT}s (stdout={stdout!r})")
+        return proc.returncode, stdout, stderr
+
+    def test_start_managed_session_git_shim_reaches_real_git_once(self):
+        rc, stdout, stderr = self._run_start("managed-git-shim")
+
+        self.assertEqual(rc, 0, f"stdout={stdout!r} stderr={stderr!r}")
+        self.assertTrue(self.log_path.exists(), "managed session never reached real git")
+        self.assertEqual(
+            self.log_path.read_text(encoding="utf-8").splitlines(),
+            [
+                "argv:status",
+                "author_name:managed-git-shim",
+                "author_email:managed-git-shim@c2c.im",
+            ],
+        )
+
+    def test_start_writes_guarded_git_shim_with_warning_block(self):
+        name = "managed-git-shim-script"
+        rc, stdout, stderr = self._run_start(name)
+
+        self.assertEqual(rc, 0, f"stdout={stdout!r} stderr={stderr!r}")
+        shim_path = self.instances_dir / name / "bin" / "git"
+        self.assertTrue(shim_path.exists(), f"git shim not created at {shim_path}")
+        shim_text = shim_path.read_text(encoding="utf-8")
+        self.assertIn("C2C_GIT_SHIM_ACTIVE", shim_text)
+        self.assertIn("a23b483", shim_text)
+        self.assertIn(str(self.real_git), shim_text)
+        self.assertIn(str(CLI_EXE), shim_text)
+        managed_path = self.path_log.read_text(encoding="utf-8").strip()
+        self.assertTrue(
+            managed_path.startswith(str(self.instances_dir / name / "bin") + os.pathsep),
+            managed_path,
+        )
+
+
+@_CLI_SKIP
 class C2CStartOpencodeSessionPreflightTests(unittest.TestCase):
     """Pre-flight: c2c start opencode -s ses_* must verify the session exists.
 

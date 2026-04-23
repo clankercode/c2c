@@ -291,6 +291,25 @@ let rec mkdir_p dir =
     with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
   end
 
+let write_git_shim ~shim_bin_path ~c2c_bin_path ~real_git_path =
+  let oc = open_out shim_bin_path in
+  let q = Filename.quote in
+  Fun.protect ~finally:(fun () -> close_out oc) @@ fun () ->
+  output_string oc "#!/bin/bash\n";
+  output_string oc
+    "# WARNING: Recursion trap. This shim sits on PATH for managed sessions.\n";
+  output_string oc
+    "# If `c2c git` or any startup helper re-enters bare `git` without the\n";
+  output_string oc
+    "# guard below, the process chain becomes shim -> c2c git -> git -> shim\n";
+  output_string oc
+    "# and can fork-bomb the session. See revert a23b483 before changing this.\n";
+  output_string oc "if [ \"${C2C_GIT_SHIM_ACTIVE:-}\" = \"1\" ]; then\n";
+  output_string oc (Printf.sprintf "  exec %s \"$@\"\n" (q real_git_path));
+  output_string oc "fi\n";
+  output_string oc "export C2C_GIT_SHIM_ACTIVE=1\n";
+  output_string oc (Printf.sprintf "exec %s git -- \"$@\"\n" (q c2c_bin_path))
+
 let ensure_fifo path =
   (try
      if Sys.file_exists path then
@@ -850,7 +869,9 @@ let build_env ?(broker_root_override : string option = None)
      (avoids fork-bomb: plugin runC2c() would otherwise resolve bare "c2c" via PATH
      which could pick up ./c2c if CWD is in PATH). *)
   let c2c_bin = current_c2c_command () in
-  let additions = [
+  let enable_git_shim = repo_config_git_attribution () in
+  let additions =
+    let base = [
     "C2C_WRAPPER_SELF", "1";  (* marks the wrapper process itself; bash subshells of the managed client don't inherit this *)
     "C2C_MCP_SESSION_ID", name;
     "C2C_INSTANCE_NAME", name;
@@ -865,22 +886,45 @@ let build_env ?(broker_root_override : string option = None)
     (* Pin the c2c binary used by the plugin to the running binary's absolute
        path so a CWD-relative ./c2c shim can never be accidentally preferred. *)
     "C2C_CLI_COMMAND", c2c_bin;
-  ] in
+    ] in
+    if enable_git_shim then
+      let shim_bin_dir = instance_dir name // "bin" in
+      base @ [ "C2C_GIT_SHIM_DIR", shim_bin_dir ]
+    else
+      base
+  in
   (* Strip any existing copies of overridden keys from the inherited env, then
      append our authoritative values. This avoids the duplicate-key bug where
      both the parent's C2C_MCP_SESSION_ID and the child's appear in the array
      (previously a buggy in-place replacement left both copies).
      Also strip CLAUDE_SESSION_ID: when starting a new managed session, the child
      should create a fresh session rather than inheriting the parent's. *)
-  let override_keys = "CLAUDE_SESSION_ID" :: List.map fst additions in
+  let override_keys = "CLAUDE_SESSION_ID" :: "C2C_GIT_SHIM_ACTIVE" :: List.map fst additions in
   let env_key e =
     try String.sub e 0 (String.index e '=') with Not_found -> e
   in
   let filtered = Array.to_list (Unix.environment ())
     |> List.filter (fun e -> not (List.mem (env_key e) override_keys))
   in
+  let filtered =
+    if enable_git_shim then List.filter (fun e -> env_key e <> "PATH") filtered
+    else filtered
+  in
   let new_entries = List.map (fun (k, v) -> Printf.sprintf "%s=%s" k v) additions in
-  Array.of_list (filtered @ new_entries)
+  if enable_git_shim then
+    let shim_bin_dir = instance_dir name // "bin" in
+    let existing_path =
+      match Sys.getenv_opt "PATH" with
+      | Some path -> path
+      | None -> ""
+    in
+    let path_entry =
+      "PATH=" ^ shim_bin_dir ^
+      (if existing_path <> "" then ":" ^ existing_path else "")
+    in
+    Array.of_list ((path_entry :: filtered) @ new_entries)
+  else
+    Array.of_list (filtered @ new_entries)
 
 (* ---------------------------------------------------------------------------
  * OpenCode identity files refresh
@@ -1627,6 +1671,22 @@ let run_outer_loop ~(name : string) ~(client : string)
 
       let inst_dir = instance_dir name in
       mkdir_p inst_dir;
+      if repo_config_git_attribution () then begin
+        let shim_bin_dir = inst_dir // "bin" in
+        mkdir_p shim_bin_dir;
+        let shim_bin_path = shim_bin_dir // "git" in
+        let c2c_bin_path = current_c2c_command () in
+        let real_git_path = Git_helpers.find_real_git () in
+        (* WARNING: this shim is intentionally dangerous-looking because it is.
+           It lives on PATH inside managed sessions and can recurse into
+           `c2c git` catastrophically if either the env guard or the baked
+           real-git fallback is removed. The previous unguarded version caused
+           a fork bomb and was reverted in a23b483. Keep the warning block in
+           the generated shim and update the tmux dogfood coverage if this
+           behavior changes. *)
+        write_git_shim ~shim_bin_path ~c2c_bin_path ~real_git_path;
+        (try Unix.chmod shim_bin_path 0o755 with _ -> ());
+      end;
       (* Registry precheck: human-readable "alias alive" error before flock. *)
       check_registry_alias_alive ~broker_root ~name;
       (* Exclusive instance lock: prevents two concurrent starts for the same
