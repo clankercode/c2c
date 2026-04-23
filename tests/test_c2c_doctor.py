@@ -67,7 +67,16 @@ class DoctorScriptClassificationTests(unittest.TestCase):
         try:
             # Script calls `c2c health` which needs a broker — stub it
             stub = Path(d) / "c2c"
-            stub.write_text("#!/bin/bash\necho '{\"ok\":true}'\n")
+            stub.write_text(
+                "#!/bin/bash\n"
+                "if [[ \"$1\" == \"health\" ]]; then\n"
+                "  echo '{\"ok\":true}'\n"
+                "elif [[ \"$1\" == \"instances\" ]]; then\n"
+                "  echo 'No managed instances.'\n"
+                "else\n"
+                "  echo 'stub'\n"
+                "fi\n"
+            )
             stub.chmod(0o755)
             result = subprocess.run(
                 ["bash", str(DOCTOR_SCRIPT)],
@@ -82,14 +91,23 @@ class DoctorScriptClassificationTests(unittest.TestCase):
             import shutil
             shutil.rmtree(d)
 
-    def test_script_classifies_relay_critical_by_message(self):
-        """Commits with 'fix(relay' in message appear in relay-critical section."""
+    def test_script_treats_plain_fix_relay_message_as_local_only(self):
+        """Message-only 'fix(relay)' is local-only without relay-server scope or files."""
         d, git, env = self._make_temp_repo()
         try:
             git("commit", "--allow-empty", "-m", "fix(relay): auth bypass")
             git("commit", "--allow-empty", "-m", "chore: update README")
             stub = Path(d) / "c2c"
-            stub.write_text("#!/bin/bash\necho '{\"ok\":true}'\n")
+            stub.write_text(
+                "#!/bin/bash\n"
+                "if [[ \"$1\" == \"health\" ]]; then\n"
+                "  echo '{\"ok\":true}'\n"
+                "elif [[ \"$1\" == \"instances\" ]]; then\n"
+                "  echo 'No managed instances.'\n"
+                "else\n"
+                "  echo 'stub'\n"
+                "fi\n"
+            )
             stub.chmod(0o755)
             result = subprocess.run(
                 ["bash", str(DOCTOR_SCRIPT)],
@@ -98,7 +116,8 @@ class DoctorScriptClassificationTests(unittest.TestCase):
                 env={**env, "PATH": str(d) + ":" + os.environ["PATH"]}
             )
             self.assertIn("fix(relay): auth bypass", result.stdout)
-            self.assertIn("Relay/deploy critical", result.stdout)
+            self.assertIn("Local-only", result.stdout)
+            self.assertNotIn("Relay/deploy critical", result.stdout)
         finally:
             import shutil
             shutil.rmtree(d)
@@ -109,7 +128,16 @@ class DoctorScriptClassificationTests(unittest.TestCase):
         try:
             git("commit", "--allow-empty", "-m", "chore: update README")
             stub = Path(d) / "c2c"
-            stub.write_text("#!/bin/bash\necho '{\"ok\":true}'\n")
+            stub.write_text(
+                "#!/bin/bash\n"
+                "if [[ \"$1\" == \"health\" ]]; then\n"
+                "  echo '{\"ok\":true}'\n"
+                "elif [[ \"$1\" == \"instances\" ]]; then\n"
+                "  echo 'No managed instances.'\n"
+                "else\n"
+                "  echo 'stub'\n"
+                "fi\n"
+            )
             stub.chmod(0o755)
             result = subprocess.run(
                 ["bash", str(DOCTOR_SCRIPT)],
@@ -134,7 +162,16 @@ class DoctorScriptClassificationTests(unittest.TestCase):
             git("add", "docs/overview.md")
             git("commit", "-m", "docs(website): mark relay.c2c.im live — v0.6.11 prod mode")
             stub = Path(d) / "c2c"
-            stub.write_text("#!/bin/bash\necho '{\"ok\":true}'\n")
+            stub.write_text(
+                "#!/bin/bash\n"
+                "if [[ \"$1\" == \"health\" ]]; then\n"
+                "  echo '{\"ok\":true}'\n"
+                "elif [[ \"$1\" == \"instances\" ]]; then\n"
+                "  echo 'No managed instances.'\n"
+                "else\n"
+                "  echo 'stub'\n"
+                "fi\n"
+            )
             stub.chmod(0o755)
             result = subprocess.run(
                 ["bash", str(DOCTOR_SCRIPT)],
@@ -144,6 +181,35 @@ class DoctorScriptClassificationTests(unittest.TestCase):
             )
             self.assertIn("Local-only", result.stdout)
             self.assertNotIn("Relay/deploy critical", result.stdout)
+        finally:
+            import shutil
+            shutil.rmtree(d)
+
+    def test_script_prints_managed_instances_section(self):
+        d, git, env = self._make_temp_repo()
+        try:
+            stub = Path(d) / "c2c"
+            stub.write_text(
+                "#!/bin/bash\n"
+                "if [[ \"$1\" == \"health\" ]]; then\n"
+                "  echo '{\"ok\":true}'\n"
+                "elif [[ \"$1\" == \"instances\" ]]; then\n"
+                "  echo '  opencode-test        opencode   stopped      plugin'\n"
+                "else\n"
+                "  echo 'stub'\n"
+                "fi\n"
+            )
+            stub.chmod(0o755)
+            result = subprocess.run(
+                ["bash", str(DOCTOR_SCRIPT)],
+                capture_output=True,
+                text=True,
+                cwd=d,
+                env={**env, "PATH": str(d) + ":" + os.environ["PATH"]},
+            )
+            self.assertIn("=== managed instances ===", result.stdout)
+            self.assertIn("opencode-test", result.stdout)
+            self.assertIn("plugin", result.stdout)
         finally:
             import shutil
             shutil.rmtree(d)

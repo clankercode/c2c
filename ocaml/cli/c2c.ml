@@ -1512,6 +1512,103 @@ let health_cmd =
 
 (* --- subcommand: status --------------------------------------------------- *)
 
+type managed_instance_view =
+  { mi_name : string
+  ; mi_client : string
+  ; mi_status : string
+  ; mi_delivery_mode : string
+  ; mi_pid : int option
+  }
+
+let read_managed_instances () =
+  let base =
+    Filename.concat (Sys.getenv "HOME")
+      (".local" // "share" // "c2c" // "instances")
+  in
+  let dirs =
+    if not (Sys.file_exists base) then []
+    else
+      Array.fold_left
+        (fun acc name ->
+           let full = base // name in
+           if Sys.is_directory full && Sys.file_exists (full // "config.json")
+           then full :: acc
+           else acc)
+        [] (Sys.readdir base)
+  in
+  List.sort String.compare dirs
+  |> List.map (fun dir ->
+         let name = Filename.basename dir in
+         let config_path = dir // "config.json" in
+         let config =
+           try Some (Yojson.Safe.from_file config_path) with _ -> None
+         in
+         let config_string name fields =
+           match List.assoc_opt name fields with Some (`String s) -> Some s | _ -> None
+         in
+         let config_float name fields =
+           match List.assoc_opt name fields with
+           | Some (`Float f) -> Some f
+           | Some (`Int n) -> Some (float_of_int n)
+           | _ -> None
+         in
+         let client =
+           match config with
+           | Some (`Assoc fields) ->
+               (match List.assoc_opt "client" fields with Some (`String c) -> c | _ -> "?")
+           | _ -> "?"
+         in
+         let created_at =
+           match config with
+           | Some (`Assoc fields) -> config_float "created_at" fields
+           | _ -> None
+         in
+         let binary_path =
+           match config with
+           | Some (`Assoc fields) ->
+               (match config_string "binary_override" fields with
+                | Some path -> path
+                | None ->
+                    (match Hashtbl.find_opt C2c_start.clients client with
+                     | Some cfg -> cfg.C2c_start.binary
+                     | None -> client))
+           | _ ->
+               (match Hashtbl.find_opt C2c_start.clients client with
+                | Some cfg -> cfg.C2c_start.binary
+                | None -> client)
+         in
+         let status, pid =
+           let outer_pid_path = dir // "outer.pid" in
+           if Sys.file_exists outer_pid_path then begin
+             let pid_s =
+               let ic = open_in outer_pid_path in
+               Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+                   let s = input_line ic in
+                   String.trim s)
+             in
+             match int_of_string_opt pid_s with
+             | Some pid ->
+                 (try
+                    ignore (Unix.kill pid 0);
+                    ("running", Some pid)
+                  with Unix.Unix_error _ -> ("stopped", Some pid))
+             | None -> ("unknown", None)
+           end
+           else ("stopped", None)
+         in
+         let delivery_mode =
+           C2c_start.delivery_mode ~client ~name ~binary_path ~start_time:created_at ()
+         in
+         { mi_name = name
+         ; mi_client = client
+         ; mi_status = status
+         ; mi_delivery_mode = delivery_mode
+         ; mi_pid = pid
+         })
+
+let safe_is_directory path =
+  try Sys.file_exists path && Sys.is_directory path with Sys_error _ -> false
+
 let status_cmd =
   let min_messages =
     Cmdliner.Arg.(
@@ -1532,7 +1629,7 @@ let status_cmd =
   let last_sent_by_alias = Hashtbl.create 16 in
   let last_recv_by_sid = Hashtbl.create 16 in
 
-  if Sys.is_directory archive_dir then
+  if safe_is_directory archive_dir then (
     let entries =
       try Array.to_list (Sys.readdir archive_dir)
       with Sys_error _ -> []
@@ -1600,7 +1697,8 @@ let status_cmd =
                   in
                   loop ())
            with Sys_error _ -> ()))
-      entries;
+      entries
+  );
 
   let goal_count = 20 in
   let regs = C2c_mcp.Broker.list_registrations broker in
@@ -1640,6 +1738,7 @@ let status_cmd =
     alive_peers <> []
     && List.for_all (fun (_, _, _, gm, _) -> gm) alive_peers
   in
+  let managed_instances = read_managed_instances () in
 
   let output_mode = if json then Json else Human in
   match output_mode with
@@ -1673,6 +1772,18 @@ let status_cmd =
            [ ("alive_peers", `List (List.map peer_json alive_peers))
            ; ("dead_peer_count", `Int dead_peer_count)
            ; ("total_peer_count", `Int (List.length regs))
+           ; ( "managed_instances",
+               `List
+                 (List.map
+                    (fun inst ->
+                       `Assoc
+                         [ ("name", `String inst.mi_name)
+                         ; ("client", `String inst.mi_client)
+                         ; ("status", `String inst.mi_status)
+                         ; ("delivery_mode", `String inst.mi_delivery_mode)
+                         ; ("pid", match inst.mi_pid with Some p -> `Int p | None -> `Null)
+                         ])
+                    managed_instances) )
            ; ("rooms", `List (List.map room_json rooms))
            ; ("overall_goal_met", `Bool overall_goal_met)
            ])
@@ -1705,6 +1816,18 @@ let status_cmd =
              r.ri_member_count r.ri_alive_member_count)
         rooms;
       if rooms = [] then Printf.printf "  (none)\n";
+      Printf.printf "\nManaged instances:\n";
+      List.iter
+        (fun inst ->
+           let pid_str =
+             match inst.mi_pid with
+             | Some pid -> Printf.sprintf " (pid %d)" pid
+             | None -> ""
+           in
+           Printf.printf "  %-20s %-10s %-12s %s%s\n" inst.mi_name
+             inst.mi_client inst.mi_status inst.mi_delivery_mode pid_str)
+        managed_instances;
+      if managed_instances = [] then Printf.printf "  (none)\n";
       Printf.printf "\nOverall goal_met: %s\n"
         (if overall_goal_met then "YES" else "NO")
 
@@ -1736,7 +1859,7 @@ let verify_cmd =
   let archive_dir = root // "archive" in
   let sent_by_alias = Hashtbl.create 16 in
   let received_by_sid = Hashtbl.create 16 in
-  if Sys.is_directory archive_dir then
+  if safe_is_directory archive_dir then (
     let entries =
       try Array.to_list (Sys.readdir archive_dir)
       with Sys_error _ -> []
@@ -1780,7 +1903,8 @@ let verify_cmd =
                   let recv_count = loop 0 in
                   Hashtbl.replace received_by_sid session_id recv_count)
            with Sys_error _ -> ()))
-      entries;
+      entries
+  );
   let goal_count = 20 in
   let regs = C2c_mcp.Broker.list_registrations broker in
   let participants =
@@ -6319,84 +6443,29 @@ let list_instance_dirs () =
 let instances_cmd =
   let+ json = json_flag in
   let output_mode = if json then Json else Human in
-  let dirs = list_instance_dirs () in
-  if dirs = [] then begin
+  let managed_instances = read_managed_instances () in
+  if managed_instances = [] then begin
     match output_mode with
     | Json -> print_json (`List [])
     | Human -> Printf.printf "No managed instances.\n"
   end else begin
     let instances =
-      List.sort String.compare dirs |> List.map (fun dir ->
-        let name = Filename.basename dir in
-        let config_path = dir // "config.json" in
-        let config =
-          try Some (json_read_file config_path) with _ -> None
-        in
-        let config_string name fields =
-          match List.assoc_opt name fields with Some (`String s) -> Some s | _ -> None
-        in
-        let config_float name fields =
-          match List.assoc_opt name fields with
-          | Some (`Float f) -> Some f
-          | Some (`Int n) -> Some (float_of_int n)
-          | _ -> None
-        in
-        let client = match config with
-          | Some (`Assoc fields) -> (match List.assoc_opt "client" fields with Some (`String c) -> c | _ -> "?")
-          | _ -> "?"
-        in
-        let created_at = match config with
-          | Some (`Assoc fields) -> config_float "created_at" fields
-          | _ -> None
-        in
-        let binary_path =
-          match config with
-          | Some (`Assoc fields) ->
-              (match config_string "binary_override" fields with
-               | Some path -> path
-               | None ->
-                   (match Hashtbl.find_opt C2c_start.clients client with
-                    | Some cfg -> cfg.C2c_start.binary
-                    | None -> client))
-          | _ ->
-              (match Hashtbl.find_opt C2c_start.clients client with
-               | Some cfg -> cfg.C2c_start.binary
-               | None -> client)
-        in
-        let status, pid =
-          let outer_pid_path = dir // "outer.pid" in
-          if Sys.file_exists outer_pid_path then begin
-            let pid_s =
-              let ic = open_in outer_pid_path in
-              Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
-                let s = input_line ic in String.trim s)
-            in
-            match int_of_string_opt pid_s with
-            | Some pid ->
-                (try
-                   ignore (Unix.kill pid 0);
-                   ("running", Some pid)
-                 with Unix.Unix_error _ -> ("stopped", Some pid))
-            | None -> ("unknown", None)
-          end else ("stopped", None)
-        in
-        let delivery_mode =
-          C2c_start.delivery_mode ~client ~name ~binary_path ~start_time:created_at ()
-        in
+      List.map (fun inst ->
         let fields : (string * Yojson.Safe.t) list =
-          [ ("name", `String name)
-          ; ("client", `String client)
-          ; ("status", `String status)
-          ; ("delivery_mode", `String delivery_mode)
-          ; ("outer_alive", `Bool (status = "running"))
-          ; ("outer_pid", match pid with Some p -> `Int p | None -> `Null)
+          [ ("name", `String inst.mi_name)
+          ; ("client", `String inst.mi_client)
+          ; ("status", `String inst.mi_status)
+          ; ("delivery_mode", `String inst.mi_delivery_mode)
+          ; ("outer_alive", `Bool (inst.mi_status = "running"))
+          ; ("outer_pid", match inst.mi_pid with Some p -> `Int p | None -> `Null)
           ]
         in
-        let fields = match pid with
+        let fields = match inst.mi_pid with
           | Some p -> fields @ [ ("pid", `Int p) ]
           | None -> fields
         in
         `Assoc fields)
+        managed_instances
     in
     match output_mode with
     | Json -> print_json (`List instances)
