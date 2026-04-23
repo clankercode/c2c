@@ -96,3 +96,8 @@
  (name test_relay_e2e_integration)
  (modules test_relay_e2e_integration)
  (libraries c2c_mcp alcotest mirage-crypto-ec unix))
+
+(test
+ (name test_relay_observer_contract)
+ (modules test_relay_observer_contract)
+ (libraries c2c_mcp alcotest base64 mirage-crypto-ec unix str))
