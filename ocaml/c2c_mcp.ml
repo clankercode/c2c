@@ -2905,15 +2905,13 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                             | Some sid -> sid | None -> from_alias
                           in
                           (match Relay_enc.load_or_generate ~session_id () with
-                           | Error e ->
-                             Broker.log_error (Printf.sprintf "send: x25519 load_or_generate failed: %s" e);
-                             `Plain content
-                           | Ok our_x25519 ->
-                             let sender_pk_b64 = our_x25519.public_key_b64 in
-                             Broker.pin_x25519_if_unknown ~alias:to_alias ~pk:recipient_pk_b64 |> ignore;
-                             let our_ed25519 = Broker.load_or_create_ed25519_identity () in
-                             Broker.pin_ed25519_if_unknown ~alias:from_alias ~pk:our_ed25519.public_key_b64 |> ignore;
-                             let sk_seed = our_x25519.private_key_seed in
+                            | Error _ -> `Plain content
+                             | Ok our_x25519 ->
+                              let sender_pk_b64 = Relay_enc.b64url_encode our_x25519.public_key in
+                              Broker.pin_x25519_if_unknown ~alias:to_alias ~pk:recipient_pk_b64 |> ignore;
+                              let our_ed25519 = Broker.load_or_create_ed25519_identity () in
+                              let our_ed_pubkey_b64 = Relay_enc.b64url_encode our_ed25519.public_key in
+                              let sk_seed = our_x25519.private_key_seed in
                              match Relay_e2e.encrypt_for_recipient
                                      ~pt:content
                                      ~recipient_pk_b64:recipient_pk_b64
@@ -3111,7 +3109,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                                     | None -> ());
                                    pt, Some (Relay_e2e.enc_status_to_string status)))))
                  | _ -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
-              | _ -> content, None
+              | _ -> content, None)
         in
         let base = [ ("from_alias", `String from_alias); ("to_alias", `String to_alias); ("content", `String decrypted) ] in
         let base = if deferrable then base @ [("deferrable", `Bool true)] else base in
