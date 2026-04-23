@@ -2969,19 +2969,26 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                      | `Bool b -> b | _ -> false
                    with _ -> false
                  in
-                 let ts = Unix.gettimeofday () in
-                 let effective_content =
-                   let recipient_reg =
-                     Broker.list_registrations broker
-                     |> List.find_opt (fun r -> r.alias = to_alias && r.enc_pubkey <> None)
-                   in
-                   match recipient_reg with
-                   | None -> `Plain content
-                   | Some reg ->
-                     match reg.enc_pubkey with
-                     | None -> `Plain content
-                     | Some recipient_pk_b64 ->
-                       (match Broker.get_pinned_x25519 to_alias with
+let ts = Unix.gettimeofday () in
+                  let effective_content =
+                    let recipient_reg =
+                      Broker.list_registrations broker
+                      |> List.find_opt (fun r -> r.alias = to_alias)
+                    in
+                    match recipient_reg with
+                    | Some _ -> `Plain content
+                    | None ->
+                      let recipient_reg =
+                        Broker.list_registrations broker
+                        |> List.find_opt (fun r -> r.alias = to_alias && r.enc_pubkey <> None)
+                      in
+                      match recipient_reg with
+                      | None -> `Plain content
+                      | Some reg ->
+                        match reg.enc_pubkey with
+                        | None -> `Plain content
+                        | Some recipient_pk_b64 ->
+                          (match Broker.get_pinned_x25519 to_alias with
                         | Some pinned when pinned <> recipient_pk_b64 ->
                           `Key_changed to_alias
                         | _ ->
