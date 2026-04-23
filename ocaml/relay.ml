@@ -1781,6 +1781,84 @@ end
 (* Instantiate rate limiter once at module level — avoids fresh-type-in-functor issue. *)
 module Rate_limiter_inst = Relay_ratelimit.Make()
 
+(* --- S4/S5a: Observer bindings and nonce cache --- *)
+module ObserverBindings : sig
+  type t
+  val create : unit -> t
+  val add : t -> binding_id:string -> phone_ed25519_pubkey:string -> phone_x25519_pubkey:string -> unit
+  val get : t -> binding_id:string -> (string * string) option
+  val remove : t -> binding_id:string -> unit
+end = struct
+  type binding = {
+    phone_ed25519_pubkey : string;
+    phone_x25519_pubkey : string;
+    issued_at : float;
+  }
+  type t = {
+    bindings : (string, binding) Hashtbl.t;
+    mutex : Mutex.t;
+  }
+  let create () = {
+    bindings = Hashtbl.create 64;
+    mutex = Mutex.create ();
+  }
+  let add t ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey =
+    Mutex.lock t.mutex;
+    Hashtbl.replace t.bindings binding_id {
+      phone_ed25519_pubkey; phone_x25519_pubkey;
+      issued_at = Unix.gettimeofday ();
+    };
+    Mutex.unlock t.mutex
+  let get t ~binding_id =
+    Mutex.lock t.mutex;
+    let result = Hashtbl.find_opt t.bindings binding_id in
+    Mutex.unlock t.mutex;
+    match result with
+    | Some b -> Some (b.phone_ed25519_pubkey, b.phone_x25519_pubkey)
+    | None -> None
+  let remove t ~binding_id =
+    Mutex.lock t.mutex;
+    Hashtbl.remove t.bindings binding_id;
+    Mutex.unlock t.mutex
+end
+
+module NonceCache : sig
+  type t
+  val create : unit -> t
+  val is_seen : t -> phone_pubkey:string -> nonce:string -> bool
+  val record : t -> phone_pubkey:string -> nonce:string -> unit
+  val cleanup : t -> older_than:float -> int
+end = struct
+  type t = {
+    cache : (string * string, float) Hashtbl.t;
+    mutex : Mutex.t;
+  }
+  let create () = { cache = Hashtbl.create 1024; mutex = Mutex.create (); }
+  let is_seen t ~phone_pubkey ~nonce =
+    Mutex.lock t.mutex;
+    let seen = Hashtbl.mem t.cache (phone_pubkey, nonce) in
+    Mutex.unlock t.mutex;
+    seen
+  let record t ~phone_pubkey ~nonce =
+    Mutex.lock t.mutex;
+    Hashtbl.replace t.cache (phone_pubkey, nonce) (Unix.gettimeofday ());
+    Mutex.unlock t.mutex
+  let cleanup t ~older_than =
+    Mutex.lock t.mutex;
+    let now = Unix.gettimeofday () in
+    let to_remove = ref [] in
+    Hashtbl.iter (fun (pk, nonce) seen_at ->
+      if now -. seen_at > older_than then to_remove := (pk, nonce) :: !to_remove
+    ) t.cache;
+    List.iter (fun k -> Hashtbl.remove t.cache k) !to_remove;
+    let count = List.length !to_remove in
+    Mutex.unlock t.mutex;
+    count
+end
+
+module ObserverBindings_inst = ObserverBindings
+module NonceCache_inst = NonceCache
+
 module Relay_server(R : RELAY) : sig
   val make_callback :
     R.t ->
@@ -2828,6 +2906,23 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
         with Yojson.Json_error msg -> Res.Error msg
       in
       match meth, path with
+      (* === S4: Observer WebSocket endpoint === *)
+      | `GET, path when String.length path > 11 && String.sub path 0 11 = "/observer/" ->
+        let binding_id = String.sub path 11 (String.length path - 11) in
+        let upgrade = Header.get (Request.headers req) "Upgrade" in
+        let client_ip = get_client_ip conn in
+        (match upgrade with
+         | Some u when String.lowercase_ascii u = "websocket" ->
+           (* TODO S4: implement WebSocket upgrade
+              Steps: extract fd, verify bearer token, spawn ws_frame Session, return 101 *)
+           Relay_ratelimit.structured_log
+             ~event:"observer_handshake"
+             ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
+             ~binding_id_prefix:(Relay_ratelimit.prefix8 binding_id)
+             ~result:"not_implemented" ();
+           respond_json ~status:`Not_implemented (json_error_str "observer_not_implemented" "observer WebSocket endpoint not yet implemented")
+         | _ ->
+           respond_bad_request (json_error_str "observer_upgrade_required" "Upgrade: websocket header required"))
       | `GET, "/" ->
         respond_html landing_html
 
