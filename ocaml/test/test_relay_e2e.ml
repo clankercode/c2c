@@ -40,6 +40,7 @@ let test_box_roundtrip () =
 let test_canonical_json_byte_stability () =
   let e = {
     from_ = "alice";
+    from_x25519 = None;
     to_ = Some "bob";
     room = None;
     ts = 1234567890L;
@@ -54,6 +55,7 @@ let test_canonical_json_byte_stability () =
 let test_canonical_json_sorted () =
   let e = {
     from_ = "alice";
+    from_x25519 = None;
     to_ = Some "bob";
     room = None;
     ts = 1234567890L;
@@ -68,7 +70,7 @@ let test_canonical_json_sorted () =
 
 let test_downgrade_detection () =
   let ds = make_downgrade_state () in
-  let e_plain = { from_ = "alice"; to_ = Some "bob"; room = None; ts = 1L; enc = "plain"; recipients = []; sig_b64 = "" } in
+  let e_plain = { from_ = "alice"; from_x25519 = None; to_ = Some "bob"; room = None; ts = 1L; enc = "plain"; recipients = []; sig_b64 = "" } in
   let (status, ds) = decide_enc_status ds e_plain in
   Alcotest.(check string) "first msg plain -> Plain" (enc_status_to_string status) "plain";
   let e_enc = { e_plain with enc = "box-x25519-v1" } in

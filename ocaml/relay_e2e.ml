@@ -25,6 +25,7 @@ type recipient = {
 
 type envelope = {
   from_ : string;
+  from_x25519 : string option;  (** Sender's x25519 pubkey (b64url). Optional — absent on legacy envelopes. Used for x25519 TOFU on receive. *)
   to_ : string option;
   room : string option;
   ts : int64;
@@ -201,21 +202,23 @@ let recipient_of_json (j : Yojson.Safe.t) =
   | _ -> failwith "recipient_of_json: expected object"
 
 let envelope_to_json (e : envelope) : Yojson.Safe.t =
-  `Assoc [
-    "from",      `String e.from_;
-    "to",        (match e.to_ with Some s -> `String s | None -> `Null);
-    "room",      (match e.room with Some s -> `String s | None -> `Null);
-    "ts",        `Intlit (Int64.to_string e.ts);
-    "enc",       `String e.enc;
-    "recipients", `List (List.map recipient_to_json e.recipients);
-    "sig",       `String e.sig_b64;
-  ]
+  `Assoc (
+    [ "from",      `String e.from_ ]
+    @ (match e.from_x25519 with Some pk -> [ "from_x25519", `String pk ] | None -> [])
+    @ [ "to",        (match e.to_ with Some s -> `String s | None -> `Null)
+      ; "room",      (match e.room with Some s -> `String s | None -> `Null)
+      ; "ts",        `Intlit (Int64.to_string e.ts)
+      ; "enc",       `String e.enc
+      ; "recipients", `List (List.map recipient_to_json e.recipients)
+      ; "sig",       `String e.sig_b64
+    ])
 
 let envelope_of_json (j : Yojson.Safe.t) : envelope =
   match j with
   | `Assoc _ ->
     let open Yojson.Safe.Util in
     let from_ = member "from" j |> to_string in
+    let from_x25519 = match member "from_x25519" j with `String s -> Some s | _ -> None in
     let to_ = match member "to" j with `Null -> None | `String s -> Some s | _ -> failwith "envelope_of_json: to must be string or null" in
     let room = match member "room" j with `Null -> None | `String s -> Some s | _ -> failwith "envelope_of_json: room must be string or null" in
     let ts_str = member "ts" j |> to_string in
@@ -223,7 +226,7 @@ let envelope_of_json (j : Yojson.Safe.t) : envelope =
     let enc = member "enc" j |> to_string in
     let recipients = member "recipients" j |> to_list |> List.map recipient_of_json in
     let sig_b64 = member "sig" j |> to_string in
-    { from_; to_; room; ts; enc; recipients; sig_b64 }
+    { from_; from_x25519; to_; room; ts; enc; recipients; sig_b64 }
   | _ -> failwith "envelope_of_json: expected object"
 
 let find_my_recipient ~(my_alias : string) (recipients : recipient list) =
@@ -257,7 +260,7 @@ let check_pinned_x25519_mismatch ~(pinned_pk : string) ~(claimed_pk : string) : 
   pinned_pk <> claimed_pk
 
 let make_test_envelope ~from_ ~to_ ~room ~ts ~enc ~recipients =
-  { from_; to_; room; ts; enc; recipients; sig_b64 = "" }
+  { from_; from_x25519 = None; to_; room; ts; enc; recipients; sig_b64 = "" }
 
 let set_sig (e : envelope) ~sk_seed =
   let sig_b64 = sign_envelope ~sk_seed e in

@@ -3095,14 +3095,15 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                              | _ ->
                                (match Broker.get_pinned_ed25519 env.from_ with None -> Broker.set_pinned_ed25519 env.from_ sender_pk | Some _ -> ());
                                content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
-                          | Some pt ->
-                            let pinned_pk = Broker.get_pinned_ed25519 env.from_ in
-                            if pinned_pk <> None && pinned_pk <> Some sender_pk then
-                              content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
-                            else (
-                              (match Broker.get_pinned_ed25519 env.from_ with None -> Broker.set_pinned_ed25519 env.from_ sender_pk | Some _ -> ());
-                              (match Broker.get_pinned_x25519 env.from_ with None -> Broker.set_pinned_x25519 env.from_ env.from_ | Some _ -> ());
-                              pt, Some (Relay_e2e.enc_status_to_string status))))
+                           | Some pt ->
+                             let pinned_pk = Broker.get_pinned_ed25519 env.from_ in
+                             (match pinned_pk with
+                              | Some pk when pk <> sender_pk ->
+                                content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
+                              | _ ->
+                                (match Broker.get_pinned_ed25519 env.from_ with None -> Broker.set_pinned_ed25519 env.from_ sender_pk | Some _ -> ());
+                                (match env.from_x25519 with None -> () | Some pk -> (match Broker.get_pinned_x25519 env.from_ with None -> Broker.set_pinned_x25519 env.from_ pk | Some _ -> ()));
+                                pt, Some (Relay_e2e.enc_status_to_string status))))
                  | _ -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
               | _ -> content, None
         in
