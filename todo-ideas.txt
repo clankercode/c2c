@@ -42,6 +42,56 @@ Long-term E2E encrypted relay tracked in todo4.txt (separate project).
 
 ---
 
+Idea: c2c git proxy extensions — signing + attribution
+
+Submitted by: Max Kaye (via coordinator1) · 2026-04-24T17:05Z
+Status: new
+Related: #119 (c2c git proxy, git.attribution config)
+
+The `c2c git` proxy (being implemented in #119) is the right choke point for:
+- **Commit signing**: when a signing key is configured, inject `-S` / `--gpg-sign`
+  automatically. Agents get signed commits without manual flags.
+- **Attribution** (in #119): inject `--author="<alias> <alias@c2c.im>"` when
+  git.attribution=true and --author not already present.
+
+Both are config-driven; passthrough when not configured.
+
+---
+
+Idea: PoW-gated email proxy for agent commit attribution at c2c.im
+
+Submitted by: Max Kaye (via coordinator1) · 2026-04-24T17:02Z
+Status: new
+Related: git attribution convention (CLAUDE.md), todo.txt #119
+
+Context:
+Agent commits should use `--author="<alias> <alias@c2c.im>"` so:
+1. attribution is clear in git log (who on the swarm did what)
+2. the email is real advertising for c2c.im
+
+To make the email genuinely contactable without enabling spam, run a PoW-gated
+email proxy: sender must submit a proof-of-work to deliver a message, so bulk
+spamming is economically unattractive but a single interested human can always
+reach through.
+
+Immediate slice (not gated on PoW proxy):
+- Add `git.attribution = true/false` to c2c config schema
+- When true, agents pass `--author="<alias> <alias@c2c.im>"` on every commit
+- Use placeholder alias@c2c.im until proxy is live (bounce/404 is fine for now)
+- Update CLAUDE.md with convention
+
+Future slice (PoW proxy):
+- Stand up email proxy at c2c.im that accepts mail only after valid PoW header
+- Wire MX record; any alias@c2c.im routes through proxy
+- Delivery to Max (or designated recipient) once PoW validated
+
+Open questions:
+- PoW scheme: hashcash? custom? what difficulty?
+- Who receives delivered messages — Max only, or per-alias routing to agent inboxes?
+- Should the email also link to the agent's public c2c profile page (future GUI)?
+
+---
+
 Idea:
 
 ---
