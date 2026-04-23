@@ -450,3 +450,90 @@ All observer WS frames are JSON text messages. The `type` field discriminates:
 - `pseudo_registration` — new phone binding pushed from relay
 - `pseudo_unregistration` — phone binding removed
 - `broker_offline` — broker unreachable (phone→relay buffering active)
+
+---
+
+## §10 — S5b: Device-Login OAuth Fallback
+
+When QR scanning isn't viable (headless server, remote pairing), use the RFC 8628-style device-login flow.
+
+### 10.1 Overview
+
+```
+Desktop                          Relay                        Phone
+   |                              |                             |
+   |-- init ─────────────────────>|  create pending record      |
+   |<── user_code ───────────────|  (10min TTL)                 |
+   |                              |                             |
+   |  [display user_code + URL]   |                             |
+   |                              |                             |
+   |                              |<── register pubkeys ─────────|
+   |                              |  (phone hits relay web UI)   |
+   |                              |                             |
+   |  [poll /device-pair/UC]     |                             |
+   |                              |<─────────────── claimed ─────|
+   |                              |  create binding              |
+   |                              |                             |
+   |  [binding_id received]       |                             |
+```
+
+### 10.2 Desktop: init
+
+```bash
+c2c relay mobile-pair init --relay-url https://your-relay.example.com
+```
+
+Output:
+```
+user_code: abcd1234
+poll_interval: 2s
+expires_at: 1234567890.0
+Enter this code on your phone at the relay URL.
+```
+
+### 10.3 Phone: register via web
+
+Navigate to the relay URL, enter the `user_code`, and register the phone's pubkeys.
+
+### 10.4 Desktop: claim
+
+```bash
+c2c relay mobile-pair claim --relay-url https://your-relay.example.com --user-code abcd1234
+```
+
+The CLI polls every 2 seconds until the phone has registered. On success:
+```
+Pairing complete! binding_id: dev-abcd1234
+```
+
+### 10.5 Rate limits
+
+- `/device-pair/init`: 5 requests/minute per IP
+- `/device-pair/<user_code>`: 5 requests/minute per IP per user_code
+- 10 failed pubkey registration attempts → user_code invalidated
+
+### 10.6 Common failure modes
+
+#### 10.6.1 User code expired
+
+**Symptom**: `{"ok": false, "error": "user_code expired"}`
+
+**Cause**: More than 10 minutes elapsed since `init`.
+
+**Fix**: Run `init` again to get a fresh user_code.
+
+#### 10.6.2 User code not found
+
+**Symptom**: `{"ok": false, "error": "user_code not found or expired"}`
+
+**Cause**: The user_code doesn't exist or already completed (claimed).
+
+**Fix**: Run `init` again.
+
+#### 10.6.3 User code invalidated
+
+**Symptom**: `{"ok": false, "error": "user_code invalidated"}`
+
+**Cause**: 10 failed pubkey registration attempts (wrong format or wrong keys).
+
+**Fix**: Run `init` again with a fresh user_code.
