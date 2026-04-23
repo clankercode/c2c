@@ -67,6 +67,20 @@ let policy_of_endpoint path =
     Some (5.0, 0.083)   (* strict: 5/min ≈ 0.083/s *)
   else if starts_with "/observer" path then
     Some (20.0, 0.333)  (* strict: 20/min ≈ 0.333/s *)
+  else if starts_with "/register" path then
+    Some (10.0, 0.5)    (* moderate: 10 burst, 30/min ≈ 0.5/s *)
+  else if starts_with "/send_all" path then
+    Some (20.0, 1.0)     (* moderate: 20 burst, 60/min = 1/s *)
+  else if starts_with "/send_room" path then
+    Some (20.0, 1.0)     (* moderate: 20 burst, 60/min = 1/s *)
+  else if starts_with "/send" path then
+    Some (20.0, 1.0)     (* moderate: 20 burst, 60/min = 1/s *)
+  else if starts_with "/heartbeat" path then
+    Some (30.0, 2.0)     (* frequent: 30 burst, 120/min = 2/s *)
+  else if starts_with "/poll_inbox" path then
+    Some (30.0, 2.0)     (* frequent: 30 burst, 120/min = 2/s *)
+  else if starts_with "/room_history" path then
+    Some (20.0, 1.0)     (* moderate: 20 burst, 60/min = 1/s *)
   else
     None
 
