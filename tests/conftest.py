@@ -245,6 +245,22 @@ def _pgid_cleanup_guard() -> None:  # type: ignore[return]
 def _cleanup_scenario_agents(sc: Scenario) -> None:
     cleanup_failures: list[str] = []
     for agent in list(sc.agents.values()):
+        if agent.client in {"claude", "codex", "codex-headless", "opencode", "kimi", "crush"}:
+            env = dict(os.environ)
+            env["C2C_MCP_BROKER_ROOT"] = str(sc.broker_root())
+            result = subprocess.run(
+                ["c2c", "stop", agent.name, "--json"],
+                cwd=sc.workdir,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0 and "is not running" not in result.stderr:
+                cleanup_failures.append(
+                    f"{agent.name}: c2c stop failed with exit {result.returncode}: "
+                    f"{result.stderr.strip() or result.stdout.strip()}"
+                )
         try:
             sc.drivers[agent.backend].stop(agent.handle)
         except Exception as exc:

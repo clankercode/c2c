@@ -142,6 +142,26 @@ let repo_config_pmodel () : (string * pmodel) list =
 let repo_config_pmodel_lookup (use_case : string) : pmodel option =
   List.assoc_opt use_case (repo_config_pmodel ())
 
+let normalize_model_override_for_client ~(client : string) (raw : string)
+    : (string, string) result =
+  let value = String.trim raw in
+  if value = "" then Error "--model cannot be empty"
+  else
+    match client with
+    | "opencode" ->
+        (match parse_pmodel value with
+         | Ok p -> Ok (p.provider ^ "/" ^ p.model)
+         | Error e ->
+             Error (Printf.sprintf
+                      "opencode --model requires provider:model input (%s)" e))
+    | "claude" | "codex" | "codex-headless" | "kimi" | "crush" ->
+        if String.contains value ':' then
+          (match parse_pmodel value with
+           | Ok p -> Ok p.model
+           | Error e -> Error e)
+        else Ok value
+    | _ -> Error (Printf.sprintf "unknown client for --model normalization: %s" client)
+
 (* ---------------------------------------------------------------------------
  * Client configurations
  * --------------------------------------------------------------------------- *)
@@ -581,6 +601,7 @@ type instance_config = {
   broker_root : string;
   auto_join_rooms : string;
   binary_override : string option;
+  model_override : string option;
 }
 
 let write_config (cfg : instance_config) =
@@ -600,6 +621,10 @@ let write_config (cfg : instance_config) =
     @
     (match cfg.binary_override with
      | Some b -> [ ("binary_override", `String b) ]
+     | None -> [])
+    @
+    (match cfg.model_override with
+     | Some m -> [ ("model_override", `String m) ]
      | None -> [])
   in
   let oc = open_out path in
@@ -623,7 +648,8 @@ let load_config_opt (name : string) : instance_config option =
              resume_session_id = gs "resume_session_id"; alias = gs "alias";
              extra_args = gl "extra_args"; created_at = gf "created_at";
              broker_root = gs "broker_root"; auto_join_rooms = gs "auto_join_rooms";
-             binary_override = gso "binary_override" }
+             binary_override = gso "binary_override";
+             model_override = gso "model_override" }
     with _ -> None
 
 let load_config (name : string) : instance_config =
@@ -1007,7 +1033,8 @@ let claude_session_exists uuid =
 let prepare_launch_args ~(name : string) ~(client : string)
     ~(extra_args : string list) ~(broker_root : string)
     ?(alias_override : string option) ?(resume_session_id : string option)
-    ?(binary_override : string option) ?(codex_xml_input_fd : string option)
+    ?(binary_override : string option) ?(model_override : string option)
+    ?(codex_xml_input_fd : string option)
     ?(thread_id_fd : string option) () : string list =
   let args =
     match client with
@@ -1058,6 +1085,11 @@ let prepare_launch_args ~(name : string) ~(client : string)
            | Some fd -> [ "--thread-id-fd"; fd ]
            | None -> [])
     | _ -> []
+  in
+  let args =
+    match model_override with
+    | Some model when String.trim model <> "" -> args @ [ "--model"; model ]
+    | _ -> args
   in
   let args =
     match client, codex_xml_input_fd with
@@ -1537,6 +1569,7 @@ let run_outer_loop ~(name : string) ~(client : string)
     ~(extra_args : string list) ~(broker_root : string)
     ?(binary_override : string option) ?(alias_override : string option)
     ?(session_id : string option) ?(resume_session_id : string option)
+    ?(model_override : string option)
     ?(one_hr_cache = false) ?(kickoff_prompt : string option)
     ?(auto_join_rooms : string option) () : int =
   let session_id = Option.value session_id ~default:name in
@@ -1713,7 +1746,8 @@ let run_outer_loop ~(name : string) ~(client : string)
           []
         else
           prepare_launch_args ~name ~client ~extra_args ~broker_root
-            ?alias_override ?resume_session_id ?binary_override ?codex_xml_input_fd
+            ?alias_override ?resume_session_id ?binary_override ?model_override
+            ?codex_xml_input_fd
             ?thread_id_fd ()
       in
       let headless_xml_fifo =
@@ -2158,7 +2192,8 @@ let run_outer_loop ~(name : string) ~(client : string)
 
 let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?(binary_override : string option) ?(alias_override : string option)
-    ?(session_id_override : string option) ?(one_hr_cache = false)
+    ?(session_id_override : string option) ?(model_override : string option)
+    ?(one_hr_cache = false)
     ?(kickoff_prompt : string option) ?(auto_join_rooms : string option) () : int =
   if not (Stdlib.Hashtbl.mem clients client) then
     (Printf.eprintf "error: unknown client: '%s'. Choose from: %s\n%!"
@@ -2297,7 +2332,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
 
   (* Resume: inherit saved settings *)
   let existing = load_config_opt name in
-  let (binary_override, alias_override, extra_args, resume_session_id, broker_root) =
+  let (binary_override, alias_override, extra_args, resume_session_id, broker_root, model_override) =
     match existing with
     | Some ex ->
         if ex.client <> client then
@@ -2308,6 +2343,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
         let bo = if binary_override = None then None else binary_override in
         let ao = if alias_override = None then Some ex.alias else alias_override in
         let ea = if extra_args = [] then ex.extra_args else extra_args in
+        let mo = match model_override with Some _ -> model_override | None -> ex.model_override in
         (* For OpenCode: prefer the ses_* session ID captured by the plugin
            in opencode-session.txt over the UUID stored in instance config.
            The plugin writes this file when it first sees a session.created
@@ -2347,7 +2383,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
                     | Some v -> Some v
                     | None -> Some (Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()))))
         in
-        (bo, ao, ea, rs, ex.broker_root)
+        (bo, ao, ea, rs, ex.broker_root, mo)
     | None ->
         let rs =
           match client, session_id_override with
@@ -2363,7 +2399,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
             else
               Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
         in
-        (binary_override, alias_override, extra_args, Some rs, broker_root ())
+        (binary_override, alias_override, extra_args, Some rs, broker_root (), model_override)
   in
 
   let binary_to_check =
@@ -2390,6 +2426,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     broker_root;
     auto_join_rooms = Option.value auto_join_rooms ~default:"swarm-lounge";
     binary_override;
+    model_override;
   }
   in
   write_config cfg;
@@ -2405,6 +2442,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
   run_outer_loop ~name ~client ~extra_args ~broker_root
     ?binary_override ?alias_override ~session_id:cfg.session_id
     ?resume_session_id:launch_resume_session_id
+    ?model_override:cfg.model_override
     ~one_hr_cache ?kickoff_prompt ?auto_join_rooms ()
 
 (* Signal the managed inner client so the outer loop relaunches it. Designed
@@ -2485,6 +2523,7 @@ let cmd_restart (name : string) : int =
         ?binary_override:cfg.binary_override
         ?alias_override:(Some cfg.alias)
         ?resume_session_id:(Some cfg.resume_session_id)
+        ?model_override:cfg.model_override
         ?kickoff_prompt ()
 
 let cmd_instances () : int =

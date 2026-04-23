@@ -108,6 +108,7 @@ def test_codex_adapter_builds_managed_launch_command(tmp_path: Path) -> None:
         client="codex",
         name="codex-a",
         auto=True,
+        model="gpt-5.4",
         extra_args=["--approval-policy", "never"],
     )
     scenario = mock.Mock(workdir=tmp_path / "work")
@@ -115,6 +116,8 @@ def test_codex_adapter_builds_managed_launch_command(tmp_path: Path) -> None:
     launch = adapter.build_launch(scenario, config)
 
     assert launch["command"][:5] == ["c2c", "start", "codex", "-n", "codex-a"]
+    assert "--model" in launch["command"]
+    assert "gpt-5.4" in launch["command"]
     assert "--auto" in launch["command"]
     assert "--" in launch["command"]
     assert launch["cwd"] == scenario.workdir
@@ -129,6 +132,7 @@ def test_codex_headless_adapter_builds_managed_launch_command(tmp_path: Path) ->
         client="codex-headless",
         name="headless-a",
         auto=True,
+        model="gpt-5.4",
         extra_args=["--approval-policy", "never"],
         env={"C2C_TEST_ENV": "1"},
     )
@@ -137,8 +141,37 @@ def test_codex_headless_adapter_builds_managed_launch_command(tmp_path: Path) ->
     launch = adapter.build_launch(scenario, config)
 
     assert launch["command"][:5] == ["c2c", "start", "codex-headless", "-n", "headless-a"]
+    assert "--model" in launch["command"]
+    assert "gpt-5.4" in launch["command"]
     assert launch["command"][-3:] == ["--", "--approval-policy", "never"]
     assert launch["env"] == {"C2C_TEST_ENV": "1"}
+
+
+def test_opencode_adapter_builds_managed_launch_command_with_model(tmp_path: Path) -> None:
+    from tests.e2e.framework.client_adapters import OpenCodeAdapter
+
+    adapter = OpenCodeAdapter(tmp_path)
+    config = AgentConfig(
+        client="opencode",
+        name="oc-a",
+        role="worker",
+        model="minimax-coding-plan/MiniMax-M2.7-highspeed",
+    )
+    scenario = mock.Mock(workdir=tmp_path / "work")
+
+    launch = adapter.build_launch(scenario, config)
+
+    assert launch["command"] == [
+        "c2c",
+        "start",
+        "opencode",
+        "-n",
+        "oc-a",
+        "--agent",
+        "worker",
+        "--model",
+        "minimax-coding-plan/MiniMax-M2.7-highspeed",
+    ]
 
 
 def test_codex_adapter_ready_requires_live_inner_pid(tmp_path: Path) -> None:

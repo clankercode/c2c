@@ -523,6 +523,63 @@ def test_cleanup_scenario_agents_continues_after_stop_failure(tmp_path: Path) ->
     assert healthy_driver.stopped == [healthy_agent.handle]
 
 
+def test_cleanup_scenario_agents_stops_managed_instances_before_driver_teardown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = DummyDriver()
+    scenario = Scenario(
+        test_name="test_demo",
+        workdir=tmp_path / "work",
+        artifacts=ArtifactCollector(tmp_path / "artifacts", "test_demo"),
+        drivers={"healthy": driver},
+        adapters={"dummy": DummyAdapter()},
+    )
+    scenario.artifacts.start_run()
+    agent = scenario.start_agent("dummy", name="dummy-a", backend="healthy")
+    agent.client = "opencode"
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> mock.Mock:
+        calls.append(cmd)
+        return mock.Mock(returncode=0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(conftest_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(scenario, "broker_root", lambda: tmp_path / "broker")
+
+    conftest_module._cleanup_scenario_agents(scenario)
+
+    assert calls == [["c2c", "stop", "dummy-a", "--json"]]
+    assert driver.stopped == [agent.handle]
+
+
+def test_cleanup_scenario_agents_ignores_not_running_managed_instances(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = DummyDriver()
+    scenario = Scenario(
+        test_name="test_demo",
+        workdir=tmp_path / "work",
+        artifacts=ArtifactCollector(tmp_path / "artifacts", "test_demo"),
+        drivers={"healthy": driver},
+        adapters={"dummy": DummyAdapter()},
+    )
+    scenario.artifacts.start_run()
+    agent = scenario.start_agent("dummy", name="dummy-a", backend="healthy")
+    agent.client = "codex"
+
+    monkeypatch.setattr(
+        conftest_module.subprocess,
+        "run",
+        lambda cmd, **kwargs: mock.Mock(returncode=1, stdout="", stderr="instance is not running\n"),
+    )
+    monkeypatch.setattr(scenario, "broker_root", lambda: tmp_path / "broker")
+
+    conftest_module._cleanup_scenario_agents(scenario)
+
+    assert driver.stopped == [agent.handle]
+
+
 def test_scenario_fixture_provides_workdir_and_artifacts(scenario) -> None:
     assert scenario.workdir.exists()
     assert scenario.artifacts.run_dir is not None

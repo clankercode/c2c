@@ -41,6 +41,7 @@ type instance_config = {
   broker_root : string;
   auto_join_rooms : string;
   binary_override : string option;
+  model_override : string option;
 }
 
 (** {1 Client Configurations} *)
@@ -97,6 +98,12 @@ val repo_config_pmodel_lookup : string -> pmodel option
 (** [repo_config_pmodel_lookup class_key] looks up a class (e.g. "coder",
     "coordinator") in the repo pmodel table. Returns [None] if absent. *)
 
+val normalize_model_override_for_client :
+  client:string -> string -> (string, string) result
+(** Normalize a user-supplied [--model] override for the target client.
+    OpenCode keeps provider/model syntax, while single-provider clients accept
+    either bare model names or provider:model input and emit just the model. *)
+
 type pty_inject_capability = [ `Ok | `Missing_cap of string | `Unknown ]
 
 val check_pty_inject_capability :
@@ -137,6 +144,7 @@ val prepare_launch_args :
   ?alias_override:string ->
   ?resume_session_id:string ->
   ?binary_override:string ->
+  ?model_override:string ->
   ?codex_xml_input_fd:string ->
   ?thread_id_fd:string ->
   unit ->
@@ -295,6 +303,7 @@ val cmd_start :
   ?binary_override:string ->
   ?alias_override:string ->
   ?session_id_override:string ->
+  ?model_override:string ->
   ?one_hr_cache:bool ->
   ?kickoff_prompt:string ->
   ?auto_join_rooms:string ->

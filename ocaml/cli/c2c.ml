@@ -6670,13 +6670,17 @@ let agent_file_path ~client ~name =
   | "kimi" -> ".kimi" // "agents" // (name ^ ".md")
   | _ -> ".c2c" // "agents" // (name ^ ".md")
 
-let render_role_for_client (r : C2c_role.t) ~client =
+let render_role_for_client ?(model_override : string option) (r : C2c_role.t) ~client =
   let pmodel_lookup (key : string) : string option =
     match C2c_start.repo_config_pmodel_lookup key with
     | None -> None
     | Some p -> Some (p.C2c_start.provider ^ ":" ^ p.C2c_start.model)
   in
-  let resolved_pmodel = C2c_role.resolve_pmodel r ~class_lookup:pmodel_lookup in
+  let resolved_pmodel =
+    match model_override with
+    | Some m -> Some m
+    | None -> C2c_role.resolve_pmodel r ~class_lookup:pmodel_lookup
+  in
   match resolved_pmodel with
   | Some p -> C2c_role.render_for_client r ~client ~resolved_pmodel:p
   | None -> C2c_role.render_for_client r ~client
@@ -6737,6 +6741,9 @@ let start_cmd =
   let agent =
     Cmdliner.Arg.(value & opt (some string) None & info [ "agent"; "a" ] ~docv:"NAME" ~doc:"Start from canonical role at .c2c/roles/<NAME>.md (compiled to client format on launch).")
   in
+  let model =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "model"; "m" ] ~docv:"MODEL" ~doc:"Override the launch model. Accepts pmodel-style input; single-provider clients also accept bare model names.")
+  in
   let+ client = client
   and+ name_opt = name
   and+ alias_opt = alias
@@ -6746,7 +6753,8 @@ let start_cmd =
   and+ auto_flag = auto_flag
   and+ kickoff_prompt_text_raw = kickoff_prompt_opt
   and+ kickoff_prompt_file = kickoff_prompt_file_opt
-  and+ agent_opt = agent in
+  and+ agent_opt = agent
+  and+ model_opt = model in
   let kickoff_prompt_text =
     match kickoff_prompt_text_raw, kickoff_prompt_file with
     | Some _, Some _ ->
@@ -6787,6 +6795,16 @@ let start_cmd =
            cfg.C2c_start.binary
          with Not_found -> client)
   in
+  let model_override =
+    match model_opt with
+    | None -> None
+    | Some raw ->
+        (match C2c_start.normalize_model_override_for_client ~client raw with
+         | Ok normalized -> Some normalized
+         | Error msg ->
+             Printf.eprintf "error: invalid --model for client '%s': %s\n%!" client msg;
+             exit 1)
+  in
   let effective_alias = Option.value alias_opt ~default:name in
   (* Agent-file path: canonical .c2c/roles/<agent>.md *)
   let agent_role_path agent_name =
@@ -6819,7 +6837,7 @@ let start_cmd =
                (if available = [] then "(none)" else String.concat ", " available);
              exit 1
            end;
-           match render_role_for_client role ~client with
+           match render_role_for_client ?model_override role ~client with
            | Some rendered ->
                write_agent_file ~client ~name ~content:rendered;
                let kickoff = Some rendered in
@@ -6866,7 +6884,7 @@ let start_cmd =
                   (if available = [] then "(none)" else String.concat ", " available);
                exit 1
              end;
-             (match render_role_for_client role ~client with
+             (match render_role_for_client ?model_override role ~client with
               | Some rendered ->
                   write_agent_file ~client ~name ~content:rendered;
                   let kickoff = Some rendered in
@@ -6940,6 +6958,7 @@ let start_cmd =
       ?binary_override:bin_opt
       ?alias_override
       ?session_id_override:session_id_opt
+      ?model_override
       ~one_hr_cache
       ?kickoff_prompt
       ?auto_join_rooms ())

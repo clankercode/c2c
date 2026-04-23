@@ -109,6 +109,8 @@ class CodexAdapter:
 
     def build_launch(self, scenario: Scenario, config: AgentConfig) -> dict[str, object]:
         command = ["c2c", "start", self.client_name, "-n", config.name]
+        if config.model:
+            command.extend(["--model", config.model])
         if config.auto:
             command.append("--auto")
         if config.extra_args:
@@ -139,6 +141,8 @@ class CodexHeadlessAdapter:
 
     def build_launch(self, scenario: Scenario, config: AgentConfig) -> dict[str, object]:
         command = ["c2c", "start", self.client_name, "-n", config.name]
+        if config.model:
+            command.extend(["--model", config.model])
         if config.auto:
             command.append("--auto")
         if config.extra_args:
@@ -196,6 +200,8 @@ class OpenCodeAdapter:
         command = ["c2c", "start", self.client_name, "-n", config.name]
         if config.role:
             command.extend(["--agent", config.role])
+        if config.model:
+            command.extend(["--model", config.model])
         if config.auto:
             command.append("--auto")
         if config.extra_args:
@@ -226,6 +232,8 @@ class ClaudeAdapter:
 
     def build_launch(self, scenario: Scenario, config: AgentConfig) -> dict[str, object]:
         command = ["c2c", "start", self.client_name, "-n", config.name]
+        if config.model:
+            command.extend(["--model", config.model])
         if config.auto:
             command.append("--auto")
         if config.extra_args:
@@ -257,6 +265,8 @@ class KimiAdapter:
         command = ["c2c", "start", self.client_name, "-n", config.name]
         if config.role:
             command.extend(["--agent", config.role])
+        if config.model:
+            command.extend(["--model", config.model])
         if config.auto:
             command.append("--auto")
         if config.extra_args:

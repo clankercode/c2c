@@ -81,6 +81,59 @@ let test_prepare_launch_args_claude_ignores_enable_channels_config () =
   check bool "does not add untagged channel name" false
     (has_adjacent_pair "--channels" "c2c" args)
 
+let test_normalize_model_override_for_opencode_requires_provider () =
+  match C2c_start.normalize_model_override_for_client ~client:"opencode" "MiniMax-M2.7-highspeed" with
+  | Ok _ -> fail "expected opencode bare model to be rejected"
+  | Error _ -> ()
+
+let test_normalize_model_override_for_opencode_rewrites_provider_model () =
+  check string "provider/model"
+    "minimax-coding-plan/MiniMax-M2.7-highspeed"
+    (match C2c_start.normalize_model_override_for_client
+             ~client:"opencode"
+             "minimax-coding-plan:MiniMax-M2.7-highspeed"
+     with
+     | Ok model -> model
+     | Error msg -> fail msg)
+
+let test_normalize_model_override_for_claude_accepts_plain_model () =
+  check string "plain model preserved"
+    "claude-sonnet-4-7"
+    (match C2c_start.normalize_model_override_for_client
+             ~client:"claude"
+             "claude-sonnet-4-7"
+     with
+     | Ok model -> model
+     | Error msg -> fail msg)
+
+let test_normalize_model_override_for_claude_discards_provider_prefix () =
+  check string "provider removed"
+    "claude-sonnet-4-7"
+    (match C2c_start.normalize_model_override_for_client
+             ~client:"claude"
+             "anthropic:claude-sonnet-4-7"
+     with
+     | Ok model -> model
+     | Error msg -> fail msg)
+
+let test_prepare_launch_args_adds_model_flag_for_claude () =
+  let args =
+    C2c_start.prepare_launch_args ~name:"claude-proof" ~client:"claude"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~model_override:"claude-sonnet-4-7" ()
+  in
+  check bool "adds --model" true (has_adjacent_pair "--model" "claude-sonnet-4-7" args)
+
+let test_prepare_launch_args_adds_model_flag_for_opencode () =
+  let args =
+    C2c_start.prepare_launch_args ~name:"oc-proof" ~client:"opencode"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~model_override:"minimax-coding-plan/MiniMax-M2.7-highspeed" ()
+  in
+  check bool "adds --model"
+    true
+    (has_adjacent_pair "--model" "minimax-coding-plan/MiniMax-M2.7-highspeed" args)
+
 let test_build_env_keeps_channel_delivery_without_force_flag () =
   let env =
     C2c_start.build_env ~broker_root_override:(Some "/tmp/c2c-test-broker")
@@ -529,6 +582,18 @@ let () =
             `Quick, test_prepare_launch_args_claude_uses_development_channel_flag )
         ; ( "prepare_launch_args_claude_ignores_enable_channels_config",
             `Quick, test_prepare_launch_args_claude_ignores_enable_channels_config )
+        ; ( "normalize_model_override_for_opencode_requires_provider",
+            `Quick, test_normalize_model_override_for_opencode_requires_provider )
+        ; ( "normalize_model_override_for_opencode_rewrites_provider_model",
+            `Quick, test_normalize_model_override_for_opencode_rewrites_provider_model )
+        ; ( "normalize_model_override_for_claude_accepts_plain_model",
+            `Quick, test_normalize_model_override_for_claude_accepts_plain_model )
+        ; ( "normalize_model_override_for_claude_discards_provider_prefix",
+            `Quick, test_normalize_model_override_for_claude_discards_provider_prefix )
+        ; ( "prepare_launch_args_adds_model_flag_for_claude",
+            `Quick, test_prepare_launch_args_adds_model_flag_for_claude )
+        ; ( "prepare_launch_args_adds_model_flag_for_opencode",
+            `Quick, test_prepare_launch_args_adds_model_flag_for_opencode )
         ; ( "build_env_keeps_channel_delivery_without_force_flag",
             `Quick, test_build_env_keeps_channel_delivery_without_force_flag )
         ; ( "probed_capabilities_for_claude_include_channel",
