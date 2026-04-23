@@ -258,7 +258,13 @@ module OpenCode_renderer = struct
             emit_entries current_section rest
           )
     in
-    let all_entries = r.opencode @ r.claude @ r.codex @ r.kimi in
+    let has_steps = List.mem ("opencode.steps", "") r.opencode
+      || List.exists (fun (k, _) -> k = "opencode.steps") r.opencode in
+    let opencode_with_default =
+      if has_steps then r.opencode
+      else r.opencode @ [("opencode.steps", "9999")]
+    in
+    let all_entries = opencode_with_default @ r.claude @ r.codex @ r.kimi in
     emit_entries "" all_entries;
     let fm = String.concat "\n" (List.rev !lines) in
     "---\n" ^ fm ^ "\n---\n\n" ^ r.body
