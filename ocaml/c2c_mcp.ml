@@ -461,6 +461,16 @@ module Broker = struct
   let create ~root = { root }
   let root t = t.root
 
+  let tofu_mutex : (string, Lwt_mutex.t) Hashtbl.t = Hashtbl.create 64
+
+  let get_tofu_mutex alias =
+    match Hashtbl.find_opt tofu_mutex alias with
+    | Some m -> m
+    | None ->
+      let m = Lwt_mutex.create () in
+      Hashtbl.add tofu_mutex alias m;
+      m
+
   let known_keys_ed25519 : (string, string) Hashtbl.t = Hashtbl.create 64
   let known_keys_x25519 : (string, string) Hashtbl.t = Hashtbl.create 64
   let downgrade_states : (string, Relay_e2e.downgrade_state) Hashtbl.t = Hashtbl.create 64
@@ -474,6 +484,26 @@ module Broker = struct
     | Some ds -> ds
     | None -> Relay_e2e.make_downgrade_state ()
   let set_downgrade_state from_alias ds = Hashtbl.replace downgrade_states from_alias ds
+
+  let pin_x25519_if_unknown ~alias ~pk =
+    let m = get_tofu_mutex alias in
+    Lwt_mutex.with_lock m (fun () ->
+      match Hashtbl.find_opt known_keys_x25519 alias with
+      | Some existing when existing <> pk -> Lwt.return `Mismatch
+      | Some _ -> Lwt.return `Already_pinned
+      | None ->
+        Hashtbl.replace known_keys_x25519 alias pk;
+        Lwt.return `New_pin)
+
+  let pin_ed25519_if_unknown ~alias ~pk =
+    let m = get_tofu_mutex alias in
+    Lwt_mutex.with_lock m (fun () ->
+      match Hashtbl.find_opt known_keys_ed25519 alias with
+      | Some existing when existing <> pk -> Lwt.return `Mismatch
+      | Some _ -> Lwt.return `Already_pinned
+      | None ->
+        Hashtbl.replace known_keys_ed25519 alias pk;
+        Lwt.return `New_pin)
 
   let load_or_create_ed25519_identity () =
     match Relay_identity.load () with
@@ -2845,18 +2875,70 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                            (2) call whoami to see your current identity."
                           from_alias conflict.session_id)
                      ~is_error:true)
-             | None ->
-                if from_alias = to_alias then
-                  Lwt.return (tool_result ~content:"error: cannot send a message to yourself" ~is_error:true)
-                else
-                let deferrable =
-                  try match Yojson.Safe.Util.member "deferrable" arguments with
-                    | `Bool b -> b | _ -> false
-                  with _ -> false
-                in
-                Broker.enqueue_message broker ~from_alias ~to_alias ~content ~deferrable ();
-                let ts = Unix.gettimeofday () in
-                let recipient_dnd =
+              | None ->
+                 if from_alias = to_alias then
+                   Lwt.return (tool_result ~content:"error: cannot send a message to yourself" ~is_error:true)
+                 else
+                 let deferrable =
+                   try match Yojson.Safe.Util.member "deferrable" arguments with
+                     | `Bool b -> b | _ -> false
+                   with _ -> false
+                 in
+                 let ts = Unix.gettimeofday () in
+                 let effective_content =
+                   let recipient_reg =
+                     Broker.list_registrations broker
+                     |> List.find_opt (fun r -> r.alias = to_alias && r.enc_pubkey <> None)
+                   in
+                   match recipient_reg with
+                   | None -> `Plain content
+                   | Some reg ->
+                     match reg.enc_pubkey with
+                     | None -> `Plain content
+                     | Some recipient_pk_b64 ->
+                       (match Broker.get_pinned_x25519 to_alias with
+                        | Some pinned when pinned <> recipient_pk_b64 ->
+                          `Key_changed to_alias
+                        | _ ->
+                          let session_id =
+                            match current_session_id () with
+                            | Some sid -> sid | None -> from_alias
+                          in
+                          (match Relay_enc.load_or_generate ~session_id () with
+                           | Error _ -> `Plain content
+                           | Ok our_x25519 ->
+                             Broker.set_pinned_x25519 to_alias recipient_pk_b64;
+                             let our_ed25519 = Broker.load_or_create_ed25519_identity () in
+                             let sk_seed = our_x25519.private_key_seed in
+                             match Relay_e2e.encrypt_for_recipient
+                                     ~pt:content
+                                     ~recipient_pk_b64:recipient_pk_b64
+                                     ~our_sk_seed:sk_seed with
+                             | None -> `Plain content
+                             | Some (ct_b64, nonce_b64) ->
+                               let recipient_entry = Relay_e2e.make_recipient
+                                 ~alias:to_alias ~ct_b64 ~nonce:nonce_b64
+                               in
+                               let envelope : Relay_e2e.envelope = {
+                                 from_ = from_alias;
+                                 to_ = Some to_alias;
+                                 room = None;
+                                 ts = Int64.of_float ts;
+                                 enc = "box-x25519-v1";
+                                 recipients = [ recipient_entry ];
+                                 sig_b64 = "";
+                               } in
+                               let signed = Relay_e2e.set_sig envelope ~sk_seed:our_ed25519.private_key_seed in
+                               `Encrypted (Yojson.Safe.to_string (Relay_e2e.envelope_to_json signed))))
+                 in
+                 match effective_content with
+                 | `Key_changed alias ->
+                   let err = Printf.sprintf "send rejected: enc_status:key-changed — %s's x25519 key differs from known pin (possible relay tamper). Re-send after trust --repin %s." alias alias in
+                   Lwt.return (tool_result ~content:err ~is_error:true)
+                  | `Plain s | `Encrypted s ->
+                    Broker.enqueue_message broker ~from_alias ~to_alias ~content:s ~deferrable ();
+                    let ts = Unix.gettimeofday () in
+                    let recipient_dnd =
                   match Broker.list_registrations broker
                         |> List.find_opt (fun r -> r.alias = to_alias) with
                   | Some r -> Broker.is_dnd broker ~session_id:r.session_id
