@@ -1,3 +1,38 @@
+let debug_enabled () =
+  match Sys.getenv_opt "C2C_MCP_DEBUG" with
+  | Some v ->
+      let n = String.lowercase_ascii (String.trim v) in
+      not (List.mem n [ "0"; "false"; "no"; "" ])
+  | None -> false
+
+let debug_log_path () =
+  let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+  let base = Filename.concat home ".local/share/c2c" in
+  let sid =
+    match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+    | Some s when String.trim s <> "" -> String.trim s
+    | _ -> "no-session"
+  in
+  let dir = Filename.concat base "mcp-debug" in
+  (try ignore (Unix.mkdir dir 0o700) with Unix.Unix_error _ -> ());
+  Filename.concat dir (sid ^ ".log")
+
+let debug_log msg =
+  if debug_enabled () then
+    try
+      let path = debug_log_path () in
+      let now = Unix.gettimeofday () in
+      let tm = Unix.gmtime now in
+      let ms = int_of_float ((now -. Float.round now) *. 1000.0) |> abs in
+      let ts = Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ"
+        (tm.Unix.tm_year + 1900) (tm.Unix.tm_mon + 1) tm.Unix.tm_mday
+        tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec ms
+      in
+      let oc = open_out_gen [Open_wronly; Open_creat; Open_append] 0o644 path in
+      Printf.fprintf oc "%s [%d] %s\n%!" ts (Unix.getpid ()) msg;
+      close_out oc
+    with _ -> ()
+
 let broker_root () =
   match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
   | Some path when String.trim path <> "" -> path
@@ -28,7 +63,7 @@ let inbox_watcher_delay_seconds () =
       match float_of_string_opt (String.trim value) with
       | Some n -> n
       | None -> 30.0)
-  | None -> 5.0
+  | None -> 2.0
 
 let assoc_opt name = function
   | `Assoc fields -> List.assoc_opt name fields
@@ -136,6 +171,7 @@ let start_inbox_watcher ~broker_root ~session_id ~emit_notification
         else
           loop current_size)
       (fun exn ->
+        debug_log ("inbox_watcher error: " ^ Printexc.to_string exn);
         let* () =
           Lwt_io.eprintlf "c2c inbox watcher: %s" (Printexc.to_string exn)
         in
@@ -144,6 +180,7 @@ let start_inbox_watcher ~broker_root ~session_id ~emit_notification
   loop (stat_size ())
 
 let emit_notification ~session_id msg =
+  debug_log ("emit_notification -> " ^ session_id);
   let decrypted_msg = C2c_mcp.decrypt_message_for_push msg ~session_id in
   write_message (C2c_mcp.channel_notification decrypted_msg)
 
@@ -167,17 +204,18 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
   let open Lwt.Syntax in
   let* msg = read_message () in
   match msg with
-  | None -> Lwt.return_unit
-  | Some line -> (
+  | None -> debug_log "stdin EOF — exiting"; Lwt.return_unit
+  | Some line -> (debug_log ("recv: " ^ String.sub line 0 (min (String.length line) 200));
       let json = try Ok (Yojson.Safe.from_string line) with _ -> Error () in
       match json with
       | Error () ->
+          debug_log "parse error";
           let* () = write_message (jsonrpc_error ~id:`Null ~code:(-32700) ~message:"Parse error") in
           loop ~broker_root ~negotiated_capabilities_ref
       | Ok request ->
           let method_name =
             match assoc_opt "method" request with
-            | Some (`String value) -> Some value
+            | Some (`String value) -> (debug_log ("method: " ^ value); Some value)
             | _ -> None
           in
           let was_capable =
@@ -193,7 +231,10 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
             C2c_capability.has new_capabilities C2c_capability.Claude_channel
           in
           let* response = C2c_mcp.handle_request ~broker_root request in
-          let* () = match response with None -> Lwt.return_unit | Some resp -> write_message resp in
+          let* () = match response with
+            | None -> debug_log "send: (no response)"; Lwt.return_unit
+            | Some resp -> debug_log ("send: " ^ String.sub (Yojson.Safe.to_string resp) 0 (min (String.length (Yojson.Safe.to_string resp)) 200)); write_message resp
+          in
           let* () =
             match (method_name, was_capable, new_capable, session_id ()) with
             | Some "initialize", false, true, Some sid ->
@@ -222,14 +263,22 @@ let server_banner () =
 
 let () =
   server_banner ();
+  debug_log ("starting pid=" ^ string_of_int (Unix.getpid ()));
+  (match session_id () with Some s -> debug_log ("session_id=" ^ s) | None -> debug_log "no session_id");
+  debug_log ("channel_delivery=" ^ string_of_bool (channel_delivery_enabled ()));
   let root = broker_root () in
+  debug_log ("broker_root=" ^ root);
   C2c_mcp.auto_register_startup ~broker_root:root;
   C2c_mcp.auto_join_rooms_startup ~broker_root:root;
   let negotiated_capabilities_ref = ref [] in
   (match (channel_delivery_enabled (), session_id ()) with
-   | true, Some sid ->
-       Lwt.async (fun () ->
+   | true, Some sid -> debug_log ("starting inbox watcher for " ^ sid); Lwt.async (fun () ->
          start_inbox_watcher ~broker_root:root ~session_id:sid
            ~emit_notification ~negotiated_capabilities_ref)
    | _, _ -> ());
-  Lwt_main.run (loop ~broker_root:root ~negotiated_capabilities_ref)
+  try
+    Lwt_main.run (loop ~broker_root:root ~negotiated_capabilities_ref);
+    debug_log "normal exit"
+  with exn ->
+    debug_log ("FATAL: " ^ Printexc.to_string exn ^ "\n" ^ Printexc.get_backtrace ());
+    raise exn
