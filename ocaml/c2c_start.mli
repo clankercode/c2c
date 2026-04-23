@@ -139,6 +139,28 @@ val probed_capabilities : client:string -> binary_path:string -> string list
 (** Return the currently known capability names that can be inferred for a
     managed client launch from static launcher/binary probes. *)
 
+val runtime_capabilities :
+  ?now:float ->
+  ?opencode_plugin_freshness_window_s:float ->
+  client:string ->
+  name:string ->
+  unit ->
+  string list
+(** Return runtime capability names inferred from managed-instance state on disk.
+    This is separate from [probed_capabilities] because it depends on
+    post-launch signals such as OpenCode plugin heartbeats. *)
+
+val managed_capabilities :
+  ?now:float ->
+  ?opencode_plugin_freshness_window_s:float ->
+  client:string ->
+  name:string ->
+  binary_path:string ->
+  unit ->
+  string list
+(** Return the union of static [probed_capabilities] and runtime capability
+    observations for a managed instance. *)
+
 val missing_role_capabilities :
   client:string -> binary_path:string -> C2c_role.t -> string list
 (** Return role [required_capabilities] that are not satisfied by the probed

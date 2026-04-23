@@ -1146,10 +1146,95 @@ let probed_capabilities ~(client : string) ~(binary_path : string) : string list
   in
   []
   |> add_if Claude_channel (client = "claude")
+  |> add_if Opencode_plugin (client = "opencode")
+  |> add_if Kimi_wire (client = "kimi")
   |> add_if Codex_xml_fd (client = "codex" && codex_supports_xml_input_fd binary_path)
   |> add_if Codex_headless_thread_id_fd
        (client = "codex-headless" && bridge_supports_thread_id_fd binary_path)
   |> List.rev
+
+let parse_rfc3339_utc s =
+  match Ptime.of_rfc3339 s with
+  | Ok (t, _, _) -> Some (Ptime.to_float_s t)
+  | Error _ -> None
+
+let opencode_statefile_path (name : string) : string =
+  instance_dir name // "oc-plugin-state.json"
+
+let assoc_opt name = function
+  | `Assoc fields -> List.assoc_opt name fields
+  | _ -> None
+
+let string_member name json =
+  match assoc_opt name json with
+  | Some (`String value) -> Some value
+  | _ -> None
+
+let opencode_plugin_active ~name ~now ~freshness_window_s =
+  let path = opencode_statefile_path name in
+  if not (Sys.file_exists path) then false
+  else
+    try
+      let json = Yojson.Safe.from_file path in
+      let state =
+        match assoc_opt "state" json with
+        | Some state -> state
+        | None -> json
+      in
+      let session_matches =
+        match string_member "c2c_session_id" state with
+        | Some session_id -> String.equal session_id name
+        | None -> false
+      in
+      if not session_matches then false
+      else
+        let plugin_source =
+          match assoc_opt "activity_sources" state with
+          | Some sources -> (
+              match assoc_opt "plugin" sources with
+              | Some source -> source
+              | None -> `Null)
+          | None -> `Null
+        in
+        let source_matches =
+          match string_member "source_type" plugin_source with
+          | Some "plugin" -> true
+          | Some _ -> false
+          | None -> true
+        in
+        match string_member "last_active_at" plugin_source with
+        | Some ts when source_matches -> (
+            match parse_rfc3339_utc ts with
+            | Some last_active -> now -. last_active <= freshness_window_s
+            | None -> false)
+        | _ -> false
+    with _ -> false
+
+let runtime_capabilities ?(now = Unix.gettimeofday ())
+    ?(opencode_plugin_freshness_window_s = 60.0)
+    ~(client : string) ~(name : string) () : string list =
+  let open C2c_capability in
+  let add_if cap enabled acc =
+    if enabled then to_string cap :: acc else acc
+  in
+  []
+  |> add_if Opencode_plugin_active
+       (client = "opencode"
+        && opencode_plugin_active ~name ~now
+             ~freshness_window_s:opencode_plugin_freshness_window_s)
+  |> List.rev
+
+let managed_capabilities ?(now = Unix.gettimeofday ())
+    ?(opencode_plugin_freshness_window_s = 60.0)
+    ~(client : string) ~(name : string) ~(binary_path : string) () : string list =
+  let static_caps = probed_capabilities ~client ~binary_path in
+  let runtime_caps =
+    runtime_capabilities ~now ~opencode_plugin_freshness_window_s
+      ~client ~name ()
+  in
+  List.fold_left
+    (fun acc cap -> if List.mem cap acc then acc else acc @ [ cap ])
+    static_caps runtime_caps
 
 let missing_role_capabilities ~(client : string) ~(binary_path : string)
     (role : C2c_role.t) : string list =

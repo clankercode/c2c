@@ -2,6 +2,9 @@
 
 type t =
   | Claude_channel
+  | Opencode_plugin
+  | Opencode_plugin_active
+  | Kimi_wire
   | Codex_xml_fd
   | Codex_headless_thread_id_fd
 
