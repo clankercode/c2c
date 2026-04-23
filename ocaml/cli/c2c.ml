@@ -7066,121 +7066,21 @@ let config_group =
     (Cmdliner.Cmd.info "config" ~doc:"Manage .c2c/config.toml — per-repo c2c configuration.")
     [config_show_cmd; config_generation_client_cmd]
 
-(* --- subcommand: agent refine (Phase 2 of the wizard) ---------------------- *)
-(* Launches the user's configured generation_client (claude|opencode|codex)
-   directly — NOT via `c2c start` — with a pre-seeded prompt combining the
-   canonical role-designer persona + the current role file. Interactive
-   human-agent refinement; execvp replaces this process entirely. *)
+(* --- shared ephemeral-agent runner ---------------------------------------- *)
+(* Parses a role file, resolves client/name/caller, composes a kickoff prompt,
+   forks an idle-timeout watchdog, and invokes cmd_start. Used by `c2c agent
+   run` directly and by `c2c agent refine` (which delegates to role-designer).
+   May exit the process on error or on cmd_start return. *)
 
-let agent_refine_term =
-  let name_arg =
-    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME"
-      ~doc:"Role name — reads .c2c/roles/<NAME>.md and refines it interactively.")
-  in
-  let+ name = name_arg in
-  let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
-  let role_file_path = Filename.concat roles_dir (name ^ ".md") in
-  if not (Sys.file_exists role_file_path) then begin
-    Printf.eprintf "error: role file not found: %s\n%!" role_file_path;
-    Printf.eprintf "  create it first with: c2c agent new %s\n%!" name;
-    exit 1
-  end;
-  let client =
-    match List.assoc_opt "generation_client" (config_read ()) with
-    | Some v -> v
-    | None ->
-      Printf.printf "note: generation_client not set in .c2c/config.toml; defaulting to opencode.\n";
-      Printf.printf "  set explicitly with: c2c config generation-client <claude|opencode|codex>\n%!";
-      "opencode"
-  in
-  let read_all path =
-    let ic = open_in path in
-    Fun.protect ~finally:(fun () -> close_in_noerr ic) @@ fun () ->
-      let n = in_channel_length ic in
-      let buf = Bytes.create n in
-      really_input ic buf 0 n;
-      Bytes.to_string buf
-  in
-  (* Prefer a user override at .c2c/roles/role-designer.md (e.g. a symlink to
-     an experimental variant), then the on-disk canonical builtin, and finally
-     the compile-time-embedded content so the binary works in any checkout. *)
-  let role_designer_body =
-    let p1 = Filename.concat (Sys.getcwd ()) ".c2c/roles/role-designer.md" in
-    let p2 = Filename.concat (Sys.getcwd ()) ".c2c/roles/builtins/role-designer.md" in
-    if Sys.file_exists p1 then read_all p1
-    else if Sys.file_exists p2 then read_all p2
-    else Role_designer_embedded.content
-  in
-  let draft_body = read_all role_file_path in
-  let prompt = Printf.sprintf
-    "%s\n\n---\n\nWe are refining a role named `%s`. Here is the current draft at %s:\n\n---\n%s\n---\n\nInterview me about this agent and refine the role file in place. When I say \"done\", save it and exit.\n"
-    role_designer_body name role_file_path draft_body
-  in
-  (* Write the prompt to a file that the spawned client can read.
-     claude/codex get it as an argv argument; opencode cats it. *)
-  let prompt_file = Filename.concat (Sys.getcwd ()) ".c2c/agent-refine-last-prompt.md" in
-  let oc = open_out prompt_file in
-  output_string oc prompt;
-  close_out oc;
-  let argv = match client with
-    | "claude" -> [| "claude"; prompt |]
-    | "opencode" -> [| "opencode"; "--agent"; "role-designer";  "--prompt"; "Run 'cat .c2c/agent-refine-last-prompt.md' and follow the instructions." |]
-    | "codex" -> [| "codex"; "exec"; prompt |]
-    | other ->
-      Printf.eprintf "error: unknown generation_client '%s' (expected claude|opencode|codex)\n%!" other;
-      exit 1
-  in
-  Printf.printf "executing: %s (role=%s, file=%s)\n%!" argv.(0) name role_file_path;
-  Printf.printf "argv:";
-  Array.iter (fun a -> Printf.printf " %s" (Filename.quote a)) argv;
-  Printf.printf "\n%!";
-  try Unix.execvp argv.(0) argv with
-  | Unix.Unix_error (e, _, _) ->
-    Printf.eprintf "error: failed to exec %s: %s\n%!" argv.(0) (Unix.error_message e);
-    exit 1
-
-let agent_refine_cmd =
-  Cmdliner.Cmd.v
-    (Cmdliner.Cmd.info "refine"
-      ~doc:"Launch the configured generation_client to interactively refine an existing role file (Phase 2 of the agent wizard).")
-    agent_refine_term
-
-let agent_run_term =
-  let role_arg =
-    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROLE"
-      ~doc:"Role name — reads .c2c/roles/<ROLE>.md and launches an ephemeral managed peer with that role.")
-  in
-  let prompt_arg =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "prompt"; "p" ] ~docv:"TEXT"
-      ~doc:"Optional caller prompt folded into the kickoff template.")
-  in
-  let name_arg =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "name"; "n" ] ~docv:"NAME"
-      ~doc:"Explicit instance/alias name. Default: eph-<role>-<word>-<word>.")
-  in
-  let client_arg =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "client"; "c" ] ~docv:"CLIENT"
-      ~doc:"Client to launch (claude|opencode|codex|kimi). Default: first entry of role.compatible_clients, else generation_client from config.")
-  in
-  let bin_arg =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "bin" ] ~docv:"PATH"
-      ~doc:"Custom binary path or name (e.g. cc-mm).")
-  in
-  let timeout_arg =
-    Cmdliner.Arg.(value & opt float 1800.0 & info [ "timeout"; "t" ] ~docv:"SECONDS"
-      ~doc:"Idle timeout — SIGTERM the instance if no broker activity for this many seconds. 0 disables. Default 1800 (30min).")
-  in
-  let dry_run_arg =
-    Cmdliner.Arg.(value & flag & info [ "dry-run" ]
-      ~doc:"Print resolved client, name, caller, kickoff prompt, and timeout without invoking c2c start.")
-  in
-  let+ role = role_arg
-  and+ prompt_opt = prompt_arg
-  and+ name_opt = name_arg
-  and+ client_opt = client_arg
-  and+ bin_opt = bin_arg
-  and+ timeout = timeout_arg
-  and+ dry_run = dry_run_arg in
+let run_ephemeral_agent
+    ~(role : string)
+    ~(prompt_opt : string option)
+    ~(name_opt : string option)
+    ~(client_opt : string option)
+    ~(bin_opt : string option)
+    ~(timeout : float)
+    ~(dry_run : bool)
+    () =
   let role_path = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" // (role ^ ".md") in
   if not (Sys.file_exists role_path) then begin
     Printf.eprintf "error: role file not found: %s\n  create it first with: c2c agent new %s\n%!" role_path role;
@@ -7213,10 +7113,6 @@ let agent_run_term =
     | Some n -> n
     | None -> Printf.sprintf "eph-%s-%s" role (C2c_start.generate_alias ())
   in
-  (* Caller: prefer the c2c alias of the calling session (set when run from
-     inside a managed session). Fall back to a non-alias sentinel so the
-     kickoff template doesn't instruct the agent to `c2c send $USER ...`
-     (which won't route — $USER is not a registered alias). *)
   let caller =
     match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
     | Some a when a <> "" -> a
@@ -7278,14 +7174,10 @@ let agent_run_term =
   end;
   write_agent_file ~client ~name ~content:rendered;
   Printf.printf "c2c agent run: role=%s client=%s name=%s caller=%s timeout=%.0fs\n%!" role client name caller timeout;
-  (* Idle-timeout watchdog: fork a child that SIGTERMs the outer.pid after
-     `timeout` seconds of no broker-inbox activity. Parent runs cmd_start
-     to completion; on return, terminates the watchdog. timeout=0 disables. *)
   let watchdog_pid = ref None in
   if timeout > 0.0 then begin
     match Unix.fork () with
     | 0 ->
-      (* child: watchdog. Never returns; only exits. *)
       (try ignore (Unix.setsid ()) with _ -> ());
       let broker_root = C2c_start.broker_root () in
       let outer_pid_path = C2c_start.outer_pid_path name in
@@ -7298,8 +7190,6 @@ let agent_run_term =
       in
       let start_time = Unix.gettimeofday () in
       let tick = min 30.0 (max 5.0 (timeout /. 4.0)) in
-      (* Give the outer loop a boot-grace window before requiring outer.pid.
-         Covers the race where cmd_start hasn't written the pidfile yet. *)
       let boot_grace_deadline = start_time +. 60.0 in
       let rec loop () =
         Unix.sleepf tick;
@@ -7333,6 +7223,112 @@ let agent_run_term =
    | Some pid -> (try Unix.kill pid Sys.sigterm with _ -> ())
    | None -> ());
   exit rc
+
+(* --- subcommand: agent refine (Phase 2 of the wizard) ---------------------- *)
+(* Thin wrapper over `c2c agent run role-designer` — composes a refine-specific
+   caller prompt (role name + draft body + edit-in-place instructions) and
+   delegates to run_ephemeral_agent. *)
+
+let agent_refine_term =
+  let name_arg =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME"
+      ~doc:"Role name — reads .c2c/roles/<NAME>.md and refines it via a role-designer ephemeral.")
+  in
+  let client_arg =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "client"; "c" ] ~docv:"CLIENT"
+      ~doc:"Client to launch (claude|opencode|codex|kimi). Default: first entry of role-designer.compatible_clients, else generation_client from config.")
+  in
+  let bin_arg =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "bin" ] ~docv:"PATH"
+      ~doc:"Custom binary path or name (e.g. cc-mm).")
+  in
+  let timeout_arg =
+    Cmdliner.Arg.(value & opt float 1800.0 & info [ "timeout"; "t" ] ~docv:"SECONDS"
+      ~doc:"Idle timeout — SIGTERM if no broker activity for this many seconds. 0 disables. Default 1800 (30min).")
+  in
+  let dry_run_arg =
+    Cmdliner.Arg.(value & flag & info [ "dry-run" ]
+      ~doc:"Print resolved config + kickoff prompt without invoking c2c start.")
+  in
+  let+ name = name_arg
+  and+ client_opt = client_arg
+  and+ bin_opt = bin_arg
+  and+ timeout = timeout_arg
+  and+ dry_run = dry_run_arg in
+  let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
+  let role_file_path = Filename.concat roles_dir (name ^ ".md") in
+  if not (Sys.file_exists role_file_path) then begin
+    Printf.eprintf "error: role file not found: %s\n  create it first with: c2c agent new %s\n%!" role_file_path name;
+    exit 1
+  end;
+  let read_all path =
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) @@ fun () ->
+      let n = in_channel_length ic in
+      let buf = Bytes.create n in
+      really_input ic buf 0 n;
+      Bytes.to_string buf
+  in
+  let draft_body = read_all role_file_path in
+  let refine_prompt = Printf.sprintf
+    "We are refining a role named `%s`. The role file is at:\n\n    %s\n\nHere is the current draft:\n\n---\n%s\n---\n\nInterview the caller (or the human operator in this pane) about this agent, and refine the role file IN PLACE at the path above using your Edit tool. When the caller says \"done\" (or a human operator says they're done), save the final content and call `stop_self`.\n"
+    name role_file_path draft_body
+  in
+  let instance_name =
+    Printf.sprintf "eph-refine-%s-%s" name (C2c_start.generate_alias ())
+  in
+  run_ephemeral_agent
+    ~role:"role-designer"
+    ~prompt_opt:(Some refine_prompt)
+    ~name_opt:(Some instance_name)
+    ~client_opt ~bin_opt ~timeout ~dry_run
+    ()
+
+let agent_refine_cmd =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "refine"
+      ~doc:"Launch the configured generation_client to interactively refine an existing role file (Phase 2 of the agent wizard).")
+    agent_refine_term
+
+let agent_run_term =
+  let role_arg =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROLE"
+      ~doc:"Role name — reads .c2c/roles/<ROLE>.md and launches an ephemeral managed peer with that role.")
+  in
+  let prompt_arg =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "prompt"; "p" ] ~docv:"TEXT"
+      ~doc:"Optional caller prompt folded into the kickoff template.")
+  in
+  let name_arg =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "name"; "n" ] ~docv:"NAME"
+      ~doc:"Explicit instance/alias name. Default: eph-<role>-<word>-<word>.")
+  in
+  let client_arg =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "client"; "c" ] ~docv:"CLIENT"
+      ~doc:"Client to launch (claude|opencode|codex|kimi). Default: first entry of role.compatible_clients, else generation_client from config.")
+  in
+  let bin_arg =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "bin" ] ~docv:"PATH"
+      ~doc:"Custom binary path or name (e.g. cc-mm).")
+  in
+  let timeout_arg =
+    Cmdliner.Arg.(value & opt float 1800.0 & info [ "timeout"; "t" ] ~docv:"SECONDS"
+      ~doc:"Idle timeout — SIGTERM the instance if no broker activity for this many seconds. 0 disables. Default 1800 (30min).")
+  in
+  let dry_run_arg =
+    Cmdliner.Arg.(value & flag & info [ "dry-run" ]
+      ~doc:"Print resolved client, name, caller, kickoff prompt, and timeout without invoking c2c start.")
+  in
+  let+ role = role_arg
+  and+ prompt_opt = prompt_arg
+  and+ name_opt = name_arg
+  and+ client_opt = client_arg
+  and+ bin_opt = bin_arg
+  and+ timeout = timeout_arg
+  and+ dry_run = dry_run_arg in
+  run_ephemeral_agent
+    ~role ~prompt_opt ~name_opt ~client_opt ~bin_opt ~timeout ~dry_run
+    ()
 
 let agent_run_cmd =
   Cmdliner.Cmd.v
