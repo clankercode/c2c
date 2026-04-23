@@ -288,6 +288,14 @@ CREATE TABLE IF NOT EXISTS room_invites (
     identity_pk_b64 TEXT NOT NULL,
     PRIMARY KEY (room_id, identity_pk_b64)
 );
+
+CREATE TABLE IF NOT EXISTS pairing_tokens (
+    binding_id TEXT PRIMARY KEY,
+    token_b64 TEXT NOT NULL,
+    machine_ed25519_pubkey TEXT NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0,
+    expires_at REAL NOT NULL
+);
 |sql}
 
 let get_now = fun () -> Unix.gettimeofday ()
@@ -586,6 +594,7 @@ module InMemoryRelay : RELAY = struct
   let query_messages_since t ~alias ~since_ts =
     with_lock t (fun () ->
       let results = ref [] in
+      let min_ts = max since_ts (Unix.gettimeofday () -. 86400.0) in
       Hashtbl.iter (fun alias' lease ->
         if alias' = alias then (
           let key = (RegistrationLease.node_id lease, RegistrationLease.session_id lease) in
@@ -595,7 +604,7 @@ module InMemoryRelay : RELAY = struct
               match msg with
               | `Assoc fields ->
                 let ts = try List.assoc "ts" fields |> function `Float f -> f | `Int i -> float_of_int i | _ -> 0.0 with _ -> 0.0 in
-                if ts > since_ts then results := msg :: !results
+                if ts > min_ts then results := msg :: !results
               | _ -> ()
             ) msgs
           | None -> ()
@@ -1184,6 +1193,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
       let msgs = ref [] in
+      let min_ts = max since_ts (Unix.gettimeofday () -. 86400.0) in
       let stmt = prepare conn
         "SELECT message_id, from_alias, to_alias, content, ts FROM inboxes \
          WHERE (to_alias = ? OR from_alias = ?) AND ts > ? \
@@ -1191,7 +1201,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
       in
       bind_text stmt 1 alias |> ignore;
       bind_text stmt 2 alias |> ignore;
-      bind_double stmt 3 since_ts |> ignore;
+      bind_double stmt 3 min_ts |> ignore;
       let rec loop () =
         let rc = step stmt in
         if rc = Rc.ROW then (
@@ -3309,8 +3319,38 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
                                     | Some (phone_pk, _) ->
                                       (match R.alias_of_identity_pk relay ~identity_pk:phone_pk with
                                        | Some alias ->
-                                         let history = R.query_messages_since relay ~alias ~since_ts in
-                                         (history, [("gap", `Bool true)])
+                                         let direct_msgs = R.query_messages_since relay ~alias ~since_ts in
+                                         let room_msgs =
+                                           let all_rooms = R.list_rooms relay in
+                                           List.fold_left (fun acc room ->
+                                             match room with
+                                             | `Assoc fields ->
+                                               (match List.assoc_opt "room_id" fields with
+                                                | Some (`String room_id) ->
+                                                  if R.is_room_member_alias relay ~room_id ~alias then
+                                                    let hist = R.room_history relay ~room_id ~limit:100 in
+                                                    let since_float = since_ts in
+                                                    let filtered = List.filter (fun msg ->
+                                                      match msg with
+                                                      | `Assoc f ->
+                                                        (match List.assoc_opt "ts" f with
+                                                         | Some (`Float t) -> t > since_float
+                                                         | Some (`Int t) -> float_of_int t > since_float
+                                                         | _ -> false)
+                                                      | _ -> false
+                                                    ) hist in
+                                                    filtered @ acc
+                                                  else acc
+                                                | _ -> acc)
+                                             | _ -> acc
+                                           ) [] all_rooms
+                                         in
+                                         let all_msgs = direct_msgs @ room_msgs in
+                                         (List.sort (fun a b ->
+                                           let ts_a = match a with `Assoc f -> (match List.assoc_opt "ts" f with Some (`Float t) -> t | Some (`Int i) -> float_of_int i | _ -> 0.0) | _ -> 0.0 in
+                                           let ts_b = match b with `Assoc f -> (match List.assoc_opt "ts" f with Some (`Float t) -> t | Some (`Int i) -> float_of_int i | _ -> 0.0) in
+                                           compare ts_a ts_b
+                                         ) all_msgs, [("gap", `Bool true)])
                                        | None -> ([], [("gap", `Bool true)]))
                                     | None -> ([], [("gap", `Bool true)])
                                   else ([], [])
