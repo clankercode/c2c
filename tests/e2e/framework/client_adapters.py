@@ -8,6 +8,13 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .capabilities import (
+    CLAUDE_CHANNEL,
+    CODEX_HEADLESS_THREAD_ID_FD,
+    CODEX_XML_FD,
+    KIMI_WIRE,
+    OPENCODE_PLUGIN,
+)
 from .scenario import AgentConfig
 
 if TYPE_CHECKING:
@@ -115,7 +122,7 @@ class CodexAdapter:
         return _has_live_pid(_instance_dir(agent.name) / "inner.pid")
 
     def probe_capabilities(self, scenario: Scenario | None) -> dict[str, bool]:
-        return {"codex_xml_fd": _help_contains("codex", "--xml-input-fd")}
+        return {CODEX_XML_FD: _help_contains("codex", "--xml-input-fd")}
 
 
 class CodexHeadlessAdapter:
@@ -166,7 +173,7 @@ class CodexHeadlessAdapter:
 
     def probe_capabilities(self, scenario: Scenario | None) -> dict[str, bool]:
         return {
-            "codex_headless_thread_id_fd": _help_contains(
+            CODEX_HEADLESS_THREAD_ID_FD: _help_contains(
                 "codex-turn-start-bridge",
                 "--thread-id-fd",
             )
@@ -201,7 +208,8 @@ class OpenCodeAdapter:
         return _has_live_pid(_instance_dir(agent.name) / "inner.pid")
 
     def probe_capabilities(self, scenario: Scenario | None) -> dict[str, bool]:
-        return {"opencode_binary": shutil.which("opencode") is not None}
+        plugin_path = self.repo_root / ".opencode" / "plugins" / "c2c.ts"
+        return {OPENCODE_PLUGIN: plugin_path.exists()}
 
 
 class ClaudeAdapter:
@@ -230,7 +238,7 @@ class ClaudeAdapter:
         return _has_live_pid(_instance_dir(agent.name) / "inner.pid")
 
     def probe_capabilities(self, scenario: Scenario | None) -> dict[str, bool]:
-        return {"claude_binary": shutil.which("claude") is not None}
+        return {CLAUDE_CHANNEL: shutil.which("claude") is not None}
 
 
 class KimiAdapter:
@@ -261,4 +269,4 @@ class KimiAdapter:
         return _has_live_pid(_instance_dir(agent.name) / "inner.pid")
 
     def probe_capabilities(self, scenario: Scenario | None) -> dict[str, bool]:
-        return {"kimi_binary": shutil.which("kimi") is not None}
+        return {KIMI_WIRE: shutil.which("kimi") is not None}

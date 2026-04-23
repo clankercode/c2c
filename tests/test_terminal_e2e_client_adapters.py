@@ -6,6 +6,13 @@ from unittest import mock
 
 import pytest
 
+from tests.e2e.framework.capabilities import (
+    CLAUDE_CHANNEL,
+    CODEX_HEADLESS_THREAD_ID_FD,
+    CODEX_XML_FD,
+    KIMI_WIRE,
+    OPENCODE_PLUGIN,
+)
 from tests.e2e.framework.scenario import AgentConfig, Scenario, StartedAgent
 from tests.e2e.framework.terminal_driver import TerminalCapture, TerminalHandle
 
@@ -71,7 +78,7 @@ def test_codex_adapter_detects_xml_fd_capability(tmp_path: Path, monkeypatch: py
     adapter = CodexAdapter(tmp_path)
     capabilities = adapter.probe_capabilities(None)
 
-    assert capabilities["codex_xml_fd"] is True
+    assert capabilities[CODEX_XML_FD] is True
 
 
 def test_codex_headless_adapter_detects_thread_id_fd_capability(
@@ -90,7 +97,7 @@ def test_codex_headless_adapter_detects_thread_id_fd_capability(
     adapter = CodexHeadlessAdapter(tmp_path)
     capabilities = adapter.probe_capabilities(None)
 
-    assert capabilities["codex_headless_thread_id_fd"] is True
+    assert capabilities[CODEX_HEADLESS_THREAD_ID_FD] is True
 
 
 def test_codex_adapter_builds_managed_launch_command(tmp_path: Path) -> None:
@@ -203,7 +210,7 @@ def test_capability_probe_returns_false_on_timeout(tmp_path: Path, monkeypatch: 
 
     adapter = CodexAdapter(tmp_path)
 
-    assert adapter.probe_capabilities(None) == {"codex_xml_fd": False}
+    assert adapter.probe_capabilities(None) == {CODEX_XML_FD: False}
 
 
 def test_headless_capability_probe_returns_false_on_subprocess_failure(
@@ -218,7 +225,49 @@ def test_headless_capability_probe_returns_false_on_subprocess_failure(
 
     adapter = CodexHeadlessAdapter(tmp_path)
 
-    assert adapter.probe_capabilities(None) == {"codex_headless_thread_id_fd": False}
+    assert adapter.probe_capabilities(None) == {CODEX_HEADLESS_THREAD_ID_FD: False}
+
+
+def test_claude_adapter_uses_shared_channel_capability_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.e2e.framework.client_adapters import ClaudeAdapter
+
+    monkeypatch.setattr(
+        "tests.e2e.framework.client_adapters.shutil.which",
+        lambda name: "/usr/bin/claude" if name == "claude" else None,
+    )
+
+    adapter = ClaudeAdapter(tmp_path)
+
+    assert adapter.probe_capabilities(None) == {CLAUDE_CHANNEL: True}
+
+
+def test_opencode_adapter_reports_plugin_capability_from_repo_plugin_path(tmp_path: Path) -> None:
+    from tests.e2e.framework.client_adapters import OpenCodeAdapter
+
+    plugin_path = tmp_path / ".opencode" / "plugins"
+    plugin_path.mkdir(parents=True)
+    (plugin_path / "c2c.ts").write_text("// plugin\n", encoding="utf-8")
+
+    adapter = OpenCodeAdapter(tmp_path)
+
+    assert adapter.probe_capabilities(None) == {OPENCODE_PLUGIN: True}
+
+
+def test_kimi_adapter_uses_shared_wire_capability_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.e2e.framework.client_adapters import KimiAdapter
+
+    monkeypatch.setattr(
+        "tests.e2e.framework.client_adapters.shutil.which",
+        lambda name: "/usr/bin/kimi" if name == "kimi" else None,
+    )
+
+    adapter = KimiAdapter(tmp_path)
+
+    assert adapter.probe_capabilities(None) == {KIMI_WIRE: True}
 
 
 def test_scenario_refresh_capabilities_merges_adapter_results(tmp_path: Path) -> None:
@@ -228,16 +277,16 @@ def test_scenario_refresh_capabilities_merges_adapter_results(tmp_path: Path) ->
         artifacts=mock.Mock(),
         drivers={"fake-pty": _ReadyDriver()},
         adapters={
-            "dummy-a": _CapabilityAdapter({"codex_xml_fd": True}),
-            "dummy-b": _CapabilityAdapter({"codex_headless_thread_id_fd": False}),
+            "dummy-a": _CapabilityAdapter({CODEX_XML_FD: True}),
+            "dummy-b": _CapabilityAdapter({CODEX_HEADLESS_THREAD_ID_FD: False}),
         },
     )
 
     capabilities = scenario.refresh_capabilities()
 
     assert capabilities == {
-        "codex_xml_fd": True,
-        "codex_headless_thread_id_fd": False,
+        CODEX_XML_FD: True,
+        CODEX_HEADLESS_THREAD_ID_FD: False,
     }
 
 
@@ -247,13 +296,13 @@ def test_scenario_require_capability_raises_for_missing_capability(tmp_path: Pat
         workdir=tmp_path / "work",
         artifacts=mock.Mock(),
         drivers={"fake-pty": _ReadyDriver()},
-        adapters={"dummy": _CapabilityAdapter({"codex_xml_fd": False})},
+        adapters={"dummy": _CapabilityAdapter({CODEX_XML_FD: False})},
     )
 
     scenario.refresh_capabilities()
 
-    with pytest.raises(AssertionError, match="required capability missing: codex_xml_fd"):
-        scenario.require_capability("codex_xml_fd")
+    with pytest.raises(AssertionError, match=f"required capability missing: {CODEX_XML_FD}"):
+        scenario.require_capability(CODEX_XML_FD)
 
 
 def test_scenario_probe_capabilities_populates_require_and_xfail_contract(tmp_path: Path) -> None:
@@ -263,19 +312,19 @@ def test_scenario_probe_capabilities_populates_require_and_xfail_contract(tmp_pa
         artifacts=mock.Mock(),
         drivers={"fake-pty": _ReadyDriver()},
         adapters={
-            "codex": _CapabilityAdapter({"codex_xml_fd": True}),
-            "headless": _CapabilityAdapter({"codex_headless_thread_id_fd": False}),
+            "codex": _CapabilityAdapter({CODEX_XML_FD: True}),
+            "headless": _CapabilityAdapter({CODEX_HEADLESS_THREAD_ID_FD: False}),
         },
     )
 
     caps = scenario.probe_capabilities("codex")
 
-    assert caps == {"codex_xml_fd": True}
-    scenario.require_capability("codex_xml_fd")
+    assert caps == {CODEX_XML_FD: True}
+    scenario.require_capability(CODEX_XML_FD)
 
     scenario.probe_capabilities("headless")
     with pytest.raises(pytest.xfail.Exception):
-        scenario.xfail_unless("codex_headless_thread_id_fd", reason="missing binary support")
+        scenario.xfail_unless(CODEX_HEADLESS_THREAD_ID_FD, reason="missing binary support")
 
 
 def test_scenario_xfail_unless_marks_missing_capability(tmp_path: Path) -> None:
@@ -284,10 +333,10 @@ def test_scenario_xfail_unless_marks_missing_capability(tmp_path: Path) -> None:
         workdir=tmp_path / "work",
         artifacts=mock.Mock(),
         drivers={"fake-pty": _ReadyDriver()},
-        adapters={"dummy": _CapabilityAdapter({"codex_xml_fd": False})},
+        adapters={"dummy": _CapabilityAdapter({CODEX_XML_FD: False})},
     )
 
     scenario.refresh_capabilities()
 
     with pytest.raises(pytest.xfail.Exception):
-        scenario.xfail_unless("codex_xml_fd", reason="missing binary support")
+        scenario.xfail_unless(CODEX_XML_FD, reason="missing binary support")
