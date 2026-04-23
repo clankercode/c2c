@@ -992,7 +992,7 @@ let claude_session_exists uuid =
   in
   let default_root = home_dir () // ".claude" // "projects" in
   let custom_root =
-    try Some (Sys.getenv "CLAUDE_CONFIG_DIR" // ".claude" // "projects")
+    try Some (Sys.getenv "CLAUDE_CONFIG_DIR" // "projects")
     with Not_found -> None
   in
   probe_root default_root ||
@@ -1697,7 +1697,7 @@ let run_outer_loop ~(name : string) ~(client : string)
              Don't re-inject the dev-channel flags here — duplicating
              creates parser confusion / ugly argv. Wrapper script is
              responsible for passing --dangerously-load-development-channels
-             server:c2c --channels server:c2c through to claude. *)
+             server:c2c through to claude. *)
           []
         else
           prepare_launch_args ~name ~client ~extra_args ~broker_root
