@@ -21,9 +21,13 @@ let with_cwd dir f =
       Unix.chdir dir;
       f ())
 
+let c2c_path =
+  match Sys.getenv_opt "HOME" with
+  | Some home -> Filename.concat home ".local/bin/c2c"
+  | None -> "/home/xertrov/.local/bin/c2c"
+
 (* Capture stdout from a child process running `c2c agent refine ... --dry-run` *)
-let capture_refine_dryrun ?(client="claude") role_name =
-  let c2c_path = "/home/xertrov/.local/bin/c2c" in
+let capture_refine_dryrun ?(client="claude") ?(extra_args=[]) role_name =
   let stdout_read, stdout_write = Unix.pipe () in
   (* Build env: inherit current env + override C2C_KEY_DIR *)
   let base_env = Unix.environment () in
@@ -36,7 +40,9 @@ let capture_refine_dryrun ?(client="claude") role_name =
       Unix.dup2 stdout_write Unix.stdout;
       Unix.close stdout_write;
       Unix.execve c2c_path
-        [| c2c_path; "agent"; "refine"; role_name; "--client"; client; "--dry-run" |]
+        (Array.append
+           [| c2c_path; "agent"; "refine"; role_name; "--client"; client |]
+           (Array.of_list (extra_args @ [ "--dry-run" ])))
         env
   | child ->
       Unix.close stdout_write;
@@ -50,11 +56,11 @@ let capture_refine_dryrun ?(client="claude") role_name =
       read_loop ch;
       close_in ch;
       let rec wait_eintr () =
-        try ignore (Unix.waitpid [] child)
+        try Unix.waitpid [] child
         with Unix.Unix_error (Unix.EINTR, _, _) -> wait_eintr ()
       in
-      wait_eintr ();
-      Buffer.contents buf
+      let (_, status) = wait_eintr () in
+      (Buffer.contents buf, status)
 
 let contains ~sub s =
   if sub = "" then true
@@ -89,7 +95,7 @@ let test_refine_dry_run_composes_correct_prompt () =
       \n\
       You are a test agent.\n");
   (* run dry-run and capture output *)
-  let out = capture_refine_dryrun "test-ephemeral" in
+  let (out, _) = capture_refine_dryrun "test-ephemeral" in
   (* verify dry-run banner *)
   check bool "contains dry-run banner" true
     (contains ~sub:"c2c agent run [dry-run]:" out);
@@ -106,10 +112,12 @@ let test_refine_dry_run_composes_correct_prompt () =
     (contains ~sub:"test-ephemeral.md" out);
   (* verify the role body appears in the prompt *)
   check bool "contains role body" true
-    (contains ~sub:"You are a test agent" out)
+    (contains ~sub:"You are a test agent" out);
+  (* verify client=claude appears in output *)
+  check bool "contains client=claude" true
+    (contains ~sub:"client=claude" out)
 
 let test_refine_dry_run_role_not_found () =
-  let c2c_path = "/home/xertrov/.local/bin/c2c" in
   with_temp_dir @@ fun dir ->
   with_cwd dir @@ fun () ->
   (* create .c2c dir but no roles subdir — role file should not exist *)
@@ -150,13 +158,97 @@ let test_refine_dry_run_role_not_found () =
       read_err ();
       close_in err_ch;
       let rec wait_eintr () =
-        try ignore (Unix.waitpid [] child)
+        try Unix.waitpid [] child
         with Unix.Unix_error (Unix.EINTR, _, _) -> wait_eintr ()
       in
-      wait_eintr ();
+      let (_, status) = wait_eintr () in
       let stderr_out = Buffer.contents err_buf in
       check bool "fails with role not found" true
-        (contains ~sub:"role file not found" stderr_out)
+        (contains ~sub:"role file not found" stderr_out);
+      match status with
+      | Unix.WEXITED n -> check int "exits 1" 1 n
+      | _ -> check bool "exits 1" false true
+
+let test_refine_dry_run_bin_flag () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  (* create .c2c/roles/ directory and a test role file *)
+  let roles_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir roles_dir 0o755;
+  let roles_subdir = Filename.concat roles_dir "roles" in
+  Unix.mkdir roles_subdir 0o755;
+  let src_role_designer = "/home/xertrov/src/c2c/.c2c/roles/role-designer.md" in
+  let dst_role_designer = Filename.concat roles_subdir "role-designer.md" in
+  ignore (Sys.command (Printf.sprintf "cp %s %s"
+    (Filename.quote src_role_designer) (Filename.quote dst_role_designer)));
+  let test_role_path = Filename.concat roles_subdir "test-ephemeral.md" in
+  let oc = open_out test_role_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc
+      "---\n\
+      description: A test ephemeral role for unit testing.\n\
+      role: ephemeral\n\
+      model: anthropic:claude-sonnet-4-6\n\
+      ---\n\
+      \n\
+      You are a test agent.\n");
+  let (out, _) = capture_refine_dryrun ~extra_args:["--bin"; "cc-test"] "test-ephemeral" in
+  check bool "contains bin=cc-test" true
+    (contains ~sub:"bin=cc-test" out)
+
+let test_refine_dry_run_timeout_flag () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  (* create .c2c/roles/ directory and a test role file *)
+  let roles_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir roles_dir 0o755;
+  let roles_subdir = Filename.concat roles_dir "roles" in
+  Unix.mkdir roles_subdir 0o755;
+  let src_role_designer = "/home/xertrov/src/c2c/.c2c/roles/role-designer.md" in
+  let dst_role_designer = Filename.concat roles_subdir "role-designer.md" in
+  ignore (Sys.command (Printf.sprintf "cp %s %s"
+    (Filename.quote src_role_designer) (Filename.quote dst_role_designer)));
+  let test_role_path = Filename.concat roles_subdir "test-ephemeral.md" in
+  let oc = open_out test_role_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc
+      "---\n\
+      description: A test ephemeral role for unit testing.\n\
+      role: ephemeral\n\
+      model: anthropic:claude-sonnet-4-6\n\
+      ---\n\
+      \n\
+      You are a test agent.\n");
+  let (out, _) = capture_refine_dryrun ~extra_args:["--timeout"; "600"] "test-ephemeral" in
+  check bool "contains timeout=600s" true
+    (contains ~sub:"timeout=600s" out)
+
+let test_refine_dry_run_pane_flag () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  (* create .c2c/roles/ directory and a test role file *)
+  let roles_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir roles_dir 0o755;
+  let roles_subdir = Filename.concat roles_dir "roles" in
+  Unix.mkdir roles_subdir 0o755;
+  let src_role_designer = "/home/xertrov/src/c2c/.c2c/roles/role-designer.md" in
+  let dst_role_designer = Filename.concat roles_subdir "role-designer.md" in
+  ignore (Sys.command (Printf.sprintf "cp %s %s"
+    (Filename.quote src_role_designer) (Filename.quote dst_role_designer)));
+  let test_role_path = Filename.concat roles_subdir "test-ephemeral.md" in
+  let oc = open_out test_role_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc
+      "---\n\
+      description: A test ephemeral role for unit testing.\n\
+      role: ephemeral\n\
+      model: anthropic:claude-sonnet-4-6\n\
+      ---\n\
+      \n\
+      You are a test agent.\n");
+  let (out, _) = capture_refine_dryrun ~extra_args:["--pane"] "test-ephemeral" in
+  check bool "contains pane=true" true
+    (contains ~sub:"pane=true" out)
 
 let () =
   Random.self_init ();
@@ -166,5 +258,11 @@ let () =
             `Quick, test_refine_dry_run_composes_correct_prompt )
         ; ( "role_not_found_error",
             `Quick, test_refine_dry_run_role_not_found )
+        ; ( "bin_flag",
+            `Quick, test_refine_dry_run_bin_flag )
+        ; ( "timeout_flag",
+            `Quick, test_refine_dry_run_timeout_flag )
+        ; ( "pane_flag",
+            `Quick, test_refine_dry_run_pane_flag )
         ] )
     ]
