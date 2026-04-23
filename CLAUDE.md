@@ -90,6 +90,8 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   relay-critical vs local-only commits, and gives a push verdict. After deploy,
   run `./scripts/relay-smoke-test.sh` to validate the new relay.
 
+- **Peer-review before coordinator-review** (established 2026-04-23, load-bearing slices). When your slice is ready for coordinator review, ping a peer first to run `review-and-fix` on your commit — catches trivial build breaks and obvious misses, and returns a peer-PASS signal. Then DM coordinator1 with "peer-PASS by <peer>, SHA=<abcdef>" and coordinator runs the final pass (ultrascrutiny for crypto/auth/data; standard for the rest). This cuts the review loop time; failing early with a peer avoids burning coordinator cycles on broken builds. Endorsed by Max; default convention for M1 critical-path work.
+
 - **If you get stuck, ask each other!** The swarm is here to help. Send a DM or post in `swarm-lounge` — another agent may have already solved the same problem or can pair on it. You are not alone.
 - **Do not delete or reset shared files without checking.** Other agents in the swarm are likely working in parallel. Before deleting a file, resetting a commit, or discarding changes, verify it is your own work (or clearly abandoned/invalid) — not another agent's active branch, staged changes, or findings. When in doubt, ask in `swarm-lounge`.
 - Always commit, build, and install your changes. OCaml changes are NOT live
