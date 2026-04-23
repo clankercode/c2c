@@ -314,6 +314,39 @@ let test_ws_handshake_rfc6455_vector () =
   in
   Alcotest.(check bool) "RFC 6455 test vector" true resp_has_correct_accept
 
+(* --- S5a: Observer binding management --- *)
+
+let test_observer_binding_add_get () =
+  let r = InMemoryRelay.create () in
+  let binding_id = "obs-001" in
+  let phone_ed = String.make 32 '\x02' in
+  let phone_x = String.make 32 '\x03' in
+  InMemoryRelay.add_observer_binding r ~binding_id
+    ~phone_ed25519_pubkey:phone_ed ~phone_x25519_pubkey:phone_x;
+  let result = InMemoryRelay.get_observer_binding r ~binding_id in
+  Alcotest.(check bool) "binding found" true (result <> None);
+  match result with
+  | Some (ed, x) ->
+      Alcotest.(check string) "phone_ed25519 preserved" phone_ed ed;
+      Alcotest.(check string) "phone_x25519 preserved" phone_x x
+  | None -> Alcotest.fail "expected binding"
+
+let test_observer_binding_remove () =
+  let r = InMemoryRelay.create () in
+  let binding_id = "obs-002" in
+  let phone_ed = String.make 32 '\x04' in
+  let phone_x = String.make 32 '\x05' in
+  InMemoryRelay.add_observer_binding r ~binding_id
+    ~phone_ed25519_pubkey:phone_ed ~phone_x25519_pubkey:phone_x;
+  InMemoryRelay.remove_observer_binding r ~binding_id;
+  let result = InMemoryRelay.get_observer_binding r ~binding_id in
+  Alcotest.(check bool) "binding removed" true (result = None)
+
+let test_observer_binding_nonexistent () =
+  let r = InMemoryRelay.create () in
+  let result = InMemoryRelay.get_observer_binding r ~binding_id:"no-such" in
+  Alcotest.(check bool) "nonexistent binding returns None" true (result = None)
+
 (* --- L4 slice 5: invited_members ACL --- *)
 
 let test_default_visibility_public () =
@@ -479,6 +512,9 @@ let tests = [
   "send_room_persists_envelope",   `Quick, test_send_room_persists_envelope_in_history;
   "send_room_legacy_no_envelope",  `Quick, test_send_room_without_envelope_legacy_history;
   "ws_handshake_rfc6455_vector",  `Quick, test_ws_handshake_rfc6455_vector;
+  "observer_binding_add_get", `Quick, test_observer_binding_add_get;
+  "observer_binding_remove", `Quick, test_observer_binding_remove;
+  "observer_binding_nonexistent", `Quick, test_observer_binding_nonexistent;
 ]
 
 let () =
