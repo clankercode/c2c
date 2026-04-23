@@ -257,9 +257,7 @@ let rec command_tier_map () : (string * safety) list =
 
 (* Returns true when running inside a c2c agent session *)
 let is_agent_session () =
-  match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
-  | Some id when String.trim id <> "" -> true
-  | _ -> false
+  match C2c_mcp.session_id_from_env () with Some _ -> true | None -> false
 
 (* Hide tier-3 and tier-4 commands when running as an agent *)
 let tier_visible tier =
@@ -285,9 +283,7 @@ let filter_commands ~cmds =
 (* --- session / alias resolution ------------------------------------------- *)
 
 let env_session_id () =
-  match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
-  | Some v when String.trim v <> "" -> Some (String.trim v)
-  | _ -> None
+  C2c_mcp.session_id_from_env ()
 
 let env_auto_alias () =
   match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
@@ -4823,6 +4819,7 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~client =
   Buffer.add_string buf "\n[mcp_servers.c2c.env]\n";
   Buffer.add_string buf (Printf.sprintf "C2C_MCP_BROKER_ROOT = \"%s\"\n" root);
   Buffer.add_string buf "C2C_MCP_AUTO_JOIN_ROOMS = \"swarm-lounge\"\n";
+  Buffer.add_string buf "C2C_AUTO_JOIN_ROLE_ROOM = \"1\"\n";
   List.iter (fun tool ->
     Buffer.add_string buf (Printf.sprintf "\n[mcp_servers.c2c.tools.%s]\n" tool);
     Buffer.add_string buf "approval_mode = \"auto\"\n"
@@ -4874,6 +4871,7 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path =
           ; ("C2C_MCP_SESSION_ID", `String alias_val)
           ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
           ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+          ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
           ])
       ]
   in
@@ -4963,6 +4961,7 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
                   ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
                   ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
                   ; ("C2C_CLI_COMMAND", `String (current_c2c_command ()))
+                  ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
                   ])
               ; ("enabled", `Bool true)
               ])
@@ -5177,6 +5176,7 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
     [ ("C2C_MCP_BROKER_ROOT", `String root)
     ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
     ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+    ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
     ] @ (if channel_delivery then [ ("C2C_MCP_CHANNEL_DELIVERY", `String "1") ] else [])
   in
   let mcp_entry =
@@ -5355,6 +5355,7 @@ let setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path =
           ; ("C2C_MCP_SESSION_ID", `String alias_val)
           ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
           ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+          ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
           ])
       ]
   in
@@ -5964,6 +5965,58 @@ let init_cmd =
        Printf.printf "  c2c send ALIAS MSG    — send a message\n";
        Printf.printf "  c2c poll-inbox        — check your inbox\n";
        Printf.printf "  c2c send-room %s MSG  — chat in the room\n" room)
+
+let completion_cmd =
+  let shell_arg =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "shell" ] ~docv:"SHELL"
+      ~doc:"Shell to generate completions for: bash, zsh, or pwsh. Detects from $$SHELL if omitted.")
+  in
+  let detect_shell () =
+    try
+      let shell = Sys.getenv "SHELL" in
+      if Filename.check_suffix shell "bash" then Some "bash"
+      else if Filename.check_suffix shell "zsh" then Some "zsh"
+      else if Filename.check_suffix shell "pwsh" || Filename.check_suffix shell "powershell" then Some "pwsh"
+      else None
+    with Not_found -> None
+  in
+  let cmdliner_bin () =
+    try
+      let opam_prefix = Sys.getenv "OPAM_SWITCH_PREFIX" in
+      Filename.concat opam_prefix "bin" // "cmdliner"
+    with Not_found ->
+      let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+      Filename.concat home ".opam/c2c/bin/cmdliner"
+  in
+  let term =
+    let+ shell = shell_arg in
+    let shell = match shell with
+      | Some s -> Some (String.lowercase_ascii (String.trim s))
+      | None -> detect_shell ()
+    in
+    match shell with
+    | Some s when List.mem s ["bash"; "zsh"; "pwsh"] ->
+        let cmd = Printf.sprintf "%s tool-completion --standalone-completion %s c2c"
+          (cmdliner_bin ()) s
+        in
+        let ic = Unix.open_process_in cmd in
+        let rec copy_all () =
+          try print_endline (input_line ic); copy_all ()
+          with End_of_file -> ()
+        in
+        copy_all ();
+        ignore (Unix.close_process_in ic)
+    | Some s ->
+        Printf.eprintf "error: unknown shell '%s'. Supported: bash, zsh, pwsh\n%!" s;
+        exit 1
+    | None ->
+        Printf.eprintf "error: could not detect shell. Please specify --shell explicitly\n%!";
+        exit 1
+  in
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "completion"
+       ~doc:"Generate shell completion scripts for bash, zsh, and pwsh.")
+    term
 
 let init =
   Cmdliner.Cmd.v
@@ -9731,7 +9784,7 @@ let () =
   let all_cmds =
     [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; send_all; sweep
     ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
-    ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
+    ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; smoke_test; init; install; completion_cmd
     ; serve; mcp; start; agent_group; config_group; roles_group; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in
