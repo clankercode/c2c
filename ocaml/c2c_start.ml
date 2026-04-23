@@ -1460,6 +1460,15 @@ let run_outer_loop ~(name : string) ~(client : string)
         | _ -> binary_path :: launch_args
       in
 
+      (* Debug: print full cmd before fork when C2C_START_DEBUG set. Intentional
+         verbosity — this costs one line per launch and is invaluable when
+         diagnosing "why did claude/cc-mm reject the channel flags?" bugs. *)
+      (match Sys.getenv_opt "C2C_START_DEBUG" with
+       | Some v when v <> "" && v <> "0" ->
+         Printf.eprintf "[c2c-start/debug] exec: %s\n%!"
+           (String.concat " " (List.map Filename.quote cmd))
+       | _ -> ());
+
       (* Write meta.json with launch metadata *)
       let meta_path = meta_json_path name in
       let meta_entries = [
