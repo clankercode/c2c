@@ -26,6 +26,48 @@ let c2c_path =
   | Some home -> Filename.concat home ".local/bin/c2c"
   | None -> "/home/xertrov/.local/bin/c2c"
 
+(* Capture stdout+stderr from a child process running `c2c agent new` *)
+let capture_new_role ?(extra_args=[]) role_name =
+  let stdout_read, stdout_write = Unix.pipe ()
+  and stderr_read, stderr_write = Unix.pipe () in
+  let base_env = Unix.environment () in
+  let extra_env =
+    [| "C2C_KEY_DIR=/tmp/c2c-agent-new-test-keys"; "TERM=dumb" |]
+  in
+  let env = Array.append base_env extra_env in
+  match Unix.fork () with
+  | 0 ->
+      (* child *)
+      Unix.close stdout_read; Unix.close stderr_read;
+      Unix.dup2 stdout_write Unix.stdout;
+      Unix.dup2 stderr_write Unix.stderr;
+      Unix.close stdout_write; Unix.close stderr_write;
+      let args =
+        let base = [| c2c_path; "agent"; "new"; role_name |] in
+        if extra_args = [] then base
+        else Array.append base (Array.of_list extra_args)
+      in
+      Unix.execve c2c_path args env
+  | child ->
+      Unix.close stdout_write; Unix.close stderr_write;
+      let buf_out = Buffer.create 256 and buf_err = Buffer.create 256 in
+      let rec read_loop ch buf =
+        match input_char ch with
+        | exception End_of_file -> ()
+        | c -> Buffer.add_char buf c; read_loop ch buf
+      in
+      let ch_out = Unix.in_channel_of_descr stdout_read in
+      let ch_err = Unix.in_channel_of_descr stderr_read in
+      read_loop ch_out buf_out;
+      read_loop ch_err buf_err;
+      close_in ch_out; close_in ch_err;
+      let rec wait_eintr () =
+        try Unix.waitpid [] child
+        with Unix.Unix_error (Unix.EINTR, _, _) -> wait_eintr ()
+      in
+      let (_, status) = wait_eintr () in
+      (Buffer.contents buf_out, Buffer.contents buf_err, status)
+
 (* Capture stdout from a child process running `c2c agent refine ... --dry-run` *)
 let capture_refine_dryrun ?(client="claude") ?(extra_args=[]) role_name =
   let stdout_read, stdout_write = Unix.pipe () in
@@ -250,11 +292,45 @@ let test_refine_dry_run_pane_flag () =
   check bool "contains pane=true" true
     (contains ~sub:"pane=true" out)
 
+(* ---------- agent new tests ---------- *)
+
+let test_agent_new_positional_arg_alone () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let unique_name =
+    Printf.sprintf "testrole-%d-%d" (Unix.getpid ()) (Random.bits ())
+  in
+  let (out, err, status) = capture_new_role ~extra_args:[] unique_name in
+  Alcotest.(check bool) "agent new positional: exits 0"
+    true (status = Unix.WEXITED 0);
+  Alcotest.(check bool) "agent new: created file"
+    true (Sys.file_exists (Filename.concat dir (".c2c/roles/" ^ unique_name ^ ".md")));
+  Alcotest.(check bool) "agent new: no override warning on stderr"
+    false (contains ~sub:"overrides positional argument" err)
+
+let test_agent_new_both_args_errors () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let unique_name =
+    Printf.sprintf "testrole-%d-%d" (Unix.getpid ()) (Random.bits ())
+  in
+  let (out, err, status) =
+    capture_new_role ~extra_args:[ "--name"; unique_name ] "ignored-positional"
+  in
+  Alcotest.(check bool) "agent new both: exits non-zero"
+    true (status <> Unix.WEXITED 0);
+  Alcotest.(check bool) "agent new: errors on both args"
+    true (contains ~sub:"error: give either a positional NAME or --name, not both" err);
+  Alcotest.(check bool) "agent new: does NOT create file"
+    false (Sys.file_exists (Filename.concat dir (".c2c/roles/" ^ unique_name ^ ".md")));
+  Alcotest.(check bool) "agent new: does NOT create file with positional name"
+    false (Sys.file_exists (Filename.concat dir (".c2c/roles/ignored-positional.md")))
+
 let () =
   Random.self_init ();
   Alcotest.run "agent_refine"
     [ ( "dry_run",
-        [ ( "composes_correct_kickoff_prompt",
+        [ ( "composes_correct_prompt",
             `Quick, test_refine_dry_run_composes_correct_prompt )
         ; ( "role_not_found_error",
             `Quick, test_refine_dry_run_role_not_found )
@@ -264,5 +340,11 @@ let () =
             `Quick, test_refine_dry_run_timeout_flag )
         ; ( "pane_flag",
             `Quick, test_refine_dry_run_pane_flag )
+        ] )
+    ; ( "agent_new",
+        [ ( "positional_arg_alone",
+            `Quick, test_agent_new_positional_arg_alone )
+        ; ( "both_args_error",
+            `Quick, test_agent_new_both_args_errors )
         ] )
     ]

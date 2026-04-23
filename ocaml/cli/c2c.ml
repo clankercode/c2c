@@ -7011,10 +7011,10 @@ let agent_new_term =
   and+ theme = theme in
   let name =
     match name, name_pos with
-    | Some n, Some p when n <> p ->
-        Printf.eprintf "note: --name '%s' overrides positional argument '%s'\n%!" n p;
-        n
-    | Some n, _ -> n
+    | Some n, Some p ->
+        Printf.eprintf "error: give either a positional NAME or --name, not both\n%!";
+        exit 1
+    | Some n, None -> n
     | None, Some p -> p
     | None, None ->
         if is_interactive_stdin () then
