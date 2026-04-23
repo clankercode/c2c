@@ -6867,8 +6867,18 @@ let prompt_multi_select ~prompt ~items () =
   flush stdout;
   let line = String.trim (input_line stdin) in
   if line = "" then [] else
-    let nums = List.filter_map int_of_string_opt (String.split_on_char ',' line) in
-    List.filter_map (fun n -> if n >= 0 && n < List.length items then Some (List.nth items n) else None) nums
+    let nums =
+      if String.index_opt line ',' = None && String.for_all (fun c -> c >= '0' && c <= '9') line then
+        let rec expl i = if i >= String.length line then [] else line.[i] :: expl (i+1) in expl 0 |> List.filter_map (fun c -> int_of_string_opt (String.make 1 c))
+      else
+        List.filter_map int_of_string_opt (String.split_on_char ',' line)
+    in
+    match nums with
+    | [] ->
+        print_endline "Invalid selection (no valid numbers entered). Try again.";
+        prompt_multi_select ~prompt ~items ()
+    | _ ->
+        List.filter_map (fun n -> if n >= 0 && n < List.length items then Some (List.nth items n) else None) nums
 
 let agent_new_interactive ?(client="opencode") name =
   print_newline ();
@@ -6943,6 +6953,10 @@ let agent_new_interactive ?(client="opencode") name =
   (description, role, compatible_clients, theme, auto_join_rooms, selected_snippets)
 
 let agent_new_term =
+  let name_pos =
+    Cmdliner.Arg.(value & pos 0 (some string) None & info [] ~docv:"NAME"
+      ~doc:"Role name (creates .c2c/roles/<NAME>.md). Pass as positional arg or use --name.")
+  in
   let name =
     Cmdliner.Arg.(value & opt (some string) None & info [ "name" ] ~docv:"NAME"
       ~doc:"Role name (creates .c2c/roles/<NAME>.md). Omit to use interactive prompt.")
@@ -6959,10 +6973,12 @@ let agent_new_term =
     Cmdliner.Arg.(value & opt (some string) None & info [ "theme"; "t" ]
       ~docv:"THEME" ~doc:"Banner theme (exp33-gilded, ffx-yuna, lotr-forge, etc.).")
   in
-  let+ name = name
+  let+ name_pos = name_pos
+  and+ name = name
   and+ description = description
   and+ role_type = role_type
   and+ theme = theme in
+  let name = if name <> None then name else name_pos in
   let any_flag_passed = description <> None || role_type <> None || theme <> None || name <> None in
   let interactive = (not any_flag_passed) && is_interactive_stdin () in
   let name =
@@ -6970,7 +6986,7 @@ let agent_new_term =
     | Some n -> n
     | None when interactive -> prompt_nonempty ~prompt:"Role name: " ()
     | None ->
-        Printf.eprintf "error: NAME is required (or run with no arguments for interactive mode)\n%!";
+        Printf.eprintf "error: NAME is required (pass as positional arg, use --name, or run with no arguments for interactive mode)\n%!";
         exit 1
   in
   let (description, role, compatible_clients, theme, auto_join_rooms, selected_snippets) =
