@@ -56,7 +56,7 @@ let test_prepare_launch_args_claude_uses_development_channel_flag () =
     (List.mem "--dangerously-load-development-channels" args);
   check bool "passes local server through dev channel flag" true
     (has_adjacent_pair "--dangerously-load-development-channels" "server:c2c" args);
-  check bool "passes local server through --channels" true
+  check bool "does not pass --channels server:c2c (Max 2026-04-24)" false
     (has_adjacent_pair "--channels" "server:c2c" args)
 
 let test_prepare_launch_args_claude_ignores_enable_channels_config () =
@@ -76,7 +76,7 @@ let test_prepare_launch_args_claude_ignores_enable_channels_config () =
     (List.mem "--dangerously-load-development-channels" args);
   check bool "passes local server through dev channel flag" true
     (has_adjacent_pair "--dangerously-load-development-channels" "server:c2c" args);
-  check bool "passes local server through --channels" true
+  check bool "does not pass --channels server:c2c (Max 2026-04-24)" false
     (has_adjacent_pair "--channels" "server:c2c" args);
   check bool "does not add untagged channel name" false
     (has_adjacent_pair "--channels" "c2c" args)
