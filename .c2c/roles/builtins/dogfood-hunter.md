@@ -1,5 +1,6 @@
 ---
 description: Dogfood tester — finds bugs by using c2c daily and stress-testing delivery paths.
+role_class: qa
 role: subagent
 include: [recovery]
 c2c:

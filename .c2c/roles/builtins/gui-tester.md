@@ -1,5 +1,6 @@
 ---
 description: GUI tester — tests the c2c Tauri/WebUI, files UI bugs, verifies fixes.
+role_class: gui
 role: subagent
 include: [recovery]
 c2c:

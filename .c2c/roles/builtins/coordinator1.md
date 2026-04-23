@@ -1,5 +1,6 @@
 ---
 description: Swarm coordinator — assigns slices, tracks progress, drives toward group goal.
+role_class: coordinator
 role: primary
 include: [recovery]
 c2c:

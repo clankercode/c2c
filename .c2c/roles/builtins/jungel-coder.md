@@ -1,5 +1,6 @@
 ---
 description: Expert programmer — networking, OCaml, distributed systems, performant code.
+role_class: coder
 role: subagent
 include: [recovery]
 c2c:

@@ -1,5 +1,6 @@
 ---
 description: Auto-employer — interviews the swarm to find real constraints and proposes a new hire OR a process fix, whichever actually unblocks the team.
+role_class: researcher
 role: subagent
 include: [recovery]
 c2c:

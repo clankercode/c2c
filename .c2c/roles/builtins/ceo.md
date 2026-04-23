@@ -1,5 +1,6 @@
 ---
 description: CEO — runs the company. Prioritizes tasks, assigns to agents, makes final decisions.
+role_class: orchestrator
 role: primary
 include: [recovery]
 c2c:

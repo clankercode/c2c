@@ -1,5 +1,6 @@
 ---
 description: Expert coder — frontend (WebUI + Tauri), Rust, P2P, distributed systems.
+role_class: coder
 role: subagent
 include: [recovery]
 c2c:
