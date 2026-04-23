@@ -78,6 +78,11 @@
  (modules test_relay_mobile_pair)
  (libraries c2c_mcp alcotest base64 mirage-crypto-ec unix))
 
+(test
+ (name test_relay_observer)
+ (modules test_relay_observer)
+ (libraries c2c_mcp alcotest unix))
+
 ; test_relay.ml stale: references C2c_relay.RegistrationLease (wrong module
 ; name post-inline-merge) + uses `let R = ...` pattern syntax that isn't
 ; S-A4: test_relay.ml updated to use Relay.* (was C2c_relay.*), local module
