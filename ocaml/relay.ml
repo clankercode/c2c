@@ -59,6 +59,9 @@ let room_invite_sign_ctx = "c2c/v1/room-invite"
 let room_uninvite_sign_ctx = "c2c/v1/room-uninvite"
 let room_set_visibility_sign_ctx = "c2c/v1/room-set-visibility"
 
+(* S5a: Mobile pair token signing context *)
+let mobile_pair_token_sign_ctx = "c2c/v1/mobile-pair-token"
+
 (* Parse a header value like
      "Ed25519 alias=foo,ts=1776698000,nonce=AAA,sig=BBB"
    into the four fields. Leading "Ed25519 " prefix is stripped by the caller. *)
@@ -1245,45 +1248,91 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
       let open Sqlite3 in
       let conn = db_open t.db_path in
       let now = Unix.gettimeofday () in
-      let effective_pk = if identity_pk <> "" then identity_pk else "" in
-      let has_row = exec_prepared conn "SELECT node_id, last_seen, ttl FROM leases WHERE alias = ?" [`Text alias] in
-      let conflict_lease = ref None in
-      if has_row then (
-        let stmt = prepare conn "SELECT node_id, last_seen, ttl FROM leases WHERE alias = ?" in
-        bind_text stmt 1 alias |> ignore;
-        let rec check_existing () =
-          let rc = step stmt in
-          if rc = ROW then (
-            let row_node_id = Data.to_string_exn (column stmt 0) in
-            let row_last_seen = Data.to_string_exn (column stmt 1) in
-            let row_ttl = Data.to_string_exn (column stmt 2) in
-            let alive = (float_of_string row_last_seen +. float_of_string row_ttl) >= now in
-            if alive && row_node_id <> node_id then (
-              conflict_lease := Some (RegistrationLease.make ~node_id:row_node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ())
-            ) else
-              check_existing ()
-          ) else if rc <> DONE then
-            failwith ("step error: " ^ Rc.to_string rc)
-        in
-        check_existing ()
-      );
-      match !conflict_lease with
-      | Some lease -> (relay_err_alias_conflict, lease)
-      | None ->
-        let stmt = prepare conn "INSERT INTO leases (alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(alias) DO UPDATE SET node_id=excluded.node_id, session_id=excluded.session_id, client_type=excluded.client_type, last_seen=excluded.last_seen, ttl=excluded.ttl, identity_pk=excluded.identity_pk" in
-        bind_text stmt 1 alias |> ignore;
-        bind_text stmt 2 node_id |> ignore;
-        bind_text stmt 3 session_id |> ignore;
-        bind_text stmt 4 client_type |> ignore;
-        bind_double stmt 5 now |> ignore;
-        bind_double stmt 6 now |> ignore;
-        bind_double stmt 7 ttl |> ignore;
-        bind_text stmt 8 effective_pk |> ignore;
-        let rc = step stmt in
-        if not (Rc.is_success rc) && rc <> DONE then
-          failwith ("register insert failed: " ^ Rc.to_string rc);
-        let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk:effective_pk () in
-        ("ok", lease)
+      if not (C2c_name.is_valid alias) then
+        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk () in
+        ("invalid_alias", dummy)
+      else
+      let allow_state =
+        if identity_pk <> "" then
+          let submitted_b64 = Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet identity_pk in
+          let has_row = exec_prepared conn "SELECT identity_pk_b64 FROM allowed_identities WHERE alias = ?" [`Text alias] in
+          if not has_row then `Unlisted
+          else
+            let stmt = prepare conn "SELECT identity_pk_b64 FROM allowed_identities WHERE alias = ?" in
+            bind_text stmt 1 alias |> ignore;
+            let rc = step stmt in
+            if rc = ROW then
+              let pinned = Data.to_string_exn (column stmt 0) in
+              if submitted_b64 = pinned then `Allowed else `Mismatch
+            else `Unlisted
+        else
+          let has_row = exec_prepared conn "SELECT identity_pk_b64 FROM allowed_identities WHERE alias = ?" [`Text alias] in
+          if not has_row then `Unlisted else `ListedNoPk
+      in
+      match allow_state with
+      | `Mismatch | `ListedNoPk ->
+        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk () in
+        ("alias_not_allowed", dummy)
+      | `Unlisted | `Allowed ->
+        let has_row = exec_prepared conn "SELECT node_id, last_seen, ttl, identity_pk FROM leases WHERE alias = ?" [`Text alias] in
+        let conflict_lease = ref None in
+        let existing_pk = ref "" in
+        if has_row then (
+          let stmt = prepare conn "SELECT node_id, last_seen, ttl, identity_pk FROM leases WHERE alias = ?" in
+          bind_text stmt 1 alias |> ignore;
+          let rec check_existing () =
+            let rc = step stmt in
+            if rc = ROW then (
+              let row_node_id = Data.to_string_exn (column stmt 0) in
+              let row_last_seen = Data.to_string_exn (column stmt 1) in
+              let row_ttl = Data.to_string_exn (column stmt 2) in
+              let row_pk = Data.to_string_exn (column stmt 3) in
+              existing_pk := row_pk;
+              let alive = (float_of_string row_last_seen +. float_of_string row_ttl) >= now in
+              if alive && row_node_id <> node_id then (
+                conflict_lease := Some (RegistrationLease.make ~node_id:row_node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ())
+              ) else
+                check_existing ()
+            ) else if rc <> DONE then
+              failwith ("step error: " ^ Rc.to_string rc)
+          in
+          check_existing ()
+        );
+        match !conflict_lease with
+        | Some lease -> (relay_err_alias_conflict, lease)
+        | None ->
+          let binding_state =
+            if identity_pk <> "" then
+              if !existing_pk <> "" && !existing_pk <> identity_pk then `Mismatch
+              else `Matches
+            else
+              if !existing_pk <> "" then `Preserve
+              else `NoPkNoBinding
+          in
+          match binding_state with
+          | `Mismatch ->
+            let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk () in
+            (relay_err_alias_identity_mismatch, dummy)
+          | _ ->
+            let effective_pk = match binding_state with
+              | `Preserve -> !existing_pk
+              | `Matches -> identity_pk
+              | `NoPkNoBinding -> ""
+            in
+            let stmt = prepare conn "INSERT INTO leases (alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(alias) DO UPDATE SET node_id=excluded.node_id, session_id=excluded.session_id, client_type=excluded.client_type, last_seen=excluded.last_seen, ttl=excluded.ttl, identity_pk=excluded.identity_pk" in
+            bind_text stmt 1 alias |> ignore;
+            bind_text stmt 2 node_id |> ignore;
+            bind_text stmt 3 session_id |> ignore;
+            bind_text stmt 4 client_type |> ignore;
+            bind_double stmt 5 now |> ignore;
+            bind_double stmt 6 now |> ignore;
+            bind_double stmt 7 ttl |> ignore;
+            bind_text stmt 8 effective_pk |> ignore;
+            let rc = step stmt in
+            if not (Rc.is_success rc) && rc <> DONE then
+              failwith ("register insert failed: " ^ Rc.to_string rc);
+            let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk:effective_pk () in
+            ("ok", lease)
     )
 
   let identity_pk_of t ~alias =
@@ -2397,7 +2446,31 @@ end = struct
      | `Int n -> Some n
      | `Float f -> Some (int_of_float f)
      | _ -> None)
+     |> Option.value ~default
+
+  (* S5a: Mobile pair token helpers *)
+  let get_float json field default =
+    (match Yojson.Safe.Util.member field json with
+     | `Float f -> Some f
+     | `Int n -> Some (float_of_int n)
+     | _ -> None)
     |> Option.value ~default
+
+  let encode_token_json j =
+    Yojson.Safe.to_string j |>
+    fun s -> Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet s
+
+  let decode_token_json b64 =
+    match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet b64 with
+    | Error _ -> None
+    | Ok s ->
+      try Some (Yojson.Safe.from_string s)
+      with Yojson.Json_error _ -> None
+
+  let canonical_token_msg ~binding_id ~machine_ed25519_pubkey_b64 ~issued_at ~expires_at ~nonce =
+    Relay_identity.canonical_msg ~ctx:mobile_pair_token_sign_ctx
+      [ binding_id; machine_ed25519_pubkey_b64; string_of_float issued_at;
+        string_of_float expires_at; nonce ]
 
   (* --- Response helpers --- *)
 
