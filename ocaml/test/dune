@@ -44,6 +44,11 @@
  (libraries c2c_mcp alcotest unix))
 
 (test
+ (name test_relay_enc)
+ (modules test_relay_enc)
+ (libraries c2c_mcp alcotest base64 unix))
+
+(test
  (name test_relay_remote_broker)
  (modules test_relay_remote_broker)
  (libraries c2c_mcp alcotest))

@@ -23,7 +23,11 @@ type registration =
       drained — still "provisional". *)
   ; enc_pubkey : string option
   (** X25519 public key (base64url, 32 bytes) for E2E encryption.
-      Published in the registry so recipients can encrypt DMs. *)
+      Published in the registry so recipients can encrypt DMs.
+      Secret stored in [~/.c2c/keys/<session_id>.x25519] mode 0600.
+      Known v1 limitation (M1 threat model §I1): mode 0600 does not protect
+      against other processes running as the same Unix user (including child
+      agents). OS keyring integration deferred to M3. *)
   ; compacting : compacting option
   }
 type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option }

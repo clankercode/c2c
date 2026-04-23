@@ -2401,7 +2401,7 @@ let auto_register_startup ~broker_root =
         let client_type = current_client_type () in
         let plugin_version = current_plugin_version () in
         let enc_pubkey =
-          match Relay_enc.load_or_generate ~session_id with
+          match Relay_enc.load_or_generate ~session_id () with
           | Ok enc -> Some (Relay_enc.public_key_b64 enc)
           | Error e ->
               Printf.eprintf "[auto_register_startup] warning: could not load X25519 key: %s\n%!" e;
@@ -2682,7 +2682,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
             else begin
               let plugin_version = optional_string_member "plugin_version" arguments in
               let enc_pubkey =
-                match Relay_enc.load_or_generate ~session_id with
+                match Relay_enc.load_or_generate ~session_id () with
                 | Ok enc -> Some (Relay_enc.public_key_b64 enc)
                 | Error e ->
                     Printf.eprintf "[register] warning: could not load X25519 key: %s\n%!" e;

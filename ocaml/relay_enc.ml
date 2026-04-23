@@ -22,12 +22,7 @@ let default_path ~session_id =
     try Sys.getenv "HOME"
     with Not_found -> "/"
   in
-  let xdg =
-    try Sys.getenv "XDG_DATA_HOME"
-    with Not_found -> Filename.concat (Filename.concat home ".local") "share"
-  in
-  let keys_dir = Filename.concat (Filename.concat xdg "c2c") "keys" in
-  (* One X25519 keypair per session, alongside Ed25519 identity. *)
+  let keys_dir = home // ".c2c" // "keys" in
   keys_dir // session_id ^ ".x25519"
 
 let rng_initialized = ref false
@@ -172,14 +167,20 @@ let load ~path () =
                path (Unix.error_message e) fn arg)
   | Sys_error msg -> Error ("load: " ^ msg)
 
-(* Load or generate a keypair for the given session. *)
-let load_or_generate ~session_id =
-  let path = default_path ~session_id in
+(* Load or generate a keypair for the given session.
+   Only regenerates when the file does not exist (ENOENT).
+   Permissions errors or corruption are returned as errors — never silently overwritten.
+   [path] defaults to [default_path ~session_id]; override with [?path] for tests. *)
+let load_or_generate ~session_id ?(path : string option) () =
+  let path = match path with Some p -> p | None -> default_path ~session_id in
   match load ~path () with
   | Ok t -> Ok t
-  | Error _ ->
-      (* Key doesn't exist yet — generate and save. *)
-      let t = generate () in
-      match save ~path t with
-      | Ok () -> Ok t
-      | Error e -> Error ("save after generate: " ^ e)
+  | Error e ->
+      if String.length e >= 22 && String.sub e 0 22 = "enc identity file not " then
+        (* ENOENT: key file absent — generate and save. *)
+        let t = generate () in
+        (match save ~path t with
+         | Ok () -> Ok t
+         | Error se -> Error ("save after generate: " ^ se))
+      else
+        Error e
