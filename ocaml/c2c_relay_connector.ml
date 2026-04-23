@@ -196,6 +196,65 @@ let remove_pseudo_registration broker_root ~binding_id =
   let entries = List.remove_assq binding_id entries in
   write_pseudo_registrations broker_root entries
 
+(* S5c Phase B: Mobile bindings — local store of binding_ids this broker
+   should connect to. Stored in mobile_bindings.json — list of binding_ids. *)
+
+let mobile_bindings_path broker_root = broker_root // "mobile_bindings.json"
+
+type mobile_binding = {
+  mb_binding_id : string;
+  mb_created_at : float;
+}
+
+let read_mobile_bindings broker_root =
+  let path = mobile_bindings_path broker_root in
+  if not (Sys.file_exists path) then []
+  else
+    try
+      let json = Yojson.Safe.from_file path in
+      let open Yojson.Safe.Util in
+      match json with
+      | `List ids ->
+          List.filter_map (function
+            | `Assoc fields ->
+                let binding_id = match List.assoc_opt "binding_id" fields with Some (`String s) -> s | _ -> "" in
+                let created_at = match List.assoc_opt "created_at" fields with Some (`Float f) -> f | Some (`Int i) -> float_of_int i | _ -> 0.0 in
+                if binding_id <> "" then Some { mb_binding_id = binding_id; mb_created_at = created_at }
+                else None
+            | _ -> None)
+          ids
+      | _ -> []
+    with _ -> []
+
+let write_mobile_bindings broker_root entries =
+  let path = mobile_bindings_path broker_root in
+  let json = `List (List.map (fun mb ->
+    `Assoc [
+      "binding_id", `String mb.mb_binding_id;
+      "created_at", `Float mb.mb_created_at;
+    ])
+  entries) in
+  let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+  let oc = open_out tmp in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () ->
+      Yojson.Safe.to_channel oc json ~std:false;
+      close_out oc;
+      Unix.rename tmp path)
+
+let add_mobile_binding broker_root ~binding_id =
+  let entries = read_mobile_bindings broker_root in
+  let now = Unix.gettimeofday () in
+  let new_entry = { mb_binding_id = binding_id; mb_created_at = now } in
+  let entries = List.filter (fun e -> e.mb_binding_id <> binding_id) entries in
+  let entries = new_entry :: entries in
+  write_mobile_bindings broker_root entries
+
+let remove_mobile_binding broker_root ~binding_id =
+  let entries = read_mobile_bindings broker_root in
+  let entries = List.filter (fun e -> e.mb_binding_id <> binding_id) entries in
+  write_mobile_bindings broker_root entries
+
 (* ---------------------------------------------------------------------------
  * Outbox (remote-outbox.jsonl)
  * --------------------------------------------------------------------------- *)
