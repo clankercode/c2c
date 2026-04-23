@@ -208,7 +208,7 @@ const C2CDelivery: Plugin = async (ctx) => {
     process.env.C2C_OPENCODE_SESSION_ID || sidecar.opencode_session_id || "";
   const c2cAlias: string =
     (sidecar.alias as string | undefined) || sessionId || "";
-  const pollIntervalMs: number = parseInt(process.env.C2C_PLUGIN_POLL_INTERVAL_MS || "30000", 10);
+  const pollIntervalMs: number = parseInt(process.env.C2C_PLUGIN_POLL_INTERVAL_MS || "5000", 10);
   const idleOnlyMode: boolean = (process.env.C2C_PLUGIN_DELIVER_ON_IDLE || "0") === "1";
   const permissionSupervisors: string[] = resolvePermissionSupervisors();
   const supervisorStrategy: string =
