@@ -6,6 +6,15 @@
 
 ---
 
+## Review policy (added 2026-04-23 per Max)
+
+**Every commit touching M1 gets reviewed by coordinator1 (or a dispatched subagent) before the slice is considered landed.** This is explicit — crypto + auth + WebSocket layer is load-bearing for mobile trust model, so no silent merges.
+
+- Implementers: after each commit on an M1 slice, DM coordinator1 with `SHA + slice-id + one-line summary`. Coordinator1 reviews against spec + slice AC and signs off (or requests changes).
+- Review latency target: <1h during active swarm hours; <4h otherwise.
+- If coordinator1 is offline, reviews can be delegated to a peer with explicit hand-off (DM'd to swarm-lounge).
+- Merge to master is allowed pre-review (we commit fast locally), but **no push to origin** without review sign-off on every M1 commit in the batch.
+
 ## Principles
 
 - **Backward compatible throughout M1.** Every change must keep existing agents (Claude/Codex/OpenCode/Kimi) working with zero config change. Peers without a pubkey get plaintext; peers with one get boxed.
