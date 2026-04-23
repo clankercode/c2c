@@ -347,6 +347,7 @@ let exec_prepared db sql params =
     else failwith ("step failed: " ^ Rc.to_string rc)
   in
   let has_row = loop () in
+  (try Sqlite3.finalize stmt |> ignore with _ -> ());
   has_row
 
 (* S5a: Pairing token SQL helpers *)
@@ -1359,10 +1360,13 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
         let stmt = prepare conn "SELECT alias FROM leases WHERE identity_pk = ?" in
         bind_text stmt 1 identity_pk |> ignore;
         let rc = step stmt in
-        if rc = Rc.ROW then
+        let result = if rc = Rc.ROW then
           let alias = Data.to_string_exn (column stmt 0) in
           if alias = "" then None else Some alias
         else None
+        in
+        (try Sqlite3.finalize stmt |> ignore with _ -> ());
+        result
     )
 
   let query_messages_since t ~alias ~since_ts =
@@ -1398,6 +1402,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
           failwith ("query_messages_since step failed: " ^ Rc.to_string rc)
       in
       loop ();
+      (try Sqlite3.finalize stmt |> ignore with _ -> ());
       List.rev !msgs
     )
 
@@ -3812,9 +3817,10 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
 
       | `GET, path when String.starts_with ~prefix:"/remote_inbox/" path ->
         let session_id = String.sub path 14 (String.length path - 14) in
-        let valid = match String.length session_id with
-          | 0 | 65 -> false
-          | _ ->
+        let valid =
+          let n = String.length session_id in
+          if n = 0 || n > 64 then false
+          else begin
             let ok = ref true in
             String.iter (fun c ->
               if not ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
@@ -3822,6 +3828,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
               then ok := false
             ) session_id;
             !ok
+          end
         in
         if not valid then
           respond_bad_request (json_error_str err_bad_request "invalid session_id")
