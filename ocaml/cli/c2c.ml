@@ -7252,8 +7252,15 @@ let run_ephemeral_agent
     end;
     let c2c_bin = match bin_opt with Some b -> b | None -> "c2c" in
     let q = Filename.quote in
+    (* Strip parent c2c-session env vars so the child `c2c start` in the new
+       tmux window isn't blocked by the nested-session guard in c2c_start.ml.
+       tmux new-window usually inherits from the tmux server's env, but when
+       the caller is itself a managed c2c session (e.g. coordinator1 spawning
+       a review-bot), these vars leak through. Explicit `env -u` is safe
+       even when they're unset. *)
     let shell_cmd =
-      Printf.sprintf "exec %s start %s -n %s --kickoff-prompt-file %s"
+      Printf.sprintf
+        "exec env -u C2C_MCP_SESSION_ID -u C2C_MCP_AUTO_REGISTER_ALIAS -u C2C_INSTANCE_NAME -u C2C_WRAPPER_SELF %s start %s -n %s --kickoff-prompt-file %s"
         (q c2c_bin) (q client) (q name) (q kickoff_path)
     in
     let window_title = Printf.sprintf "c2c-%s" name in
