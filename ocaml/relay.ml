@@ -2254,6 +2254,38 @@ let push_to_observers ~binding_id (msg : Relay_short_queue.message) =
     Lwt.async (fun () -> Relay_ws_frame.Session.send_text session payload)
   ) sessions
 
+(* S5c: Push pseudo_registration to all active observer sessions for a binding.
+   This tells the bound broker to add the phone as a reachable peer. *)
+let push_pseudo_registration_to_observers ~binding_id ~phone_ed_pk ~phone_x_pk ~machine_ed_pk ~provenance_sig ~bound_at =
+  let sessions = ObserverSessions.get observer_sessions ~binding_id in
+  let json = `Assoc [
+    "type", `String "pseudo_registration";
+    "alias", `String binding_id;
+    "ed25519_pubkey", `String phone_ed_pk;
+    "x25519_pubkey", `String phone_x_pk;
+    "machine_ed25519_pubkey", `String machine_ed_pk;
+    "binding_id", `String binding_id;
+    "bound_at", `Float bound_at;
+    "provenance_sig", `String provenance_sig;
+  ] in
+  let payload = Yojson.Safe.to_string json in
+  List.iter (fun session ->
+    Lwt.async (fun () -> Relay_ws_frame.Session.send_text session payload)
+  ) sessions
+
+(* S5c: Push pseudo_unregistration to all active observer sessions for a binding.
+   This tells the bound broker to remove the phone's pseudo-registration. *)
+let push_pseudo_unregistration_to_observers ~binding_id =
+  let sessions = ObserverSessions.get observer_sessions ~binding_id in
+  let json = `Assoc [
+    "type", `String "pseudo_unregistration";
+    "binding_id", `String binding_id;
+  ] in
+  let payload = Yojson.Safe.to_string json in
+  List.iter (fun session ->
+    Lwt.async (fun () -> Relay_ws_frame.Session.send_text session payload)
+  ) sessions
+
 (* S6: Parse observer WebSocket messages *)
 let parse_observer_ws_msg (raw : string) : [`Reconnect of float * string option | `Ping | `Unknown] =
   try
@@ -3402,6 +3434,9 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
                         let () = R.add_observer_binding relay ~binding_id
                           ~phone_ed25519_pubkey:phone_ed_pk ~phone_x25519_pubkey:phone_x_pk in
                         let bound_at = Unix.gettimeofday () in
+                        let () = push_pseudo_registration_to_observers ~binding_id
+                          ~phone_ed_pk:phone_ed_pk ~phone_x_pk:phone_x_pk
+                          ~machine_ed_pk:machine_pk ~provenance_sig:sig_b64 ~bound_at in
                         let confirm_json = `Assoc [
                           "binding_id", `String binding_id;
                           "phone_ed25519_pubkey", `String phone_ed_pk;
@@ -3428,6 +3463,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
         | Some _ -> true
       in
       R.remove_observer_binding relay ~binding_id;
+      (if existed then push_pseudo_unregistration_to_observers ~binding_id else ());
       Relay_ratelimit.structured_log ~event:"pair_revoke"
         ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
         ~result:(if existed then "ok" else "not_found") ();
