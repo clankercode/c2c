@@ -453,6 +453,10 @@ module InMemoryRelay : RELAY = struct
     dedup_window : int;
     seen_ids_fifo : string Queue.t;
     persist_dir : string option;  (* if set, room history is also written to disk *)
+    (* S5a: In-memory pairing token store *)
+    pairing_tokens : (string, (string * string * float)) Hashtbl.t;
+    (* S5a: In-memory observer bindings *)
+    observer_bindings_mem : (string, (string * string)) Hashtbl.t;
   }
 
   let room_history_jsonl_path persist_dir room_id =
@@ -515,6 +519,8 @@ module InMemoryRelay : RELAY = struct
       seen_ids_fifo = Queue.create ();
       dedup_window;
       persist_dir;
+      pairing_tokens = Hashtbl.create 64;
+      observer_bindings_mem = Hashtbl.create 64;
     }
 
   let with_lock t f =
@@ -631,6 +637,32 @@ module InMemoryRelay : RELAY = struct
       ) t.leases;
       !result
     )
+
+  (* S5a: In-memory pairing token store *)
+  let store_pairing_token t ~binding_id ~token_b64 ~machine_ed25519_pubkey ~expires_at =
+    Hashtbl.replace t.pairing_tokens binding_id (token_b64, machine_ed25519_pubkey, expires_at);
+    Res.Ok ()
+
+  let get_and_burn_pairing_token t ~binding_id =
+    let now = Unix.gettimeofday () in
+    match Hashtbl.find_opt t.pairing_tokens binding_id with
+    | None -> None
+    | Some (token_b64, machine_ed25519_pubkey, expires_at) ->
+      if now > expires_at then
+        (Hashtbl.remove t.pairing_tokens binding_id; None)
+      else
+        (Hashtbl.remove t.pairing_tokens binding_id;
+         Some (token_b64, machine_ed25519_pubkey))
+
+  (* S5a: In-memory observer bindings *)
+  let add_observer_binding t ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey =
+    Hashtbl.replace t.observer_bindings_mem binding_id (phone_ed25519_pubkey, phone_x25519_pubkey)
+
+  let get_observer_binding t ~binding_id =
+    Hashtbl.find_opt t.observer_bindings_mem binding_id
+
+  let remove_observer_binding t ~binding_id =
+    Hashtbl.remove t.observer_bindings_mem binding_id
 
   let query_messages_since t ~alias ~since_ts =
     with_lock t (fun () ->
@@ -1094,6 +1126,59 @@ module InMemoryRelay : RELAY = struct
     )
 end
 
+(* --- S4/S5a: Observer bindings (moved before SqliteRelay for forward reference) --- *)
+module ObserverBindings : sig
+  type t
+  val create : unit -> t
+  val add : t -> binding_id:string -> phone_ed25519_pubkey:string -> phone_x25519_pubkey:string -> unit
+  val get : t -> binding_id:string -> (string * string) option
+  val binding_id_of_phone_pk : t -> phone_ed25519_pubkey:string -> string option
+  val remove : t -> binding_id:string -> unit
+end = struct
+  type binding = {
+    phone_ed25519_pubkey : string;
+    phone_x25519_pubkey : string;
+    issued_at : float;
+  }
+  type t = {
+    bindings : (string, binding) Hashtbl.t;
+    phone_pk_to_binding : (string, string) Hashtbl.t;
+    mutex : Mutex.t;
+  }
+  let create () = {
+    bindings = Hashtbl.create 64;
+    phone_pk_to_binding = Hashtbl.create 64;
+    mutex = Mutex.create ();
+  }
+  let add t ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey =
+    Mutex.lock t.mutex;
+    Hashtbl.replace t.bindings binding_id {
+      phone_ed25519_pubkey; phone_x25519_pubkey;
+      issued_at = Unix.gettimeofday ();
+    };
+    Hashtbl.replace t.phone_pk_to_binding phone_ed25519_pubkey binding_id;
+    Mutex.unlock t.mutex
+  let get t ~binding_id =
+    Mutex.lock t.mutex;
+    let result = Hashtbl.find_opt t.bindings binding_id in
+    Mutex.unlock t.mutex;
+    match result with
+    | Some b -> Some (b.phone_ed25519_pubkey, b.phone_x25519_pubkey)
+    | None -> None
+  let binding_id_of_phone_pk t ~phone_ed25519_pubkey =
+    Mutex.lock t.mutex;
+    let result = Hashtbl.find_opt t.phone_pk_to_binding phone_ed25519_pubkey in
+    Mutex.unlock t.mutex;
+    result
+  let remove t ~binding_id =
+    Mutex.lock t.mutex;
+    (match Hashtbl.find_opt t.bindings binding_id with
+     | Some b -> Hashtbl.remove t.phone_pk_to_binding b.phone_ed25519_pubkey
+     | None -> ());
+    Hashtbl.remove t.bindings binding_id;
+    Mutex.unlock t.mutex
+end
+
 (* --- SqliteRelay --- *)
 
 module SqliteRelay : RELAY = struct
@@ -1101,6 +1186,7 @@ module SqliteRelay : RELAY = struct
     db_path : string;
     dedup_window : int;
     mutex : Mutex.t;
+    observer_bindings : ObserverBindings.t;
   }
 
 let create ?(dedup_window=10000) ?(persist_dir="") () =
@@ -1109,7 +1195,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
     let conn = Sqlite3.db_open db_path in
     Sqlite3.exec conn "PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;" |> ignore;
     Sqlite3.exec conn sqlite_ddl |> ignore;
-    { db_path; dedup_window; mutex }
+    { db_path; dedup_window; mutex; observer_bindings = ObserverBindings.create () }
 
   let with_lock t f =
     Mutex.lock t.mutex;
@@ -1944,65 +2030,37 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
       let rc = Sqlite3.step stmt in
       rc = Rc.ROW
     )
+
+  (* S5a: Pairing token management — delegates to module-level SQL helpers *)
+  let store_pairing_token t ~binding_id ~token_b64 ~machine_ed25519_pubkey ~expires_at =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      store_pairing_token_db conn ~binding_id ~token_b64 ~machine_ed25519_pubkey ~expires_at
+    )
+
+  let get_and_burn_pairing_token t ~binding_id =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      match get_and_burn_pairing_token_db conn ~binding_id with
+      | Res.Ok opt -> opt
+      | Res.Error _ -> None
+    )
+
+  (* S5a: Observer bindings — uses per-relay ObserverBindings instance *)
+  let add_observer_binding t ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey =
+    ObserverBindings.add t.observer_bindings ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey
+
+  let get_observer_binding t ~binding_id =
+    ObserverBindings.get t.observer_bindings ~binding_id
+
+  let remove_observer_binding t ~binding_id =
+    ObserverBindings.remove t.observer_bindings ~binding_id
 end
 
 (* --- Relay_server HTTP layer (functor over RELAY backend) --- *)
 
 (* Instantiate rate limiter once at module level — avoids fresh-type-in-functor issue. *)
 module Rate_limiter_inst = Relay_ratelimit.Make()
-
-(* --- S4/S5a: Observer bindings and nonce cache --- *)
-module ObserverBindings : sig
-  type t
-  val create : unit -> t
-  val add : t -> binding_id:string -> phone_ed25519_pubkey:string -> phone_x25519_pubkey:string -> unit
-  val get : t -> binding_id:string -> (string * string) option
-  val binding_id_of_phone_pk : t -> phone_ed25519_pubkey:string -> string option
-  val remove : t -> binding_id:string -> unit
-end = struct
-  type binding = {
-    phone_ed25519_pubkey : string;
-    phone_x25519_pubkey : string;
-    issued_at : float;
-  }
-  type t = {
-    bindings : (string, binding) Hashtbl.t;
-    phone_pk_to_binding : (string, string) Hashtbl.t;
-    mutex : Mutex.t;
-  }
-  let create () = {
-    bindings = Hashtbl.create 64;
-    phone_pk_to_binding = Hashtbl.create 64;
-    mutex = Mutex.create ();
-  }
-  let add t ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey =
-    Mutex.lock t.mutex;
-    Hashtbl.replace t.bindings binding_id {
-      phone_ed25519_pubkey; phone_x25519_pubkey;
-      issued_at = Unix.gettimeofday ();
-    };
-    Hashtbl.replace t.phone_pk_to_binding phone_ed25519_pubkey binding_id;
-    Mutex.unlock t.mutex
-  let get t ~binding_id =
-    Mutex.lock t.mutex;
-    let result = Hashtbl.find_opt t.bindings binding_id in
-    Mutex.unlock t.mutex;
-    match result with
-    | Some b -> Some (b.phone_ed25519_pubkey, b.phone_x25519_pubkey)
-    | None -> None
-  let binding_id_of_phone_pk t ~phone_ed25519_pubkey =
-    Mutex.lock t.mutex;
-    let result = Hashtbl.find_opt t.phone_pk_to_binding phone_ed25519_pubkey in
-    Mutex.unlock t.mutex;
-    result
-  let remove t ~binding_id =
-    Mutex.lock t.mutex;
-    (match Hashtbl.find_opt t.bindings binding_id with
-     | Some b -> Hashtbl.remove t.phone_pk_to_binding b.phone_ed25519_pubkey
-     | None -> ());
-    Hashtbl.remove t.bindings binding_id;
-    Mutex.unlock t.mutex
-end
 
 module NonceCache : sig
   type t
@@ -3077,7 +3135,24 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
         in
         match R.send_room relay ~from_alias ~room_id ~content
                 ~message_id ?envelope () with
-        | `Ok (ts, delivered, skipped) -> respond_ok (json_of_send_room_result (ts, delivered, skipped))
+        | `Ok (ts, delivered, skipped) ->
+          List.iter (fun to_alias ->
+            match R.identity_pk_of relay ~alias:to_alias with
+            | Some identity_pk ->
+              (match binding_id_of_phone_pk ~phone_ed25519_pubkey:identity_pk with
+               | Some binding_id ->
+                 let sq_msg = {
+                   Relay_short_queue.ts;
+                   from_alias;
+                   to_alias;
+                   room_id = Some room_id;
+                   content;
+                 } in
+                 Relay_short_queue.ShortQueue.push short_queue ~binding_id sq_msg
+               | None -> ())
+            | None -> ()
+          ) delivered;
+          respond_ok (json_of_send_room_result (ts, delivered, skipped))
 
   let handle_room_history relay body =
     let room_id = get_string body "room_id" in
