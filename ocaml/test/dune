@@ -72,3 +72,12 @@
  (name test_relay_short_queue)
  (modules test_relay_short_queue)
  (libraries c2c_mcp alcotest unix))
+
+; test_relay.ml stale: references C2c_relay.RegistrationLease (wrong module
+; name post-inline-merge) + uses `let R = ...` pattern syntax that isn't
+; OCaml. Needs a proper modernization pass as part of S-A4 (#100). Until
+; then, leaving the module unregistered — it cannot compile in current form.
+;(test
+; (name test_relay)
+; (modules test_relay)
+; (libraries c2c_mcp alcotest yojson unix))

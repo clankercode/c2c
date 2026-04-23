@@ -3236,6 +3236,128 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
       let history = R.room_history relay ~room_id ~limit in
       respond_ok (json_ok [ ("room_id", `String room_id); ("history", `List history) ])
 
+  (* S5a: POST /mobile-pair/prepare — store signed pairing token, return binding_id *)
+  let handle_mobile_pair_prepare relay ~client_ip body =
+    let open Yojson.Safe.Util in
+    let machine_pk = get_opt_string body "machine_ed25519_pubkey" |> Option.value ~default:"" in
+    let token_b64 = get_opt_string body "token" |> Option.value ~default:"" in
+    if machine_pk = "" then respond_bad_request (json_error_str err_bad_request "machine_ed25519_pubkey is required")
+    else if token_b64 = "" then respond_bad_request (json_error_str err_bad_request "token is required")
+    else
+      match decode_b64url machine_pk with
+      | Error _ -> respond_bad_request (json_error_str err_bad_request "machine_ed25519_pubkey not base64url-nopad")
+      | Ok pk when String.length pk <> 32 -> respond_bad_request (json_error_str err_bad_request "machine_ed25519_pubkey must be 32 bytes")
+      | Ok _ ->
+        match decode_token_json token_b64 with
+        | None -> respond_bad_request (json_error_str err_bad_request "token: invalid JSON or encoding")
+        | Some token_json ->
+          let open Yojson.Safe.Util in
+          let token_fields = match token_json with `Assoc f -> f | _ -> [] in
+          let binding_id = `Assoc token_fields |> member "binding_id" |> to_string_option |> Option.value ~default:"" in
+          let issued_at = `Assoc token_fields |> member "issued_at" |> function `Float f -> f | `Int i -> float_of_int i | _ -> 0.0 in
+          let expires_at = `Assoc token_fields |> member "expires_at" |> function `Float f -> f | `Int i -> float_of_int i | _ -> 0.0 in
+          let sig_b64 = `Assoc token_fields |> member "sig" |> to_string_option |> Option.value ~default:"" in
+          let nonce = `Assoc token_fields |> member "nonce" |> to_string_option |> Option.value ~default:"" in
+          let now = Unix.gettimeofday () in
+          if binding_id = "" then respond_bad_request (json_error_str err_bad_request "token missing binding_id")
+          else if sig_b64 = "" then respond_bad_request (json_error_str err_bad_request "token missing sig")
+          else if nonce = "" then respond_bad_request (json_error_str err_bad_request "token missing nonce")
+          else if now > expires_at then respond_bad_request (json_error_str err_bad_request "token expired")
+          else if now < issued_at -. 5.0 then respond_bad_request (json_error_str err_bad_request "token issued_at in future")
+          else
+            match decode_b64url sig_b64 with
+            | Error _ -> respond_bad_request (json_error_str err_bad_request "token sig not base64url-nopad")
+            | Ok sig_raw ->
+              let blob = canonical_token_msg ~binding_id ~machine_ed25519_pubkey_b64:machine_pk
+                ~issued_at ~expires_at ~nonce in
+              match decode_b64url machine_pk with
+              | Error _ -> respond_bad_request (json_error_str err_bad_request "machine_ed25519_pubkey decode")
+              | Ok pk_raw ->
+                if not (Relay_identity.verify ~pk:pk_raw ~msg:blob ~sig_:sig_raw) then
+                  respond_unauthorized (json_error_str relay_err_signature_invalid "token signature verification failed")
+                else
+                  match R.store_pairing_token relay ~binding_id ~token_b64 ~machine_ed25519_pubkey:machine_pk ~expires_at with
+                  | Error e -> respond_internal_error (json_error_str err_internal_error e)
+                  | Ok () ->
+                    Relay_ratelimit.structured_log ~event:"pair_requested"
+                      ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip) ~result:"ok" ();
+                    respond_ok (`Assoc ["binding_id", `String binding_id])
+
+  (* S5a: POST /mobile-pair — verify token sig, burn atomically, create binding *)
+  let handle_mobile_pair relay body =
+    let open Yojson.Safe.Util in
+    let token_b64 = get_opt_string body "token" |> Option.value ~default:"" in
+    let phone_ed_pk = get_opt_string body "phone_ed25519_pubkey" |> Option.value ~default:"" in
+    let phone_x_pk = get_opt_string body "phone_x25519_pubkey" |> Option.value ~default:"" in
+    if token_b64 = "" then respond_bad_request (json_error_str err_bad_request "token is required")
+    else if phone_ed_pk = "" || phone_x_pk = "" then
+      respond_bad_request (json_error_str err_bad_request "phone_ed25519_pubkey and phone_x25519_pubkey are required")
+    else
+      match decode_token_json token_b64 with
+      | None -> respond_bad_request (json_error_str err_bad_request "token: invalid JSON or encoding")
+      | Some token_json ->
+        let open Yojson.Safe.Util in
+        let token_fields = match token_json with `Assoc f -> f | _ -> [] in
+        let binding_id = `Assoc token_fields |> member "binding_id" |> to_string_option |> Option.value ~default:"" in
+        let machine_pk = `Assoc token_fields |> member "machine_ed25519_pubkey" |> to_string_option |> Option.value ~default:"" in
+        let issued_at = `Assoc token_fields |> member "issued_at" |> function `Float f -> f | `Int i -> float_of_int i | _ -> 0.0 in
+        let expires_at = `Assoc token_fields |> member "expires_at" |> function `Float f -> f | `Int i -> float_of_int i | _ -> 0.0 in
+        let nonce = `Assoc token_fields |> member "nonce" |> to_string_option |> Option.value ~default:"" in
+        let sig_b64 = `Assoc token_fields |> member "sig" |> to_string_option |> Option.value ~default:"" in
+        let now = Unix.gettimeofday () in
+        if binding_id = "" then respond_bad_request (json_error_str err_bad_request "token missing binding_id")
+        else if machine_pk = "" then respond_bad_request (json_error_str err_bad_request "token missing machine_ed25519_pubkey")
+        else if sig_b64 = "" then respond_bad_request (json_error_str err_bad_request "token missing sig")
+        else if nonce = "" then respond_bad_request (json_error_str err_bad_request "token missing nonce")
+        else if now > expires_at then respond_bad_request (json_error_str err_bad_request "token expired")
+        else if now < issued_at -. 5.0 then respond_bad_request (json_error_str err_bad_request "token issued_at in future")
+        else
+          match decode_b64url sig_b64 with
+          | Error _ -> respond_bad_request (json_error_str err_bad_request "token sig not base64url-nopad")
+          | Ok sig_raw ->
+            let blob = canonical_token_msg ~binding_id ~machine_ed25519_pubkey_b64:machine_pk
+              ~issued_at ~expires_at ~nonce in
+            match decode_b64url machine_pk with
+            | Error _ -> respond_bad_request (json_error_str err_bad_request "token machine_ed25519_pubkey decode")
+            | Ok pk_raw ->
+              if not (Relay_identity.verify ~pk:pk_raw ~msg:blob ~sig_:sig_raw) then
+                respond_unauthorized (json_error_str relay_err_signature_invalid "token signature verification failed")
+              else
+                match R.get_and_burn_pairing_token relay ~binding_id with
+                | None -> respond_bad_request (json_error_str err_bad_request "token already used, expired, or not found")
+                | Some (stored_token, stored_pk) ->
+                  if stored_token <> token_b64 then
+                    respond_bad_request (json_error_str err_bad_request "token mismatch after burn")
+                  else if stored_pk <> machine_pk then
+                    respond_bad_request (json_error_str err_bad_request "machine_ed25519_pubkey mismatch")
+                  else
+                    match decode_b64url phone_ed_pk with
+                    | Error _ -> respond_bad_request (json_error_str err_bad_request "phone_ed25519_pubkey invalid encoding")
+                    | Ok p when String.length p <> 32 -> respond_bad_request (json_error_str err_bad_request "phone_ed25519_pubkey must be 32 bytes")
+                    | Ok _ ->
+                      match decode_b64url phone_x_pk with
+                      | Error _ -> respond_bad_request (json_error_str err_bad_request "phone_x25519_pubkey invalid encoding")
+                      | Ok p when String.length p <> 32 -> respond_bad_request (json_error_str err_bad_request "phone_x25519_pubkey must be 32 bytes")
+                      | Ok _ ->
+                        let () = R.add_observer_binding relay ~binding_id
+                          ~phone_ed25519_pubkey:phone_ed_pk ~phone_x25519_pubkey:phone_x_pk in
+                        let bound_at = Unix.gettimeofday () in
+                        let confirm_json = `Assoc [
+                          "binding_id", `String binding_id;
+                          "phone_ed25519_pubkey", `String phone_ed_pk;
+                          "phone_x25519_pubkey", `String phone_x_pk;
+                          "bound_at", `Float bound_at
+                        ] in
+                        let confirm_b64 = Yojson.Safe.to_string confirm_json |>
+                          Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet in
+                        Relay_ratelimit.structured_log ~event:"pair_confirmed"
+                          ~binding_id_prefix:(Relay_ratelimit.prefix8 binding_id) ~result:"ok" ();
+                        respond_ok (`Assoc [
+                          "ok", `Bool true;
+                          "binding_id", `String binding_id;
+                          "confirmation", `String confirm_b64
+                        ])
+
   (* --- Main callback factory --- *)
 
   let meth_to_string = function
