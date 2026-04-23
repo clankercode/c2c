@@ -21,7 +21,7 @@ Ordered by dependency. Parallelizable pairs flagged with `[parallel: …]`.
 
 ### S1 — X25519 keypair in `c2c register` (broker + registry)
 
-**Owner**: TBD (galaxy-coder — prior Ed25519 signing work)
+**Owner**: galaxy-coder (claimed 2026-04-23)
 **Blocks**: S3, S5, S7
 **Estimate**: ~1 day
 
@@ -33,7 +33,7 @@ Ordered by dependency. Parallelizable pairs flagged with `[parallel: …]`.
 
 ### S2 — Signed pubkey lookup on relay
 
-**Owner**: TBD (jungle-coder — relay transport v1)
+**Owner**: jungle-coder (claimed 2026-04-23)
 **Blocks**: S3
 **Estimate**: ~1 day
 **[parallel with S1]**
@@ -46,7 +46,7 @@ Ordered by dependency. Parallelizable pairs flagged with `[parallel: …]`.
 
 ### S3 — Opportunistic E2E in `c2c send` + MCP `send`
 
-**Owner**: TBD (galaxy-coder best-fit — crypto cont.)
+**Owner**: galaxy-coder (claimed 2026-04-23)
 **Blocks**: S7 (mobile pairing relies on this working)
 **BlockedBy**: S1, S2
 **Estimate**: ~1.5 days
@@ -59,11 +59,12 @@ Ordered by dependency. Parallelizable pairs flagged with `[parallel: …]`.
 
 ### S4 — Observer WebSocket endpoint (relay)
 
-**Owner**: TBD (jungle-coder — relay transport)
+**Owner**: jungle-coder (claimed 2026-04-23)
 **Blocks**: S7
 **BlockedBy**: none (can start immediately; doesn't require S1-S3)
 **Estimate**: ~2 days
 **[parallel with S1-S3]**
+**Lib**: `websocketaf` (integrates with existing conduit-lwt-unix/cohttp-lwt-unix stack; no extra C stubs).
 
 - `wss://relay/observer/<machine_binding>` in `ocaml/relay/relay.ml`.
 - Auth: Bearer header = Ed25519-signed token `{binding, phone_pubkey, issued_at, nonce}` signed by phone's identity; relay verifies against stored binding.
@@ -74,7 +75,7 @@ Ordered by dependency. Parallelizable pairs flagged with `[parallel: …]`.
 
 ### S5 — `c2c mobile-pair` (machine-side QR)
 
-**Owner**: TBD (galaxy-coder or jungle-coder)
+**Owner**: TBD (open between galaxy/jungle; claim after S1 + S4 land)
 **BlockedBy**: S1 (needs X25519), S4 partial (needs binding model defined)
 **Estimate**: ~1.5 days
 
@@ -97,7 +98,7 @@ Ordered by dependency. Parallelizable pairs flagged with `[parallel: …]`.
 
 ### S6 — Short-queue + auth-gated history backfill
 
-**Owner**: TBD
+**Owner**: jungle-coder (claimed 2026-04-23)
 **BlockedBy**: S4
 **Estimate**: ~1 day
 
@@ -108,7 +109,7 @@ Ordered by dependency. Parallelizable pairs flagged with `[parallel: …]`.
 
 ### S7 — OCaml-side contract tests (observer + mobile-pair)
 
-**Owner**: TBD (likely jungle-coder, mirrors her remote-relay test pattern)
+**Owner**: jungle-coder (claimed 2026-04-23)
 **BlockedBy**: S4, S5
 **Estimate**: ~1 day
 **[parallel with S6]**
@@ -143,10 +144,10 @@ S4 (observer ws) ─→ S5 (mobile-pair QR) ─→ S5b ─┐   ↗
 
 ## Open questions (to resolve in peer review)
 
-- **Q1 — machine_binding_id shape.** Hash of machine hostname + relay-assigned nonce? Or purely relay-assigned? → recommend relay-assigned UUIDv4, bound at pair-time.
-- **Q2 — phone identity on relay.** Store by Ed25519 pubkey hash, or by human-named binding? → recommend pubkey-hash primary, human name a display-only nick.
-- **Q3 — key rotation.** If a peer rotates X25519, inflight ciphertext to the old key fails. Ship rotation UX in M1 or defer to M3? → recommend defer; M1 ships regen-only, no grace window.
-- **Q4 — libsodium vs age.** Spec says "pick when M1 starts." → recommend libsodium: lower-level, well-known, existing OCaml bindings (`sodium` package on opam).
+- **Q1 — machine_binding_id shape.** → **RESOLVED: relay-assigned UUIDv4 at pair-time.** No hostname (unstable + leaks identity). Confirmed jungle-coder 2026-04-23.
+- **Q2 — phone identity on relay.** → **RESOLVED: Ed25519 pubkey-hash primary, human name display-only.** Confirmed jungle-coder 2026-04-23.
+- **Q3 — key rotation.** If a peer rotates X25519, inflight ciphertext to the old key fails. Ship rotation UX in M1 or defer to M3? → **RESOLVED: defer to M3.** M1 ships `--rotate-enc-key` for manual regen; no automated grace window. Confirmed galaxy-coder 2026-04-23.
+- **Q4 — libsodium vs age.** Spec says "pick when M1 starts." → **RESOLVED: libsodium.** opam `sodium` package, direct X25519 support. Confirmed galaxy-coder 2026-04-23.
 - **Q5 — does the phone need Ed25519 separate from X25519?** Yes — X25519 for E2E, Ed25519 for auth envelopes. Phone generates both on first pair.
 - **Q6 — legacy peer behavior on encrypted inbound.** If a legacy broker without decrypt support receives ciphertext, what happens? → recommend: sender falls back to plaintext when recipient advertises no pubkey; so this shouldn't occur. Belt-and-braces: receivers MUST preserve `body_ciphertext` untouched even if they can't decrypt, so a later-upgraded agent can re-process.
 
