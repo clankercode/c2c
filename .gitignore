@@ -70,6 +70,7 @@ run-codex-inst.d
 .claude
 .playwright-mcp/
 *.png
+*.out
 c2c-site-current.*
 .codex/*
 !.codex/skills/
