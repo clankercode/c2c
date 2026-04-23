@@ -11,9 +11,11 @@ import time
 from pathlib import Path
 from typing import Any
 
-import c2c_inject
 import c2c_poll_inbox
 import c2c_poker
+
+# c2c_inject is only needed for the PTY-injection path (deprecated); lazy-import
+# to keep bare CLI invocation working when the module has been moved to deprecated/.
 
 
 KIMI_SUBMIT_DELAY = 1.5
@@ -703,6 +705,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.xml_output_fd is None and args.xml_output_path is None:
+            import c2c_inject  # PTY-injection path; fails cleanly with ImportError if the module is in deprecated/
             terminal_pid, pts, _transcript = c2c_inject.resolve_session_info(args)
         else:
             terminal_pid = args.terminal_pid or args.pid or 0
