@@ -345,6 +345,7 @@ module type RELAY = sig
   val create : ?dedup_window:int -> ?persist_dir:string -> unit -> t
   val register : t -> node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> unit -> (string * RegistrationLease.t)
   val identity_pk_of : t -> alias:string -> string option
+  val alias_of_identity_pk : t -> identity_pk:string -> string option
   val enc_pubkey_of : t -> alias:string -> string option
   val signed_at_of : t -> alias:string -> float option
   val sig_b64_of : t -> alias:string -> string option
@@ -559,6 +560,15 @@ module InMemoryRelay : RELAY = struct
 
   let identity_pk_of t ~alias =
     with_lock t (fun () -> Hashtbl.find_opt t.bindings alias)
+
+  let alias_of_identity_pk t ~identity_pk =
+    with_lock t (fun () ->
+      let result = ref None in
+      Hashtbl.iter (fun alias pk ->
+        if pk = identity_pk then result := Some alias
+      ) t.bindings;
+      !result
+    )
 
   let enc_pubkey_of t ~alias =
     with_lock t (fun () ->
@@ -1107,6 +1117,21 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
         if rc = Rc.ROW then
           let pk = Data.to_string_exn (column stmt 0) in
           if pk = "" then None else Some pk
+        else None
+    )
+
+  let alias_of_identity_pk t ~identity_pk =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let has_row = exec_prepared conn "SELECT alias FROM leases WHERE identity_pk = ?" [`Text identity_pk] in
+      if not has_row then None
+      else
+        let stmt = prepare conn "SELECT alias FROM leases WHERE identity_pk = ?" in
+        bind_text stmt 1 identity_pk |> ignore;
+        let rc = step stmt in
+        if rc = Rc.ROW then
+          let alias = Data.to_string_exn (column stmt 0) in
+          if alias = "" then None else Some alias
         else None
     )
 
