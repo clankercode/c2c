@@ -4112,6 +4112,7 @@ let relay_mobile_pair_cmd =
                );
                exit 0)
       | "confirm" ->
+          let token_val = match token with Some t -> t | None -> "" in
           let ed_pk = phone_ed_pk in
           let x_pk = phone_x_pk in
           if ed_pk = None then (Printf.eprintf "error: --phone-ed-pk required for confirm.\n%!"; exit 1);
@@ -4120,7 +4121,20 @@ let relay_mobile_pair_cmd =
           let x_pk = Option.get x_pk in
           let result = Lwt_main.run
             (Relay.Relay_client.mobile_pair_confirm client
-               ~token:"" ~phone_ed25519_pubkey:ed_pk ~phone_x25519_pubkey:x_pk)
+               ~token:token_val ~phone_ed25519_pubkey:ed_pk ~phone_x25519_pubkey:x_pk)
+          in
+          if json then print_endline (Yojson.Safe.pretty_to_string result)
+          else print_endline (Yojson.Safe.pretty_to_string result);
+           (match result with
+            | `Assoc fields ->
+                (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
+            | _ -> exit 1)
+      | "revoke" ->
+          let bid = binding_id in
+          if bid = None then (Printf.eprintf "error: --binding-id required for revoke.\n%!"; exit 1);
+          let bid = Option.get bid in
+          let result = Lwt_main.run
+            (Relay.Relay_client.mobile_pair_revoke client ~binding_id:bid)
           in
           if json then print_endline (Yojson.Safe.pretty_to_string result)
           else print_endline (Yojson.Safe.pretty_to_string result);
@@ -4129,7 +4143,7 @@ let relay_mobile_pair_cmd =
                (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
            | _ -> exit 1)
       | other ->
-          Printf.eprintf "error: unknown mobile-pair subcommand: %s (use prepare or confirm)\n%!" other;
+          Printf.eprintf "error: unknown mobile-pair subcommand: %s (use prepare, confirm, or revoke)\n%!" other;
           exit 1
 
 let relay_gc_cmd =

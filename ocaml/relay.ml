@@ -396,7 +396,7 @@ let find_pairing_token_db db ~binding_id =
 module type RELAY = sig
   type t
   val create : ?dedup_window:int -> ?persist_dir:string -> unit -> t
-  val register : t -> node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> unit -> (string * RegistrationLease.t)
+  val register : t -> node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> ?enc_pubkey:string -> ?signed_at:float -> ?sig_b64:string -> unit -> (string * RegistrationLease.t)
   val identity_pk_of : t -> alias:string -> string option
   val alias_of_identity_pk : t -> identity_pk:string -> string option
   val alias_of_session : t -> node_id:string -> session_id:string -> string option
@@ -573,10 +573,10 @@ module InMemoryRelay : RELAY = struct
   let set_inbox t key msgs =
     Hashtbl.replace t.inboxes key msgs
 
-  let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = 300.0) ?(identity_pk = "") () =
+  let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = 300.0) ?(identity_pk = "") ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") () =
     with_lock t (fun () ->
       if not (C2c_name.is_valid alias) then
-        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk () in
+        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 () in
         ("invalid_alias", dummy)
       else
       let allow_state =
@@ -594,7 +594,7 @@ module InMemoryRelay : RELAY = struct
       in
       match allow_state with
       | `AllowMismatch | `ListedNoPk ->
-        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk () in
+        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 () in
         ("alias_not_allowed", dummy)
       | `Unlisted | `Allowed ->
       let binding_state =
@@ -607,7 +607,7 @@ module InMemoryRelay : RELAY = struct
       in
       match binding_state with
       | `Mismatch ->
-        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk () in
+        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 () in
         (relay_err_alias_identity_mismatch, dummy)
       | _ ->
         let existing = Hashtbl.find_opt t.leases alias in
@@ -620,7 +620,7 @@ module InMemoryRelay : RELAY = struct
              if identity_pk <> "" then identity_pk
              else Option.value ~default:"" (Hashtbl.find_opt t.bindings alias)
            in
-           let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk:effective_pk () in
+           let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk:effective_pk ~enc_pubkey ~signed_at ~sig_b64 () in
            Hashtbl.replace t.leases alias lease;
            (match binding_state with
             | `BindNew -> Hashtbl.replace t.bindings alias identity_pk
@@ -629,6 +629,7 @@ module InMemoryRelay : RELAY = struct
            if not (Hashtbl.mem t.inboxes key) then set_inbox t key [];
            ("ok", lease))
     )
+
 
   let identity_pk_of t ~alias =
     with_lock t (fun () -> Hashtbl.find_opt t.bindings alias)
@@ -1263,13 +1264,13 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
 
   let row_to_string_opt = function Some s -> s | None -> ""
 
-  let register t ~node_id ~session_id ~alias ?(client_type="unknown") ?(ttl=300.0) ?(identity_pk="") () =
+  let register t ~node_id ~session_id ~alias ?(client_type="unknown") ?(ttl=300.0) ?(identity_pk="") ?(enc_pubkey="") ?(signed_at=0.0) ?(sig_b64="") () =
     with_lock t (fun () ->
       let open Sqlite3 in
       let conn = db_open t.db_path in
       let now = Unix.gettimeofday () in
       if not (C2c_name.is_valid alias) then
-        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk () in
+        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 () in
         ("invalid_alias", dummy)
       else
       let allow_state =
@@ -1291,7 +1292,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
       in
       match allow_state with
       | `Mismatch | `ListedNoPk ->
-        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk () in
+        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 () in
         ("alias_not_allowed", dummy)
       | `Unlisted | `Allowed ->
         let has_row = exec_prepared conn "SELECT node_id, last_seen, ttl, identity_pk FROM leases WHERE alias = ?" [`Text alias] in
@@ -1310,7 +1311,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
               existing_pk := row_pk;
               let alive = (float_of_string row_last_seen +. float_of_string row_ttl) >= now in
               if alive && row_node_id <> node_id then (
-                conflict_lease := Some (RegistrationLease.make ~node_id:row_node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ())
+                conflict_lease := Some (RegistrationLease.make ~node_id:row_node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 ())
               ) else
                 check_existing ()
             ) else if rc <> DONE then
@@ -1331,7 +1332,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
           in
           match binding_state with
           | `Mismatch ->
-            let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk () in
+            let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 () in
             (relay_err_alias_identity_mismatch, dummy)
           | _ ->
             let effective_pk = match binding_state with
@@ -1339,7 +1340,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
               | `Matches -> identity_pk
               | `NoPkNoBinding -> ""
             in
-            let stmt = prepare conn "INSERT INTO leases (alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(alias) DO UPDATE SET node_id=excluded.node_id, session_id=excluded.session_id, client_type=excluded.client_type, last_seen=excluded.last_seen, ttl=excluded.ttl, identity_pk=excluded.identity_pk" in
+            let stmt = prepare conn "INSERT INTO leases (alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, enc_pubkey, signed_at, sig_b64) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(alias) DO UPDATE SET node_id=excluded.node_id, session_id=excluded.session_id, client_type=excluded.client_type, last_seen=excluded.last_seen, ttl=excluded.ttl, identity_pk=excluded.identity_pk, enc_pubkey=excluded.enc_pubkey, signed_at=excluded.signed_at, sig_b64=excluded.sig_b64" in
             bind_text stmt 1 alias |> ignore;
             bind_text stmt 2 node_id |> ignore;
             bind_text stmt 3 session_id |> ignore;
@@ -1348,10 +1349,13 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
             bind_double stmt 6 now |> ignore;
             bind_double stmt 7 ttl |> ignore;
             bind_text stmt 8 effective_pk |> ignore;
+            bind_text stmt 9 enc_pubkey |> ignore;
+            bind_double stmt 10 signed_at |> ignore;
+            bind_text stmt 11 sig_b64 |> ignore;
             let rc = step stmt in
             if not (Rc.is_success rc) && rc <> DONE then
               failwith ("register insert failed: " ^ Rc.to_string rc);
-            let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk:effective_pk () in
+            let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk:effective_pk ~enc_pubkey ~signed_at ~sig_b64 () in
             ("ok", lease)
     )
 
@@ -2431,6 +2435,7 @@ end = struct
       || path = "/send_room_invite"
       || path = "/mobile-pair/prepare"
       || path = "/mobile-pair"
+      || String.starts_with ~prefix:"/binding/" path
     in
     if is_unauth || is_self_auth then (true, None)
     else if is_admin then
@@ -3408,6 +3413,22 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
                           "confirmation", `String confirm_b64
                         ])
 
+  (* S5a: DELETE /binding/<binding_id> — revoke a mobile binding *)
+  let handle_mobile_pair_revoke relay ~client_ip binding_id =
+    if not (is_valid_binding_id binding_id) then
+      respond_bad_request (json_error_str err_bad_request "binding_id must be 8-64 chars of [A-Za-z0-9_-]")
+    else
+      let existed = match R.get_observer_binding relay ~binding_id with
+        | None -> false
+        | Some _ -> true
+      in
+      R.remove_observer_binding relay ~binding_id;
+      Relay_ratelimit.structured_log ~event:"pair_revoke"
+        ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
+        ~result:(if existed then "ok" else "not_found") ();
+      if existed then respond_ok (`Assoc ["ok", `Bool true; "binding_id", `String binding_id])
+      else respond_not_found (json_error_str err_not_found "binding_id not found")
+
   (* --- Main callback factory --- *)
 
   let meth_to_string = function
@@ -3898,6 +3919,10 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j -> handle_mobile_pair relay j)
 
+      | `DELETE, path when String.starts_with ~prefix:"/binding/" path ->
+        let binding_id = String.sub path 9 (String.length path - 9) in
+        handle_mobile_pair_revoke relay ~client_ip binding_id
+
       (* === S5b: Device-pair endpoints === *)
       (* TODO S5b: POST /device-pair/init + POST /device-pair/<user_code>
          Wire: Relay_ratelimit.structured_log ~event:"device_pair_attempt"
@@ -3986,7 +4011,7 @@ module Relay_client : sig
   val health : t -> Yojson.Safe.t Lwt.t
   val register :
     t -> node_id:string -> session_id:string -> alias:string ->
-    ?client_type:string -> ?ttl:float -> ?identity_pk:string ->
+    ?client_type:string -> ?ttl:float -> ?identity_pk:string -> ?enc_pubkey:string -> ?signed_at:float -> ?sig_b64:string ->
     unit -> Yojson.Safe.t Lwt.t
   val register_signed :
     t -> node_id:string -> session_id:string -> alias:string ->
@@ -4030,6 +4055,7 @@ module Relay_client : sig
   val set_room_visibility : t -> room_id:string -> visibility:string -> Yojson.Safe.t Lwt.t
   val mobile_pair_prepare : t -> machine_ed25519_pubkey:string -> token:string -> Yojson.Safe.t Lwt.t
   val mobile_pair_confirm : t -> token:string -> phone_ed25519_pubkey:string -> phone_x25519_pubkey:string -> Yojson.Safe.t Lwt.t
+  val mobile_pair_revoke : t -> binding_id:string -> Yojson.Safe.t Lwt.t
   val gc : t -> Yojson.Safe.t Lwt.t
 end = struct
 
@@ -4122,7 +4148,8 @@ end = struct
   let health t = get t "/health"
 
   let register t ~node_id ~session_id ~alias
-      ?(client_type = "unknown") ?(ttl = 300.0) ?(identity_pk = "") () =
+      ?(client_type = "unknown") ?(ttl = 300.0) ?(identity_pk = "")
+      ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") () =
     let base = [
       ("node_id", `String node_id);
       ("session_id", `String session_id);
@@ -4137,6 +4164,11 @@ end = struct
           ~alphabet:Base64.uri_safe_alphabet identity_pk
         in
         base @ [("identity_pk", `String b64)]
+    in
+    let fields =
+      if enc_pubkey <> "" then
+        fields @ [("enc_pubkey", `String enc_pubkey); ("signed_at", `Float signed_at); ("sig_b64", `String sig_b64)]
+      else fields
     in
     post t "/register" (`Assoc fields)
 
@@ -4333,6 +4365,9 @@ end = struct
       ("phone_ed25519_pubkey", `String phone_ed25519_pubkey);
       ("phone_x25519_pubkey", `String phone_x25519_pubkey);
     ])
+
+  let mobile_pair_revoke t ~binding_id =
+    request t ~meth:`DELETE ~path:("/binding/" ^ binding_id) ()
 
   let gc t = post t "/gc" (`Assoc [])
 

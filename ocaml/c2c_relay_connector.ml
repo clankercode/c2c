@@ -267,7 +267,7 @@ module Relay_client = struct
 
   let health t = get t "/health"
 
-  let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = 300.0) () =
+  let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = 300.0) ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") () =
     let body = `Assoc [
       ("node_id", `String node_id);
       ("session_id", `String session_id);
@@ -291,6 +291,13 @@ module Relay_client = struct
               ("timestamp", `String proof.ts);
             ]
           )
+    in
+    let body =
+      if enc_pubkey <> "" then
+        let open Yojson.Safe.Util in
+        let base_list = to_assoc body in
+        `Assoc (base_list @ [("enc_pubkey", `String enc_pubkey); ("signed_at", `Float signed_at); ("sig_b64", `String sig_b64)])
+      else body
     in
     post t "/register" ~alias body
 
