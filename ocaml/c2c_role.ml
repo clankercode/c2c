@@ -270,7 +270,7 @@ let yaml_scalar s =
   else s
 
 module OpenCode_renderer = struct
-  let render ?(resolved_pmodel : string option) (r : t) =
+  let render ?resolved_pmodel (r : t) =
     let lines = ref [] in
     lines := ("description: " ^ yaml_scalar r.description) :: !lines;
     lines := ("role: " ^ r.role) :: !lines;
@@ -310,7 +310,7 @@ module OpenCode_renderer = struct
 end
 
 module Claude_renderer = struct
-  let render ?(resolved_pmodel:string option) (r : t) =
+  let render ?resolved_pmodel (r : t) =
     let lines = ref [] in
     lines := ("description: " ^ yaml_scalar r.description) :: !lines;
     lines := ("role: " ^ r.role) :: !lines;
@@ -336,7 +336,7 @@ module Claude_renderer = struct
 end
 
 module Codex_renderer = struct
-  let render ?(resolved_pmodel:string option) (r : t) =
+  let render ?resolved_pmodel (r : t) =
     let lines = ref [] in
     lines := ("description: " ^ yaml_scalar r.description) :: !lines;
     lines := ("role: " ^ r.role) :: !lines;
@@ -362,7 +362,7 @@ module Codex_renderer = struct
 end
 
 module Kimi_renderer = struct
-  let render ?(resolved_pmodel:string option) (r : t) =
+  let render ?resolved_pmodel (r : t) =
     let lines = ref [] in
     lines := ("description: " ^ yaml_scalar r.description) :: !lines;
     lines := ("role: " ^ r.role) :: !lines;
@@ -387,7 +387,7 @@ module Kimi_renderer = struct
     "---\n" ^ fm ^ "\n---\n\n" ^ r.body
 end
 
-let render_for_client ?(resolved_pmodel:string option) (r : t) ~(client : string) : string option =
+let render_for_client ?resolved_pmodel (r : t) ~(client : string) : string option =
   match client with
   | "opencode" -> Some (OpenCode_renderer.render ?resolved_pmodel r)
   | "claude" -> Some (Claude_renderer.render ?resolved_pmodel r)
