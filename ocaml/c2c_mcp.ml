@@ -505,6 +505,28 @@ module Broker = struct
         Hashtbl.replace known_keys_ed25519 alias pk;
         Lwt.return `New_pin)
 
+  let tofu_sync_mutex = Mutex.create ()
+
+  let pin_x25519_sync ~alias ~pk =
+    Mutex.lock tofu_sync_mutex;
+    Fun.protect ~finally:(fun () -> Mutex.unlock tofu_sync_mutex) (fun () ->
+      match Hashtbl.find_opt known_keys_x25519 alias with
+      | Some existing when existing <> pk -> `Mismatch
+      | Some _ -> `Already_pinned
+      | None ->
+        Hashtbl.replace known_keys_x25519 alias pk;
+        `New_pin)
+
+  let pin_ed25519_sync ~alias ~pk =
+    Mutex.lock tofu_sync_mutex;
+    Fun.protect ~finally:(fun () -> Mutex.unlock tofu_sync_mutex) (fun () ->
+      match Hashtbl.find_opt known_keys_ed25519 alias with
+      | Some existing when existing <> pk -> `Mismatch
+      | Some _ -> `Already_pinned
+      | None ->
+        Hashtbl.replace known_keys_ed25519 alias pk;
+        `New_pin)
+
   let load_or_create_ed25519_identity () =
     match Relay_identity.load () with
     | Ok id -> id
@@ -2905,12 +2927,15 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                             | Some sid -> sid | None -> from_alias
                           in
                           (match Relay_enc.load_or_generate ~session_id () with
-                            | Error _ -> `Plain content
+                            | Error e ->
+                              Printf.eprintf "send: load_or_generate x25519 failed: %s\n" e;
+                              `Plain content
                              | Ok our_x25519 ->
                               let sender_pk_b64 = Relay_enc.b64url_encode our_x25519.public_key in
-                              Broker.pin_x25519_if_unknown ~alias:to_alias ~pk:recipient_pk_b64 |> ignore;
+                              Broker.pin_x25519_sync ~alias:to_alias ~pk:recipient_pk_b64 |> ignore;
                               let our_ed25519 = Broker.load_or_create_ed25519_identity () in
                               let our_ed_pubkey_b64 = Relay_enc.b64url_encode our_ed25519.public_key in
+                              Broker.pin_ed25519_sync ~alias:from_alias ~pk:our_ed_pubkey_b64 |> ignore;
                               let sk_seed = our_x25519.private_key_seed in
                              match Relay_e2e.encrypt_for_recipient
                                      ~pt:content
@@ -3091,9 +3116,13 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                             ~our_sk_seed:x25519.private_key_seed with
                            | None ->
                              (match sender_x25519_pk with
-                              | Some pk when Broker.get_pinned_x25519 env.from_ <> None && Broker.get_pinned_x25519 env.from_ <> Some pk ->
-                                content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
-                              | _ -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
+                              | Some pk ->
+                                let pinned = Broker.get_pinned_x25519 env.from_ in
+                                if pinned <> None && pinned <> Some pk then
+                                  content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
+                                else
+                                  content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed)
+                              | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
                            | Some pt ->
                               let sender_ed25519_pk_opt = Broker.get_pinned_ed25519 env.from_ in
                               (match sender_ed25519_pk_opt with
@@ -3105,7 +3134,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                                    content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
                                  else (
                                    (match sender_x25519_pk with
-                                    | Some pk -> Broker.pin_x25519_if_unknown ~alias:env.from_ ~pk |> ignore
+                                    | Some pk -> Broker.pin_x25519_sync ~alias:env.from_ ~pk |> ignore
                                     | None -> ());
                                    pt, Some (Relay_e2e.enc_status_to_string status)))))
                  | _ -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
