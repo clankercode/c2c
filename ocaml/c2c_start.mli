@@ -135,6 +135,15 @@ val bridge_supports_thread_id_fd : string -> bool
 (** [bridge_supports_thread_id_fd binary_path] returns whether the Codex
     headless bridge advertises [--thread-id-fd] in its help output. *)
 
+val probed_capabilities : client:string -> binary_path:string -> string list
+(** Return the currently known capability names that can be inferred for a
+    managed client launch from static launcher/binary probes. *)
+
+val missing_role_capabilities :
+  client:string -> binary_path:string -> C2c_role.t -> string list
+(** Return role [required_capabilities] that are not satisfied by the probed
+    capability set for the chosen client/binary pair. *)
+
 (** {1 Configuration persistence} *)
 
 val write_config : instance_config -> unit

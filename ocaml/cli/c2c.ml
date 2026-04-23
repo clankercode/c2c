@@ -6626,6 +6626,15 @@ let start_cmd =
         Printf.eprintf "[c2c start] no -n given; auto-picked name=%s. Pass -n NAME to override.\n%!" n;
         n
   in
+  let binary_path =
+    match bin_opt with
+    | Some path -> path
+    | None ->
+        (try
+           let cfg = Stdlib.Hashtbl.find C2c_start.clients client in
+           cfg.C2c_start.binary
+         with Not_found -> client)
+  in
   let effective_alias = Option.value alias_opt ~default:name in
   (* Agent-file path: canonical .c2c/roles/<agent>.md *)
   let agent_role_path agent_name =
@@ -6643,9 +6652,21 @@ let start_cmd =
              (Printf.eprintf "error: role '%s' is not compatible with client '%s'.\n" agent_name client;
               Printf.eprintf "  compatible clients: %s\n%!" (String.concat ", " role.C2c_role.compatible_clients);
               exit 1);
-           (* TODO: required_capabilities pre-flight check — needs per-client
-              capability table (vision, tools, reasoning etc.) on the model used.
-              Tracked as v1.2 item; for now the check is a no-op. *)
+           let missing =
+             C2c_start.missing_role_capabilities ~client ~binary_path role
+           in
+           if missing <> [] then begin
+             let available =
+               C2c_start.probed_capabilities ~client ~binary_path
+             in
+             Printf.eprintf
+               "error: role '%s' requires unsupported capabilities for client '%s'.\n"
+               agent_name client;
+             Printf.eprintf "  missing: %s\n%!" (String.concat ", " missing);
+             Printf.eprintf "  available: %s\n%!"
+               (if available = [] then "(none)" else String.concat ", " available);
+             exit 1
+           end;
            match render_role_for_client role ~client with
            | Some rendered ->
                write_agent_file ~client ~name ~content:rendered;
@@ -6678,18 +6699,33 @@ let start_cmd =
                 (Printf.eprintf "error: role '%s' is not compatible with client '%s'.\n" name client;
                  Printf.eprintf "  compatible clients: %s\n%!" (String.concat ", " role.C2c_role.compatible_clients);
                  exit 1);
-                  (match render_role_for_client role ~client with
-                   | Some rendered ->
-                       write_agent_file ~client ~name ~content:rendered;
-                       let kickoff = Some rendered in
-                       let alias_override = role.C2c_role.c2c_alias in
-                       let auto_join_rooms =
-                         if role.C2c_role.c2c_auto_join_rooms <> []
-                         then Some (String.concat ", " role.C2c_role.c2c_auto_join_rooms)
-                         else None
-                       in
-                       (kickoff, alias_override, auto_join_rooms)
-                    | None ->
+             let missing =
+               C2c_start.missing_role_capabilities ~client ~binary_path role
+             in
+             if missing <> [] then begin
+               let available =
+                 C2c_start.probed_capabilities ~client ~binary_path
+               in
+               Printf.eprintf
+                 "error: role '%s' requires unsupported capabilities for client '%s'.\n"
+                 name client;
+                Printf.eprintf "  missing: %s\n%!" (String.concat ", " missing);
+                Printf.eprintf "  available: %s\n%!"
+                  (if available = [] then "(none)" else String.concat ", " available);
+               exit 1
+             end;
+             (match render_role_for_client role ~client with
+              | Some rendered ->
+                  write_agent_file ~client ~name ~content:rendered;
+                  let kickoff = Some rendered in
+                  let alias_override = role.C2c_role.c2c_alias in
+                  let auto_join_rooms =
+                    if role.C2c_role.c2c_auto_join_rooms <> []
+                    then Some (String.concat ", " role.C2c_role.c2c_auto_join_rooms)
+                    else None
+                  in
+                  (kickoff, alias_override, auto_join_rooms)
+              | None ->
                         (* Role file exists but not supported for this client — fall through
                            to structured role path so user can still start with the role. *)
                         let role_opt =
@@ -8999,6 +9035,139 @@ let statefile_top =
                   $(b,c2c start opencode))."; ])
     statefile_cmd
 
+(* --- debug: statefile debug log -------------------------------------------- *)
+
+let debug_statefile_log_cmd =
+  let open Cmdliner in
+  let instance_arg =
+    Arg.(value & opt (some string) None & info ["instance"; "i"] ~docv:"NAME"
+           ~doc:"Instance name. Selects the per-instance debug log.")
+  in
+  let limit_arg =
+    Arg.(value & opt int 50 & info ["limit"; "n"] ~docv:"N"
+           ~doc:"Maximum number of entries to print (default: 50).")
+  in
+  let checkpoint_filter_arg =
+    Arg.(value & opt (some string) None & info ["checkpoint"; "c"] ~docv:"NAME"
+           ~doc:"Only show entries for a specific named checkpoint.")
+  in
+  Term.(const (fun instance limit checkpoint_filter () ->
+    let home = Sys.getenv_opt "HOME" |> Option.value ~default:"/tmp" in
+    let base_dir = Filename.concat home ".local/share/c2c" in
+    let name =
+      match instance with
+      | Some n when String.trim n <> "" -> Some (String.trim n)
+      | _ -> (match Sys.getenv_opt "C2C_INSTANCE_NAME" with
+              | Some n when String.trim n <> "" -> Some (String.trim n)
+              | _ -> None)
+    in
+    let log_path =
+      match name with
+      | Some n -> Filename.concat (Filename.concat base_dir "instances") n // "statefile-debug.jsonl"
+      | None   -> Filename.concat base_dir "statefile-debug.jsonl"
+    in
+    if not (Sys.file_exists log_path) then
+      (Printf.eprintf "debug log not found: %s\n%!" log_path; exit 1)
+    else ();
+    (try
+      let ic = open_in log_path in
+      let lines = ref [] in
+      (try while true do lines := input_line ic :: !lines done with End_of_file -> ());
+      close_in ic;
+      let all_rev = !lines in
+      let filtered =
+        match checkpoint_filter with
+        | Some cf ->
+            List.filter (fun line ->
+              match Yojson.Safe.from_string line with
+              | `Assoc fields ->
+                  (match List.assoc_opt "checkpoint" fields with
+                   | Some (`String cp) -> cp = cf
+                   | _ -> false)
+              | _ -> false) all_rev
+        | None -> all_rev
+      in
+      let to_print =
+        let rec take n lst = match n with 0 -> [] | _ -> match lst with [] -> [] | h :: t -> h :: take (n-1) t in
+        List.rev (take limit (List.rev filtered))
+      in
+      List.iter (fun l ->
+        match Yojson.Safe.from_string l with
+        | `Assoc fields ->
+            let ts = match List.assoc_opt "ts" fields with Some (`String s) -> s | _ -> "?" in
+            let event = match List.assoc_opt "event" fields with Some (`String e) -> e | _ -> "?" in
+            let cp = match List.assoc_opt "checkpoint" fields with Some (`String c) when c <> "" -> " [" ^ c ^ "]" | _ -> "" in
+            Printf.printf "%s  %s%s\n%!" ts event cp
+        | _ -> print_endline l) to_print;
+      (match checkpoint_filter with
+       | Some checkpoint when List.length to_print = 0 ->
+           Printf.eprintf "no entries found for checkpoint %S\n%!" checkpoint
+       | _ -> ())
+    with e -> prerr_endline (Printexc.to_string e); exit 1)
+  ) $ instance_arg $ limit_arg $ checkpoint_filter_arg $ Term.const ())
+
+let debug_statefile_checkpoint_cmd =
+  let open Cmdliner in
+  let instance_arg =
+    Arg.(value & opt (some string) None & info ["instance"; "i"] ~docv:"NAME"
+           ~doc:"Instance name. Selects the per-instance debug log.")
+  in
+  Term.(const (fun instance checkpoint_name () ->
+    if String.trim checkpoint_name = "" then
+      (Printf.eprintf "error: checkpoint name cannot be empty\n%!"; exit 1);
+    let home = Sys.getenv_opt "HOME" |> Option.value ~default:"/tmp" in
+    let base_dir = Filename.concat home ".local/share/c2c" in
+    let name =
+      match instance with
+      | Some n when String.trim n <> "" -> Some (String.trim n)
+      | _ -> (match Sys.getenv_opt "C2C_INSTANCE_NAME" with
+              | Some n when String.trim n <> "" -> Some (String.trim n)
+              | _ -> None)
+    in
+    let log_path =
+      match name with
+      | Some n -> Filename.concat (Filename.concat base_dir "instances") n // "statefile-debug.jsonl"
+      | None   -> Filename.concat base_dir "statefile-debug.jsonl"
+    in
+    let now =
+      let t = Unix.gettimeofday () in
+      let tm = Unix.gmtime t in
+      let ms = int_of_float ((t -. Float.round t) *. 1000.0) |> abs in
+      Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ"
+        (tm.Unix.tm_year + 1900) (tm.Unix.tm_mon + 1) tm.Unix.tm_mday
+        tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec ms
+    in
+    let entry =
+      `Assoc
+        [ ("ts", `String now)
+        ; ("event", `String "named.checkpoint")
+        ; ("checkpoint", `String (String.trim checkpoint_name))
+        ; ("state", `Null)
+        ]
+      |> Yojson.Safe.to_string
+    in
+    try
+      let oc = open_out_gen [ Open_wronly; Open_creat; Open_append ] 0o644 log_path in
+      output_string oc entry;
+      output_char oc '\n';
+      close_out oc;
+      Printf.printf "checkpoint '%s' written at %s\n%!" (String.trim checkpoint_name) now
+    with e -> prerr_endline (Printexc.to_string e); exit 1
+  ) $ instance_arg
+    $ Arg.(required & pos 0 (some string) None
+         & info [] ~docv:"NAME"
+             ~doc:"Checkpoint name (e.g. 'pre-compact', 'post-compact').")
+    $ Term.const ())
+
+let debug_group =
+  let open Cmdliner in
+  Cmd.group (Cmd.info "debug" ~doc:"Debug tools for c2c statefile and broker.")
+    [ Cmd.v (Cmd.info "statefile-log" ~doc:"Print the high-resolution statefile debug log (JSONL).")
+        debug_statefile_log_cmd
+    ; Cmd.v (Cmd.info "statefile-checkpoint" ~doc:"Create a named checkpoint entry in the statefile debug log.")
+        debug_statefile_checkpoint_cmd
+    ]
+
 (* --- subcommand group: oc-plugin ------------------------------------------ *)
 (* Sink commands for the OpenCode TypeScript plugin (c2c.ts).
    The plugin pipes state snapshots via stdin; these commands persist them
@@ -9557,7 +9726,7 @@ let () =
     [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; send_all; sweep
     ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
-    ; serve; mcp; start; agent_group; config_group; roles_group; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
+    ; serve; mcp; start; agent_group; config_group; roles_group; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in
   exit

@@ -794,11 +794,6 @@ let build_env ?(broker_root_override : string option = None)
        clients that don't declare experimental.claude/channel in initialize,
        so harmless where unsupported. *)
     "C2C_MCP_CHANNEL_DELIVERY", "1";
-    (* Force notifications/claude/channel push delivery regardless of client capability.
-       Claude Code doesn't declare experimental.claude/channel, so without this
-       the watcher would leave messages in the inbox. Harmless on clients that
-       don't handle the notification (they just ignore it). *)
-    "C2C_MCP_FORCE_CHANNEL_DELIVERY", "1";
     (* Pin the c2c binary used by the plugin to the running binary's absolute
        path so a CWD-relative ./c2c shim can never be accidentally preferred. *)
     "C2C_CLI_COMMAND", c2c_bin;
@@ -1143,6 +1138,23 @@ let codex_supports_xml_input_fd (binary_path : string) : bool =
 
 let bridge_supports_thread_id_fd (binary_path : string) : bool =
   command_help_contains binary_path "--thread-id-fd"
+
+let probed_capabilities ~(client : string) ~(binary_path : string) : string list =
+  let open C2c_capability in
+  let add_if cap enabled acc =
+    if enabled then to_string cap :: acc else acc
+  in
+  []
+  |> add_if Claude_channel (client = "claude")
+  |> add_if Codex_xml_fd (client = "codex" && codex_supports_xml_input_fd binary_path)
+  |> add_if Codex_headless_thread_id_fd
+       (client = "codex-headless" && bridge_supports_thread_id_fd binary_path)
+  |> List.rev
+
+let missing_role_capabilities ~(client : string) ~(binary_path : string)
+    (role : C2c_role.t) : string list =
+  C2c_capability.missing_required ~required:role.required_capabilities
+    ~available:(probed_capabilities ~client ~binary_path)
 
 let poker_script_path ~(broker_root : string) : string option =
   match resolve_repo_root ~broker_root with

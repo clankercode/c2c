@@ -25,6 +25,18 @@ let rec has_adjacent_pair left right = function
   | _ :: tl -> has_adjacent_pair left right tl
   | [] -> false
 
+let env_contains env expected =
+  Array.exists (fun entry -> String.equal entry expected) env
+
+let env_has_key env key =
+  let prefix = key ^ "=" in
+  Array.exists
+    (fun entry ->
+      let len = String.length prefix in
+      String.length entry >= len
+      && String.sub entry 0 len = prefix)
+    env
+
 let test_prepare_launch_args_claude_uses_development_channel_flag () =
   with_temp_dir @@ fun dir ->
   with_cwd dir @@ fun () ->
@@ -60,6 +72,47 @@ let test_prepare_launch_args_claude_ignores_enable_channels_config () =
     (has_adjacent_pair "--channels" "server:c2c" args);
   check bool "does not add untagged channel name" false
     (has_adjacent_pair "--channels" "c2c" args)
+
+let test_build_env_keeps_channel_delivery_without_force_flag () =
+  let env =
+    C2c_start.build_env ~broker_root_override:(Some "/tmp/c2c-test-broker")
+      "claude-proof" (Some "claude-proof")
+  in
+  check bool "keeps managed channel delivery opt-in" true
+    (env_contains env "C2C_MCP_CHANNEL_DELIVERY=1");
+  check bool "does not export force channel delivery" false
+    (env_has_key env "C2C_MCP_FORCE_CHANNEL_DELIVERY");
+  ()
+
+let test_probed_capabilities_for_claude_include_channel () =
+  let caps =
+    C2c_start.probed_capabilities ~client:"claude" ~binary_path:"/bin/true"
+  in
+  check (list string) "claude capability set"
+    [ "claude_channel" ] caps
+
+let test_missing_role_capabilities_reports_missing_codex_xml_fd () =
+  let role =
+    C2c_role.parse_string
+      "---\nrequired_capabilities: [codex_xml_fd]\n---\nrole body\n"
+  in
+  let missing =
+    C2c_start.missing_role_capabilities ~client:"claude"
+      ~binary_path:"/bin/true" role
+  in
+  check (list string) "missing codex xml fd"
+    [ "codex_xml_fd" ] missing
+
+let test_missing_role_capabilities_satisfied_for_claude_channel () =
+  let role =
+    C2c_role.parse_string
+      "---\nrequired_capabilities: [claude_channel]\n---\nrole body\n"
+  in
+  let missing =
+    C2c_start.missing_role_capabilities ~client:"claude"
+      ~binary_path:"/bin/true" role
+  in
+  check (list string) "claude channel satisfied" [] missing
 
 (* ------------------------------------------------------------------ *)
 (* pmodel parsing                                                      *)
@@ -149,6 +202,14 @@ let () =
             `Quick, test_prepare_launch_args_claude_uses_development_channel_flag )
         ; ( "prepare_launch_args_claude_ignores_enable_channels_config",
             `Quick, test_prepare_launch_args_claude_ignores_enable_channels_config )
+        ; ( "build_env_keeps_channel_delivery_without_force_flag",
+            `Quick, test_build_env_keeps_channel_delivery_without_force_flag )
+        ; ( "probed_capabilities_for_claude_include_channel",
+            `Quick, test_probed_capabilities_for_claude_include_channel )
+        ; ( "missing_role_capabilities_reports_missing_codex_xml_fd",
+            `Quick, test_missing_role_capabilities_reports_missing_codex_xml_fd )
+        ; ( "missing_role_capabilities_satisfied_for_claude_channel",
+            `Quick, test_missing_role_capabilities_satisfied_for_claude_channel )
         ] )
     ; ( "pmodel",
         [ ("parse_pmodel_plain", `Quick, test_parse_pmodel_plain)
