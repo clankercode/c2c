@@ -61,7 +61,7 @@ Ordered by dependency. Parallelizable pairs flagged with `[parallel: …]`.
 **Owner**: galaxy-coder (claimed 2026-04-23)
 **Blocks**: S7 (mobile pairing relies on this working)
 **BlockedBy**: S1, S2 (can stub — see below)
-**Estimate**: ~3-4 days (revised up from 2d: canonical JSON, Ed25519 sign/verify, libsodium multi-recipient, downgrade state machine, pinned-key verify against S2 TOFU store, failure-mode surfacing, S2 stub for unit tests).
+**Estimate**: ~3-4 days (revised up from 2d: canonical JSON, Ed25519 sign/verify, hacl-star NaCl multi-recipient, downgrade state machine, pinned-key verify against S2 TOFU store, failure-mode surfacing, S2 stub for unit tests).
 
 **Envelope format v1 (locked — no breaking change in M4 rooms):**
 
@@ -245,7 +245,7 @@ Critical path: S1 → S3 → S7 (E2E side) and S4 → S5a → **S5c** → S7 (mo
 - **Q1 — machine_binding_id shape.** → **RESOLVED: relay-assigned UUIDv4 at pair-time.** No hostname (unstable + leaks identity). Confirmed jungle-coder 2026-04-23.
 - **Q2 — phone identity on relay.** → **RESOLVED: Ed25519 pubkey-hash primary, human name display-only.** Confirmed jungle-coder 2026-04-23.
 - **Q3 — key rotation.** If a peer rotates X25519, inflight ciphertext to the old key fails. Ship rotation UX in M1 or defer to M3? → **RESOLVED: defer to M3.** M1 ships `--rotate-enc-key` for manual regen; no automated grace window. Confirmed galaxy-coder 2026-04-23.
-- **Q4 — libsodium vs age.** Spec says "pick when M1 starts." → **RESOLVED: libsodium.** opam `sodium` package, direct X25519 support. Confirmed galaxy-coder 2026-04-23.
+- **Q4 — crypto library.** → **RESOLVED (pass 3 — 2026-04-23): `hacl-star` via `Hacl.NaCl`.** Original pick was libsodium (opam `sodium`) but that package requires OCaml <5.0, incompatible with c2c's OCaml 5.2+. Evaluated alternatives: (a) mirage-crypto-ec + cryptokit — rejected, missing HSalsa20/XSalsa20 required for NaCl box; (b) HKDF + ChaCha20-Poly1305 — rejected, wire-format departure from NaCl with no affirmative reason; (c) **hacl-star 0.7.2 — accepted**, already installed in c2c opam switch, exposes `Hacl.NaCl.box`/`box_open`/`secretbox` with 24B nonce (input parameter), formally verified (Project Everest F*→C), pure OCaml+C with no system libsodium dep. Confirmed galaxy-coder 2026-04-23 pass 3.
 - **Q5 — does the phone need Ed25519 separate from X25519?** → **RESOLVED: yes, both.** X25519 for E2E, Ed25519 for auth envelopes; phone generates both on first pair. No peer objected.
 - **Q6 — legacy peer behavior on encrypted inbound.** → **RESOLVED: sender falls back to plaintext when recipient advertises no pubkey; receivers MUST preserve `body_ciphertext` untouched even if they can't decrypt.** No peer objected.
 
