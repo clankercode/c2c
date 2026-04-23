@@ -101,3 +101,8 @@
  (name test_relay_observer_contract)
  (modules test_relay_observer_contract)
  (libraries c2c_mcp alcotest base64 mirage-crypto-ec unix str))
+
+(test
+ (name test_agent_refine)
+ (modules test_agent_refine)
+ (libraries c2c_mcp alcotest unix str))
