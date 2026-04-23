@@ -6936,7 +6936,14 @@ let agent_new_interactive ?(client="opencode") name =
       if line = "" then []
       else begin
         let nums = List.filter_map int_of_string_opt (String.split_on_char ',' line) in
-        let names = List.filter_map (fun n -> if n >= 0 && n < List.length snippets then Some (List.nth snippets n) else None) nums in
+        let names =
+          List.filter_map
+            (fun n ->
+              if n >= 0 && n < List.length snippets then
+                Some (Filename.remove_extension (List.nth snippets n))
+              else None)
+            nums
+        in
         if names <> [] then begin
           print_endline "Included snippets:";
           List.iter (fun s -> print_endline ("  - " ^ s)) names
@@ -7014,8 +7021,8 @@ let agent_new_term =
     match theme with Some t -> "  theme: " ^ t ^ "\n" | None -> ""
   in
   let include_yaml =
-    if selected_snippets = [] then "  include: []\n"
-    else "  include: [" ^ String.concat ", " selected_snippets ^ "]\n"
+    if selected_snippets = [] then "include: []\n"
+    else "include: [" ^ String.concat ", " selected_snippets ^ "]\n"
   in
   let tmpl = Printf.sprintf
     "---\n\

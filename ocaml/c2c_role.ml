@@ -63,12 +63,17 @@ let parse_list s =
 
 let split_frontmatter content =
   let lines = String.split_on_char '\n' content in
-  let rec skip_leading_empty = function
+  let is_noise_line line =
+    let t = String.trim line in
+    t = "" || t |> String.starts_with ~prefix:"<!--"
+    || t |> String.starts_with ~prefix:"#!"
+  in
+  let rec skip_leading_noise = function
     | [] -> []
-    | "" :: rest -> skip_leading_empty rest
+    | l :: rest when is_noise_line l -> skip_leading_noise rest
     | l :: _ as all -> all
   in
-  let lines = skip_leading_empty lines in
+  let lines = skip_leading_noise lines in
   let rec find_end acc = function
     | [] -> (List.rev acc, [])
     | line :: rest ->
@@ -152,13 +157,22 @@ let parse_yaml_entries fm_lines =
 let assoc_find k alist = try Some (List.assoc k alist) with Not_found -> None
 
 let load_snippet snippets_dir name =
-  let path = Filename.concat snippets_dir (name ^ ".md") in
-  if Sys.file_exists path then
+  let base = Filename.remove_extension name in
+  let try_path suffix =
+    let path = Filename.concat snippets_dir (base ^ suffix) in
+    if Sys.file_exists path then Some path else None
+  in
+  let load path =
     let ic = open_in path in
     Fun.protect ~finally:(fun () -> close_in ic)
-      (fun () -> really_input_string ic (in_channel_length ic))
-  else
-    ""
+      (fun () -> really_input_string ic (in_channel_length ic) |> String.trim)
+  in
+  match try_path ".md" with
+  | Some path -> load path
+  | None ->
+      match try_path "" with
+      | Some path -> load path
+      | None -> ""
 
 let resolve_includes t snippets_dir =
   if t.include_ = [] then t

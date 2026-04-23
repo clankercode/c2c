@@ -166,5 +166,77 @@ let pmodel_tests = [
   "resolve_pmodel_none_when_lookup_empty", `Quick, test_resolve_pmodel_none_when_lookup_empty;
 ]
 
+(* ---------- split_frontmatter noise-line tolerance ---------- *)
+
+let role_with_html_comment_before_frontmatter = {|
+<!-- NOTE: this comment should be skipped -->
+---
+description: Role with leading HTML comment
+role: primary
+---
+Body text here.
+|}
+
+let test_split_frontmatter_skips_html_comment () =
+  let r = C2c_role.parse_string role_with_html_comment_before_frontmatter in
+  Alcotest.(check string) "html comment: description parsed correctly"
+    "Role with leading HTML comment" r.C2c_role.description;
+  Alcotest.(check string) "html comment: role parsed correctly"
+    "primary" r.C2c_role.role;
+  Alcotest.(check string) "html comment: body preserved"
+    "Body text here." r.C2c_role.body
+
+let role_with_shebang_before_frontmatter = {|
+#!/bin/env python3
+---
+description: Role with shebang
+role: subagent
+---
+Body.
+|}
+
+let test_split_frontmatter_skips_shebang () =
+  let r = C2c_role.parse_string role_with_shebang_before_frontmatter in
+  Alcotest.(check string) "shebang: description parsed" "Role with shebang" r.C2c_role.description;
+  Alcotest.(check string) "shebang: role parsed" "subagent" r.C2c_role.role
+
+(* ---------- load_snippet double-.md defense ---------- *)
+
+let with_snippet_tmpdir ~f =
+  let dir = Filename.concat (Filename.get_temp_dir_name ()) "c2c_test_snippets" in
+  (try Sys.mkdir dir 0o700 with Sys_error _ -> ());
+  let snippet_file = Filename.concat dir "test-snippet.md" in
+  let ch = open_out snippet_file in
+  output_string ch "This is the snippet body.\n";
+  close_out ch;
+  Fun.protect ~finally:(fun () -> try Sys.remove snippet_file with _ -> ()) (fun () -> f dir)
+
+let test_load_snippet_accepts_bare_name () =
+  with_snippet_tmpdir ~f:(fun dir ->
+    let r = C2c_role.parse_string ~snippets_dir:dir
+      ("---\ninclude: [test-snippet]\n---\nmain body\n")
+    in
+    Alcotest.(check string) "bare name: snippet loaded into body"
+      "This is the snippet body.\n\nmain body" r.C2c_role.body)
+
+let test_load_snippet_accepts_md_suffix () =
+  with_snippet_tmpdir ~f:(fun dir ->
+    let r = C2c_role.parse_string ~snippets_dir:dir
+      ("---\ninclude: [test-snippet.md]\n---\nmain body\n")
+    in
+    Alcotest.(check string) "md suffix: snippet loaded into body"
+      "This is the snippet body.\n\nmain body" r.C2c_role.body)
+
+let frontmatter_tests = [
+  "skips_html_comment",    `Quick, test_split_frontmatter_skips_html_comment;
+  "skips_shebang",        `Quick, test_split_frontmatter_skips_shebang;
+  "load_snippet_bare",    `Quick, test_load_snippet_accepts_bare_name;
+  "load_snippet_md_suffix", `Quick, test_load_snippet_accepts_md_suffix;
+]
+
 let () =
-  Alcotest.run "c2c_role" [ "renderers", tests; "pmodel", pmodel_tests ]
+  Alcotest.run "c2c_role" [
+    "renderers", tests;
+    "pmodel", pmodel_tests;
+    "frontmatter", frontmatter_tests;
+  ]
