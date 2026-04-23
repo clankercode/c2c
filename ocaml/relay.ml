@@ -3976,6 +3976,8 @@ module Relay_client : sig
   val uninvite_room : t -> alias:string -> room_id:string -> invitee_pk:string -> Yojson.Safe.t Lwt.t
   val uninvite_room_signed : t -> alias:string -> room_id:string -> invitee_pk:string -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
   val set_room_visibility : t -> room_id:string -> visibility:string -> Yojson.Safe.t Lwt.t
+  val mobile_pair_prepare : t -> machine_ed25519_pubkey:string -> token:string -> Yojson.Safe.t Lwt.t
+  val mobile_pair_confirm : t -> token:string -> phone_ed25519_pubkey:string -> phone_x25519_pubkey:string -> Yojson.Safe.t Lwt.t
   val gc : t -> Yojson.Safe.t Lwt.t
 end = struct
 
@@ -4265,6 +4267,19 @@ end = struct
     post t "/set_room_visibility" (`Assoc [
       ("room_id", `String room_id);
       ("visibility", `String visibility);
+    ])
+
+  let mobile_pair_prepare t ~machine_ed25519_pubkey ~token =
+    post t "/mobile-pair/prepare" (`Assoc [
+      ("machine_ed25519_pubkey", `String machine_ed25519_pubkey);
+      ("token", `String token);
+    ])
+
+  let mobile_pair_confirm t ~token ~phone_ed25519_pubkey ~phone_x25519_pubkey =
+    post t "/mobile-pair" (`Assoc [
+      ("token", `String token);
+      ("phone_ed25519_pubkey", `String phone_ed25519_pubkey);
+      ("phone_x25519_pubkey", `String phone_x25519_pubkey);
     ])
 
   let gc t = post t "/gc" (`Assoc [])
