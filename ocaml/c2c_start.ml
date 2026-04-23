@@ -291,6 +291,12 @@ let rec mkdir_p dir =
     with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
   end
 
+let write_git_shim ~shim_bin_path ~c2c_bin_path =
+  let oc = open_out shim_bin_path in
+  Fun.protect ~finally:(fun () -> close_out oc) @@ fun () ->
+  output_string oc "#!/bin/bash\n";
+  output_string oc (Printf.sprintf "exec %s git -- \"$@\"\n" c2c_bin_path)
+
 let ensure_fifo path =
   (try
      if Sys.file_exists path then
@@ -850,6 +856,7 @@ let build_env ?(broker_root_override : string option = None)
      (avoids fork-bomb: plugin runC2c() would otherwise resolve bare "c2c" via PATH
      which could pick up ./c2c if CWD is in PATH). *)
   let c2c_bin = current_c2c_command () in
+  let shim_bin_dir = instance_dir name // "bin" in
   let additions = [
     "C2C_WRAPPER_SELF", "1";  (* marks the wrapper process itself; bash subshells of the managed client don't inherit this *)
     "C2C_MCP_SESSION_ID", name;
@@ -865,6 +872,8 @@ let build_env ?(broker_root_override : string option = None)
     (* Pin the c2c binary used by the plugin to the running binary's absolute
        path so a CWD-relative ./c2c shim can never be accidentally preferred. *)
     "C2C_CLI_COMMAND", c2c_bin;
+    (* Expose the git shim directory so spawned shells can prepend it to PATH. *)
+    "C2C_GIT_SHIM_DIR", shim_bin_dir;
   ] in
   (* Strip any existing copies of overridden keys from the inherited env, then
      append our authoritative values. This avoids the duplicate-key bug where
@@ -876,11 +885,21 @@ let build_env ?(broker_root_override : string option = None)
   let env_key e =
     try String.sub e 0 (String.index e '=') with Not_found -> e
   in
+  let strip_key key env = List.filter (fun e -> env_key e <> key) env in
   let filtered = Array.to_list (Unix.environment ())
     |> List.filter (fun e -> not (List.mem (env_key e) override_keys))
+    |> strip_key "PATH"
   in
+  (* Get existing PATH value for prepending *)
+  let existing_path =
+    try
+      let path_entry = List.find (fun e -> env_key e = "PATH") (Array.to_list (Unix.environment ())) in
+      String.sub path_entry (String.length "PATH=") (String.length path_entry - String.length "PATH=")
+    with Not_found -> ""
+  in
+  let path_entry = "PATH=" ^ shim_bin_dir ^ (if existing_path <> "" then ":" ^ existing_path else "") in
   let new_entries = List.map (fun (k, v) -> Printf.sprintf "%s=%s" k v) additions in
-  Array.of_list (filtered @ new_entries)
+  Array.of_list ((path_entry :: filtered) @ new_entries)
 
 (* ---------------------------------------------------------------------------
  * OpenCode identity files refresh
@@ -1627,6 +1646,15 @@ let run_outer_loop ~(name : string) ~(client : string)
 
       let inst_dir = instance_dir name in
       mkdir_p inst_dir;
+      (* Create a git shim that routes through 'c2c git --' so agents get
+         automatic --author injection without needing to remember the '--' separator.
+         The shim dir is prepended to PATH in build_env below. *)
+      let shim_bin_dir = inst_dir // "bin" in
+      mkdir_p shim_bin_dir;
+      let shim_bin_path = shim_bin_dir // "git" in
+      let c2c_bin_path = current_c2c_command () in
+      write_git_shim ~shim_bin_path ~c2c_bin_path;
+      (try Unix.chmod shim_bin_path 0o755 with _ -> ());
       (* Registry precheck: human-readable "alias alive" error before flock. *)
       check_registry_alias_alive ~broker_root ~name;
       (* Exclusive instance lock: prevents two concurrent starts for the same
