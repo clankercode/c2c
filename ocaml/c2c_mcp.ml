@@ -2296,6 +2296,10 @@ let tool_definitions =
       ~description:"Return the last N lines from the broker RPC audit log (broker.log). Each line is a JSON object {ts, tool, ok}. Useful for verifying that your sends and polls actually reached the broker, without needing to read the file directly. Content fields are not logged — only tool names and success/fail status. Optional `limit` (default 50, max 500). Returns a JSON array of log entries, oldest first."
       ~required:[]
       ~properties:[ int_prop "limit" "Max log entries (default 50, max 500)." ]
+  ; tool_definition ~name:"server_info"
+      ~description:"Return c2c client/broker version, git SHA, and feature flags. Useful for diagnostics and for checking which capabilities are available in the current session."
+      ~required:[]
+      ~properties:[]
   ; tool_definition ~name:"prune_rooms"
       ~description:"Evict dead members from all room member lists without touching registrations or inboxes. Safe to call while outer loops are running (unlike `sweep`, which also drops registrations and deletes inboxes). Returns JSON {evicted_room_members:[{room_id,alias}]}."
       ~required:[]
@@ -3333,6 +3337,9 @@ let ts = Unix.gettimeofday () in
           `List parsed |> Yojson.Safe.to_string
         end
       in
+      Lwt.return (tool_result ~content ~is_error:false)
+  | "server_info" ->
+      let content = Yojson.Safe.to_string server_info in
       Lwt.return (tool_result ~content ~is_error:false)
   | "sweep" ->
       let { Broker.dropped_regs; deleted_inboxes; preserved_messages } =

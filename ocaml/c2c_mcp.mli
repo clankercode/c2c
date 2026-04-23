@@ -1,5 +1,6 @@
 val server_version : string
 val server_git_hash : string
+val server_info : Yojson.Safe.t
 
 type compacting = { started_at : float; reason : string option }
 type registration =
