@@ -6448,7 +6448,9 @@ let render_role_for_client (r : C2c_role.t) ~client =
     | Some p -> Some (p.C2c_start.provider ^ ":" ^ p.C2c_start.model)
   in
   let resolved_pmodel = C2c_role.resolve_pmodel r ~class_lookup:pmodel_lookup in
-  C2c_role.render_for_client r ~client ?resolved_pmodel
+  match resolved_pmodel with
+  | Some p -> C2c_role.render_for_client r ~client ~resolved_pmodel:p
+  | None -> C2c_role.render_for_client r ~client
 
 let write_agent_file ~client ~name ~content =
   let path = agent_file_path ~client ~name in
