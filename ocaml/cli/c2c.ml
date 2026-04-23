@@ -7210,11 +7210,16 @@ let agent_run_term =
     | Some n -> n
     | None -> Printf.sprintf "eph-%s-%s" role (C2c_start.generate_alias ())
   in
+  (* Caller: prefer the c2c alias of the calling session (set when run from
+     inside a managed session). Fall back to a non-alias sentinel so the
+     kickoff template doesn't instruct the agent to `c2c send $USER ...`
+     (which won't route — $USER is not a registered alias). *)
   let caller =
     match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
     | Some a when a <> "" -> a
-    | _ -> (match Sys.getenv_opt "USER" with Some u -> u | None -> "unknown")
+    | _ -> "(human operator)"
   in
+  let caller_is_alias = caller <> "(human operator)" in
   let rendered =
     match render_role_for_client r ~client with
     | Some s -> s
@@ -7226,18 +7231,34 @@ let agent_run_term =
     | Some p when p <> "" -> Printf.sprintf "\n## Caller prompt\n\n%s\n" p
     | _ -> ""
   in
+  let confirm_line =
+    if caller_is_alias then
+      Printf.sprintf "1. Confirm completion with the caller (`c2c send %s \"done: <short summary>\"`).\n" caller
+    else
+      "1. Leave a summary for the human operator in this pane (stdout). The operator will decide when you are done.\n"
+  in
+  let idle_line =
+    if timeout > 0.0 then
+      Printf.sprintf
+        "## Idle timeout\n\n\
+         A supervisor watchdog will SIGTERM this session after %.0f seconds of no broker activity (inbox or archive mtime). If you expect to pause for longer than that, send a keepalive (e.g. poll_inbox, or a short swarm-lounge note) to reset the clock.\n\n"
+        timeout
+    else
+      ""
+  in
   let kickoff =
     Printf.sprintf
       "# Ephemeral c2c agent (role: %s)\n\n\
-       You are a short-lived, purpose-built c2c peer. Your alias is `%s`. Your caller session is `%s`.\n\n\
+       You are a short-lived, purpose-built c2c peer. Your alias is `%s`. Your caller is `%s`.\n\n\
        ## Lifecycle\n\n\
        When your task is complete:\n\
-       1. Confirm completion with the caller (`c2c send %s \"done: <short summary>\"`).\n\
-       2. After the caller acknowledges, call the `stop_self` MCP tool (c2c server) to terminate cleanly.\n\n\
+       %s\
+       2. After the caller acknowledges (or you have left a summary for a human), call the `stop_self` MCP tool (c2c server) to terminate cleanly.\n\n\
        If you are unsure whether you are done, ASK the caller rather than stop_self-ing prematurely.\n\
-       %s\n\
+       %s\
+       %s\
        ## Role briefing\n\n%s\n"
-      role name caller caller user_prompt_section rendered
+      role name caller confirm_line user_prompt_section idle_line rendered
   in
   let auto_join =
     if r.C2c_role.c2c_auto_join_rooms <> []
@@ -7274,10 +7295,15 @@ let agent_run_term =
       in
       let start_time = Unix.gettimeofday () in
       let tick = min 30.0 (max 5.0 (timeout /. 4.0)) in
+      (* Give the outer loop a boot-grace window before requiring outer.pid.
+         Covers the race where cmd_start hasn't written the pidfile yet. *)
+      let boot_grace_deadline = start_time +. 60.0 in
       let rec loop () =
         Unix.sleepf tick;
         match C2c_start.read_pid outer_pid_path with
-        | None -> exit 0
+        | None ->
+          if Unix.gettimeofday () < boot_grace_deadline then loop ()
+          else exit 0
         | Some pid when not (C2c_start.pid_alive pid) -> exit 0
         | Some pid ->
           let last = max_mtime () in
