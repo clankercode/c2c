@@ -275,7 +275,7 @@ class TestSendAndPollRoundTrip:
             channel_delivery=False, auto_register_alias="lonely",
         )
         try:
-            initialize_server(proc)
+            initialize_server(proc, with_channel=True)
             self._register(proc, "session-empty", "lonely")
             poll_resp = self._poll_inbox(proc)
             text = poll_resp["result"]["content"][0]["text"]
@@ -303,7 +303,7 @@ class TestChannelNotificationDelivery:
             auto_register_alias="watcher-test",
         )
         try:
-            initialize_server(proc)
+            initialize_server(proc, with_channel=True)
 
             # Write a message directly to the inbox file (simulating
             # another process sending a message)
@@ -351,7 +351,7 @@ class TestChannelNotificationDelivery:
             auto_drain=False,
         )
         try:
-            initialize_server(proc)
+            initialize_server(proc, with_channel=True)
 
             # Inbox file doesn't exist yet - watcher should survive
             inbox_path = broker_dir / f"{session_id}.inbox.json"
@@ -394,7 +394,7 @@ class TestChannelNotificationDelivery:
             auto_drain=False,
         )
         try:
-            initialize_server(proc)
+            initialize_server(proc, with_channel=True)
             inbox_path = broker_dir / f"{session_id}.inbox.json"
 
             # First batch: large message
@@ -560,7 +560,7 @@ class TestWatcherDrainDelay:
             watcher_delay="1.2",
         )
         try:
-            initialize_server(proc)
+            initialize_server(proc, with_channel=True)
 
             # Write a message immediately
             inbox_path = broker_dir / f"{session_id}.inbox.json"
@@ -673,7 +673,7 @@ class TestE2ESessionLifecycle:
         )
         try:
             # Step 1: Initialize
-            resp = initialize_server(proc)
+            resp = initialize_server(proc, with_channel=True)
             assert resp["result"]["capabilities"]["experimental"]["claude/channel"] == {}
             assert resp["result"]["serverInfo"]["name"] == "c2c"
 
@@ -928,32 +928,37 @@ class TestPeerRenameGuard:
         """Same process registers under a new alias — peer_renamed must fire."""
         room = "rename-same-pid-test"
         own_pid = os.getpid()
-
-        obs = start_server(
-            str(broker_dir), "session-obs2",
-            channel_delivery=False,
-            auto_register_alias="obs2",
-            auto_join_rooms=room,
-        )
-        time.sleep(0.2)
-
-        # Agent: same PID for both registration calls.
-        proc = start_server(
-            str(broker_dir), "agent-session",
-            channel_delivery=False,
-            auto_register_alias="agent-old",
-            auto_join_rooms=room,
-            client_pid=own_pid,
-        )
-        time.sleep(0.2)
+        helper = subprocess.Popen(["sleep", "30"])
 
         try:
+            obs = start_server(
+                str(broker_dir), "session-obs2",
+                channel_delivery=False,
+                auto_register_alias="obs2",
+                auto_join_rooms=room,
+                client_pid=helper.pid,
+            )
+            time.sleep(0.2)
+
+            # Agent: same PID for both registration calls, but distinct from
+            # the observer so the anti-ghost same-pid startup guard does not
+            # suppress the initial registration.
+            proc = start_server(
+                str(broker_dir), "agent-session",
+                channel_delivery=False,
+                auto_register_alias="agent-old",
+                auto_join_rooms=room,
+                client_pid=own_pid,
+            )
+            time.sleep(0.2)
+
             initialize_server(obs)
             initialize_server(proc)
             time.sleep(0.1)
 
             # Re-register with a new alias, same PID → should be a rename.
-            _call_register(proc, "agent-new")
+            register_resp = _call_register(proc, "agent-new")
+            assert register_resp.get("result", {}).get("isError") is False
             time.sleep(0.3)
 
             # Room history should contain a peer_renamed message.
@@ -966,10 +971,18 @@ class TestPeerRenameGuard:
                 f"Expected peer_renamed in room history but got: {history}"
             )
         finally:
-            obs.terminate()
-            obs.wait(timeout=5)
-            proc.terminate()
-            proc.wait(timeout=5)
+            try:
+                obs.terminate()
+                obs.wait(timeout=5)
+            except Exception:
+                pass
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+            helper.terminate()
+            helper.wait(timeout=5)
 
 
 class TestDerivedSessionId:
