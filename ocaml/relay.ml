@@ -1906,6 +1906,7 @@ module ObserverBindings : sig
   val create : unit -> t
   val add : t -> binding_id:string -> phone_ed25519_pubkey:string -> phone_x25519_pubkey:string -> unit
   val get : t -> binding_id:string -> (string * string) option
+  val binding_id_of_phone_pk : t -> phone_ed25519_pubkey:string -> string option
   val remove : t -> binding_id:string -> unit
 end = struct
   type binding = {
@@ -1915,10 +1916,12 @@ end = struct
   }
   type t = {
     bindings : (string, binding) Hashtbl.t;
+    phone_pk_to_binding : (string, string) Hashtbl.t;
     mutex : Mutex.t;
   }
   let create () = {
     bindings = Hashtbl.create 64;
+    phone_pk_to_binding = Hashtbl.create 64;
     mutex = Mutex.create ();
   }
   let add t ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey =
@@ -1927,6 +1930,7 @@ end = struct
       phone_ed25519_pubkey; phone_x25519_pubkey;
       issued_at = Unix.gettimeofday ();
     };
+    Hashtbl.replace t.phone_pk_to_binding phone_ed25519_pubkey binding_id;
     Mutex.unlock t.mutex
   let get t ~binding_id =
     Mutex.lock t.mutex;
@@ -1935,8 +1939,16 @@ end = struct
     match result with
     | Some b -> Some (b.phone_ed25519_pubkey, b.phone_x25519_pubkey)
     | None -> None
+  let binding_id_of_phone_pk t ~phone_ed25519_pubkey =
+    Mutex.lock t.mutex;
+    let result = Hashtbl.find_opt t.phone_pk_to_binding phone_ed25519_pubkey in
+    Mutex.unlock t.mutex;
+    result
   let remove t ~binding_id =
     Mutex.lock t.mutex;
+    (match Hashtbl.find_opt t.bindings binding_id with
+     | Some b -> Hashtbl.remove t.phone_pk_to_binding b.phone_ed25519_pubkey
+     | None -> ());
     Hashtbl.remove t.bindings binding_id;
     Mutex.unlock t.mutex
 end
@@ -1979,6 +1991,8 @@ let observer_bindings = ObserverBindings.create ()
 let get_observer_binding ~binding_id = ObserverBindings.get observer_bindings ~binding_id
 let add_observer_binding ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey =
   ObserverBindings.add observer_bindings ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey
+let binding_id_of_phone_pk ~phone_ed25519_pubkey =
+  ObserverBindings.binding_id_of_phone_pk observer_bindings ~phone_ed25519_pubkey
 
 let nonce_cache = NonceCache.create ()
 let is_nonce_seen ~phone_pubkey ~nonce = NonceCache.is_seen nonce_cache ~phone_pubkey ~nonce
@@ -2047,7 +2061,7 @@ let push_to_observers ~binding_id (msg : Relay_short_queue.message) =
   ) sessions
 
 (* S6: Parse observer WebSocket messages *)
-let parse_observer_ws_msg (raw : string) : [`Reconnect of float | `Ping | `Unknown] =
+let parse_observer_ws_msg (raw : string) : [`Reconnect of float * string option | `Ping | `Unknown] =
   try
     let json = Yojson.Safe.from_string raw in
     match json with
@@ -2055,8 +2069,12 @@ let parse_observer_ws_msg (raw : string) : [`Reconnect of float | `Ping | `Unkno
       (match List.assoc_opt "type" fields with
        | Some (`String "reconnect") ->
          (match List.assoc_opt "since_ts" fields with
-          | Some (`Float ts) -> `Reconnect ts
-          | Some (`Int i) -> `Reconnect (float_of_int i)
+          | Some (`Float ts) ->
+            let sig_b64 = List.assoc_opt "sig" fields |> Option.map (function `String s -> s | _ -> "") in
+            `Reconnect (ts, sig_b64)
+          | Some (`Int i) ->
+            let sig_b64 = List.assoc_opt "sig" fields |> Option.map (function `String s -> s | _ -> "") in
+            `Reconnect (float_of_int i, sig_b64)
           | _ -> `Unknown)
        | Some (`String "ping") -> `Ping
        | _ -> `Unknown)
@@ -2640,6 +2658,23 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
       | _ ->
         let message_id = get_opt_string body "message_id" in
         let result = R.send relay ~from_alias ~to_alias ~content ~message_id in
+        (match result with
+         | `Ok ts | `Duplicate ts ->
+           (match R.identity_pk_of relay ~alias:to_alias with
+            | Some identity_pk ->
+              (match binding_id_of_phone_pk ~phone_ed25519_pubkey:identity_pk with
+               | Some binding_id ->
+                 let sq_msg = {
+                   Relay_short_queue.ts;
+                   from_alias;
+                   to_alias;
+                   room_id = None;
+                   content;
+                 } in
+                 Relay_short_queue.ShortQueue.push short_queue ~binding_id sq_msg
+               | None -> ())
+            | None -> ())
+         | `Error _ -> ());
         respond_ok (json_of_send_result result)
 
   let handle_send_all relay ~verified_alias body =
@@ -3234,36 +3269,56 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
                           Relay_ws_frame.Session.close_with ~code:1000 ~reason:"normal" () session
                         | Some (`Text raw) | Some (`Binary raw) ->
                           (match parse_observer_ws_msg raw with
-                           | `Reconnect since_ts ->
-                             let sq_msgs = Relay_short_queue.ShortQueue.get_after short_queue ~binding_id ~since_ts in
-                             let sq_json_msgs = List.map (fun (m : Relay_short_queue.message) ->
-                               `Assoc (
-                                 ["ts", `Float m.ts;
-                                  "from_alias", `String m.from_alias;
-                                  "to_alias", `String m.to_alias]
-                                   @ (match m.room_id with Some r -> ["room_id", `String r] | None -> [])
-                                   @ ["content", `String m.content])
-                             ) sq_msgs in
-                             let gap = match Relay_short_queue.ShortQueue.oldest_ts short_queue ~binding_id with
-                               | Some oldest -> since_ts < oldest
+                           | `Reconnect (since_ts, sig_b64) ->
+                             let valid_sig =
+                               match sig_b64 with
+                               | Some sig_val ->
+                                 (match get_observer_binding ~binding_id with
+                                  | Some (phone_pk, _) ->
+                                    (match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet sig_val with
+                                     | Ok sig_raw ->
+                                       (match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet phone_pk with
+                                        | Ok pk_raw ->
+                                          Relay_identity.verify ~pk:pk_raw ~msg:binding_id ~sig_:sig_raw
+                                        | Error _ -> false)
+                                     | Error _ -> false)
+                                  | None -> false)
                                | None -> false
                              in
-                             let backfill_msgs, gap_flag =
-                               if gap then
-                                 match get_observer_binding ~binding_id with
-                                 | Some (phone_pk, _) ->
-                                   (match R.alias_of_identity_pk relay ~identity_pk:phone_pk with
-                                    | Some alias ->
-                                      let history = R.query_messages_since relay ~alias ~since_ts in
-                                      (history, [("gap", `Bool true)])
-                                    | None -> ([], [("gap", `Bool true)]))
-                                 | None -> ([], [("gap", `Bool true)])
-                               else ([], [])
-                             in
-                             let all_msgs = sq_json_msgs @ backfill_msgs in
-                             let response = `Assoc (["type", `String "replay"; "messages", `List all_msgs] @ gap_flag) in
-                             Relay_ws_frame.Session.send_text session (Yojson.Safe.to_string response) >>= fun () ->
-                             loop ()
+                             if not valid_sig then
+                               (finally ();
+                                Relay_ws_frame.Session.close_with ~code:4001 ~reason:"invalid_signature" () session >>= fun () ->
+                                Lwt.return_unit)
+                             else
+                               (let sq_msgs = Relay_short_queue.ShortQueue.get_after short_queue ~binding_id ~since_ts in
+                                let sq_json_msgs = List.map (fun (m : Relay_short_queue.message) ->
+                                  `Assoc (
+                                    ["ts", `Float m.ts;
+                                     "from_alias", `String m.from_alias;
+                                     "to_alias", `String m.to_alias]
+                                      @ (match m.room_id with Some r -> ["room_id", `String r] | None -> [])
+                                      @ ["content", `String m.content])
+                                ) sq_msgs in
+                                let gap = match Relay_short_queue.ShortQueue.oldest_ts short_queue ~binding_id with
+                                  | Some oldest -> since_ts < oldest
+                                  | None -> false
+                                in
+                                let backfill_msgs, gap_flag =
+                                  if gap then
+                                    match get_observer_binding ~binding_id with
+                                    | Some (phone_pk, _) ->
+                                      (match R.alias_of_identity_pk relay ~identity_pk:phone_pk with
+                                       | Some alias ->
+                                         let history = R.query_messages_since relay ~alias ~since_ts in
+                                         (history, [("gap", `Bool true)])
+                                       | None -> ([], [("gap", `Bool true)]))
+                                    | None -> ([], [("gap", `Bool true)])
+                                  else ([], [])
+                                in
+                                let all_msgs = sq_json_msgs @ backfill_msgs in
+                                let response = `Assoc (["type", `String "replay"; "messages", `List all_msgs] @ gap_flag) in
+                                Relay_ws_frame.Session.send_text session (Yojson.Safe.to_string response) >>= fun () ->
+                                loop ())
                            | `Ping ->
                              Relay_ws_frame.Session.send_text session "observer_pong" >>= fun () ->
                              loop ()
