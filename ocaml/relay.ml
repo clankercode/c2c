@@ -301,6 +301,18 @@ CREATE TABLE IF NOT EXISTS pairing_tokens (
 );
 |sql}
 
+(* S5b: In-memory device-pair pending record (RFC 8628 device-login flow).
+   Stored temporarily while waiting for phone to register pubkeys. *)
+type device_pair_pending = {
+  binding_id : string;
+  machine_ed25519_pubkey : string;
+  phone_ed25519_pubkey : string option;
+  phone_x25519_pubkey : string option;
+  created_at : float;
+  expires_at : float;
+  fail_count : int;
+}
+
 let get_now = fun () -> Unix.gettimeofday ()
 
 let with_lock m f =
@@ -3942,10 +3954,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
         else
           handle_remote_inbox session_id
 
-      (* === S4: Observer WebSocket endpoint === *)
-      (* TODO S4: GET /observer/<binding_id> → WebSocket upgrade
-         Wire: Relay_ratelimit.structured_log ~event:"observer_handshake"
-               ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip) ~result:"..." () *)
+      (* === S4: Observer WebSocket endpoint (done) === *)
 
       (* === S5a: Mobile-pair endpoints === *)
       | `POST, "/mobile-pair/prepare" ->
