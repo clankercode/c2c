@@ -137,6 +137,9 @@ end
 
 val channel_notification : message -> Yojson.Safe.t
 val decrypt_message_for_push : message -> session_id:string -> message
+val session_id_from_env : ?client_type:string -> unit -> string option
+(** Resolve the current broker session id from the ambient client env. Prefers
+    explicit c2c-managed ids and falls back to harness-native ids when safe. *)
 val auto_register_startup : broker_root:string -> unit
 val auto_join_rooms_startup : broker_root:string -> unit
 val handle_request : broker_root:string -> Yojson.Safe.t -> Yojson.Safe.t option Lwt.t

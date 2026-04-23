@@ -331,7 +331,7 @@ let resolve_session_id () =
   | Some sid -> sid
   | None ->
       Printf.eprintf
-        "error: cannot determine session ID. Set C2C_MCP_SESSION_ID.\n%!";
+        "error: cannot determine session ID. Set C2C_MCP_SESSION_ID or run from a supported client session.\n%!";
       exit 1
 
 (* Like resolve_session_id but falls back to alias-based lookup when the
@@ -645,7 +645,7 @@ let whoami_cmd =
   let output_mode = if json then Json else Human in
   match env_session_id () with
   | None ->
-      Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID.\n\
+      Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID or run from a supported client session.\n\
 hint: Run 'c2c init' to register and get started, or pass --session-id explicitly.\n%!";
       exit 1
   | Some sid ->
@@ -686,7 +686,7 @@ let set_compact_cmd =
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   match env_session_id () with
   | None ->
-      Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID.\n\
+      Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID or run from a supported client session.\n\
 hint: Run 'c2c init' to register and get started, or pass --session-id explicitly.\n%!";
       exit 1
   | Some sid ->
@@ -711,7 +711,7 @@ let clear_compact_cmd =
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   match env_session_id () with
   | None ->
-      Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID.\n\
+      Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID or run from a supported client session.\n\
 hint: Run 'c2c init' to register and get started, or pass --session-id explicitly.\n%!";
       exit 1
   | Some sid ->
@@ -746,7 +746,7 @@ let open_pending_reply_cmd =
     match env_session_id () with
     | Some s -> s
     | None ->
-        Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID.\n\
+        Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID or run from a supported client session.\n\
 hint: Run 'c2c init' to register and get started, or pass --session-id explicitly.\n%!";
         exit 1
   in
@@ -1847,7 +1847,7 @@ let register_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS" ~doc:"Alias to register (default: C2C_MCP_AUTO_REGISTER_ALIAS).")
   in
   let session_id_opt =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "session-id"; "s" ] ~docv:"ID" ~doc:"Session ID (default: C2C_MCP_SESSION_ID).")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "session-id"; "s" ] ~docv:"ID" ~doc:"Session ID (default: resolved from C2C_MCP_SESSION_ID or the current client session).")
   in
   let+ json = json_flag
   and+ alias_opt = alias
@@ -1874,7 +1874,7 @@ let register_cmd =
         | Some s -> s
         | None ->
             Printf.eprintf
-              "error: no session ID specified and C2C_MCP_SESSION_ID not set.\n\
+              "error: no session ID specified and no ambient client session ID was found.\n\
                hint: Are you running this from inside the coding agent? Have you run `c2c install <client>` for your client?\n\
                Pass --session-id ID to specify explicitly.\n%!";
             exit 1)
@@ -5969,7 +5969,7 @@ let init_cmd =
 let completion_cmd =
   let shell_arg =
     Cmdliner.Arg.(value & opt (some string) None & info [ "shell" ] ~docv:"SHELL"
-      ~doc:"Shell to generate completions for: bash, zsh, or pwsh. Detects from $$SHELL if omitted.")
+      ~doc:"Shell to generate completions for: bash, zsh, or pwsh. Detects from $SHELL if omitted.")
   in
   let detect_shell () =
     try
@@ -5999,13 +5999,23 @@ let completion_cmd =
         let cmd = Printf.sprintf "%s tool-completion --standalone-completion %s c2c"
           (cmdliner_bin ()) s
         in
-        let ic = Unix.open_process_in cmd in
-        let rec copy_all () =
-          try print_endline (input_line ic); copy_all ()
-          with End_of_file -> ()
+        let run_and_check cmd =
+          let ic = Unix.open_process_in cmd in
+          let rec copy_all () =
+            try print_endline (input_line ic); copy_all ()
+            with End_of_file -> ()
+          in
+          copy_all ();
+          match Unix.close_process_in ic with
+          | Unix.WEXITED 0 -> ()
+          | Unix.WEXITED n ->
+              Printf.eprintf "error: cmdliner exited with code %d\n%!" n;
+              exit 1
+          | _ ->
+              Printf.eprintf "error: cmdliner terminated unexpectedly\n%!";
+              exit 1
         in
-        copy_all ();
-        ignore (Unix.close_process_in ic)
+        run_and_check cmd
     | Some s ->
         Printf.eprintf "error: unknown shell '%s'. Supported: bash, zsh, pwsh\n%!" s;
         exit 1

@@ -2418,10 +2418,52 @@ let optional_string_member name json =
         if String.trim text = "" then None else Some text
   with _ -> None
 
+let first_nonempty_env keys =
+  let rec loop = function
+    | [] -> None
+    | key :: rest ->
+        (match Sys.getenv_opt key with
+         | Some value ->
+             let trimmed = String.trim value in
+             if trimmed = "" then loop rest else Some trimmed
+         | None -> loop rest)
+  in
+  loop keys
+
+let native_session_id_env_keys = function
+  | "claude" -> [ "CLAUDE_SESSION_ID" ]
+  | "codex" -> [ "CODEX_THREAD_ID" ]
+  | "opencode" -> [ "C2C_OPENCODE_SESSION_ID" ]
+  | "kimi" | "crush" | "codex-headless" -> []
+  | _ -> []
+
+let inferred_client_type_from_env () =
+  match first_nonempty_env [ "C2C_MCP_CLIENT_TYPE" ] with
+  | Some client_type -> Some client_type
+  | None ->
+      if first_nonempty_env [ "CODEX_THREAD_ID" ] <> None then Some "codex"
+      else if first_nonempty_env [ "CLAUDE_SESSION_ID" ] <> None then Some "claude"
+      else if first_nonempty_env [ "C2C_OPENCODE_SESSION_ID" ] <> None then Some "opencode"
+      else None
+
+let session_id_from_env ?client_type () =
+  match first_nonempty_env [ "C2C_MCP_SESSION_ID" ] with
+  | Some session_id -> Some session_id
+  | None ->
+      let resolved_client_type =
+        match client_type with
+        | Some kind when String.trim kind <> "" -> Some (String.trim kind)
+        | _ -> inferred_client_type_from_env ()
+      in
+      let fallback_keys =
+        match resolved_client_type with
+        | Some kind -> native_session_id_env_keys kind
+        | None -> []
+      in
+      first_nonempty_env fallback_keys
+
 let current_session_id () =
-  match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
-  | Some value when String.trim value <> "" -> Some value
-  | _ -> None
+  session_id_from_env ()
 
 (* Derive a session_id from the alias when C2C_MCP_SESSION_ID is not set.
    Uses alias as-is so the plugin (which reads the same alias from the
