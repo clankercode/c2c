@@ -3834,12 +3834,17 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
                ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip) ~result:"..." () *)
 
       (* === S5a: Mobile-pair endpoints === *)
-      (* TODO S5a: POST /mobile-pair/prepare → issue pairing token
-         Wire: Relay_ratelimit.structured_log ~event:"pair_requested"
-               ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip) ~result:"..." () *)
-      (* TODO S5a: POST /mobile-pair → confirm binding
-         Wire: Relay_ratelimit.structured_log ~event:"pair_confirmed"
-               ~binding_id_prefix:(Relay_ratelimit.prefix8 binding_id) ~result:"ok" () *)
+      | `POST, "/mobile-pair/prepare" ->
+        let json = parse_body () in
+        (match json with
+         | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
+         | Ok j -> handle_mobile_pair_prepare relay ~client_ip j)
+
+      | `POST, "/mobile-pair" ->
+        let json = parse_body () in
+        (match json with
+         | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
+         | Ok j -> handle_mobile_pair relay j)
 
       (* === S5b: Device-pair endpoints === *)
       (* TODO S5b: POST /device-pair/init + POST /device-pair/<user_code>
