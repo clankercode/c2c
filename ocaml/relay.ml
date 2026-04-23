@@ -3084,10 +3084,15 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
                                  ["ts", `Float m.ts;
                                   "from_alias", `String m.from_alias;
                                   "to_alias", `String m.to_alias]
-                                  @ (match m.room_id with Some r -> ["room_id", `String r] | None -> [])
-                                  @ ["content", `String m.content])
+                                   @ (match m.room_id with Some r -> ["room_id", `String r] | None -> [])
+                                   @ ["content", `String m.content])
                              ) msgs in
-                             let response = `Assoc ["type", `String "replay"; "messages", `List json_msgs] in
+                             let gap = match Relay_short_queue.ShortQueue.oldest_ts short_queue ~binding_id with
+                               | Some oldest -> since_ts < oldest
+                               | None -> false
+                             in
+                             let gap_field = if gap then [("gap", `Bool true)] else [] in
+                             let response = `Assoc (["type", `String "replay"; "messages", `List json_msgs] @ gap_field) in
                              Relay_ws_frame.Session.send_text session (Yojson.Safe.to_string response) >>= fun () ->
                              loop ()
                            | `Ping ->
