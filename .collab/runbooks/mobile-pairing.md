@@ -195,12 +195,13 @@ Once bound, messages between desktop and phone use the S3 signed envelope format
   "from": "<canonical_alias>",
   "to":   "<canonical_alias>" | null,
   "room": "<room_id>" | null,
-  "ts":   <epoch_ms>,
+  "ts":   <epoch_int>,
   "enc":  "box-x25519-v1" | "plain",
   "recipients": [
     { "alias": "<canonical>", "nonce": "<b64 24B nonce>", "ciphertext": "<b64 encrypted payload>" }
   ],
-  "sig":  "<b64 Ed25519 signature of canonical JSON>"
+  "from_x25519": "<sender x25519 pubkey>" | null,
+  "sig":  "<b64 Ed25519 signature>"
 }
 ```
 
@@ -208,9 +209,11 @@ Once bound, messages between desktop and phone use the S3 signed envelope format
 - `from`: sender's canonical alias (phone alias, e.g. `max-phone`)
 - `to`: recipient alias, or `null` for room sends
 - `room`: room_id if room message, else `null`
+- `ts`: Unix epoch timestamp as JSON integer (e.g. `1714000000`), not a float
 - `enc`: `"box-x25519-v1"` for encrypted, `"plain"` for unencrypted
 - `recipients[]`: one entry per intended recipient, each with per-recipient nonce + ciphertext
-- `sig`: Ed25519 signature over canonical JSON of `{from,to,room,ts,enc,recipients}` — sender signs regardless of encryption
+- `from_x25519`: sender's X25519 pubkey (optional, used for x25519 TOFU pinning on receive; `null` on legacy envelopes)
+- `sig`: Ed25519 signature over **canonical JSON** of `{from,to,room,ts,enc,recipients}` in sorted key order — `from_x25519` and `sig` fields are NOT included in what is signed
 
 **Encryption algorithm**: NaCl crypto_box (X25519 → HSalsa20 → XSalsa20-Poly1305). Not Signal-style double-ratchet — single DH per message.
 
@@ -227,11 +230,12 @@ Once bound, messages between desktop and phone use the S3 signed envelope format
   "from": "desktop-alias",
   "to": "max-phone",
   "room": null,
-  "ts": 1714000000.0,
+  "ts": 1714000000,
   "enc": "box-x25519-v1",
   "recipients": [
     { "alias": "max-phone", "nonce": "<b64 24B>", "ciphertext": "<b64>" }
   ],
+  "from_x25519": "<b64 sender x25519 pubkey>",
   "sig": "<b64 Ed25519 sig>"
 }
 ```
