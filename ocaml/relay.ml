@@ -450,11 +450,15 @@ module type RELAY = sig
   val get_and_burn_pairing_token : t -> binding_id:string -> (string * string) option
   val find_pairing_token : t -> binding_id:string -> bool
     (* true if a valid (not expired) token for this binding_id already exists *)
-  (* S5a: Observer binding management *)
+    (* S5a: Observer binding management *)
   val add_observer_binding : t -> binding_id:string ->
     phone_ed25519_pubkey:string -> phone_x25519_pubkey:string -> unit
   val get_observer_binding : t -> binding_id:string -> (string * string) option
   val remove_observer_binding : t -> binding_id:string -> unit
+  (* S5b: Device-pair pending state (RFC 8628 OAuth, ephemeral, InMemoryRelay only) *)
+  val get_device_pair_pending : t -> user_code:string -> device_pair_pending option
+  val set_device_pair_pending : t -> user_code:string -> device_pair_pending -> unit
+  val remove_device_pair_pending : t -> user_code:string -> unit
 end
 
 (* --- InMemoryRelay --- *)
@@ -484,6 +488,8 @@ module InMemoryRelay : RELAY = struct
     pairing_tokens : (string, (string * string * float)) Hashtbl.t;
     (* S5a: In-memory observer bindings *)
     observer_bindings_mem : (string, (string * string)) Hashtbl.t;
+    (* S5b: Device-pair pending table (RFC 8628 OAuth, ephemeral) *)
+    device_pair_pending_mem : (string, device_pair_pending) Hashtbl.t;
   }
 
   let room_history_jsonl_path persist_dir room_id =
@@ -548,6 +554,7 @@ module InMemoryRelay : RELAY = struct
       persist_dir;
       pairing_tokens = Hashtbl.create 64;
       observer_bindings_mem = Hashtbl.create 64;
+      device_pair_pending_mem = Hashtbl.create 64;
     }
 
   let with_lock t f =
@@ -699,6 +706,16 @@ module InMemoryRelay : RELAY = struct
 
   let remove_observer_binding t ~binding_id =
     Hashtbl.remove t.observer_bindings_mem binding_id
+
+  (* S5b: Device-pair pending state accessors *)
+  let get_device_pair_pending t ~user_code =
+    Hashtbl.find_opt t.device_pair_pending_mem user_code
+
+  let set_device_pair_pending t ~user_code pending =
+    Hashtbl.replace t.device_pair_pending_mem user_code pending
+
+  let remove_device_pair_pending t ~user_code =
+    Hashtbl.remove t.device_pair_pending_mem user_code
 
   let query_messages_since t ~alias ~since_ts =
     with_lock t (fun () ->
@@ -2152,6 +2169,11 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
 
   let remove_observer_binding t ~binding_id =
     ObserverBindings.remove t.observer_bindings ~binding_id
+
+  (* S5b: Device-pair pending — SqliteRelay doesn't use ephemeral OAuth state, stubs for signature *)
+  let get_device_pair_pending _t ~user_code:_ = None
+  let set_device_pair_pending _t ~user_code:_ (_:device_pair_pending) = ()
+  let remove_device_pair_pending _t ~user_code:_ = ()
 end
 
 (* --- Relay_server HTTP layer (functor over RELAY backend) --- *)
@@ -2199,13 +2221,6 @@ let add_observer_binding ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey 
   ObserverBindings.add observer_bindings ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey
 let binding_id_of_phone_pk ~phone_ed25519_pubkey =
   ObserverBindings.binding_id_of_phone_pk observer_bindings ~phone_ed25519_pubkey
-
-(* S5b: Global device-pair pending table for RFC 8628 device-login flow.
-   Key: user_code. Value: device_pair_pending record.
-   Lives here (not in relay record) because SqliteRelay doesn't need it —
-   the OAuth pending state is ephemeral and only needed at the server level. *)
-let device_pair_pending_mem : (string, device_pair_pending) Hashtbl.t =
-  Hashtbl.create 64
 
 let nonce_cache = NonceCache.create ()
 let is_nonce_seen ~phone_pubkey ~nonce = NonceCache.is_seen nonce_cache ~phone_pubkey ~nonce
@@ -3521,7 +3536,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
           expires_at;
           fail_count = 0;
         } in
-        Hashtbl.replace device_pair_pending_mem user_code pending;
+        R.set_device_pair_pending relay ~user_code pending;
         Relay_ratelimit.structured_log ~event:"device_pair_init"
           ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
           ~user_code_prefix:(Relay_ratelimit.prefix8 user_code)
@@ -3541,7 +3556,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
     if phone_ed_pk = "" || phone_x_pk = "" then
       respond_bad_request (json_error_str err_bad_request "phone_ed25519_pubkey and phone_x25519_pubkey required")
     else
-      match Hashtbl.find_opt device_pair_pending_mem user_code with
+      match R.get_device_pair_pending relay ~user_code with
       | None ->
         Relay_ratelimit.structured_log ~event:"device_pair_register"
           ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
@@ -3550,66 +3565,66 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
         respond_not_found (json_error_str err_not_found "user_code not found or expired")
       | Some pending ->
         if Unix.gettimeofday () > pending.expires_at then
-          (Hashtbl.remove device_pair_pending_mem user_code;
+          (R.remove_device_pair_pending relay ~user_code;
            respond_not_found (json_error_str err_not_found "user_code expired"))
         else
           match decode_b64url phone_ed_pk with
           | Error _ ->
             let new_fail = pending.fail_count + 1 in
             if new_fail >= 10 then
-              (Hashtbl.remove device_pair_pending_mem user_code;
+              (R.remove_device_pair_pending relay ~user_code;
                Relay_ratelimit.structured_log ~event:"device_pair_invalidated"
                  ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
                  ~user_code_prefix:(Relay_ratelimit.prefix8 user_code)
                  ~result:"max_failures" ();
                respond_not_found (json_error_str err_not_found "user_code invalidated"))
             else
-              (Hashtbl.replace device_pair_pending_mem user_code { pending with fail_count = new_fail };
+              (R.set_device_pair_pending relay ~user_code { pending with fail_count = new_fail };
                respond_bad_request (json_error_str err_bad_request "phone_ed25519_pubkey not base64url-nopad"))
           | Ok ed when String.length ed <> 32 ->
             let new_fail = pending.fail_count + 1 in
             if new_fail >= 10 then
-              (Hashtbl.remove device_pair_pending_mem user_code;
+              (R.remove_device_pair_pending relay ~user_code;
                Relay_ratelimit.structured_log ~event:"device_pair_invalidated"
                  ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
                  ~user_code_prefix:(Relay_ratelimit.prefix8 user_code)
                  ~result:"max_failures" ();
                respond_not_found (json_error_str err_not_found "user_code invalidated"))
             else
-              (Hashtbl.replace device_pair_pending_mem user_code { pending with fail_count = new_fail };
+              (R.set_device_pair_pending relay ~user_code { pending with fail_count = new_fail };
                respond_bad_request (json_error_str err_bad_request "phone_ed25519_pubkey must be 32 bytes"))
           | Ok _ ->
             match decode_b64url phone_x_pk with
             | Error _ ->
               let new_fail = pending.fail_count + 1 in
               if new_fail >= 10 then
-                (Hashtbl.remove device_pair_pending_mem user_code;
+                (R.remove_device_pair_pending relay ~user_code;
                  Relay_ratelimit.structured_log ~event:"device_pair_invalidated"
                    ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
                    ~user_code_prefix:(Relay_ratelimit.prefix8 user_code)
                    ~result:"max_failures" ();
                  respond_not_found (json_error_str err_not_found "user_code invalidated"))
               else
-                (Hashtbl.replace device_pair_pending_mem user_code { pending with fail_count = new_fail };
+                (R.set_device_pair_pending relay ~user_code { pending with fail_count = new_fail };
                  respond_bad_request (json_error_str err_bad_request "phone_x25519_pubkey not base64url-nopad"))
             | Ok x when String.length x <> 32 ->
               let new_fail = pending.fail_count + 1 in
               if new_fail >= 10 then
-                (Hashtbl.remove device_pair_pending_mem user_code;
+                (R.remove_device_pair_pending relay ~user_code;
                  Relay_ratelimit.structured_log ~event:"device_pair_invalidated"
                    ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
                    ~user_code_prefix:(Relay_ratelimit.prefix8 user_code)
                    ~result:"max_failures" ();
                  respond_not_found (json_error_str err_not_found "user_code invalidated"))
               else
-                (Hashtbl.replace device_pair_pending_mem user_code { pending with fail_count = new_fail };
+                (R.set_device_pair_pending relay ~user_code { pending with fail_count = new_fail };
                  respond_bad_request (json_error_str err_bad_request "phone_x25519_pubkey must be 32 bytes"))
             | Ok _ ->
               let updated = { pending with
                 phone_ed25519_pubkey = Some phone_ed_pk;
                 phone_x25519_pubkey = Some phone_x_pk
               } in
-              Hashtbl.replace device_pair_pending_mem user_code updated;
+              R.set_device_pair_pending relay ~user_code updated;
               Relay_ratelimit.structured_log ~event:"device_pair_register"
                 ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
                 ~user_code_prefix:(Relay_ratelimit.prefix8 user_code)
@@ -3618,12 +3633,12 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
 
   (* S5b: GET /device-pair/<user_code> — machine polls for phone registration *)
   let handle_device_pair_poll relay ~client_ip ~user_code =
-    match Hashtbl.find_opt device_pair_pending_mem user_code with
+    match R.get_device_pair_pending relay ~user_code with
     | None ->
       respond_not_found (json_error_str err_not_found "user_code not found")
     | Some pending ->
       if Unix.gettimeofday () > pending.expires_at then
-        (Hashtbl.remove device_pair_pending_mem user_code;
+        (R.remove_device_pair_pending relay ~user_code;
          respond_not_found (json_error_str err_not_found "user_code expired"))
       else
         match pending.phone_ed25519_pubkey, pending.phone_x25519_pubkey with
@@ -3637,7 +3652,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
             ~phone_ed_pk:ed_pk ~phone_x_pk:x_pk
             ~machine_ed_pk:pending.machine_ed25519_pubkey
             ~provenance_sig:"" ~bound_at in
-          Hashtbl.remove device_pair_pending_mem user_code;
+          R.remove_device_pair_pending relay ~user_code;
           Relay_ratelimit.structured_log ~event:"device_pair_claimed"
             ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
             ~user_code_prefix:(Relay_ratelimit.prefix8 user_code)
