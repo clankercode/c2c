@@ -177,7 +177,6 @@ let load_or_generate ~session_id ?(path : string option) () =
   | Ok t -> Ok t
   | Error e ->
       if String.length e >= 22 && String.sub e 0 22 = "enc identity file not " then
-        (* ENOENT: key file absent — generate and save. *)
         let t = generate () in
         (match save ~path t with
          | Ok () -> Ok t

@@ -52,3 +52,8 @@
  (name test_relay_remote_broker)
  (modules test_relay_remote_broker)
  (libraries c2c_mcp alcotest))
+
+(test
+ (name test_relay_ratelimit)
+ (modules test_relay_ratelimit)
+ (libraries c2c_mcp alcotest unix))

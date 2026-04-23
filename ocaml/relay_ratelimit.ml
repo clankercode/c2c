@@ -1,29 +1,19 @@
 (* Rate limiter for M1 relay endpoints.
    Token-bucket algorithm: each key has a bucket that refills at a constant rate.
-   Allows bursts up to [capacity] but enforces average [refill_rate]. *)
-
-module type RATE_LIMIT_POLICY = sig
-  type t
-  val make : unit -> t
-  val check : t -> key:string -> cost:int -> [> `Allow | `Deny of float ]
-  (* `Allow: proceed; `Deny retry_after_seconds: slow down caller *)
-  val cleanup : t -> older_than:float -> int
-  (* removes entries unused for [older_than] seconds. returns count removed *)
-end
+   Allows bursts up to [capacity] but enforces average [refill_rate].
+   Emits structured JSON logs for pair/unpair/handshake events per spec S4b. *)
 
 module TokenBucket : sig
   type t
   val create : capacity:float -> refill_rate:float -> t
   val allow : t -> cost:int -> [> `Allow | `Deny of float ]
-  (* consumes [cost] tokens. returns `Allow if enough, `Deny (secs_to_wait) otherwise *)
   val touch : t -> unit
-  (* called on successful auth — updates last_seen *)
   val tokens : t -> float
   val last_seen : t -> float
 end = struct
   type t = {
     mutable tokens : float;
-    refill_rate : float;  (* tokens per second *)
+    refill_rate : float;
     capacity : float;
     mutable last_seen : float;
   }
@@ -61,22 +51,42 @@ end
 
 (* Per-endpoint policies. Values are (capacity, refill_rate per second). *)
 let policy_of_endpoint path =
-  if        String.length path >= 7 && String.sub path 0 7 = "/pubkey" then
-    Some (100.0, 10.0)  (* generous: allow burst of 100, refill 10/s *)
-  else if   String.length path >= 12 && String.sub path 0 12 = "/mobile-pair" then
+  let starts_with prefix s =
+    String.length s >= String.length prefix
+    && String.sub s 0 (String.length prefix) = prefix
+  in
+  if starts_with "/pubkey" path then
+    Some (100.0, 10.0)  (* generous: burst 100, refill 10/s *)
+  else if starts_with "/mobile-pair" path then
     Some (10.0, 0.167)   (* strict: 10/min ≈ 0.167/s *)
-  else if  String.length path >= 12 && String.sub path 0 12 = "/device-pair" then
-    Some (10.0, 0.167)   (* strict: 10/min, per user-code *)
-  else if  String.length path >= 10 && String.sub path 0 10 = "/observer/" then
+  else if starts_with "/device-pair" path then
+    Some (5.0, 0.083)    (* strict: 5/min ≈ 0.083/s; per user-code noted but
+                            keyed by IP only at this layer — per-user-code tracking
+                            requires code-level extraction and is a future extension *)
+  else if starts_with "/observer" path then
     Some (20.0, 0.333)   (* strict: 20/min ≈ 0.333/s *)
   else
     None
 
-module Make (P : sig end) = struct
-  type policy_spec = { capacity : float; refill_rate : float }
+(* Structured log emitter for S4b pair/handshake events.
+   All identifiers are 8-char prefixes to correlate without leaking full IDs. *)
+let structured_log ~event ?(binding_id_prefix="") ?(phone_pubkey_prefix="")
+    ~source_ip_prefix ~result ?(reason="") () =
+  let ts = Unix.gettimeofday () in
+  let fields = [
+    "event", `String event;
+    "ts", `Float ts;
+    "binding_id_prefix", `String binding_id_prefix;
+    "phone_pubkey_prefix", `String phone_pubkey_prefix;
+    "source_ip_prefix", `String source_ip_prefix;
+    "result", `String result;
+  ] in
+  let fields = if reason <> "" then ("reason", `String reason) :: fields else fields in
+  Logs.info (fun m -> m "%s" (Yojson.Safe.to_string (`Assoc fields)))
 
+module Make () = struct
   type t = {
-    mutable buckets : (string, TokenBucket.t * policy_spec) Hashtbl.t;
+    mutable buckets : (string, TokenBucket.t) Hashtbl.t;
     mutex : Mutex.t;
     gc_interval : float;
   }
@@ -90,28 +100,27 @@ module Make (P : sig end) = struct
 
   let check t ~(key:string) ~(cost:int) ~(path:string) : [> `Allow | `Deny of float ] =
     match policy_of_endpoint path with
-    | None -> `Allow  (* no policy = no limiting *)
+    | None -> `Allow
     | Some (capacity, refill_rate) ->
-      with_lock t (fun () ->
-        let now = Unix.gettimeofday () in
-        match Hashtbl.find_opt t.buckets key with
-        | Some (bucket, spec) ->
-          let result = TokenBucket.allow bucket ~cost in
-          (match result with
-           | `Allow -> TokenBucket.touch bucket
-           | `Deny _ -> ());
-          result
-        | None ->
-          let bucket = TokenBucket.create ~capacity ~refill_rate in
-          Hashtbl.add t.buckets key (bucket, { capacity; refill_rate });
-          TokenBucket.allow bucket ~cost
-      )
+        with_lock t (fun () ->
+          match Hashtbl.find_opt t.buckets key with
+          | Some bucket ->
+              let result = TokenBucket.allow bucket ~cost in
+              (match result with
+               | `Allow -> TokenBucket.touch bucket
+               | `Deny _ -> ());
+              result
+          | None ->
+              let bucket = TokenBucket.create ~capacity ~refill_rate in
+              Hashtbl.add t.buckets key bucket;
+              TokenBucket.allow bucket ~cost
+        )
 
   let cleanup t ~older_than =
     with_lock t (fun () ->
       let now = Unix.gettimeofday () in
       let to_remove = ref [] in
-      Hashtbl.iter (fun key (bucket, _spec) ->
+      Hashtbl.iter (fun key bucket ->
         if now -. TokenBucket.last_seen bucket > older_than then
           to_remove := key :: !to_remove
       ) t.buckets;

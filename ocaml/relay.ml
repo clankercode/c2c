@@ -1664,6 +1664,9 @@ end
 
 (* --- Relay_server HTTP layer (functor over RELAY backend) --- *)
 
+(* Instantiate rate limiter once at module level — avoids fresh-type-in-functor issue. *)
+module Rate_limiter_inst = Relay_ratelimit.Make()
+
 module Relay_server(R : RELAY) : sig
   val make_callback :
     R.t ->
@@ -1671,7 +1674,8 @@ module Relay_server(R : RELAY) : sig
     Conduit_lwt_unix.flow ->
     Cohttp.Request.t ->
     Cohttp_lwt.Body.t ->
-    (Cohttp.Response.t * Cohttp_lwt.Body.t) Lwt.t
+    rate_limiter:Rate_limiter_inst.t ->
+    Cohttp_lwt_unix.Server.response Lwt.t
 
   (* L2/4 auth decision — exposed for unit testing the route matrix.
      Returns (allow, error_msg_if_denied). Admin routes require Bearer;
@@ -1883,6 +1887,7 @@ end = struct
   let respond_ok body = respond_json ~status:`OK body
   let respond_bad_request body = respond_json ~status:`Bad_request body
   let respond_unauthorized body = respond_json ~status:`Unauthorized body
+  let respond_too_many_requests body = respond_json ~status:`Too_many_requests body
   let respond_not_found body = respond_json ~status:`Not_found body
   let respond_conflict body = respond_json ~status:`Conflict body
   let respond_internal_error body = respond_json ~status:`Internal_server_error body
@@ -2572,16 +2577,45 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
                      if Relay_identity.verify ~pk ~msg:blob ~sig_ then
                        Ok (Some alias)
                      else
-                       Error (relay_err_signature_invalid,
-                         "Ed25519 request signature does not verify"))
+                         Error (relay_err_signature_invalid,
+                           "Ed25519 request signature does not verify"))
 
-  let make_callback relay token _conn req body =
+  let get_client_ip (flow:Conduit_lwt_unix.flow) =
+    match flow with
+    | TCP { fd } ->
+      (try
+         let addr = Unix.getpeername (Lwt_unix.unix_file_descr fd) in
+         match addr with
+         | Unix.ADDR_INET (inet_addr, _) -> Unix.string_of_inet_addr inet_addr
+         | _ -> "unix"
+       with _ -> "unknown")
+    | Domain_socket { fd } ->
+      (try
+         let addr = Unix.getpeername (Lwt_unix.unix_file_descr fd) in
+         match addr with
+         | Unix.ADDR_INET (inet_addr, _) -> Unix.string_of_inet_addr inet_addr
+         | _ -> "unix"
+       with _ -> "unknown")
+    | _ -> "unknown"
+
+  let make_callback relay token conn req body ~rate_limiter =
     let open Cohttp in
     let open Cohttp_lwt_unix in
     let uri = Request.uri req in
     let path = Uri.path uri in
     let meth = Request.meth req in
-    let auth_header = Header.get (Request.headers req) "Authorization" in
+    let client_ip = get_client_ip conn in
+    let rate_key = client_ip in
+    match Rate_limiter_inst.check rate_limiter ~key:rate_key ~cost:1 ~path with
+    | `Deny retry_after ->
+        Logs.info (fun m -> m "rate_limit denied %s %s (retry after %.1fs)" (Cohttp.Code.string_of_method meth) path retry_after);
+        respond_too_many_requests (`Assoc [
+          "error", `String "rate_limit_exceeded";
+          "retry_after", `Float retry_after
+        ])
+    | `Allow ->
+      begin
+        let auth_header = Header.get (Request.headers req) "Authorization" in
     let host_header = Header.get (Request.headers req) "Host" in
     (* Reconstruct the relay URL a client would have signed against.
        Scheme: forwarded-proto → X-Forwarded-Proto → uri.scheme → http. *)
@@ -2753,6 +2787,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
 
       | _ ->
         respond_not_found (json_error_str err_not_found ("unknown endpoint: " ^ path))
+      end
 
   (* --- GC thread loop --- *)
 
@@ -2772,8 +2807,9 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
      | [] -> ()
      | _ ->
        Printf.printf "allowlist: %d pinned identities\n%!" (List.length allowlist));
-    let callback conn req body =
-      make_callback relay token conn req body
+     let rate_limiter = Rate_limiter_inst.create ~gc_interval:300.0 () in
+    let callback (conn, _) req body =
+      make_callback relay token conn req body ~rate_limiter
     in
     let gc_thread =
       if gc_interval > 0.0 then
