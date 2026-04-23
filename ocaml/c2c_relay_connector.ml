@@ -62,6 +62,7 @@ type t = {
   interval : float;
   verbose : bool;
   mutable registered : string list;
+  mutable active_ws_bindings : string list;
 }
 
 (* ---------------------------------------------------------------------------
@@ -483,10 +484,125 @@ let json_list_member ~key json =
   | `List lst -> lst
   | _ -> []
 
+
+
+(* ---------------------------------------------------------------------------
+ * S5c Phase B: Broker WS client — connects to relay as outbound observer
+ * --------------------------------------------------------------------------- *)
+
+let parse_relay_url url =
+  match String.split_on_char ':' url with
+  | host :: port_str :: _ ->
+      let port = int_of_string port_str in
+      (host, port)
+  | _ ->
+      let default_port = if String.starts_with ~prefix:"https" url then 443 else 80 in
+      (url, default_port)
+
+let handle_pseudo_registration broker_root json =
+  let open Yojson.Safe.Util in
+  try
+    let alias = json |> member "alias" |> to_string in
+    let binding_id = json |> member "binding_id" |> to_string in
+    let ed25519_pubkey = json |> member "ed25519_pubkey" |> to_string in
+    let x25519_pubkey = json |> member "x25519_pubkey" |> to_string in
+    let machine_ed25519_pubkey = json |> member "machine_ed25519_pubkey" |> to_string in
+    let provenance_sig = json |> member "provenance_sig" |> to_string in
+    let bound_at = json |> member "bound_at" |> to_float in
+    Printf.printf "[broker-ws] pseudo_registration: alias=%s binding_id=%s\n%!" alias binding_id;
+    upsert_pseudo_registration broker_root ~binding_id ~alias ~ed25519_pubkey ~x25519_pubkey
+      ~machine_ed25519_pubkey ~provenance_sig ~bound_at;
+    Printf.printf "[broker-ws]   stored in pseudo_registrations.json\n%!"
+  with e ->
+    Printf.eprintf "[broker-ws] error handling pseudo_registration: %s\n%!" (Printexc.to_string e)
+
+let handle_pseudo_unregistration broker_root json =
+  let open Yojson.Safe.Util in
+  try
+    let binding_id = json |> member "binding_id" |> to_string in
+    Printf.printf "[broker-ws] pseudo_unregistration: binding_id=%s\n%!" binding_id;
+    remove_pseudo_registration broker_root ~binding_id;
+    Printf.printf "[broker-ws]   removed from pseudo_registrations.json\n%!"
+  with e ->
+    Printf.eprintf "[broker-ws] error handling pseudo_unregistration: %s\n%!" (Printexc.to_string e)
+
+let rec ws_client_loop (session : Relay_ws_frame.Client_session.t) broker_root binding_id =
+  Lwt.catch (fun () ->
+    session |> Relay_ws_frame.Client_session.recv >>= function
+    | None ->
+        Printf.printf "[broker-ws] connection closed\n%!";
+        Lwt.return ()
+    | Some (`Ping) ->
+        ws_client_loop session broker_root binding_id
+    | Some (`Text raw) ->
+        (try
+          let json = Yojson.Safe.from_string raw in
+          let open Yojson.Safe.Util in
+          let msg_type = json |> member "type" |> to_string in
+          match msg_type with
+          | "pseudo_registration" -> handle_pseudo_registration broker_root json
+          | "pseudo_unregistration" -> handle_pseudo_unregistration broker_root json
+          | _ -> Printf.printf "[broker-ws] unknown frame type: %s\n%!" msg_type
+        with e ->
+          Printf.eprintf "[broker-ws] error parsing frame: %s\n%!" (Printexc.to_string e));
+        ws_client_loop session broker_root binding_id
+    | Some (`Binary raw) ->
+        Printf.printf "[broker-ws] unexpected binary frame\n%!";
+        ws_client_loop session broker_root binding_id
+    | Some (`Close (code, reason)) ->
+        Printf.printf "[broker-ws] server closed: code=%d reason=%s\n%!" code reason;
+        Lwt.return ()
+  ) (fun exn ->
+    Printf.eprintf "[broker-ws] connection error: %s\n%!" (Printexc.to_string exn);
+    Lwt.return ()
+  )
+
+let broker_ws_connect ~relay_url ~binding_id ~broker_root ~verbose =
+  let host, port = parse_relay_url relay_url in
+  let path = "/observer/" ^ binding_id in
+  if verbose then Printf.printf "[broker-ws] connecting to %s:%d%s\n%!" host port path;
+  Lwt.catch (fun () ->
+    let addr = Lwt_unix.ADDR_INET (Unix.inet_addr_of_string host, port) in
+    let sock = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+    Lwt_unix.connect sock addr >>= fun () ->
+    let request, masking_key = Relay_ws_frame.make_client_handshake_request ~host:(Printf.sprintf "%s:%d" host port) ~path in
+    let request_bytes = Bytes.of_string request in
+    Lwt_unix.write sock request_bytes 0 (Bytes.length request_bytes) >>= fun _ ->
+    let ic = Lwt_io.of_fd ~mode:Lwt_io.Input sock in
+    let oc = Lwt_io.of_fd ~mode:Lwt_io.Output sock in
+    let buf = Bytes.create 4096 in
+    Lwt_io.read_into ic buf 0 4096 >>= fun n ->
+    let response = Bytes.sub_string buf 0 n in
+    if not (String.length response >= 12 && String.sub response 0 12 = "HTTP/1.1 101") then (
+      Printf.eprintf "[broker-ws] handshake failed: %s\n%!" (String.sub response 0 (min n 200));
+      Lwt.return ()
+    ) else (
+      if verbose then Printf.printf "[broker-ws] handshake succeeded\n%!";
+      let session = Relay_ws_frame.Client_session.create ic oc masking_key in
+      ws_client_loop session broker_root binding_id
+    )
+  ) (fun exn ->
+    Printf.eprintf "[broker-ws] connection failed: %s\n%!" (Printexc.to_string exn);
+    Lwt.return ()
+  )
+
+let maintain_ws_connections (t : t) : unit =
+  let bindings = read_mobile_bindings t.broker_root in
+  let binding_ids = List.map (fun mb -> mb.mb_binding_id) bindings in
+  let new_bindings = List.filter (fun id -> not (List.mem id t.active_ws_bindings)) binding_ids in
+  List.iter (fun binding_id ->
+    if t.verbose then Printf.printf "[broker-ws] maintaining connection to binding %s\n%!" binding_id;
+    let _ = Lwt_main.run (broker_ws_connect ~relay_url:t.relay_url ~binding_id ~broker_root:t.broker_root ~verbose:t.verbose) in
+    t.active_ws_bindings <- binding_id :: t.active_ws_bindings
+  ) new_bindings
+
 let sync (t : t) : sync_result Lwt.t =
   let client = Relay_client.make ?token:t.token ?identity:t.identity t.relay_url in
   let regs = read_local_registrations t.broker_root in
   let outbox = read_outbox t.broker_root in
+
+  (* 0. Maintain WS connections to mobile bindings *)
+  maintain_ws_connections t;
 
   (* 1. Register / heartbeat each local session *)
   let registered, heartbeated, new_registered, reg_errors =
@@ -728,6 +844,7 @@ let start ~relay_url ~token ~identity ~broker_root ~node_id
       relay_url; token; identity; broker_root; node_id;
       heartbeat_ttl; interval; verbose;
       registered = [];
+      active_ws_bindings = [];
     } in
     if once then begin
       match Lwt_main.run (sync t) with
