@@ -77,6 +77,26 @@ val generate_alias : unit -> string
 val default_name : string -> string
 (** [default_name client] returns "<client>-<word1>-<word2>" using random words. *)
 
+(** {1 Per-role-class pmodel preferences} *)
+
+type pmodel = { provider : string; model : string }
+(** Parsed provider:model preference. The original string form supports an
+    optional leading ':' prefix char so the model itself may contain colons
+    (e.g. ":groq:openai/gpt-oss-120b" -> provider="groq", model="openai/gpt-oss-120b"). *)
+
+val parse_pmodel : string -> (pmodel, string) result
+(** [parse_pmodel s] parses "provider:model" or ":provider:model" (prefix form
+    when the model contains ':'). Returns [Error msg] on empty provider, empty
+    model, or missing separator. *)
+
+val repo_config_pmodel : unit -> (string * pmodel) list
+(** Read the [pmodel] table from .c2c/config.toml in the repo root. Returns the
+    list of (class_key, pmodel) pairs. Malformed entries are silently dropped. *)
+
+val repo_config_pmodel_lookup : string -> pmodel option
+(** [repo_config_pmodel_lookup class_key] looks up a class (e.g. "coder",
+    "coordinator") in the repo pmodel table. Returns [None] if absent. *)
+
 (** {1 Broker root} *)
 
 val broker_root : unit -> string
