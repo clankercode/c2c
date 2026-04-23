@@ -2843,12 +2843,19 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
     let meth = Request.meth req in
     let client_ip = get_client_ip conn in
     let rate_key = client_ip in
+    let rate_limit_event, rate_limit_binding_prefix =
+      if String.length path > 11 && String.sub path 0 11 = "/observer/" then
+        ("observer_handshake", Some (Relay_ratelimit.prefix8 (String.sub path 11 (String.length path - 11))))
+      else
+        ("rate_limit_denied", None)
+    in
     match Rate_limiter_inst.check rate_limiter ~key:rate_key ~cost:1 ~path with
     | `Deny retry_after ->
         Relay_ratelimit.structured_log
-          ~event:"rate_limit_denied"
+          ~event:rate_limit_event
+          ~binding_id_prefix:(match rate_limit_binding_prefix with Some p -> p | None -> "")
           ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
-          ~result:"denied"
+          ~result:"rate_limit_denied"
           ~reason:(path ^ " retry_after=" ^ string_of_float retry_after)
           ();
         respond_too_many_requests (`Assoc [
