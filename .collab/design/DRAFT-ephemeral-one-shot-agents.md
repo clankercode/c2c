@@ -135,6 +135,22 @@ Dogfood-first: once the primitive lands, Max runs `c2c agent refine <new-role>` 
 
 Then: unit tests around prompt template composition, name allocation, flag parsing, timeout watcher. Integration: end-to-end with a minimal role file in a test harness.
 
+## Implementation notes (galaxy-coder review 2026-04-24)
+
+1. **`c2c_stop_self` needs `C2C_MCP_SESSION_ID`**: the ephemeral needs its own session ID to call `c2c stop <self>`. Must read from env and pass through to the kickoff prompt context.
+
+2. **Prompt template not yet specified**: actual template text needs defining — who composes it, where it's stored. Suggest: a `.c2c/snippets/ephemeral-kickoff-template.md` loaded at runtime.
+
+3. **`eph-` prefix on `--name` override**: should the system enforce the prefix, or silently allow non-prefixed names? Recommend: warn but allow — don't block.
+
+4. **Idle timeout vs inbox race**: timer resets on poll responses only; any inbox message (not just responses) should reset. Fix: drain check on any `c2c event` message, not just tool responses.
+
+5. **tmux autodetect edge case**: `--pane` with no tmux in SSH environment — doc assumes tmux available. Handle gracefully: fall back to `--background`.
+
+6. **Client compatibility**: `--ephemeral` and `--kickoff-prompt` flags need verification across all 5 clients before claiming full support.
+
+Overall: design is ready. These are implementation-time resolved, not blockers.
+
 ## References
 
 - `c2c start` (OCaml `c2c_start.ml`) — managed peer launcher, reuse its env-building and pidfile plumbing
