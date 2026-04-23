@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""view-latest — display the most recent sitrep with colorized markdown."""
+"""view-latest — display the most recent sitrep with colorized markdown via rich."""
 
 from __future__ import annotations
 
@@ -8,8 +8,14 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SITREPS_DIR = REPO_ROOT / ".sitreps"
+
+console = Console()
 
 
 def find_latest_sitrep() -> Path | None:
@@ -55,145 +61,34 @@ def find_latest_sitrep() -> Path | None:
     return latest
 
 
-def ansi_color(text: str, color_code: int) -> str:
-    return f"\033[{color_code}m{text}\033[0m"
-
-
-def render_sitrep(content: str) -> str:
-    """Render sitrep markdown with ANSI colorization."""
-    lines = content.splitlines()
-    output: list[str] = []
-    in_table_body = False
-
-    for raw_line in lines:
-        line = raw_line.rstrip()
-
-        # Markdown metadata block (lines starting with >)
-        if line.startswith(">"):
-            output.append(ansi_color(line, 90))
-            continue
-
-        # Headers
-        if line.startswith("# Sitrep"):
-            output.append(ansi_color(line, 36))
-            continue
-        if line.startswith("## "):
-            output.append(ansi_color(line, 36))
-            continue
-        if line.startswith("### "):
-            output.append(ansi_color(line, 34))
-            continue
-
-        # Table rows (header or data) — any | line that's not a separator
-        if line.startswith("|"):
-            if re.match(r"^\|[-| :]+\|$", line):
-                in_table_body = True
-                output.append(ansi_color(line, 90))
-            else:
-                in_table_body = True
-                cells = line.split("|")
-                colored_cells: list[str] = []
-                for i, cell in enumerate(cells):
-                    if cell:  # non-empty cell
-                        if i == 1:
-                            colored_cells.append(ansi_color(cell, 33))
-                        elif i == 2:
-                            colored_cells.append(ansi_color(cell, 90))
-                        elif i == 3:
-                            colored_cells.append(ansi_color(cell, 35))
-                        elif i == 4:
-                            colored_cells.append(ansi_color(cell, 32))
-                        else:
-                            colored_cells.append(cell)
-                    else:
-                        colored_cells.append(cell)  # empty string (leading/trailing |)
-                output.append("|".join(colored_cells))
-            continue
-
-        # Code blocks
-        if line.strip().startswith("```"):
-            output.append(ansi_color(line, 96))
-            continue
-
-        # Tags inside bold: **[feature]**, **[flow]**, **[sidequest]** — colorize the tag
-        tag_colors = {"feature": 35, "flow": 34, "sidequest": 33}
-
-        def tag_replacer(m):
-            tag = m.group(1)
-            rest = m.group(2)
-            color = tag_colors.get(tag, 1)
-            return f"\033[1m\033[{color}m[{tag}]\033[1m {rest}\033[0m"
-
-        # Replace **[tag] text** with colored tag + bold rest
-        line = re.sub(r"\*\*\[(feature|flow|sidequest)\]\s*([^\*]+)\*\*", tag_replacer, line)
-
-        # Then do generic bold
-        if "**" in line:
-            line = re.sub(r"\*\*(.+?)\*\*", lambda m: f"**{ansi_color(m.group(1), 1)}**", line)
-
-        # Bullet points
-        if line.startswith("- "):
-            output.append(line)  # already colorized if contains **
-            continue
-        if line.startswith("  - "):
-            output.append(line)  # already colorized if contains **
-            continue
-
-        # Goal tree items with [feature], [flow], [sidequest] tags
-        feature_match = re.search(r"\[feature\]", line)
-        flow_match = re.search(r"\[flow\]", line)
-        sidequest_match = re.search(r"\[sidequest\]", line)
-
-        if feature_match:
-            line = re.sub(r"\[feature\]", ansi_color("[feature]", 35), line)
-        if flow_match:
-            line = re.sub(r"\[flow\]", ansi_color("[flow]", 34), line)
-        if sidequest_match:
-            line = re.sub(r"\[sidequest\]", ansi_color("[sidequest]", 33), line)
-
-        # DONE markers
-        if "DONE" in line:
-            line = re.sub(r"\bDONE\b", ansi_color("DONE", 32), line)
-
-        # SHIPPED markers
-        if "SHIPPED" in line:
-            line = re.sub(r"\bSHIPPED\b", ansi_color("SHIPPED", 32), line)
-
-        # Blocked markers
-        if "blocked" in line.lower():
-            line = re.sub(r"blocked", ansi_color("blocked", 31), line, flags=re.IGNORECASE)
-
-        # Git SHAs
-        line = re.sub(r"\b[0-9a-f]{7}\b", lambda m: ansi_color(m.group(0), 36), line)
-
-        # Links
-        line = re.sub(r"\[([^\]]+)\]\(([^\)]+)\)", lambda m: f"{ansi_color('[', 90)}{ansi_color(m.group(1), 94)}{ansi_color('](', 90)}{m.group(2)}{ansi_color(')', 90)}", line)
-
-        output.append(line)
-
-    return "\n".join(output)
+def render_sitrep(content: str) -> None:
+    """Render sitrep markdown with rich markdown renderer."""
+    md = Markdown(content, code_theme="monokai")
+    console.print(md)
 
 
 def main() -> int:
     sitrep = find_latest_sitrep()
     if sitrep is None:
-        print("No sitreps found.", file=sys.stderr)
+        console.print("[red]No sitreps found.[/red]")
         return 1
 
     content = sitrep.read_text()
 
-    # Derive display timestamp from path
     year = sitrep.parent.parent.parent.name
     month = sitrep.parent.parent.name
     day = sitrep.parent.name
     hour_part = sitrep.stem
     ts = f"{year}-{month}-{day} {hour_part}:00 UTC"
 
-    banner = f"\033[36m{'='*60}\033[0m\n\033[1;36m  Sitrep: {ts}\033[0m\n\033[36m  Path:   {sitrep.relative_to(REPO_ROOT)}\033[0m\n\033[36m{'='*60}\033[0m"
-
-    print(banner)
-    print()
-    print(render_sitrep(content))
+    panel = Panel(
+        f"[bold cyan]Sitrep:[/bold cyan] {ts}\n[dim]Path:[/dim] {sitrep.relative_to(REPO_ROOT)}",
+        title="c2c sitrep",
+        border_style="cyan",
+    )
+    console.print(panel)
+    console.print()
+    render_sitrep(content)
     return 0
 
 
