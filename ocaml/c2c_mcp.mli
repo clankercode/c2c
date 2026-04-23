@@ -21,6 +21,9 @@ type registration =
    ; confirmed_at : float option
   (** Epoch of first poll_inbox call. None = session registered but never
       drained — still "provisional". *)
+  ; enc_pubkey : string option
+  (** X25519 public key (base64url, 32 bytes) for E2E encryption.
+      Published in the registry so recipients can encrypt DMs. *)
   ; compacting : compacting option
   }
 type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option }
@@ -59,7 +62,7 @@ module Broker : sig
       is available (up to 5 tries: primes 2,3,5,7,11), or [None] when all
       candidates are exhausted (ALIAS_COLLISION_EXHAUSTED). *)
 
-  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> ?plugin_version:string option -> unit -> unit
+  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> ?plugin_version:string option -> ?enc_pubkey:string option -> unit -> unit
   val list_registrations : t -> registration list
   val save_registrations : t -> registration list -> unit
   val with_registry_lock : t -> (unit -> 'a) -> 'a

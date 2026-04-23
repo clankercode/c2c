@@ -18,11 +18,18 @@ type registration =
    ; plugin_version : string option
    (** Version string of the c2c plugin/hook running this session.
        Used to detect stale plugins that may have known bugs. *)
-   ; confirmed_at : float option
-  (** Epoch of first poll_inbox call. None = session registered but never
-      drained — still "provisional". Provisional + pid=None sessions are
-      eligible for sweep after C2C_PROVISIONAL_SWEEP_TIMEOUT seconds. *)
-  ; compacting : compacting option
+    ; confirmed_at : float option
+   (** Epoch of first poll_inbox call. None = session registered but never
+       drained — still "provisional". Provisional + pid=None sessions are
+       eligible for sweep after C2C_PROVISIONAL_SWEEP_TIMEOUT seconds. *)
+   ; enc_pubkey : string option
+   (** X25519 public key (base64url, 32 bytes) for E2E encryption.
+       Published in the registry so recipients can encrypt DMs.
+       The matching secret lives in ~/.c2c/keys/<session_id>.x25519 mode 0600.
+       Known v1 limitation (M1 threat model): mode 0600 does not protect against
+       other processes running as the same Unix user (including child agents).
+       OS keyring integration deferred to M3. *)
+   ; compacting : compacting option
   (** Set when the agent is actively compacting/summarizing. Send-side
       checks this and returns a warning; message is still queued. *)
   }
@@ -246,7 +253,7 @@ module Broker = struct
       cleanup_tmp ();
       raise e
 
-  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; compacting } =
+  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; enc_pubkey; compacting } =
     let base =
       [ ("session_id", `String session_id); ("alias", `String alias) ]
     in
@@ -300,12 +307,17 @@ module Broker = struct
       | Some ts -> with_plugin_version @ [ ("confirmed_at", `Float ts) ]
       | None -> with_plugin_version
     in
+    let with_enc_pubkey =
+      match enc_pubkey with
+      | Some pk -> with_confirmed @ [ ("enc_pubkey", `String pk) ]
+      | None -> with_confirmed
+    in
     let fields =
       match compacting with
       | Some c ->
           let reason_json = match c.reason with Some r -> `String r | None -> `Null in
-          with_confirmed @ [ ("compacting", `Assoc [ ("started_at", `Float c.started_at); ("reason", reason_json) ]) ]
-      | None -> with_confirmed
+          with_enc_pubkey @ [ ("compacting", `Assoc [ ("started_at", `Float c.started_at); ("reason", reason_json) ]) ]
+      | None -> with_enc_pubkey
     in
     `Assoc fields
 
@@ -358,6 +370,7 @@ module Broker = struct
     ; client_type = str_opt "client_type" json
     ; plugin_version = str_opt "plugin_version" json
     ; confirmed_at = float_opt_member "confirmed_at" json
+    ; enc_pubkey = str_opt "enc_pubkey" json
     ; compacting = compacting_of_json json
     }
 
@@ -770,7 +783,7 @@ module Broker = struct
     with_registry_lock t (fun () ->
       suggest_alias_prime (load_registrations t) ~base_alias:alias)
 
-  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) () =
+  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) () =
     if List.mem alias reserved_system_aliases then
       invalid_arg (Printf.sprintf
         "register rejected: '%s' is a reserved system alias" alias);
@@ -795,11 +808,11 @@ module Broker = struct
            across re-registration. *)
         let old_state =
           match List.find_opt (fun reg -> reg.session_id = session_id) rest with
-          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting)
-          | None -> (false, None, None, None, client_type, None, None)
+          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting, r.enc_pubkey)
+          | None -> (false, None, None, None, client_type, None, None, enc_pubkey)
         in
         let new_reg =
-          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting) = old_state in
+          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting, old_enc_pubkey) = old_state in
           let effective_client_type = match client_type with
             | Some _ -> client_type
             | None -> old_client_type
@@ -808,6 +821,10 @@ module Broker = struct
             | Some _ -> plugin_version
             | None -> old_plugin_version
           in
+          let effective_enc_pubkey = match enc_pubkey with
+            | Some _ -> enc_pubkey
+            | None -> old_enc_pubkey
+          in
           { session_id; alias; pid; pid_start_time
           ; registered_at = Some (Unix.gettimeofday ())
           ; canonical_alias = Some (compute_canonical_alias ~alias ~broker_root:(root t))
@@ -815,6 +832,7 @@ module Broker = struct
           ; client_type = effective_client_type
           ; plugin_version = effective_plugin_version
           ; confirmed_at = old_confirmed_at
+          ; enc_pubkey = effective_enc_pubkey
           ; compacting = old_compacting }
         in
         let kept =
@@ -2382,7 +2400,14 @@ let auto_register_startup ~broker_root =
         let pid_start_time = Broker.capture_pid_start_time pid in
         let client_type = current_client_type () in
         let plugin_version = current_plugin_version () in
-        Broker.register broker ~session_id ~alias ~pid ~pid_start_time ~client_type ~plugin_version ();
+        let enc_pubkey =
+          match Relay_enc.load_or_generate ~session_id with
+          | Ok enc -> Some (Relay_enc.public_key_b64 enc)
+          | Error e ->
+              Printf.eprintf "[auto_register_startup] warning: could not load X25519 key: %s\n%!" e;
+              None
+        in
+        Broker.register broker ~session_id ~alias ~pid ~pid_start_time ~client_type ~plugin_version ~enc_pubkey ();
         ignore (Broker.redeliver_dead_letter_for_session broker ~session_id ~alias)
       end else begin
         (* Log which guard triggered and by which registration, for debugging. *)
@@ -2656,8 +2681,15 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                 ~is_error:true)
             else begin
               let plugin_version = optional_string_member "plugin_version" arguments in
+              let enc_pubkey =
+                match Relay_enc.load_or_generate ~session_id with
+                | Ok enc -> Some (Relay_enc.public_key_b64 enc)
+                | Error e ->
+                    Printf.eprintf "[register] warning: could not load X25519 key: %s\n%!" e;
+                    None
+              in
               Broker.register broker ~session_id ~alias ~pid ~pid_start_time
-                ~client_type ~plugin_version ();
+                ~client_type ~plugin_version ~enc_pubkey ();
               List.iter
                 (fun room_id ->
                   try
