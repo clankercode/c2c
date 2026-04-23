@@ -3092,29 +3092,20 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                                 content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
                               | _ -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
                            | Some pt ->
-                             let sender_ed25519_pk_opt = Broker.get_pinned_ed25519 env.from_ in
-                             let sig_ok = match sender_ed25519_pk_opt with
-                               | Some pk -> Relay_e2e.verify_envelope_sig ~pk env
-                               | None -> true
-                             in
-                             if not sig_ok then
-                               (match sender_ed25519_pk_opt with
-                                | Some _ -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
-                                | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
-                             else (
-                               (match sender_x25519_pk with
-                                | Some pk -> Broker.pin_x25519_if_unknown ~alias:env.from_ ~pk |> ignore
-                                | None -> ());
-                               (match sender_ed25519_pk_opt with
-                                | Some _ -> ()
-                                | None ->
-                                  let sender_pk_for_pin = match Broker.get_pinned_ed25519 env.from_ with
-                                    | Some pk -> pk
-                                    | None -> env.from_
-                                  in
-                                  if sender_pk_for_pin <> env.from_ then
-                                    Broker.pin_ed25519_if_unknown ~alias:env.from_ ~pk:sender_pk_for_pin |> ignore);
-                               pt, Some (Relay_e2e.enc_status_to_string status)))))
+                              let sender_ed25519_pk_opt = Broker.get_pinned_ed25519 env.from_ in
+                              let sig_ok = match sender_ed25519_pk_opt with
+                                | Some pk -> Relay_e2e.verify_envelope_sig ~pk env
+                                | None -> true
+                              in
+                              if not sig_ok then
+                                (match sender_ed25519_pk_opt with
+                                 | Some _ -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
+                                 | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
+                              else (
+                                (match sender_x25519_pk with
+                                 | Some pk -> Broker.pin_x25519_if_unknown ~alias:env.from_ ~pk |> ignore
+                                 | None -> ());
+                                pt, Some (Relay_e2e.enc_status_to_string status)))))
                  | _ -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
               | _ -> content, None
         in
