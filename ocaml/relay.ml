@@ -346,6 +346,38 @@ let exec_prepared db sql params =
   let has_row = loop () in
   has_row
 
+(* S5a: Pairing token SQL helpers *)
+let store_pairing_token_db db ~binding_id ~token_b64 ~machine_ed25519_pubkey ~expires_at =
+  let sql = "INSERT OR REPLACE INTO pairing_tokens (binding_id, token_b64, machine_ed25519_pubkey, used, expires_at) VALUES (?, ?, ?, 0, ?)" in
+  let stmt = Sqlite3.prepare db sql in
+  Sqlite3.bind_text stmt 1 binding_id |> ignore;
+  Sqlite3.bind_text stmt 2 token_b64 |> ignore;
+  Sqlite3.bind_text stmt 3 machine_ed25519_pubkey |> ignore;
+  Sqlite3.bind_double stmt 4 expires_at |> ignore;
+  let rc = Sqlite3.step stmt in
+  if rc = Rc.DONE then Res.Ok ()
+  else Res.Error (Printf.sprintf "store_pairing_token failed: %s" (Rc.to_string rc))
+
+let get_and_burn_pairing_token_db db ~binding_id =
+  let now = Unix.gettimeofday () in
+  let select_sql = "SELECT token_b64, machine_ed25519_pubkey FROM pairing_tokens WHERE binding_id = ? AND used = 0 AND expires_at > ?" in
+  let stmt = Sqlite3.prepare db select_sql in
+  Sqlite3.bind_text stmt 1 binding_id |> ignore;
+  Sqlite3.bind_double stmt 2 now |> ignore;
+  let rc = Sqlite3.step stmt in
+  if rc = Rc.ROW then (
+    let token_b64 = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
+    let machine_ed25519_pubkey = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 1) in
+    let update_sql = "UPDATE pairing_tokens SET used = 1 WHERE binding_id = ? AND used = 0" in
+    let upd = Sqlite3.prepare db update_sql in
+    Sqlite3.bind_text upd 1 binding_id |> ignore;
+    Sqlite3.step upd |> ignore;
+    Res.Ok (Some (token_b64, machine_ed25519_pubkey))
+  ) else if rc = Rc.DONE then
+    Res.Ok None
+  else
+    Res.Error (Printf.sprintf "get_and_burn_pairing_token failed: %s" (Rc.to_string rc))
+
 (* --- RELAY signature — satisfied by both InMemoryRelay and SqliteRelay --- *)
 
 module type RELAY = sig
@@ -2698,7 +2730,24 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
       | _ ->
         let message_id = get_opt_string body "message_id" in
         match R.send_all relay ~from_alias ~content ~message_id with
-        | `Ok (ts, delivered, skipped) -> respond_ok (json_of_send_all_result (ts, delivered, skipped))
+        | `Ok (ts, delivered, skipped) ->
+          List.iter (fun to_alias ->
+            match R.identity_pk_of relay ~alias:to_alias with
+            | Some identity_pk ->
+              (match binding_id_of_phone_pk ~phone_ed25519_pubkey:identity_pk with
+               | Some binding_id ->
+                 let sq_msg = {
+                   Relay_short_queue.ts;
+                   from_alias;
+                   to_alias;
+                   room_id = None;
+                   content;
+                 } in
+                 Relay_short_queue.ShortQueue.push short_queue ~binding_id sq_msg
+               | None -> ())
+            | None -> ()
+          ) delivered;
+          respond_ok (json_of_send_all_result (ts, delivered, skipped))
 
   let handle_poll_inbox relay ~verified_alias body =
     let node_id = get_string body "node_id" in
@@ -3322,7 +3371,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
                                          let direct_msgs = R.query_messages_since relay ~alias ~since_ts in
                                          let room_msgs =
                                            let all_rooms = R.list_rooms relay in
-                                           List.fold_left (fun acc room ->
+                                           List.fold_left (fun (acc : Yojson.Safe.t list) room ->
                                              match room with
                                              | `Assoc fields ->
                                                (match List.assoc_opt "room_id" fields with
@@ -3330,12 +3379,12 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
                                                   if R.is_room_member_alias relay ~room_id ~alias then
                                                     let hist = R.room_history relay ~room_id ~limit:100 in
                                                     let since_float = since_ts in
-                                                    let filtered = List.filter (fun msg ->
+                                                    let filtered = List.filter (fun (msg : Yojson.Safe.t) ->
                                                       match msg with
                                                       | `Assoc f ->
                                                         (match List.assoc_opt "ts" f with
                                                          | Some (`Float t) -> t > since_float
-                                                         | Some (`Int t) -> float_of_int t > since_float
+                                                         | Some (`Int i) -> float_of_int i > since_float
                                                          | _ -> false)
                                                       | _ -> false
                                                     ) hist in
@@ -3346,7 +3395,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
                                            ) [] all_rooms
                                          in
                                          let all_msgs = direct_msgs @ room_msgs in
-                                         (List.sort (fun a b ->
+                                         (List.sort (fun (a : Yojson.Safe.t) (b : Yojson.Safe.t) ->
                                            let ts_a = match a with `Assoc f -> (match List.assoc_opt "ts" f with Some (`Float t) -> t | Some (`Int i) -> float_of_int i | _ -> 0.0) | _ -> 0.0 in
                                            let ts_b = match b with `Assoc f -> (match List.assoc_opt "ts" f with Some (`Float t) -> t | Some (`Int i) -> float_of_int i | _ -> 0.0) in
                                            compare ts_a ts_b
