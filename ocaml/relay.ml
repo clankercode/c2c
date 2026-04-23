@@ -1978,7 +1978,7 @@ end = struct
     Mutex.lock t.mutex;
     begin try
       let existing = try Hashtbl.find t.sessions binding_id with Not_found -> [] in
-      let filtered = List.filter (fun s -> s != session) existing in
+      let filtered = List.filter (fun s -> s <> session) existing in
       if filtered = [] then Hashtbl.remove t.sessions binding_id
       else Hashtbl.replace t.sessions binding_id filtered
     with e -> Mutex.unlock t.mutex; raise e end;
@@ -2169,7 +2169,7 @@ end = struct
       || path = "/dead_letter"
       || path = "/admin/unbind"
       || (path = "/list" && include_dead)
-      || (String.length path > 14 && String.sub path 0 14 = "/remote_inbox/")
+      || String.starts_with ~prefix:"/remote_inbox/" path
     in
     (* /register uses body-level Ed25519 proof (identity_pk + signature + nonce
        + timestamp in the JSON body). This is the bootstrap route — the alias
@@ -3221,7 +3221,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
       | `GET, "/list_rooms" ->
         handle_list_rooms relay
 
-      | `GET, "/gc" ->
+      | `POST, "/gc" ->
         handle_gc relay
 
       | `GET, path when String.length path > 8 && String.sub path 0 8 = "/pubkey/" ->
@@ -3312,8 +3312,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j -> handle_room_history relay j)
 
-      | `GET, path when String.length path > 14
-                    && String.sub path 0 14 = "/remote_inbox/" ->
+      | `GET, path when String.starts_with ~prefix:"/remote_inbox/" path ->
         let session_id = String.sub path 14 (String.length path - 14) in
         handle_remote_inbox session_id
 
@@ -3751,6 +3750,6 @@ end = struct
       ("visibility", `String visibility);
     ])
 
-  let gc t = get t "/gc"
+  let gc t = post t "/gc" (`Assoc [])
 
 end

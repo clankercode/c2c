@@ -3354,6 +3354,7 @@ let persist_dir = match persist_dir with
   | Some d -> Some d
   | None -> Sys.getenv_opt "C2C_RELAY_PERSIST_DIR"
 in
+Random.self_init ();
 Version.banner ~role:"relay-server" ~git_hash:(Option.value (git_shorthash ()) ~default:"unknown");
 Printf.eprintf "  listen=%s:%d\n%!" host port;
 match storage with

@@ -179,6 +179,8 @@ let save ?path t =
     let oc = Unix.out_channel_of_descr fd in
     let body = Yojson.Safe.pretty_to_string (to_json t) ^ "\n" in
     output_string oc body;
+    flush oc;
+    (try Unix.fsync fd with Unix.Unix_error _ -> ());
     close_out oc;
     Unix.chmod tmp 0o600;
     Unix.rename tmp path;
