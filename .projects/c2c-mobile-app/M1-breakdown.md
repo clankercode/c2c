@@ -157,8 +157,10 @@ S4 (observer ws) ─→ S5 (mobile-pair QR) ─→ S5b ─┐   ↗
 - **Q2 — phone identity on relay.** → **RESOLVED: Ed25519 pubkey-hash primary, human name display-only.** Confirmed jungle-coder 2026-04-23.
 - **Q3 — key rotation.** If a peer rotates X25519, inflight ciphertext to the old key fails. Ship rotation UX in M1 or defer to M3? → **RESOLVED: defer to M3.** M1 ships `--rotate-enc-key` for manual regen; no automated grace window. Confirmed galaxy-coder 2026-04-23.
 - **Q4 — libsodium vs age.** Spec says "pick when M1 starts." → **RESOLVED: libsodium.** opam `sodium` package, direct X25519 support. Confirmed galaxy-coder 2026-04-23.
-- **Q5 — does the phone need Ed25519 separate from X25519?** Yes — X25519 for E2E, Ed25519 for auth envelopes. Phone generates both on first pair.
-- **Q6 — legacy peer behavior on encrypted inbound.** If a legacy broker without decrypt support receives ciphertext, what happens? → recommend: sender falls back to plaintext when recipient advertises no pubkey; so this shouldn't occur. Belt-and-braces: receivers MUST preserve `body_ciphertext` untouched even if they can't decrypt, so a later-upgraded agent can re-process.
+- **Q5 — does the phone need Ed25519 separate from X25519?** → **RESOLVED: yes, both.** X25519 for E2E, Ed25519 for auth envelopes; phone generates both on first pair. No peer objected.
+- **Q6 — legacy peer behavior on encrypted inbound.** → **RESOLVED: sender falls back to plaintext when recipient advertises no pubkey; receivers MUST preserve `body_ciphertext` untouched even if they can't decrypt.** No peer objected.
+
+**All Q1-Q6 resolved 2026-04-23. No outstanding decisions blocking implementation.**
 
 ## Outstanding issues for Max
 
