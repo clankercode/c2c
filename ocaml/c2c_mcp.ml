@@ -454,6 +454,29 @@ module Broker = struct
   let create ~root = { root }
   let root t = t.root
 
+  let known_keys_ed25519 : (string, string) Hashtbl.t = Hashtbl.create 64
+  let known_keys_x25519 : (string, string) Hashtbl.t = Hashtbl.create 64
+  let downgrade_states : (string, Relay_e2e.downgrade_state) Hashtbl.t = Hashtbl.create 64
+
+  let get_pinned_ed25519 alias = Hashtbl.find_opt known_keys_ed25519 alias
+  let set_pinned_ed25519 alias pk = Hashtbl.replace known_keys_ed25519 alias pk
+  let get_pinned_x25519 alias = Hashtbl.find_opt known_keys_x25519 alias
+  let set_pinned_x25519 alias pk = Hashtbl.replace known_keys_x25519 alias pk
+  let get_downgrade_state from_alias =
+    match Hashtbl.find_opt downgrade_states from_alias with
+    | Some ds -> ds
+    | None -> Relay_e2e.make_downgrade_state ()
+  let set_downgrade_state from_alias ds = Hashtbl.replace downgrade_states from_alias ds
+
+  let load_or_create_ed25519_identity () =
+    match Relay_identity.load () with
+    | Ok id -> id
+    | Error _ ->
+      let id = Relay_identity.generate () in
+      match Relay_identity.save id with
+      | Ok () -> id
+      | Error e -> failwith ("relay_identity save: " ^ e)
+
   let registry_lock_path t = Filename.concat t.root "registry.json.lock"
 
   let with_registry_lock t f =
