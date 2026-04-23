@@ -269,7 +269,7 @@ def test_opencode_twin_e2e(tmp_path: Path, tmux_session) -> None:
     # git-common-dir cache may resolve to the outer repo otherwise.
     send_env = {**os.environ, "C2C_MCP_BROKER_ROOT": str(broker_root)}
     subprocess.run(
-        [C2C_BIN, "send", alias_b, f"test-ping-{os.getpid()}"],
+        [C2C_BIN, "send", "--from", "oc-twin-controller", alias_b, f"test-ping-{os.getpid()}"],
         check=True,
         capture_output=True,
         text=True,
