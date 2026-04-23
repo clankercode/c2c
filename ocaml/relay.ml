@@ -452,8 +452,10 @@ module type RELAY = sig
     (* true if a valid (not expired) token for this binding_id already exists *)
     (* S5a: Observer binding management *)
   val add_observer_binding : t -> binding_id:string ->
-    phone_ed25519_pubkey:string -> phone_x25519_pubkey:string -> unit
-  val get_observer_binding : t -> binding_id:string -> (string * string) option
+    phone_ed25519_pubkey:string -> phone_x25519_pubkey:string ->
+    machine_ed25519_pubkey:string -> provenance_sig:string -> unit
+  val get_observer_binding : t -> binding_id:string -> (string * string * string * string) option
+  (** Returns (phone_ed25519_pubkey, phone_x25519_pubkey, machine_ed25519_pubkey, provenance_sig). *)
   val remove_observer_binding : t -> binding_id:string -> unit
   (* S5b: Device-pair pending state (RFC 8628 OAuth, ephemeral, InMemoryRelay only) *)
   val get_device_pair_pending : t -> user_code:string -> device_pair_pending option
@@ -698,11 +700,11 @@ module InMemoryRelay : RELAY = struct
       else true
 
   (* S5a: In-memory observer bindings *)
-  let add_observer_binding t ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey =
+  let add_observer_binding t ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey ~machine_ed25519_pubkey:_ ~provenance_sig:_ =
     Hashtbl.replace t.observer_bindings_mem binding_id (phone_ed25519_pubkey, phone_x25519_pubkey)
 
   let get_observer_binding t ~binding_id =
-    Hashtbl.find_opt t.observer_bindings_mem binding_id
+    Option.map (fun (ed, x) -> (ed, x, "", "")) (Hashtbl.find_opt t.observer_bindings_mem binding_id)
 
   let remove_observer_binding t ~binding_id =
     Hashtbl.remove t.observer_bindings_mem binding_id
@@ -1185,14 +1187,18 @@ end
 module ObserverBindings : sig
   type t
   val create : unit -> t
-  val add : t -> binding_id:string -> phone_ed25519_pubkey:string -> phone_x25519_pubkey:string -> unit
-  val get : t -> binding_id:string -> (string * string) option
+  val add : t -> binding_id:string -> phone_ed25519_pubkey:string -> phone_x25519_pubkey:string -> machine_ed25519_pubkey:string -> provenance_sig:string -> unit
+  val get : t -> binding_id:string -> (string * string * string * string) option
+  (** Returns (phone_ed25519_pubkey, phone_x25519_pubkey, machine_ed25519_pubkey, provenance_sig).
+      provenance_sig is the original token sig used to authorize the binding. *)
   val binding_id_of_phone_pk : t -> phone_ed25519_pubkey:string -> string option
   val remove : t -> binding_id:string -> unit
 end = struct
   type binding = {
     phone_ed25519_pubkey : string;
     phone_x25519_pubkey : string;
+    machine_ed25519_pubkey : string;
+    provenance_sig : string;
     issued_at : float;
   }
   type t = {
@@ -1205,10 +1211,11 @@ end = struct
     phone_pk_to_binding = Hashtbl.create 64;
     mutex = Mutex.create ();
   }
-  let add t ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey =
+  let add t ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey ~machine_ed25519_pubkey ~provenance_sig =
     Mutex.lock t.mutex;
     Hashtbl.replace t.bindings binding_id {
       phone_ed25519_pubkey; phone_x25519_pubkey;
+      machine_ed25519_pubkey; provenance_sig;
       issued_at = Unix.gettimeofday ();
     };
     Hashtbl.replace t.phone_pk_to_binding phone_ed25519_pubkey binding_id;
@@ -1218,7 +1225,7 @@ end = struct
     let result = Hashtbl.find_opt t.bindings binding_id in
     Mutex.unlock t.mutex;
     match result with
-    | Some b -> Some (b.phone_ed25519_pubkey, b.phone_x25519_pubkey)
+    | Some b -> Some (b.phone_ed25519_pubkey, b.phone_x25519_pubkey, b.machine_ed25519_pubkey, b.provenance_sig)
     | None -> None
   let binding_id_of_phone_pk t ~phone_ed25519_pubkey =
     Mutex.lock t.mutex;
@@ -2161,8 +2168,9 @@ let create ?(dedup_window=10000) ?(persist_dir="") () =
     )
 
   (* S5a: Observer bindings — uses per-relay ObserverBindings instance *)
-  let add_observer_binding t ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey =
+  let add_observer_binding t ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey ~machine_ed25519_pubkey ~provenance_sig =
     ObserverBindings.add t.observer_bindings ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey
+      ~machine_ed25519_pubkey ~provenance_sig
 
   let get_observer_binding t ~binding_id =
     ObserverBindings.get t.observer_bindings ~binding_id
@@ -2217,8 +2225,9 @@ end
 
 let observer_bindings = ObserverBindings.create ()
 let get_observer_binding ~binding_id = ObserverBindings.get observer_bindings ~binding_id
-let add_observer_binding ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey =
+let add_observer_binding ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey ~machine_ed25519_pubkey ~provenance_sig =
   ObserverBindings.add observer_bindings ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey
+    ~machine_ed25519_pubkey ~provenance_sig
 let binding_id_of_phone_pk ~phone_ed25519_pubkey =
   ObserverBindings.binding_id_of_phone_pk observer_bindings ~phone_ed25519_pubkey
 
@@ -3466,7 +3475,8 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
                       | Ok p when String.length p <> 32 -> respond_bad_request (json_error_str err_bad_request "phone_x25519_pubkey must be 32 bytes")
                       | Ok _ ->
                         let () = R.add_observer_binding relay ~binding_id
-                          ~phone_ed25519_pubkey:phone_ed_pk ~phone_x25519_pubkey:phone_x_pk in
+                          ~phone_ed25519_pubkey:phone_ed_pk ~phone_x25519_pubkey:phone_x_pk
+                          ~machine_ed25519_pubkey:machine_pk ~provenance_sig:sig_b64 in
                         let bound_at = Unix.gettimeofday () in
                         let () = push_pseudo_registration_to_observers ~binding_id
                           ~phone_ed_pk:phone_ed_pk ~phone_x_pk:phone_x_pk
@@ -3646,7 +3656,8 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
           respond_ok (`Assoc ["status", `String "pending"; "user_code", `String user_code])
         | Some ed_pk, Some x_pk ->
           let () = R.add_observer_binding relay ~binding_id:pending.binding_id
-            ~phone_ed25519_pubkey:ed_pk ~phone_x25519_pubkey:x_pk in
+            ~phone_ed25519_pubkey:ed_pk ~phone_x25519_pubkey:x_pk
+            ~machine_ed25519_pubkey:pending.machine_ed25519_pubkey ~provenance_sig:"" in
           let bound_at = Unix.gettimeofday () in
           let () = push_pseudo_registration_to_observers ~binding_id:pending.binding_id
             ~phone_ed_pk:ed_pk ~phone_x_pk:x_pk
@@ -3918,8 +3929,8 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
                              let valid_sig =
                                match sig_b64 with
                                | Some sig_val ->
-                                 (match get_observer_binding ~binding_id with
-                                  | Some (phone_pk, _) ->
+                                  (match get_observer_binding ~binding_id with
+                                   | Some (phone_pk, _, _, _) ->
                                     (match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet sig_val with
                                      | Ok sig_raw ->
                                        (match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet phone_pk with
@@ -3951,7 +3962,7 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
                                 let backfill_msgs, gap_flag =
                                   if gap then
                                     match get_observer_binding ~binding_id with
-                                    | Some (phone_pk, _) ->
+                                    | Some (phone_pk, _, _, _) ->
                                       (match R.alias_of_identity_pk relay ~identity_pk:phone_pk with
                                        | Some alias ->
                                          let direct_msgs = R.query_messages_since relay ~alias ~since_ts in

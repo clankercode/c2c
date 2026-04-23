@@ -119,10 +119,11 @@ let test_mobile_pair_full_round_trip () =
   Alcotest.(check bool) "binding consumed after burn" false
     (Relay.InMemoryRelay.find_pairing_token r ~binding_id);
   Relay.InMemoryRelay.add_observer_binding r ~binding_id
-    ~phone_ed25519_pubkey:phone_ed_b64 ~phone_x25519_pubkey:phone_x_b64;
+    ~phone_ed25519_pubkey:phone_ed_b64 ~phone_x25519_pubkey:phone_x_b64
+    ~machine_ed25519_pubkey:"" ~provenance_sig:"";
   let observer_binding = Relay.InMemoryRelay.get_observer_binding r ~binding_id in
   Alcotest.(check bool) "observer binding exists after confirm" true
-    (observer_binding = Some (phone_ed_b64, phone_x_b64));
+    (observer_binding = Some (phone_ed_b64, phone_x_b64, "", ""));
   Relay.InMemoryRelay.remove_observer_binding r ~binding_id;
   Alcotest.(check bool) "observer binding gone after revoke" true
     (Relay.InMemoryRelay.get_observer_binding r ~binding_id = None)

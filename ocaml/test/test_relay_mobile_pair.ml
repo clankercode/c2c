@@ -199,10 +199,11 @@ let test_observer_binding_add_get_remove () =
   Alcotest.(check bool) "get before add" true
     (Relay.InMemoryRelay.get_observer_binding r ~binding_id = None);
   Relay.InMemoryRelay.add_observer_binding r ~binding_id
-    ~phone_ed25519_pubkey:phone_ed ~phone_x25519_pubkey:phone_x;
+    ~phone_ed25519_pubkey:phone_ed ~phone_x25519_pubkey:phone_x
+    ~machine_ed25519_pubkey:"" ~provenance_sig:"";
   let got = Relay.InMemoryRelay.get_observer_binding r ~binding_id in
   Alcotest.(check bool) "get after add" true
-    (got = Some (phone_ed, phone_x));
+    (got = Some (phone_ed, phone_x, "", ""));
   Relay.InMemoryRelay.remove_observer_binding r ~binding_id;
   Alcotest.(check bool) "get after remove" true
     (Relay.InMemoryRelay.get_observer_binding r ~binding_id = None)

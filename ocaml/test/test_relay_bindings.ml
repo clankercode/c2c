@@ -322,11 +322,12 @@ let test_observer_binding_add_get () =
   let phone_ed = String.make 32 '\x02' in
   let phone_x = String.make 32 '\x03' in
   InMemoryRelay.add_observer_binding r ~binding_id
-    ~phone_ed25519_pubkey:phone_ed ~phone_x25519_pubkey:phone_x;
+    ~phone_ed25519_pubkey:phone_ed ~phone_x25519_pubkey:phone_x
+    ~machine_ed25519_pubkey:"" ~provenance_sig:"";
   let result = InMemoryRelay.get_observer_binding r ~binding_id in
   Alcotest.(check bool) "binding found" true (result <> None);
   match result with
-  | Some (ed, x) ->
+  | Some (ed, x, _, _) ->
       Alcotest.(check string) "phone_ed25519 preserved" phone_ed ed;
       Alcotest.(check string) "phone_x25519 preserved" phone_x x
   | None -> Alcotest.fail "expected binding"
@@ -337,7 +338,8 @@ let test_observer_binding_remove () =
   let phone_ed = String.make 32 '\x04' in
   let phone_x = String.make 32 '\x05' in
   InMemoryRelay.add_observer_binding r ~binding_id
-    ~phone_ed25519_pubkey:phone_ed ~phone_x25519_pubkey:phone_x;
+    ~phone_ed25519_pubkey:phone_ed ~phone_x25519_pubkey:phone_x
+    ~machine_ed25519_pubkey:"" ~provenance_sig:"";
   InMemoryRelay.remove_observer_binding r ~binding_id;
   let result = InMemoryRelay.get_observer_binding r ~binding_id in
   Alcotest.(check bool) "binding removed" true (result = None)
