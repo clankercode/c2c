@@ -7,7 +7,8 @@
       "env": {
         "C2C_MCP_BROKER_ROOT": "/home/xertrov/src/c2c/.git/c2c/mcp",
         "C2C_MCP_CHANNEL_DELIVERY": "1",
-        "C2C_MCP_AUTO_JOIN_ROOMS": "swarm-lounge"
+        "C2C_MCP_AUTO_JOIN_ROOMS": "swarm-lounge",
+        "C2C_MCP_DEBUG": "1"
       }
     }
   }
