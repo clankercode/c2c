@@ -18,11 +18,13 @@ let b64url_decode s =
   Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet s
 
 let default_path ~session_id =
-  let home =
-    try Sys.getenv "HOME"
-    with Not_found -> "/"
+  let keys_dir =
+    match Sys.getenv_opt "C2C_KEY_DIR" with
+    | Some d -> d
+    | None ->
+      let home = try Sys.getenv "HOME" with Not_found -> "/" in
+      home // ".c2c" // "keys"
   in
-  let keys_dir = home // ".c2c" // "keys" in
   keys_dir // session_id ^ ".x25519"
 
 let rng_initialized = ref false

@@ -91,3 +91,8 @@
  (name test_relay)
  (modules test_relay)
  (libraries c2c_mcp alcotest yojson unix))
+
+(test
+ (name test_relay_e2e_integration)
+ (modules test_relay_e2e_integration)
+ (libraries c2c_mcp alcotest mirage-crypto-ec unix))
