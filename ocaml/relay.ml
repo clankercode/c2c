@@ -4287,6 +4287,8 @@ module Relay_client : sig
   val mobile_pair_prepare : t -> machine_ed25519_pubkey:string -> token:string -> Yojson.Safe.t Lwt.t
   val mobile_pair_confirm : t -> token:string -> phone_ed25519_pubkey:string -> phone_x25519_pubkey:string -> Yojson.Safe.t Lwt.t
   val mobile_pair_revoke : t -> binding_id:string -> Yojson.Safe.t Lwt.t
+  val device_pair_init : t -> machine_ed25519_pubkey:string -> Yojson.Safe.t Lwt.t
+  val device_pair_poll : t -> user_code:string -> Yojson.Safe.t Lwt.t
   val gc : t -> Yojson.Safe.t Lwt.t
 end = struct
 
@@ -4599,6 +4601,14 @@ end = struct
 
   let mobile_pair_revoke t ~binding_id =
     request t ~meth:`DELETE ~path:("/binding/" ^ binding_id) ()
+
+  let device_pair_init t ~machine_ed25519_pubkey =
+    post t "/device-pair/init" (`Assoc [
+      ("machine_ed25519_pubkey", `String machine_ed25519_pubkey);
+    ])
+
+  let device_pair_poll t ~user_code =
+    request t ~meth:`GET ~path:("/device-pair/" ^ user_code) ()
 
   let gc t = post t "/gc" (`Assoc [])
 

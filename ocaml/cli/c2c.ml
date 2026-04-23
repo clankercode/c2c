@@ -1958,6 +1958,25 @@ let tail_log_cmd =
     | Json -> print_json (`List parsed)
     | Human -> List.iter (fun line -> print_endline line) tail
 
+(* --- subcommand: server-info ----------------------------------------- *)
+
+let server_info_cmd =
+  let+ json = json_flag in
+  let output_mode = if json then Json else Human in
+  let info = C2c_mcp.server_info in
+  match output_mode with
+  | Json -> print_json info
+  | Human ->
+    (match info with
+     | `Assoc fields ->
+       List.iter (fun (k, v) ->
+         match v with
+         | `String s -> Printf.printf "%s: %s\n" k s
+         | `List l -> Printf.printf "%s:\n" k; List.iter (fun item -> Printf.printf "  - %s\n" (Yojson.Safe.to_string item)) l
+         | _ -> Printf.printf "%s: %s\n" k (Yojson.Safe.to_string v))
+         fields
+     | _ -> print_json info)
+
 (* --- subcommand: my-rooms ---------------------------------------------- *)
 
 let my_rooms_cmd =
@@ -4046,6 +4065,10 @@ let relay_mobile_pair_cmd =
     Cmdliner.Arg.(value & opt (some float) None & info [ "ttl" ]
        ~docv:"SECONDS" ~doc:"Token TTL in seconds (default: 300, max: 300).")
   in
+  let user_code =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "user-code" ]
+       ~docv:"CODE" ~doc:"User code from device-pair init (for claim).")
+  in
   let+ subcmd = subcmd
   and+ relay_url = relay_url
   and+ token = token
@@ -4053,6 +4076,7 @@ let relay_mobile_pair_cmd =
   and+ phone_ed_pk = phone_ed_pk
   and+ phone_x_pk = phone_x_pk
   and+ ttl = ttl
+  and+ user_code = user_code
   and+ json = json_flag in
   match resolve_relay_url relay_url with
   | None ->
@@ -4145,8 +4169,60 @@ let relay_mobile_pair_cmd =
            | `Assoc fields ->
                (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
            | _ -> exit 1)
+      | "init" ->
+          (match Relay_identity.load () with
+           | Error _ ->
+               Printf.eprintf "error: no identity.json found. Run 'c2c relay identity init' first.\n%!";
+               exit 1
+           | Ok id ->
+               let machine_pk_b64 =
+                 Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet id.Relay_identity.public_key
+               in
+               let result = Lwt_main.run
+                 (Relay.Relay_client.device_pair_init client ~machine_ed25519_pubkey:machine_pk_b64)
+               in
+               if json then print_endline (Yojson.Safe.pretty_to_string result)
+               else (
+                 match List.assoc_opt "user_code" (Yojson.Safe.Util.to_assoc result) with
+                 | Some (`String uc) ->
+                     let poll_interval = match List.assoc_opt "poll_interval" (Yojson.Safe.Util.to_assoc result) with
+                       | Some (`Float f) -> Printf.sprintf "%.0f" f | _ -> "2" in
+                     let expires_at = match List.assoc_opt "expires_at" (Yojson.Safe.Util.to_assoc result) with
+                       | Some (`Float f) -> Printf.sprintf "%.0f" f | _ -> "0" in
+                     Printf.printf "user_code: %s\npoll_interval: %ss\nexpires_at: %s\n" uc poll_interval expires_at;
+                     Printf.eprintf "Enter this code on your phone at the relay URL.\n%!"
+                 | _ -> ()
+               );
+               exit 0)
+      | "claim" ->
+          (match user_code with
+           | None ->
+               Printf.eprintf "error: --user-code required for claim.\n%!";
+               exit 1
+           | Some uc ->
+               let rec poll_loop () =
+                 let result = Lwt_main.run
+                   (Relay.Relay_client.device_pair_poll client ~user_code:uc)
+                 in
+                 let status = match List.assoc_opt "status" (Yojson.Safe.Util.to_assoc result) with
+                   | Some (`String s) -> s | _ -> "" in
+                 if status = "claimed" then
+                   (if json then print_endline (Yojson.Safe.pretty_to_string result)
+                    else (
+                      match List.assoc_opt "binding_id" (Yojson.Safe.Util.to_assoc result) with
+                      | Some (`String bid) ->
+                          Printf.printf "Pairing complete! binding_id: %s\n%!" bid
+                      | _ -> Printf.eprintf "Pairing complete.\n%!"
+                    );
+                    exit 0)
+                 else
+                   (if not json then Printf.eprintf "Waiting... status: %s\n%!" status;
+                    let () = ignore (Lwt_main.run (Lwt_unix.sleep 2.0)) in
+                    poll_loop ())
+               in
+               poll_loop ())
       | other ->
-          Printf.eprintf "error: unknown mobile-pair subcommand: %s (use prepare, confirm, or revoke)\n%!" other;
+          Printf.eprintf "error: unknown mobile-pair subcommand: %s (use prepare, confirm, revoke, init, or claim)\n%!" other;
           exit 1
 
 let relay_gc_cmd =
@@ -4485,6 +4561,7 @@ let history = Cmdliner.Cmd.v (Cmdliner.Cmd.info "history" ~doc:"Show archived in
 let health = Cmdliner.Cmd.v (Cmdliner.Cmd.info "health" ~doc:"Show broker health diagnostics.") health_cmd
 let register = Cmdliner.Cmd.v (Cmdliner.Cmd.info "register" ~doc:"Register an alias for the current session.") register_cmd
 let tail_log = Cmdliner.Cmd.v (Cmdliner.Cmd.info "tail-log" ~doc:"Show recent broker RPC log entries.") tail_log_cmd
+let server_info = Cmdliner.Cmd.v (Cmdliner.Cmd.info "server-info" ~doc:"Show c2c client version and feature flags.") server_info_cmd
 let my_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "my-rooms" ~doc:"List rooms you are a member of.") my_rooms_cmd
 let dead_letter = Cmdliner.Cmd.v (Cmdliner.Cmd.info "dead-letter" ~doc:"Show dead-letter entries.") dead_letter_cmd
 let prune_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "prune-rooms" ~doc:"Evict dead members from all rooms.") prune_rooms_cmd
@@ -4706,7 +4783,7 @@ let c2c_tools_list = [
   "send"; "send_all";
   "poll_inbox"; "peek_inbox"; "history";
   "join_room"; "leave_room"; "send_room"; "list_rooms"; "my_rooms"; "room_history";
-  "sweep"; "tail_log";
+  "sweep"; "tail_log"; "server_info";
 ]
 
 let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~client =
@@ -7195,10 +7272,11 @@ let run_ephemeral_agent
     else None
   in
   if dry_run then begin
-    Printf.printf "c2c agent run [dry-run]:\n  role=%s\n  client=%s\n  name=%s\n  caller=%s\n  timeout=%.0fs\n  bin=%s\n  auto_join=%s\n\n--- kickoff prompt ---\n%s--- end prompt ---\n%!"
+    Printf.printf "c2c agent run [dry-run]:\n  role=%s\n  client=%s\n  name=%s\n  caller=%s\n  timeout=%.0fs\n  bin=%s\n  auto_join=%s\n  pane=%b\n\n--- kickoff prompt ---\n%s--- end prompt ---\n%!"
       role client name caller timeout
       (match bin_opt with Some b -> b | None -> "(default)")
       (match auto_join with Some r -> r | None -> "(none)")
+      pane
       kickoff;
     exit 0
   end;
@@ -9455,7 +9533,7 @@ let () =
   let all_cmds =
     [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; send_all; sweep
     ; sweep_dryrun; history; health; setcap; status; verify; register; refresh_peer
-    ; tail_log; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
+    ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; smoke_test; init; install
     ; serve; mcp; start; agent_group; config_group; roles_group; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in
