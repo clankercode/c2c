@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import argparse
 import re
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +17,20 @@ from rich.panel import Panel
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SITREPS_DIR = REPO_ROOT / ".sitreps"
 
-console = Console()
+
+def print_via_pager(content: str) -> None:
+    """Print content through less -R for less-like scrolling."""
+    proc = subprocess.Popen(
+        ["less", "-R"],
+        stdin=subprocess.PIPE,
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+    )
+    try:
+        proc.communicate(input=content.encode("utf-8"))
+    except KeyboardInterrupt:
+        proc.terminate()
+        proc.wait()
 
 
 def find_latest_sitrep() -> Path | None:
@@ -61,34 +76,62 @@ def find_latest_sitrep() -> Path | None:
     return latest
 
 
-def render_sitrep(content: str) -> None:
-    """Render sitrep markdown with rich markdown renderer."""
-    md = Markdown(content, code_theme="monokai")
-    console.print(md)
-
-
-def main() -> int:
-    sitrep = find_latest_sitrep()
-    if sitrep is None:
-        console.print("[red]No sitreps found.[/red]")
-        return 1
-
+def build_sitrep_output(sitrep: Path, ts: str) -> str:
+    """Build the full rich-rendered sitrep as an ANSI string."""
+    sitrep = sitrep.resolve()
     content = sitrep.read_text()
-
-    year = sitrep.parent.parent.parent.name
-    month = sitrep.parent.parent.name
-    day = sitrep.parent.name
-    hour_part = sitrep.stem
-    ts = f"{year}-{month}-{day} {hour_part}:00 UTC"
-
+    console = Console(force_terminal=True, file=sys.stdout)
     panel = Panel(
         f"[bold cyan]Sitrep:[/bold cyan] {ts}\n[dim]Path:[/dim] {sitrep.relative_to(REPO_ROOT)}",
         title="c2c sitrep",
         border_style="cyan",
     )
-    console.print(panel)
-    console.print()
-    render_sitrep(content)
+    with console.capture() as capture:
+        console.print(panel)
+        console.print()
+        md = Markdown(content, code_theme="monokai")
+        console.print(md)
+    return capture.get()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Display the latest c2c sitrep.")
+    parser.add_argument(
+        "--print",
+        action="store_true",
+        help="Print all output at once instead of using a pager",
+    )
+    parser.add_argument(
+        "--path",
+        metavar="FILE",
+        help="Display a specific sitrep file instead of the latest",
+    )
+    args = parser.parse_args()
+
+    if args.path:
+        sitrep = Path(args.path)
+        if not sitrep.exists():
+            print(f"error: {sitrep} not found", file=sys.stderr)
+            return 1
+        ts = sitrep.stem
+    else:
+        sitrep = find_latest_sitrep()
+        if sitrep is None:
+            print("No sitreps found.", file=sys.stderr)
+            return 1
+        year = sitrep.parent.parent.parent.name
+        month = sitrep.parent.parent.name
+        day = sitrep.parent.name
+        ts = f"{year}-{month}-{day} {sitrep.stem}:00 UTC"
+
+    output = build_sitrep_output(sitrep, ts)
+
+    if args.print:
+        sys.stdout.write(output)
+        sys.stdout.flush()
+    else:
+        print_via_pager(output)
+
     return 0
 
 
