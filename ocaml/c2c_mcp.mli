@@ -134,6 +134,7 @@ end
 (* Native OCaml relay modules *)
 
 val channel_notification : message -> Yojson.Safe.t
+val decrypt_message_for_push : message -> session_id:string -> message
 val auto_register_startup : broker_root:string -> unit
 val auto_join_rooms_startup : broker_root:string -> unit
 val handle_request : broker_root:string -> Yojson.Safe.t -> Yojson.Safe.t option Lwt.t

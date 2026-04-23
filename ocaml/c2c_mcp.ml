@@ -2137,6 +2137,64 @@ let channel_notification ({ from_alias; to_alias; content; deferrable = _ } : me
           ] )
     ]
 
+let decrypt_message_for_push (msg : message) ~session_id =
+  let our_x25519 = match Relay_enc.load_or_generate ~session_id () with Ok k -> Some k | Error _ -> None in
+  let our_ed25519 = Some (Broker.load_or_create_ed25519_identity ()) in
+  let { from_alias; to_alias; content; deferrable; reply_via; enc_status = _ } = msg in
+  let decrypted_content =
+    match Yojson.Safe.from_string content with
+    | exception _ -> content
+    | env_json ->
+      match Relay_e2e.envelope_of_json env_json with
+      | exception _ -> content
+      | env ->
+        let ds = Broker.get_downgrade_state env.from_ in
+        let (status, ds) = Relay_e2e.decide_enc_status ds env in
+        Broker.set_downgrade_state env.from_ ds;
+        match env.enc with
+        | "plain" ->
+          (match Relay_e2e.find_my_recipient ~my_alias:to_alias env.recipients with
+           | Some r -> r.ciphertext
+           | None -> content)
+        | "box-x25519-v1" ->
+          (match our_x25519, our_ed25519 with
+           | Some x25519, Some _ed25519 ->
+             (match Relay_e2e.find_my_recipient ~my_alias:to_alias env.recipients with
+              | None -> content
+              | Some recipient ->
+                (match recipient.nonce with
+                 | None -> content
+                 | Some nonce_b64 ->
+                   let sender_x25519_pk = env.from_x25519 in
+                   (match Relay_e2e.decrypt_for_me
+                     ~ct_b64:recipient.ciphertext
+                     ~nonce_b64
+                     ~sender_pk_b64:(match sender_x25519_pk with Some pk -> pk | None -> "")
+                     ~our_sk_seed:x25519.private_key_seed with
+                    | None ->
+                      (match sender_x25519_pk with
+                       | Some pk ->
+                         let pinned = Broker.get_pinned_x25519 env.from_ in
+                         if pinned <> None && pinned <> Some pk then content
+                         else content
+                       | None -> content)
+                    | Some pt ->
+                      let sender_ed25519_pk_opt = Broker.get_pinned_ed25519 env.from_ in
+                      (match sender_ed25519_pk_opt with
+                       | None -> content
+                       | Some pk ->
+                         let sig_ok = Relay_e2e.verify_envelope_sig ~pk env in
+                         if not sig_ok then content
+                         else (
+                           (match sender_x25519_pk with
+                            | Some pk -> Broker.pin_x25519_sync ~alias:env.from_ ~pk |> ignore
+                            | None -> ());
+                           pt))))
+           | _ -> content)
+        | _ -> content)
+  in
+  { msg with content = decrypted_content }
+
 let room_member_detail_json (detail : Broker.room_member_info) =
   `Assoc
     [ ("alias", `String detail.rmi_alias)

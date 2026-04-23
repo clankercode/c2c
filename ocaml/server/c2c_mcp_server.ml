@@ -158,7 +158,7 @@ let start_inbox_watcher ~broker_root ~session_id ~emit_notification
             let rec emit_all = function
               | [] -> Lwt.return_unit
               | msg :: rest ->
-                  let* () = emit_notification msg in
+                  let* () = emit_notification ~session_id msg in
                   let* () = Lwt_unix.sleep 0.01 in
                   emit_all rest
             in
@@ -177,8 +177,9 @@ let start_inbox_watcher ~broker_root ~session_id ~emit_notification
   in
   loop (stat_size ())
 
-let emit_notification msg =
-  write_message (C2c_mcp.channel_notification msg)
+let emit_notification ~session_id msg =
+  let decrypted_msg = C2c_mcp.decrypt_message_for_push msg ~session_id in
+  write_message (C2c_mcp.channel_notification decrypted_msg)
 
 let rec loop ~broker_root ~channel_capable_ref =
   let open Lwt.Syntax in
@@ -208,7 +209,7 @@ let rec loop ~broker_root ~channel_capable_ref =
                 let rec emit = function
                   | [] -> Lwt.return_unit
                   | message :: rest ->
-                      let* () = emit_notification message in
+                      let* () = emit_notification ~session_id:sid message in
                       emit rest
                 in
                 emit queued
