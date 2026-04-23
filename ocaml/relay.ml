@@ -3690,7 +3690,21 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
 
       | `GET, path when String.starts_with ~prefix:"/remote_inbox/" path ->
         let session_id = String.sub path 14 (String.length path - 14) in
-        handle_remote_inbox session_id
+        let valid = match String.length session_id with
+          | 0 | 65 -> false
+          | _ ->
+            let ok = ref true in
+            String.iter (fun c ->
+              if not ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                      || (c >= '0' && c <= '9') || c = '-' || c = '_')
+              then ok := false
+            ) session_id;
+            !ok
+        in
+        if not valid then
+          respond_bad_request (json_error_str err_bad_request "invalid session_id")
+        else
+          handle_remote_inbox session_id
 
       (* === S4: Observer WebSocket endpoint === *)
       (* TODO S4: GET /observer/<binding_id> → WebSocket upgrade
