@@ -63,7 +63,7 @@ def render_sitrep(content: str) -> str:
     """Render sitrep markdown with ANSI colorization."""
     lines = content.splitlines()
     output: list[str] = []
-    in_table = False
+    in_table_body = False
 
     for raw_line in lines:
         line = raw_line.rstrip()
@@ -84,33 +84,30 @@ def render_sitrep(content: str) -> str:
             output.append(ansi_color(line, 34))
             continue
 
-        # Table separator — collect alignment for next table
-        if re.match(r"^\|[-| :]+\|$", line):
-            in_table = True
-            output.append(ansi_color(line, 90))
-            continue
-
-        # Table rows
-        if in_table and line.startswith("|"):
-            cells = line.split("|")
-            colored_cells: list[str] = []
-            for i, cell in enumerate(cells):
-                cell = cell.strip()
-                if not cell:
-                    continue
-                if i == 0:
-                    colored_cells.append(ansi_color(cell, 33))
-                elif i == 1 and "PID" in line:
-                    colored_cells.append(ansi_color(cell, 90))
-                elif i == 2 and "Client" in line:
-                    colored_cells.append(ansi_color(cell, 35))
-                elif "Last activity" in line:
-                    colored_cells.append(ansi_color(cell, 32))
-                else:
-                    colored_cells.append(cell)
-            output.append("|" + "|".join(colored_cells) + "|")
-            if not re.match(r"^\||\|[-| :]+\|$", line):
-                in_table = False
+        # Table rows (header or data) — any | line that's not a separator
+        if line.startswith("|"):
+            if re.match(r"^\|[-| :]+\|$", line):
+                in_table_body = True
+                output.append(ansi_color(line, 90))
+            else:
+                in_table_body = True
+                cells = line.split("|")
+                colored_cells: list[str] = []
+                for i, cell in enumerate(cells):
+                    if cell:  # non-empty cell
+                        if i == 1:
+                            colored_cells.append(ansi_color(cell, 33))
+                        elif i == 2:
+                            colored_cells.append(ansi_color(cell, 90))
+                        elif i == 3:
+                            colored_cells.append(ansi_color(cell, 35))
+                        elif i == 4:
+                            colored_cells.append(ansi_color(cell, 32))
+                        else:
+                            colored_cells.append(cell)
+                    else:
+                        colored_cells.append(cell)  # empty string (leading/trailing |)
+                output.append("|".join(colored_cells))
             continue
 
         # Code blocks
@@ -132,7 +129,7 @@ def render_sitrep(content: str) -> str:
 
         # Then do generic bold
         if "**" in line:
-            line = re.sub(r"\*\*(.+?)\*\*", lambda m: ansi_color(f"**{m.group(1)}**", 1), line)
+            line = re.sub(r"\*\*(.+?)\*\*", lambda m: f"**{ansi_color(m.group(1), 1)}**", line)
 
         # Bullet points
         if line.startswith("- "):
