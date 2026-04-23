@@ -1016,13 +1016,11 @@ let prepare_launch_args ~(name : string) ~(client : string)
            or --resume <sid> to reattach an existing one. --session-id errors out
            if a session with that id already exists; --resume errors out if it
            doesn't. So probe ~/.claude/projects/*/<uuid>.jsonl to pick.
-           Both --dangerously-load-development-channels server:c2c AND
-           --channels server:c2c are required for channels to work in Claude.
-           The former enables Claude Code to process notifications/claude/channel
-           as <channel> tags; the latter registers the MCP server. *)
+            --dangerously-load-development-channels server:c2c enables Claude Code to
+            process notifications/claude/channel as <channel> tags. --channels is
+            removed (Max 2026-04-24) to prevent parser confusion in cc-* wrappers. *)
         let dev_channel_args =
-          [ "--dangerously-load-development-channels"; "server:c2c"
-          ; "--channels"; "server:c2c" ]
+          [ "--dangerously-load-development-channels"; "server:c2c" ]
         in
         (match resume_session_id with
          | Some sid ->
@@ -1650,6 +1648,20 @@ let run_outer_loop ~(name : string) ~(client : string)
              (List.map (fun (k, v) -> Printf.sprintf "%s=%s" k v) cfg.extra_env))
       in
       let env = Array.append env [| Printf.sprintf "C2C_MCP_CLIENT_PID=%d" (Unix.getpid ()) |] in
+      (* Export client-native session IDs so child shells/CLIs can self-identify
+         without walking /proc. For Claude Code (claude), CC generates its own session
+         ID internally so we export CLAUDE_CODE_PARENT_SESSION_ID as a hint; for other
+         clients the name IS their session ID so we export their native env var. *)
+      let client_session_env =
+        match client with
+        | "claude"   -> [| "CLAUDE_CODE_PARENT_SESSION_ID=" ^ name |]
+        | "codex"    -> [| "CODEX_SESSION_ID=" ^ name |]
+        | "opencode" -> [| "OPENCODE_SESSION_ID=" ^ name |]
+        | "kimi"     -> [| "KIMI_SESSION_ID=" ^ name |]
+        | "crush"    -> [| "CRUSH_SESSION_ID=" ^ name |]
+        | _ -> [||]
+      in
+      let env = Array.append env client_session_env in
       let env =
         if one_hr_cache then
           Array.append env [| "ENABLE_PROMPT_CACHING_1H=1" |]
