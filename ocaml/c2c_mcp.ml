@@ -3052,10 +3052,10 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
       let session_id = resolve_session_id arguments in
       Broker.confirm_registration broker ~session_id;
       let messages = Broker.drain_inbox broker ~session_id in
+      let sid = match current_session_id () with Some s -> s | None -> "unknown" in
+      let our_x25519 = match Relay_enc.load_or_generate ~session_id:sid () with Ok k -> Some k | Error _ -> None in
+      let our_ed25519 = Some (Broker.load_or_create_ed25519_identity ()) in
       let process_msg ({ from_alias; to_alias; content; deferrable } : message) =
-        let sid = match current_session_id () with Some s -> s | None -> from_alias in
-        let our_x25519 = match Relay_enc.load_or_generate ~session_id:sid () with Ok k -> Some k | Error _ -> None in
-        let our_ed25519 = Some (Broker.load_or_create_ed25519_identity ()) in
         let (decrypted, enc_status) =
           match Yojson.Safe.from_string content with
           | exception _ -> content, None
@@ -3073,37 +3073,48 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                  | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Not_for_me))
               | "box-x25519-v1" ->
                 (match our_x25519, our_ed25519 with
-                 | Some x25519, Some _ ->
-                   (match Relay_e2e.find_my_recipient ~my_alias:to_alias env.recipients with
-                    | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Not_for_me)
-                    | Some recipient ->
-                      (match recipient.nonce with
-                       | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed)
-                       | Some nonce_b64 ->
-                         let sender_pk = match Broker.get_pinned_ed25519 env.from_ with
-                           | Some pk -> pk
-                           | None -> env.from_
-                         in
-                         (match Relay_e2e.decrypt_for_me
-                           ~ct_b64:recipient.ciphertext
-                           ~nonce_b64
-                           ~sender_pk_b64:sender_pk
-                           ~our_sk_seed:x25519.private_key_seed with
-                          | None ->
-                            (match Broker.get_pinned_ed25519 env.from_ with
-                             | Some pk when pk <> sender_pk -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
-                             | _ ->
-                               (match Broker.get_pinned_ed25519 env.from_ with None -> Broker.set_pinned_ed25519 env.from_ sender_pk | Some _ -> ());
-                               content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
-                           | Some pt ->
-                             let pinned_pk = Broker.get_pinned_ed25519 env.from_ in
-                             (match pinned_pk with
-                              | Some pk when pk <> sender_pk ->
+                 | Some x25519, Some ed25519 ->
+                    (match Relay_e2e.find_my_recipient ~my_alias:to_alias env.recipients with
+                     | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Not_for_me)
+                     | Some recipient ->
+                       (match recipient.nonce with
+                        | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed)
+                        | Some nonce_b64 ->
+                          let sender_x25519_pk = env.from_x25519 in
+                          (match Relay_e2e.decrypt_for_me
+                            ~ct_b64:recipient.ciphertext
+                            ~nonce_b64
+                            ~sender_pk_b64:(match sender_x25519_pk with Some pk -> pk | None -> "")
+                            ~our_sk_seed:x25519.private_key_seed with
+                           | None ->
+                             (match sender_x25519_pk with
+                              | Some pk when Broker.get_pinned_x25519 env.from_ <> None && Broker.get_pinned_x25519 env.from_ <> Some pk ->
                                 content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
-                              | _ ->
-                                (match Broker.get_pinned_ed25519 env.from_ with None -> Broker.set_pinned_ed25519 env.from_ sender_pk | Some _ -> ());
-                                (match env.from_x25519 with None -> () | Some pk -> (match Broker.get_pinned_x25519 env.from_ with None -> Broker.set_pinned_x25519 env.from_ pk | Some _ -> ()));
-                                pt, Some (Relay_e2e.enc_status_to_string status))))
+                              | _ -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
+                           | Some pt ->
+                             let sender_ed25519_pk_opt = Broker.get_pinned_ed25519 env.from_ in
+                             let sig_ok = match sender_ed25519_pk_opt with
+                               | Some pk -> Relay_e2e.verify_envelope_sig ~pk env
+                               | None -> true
+                             in
+                             if not sig_ok then
+                               (match sender_ed25519_pk_opt with
+                                | Some _ -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
+                                | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
+                             else (
+                               (match sender_x25519_pk with
+                                | Some pk -> Broker.pin_x25519_if_unknown ~alias:env.from_ ~pk |> ignore
+                                | None -> ());
+                               (match sender_ed25519_pk_opt with
+                                | Some _ -> ()
+                                | None ->
+                                  let sender_pk_for_pin = match Broker.get_pinned_ed25519 env.from_ with
+                                    | Some pk -> pk
+                                    | None -> env.from_
+                                  in
+                                  if sender_pk_for_pin <> env.from_ then
+                                    Broker.pin_ed25519_if_unknown ~alias:env.from_ ~pk:sender_pk_for_pin |> ignore);
+                               pt, Some (Relay_e2e.enc_status_to_string status)))))
                  | _ -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
               | _ -> content, None
         in
