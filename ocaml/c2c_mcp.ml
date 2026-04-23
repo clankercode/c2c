@@ -2905,10 +2905,14 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                             | Some sid -> sid | None -> from_alias
                           in
                           (match Relay_enc.load_or_generate ~session_id () with
-                           | Error _ -> `Plain content
+                           | Error e ->
+                             Broker.log_error (Printf.sprintf "send: x25519 load_or_generate failed: %s" e);
+                             `Plain content
                            | Ok our_x25519 ->
-                             Broker.set_pinned_x25519 to_alias recipient_pk_b64;
+                             let sender_pk_b64 = our_x25519.public_key_b64 in
+                             Broker.pin_x25519_if_unknown ~alias:to_alias ~pk:recipient_pk_b64 |> ignore;
                              let our_ed25519 = Broker.load_or_create_ed25519_identity () in
+                             Broker.pin_ed25519_if_unknown ~alias:from_alias ~pk:our_ed25519.public_key_b64 |> ignore;
                              let sk_seed = our_x25519.private_key_seed in
                              match Relay_e2e.encrypt_for_recipient
                                      ~pt:content
@@ -2921,6 +2925,7 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                                in
                                let envelope : Relay_e2e.envelope = {
                                  from_ = from_alias;
+                                 from_x25519 = Some sender_pk_b64;
                                  to_ = Some to_alias;
                                  room = None;
                                  ts = Int64.of_float ts;
@@ -3093,19 +3098,18 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
                               | _ -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
                            | Some pt ->
                               let sender_ed25519_pk_opt = Broker.get_pinned_ed25519 env.from_ in
-                              let sig_ok = match sender_ed25519_pk_opt with
-                                | Some pk -> Relay_e2e.verify_envelope_sig ~pk env
-                                | None -> true
-                              in
-                              if not sig_ok then
-                                (match sender_ed25519_pk_opt with
-                                 | Some _ -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
-                                 | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
-                              else (
-                                (match sender_x25519_pk with
-                                 | Some pk -> Broker.pin_x25519_if_unknown ~alias:env.from_ ~pk |> ignore
-                                 | None -> ());
-                                pt, Some (Relay_e2e.enc_status_to_string status)))))
+                              (match sender_ed25519_pk_opt with
+                               | None ->
+                                 content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed)
+                               | Some pk ->
+                                 let sig_ok = Relay_e2e.verify_envelope_sig ~pk env in
+                                 if not sig_ok then
+                                   content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
+                                 else (
+                                   (match sender_x25519_pk with
+                                    | Some pk -> Broker.pin_x25519_if_unknown ~alias:env.from_ ~pk |> ignore
+                                    | None -> ());
+                                   pt, Some (Relay_e2e.enc_status_to_string status)))))
                  | _ -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
               | _ -> content, None
         in
