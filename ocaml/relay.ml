@@ -1866,6 +1866,84 @@ let is_nonce_seen ~phone_pubkey ~nonce = NonceCache.is_seen nonce_cache ~phone_p
 let record_nonce ~phone_pubkey ~nonce = NonceCache.record nonce_cache ~phone_pubkey ~nonce
 let cleanup_nonce_cache ~older_than = NonceCache.cleanup nonce_cache ~older_than
 
+(* S6: Short queue for observer message short-term storage *)
+let short_queue = Relay_short_queue.ShortQueue.create ()
+
+(* S6: Observer session table — binding_id -> list of active WebSocket sessions *)
+module ObserverSessions : sig
+  type t
+  val create : unit -> t
+  val register : t -> binding_id:string -> Relay_ws_frame.Session.t -> unit
+  val remove : t -> binding_id:string -> Relay_ws_frame.Session.t -> unit
+  val get : t -> binding_id:string -> Relay_ws_frame.Session.t list
+end = struct
+  type t = {
+    mutable sessions : (string, Relay_ws_frame.Session.t list) Hashtbl.t;
+    mutex : Mutex.t;
+  }
+  let create () = {
+    sessions = Hashtbl.create 64;
+    mutex = Mutex.create ();
+  }
+  let register t ~binding_id session =
+    Mutex.lock t.mutex;
+    begin try
+      let existing = try Hashtbl.find t.sessions binding_id with Not_found -> [] in
+      Hashtbl.replace t.sessions binding_id (session :: existing)
+    with e -> Mutex.unlock t.mutex; raise e end;
+    Mutex.unlock t.mutex
+  let remove t ~binding_id session =
+    Mutex.lock t.mutex;
+    begin try
+      let existing = try Hashtbl.find t.sessions binding_id with Not_found -> [] in
+      let filtered = List.filter (fun s -> s != session) existing in
+      if filtered = [] then Hashtbl.remove t.sessions binding_id
+      else Hashtbl.replace t.sessions binding_id filtered
+    with e -> Mutex.unlock t.mutex; raise e end;
+    Mutex.unlock t.mutex
+  let get t ~binding_id =
+    Mutex.lock t.mutex;
+    let result = try Hashtbl.find t.sessions binding_id with Not_found -> [] in
+    Mutex.unlock t.mutex;
+    result
+end
+
+let observer_sessions = ObserverSessions.create ()
+
+(* S6: Push messages to all active observer sessions for a binding *)
+let push_to_observers ~binding_id (msg : Relay_short_queue.message) =
+  let sessions = ObserverSessions.get observer_sessions ~binding_id in
+  let base_fields = [
+    "type", `String "message";
+    "ts", `Float msg.ts;
+    "from_alias", `String msg.from_alias;
+    "to_alias", `String msg.to_alias;
+  ] in
+  let room_field = match msg.room_id with Some r -> ["room_id", `String r] | None -> [] in
+  let all_fields = base_fields @ room_field @ ["content", `String msg.content] in
+  let json = `Assoc all_fields in
+  let payload = Yojson.Safe.to_string json in
+  List.iter (fun session ->
+    Lwt.async (fun () -> Relay_ws_frame.Session.send_text session payload)
+  ) sessions
+
+(* S6: Parse observer WebSocket messages *)
+let parse_observer_ws_msg (raw : string) : [`Reconnect of float | `Ping | `Unknown] =
+  try
+    let json = Yojson.Safe.from_string raw in
+    match json with
+    | `Assoc fields ->
+      (match List.assoc_opt "type" fields with
+       | Some (`String "reconnect") ->
+         (match List.assoc_opt "since_ts" fields with
+          | Some (`Float ts) -> `Reconnect ts
+          | Some (`Int i) -> `Reconnect (float_of_int i)
+          | _ -> `Unknown)
+       | Some (`String "ping") -> `Ping
+       | _ -> `Unknown)
+    | _ -> `Unknown
+  with Yojson.Json_error _ -> `Unknown
+
 module Relay_server(R : RELAY) : sig
   val make_callback :
     R.t ->
@@ -2981,18 +3059,45 @@ Source: <a href="https://github.com/clankercode/c2c">github.com/clankercode/c2c<
                   Lwt.async (fun () ->
                     Lwt.catch (fun () ->
                       let session = Relay_ws_frame.Session.of_fd fd_dup_lwt in
+                      ObserverSessions.register observer_sessions ~binding_id session;
+                      let finally () =
+                        ObserverSessions.remove observer_sessions ~binding_id session
+                      in
                       let rec loop () =
                         Relay_ws_frame.Session.recv session >>= fun msg ->
                         match msg with
-                        | None -> Lwt.return_unit
-                        | Some (`Ping) -> loop ()
+                        | None ->
+                          finally ();
+                          Lwt.return_unit
+                        | Some (`Ping) ->
+                          Relay_ws_frame.Session.send_text session "observer_pong" >>= fun () ->
+                          loop ()
                         | Some (`Close (_, _)) ->
-                            Relay_ws_frame.Session.close_with ~code:1000 ~reason:"normal" () session
-                        | Some (`Text _) | Some (`Binary _) ->
-                            Relay_ws_frame.Session.send_text session "observer_receipt" >>= fun () ->
-                            loop ()
+                          finally ();
+                          Relay_ws_frame.Session.close_with ~code:1000 ~reason:"normal" () session
+                        | Some (`Text raw) | Some (`Binary raw) ->
+                          (match parse_observer_ws_msg raw with
+                           | `Reconnect since_ts ->
+                             let msgs = Relay_short_queue.ShortQueue.get_after short_queue ~binding_id ~since_ts in
+                             let json_msgs = List.map (fun (m : Relay_short_queue.message) ->
+                               `Assoc (
+                                 ["ts", `Float m.ts;
+                                  "from_alias", `String m.from_alias;
+                                  "to_alias", `String m.to_alias]
+                                  @ (match m.room_id with Some r -> ["room_id", `String r] | None -> [])
+                                  @ ["content", `String m.content])
+                             ) msgs in
+                             let response = `Assoc ["type", `String "replay"; "messages", `List json_msgs] in
+                             Relay_ws_frame.Session.send_text session (Yojson.Safe.to_string response) >>= fun () ->
+                             loop ()
+                           | `Ping ->
+                             Relay_ws_frame.Session.send_text session "observer_pong" >>= fun () ->
+                             loop ()
+                           | `Unknown ->
+                             Relay_ws_frame.Session.send_text session "observer_ack" >>= fun () ->
+                             loop ())
                       in
-                      loop ()
+                      Lwt.catch loop (fun e -> finally (); Lwt.return_unit)
                     ) (function
                       | End_of_file -> Lwt.return_unit
                       | e -> Lwt.return_unit
