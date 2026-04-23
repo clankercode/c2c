@@ -52,6 +52,18 @@ let statefile_path () =
       mkdir_p base;
       Filename.concat base "oc-plugin-state.json"
 
+let debug_log_path () =
+  let home = Sys.getenv_opt "HOME" |> Option.value ~default:"/tmp" in
+  let base = Filename.concat home ".local/share/c2c" in
+  match Sys.getenv_opt "C2C_INSTANCE_NAME" with
+  | Some name when String.trim name <> "" ->
+      let inst_dir = Filename.concat (Filename.concat base "instances") (String.trim name) in
+      mkdir_p inst_dir;
+      Filename.concat inst_dir "statefile-debug.jsonl"
+  | _ ->
+      mkdir_p base;
+      Filename.concat base "statefile-debug.jsonl"
+
 (* Read existing statefile JSON if present. *)
 let read_existing_state path =
   try
@@ -74,7 +86,7 @@ let string_field_or fields name default =
   | _ -> default
 
 (* Write statefile atomically. Non-fatal on any error. *)
-let write_statefile ~session_id ~alias ~client_pid ~now =
+let rec write_statefile ~session_id ~alias ~client_pid ~now =
   try
     let path = statefile_path () in
     let existing = read_existing_state path in
@@ -126,6 +138,7 @@ let write_statefile ~session_id ~alias ~client_pid ~now =
       `Assoc
         [ ("event", `String "state.snapshot")
         ; ("ts", `String now)
+        ; ("checkpoint", `Null)
         ; ("state", state)
         ]
       |> Yojson.Safe.to_string
@@ -135,7 +148,62 @@ let write_statefile ~session_id ~alias ~client_pid ~now =
     output_string oc payload;
     output_char oc '\n';
     close_out oc;
-    Unix.rename tmp path
+    Unix.rename tmp path;
+    append_debug_log ~now ~event:"state.snapshot" ~checkpoint:`Null ~state:(Some state)
+  with _ -> ()
+
+and append_debug_log ~now ~event ~checkpoint ~state =
+  try
+    let path = debug_log_path () in
+    let entry =
+      `Assoc
+        [ ("ts", `String now)
+        ; ("event", `String event)
+        ; ("checkpoint", checkpoint)
+        ; ("state", match state with Some s -> s | None -> `Null)
+        ]
+      |> Yojson.Safe.to_string
+    in
+    let oc = open_out_gen [ Open_wronly; Open_creat; Open_append ] 0o644 path in
+    output_string oc entry;
+    output_char oc '\n';
+    close_out oc;
+    rotate_debug_log_if_needed path
+  with _ -> ()
+
+and rotate_debug_log_if_needed path =
+  try
+    let ic = open_in path in
+    let lines = ref [] in
+    (try while true do lines := input_line ic :: !lines done with End_of_file -> ());
+    close_in ic;
+    let one_hour_ago = Unix.gettimeofday () -. 3600.0 in
+    let recent_lines =
+      List.filter (fun line ->
+        match Yojson.Safe.from_string line with
+        | `Assoc fields ->
+            (match List.assoc_opt "ts" fields with
+             | Some (`String s) ->
+                 (try
+                    let year = int_of_string (String.sub s 0 4) in
+                    let month = int_of_string (String.sub s 5 2) - 1 in
+                    let day = int_of_string (String.sub s 8 2) in
+                    let hour = int_of_string (String.sub s 11 2) in
+                    let min = int_of_string (String.sub s 14 2) in
+                    let sec = int_of_string (String.sub s 17 2) in
+                    let tm_val = { Unix.tm_year = year - 1900; tm_mon = month; tm_mday = day; tm_hour = hour; tm_min = min; tm_sec = sec; tm_isdst = false; tm_yday = 0; tm_wday = 0 } in
+                    let ts, _ = Unix.mktime tm_val in
+                    ts > one_hour_ago
+                  with _ -> false)
+             | _ -> false)
+        | _ -> false
+      ) !lines
+    in
+    if List.length recent_lines < List.length !lines then begin
+      let oc = open_out path in
+      List.iter (fun l -> output_string oc l; output_char oc '\n') (List.rev recent_lines);
+      close_out oc
+    end
   with _ -> ()
 
 let () =
