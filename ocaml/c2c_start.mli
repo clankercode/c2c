@@ -284,6 +284,7 @@ val run_outer_loop :
   ?alias_override:string ->
   ?session_id:string ->
   ?resume_session_id:string ->
+  ?model_override:string ->
   ?one_hr_cache:bool ->
   ?kickoff_prompt:string ->
   ?auto_join_rooms:string ->
