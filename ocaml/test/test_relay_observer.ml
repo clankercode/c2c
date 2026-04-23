@@ -203,6 +203,60 @@ let test_no_gap_when_messages_cover_range () =
   in
   Alcotest.(check bool) "no gap (since_ts=150 between msgs 100..200)" false gap
 
+(* ---- TTL-drop (cleanup) tests ---- *)
+
+let test_cleanup_removes_old_messages () =
+  let q = ShortQueue.create () in
+  let old = mk_msg ~ts:100.0 ~from:"a" ~to_:"b" "old" in
+  let recent = mk_msg ~ts:500.0 ~from:"c" ~to_:"d" "recent" in
+  ShortQueue.push q ~binding_id:"b1" old;
+  ShortQueue.push q ~binding_id:"b1" recent;
+  let cleaned = ShortQueue.cleanup q ~older_than:300.0 in
+  Alcotest.(check int) "1 msg cleaned" 1 cleaned;
+  let msgs = ShortQueue.get_after q ~binding_id:"b1" ~since_ts:0.0 in
+  Alcotest.(check int) "1 msg remains" 1 (List.length msgs);
+  Alcotest.(check string) "only recent remains" "recent" (List.hd msgs).content
+
+let test_cleanup_empty_queue_returns_zero () =
+  let q = ShortQueue.create () in
+  let cleaned = ShortQueue.cleanup q ~older_than:1000.0 in
+  Alcotest.(check int) "0 cleaned on empty" 0 cleaned
+
+let test_cleanup_updates_oldest_ts () =
+  let q = ShortQueue.create () in
+  let old = mk_msg ~ts:100.0 ~from:"a" ~to_:"b" "old" in
+  let recent = mk_msg ~ts:500.0 ~from:"c" ~to_:"d" "recent" in
+  ShortQueue.push q ~binding_id:"b1" old;
+  ShortQueue.push q ~binding_id:"b1" recent;
+  let _ = ShortQueue.cleanup q ~older_than:300.0 in
+  (match ShortQueue.oldest_ts q ~binding_id:"b1" with
+   | Some t -> Alcotest.(check bool) "oldest is 500" true (approx_equal ~expected:500.0 ~actual:t ~tol:0.001)
+   | None -> Alcotest.fail "expected oldest_ts after cleanup")
+
+let test_cleanup_all_old_removes_binding () =
+  let q = ShortQueue.create () in
+  let m = mk_msg ~ts:100.0 ~from:"a" ~to_:"b" "old" in
+  ShortQueue.push q ~binding_id:"b1" m;
+  let cleaned = ShortQueue.cleanup q ~older_than:1000.0 in
+  Alcotest.(check int) "1 cleaned" 1 cleaned;
+  Alcotest.(check bool) "oldest_ts none after full cleanup"
+    true (Option.is_none (ShortQueue.oldest_ts q ~binding_id:"b1"))
+
+let test_gap_detected_after_ttl_drop () =
+  let q = ShortQueue.create () in
+  let m1 = mk_msg ~ts:100.0 ~from:"a" ~to_:"b" "old" in
+  let m2 = mk_msg ~ts:200.0 ~from:"c" ~to_:"d" "newer" in
+  ShortQueue.push q ~binding_id:"b1" m1;
+  ShortQueue.push q ~binding_id:"b1" m2;
+  let _ = ShortQueue.cleanup q ~older_than:150.0 in
+  let oldest = ShortQueue.oldest_ts q ~binding_id:"b1" in
+  let since_ts = 50.0 in
+  let gap = match oldest with
+    | Some o -> since_ts < o
+    | None -> true
+  in
+  Alcotest.(check bool) "gap after TTL drop (since_ts < oldest)" true gap
+
 (* ---- push_to_observers payload shape tests ---- *)
 
 let test_push_to_observers_payload_shape_direct () =
@@ -255,6 +309,12 @@ let tests = [
   (* gap detection *)
   "gap_triggered_when_since_before_oldest", `Quick, test_gap_detection_triggered_when_since_before_oldest;
   "no_gap_when_messages_cover_range",       `Quick, test_no_gap_when_messages_cover_range;
+  (* TTL-drop cleanup *)
+  "cleanup_removes_old",               `Quick, test_cleanup_removes_old_messages;
+  "cleanup_empty_is_zero",             `Quick, test_cleanup_empty_queue_returns_zero;
+  "cleanup_updates_oldest_ts",         `Quick, test_cleanup_updates_oldest_ts;
+  "cleanup_all_old_removes_binding",   `Quick, test_cleanup_all_old_removes_binding;
+  "gap_after_ttl_drop",               `Quick, test_gap_detected_after_ttl_drop;
   (* push_to_observers payload shape *)
   "sq_payload_shape_direct",             `Quick, test_push_to_observers_payload_shape_direct;
   "sq_payload_shape_room",                `Quick, test_push_to_observers_room_payload_shape;
