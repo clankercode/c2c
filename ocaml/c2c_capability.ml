@@ -25,3 +25,39 @@ let missing_required ~required ~available =
       | Some known -> not (mem (to_string known))
       | None -> true)
     required
+
+let has available capability =
+  List.mem (to_string capability) available
+
+let assoc_opt name = function
+  | `Assoc fields -> List.assoc_opt name fields
+  | _ -> None
+
+let string_field name json =
+  match assoc_opt name json with Some (`String value) -> Some value | _ -> None
+
+let initialize_has_claude_channel request =
+  let channel_capability =
+    match assoc_opt "params" request with
+    | None -> None
+    | Some params -> (
+        match assoc_opt "capabilities" params with
+        | None -> None
+        | Some capabilities -> (
+            match assoc_opt "experimental" capabilities with
+            | None -> None
+            | Some experimental -> assoc_opt "claude/channel" experimental))
+  in
+  match channel_capability with
+  | Some (`Bool false) | Some `Null | None -> false
+  | Some _ -> true
+
+let negotiated_in_initialize ~current request =
+  match string_field "method" request with
+  | Some "initialize" ->
+      if initialize_has_claude_channel request then
+        let cap = to_string Claude_channel in
+        if List.mem cap current then current else current @ [ cap ]
+      else
+        List.filter ((<>) (to_string Claude_channel)) current
+  | _ -> current

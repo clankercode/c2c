@@ -17,3 +17,11 @@ val all : t list
 val missing_required : required:string list -> available:string list -> string list
 (** Return required capability names that are not present in [available].
     Unknown requirement names are treated as missing so callers fail closed. *)
+
+val negotiated_in_initialize :
+  current:string list -> Yojson.Safe.t -> string list
+(** Update the negotiated runtime capability set from an MCP request.
+    Only [initialize] currently changes the set. *)
+
+val has : string list -> t -> bool
+(** Membership check against a serialized capability set. *)

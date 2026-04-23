@@ -22,17 +22,6 @@ let auto_drain_channel_enabled () =
       not (List.mem normalized [ "0"; "false"; "no"; "off" ])
   | None -> channel_delivery_enabled ()
 
-(* Force channel-capable mode regardless of client capability negotiation.
-   When set, the inbox watcher drains and emits notifications/claude/channel
-   even if the client never declared experimental.claude/channel. Use for
-   Claude Code sessions where we want push delivery. *)
-let force_channel_delivery_enabled () =
-  match Sys.getenv_opt "C2C_MCP_FORCE_CHANNEL_DELIVERY" with
-  | Some value ->
-      let normalized = String.lowercase_ascii (String.trim value) in
-      not (List.mem normalized [ "0"; "false"; "no"; "off" ])
-  | None -> false
-
 let inbox_watcher_delay_seconds () =
   match Sys.getenv_opt "C2C_MCP_INBOX_WATCHER_DELAY" with
   | Some value -> (
@@ -44,30 +33,6 @@ let inbox_watcher_delay_seconds () =
 let assoc_opt name = function
   | `Assoc fields -> List.assoc_opt name fields
   | _ -> None
-
-let string_field name json =
-  match assoc_opt name json with Some (`String value) -> Some value | _ -> None
-
-let client_supports_claude_channel request =
-  let channel_capability =
-    match assoc_opt "params" request with
-    | None -> None
-    | Some params -> (
-        match assoc_opt "capabilities" params with
-        | None -> None
-        | Some capabilities -> (
-            match assoc_opt "experimental" capabilities with
-            | None -> None
-            | Some experimental -> assoc_opt "claude/channel" experimental))
-  in
-  match channel_capability with
-  | Some (`Bool false) | Some `Null | None -> false
-  | Some _ -> true
-
-let next_channel_capability ~current request =
-  match string_field "method" request with
-  | Some "initialize" -> client_supports_claude_channel request
-  | _ -> current
 
 let starts_with_ci ~prefix s =
   let p = String.lowercase_ascii prefix in
@@ -127,7 +92,7 @@ let jsonrpc_error ~id ~code ~message =
    method, which would otherwise cause messages to vanish from the agent's
    perspective. *)
 let start_inbox_watcher ~broker_root ~session_id ~emit_notification
-    ~channel_capable_ref =
+    ~negotiated_capabilities_ref =
   let open Lwt.Syntax in
   let inbox_path = Filename.concat broker_root (session_id ^ ".inbox.json") in
   let stat_size () =
@@ -149,7 +114,8 @@ let start_inbox_watcher ~broker_root ~session_id ~emit_notification
              For non-channel-capable clients (e.g. standard Claude Code), leaving
              messages in the inbox is correct — they will be retrieved via
              poll_inbox or the PostToolUse hook on the next tool call. *)
-          if !channel_capable_ref then
+          if C2c_capability.has !negotiated_capabilities_ref
+               C2c_capability.Claude_channel then
             let broker = C2c_mcp.Broker.create ~root:broker_root in
             let messages =
               if C2c_mcp.Broker.is_dnd broker ~session_id then []
@@ -181,7 +147,23 @@ let emit_notification ~session_id msg =
   let decrypted_msg = C2c_mcp.decrypt_message_for_push msg ~session_id in
   write_message (C2c_mcp.channel_notification decrypted_msg)
 
-let rec loop ~broker_root ~channel_capable_ref =
+let emit_notifications ?(inter_message_delay = 0.0) ~session_id messages =
+  let open Lwt.Syntax in
+  let rec loop = function
+    | [] -> Lwt.return_unit
+    | msg :: rest ->
+        let* () = emit_notification ~session_id msg in
+        let* () =
+          if inter_message_delay > 0.0 then
+            Lwt_unix.sleep inter_message_delay
+          else
+            Lwt.return_unit
+        in
+        loop rest
+  in
+  loop messages
+
+let rec loop ~broker_root ~negotiated_capabilities_ref =
   let open Lwt.Syntax in
   let* msg = read_message () in
   match msg with
@@ -191,13 +173,38 @@ let rec loop ~broker_root ~channel_capable_ref =
       match json with
       | Error () ->
           let* () = write_message (jsonrpc_error ~id:`Null ~code:(-32700) ~message:"Parse error") in
-          loop ~broker_root ~channel_capable_ref
+          loop ~broker_root ~negotiated_capabilities_ref
       | Ok request ->
-          let new_capable = next_channel_capability ~current:!channel_capable_ref request in
-          let new_capable = new_capable || force_channel_delivery_enabled () in
-          channel_capable_ref := new_capable;
+          let method_name =
+            match assoc_opt "method" request with
+            | Some (`String value) -> Some value
+            | _ -> None
+          in
+          let was_capable =
+            C2c_capability.has !negotiated_capabilities_ref
+              C2c_capability.Claude_channel
+          in
+          let new_capabilities =
+            C2c_capability.negotiated_in_initialize
+              ~current:!negotiated_capabilities_ref request
+          in
+          negotiated_capabilities_ref := new_capabilities;
+          let new_capable =
+            C2c_capability.has new_capabilities C2c_capability.Claude_channel
+          in
           let* response = C2c_mcp.handle_request ~broker_root request in
           let* () = match response with None -> Lwt.return_unit | Some resp -> write_message resp in
+          let* () =
+            match (method_name, was_capable, new_capable, session_id ()) with
+            | Some "initialize", false, true, Some sid ->
+                let broker = C2c_mcp.Broker.create ~root:broker_root in
+                let queued =
+                  if C2c_mcp.Broker.is_dnd broker ~session_id:sid then []
+                  else C2c_mcp.Broker.drain_inbox_push broker ~session_id:sid
+                in
+                emit_notifications ~session_id:sid queued
+            | _ -> Lwt.return_unit
+          in
           let* () =
             match (auto_drain_channel_enabled (), new_capable, session_id ()) with
             | false, _, _ -> Lwt.return_unit
@@ -206,15 +213,9 @@ let rec loop ~broker_root ~channel_capable_ref =
             | true, true, Some sid ->
                 let broker = C2c_mcp.Broker.create ~root:broker_root in
                 let queued = C2c_mcp.Broker.drain_inbox broker ~session_id:sid in
-                let rec emit = function
-                  | [] -> Lwt.return_unit
-                  | message :: rest ->
-                      let* () = emit_notification ~session_id:sid message in
-                      emit rest
-                in
-                emit queued
+                emit_notifications ~session_id:sid queued
           in
-          loop ~broker_root ~channel_capable_ref)
+          loop ~broker_root ~negotiated_capabilities_ref)
 
 let server_banner () =
   Version.banner ~role:"mcp-server" ~git_hash:C2c_mcp.server_git_hash
@@ -224,11 +225,11 @@ let () =
   let root = broker_root () in
   C2c_mcp.auto_register_startup ~broker_root:root;
   C2c_mcp.auto_join_rooms_startup ~broker_root:root;
-  let channel_capable_ref = ref (force_channel_delivery_enabled ()) in
+  let negotiated_capabilities_ref = ref [] in
   (match (channel_delivery_enabled (), session_id ()) with
    | true, Some sid ->
        Lwt.async (fun () ->
          start_inbox_watcher ~broker_root:root ~session_id:sid
-           ~emit_notification ~channel_capable_ref)
+           ~emit_notification ~negotiated_capabilities_ref)
    | _, _ -> ());
-  Lwt_main.run (loop ~broker_root:root ~channel_capable_ref)
+  Lwt_main.run (loop ~broker_root:root ~negotiated_capabilities_ref)

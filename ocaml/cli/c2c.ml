@@ -6035,25 +6035,6 @@ let serve_cmd =
   let assoc_opt name json =
     match json with `Assoc fields -> List.assoc_opt name fields | _ -> None
   in
-  let string_field name json =
-    match assoc_opt name json with Some (`String v) -> Some v | _ -> None
-  in
-  let client_supports_channel request =
-    let cap =
-      let params = assoc_opt "params" request in
-      let caps = Option.bind params (assoc_opt "capabilities") in
-      let exp = Option.bind caps (assoc_opt "experimental") in
-      Option.bind exp (assoc_opt "claude/channel")
-    in
-    match cap with
-    | Some (`Bool false) | Some `Null | None -> false
-    | Some _ -> true
-  in
-  let next_channel_cap ~current request =
-    match string_field "method" request with
-    | Some "initialize" -> client_supports_channel request
-    | _ -> current
-  in
   let starts_with_ci ~prefix s =
     let p = String.lowercase_ascii prefix in
     let v = String.lowercase_ascii s in
@@ -6100,7 +6081,7 @@ let serve_cmd =
       ; ("error", `Assoc [ ("code", `Int code); ("message", `String message) ])
       ]
   in
-  let rec loop ~channel_capable =
+  let rec loop ~negotiated_capabilities =
     let* msg = read_message () in
     match msg with
     | None -> Lwt.return_unit
@@ -6109,9 +6090,16 @@ let serve_cmd =
         match json with
         | Error () ->
             let* () = write_message (jsonrpc_error ~id:`Null ~code:(-32700) ~message:"Parse error") in
-            loop ~channel_capable
+            loop ~negotiated_capabilities
         | Ok request ->
-            let channel_capable = next_channel_cap ~current:channel_capable request in
+            let negotiated_capabilities =
+              C2c_capability.negotiated_in_initialize
+                ~current:negotiated_capabilities request
+            in
+            let channel_capable =
+              C2c_capability.has negotiated_capabilities
+                C2c_capability.Claude_channel
+            in
             let* response = C2c_mcp.handle_request ~broker_root:root request in
             let* () = match response with None -> Lwt.return_unit | Some resp -> write_message resp in
             let* () =
@@ -6130,9 +6118,9 @@ let serve_cmd =
                   in
                   emit queued
             in
-            loop ~channel_capable
+            loop ~negotiated_capabilities
   in
-  Lwt_main.run (loop ~channel_capable:false)
+  Lwt_main.run (loop ~negotiated_capabilities:[])
 
 let serve = Cmdliner.Cmd.v (Cmdliner.Cmd.info "serve" ~doc:"Run the MCP server (JSON-RPC over stdio).") serve_cmd
 
@@ -6998,11 +6986,11 @@ let agent_new_interactive ?(client="opencode") name =
 let agent_new_term =
   let name_pos =
     Cmdliner.Arg.(value & pos 0 (some string) None & info [] ~docv:"NAME"
-      ~doc:"Role name (creates .c2c/roles/<NAME>.md). Pass as positional arg or use --name.")
+      ~doc:"Role name (creates .c2c/roles/<NAME>.md). Use instead of --name.")
   in
   let name =
     Cmdliner.Arg.(value & opt (some string) None & info [ "name" ] ~docv:"NAME"
-      ~doc:"Role name (creates .c2c/roles/<NAME>.md). Omit to use interactive prompt.")
+      ~doc:"Role name (creates .c2c/roles/<NAME>.md). Use instead of the positional argument.")
   in
   let description =
     Cmdliner.Arg.(value & opt (some string) None & info [ "description"; "d" ]
@@ -7021,17 +7009,23 @@ let agent_new_term =
   and+ description = description
   and+ role_type = role_type
   and+ theme = theme in
-  let name = if name <> None then name else name_pos in
-  let any_flag_passed = description <> None || role_type <> None || theme <> None || name <> None in
-  let interactive = (not any_flag_passed) && is_interactive_stdin () in
   let name =
-    match name with
-    | Some n -> n
-    | None when interactive -> prompt_nonempty ~prompt:"Role name: " ()
-    | None ->
-        Printf.eprintf "error: NAME is required (pass as positional arg, use --name, or run with no arguments for interactive mode)\n%!";
-        exit 1
+    match name, name_pos with
+    | Some n, Some p when n <> p ->
+        Printf.eprintf "note: --name '%s' overrides positional argument '%s'\n%!" n p;
+        n
+    | Some n, _ -> n
+    | None, Some p -> p
+    | None, None ->
+        if is_interactive_stdin () then
+          prompt_nonempty ~prompt:"Role name: " ()
+        else begin
+          Printf.eprintf "error: NAME is required (pass as positional arg, use --name, or run with no arguments for interactive mode)\n%!";
+          exit 1
+        end
   in
+  let any_flag_passed = description <> None || role_type <> None || theme <> None in
+  let interactive = not any_flag_passed && is_interactive_stdin () in
   let (description, role, compatible_clients, theme, auto_join_rooms, selected_snippets) =
     if not interactive then
       ( Option.value description ~default:"TODO: describe this agent's purpose",
