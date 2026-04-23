@@ -4017,7 +4017,7 @@ let relay_dm_cmd =
 let relay_mobile_pair_cmd =
   let subcmd =
     Cmdliner.Arg.(required & pos 0 (some string) None & info []
-       ~docv:"prepare|confirm" ~doc:"Mobile-pair subcommand: prepare issues a pairing token; confirm completes binding.")
+       ~docv:"prepare|confirm|revoke" ~doc:"Mobile-pair subcommand: prepare issues a pairing token; confirm completes binding; revoke deletes a binding.")
   in
   let relay_url =
     Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ]
