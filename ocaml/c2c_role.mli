@@ -30,18 +30,22 @@ val parse_file : string -> t
    C2c_start.repo_config_pmodel_lookup. *)
 val resolve_pmodel : t -> class_lookup:(string -> string option) -> string option
 
+val render_for_client : ?resolved_pmodel:string option -> t -> client:string -> string option
+
 module OpenCode_renderer : sig
-  val render : t -> string
+  val render : ?resolved_pmodel:string option -> t -> string
 end
 
 module Claude_renderer : sig
-  val render : t -> string
+  val render : ?resolved_pmodel:string option -> t -> string
 end
 
 module Codex_renderer : sig
-  val render : t -> string
+  val render : ?resolved_pmodel:string option -> t -> string
 end
 
 module Kimi_renderer : sig
-  val render : t -> string
+  val render : ?resolved_pmodel:string option -> t -> string
 end
+
+val render_for_client : ?resolved_pmodel:string option -> t -> client:string -> string option

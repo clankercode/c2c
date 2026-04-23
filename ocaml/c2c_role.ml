@@ -257,9 +257,9 @@ let resolve_pmodel (t : t) ~(class_lookup : string -> string option) : string op
       | Some rc -> class_lookup rc
       | None -> None
     in
-    (match from_class with
-     | Some _ as m -> m
-     | None -> class_lookup "default")
+     (match from_class with
+      | Some _ as m -> m
+      | None -> class_lookup "default")
 
 (* Renderers *)
 
@@ -270,11 +270,12 @@ let yaml_scalar s =
   else s
 
 module OpenCode_renderer = struct
-  let render r =
+  let render ?(resolved_pmodel : string option) (r : t) =
     let lines = ref [] in
     lines := ("description: " ^ yaml_scalar r.description) :: !lines;
     lines := ("role: " ^ r.role) :: !lines;
-    (match r.model with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
+    let model_to_emit = match resolved_pmodel with Some m -> Some m | None -> r.model in
+    (match model_to_emit with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
     if r.c2c_alias <> None || r.c2c_auto_join_rooms <> [] then begin
       lines := "c2c:" :: !lines;
       (match r.c2c_alias with Some a -> lines := ("  alias: " ^ a) :: !lines | None -> ());
@@ -309,11 +310,12 @@ module OpenCode_renderer = struct
 end
 
 module Claude_renderer = struct
-  let render r =
+  let render ?(resolved_pmodel:string option) (r : t) =
     let lines = ref [] in
     lines := ("description: " ^ yaml_scalar r.description) :: !lines;
     lines := ("role: " ^ r.role) :: !lines;
-    (match r.model with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
+    let model_to_emit = match resolved_pmodel with Some m -> Some m | None -> r.model in
+    (match model_to_emit with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
     if r.c2c_alias <> None || r.c2c_auto_join_rooms <> [] then begin
       lines := "# c2c:" :: !lines;
       (match r.c2c_alias with Some a -> lines := ("#   alias: " ^ a) :: !lines | None -> ());
@@ -334,11 +336,12 @@ module Claude_renderer = struct
 end
 
 module Codex_renderer = struct
-  let render r =
+  let render ?(resolved_pmodel:string option) (r : t) =
     let lines = ref [] in
     lines := ("description: " ^ yaml_scalar r.description) :: !lines;
     lines := ("role: " ^ r.role) :: !lines;
-    (match r.model with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
+    let model_to_emit = match resolved_pmodel with Some m -> Some m | None -> r.model in
+    (match model_to_emit with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
     if r.c2c_alias <> None || r.c2c_auto_join_rooms <> [] then begin
       lines := "# c2c:" :: !lines;
       (match r.c2c_alias with Some a -> lines := ("#   alias: " ^ a) :: !lines | None -> ());
@@ -359,11 +362,12 @@ module Codex_renderer = struct
 end
 
 module Kimi_renderer = struct
-  let render r =
+  let render ?(resolved_pmodel:string option) (r : t) =
     let lines = ref [] in
     lines := ("description: " ^ yaml_scalar r.description) :: !lines;
     lines := ("role: " ^ r.role) :: !lines;
-    (match r.model with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
+    let model_to_emit = match resolved_pmodel with Some m -> Some m | None -> r.model in
+    (match model_to_emit with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
     if r.c2c_alias <> None || r.c2c_auto_join_rooms <> [] then begin
       lines := "# c2c:" :: !lines;
       (match r.c2c_alias with Some a -> lines := ("#   alias: " ^ a) :: !lines | None -> ());
@@ -382,3 +386,11 @@ module Kimi_renderer = struct
     let fm = String.concat "\n" (List.rev !lines) in
     "---\n" ^ fm ^ "\n---\n\n" ^ r.body
 end
+
+let render_for_client ?(resolved_pmodel:string option) (r : t) ~(client : string) : string option =
+  match client with
+  | "opencode" -> Some (OpenCode_renderer.render ?resolved_pmodel r)
+  | "claude" -> Some (Claude_renderer.render ?resolved_pmodel r)
+  | "codex" -> Some (Codex_renderer.render ?resolved_pmodel r)
+  | "kimi" -> Some (Kimi_renderer.render ?resolved_pmodel r)
+  | _ -> None

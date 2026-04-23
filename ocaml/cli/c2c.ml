@@ -6442,12 +6442,13 @@ let agent_file_path ~client ~name =
   | _ -> ".c2c" // "agents" // (name ^ ".md")
 
 let render_role_for_client (r : C2c_role.t) ~client =
-  match client with
-  | "opencode" -> Some (C2c_role.OpenCode_renderer.render r)
-  | "claude" -> Some (C2c_role.Claude_renderer.render r)
-  | "codex" -> Some (C2c_role.Codex_renderer.render r)
-  | "kimi" -> Some (C2c_role.Kimi_renderer.render r)
-  | _ -> None
+  let pmodel_lookup (key : string) : string option =
+    match C2c_start.repo_config_pmodel_lookup key with
+    | None -> None
+    | Some p -> Some (p.C2c_start.provider ^ ":" ^ p.C2c_start.model)
+  in
+  let resolved_pmodel = C2c_role.resolve_pmodel r ~class_lookup:pmodel_lookup in
+  C2c_role.render_for_client r ~client ?resolved_pmodel
 
 let write_agent_file ~client ~name ~content =
   let path = agent_file_path ~client ~name in
