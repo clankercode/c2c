@@ -221,6 +221,9 @@ let decide_enc_status (ds : downgrade_state) (e : envelope) : enc_status * downg
   | _ ->
     Plain, ds
 
+(* TOFU helpers: comparison functions only. The known_keys store (per-alias pinned pubkeys)
+   is managed by c2c_mcp.ml. Callers pass pinned_pk from known_keys + claimed_pk from the
+   envelope. True return = mismatch → caller surfaces enc_status:"key-changed" and drops. *)
 let check_pinned_ed25519_mismatch ~(pinned_pk : string) ~(claimed_pk : string) : bool =
   pinned_pk <> claimed_pk
 
