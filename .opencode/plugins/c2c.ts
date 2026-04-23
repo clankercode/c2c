@@ -392,6 +392,12 @@ const C2CDelivery: Plugin = async (ctx) => {
     opencode_pid: number;
     plugin_started_at: string;
     state_last_updated_at: string;
+    activity_sources: Record<string, {
+      source_type: string;
+      first_active_at: string;
+      last_active_at: string;
+      heartbeat_interval_ms?: number;
+    }>;
     agent: {
       is_idle: boolean | null;
       active_fraction_1h: number;
@@ -442,6 +448,14 @@ const C2CDelivery: Plugin = async (ctx) => {
     opencode_pid: process.pid,
     plugin_started_at: pluginStartedAt,
     state_last_updated_at: pluginStartedAt,
+    activity_sources: {
+      plugin: {
+        source_type: "plugin",
+        first_active_at: pluginStartedAt,
+        last_active_at: pluginStartedAt,
+        heartbeat_interval_ms: parseInt(process.env.C2C_PLUGIN_HEARTBEAT_INTERVAL_MS || "10000", 10),
+      },
+    },
     agent: {
       is_idle: null,
       active_fraction_1h: 0.5,
@@ -547,6 +561,51 @@ const C2CDelivery: Plugin = async (ctx) => {
       prompt: {
         ...pluginState.prompt,
       },
+      activity_sources: Object.fromEntries(
+        Object.entries(pluginState.activity_sources).map(([name, source]) => [
+          name,
+          { ...source },
+        ]),
+      ),
+    };
+  }
+
+  function pluginHeartbeatIntervalMs(): number {
+    const value = parseInt(process.env.C2C_PLUGIN_HEARTBEAT_INTERVAL_MS || "10000", 10);
+    return Number.isFinite(value) && value > 0 ? value : 10_000;
+  }
+
+  function sourceActivityPatch(name: string, ts: string): Record<string, unknown> {
+    const existing = pluginState.activity_sources[name];
+    return {
+      activity_sources: {
+        [name]: {
+          source_type: existing?.source_type ?? name,
+          first_active_at: existing?.first_active_at ?? ts,
+          last_active_at: ts,
+          ...(existing?.heartbeat_interval_ms !== undefined
+            ? { heartbeat_interval_ms: existing.heartbeat_interval_ms }
+            : {}),
+        },
+      },
+    };
+  }
+
+  function touchActivitySource(
+    name: string,
+    ts: string,
+    overrides: { source_type?: string; heartbeat_interval_ms?: number } = {},
+  ): void {
+    const existing = pluginState.activity_sources[name];
+    pluginState.activity_sources[name] = {
+      source_type: overrides.source_type ?? existing?.source_type ?? name,
+      first_active_at: existing?.first_active_at ?? ts,
+      last_active_at: ts,
+      ...(overrides.heartbeat_interval_ms !== undefined
+        ? { heartbeat_interval_ms: overrides.heartbeat_interval_ms }
+        : existing?.heartbeat_interval_ms !== undefined
+          ? { heartbeat_interval_ms: existing.heartbeat_interval_ms }
+          : {}),
     };
   }
 
@@ -564,11 +623,19 @@ const C2CDelivery: Plugin = async (ctx) => {
   function writeStateSnapshot(): void {
     const ts = new Date().toISOString();
     pluginState.state_last_updated_at = ts;
+    touchActivitySource("plugin", ts, {
+      source_type: "plugin",
+      heartbeat_interval_ms: pluginHeartbeatIntervalMs(),
+    });
     writeStateLine({ event: "state.snapshot", ts, state: cloneState() });
   }
 
   function writeStatePatch(patch: Record<string, unknown>): void {
     const ts = new Date().toISOString();
+    writeStatePatchAt(ts, patch);
+  }
+
+  function writeStatePatchAt(ts: string, patch: Record<string, unknown>): void {
     pluginState.state_last_updated_at = ts;
     writeStateLine({
       event: "state.patch",
@@ -578,6 +645,15 @@ const C2CDelivery: Plugin = async (ctx) => {
         state_last_updated_at: ts,
       },
     });
+  }
+
+  function emitPluginHeartbeat(): void {
+    const ts = new Date().toISOString();
+    touchActivitySource("plugin", ts, {
+      source_type: "plugin",
+      heartbeat_interval_ms: pluginHeartbeatIntervalMs(),
+    });
+    writeStatePatchAt(ts, sourceActivityPatch("plugin", ts));
   }
 
   async function spawnStateWriter(): Promise<void> {
@@ -610,6 +686,13 @@ const C2CDelivery: Plugin = async (ctx) => {
       await log("state writer spawn failed — reconnecting in 30s");
       setTimeout(() => void spawnStateWriter(), 30_000);
     }
+  }
+
+  function startStateHeartbeat(): void {
+    const intervalMs = pluginHeartbeatIntervalMs();
+    setInterval(() => {
+      emitPluginHeartbeat();
+    }, intervalMs);
   }
 
   /**
@@ -1459,6 +1542,7 @@ const C2CDelivery: Plugin = async (ctx) => {
   await log(`plugin loaded (session=${sessionId}, interval=${pollIntervalMs}ms, idleOnly=${idleOnlyMode}, sha256=${pluginHash})`);
   await log(`API introspect: session methods=[${sessionMethods}] app methods=[${appMethods}]`);
   await spawnStateWriter();
+  startStateHeartbeat();
   await checkConflictingInstances();
   void bootstrapRootSession();
   startBackgroundLoop();

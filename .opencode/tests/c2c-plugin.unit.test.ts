@@ -309,6 +309,28 @@ describe('c2c plugin unit tests', () => {
     expect(events[0].state.agent.step_count).toBe(0);
     expect(events[0].state.agent.last_step).toBeNull();
     expect(events[0].state.prompt.has_text).toBeNull();
+    expect(events[0].state.activity_sources.plugin.source_type).toBe('plugin');
+    expect(events[0].state.activity_sources.plugin.heartbeat_interval_ms).toBe(10000);
+    expect(events[0].state.activity_sources.plugin.last_active_at).toBe(events[0].state.state_last_updated_at);
+    expect(events[0].state.activity_sources.plugin.first_active_at).toBe(events[0].state.plugin_started_at);
+  });
+
+  it('emits a plugin heartbeat patch that only refreshes source activity', async () => {
+    const ctx = makeCtx();
+    await C2CDelivery(ctx as any);
+
+    expect(stateEvents()).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    const events = stateEvents();
+    expect(events).toHaveLength(2);
+    expect(events[1].event).toBe('state.patch');
+    expect(events[1].patch.activity_sources.plugin.source_type).toBe('plugin');
+    expect(events[1].patch.activity_sources.plugin.heartbeat_interval_ms).toBe(10000);
+    expect(events[1].patch.activity_sources.plugin.last_active_at).toBe(events[1].patch.state_last_updated_at);
+    expect(events[1].patch.agent).toBeUndefined();
+    expect(events[1].patch.tui_focus).toBeUndefined();
   });
 
   it('emits state.patch for root session.created and session.idle', async () => {
