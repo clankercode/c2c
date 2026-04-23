@@ -6652,7 +6652,13 @@ let start_cmd =
           let role_opt =
             match read_role ~alias:effective_alias with
             | Some r -> Some r
-            | None -> prompt_for_role ~alias:effective_alias
+            | None ->
+                (* If an explicit kickoff is already set, skip the interactive
+                   role prompt — the caller knows what they want. This is the
+                   path hit by `c2c agent run --pane` which pre-composes the
+                   full kickoff and passes it via --kickoff-prompt-file. *)
+                if kickoff_prompt_text <> None then None
+                else prompt_for_role ~alias:effective_alias
           in
           let kickoff_prompt =
             match kickoff_prompt_text with
@@ -7218,6 +7224,15 @@ let run_ephemeral_agent
       match Unix.fork () with
       | 0 ->
         (try ignore (Unix.setsid ()) with _ -> ());
+        (* Close stdio so the parent process can exit cleanly without the
+           Bash tool (or any pipe reader) seeing open fds and blocking. *)
+        (try
+           let devnull = Unix.openfile "/dev/null" [Unix.O_RDWR] 0 in
+           Unix.dup2 devnull Unix.stdin;
+           Unix.dup2 devnull Unix.stdout;
+           Unix.dup2 devnull Unix.stderr;
+           Unix.close devnull
+         with _ -> ());
         let broker_root = C2c_start.broker_root () in
         let outer_pid_path = C2c_start.outer_pid_path name in
         let inbox_path = Filename.concat broker_root (name ^ ".inbox.json") in
