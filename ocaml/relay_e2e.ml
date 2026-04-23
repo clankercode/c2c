@@ -62,12 +62,12 @@ let rec json_to_string_sorted (j : Yojson.Safe.t) : string =
   match j with
   | `Assoc fields ->
     let sorted = sort_assoc fields in
-    let inner = List.map (fun (k, v) -> Printf.sprintf "%S:%s" k (json_to_string_sorted v)) sorted in
+    let inner = List.map (fun (k, v) -> Printf.sprintf "%s:%s" (Yojson.Safe.to_string (`String k)) (json_to_string_sorted v)) sorted in
     "{" ^ String.concat "," inner ^ "}"
   | `List items ->
     let inner = List.map json_to_string_sorted items in
     "[" ^ String.concat "," inner ^ "]"
-  | `String s -> Printf.sprintf "%S" s
+  | `String s -> Yojson.Safe.to_string (`String s)
   | `Null -> "null"
   | `Int i -> string_of_int i
   | `Intlit s -> s
