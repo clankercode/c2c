@@ -701,7 +701,9 @@ module InMemoryRelay : RELAY = struct
               match msg with
               | `Assoc fields ->
                 let ts = try List.assoc "ts" fields |> function `Float f -> f | `Int i -> float_of_int i | _ -> 0.0 with _ -> 0.0 in
-                if ts > min_ts then results := msg :: !results
+                let from = try match List.assoc "from_alias" fields with `String s -> s | _ -> "" with _ -> "" in
+                let to_ = try match List.assoc "to_alias" fields with `String s -> s | _ -> "" with _ -> "" in
+                if ts > min_ts && (from = alias || to_ = alias) then results := msg :: !results
               | _ -> ()
             ) msgs
           | None -> ()
