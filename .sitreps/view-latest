@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""view-latest — display the most recent sitrep with colorized markdown."""
+
+from __future__ import annotations
+
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SITREPS_DIR = REPO_ROOT / ".sitreps"
+
+
+def find_latest_sitrep() -> Path | None:
+    """Find the most recent sitrep file by scanning date dirs."""
+    if not SITREPS_DIR.exists():
+        return None
+
+    latest: Path | None = None
+    latest_dt: datetime | None = None
+
+    for year_dir in sorted(SITREPS_DIR.iterdir(), reverse=True):
+        if not year_dir.is_dir():
+            continue
+        try:
+            year = int(year_dir.name)
+        except ValueError:
+            continue
+        for month_dir in sorted(year_dir.iterdir(), reverse=True):
+            if not month_dir.is_dir():
+                continue
+            try:
+                month = int(month_dir.name)
+            except ValueError:
+                continue
+            for day_dir in sorted(month_dir.iterdir(), reverse=True):
+                if not day_dir.is_dir():
+                    continue
+                try:
+                    day = int(day_dir.name)
+                except ValueError:
+                    continue
+                for sitrep_file in sorted(day_dir.iterdir(), reverse=True):
+                    if not sitrep_file.is_file() or not re.match(r"^\d\d\.md$", sitrep_file.name):
+                        continue
+                    try:
+                        hour = int(sitrep_file.stem)
+                    except ValueError:
+                        continue
+                    dt_candidate = datetime(year, month, day, hour)
+                    if latest_dt is None or dt_candidate > latest_dt:
+                        latest_dt = dt_candidate
+                        latest = sitrep_file
+    return latest
+
+
+def ansi_color(text: str, color_code: int) -> str:
+    return f"\033[{color_code}m{text}\033[0m"
+
+
+def render_sitrep(content: str) -> str:
+    """Render sitrep markdown with ANSI colorization."""
+    lines = content.splitlines()
+    output: list[str] = []
+    in_table = False
+
+    for raw_line in lines:
+        line = raw_line.rstrip()
+
+        # Markdown metadata block (lines starting with >)
+        if line.startswith(">"):
+            output.append(ansi_color(line, 90))
+            continue
+
+        # Headers
+        if line.startswith("# Sitrep"):
+            output.append(ansi_color(line, 36))
+            continue
+        if line.startswith("## "):
+            output.append(ansi_color(line, 36))
+            continue
+        if line.startswith("### "):
+            output.append(ansi_color(line, 34))
+            continue
+
+        # Table separator — collect alignment for next table
+        if re.match(r"^\|[-| :]+\|$", line):
+            in_table = True
+            output.append(ansi_color(line, 90))
+            continue
+
+        # Table rows
+        if in_table and line.startswith("|"):
+            cells = line.split("|")
+            colored_cells: list[str] = []
+            for i, cell in enumerate(cells):
+                cell = cell.strip()
+                if not cell:
+                    continue
+                if i == 0:
+                    colored_cells.append(ansi_color(cell, 33))
+                elif i == 1 and "PID" in line:
+                    colored_cells.append(ansi_color(cell, 90))
+                elif i == 2 and "Client" in line:
+                    colored_cells.append(ansi_color(cell, 35))
+                elif "Last activity" in line:
+                    colored_cells.append(ansi_color(cell, 32))
+                else:
+                    colored_cells.append(cell)
+            output.append("|" + "|".join(colored_cells) + "|")
+            if not re.match(r"^\||\|[-| :]+\|$", line):
+                in_table = False
+            continue
+
+        # Code blocks
+        if line.strip().startswith("```"):
+            output.append(ansi_color(line, 96))
+            continue
+
+        # Tags inside bold: **[feature]**, **[flow]**, **[sidequest]** — colorize the tag
+        tag_colors = {"feature": 35, "flow": 34, "sidequest": 33}
+
+        def tag_replacer(m):
+            tag = m.group(1)
+            rest = m.group(2)
+            color = tag_colors.get(tag, 1)
+            return f"\033[1m\033[{color}m[{tag}]\033[1m {rest}\033[0m"
+
+        # Replace **[tag] text** with colored tag + bold rest
+        line = re.sub(r"\*\*\[(feature|flow|sidequest)\]\s*([^\*]+)\*\*", tag_replacer, line)
+
+        # Then do generic bold
+        if "**" in line:
+            line = re.sub(r"\*\*(.+?)\*\*", lambda m: ansi_color(f"**{m.group(1)}**", 1), line)
+
+        # Bullet points
+        if line.startswith("- "):
+            output.append(line)  # already colorized if contains **
+            continue
+        if line.startswith("  - "):
+            output.append(line)  # already colorized if contains **
+            continue
+
+        # Goal tree items with [feature], [flow], [sidequest] tags
+        feature_match = re.search(r"\[feature\]", line)
+        flow_match = re.search(r"\[flow\]", line)
+        sidequest_match = re.search(r"\[sidequest\]", line)
+
+        if feature_match:
+            line = re.sub(r"\[feature\]", ansi_color("[feature]", 35), line)
+        if flow_match:
+            line = re.sub(r"\[flow\]", ansi_color("[flow]", 34), line)
+        if sidequest_match:
+            line = re.sub(r"\[sidequest\]", ansi_color("[sidequest]", 33), line)
+
+        # DONE markers
+        if "DONE" in line:
+            line = re.sub(r"\bDONE\b", ansi_color("DONE", 32), line)
+
+        # SHIPPED markers
+        if "SHIPPED" in line:
+            line = re.sub(r"\bSHIPPED\b", ansi_color("SHIPPED", 32), line)
+
+        # Blocked markers
+        if "blocked" in line.lower():
+            line = re.sub(r"blocked", ansi_color("blocked", 31), line, flags=re.IGNORECASE)
+
+        # Git SHAs
+        line = re.sub(r"\b[0-9a-f]{7}\b", lambda m: ansi_color(m.group(0), 36), line)
+
+        # Links
+        line = re.sub(r"\[([^\]]+)\]\(([^\)]+)\)", lambda m: f"{ansi_color('[', 90)}{ansi_color(m.group(1), 94)}{ansi_color('](', 90)}{m.group(2)}{ansi_color(')', 90)}", line)
+
+        output.append(line)
+
+    return "\n".join(output)
+
+
+def main() -> int:
+    sitrep = find_latest_sitrep()
+    if sitrep is None:
+        print("No sitreps found.", file=sys.stderr)
+        return 1
+
+    content = sitrep.read_text()
+
+    # Derive display timestamp from path
+    year = sitrep.parent.parent.parent.name
+    month = sitrep.parent.parent.name
+    day = sitrep.parent.name
+    hour_part = sitrep.stem
+    ts = f"{year}-{month}-{day} {hour_part}:00 UTC"
+
+    banner = f"\033[36m{'='*60}\033[0m\n\033[1;36m  Sitrep: {ts}\033[0m\n\033[36m  Path:   {sitrep.relative_to(REPO_ROOT)}\033[0m\n\033[36m{'='*60}\033[0m"
+
+    print(banner)
+    print()
+    print(render_sitrep(content))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
