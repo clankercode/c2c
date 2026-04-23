@@ -6502,6 +6502,9 @@ let start_cmd =
   let kickoff_prompt_opt =
     Cmdliner.Arg.(value & opt (some string) None & info [ "kickoff-prompt" ] ~docv:"TEXT" ~doc:"Custom kickoff prompt text (implies --auto). OpenCode only.")
   in
+  let kickoff_prompt_file_opt =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "kickoff-prompt-file" ] ~docv:"PATH" ~doc:"Read kickoff prompt from file (mutually exclusive with --kickoff-prompt). Useful for passing multi-line kickoff via tmux-backed launchers.")
+  in
   let agent =
     Cmdliner.Arg.(value & opt (some string) None & info [ "agent"; "a" ] ~docv:"NAME" ~doc:"Start from canonical role at .c2c/roles/<NAME>.md (compiled to client format on launch).")
   in
@@ -6512,8 +6515,28 @@ let start_cmd =
   and+ session_id_opt = session_id
   and+ one_hr_cache = one_hr_cache
   and+ auto_flag = auto_flag
-  and+ kickoff_prompt_text = kickoff_prompt_opt
+  and+ kickoff_prompt_text_raw = kickoff_prompt_opt
+  and+ kickoff_prompt_file = kickoff_prompt_file_opt
   and+ agent_opt = agent in
+  let kickoff_prompt_text =
+    match kickoff_prompt_text_raw, kickoff_prompt_file with
+    | Some _, Some _ ->
+        Printf.eprintf "error: --kickoff-prompt and --kickoff-prompt-file are mutually exclusive.\n%!";
+        exit 1
+    | Some t, None -> Some t
+    | None, Some path ->
+        (try
+           let ic = open_in path in
+           Fun.protect ~finally:(fun () -> close_in_noerr ic) @@ fun () ->
+             let n = in_channel_length ic in
+             let buf = Bytes.create n in
+             really_input ic buf 0 n;
+             Some (Bytes.to_string buf)
+         with Sys_error e ->
+           Printf.eprintf "error: failed to read --kickoff-prompt-file %s: %s\n%!" path e;
+           exit 1)
+    | None, None -> None
+  in
   if Sys.getenv_opt "C2C_INSTANCE_NAME" <> None then begin
     Printf.eprintf "error: cannot run 'c2c start' from inside a c2c session.\n";
     Printf.eprintf "  Hint: use the outer shell or a separate terminal instead.\n%!";
@@ -7080,6 +7103,7 @@ let run_ephemeral_agent
     ~(bin_opt : string option)
     ~(timeout : float)
     ~(dry_run : bool)
+    ?(pane : bool = false)
     () =
   let role_path = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" // (role ^ ".md") in
   if not (Sys.file_exists role_path) then begin
@@ -7173,7 +7197,81 @@ let run_ephemeral_agent
     exit 0
   end;
   write_agent_file ~client ~name ~content:rendered;
-  Printf.printf "c2c agent run: role=%s client=%s name=%s caller=%s timeout=%.0fs\n%!" role client name caller timeout;
+  Printf.printf "c2c agent run: role=%s client=%s name=%s caller=%s timeout=%.0fs pane=%b\n%!"
+    role client name caller timeout pane;
+  (* --pane: spawn `c2c start` in a new tmux window and return immediately.
+     Watchdog still forks detached so idle-timeout applies. Requires TMUX. *)
+  if pane then begin
+    (match Sys.getenv_opt "TMUX" with
+     | Some s when s <> "" -> ()
+     | _ ->
+       Printf.eprintf "error: --pane requires running inside tmux (TMUX env var is not set)\n%!";
+       exit 1);
+    let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+    let kickoff_dir = Filename.concat home ".local/share/c2c/kickoff" in
+    (try Unix.mkdir kickoff_dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> () | _ -> ());
+    let kickoff_path = Filename.concat kickoff_dir (name ^ ".md") in
+    let oc = open_out kickoff_path in
+    output_string oc kickoff;
+    close_out oc;
+    if timeout > 0.0 then begin
+      match Unix.fork () with
+      | 0 ->
+        (try ignore (Unix.setsid ()) with _ -> ());
+        let broker_root = C2c_start.broker_root () in
+        let outer_pid_path = C2c_start.outer_pid_path name in
+        let inbox_path = Filename.concat broker_root (name ^ ".inbox.json") in
+        let archive_path = Filename.concat (Filename.concat broker_root "archive") (name ^ ".jsonl") in
+        let mtime_opt p = try Some (Unix.stat p).st_mtime with _ -> None in
+        let max_mtime () =
+          let candidates = [mtime_opt inbox_path; mtime_opt archive_path] in
+          List.fold_left (fun acc -> function Some m -> max acc m | None -> acc) 0.0 candidates
+        in
+        let start_time = Unix.gettimeofday () in
+        let tick = min 30.0 (max 5.0 (timeout /. 4.0)) in
+        let boot_grace_deadline = start_time +. 120.0 in
+        let rec loop () =
+          Unix.sleepf tick;
+          match C2c_start.read_pid outer_pid_path with
+          | None ->
+            if Unix.gettimeofday () < boot_grace_deadline then loop ()
+            else exit 0
+          | Some pid when not (C2c_start.pid_alive pid) -> exit 0
+          | Some pid ->
+            let last = max_mtime () in
+            let effective = if last > 0.0 then last else start_time in
+            if Unix.gettimeofday () -. effective > timeout then begin
+              Printf.eprintf "[c2c agent run] idle timeout %.0fs reached; SIGTERM pid %d (name=%s)\n%!"
+                timeout pid name;
+              (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
+              exit 0
+            end else loop ()
+        in
+        loop ()
+      | _ -> ()
+    end;
+    let c2c_bin = match bin_opt with Some b -> b | None -> "c2c" in
+    let q = Filename.quote in
+    let shell_cmd =
+      Printf.sprintf "exec %s start %s -n %s --kickoff-prompt-file %s"
+        (q c2c_bin) (q client) (q name) (q kickoff_path)
+    in
+    let window_title = Printf.sprintf "c2c-%s" name in
+    (match Unix.fork () with
+     | 0 ->
+       (try Unix.execvp "tmux" [| "tmux"; "new-window"; "-n"; window_title; shell_cmd |] with
+        | Unix.Unix_error (e, _, _) ->
+          Printf.eprintf "error: tmux new-window failed: %s\n%!" (Unix.error_message e);
+          exit 1)
+     | child ->
+       (match snd (Unix.waitpid [] child) with
+        | Unix.WEXITED 0 ->
+          Printf.printf "launched tmux window '%s' (kickoff=%s)\n%!" window_title kickoff_path;
+          exit 0
+        | _ ->
+          Printf.eprintf "error: tmux new-window returned non-zero\n%!";
+          exit 1))
+  end;
   let watchdog_pid = ref None in
   if timeout > 0.0 then begin
     match Unix.fork () with
@@ -7250,11 +7348,16 @@ let agent_refine_term =
     Cmdliner.Arg.(value & flag & info [ "dry-run" ]
       ~doc:"Print resolved config + kickoff prompt without invoking c2c start.")
   in
+  let pane_arg =
+    Cmdliner.Arg.(value & flag & info [ "pane" ]
+      ~doc:"Launch the ephemeral in a new tmux window (requires TMUX) and return immediately. Watchdog still runs detached.")
+  in
   let+ name = name_arg
   and+ client_opt = client_arg
   and+ bin_opt = bin_arg
   and+ timeout = timeout_arg
-  and+ dry_run = dry_run_arg in
+  and+ dry_run = dry_run_arg
+  and+ pane = pane_arg in
   let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
   let role_file_path = Filename.concat roles_dir (name ^ ".md") in
   if not (Sys.file_exists role_file_path) then begin
@@ -7281,7 +7384,7 @@ let agent_refine_term =
     ~role:"role-designer"
     ~prompt_opt:(Some refine_prompt)
     ~name_opt:(Some instance_name)
-    ~client_opt ~bin_opt ~timeout ~dry_run
+    ~client_opt ~bin_opt ~timeout ~dry_run ~pane
     ()
 
 let agent_refine_cmd =
@@ -7319,15 +7422,20 @@ let agent_run_term =
     Cmdliner.Arg.(value & flag & info [ "dry-run" ]
       ~doc:"Print resolved client, name, caller, kickoff prompt, and timeout without invoking c2c start.")
   in
+  let pane_arg =
+    Cmdliner.Arg.(value & flag & info [ "pane" ]
+      ~doc:"Launch the ephemeral in a new tmux window (requires TMUX) and return immediately. Watchdog still runs detached. Enables spawning fire-and-forget peers (e.g. review-bots) that DM results back instead of blocking a terminal.")
+  in
   let+ role = role_arg
   and+ prompt_opt = prompt_arg
   and+ name_opt = name_arg
   and+ client_opt = client_arg
   and+ bin_opt = bin_arg
   and+ timeout = timeout_arg
-  and+ dry_run = dry_run_arg in
+  and+ dry_run = dry_run_arg
+  and+ pane = pane_arg in
   run_ephemeral_agent
-    ~role ~prompt_opt ~name_opt ~client_opt ~bin_opt ~timeout ~dry_run
+    ~role ~prompt_opt ~name_opt ~client_opt ~bin_opt ~timeout ~dry_run ~pane
     ()
 
 let agent_run_cmd =
