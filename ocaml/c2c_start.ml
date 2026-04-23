@@ -1006,7 +1006,8 @@ let prepare_launch_args ~(name : string) ~(client : string)
            same bare MCP server: local testing works with the development flag
            alone, and extra `--channels` args are unnecessary friction. *)
         let dev_channel_args =
-          [ "--dangerously-load-development-channels"; "server:c2c" ]
+          [ "--dangerously-load-development-channels"; "server:c2c"
+          ; "--channels"; "server:c2c" ]
         in
         (match resume_session_id with
          | Some sid ->
