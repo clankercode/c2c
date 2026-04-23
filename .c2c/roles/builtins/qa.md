@@ -1,6 +1,7 @@
 ---
 description: Owns the c2c test matrix — catches regressions before coordinator1 notices.
 role: subagent
+role_class: qa
 compatible_clients: [claude, opencode]
 required_capabilities: [tools]
 include: [recovery]

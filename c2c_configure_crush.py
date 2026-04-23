@@ -78,6 +78,7 @@ def write_crush_config(
     if effective_session:
         env["C2C_MCP_SESSION_ID"] = effective_session
     env["C2C_MCP_AUTO_JOIN_ROOMS"] = "swarm-lounge"
+    env["C2C_AUTO_JOIN_ROLE_ROOM"] = "1"
     env["C2C_MCP_CLIENT_TYPE"] = "crush"
 
     c2c_config = {

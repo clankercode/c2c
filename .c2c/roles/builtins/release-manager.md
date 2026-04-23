@@ -1,6 +1,7 @@
 ---
 description: Release coordinator — manages Railway deploys, pushes to production, coordinates hotfixes.
 role: subagent
+role_class: coordinator
 include: [recovery]
 c2c:
   alias: release-manager

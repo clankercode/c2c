@@ -1,6 +1,7 @@
 ---
 description: Security reviewer — audits permission flows, alias binding, and broker-side access control for the c2c swarm.
 role: primary
+role_class: reviewer
 include: [recovery]
 c2c:
   alias: security-review
