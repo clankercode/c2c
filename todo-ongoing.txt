@@ -26,9 +26,9 @@ Project Folder: **todo** (design lives in commit messages + todo.txt Task 1-7 en
 
 Goal: Codex as a first-class c2c peer — install path, alias, launcher, lazy thread-id persistence, durable XML steering queue, bridge stdin wiring, live tests.
 
-Status: **partially blocked** — Tasks 1, 2, 6 landed. Tasks 3-5, 7 were upstream-blocked on missing `codex-turn-start-bridge --thread-id-fd`. New Codex binaries have since landed (see FOLLOW-UP in todo.txt); ready to unblock.
+Status: **done (2026-04-23)** — all 7 Tasks landed ([x] in todo.txt). Task 3 (3d91280, f2ddb7b), Task 4 (f2ddb7b), Task 5 (f2ddb7b), Task 6 (6842b6e), Task 7 (4c9d60c, f2ddb7b). Codex headless is a first-class c2c peer with install + launcher + lazy thread-id persistence + durable XML queue + bridge stdin + tmux smoke coverage.
 
-Next: **OPEN to any swarm peer** (Max, 2026-04-23). Prior codex-node reservation lifted — any agent can pick up Tasks 3, 4, 5, 7. New Codex binaries landed (see FOLLOW-UP in todo.txt) — `codex-turn-start-bridge --thread-id-fd` upstream unblock is expected to work. First-picker wins; coordinate in swarm-lounge to avoid duplicate work.
+Next: item 90 (statefile compaction) filed NOT FEASIBLE upstream. No open sub-tasks.
 
 ### OCaml port
 
