@@ -119,11 +119,6 @@ module Make () = struct
               TokenBucket.allow bucket ~cost
         )
 
-  (* Composite-key check for /device-pair: rate-limit by IP + user-code.
-     [extra_id] is the user-code extracted by the route handler. *)
-  let check_composite t ~(key:string) ~(extra_id:string) ~(cost:int) ~(path:string) =
-    check t ~key:(key ^ "|" ^ extra_id) ~cost ~path
-
   let cleanup t ~older_than =
     with_lock t (fun () ->
       let now = Unix.gettimeofday () in
