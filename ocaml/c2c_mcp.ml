@@ -2344,6 +2344,11 @@ let tool_definitions =
       ~description:"Clear the compacting flag for this session. Called by PostCompact hooks after context summarization completes."
       ~required:[]
       ~properties:[]
+  ; tool_definition ~name:"stop_self"
+      ~description:"Ephemeral agents: stop this managed session cleanly. Confirm with your caller that your job is complete BEFORE calling this. Looks up the managed-instance name from the current session's registered alias and sends SIGTERM to the outer loop. Returns {ok, name, reason}."
+      ~required:[]
+      ~properties:
+        [ prop "reason" "Optional short reason logged in the stop report (e.g. 'task complete')." ]
   ]
 
 let string_member name json =
@@ -3763,6 +3768,39 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
              |> Yojson.Safe.to_string
            in
            Lwt.return (tool_result ~content ~is_error:false))
+  | "stop_self" ->
+      let reason = match optional_string_member "reason" arguments with Some r -> r | None -> "" in
+      (match alias_for_current_session_or_argument broker arguments with
+       | None -> Lwt.return (missing_sender_alias_result "stop_self")
+       | Some name ->
+           (* Reconstruct outer.pid path without creating a C2c_start dep cycle. *)
+           let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+           let instances_dir =
+             match Sys.getenv_opt "C2C_INSTANCES_DIR" with
+             | Some d when String.trim d <> "" -> String.trim d
+             | _ -> Filename.concat home ".local/share/c2c/instances"
+           in
+           let pid_path = Filename.concat (Filename.concat instances_dir name) "outer.pid" in
+           let ok =
+             if not (Sys.file_exists pid_path) then false
+             else
+               try
+                 let ic = open_in pid_path in
+                 let line = try input_line ic with End_of_file -> "" in
+                 close_in_noerr ic;
+                 match int_of_string_opt (String.trim line) with
+                 | Some pid ->
+                   (try Unix.kill pid Sys.sigterm; true
+                    with Unix.Unix_error _ -> false)
+                 | None -> false
+               with _ -> false
+           in
+           let content =
+             `Assoc [ ("ok", `Bool ok); ("name", `String name); ("reason", `String reason);
+                      ("pid_path", `String pid_path) ]
+             |> Yojson.Safe.to_string
+           in
+           Lwt.return (tool_result ~content ~is_error:(not ok)))
   | _ -> Lwt.return (tool_result ~content:("unknown tool: " ^ tool_name) ~is_error:true)
 
 (* Append one structured line to <broker_root>/broker.log for every
