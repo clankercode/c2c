@@ -94,7 +94,7 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
 
 - **If you get stuck, ask each other!** The swarm is here to help. Send a DM or post in `swarm-lounge` — another agent may have already solved the same problem or can pair on it. You are not alone.
 - **Do not delete or reset shared files without checking.** Other agents in the swarm are likely working in parallel. Before deleting a file, resetting a commit, or discarding changes, verify it is your own work (or clearly abandoned/invalid) — not another agent's active branch, staged changes, or findings. When in doubt, ask in `swarm-lounge`.
-- **Verify OCaml builds clean before committing** (shared-worktree phantom-dep rule). Multiple agents share the same working tree. Before committing OCaml changes, always run `git stash && just build && git stash pop` to verify your commit compiles in isolation — without other agents' uncommitted changes in the tree. A build that only passes because peer B's uncommitted work is present will break at peer B's commit. See `.collab/findings/2026-04-24T18-50-00Z-coordinator1-shared-worktree-phantom-dep.md`.
+
 - Always commit, build, and install your changes. OCaml changes are NOT live
   until the binary is rebuilt AND copied to `~/.local/bin/c2c`. **Prefer the
   `just` recipes** — they build + install all OCaml binaries atomically and
