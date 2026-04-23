@@ -146,9 +146,11 @@ let test_observer_binding_isolation () =
   let binding_a = "isolate-bind-a" in
   let binding_b = "isolate-bind-b" in
   Relay.InMemoryRelay.add_observer_binding r ~binding_id:binding_a
-    ~phone_ed25519_pubkey:phone_ed ~phone_x25519_pubkey:phone_x;
+    ~phone_ed25519_pubkey:phone_ed ~phone_x25519_pubkey:phone_x
+    ~machine_ed25519_pubkey:"" ~provenance_sig:"";
   Relay.InMemoryRelay.add_observer_binding r ~binding_id:binding_b
-    ~phone_ed25519_pubkey:phone_ed ~phone_x25519_pubkey:phone_x;
+    ~phone_ed25519_pubkey:phone_ed ~phone_x25519_pubkey:phone_x
+    ~machine_ed25519_pubkey:"" ~provenance_sig:"";
   Alcotest.(check bool) "binding A exists" true
     (Relay.InMemoryRelay.get_observer_binding r ~binding_id:binding_a <> None);
   Alcotest.(check bool) "binding B exists" true

@@ -179,3 +179,132 @@ module Session = struct
       | Some m -> Lwt.return (Some m)
       | None -> Lwt.return None
 end
+
+(* ============================================================
+   Client-side WebSocket support (RFC 6455)
+   ============================================================ *)
+
+(* Generate a random 4-byte masking key. *)
+let generate_masking_key () =
+  let b = Bytes.create 4 in
+  for i = 0 to 3 do
+    Bytes.set_uint8 b i (Random.int 256)
+  done;
+  Bytes.to_string b
+
+(* Mask data using the given 4-byte key (XOR). *)
+let mask_data ~(key:string) ~(data:string) =
+  let n = String.length data in
+  let r = Bytes.create n in
+  for i = 0 to n - 1 do
+    let k = Char.code key.[i mod 4] in
+    let d = Char.code data.[i] in
+    Bytes.set_uint8 r i (d lxor k)
+  done;
+  Bytes.to_string r
+
+(* Write a masked frame (client-to-server). *)
+let write_frame_masked ~(opcode:int) ~(masking_key:string) ~(payload:string) (oc:Lwt_io.output_channel) =
+  let len = String.length payload in
+  let header_len, len_code =
+    if len < 126 then 6, len
+    else if len < 65536 then 8, 126
+    else 14, 127
+  in
+  let buf = Bytes.create (header_len + len) in
+  Bytes.set_uint8 buf 0 (0x80 lor opcode);
+  Bytes.set_uint8 buf 1 (0x80 lor len_code);
+  let rec set_len off = function
+    | 126 ->
+        Bytes.set_uint8 buf off ((len lsr 8) land 0xFF);
+        Bytes.set_uint8 buf (off + 1) (len land 0xFF)
+    | 127 ->
+        let hi = Int64.to_int (Int64.shift_right (Int64.of_int len) 32) in
+        let lo = len land 0xFFFF_FFFF in
+        Bytes.set_uint8 buf off (Int64.to_int (Int64.shift_right (Int64.of_int hi) 24) land 0xFF);
+        Bytes.set_uint8 buf (off + 1) ((hi lsr 8) land 0xFF);
+        Bytes.set_uint8 buf (off + 2) ((hi lsr 16) land 0xFF);
+        Bytes.set_uint8 buf (off + 3) ((hi lsr 24) land 0xFF);
+        Bytes.set_uint8 buf (off + 4) ((lo lsr 24) land 0xFF);
+        Bytes.set_uint8 buf (off + 5) ((lo lsr 16) land 0xFF);
+        Bytes.set_uint8 buf (off + 6) ((lo lsr 8) land 0xFF);
+        Bytes.set_uint8 buf (off + 7) (lo land 0xFF)
+    | _ -> ()
+  in
+  set_len 2 len_code;
+  Bytes.unsafe_blit_string masking_key 0 buf (header_len - 4) 4;
+  let masked_payload = mask_data ~key:masking_key ~data:payload in
+  Bytes.unsafe_blit_string masked_payload 0 buf header_len len;
+  Lwt_io.write oc (Bytes.unsafe_to_string buf) >|= fun () -> ()
+
+let write_text_masked    oc masking_key msg = write_frame_masked ~opcode:opcode_text    ~masking_key ~payload:msg oc
+let write_binary_masked  oc masking_key b   = write_frame_masked ~opcode:opcode_binary  ~masking_key ~payload:b oc
+let write_close_masked   oc masking_key ?(code=1000) ?(reason="") () =
+  let payload = Printf.sprintf "%04X%s" code reason in
+  write_frame_masked ~opcode:opcode_close ~masking_key ~payload oc
+let write_ping_masked    oc masking_key     = write_frame_masked ~opcode:opcode_ping   ~masking_key ~payload:"" oc
+let write_pong_masked    oc masking_key     = write_frame_masked ~opcode:opcode_pong   ~masking_key ~payload:"" oc
+
+(* Build HTTP WS upgrade request (client-side). *)
+let make_client_handshake_request ~(host:string) ~(path:string) =
+  let key = generate_masking_key () in
+  let key_base64 = Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet key in
+  let request = Printf.sprintf
+    "GET %s HTTP/1.1\r\n\
+     Host: %s\r\n\
+     Upgrade: websocket\r\n\
+     Connection: Upgrade\r\n\
+     Sec-WebSocket-Key: %s\r\n\
+     Sec-WebSocket-Version: 13\r\n\
+     \r\n"
+    path host key_base64
+  in
+  (request, key)
+
+(* Client-side session: uses masked writes, unmasked reads. *)
+module Client_session : sig
+  type t
+  val create : Lwt_io.input_channel -> Lwt_io.output_channel -> string -> t
+  (** create ic oc masking_key *)
+  val send_text : t -> string -> unit Lwt.t
+  val send_binary : t -> string -> unit Lwt.t
+  val close : t -> unit Lwt.t
+  val recv : t -> client_message option Lwt.t
+end = struct
+  type t = {
+    ic : Lwt_io.input_channel;
+    oc : Lwt_io.output_channel;
+    masking_key : string;
+    mutable closed : bool;
+  }
+
+  let create ic oc masking_key = { ic; oc; masking_key; closed = false }
+
+  let send_text t msg =
+    if t.closed then Lwt.return ()
+    else write_text_masked t.oc t.masking_key msg
+
+  let send_binary t b =
+    if t.closed then Lwt.return ()
+    else write_binary_masked t.oc t.masking_key b
+
+  let close t =
+    if t.closed then Lwt.return ()
+    else (
+      t.closed <- true;
+      write_close_masked t.oc t.masking_key () >>= fun () ->
+      Lwt_io.close t.ic >>= fun () ->
+      Lwt_io.close t.oc
+    )
+
+  let recv t =
+    if t.closed then Lwt.return None
+    else
+      read_frame t.ic >>= fun f ->
+      match parse_message f with
+      | Some (`Ping) ->
+          write_pong_masked t.oc t.masking_key >|= fun () ->
+          Some (`Ping)
+      | Some m -> Lwt.return (Some m)
+      | None -> Lwt.return None
+end
