@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -16,6 +17,9 @@ class ManagedInstancesCLITests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
         self.home = Path(self.temp_dir)
+        now = datetime.now(timezone.utc)
+        first_active_at = (now - timedelta(seconds=30)).isoformat().replace("+00:00", "Z")
+        last_active_at = now.isoformat().replace("+00:00", "Z")
         self.instance_dir = self.home / ".local" / "share" / "c2c" / "instances" / "opencode-test"
         self.instance_dir.mkdir(parents=True, exist_ok=True)
         (self.instance_dir / "config.json").write_text(
@@ -39,15 +43,15 @@ class ManagedInstancesCLITests(unittest.TestCase):
             json.dumps(
                 {
                     "event": "state.snapshot",
-                    "ts": "2026-04-24T01:00:30.000Z",
+                    "ts": last_active_at,
                     "state": {
                         "c2c_session_id": "opencode-test",
-                        "state_last_updated_at": "2026-04-24T01:00:30.000Z",
+                        "state_last_updated_at": last_active_at,
                         "activity_sources": {
                             "plugin": {
                                 "source_type": "plugin",
-                                "first_active_at": "2026-04-24T01:00:00.000Z",
-                                "last_active_at": "2026-04-24T01:00:30.000Z",
+                                "first_active_at": first_active_at,
+                                "last_active_at": last_active_at,
                                 "heartbeat_interval_ms": 10000,
                             }
                         },
