@@ -98,6 +98,11 @@ val repo_config_pmodel_lookup : string -> pmodel option
 (** [repo_config_pmodel_lookup class_key] looks up a class (e.g. "coder",
     "coordinator") in the repo pmodel table. Returns [None] if absent. *)
 
+val repo_config_git_attribution : unit -> bool
+(** [repo_config_git_attribution ()] reads git_attribution from .c2c/config.toml.
+    Returns [true] if absent (default on). When true, `c2c git` injects
+    --author=<alias> <alias@c2c.im> into git calls unless --author is already present. *)
+
 val normalize_model_override_for_client :
   client:string -> string -> (string, string) result
 (** Normalize a user-supplied [--model] override for the target client.

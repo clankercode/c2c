@@ -50,6 +50,36 @@ let repo_config_enable_channels () : bool =
     in
     loop ()
 
+let repo_config_git_attribution () : bool =
+  let path = repo_config_path () in
+  if not (Sys.file_exists path) then true
+  else
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) @@ fun () ->
+    let rec loop () =
+      match try Some (input_line ic) with End_of_file -> None with
+      | None -> true
+      | Some line ->
+        let trimmed = String.trim line in
+        if trimmed = "" || String.length trimmed > 0 && trimmed.[0] = '#' then loop ()
+        else if String.length trimmed >= 16 &&
+                String.sub trimmed 0 16 = "git_attribution" &&
+                (String.length trimmed = 16 ||
+                 String.get trimmed 16 = ' ' ||
+                 String.get trimmed 16 = '=') then
+          let rest =
+            let i = try String.index trimmed '=' with Not_found -> 16 in
+            String.trim (String.sub trimmed (i + 1) (String.length trimmed - i - 1))
+          in
+          let v = if String.length rest >= 2 && rest.[0] = '"' && rest.[String.length rest - 1] = '"'
+            then String.sub rest 1 (String.length rest - 2)
+            else rest
+          in
+          v = "true" || v = "1" || v = "yes" || v = "on"
+        else loop ()
+    in
+    loop ()
+
 (* ---------------------------------------------------------------------------
  * pmodel (provider:model) preferences
  *

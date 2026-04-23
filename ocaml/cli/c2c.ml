@@ -1988,22 +1988,7 @@ let has_author_flag args =
     args
 
 let git_cmd =
-  let+ () = Cmdliner.Term.const () in
-  let rec get_git_args = function
-    | [] -> []
-    | "-" :: rest -> rest
-    | arg :: rest ->
-        if String.length arg >= 2 && arg.[0] = '-' && arg.[1] = '-' then
-          arg :: get_git_args rest
-        else
-          arg :: rest
-  in
-  let rec find_git_subcommand = function
-    | [] -> []
-    | "git" :: rest -> get_git_args rest
-    | _ :: rest -> find_git_subcommand rest
-  in
-  let args = find_git_subcommand (Array.to_list Sys.argv) in
+  let+ args = Cmdliner.Arg.(value & pos_all string [] & info [] ~docv:"ARG" ~doc:"Git argument (passed through verbatim).") in
   let args = if args = [] then ["--version"] else args in
   let alias =
     match env_auto_alias () with
@@ -2014,15 +1999,20 @@ let git_cmd =
          | _ -> "anonymous")
   in
   let attribution = C2c_start.repo_config_git_attribution () in
-  let args =
+  let env =
     if attribution && not (has_author_flag args) then
-      let author_arg = Printf.sprintf "--author=%s <%s@c2c.im>" alias alias in
-      "--author" :: author_arg :: args
-    else args
+      let author_name = alias in
+      let author_email = Printf.sprintf "%s@c2c.im" alias in
+      Some (author_name, author_email)
+    else None
   in
   let git_path = find_real_git () in
   let argv = Array.of_list (git_path :: args) in
-  Unix.execv git_path argv
+  let env_array = match env with
+    | None -> [||]
+    | Some (name, email) -> [| "GIT_AUTHOR_NAME=" ^ name; "GIT_AUTHOR_EMAIL=" ^ email |]
+  in
+  Unix.execve git_path argv (Array.append env_array (Unix.environment ()))
 
 let git =
   Cmdliner.Cmd.v
