@@ -7041,9 +7041,9 @@ let start_cmd =
                Printf.eprintf
                  "error: role '%s' requires unsupported capabilities for client '%s'.\n"
                  name client;
-                Printf.eprintf "  missing: %s\n%!" (String.concat ", " missing);
-                Printf.eprintf "  available: %s\n%!"
-                  (if available = [] then "(none)" else String.concat ", " available);
+               Printf.eprintf "  missing: %s\n%!" (String.concat ", " missing);
+               Printf.eprintf "  available: %s\n%!"
+                 (if available = [] then "(none)" else String.concat ", " available);
                exit 1
              end;
               (match render_role_for_client ?model_override role ~client ~name with
