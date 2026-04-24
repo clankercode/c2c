@@ -2,3 +2,8 @@
  (name c2c_inbox_hook)
  (modules c2c_inbox_hook)
  (libraries c2c_mcp unix lwt lwt.unix))
+
+(executable
+ (name c2c_cold_boot_hook)
+ (modules c2c_cold_boot_hook)
+ (libraries c2c_mcp unix))
