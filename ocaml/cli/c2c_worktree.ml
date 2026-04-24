@@ -3,38 +3,23 @@
 let ( // ) = Filename.concat
 
 (** [git_command args] runs `git <args>` and returns (exit_code, stdout, stderr).
-    Uses a pipe + subprocess to avoid deadlocks from full pipe buffers. *)
+    Uses Unix.open_process_in for stdout and ignores stderr (git worktree list
+    only writes to stdout on success). This is the simplest safe approach. *)
 let git_command args =
   let git_path = Git_helpers.find_real_git () in
-  let (cin_read, cin_write) = Unix.pipe () in
-  let (cout_read, cout_write) = Unix.pipe () in
-  let (cerr_read, cerr_write) = Unix.pipe () in
-  match Unix.fork () with
-  | 0 ->
-      (* child *)
-      Unix.close cin_write; Unix.close cout_read; Unix.close cerr_read;
-      Unix.dup2 cin_read Unix.stdin;
-      Unix.dup2 cout_write Unix.stdout;
-      Unix.dup2 cerr_write Unix.stderr;
-      Unix.close cin_read; Unix.close cout_write; Unix.close cerr_write;
-      let argv = Array.of_list (git_path :: args) in
-      Unix.execvp git_path argv
-  | pid ->
-      (* parent *)
-      Unix.close cin_read; Unix.close cout_write; Unix.close cerr_write;
-      let buf_size = 4096 in
-      let buf = Bytes.create buf_size in
-      let rec read_all fd acc =
-        match Unix.read fd buf 0 buf_size with
-        | 0 -> acc
-        | n -> read_all fd (Bytes.sub buf 0 n :: acc)
-      in
-      let stdout_data = read_all cout_read [] |> List.rev |> Bytes.concat (Bytes.create 0) |> Bytes.to_string in
-      let stderr_data = read_all cerr_read [] |> List.rev |> Bytes.concat (Bytes.create 0) |> Bytes.to_string in
-      Unix.close cin_write; Unix.close cout_read; Unix.close cerr_read;
-      let _, status = Unix.waitpid [] pid in
-      let code = match status with Unix.WEXITED n -> n | _ -> 127 in
-      (code, stdout_data, stderr_data)
+  let argv = Array.of_list (git_path :: args) in
+  let ic = Unix.open_process_args_in git_path argv in
+  let buf_size = 4096 in
+  let buf = Bytes.create buf_size in
+  let rec drain acc =
+    match input ic buf 0 buf_size with
+    | 0 -> close_in ic; List.rev acc
+    | n -> drain (Bytes.sub buf 0 n :: acc)
+  in
+  let stdout_data = drain [] |> Bytes.concat (Bytes.create 0) |> Bytes.to_string in
+  let status = Unix.close_process_in ic in
+  let code = match status with Unix.WEXITED n -> n | _ -> 127 in
+  (code, stdout_data, "")
 
 (** [worktrees_root ()] returns .c2c/worktrees/ under the repo root. *)
 let worktrees_root () =
@@ -69,24 +54,31 @@ let ensure_worktree ~(alias : string) ~(branch : string) : string =
 let list_worktrees () =
   let (_, output, _) = git_command [ "worktree"; "list"; "--porcelain" ] in
   let lines = String.split_on_char '\n' output in
-  let rec aux acc cur_alias cur_path cur_branch =
-    match lines with
-    | [] -> acc
+  let worktree_prefix = "worktree " in
+  let prefix_len = String.length worktree_prefix in
+  let rec parse_block acc cur_alias cur_path cur_branch = function
+    | [] -> (acc, cur_alias, cur_path, cur_branch)
+    | "" :: rest ->
+        let new_acc = match cur_path with
+          | "" -> acc
+          | _ -> (cur_alias, cur_path, cur_branch) :: acc
+        in
+        parse_block new_acc "" "" "" rest
     | line :: rest ->
-      let trimmed = String.trim line in
-      if trimmed = "" then aux acc cur_alias cur_path cur_branch
-      else if trimmed.[0] <> ' ' then
-        let path = trimmed in
-        let alias = Filename.basename path in
-        aux ((alias, path, "") :: acc) alias path ""
-      else
-        let cont = String.trim trimmed in
-        if String.length cont >= 8 && String.sub cont 0 8 = "branch: " then
-          let b = String.sub cont 8 (String.length cont - 8) in
-          aux acc cur_alias cur_path b
-        else aux acc cur_alias cur_path cur_branch
+        let trimmed = String.trim line in
+        if trimmed = "" then parse_block acc cur_alias cur_path cur_branch rest
+        else if String.length trimmed >= prefix_len && String.sub trimmed 0 prefix_len = worktree_prefix then
+          let path = String.sub trimmed prefix_len (String.length trimmed - prefix_len) in
+          let alias = Filename.basename path in
+          parse_block acc alias path "" rest
+        else if String.length trimmed >= 5 && String.sub trimmed 0 5 = "HEAD " then
+          parse_block acc cur_alias cur_path cur_branch rest
+        else if String.length trimmed >= 7 && String.sub trimmed 0 7 = "branch " then
+          let b = String.sub trimmed 7 (String.length trimmed - 7) in
+          parse_block acc cur_alias cur_path b rest
+        else parse_block acc cur_alias cur_path cur_branch rest
   in
-  let results = aux [] "" "" "" in
+  let results, _, _, _ = parse_block [] "" "" "" lines in
   List.rev results
 
 (** [prune_worktrees ()] removes stale worktree entries. *)
