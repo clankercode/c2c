@@ -8,10 +8,10 @@
         "/home/xertrov/src/c2c/_build/default/ocaml/server/c2c_mcp_server.exe"
       ],
       "environment": {
+        "C2C_MCP_DEBUG": "1",
         "C2C_MCP_BROKER_ROOT": "/home/xertrov/src/c2c/.git/c2c/mcp",
         "C2C_MCP_AUTO_JOIN_ROOMS": "swarm-lounge",
         "C2C_MCP_AUTO_DRAIN_CHANNEL": "0",
-        "C2C_MCP_DEBUG": "1",
         "C2C_CLI_COMMAND": "/home/xertrov/.local/bin/c2c"
       },
       "enabled": true
