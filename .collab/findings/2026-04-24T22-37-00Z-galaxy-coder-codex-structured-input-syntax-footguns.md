@@ -171,6 +171,8 @@ Even if the controller logic is mostly correct, Codex should make this surface m
 
 **Action**: No task needed on c2c side. If we use codex-headless XML delivery, document in c2c docs that external messages must use `queue="AfterAnyItem"`.
 
-**Suggested tasks**:
-1. Document `queue="AfterAnyItem"` requirement in c2c integration docs for codex-headless
-2. Consider adding a c2c-level note/warning if delivering to codex-headless without proper queue attribute
+**Actual finding (2026-04-24T22:43:00Z by galaxy-coder — CORRECTION)**:
+- c2c deliver daemon already uses `queue="AfterAnyItem"` internally (`c2c_deliver_inbox.py:107`)
+- The code comment (lines 103-105) explains the reasoning clearly
+- **c2c's usage is correct** — no code change needed
+- The docs gap is for **external callers** who bypass c2c's deliver daemon and send XML directly to Codex

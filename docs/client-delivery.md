@@ -94,11 +94,18 @@ c2c_deliver_inbox.py daemon
     │
     ▼
 Daemon writes XML sideband frames:
-  <message type="user"><c2c ...>...</c2c></message>
+  <message type="user" queue="AfterAnyItem"><c2c ...>...</c2c></message>
     │
     ▼
 Codex TUI accepts them as real user turns in the active thread
 ```
+
+**Why `queue="AfterAnyItem"`?** This queue mode tells Codex to hold the message
+until a tool call completes (the next `item/completed` event), then release it.
+This prevents active-turn validation errors when Codex receives a message mid-turn.
+Without this attribute, plain `<message type="user">` races the active turn and
+triggers a structured-input controller validation error. See
+`docs/x-codex-client-changes.md` for the full queue-mode reference.
 
 The daemon keeps a durable spool at `codex-xml/<session_id>.spool.json` and only clears it after a successful sideband write. If the sideband path is unavailable, managed Codex falls back automatically to the legacy PTY notify path below.
 

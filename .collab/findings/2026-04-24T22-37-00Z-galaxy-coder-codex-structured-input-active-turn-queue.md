@@ -110,6 +110,8 @@ This report is specifically about the active-turn structured-input validation fa
 
 **Action**: No task needed on c2c side. If we use `codex-headless` in production, we should verify our deliver daemon sends `queue="AfterAnyItem"` XML frames.
 
-**Suggested tasks**:
-1. Verify c2c deliver daemon XML formatting for codex-headless (or confirm it's not used)
-2. Document `queue="AfterAnyItem"` requirement in c2c docs if codex-headless delivery is used
+**Actual finding (2026-04-24T22:43:00Z by galaxy-coder — CORRECTION)**:
+- c2c deliver daemon DOES use `queue="AfterAnyItem"` in `c2c_deliver_inbox.py:107` — the correct queue mode
+- Comment at lines 103-105 explicitly explains why: "AfterAnyItem gives Codex a safe mid-turn release point while still starting immediately when the thread is idle"
+- The `stage_inbox_into_xml_spool`, `C2CSpool`, and `deliver_xml_messages` functions all exist and are implemented
+- **c2c's code is correct** — this is NOT a c2c bug. External callers who bypass c2c's deliver daemon would still hit the issue if they send plain `<message type="user">`
