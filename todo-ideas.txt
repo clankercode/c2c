@@ -45,16 +45,15 @@ Long-term E2E encrypted relay tracked in todo4.txt (separate project).
 Idea: c2c git proxy extensions — signing + attribution
 
 Submitted by: Max Kaye (via coordinator1) · 2026-04-24T17:05Z
-Status: brainstorming and planning
-Related: #119 (c2c git proxy, git.attribution config), swarm-lounge discussion 2026-04-24T11:53 AEST
+Status: **ingested**
+Related: #119 (c2c git proxy shipped), #129 (signing slice 1), design doc `.collab/design/2026-04-24-per-agent-git-signing.md`
 
-The `c2c git` proxy (being implemented in #119) is the right choke point for:
-- **Commit signing**: when a signing key is configured, inject `-S` / `--gpg-sign`
-  automatically. Agents get signed commits without manual flags.
-- **Attribution** (in #119): inject `--author="<alias> <alias@c2c.im>"` when
-  git.attribution=true and --author not already present.
-
-Both are config-driven; passthrough when not configured.
+Evolved through swarm discussion (Max + test-agent 2026-04-24):
+don't detect user's global signingkey at all; c2c manages its own
+per-repo, per-agent keys (reuse the Ed25519 identity that
+`c2c register` already generates). SSH-format git signatures.
+Attribution via `--author="<alias> <alias@c2c.im>"`. Full design
+captured in the design doc; sliced into #129+ for implementation.
 
 ---
 
