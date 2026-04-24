@@ -19,11 +19,12 @@ type sticker_envelope = {
   scope : scope;
   ts : string;             (** RFC3339 UTC timestamp *)
   nonce : string;          (** 16-byte random, base64url-nopad *)
+  sender_pk : string;       (** Sender's public key, base64url-nopad *)
   signature : string;      (** Ed25519 signature, base64url-nopad *)
 }
 
 (** Scope determines storage path and visibility *)
-and scope = [ `Public | `Private ]
+and scope = [ `Public | `Private | `Both ]
 
 (** A registry entry for a sticker kind *)
 type registry_entry = {
@@ -98,4 +99,4 @@ val format_sticker : sticker_envelope -> string
 
 (** {1 CLI commands} *)
 
-val sticker_group : Cmdliner.Cmd.t
+val sticker_group : unit Cmdliner.Cmd.t

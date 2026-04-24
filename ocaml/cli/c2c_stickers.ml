@@ -1,13 +1,14 @@
 (* c2c_stickers.ml — Agent stickers: signed appreciation tokens *)
 
-open Cmdliner.Syntax
-module String_map = Map.Make(String)
+open Cmdliner.Term.Syntax
+let ( // ) = Filename.concat
 
 (* --- path helpers ------------------------------------------------------- *)
 
 let sticker_dir () =
-  let git_common = Git_helpers.git_common_dir () in
-  Filename.concat git_common ".c2c" // "stickers"
+  match Git_helpers.git_repo_toplevel () with
+  | Some top -> top // ".c2c" // "stickers"
+  | None -> failwith "not in a git repository"
 
 let received_dir ~alias =
   sticker_dir () // alias // "received"
@@ -54,7 +55,7 @@ let validate_sticker_id id =
 
 (* --- envelope type ------------------------------------------------------ *)
 
-type scope = [ `Public | `Private ]
+type scope = [ `Public | `Private | `Both ]
 
 type sticker_envelope = {
   version : int;
@@ -65,6 +66,7 @@ type sticker_envelope = {
   scope : scope;
   ts : string;
   nonce : string;
+  sender_pk : string;
   signature : string;
 }
 
@@ -87,26 +89,28 @@ let random_nonce_b64 () =
 
 let canonical_blob env =
   let note_str = match env.note with Some n -> n | None -> "" in
-  let scope_str = match env.scope with `Public -> "public" | `Private -> "private" in
+  let scope_str = match env.scope with `Public -> "public" | `Private -> "private" | `Both -> "both" in
   String.concat "|"
     [ env.from_; env.to_; env.sticker_id; note_str; scope_str; env.ts; env.nonce ]
 
 let sign_envelope ~identity env =
+  let sender_pk = b64url_nopad identity.Relay_identity.public_key in
+  let env = { env with sender_pk } in
   let blob = canonical_blob env in
-  let sig = Relay_identity.sign identity blob in
-  { env with signature = b64url_nopad sig }
+  let sig_bytes = Relay_identity.sign identity blob in
+  { env with signature = b64url_nopad sig_bytes }
 
 let verify_envelope env =
   if env.signature = "" then Error "missing signature"
+  else if env.sender_pk = "" then Error "missing sender public key"
   else
     match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet env.signature with
+    | Error _ -> Error "b64 decode failed for signature"
     | Ok sig_bytes ->
       let blob = canonical_blob env in
-      let pk = Relay_identity.{ public_key = Relay_identity.public_key identity } in
-      (match Relay_identity.verify ~pk ~msg:blob ~sig_:(b64url_nopad sig_bytes) with
-       | true -> Ok true
-       | false -> Error "invalid signature")
-    | Error e -> Error ("b64 decode failed: " ^ e)
+      match Relay_identity.verify ~pk:env.sender_pk ~msg:blob ~sig_:sig_bytes with
+      | true -> Ok true
+      | false -> Error "invalid signature"
 
 (* --- storage ------------------------------------------------------------ *)
 
@@ -120,6 +124,7 @@ let envelope_to_json env =
     ("scope", `String scope_str);
     ("ts", `String env.ts);
     ("nonce", `String env.nonce);
+    ("sender_pk", `String env.sender_pk);
     ("signature", `String env.signature);
   ] in
   let fields = match env.note with Some n -> ("note", `String n) :: fields | None -> fields in
@@ -140,6 +145,7 @@ let envelope_of_json json =
       scope;
       ts = get_str fields "ts";
       nonce = get_str fields "nonce";
+      sender_pk = get_str fields "sender_pk";
       signature = get_str fields "signature";
     }
   | _ -> Error "expected JSON object"
@@ -192,7 +198,6 @@ let load_stickers ~alias ?(scope=`Both) () =
     with _ -> []
   in
   let stickers = List.concat (List.map glob dirs) in
-  (* sort by ts descending (newest first) *)
   List.sort (fun a b -> String.compare b.ts a.ts) stickers
 
 (* --- create and store --------------------------------------------------- *)
@@ -203,9 +208,10 @@ let create_and_store ~from_ ~to_ ~sticker_id ~note ~scope ~identity =
   | Ok () ->
     let ts = now_rfc3339_utc () in
     let nonce = random_nonce_b64 () in
-    let env = { version = 1; from_; to_; sticker_id; note; scope; ts; nonce; signature = "" } in
+    let sender_pk = b64url_nopad identity.Relay_identity.public_key in
+    let env = { version = 1; from_; to_; sticker_id; note; scope; ts; nonce; sender_pk; signature = "" } in
     let env = sign_envelope ~identity env in
-    (try store_envelope env; Ok env with e -> Error (Printexc.to_string e))
+    try store_envelope env; Ok env with e -> Error (Printexc.to_string e)
 
 (* --- formatting --------------------------------------------------------- *)
 
@@ -275,15 +281,15 @@ let sticker_send_cmd =
   let+ peer = peer
   and+ sticker_id = sticker_id
   and+ note = note
-  and+ scope = scope
-  and+ () = () in
+  and+ scope = scope in
   let scope = match scope with Some s -> s | None -> `Private in
   let from_alias = match resolve_current_alias () with
     | Some a -> a
     | None -> (Printf.eprintf "error: no alias set. Set C2C_MCP_AUTO_REGISTER_ALIAS or run 'c2c register' first.\n%!"; exit 1)
   in
-  let identity = try Relay_identity.load () with _ ->
-    (Printf.eprintf "error: no identity found. Run 'c2c install' first.\n%!"; exit 1)
+  let identity = match Relay_identity.load () with
+    | Ok id -> id
+    | Error _ -> (Printf.eprintf "error: no identity found. Run 'c2c install' first.\n%!"; exit 1)
   in
   (match note with Some n when String.length n > 280 ->
     (Printf.eprintf "error: note exceeds 280 characters\n%!"; exit 1)
@@ -308,8 +314,7 @@ let sticker_wall_cmd =
   let json = json_flag in
   let+ alias_opt = alias_opt
   and+ scope = scope
-  and+ json = json
-  and+ () = () in
+  and+ json = json in
   let scope = match scope with Some s -> s | None -> `Both in
   let alias = match alias_opt with Some a -> a | None ->
     (match resolve_current_alias () with
