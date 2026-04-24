@@ -1572,16 +1572,19 @@ let read_managed_instances () =
          ; mi_client = client
          ; mi_status = status
          ; mi_delivery_mode = delivery_mode
-         ; mi_pid = pid
-         ; mi_created_at = created_at
-         })
+          ; mi_pid = pid
+          ; mi_created_at = created_at
+          })
+
+let safe_is_directory path =
+  try Sys.file_exists path && Sys.is_directory path with Sys_error _ -> false
 
 let rec rm_rf path =
-  if Sys.is_directory path then (
+  if safe_is_directory path then (
     Array.iter (fun entry -> rm_rf (path // entry)) (Sys.readdir path);
     Unix.rmdir path)
   else
-    Sys.remove path
+    (try Sys.remove path with Sys_error _ -> ())
 
 let prune_stopped_instances_older_than ~days ~instances_dir managed_instances =
   let cutoff = Unix.gettimeofday () -. (float_of_int days *. 86400.0) in
@@ -1600,9 +1603,6 @@ let prune_stopped_instances_older_than ~days ~instances_dir managed_instances =
        if Sys.file_exists path then rm_rf path)
     stale_instances;
   stale_instances
-
-let safe_is_directory path =
-  try Sys.file_exists path && Sys.is_directory path with Sys_error _ -> false
 
 let status_cmd =
   let min_messages =
