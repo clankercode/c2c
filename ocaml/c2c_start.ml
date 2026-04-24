@@ -21,6 +21,33 @@ let set_terminal_title ~(alias : string) ~(client : string) ~(glyph : string) =
           flush stdout
       | None -> ()))
 
+(* Title ticker — background thread that periodically recomputes the status glyph
+   based on broker state (inbox depth, DND) and updates the terminal title.
+   Respects NO_COLOR and TERM=dumb. *)
+let compute_status_glyph ~(broker_root : string) ~(session_id : string) : string =
+  if Sys.getenv_opt "NO_COLOR" <> None then "●" else
+  (match Sys.getenv_opt "TERM" with
+   | Some "dumb" | None -> "●"
+   | _ ->
+     let broker = C2c_mcp.Broker.create ~root:broker_root in
+     let has_mail = match C2c_mcp.Broker.read_inbox broker ~session_id with
+       | [] -> false | _ -> true
+     in
+     let is_dnd = C2c_mcp.Broker.is_dnd broker ~session_id in
+     let glyph = (if has_mail then "✉" else "") ^ (if is_dnd then "⏸" else "") in
+     if glyph = "" then "●" else glyph)
+
+let start_title_ticker ~(broker_root : string) ~(session_id : string)
+    ~(alias : string) ~(client : string) ~(poll_interval_s : float) : unit =
+  ignore (Thread.create (fun () ->
+    let rec loop () =
+      Unix.sleepf poll_interval_s;
+      let glyph = compute_status_glyph ~broker_root ~session_id in
+      set_terminal_title ~alias ~client ~glyph;
+      loop ()
+    in
+    loop ()))
+
 (* setpgid(2) binding — OCaml 5.x's Unix module omits this call.
    Implementation in ocaml/cli/c2c_posix_stubs.c. *)
 external setpgid : int -> int -> unit = "caml_c2c_setpgid"
@@ -2340,7 +2367,10 @@ let run_outer_loop ~(name : string) ~(client : string)
              match start_poker ~name ~client ~broker_root ?child_pid_opt:(Some pid) () with
              | Some p -> poker_pid := Some p; write_pid (poker_pid_path name) p
              | None -> ());
-          pid
+           (* Start periodic title ticker — updates glyph based on broker state (✉ ⏸). *)
+           start_title_ticker ~broker_root ~session_id:name ~alias:effective_alias
+             ~client ~poll_interval_s:30.0;
+           pid
         with Unix.Unix_error (Unix.EINTR, _, _) -> 0
       in
 
