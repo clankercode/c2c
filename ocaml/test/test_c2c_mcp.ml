@@ -2487,6 +2487,7 @@ let test_start_time_mismatch_is_not_alive () =
     ; confirmed_at = None
     ; enc_pubkey = None
     ; compacting = None
+    ; last_activity_ts = None
     }
   in
   check bool "mismatched start_time → not alive" false
@@ -2509,6 +2510,7 @@ let test_start_time_match_is_alive () =
     ; confirmed_at = None
     ; enc_pubkey = None
     ; compacting = None
+    ; last_activity_ts = None
     }
   in
   check bool "matching start_time → alive" true
@@ -2531,6 +2533,7 @@ let test_start_time_none_falls_back_to_proc_exists () =
     ; confirmed_at = None
     ; enc_pubkey = None
     ; compacting = None
+    ; last_activity_ts = None
     }
   in
   check bool "pid exists + no stored start_time → alive" true
@@ -5618,8 +5621,65 @@ let test_tools_call_set_room_visibility_via_mcp () =
                in
                check bool "set_room_visibility success" false is_error;
                let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"secret-club" in
-               check bool "visibility is invite_only" true
-                 (match meta.visibility with Invite_only -> true | Public -> false)))
+                check bool "visibility is invite_only" true
+                  (match meta.visibility with Invite_only -> true | Public -> false)))
+
+(* --- prompts/list and prompts/get tests (run via subprocess to isolate Sys.chdir) --- *)
+
+let run_prompts_test_skeleton ~dir ~skill_name ~test_code =
+  let skills_dir = Filename.concat dir (Filename.concat ".opencode" "skills") in
+  let skill_dir = Filename.concat skills_dir skill_name in
+  Unix.mkdir (Filename.concat dir ".opencode") 0o755;
+  Unix.mkdir skills_dir 0o755;
+  Unix.mkdir skill_dir 0o755;
+  let skill_file = Filename.concat skill_dir "SKILL.md" in
+  let oc = open_out skill_file in
+  output_string oc "name: test-skill\ndescription: A test skill for prompts\n---\nTest skill body content.\n";
+  close_out oc;
+  let code = Printf.sprintf "begin %s; exit 0 end" test_code in
+  let full_code = Printf.sprintf "Sys.chdir %S; %s" dir code in
+  let result = Sys.command ("ocaml -stdio <<'EOF'\n" ^ full_code ^ "\nEOF\n 2>&1") in
+  if result <> 0 then Printf.eprintf "subprocess failed with code %d\n%!" result;
+  result
+
+let test_prompts_list_via_subprocess () =
+  with_temp_dir (fun dir ->
+      let test_code =
+        "let prompts = C2c_mcp.list_skills_as_prompts () in \
+         let n = List.length prompts in \
+         if n = 0 then failwith \"expected at least one prompt\"; \
+         let p = List.hd prompts in \
+         match p with \
+         | `Assoc fields -> \
+           (match List.assoc_opt \"name\" fields with \
+            Some (`String \"test-skill\") -> () \
+            | _ -> failwith \"expected name field\") \
+         | _ -> failwith \"expected prompt to be object\""
+      in
+      let result = run_prompts_test_skeleton ~dir ~skill_name:"test-skill" ~test_code in
+      check int "prompts/list subprocess" 0 result)
+
+let test_prompts_get_via_subprocess () =
+  with_temp_dir (fun dir ->
+      let test_code =
+        "match C2c_mcp.get_skill \"test-skill\" with \
+         | Some (desc, content) -> \
+           if desc <> \"A test skill for prompts\" then failwith \"wrong description\"; \
+           if not (String.length content > 0) then failwith \"expected content\" \
+         | None -> failwith \"expected Some\""
+      in
+      let result = run_prompts_test_skeleton ~dir ~skill_name:"test-skill" ~test_code in
+      check int "prompts/get subprocess" 0 result)
+
+let test_prompts_get_unknown_via_subprocess () =
+  with_temp_dir (fun dir ->
+      let test_code =
+        "match C2c_mcp.get_skill \"nonexistent\" with \
+         | None -> () \
+         | Some _ -> failwith \"expected None for unknown skill\""
+      in
+      let result = run_prompts_test_skeleton ~dir ~skill_name:"test-skill" ~test_code in
+      check int "prompts/get unknown subprocess" 0 result)
 
 let test_join_room_invite_only_rejects_uninvited_via_mcp () =
   with_temp_dir (fun dir ->
@@ -6288,6 +6348,12 @@ let () =
               test_check_pending_reply_valid_supervisor_via_mcp
           ; test_case "check_pending_reply unknown perm_id via MCP" `Quick
               test_check_pending_reply_unknown_perm_id_via_mcp
-          ; test_case "check_pending_reply non-supervisor via MCP" `Quick
-              test_check_pending_reply_non_supervisor_via_mcp
-          ] ) ]
+           ; test_case "check_pending_reply non-supervisor via MCP" `Quick
+               test_check_pending_reply_non_supervisor_via_mcp
+           ; test_case "prompts/list returns skills as prompts" `Quick
+               test_prompts_list_via_subprocess
+           ; test_case "prompts/get returns skill content" `Quick
+               test_prompts_get_via_subprocess
+           ; test_case "prompts/get unknown skill returns error" `Quick
+               test_prompts_get_unknown_via_subprocess
+           ] ) ]
