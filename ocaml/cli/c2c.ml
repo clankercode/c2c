@@ -6963,7 +6963,7 @@ let start_cmd =
             match render_role_for_client ?model_override role ~client ~name:agent_name with
             | Some rendered ->
                 let effective_alias = Option.value role.C2c_role.c2c_alias ~default:agent_name in
-                if client = "opencode" then
+                if client = "opencode" || client = "claude" then
                   write_agent_file ~client ~name ~content:rendered;
                 let onboarding_preamble =
                   Printf.sprintf
@@ -7033,7 +7033,7 @@ let start_cmd =
               (match render_role_for_client ?model_override role ~client ~name with
                | Some rendered ->
                    let effective_alias = Option.value role.C2c_role.c2c_alias ~default:name in
-                   if client = "opencode" then
+                if client = "opencode" || client = "claude" then
                      write_agent_file ~client ~name ~content:rendered;
                    let kickoff =
                      if client = "claude" then Some rendered
