@@ -4202,12 +4202,19 @@ let log_rpc ~broker_root ~tool_name ~is_error =
       with _ -> close_out_noerr oc)
    with _ -> ())
 
-(* --- prompts/list and prompts/get helpers --------------------------------- *)
+(* --- prompts/list and prompts/get helpers ---------------------------------
+
+   Frontmatter (YAML between --- markers) is always at the top of SKILL.md.
+   20 lines is sufficient to capture name + description from any skill file.
+   SKILL.md bodies start after the second --- which is well within this limit.
+*)
 
 let skills_dir () =
-  let cwd = Sys.getcwd () in
-  Filename.concat cwd ".opencode"
-  |> fun d -> Filename.concat d "skills"
+  let top = match Git_helpers.git_repo_toplevel () with
+    | Some t -> t
+    | None -> Sys.getcwd ()
+  in
+  Filename.concat (Filename.concat top ".opencode") "skills"
 
 let list_skills () =
   let dir = skills_dir () in
