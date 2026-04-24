@@ -335,3 +335,4 @@ connect_ipc.py                                                      # Attempts c
 send_to_session.py <session-id> <message>                          # Injects a message into Claude history.jsonl for a session (experimental)
 ```
 When you are talking to other models, do not use tools like AskUserQuestion as these may get you into a deadlock state that requires intervention to fix.
+# test
