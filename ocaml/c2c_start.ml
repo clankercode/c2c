@@ -2,6 +2,25 @@
 
 let ( // ) = Filename.concat
 
+(* Terminal title — OSC-0 / tmux pane title.
+   Respects NO_COLOR and TERM=dumb. Title format: "<glyph> <alias> (<client>)"
+   Called from run_outer_loop so operators can scan tmux panes at a glance. *)
+let set_terminal_title ~(alias : string) ~(client : string) ~(glyph : string) =
+  if Sys.getenv_opt "NO_COLOR" <> None then () else
+  (match Sys.getenv_opt "TERM" with
+   | Some "dumb" | None -> ()
+   | _ ->
+     let title = Printf.sprintf "%s %s (%s)" glyph alias client in
+     let osc = Printf.sprintf "\027]0;%s\027\\" title in
+     let tmux = Printf.sprintf "\027]2;%s\027\\" title in
+     output_string stdout osc;
+     flush stdout;
+     (match Sys.getenv_opt "TMUX" with
+      | Some _ ->
+          output_string stdout tmux;
+          flush stdout
+      | None -> ()))
+
 (* setpgid(2) binding — OCaml 5.x's Unix module omits this call.
    Implementation in ocaml/cli/c2c_posix_stubs.c. *)
 external setpgid : int -> int -> unit = "caml_c2c_setpgid"
@@ -1914,6 +1933,9 @@ let run_outer_loop ~(name : string) ~(client : string)
 
       Printf.printf "[c2c-start/%s] iter 1: launching %s (outer pid=%d)\n%!"
         name client (Unix.getpid ());
+
+      let effective_alias = Option.value alias_override ~default:name in
+      set_terminal_title ~alias:effective_alias ~client ~glyph:"●";
 
       let start_time = Unix.gettimeofday () in
 
