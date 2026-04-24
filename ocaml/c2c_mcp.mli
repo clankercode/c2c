@@ -131,6 +131,7 @@ module Broker : sig
   val find_pending_permission : t -> string -> pending_permission option
   val remove_pending_permission : t -> string -> unit
   val pending_permission_exists_for_alias : t -> string -> bool
+  val write_allowed_signers_entry : t -> alias:string -> unit
 end
 
 (* Native OCaml relay modules *)
