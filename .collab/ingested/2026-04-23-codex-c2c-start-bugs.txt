@@ -1,0 +1,52 @@
+two bugs: the python reference (if this is required for message delivery, we need to port the functionality to ocaml), and then after i close codex it hangs and need ot ctrl c and then it exists with code 122. 
+
+
+LOG: start of codex session
+===========
+
+
+~/src/c2c master* ≡ ⇡ xertrov@cachyos-x8664 22s
+❯ c2c start codex --agent Lyra-Quill -n Lyra-Quill-X
+[c2c start] wrote compiled agent file: .codex/agents/Lyra-Quill-X.md
+
++========================================================+
+| c2c start --agent Lyra-Quill                           |
+|  codex  |  Lyra-Quill-X                                |
++========================================================+
+| c2c peer-to-peer messaging for AI agents               |
+|  2026-04-23 08:47:44 UTC                               |
++========================================================+
+
+[c2c-start/Lyra-Quill-X] iter 1: launching codex (outer pid=635390)
+Traceback (most recent call last):
+  File "/home/xertrov/src/c2c/c2c_deliver_inbox.py", line 14, in <module>
+    import c2c_inject
+ModuleNotFoundError: No module named 'c2c_inject'
+╭───────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.122.0)                        │
+│                                                   │
+│ model:     gpt-5.4-mini medium   /model to change │
+│ directory: ~/src/c2c                              │
+╰────────────────────────────────────�──────────────╯
+
+  Tip: Switch models or reasoning effort quickly with /model.
+
+
+
+
+LOG: end of codex after quitting:
+===========================
+
+
+
+• Context compacted
+Token usage: total=8,698,875 input=8,123,887 (+ 184,766,080 cached) output=574,988 (reasoning 269,132)
+To continue this session, run codex resume codex-compat-coder-1
+
+
+
+^C[c2c-start/Lyra-Quill-X] inner exited code=122 after 45.0s (pid=635415)
+
+resume via: c2c start codex -n Lyra-Quill-X --resume 27c8abef-4397-4972-b8a5-e3ca9dfd3984
+
+
