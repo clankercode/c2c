@@ -556,7 +556,10 @@ module Broker = struct
       let ssh_pub_path = ssh_priv_path ^ ".pub" in
       if not (Sys.file_exists ssh_pub_path) then
         failwith (Printf.sprintf "ssh key not found at %s (run load_or_create_at first)" ssh_pub_path);
-      let ssh_pub_content = really_input_string (open_in ssh_pub_path) (in_channel_length (open_in ssh_pub_path)) in
+      let ic = open_in ssh_pub_path in
+      let len = in_channel_length ic in
+      let ssh_pub_content = really_input_string ic len in
+      close_in ic;
       let b64_key =
         match (let parts = List.filter ((<>) "") (String.split_on_char ' ' ssh_pub_content) in List.nth_opt parts 1) with
         | Some b64 -> String.trim b64
