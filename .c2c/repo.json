@@ -1,4 +1,4 @@
 {
   "supervisor_strategy": "broadcast",
-  "supervisors": [ "coordinator1", "ceo" ]
+  "supervisors": [ "coordinator1", "ceo", "lyra-quill" ]
 }
