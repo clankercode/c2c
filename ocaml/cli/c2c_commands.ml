@@ -15,7 +15,7 @@ let safety_to_label = function
 (* Map from command name to safety tier.
    This is used by filter_commands to determine which commands to hide
    when running inside an agent session. *)
-let rec command_tier_map () : (string * safety) list =
+let command_tier_map () : (string * safety) list =
   [ "send", Tier1
   ; "list", Tier1
   ; "whoami", Tier1
