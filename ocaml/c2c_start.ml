@@ -930,6 +930,7 @@ let build_env ?(broker_root_override : string option = None)
     ?(auto_join_rooms_override : string option = None)
     ?(role_class_opt : string option = None)
     ?(client : string option = None)
+    ?(reply_to_override : string option = None)
     (name : string) (alias_override : string option) : string array =
   let br = Option.value broker_root_override ~default:(broker_root ()) in
   let rooms_base = Option.value auto_join_rooms_override ~default:"swarm-lounge" in
@@ -972,6 +973,9 @@ let build_env ?(broker_root_override : string option = None)
        so harmless where unsupported. *)
     "C2C_MCP_CHANNEL_DELIVERY", "1";
     ] in
+    let base = base @ match reply_to_override with
+      | Some r -> [ "C2C_MCP_REPLY_TO", r ]
+      | None -> [] in
     let base =
       if client = Some "claude" then
         (* For claude managed sessions, force claude_channel capability so
@@ -1789,7 +1793,7 @@ let run_outer_loop ~(name : string) ~(client : string)
     ?(model_override : string option)
     ?(one_hr_cache = false) ?(kickoff_prompt : string option)
     ?(auto_join_rooms : string option)
-    ?(agent_json : string option) () : int =
+    ?(agent_json : string option) ?(reply_to : string option) () : int =
   let session_id = Option.value session_id ~default:name in
   let cfg =
     try Stdlib.Hashtbl.find clients client
@@ -1910,6 +1914,7 @@ let run_outer_loop ~(name : string) ~(client : string)
       (* Build env *)
       let env = build_env ~broker_root_override:(Some broker_root)
           ~auto_join_rooms_override:auto_join_rooms ~client:(Some client)
+          ~reply_to_override:reply_to
           name alias_override in
       let env =
         Array.append env
@@ -2445,7 +2450,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?(session_id_override : string option) ?(model_override : string option)
     ?(one_hr_cache = false)
     ?(kickoff_prompt : string option) ?(auto_join_rooms : string option)
-    ?(agent_json : string option) () : int =
+    ?(agent_json : string option) ?(reply_to : string option) () : int =
   if not (Stdlib.Hashtbl.mem clients client) then
     (Printf.eprintf "error: unknown client: '%s'. Choose from: %s\n%!"
        client (String.concat ", " (List.sort String.compare supported_clients));
@@ -2713,7 +2718,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?codex_resume_target:cfg.codex_resume_target
     ?model_override:cfg.model_override
     ~one_hr_cache ?kickoff_prompt ?auto_join_rooms
-    ?agent_json ()
+    ?agent_json ?reply_to ()
 
 (* Signal the managed inner client so the outer loop relaunches it. Designed
    to be callable by an agent running *inside* that client, so the outer

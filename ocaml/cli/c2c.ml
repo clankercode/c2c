@@ -6885,6 +6885,9 @@ let start_cmd =
   let model =
     Cmdliner.Arg.(value & opt (some string) None & info [ "model"; "m" ] ~docv:"MODEL" ~doc:"Override the launch model. Accepts pmodel-style input; single-provider clients also accept bare model names.")
   in
+  let reply_to =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "reply-to" ] ~docv:"ALIAS" ~doc:"Set C2C_MCP_REPLY_TO env var — used by ephemeral agents to know where to send completion results.")
+  in
   let+ client = client
   and+ name_opt = name
   and+ alias_opt = alias
@@ -6895,7 +6898,8 @@ let start_cmd =
   and+ kickoff_prompt_text_raw = kickoff_prompt_opt
   and+ kickoff_prompt_file = kickoff_prompt_file_opt
   and+ agent_opt = agent
-  and+ model_opt = model in
+  and+ model_opt = model
+  and+ reply_to = reply_to in
   let kickoff_prompt_text =
     match kickoff_prompt_text_raw, kickoff_prompt_file with
     | Some _, Some _ ->
@@ -7149,7 +7153,8 @@ let start_cmd =
       ~one_hr_cache
       ?kickoff_prompt
       ?agent_json
-      ?auto_join_rooms ())
+      ?auto_join_rooms
+      ?reply_to ())
 
 let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Start a managed c2c instance.") start_cmd
 
@@ -7602,6 +7607,11 @@ let config_group =
    run` directly and by `c2c agent refine` (which delegates to role-designer).
    May exit the process on error or on cmd_start return. *)
 
+type ephemeral_mode =
+  | Pane
+  | Background
+  | Headless
+
 let run_ephemeral_agent
     ~(role : string)
     ~(prompt_opt : string option)
@@ -7610,7 +7620,9 @@ let run_ephemeral_agent
     ~(bin_opt : string option)
     ~(timeout : float)
     ~(dry_run : bool)
-    ?(pane : bool = false)
+    ~(mode : ephemeral_mode)
+    ~(reply_to_opt : string option)
+    ~(auto_join_rooms_opt : string option)
     () =
   let role_path = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" // (role ^ ".md") in
   if not (Sys.file_exists role_path) then begin
@@ -7661,6 +7673,10 @@ let run_ephemeral_agent
     | Some p when p <> "" -> Printf.sprintf "\n## Caller prompt\n\n%s\n" p
     | _ -> ""
   in
+  let reply_to_line = match reply_to_opt with
+    | Some r -> Printf.sprintf "Send completion results to: %s (via `c2c send %s \"<result>\"`).\n" r r
+    | None -> ""
+  in
   let confirm_line =
     if caller_is_alias then
       Printf.sprintf "1. Confirm completion with the caller (`c2c send %s \"done: <short summary>\"`).\n" caller
@@ -7681,6 +7697,7 @@ let run_ephemeral_agent
       "# Ephemeral c2c agent (role: %s)\n\n\
        You are a short-lived, purpose-built c2c peer. Your alias is `%s`. Your caller is `%s`.\n\n\
        ## Lifecycle\n\n\
+       %s\
        When your task is complete:\n\
        %s\
        2. After the caller acknowledges (or you have left a summary for a human), call the `stop_self` MCP tool (c2c server) to terminate cleanly.\n\n\
@@ -7688,65 +7705,44 @@ let run_ephemeral_agent
        %s\
        %s\
        ## Role briefing\n\n%s\n"
-      role name caller confirm_line user_prompt_section idle_line rendered
+      role name caller reply_to_line confirm_line user_prompt_section idle_line rendered
   in
   let auto_join =
-    let base =
-      if r.C2c_role.c2c_auto_join_rooms <> []
-      then Some (String.concat "," r.C2c_role.c2c_auto_join_rooms)
-      else None
-    in
-    (* Derive role-specific room if C2C_AUTO_JOIN_ROLE_ROOM=1 is set.
-       This opt-in env var is written by `c2c install <client>`. *)
-    match Sys.getenv_opt "C2C_AUTO_JOIN_ROLE_ROOM", r.C2c_role.role_class with
-    | Some "1", Some rc when String.trim rc <> "" ->
-        (match C2c_role.role_class_to_room rc with
-         | Some rr ->
-             let base_str = Option.value base ~default:"swarm-lounge" in
-             Some (base_str ^ "," ^ rr)
-         | None -> base)
-    | _ -> base
+    match auto_join_rooms_opt with
+    | Some rooms -> Some rooms
+    | None -> None
   in
   if dry_run then begin
-    Printf.printf "c2c agent run [dry-run]:\n  role=%s\n  client=%s\n  name=%s\n  caller=%s\n  timeout=%.0fs\n  bin=%s\n  auto_join=%s\n  pane=%b\n\n--- kickoff prompt ---\n%s--- end prompt ---\n%!"
+    let mode_str = match mode with Pane -> "pane" | Background -> "background" | Headless -> "headless" in
+    let reply_to_str = match reply_to_opt with Some r -> r | None -> "(none)" in
+    Printf.printf "c2c agent run [dry-run]:\n  role=%s\n  client=%s\n  name=%s\n  caller=%s\n  timeout=%.0fs\n  bin=%s\n  mode=%s\n  reply_to=%s\n  auto_join=%s\n\n--- kickoff prompt ---\n%s--- end prompt ---\n%!"
       role client name caller timeout
       (match bin_opt with Some b -> b | None -> "(default)")
+      mode_str
+      reply_to_str
       (match auto_join with Some r -> r | None -> "(none)")
-      pane
       kickoff;
     exit 0
   end;
   write_agent_file ~client ~name ~content:rendered;
-  Printf.printf "c2c agent run: role=%s client=%s name=%s caller=%s timeout=%.0fs pane=%b\n%!"
-    role client name caller timeout pane;
-  (* --pane: spawn `c2c start` in a new tmux window and return immediately.
-     Watchdog still forks detached so idle-timeout applies. Requires TMUX. *)
-  if pane then begin
-    (match Sys.getenv_opt "TMUX" with
-     | Some s when s <> "" -> ()
-     | _ ->
-       Printf.eprintf "error: --pane requires running inside tmux (TMUX env var is not set)\n%!";
-       exit 1);
-    let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
-    let kickoff_dir = Filename.concat home ".local/share/c2c/kickoff" in
-    (try Unix.mkdir kickoff_dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> () | _ -> ());
-    let kickoff_path = Filename.concat kickoff_dir (name ^ ".md") in
-    let oc = open_out kickoff_path in
-    output_string oc kickoff;
-    close_out oc;
+  let mode_str = match mode with Pane -> "pane" | Background -> "background" | Headless -> "headless" in
+  Printf.printf "c2c agent run: role=%s client=%s name=%s caller=%s timeout=%.0fs mode=%s\n%!"
+    role client name caller timeout mode_str;
+  (* Write kickoff to a file for all modes *)
+  let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+  let kickoff_dir = Filename.concat home ".local/share/c2c/kickoff" in
+  (try Unix.mkdir kickoff_dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> () | _ -> ());
+  let kickoff_path = Filename.concat kickoff_dir (name ^ ".md") in
+  let oc = open_out kickoff_path in
+  output_string oc kickoff;
+  close_out oc;
+
+  (* Shared watchdog fork for all modes *)
+  let start_watchdog () =
     if timeout > 0.0 then begin
       match Unix.fork () with
       | 0 ->
         (try ignore (Unix.setsid ()) with _ -> ());
-        (* Close stdio so the parent process can exit cleanly without the
-           Bash tool (or any pipe reader) seeing open fds and blocking. *)
-        (try
-           let devnull = Unix.openfile "/dev/null" [Unix.O_RDWR] 0 in
-           Unix.dup2 devnull Unix.stdin;
-           Unix.dup2 devnull Unix.stdout;
-           Unix.dup2 devnull Unix.stderr;
-           Unix.close devnull
-         with _ -> ());
         let broker_root = C2c_start.broker_root () in
         let outer_pid_path = C2c_start.outer_pid_path name in
         let inbox_path = Filename.concat broker_root (name ^ ".inbox.json") in
@@ -7758,7 +7754,7 @@ let run_ephemeral_agent
         in
         let start_time = Unix.gettimeofday () in
         let tick = min 30.0 (max 5.0 (timeout /. 4.0)) in
-        let boot_grace_deadline = start_time +. 120.0 in
+        let boot_grace_deadline = start_time +. 60.0 in
         let rec loop () =
           Unix.sleepf tick;
           match C2c_start.read_pid outer_pid_path with
@@ -7777,86 +7773,88 @@ let run_ephemeral_agent
             end else loop ()
         in
         loop ()
-      | _ -> ()
-    end;
-    let c2c_bin = match bin_opt with Some b -> b | None -> "c2c" in
-    let q = Filename.quote in
-    (* Strip parent c2c-session env vars so the child `c2c start` in the new
-       tmux window isn't blocked by the nested-session guard in c2c_start.ml.
-       tmux new-window usually inherits from the tmux server's env, but when
-       the caller is itself a managed c2c session (e.g. coordinator1 spawning
-       a review-bot), these vars leak through. Explicit `env -u` is safe
-       even when they're unset. *)
-    let shell_cmd =
-      Printf.sprintf
-        "exec env -u C2C_MCP_SESSION_ID -u C2C_MCP_AUTO_REGISTER_ALIAS -u C2C_INSTANCE_NAME -u C2C_WRAPPER_SELF %s start %s -n %s --kickoff-prompt-file %s"
-        (q c2c_bin) (q client) (q name) (q kickoff_path)
-    in
-    let window_title = Printf.sprintf "c2c-%s" name in
-    (match Unix.fork () with
-     | 0 ->
-       (try Unix.execvp "tmux" [| "tmux"; "new-window"; "-n"; window_title; shell_cmd |] with
-        | Unix.Unix_error (e, _, _) ->
-          Printf.eprintf "error: tmux new-window failed: %s\n%!" (Unix.error_message e);
-          exit 1)
-     | child ->
-       (match snd (Unix.waitpid [] child) with
-        | Unix.WEXITED 0 ->
-          Printf.printf "launched tmux window '%s' (kickoff=%s)\n%!" window_title kickoff_path;
-          exit 0
-        | _ ->
-          Printf.eprintf "error: tmux new-window returned non-zero\n%!";
-          exit 1))
-  end;
-  let watchdog_pid = ref None in
-  if timeout > 0.0 then begin
-    match Unix.fork () with
-    | 0 ->
-      (try ignore (Unix.setsid ()) with _ -> ());
-      let broker_root = C2c_start.broker_root () in
-      let outer_pid_path = C2c_start.outer_pid_path name in
-      let inbox_path = Filename.concat broker_root (name ^ ".inbox.json") in
-      let archive_path = Filename.concat (Filename.concat broker_root "archive") (name ^ ".jsonl") in
-      let mtime_opt p = try Some (Unix.stat p).st_mtime with _ -> None in
-      let max_mtime () =
-        let candidates = [mtime_opt inbox_path; mtime_opt archive_path] in
-        List.fold_left (fun acc -> function Some m -> max acc m | None -> acc) 0.0 candidates
-      in
-      let start_time = Unix.gettimeofday () in
-      let tick = min 30.0 (max 5.0 (timeout /. 4.0)) in
-      let boot_grace_deadline = start_time +. 60.0 in
-      let rec loop () =
-        Unix.sleepf tick;
-        match C2c_start.read_pid outer_pid_path with
-        | None ->
-          if Unix.gettimeofday () < boot_grace_deadline then loop ()
-          else exit 0
-        | Some pid when not (C2c_start.pid_alive pid) -> exit 0
-        | Some pid ->
-          let last = max_mtime () in
-          let effective = if last > 0.0 then last else start_time in
-          if Unix.gettimeofday () -. effective > timeout then begin
-            Printf.eprintf "[c2c agent run] idle timeout %.0fs reached; SIGTERM pid %d (name=%s)\n%!"
-              timeout pid name;
-            (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
-            exit 0
-          end else loop ()
-      in
-      loop ()
-    | pid -> watchdog_pid := Some pid
-  end;
-  let rc =
-    C2c_start.cmd_start ~client ~name ~extra_args:[]
-      ?binary_override:bin_opt
-      ?alias_override:(Some name)
-      ?kickoff_prompt:(Some kickoff)
-      ?auto_join_rooms:auto_join
-      ()
+      | pid -> pid
+    end else 0
   in
-  (match !watchdog_pid with
-   | Some pid -> (try Unix.kill pid Sys.sigterm with _ -> ())
-   | None -> ());
-  exit rc
+
+  let c2c_bin = match bin_opt with Some b -> b | None -> "c2c" in
+  let q = Filename.quote in
+
+  (* Build env vars to strip for child (prevents nested-session guard) *)
+  let strip_env = "env -u C2C_MCP_SESSION_ID -u C2C_MCP_AUTO_REGISTER_ALIAS -u C2C_INSTANCE_NAME -u C2C_WRAPPER_SELF" in
+
+  (* Build the c2c start command with common args *)
+  let start_cmd_args = Printf.sprintf "%s start %s -n %s --kickoff-prompt-file %s"
+    (q c2c_bin) (q client) (q name) (q kickoff_path)
+  in
+
+  match mode with
+  | Pane ->
+      (match Sys.getenv_opt "TMUX" with
+       | Some s when s <> "" -> ()
+       | _ ->
+         Printf.eprintf "error: --mode pane requires running inside tmux (TMUX env var is not set)\n%!";
+         exit 1);
+      let window_title = Printf.sprintf "c2c-%s" name in
+      let shell_cmd = Printf.sprintf "%s %s" strip_env start_cmd_args in
+      (match Unix.fork () with
+       | 0 ->
+         (try Unix.execvp "tmux" [| "tmux"; "new-window"; "-n"; window_title; shell_cmd |] with
+          | Unix.Unix_error (e, _, _) ->
+            Printf.eprintf "error: tmux new-window failed: %s\n%!" (Unix.error_message e);
+            exit 1)
+       | child ->
+         (match snd (Unix.waitpid [] child) with
+          | Unix.WEXITED 0 ->
+            let wp = start_watchdog () in
+            Printf.printf "launched tmux window '%s' (kickoff=%s)\n%!" window_title kickoff_path;
+            (try Unix.kill wp Sys.sigterm with _ -> ());
+            exit 0
+          | _ ->
+            Printf.eprintf "error: tmux new-window returned non-zero\n%!";
+            exit 1))
+
+  | Background ->
+      let full_cmd = Printf.sprintf "%s %s &" strip_env start_cmd_args in
+      Printf.printf "spawning background ephemeral '%s' (kickoff=%s)\n%!" name kickoff_path;
+      (match Unix.fork () with
+       | 0 ->
+         (try ignore (Unix.setsid ()) with _ -> ());
+         (try
+            let devnull = Unix.openfile "/dev/null" [Unix.O_RDWR] 0 in
+            Unix.dup2 devnull Unix.stdin;
+            Unix.dup2 devnull Unix.stdout;
+            Unix.dup2 devnull Unix.stderr;
+            Unix.close devnull
+          with _ -> ());
+         let wp = start_watchdog () in
+         ignore (Sys.command full_cmd);
+         (try Unix.kill wp Sys.sigterm with _ -> ());
+         exit 0
+       | _ -> exit 0)
+
+  | Headless ->
+      let headless_client = if client = "claude" || client = "opencode" then "codex-headless" else client in
+      let start_cmd_args = Printf.sprintf "%s start %s -n %s --kickoff-prompt-file %s"
+        (q c2c_bin) (q headless_client) (q name) (q kickoff_path)
+      in
+      let full_cmd = Printf.sprintf "%s %s &" strip_env start_cmd_args in
+      Printf.printf "spawning headless ephemeral '%s' (kickoff=%s)\n%!" name kickoff_path;
+      (match Unix.fork () with
+       | 0 ->
+         (try ignore (Unix.setsid ()) with _ -> ());
+         (try
+            let devnull = Unix.openfile "/dev/null" [Unix.O_RDWR] 0 in
+            Unix.dup2 devnull Unix.stdin;
+            Unix.dup2 devnull Unix.stdout;
+            Unix.dup2 devnull Unix.stderr;
+            Unix.close devnull
+          with _ -> ());
+         let wp = start_watchdog () in
+         ignore (Sys.command full_cmd);
+         (try Unix.kill wp Sys.sigterm with _ -> ());
+         exit 0
+       | _ -> exit 0)
 
 (* --- subcommand: agent refine (Phase 2 of the wizard) ---------------------- *)
 (* Thin wrapper over `c2c agent run role-designer` — composes a refine-specific
@@ -7888,6 +7886,10 @@ let agent_refine_term =
     Cmdliner.Arg.(value & flag & info [ "pane" ]
       ~doc:"Launch the ephemeral in a new tmux window (requires TMUX) and return immediately. Watchdog still runs detached.")
   in
+  let reply_to_arg =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "reply-to" ]
+      ~docv:"ALIAS" ~doc:"Alias to DM completion results to (default: caller alias from C2C_MCP_AUTO_REGISTER_ALIAS).")
+  in
   let agent_mode_arg =
     Cmdliner.Arg.(value & flag & info [ "agent-mode" ]
       ~doc:"Peer-invocation mode: DM the caller (from C2C_MCP_REPLY_TO, or coordinator1 fallback) for clarification instead of interviewing in this pane. Implies structured output + stop_self on completion.")
@@ -7898,6 +7900,7 @@ let agent_refine_term =
   and+ timeout = timeout_arg
   and+ dry_run = dry_run_arg
   and+ pane = pane_arg
+  and+ reply_to_opt = reply_to_arg
   and+ agent_mode = agent_mode_arg in
   let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
   let role_file_path = Filename.concat roles_dir (name ^ ".md") in
@@ -7934,11 +7937,21 @@ let agent_refine_term =
   let instance_name =
     Printf.sprintf "eph-refine-%s-%s" name (C2c_start.generate_alias ())
   in
+  let caller =
+    match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
+    | Some a when a <> "" -> Some a
+    | _ -> None
+  in
+  let reply_to = match reply_to_opt with
+    | Some r -> Some r
+    | None -> caller
+  in
   run_ephemeral_agent
     ~role:"role-designer"
     ~prompt_opt:(Some refine_prompt)
     ~name_opt:(Some instance_name)
-    ~client_opt ~bin_opt ~timeout ~dry_run ~pane
+    ~client_opt ~bin_opt ~timeout ~dry_run
+    ~mode:Pane ~reply_to_opt:reply_to ~auto_join_rooms_opt:None
     ()
 
 let agent_refine_cmd =
@@ -7976,9 +7989,24 @@ let agent_run_term =
     Cmdliner.Arg.(value & flag & info [ "dry-run" ]
       ~doc:"Print resolved client, name, caller, kickoff prompt, and timeout without invoking c2c start.")
   in
-  let pane_arg =
-    Cmdliner.Arg.(value & flag & info [ "pane" ]
-      ~doc:"Launch the ephemeral in a new tmux window (requires TMUX) and return immediately. Watchdog still runs detached. Enables spawning fire-and-forget peers (e.g. review-bots) that DM results back instead of blocking a terminal.")
+  let mode_arg =
+    let mode_conv =
+      Cmdliner.Arg.enum [
+        "pane", Pane;
+        "background", Background;
+        "headless", Headless;
+      ]
+    in
+    Cmdliner.Arg.(value & opt (some mode_conv) (Some Pane) & info [ "mode" ]
+      ~docv:"MODE" ~doc:"Terminal harness mode: pane (tmux window), background (detached daemon), or headless (codex-headless). Default: pane.")
+  in
+  let reply_to_arg =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "reply-to" ]
+      ~docv:"ALIAS" ~doc:"Alias to DM completion results to (default: caller alias from C2C_MCP_AUTO_REGISTER_ALIAS).")
+  in
+  let auto_join_arg =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "auto-join" ]
+      ~docv:"ROOMS" ~doc:"Comma-separated room IDs to auto-join on startup (default: none for ephemerals).")
   in
   let+ role = role_arg
   and+ prompt_opt = prompt_arg
@@ -7987,9 +8015,23 @@ let agent_run_term =
   and+ bin_opt = bin_arg
   and+ timeout = timeout_arg
   and+ dry_run = dry_run_arg
-  and+ pane = pane_arg in
+  and+ mode_opt = mode_arg
+  and+ reply_to_opt = reply_to_arg
+  and+ auto_join_rooms_opt = auto_join_arg in
+  let mode = Option.value mode_opt ~default:Pane in
+  let auto_join_rooms_opt = auto_join_rooms_opt in
+  let caller =
+    match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
+    | Some a when a <> "" -> Some a
+    | _ -> None
+  in
+  let reply_to = match reply_to_opt with
+    | Some r -> Some r
+    | None -> caller
+  in
   run_ephemeral_agent
-    ~role ~prompt_opt ~name_opt ~client_opt ~bin_opt ~timeout ~dry_run ~pane
+    ~role ~prompt_opt ~name_opt ~client_opt ~bin_opt ~timeout ~dry_run
+    ~mode ~reply_to_opt:reply_to ~auto_join_rooms_opt:auto_join_rooms_opt
     ()
 
 let agent_run_cmd =
