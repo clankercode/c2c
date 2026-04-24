@@ -142,4 +142,7 @@ val session_id_from_env : ?client_type:string -> unit -> string option
     explicit c2c-managed ids and falls back to harness-native ids when safe. *)
 val auto_register_startup : broker_root:string -> unit
 val auto_join_rooms_startup : broker_root:string -> unit
+val pop_channel_test_code : unit -> string option
+(** [pop_channel_test_code ()] returns and clears the pending channel-test code,
+    if one was generated during registration. Returns [None] if no test is pending. *)
 val handle_request : broker_root:string -> Yojson.Safe.t -> Yojson.Safe.t option Lwt.t

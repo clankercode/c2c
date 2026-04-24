@@ -241,7 +241,16 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
                   if C2c_mcp.Broker.is_dnd broker ~session_id:sid then []
                   else C2c_mcp.Broker.drain_inbox_push broker ~session_id:sid
                 in
-                emit_notifications ~session_id:sid queued
+                let* () = emit_notifications ~session_id:sid queued in
+                (* Emit channel test notification if code exists *)
+                (match C2c_mcp.pop_channel_test_code () with
+                 | Some code ->
+                     let test_msg = { C2c_mcp.from_alias = "c2c-system";
+                                      to_alias = sid;
+                                      content = Printf.sprintf "<c2c event=\"channel-test\" code=\"%s\"/>" code;
+                                      deferrable = false; reply_via = None; enc_status = None } in
+                     emit_notification ~session_id:sid test_msg
+                 | None -> Lwt.return_unit)
             | _ -> Lwt.return_unit
           in
           let* () =
