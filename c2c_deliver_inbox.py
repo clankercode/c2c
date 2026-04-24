@@ -705,8 +705,12 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.xml_output_fd is None and args.xml_output_path is None:
-            import c2c_inject  # PTY-injection path; fails cleanly with ImportError if the module is in deprecated/
-            terminal_pid, pts, _transcript = c2c_inject.resolve_session_info(args)
+            try:
+                import c2c_inject  # PTY-injection path; unavailable if module is in deprecated/
+                terminal_pid, pts, _transcript = c2c_inject.resolve_session_info(args)
+            except ImportError:
+                terminal_pid = args.terminal_pid or args.pid or 0
+                pts = args.pts or ""
         else:
             terminal_pid = args.terminal_pid or args.pid or 0
             pts = args.pts or ""
