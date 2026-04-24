@@ -1144,6 +1144,105 @@ class TestDebugTool:
             proc.terminate()
             proc.wait(timeout=5)
 
+    def test_codex_debug_lazy_bootstraps_managed_registration(
+        self, broker_dir: Path, tmp_path: Path
+    ) -> None:
+        """Codex debug should recover the managed session from request metadata."""
+        instances_dir = tmp_path / "instances"
+        instance_name = "Lyra-Quill-X"
+        alias = "lyra-quill"
+        codex_thread_id = "019dafa6-caef-7e50-bfad-323af643e3ce"
+        inst_dir = instances_dir / instance_name
+        inst_dir.mkdir(parents=True)
+        (inst_dir / "config.json").write_text(
+            json.dumps(
+                {
+                    "name": instance_name,
+                    "client": "codex",
+                    "session_id": instance_name,
+                    "resume_session_id": codex_thread_id,
+                    "codex_resume_target": codex_thread_id,
+                    "alias": alias,
+                    "extra_args": [],
+                    "created_at": 0.0,
+                    "broker_root": str(broker_dir),
+                    "auto_join_rooms": "swarm-lounge",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        env = {
+            **os.environ,
+            "C2C_MCP_BROKER_ROOT": str(broker_dir),
+            "C2C_MCP_CHANNEL_DELIVERY": "0",
+            "C2C_MCP_AUTO_DRAIN_CHANNEL": "0",
+            "C2C_MCP_AUTO_JOIN_ROOMS": "swarm-lounge",
+            "C2C_MCP_AUTO_REGISTER_ALIAS": alias,
+            "C2C_MCP_INBOX_WATCHER_DELAY": "0",
+            "C2C_INSTANCES_DIR": str(instances_dir),
+        }
+        env.pop("C2C_MCP_SESSION_ID", None)
+        env.pop("C2C_MCP_CLIENT_TYPE", None)
+        env.pop("CODEX_SESSION_ID", None)
+        env.pop("CODEX_THREAD_ID", None)
+
+        proc = spawn_tracked(
+            [str(MCP_SERVER_EXE)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            text=True,
+            bufsize=1,
+        )
+        try:
+            initialize_server(proc)
+            req = {
+                "jsonrpc": "2.0",
+                "id": 8,
+                "method": "tools/call",
+                "params": {
+                    "name": "debug",
+                    "arguments": {
+                        "action": "send_msg_to_self",
+                        "payload": {"probe": "codex-delivery"},
+                    },
+                    "_meta": {
+                        "x-codex-turn-metadata": {
+                            "session_id": codex_thread_id,
+                        }
+                    },
+                },
+            }
+            send_jsonrpc(proc, req)
+            response = read_jsonrpc(proc)
+            result_text = response["result"]["content"][0]["text"]
+            result = json.loads(result_text)
+            assert result["ok"] is True
+            assert result["session_id"] == instance_name
+            assert result["alias"] == alias
+
+            regs_path = broker_dir / "registry.json"
+            regs = json.loads(regs_path.read_text())
+            matching = [r for r in regs if r.get("alias") == alias]
+            assert matching, f"No registration with alias={alias!r}: {regs}"
+            reg = matching[0]
+            assert reg["session_id"] == instance_name
+
+            inbox_path = broker_dir / f"{instance_name}.inbox.json"
+            inbox = json.loads(inbox_path.read_text())
+            assert len(inbox) == 1
+            msg = inbox[0]
+            assert msg["from_alias"] == alias
+            assert msg["to_alias"] == alias
+            content = json.loads(msg["content"])
+            assert content["kind"] == "c2c_debug"
+            assert content["session_id"] == instance_name
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
     def test_codex_turn_metadata_maps_to_managed_session_id(
         self, broker_dir: Path, tmp_path: Path
     ) -> None:

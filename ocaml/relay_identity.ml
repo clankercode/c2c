@@ -73,11 +73,31 @@ let generate ?(alias_hint = "") () =
     alias_hint;
   }
 
+let generate_ssh_key ~(priv_path : string) ~(alias : string) =
+  if Sys.file_exists priv_path then Ok ()
+  else
+    let dir = Filename.dirname priv_path in
+    let tmp_base = Filename.concat dir (Printf.sprintf "c2c_ssh_%s" alias) in
+    let tmp_priv = tmp_base in
+    let tmp_pub = tmp_base ^ ".pub" in
+    let pub_path = priv_path ^ ".pub" in
+    let email = alias ^ "@c2c.im" in
+    let cmd = String.concat " && " [
+      Printf.sprintf "ssh-keygen -t ed25519 -N '' -C '%s' -f '%s' -q" email tmp_priv;
+      Printf.sprintf "mv '%s' '%s'" tmp_priv priv_path;
+      Printf.sprintf "mv '%s' '%s'" tmp_pub pub_path
+    ] in
+    let rc = Sys.command cmd in
+    if rc <> 0 then begin
+      (try Sys.remove tmp_priv with _ -> ());
+      (try Sys.remove tmp_pub with _ -> ());
+      Error (Printf.sprintf "ssh-keygen failed with code %d" rc)
+    end else Ok ()
+
 let sign t msg =
   match Mirage_crypto_ec.Ed25519.priv_of_octets t.private_key_seed with
   | Error _ ->
-    (* Only reachable if someone built a t by hand with an invalid seed. *)
-    failwith "relay_identity.sign: invalid private key seed"
+      failwith "relay_identity.sign: invalid private key seed"
   | Ok priv -> Mirage_crypto_ec.Ed25519.sign ~key:priv msg
 
 let verify ~pk ~msg ~sig_ =
@@ -220,11 +240,34 @@ let load ?path () =
              path (Unix.error_message e) fn arg)
   | Sys_error msg -> Error ("load: " ^ msg)
 
+let write_openssh_key (id : t) ~(priv_path : string) =
+  try
+    if Sys.file_exists priv_path then Ok ()
+    else
+      let dir = Filename.dirname priv_path in
+      (try ignore (Unix.stat dir) with Unix.Unix_error _ -> Unix.mkdir dir 0o700);
+      match generate_ssh_key ~priv_path ~alias:id.alias_hint with
+      | Ok () -> Ok ()
+      | Error e -> Error e
+  with
+  | Unix.Unix_error (e, fn, arg) ->
+      Error (Printf.sprintf "write_openssh_key %s: %s (%s %s)"
+               priv_path (Unix.error_message e) fn arg)
+  | Sys_error msg -> Error ("write_openssh_key: " ^ msg)
+
 let load_or_create_at ~(path : string) ~(alias_hint : string) =
   match load ~path () with
-  | Ok id -> id
+  | Ok id ->
+      (match write_openssh_key id ~priv_path:(path ^ ".ssh") with
+       | Ok () -> ()
+       | Error e -> Printf.eprintf "[load_or_create_at] openssh key write failed: %s\n%!" e);
+      id
   | Error _ ->
       let id = generate ~alias_hint () in
       (match save ~path id with
-       | Ok () -> id
-       | Error e -> failwith ("load_or_create_at save: " ^ e))
+       | Error e -> failwith ("load_or_create_at save: " ^ e)
+       | Ok () ->
+           (match write_openssh_key id ~priv_path:(path ^ ".ssh") with
+            | Ok () -> ()
+            | Error e -> Printf.eprintf "[load_or_create_at] openssh key write failed: %s\n%!" e);
+           id)
