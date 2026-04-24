@@ -145,6 +145,17 @@ let test_build_env_keeps_channel_delivery_without_force_flag () =
     (env_has_key env "C2C_MCP_FORCE_CHANNEL_DELIVERY");
   ()
 
+let test_build_env_exports_codex_thread_id () =
+  let env =
+    C2c_start.build_env ~broker_root_override:(Some "/tmp/c2c-test-broker")
+      ~client:(Some "codex")
+      "codex-proof" (Some "codex-proof")
+  in
+  check bool "exports CODEX_THREAD_ID" true
+    (env_contains env "CODEX_THREAD_ID=codex-proof");
+  check bool "does not export legacy CODEX_SESSION_ID" false
+    (env_has_key env "CODEX_SESSION_ID")
+
 let test_probed_capabilities_for_claude_include_channel () =
   let caps =
     C2c_start.probed_capabilities ~client:"claude" ~binary_path:"/bin/true"
@@ -494,6 +505,56 @@ let test_missing_role_capabilities_satisfied_for_claude_channel () =
   in
   check (list string) "claude channel satisfied" [] missing
 
+let test_prepare_launch_args_codex_resume_last_by_default () =
+  let args =
+    C2c_start.prepare_launch_args ~name:"codex-proof" ~client:"codex"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~resume_session_id:"placeholder-uuid"
+      ()
+  in
+  check (list string) "codex resume last"
+    [ "resume"; "--last" ] args
+
+let test_prepare_launch_args_codex_uses_exact_resume_target_when_set () =
+  let args =
+    C2c_start.prepare_launch_args ~name:"codex-proof" ~client:"codex"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~resume_session_id:"placeholder-uuid"
+      ~codex_resume_target:"thread-abc"
+      ()
+  in
+  check (list string) "codex exact resume"
+    [ "resume"; "thread-abc" ] args
+
+let test_cmd_reset_thread_persists_codex_resume_target () =
+  let name = Printf.sprintf "codex-reset-%d" (Random.bits ()) in
+  with_instance_dir name @@ fun _dir ->
+  with_temp_dir @@ fun broker_root ->
+  let cfg : C2c_start.instance_config =
+    { name
+    ; client = "codex"
+    ; session_id = name
+    ; resume_session_id =
+        Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
+    ; codex_resume_target = None
+    ; alias = name
+    ; extra_args = []
+    ; created_at = Unix.gettimeofday ()
+    ; broker_root
+    ; auto_join_rooms = "swarm-lounge"
+    ; binary_override = Some "/bin/true"
+    ; model_override = None
+    }
+  in
+  C2c_start.write_config cfg;
+  let rc = C2c_start.cmd_reset_thread name "thread-reset-123" in
+  check int "reset-thread rc" 0 rc;
+  match C2c_start.load_config_opt name with
+  | None -> fail "expected config after reset-thread"
+  | Some saved ->
+      check (option string) "persisted codex resume target"
+        (Some "thread-reset-123") saved.codex_resume_target
+
 (* ------------------------------------------------------------------ *)
 (* pmodel parsing                                                      *)
 (* ------------------------------------------------------------------ *)
@@ -596,6 +657,8 @@ let () =
             `Quick, test_prepare_launch_args_adds_model_flag_for_opencode )
         ; ( "build_env_keeps_channel_delivery_without_force_flag",
             `Quick, test_build_env_keeps_channel_delivery_without_force_flag )
+        ; ( "build_env_exports_codex_thread_id",
+            `Quick, test_build_env_exports_codex_thread_id )
         ; ( "probed_capabilities_for_claude_include_channel",
             `Quick, test_probed_capabilities_for_claude_include_channel )
         ; ( "probed_capabilities_for_opencode_include_plugin",
@@ -633,6 +696,12 @@ let () =
             `Quick, test_missing_role_capabilities_reports_missing_codex_xml_fd )
         ; ( "missing_role_capabilities_satisfied_for_claude_channel",
             `Quick, test_missing_role_capabilities_satisfied_for_claude_channel )
+        ; ( "prepare_launch_args_codex_resume_last_by_default",
+            `Quick, test_prepare_launch_args_codex_resume_last_by_default )
+        ; ( "prepare_launch_args_codex_uses_exact_resume_target_when_set",
+            `Quick, test_prepare_launch_args_codex_uses_exact_resume_target_when_set )
+        ; ( "cmd_reset_thread_persists_codex_resume_target",
+            `Quick, test_cmd_reset_thread_persists_codex_resume_target )
         ] )
     ; ( "pmodel",
         [ ("parse_pmodel_plain", `Quick, test_parse_pmodel_plain)

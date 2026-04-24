@@ -644,6 +644,7 @@ type instance_config = {
   client : string;
   session_id : string;
   resume_session_id : string;
+  codex_resume_target : string option;
   alias : string;
   extra_args : string list;
   created_at : float;
@@ -667,6 +668,10 @@ let write_config (cfg : instance_config) =
     ; ("created_at", `Float cfg.created_at)
     ; ("broker_root", `String cfg.broker_root)
     ; ("auto_join_rooms", `String cfg.auto_join_rooms) ]
+    @
+    (match cfg.codex_resume_target with
+     | Some sid -> [ ("codex_resume_target", `String sid) ]
+     | None -> [])
     @
     (match cfg.binary_override with
      | Some b -> [ ("binary_override", `String b) ]
@@ -694,7 +699,7 @@ let load_config_opt (name : string) : instance_config option =
       let gf k = match List.assoc_opt k a with Some (`Float f) -> f | Some (`Int i) -> float_of_int i | _ -> raise Not_found in
       let gl k = match List.assoc_opt k a with Some (`List l) -> List.map (function `String s -> s | _ -> raise Not_found) l | _ -> [] in
       Some { name = gs "name"; client = gs "client"; session_id = gs "session_id";
-             resume_session_id = gs "resume_session_id"; alias = gs "alias";
+             resume_session_id = gs "resume_session_id"; codex_resume_target = gso "codex_resume_target"; alias = gs "alias";
              extra_args = gl "extra_args"; created_at = gf "created_at";
              broker_root = gs "broker_root"; auto_join_rooms = gs "auto_join_rooms";
              binary_override = gso "binary_override";
@@ -713,6 +718,12 @@ let persist_headless_thread_id ~(name : string) ~(thread_id : string) : unit =
   | None -> ()
   | Some cfg ->
       write_config { cfg with resume_session_id = thread_id }
+
+let persist_codex_resume_target ~(name : string) ~(thread_id : string) : unit =
+  match load_config_opt name with
+  | None -> ()
+  | Some cfg ->
+      write_config { cfg with codex_resume_target = Some thread_id }
 
 (* ---------------------------------------------------------------------------
  * Process utilities
@@ -850,6 +861,7 @@ let cleanup_stale_opentui_zig_cache () : int =
 let build_env ?(broker_root_override : string option = None)
     ?(auto_join_rooms_override : string option = None)
     ?(role_class_opt : string option = None)
+    ?(client : string option = None)
     (name : string) (alias_override : string option) : string array =
   let br = Option.value broker_root_override ~default:(broker_root ()) in
   let rooms_base = Option.value auto_join_rooms_override ~default:"swarm-lounge" in
@@ -870,6 +882,15 @@ let build_env ?(broker_root_override : string option = None)
      which could pick up ./c2c if CWD is in PATH). *)
   let c2c_bin = current_c2c_command () in
   let enable_git_shim = repo_config_git_attribution () in
+  let client_session_additions =
+    match client with
+    | Some "claude" -> [ "CLAUDE_CODE_PARENT_SESSION_ID", name ]
+    | Some "codex" -> [ "CODEX_THREAD_ID", name ]
+    | Some "opencode" -> [ "OPENCODE_SESSION_ID", name ]
+    | Some "kimi" -> [ "KIMI_SESSION_ID", name ]
+    | Some "crush" -> [ "CRUSH_SESSION_ID", name ]
+    | _ -> []
+  in
   let additions =
     let base = [
     "C2C_WRAPPER_SELF", "1";  (* marks the wrapper process itself; bash subshells of the managed client don't inherit this *)
@@ -887,6 +908,7 @@ let build_env ?(broker_root_override : string option = None)
        path so a CWD-relative ./c2c shim can never be accidentally preferred. *)
     "C2C_CLI_COMMAND", c2c_bin;
     ] in
+    let base = base @ client_session_additions in
     if enable_git_shim then
       let shim_bin_dir = instance_dir name // "bin" in
       base @ [ "C2C_GIT_SHIM_DIR", shim_bin_dir ]
@@ -899,7 +921,13 @@ let build_env ?(broker_root_override : string option = None)
      (previously a buggy in-place replacement left both copies).
      Also strip CLAUDE_SESSION_ID: when starting a new managed session, the child
      should create a fresh session rather than inheriting the parent's. *)
-  let override_keys = "CLAUDE_SESSION_ID" :: "C2C_GIT_SHIM_ACTIVE" :: List.map fst additions in
+  let legacy_native_session_keys =
+    [ "CLAUDE_SESSION_ID"; "CODEX_SESSION_ID"; "OPENCODE_SESSION_ID";
+      "KIMI_SESSION_ID"; "CRUSH_SESSION_ID" ]
+  in
+  let override_keys =
+    legacy_native_session_keys @ "C2C_GIT_SHIM_ACTIVE" :: List.map fst additions
+  in
   let env_key e =
     try String.sub e 0 (String.index e '=') with Not_found -> e
   in
@@ -1109,6 +1137,7 @@ let prepare_launch_args ~(name : string) ~(client : string)
     ?(alias_override : string option) ?(resume_session_id : string option)
     ?(binary_override : string option) ?(model_override : string option)
     ?(codex_xml_input_fd : string option)
+    ?(codex_resume_target : string option)
     ?(thread_id_fd : string option) () : string list =
   let args =
     match client with
@@ -1144,7 +1173,10 @@ let prepare_launch_args ~(name : string) ~(client : string)
         in
         [ "--log-level"; "INFO" ] @ session_arg
     | "codex" ->
-        (match resume_session_id with Some _ -> [ "resume"; "--last" ] | None -> [])
+        (match codex_resume_target with
+         | Some sid when String.trim sid <> "" -> [ "resume"; sid ]
+         | _ ->
+             (match resume_session_id with Some _ -> [ "resume"; "--last" ] | None -> []))
     | "codex-headless" ->
         [ "--stdin-format"; "xml";
           "--codex-bin"; "codex";
@@ -1643,6 +1675,7 @@ let run_outer_loop ~(name : string) ~(client : string)
     ~(extra_args : string list) ~(broker_root : string)
     ?(binary_override : string option) ?(alias_override : string option)
     ?(session_id : string option) ?(resume_session_id : string option)
+    ?(codex_resume_target : string option)
     ?(model_override : string option)
     ?(one_hr_cache = false) ?(kickoff_prompt : string option)
     ?(auto_join_rooms : string option) () : int =
@@ -1764,27 +1797,14 @@ let run_outer_loop ~(name : string) ~(client : string)
 
       (* Build env *)
       let env = build_env ~broker_root_override:(Some broker_root)
-          ~auto_join_rooms_override:auto_join_rooms name alias_override in
+          ~auto_join_rooms_override:auto_join_rooms ~client:(Some client)
+          name alias_override in
       let env =
         Array.append env
           (Array.of_list
              (List.map (fun (k, v) -> Printf.sprintf "%s=%s" k v) cfg.extra_env))
       in
       let env = Array.append env [| Printf.sprintf "C2C_MCP_CLIENT_PID=%d" (Unix.getpid ()) |] in
-      (* Export client-native session IDs so child shells/CLIs can self-identify
-         without walking /proc. For Claude Code (claude), CC generates its own session
-         ID internally so we export CLAUDE_CODE_PARENT_SESSION_ID as a hint; for other
-         clients the name IS their session ID so we export their native env var. *)
-      let client_session_env =
-        match client with
-        | "claude"   -> [| "CLAUDE_CODE_PARENT_SESSION_ID=" ^ name |]
-        | "codex"    -> [| "CODEX_SESSION_ID=" ^ name |]
-        | "opencode" -> [| "OPENCODE_SESSION_ID=" ^ name |]
-        | "kimi"     -> [| "KIMI_SESSION_ID=" ^ name |]
-        | "crush"    -> [| "CRUSH_SESSION_ID=" ^ name |]
-        | _ -> [||]
-      in
-      let env = Array.append env client_session_env in
       let env =
         if one_hr_cache then
           Array.append env [| "ENABLE_PROMPT_CACHING_1H=1" |]
@@ -1837,6 +1857,7 @@ let run_outer_loop ~(name : string) ~(client : string)
         else
           prepare_launch_args ~name ~client ~extra_args ~broker_root
             ?alias_override ?resume_session_id ?binary_override ?model_override
+            ?codex_resume_target
             ?codex_xml_input_fd
             ?thread_id_fd ()
       in
@@ -2351,7 +2372,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
    | Some _, Some _, Some _ -> ());
 
   (* Validate --session-id. OpenCode accepts ses_* session IDs from its TUI.
-     codex-headless stores opaque bridge thread ids here, not UUIDs. *)
+     codex / codex-headless accept non-empty explicit thread/session targets. *)
   (match session_id_override with
    | None -> ()
    | Some sid when client = "opencode" ->
@@ -2376,6 +2397,11 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
              \  Omit -s to start a fresh session.\n%!"
              sid;
            exit 1)
+   | Some sid when client = "codex" ->
+       if String.trim sid = "" then begin
+         Printf.eprintf "error: --session-id for codex must be a non-empty session id or thread name\n%!";
+         exit 1
+       end
    | Some sid when client = "codex-headless" ->
        if String.trim sid = "" then begin
          Printf.eprintf "error: --session-id for codex-headless must be a non-empty thread id\n%!";
@@ -2422,7 +2448,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
 
   (* Resume: inherit saved settings *)
   let existing = load_config_opt name in
-  let (binary_override, alias_override, extra_args, resume_session_id, broker_root, model_override) =
+  let (binary_override, alias_override, extra_args, resume_session_id, codex_resume_target, broker_root, model_override) =
     match existing with
     | Some ex ->
         if ex.client <> client then
@@ -2473,7 +2499,13 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
                     | Some v -> Some v
                     | None -> Some (Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()))))
         in
-        (bo, ao, ea, rs, ex.broker_root, mo)
+        let codex_target =
+          match client, session_id_override with
+          | "codex", Some sid -> Some sid
+          | "codex", None -> ex.codex_resume_target
+          | _, _ -> ex.codex_resume_target
+        in
+        (bo, ao, ea, rs, codex_target, ex.broker_root, mo)
     | None ->
         let rs =
           match client, session_id_override with
@@ -2489,7 +2521,12 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
             else
               Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
         in
-        (binary_override, alias_override, extra_args, Some rs, broker_root (), model_override)
+        let codex_target =
+          match client, session_id_override with
+          | "codex", Some sid -> Some sid
+          | _ -> None
+        in
+        (binary_override, alias_override, extra_args, Some rs, codex_target, broker_root (), model_override)
   in
 
   let binary_to_check =
@@ -2510,6 +2547,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
   let cfg : instance_config = {
     name; client; session_id = name;
     resume_session_id = Option.value resume_session_id ~default:name;
+    codex_resume_target;
     alias = Option.value alias_override ~default:name;
     extra_args;
     created_at = (match existing with Some ex -> ex.created_at | None -> Unix.gettimeofday ());
@@ -2532,6 +2570,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
   run_outer_loop ~name ~client ~extra_args ~broker_root
     ?binary_override ?alias_override ~session_id:cfg.session_id
     ?resume_session_id:launch_resume_session_id
+    ?codex_resume_target:cfg.codex_resume_target
     ?model_override:cfg.model_override
     ~one_hr_cache ?kickoff_prompt ?auto_join_rooms ()
 
@@ -2600,12 +2639,27 @@ let read_kickoff_prompt_opt (name : string) : string option =
     with _ -> None
   else None
 
-let cmd_restart (name : string) : int =
+let cmd_restart ?(session_id_override : string option) (name : string) : int =
   match load_config_opt name with
   | None ->
       Printf.eprintf "error: no config found for instance '%s'\n%!" name;
       exit 1
   | Some cfg ->
+      let cfg =
+        match session_id_override with
+        | None -> cfg
+        | Some sid ->
+            let updated =
+              match cfg.client with
+              | "codex" -> { cfg with codex_resume_target = Some sid }
+              | "codex-headless" -> { cfg with resume_session_id = sid }
+              | "claude" | "opencode" | "kimi" | "crush" ->
+                  { cfg with resume_session_id = sid }
+              | _ -> cfg
+            in
+            write_config updated;
+            updated
+      in
       ignore (cmd_stop name);
       let kickoff_prompt = read_kickoff_prompt_opt name in
       run_outer_loop ~name ~client:cfg.client ~extra_args:cfg.extra_args
@@ -2613,8 +2667,31 @@ let cmd_restart (name : string) : int =
         ?binary_override:cfg.binary_override
         ?alias_override:(Some cfg.alias)
         ?resume_session_id:(Some cfg.resume_session_id)
+        ?codex_resume_target:cfg.codex_resume_target
         ?model_override:cfg.model_override
         ?kickoff_prompt ()
+
+let cmd_reset_thread (name : string) (thread_id : string) : int =
+  if String.trim thread_id = "" then begin
+    Printf.eprintf "error: thread id must be non-empty\n%!";
+    exit 1
+  end;
+  match load_config_opt name with
+  | None ->
+      Printf.eprintf "error: no config found for instance '%s'\n%!" name;
+      exit 1
+  | Some cfg ->
+      (match cfg.client with
+       | "codex" ->
+           write_config { cfg with codex_resume_target = Some thread_id }
+       | "codex-headless" ->
+           write_config { cfg with resume_session_id = thread_id }
+       | _ ->
+           Printf.eprintf
+             "error: reset-thread currently supports codex and codex-headless instances only (got %s)\n%!"
+             cfg.client;
+           exit 1);
+      cmd_restart name
 
 let cmd_instances () : int =
   if not (Sys.file_exists instances_dir) then

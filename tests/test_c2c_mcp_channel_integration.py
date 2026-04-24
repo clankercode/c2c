@@ -1008,6 +1008,7 @@ class TestDerivedSessionId:
         }
         # Explicitly unset C2C_MCP_SESSION_ID so derived path is exercised.
         env.pop("C2C_MCP_SESSION_ID", None)
+        env.pop("C2C_MCP_CLIENT_TYPE", None)
         env.pop("CODEX_SESSION_ID", None)
         env.pop("CODEX_THREAD_ID", None)
 
@@ -1039,24 +1040,25 @@ class TestDerivedSessionId:
         finally:
             proc.terminate()
 
-    def test_auto_register_prefers_codex_session_id_when_c2c_session_id_absent(
+    def test_auto_register_prefers_codex_thread_id_when_c2c_session_id_absent(
         self, broker_dir: Path
     ) -> None:
-        """Managed Codex should recover identity from CODEX_SESSION_ID on server startup."""
+        """Managed Codex should recover identity from CODEX_THREAD_ID on server startup."""
         alias = "codex-no-c2c-sid"
         codex_session_id = "codex-managed-123"
         env = {
             **os.environ,
             "C2C_MCP_BROKER_ROOT": str(broker_dir),
             "C2C_MCP_AUTO_REGISTER_ALIAS": alias,
-            "CODEX_SESSION_ID": codex_session_id,
+            "CODEX_THREAD_ID": codex_session_id,
             "C2C_MCP_CHANNEL_DELIVERY": "0",
             "C2C_MCP_AUTO_DRAIN_CHANNEL": "0",
             "C2C_MCP_AUTO_JOIN_ROOMS": "",
             "C2C_MCP_INBOX_WATCHER_DELAY": "0",
         }
         env.pop("C2C_MCP_SESSION_ID", None)
-        env.pop("CODEX_THREAD_ID", None)
+        env.pop("C2C_MCP_CLIENT_TYPE", None)
+        env.pop("CODEX_SESSION_ID", None)
 
         proc = spawn_tracked(
             [str(MCP_SERVER_EXE)],

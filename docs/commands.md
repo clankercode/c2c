@@ -523,6 +523,7 @@ Run `c2c --help` for the top-level subcommand list, or
 | `start <client> [-n NAME]` | Launch a managed client session (outer restart loop + deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `crush`. NAME becomes the alias. |
 | `stop <name>` | Stop a managed instance (SIGTERM outer loop) |
 | `restart <name>` | Stop then start a managed instance |
+| `reset-thread <name> <thread>` | For `codex` and `codex-headless`, persist an exact resume target and restart the instance onto that thread. |
 | `instances [--json]` | List all managed instances with their alive/dead status |
 
 #### Maintenance

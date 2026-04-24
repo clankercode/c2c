@@ -35,6 +35,7 @@ type instance_config = {
   client : string;
   session_id : string;
   resume_session_id : string;
+  codex_resume_target : string option;
   alias : string;
   extra_args : string list;
   created_at : float;
@@ -131,11 +132,11 @@ val broker_root : unit -> string
 
 (** {1 Environment building} *)
 
-val build_env : ?broker_root_override:string option -> ?auto_join_rooms_override:string option -> ?role_class_opt:string option -> string -> string option -> string array
-(** [build_env ?broker_root_override ?auto_join_rooms_override ?role_class_opt name alias_override] builds the environment array for a managed
+val build_env : ?broker_root_override:string option -> ?auto_join_rooms_override:string option -> ?role_class_opt:string option -> ?client:string option -> string -> string option -> string array
+(** [build_env ?broker_root_override ?auto_join_rooms_override ?role_class_opt ?client name alias_override] builds the environment array for a managed
     client subprocess. Sets C2C_MCP_SESSION_ID, C2C_MCP_AUTO_REGISTER_ALIAS,
     C2C_MCP_BROKER_ROOT, C2C_MCP_AUTO_JOIN_ROOMS (defaults to "swarm-lounge"),
-    C2C_MCP_AUTO_DRAIN_CHANNEL=0, and C2C_MCP_CLIENT_PID.
+    C2C_MCP_AUTO_DRAIN_CHANNEL=0, and client-native session env when requested.
     When C2C_AUTO_JOIN_ROLE_ROOM=1 is set and role_class_opt is provided,
     appends the derived role room (e.g. "reviewers" from "reviewer") to C2C_MCP_AUTO_JOIN_ROOMS. *)
 
@@ -151,12 +152,14 @@ val prepare_launch_args :
   ?binary_override:string ->
   ?model_override:string ->
   ?codex_xml_input_fd:string ->
+  ?codex_resume_target:string ->
   ?thread_id_fd:string ->
   unit ->
   string list
 (** [prepare_launch_args] returns client args, adding managed per-instance
     config where needed. Handles --session-id, --resume for claude, --session
-    for opencode, resume --last for codex, optional --xml-input-fd for Codex,
+    for opencode, resume --last or resume <target> for codex, optional
+    --xml-input-fd for Codex,
     optional --thread-id/--thread-id-fd for codex-headless, and
     --mcp-config-file for kimi. *)
 
@@ -237,6 +240,10 @@ val persist_headless_thread_id : name:string -> thread_id:string -> unit
 (** [persist_headless_thread_id ~name ~thread_id] updates the managed instance
     config with the lazily handed-off Codex thread id, if the config exists. *)
 
+val persist_codex_resume_target : name:string -> thread_id:string -> unit
+(** [persist_codex_resume_target ~name ~thread_id] stores an explicit Codex
+    resume target for a managed normal-codex instance, if the config exists. *)
+
 (** {1 Process utilities} *)
 
 val pid_alive : int -> bool
@@ -289,6 +296,7 @@ val run_outer_loop :
   ?alias_override:string ->
   ?session_id:string ->
   ?resume_session_id:string ->
+  ?codex_resume_target:string ->
   ?model_override:string ->
   ?one_hr_cache:bool ->
   ?kickoff_prompt:string ->
@@ -322,8 +330,14 @@ val cmd_start :
 val cmd_stop : string -> int
 (** [cmd_stop name] stops a running instance. Returns 0. *)
 
-val cmd_restart : string -> int
-(** [cmd_restart name] stops then restarts an instance. Returns exit code. *)
+val cmd_restart : ?session_id_override:string -> string -> int
+(** [cmd_restart ?session_id_override name] stops then restarts an instance.
+    When [session_id_override] is provided, it becomes the persisted exact
+    resume target for clients that support it. Returns exit code. *)
+
+val cmd_reset_thread : string -> string -> int
+(** [cmd_reset_thread name thread_id] stores an explicit thread/session target
+    for a managed Codex-family instance and restarts it onto that thread. *)
 
 val cmd_restart_self : ?name:string -> unit -> int
 (** [cmd_restart_self ?name ()] signals the managed inner client for this

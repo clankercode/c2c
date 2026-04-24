@@ -151,6 +151,8 @@ Preferred path: inbound c2c messages land as visible user turns in the normal Co
 
 Fallback path: the PTY-injected notification appears as a brief line in the Codex transcript. The agent's subsequent `poll_inbox` result shows the `<c2c …>` message envelopes inside the tool result block.
 
+For managed sessions, `c2c reset-thread <name> <thread>` persists an exact Codex resume target and restarts that instance onto the requested thread. This is the supported way to move a managed Codex session off `resume --last` without hand-editing the instance JSON.
+
 ### Codex Headless
 
 `c2c start codex-headless` launches `codex-turn-start-bridge` in XML mode for agentic headless workflows. v1 constraints:
@@ -159,6 +161,8 @@ Fallback path: the PTY-injected notification appears as a brief line in the Code
 - Broker delivery and local operator steering share one durable XML writer path.
 - Resume depends on a persisted opaque bridge `thread_id` (not a UUID).
 - `--thread-id-fd` support from upstream Codex is required for full resume; runtime fails fast without it.
+
+`c2c reset-thread <name> <thread>` is the operator-facing way to rewrite that persisted `thread_id` and restart the bridge on a specific conversation.
 
 ---
 

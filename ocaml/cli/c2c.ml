@@ -150,6 +150,7 @@ let rec command_tier_map () : (string * safety) list =
   ; "stop", Tier2
   ; "agent", Tier2
   ; "restart", Tier2
+  ; "reset-thread", Tier2
   ; "rooms-send", Tier2
   ; "rooms-visibility", Tier2
   ; "rooms-invite", Tier2
@@ -379,6 +380,7 @@ let commands_by_safety_cmd =
     ("start", "Start a managed c2c instance");
     ("stop", "Stop a managed c2c instance");
     ("restart", "Restart a managed c2c instance");
+    ("reset-thread", "Restart a managed codex instance onto a specific thread");
     ("register", "Register an alias for the current session");
     ("rooms send", "Send a message to a room");
     ("rooms invite", "Invite an alias to a room");
@@ -8103,6 +8105,23 @@ let restart_cmd =
 
 let restart = Cmdliner.Cmd.v (Cmdliner.Cmd.info "restart" ~doc:"Restart a managed c2c instance.") restart_cmd
 
+let reset_thread_cmd =
+  let name =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME" ~doc:"Instance name to reset.")
+  in
+  let thread_id =
+    Cmdliner.Arg.(required & pos 1 (some string) None & info [] ~docv:"THREAD" ~doc:"Exact Codex thread/session target to resume.")
+  in
+  let+ name = name
+  and+ thread_id = thread_id in
+  exit (C2c_start.cmd_reset_thread name thread_id)
+
+let reset_thread =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "reset-thread"
+       ~doc:"Restart a managed codex/codex-headless instance onto a specific thread.")
+    reset_thread_cmd
+
 let restart_self_cmd =
   let name =
     Cmdliner.Arg.(value & pos 0 (some string) None & info [] ~docv:"NAME" ~doc:"Instance name (default: \\$C2C_MCP_SESSION_ID).")
@@ -9872,7 +9891,7 @@ let commands_man is_agent =
          $(b,instances) $(b,doctor) $(b,verify) $(b,status) \
          $(b,monitor) $(b,screen)"
     ; `P "== TIER 2: LIFECYCLE AND SETUP (use with care) =="
-    ; `P "$(b,start) $(b,stop) $(b,restart) — manage c2c instances"
+    ; `P "$(b,start) $(b,stop) $(b,restart) $(b,reset-thread) — manage c2c instances"
     ; `P "$(b,c2c rooms) $(b,send|join|leave|list|members|history|invite|visibility|delete)"
     ; `P "$(b,c2c agent) $(b,c2c roles) $(b,compile|validate) — role file management"
     ; `P "$(b,c2c config) $(b,show|generation-client)"
@@ -9891,7 +9910,7 @@ let commands_man is_agent =
          $(b,open-pending-reply), $(b,check-pending-reply), \
          $(b,instances), $(b,doctor), $(b,rooms), $(b,monitor), $(b,screen)"
     ; `P "== TIER 2: LIFECYCLE AND SETUP (safe with care) =="
-    ; `P "$(b,start), $(b,stop), $(b,restart), $(b,init), $(b,install), \
+    ; `P "$(b,start), $(b,stop), $(b,restart), $(b,reset-thread), $(b,init), $(b,install), \
          $(b,agent), $(b,roles), $(b,compile), $(b,roles-validate), \
           $(b,config), $(b,config-show), $(b,generation-client), \
          $(b,wire-daemon), $(b,wire-daemon-list), $(b,wire-daemon-status), \
@@ -9924,7 +9943,7 @@ let () =
     [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; send_all; sweep
     ; sweep_dryrun; history; health; setcap; status; verify; git; register; refresh_peer
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; smoke_test; init; install; completion_cmd
-    ; serve; mcp; start; agent_group; config_group; roles_group; gui; stop; restart; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
+    ; serve; mcp; start; agent_group; config_group; roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; rooms_group; room_group; relay_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in
   exit
