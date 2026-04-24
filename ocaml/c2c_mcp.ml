@@ -2243,10 +2243,10 @@ let tool_definitions =
       ~properties:
         [ prop "session_id" "Optional session id override; defaults to the current MCP session." ]
   ; tool_definition ~name:"poll_inbox"
-      ~description:"Drain queued C2C messages for the current session. Returns a JSON array of {from_alias,to_alias,content} objects; call this at the start of each turn and after each send to reliably receive messages regardless of whether the client surfaces notifications/claude/channel."
+      ~description:"Drain queued C2C messages for the current session. Returns a JSON array of {from_alias,to_alias,content} objects; call this at the start of each turn and after each send to reliably receive messages regardless of whether the client surfaces notifications/claude/channel. The session_id argument (if provided) must match the caller's MCP session — cross-session drain attempts are rejected."
       ~required:[]
       ~properties:
-        [ prop "session_id" "Optional session id override for compatible clients." ]
+        [ prop "session_id" "Must match caller's MCP session (C2C_MCP_SESSION_ID); rejected if mismatched." ]
   ; tool_definition ~name:"peek_inbox"
       ~description:"Non-draining inbox check for the current session. Returns the same JSON array as `poll_inbox` but leaves the messages in the inbox so a subsequent `poll_inbox` still sees them. Useful for 'any mail?' checks without losing messages on error paths. Caller's session_id is always resolved from the MCP env (C2C_MCP_SESSION_ID); passing a session_id argument is ignored for isolation."
       ~required:[]
@@ -3200,6 +3200,13 @@ let ts = Unix.gettimeofday () in
       in
       Lwt.return (tool_result ~content ~is_error:false)
   | "poll_inbox" ->
+      let req_sid = optional_string_member "session_id" arguments in
+      let caller_sid = current_session_id () in
+      if req_sid <> None && caller_sid <> None && req_sid <> caller_sid then
+        Lwt.return (tool_result
+          ~content:"poll_inbox: session_id argument does not match caller's MCP session (C2C_MCP_SESSION_ID)"
+          ~is_error:true)
+      else begin
       let session_id = resolve_session_id arguments in
       Broker.confirm_registration broker ~session_id;
       let messages = Broker.drain_inbox broker ~session_id in
@@ -3270,6 +3277,7 @@ let ts = Unix.gettimeofday () in
       in
       let content = `List (List.map process_msg messages) |> Yojson.Safe.to_string in
       Lwt.return (tool_result ~content ~is_error:false)
+      end
   | "peek_inbox" ->
       (* Like poll_inbox but does not drain. Resolves session_id from
          env only (ignores argument overrides) — same isolation contract
