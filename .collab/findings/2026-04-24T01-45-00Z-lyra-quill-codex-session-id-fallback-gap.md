@@ -7,7 +7,7 @@
   Live check from the current managed Codex session reproduced the failure immediately.
 
 - Root cause:
-  `c2c start codex` already exports `CODEX_SESSION_ID=<instance-name>` in the managed child env, but the OCaml MCP resolver only treated `CODEX_THREAD_ID` as a Codex fallback key. The MCP server wrapper also had its own startup/session helper that only trusted `C2C_MCP_SESSION_ID`, so startup auto-register and watcher setup missed the same fallback path.
+  `c2c start codex` already exports `CODEX_THREAD_ID=<instance-name>` in the managed child env, but the OCaml MCP resolver only treated `CODEX_THREAD_ID` as a Codex fallback key. The MCP server wrapper also had its own startup/session helper that only trusted `C2C_MCP_SESSION_ID`, so startup auto-register and watcher setup missed the same fallback path.
 
 - Fix status:
   Fixed in the working tree.
@@ -26,4 +26,4 @@
   High. Managed Codex could lose broker identity after an MCP reconnect or session replacement, breaking `whoami`, auto-register, and channel watcher setup.
 
 - Notes:
-  The server integration test initially failed because it inherited the live agent's `CODEX_SESSION_ID` from the outer environment. The test now clears conflicting native env vars explicitly so the derived-session paths are deterministic.
+  The server integration test initially failed because it inherited the live agent's `CODEX_THREAD_ID` from the outer environment. The test now clears conflicting native env vars explicitly so the derived-session paths are deterministic.

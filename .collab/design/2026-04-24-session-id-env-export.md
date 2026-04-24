@@ -17,7 +17,7 @@ Claude Code does NOT export `CLAUDE_CODE_SESSION_ID` to the Bash tool environmen
 | Client | Env var | Value | Notes |
 |--------|---------|-------|-------|
 | claude | `CLAUDE_CODE_PARENT_SESSION_ID` | `name` | CC generates its own session ID internally; we export PARENT hint |
-| codex | `CODEX_SESSION_ID` | `name` | Codex accepts session IDs directly |
+| codex | `CODEX_THREAD_ID` | `name` | Codex accepts session IDs directly |
 | opencode | `OPENCODE_SESSION_ID` | `name` | OpenCode accepts session IDs directly |
 | kimi | `KIMI_SESSION_ID` | `name` | Kimi accepts session IDs directly |
 | crush | `CRUSH_SESSION_ID` | `name` | Crush accepts session IDs directly |
@@ -34,7 +34,7 @@ The `build_env` function doesn't take a `client` parameter, so add client-specif
 let client_session_env =
   match client with
   | "claude"   -> [| "CLAUDE_CODE_PARENT_SESSION_ID=" ^ name |]
-  | "codex"    -> [| "CODEX_SESSION_ID=" ^ name |]
+  | "codex"    -> [| "CODEX_THREAD_ID=" ^ name |]
   | "opencode" -> [| "OPENCODE_SESSION_ID=" ^ name |]
   | "kimi"     -> [| "KIMI_SESSION_ID=" ^ name |]
   | "crush"    -> [| "CRUSH_SESSION_ID=" ^ name |]

@@ -35,7 +35,7 @@ manually for exactly this reason).
 
 Claude Code should export `CLAUDE_CODE_SESSION_ID` (and ideally
 `CLAUDE_CODE_TRANSCRIPT_PATH`) into the Bash tool's environment. Matches
-what most agent harnesses already do (Codex exports `CODEX_SESSION_ID`,
+what most agent harnesses already do (Codex exports `CODEX_THREAD_ID`,
 OpenCode exports its session dir).
 
 ## Workaround
