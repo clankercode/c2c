@@ -4953,6 +4953,7 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~client =
   Buffer.add_string buf (Printf.sprintf "args = [\"exec\", \"--\", \"%s\"]\n" server_path);
   Buffer.add_string buf "\n[mcp_servers.c2c.env]\n";
   Buffer.add_string buf (Printf.sprintf "C2C_MCP_BROKER_ROOT = \"%s\"\n" root);
+  Buffer.add_string buf "C2C_MCP_CLIENT_TYPE = \"codex\"\n";
   Buffer.add_string buf "C2C_MCP_AUTO_JOIN_ROOMS = \"swarm-lounge\"\n";
   Buffer.add_string buf "C2C_AUTO_JOIN_ROLE_ROOM = \"1\"\n";
   List.iter (fun tool ->
@@ -6720,6 +6721,38 @@ let write_agent_file ~client ~name ~content =
 let get_opencode_theme (r : C2c_role.t) : string option =
   List.assoc_opt "theme" r.C2c_role.opencode
 
+(* Build the --agents JSON for claude from a role.
+   Format: {"<name>": {"description": "...", "prompt": "<body>", "model": "...", "tools": []}}
+   The prompt is the role body (strip frontmatter from the rendered output). *)
+let build_agent_json ~(agent_name : string) ~(role : C2c_role.t) ~(rendered : string) : string =
+  let marker = "\n---\n" in
+  let mlen = String.length marker in
+  let rec skip_first after i =
+    if i + mlen > String.length after then None
+    else if String.sub after i mlen = marker then Some i
+    else skip_first after (i + 1)
+  in
+  let body =
+    match skip_first rendered 0 with
+    | None -> rendered
+    | Some first_off ->
+        let after_first = String.sub rendered (first_off + mlen) (String.length rendered - first_off - mlen) in
+        match skip_first after_first 0 with
+        | None -> rendered
+        | Some second_off -> String.sub after_first second_off (String.length after_first - second_off)
+  in
+  let model_field = match role.C2c_role.model with
+    | Some m -> [("model", `String m)]
+    | None -> []
+  in
+  let agent_obj = `Assoc (
+    ("description", `String role.C2c_role.description)
+    :: ("prompt", `String body)
+    :: ("tools", `List [])
+    :: model_field
+  ) in
+  Yojson.Safe.to_string (`Assoc [(agent_name, agent_obj)])
+
 let start_cmd =
   let client =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"CLIENT"
@@ -6822,7 +6855,7 @@ let start_cmd =
     Filename.concat (Sys.getcwd ()) ".c2c" // "roles" // (agent_name ^ ".md")
   in
   (* --agent mode: load canonical role, render for client, write compiled file *)
-  let (kickoff_prompt, alias_override, auto_join_rooms) =
+  let (kickoff_prompt, alias_override, auto_join_rooms, agent_json) =
     match agent_opt with
     | Some agent_name ->
         let role_path = agent_role_path agent_name in
@@ -6861,7 +6894,12 @@ let start_cmd =
                let theme = get_opencode_theme role in
                let subtitle = Printf.sprintf "%s  |  %s" client name in
                Banner.print_banner ?theme_name:theme ~subtitle (Printf.sprintf "c2c start --agent %s" agent_name);
-               (kickoff, alias_override, auto_join_rooms)
+               let agent_json =
+                 if client = "claude" then
+                   Some (build_agent_json ~agent_name ~role ~rendered)
+                 else None
+               in
+               (kickoff, alias_override, auto_join_rooms, agent_json)
           | None ->
               Printf.eprintf "error: --agent is not supported for client '%s' yet.\n%!" client;
               exit 1
@@ -6895,17 +6933,22 @@ let start_cmd =
                   (if available = [] then "(none)" else String.concat ", " available);
                exit 1
              end;
-             (match render_role_for_client ?model_override role ~client with
-              | Some rendered ->
-                  write_agent_file ~client ~name ~content:rendered;
-                  let kickoff = Some rendered in
-                  let alias_override = role.C2c_role.c2c_alias in
-                  let auto_join_rooms =
-                    if role.C2c_role.c2c_auto_join_rooms <> []
-                    then Some (String.concat ", " role.C2c_role.c2c_auto_join_rooms)
-                    else None
-                  in
-                  (kickoff, alias_override, auto_join_rooms)
+              (match render_role_for_client ?model_override role ~client with
+               | Some rendered ->
+                   write_agent_file ~client ~name ~content:rendered;
+                   let kickoff = Some rendered in
+                   let alias_override = role.C2c_role.c2c_alias in
+                   let auto_join_rooms =
+                     if role.C2c_role.c2c_auto_join_rooms <> []
+                     then Some (String.concat ", " role.C2c_role.c2c_auto_join_rooms)
+                     else None
+                   in
+                   let agent_json =
+                     if client = "claude" then
+                       Some (build_agent_json ~agent_name:name ~role ~rendered)
+                     else None
+                   in
+                   (kickoff, alias_override, auto_join_rooms, agent_json)
               | None ->
                         (* Role file exists but not supported for this client — fall through
                            to structured role path so user can still start with the role. *)
@@ -6913,17 +6956,17 @@ let start_cmd =
                           match read_role ~alias:effective_alias with
                           | Some r -> Some r
                           | None -> prompt_for_role ~alias:effective_alias
-                        in
-                        let kickoff_prompt =
-                          match kickoff_prompt_text with
-                          | Some t -> Some t
-                          | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
-                          | None ->
-                              (match role_opt with
-                               | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
-                               | None -> None)
-                        in
-                        (kickoff_prompt, alias_opt, None))
+                         in
+                         let kickoff_prompt =
+                           match kickoff_prompt_text with
+                           | Some t -> Some t
+                           | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
+                           | None ->
+                               (match role_opt with
+                                | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
+                                | None -> None)
+                         in
+                         (kickoff_prompt, alias_opt, None, None))
             with Sys_error _ ->
               (* Role file exists but can't be read as structured role — fall through. *)
               let role_opt =
@@ -6939,8 +6982,8 @@ let start_cmd =
                     (match role_opt with
                      | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
                      | None -> None)
-              in
-              (kickoff_prompt, alias_opt, None))
+                in
+                (kickoff_prompt, alias_opt, None, None))
         else
           (* No structured role file — structured role path. *)
           let role_opt =
@@ -6963,7 +7006,7 @@ let start_cmd =
                  | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
                  | None -> None)
           in
-          (kickoff_prompt, alias_opt, None)
+          (kickoff_prompt, alias_opt, None, None)
   in
   exit (C2c_start.cmd_start ~client ~name ~extra_args:[]
       ?binary_override:bin_opt
@@ -6972,6 +7015,7 @@ let start_cmd =
       ?model_override
       ~one_hr_cache
       ?kickoff_prompt
+      ?agent_json
       ?auto_join_rooms ())
 
 let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Start a managed c2c instance.") start_cmd

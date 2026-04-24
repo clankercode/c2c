@@ -1130,7 +1130,26 @@ let claude_session_exists uuid =
 
 (* ---------------------------------------------------------------------------
  * Launch argument preparation
- * --------------------------------------------------------------------------- *)
+   * --------------------------------------------------------------------------- *)
+
+(* Extract the agent body (prompt) from a YAML-frontmatter render.
+   The render format is "---\n<frontmatter>\n---\n\n<body>".
+   We split on the second "---\n" to get just the body. *)
+let extract_agent_body (rendered : string) : string =
+  let marker = "\n---\n" in
+  let mlen = String.length marker in
+  let rec skip_first after i =
+    if i + mlen > String.length after then None
+    else if String.sub after i mlen = marker then Some i
+    else skip_first after (i + 1)
+  in
+  match skip_first rendered 0 with
+  | None -> rendered
+  | Some first_off ->
+      let after_first = String.sub rendered (first_off + mlen) (String.length rendered - first_off - mlen) in
+      match skip_first after_first 0 with
+      | None -> rendered
+      | Some second_off -> String.sub after_first second_off (String.length after_first - second_off)
 
 let prepare_launch_args ~(name : string) ~(client : string)
     ~(extra_args : string list) ~(broker_root : string)
@@ -1138,7 +1157,8 @@ let prepare_launch_args ~(name : string) ~(client : string)
     ?(binary_override : string option) ?(model_override : string option)
     ?(codex_xml_input_fd : string option)
     ?(codex_resume_target : string option)
-    ?(thread_id_fd : string option) () : string list =
+    ?(thread_id_fd : string option)
+    ?(agent_json : string option) () : string list =
   let args =
     match client with
     | "claude" ->
@@ -1152,14 +1172,19 @@ let prepare_launch_args ~(name : string) ~(client : string)
         let dev_channel_args =
           [ "--dangerously-load-development-channels"; "server:c2c" ]
         in
+        let agent_args =
+          match agent_json with
+          | Some json -> [ "--agents"; json ]
+          | None -> []
+        in
         (match resume_session_id with
          | Some sid ->
              let flag =
                if claude_session_exists sid then "--resume" else "--session-id"
              in
              [ flag; sid; "--name"; name;
-             ] @ dev_channel_args
-         | None -> [ "--name"; name ] @ dev_channel_args)
+             ] @ dev_channel_args @ agent_args
+         | None -> [ "--name"; name ] @ dev_channel_args @ agent_args)
     | "opencode" ->
         (* OpenCode rejects UUIDs — session IDs must start with "ses". Only
            pass --session when resuming a prior OpenCode-generated ID.
@@ -1678,7 +1703,8 @@ let run_outer_loop ~(name : string) ~(client : string)
     ?(codex_resume_target : string option)
     ?(model_override : string option)
     ?(one_hr_cache = false) ?(kickoff_prompt : string option)
-    ?(auto_join_rooms : string option) () : int =
+    ?(auto_join_rooms : string option)
+    ?(agent_json : string option) () : int =
   let session_id = Option.value session_id ~default:name in
   let cfg =
     try Stdlib.Hashtbl.find clients client
@@ -1859,7 +1885,8 @@ let run_outer_loop ~(name : string) ~(client : string)
             ?alias_override ?resume_session_id ?binary_override ?model_override
             ?codex_resume_target
             ?codex_xml_input_fd
-            ?thread_id_fd ()
+            ?thread_id_fd
+            ?agent_json ()
       in
       let headless_xml_fifo =
         if client = "codex-headless" then
@@ -2310,7 +2337,8 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?(binary_override : string option) ?(alias_override : string option)
     ?(session_id_override : string option) ?(model_override : string option)
     ?(one_hr_cache = false)
-    ?(kickoff_prompt : string option) ?(auto_join_rooms : string option) () : int =
+    ?(kickoff_prompt : string option) ?(auto_join_rooms : string option)
+    ?(agent_json : string option) () : int =
   if not (Stdlib.Hashtbl.mem clients client) then
     (Printf.eprintf "error: unknown client: '%s'. Choose from: %s\n%!"
        client (String.concat ", " (List.sort String.compare supported_clients));
@@ -2577,7 +2605,8 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?resume_session_id:launch_resume_session_id
     ?codex_resume_target:cfg.codex_resume_target
     ?model_override:cfg.model_override
-    ~one_hr_cache ?kickoff_prompt ?auto_join_rooms ()
+    ~one_hr_cache ?kickoff_prompt ?auto_join_rooms
+    ?agent_json ()
 
 (* Signal the managed inner client so the outer loop relaunches it. Designed
    to be callable by an agent running *inside* that client, so the outer

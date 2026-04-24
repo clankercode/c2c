@@ -154,13 +154,15 @@ val prepare_launch_args :
   ?codex_xml_input_fd:string ->
   ?codex_resume_target:string ->
   ?thread_id_fd:string ->
+  ?agent_json:string ->
   unit ->
   string list
 (** [prepare_launch_args] returns client args, adding managed per-instance
     config where needed. Handles --session-id, --resume for claude, --session
     for opencode, resume --last or resume <target> for codex, optional
     --xml-input-fd for Codex,
-    optional --thread-id/--thread-id-fd for codex-headless, and
+    optional --thread-id/--thread-id-fd for codex-headless,
+    optional --agent-file for Claude/agent launches, and
     --mcp-config-file for kimi. *)
 
 val bridge_supports_thread_id_fd : string -> bool
@@ -301,6 +303,7 @@ val run_outer_loop :
   ?one_hr_cache:bool ->
   ?kickoff_prompt:string ->
   ?auto_join_rooms:string ->
+  ?agent_json:string ->
   unit ->
   int
 (** [run_outer_loop] runs the outer restart loop for the given instance
@@ -321,6 +324,7 @@ val cmd_start :
   ?one_hr_cache:bool ->
   ?kickoff_prompt:string ->
   ?auto_join_rooms:string ->
+  ?agent_json:string ->
   unit ->
   int
 (** [cmd_start] validates and starts a managed instance. Returns 0 on success,
