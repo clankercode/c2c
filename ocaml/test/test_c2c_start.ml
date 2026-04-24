@@ -635,6 +635,40 @@ let test_repo_config_pmodel_reads_table () =
    | Some _ -> fail "unset role should not resolve"
    | None -> ())
 
+let test_body_stripped_of_frontmatter () =
+  let marker = "---\n" in
+  let mlen = String.length marker in
+  let rec find_next after off =
+    if off + mlen > String.length after then None
+    else if String.sub after off mlen = marker then Some off
+    else find_next after (off + 1)
+  in
+  let extract_body rendered =
+    match find_next rendered 0 with
+    | None -> rendered
+    | Some first_off ->
+        let after_first =
+          String.sub rendered (first_off + mlen)
+            (String.length rendered - first_off - mlen)
+        in
+        match find_next after_first 0 with
+        | None -> String.trim after_first
+        | Some second_off ->
+            let raw =
+              String.sub after_first (second_off + mlen)
+                (String.length after_first - second_off - mlen)
+            in
+            String.trim raw
+  in
+  check string "body extracted exactly" "Body"
+    (extract_body "---\ndesc: foo\n---\n\nBody");
+  check string "body extracted with trailing newline" "You are a agent."
+    (extract_body "---\ndesc: test\nrole: primary\n---\n\nYou are a agent.\n");
+  check string "no frontmatter returns trimmed" "No frontmatter Just body"
+    (extract_body "No frontmatter Just body");
+  check string "double fence body" "Double fence"
+    (extract_body "---\n---\n\nDouble fence")
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_start"
@@ -711,4 +745,8 @@ let () =
         ; ("repo_config_pmodel_reads_table", `Quick,
            test_repo_config_pmodel_reads_table)
         ] )
+    ; ( "build_agent_json_body_extraction",
+        [ ("body_stripped_of_frontmatter", `Quick,
+           test_body_stripped_of_frontmatter) ] )
     ]
+

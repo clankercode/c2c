@@ -1130,26 +1130,6 @@ let claude_session_exists uuid =
 (* ---------------------------------------------------------------------------
  * Launch argument preparation
    * --------------------------------------------------------------------------- *)
-
-(* Extract the agent body (prompt) from a YAML-frontmatter render.
-   The render format is "---\n<frontmatter>\n---\n\n<body>".
-   We split on the second "---\n" to get just the body. *)
-let extract_agent_body (rendered : string) : string =
-  let marker = "\n---\n" in
-  let mlen = String.length marker in
-  let rec skip_first after i =
-    if i + mlen > String.length after then None
-    else if String.sub after i mlen = marker then Some i
-    else skip_first after (i + 1)
-  in
-  match skip_first rendered 0 with
-  | None -> rendered
-  | Some first_off ->
-      let after_first = String.sub rendered (first_off + mlen) (String.length rendered - first_off - mlen) in
-      match skip_first after_first 0 with
-      | None -> rendered
-      | Some second_off -> String.sub after_first second_off (String.length after_first - second_off)
-
 let prepare_launch_args ~(name : string) ~(client : string)
     ~(extra_args : string list) ~(broker_root : string)
     ?(alias_override : string option) ?(resume_session_id : string option)
