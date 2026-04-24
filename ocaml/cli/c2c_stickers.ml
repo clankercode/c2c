@@ -104,13 +104,18 @@ let verify_envelope env =
   if env.signature = "" then Error "missing signature"
   else if env.sender_pk = "" then Error "missing sender public key"
   else
-    match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet env.signature with
-    | Error _ -> Error "b64 decode failed for signature"
-    | Ok sig_bytes ->
-      let blob = canonical_blob env in
-      match Relay_identity.verify ~pk:env.sender_pk ~msg:blob ~sig_:sig_bytes with
-      | true -> Ok true
-      | false -> Error "invalid signature"
+    match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet env.signature,
+          Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet env.sender_pk with
+    | Error _, _ -> Error "b64 decode failed for signature"
+    | _, Error _ -> Error "b64 decode failed for sender_pk"
+    | Ok sig_bytes, Ok pk_bytes ->
+      if String.length pk_bytes <> 32 then Error "sender_pk must be 32 bytes"
+      else if String.length sig_bytes <> 64 then Error "signature must be 64 bytes"
+      else
+        let blob = canonical_blob env in
+        match Relay_identity.verify ~pk:pk_bytes ~msg:blob ~sig_:sig_bytes with
+        | true -> Ok true
+        | false -> Error "invalid signature"
 
 (* --- storage ------------------------------------------------------------ *)
 
@@ -181,16 +186,18 @@ let load_stickers ~alias ?(scope=`Both) () =
       else
         let d = Unix.opendir dir in
         let rec go acc =
-          match Unix.readdir d with
-          | entry when entry <> "" && entry <> "." && entry <> ".." ->
-            (try
-               let path = dir // entry in
-               let json = Yojson.Safe.from_file path in
-               match envelope_of_json json with
-               | Ok env -> env :: acc
-               | Error _ -> acc
-             with _ -> acc)
-          | _ -> go acc
+          try
+            match Unix.readdir d with
+            | entry when entry <> "" && entry <> "." && entry <> ".." ->
+              (try
+                 let path = dir // entry in
+                 let json = Yojson.Safe.from_file path in
+                 match envelope_of_json json with
+                 | Ok env -> go (env :: acc)
+                 | Error _ -> go acc
+               with _ -> go acc)
+            | _ -> go acc
+          with End_of_file -> acc
         in
         let results = go [] in
         Unix.closedir d;
