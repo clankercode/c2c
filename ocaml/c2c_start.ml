@@ -1181,7 +1181,8 @@ let prepare_launch_args ~(name : string) ~(client : string)
     ?(codex_xml_input_fd : string option)
     ?(codex_resume_target : string option)
     ?(thread_id_fd : string option)
-    ?(agent_json : string option) () : string list =
+    ?(agent_json : string option)
+    ?(kickoff_prompt : string option) () : string list =
   let args =
     match client with
     | "claude" ->
@@ -1201,6 +1202,11 @@ let prepare_launch_args ~(name : string) ~(client : string)
           | Some json -> [ "--agents"; json ]
           | None -> []
         in
+        let kickoff_args =
+          match kickoff_prompt with
+          | Some p when p <> "" -> [ p ]
+          | _ -> []
+        in
         (match resume_session_id with
          | Some sid ->
              let flag =
@@ -1208,7 +1214,7 @@ let prepare_launch_args ~(name : string) ~(client : string)
              in
              [ flag; sid; "--name"; name;
              ] @ dev_channel_args @ agent_args
-         | None -> [ "--name"; name ] @ dev_channel_args @ agent_args)
+         | None -> [ "--name"; name ] @ dev_channel_args @ agent_args @ kickoff_args)
     | "opencode" ->
         (* OpenCode rejects UUIDs — session IDs must start with "ses". Only
            pass --session when resuming a prior OpenCode-generated ID.
@@ -1925,7 +1931,8 @@ let run_outer_loop ~(name : string) ~(client : string)
             ?codex_resume_target
             ?codex_xml_input_fd
             ?thread_id_fd
-            ?agent_json ()
+            ?agent_json
+            ?kickoff_prompt ()
       in
       let headless_xml_fifo =
         if client = "codex-headless" then

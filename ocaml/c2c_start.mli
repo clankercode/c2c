@@ -161,6 +161,7 @@ val prepare_launch_args :
   ?codex_resume_target:string ->
   ?thread_id_fd:string ->
   ?agent_json:string ->
+  ?kickoff_prompt:string ->
   unit ->
   string list
 (** [prepare_launch_args] returns client args, adding managed per-instance

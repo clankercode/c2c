@@ -6911,10 +6911,23 @@ let start_cmd =
              exit 1
            end;
             match render_role_for_client ?model_override role ~client ~name:agent_name with
-           | Some rendered ->
-               write_agent_file ~client ~name ~content:rendered;
-               let kickoff = Some rendered in
-               let alias_override = role.C2c_role.c2c_alias in
+            | Some rendered ->
+                write_agent_file ~client ~name ~content:rendered;
+                let onboarding_preamble =
+                  Printf.sprintf
+                    "You are now running as %s. Complete these startup steps:\n\
+                     1. Call `whoami` to confirm your identity and registration.\n\
+                     2. Join the `swarm-lounge` room: use `join_room` with {\"room_id\": \"swarm-lounge\"}.\n\
+                     3. Send a message to coordinator1 introducing yourself: use `send` with \
+                     {\"to_alias\": \"coordinator1\", \"content\": \"<brief intro of your role and capabilities>\"}.\n\
+                     4. Call `poll_inbox` to check for any messages addressed to you.\n\
+                     Begin now."
+                    agent_name
+                in
+                let kickoff =
+                  if client = "claude" then Some onboarding_preamble else Some rendered
+                in
+                let alias_override = role.C2c_role.c2c_alias in
                let auto_join_rooms =
                  if role.C2c_role.c2c_auto_join_rooms <> []
                  then Some (String.concat ", " role.C2c_role.c2c_auto_join_rooms)
