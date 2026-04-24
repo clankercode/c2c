@@ -19,9 +19,11 @@ Every commit from a managed c2c agent should be cryptographically signed by that
 
 ## Design
 
-### 1. Reuse the Ed25519 identity key
+### 1. Per-alias Ed25519 key at register-time
 
-`c2c register` already generates a per-alias Ed25519 keypair (M1-S1 shipped). The private key lives under the broker root — we treat it as the agent's git signing key too. No new key material.
+**Correction (2026-04-24, post slice 1 review)**: M1-S1 shipped a *machine-scoped* relay peer identity at `~/.config/c2c/identity.json`, not a per-alias key. So per-alias signing requires fresh keypair generation here.
+
+On `c2c register`: if `<broker_root>/keys/<alias>.ed25519(.pub)` does not exist, generate a new Ed25519 keypair and write both files (mode 0600 on the private). Reuse if present (re-registration idempotent). That file IS the agent's git signing key. Format: raw 32-byte Ed25519 private seed + 32-byte public key (SSH-compatible), or OpenSSH-armored — whichever plays cleanest with `ssh-keygen -Y sign`.
 
 ### 2. Per-repo scope via `.git/c2c/`
 
@@ -83,7 +85,9 @@ If an alias's key must rotate: new entry appended to `allowed_signers` with a ne
 
 Small slices, each independently shippable:
 
-**Slice 1** (OCaml, ~100 LOC): `<broker_root>/allowed_signers` write/append on `c2c register`. Format: one line, `<alias>@c2c.im ssh-ed25519 <base64-pubkey> # added <ISO-date>`. Append-only; never truncate.
+**Slice 1** (OCaml, ~100 LOC): `<broker_root>/allowed_signers` write/append on `c2c register`. Format: one line, `<alias>@c2c.im ssh-ed25519 <base64-pubkey> # added <ISO-date>`. Append-only; never truncate. **Shipped as `9bc29b0` (#129) — uses machine identity pubkey; per-alias pubkey pending Slice 1b.**
+
+**Slice 1b** (OCaml, ~60 LOC, #133): at register-time generate `<broker_root>/keys/<alias>.ed25519(.pub)` if not present; use that pubkey in the allowed_signers line. Idempotent on re-registration. Blocks slice 2.
 
 **Slice 2** (OCaml, ~50 LOC, gated on guarded `c2c git` shim #122): extend the `c2c git` subcommand in `ocaml/cli/c2c.ml` — when `argv[0] = "commit"`, read `git.sign` config, resolve caller alias, inject `-c gpg.format=ssh -c user.signingkey=… -c gpg.ssh.allowedSignersFile=… -c commit.gpgsign=true -S` into the exec call. Also inject `--author` when `git.attribution=true` and no `--author` already in argv.
 
