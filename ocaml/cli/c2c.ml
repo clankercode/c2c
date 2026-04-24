@@ -8,6 +8,7 @@ open C2c_mcp
 module Relay = Relay
 open C2c_types
 open C2c_commands
+open C2c_utils
 
 (* Resolve the Claude config dir.
    Prefers CLAUDE_CONFIG_DIR if set, otherwise resolves ~/.claude as a symlink
@@ -3609,14 +3610,6 @@ let relay_setup_cmd =
     | Some s ->
         (try Yojson.Safe.from_string s with _ -> `Assoc [])
   in
-  let rec mkdir_p dir =
-    if dir = "/" || dir = "." || dir = "" then ()
-    else if Sys.file_exists dir then ()
-    else begin
-      mkdir_p (Filename.dirname dir);
-      try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-    end
-  in
   let save path json =
     mkdir_p (Filename.dirname path);
     let oc = open_out path in
@@ -5516,11 +5509,6 @@ let render_role_for_client ?(model_override : string option) (r : C2c_role.t) ~c
 let write_agent_file ~client ~name ~content =
   let path = agent_file_path ~client ~name in
   let dir = Filename.dirname path in
-  let rec mkdir_p d =
-    if d = "/" || d = "." || d = "" then ()
-    else if Sys.file_exists d then ()
-    else begin mkdir_p (Filename.dirname d); try Unix.mkdir d 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> () end
-  in
   mkdir_p dir;
   let lock_path = path ^ ".lock" in
   let fd = Unix.openfile lock_path [Unix.O_RDWR; Unix.O_CREAT; Unix.O_TRUNC] 0o644 in
@@ -5892,11 +5880,6 @@ let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Start a managed c2c 
 (* --- subcommand: agent ----------------------------------------------------- *)
 
 let agent_list_term =
-  let rec mkdir_p dir =
-    if dir = "/" || dir = "." || dir = "" then ()
-    else if Sys.file_exists dir then ()
-    else begin mkdir_p (Filename.dirname dir); try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> () end
-  in
   let+ () = Cmdliner.Term.const () in
   let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
   mkdir_p roles_dir;
@@ -5964,11 +5947,6 @@ let agent_rename_term =
 
 let is_interactive_stdin () =
   Unix.isatty Unix.stdin
-
-let rec mkdir_p dir =
-  if dir = "/" || dir = "." || dir = "" then ()
-  else if Sys.file_exists dir then ()
-  else begin mkdir_p (Filename.dirname dir); try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> () end
 
 let rec prompt_nonempty ~prompt () =
   print_string prompt;
@@ -6806,11 +6784,6 @@ let roles_compile_term =
           Printf.eprintf "error: roles directory not found: %s\n%!" roles_dir;
           exit 1)
   in
-  let rec mkdir_p d =
-    if d = "/" || d = "." || d = "" then ()
-    else if Sys.file_exists d then ()
-    else begin mkdir_p (Filename.dirname d); try Unix.mkdir d 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> () end
-  in
   let n_roles = List.length roles in
   let subtitle = if n_roles = 1 then "1 role" else Printf.sprintf "%d roles" n_roles in
   Banner.print_banner ~subtitle:("roles compile  |  " ^ subtitle) "c2c roles";
@@ -6901,11 +6874,6 @@ let roles_validate_cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "validate" ~doc:"Vali
 
 let roles_default_term =
   let+ () = Cmdliner.Term.const () in
-  let rec mkdir_p d =
-    if d = "/" || d = "." || d = "" then ()
-    else if Sys.file_exists d then ()
-    else begin mkdir_p (Filename.dirname d); try Unix.mkdir d 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> () end
-  in
   let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
   let roles =
     try
