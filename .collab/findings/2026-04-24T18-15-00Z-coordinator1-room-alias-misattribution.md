@@ -54,7 +54,26 @@ from-alias resolution path.
 
 ## Fix status
 
-Open — root cause narrowed to send_room alias resolution in c2c_mcp.ml.
+FIXED at ea99765 (jungle-coder commit 2026-04-24T20:15 UTC).
+
+### Fix (two parts)
+
+**1. childProcessEnv() — always set C2C_MCP_SESSION_ID from sessionId, not outer shell env**
+
+Before: `childProcessEnv()` used `process.env.C2C_MCP_SESSION_ID` (could be inherited from parent shell, e.g. coordinator1's value).
+After: Always set `C2C_MCP_SESSION_ID = sessionId || activeSessionId` (the instance name, e.g. 'jungle-coder').
+
+**2. session.compacted handler — re-register after compaction**
+
+Added `register --json` call to `session.compacted` handler so the new OpenCode process re-registers with the correct alias binding.
+
+### Root cause
+
+OpenCode compaction → new child process spawns WITHOUT C2C_MCP_SESSION_ID → falls back to `inferred_client_type_from_env()` → if parent shell has `CLAUDE_SESSION_ID=coordinator1`, type="claude" → fallback key = `CLAUDE_SESSION_ID` → session_id=coordinator1 → alias lookup finds coordinator1's alias.
+
+### Verification
+
+Awaiting restart of jungle-coder's OpenCode session to apply plugin fix, then test by sending to swarm-lounge and checking room_history attribution.
 
 ## Next steps
 
@@ -109,3 +128,28 @@ OpenCode compaction → new process doesn't inherit C2C_MCP_SESSION_ID properly
    before spawning, not relying on inheritance from parent shell
 2. Hook re-registration into session.compacted handler in the OpenCode plugin
 3. Remove CLAUDE_SESSION_ID fallback for OpenCode entirely (never relevant)
+
+## Analysis补充 (galaxy-coder, 2026-04-24T09:10 UTC)
+
+### Confirmed: env inference chain issue
+
+`inferred_client_type_from_env` (c2c_mcp.ml:2505) checks `CLAUDE_SESSION_ID` before `C2C_OPENCODE_SESSION_ID`. If OpenCode's post-compaction process inherits `CLAUDE_SESSION_ID=coordinator1` from parent shell env, it types as "claude" → uses `CLAUDE_SESSION_ID` as session fallback → resolves to coordinator1's session_id.
+
+### Plugin env propagation analysis
+
+The plugin spawns MCP subprocess via `childProcessEnv()` (c2c.ts:1091):
+```typescript
+const inheritedSessionId = process.env.C2C_MCP_SESSION_ID || process.env.C2C_SESSION_ID || sessionId;
+```
+
+The `sessionId` here is from the plugin's own initialization. If the plugin's own env loses `C2C_MCP_SESSION_ID` after compaction, it falls back to `sessionId` (which may be the original session ID or stale).
+
+### Fix options
+
+1. **Plugin writes session ID to file on init, reads on compaction restart** — persists `C2C_MCP_SESSION_ID` across compaction
+2. **Plugin sets `C2C_MCP_CLIENT_TYPE=opencode` in `childProcessEnv()`** — prevents mis-typing as "claude", but `C2C_OPENCODE_SESSION_ID` isn't set by OpenCode so session_id still might not resolve
+3. **Remove `CLAUDE_SESSION_ID` from opencode fallback keys** — too broad, may break legitimate cases
+
+### Recommended fix
+
+The plugin should persist `C2C_MCP_SESSION_ID` to a file (e.g. `<instance_dir>/opencode-session-env`) on init, and read it back on startup. This ensures the session ID survives compaction. The `C2C_MCP_SESSION_ID` is the canonical session identifier — it's set by `c2c start opencode` and should persist across compaction.
