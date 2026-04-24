@@ -6740,7 +6740,7 @@ let build_agent_json ~(agent_name : string) ~(role : C2c_role.t) ~(rendered : st
         match find_next after_first 0 with
         | None -> String.trim after_first
         | Some second_off ->
-            let raw = String.sub after_first second_off (String.length after_first - second_off) in
+            let raw = String.sub after_first (second_off + mlen) (String.length after_first - second_off - mlen) in
             String.trim raw
   in
   let model_field = match role.C2c_role.model with
