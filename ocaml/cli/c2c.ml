@@ -7857,12 +7857,17 @@ let agent_refine_term =
     Cmdliner.Arg.(value & flag & info [ "pane" ]
       ~doc:"Launch the ephemeral in a new tmux window (requires TMUX) and return immediately. Watchdog still runs detached.")
   in
+  let agent_mode_arg =
+    Cmdliner.Arg.(value & flag & info [ "agent-mode" ]
+      ~doc:"Peer-invocation mode: DM the caller (from C2C_MCP_REPLY_TO, or coordinator1 fallback) for clarification instead of interviewing in this pane. Implies structured output + stop_self on completion.")
+  in
   let+ name = name_arg
   and+ client_opt = client_arg
   and+ bin_opt = bin_arg
   and+ timeout = timeout_arg
   and+ dry_run = dry_run_arg
-  and+ pane = pane_arg in
+  and+ pane = pane_arg
+  and+ agent_mode = agent_mode_arg in
   let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
   let role_file_path = Filename.concat roles_dir (name ^ ".md") in
   if not (Sys.file_exists role_file_path) then begin
@@ -7878,9 +7883,22 @@ let agent_refine_term =
       Bytes.to_string buf
   in
   let draft_body = read_all role_file_path in
-  let refine_prompt = Printf.sprintf
-    "We are refining a role named `%s`. The role file is at:\n\n    %s\n\nHere is the current draft:\n\n---\n%s\n---\n\nInterview the caller (or the human operator in this pane) about this agent, and refine the role file IN PLACE at the path above using your Edit tool. When the caller says \"done\" (or a human operator says they're done), save the final content and call `stop_self`.\n"
-    name role_file_path draft_body
+  let refine_prompt =
+    if agent_mode then
+      let reply_to =
+        match Sys.getenv_opt "C2C_MCP_REPLY_TO" with
+        | Some alias when String.trim alias <> "" -> alias
+        | _ ->
+          (Printf.eprintf "[c2c agent refine --agent-mode] warning: C2C_MCP_REPLY_TO is not set. DMing coordinator1 as fallback.\n%!";
+           "coordinator1")
+      in
+      Printf.sprintf
+        "We are refining a role named `%s`. The role file is at:\n\n    %s\n\nHere is the current draft:\n\n---\n%s\n---\n\nYou are being called by peer `%s`. Refine the role file IN PLACE at the path above using your Edit tool. Use `send` to DM `%s` for any clarification needed. When the role is finalized, call `stop_self` to terminate cleanly.\n"
+        name role_file_path draft_body reply_to reply_to
+    else
+      Printf.sprintf
+        "We are refining a role named `%s`. The role file is at:\n\n    %s\n\nHere is the current draft:\n\n---\n%s\n---\n\nInterview the caller (or the human operator in this pane) about this agent, and refine the role file IN PLACE at the path above using your Edit tool. When the caller says \"done\" (or a human operator says they're done), save the final content and call `stop_self`.\n"
+        name role_file_path draft_body
   in
   let instance_name =
     Printf.sprintf "eph-refine-%s-%s" name (C2c_start.generate_alias ())
