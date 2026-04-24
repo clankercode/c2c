@@ -149,6 +149,7 @@ let supported_protocol_version = "2024-11-05"
 let capabilities =
   `Assoc
     [ ("tools", `Assoc [])
+    ; ("prompts", `Assoc [])
     ; ("experimental", `Assoc [ ("claude/channel", `Assoc []) ])
     ]
 
@@ -4201,6 +4202,90 @@ let log_rpc ~broker_root ~tool_name ~is_error =
       with _ -> close_out_noerr oc)
    with _ -> ())
 
+(* --- prompts/list and prompts/get helpers --------------------------------- *)
+
+let skills_dir () =
+  let cwd = Sys.getcwd () in
+  Filename.concat cwd ".opencode"
+  |> fun d -> Filename.concat d "skills"
+
+let list_skills () =
+  let dir = skills_dir () in
+  try
+    Array.to_list (Sys.readdir dir)
+    |> List.filter (fun name ->
+      let path = Filename.concat dir name in
+      try Sys.is_directory path with _ -> false)
+  with _ -> []
+
+let parse_skill_frontmatter dir name =
+  let skill_md = Filename.concat dir (Filename.concat name "SKILL.md") in
+  try
+    let ic = open_in skill_md in
+    let lines = ref [] in
+    let in_frontmatter = ref false in
+    let name_ref = ref None in
+    let desc_ref = ref None in
+    let strip_quotes s =
+      let len = String.length s in
+      if len >= 2 && s.[0] = '"' && s.[len - 1] = '"'
+      then String.sub s 1 (len - 2)
+      else s
+    in
+    (try
+       for _i = 1 to 20 do
+         match input_line ic with
+         | line ->
+             let line = String.trim line in
+             if line = "---" then in_frontmatter := not !in_frontmatter
+             else if !in_frontmatter then
+               (if Str.string_match (Str.regexp "^name:[ ]*\\([^ ].*\\)$") line 0
+                then name_ref := Some (Str.matched_group 1 line)
+                else if Str.string_match (Str.regexp "^description:[ ]*\\(\".*\"\\)$") line 0
+                then desc_ref := Some (strip_quotes (Str.matched_group 1 line))
+                else if Str.string_match (Str.regexp "^description:[ ]*\\([^ ].*\\)$") line 0
+                then desc_ref := Some (Str.matched_group 1 line));
+             lines := line :: !lines
+         | exception End_of_file -> ()
+       done;
+     with _ -> ());
+    close_in_noerr ic;
+    (!name_ref, !desc_ref)
+  with _ -> (None, None)
+
+let get_skill_content dir name =
+  let skill_md = Filename.concat dir (Filename.concat name "SKILL.md") in
+  try
+    let ic = open_in skill_md in
+    let content = ref "" in
+    (try
+       while true do
+         content := !content ^ input_line ic ^ "\n"
+       done
+     with End_of_file -> close_in ic | _ -> close_in_noerr ic);
+    String.trim !content
+  with _ -> ""
+
+let list_skills_as_prompts () =
+  let dir = skills_dir () in
+  let names = list_skills () in
+  List.map (fun name ->
+    let (_, desc) = parse_skill_frontmatter dir name in
+    `Assoc
+      (("name", `String name)
+       :: (match desc with Some d -> [("description", `String d)] | None -> []))
+  ) names
+
+let get_skill name =
+  let dir = skills_dir () in
+  let names = list_skills () in
+  if not (List.mem name names) then None
+  else
+    let (_, desc) = parse_skill_frontmatter dir name in
+    let content = get_skill_content dir name in
+    let description = match desc with Some d -> d | None -> name in
+    Some (description, content)
+
 let handle_request ~broker_root json =
   let open Yojson.Safe.Util in
   let broker = Broker.create ~root:broker_root in
@@ -4254,6 +4339,17 @@ let handle_request ~broker_root json =
       in
       log_rpc ~broker_root ~tool_name ~is_error;
       Lwt.return_some (jsonrpc_response ~id result)
+  | Some id, "prompts/list" ->
+      let prompts = list_skills_as_prompts () in
+      Lwt.return_some (jsonrpc_response ~id (`Assoc [("prompts", `List prompts)]))
+  | Some id, "prompts/get" ->
+      let name = try params |> member "name" |> to_string with _ -> "" in
+      (match get_skill name with
+       | Some (description, content) ->
+           let prompt_msg = `Assoc [("role", `String "user"); ("content", `Assoc [("type", `String "text"); ("text", `String content)])] in
+           Lwt.return_some (jsonrpc_response ~id (`Assoc [("description", `String description); ("messages", `List [prompt_msg])]))
+       | None ->
+           Lwt.return_some (jsonrpc_error ~id ~code:(-32602) ~message:("Unknown skill: " ^ name)))
   | Some id, "ping" ->
       (* MCP protocol keepalive — must respond with empty result, not an error.
          Claude Code sends periodic pings; an error response triggers "server unhealthy"
