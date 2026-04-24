@@ -538,9 +538,20 @@ module Broker = struct
       | Error e -> failwith ("relay_identity save: " ^ e)
 
   let write_allowed_signers_entry t ~alias =
-    let path = Filename.concat t.root "allowed_signers" in
+    let keys_dir = Filename.concat t.root "keys" in
+    let priv_path = Filename.concat keys_dir (alias ^ ".ed25519") in
+    let signers_path = Filename.concat t.root "allowed_signers" in
     try
-      let id = load_or_create_ed25519_identity () in
+      let mkdir_p d =
+        let rec aux p =
+          if p = "" || p = "/" || p = "." then ()
+          else if Sys.file_exists p then ()
+          else begin aux (Filename.dirname p); try Unix.mkdir p 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> () end
+        in
+        aux d
+      in
+      mkdir_p keys_dir;
+      let id = Relay_identity.load_or_create_at ~path:priv_path ~alias_hint:alias in
       let key_type = "ssh-ed25519" in
       let key_blob =
         let kt_len = String.length key_type in
@@ -568,7 +579,7 @@ module Broker = struct
       let line = Printf.sprintf "%s@c2c.im %s %s # added %s\n"
         alias key_type b64_key date_str
       in
-      let oc = open_out_gen [Open_append; Open_creat] 0o644 path in
+      let oc = open_out_gen [Open_append; Open_creat] 0o644 signers_path in
       Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
         output_string oc line)
     with e ->

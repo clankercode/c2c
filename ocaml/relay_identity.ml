@@ -219,3 +219,12 @@ let load ?path () =
     Error (Printf.sprintf "load %s: %s (%s %s)"
              path (Unix.error_message e) fn arg)
   | Sys_error msg -> Error ("load: " ^ msg)
+
+let load_or_create_at ~(path : string) ~(alias_hint : string) =
+  match load ~path () with
+  | Ok id -> id
+  | Error _ ->
+      let id = generate ~alias_hint () in
+      (match save ~path id with
+       | Ok () -> id
+       | Error e -> failwith ("load_or_create_at save: " ^ e))

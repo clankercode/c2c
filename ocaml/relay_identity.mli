@@ -68,3 +68,8 @@ val save : ?path:string -> t -> (unit, string) result
     (mirrors ssh's behavior on [~/.ssh/id_ed25519]). Returns
     [Error "permissions too permissive: ..."] in that case. *)
 val load : ?path:string -> unit -> (t, string) result
+
+(** [load_or_create_at ~path ~alias_hint] loads an identity from [path],
+    or generates and saves a fresh one if [path] does not exist.
+    Used for per-alias keys stored under [<broker_root>/keys/<alias>.ed25519]. *)
+val load_or_create_at : path:string -> alias_hint:string -> t
