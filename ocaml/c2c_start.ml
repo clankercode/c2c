@@ -1193,7 +1193,8 @@ let prepare_launch_args ~(name : string) ~(client : string)
             process notifications/claude/channel as <channel> tags. --channels is
             removed (Max 2026-04-24) to prevent parser confusion in cc-* wrappers. *)
         let dev_channel_args =
-          [ "--dangerously-load-development-channels"; "server:c2c" ]
+          [ "--dangerously-load-development-channels"; "server:c2c"
+          ; "--channels"; "server:c2c" ]
         in
         let agent_args =
           match agent_json with
@@ -1647,11 +1648,25 @@ let start_deliver_daemon ~(name : string) ~(client : string)
       in
       try
         let argv = Array.of_list (command :: args) in
-        let pid = Unix.create_process_env command argv
-            (Unix.environment ()) Unix.stdin Unix.stdout Unix.stderr
-        in
-        ignore pid;
-        Some pid
+        let env = Unix.environment () in
+        match Unix.fork () with
+        | 0 ->
+            (try ignore (Sys.signal Sys.sigchld Sys.Signal_default) with _ -> ());
+            (try ignore (Sys.signal Sys.sigpipe Sys.Signal_default) with _ -> ());
+            (* Sidecars must not keep the pane's terminal fds alive. Codex sideband
+               delivery is especially sensitive here: inheriting the controlling tty
+               can wedge shutdown even after the managed child exits. *)
+            let devnull = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 in
+            (try Unix.dup2 devnull Unix.stdin with _ -> ());
+            (try Unix.dup2 devnull Unix.stdout with _ -> ());
+            (try Unix.dup2 devnull Unix.stderr with _ -> ());
+            (try
+               if devnull <> Unix.stdin && devnull <> Unix.stdout && devnull <> Unix.stderr
+               then Unix.close devnull
+             with _ -> ());
+            (try Unix.execvpe command argv env
+             with _ -> exit 127)
+        | pid -> Some pid
       with Unix.Unix_error _ -> None
 
 let start_poker ~(name : string) ~(client : string)
