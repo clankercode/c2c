@@ -1,4 +1,4 @@
 (executable
  (name c2c)
- (modules c2c c2c_types c2c_commands c2c_setup c2c_utils c2c_worktree c2c_rooms role_designer_embedded)
+ (modules c2c c2c_types c2c_commands c2c_setup c2c_utils c2c_worktree c2c_rooms c2c_stickers role_designer_embedded)
  (libraries c2c_mcp cmdliner yojson logs unix lwt.unix cohttp-lwt-unix))
