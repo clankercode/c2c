@@ -6,8 +6,8 @@ let ( // ) = Filename.concat
 (* --- path helpers ------------------------------------------------------- *)
 
 let sticker_dir () =
-  match Git_helpers.git_repo_toplevel () with
-  | Some top -> top // ".c2c" // "stickers"
+  match Git_helpers.git_common_dir_parent () with
+  | Some parent -> parent // ".c2c" // "stickers"
   | None -> failwith "not in a git repository"
 
 let received_dir ~alias =

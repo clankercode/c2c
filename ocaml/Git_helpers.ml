@@ -47,6 +47,11 @@ let git_common_dir () =
   | Some line when Sys.is_directory line -> Some line
   | _ -> None
 
+let git_common_dir_parent () =
+  match git_common_dir () with
+  | Some d -> Some (Filename.dirname d)
+  | None -> None
+
 let git_repo_toplevel () =
   match git_first_line [ "rev-parse"; "--show-toplevel" ] with
   | Some line when Sys.is_directory line -> Some line
