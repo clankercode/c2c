@@ -2465,6 +2465,89 @@ let session_id_from_env ?client_type () =
 let current_session_id () =
   session_id_from_env ()
 
+let managed_instances_dir () =
+  match Sys.getenv_opt "C2C_INSTANCES_DIR" with
+  | Some d when String.trim d <> "" -> String.trim d
+  | _ ->
+      let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+      Filename.concat home ".local/share/c2c/instances"
+
+let managed_session_id_from_codex_thread ~broker_root ~thread_id =
+  let instances_dir = managed_instances_dir () in
+  if not (Sys.file_exists instances_dir && Sys.is_directory instances_dir) then None
+  else
+    let entries = try Array.to_list (Sys.readdir instances_dir) with _ -> [] in
+    let matches =
+      List.filter_map
+        (fun name ->
+          let config_path =
+            Filename.concat (Filename.concat instances_dir name) "config.json"
+          in
+          if not (Sys.file_exists config_path) then None
+          else
+            try
+              let json = Yojson.Safe.from_file config_path in
+              let fields = match json with `Assoc assoc -> assoc | _ -> [] in
+              let string_field key =
+                match List.assoc_opt key fields with
+                | Some (`String value) when String.trim value <> "" ->
+                    Some (String.trim value)
+                | _ -> None
+              in
+              let is_codex_family =
+                match string_field "client" with
+                | Some ("codex" | "codex-headless") -> true
+                | _ -> false
+              in
+              let broker_matches =
+                match string_field "broker_root" with
+                | Some root -> String.equal root broker_root
+                | None -> false
+              in
+              let thread_matches =
+                (match string_field "resume_session_id" with
+                 | Some value -> String.equal value thread_id
+                 | None -> false)
+                || (match string_field "codex_resume_target" with
+                    | Some value -> String.equal value thread_id
+                    | None -> false)
+              in
+              if is_codex_family && broker_matches && thread_matches
+              then string_field "session_id"
+              else None
+            with _ -> None)
+        entries
+    in
+    match matches with
+    | session_id :: _ -> Some session_id
+    | [] -> None
+
+let codex_turn_metadata_session_id params =
+  let open Yojson.Safe.Util in
+  try
+    match params |> member "_meta" |> member "x-codex-turn-metadata" |> member "session_id" with
+    | `String value when String.trim value <> "" -> Some (String.trim value)
+    | _ -> None
+  with _ -> None
+
+let request_session_id_override ~broker_root ~tool_name ~params =
+  match tool_name with
+  | "register" | "whoami" | "poll_inbox" | "peek_inbox" | "history" | "my_rooms"
+  | "send" | "send_all" | "send_room" | "send_room_invite" | "set_room_visibility"
+  | "open_pending_reply" | "check_pending_reply" | "set_compact" | "clear_compact"
+  | "stop_self" ->
+      (* Codex does not reliably pass parent env through to MCP subprocesses,
+         but it does attach the real thread id on each tools/call request.
+         For managed sessions we map that native thread id back to the stable
+         c2c instance session_id; otherwise we fall back to the raw thread id. *)
+      (match codex_turn_metadata_session_id params with
+       | Some thread_id ->
+           (match managed_session_id_from_codex_thread ~broker_root ~thread_id with
+            | Some session_id -> Some session_id
+            | None -> Some thread_id)
+       | None -> None)
+  | _ -> None
+
 (* Derive a session_id from the alias when C2C_MCP_SESSION_ID is not set.
    Uses alias as-is so the plugin (which reads the same alias from the
    sidecar or env) passes a consistent session_id in MCP tool calls.
@@ -2676,16 +2759,19 @@ let auto_join_rooms_startup ~broker_root =
       rooms
   end
 
-let resolve_session_id arguments =
+let resolve_session_id ?session_id_override arguments =
   match optional_string_member "session_id" arguments with
   | Some session_id when session_id <> "" -> session_id
   | _ ->
-      (match current_session_id () with
-      | Some session_id -> session_id
-      | None -> invalid_arg "missing session_id")
+      (match session_id_override with
+       | Some session_id -> session_id
+       | None ->
+           (match current_session_id () with
+            | Some session_id -> session_id
+            | None -> invalid_arg "missing session_id"))
 
-let current_registered_alias broker =
-  match current_session_id () with
+let current_registered_alias ?session_id_override broker =
+  match (match session_id_override with Some sid -> Some sid | None -> current_session_id ()) with
   | None -> None
   | Some session_id ->
       Broker.list_registrations broker
@@ -2693,8 +2779,8 @@ let current_registered_alias broker =
            (fun reg -> reg.session_id = session_id)
       |> Option.map (fun reg -> reg.alias)
 
-let alias_for_current_session_or_argument broker arguments =
-  match current_registered_alias broker with
+let alias_for_current_session_or_argument ?session_id_override broker arguments =
+  match current_registered_alias ?session_id_override broker with
   | Some alias -> Some alias
   | None ->
       (match optional_string_member "from_alias" arguments with
@@ -2726,8 +2812,8 @@ let missing_member_alias_result tool_name =
    - If the caller IS registered with this alias (same session_id) → None (ok).
    - If no session_id context is available → None (allow legacy / system calls).
    - Otherwise, returns Some conflict_reg if alive different-session holds alias. *)
-let send_alias_impersonation_check broker from_alias =
-  match current_session_id () with
+let send_alias_impersonation_check ?session_id_override broker from_alias =
+  match (match session_id_override with Some sid -> Some sid | None -> current_session_id ()) with
   | None -> None
   | Some current_sid ->
       List.find_opt
@@ -2742,10 +2828,10 @@ let send_alias_impersonation_check broker from_alias =
           && Broker.registration_is_alive reg)
         (Broker.list_registrations broker)
 
-let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
+let handle_tool_call ~(broker : Broker.t) ?session_id_override ~tool_name ~arguments =
   match tool_name with
   | "register" ->
-      let session_id = resolve_session_id arguments in
+      let session_id = resolve_session_id ?session_id_override arguments in
       let alias =
         match optional_string_member "alias" arguments with
         | Some a -> a
@@ -2996,11 +3082,11 @@ let handle_tool_call ~(broker : Broker.t) ~tool_name ~arguments =
   | "send" ->
       let to_alias = string_member_any [ "to_alias"; "alias" ] arguments in
       let content = string_member "content" arguments in
-      (match alias_for_current_session_or_argument broker arguments with
+      (match alias_for_current_session_or_argument ?session_id_override broker arguments with
        | None ->
            Lwt.return (missing_sender_alias_result "send")
        | Some from_alias ->
-           (match send_alias_impersonation_check broker from_alias with
+           (match send_alias_impersonation_check ?session_id_override broker from_alias with
             | Some conflict ->
                 Lwt.return
                   (tool_result
@@ -3046,8 +3132,12 @@ let ts = Unix.gettimeofday () in
                           `Key_changed to_alias
                         | _ ->
                           let session_id =
-                            match current_session_id () with
-                            | Some sid -> sid | None -> from_alias
+                            match session_id_override with
+                            | Some sid -> sid
+                            | None ->
+                                (match current_session_id () with
+                                 | Some sid -> sid
+                                 | None -> from_alias)
                           in
                           (match Relay_enc.load_or_generate ~session_id () with
                             | Error e ->
@@ -3133,10 +3223,10 @@ let ts = Unix.gettimeofday () in
                 Lwt.return (tool_result ~content:receipt ~is_error:false)))
   | "send_all" ->
       let content = string_member "content" arguments in
-      (match alias_for_current_session_or_argument broker arguments with
+      (match alias_for_current_session_or_argument ?session_id_override broker arguments with
        | None -> Lwt.return (missing_sender_alias_result "send_all")
        | Some from_alias ->
-           (match send_alias_impersonation_check broker from_alias with
+           (match send_alias_impersonation_check ?session_id_override broker from_alias with
             | Some conflict ->
                 Lwt.return
                   (tool_result
@@ -3183,7 +3273,7 @@ let ts = Unix.gettimeofday () in
                 in
                 Lwt.return (tool_result ~content:result_json ~is_error:false)))
   | "whoami" ->
-      let session_id = resolve_session_id arguments in
+      let session_id = resolve_session_id ?session_id_override arguments in
       let reg_opt =
         Broker.list_registrations broker
         |> List.find_opt (fun reg -> reg.session_id = session_id)
@@ -3201,16 +3291,24 @@ let ts = Unix.gettimeofday () in
       Lwt.return (tool_result ~content ~is_error:false)
   | "poll_inbox" ->
       let req_sid = optional_string_member "session_id" arguments in
-      let caller_sid = current_session_id () in
+      let caller_sid =
+        match session_id_override with
+        | Some sid -> Some sid
+        | None -> current_session_id ()
+      in
       if req_sid <> None && caller_sid <> None && req_sid <> caller_sid then
         Lwt.return (tool_result
           ~content:"poll_inbox: session_id argument does not match caller's MCP session (C2C_MCP_SESSION_ID)"
           ~is_error:true)
       else begin
-      let session_id = resolve_session_id arguments in
+      let session_id = resolve_session_id ?session_id_override arguments in
       Broker.confirm_registration broker ~session_id;
       let messages = Broker.drain_inbox broker ~session_id in
-      let sid = match current_session_id () with Some s -> s | None -> "unknown" in
+      let sid =
+        match session_id_override with
+        | Some sid -> sid
+        | None -> (match current_session_id () with Some s -> s | None -> "unknown")
+      in
       let our_x25519 = match Relay_enc.load_or_generate ~session_id:sid () with Ok k -> Some k | Error _ -> None in
       let our_ed25519 = Some (Broker.load_or_create_ed25519_identity ()) in
       let process_msg ({ from_alias; to_alias; content; deferrable } : message) =
@@ -3282,7 +3380,7 @@ let ts = Unix.gettimeofday () in
       (* Like poll_inbox but does not drain. Resolves session_id from
          env only (ignores argument overrides) — same isolation contract
          as `history` and `my_rooms`. *)
-      (match current_session_id () with
+      (match (match session_id_override with Some sid -> Some sid | None -> current_session_id ()) with
        | None ->
            Lwt.return
              (tool_result
@@ -3316,7 +3414,7 @@ let ts = Unix.gettimeofday () in
          (Subagent-level isolation — preventing a forked child from
          inheriting the parent's env — is goal B, tracked separately in
          the archive-and-subagent-goals findings doc.) *)
-      (match current_session_id () with
+      (match (match session_id_override with Some sid -> Some sid | None -> current_session_id ()) with
        | None ->
            Lwt.return
              (tool_result
@@ -3457,7 +3555,7 @@ let ts = Unix.gettimeofday () in
       in
       Lwt.return (tool_result ~content ~is_error:false)
   | "set_dnd" ->
-      let session_id = resolve_session_id arguments in
+      let session_id = resolve_session_id ?session_id_override arguments in
       let on =
         try
           match Yojson.Safe.Util.member "on" arguments with
@@ -3484,7 +3582,7 @@ let ts = Unix.gettimeofday () in
       in
       Lwt.return (tool_result ~content ~is_error:false)
   | "dnd_status" ->
-      let session_id = resolve_session_id arguments in
+      let session_id = resolve_session_id ?session_id_override arguments in
       let reg_opt =
         Broker.list_registrations broker
         |> List.find_opt (fun r -> r.session_id = session_id)
@@ -3512,10 +3610,10 @@ let ts = Unix.gettimeofday () in
       Lwt.return (tool_result ~content ~is_error:false)
   | "join_room" ->
       let room_id = string_member "room_id" arguments in
-      (match alias_for_current_session_or_argument broker arguments with
+      (match alias_for_current_session_or_argument ?session_id_override broker arguments with
        | None -> Lwt.return (missing_member_alias_result "join_room")
        | Some alias ->
-           let session_id = resolve_session_id arguments in
+           let session_id = resolve_session_id ?session_id_override arguments in
            let members = Broker.join_room broker ~room_id ~alias ~session_id in
            let history_limit =
              match Broker.int_opt_member "history_limit" arguments with
@@ -3550,7 +3648,7 @@ let ts = Unix.gettimeofday () in
            Lwt.return (tool_result ~content ~is_error:false))
   | "leave_room" ->
       let room_id = string_member "room_id" arguments in
-      (match alias_for_current_session_or_argument broker arguments with
+      (match alias_for_current_session_or_argument ?session_id_override broker arguments with
        | None -> Lwt.return (missing_member_alias_result "leave_room")
        | Some alias ->
            let members = Broker.leave_room broker ~room_id ~alias in
@@ -3583,10 +3681,10 @@ let ts = Unix.gettimeofday () in
   | "send_room" ->
       let room_id = string_member "room_id" arguments in
       let content = string_member "content" arguments in
-      (match alias_for_current_session_or_argument broker arguments with
+      (match alias_for_current_session_or_argument ?session_id_override broker arguments with
        | None -> Lwt.return (missing_sender_alias_result "send_room")
        | Some from_alias ->
-           (match send_alias_impersonation_check broker from_alias with
+           (match send_alias_impersonation_check ?session_id_override broker from_alias with
             | Some conflict ->
                 Lwt.return
                   (tool_result
@@ -3628,7 +3726,7 @@ let ts = Unix.gettimeofday () in
          env would see the parent's rooms, which is acceptable today
          (goal B — subagent access tokens — is the follow-up slice
          that closes that gap). Argument-level override is ignored. *)
-      (match current_session_id () with
+      (match (match session_id_override with Some sid -> Some sid | None -> current_session_id ()) with
        | None ->
            Lwt.return
              (tool_result
@@ -3667,10 +3765,10 @@ let ts = Unix.gettimeofday () in
   | "send_room_invite" ->
       let room_id = string_member "room_id" arguments in
       let invitee_alias = string_member "invitee_alias" arguments in
-      (match alias_for_current_session_or_argument broker arguments with
+      (match alias_for_current_session_or_argument ?session_id_override broker arguments with
        | None -> Lwt.return (missing_sender_alias_result "send_room_invite")
        | Some from_alias ->
-           (match send_alias_impersonation_check broker from_alias with
+           (match send_alias_impersonation_check ?session_id_override broker from_alias with
             | Some conflict ->
                 Lwt.return
                   (tool_result
@@ -3699,10 +3797,10 @@ let ts = Unix.gettimeofday () in
         | "invite_only" -> Invite_only
         | _ -> Public
       in
-      (match alias_for_current_session_or_argument broker arguments with
+      (match alias_for_current_session_or_argument ?session_id_override broker arguments with
        | None -> Lwt.return (missing_sender_alias_result "set_room_visibility")
        | Some from_alias ->
-           (match send_alias_impersonation_check broker from_alias with
+           (match send_alias_impersonation_check ?session_id_override broker from_alias with
             | Some conflict ->
                 Lwt.return
                   (tool_result
@@ -3739,7 +3837,7 @@ let ts = Unix.gettimeofday () in
               items
         | _ -> []
       in
-      let session_id = resolve_session_id arguments in
+      let session_id = resolve_session_id ?session_id_override arguments in
       let alias =
         match List.find_opt (fun r -> r.session_id = session_id)
                 (Broker.list_registrations broker) with
@@ -3806,7 +3904,7 @@ let ts = Unix.gettimeofday () in
             in
             Lwt.return (tool_result ~content ~is_error:false))
   | "set_compact" ->
-      (match current_session_id () with
+      (match (match session_id_override with Some sid -> Some sid | None -> current_session_id ()) with
        | None ->
            Lwt.return (tool_result ~content:"{\"error\": \"no session ID; set C2C_MCP_SESSION_ID\"}" ~is_error:true)
        | Some session_id ->
@@ -3829,7 +3927,7 @@ let ts = Unix.gettimeofday () in
            in
            Lwt.return (tool_result ~content ~is_error:false))
   | "clear_compact" ->
-      (match current_session_id () with
+      (match (match session_id_override with Some sid -> Some sid | None -> current_session_id ()) with
        | None ->
            Lwt.return (tool_result ~content:"{\"error\": \"no session ID; set C2C_MCP_SESSION_ID\"}" ~is_error:true)
        | Some session_id ->
@@ -3841,7 +3939,7 @@ let ts = Unix.gettimeofday () in
            Lwt.return (tool_result ~content ~is_error:false))
   | "stop_self" ->
       let reason = match optional_string_member "reason" arguments with Some r -> r | None -> "" in
-      (match alias_for_current_session_or_argument broker arguments with
+      (match alias_for_current_session_or_argument ?session_id_override broker arguments with
        | None -> Lwt.return (missing_sender_alias_result "stop_self")
        | Some name ->
            (* Reconstruct outer.pid path without creating a C2c_start dep cycle. *)
@@ -3926,10 +4024,14 @@ let handle_request ~broker_root json =
   | Some id, "tools/call" ->
       let tool_name = try params |> member "name" |> to_string with _ -> "" in
       let arguments = try params |> member "arguments" with _ -> `Assoc [] in
+      let session_id_override =
+        request_session_id_override ~broker_root ~tool_name ~params
+      in
       let open Lwt.Syntax in
       let* result =
         Lwt.catch
-          (fun () -> handle_tool_call ~broker ~tool_name ~arguments)
+          (fun () ->
+            handle_tool_call ~broker ?session_id_override ~tool_name ~arguments)
           (fun exn ->
             let msg =
               match exn with

@@ -287,6 +287,31 @@ class C2CCLITests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["client"], "codex")
 
+    def test_native_install_codex_writes_client_type_env(self):
+        home_dir = Path(self.temp_dir.name) / "home"
+        broker_root = Path(self.temp_dir.name) / "broker"
+        home_dir.mkdir(parents=True, exist_ok=True)
+        broker_root.mkdir(parents=True, exist_ok=True)
+
+        env = dict(self.env)
+        env["HOME"] = str(home_dir)
+
+        self.assertTrue(NATIVE_C2C.exists(), NATIVE_C2C)
+        result = run_native_cli(
+            "install",
+            "codex",
+            "--broker-root",
+            str(broker_root),
+            "--json",
+            env=env,
+        )
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        config_text = (home_dir / ".codex" / "config.toml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('C2C_MCP_CLIENT_TYPE = "codex"', config_text)
+
     def test_start_help_mentions_codex_headless(self):
         self.assertTrue(NATIVE_C2C.exists(), NATIVE_C2C)
         result = run_native_cli("start", "--help", env=self.env)
