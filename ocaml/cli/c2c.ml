@@ -6645,7 +6645,18 @@ let diag = Cmdliner.Cmd.v (Cmdliner.Cmd.info "diag" ~doc:"Show diagnostic info (
 (* --- subcommand: doctor --------------------------------------------------- *)
 
 let doctor_cmd =
-  let+ () = Cmdliner.Term.const () in
+  let summary =
+    Cmdliner.Arg.(value & flag & info [ "summary" ]
+      ~doc:"Compact ACTION REQUIRED output with FIX NOW / COORDINATOR / ALL CLEAR sections.")
+  in
+  let json =
+    Cmdliner.Arg.(value & flag & info [ "json" ]
+      ~doc:"Output machine-readable JSON.")
+  in
+  let+ summary = summary
+  and+ json = json in
+  let args = [] |> (if summary then fun l -> "--summary" :: l else Fun.id)
+              |> (if json then fun l -> "--json" :: l else Fun.id) in
   match git_repo_toplevel () with
   | None ->
       Printf.eprintf "error: must run from inside the c2c git repo.\n%!";
@@ -6656,7 +6667,7 @@ let doctor_cmd =
         Printf.eprintf "error: scripts/c2c-doctor.sh not found.\n%!";
         exit 1
       end;
-      Unix.execvp "bash" [| "bash"; script |]
+      Unix.execvp "bash" (Array.of_list (["bash"; script] @ args))
 
 let doctor = Cmdliner.Cmd.v (Cmdliner.Cmd.info "doctor"
     ~doc:"Health snapshot + push-pending analysis (for Max / human operators).") doctor_cmd
