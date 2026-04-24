@@ -146,42 +146,28 @@ let rec command_tier_map () : (string * safety) list =
   ; "status", Tier1
   ; "commands", Tier1
   ; "monitor", Tier1      (* read-only inbox/archive event stream — required by agent recovery-snippet *)
+  (* relay subcommands (serve, gc, connect, setup, status, list, rooms, poll-inbox) are
+     not top-level commands; they inherit tier from the relay parent and are not
+     independently filtered by filter_commands. *)
   ; "start", Tier2
   ; "stop", Tier2
   ; "agent", Tier2
   ; "restart", Tier2
   ; "reset-thread", Tier2
-  ; "rooms-send", Tier2
-  ; "rooms-visibility", Tier2
-  ; "rooms-invite", Tier2
-  ; "rooms-join", Tier2
-  ; "rooms-leave", Tier2
-  ; "rooms-list", Tier2
-  ; "rooms-members", Tier2
-  ; "rooms-history", Tier2
-  ; "rooms-tail", Tier2
-  ; "rooms-delete", Tier2
+  (* rooms subcommands (send, join, leave, list, members, history, tail, delete, visibility, invite)
+     are not top-level commands; they inherit tier from the rooms parent. *)
   ; "agent", Tier2
   ; "roles-validate", Tier2
   ; "config", Tier2
   ; "config-show", Tier2
   ; "wire-daemon", Tier2
-  ; "wire-daemon-list", Tier2
-  ; "wire-daemon-status", Tier2
+  (* wire-daemon subcommands (list, status) are not top-level. *)
   ; "init", Tier2
   ; "repo", Tier2
    ; "restart-self", Tier3
    ; "relay", Tier2
-   ; "relay-serve", Tier3
-   ; "relay-gc", Tier3
-   ; "relay-setup", Tier2
-   ; "relay-connect", Tier3
-   ; "relay-register", Tier2
-   ; "relay-dm", Tier2
-   ; "relay-status", Tier2
-   ; "relay-list", Tier2
-    ; "relay-rooms", Tier2
-    ; "relay-poll-inbox", Tier2
+   (* relay subcommands (serve, gc, setup, connect, register, dm, status, list, rooms, poll-inbox)
+      are not top-level commands. *)
    ; "setcap", Tier3
    ; "install", Tier2
    ; "gui", Tier3
@@ -210,15 +196,8 @@ let rec command_tier_map () : (string * safety) list =
   ; "supervisor-question-reject", Tier4
   ; "supervisor-approve", Tier4
   ; "supervisor-reject", Tier4
-  ; "room-send", Tier4
-  ; "room-join", Tier4
-  ; "room-leave", Tier4
-  ; "room-list", Tier4
-  ; "room-members", Tier4
-  ; "room-history", Tier4
-  ; "room-tail", Tier4
-  ; "room-delete", Tier4
-  ; "room-visibility", Tier4
+  (* room subcommands (send, join, leave, list, members, history, tail, delete, visibility)
+     are not top-level commands. *)
   ; "room-invite", Tier4
   ]
 
