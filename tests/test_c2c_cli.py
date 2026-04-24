@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -201,6 +202,41 @@ class C2CCLITests(unittest.TestCase):
         except FileNotFoundError as error:
             self.fail(f"missing command: {command}\n{error}")
 
+    def native_home_env(self, home_name: str):
+        home_dir = Path(self.temp_dir.name) / home_name
+        instances_dir = home_dir / ".local" / "share" / "c2c" / "instances"
+        instances_dir.mkdir(parents=True, exist_ok=True)
+        env = dict(self.env)
+        env["HOME"] = str(home_dir)
+        return env, instances_dir
+
+    @staticmethod
+    def write_instance_dir(
+        instances_dir: Path,
+        name: str,
+        *,
+        client: str = "codex",
+        created_at: float,
+        outer_pid: int | None = None,
+    ) -> Path:
+        inst_dir = instances_dir / name
+        inst_dir.mkdir(parents=True, exist_ok=True)
+        config = {
+            "name": name,
+            "client": client,
+            "session_id": name,
+            "resume_session_id": name,
+            "alias": name,
+            "extra_args": [],
+            "created_at": created_at,
+            "broker_root": str(instances_dir.parent.parent.parent / "broker"),
+            "auto_join_rooms": "swarm-lounge",
+        }
+        (inst_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
+        if outer_pid is not None:
+            (inst_dir / "outer.pid").write_text(f"{outer_pid}\n", encoding="utf-8")
+        return inst_dir
+
     def test_register_returns_alias_and_json(self):
         result = self.invoke_cli(
             "c2c-register",
@@ -334,6 +370,73 @@ class C2CCLITests(unittest.TestCase):
             "Restart a managed codex or codex-headless instance onto a specific thread",
             result.stdout,
         )
+
+    def test_instances_cli_lists_stopped_and_running_instances(self):
+        env, instances_dir = self.native_home_env("home-list")
+        now = time.time()
+        self.write_instance_dir(
+            instances_dir,
+            "stale-stopped",
+            created_at=now - 10 * 86400.0,
+        )
+        self.write_instance_dir(
+            instances_dir,
+            "fresh-stopped",
+            created_at=now - 1 * 86400.0,
+        )
+        self.write_instance_dir(
+            instances_dir,
+            "live-running",
+            created_at=now - 2 * 86400.0,
+            outer_pid=os.getpid(),
+        )
+
+        result = run_native_cli("instances", "--json", env=env)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        names = [item["name"] for item in payload]
+        self.assertEqual(sorted(names), ["fresh-stopped", "live-running", "stale-stopped"])
+        statuses = {item["name"]: item["status"] for item in payload}
+        self.assertEqual(statuses["stale-stopped"], "stopped")
+        self.assertEqual(statuses["fresh-stopped"], "stopped")
+        self.assertEqual(statuses["live-running"], "running")
+
+    def test_instances_cli_prune_older_than_removes_stale_stopped_instances(self):
+        env, instances_dir = self.native_home_env("home-prune")
+        now = time.time()
+        stale_dir = self.write_instance_dir(
+            instances_dir,
+            "stale-stopped",
+            created_at=now - 10 * 86400.0,
+        )
+        fresh_dir = self.write_instance_dir(
+            instances_dir,
+            "fresh-stopped",
+            created_at=now - 1 * 86400.0,
+        )
+        live_dir = self.write_instance_dir(
+            instances_dir,
+            "live-running",
+            created_at=now - 2 * 86400.0,
+            outer_pid=os.getpid(),
+        )
+
+        result = run_native_cli(
+            "instances",
+            "--prune-older-than",
+            "7",
+            "--json",
+            env=env,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        names = sorted(item["name"] for item in payload)
+        self.assertEqual(names, ["fresh-stopped", "live-running"])
+        self.assertFalse(stale_dir.exists())
+        self.assertTrue(fresh_dir.exists())
+        self.assertTrue(live_dir.exists())
 
     def test_repo_c2c_install_errors_cleanly_without_native_cli(self):
         c2c_entry = load_repo_c2c_module()

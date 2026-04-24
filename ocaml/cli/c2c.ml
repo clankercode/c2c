@@ -1486,6 +1486,7 @@ type managed_instance_view =
   ; mi_status : string
   ; mi_delivery_mode : string
   ; mi_pid : int option
+  ; mi_created_at : float option
   }
 
 let read_managed_instances () =
@@ -1572,7 +1573,33 @@ let read_managed_instances () =
          ; mi_status = status
          ; mi_delivery_mode = delivery_mode
          ; mi_pid = pid
+         ; mi_created_at = created_at
          })
+
+let rec rm_rf path =
+  if Sys.is_directory path then (
+    Array.iter (fun entry -> rm_rf (path // entry)) (Sys.readdir path);
+    Unix.rmdir path)
+  else
+    Sys.remove path
+
+let prune_stopped_instances_older_than ~days ~instances_dir managed_instances =
+  let cutoff = Unix.gettimeofday () -. (float_of_int days *. 86400.0) in
+  let stale_instances =
+    List.filter
+      (fun (inst : managed_instance_view) ->
+         inst.mi_status = "stopped"
+         && (match inst.mi_created_at with
+             | Some created_at -> created_at < cutoff
+             | None -> false))
+      managed_instances
+  in
+  List.iter
+    (fun (inst : managed_instance_view) ->
+       let path = instances_dir // inst.mi_name in
+       if Sys.file_exists path then rm_rf path)
+    stale_instances;
+  stale_instances
 
 let safe_is_directory path =
   try Sys.file_exists path && Sys.is_directory path with Sys_error _ -> false
@@ -6479,9 +6506,32 @@ let list_instance_dirs () =
   end
 
 let instances_cmd =
-  let+ json = json_flag in
+  let prune_older_than =
+    Cmdliner.Arg.(
+      value
+      & opt (some int) None
+      & info [ "prune-older-than" ] ~docv:"DAYS"
+          ~doc:"Prune stopped instances older than DAYS before listing." )
+  in
+  let+ json = json_flag
+  and+ prune_older_than = prune_older_than in
   let output_mode = if json then Json else Human in
+  let instances_dir = instances_dir () in
   let managed_instances = read_managed_instances () in
+  let managed_instances =
+    match prune_older_than with
+    | None -> managed_instances
+    | Some days ->
+        if days < 0 then (
+          Printf.eprintf "error: --prune-older-than must be >= 0\n%!";
+          exit 1);
+        let stale = prune_stopped_instances_older_than ~days ~instances_dir managed_instances in
+        if stale <> [] && output_mode = Human then
+          Printf.eprintf
+            "pruned %d stopped instance(s) older than %d day(s)\n%!"
+            (List.length stale) days;
+        read_managed_instances ()
+  in
   if managed_instances = [] then begin
     match output_mode with
     | Json -> print_json (`List [])
