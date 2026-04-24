@@ -63,3 +63,49 @@ Open — root cause narrowed to send_room alias resolution in c2c_mcp.ml.
 - Compare jungle-coder's registered session_id vs coordinator1's
 - Check if OpenCode's MCP session is registering with the wrong session_id
   (known footgun: child CLIs inherit CLAUDE_SESSION_ID)
+
+## Deep trace (jungle-coder, 2026-04-24T20:30 UTC)
+
+### send_room alias resolution path
+
+```
+alias_for_current_session_or_argument (c2c_mcp.ml:2866)
+  → current_registered_alias ?session_id_override broker (line 2857)
+    → session_id from override or current_session_id() (line 2858)
+      → session_id_from_env () (line 2530)
+        → first C2C_MCP_SESSION_ID, else native env keys (line 2515)
+          → For OpenCode: C2C_OPENCODE_SESSION_ID fallback (line 2501)
+```
+
+If `C2C_MCP_SESSION_ID` is NOT set in OpenCode's new process after compaction:
+1. `session_id_from_env` falls back to `inferred_client_type_from_env`
+2. `inferred_client_type_from_env` checks CLAUDE_SESSION_ID first (line 2509)
+3. If parent shell has `CLAUDE_SESSION_ID=coordinator1`, OpenCode inherits it
+4. Session resolves to "coordinator1" → alias lookup finds coordinator1's alias
+
+### Auto-registration on new OpenCode process
+
+`auto_register_startup` is called from `c2c_mcp_server.ml:294` at MCP server startup.
+This calls `auto_register_impl` with `session_id_override=None`, so:
+- Uses `current_session_id()` from env
+- Same fallback chain as above
+
+### Hypothesis
+
+OpenCode compaction → new process doesn't inherit C2C_MCP_SESSION_ID properly
+→ `current_session_id()` falls back to `CLAUDE_SESSION_ID=coordinator1`
+→ registration uses wrong session_id, or send_room alias resolution is wrong
+
+### Verification needed
+
+- Does OpenCode's new process after compaction have C2C_MCP_SESSION_ID set?
+- Does OpenCode spawn the MCP server directly or through a shell that could
+  inject CLAUDE_SESSION_ID?
+- Does the plugin re-register after session.compacted?
+
+### Possible fix directions
+
+1. Ensure C2C_MCP_SESSION_ID is explicitly set in OpenCode's MCP server env
+   before spawning, not relying on inheritance from parent shell
+2. Hook re-registration into session.compacted handler in the OpenCode plugin
+3. Remove CLAUDE_SESSION_ID fallback for OpenCode entirely (never relevant)

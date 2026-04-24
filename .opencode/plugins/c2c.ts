@@ -1090,12 +1090,24 @@ const C2CDelivery: Plugin = async (ctx) => {
 
   function childProcessEnv(): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = { ...process.env };
-    const inheritedSessionId = process.env.C2C_MCP_SESSION_ID || process.env.C2C_SESSION_ID || sessionId;
-    const inheritedBrokerRoot = process.env.C2C_MCP_BROKER_ROOT || process.env.C2C_BROKER_ROOT || brokerRoot;
-    if (inheritedSessionId) {
-      if (!env.C2C_MCP_SESSION_ID) env.C2C_MCP_SESSION_ID = inheritedSessionId;
-      if (!env.C2C_SESSION_ID) env.C2C_SESSION_ID = inheritedSessionId;
+    // Always use sessionId (instance name, e.g. "jungle-coder") for child processes,
+    // NOT the inherited C2C_MCP_SESSION_ID from the outer shell (which could be
+    // "coordinator1" or another instance's value). OpenCode compacts by spawning a
+    // fresh child process — if that child inherits the wrong C2C_MCP_SESSION_ID,
+    // the MCP server resolves the wrong session_id → alias and all send_room /
+    // send messages appear to come from the wrong agent.
+    // Strip any inherited value so we always set the authoritative one.
+    const effectiveSessionId = sessionId || activeSessionId || "";
+    if (effectiveSessionId) {
+      env.C2C_MCP_SESSION_ID = effectiveSessionId;
+      env.C2C_SESSION_ID = effectiveSessionId;
     }
+    // Short-circuit inferred_client_type_from_env at c2c_mcp.ml:2505.
+    // Without this, if the outer shell has CLAUDE_SESSION_ID=coordinator1,
+    // inferred_client_type_from_env() returns "claude" and the fallback
+    // session_id key becomes CLAUDE_SESSION_ID instead of C2C_OPENCODE_SESSION_ID.
+    env.C2C_MCP_CLIENT_TYPE = "opencode";
+    const inheritedBrokerRoot = process.env.C2C_MCP_BROKER_ROOT || process.env.C2C_BROKER_ROOT || brokerRoot;
     if (inheritedBrokerRoot) {
       if (!env.C2C_MCP_BROKER_ROOT) env.C2C_MCP_BROKER_ROOT = inheritedBrokerRoot;
       if (!env.C2C_BROKER_ROOT) env.C2C_BROKER_ROOT = inheritedBrokerRoot;
@@ -1857,12 +1869,24 @@ const C2CDelivery: Plugin = async (ctx) => {
         return;
       }
 
-      // Clear compacting flag when OpenCode finishes context compaction
+      // Re-register + clear compacting flag when OpenCode finishes context compaction.
+      // After compaction OpenCode spawns a fresh child process that does NOT inherit
+      // C2C_MCP_SESSION_ID from the plugin — without re-registration the new process
+      // would use a fallback session_id (e.g. CLAUDE_SESSION_ID from a parent shell)
+      // and messages would be attributed to the wrong alias (e.g. coordinator1).
       if (event.type === "session.compacted") {
         const e = event as EventSessionCompacted;
         const compactedSessionId: string = (e as any).properties?.sessionID || activeSessionId || "";
         if (!compactedSessionId) return;
         if (configuredOpenCodeSessionId && compactedSessionId !== configuredOpenCodeSessionId) return;
+        try {
+          // Re-register first so the new MCP server process has the correct alias
+          // bound to its session_id before any tool calls (including send_room).
+          await runC2c(["register", "--json"]);
+          await log(`session.compacted: re-registered after compaction for ${compactedSessionId}`);
+        } catch (err) {
+          await log(`session.compacted: register failed: ${err}`);
+        }
         try {
           await runC2c(["clear-compact"]);
           await log(`session.compacted: cleared compacting flag for ${compactedSessionId}`);
