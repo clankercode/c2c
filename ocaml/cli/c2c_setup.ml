@@ -568,13 +568,20 @@ let claude_hook_script = {|
 
 SCRIPT_DIR="$(dirname "$0")"
 REPO_ROOT="$(cd "$SCRIPT_DIR" && git rev-parse --show-toplevel 2>/dev/null || echo "$SCRIPT_DIR")"
-COLD_BOOT="$REPO_ROOT/_build/default/ocaml/tools/c2c_cold_boot_hook.exe"
 
 if command -v c2c >/dev/null 2>&1; then
     c2c hook
 fi
-if [ -x "$COLD_BOOT" ]; then
-    "$COLD_BOOT"
+
+# Try c2c-cold-boot-hook from PATH first (after `just install-all`),
+# fall back to dev-tree _build path.
+if command -v c2c-cold-boot-hook >/dev/null 2>&1; then
+    c2c-cold-boot-hook
+elif [ -x "$REPO_ROOT/_build/default/ocaml/tools/c2c_cold_boot_hook.exe" ]; then
+    "$REPO_ROOT/_build/default/ocaml/tools/c2c_cold_boot_hook.exe"
+else
+    # Neither binary found: sleep to avoid fast-exit ECHILD race, then exit.
+    sleep 0.05
 fi
 exit 0
 |}
