@@ -1194,7 +1194,7 @@ let prepare_launch_args ~(name : string) ~(client : string)
             removed (Max 2026-04-24) to prevent parser confusion in cc-* wrappers. *)
         let dev_channel_args =
           [ "--dangerously-load-development-channels"; "server:c2c"
-          ; "--channels"; "server:c2c" ]
+          ]
         in
         let agent_args =
           match agent_json with
