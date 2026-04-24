@@ -501,6 +501,37 @@ let client_log_path name = instance_dir name // "client.log"
 let headless_thread_id_handoff_path name = instance_dir name // "thread-id-handoff.jsonl"
 let headless_xml_fifo_path name = instance_dir name // "xml-input.fifo"
 let deaths_jsonl_path broker_root = broker_root // "deaths.jsonl"
+let tmux_info_path name = instance_dir name // "tmux.json"
+
+(* Capture tmux location if running inside a tmux session.
+   Writes {session, pane_pid, pane_tty, captured_at} to tmux_info_path.
+   Silently skips if $TMUX is not set or tmux commands fail. *)
+let capture_and_write_tmux_location name =
+  match Sys.getenv_opt "TMUX" with
+  | None -> ()
+  | Some _ ->
+      let tmux_info_file = tmux_info_path name in
+      let capture cmd =
+        try
+          let ic = Unix.open_process_in cmd in
+          Fun.protect ~finally:(fun () -> ignore (Unix.close_process_in ic))
+            (fun () -> Some (input_line ic))
+        with _ -> None
+      in
+      match capture "tmux display -p '#S:#I.#P'", capture "tmux display -p '#{pane_pid}'" with
+      | Some session, Some pane_pid ->
+          (try
+            let pane_pid_s = String.trim pane_pid in
+            let tmux_json =
+              Printf.sprintf
+                "{\n  \"session\": \"%s\",\n  \"pane_pid\": \"%s\",\n  \"captured_at\": %.0f\n}\n"
+                (String.trim session) pane_pid_s (Unix.gettimeofday ())
+            in
+            let oc = open_out tmux_info_file in
+            Fun.protect ~finally:(fun () -> close_out oc)
+              (fun () -> output_string oc tmux_json)
+          with _ -> ())
+      | _ -> ()
 
 (* Tee stderr to inst_dir/stderr.log with 2 MB ring rotation.
    Returns (pipe_write_fd, stop_write_fd, tee_thread). The explicit stop pipe
@@ -1775,6 +1806,7 @@ let run_outer_loop ~(name : string) ~(client : string)
 
       let inst_dir = instance_dir name in
       mkdir_p inst_dir;
+      capture_and_write_tmux_location name;
       if repo_config_git_attribution () then begin
         let shim_bin_dir = inst_dir // "bin" in
         mkdir_p shim_bin_dir;
