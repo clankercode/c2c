@@ -6,7 +6,6 @@
  * Env vars:
  *   C2C_MCP_SESSION_ID   — broker session id
  *   C2C_MCP_BROKER_ROOT  — absolute path to broker root dir
- *   C2C_MCP_ALIAS        — alias for this session (used for findings lookup)
  *)
 
 let iso8601_now () =
@@ -26,15 +25,19 @@ let mkdir_p dir =
       p
   ) "" parts)
 
-let rec rm_rf path =
-  if Sys.is_directory path then (
-    let entries = Sys.readdir path in
-    Array.iter (fun e -> rm_rf (path ^ "/" ^ e)) entries;
-    Unix.rmdir path)
-  else Sys.remove path
-
 let cold_boot_marker_path broker_root session_id =
   Filename.concat (Filename.concat broker_root ".cold_boot_done") session_id
+
+(* Find repo root using git to resolve relative paths *)
+let repo_root () =
+  let cwd = Sys.getcwd () in
+  let rec find_root dir =
+    if Sys.file_exists (Filename.concat dir ".git") then Some dir
+    else
+      let parent = Filename.dirname dir in
+      if parent = dir then None else find_root parent
+  in
+  find_root cwd
 
 let rec dotfile_entries dir prefix =
   try
@@ -45,14 +48,18 @@ let rec dotfile_entries dir prefix =
   with _ -> []
 
 let recent_findings ~alias ~maxFindings ~maxChars =
-  let base = Filename.concat ".collab" "findings" in
+  let base = match repo_root () with
+    | Some root -> Filename.concat root ".collab"
+    | None -> ".collab"
+  in
+  let findings_dir = Filename.concat base "findings" in
   let prefix = Printf.sprintf "0000-00-00T00-00-00Z-%s-" alias in
-  let all = dotfile_entries base prefix in
+  let all = dotfile_entries findings_dir prefix in
   let selected = List.filter (fun n -> String.length n > 4 && String.sub n (String.length n - 3) 3 = ".md") all
                |> List.fold_left (fun acc n -> if List.length acc >= maxFindings then acc else n :: acc) []
                |> List.rev in
   List.fold_left (fun acc fname ->
-    let path = Filename.concat base fname in
+    let path = Filename.concat findings_dir fname in
     let entry =
       try
         let ic = open_in path in
@@ -74,18 +81,19 @@ let recent_findings ~alias ~maxFindings ~maxChars =
     if acc = "" then entry else acc ^ "\n" ^ entry
   ) "" selected
 
-let rec personal_logs_entries ~alias ~maxEntries =
-  let base = Filename.concat ".c2c" "personal-logs" in
-  let dir = Filename.concat base alias in
+let personal_logs_entries ~alias ~maxEntries =
+  let base = match repo_root () with
+    | Some root -> Filename.concat root ".c2c"
+    | None -> ".c2c"
+  in
+  let logs_dir = Filename.concat (Filename.concat base "personal-logs") alias in
   let entries =
     try
-      Array.to_list (Sys.readdir dir)
+      Array.to_list (Sys.readdir logs_dir)
       |> List.filter (fun n -> String.length n > 0 && n.[0] <> '.')
+      |> List.filter (fun n -> String.length n > 4 && String.sub n (String.length n - 3) 3 = ".md")
       |> List.sort String.compare
       |> List.rev
-      |> List.filter (fun n -> String.length n > 4 && String.sub n (String.length n - 3) 3 = ".md")
-      |> List.filter (fun n -> try Sys.is_directory (Filename.concat dir n) with _ -> false)
-      |> List.filter (fun n -> true)
       |> fun l -> List.fold_left (fun acc n -> if List.length acc >= maxEntries then acc else n :: acc) [] l
     with _ -> []
   in
@@ -118,11 +126,20 @@ let () =
   let broker_root =
     try Sys.getenv "C2C_MCP_BROKER_ROOT" with Not_found -> ""
   in
-  let alias =
-    try Sys.getenv "C2C_MCP_ALIAS" with Not_found -> ""
-  in
   (* Fast path: if not configured, exit silently *)
-  if session_id = "" || broker_root = "" || alias = "" then exit 0;
+  if session_id = "" || broker_root = "" then exit 0;
+
+  (* Resolve alias from registry using session_id *)
+  let alias =
+    try
+      let broker = C2c_mcp.Broker.create ~root:broker_root in
+      match C2c_mcp.Broker.list_registrations broker
+            |> List.find_opt (fun r -> r.C2c_mcp.session_id = session_id) with
+      | Some reg -> reg.C2c_mcp.alias
+      | None -> ""
+    with _ -> ""
+  in
+  if alias = "" then exit 0;
 
   let ts = iso8601_now () in
   let marker_path = cold_boot_marker_path broker_root session_id in

@@ -553,6 +553,7 @@ let claude_hook_script = {|
 # c2c-inbox-check.sh — PostToolUse hook for c2c auto-delivery in Claude Code
 #
 # Calls 'c2c hook' which drains the inbox and outputs messages.
+# Also calls cold-boot hook to emit context block once per session.
 # c2c hook self-regulates runtime to prevent Node.js ECHILD race.
 #
 # IMPORTANT: do NOT use `exec c2c hook`. Claude Code's Node.js hook runner
@@ -565,12 +566,16 @@ let claude_hook_script = {|
 #   C2C_MCP_SESSION_ID   — broker session id
 #   C2C_MCP_BROKER_ROOT  — absolute path to broker root dir
 
+SCRIPT_DIR="$(dirname "$0")"
+REPO_ROOT="$(cd "$SCRIPT_DIR" && git rev-parse --show-toplevel 2>/dev/null || echo "$SCRIPT_DIR")"
+COLD_BOOT="$REPO_ROOT/_build/default/ocaml/tools/c2c_cold_boot_hook.exe"
+
 if command -v c2c >/dev/null 2>&1; then
     c2c hook
-    exit 0
 fi
-# c2c binary missing: sleep ~50ms to avoid fast-exit ECHILD, then exit cleanly.
-sleep 0.05
+if [ -x "$COLD_BOOT" ]; then
+    "$COLD_BOOT"
+fi
 exit 0
 |}
 
