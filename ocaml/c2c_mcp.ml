@@ -2598,7 +2598,7 @@ let codex_turn_metadata_session_id params =
 let request_session_id_override ~broker_root ~tool_name ~params =
   match tool_name with
   | "register" | "whoami" | "debug" | "poll_inbox" | "peek_inbox" | "history" | "my_rooms"
-  | "send" | "send_all" | "send_room" | "send_room_invite" | "set_room_visibility"
+  | "send" | "send_all" | "send_room" | "join_room" | "leave_room" | "send_room_invite" | "set_room_visibility"
   | "open_pending_reply" | "check_pending_reply" | "set_compact" | "clear_compact"
   | "stop_self" ->
       (* Codex does not reliably pass parent env through to MCP subprocesses,
