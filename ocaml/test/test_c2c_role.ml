@@ -31,8 +31,19 @@ opencode:
 You are a test agent.
 |}
 
+let input_yaml_with_pronouns = {|
+---
+description: Role with pronouns
+role: primary
+pronouns: she/her
+---
+
+You are a test agent.
+|}
+
 let role_input = C2c_role.parse_string input_yaml
 let role_input_with_steps = C2c_role.parse_string input_yaml_with_steps
+let role_input_with_pronouns = C2c_role.parse_string input_yaml_with_pronouns
 
 let check_output ~msg ~pattern output =
   Alcotest.(check bool) msg true (Str.string_match (Str.regexp_string pattern) output 0)
@@ -87,6 +98,30 @@ let test_roundtrip_opencode () =
   Alcotest.(check string) "roundtrip: role preserved" "primary" re_parsed.C2c_role.role;
   Alcotest.(check int) "roundtrip: c2c_auto_join_rooms count" 2 (List.length re_parsed.C2c_role.c2c_auto_join_rooms)
 
+let test_pronouns_parse () =
+  Alcotest.(check (option string)) "pronouns parsed from input" (Some "she/her") role_input_with_pronouns.C2c_role.pronouns
+
+let test_pronouns_render_opencode () =
+  let output = C2c_role.OpenCode_renderer.render role_input_with_pronouns in
+  contains ~msg:"opencode: pronouns field present" ~pattern:"pronouns: she/her" output
+
+let test_pronouns_render_claude () =
+  let output = C2c_role.Claude_renderer.render role_input_with_pronouns in
+  contains ~msg:"claude: pronouns field present" ~pattern:"pronouns: she/her" output
+
+let test_pronouns_render_codex () =
+  let output = C2c_role.Codex_renderer.render role_input_with_pronouns in
+  contains ~msg:"codex: pronouns field present" ~pattern:"pronouns: she/her" output
+
+let test_pronouns_render_kimi () =
+  let output = C2c_role.Kimi_renderer.render role_input_with_pronouns in
+  contains ~msg:"kimi: pronouns field present" ~pattern:"pronouns: she/her" output
+
+let test_pronouns_roundtrip () =
+  let rendered = C2c_role.OpenCode_renderer.render role_input_with_pronouns in
+  let re_parsed = C2c_role.parse_string rendered in
+  Alcotest.(check (option string)) "roundtrip: pronouns preserved" (Some "she/her") re_parsed.C2c_role.pronouns
+
 let tests = [
   "opencode_renderer",            `Quick, test_opencode_renderer;
   "opencode_renderer_default_steps", `Quick, test_opencode_renderer_default_steps;
@@ -95,6 +130,12 @@ let tests = [
   "codex_renderer",              `Quick, test_codex_renderer;
   "kimi_renderer",               `Quick, test_kimi_renderer;
   "roundtrip",                   `Quick, test_roundtrip_opencode;
+  "pronouns_parse",              `Quick, test_pronouns_parse;
+  "pronouns_render_opencode",     `Quick, test_pronouns_render_opencode;
+  "pronouns_render_claude",       `Quick, test_pronouns_render_claude;
+  "pronouns_render_codex",        `Quick, test_pronouns_render_codex;
+  "pronouns_render_kimi",         `Quick, test_pronouns_render_kimi;
+  "pronouns_roundtrip",           `Quick, test_pronouns_roundtrip;
 ]
 
 (* ---------- pmodel resolution ---------- *)

@@ -14,6 +14,7 @@ type t = {
      role falls into (coder, coordinator, orchestrator, reviewer, researcher,
      release, qa, gui, …). When unset, resolvers fall back to "default". *)
   role_class : string option;
+  pronouns : string option;
   c2c_alias : string option;
   c2c_auto_join_rooms : string list;
   include_ : string list;
@@ -32,6 +33,7 @@ let empty = {
   model = None;
   pmodel = None;
   role_class = None;
+  pronouns = None;
   c2c_alias = None;
   c2c_auto_join_rooms = [];
   include_ = [];
@@ -221,6 +223,7 @@ let parse_string ?(snippets_dir = ".c2c/snippets") ?(filename = "(string)") cont
     model = find "model";
     pmodel = find "pmodel";
     role_class = find "role_class";
+    pronouns = find "pronouns";
     c2c_alias = find "c2c.alias";
     c2c_auto_join_rooms =
       (match find "c2c.auto_join_rooms" with Some v -> parse_list v | None -> []);
@@ -288,6 +291,7 @@ module OpenCode_renderer = struct
     let lines = ref [] in
     lines := ("description: " ^ yaml_scalar r.description) :: !lines;
     lines := ("role: " ^ r.role) :: !lines;
+    (match r.pronouns with Some p -> lines := ("pronouns: " ^ yaml_scalar p) :: !lines | None -> ());
     let model_to_emit = match resolved_pmodel with Some m -> Some m | None -> r.model in
     (match model_to_emit with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
     if r.c2c_alias <> None || r.c2c_auto_join_rooms <> [] then begin
@@ -328,6 +332,7 @@ module Claude_renderer = struct
     let lines = ref [] in
     lines := ("description: " ^ yaml_scalar r.description) :: !lines;
     lines := ("role: " ^ r.role) :: !lines;
+    (match r.pronouns with Some p -> lines := ("pronouns: " ^ yaml_scalar p) :: !lines | None -> ());
     let model_to_emit = match resolved_pmodel with Some m -> Some m | None -> r.model in
     (match model_to_emit with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
     if r.c2c_alias <> None || r.c2c_auto_join_rooms <> [] then begin
@@ -354,6 +359,7 @@ module Codex_renderer = struct
     let lines = ref [] in
     lines := ("description: " ^ yaml_scalar r.description) :: !lines;
     lines := ("role: " ^ r.role) :: !lines;
+    (match r.pronouns with Some p -> lines := ("pronouns: " ^ yaml_scalar p) :: !lines | None -> ());
     let model_to_emit = match resolved_pmodel with Some m -> Some m | None -> r.model in
     (match model_to_emit with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
     if r.c2c_alias <> None || r.c2c_auto_join_rooms <> [] then begin
@@ -380,6 +386,7 @@ module Kimi_renderer = struct
     let lines = ref [] in
     lines := ("description: " ^ yaml_scalar r.description) :: !lines;
     lines := ("role: " ^ r.role) :: !lines;
+    (match r.pronouns with Some p -> lines := ("pronouns: " ^ yaml_scalar p) :: !lines | None -> ());
     let model_to_emit = match resolved_pmodel with Some m -> Some m | None -> r.model in
     (match model_to_emit with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
     if r.c2c_alias <> None || r.c2c_auto_join_rooms <> [] then begin

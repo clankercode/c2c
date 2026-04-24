@@ -4,6 +4,7 @@ type t = {
   model : string option;
   pmodel : string option;
   role_class : string option;
+  pronouns : string option;
   c2c_alias : string option;
   c2c_auto_join_rooms : string list;
   include_ : string list;

@@ -6641,6 +6641,7 @@ let prompt_for_role ~alias =
         model = None;
         pmodel = None;
         role_class = None;
+        pronouns = None;
         c2c_alias = None;
         c2c_auto_join_rooms = [];
         include_ = [];
