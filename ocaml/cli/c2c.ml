@@ -6921,6 +6921,8 @@ let start_cmd =
                      3. Send a message to coordinator1 introducing yourself: use `send` with \
                      {\"to_alias\": \"coordinator1\", \"content\": \"<brief intro of your role and capabilities>\"}.\n\
                      4. Call `poll_inbox` to check for any messages addressed to you.\n\
+                     5. Arm a heartbeat Monitor: use Monitor tool with \
+                     command `heartbeat 4.1m \"<wake message>\"`, persistent:true.\n\
                      Begin now."
                     agent_name
                 in
