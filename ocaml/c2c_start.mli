@@ -320,6 +320,16 @@ val run_outer_loop :
     (double-SIGINT window), TTY save/restore, deliver daemon and poker
     management, and cleanup. *)
 
+val finalize_outer_loop_exit :
+  cleanup_and_exit:(int -> int) ->
+  print_resume:(string -> unit) ->
+  resume_cmd:string ->
+  exit_code:int ->
+  int
+(** [finalize_outer_loop_exit ~cleanup_and_exit ~print_resume ~resume_cmd
+     ~exit_code] runs cleanup before printing the final resume hint and
+     returns the cleanup exit code. *)
+
 (** {1 Commands} *)
 
 val cmd_start :

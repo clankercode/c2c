@@ -1772,6 +1772,15 @@ let start_headless_thread_id_watcher ~(name : string) ~(path : string) : Thread.
  * Outer loop
  * --------------------------------------------------------------------------- *)
 
+let finalize_outer_loop_exit
+    ~(cleanup_and_exit : int -> int)
+    ~(print_resume : string -> unit)
+    ~(resume_cmd : string)
+    ~(exit_code : int) : int =
+  let code = cleanup_and_exit exit_code in
+  print_resume resume_cmd;
+  code
+
 let run_outer_loop ~(name : string) ~(client : string)
     ~(extra_args : string list) ~(broker_root : string)
     ?(binary_override : string option) ?(alias_override : string option)
@@ -2419,8 +2428,13 @@ let run_outer_loop ~(name : string) ~(client : string)
         Printf.sprintf "c2c start %s -n %s --session-id %s" client name sid
         ^ (match binary_override with None -> "" | Some b -> Printf.sprintf " --bin %s" b)
       in
-      print_endline ("\nresume via: " ^ resume_cmd);
-      cleanup_and_exit exit_code
+      ignore
+        (finalize_outer_loop_exit
+           ~cleanup_and_exit
+           ~print_resume:(fun cmd -> print_endline ("\nresume via: " ^ cmd))
+           ~resume_cmd
+           ~exit_code);
+      exit_code
 
 (* ---------------------------------------------------------------------------
  * Commands

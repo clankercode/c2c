@@ -146,6 +146,24 @@ let test_build_env_keeps_channel_delivery_without_force_flag () =
     (env_contains env "C2C_MCP_FORCE_CAPABILITIES=claude_channel");
   ()
 
+let test_finalize_outer_loop_exit_cleans_before_print () =
+  let events = ref [] in
+  let cleanup_and_exit code =
+    events := !events @ [ Printf.sprintf "cleanup:%d" code ];
+    code
+  in
+  let print_resume resume_cmd =
+    events := !events @ [ "print:" ^ resume_cmd ]
+  in
+  let rc =
+    C2c_start.finalize_outer_loop_exit ~cleanup_and_exit ~print_resume
+      ~resume_cmd:"c2c start codex -n demo --session-id demo" ~exit_code:17
+  in
+  check int "finalize returns cleanup code" 17 rc;
+  check (list string) "cleanup happens before print"
+    [ "cleanup:17"; "print:c2c start codex -n demo --session-id demo" ]
+    !events
+
 let test_build_env_does_not_seed_codex_thread_id () =
   let env =
     C2c_start.build_env ~broker_root_override:(Some "/tmp/c2c-test-broker")
@@ -772,6 +790,8 @@ let () =
             `Quick, test_build_env_keeps_channel_delivery_without_force_flag )
         ; ( "build_env_does_not_seed_codex_thread_id",
             `Quick, test_build_env_does_not_seed_codex_thread_id )
+        ; ( "finalize_outer_loop_exit_cleans_before_print",
+            `Quick, test_finalize_outer_loop_exit_cleans_before_print )
         ; ( "start_deliver_daemon_detaches_from_terminal_stdio_and_group",
             `Quick, test_start_deliver_daemon_detaches_from_terminal_stdio_and_group )
         ; ( "probed_capabilities_for_claude_include_channel",
