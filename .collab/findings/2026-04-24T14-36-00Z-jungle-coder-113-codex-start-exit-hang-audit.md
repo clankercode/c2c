@@ -2,7 +2,16 @@
 
 **Date**: 2026-04-24T14:36:00Z
 **Author**: jungle-coder
-**Status**: Max is actively fixing this in `c2c_start.ml` — audit is read-only
+**Status**: Fix at 7197f61 — lyra PASS, coordinator PASS. Awaiting live codex exit smoke test by test-agent + lyra. Merge to master pending smoke PASS.
+
+## Fix history
+
+- **fa986c7**: First draft — BROKEN: `Thread.join th` unconditionally first, watchdog never fired
+- **0bcead6**: Second draft — BROKEN: fast path still joined watchdog (5s delay on clean exits)
+- **6c35384**: Third draft — STILL BROKEN: watchdog can't interrupt already-blocking Thread.join in another thread
+- **7197f61**: Fourth draft — FIXED: reorder shutdown sequence; close `outer_stderr_fd` FIRST to force tee thread's blocked write to fail, then join is safe
+
+## Fix (7197f61)
 
 ## Bug description
 

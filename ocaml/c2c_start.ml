@@ -2321,7 +2321,18 @@ let run_outer_loop ~(name : string) ~(client : string)
            with _ -> 1)
       in
 
-      (* Close tee pipe write-end so the tee thread sees EOF, then join *)
+      (* Shutdown sequence for tee thread:
+         1. Close outer_stderr_fd FIRST — forces any blocked write in the tee
+            thread to fail with EBADF, causing flush_line to raise.
+         2. Close tee_write_fd — sends EOF to the tee thread's read end.
+         3. Signal stop pipe — tee thread exits via raise Exit in select.
+         4. Thread.join — returns immediately since tee thread exited.
+
+         The previous order (close tee_write_fd → signal stop → join → close
+         outer_stderr_fd) could deadlock: if tee thread was blocked in
+         flush_line writing to outer_stderr_fd, it never returned to select
+         to check the stop pipe, so the stop signal never fired. *)
+      (try Unix.close outer_stderr_fd with _ -> ());
       (match tee_write_fd_opt with
        | Some fd -> (try Unix.close fd with _ -> ())
        | None -> ());
@@ -2333,7 +2344,6 @@ let run_outer_loop ~(name : string) ~(client : string)
       (match tee_thread_opt with
        | Some th -> Thread.join th
        | None -> ());
-      (try Unix.close outer_stderr_fd with _ -> ());
 
       (* Restore TTY *)
       (match old_tty with
