@@ -1487,6 +1487,7 @@ type managed_instance_view =
   ; mi_delivery_mode : string
   ; mi_pid : int option
   ; mi_created_at : float option
+  ; mi_tmux_location : string option
   }
 
 let read_managed_instances () =
@@ -1564,16 +1565,31 @@ let read_managed_instances () =
              | None -> ("unknown", None)
            end
            else ("stopped", None)
-         in
-         let delivery_mode =
-           C2c_start.delivery_mode ~client ~name ~binary_path ~start_time:created_at ()
-         in
-         { mi_name = name
-         ; mi_client = client
-         ; mi_status = status
-         ; mi_delivery_mode = delivery_mode
+          in
+          let delivery_mode =
+            C2c_start.delivery_mode ~client ~name ~binary_path ~start_time:created_at ()
+          in
+          let tmux_location =
+            let tmux_json_path = dir // "tmux.json" in
+            if Sys.file_exists tmux_json_path then
+              (try
+                let json = Yojson.Safe.from_file tmux_json_path in
+                match json with
+                | `Assoc fields ->
+                    (match List.assoc_opt "session" fields with
+                     | Some (`String s) -> Some s
+                     | _ -> None)
+                | _ -> None
+              with _ -> None)
+            else None
+          in
+          { mi_name = name
+          ; mi_client = client
+          ; mi_status = status
+          ; mi_delivery_mode = delivery_mode
           ; mi_pid = pid
           ; mi_created_at = created_at
+          ; mi_tmux_location = tmux_location
           })
 
 let safe_is_directory path =
@@ -6546,6 +6562,7 @@ let instances_cmd =
           ; ("delivery_mode", `String inst.mi_delivery_mode)
           ; ("outer_alive", `Bool (inst.mi_status = "running"))
           ; ("outer_pid", match inst.mi_pid with Some p -> `Int p | None -> `Null)
+          ; ("tmux_location", match inst.mi_tmux_location with Some s -> `String s | None -> `Null)
           ]
         in
         let fields = match inst.mi_pid with
@@ -6566,7 +6583,8 @@ let instances_cmd =
               let status = match List.assoc_opt "status" fields with Some (`String s) -> s | _ -> "?" in
               let delivery_mode = match List.assoc_opt "delivery_mode" fields with Some (`String s) -> s | _ -> "?" in
               let pid_str = match List.assoc_opt "pid" fields with Some (`Int n) -> Printf.sprintf " (pid %d)" n | _ -> "" in
-              Printf.printf "  %-20s %-10s %-12s %s%s\n" name client status delivery_mode pid_str
+              let tmux_str = match List.assoc_opt "tmux_location" fields with Some (`String s) -> " [" ^ s ^ "]" | _ -> "" in
+              Printf.printf "  %-20s %-10s %-12s %s%s%s\n" name client status delivery_mode pid_str tmux_str
           | _ -> ()
         ) instances
   end
