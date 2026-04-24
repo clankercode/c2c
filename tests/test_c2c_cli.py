@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
+NATIVE_C2C = REPO / "_build" / "default" / "ocaml" / "cli" / "c2c.exe"
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
@@ -27,6 +28,20 @@ AGENT_TWO_SESSION_ID = "fa68bd5b-0529-4292-bc27-d617f6840ce7"
 
 def run_cli(command, *args, env=None):
     return run_cli_in_root(REPO, command, *args, env=env)
+
+
+def run_native_cli(*args, env=None):
+    merged_env = os.environ.copy()
+    if env:
+        merged_env.update(env)
+    return subprocess.run(
+        [str(NATIVE_C2C), *args],
+        cwd=REPO,
+        env=merged_env,
+        capture_output=True,
+        text=True,
+        timeout=CLI_TIMEOUT_SECONDS,
+    )
 
 
 def load_repo_c2c_module():
@@ -273,9 +288,27 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(payload["client"], "codex")
 
     def test_start_help_mentions_codex_headless(self):
-        result = self.invoke_cli("c2c", "start", "--help", env=self.env)
+        self.assertTrue(NATIVE_C2C.exists(), NATIVE_C2C)
+        result = run_native_cli("start", "--help", env=self.env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("codex-headless", result.stdout)
+
+    def test_start_help_describes_codex_session_id_as_exact_target(self):
+        self.assertTrue(NATIVE_C2C.exists(), NATIVE_C2C)
+        result = run_native_cli("start", "--help", env=self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Explicit", result.stdout)
+        self.assertIn("thread/session target for codex and codex-headless", result.stdout)
+
+    def test_commands_by_safety_describes_reset_thread_for_headless_too(self):
+        self.assertTrue(NATIVE_C2C.exists(), NATIVE_C2C)
+        result = run_native_cli("commands", env=self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("reset-thread", result.stdout)
+        self.assertIn(
+            "Restart a managed codex or codex-headless instance onto a specific thread",
+            result.stdout,
+        )
 
     def test_repo_c2c_install_errors_cleanly_without_native_cli(self):
         c2c_entry = load_repo_c2c_module()

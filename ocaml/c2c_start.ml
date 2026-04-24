@@ -2290,8 +2290,13 @@ let run_outer_loop ~(name : string) ~(client : string)
         record_death ~broker_root ~name ~client ~exit_code ~duration_s:elapsed ~inst_dir;
 
       let resume_cmd =
-        let sid = Option.value resume_session_id ~default:session_id in
-        Printf.sprintf "c2c start %s -n %s --resume %s" client name sid
+        let sid =
+          match client, codex_resume_target, resume_session_id with
+          | "codex", Some target, _ when String.trim target <> "" -> target
+          | _, _, Some sid -> sid
+          | _ -> session_id
+        in
+        Printf.sprintf "c2c start %s -n %s --session-id %s" client name sid
         ^ (match binary_override with None -> "" | Some b -> Printf.sprintf " --bin %s" b)
       in
       print_endline ("\nresume via: " ^ resume_cmd);
