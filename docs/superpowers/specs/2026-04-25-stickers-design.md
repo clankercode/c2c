@@ -47,7 +47,7 @@ where `note_or_empty` is the note field contents, or empty string if absent. Fie
 
 ## Sticker Registry
 
-### `~/.c2c/stickers/registry.json`
+### `.c2c/stickers/registry.json`
 ```json
 {
   "stickers": [
@@ -64,23 +64,25 @@ where `note_or_empty` is the note field contents, or empty string if absent. Fie
 }
 ```
 
-Registry lives at `~/.c2c/stickers/registry.json`. Extensions via PR to the repo, reviewed by coordinator.
+Registry lives at `.c2c/stickers/registry.json`. Extensions via PR to the repo, reviewed by coordinator.
 
 ## Storage Layout
 
 ```
-~/.c2c/stickers/
-  registry.json                        # closed sticker registry
+.c2c/stickers/
+  registry.json                        # closed sticker registry (git-tracked)
   <alias>/
     received/
-      <ts>-<nonce>.json              # private stickers sent to <alias>
+      <ts>-<nonce>.json              # stickers sent to <alias>
     sent/
       <ts>-<nonce>.json              # stickers I sent (for my own wall)
   public/
     <from>-<ts>-<nonce>.json         # public stickers (scope=public)
 ```
 
-- Private stickers: only recipient can read (`chmod 600` on file)
+- Storage is repo-relative (`.c2c/stickers/`) not user-home. Enables cross-machine access, git auditability, and shared verification across worktrees.
+- "Private" scope means prompt-injection-scoped, not git-invisible. Files are not encrypted — they live in the repo and are git-tracked. This is intentional for the social/reputation use case.
+- Filename: `<ts>-<nonce>.json` (sortable, collision-resistant)
 - Public stickers: world-readable in `public/` dir
 - Filename: `<ts>-<nonce>.json` (sortable, collision-resistant)
 
@@ -104,7 +106,7 @@ List all known sticker kinds from registry. Shows emoji, id, display name.
 ## Components
 
 ### `ocaml/cli/c2c_stickers.ml` (new)
-- `sticker_dir ()`: `~/.c2c/stickers`
+- `sticker_dir ()`: `.c2c/stickers` (repo-relative via `git rev-parse --git-common-dir`)
 - `load_registry ()`: parse `registry.json`, cache in ref
 - `validate_sticker_id id`: lookup in registry, return error if missing
 - `canonicalEnvelope env`: serialize without signature field
