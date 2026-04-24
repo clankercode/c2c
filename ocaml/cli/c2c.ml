@@ -6725,21 +6725,23 @@ let get_opencode_theme (r : C2c_role.t) : string option =
    Format: {"<name>": {"description": "...", "prompt": "<body>", "model": "...", "tools": []}}
    The prompt is the role body (strip frontmatter from the rendered output). *)
 let build_agent_json ~(agent_name : string) ~(role : C2c_role.t) ~(rendered : string) : string =
-  let marker = "\n---\n" in
+  let marker = "---\n" in
   let mlen = String.length marker in
-  let rec skip_first after i =
-    if i + mlen > String.length after then None
-    else if String.sub after i mlen = marker then Some i
-    else skip_first after (i + 1)
+  let rec find_next after off =
+    if off + mlen > String.length after then None
+    else if String.sub after off mlen = marker then Some off
+    else find_next after (off + 1)
   in
   let body =
-    match skip_first rendered 0 with
+    match find_next rendered 0 with
     | None -> rendered
     | Some first_off ->
         let after_first = String.sub rendered (first_off + mlen) (String.length rendered - first_off - mlen) in
-        match skip_first after_first 0 with
-        | None -> rendered
-        | Some second_off -> String.sub after_first second_off (String.length after_first - second_off)
+        match find_next after_first 0 with
+        | None -> String.trim after_first
+        | Some second_off ->
+            let raw = String.sub after_first second_off (String.length after_first - second_off) in
+            String.trim raw
   in
   let model_field = match role.C2c_role.model with
     | Some m -> [("model", `String m)]
