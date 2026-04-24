@@ -46,6 +46,7 @@ let command_tier_map () : (string * safety) list =
   ; "status", Tier1
   ; "commands", Tier1
   ; "monitor", Tier1      (* read-only inbox/archive event stream — required by agent recovery-snippet *)
+  ; "skills", Tier1
   (* relay subcommands (serve, gc, connect, setup, status, list, rooms, poll-inbox) are
      not top-level commands; they inherit tier from the relay parent and are not
      independently filtered by filter_commands. *)

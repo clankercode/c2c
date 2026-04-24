@@ -1,11 +1,21 @@
 # OCaml Module Structure: Current and Planned Extractions
 
-**File:** `ocaml/cli/c2c.ml` (10,208 LOC)
-**Status:** Pre-split; this doc maps current structure before Phase 1 extraction.
+**File:** `ocaml/cli/c2c.ml` (9,033 LOC after Phase 2)
+**Status:** Phase 1 + Phase 2 complete. Phase 3 in progress.
 
 ---
 
-## Current Top-Level Sections
+## Extracted Files
+
+| File | LOC | Phase | Status |
+|------|-----|-------|--------|
+| `c2c_setup.ml` | ~1,237 | Phase 1 | **DONE** (a0710c7) |
+| `c2c_types.ml` | ~5 | Phase 1 | **DONE** |
+| `c2c_commands.ml` | 127 | Phase 2 | **DONE** (cabdbb2) |
+
+---
+
+## Current Top-Level Sections (c2c.ml, ~9,033 LOC)
 
 | Lines | Section | Description |
 |-------|---------|-------------|
@@ -64,39 +74,22 @@
 
 ## Planned Extractions
 
-### Phase 1: `c2c_setup.ml` (PROPOSED)
+### Phase 3: `c2c_rooms.ml` (IN PROGRESS)
 
-**Lines to move:** ~500 (setup_* helpers + install_* subcommand defs)
+**Target:** ~600 LOC. Extract room command group + rooms-only helpers.
 
-```
-setup_codex          → c2c_setup.ml
-setup_kimi          → c2c_setup.ml
-setup_opencode      → c2c_setup.ml
-setup_claude        → c2c_setup.ml
-setup_crush         → c2c_setup.ml
-install_subcommand_clients
-install_client_error_list
-install_client_pipe_list
-install_common_args
-install_self_subcmd
-install_client_subcmd
-install_all_subcmd
-install_default_term
-```
+**Lines to move:**
+- `my_rooms_cmd`, `rooms_send_cmd`, `rooms_join_cmd`, `rooms_leave_cmd`, `rooms_delete_cmd`, `rooms_history_cmd`, `rooms_invite_cmd`, `rooms_members_cmd`, `rooms_visibility_cmd`, `rooms_tail_cmd`
+- `rooms_group` + `room_group` group assemblies
+- Helpers: `read_inbox_file`, `parse_to_alias`, `dedup_seen` + `dedup_check`, `truncate`, `jstr`
 
-**What stays in `c2c.ml`:** Install command group wiring (the `Cmdliner.Cmd.group` that assembles `install all`, `install <client>`, `install self`).
+**What stays in `c2c.ml`:** `resolve_broker_root` and other shared helpers.
+
+**Branch:** `phase3-rooms-extraction`
 
 ---
 
-### Phase 2: `c2c_commands.ml` (PROPOSED)
-
-**Lines to move:** ~300 (command_tier_map + filter_commands + help text)
-
-**What stays:** All actual command implementations.
-
----
-
-### Phase 3: `c2c_room.ml`, `c2c_relay.ml`, `c2c_agent.ml`, `c2c_plugin.ml` (PROPOSED)
+### Phase 4+: `c2c_relay.ml`, `c2c_agent.ml`, `c2c_plugin.ml` (PROPOSED)
 
 **What stays in `c2c.ml`:** Main `default_cmd` (top-level help), plus the command group assemblies that wire subcommands together.
 
@@ -105,3 +98,6 @@ install_default_term
 ## Decision Record
 
 - **2026-04-24:** Phase 1 approved by coordinator. DOCS PR lands first to give reviewers a map.
+- **2026-04-24:** Phase 1 extracted — c2c_setup.ml + c2c_types.ml (a0710c7).
+- **2026-04-24:** Phase 2 approved and extracted — c2c_commands.ml (cabdbb2).
+- **2026-04-24:** Phase 3 scoped — c2c_rooms.ml extraction. Branch: `phase3-rooms-extraction`.
