@@ -521,7 +521,7 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
                 os.close(read_fd)
 
             self.assertEqual(result["delivered"], 1)
-            self.assertIn('<message type="user">', payload)
+            self.assertIn('<message type="user" queue="AfterAnyItem">', payload)
             self.assertIn('<c2c event="message" from="storm-echo" alias="codex"', payload)
             spool_path = broker_root.parent / "codex-xml" / "codex-local.spool.json"
             self.assertEqual(json.loads(spool_path.read_text(encoding="utf-8")), [])
@@ -530,17 +530,19 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
                 [],
             )
 
-    def test_xml_message_payload_escapes_message_body(self):
+    def test_xml_message_payload_escapes_message_body_without_encoding_quotes(self):
         payload = c2c_deliver_inbox.xml_message_payload(
             {
                 "from_alias": "storm-echo",
                 "to_alias": "codex",
-                "content": "5 < 6 & 7",
+                "content": '5 < 6 & 7 says "hello"',
             }
         )
 
-        self.assertIn("5 &lt; 6 &amp; 7", payload)
-        self.assertNotIn("5 < 6 & 7</c2c>", payload)
+        self.assertIn('<message type="user" queue="AfterAnyItem">', payload)
+        self.assertIn('5 &lt; 6 &amp; 7 says "hello"', payload)
+        self.assertNotIn("&quot;hello&quot;", payload)
+        self.assertNotIn('5 < 6 & 7 says "hello"</c2c>', payload)
 
     def test_deliver_once_xml_output_keeps_spool_on_write_failure(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -503,12 +503,14 @@ let headless_xml_fifo_path name = instance_dir name // "xml-input.fifo"
 let deaths_jsonl_path broker_root = broker_root // "deaths.jsonl"
 
 (* Tee stderr to inst_dir/stderr.log with 2 MB ring rotation.
-   Returns (pipe_write_fd, tee_thread) — caller must close pipe_write_fd
-   after the child exits so the thread sees EOF and finishes. *)
+   Returns (pipe_write_fd, stop_write_fd, tee_thread). The explicit stop pipe
+   avoids hanging forever when a child descendant keeps stderr inherited after
+   the managed client exits; EOF on the stderr tee pipe is not reliable then. *)
 let start_stderr_tee ~inst_dir ~outer_stderr_fd =
   let log_path = inst_dir // "stderr.log" in
   let max_bytes = 2 * 1024 * 1024 in
   let (pipe_read_fd, pipe_write_fd) = Unix.pipe ~cloexec:false () in
+  let (stop_read_fd, stop_write_fd) = Unix.pipe ~cloexec:false () in
   let buf = Buffer.create 4096 in
   let tee_thread = Thread.create (fun () ->
     let chunk = Bytes.create 4096 in
@@ -568,28 +570,33 @@ let start_stderr_tee ~inst_dir ~outer_stderr_fd =
     in
     (try
       while true do
-        let n = Unix.read pipe_read_fd chunk 0 (Bytes.length chunk) in
-        if n = 0 then raise Exit;
-        let s = Bytes.sub_string chunk 0 n in
-        Buffer.add_string buf s;
-        (* Flush complete lines *)
-        let content = Buffer.contents buf in
-        let lines = String.split_on_char '\n' content in
-        let rec flush_lines = function
-          | [] -> ()
-          | [ partial ] -> Buffer.clear buf; Buffer.add_string buf partial
-          | line :: rest -> flush_line line; flush_lines rest
-        in
-        flush_lines lines
+        let ready, _, _ = Unix.select [ pipe_read_fd; stop_read_fd ] [] [] (-1.) in
+        if List.mem stop_read_fd ready then raise Exit;
+        if List.mem pipe_read_fd ready then begin
+          let n = Unix.read pipe_read_fd chunk 0 (Bytes.length chunk) in
+          if n = 0 then raise Exit;
+          let s = Bytes.sub_string chunk 0 n in
+          Buffer.add_string buf s;
+          (* Flush complete lines *)
+          let content = Buffer.contents buf in
+          let lines = String.split_on_char '\n' content in
+          let rec flush_lines = function
+            | [] -> ()
+            | [ partial ] -> Buffer.clear buf; Buffer.add_string buf partial
+            | line :: rest -> flush_line line; flush_lines rest
+          in
+          flush_lines lines
+        end
       done
     with _ -> ());
     (* Flush remainder *)
     let rest = Buffer.contents buf in
     if rest <> "" then flush_line rest;
+    Unix.close stop_read_fd;
     Unix.close pipe_read_fd;
     (match !log_fd with Some fd -> Unix.close fd | None -> ())
   ) () in
-  (pipe_write_fd, tee_thread)
+  (pipe_write_fd, stop_write_fd, tee_thread)
 
 (* Append a death record when inner client exits non-zero. *)
 let record_death ~broker_root ~name ~client ~exit_code ~duration_s ~inst_dir =
@@ -2044,11 +2051,11 @@ let run_outer_loop ~(name : string) ~(client : string)
          same command with `2>log` works fine. *)
       let stderr_is_tty = try Unix.isatty Unix.stderr with _ -> false in
       let outer_stderr_fd = Unix.dup Unix.stderr in
-      let (tee_write_fd_opt, tee_thread_opt) =
-        if stderr_is_tty then (None, None)
+      let (tee_write_fd_opt, tee_stop_fd_opt, tee_thread_opt) =
+        if stderr_is_tty then (None, None, None)
         else
-          let (fd, th) = start_stderr_tee ~inst_dir ~outer_stderr_fd in
-          (Some fd, Some th)
+          let (fd, stop_fd, th) = start_stderr_tee ~inst_dir ~outer_stderr_fd in
+          (Some fd, Some stop_fd, Some th)
       in
 
       (* Spawn the managed client with SIGCHLD reset to SIG_DFL. The outer
@@ -2295,6 +2302,11 @@ let run_outer_loop ~(name : string) ~(client : string)
       (* Close tee pipe write-end so the tee thread sees EOF, then join *)
       (match tee_write_fd_opt with
        | Some fd -> (try Unix.close fd with _ -> ())
+       | None -> ());
+      (match tee_stop_fd_opt with
+       | Some fd ->
+           (try ignore (Unix.write_substring fd "x" 0 1) with _ -> ());
+           (try Unix.close fd with _ -> ())
        | None -> ());
       (match tee_thread_opt with
        | Some th -> Thread.join th

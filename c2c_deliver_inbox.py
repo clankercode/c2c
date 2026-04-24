@@ -16,6 +16,11 @@ import c2c_poker
 
 # c2c_inject is only needed for the PTY-injection path (deprecated); lazy-import
 # to keep bare CLI invocation working when the module has been moved to deprecated/.
+class _C2CInjectStub:
+    resolve_session_info = None
+
+
+c2c_inject: Any = _C2CInjectStub()
 
 
 KIMI_SUBMIT_DELAY = 1.5
@@ -92,12 +97,26 @@ def _xml_attr(value: object) -> str:
 def xml_message_payload(message: dict[str, Any]) -> str:
     sender = _xml_attr(message.get("from_alias") or "unknown")
     alias = _xml_attr(message.get("to_alias") or "")
-    content = html.escape(str(message.get("content") or ""))
+    # Message content is XML element text, not an attribute. Quotes do not need
+    # escaping there, and over-escaping makes Codex display `&quot;` literally.
+    content = html.escape(str(message.get("content") or ""), quote=False)
+    # Broker-delivered sideband input should queue behind the active turn rather
+    # than racing it. AfterAnyItem gives Codex a safe mid-turn release point
+    # while still starting immediately when the thread is idle.
     return (
-        f'<message type="user"><c2c event="message" from="{sender}" alias="{alias}" '
+        f'<message type="user" queue="AfterAnyItem"><c2c event="message" from="{sender}" alias="{alias}" '
         'source="broker" reply_via="c2c_send" action_after="continue">'
         f"{content}</c2c></message>\n"
     )
+
+
+def ensure_c2c_inject() -> Any:
+    global c2c_inject
+    if getattr(c2c_inject, "resolve_session_info", None) is None:
+        import c2c_inject as _c2c_inject
+
+        c2c_inject = _c2c_inject
+    return c2c_inject
 
 
 class C2CSpool:
@@ -706,8 +725,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.xml_output_fd is None and args.xml_output_path is None:
             try:
-                import c2c_inject  # PTY-injection path; unavailable if module is in deprecated/
-                terminal_pid, pts, _transcript = c2c_inject.resolve_session_info(args)
+                terminal_pid, pts, _transcript = ensure_c2c_inject().resolve_session_info(args)
             except ImportError:
                 terminal_pid = args.terminal_pid or args.pid or 0
                 pts = args.pts or ""

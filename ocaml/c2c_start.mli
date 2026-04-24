@@ -104,6 +104,12 @@ val repo_config_git_attribution : unit -> bool
     Returns [true] if absent (default on). When true, `c2c git` injects
     --author=<alias> <alias@c2c.im> into git calls unless --author is already present. *)
 
+val repo_config_git_sign : unit -> bool
+(** [repo_config_git_sign ()] reads git_sign from .c2c/config.toml.
+    Returns [true] if absent (default on). When true and argv[0]="commit",
+    `c2c git` injects SSH signing flags (-c gpg.format=ssh, etc.) for
+    git commit signing. *)
+
 val normalize_model_override_for_client :
   client:string -> string -> (string, string) result
 (** Normalize a user-supplied [--model] override for the target client.
@@ -273,11 +279,13 @@ val start_deliver_daemon :
   client:string ->
   broker_root:string ->
   ?child_pid_opt:int ->
+  ?command_override:(string * string list) ->
   ?xml_output_fd:string ->
   ?xml_output_path:string ->
   unit ->
   int option
-(** [start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt ()] spawns
+(** [start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt
+     ?command_override ()] spawns
     c2c_deliver_inbox.py and returns its PID, or [None] if the script is not
     found. Without XML output settings it uses the notify-only PTY path; with
     [xml_output_fd] or [xml_output_path] it uses the Codex XML sideband path. *)
