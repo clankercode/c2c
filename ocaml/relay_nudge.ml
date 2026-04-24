@@ -55,15 +55,6 @@ let is_dnd_active (reg : registration) =
           let now = Unix.gettimeofday () in
           now < until_ts  (* expired if now >= until_ts *)
 
-(* [idle_minutes_ago reg] returns how many minutes have passed since
-   the session's last_activity_ts. None if no activity recorded. *)
-let idle_minutes_ago (reg : registration) =
-  match reg.last_activity_ts with
-  | None -> None  (* session predates last_activity_ts field *)
-  | Some ts ->
-      let elapsed = Unix.gettimeofday () -. ts in
-      if elapsed < 0.0 then None else Some (elapsed /. 60.0)
-
 let nudge_session ~broker ~reg ~message =
   (* Send nudge to the session's inbox via the broker's enqueue *)
   let open Lwt in
