@@ -1,3 +1,4 @@
+.opencode/spool*.tmp
 __pycache__/
 *.py[cod]
 *$py.class
