@@ -552,32 +552,23 @@ module Broker = struct
       in
       mkdir_p keys_dir;
       let id = Relay_identity.load_or_create_at ~path:priv_path ~alias_hint:alias in
-      let key_type = "ssh-ed25519" in
-      let key_blob =
-        let kt_len = String.length key_type in
-        let pk_len = String.length id.Relay_identity.public_key in
-        let blob_len = 4 + kt_len + 4 + pk_len in
-        let buf = Bytes.create blob_len in
-        Bytes.set buf 0 (Char.chr (kt_len lsr 24 land 0xff));
-        Bytes.set buf 1 (Char.chr (kt_len lsr 16 land 0xff));
-        Bytes.set buf 2 (Char.chr (kt_len lsr 8 land 0xff));
-        Bytes.set buf 3 (Char.chr (kt_len land 0xff));
-        String.iteri (fun i c -> Bytes.set buf (4 + i) c) key_type;
-        Bytes.set buf (4 + kt_len + 0) (Char.chr (pk_len lsr 24 land 0xff));
-        Bytes.set buf (4 + kt_len + 1) (Char.chr (pk_len lsr 16 land 0xff));
-        Bytes.set buf (4 + kt_len + 2) (Char.chr (pk_len lsr 8 land 0xff));
-        Bytes.set buf (4 + kt_len + 3) (Char.chr (pk_len land 0xff));
-        String.iteri (fun i c -> Bytes.set buf (4 + kt_len + 4 + i) c) id.Relay_identity.public_key;
-        Bytes.to_string buf
+      let ssh_priv_path = priv_path ^ ".ssh" in
+      let ssh_pub_path = ssh_priv_path ^ ".pub" in
+      if not (Sys.file_exists ssh_pub_path) then
+        failwith (Printf.sprintf "ssh key not found at %s (run load_or_create_at first)" ssh_pub_path);
+      let ssh_pub_content = really_input_string (open_in ssh_pub_path) (in_channel_length (open_in ssh_pub_path)) in
+      let b64_key =
+        match (let parts = List.filter ((<>) "") (String.split_on_char ' ' ssh_pub_content) in List.nth_opt parts 1) with
+        | Some b64 -> String.trim b64
+        | None -> failwith (Printf.sprintf "could not parse ssh pub key from %s" ssh_pub_path)
       in
-      let b64_key = Base64.encode_string key_blob in
       let now = Unix.gmtime (Unix.time ()) in
       let date_str =
         Printf.sprintf "%04d-%02d-%02d"
           (now.Unix.tm_year + 1900) (now.Unix.tm_mon + 1) now.Unix.tm_mday
       in
-      let line = Printf.sprintf "%s@c2c.im %s %s # added %s\n"
-        alias key_type b64_key date_str
+      let line = Printf.sprintf "%s@c2c.im ssh-ed25519 %s # added %s\n"
+        alias b64_key date_str
       in
       let oc = open_out_gen [Open_append; Open_creat] 0o644 signers_path in
       Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
