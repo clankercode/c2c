@@ -91,7 +91,7 @@ let canonical_blob env =
   let note_str = match env.note with Some n -> n | None -> "" in
   let scope_str = match env.scope with `Public -> "public" | `Private -> "private" | `Both -> "both" in
   String.concat "|"
-    [ env.from_; env.to_; env.sticker_id; note_str; scope_str; env.ts; env.nonce ]
+    [ string_of_int env.version; env.from_; env.to_; env.sticker_id; note_str; scope_str; env.ts; env.nonce ]
 
 let sign_envelope ~identity env =
   let sender_pk = b64url_nopad identity.Relay_identity.public_key in
@@ -120,7 +120,7 @@ let verify_envelope env =
 (* --- storage ------------------------------------------------------------ *)
 
 let envelope_to_json env =
-  let scope_str = match env.scope with `Public -> "public" | `Private -> "private" in
+  let scope_str = match env.scope with `Public -> "public" | `Private -> "private" | `Both -> "both" in
   let fields = [
     ("version", `Int env.version);
     ("from", `String env.from_);
@@ -161,13 +161,15 @@ let atomic_write_file path content =
     let oc = open_out tmp in
     output_string oc content;
     close_out oc;
-    Unix.rename tmp path
-  with _ -> ()
+    Unix.rename tmp path;
+    Ok ()
+  with e -> Error (Printexc.to_string e)
 
 let store_envelope env =
   let dir, filename = match env.scope with
     | `Private -> received_dir ~alias:env.to_, Printf.sprintf "%s-%s.json" env.ts env.nonce
     | `Public -> public_dir (), Printf.sprintf "%s-%s-%s.json" env.from_ env.ts env.nonce
+    | `Both -> received_dir ~alias:env.to_, Printf.sprintf "%s-%s.json" env.ts env.nonce
   in
   let () = C2c_utils.mkdir_p dir in
   let json = envelope_to_json env in
@@ -218,7 +220,9 @@ let create_and_store ~from_ ~to_ ~sticker_id ~note ~scope ~identity =
     let sender_pk = b64url_nopad identity.Relay_identity.public_key in
     let env = { version = 1; from_; to_; sticker_id; note; scope; ts; nonce; sender_pk; signature = "" } in
     let env = sign_envelope ~identity env in
-    try store_envelope env; Ok env with e -> Error (Printexc.to_string e)
+    match store_envelope env with
+    | Ok () -> Ok env
+    | Error e -> Error e
 
 (* --- formatting --------------------------------------------------------- *)
 
