@@ -537,6 +537,43 @@ module Broker = struct
       | Ok () -> id
       | Error e -> failwith ("relay_identity save: " ^ e)
 
+  let write_allowed_signers_entry t ~alias =
+    let path = Filename.concat t.root "allowed_signers" in
+    try
+      let id = load_or_create_ed25519_identity () in
+      let key_type = "ssh-ed25519" in
+      let key_blob =
+        let kt_len = String.length key_type in
+        let pk_len = String.length id.Relay_identity.public_key in
+        let blob_len = 4 + kt_len + 4 + pk_len in
+        let buf = Bytes.create blob_len in
+        Bytes.set buf 0 (Char.chr (kt_len lsr 24 land 0xff));
+        Bytes.set buf 1 (Char.chr (kt_len lsr 16 land 0xff));
+        Bytes.set buf 2 (Char.chr (kt_len lsr 8 land 0xff));
+        Bytes.set buf 3 (Char.chr (kt_len land 0xff));
+        String.iteri (fun i c -> Bytes.set buf (4 + i) c) key_type;
+        Bytes.set buf (4 + kt_len + 0) (Char.chr (pk_len lsr 24 land 0xff));
+        Bytes.set buf (4 + kt_len + 1) (Char.chr (pk_len lsr 16 land 0xff));
+        Bytes.set buf (4 + kt_len + 2) (Char.chr (pk_len lsr 8 land 0xff));
+        Bytes.set buf (4 + kt_len + 3) (Char.chr (pk_len land 0xff));
+        String.iteri (fun i c -> Bytes.set buf (4 + kt_len + 4 + i) c) id.Relay_identity.public_key;
+        Bytes.to_string buf
+      in
+      let b64_key = Base64.encode_string key_blob in
+      let now = Unix.gmtime (Unix.time ()) in
+      let date_str =
+        Printf.sprintf "%04d-%02d-%02d"
+          (now.Unix.tm_year + 1900) (now.Unix.tm_mon + 1) now.Unix.tm_mday
+      in
+      let line = Printf.sprintf "%s@c2c.im %s %s # added %s\n"
+        alias key_type b64_key date_str
+      in
+      let oc = open_out_gen [Open_append; Open_creat] 0o644 path in
+      Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+        output_string oc line)
+    with e ->
+      Printf.eprintf "[allowed_signers] warning: could not write entry for %s: %s\n%!" alias (Printexc.to_string e)
+
   let registry_lock_path t = Filename.concat t.root "registry.json.lock"
 
   let with_registry_lock t f =
@@ -3072,6 +3109,7 @@ let handle_tool_call ~(broker : Broker.t) ?session_id_override ~tool_name ~argum
               let redelivered =
                 Broker.redeliver_dead_letter_for_session broker ~session_id ~alias
               in
+              Broker.write_allowed_signers_entry broker ~alias;
               let response_content =
                 if redelivered > 0 then
                   Printf.sprintf "registered %s (redelivered %d dead-letter message%s)"
