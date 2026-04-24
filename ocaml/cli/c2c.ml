@@ -7033,10 +7033,23 @@ let start_cmd =
               (match render_role_for_client ?model_override role ~client ~name with
                | Some rendered ->
                    let effective_alias = Option.value role.C2c_role.c2c_alias ~default:name in
-                if client = "opencode" || client = "claude" then
+                   if client = "opencode" || client = "claude" then
                      write_agent_file ~client ~name ~content:rendered;
+                   let onboarding_preamble =
+                     Printf.sprintf
+                       "You are now running as %s. Complete these startup steps:\n\
+                        1. Call `whoami` to confirm your identity and registration.\n\
+                        2. Join the `swarm-lounge` room: use `join_room` with {\"room_id\": \"swarm-lounge\"}.\n\
+                        3. Send a message to coordinator1 introducing yourself: use `send` with \
+                        {\"to_alias\": \"coordinator1\", \"content\": \"<brief intro of your role and capabilities>\"}.\n\
+                        4. Call `poll_inbox` to check for any messages addressed to you.\n\
+                        5. Arm a heartbeat Monitor: use Monitor tool with \
+                        command `heartbeat 4.1m \"<wake message>\"`, persistent:true.\n\
+                        Begin now."
+                       name
+                   in
                    let kickoff =
-                     if client = "claude" then Some rendered
+                     if client = "claude" then Some onboarding_preamble
                      else Some (default_kickoff_prompt ~name ~alias:effective_alias ~role:role.C2c_role.body ())
                    in
                    let alias_override = role.C2c_role.c2c_alias in
