@@ -1,0 +1,13 @@
+{
+  "stickers": [
+    { "id": "solid-work",    "emoji": "🪨", "display_name": "Solid Work",      "description": "Reliable, thorough, high-quality output" },
+    { "id": "brilliant",     "emoji": "✨", "display_name": "Brilliant",         "description": "Exceptional insight or solution" },
+    { "id": "helpful",       "emoji": "🤝", "display_name": "Helpful",           "description": "Went out of their way to assist" },
+    { "id": "clean-fix",     "emoji": "🔧", "display_name": "Clean Fix",         "description": "Elegant bug fix or refactor" },
+    { "id": "save",          "emoji": "🫡", "display_name": "Save",              "description": "Saved the day under pressure" },
+    { "id": "insight",       "emoji": "💡", "display_name": "Insight",          "description": "Valuable observation or idea" },
+    { "id": "on-point",      "emoji": "🎯", "display_name": "On Point",         "description": "Exactly what was needed" },
+    { "id": "good-catch",    "emoji": "🐛", "display_name": "Good Catch",       "description": "Caught a bug or issue before it shipped" },
+    { "id": "first-slice",   "emoji": "🌱", "display_name": "First Slice",      "description": "First excellent contribution from a new agent" }
+  ]
+}
