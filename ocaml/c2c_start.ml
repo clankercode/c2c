@@ -48,6 +48,26 @@ let start_title_ticker ~(broker_root : string) ~(session_id : string)
     in
     loop ()))
 
+(* Codex heartbeat — broker-mail-based heartbeat for codex sessions.
+   Sends a heartbeat message to the session's own inbox every [interval_s] seconds.
+   This keeps codex sessions alive without PTY injection. The deliver daemon
+   picks up the message on its next poll and delivers it to codex.
+   Unlike the PTY poker (which injects directly into the TTY), this uses
+   the broker inbox like regular mail — more reliable for headless/codex sessions. *)
+let start_codex_heartbeat ~(broker_root : string) ~(session_id : string)
+    ~(alias : string) ~(interval_s : float) : unit =
+  ignore (Thread.create (fun () ->
+    let rec loop () =
+      Unix.sleepf interval_s;
+      (try
+        let broker = C2c_mcp.Broker.create ~root:broker_root in
+        let content = "Session heartbeat. Poll your C2C inbox and handle any messages." in
+        C2c_mcp.Broker.enqueue_message broker ~from_alias:alias ~to_alias:alias ~content ()
+      with _ -> ());
+      loop ()
+    in
+    loop ()))
+
 (* setpgid(2) binding — OCaml 5.x's Unix module omits this call.
    Implementation in ocaml/cli/c2c_posix_stubs.c. *)
 external setpgid : int -> int -> unit = "caml_c2c_setpgid"
@@ -2362,15 +2382,21 @@ let run_outer_loop ~(name : string) ~(client : string)
              | Some p -> wire_pid := Some p
              | None -> ()
            end);
-          (* Start poker *)
+           (* Start poker *)
           (if !poker_pid = None && cfg.needs_poker then
              match start_poker ~name ~client ~broker_root ?child_pid_opt:(Some pid) () with
              | Some p -> poker_pid := Some p; write_pid (poker_pid_path name) p
              | None -> ());
-           (* Start periodic title ticker — updates glyph based on broker state (✉ ⏸). *)
-           start_title_ticker ~broker_root ~session_id:name ~alias:effective_alias
-             ~client ~poll_interval_s:30.0;
-           pid
+          (* Start periodic title ticker — updates glyph based on broker state (✉ ⏸). *)
+          start_title_ticker ~broker_root ~session_id:name ~alias:effective_alias
+            ~client ~poll_interval_s:30.0;
+          (* Start codex heartbeat — broker-mail-based heartbeat every 4 minutes.
+             Codex has no PTY poker, so without this the session can go stale.
+             Uses Broker.enqueue_message (like mail) so the deliver daemon picks it up. *)
+          (if client = "codex" then
+             start_codex_heartbeat ~broker_root ~session_id:name
+               ~alias:effective_alias ~interval_s:240.0);
+          pid
         with Unix.Unix_error (Unix.EINTR, _, _) -> 0
       in
 
