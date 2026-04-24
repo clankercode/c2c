@@ -32,6 +32,10 @@ type registration =
    ; compacting : compacting option
   (** Set when the agent is actively compacting/summarizing. Send-side
       checks this and returns a warning; message is still queued. *)
+  ; last_activity_ts : float option
+  (** Epoch of the session's most recent broker interaction (poll_inbox,
+      send, register). None = session predates this field (Phase 0 compat).
+      Updated by [touch_session]. *)
   }
 type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
@@ -254,7 +258,7 @@ module Broker = struct
       cleanup_tmp ();
       raise e
 
-  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; enc_pubkey; compacting } =
+  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; enc_pubkey; compacting; last_activity_ts } =
     let base =
       [ ("session_id", `String session_id); ("alias", `String alias) ]
     in
@@ -320,7 +324,12 @@ module Broker = struct
           with_enc_pubkey @ [ ("compacting", `Assoc [ ("started_at", `Float c.started_at); ("reason", reason_json) ]) ]
       | None -> with_enc_pubkey
     in
-    `Assoc fields
+    let with_last_activity_ts =
+      match last_activity_ts with
+      | Some ts -> fields @ [ ("last_activity_ts", `Float ts) ]
+      | None -> fields
+    in
+    `Assoc with_last_activity_ts
 
   let int_opt_member name json =
     let open Yojson.Safe.Util in
@@ -373,6 +382,7 @@ module Broker = struct
     ; confirmed_at = float_opt_member "confirmed_at" json
     ; enc_pubkey = str_opt "enc_pubkey" json
     ; compacting = compacting_of_json json
+    ; last_activity_ts = float_opt_member "last_activity_ts" json
     }
 
   let message_to_json { from_alias; to_alias; content; deferrable; reply_via; enc_status } =
@@ -933,11 +943,11 @@ module Broker = struct
            across re-registration. *)
         let old_state =
           match List.find_opt (fun reg -> reg.session_id = session_id) rest with
-          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting, r.enc_pubkey)
-          | None -> (false, None, None, None, client_type, None, None, enc_pubkey)
+          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting, r.enc_pubkey, r.last_activity_ts)
+          | None -> (false, None, None, None, client_type, None, None, enc_pubkey, None)
         in
         let new_reg =
-          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting, old_enc_pubkey) = old_state in
+          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting, old_enc_pubkey, old_last_activity_ts) = old_state in
           let effective_client_type = match client_type with
             | Some _ -> client_type
             | None -> old_client_type
@@ -958,7 +968,8 @@ module Broker = struct
           ; plugin_version = effective_plugin_version
           ; confirmed_at = old_confirmed_at
           ; enc_pubkey = effective_enc_pubkey
-          ; compacting = old_compacting }
+          ; compacting = old_compacting
+          ; last_activity_ts = old_last_activity_ts }
         in
         let kept =
           match
@@ -2163,6 +2174,25 @@ module Broker = struct
           with _ -> ())
         joined
     end
+
+  let touch_session t ~session_id =
+    let now = Unix.gettimeofday () in
+    with_registry_lock t (fun () ->
+      let regs = load_registrations t in
+      let changed = ref false in
+      let regs' =
+        List.map
+          (fun reg ->
+            if reg.session_id = session_id then begin
+              match reg.last_activity_ts with
+              | Some ts when ts >= now -> reg
+              | _ ->
+                changed := true;
+                { reg with last_activity_ts = Some now }
+            end else reg)
+          regs
+      in
+      if !changed then save_registrations t regs')
 end
 
 let channel_notification ({ from_alias; to_alias; content; deferrable = _ } : message) =
@@ -3058,6 +3088,7 @@ let handle_tool_call ~(broker : Broker.t) ?session_id_override ~tool_name ~argum
               in
               Broker.register broker ~session_id ~alias ~pid ~pid_start_time
                 ~client_type ~plugin_version ~enc_pubkey ();
+              Broker.touch_session broker ~session_id;
               List.iter
                 (fun room_id ->
                   try
@@ -3263,6 +3294,12 @@ let ts = Unix.gettimeofday () in
                    Lwt.return (tool_result ~content:err ~is_error:true)
                   | `Plain s | `Encrypted s ->
                     Broker.enqueue_message broker ~from_alias ~to_alias ~content:s ~deferrable ();
+                    (match session_id_override with
+                     | Some sid -> Broker.touch_session broker ~session_id:sid
+                     | None ->
+                       (match current_session_id () with
+                        | Some sid -> Broker.touch_session broker ~session_id:sid
+                        | None -> ()));
                     let ts = Unix.gettimeofday () in
                     let recipient_dnd =
                   match Broker.list_registrations broker
@@ -3471,6 +3508,7 @@ let ts = Unix.gettimeofday () in
       else begin
       let session_id = resolve_session_id ?session_id_override arguments in
       Broker.confirm_registration broker ~session_id;
+      Broker.touch_session broker ~session_id;
       let messages = Broker.drain_inbox broker ~session_id in
       let sid =
         match session_id_override with

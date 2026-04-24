@@ -293,6 +293,8 @@ let () =
   debug_log ("broker_root=" ^ root);
   C2c_mcp.auto_register_startup ~broker_root:root;
   C2c_mcp.auto_join_rooms_startup ~broker_root:root;
+  let broker = C2c_mcp.Broker.create ~root in
+  Relay_nudge.start_nudge_scheduler ~broker_root:root ~broker ();
   let negotiated_capabilities_ref = ref (force_capabilities_from_env ()) in
   (match (channel_delivery_enabled (), session_id ()) with
    | true, Some sid -> debug_log ("starting inbox watcher for " ^ sid); Lwt.async (fun () ->

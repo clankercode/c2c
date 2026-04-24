@@ -30,6 +30,9 @@ type registration =
       against other processes running as the same Unix user (including child
       agents). OS keyring integration deferred to M3. *)
   ; compacting : compacting option
+  ; last_activity_ts : float option
+  (** Epoch of the session's most recent broker interaction. None = Phase 0
+      compatibility (session predates this field). *)
   }
 type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
@@ -124,6 +127,10 @@ module Broker : sig
   (** [confirm_registration t ~session_id] sets confirmed_at to now for the
       session if it is currently None, then emits deferred social broadcasts
       (peer_register + room-join) if the session was previously unconfirmed. *)
+  val touch_session : t -> session_id:string -> unit
+  (** [touch_session t ~session_id] updates last_activity_ts to now for the
+      session if the stored timestamp is None or older. Call on every broker
+      interaction (poll_inbox, send, register) to drive idle-nudge detection. *)
   val is_provisional : registration -> bool
   val is_provisional_expired : registration -> bool
   val is_unconfirmed : registration -> bool
