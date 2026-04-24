@@ -933,17 +933,23 @@ let build_env ?(broker_root_override : string option = None)
     ?(reply_to_override : string option = None)
     (name : string) (alias_override : string option) : string array =
   let br = Option.value broker_root_override ~default:(broker_root ()) in
-  let rooms_base = Option.value auto_join_rooms_override ~default:"swarm-lounge" in
-  (* Derive role-specific room from role_class if C2C_AUTO_JOIN_ROLE_ROOM=1 is set.
-     This is written by `c2c install <client>` to opt into the feature. *)
-  let rooms =
-    match Sys.getenv_opt "C2C_AUTO_JOIN_ROLE_ROOM", role_class_opt with
-    | Some "1", Some rc when String.trim rc <> "" ->
+  (* Only set C2C_MCP_AUTO_JOIN_ROOMS when explicitly requested *)
+  let auto_join_rooms =
+    match Sys.getenv_opt "C2C_AUTO_JOIN_ROLE_ROOM", role_class_opt, auto_join_rooms_override with
+    | Some "1", Some rc, _ when String.trim rc <> "" ->
         let role_room = C2c_role.role_class_to_room rc in
         (match role_room with
-         | Some rr -> rooms_base ^ "," ^ rr
-         | None -> rooms_base)
-    | _ -> rooms_base
+         | Some rr -> (match auto_join_rooms_override with
+                       | Some "" -> Some rr
+                       | Some existing -> Some (existing ^ "," ^ rr)
+                       | None -> Some rr)
+         | None -> auto_join_rooms_override)
+    | _ -> auto_join_rooms_override
+  in
+  let auto_join_base = match auto_join_rooms with
+    | Some "" -> []
+    | Some rooms -> [ "C2C_MCP_AUTO_JOIN_ROOMS", rooms ]
+    | None -> []
   in
   (* Resolve the absolute path of this c2c binary so the plugin always uses the
      correct OCaml binary even when a Python ./c2c shim exists in the project CWD
@@ -966,13 +972,13 @@ let build_env ?(broker_root_override : string option = None)
     "C2C_INSTANCE_NAME", name;
     "C2C_MCP_AUTO_REGISTER_ALIAS", Option.value alias_override ~default:name;
     "C2C_MCP_BROKER_ROOT", br;
-    "C2C_MCP_AUTO_JOIN_ROOMS", rooms;
     "C2C_MCP_AUTO_DRAIN_CHANNEL", "0";
     (* Managed sessions opt in to experimental channel-delivery. No-op on
        clients that don't declare experimental.claude/channel in initialize,
        so harmless where unsupported. *)
     "C2C_MCP_CHANNEL_DELIVERY", "1";
     ] in
+    let base = base @ auto_join_base in
     let base = base @ match reply_to_override with
       | Some r -> [ "C2C_MCP_REPLY_TO", r ]
       | None -> [] in

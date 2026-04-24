@@ -6888,6 +6888,9 @@ let start_cmd =
   let reply_to =
     Cmdliner.Arg.(value & opt (some string) None & info [ "reply-to" ] ~docv:"ALIAS" ~doc:"Set C2C_MCP_REPLY_TO env var — used by ephemeral agents to know where to send completion results.")
   in
+  let auto_join =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "auto-join" ] ~docv:"ROOMS" ~doc:"Comma-separated room IDs to auto-join on startup. Overrides the default swarm-lounge.")
+  in
   let+ client = client
   and+ name_opt = name
   and+ alias_opt = alias
@@ -6899,7 +6902,8 @@ let start_cmd =
   and+ kickoff_prompt_file = kickoff_prompt_file_opt
   and+ agent_opt = agent
   and+ model_opt = model
-  and+ reply_to = reply_to in
+  and+ reply_to = reply_to
+  and+ auto_join = auto_join in
   let kickoff_prompt_text =
     match kickoff_prompt_text_raw, kickoff_prompt_file with
     | Some _, Some _ ->
@@ -7144,6 +7148,10 @@ let start_cmd =
                  | None -> None)
           in
           (kickoff_prompt, alias_opt, None, None)
+  in
+  let auto_join_rooms = match auto_join with
+    | Some rooms -> Some rooms
+    | None -> auto_join_rooms
   in
   exit (C2c_start.cmd_start ~client ~name ~extra_args:[]
       ?binary_override:bin_opt
@@ -7780,8 +7788,15 @@ let run_ephemeral_agent
   let c2c_bin = match bin_opt with Some b -> b | None -> "c2c" in
   let q = Filename.quote in
 
-  (* Build env vars to strip for child (prevents nested-session guard) *)
-  let strip_env = "env -u C2C_MCP_SESSION_ID -u C2C_MCP_AUTO_REGISTER_ALIAS -u C2C_INSTANCE_NAME -u C2C_WRAPPER_SELF" in
+  (* Build env vars to strip for child (prevents nested-session guard).
+     Some "" = explicit suppress; None = let subprocess use its default (swarm-lounge).
+     We always set C2C_MCP_AUTO_JOIN_ROOMS when auto_join_rooms_opt is Some,
+     and explicitly UNSET it when None so build_env sees "" not env-var and
+     suppresses rather than defaulting to swarm-lounge. *)
+  let env_for_start = match auto_join_rooms_opt with
+    | Some rooms -> Printf.sprintf "env -u C2C_MCP_SESSION_ID -u C2C_MCP_AUTO_REGISTER_ALIAS -u C2C_INSTANCE_NAME -u C2C_WRAPPER_SELF C2C_MCP_AUTO_JOIN_ROOMS=%s" rooms
+    | None -> "env -u C2C_MCP_SESSION_ID -u C2C_MCP_AUTO_REGISTER_ALIAS -u C2C_INSTANCE_NAME -u C2C_WRAPPER_SELF -u C2C_MCP_AUTO_JOIN_ROOMS"
+  in
 
   (* Build the c2c start command with common args *)
   let start_cmd_args = Printf.sprintf "%s start %s -n %s --kickoff-prompt-file %s"
@@ -7796,7 +7811,7 @@ let run_ephemeral_agent
          Printf.eprintf "error: --mode pane requires running inside tmux (TMUX env var is not set)\n%!";
          exit 1);
       let window_title = Printf.sprintf "c2c-%s" name in
-      let shell_cmd = Printf.sprintf "%s %s" strip_env start_cmd_args in
+      let shell_cmd = Printf.sprintf "%s %s" env_for_start start_cmd_args in
       (match Unix.fork () with
        | 0 ->
          (try Unix.execvp "tmux" [| "tmux"; "new-window"; "-n"; window_title; shell_cmd |] with
@@ -7815,7 +7830,7 @@ let run_ephemeral_agent
             exit 1))
 
   | Background ->
-      let full_cmd = Printf.sprintf "%s %s &" strip_env start_cmd_args in
+      let full_cmd = Printf.sprintf "%s %s &" env_for_start start_cmd_args in
       Printf.printf "spawning background ephemeral '%s' (kickoff=%s)\n%!" name kickoff_path;
       (match Unix.fork () with
        | 0 ->
@@ -7838,7 +7853,7 @@ let run_ephemeral_agent
       let start_cmd_args = Printf.sprintf "%s start %s -n %s --kickoff-prompt-file %s"
         (q c2c_bin) (q headless_client) (q name) (q kickoff_path)
       in
-      let full_cmd = Printf.sprintf "%s %s &" strip_env start_cmd_args in
+      let full_cmd = Printf.sprintf "%s %s &" env_for_start start_cmd_args in
       Printf.printf "spawning headless ephemeral '%s' (kickoff=%s)\n%!" name kickoff_path;
       (match Unix.fork () with
        | 0 ->
@@ -7882,10 +7897,6 @@ let agent_refine_term =
     Cmdliner.Arg.(value & flag & info [ "dry-run" ]
       ~doc:"Print resolved config + kickoff prompt without invoking c2c start.")
   in
-  let pane_arg =
-    Cmdliner.Arg.(value & flag & info [ "pane" ]
-      ~doc:"Launch the ephemeral in a new tmux window (requires TMUX) and return immediately. Watchdog still runs detached.")
-  in
   let reply_to_arg =
     Cmdliner.Arg.(value & opt (some string) None & info [ "reply-to" ]
       ~docv:"ALIAS" ~doc:"Alias to DM completion results to (default: caller alias from C2C_MCP_AUTO_REGISTER_ALIAS).")
@@ -7899,7 +7910,6 @@ let agent_refine_term =
   and+ bin_opt = bin_arg
   and+ timeout = timeout_arg
   and+ dry_run = dry_run_arg
-  and+ pane = pane_arg
   and+ reply_to_opt = reply_to_arg
   and+ agent_mode = agent_mode_arg in
   let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
