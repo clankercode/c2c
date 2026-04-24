@@ -328,19 +328,12 @@ module OpenCode_renderer = struct
 end
 
 module Claude_renderer = struct
-  let render ?resolved_pmodel (r : t) =
+  let render ?resolved_pmodel (r : t) ~(name : string) =
     let lines = ref [] in
+    lines := ("name: " ^ yaml_scalar name) :: !lines;
     lines := ("description: " ^ yaml_scalar r.description) :: !lines;
-    lines := ("role: " ^ r.role) :: !lines;
-    (match r.pronouns with Some p -> lines := ("pronouns: " ^ yaml_scalar p) :: !lines | None -> ());
     let model_to_emit = match resolved_pmodel with Some m -> Some m | None -> r.model in
     (match model_to_emit with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
-    if r.c2c_alias <> None || r.c2c_auto_join_rooms <> [] then begin
-      lines := "# c2c:" :: !lines;
-      (match r.c2c_alias with Some a -> lines := ("#   alias: " ^ a) :: !lines | None -> ());
-      if r.c2c_auto_join_rooms <> [] then
-        lines := ("#   auto_join_rooms: [" ^ String.concat ", " r.c2c_auto_join_rooms ^ "]") :: !lines;
-    end;
     if r.claude <> [] then begin
       lines := "claude:" :: !lines;
       List.iter (fun (k, v) ->
@@ -351,8 +344,8 @@ module Claude_renderer = struct
       ) r.claude;
     end;
     let fm = String.concat "\n" (List.rev !lines) in
-    "---\n" ^ fm ^ "\n---\n\n" ^ r.body
-end
+    "---\n" ^ fm ^ "\n---\n\n" ^ r.role ^ "\n\n" ^ r.body
+  end
 
 module Codex_renderer = struct
   let render ?resolved_pmodel (r : t) =
@@ -408,10 +401,10 @@ module Kimi_renderer = struct
     "---\n" ^ fm ^ "\n---\n\n" ^ r.body
 end
 
-let render_for_client ?resolved_pmodel (r : t) ~(client : string) : string option =
+let render_for_client ?resolved_pmodel (r : t) ~(client : string) ~(name : string) : string option =
   match client with
   | "opencode" -> Some (OpenCode_renderer.render ?resolved_pmodel r)
-  | "claude" -> Some (Claude_renderer.render ?resolved_pmodel r)
+  | "claude" -> Some (Claude_renderer.render ?resolved_pmodel r ~name)
   | "codex" -> Some (Codex_renderer.render ?resolved_pmodel r)
   | "kimi" -> Some (Kimi_renderer.render ?resolved_pmodel r)
   | _ -> None

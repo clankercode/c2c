@@ -6709,7 +6709,7 @@ let agent_file_path ~client ~name =
   | "kimi" -> ".kimi" // "agents" // (name ^ ".md")
   | _ -> ".c2c" // "agents" // (name ^ ".md")
 
-let render_role_for_client ?(model_override : string option) (r : C2c_role.t) ~client =
+let render_role_for_client ?(model_override : string option) (r : C2c_role.t) ~client ~name =
   let pmodel_lookup (key : string) : string option =
     match C2c_start.repo_config_pmodel_lookup key with
     | None -> None
@@ -6721,8 +6721,8 @@ let render_role_for_client ?(model_override : string option) (r : C2c_role.t) ~c
     | None -> C2c_role.resolve_pmodel r ~class_lookup:pmodel_lookup
   in
   match resolved_pmodel with
-  | Some p -> C2c_role.render_for_client r ~client ~resolved_pmodel:p
-  | None -> C2c_role.render_for_client r ~client
+  | Some p -> C2c_role.render_for_client r ~client ~resolved_pmodel:p ~name
+  | None -> C2c_role.render_for_client r ~client ~name
 
 let write_agent_file ~client ~name ~content =
   let path = agent_file_path ~client ~name in
@@ -6910,7 +6910,7 @@ let start_cmd =
                (if available = [] then "(none)" else String.concat ", " available);
              exit 1
            end;
-           match render_role_for_client ?model_override role ~client with
+            match render_role_for_client ?model_override role ~client ~name:agent_name with
            | Some rendered ->
                write_agent_file ~client ~name ~content:rendered;
                let kickoff = Some rendered in
@@ -6962,7 +6962,7 @@ let start_cmd =
                   (if available = [] then "(none)" else String.concat ", " available);
                exit 1
              end;
-              (match render_role_for_client ?model_override role ~client with
+              (match render_role_for_client ?model_override role ~client ~name with
                | Some rendered ->
                    write_agent_file ~client ~name ~content:rendered;
                    let kickoff = Some rendered in
@@ -7547,7 +7547,7 @@ let run_ephemeral_agent
   in
   let caller_is_alias = caller <> "(human operator)" in
   let rendered =
-    match render_role_for_client r ~client with
+    match render_role_for_client r ~client ~name with
     | Some s -> s
     | None ->
       Printf.eprintf "error: role rendering not supported for client '%s'\n%!" client;
@@ -7889,7 +7889,7 @@ let roles_compile_term =
       ~doc:"Role name to compile (reads .c2c/roles/<NAME>.md). Omit to compile all roles.")
   in
   let client =
-    Cmdliner.Arg.(value & opt (some string) (Some "opencode") & info [ "client"; "c" ]
+    Cmdliner.Arg.(value & opt (some string) (Some "all") & info [ "client"; "c" ]
       ~docv:"CLIENT" ~doc:"Target client for rendering (opencode, claude, codex, kimi, or 'all' for every supported client).")
   in
   let dry_run =
@@ -7928,7 +7928,7 @@ let roles_compile_term =
     try
       let role = C2c_role.parse_file path in
       List.iter (fun target ->
-        match render_role_for_client role ~client:target with
+        match render_role_for_client role ~client:target ~name with
         | Some rendered ->
             if dry_run then
               (Printf.printf "=== %s (%s) ===\n%s\n\n" name target rendered; flush stdout)
@@ -7961,8 +7961,8 @@ let roles_compile_cmd = Cmdliner.Cmd.v
      ~man:[ `S "DESCRIPTION"
           ; `P "Canonical role files live in $(b,.c2c/roles/). Use $(b,c2c roles compile) to compile them to client-specific agent files (e.g. $(b,.opencode/agents/<name>.md))."
           ; `S "EXAMPLES"
-          ; `P "$(b,c2c roles compile)  — compile all roles to default client (opencode)"
-          ; `P "$(b,c2c roles compile --client opencode)  — compile all roles for OpenCode"
+           ; `P "$(b,c2c roles compile)  — compile all roles for all clients (opencode, claude, codex, kimi)"
+           ; `P "$(b,c2c roles compile --client opencode)  — compile all roles for OpenCode only"
           ; `P "$(b,c2c roles compile my-role --client claude)  — compile one role for Claude"
           ; `P "$(b,c2c roles validate)  — check role files for completeness"
           ])
@@ -8024,27 +8024,30 @@ let roles_default_term =
   let n_roles = List.length roles in
   let subtitle = if n_roles = 1 then "1 role" else Printf.sprintf "%d roles" n_roles in
   Banner.print_banner ~subtitle:("roles compile  |  " ^ subtitle) "c2c roles";
+  let all_targets = ["opencode"; "claude"; "codex"; "kimi"] in
   List.iter (fun (name, path) ->
     try
       let role = C2c_role.parse_file path in
-      match render_role_for_client role ~client:"opencode" with
-      | Some rendered ->
-          let out_path = agent_file_path ~client:"opencode" ~name in
-          let dir = Filename.dirname out_path in
-          mkdir_p dir;
-          let lock_path = out_path ^ ".lock" in
-          let fd = Unix.openfile lock_path [Unix.O_RDWR; Unix.O_CREAT; Unix.O_TRUNC] 0o644 in
-          Fun.protect ~finally:(fun () -> Unix.close fd)
-            (fun () ->
-              Unix.lockf fd Unix.F_LOCK 0;
-              Fun.protect ~finally:(fun () -> Unix.lockf fd Unix.F_ULOCK 0)
-                (fun () ->
-                  let oc = open_out out_path in
-                  Fun.protect ~finally:(fun () -> close_out oc)
-                    (fun () -> output_string oc rendered; output_char oc '\n');
-                  Printf.printf "  [roles compile] %s -> %s\n" path out_path))
-      | None ->
-          Printf.eprintf "  [roles compile] skip %s: client 'opencode' not supported\n" name
+      List.iter (fun target ->
+        match render_role_for_client role ~client:target ~name with
+        | Some rendered ->
+            let out_path = agent_file_path ~client:target ~name in
+            let dir = Filename.dirname out_path in
+            mkdir_p dir;
+            let lock_path = out_path ^ ".lock" in
+            let fd = Unix.openfile lock_path [Unix.O_RDWR; Unix.O_CREAT; Unix.O_TRUNC] 0o644 in
+            Fun.protect ~finally:(fun () -> Unix.close fd)
+              (fun () ->
+                Unix.lockf fd Unix.F_LOCK 0;
+                Fun.protect ~finally:(fun () -> Unix.lockf fd Unix.F_ULOCK 0)
+                  (fun () ->
+                    let oc = open_out out_path in
+                    Fun.protect ~finally:(fun () -> close_out oc)
+                      (fun () -> output_string oc rendered; output_char oc '\n');
+                    Printf.printf "  [roles compile] %s -> %s\n" path out_path))
+        | None ->
+            Printf.eprintf "  [roles compile] skip %s: client '%s' not supported\n" name target
+      ) all_targets
     with Sys_error msg ->
       Printf.eprintf "  [roles compile] skip %s: %s\n" name msg
   ) roles;

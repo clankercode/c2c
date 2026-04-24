@@ -71,10 +71,10 @@ let test_opencode_renderer_user_steps_preserved () =
   contains_not ~msg:"opencode: default steps NOT injected when user-set" ~pattern:"steps: 9999" output
 
 let test_claude_renderer () =
-  let output = C2c_role.Claude_renderer.render role_input in
+  let output = C2c_role.Claude_renderer.render role_input ~name:"test-agent" in
+  contains ~msg:"claude: name field present" ~pattern:"name: test-agent" output;
   contains ~msg:"claude: description field present" ~pattern:"description: Test role for regression" output;
-  contains ~msg:"claude: role field present" ~pattern:"role: primary" output;
-  contains ~msg:"claude: c2c commented" ~pattern:"# c2c:" output;
+  contains ~msg:"claude: prompt prepends body" ~pattern:"primary\n\nYou are a test agent" output;
   contains ~msg:"claude: claude section present" ~pattern:"claude:" output
 
 let test_codex_renderer () =
@@ -106,8 +106,8 @@ let test_pronouns_render_opencode () =
   contains ~msg:"opencode: pronouns field present" ~pattern:"pronouns: she/her" output
 
 let test_pronouns_render_claude () =
-  let output = C2c_role.Claude_renderer.render role_input_with_pronouns in
-  contains ~msg:"claude: pronouns field present" ~pattern:"pronouns: she/her" output
+  let output = C2c_role.Claude_renderer.render role_input_with_pronouns ~name:"test-agent" in
+  contains_not ~msg:"claude: pronouns NOT emitted (not spec-compliant)" ~pattern:"pronouns:" output
 
 let test_pronouns_render_codex () =
   let output = C2c_role.Codex_renderer.render role_input_with_pronouns in
