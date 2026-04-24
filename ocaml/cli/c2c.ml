@@ -6962,7 +6962,9 @@ let start_cmd =
            end;
             match render_role_for_client ?model_override role ~client ~name:agent_name with
             | Some rendered ->
-                write_agent_file ~client ~name ~content:rendered;
+                let effective_alias = Option.value role.C2c_role.c2c_alias ~default:agent_name in
+                if client = "opencode" then
+                  write_agent_file ~client ~name ~content:rendered;
                 let onboarding_preamble =
                   Printf.sprintf
                     "You are now running as %s. Complete these startup steps:\n\
@@ -6977,7 +6979,8 @@ let start_cmd =
                     agent_name
                 in
                 let kickoff =
-                  if client = "claude" then Some onboarding_preamble else Some rendered
+                  if client = "claude" then Some onboarding_preamble
+                  else Some (default_kickoff_prompt ~name:agent_name ~alias:effective_alias ~role:role.C2c_role.body ())
                 in
                 let alias_override = role.C2c_role.c2c_alias in
                let auto_join_rooms =
@@ -7029,8 +7032,13 @@ let start_cmd =
              end;
               (match render_role_for_client ?model_override role ~client ~name with
                | Some rendered ->
-                   write_agent_file ~client ~name ~content:rendered;
-                   let kickoff = Some rendered in
+                   let effective_alias = Option.value role.C2c_role.c2c_alias ~default:name in
+                   if client = "opencode" then
+                     write_agent_file ~client ~name ~content:rendered;
+                   let kickoff =
+                     if client = "claude" then Some rendered
+                     else Some (default_kickoff_prompt ~name ~alias:effective_alias ~role:role.C2c_role.body ())
+                   in
                    let alias_override = role.C2c_role.c2c_alias in
                    let auto_join_rooms =
                      if role.C2c_role.c2c_auto_join_rooms <> []
