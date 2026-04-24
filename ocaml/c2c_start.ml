@@ -885,7 +885,6 @@ let build_env ?(broker_root_override : string option = None)
   let client_session_additions =
     match client with
     | Some "claude" -> [ "CLAUDE_CODE_PARENT_SESSION_ID", name ]
-    | Some "codex" -> [ "CODEX_THREAD_ID", name ]
     | Some "opencode" -> [ "OPENCODE_SESSION_ID", name ]
     | Some "kimi" -> [ "KIMI_SESSION_ID", name ]
     | Some "crush" -> [ "CRUSH_SESSION_ID", name ]
@@ -922,7 +921,7 @@ let build_env ?(broker_root_override : string option = None)
      Also strip CLAUDE_SESSION_ID: when starting a new managed session, the child
      should create a fresh session rather than inheriting the parent's. *)
   let legacy_native_session_keys =
-    [ "CLAUDE_SESSION_ID"; "CODEX_SESSION_ID"; "OPENCODE_SESSION_ID";
+    [ "CLAUDE_SESSION_ID"; "CODEX_SESSION_ID"; "CODEX_THREAD_ID"; "OPENCODE_SESSION_ID";
       "KIMI_SESSION_ID"; "CRUSH_SESSION_ID" ]
   in
   let override_keys =

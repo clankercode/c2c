@@ -2591,13 +2591,17 @@ let pop_channel_test_code () =
   pending_channel_test_code := None;
   value
 
-let auto_register_startup ~broker_root =
+let auto_register_impl ~broker_root ?session_id_override () =
   match auto_register_alias () with
   | None -> ()
   | Some alias ->
-  let session_id = match current_session_id () with
-    | Some sid -> sid
-    | None -> derived_session_id_from_alias alias
+  let session_id =
+    match session_id_override with
+    | Some sid when String.trim sid <> "" -> String.trim sid
+    | _ ->
+        (match current_session_id () with
+         | Some sid -> sid
+         | None -> derived_session_id_from_alias alias)
   in
   begin
       let broker = Broker.create ~root:broker_root in
@@ -2712,6 +2716,8 @@ let auto_register_startup ~broker_root =
       end
   end
 
+let auto_register_startup ~broker_root = auto_register_impl ~broker_root ()
+
 (** Auto-join rooms listed in C2C_MCP_AUTO_JOIN_ROOMS (comma-separated) on
     server startup. Only runs when auto-registration is also configured (both
     C2C_MCP_AUTO_REGISTER_ALIAS must be set; C2C_MCP_SESSION_ID is optional
@@ -2721,13 +2727,17 @@ let auto_register_startup ~broker_root =
     in the MCP env so every agent session joins the persistent social channel
     automatically on first startup. Idempotent — joining the same room twice
     is a no-op on the broker side. *)
-let auto_join_rooms_startup ~broker_root =
+let auto_join_rooms_impl ~broker_root ?session_id_override () =
   match auto_register_alias () with
   | None -> ()
   | Some alias ->
-  let session_id = match current_session_id () with
-    | Some sid -> sid
-    | None -> derived_session_id_from_alias alias
+  let session_id =
+    match session_id_override with
+    | Some sid when String.trim sid <> "" -> String.trim sid
+    | _ ->
+        (match current_session_id () with
+         | Some sid -> sid
+         | None -> derived_session_id_from_alias alias)
   in
   let rooms_raw =
     match Sys.getenv_opt "C2C_MCP_AUTO_JOIN_ROOMS" with
@@ -2758,6 +2768,15 @@ let auto_join_rooms_startup ~broker_root =
            crash the server *))
       rooms
   end
+
+let auto_join_rooms_startup ~broker_root = auto_join_rooms_impl ~broker_root ()
+
+let ensure_request_session_bootstrap ~broker_root ?session_id_override () =
+  match session_id_override, auto_register_alias () with
+  | Some _, Some _ ->
+      auto_register_impl ~broker_root ?session_id_override ();
+      auto_join_rooms_impl ~broker_root ?session_id_override ()
+  | _ -> ()
 
 let resolve_session_id ?session_id_override arguments =
   match optional_string_member "session_id" arguments with
@@ -4027,6 +4046,7 @@ let handle_request ~broker_root json =
       let session_id_override =
         request_session_id_override ~broker_root ~tool_name ~params
       in
+      ensure_request_session_bootstrap ~broker_root ?session_id_override ();
       let open Lwt.Syntax in
       let* result =
         Lwt.catch

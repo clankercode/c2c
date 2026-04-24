@@ -1114,6 +1114,100 @@ let test_tools_call_whoami_uses_codex_turn_metadata_to_find_managed_session ()
               in
               check string "whoami alias" alias resolved_alias))
 
+let test_tools_call_whoami_lazy_bootstraps_managed_codex_registration () =
+  with_temp_dir (fun dir ->
+      let instances_dir = Filename.concat dir "instances" in
+      let instance_dir = Filename.concat instances_dir "lyra-quill-x" in
+      let config_path = Filename.concat instance_dir "config.json" in
+      let codex_thread_id = "019dafa6-caef-7e50-bfad-323af643e3ce" in
+      let managed_session_id = "Lyra-Quill-X" in
+      let alias = "lyra-quill" in
+      let config_json =
+        `Assoc
+          [ ("name", `String managed_session_id)
+          ; ("client", `String "codex")
+          ; ("session_id", `String managed_session_id)
+          ; ("resume_session_id", `String codex_thread_id)
+          ; ("codex_resume_target", `String codex_thread_id)
+          ; ("alias", `String alias)
+          ; ("extra_args", `List [])
+          ; ("created_at", `Float 0.)
+          ; ("broker_root", `String dir)
+          ; ("auto_join_rooms", `String "swarm-lounge")
+          ]
+      in
+      let mkdir path =
+        try Unix.mkdir path 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+      in
+      mkdir instances_dir;
+      mkdir instance_dir;
+      let oc = open_out config_path in
+      Fun.protect
+        ~finally:(fun () -> close_out oc)
+        (fun () ->
+          Yojson.Safe.pretty_to_channel oc config_json;
+          output_char oc '\n');
+      Unix.putenv "C2C_MCP_SESSION_ID" "";
+      Unix.putenv "CODEX_THREAD_ID" "";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" alias;
+      Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "swarm-lounge";
+      Unix.putenv "C2C_INSTANCES_DIR" instances_dir;
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "CODEX_THREAD_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+          Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "";
+          Unix.putenv "C2C_INSTANCES_DIR" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 46)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "whoami")
+                    ; ("arguments", `Assoc [])
+                    ; ( "_meta",
+                        `Assoc
+                          [ ( "x-codex-turn-metadata",
+                              `Assoc [ ("session_id", `String codex_thread_id) ] )
+                          ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected tools/call response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              let resolved_alias =
+                match Yojson.Safe.from_string text with
+                | `Assoc fields ->
+                    (match List.assoc_opt "alias" fields with
+                     | Some (`String value) -> value
+                     | _ -> text)
+                | _ -> text
+              in
+              check string "whoami alias" alias resolved_alias;
+              let regs = C2c_mcp.Broker.list_registrations broker in
+              check int "one registration" 1 (List.length regs);
+              let reg = List.hd regs in
+              check string "registered session" managed_session_id reg.session_id;
+              check string "registered alias" alias reg.alias;
+              let room_members =
+                C2c_mcp.Broker.my_rooms broker ~session_id:managed_session_id
+              in
+              check int "auto joined one room" 1 (List.length room_members)))
+
 let test_tools_call_register_uses_codex_turn_metadata_when_env_missing () =
   with_temp_dir (fun dir ->
       let codex_thread_id = "codex-thread-meta-123" in
@@ -5743,6 +5837,8 @@ let () =
              test_tools_call_whoami_uses_codex_thread_id_when_c2c_session_id_missing
          ; test_case "tools/call whoami uses Codex turn metadata to find managed session" `Quick
              test_tools_call_whoami_uses_codex_turn_metadata_to_find_managed_session
+         ; test_case "tools/call whoami lazily bootstraps managed Codex registration" `Quick
+             test_tools_call_whoami_lazy_bootstraps_managed_codex_registration
          ; test_case "tools/call poll_inbox drains messages as tool result" `Quick
              test_tools_call_poll_inbox_drains_messages_as_tool_result
          ; test_case "tools/call poll_inbox empty inbox returns empty json array" `Quick

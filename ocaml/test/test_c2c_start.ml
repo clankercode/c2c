@@ -145,14 +145,14 @@ let test_build_env_keeps_channel_delivery_without_force_flag () =
     (env_has_key env "C2C_MCP_FORCE_CHANNEL_DELIVERY");
   ()
 
-let test_build_env_exports_codex_thread_id () =
+let test_build_env_does_not_seed_codex_thread_id () =
   let env =
     C2c_start.build_env ~broker_root_override:(Some "/tmp/c2c-test-broker")
       ~client:(Some "codex")
       "codex-proof" (Some "codex-proof")
   in
-  check bool "exports CODEX_THREAD_ID" true
-    (env_contains env "CODEX_THREAD_ID=codex-proof");
+  check bool "does not seed CODEX_THREAD_ID" false
+    (env_has_key env "CODEX_THREAD_ID");
   check bool "does not export legacy CODEX_SESSION_ID" false
     (env_has_key env "CODEX_SESSION_ID")
 
@@ -657,8 +657,8 @@ let () =
             `Quick, test_prepare_launch_args_adds_model_flag_for_opencode )
         ; ( "build_env_keeps_channel_delivery_without_force_flag",
             `Quick, test_build_env_keeps_channel_delivery_without_force_flag )
-        ; ( "build_env_exports_codex_thread_id",
-            `Quick, test_build_env_exports_codex_thread_id )
+        ; ( "build_env_does_not_seed_codex_thread_id",
+            `Quick, test_build_env_does_not_seed_codex_thread_id )
         ; ( "probed_capabilities_for_claude_include_channel",
             `Quick, test_probed_capabilities_for_claude_include_channel )
         ; ( "probed_capabilities_for_opencode_include_plugin",
