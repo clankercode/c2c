@@ -911,13 +911,28 @@ let test_tools_call_register_uses_current_session_id_when_omitted () =
 
 let test_session_id_from_env_falls_back_to_codex_thread_id () =
   Unix.putenv "C2C_MCP_SESSION_ID" "";
+  Unix.putenv "CODEX_SESSION_ID" "";
   Unix.putenv "CODEX_THREAD_ID" "codex-thread-123";
   Fun.protect
     ~finally:(fun () ->
       Unix.putenv "C2C_MCP_SESSION_ID" "";
+      Unix.putenv "CODEX_SESSION_ID" "";
       Unix.putenv "CODEX_THREAD_ID" "")
     (fun () ->
       check (option string) "session id from env" (Some "codex-thread-123")
+        (C2c_mcp.session_id_from_env ()))
+
+let test_session_id_from_env_falls_back_to_codex_session_id () =
+  Unix.putenv "C2C_MCP_SESSION_ID" "";
+  Unix.putenv "CODEX_THREAD_ID" "";
+  Unix.putenv "CODEX_SESSION_ID" "codex-managed-123";
+  Fun.protect
+    ~finally:(fun () ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "";
+      Unix.putenv "CODEX_THREAD_ID" "";
+      Unix.putenv "CODEX_SESSION_ID" "")
+    (fun () ->
+      check (option string) "session id from env" (Some "codex-managed-123")
         (C2c_mcp.session_id_from_env ()))
 
 let test_session_id_from_env_uses_client_specific_claude_fallback () =
@@ -946,10 +961,12 @@ let test_tools_call_register_uses_codex_thread_id_when_c2c_session_id_missing ()
     =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "";
+      Unix.putenv "CODEX_SESSION_ID" "";
       Unix.putenv "CODEX_THREAD_ID" "codex-thread-123";
       Fun.protect
         ~finally:(fun () ->
           Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "CODEX_SESSION_ID" "";
           Unix.putenv "CODEX_THREAD_ID" "")
         (fun () ->
           let request =
@@ -975,6 +992,42 @@ let test_tools_call_register_uses_codex_thread_id_when_c2c_session_id_missing ()
           let reg = List.hd regs in
           check string "registered session" "codex-thread-123" reg.session_id;
           check string "registered alias" "storm-codex" reg.alias))
+
+let test_tools_call_register_uses_codex_session_id_when_c2c_session_id_missing ()
+    =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "";
+      Unix.putenv "CODEX_THREAD_ID" "";
+      Unix.putenv "CODEX_SESSION_ID" "codex-managed-123";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "CODEX_THREAD_ID" "";
+          Unix.putenv "CODEX_SESSION_ID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 43)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "register")
+                    ; ("arguments", `Assoc [ ("alias", `String "storm-managed") ])
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          (match response with None -> fail "expected tools/call response" | Some _ -> ());
+          let regs =
+            C2c_mcp.Broker.list_registrations (C2c_mcp.Broker.create ~root:dir)
+          in
+          check int "one registration" 1 (List.length regs);
+          let reg = List.hd regs in
+          check string "registered session" "codex-managed-123" reg.session_id;
+          check string "registered alias" "storm-managed" reg.alias))
 
 let test_tools_call_register_prefers_explicit_client_pid_env () =
   with_temp_dir (fun dir ->
@@ -1572,10 +1625,12 @@ let test_tools_call_whoami_uses_codex_thread_id_when_c2c_session_id_missing ()
     =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "";
+      Unix.putenv "CODEX_SESSION_ID" "";
       Unix.putenv "CODEX_THREAD_ID" "codex-thread-123";
       Fun.protect
         ~finally:(fun () ->
           Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "CODEX_SESSION_ID" "";
           Unix.putenv "CODEX_THREAD_ID" "")
         (fun () ->
           let broker = C2c_mcp.Broker.create ~root:dir in
@@ -5509,12 +5564,16 @@ let () =
               test_tools_call_register_uses_current_session_id_when_omitted
          ; test_case "session_id_from_env falls back to CODEX_THREAD_ID" `Quick
              test_session_id_from_env_falls_back_to_codex_thread_id
+         ; test_case "session_id_from_env falls back to CODEX_SESSION_ID" `Quick
+             test_session_id_from_env_falls_back_to_codex_session_id
          ; test_case "session_id_from_env uses client-specific CLAUDE_SESSION_ID fallback" `Quick
              test_session_id_from_env_uses_client_specific_claude_fallback
          ; test_case "session_id_from_env uses client-specific opencode fallback" `Quick
              test_session_id_from_env_uses_client_specific_opencode_fallback
          ; test_case "tools/call register uses CODEX_THREAD_ID when C2C session id missing" `Quick
              test_tools_call_register_uses_codex_thread_id_when_c2c_session_id_missing
+         ; test_case "tools/call register uses CODEX_SESSION_ID when C2C session id missing" `Quick
+             test_tools_call_register_uses_codex_session_id_when_c2c_session_id_missing
          ; test_case "tools/call register prefers explicit client pid env" `Quick
              test_tools_call_register_prefers_explicit_client_pid_env
          ; test_case "tools/call register no alias falls back to env" `Quick

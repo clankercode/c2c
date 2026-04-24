@@ -9,7 +9,7 @@ let debug_log_path () =
   let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
   let base = Filename.concat home ".local/share/c2c" in
   let sid =
-    match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+    match C2c_mcp.session_id_from_env () with
     | Some s when String.trim s <> "" -> String.trim s
     | _ -> "no-session"
   in
@@ -39,9 +39,7 @@ let broker_root () =
   | _ -> Filename.concat (Filename.get_temp_dir_name ()) "c2c-mcp-broker"
 
 let session_id () =
-  match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
-  | Some value when String.trim value <> "" -> Some value
-  | _ -> None
+  C2c_mcp.session_id_from_env ()
 
 let channel_delivery_enabled () =
   match Sys.getenv_opt "C2C_MCP_CHANNEL_DELIVERY" with

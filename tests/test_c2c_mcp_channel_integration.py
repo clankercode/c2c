@@ -1008,6 +1008,8 @@ class TestDerivedSessionId:
         }
         # Explicitly unset C2C_MCP_SESSION_ID so derived path is exercised.
         env.pop("C2C_MCP_SESSION_ID", None)
+        env.pop("CODEX_SESSION_ID", None)
+        env.pop("CODEX_THREAD_ID", None)
 
         proc = spawn_tracked(
             [str(MCP_SERVER_EXE)],
@@ -1033,6 +1035,50 @@ class TestDerivedSessionId:
             reg = matching[0]
             assert reg["session_id"] == alias, (
                 f"Expected session_id={alias!r} (derived from alias), got {reg['session_id']!r}"
+            )
+        finally:
+            proc.terminate()
+
+    def test_auto_register_prefers_codex_session_id_when_c2c_session_id_absent(
+        self, broker_dir: Path
+    ) -> None:
+        """Managed Codex should recover identity from CODEX_SESSION_ID on server startup."""
+        alias = "codex-no-c2c-sid"
+        codex_session_id = "codex-managed-123"
+        env = {
+            **os.environ,
+            "C2C_MCP_BROKER_ROOT": str(broker_dir),
+            "C2C_MCP_AUTO_REGISTER_ALIAS": alias,
+            "CODEX_SESSION_ID": codex_session_id,
+            "C2C_MCP_CHANNEL_DELIVERY": "0",
+            "C2C_MCP_AUTO_DRAIN_CHANNEL": "0",
+            "C2C_MCP_AUTO_JOIN_ROOMS": "",
+            "C2C_MCP_INBOX_WATCHER_DELAY": "0",
+        }
+        env.pop("C2C_MCP_SESSION_ID", None)
+        env.pop("CODEX_THREAD_ID", None)
+
+        proc = spawn_tracked(
+            [str(MCP_SERVER_EXE)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            text=True,
+            bufsize=1,
+        )
+        try:
+            initialize_server(proc)
+            time.sleep(0.2)
+
+            regs_path = broker_dir / "registry.json"
+            assert regs_path.exists(), "registry.json should exist after auto-register"
+            regs = json.loads(regs_path.read_text())
+            matching = [r for r in regs if r.get("alias") == alias]
+            assert matching, f"No registration with alias={alias!r}: {regs}"
+            reg = matching[0]
+            assert reg["session_id"] == codex_session_id, (
+                f"Expected session_id={codex_session_id!r}, got {reg['session_id']!r}"
             )
         finally:
             proc.terminate()

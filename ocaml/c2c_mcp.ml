@@ -2432,7 +2432,7 @@ let first_nonempty_env keys =
 
 let native_session_id_env_keys = function
   | "claude" -> [ "CLAUDE_SESSION_ID" ]
-  | "codex" -> [ "CODEX_THREAD_ID" ]
+  | "codex" -> [ "CODEX_SESSION_ID"; "CODEX_THREAD_ID" ]
   | "opencode" -> [ "C2C_OPENCODE_SESSION_ID" ]
   | "kimi" | "crush" | "codex-headless" -> []
   | _ -> []
@@ -2441,7 +2441,7 @@ let inferred_client_type_from_env () =
   match first_nonempty_env [ "C2C_MCP_CLIENT_TYPE" ] with
   | Some client_type -> Some client_type
   | None ->
-      if first_nonempty_env [ "CODEX_THREAD_ID" ] <> None then Some "codex"
+      if first_nonempty_env [ "CODEX_SESSION_ID"; "CODEX_THREAD_ID" ] <> None then Some "codex"
       else if first_nonempty_env [ "CLAUDE_SESSION_ID" ] <> None then Some "claude"
       else if first_nonempty_env [ "C2C_OPENCODE_SESSION_ID" ] <> None then Some "opencode"
       else None
