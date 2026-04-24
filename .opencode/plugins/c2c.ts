@@ -157,6 +157,25 @@ export function summarizePermission(perm: Record<string, unknown>): string {
 // Plugin definition
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Pure parsing helpers (also exported for unit testing)
+// ---------------------------------------------------------------------------
+
+/** Extract a structured permission reply from message content, or null. */
+function extractPermissionReply(content: string): { permId: string; decision: string } | null {
+  const m = content.match(/\bpermission:([a-zA-Z0-9_-]+):(approve-once|approve-always|reject)\b/);
+  return m ? { permId: m[1], decision: m[2] } : null;
+}
+
+/** Extract a question reply: `question:<id>:answer:<text>` or `question:<id>:reject`. */
+function extractQuestionReply(content: string): { qId: string; answer: string | null; rejected: boolean } | null {
+  const rejectM = content.match(/\bquestion:([a-zA-Z0-9_-]+):reject\b/);
+  if (rejectM) return { qId: rejectM[1], answer: null, rejected: true };
+  const answerM = content.match(/\bquestion:([a-zA-Z0-9_-]+):answer:(.+)/s);
+  if (answerM) return { qId: answerM[1], answer: answerM[2].trim(), rejected: false };
+  return null;
+}
+
 const C2CDelivery: Plugin = async (ctx) => {
   // If running as the global plugin and a project-level plugin exists in the
   // current directory, defer to it — avoids double-loading when both are active.
@@ -1261,30 +1280,55 @@ const C2CDelivery: Plugin = async (ctx) => {
   }
 
   /** Extract a structured permission reply from message content, or null. */
-  function extractPermissionReply(content: string): { permId: string; decision: string } | null {
-    const m = content.match(/\bpermission:([a-zA-Z0-9_-]+):(approve-once|approve-always|reject)\b/);
-    return m ? { permId: m[1], decision: m[2] } : null;
-  }
-
-  /** Extract a question reply: `question:<id>:answer:<text>` or `question:<id>:reject`. */
-  function extractQuestionReply(content: string): { qId: string; answer: string | null; rejected: boolean } | null {
-    const rejectM = content.match(/\bquestion:([a-zA-Z0-9_-]+):reject\b/);
-    if (rejectM) return { qId: rejectM[1], answer: null, rejected: true };
-    const answerM = content.match(/\bquestion:([a-zA-Z0-9_-]+):answer:(.+)/s);
-    if (answerM) return { qId: answerM[1], answer: answerM[2].trim(), rejected: false };
+  /** Peek at inbox without draining — returns any question reply for qId, or null. */
+  async function peekInboxForQuestion(qId: string): Promise<{answer: string | null; rejected: boolean} | null> {
+    try {
+      const stdout = (await runC2c([
+        "peek-inbox",
+        "--json",
+      ])).trim();
+      const parsed = JSON.parse(stdout);
+      const msgs: Msg[] = Array.isArray(parsed) ? parsed : (parsed as any).messages ?? [];
+      for (const msg of msgs) {
+        const reply = extractQuestionReply(msg.content);
+        if (reply && reply.qId === qId) {
+          return { answer: reply.answer, rejected: reply.rejected };
+        }
+      }
+    } catch {
+      // ignore errors, will fall through to timeout
+    }
     return null;
   }
 
-  /** Await a supervisor question reply; resolves with answer text or null (rejected/timeout). */
+  /** Await a supervisor question reply; resolves with answer text or null (rejected/timeout).
+   *  Polls inbox every 5s during the wait window as a fallback in case the reply arrives
+   *  between delivery ticks (when the normal intercept in deliverMessages would miss it). */
   function waitForQuestionReply(qId: string, timeoutMs: number): Promise<{answer: string | null; rejected: boolean}> {
     return new Promise((resolve) => {
       pendingQuestions.set(qId, resolve);
-      setTimeout(() => {
+      const interval = 5000; // poll every 5s
+      let elapsed = 0;
+      const poll = async () => {
+        if (!pendingQuestions.has(qId)) return; // already resolved
+        const reply = await peekInboxForQuestion(qId);
+        if (reply && pendingQuestions.has(qId)) {
+          pendingQuestions.delete(qId);
+          resolve(reply);
+          return;
+        }
+        elapsed += interval;
+        if (elapsed < timeoutMs) {
+          setTimeout(poll, interval);
+        }
+      };
+      setTimeout(async () => {
         if (pendingQuestions.has(qId)) {
           pendingQuestions.delete(qId);
           resolve({ answer: null, rejected: false }); // timeout → reject with no noise
         }
       }, timeoutMs);
+      setTimeout(poll, interval); // start polling
     });
   }
 
@@ -1912,5 +1956,7 @@ const C2CDelivery: Plugin = async (ctx) => {
 
   };
 };
+
+export { extractQuestionReply, extractPermissionReply };
 
 export default C2CDelivery;

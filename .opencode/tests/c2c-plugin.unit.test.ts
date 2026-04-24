@@ -172,7 +172,7 @@ vi.mock('fs', async (importOriginal) => {
 });
 
 // Import AFTER mocks are registered.
-import C2CDelivery, { summarizePermission } from '../plugins/c2c';
+import C2CDelivery, { summarizePermission, extractQuestionReply } from '../plugins/c2c';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -1043,5 +1043,29 @@ describe('summarizePermission', () => {
 
   it('handles write permission with no patterns', () => {
     expect(summarizePermission({ permission: 'write' })).toBe('file access (unknown path)');
+  });
+});
+
+describe('extractQuestionReply', () => {
+  it('extracts answer from question reply', () => {
+    expect(extractQuestionReply('question:abc123:answer:yes please')).toEqual({
+      qId: 'abc123',
+      answer: 'yes please',
+      rejected: false,
+    });
+  });
+
+  it('extracts rejection', () => {
+    expect(extractQuestionReply('question:xyz789:reject')).toEqual({
+      qId: 'xyz789',
+      answer: null,
+      rejected: true,
+    });
+  });
+
+  it('returns null for non-reply content', () => {
+    expect(extractQuestionReply('hello world')).toBeNull();
+    expect(extractQuestionReply('question:abc123:answer:')).toBeNull();
+    expect(extractQuestionReply('question:')).toBeNull();
   });
 });
