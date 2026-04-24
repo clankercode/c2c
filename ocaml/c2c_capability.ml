@@ -79,5 +79,8 @@ let negotiated_in_initialize ~current request =
         let cap = to_string Claude_channel in
         if List.mem cap current then current else current @ [ cap ]
       else
-        List.filter ((<>) (to_string Claude_channel)) current
+        (* Additive-only: don't strip caps the client didn't advertise.
+           This preserves force-caps set at startup and is safe because
+           clients advertise capabilities at initialize once and don't retract. *)
+        current
   | _ -> current

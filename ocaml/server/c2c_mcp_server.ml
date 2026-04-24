@@ -159,9 +159,9 @@ let start_inbox_watcher ~broker_root ~session_id ~emit_notification
              For non-channel-capable clients (e.g. standard Claude Code), leaving
              messages in the inbox is correct — they will be retrieved via
              poll_inbox or the PostToolUse hook on the next tool call. *)
-          if C2c_capability.has !negotiated_capabilities_ref
-               C2c_capability.Claude_channel then
-            let broker = C2c_mcp.Broker.create ~root:broker_root in
+           if C2c_capability.has !negotiated_capabilities_ref
+                C2c_capability.Claude_channel then
+             let broker = C2c_mcp.Broker.create ~root:broker_root in
             let messages =
               if C2c_mcp.Broker.is_dnd broker ~session_id then []
               else C2c_mcp.Broker.drain_inbox_push broker ~session_id
@@ -187,7 +187,7 @@ let start_inbox_watcher ~broker_root ~session_id ~emit_notification
         in
         loop last_size)
   in
-  loop (stat_size ())
+  loop 0
 
 let emit_notification ~session_id msg =
   debug_log ("emit_notification -> " ^ session_id);
