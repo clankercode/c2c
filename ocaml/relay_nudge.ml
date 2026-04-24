@@ -5,7 +5,7 @@
 open C2c_mcp
 
 let src_log = Logs.Src.create "relay_nudge" ~doc:"idle nudge scheduler"
-module Log = (val Logs.src_log : Logs.LOG)
+module Log = (val Logs.src_log src_log : Logs.LOG)
 
 (* Default cadence knobs *)
 let default_cadence_minutes = 30.0
@@ -15,7 +15,7 @@ let nudge_sender_alias = "c2c-nudge"
 type nudge_message = { text : string }
 
 let load_messages ~broker_root =
-  let path = Filename.concat broker_root "nudge" // "messages.json" in
+  let path = Filename.concat (Filename.concat broker_root "nudge") "messages.json" in
   if not (Sys.file_exists path) then []
   else
     try
@@ -120,7 +120,7 @@ let start_nudge_scheduler ~broker_root ~broker
                  broker_root);
   let rec loop () =
     let open Lwt in
-    Lwt_platform.sleep (cadence_minutes *. 60.0)
+    Lwt_unix.sleep (cadence_minutes *. 60.0)
     >>= fun () ->
     nudge_tick ~broker ~cadence_minutes ~idle_minutes ~messages;
     loop ()
