@@ -927,6 +927,76 @@ let test_tools_call_debug_send_msg_to_self_enqueues_payload () =
             check string "action" "send_msg_to_self" (find_string "action");
             check string "alias" "storm-debug" (find_string "alias")))
 
+let test_tools_call_debug_get_env () =
+  with_temp_dir (fun dir ->
+      if not Build_flags.mcp_debug_tool_enabled then ()
+      else
+        let broker = C2c_mcp.Broker.create ~root:dir in
+        C2c_mcp.Broker.register broker ~session_id:"session-env"
+          ~alias:"env-test" ~pid:None ~pid_start_time:None ();
+        Unix.putenv "C2C_MCP_SESSION_ID" "session-env";
+        Unix.putenv "C2C_TEST_VAR_ONE" "value1";
+        Unix.putenv "C2C_TEST_VAR_TWO" "value2";
+        Unix.putenv "OTHER_VAR" "should_be_ignored";
+        Fun.protect
+          ~finally:(fun () ->
+            Unix.putenv "C2C_MCP_SESSION_ID" "";
+            Unix.putenv "C2C_TEST_VAR_ONE" "";
+            Unix.putenv "C2C_TEST_VAR_TWO" "";
+            Unix.putenv "OTHER_VAR" "")
+          (fun () ->
+            let request =
+              `Assoc
+                [ ("jsonrpc", `String "2.0")
+                ; ("id", `Int 3201)
+                ; ("method", `String "tools/call")
+                ; ( "params",
+                    `Assoc
+                      [ ("name", `String "debug")
+                      ; ( "arguments",
+                          `Assoc [ ("action", `String "get_env") ] )
+                      ] )
+                ]
+            in
+            let response =
+              Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+            in
+            match response with
+            | None -> fail "expected debug get_env response"
+            | Some (`Assoc resp_fields) ->
+                let result_fields =
+                  match List.assoc_opt "result" resp_fields with
+                  | Some (`Assoc f) -> f
+                  | _ -> fail "expected result object in response"
+                in
+                let content_text =
+                  match List.assoc_opt "content" result_fields with
+                  | Some (`List [`Assoc cf]) ->
+                      (match List.assoc_opt "text" cf with
+                       | Some (`String t) -> t
+                       | _ -> fail "expected text field in content object")
+                  | _ -> fail "expected [content] structure in result"
+                in
+                let inner_json = Yojson.Safe.from_string content_text in
+                let inner_fields = match inner_json with `Assoc fields -> fields | _ -> fail "expected object in text" in
+                let find_string key =
+                  match List.assoc_opt key inner_fields with
+                  | Some (`String v) -> v
+                  | _ -> fail ("missing string field: " ^ key)
+                in
+                let find_int key =
+                  match List.assoc_opt key inner_fields with
+                  | Some (`Int v) -> v
+                  | _ -> fail ("missing int field: " ^ key)
+                in
+                check string "action" "get_env" (find_string "action");
+                check string "prefix" "C2C_" (find_string "prefix");
+                let count = find_int "count" in
+                check bool "count >= 2" true (count >= 2);
+                check string "C2C_TEST_VAR_ONE" "value1" (find_string "C2C_TEST_VAR_ONE");
+                check string "C2C_TEST_VAR_TWO" "value2" (find_string "C2C_TEST_VAR_TWO")
+            | Some _ -> fail "expected object response"))
+
 (* MCP ping must return empty result, not -32601. Claude Code sends periodic
    pings; an error response triggers "server unhealthy" and a 3-5min disconnect
    cycle. Regression test for e107929. *)
@@ -5948,9 +6018,11 @@ let () =
          ; test_case "tools/call send binds sender even if own pid is stale" `Quick
              test_tools_call_send_uses_current_alias_even_if_pid_stale
          ; test_case "tools/call send returns receipt JSON" `Quick test_tools_call_send_returns_receipt_json
-         ; test_case "tools/call debug send_msg_to_self enqueues payload" `Quick
-             test_tools_call_debug_send_msg_to_self_enqueues_payload
-         ; test_case "MCP ping returns empty result not -32601 (e107929)" `Quick
+          ; test_case "tools/call debug send_msg_to_self enqueues payload" `Quick
+              test_tools_call_debug_send_msg_to_self_enqueues_payload
+          ; test_case "tools/call debug get_env returns C2C_ vars" `Quick
+              test_tools_call_debug_get_env
+          ; test_case "MCP ping returns empty result not -32601 (e107929)" `Quick
              test_mcp_ping_returns_empty_result
          ; test_case "tools/call register uses current session id when omitted" `Quick
               test_tools_call_register_uses_current_session_id_when_omitted

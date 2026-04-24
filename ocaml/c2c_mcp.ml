@@ -3421,11 +3421,42 @@ let ts = Unix.gettimeofday () in
                |> Yojson.Safe.to_string
              in
              Lwt.return (tool_result ~content:result_json ~is_error:false)
-         | _ ->
-             Lwt.return
-               (tool_result
-                  ~content:(Printf.sprintf "debug: unknown action '%s'" action)
-                  ~is_error:true))
+          | "get_env" ->
+              let prefix =
+                match optional_string_member "prefix" arguments with
+                | Some p -> p
+                | None -> "C2C_"
+              in
+              let env_vars =
+                Array.to_list (Unix.environment ())
+                |> List.filter (fun entry ->
+                  String.length entry > String.length prefix
+                  && String.sub entry 0 (String.length prefix) = prefix)
+                |> List.map (fun entry ->
+                  match String.index_opt entry '=' with
+                  | Some i ->
+                      let key = String.sub entry 0 i in
+                      let value = String.sub entry (i + 1) (String.length entry - i - 1) in
+                      (key, value)
+                  | None -> (entry, ""))
+                |> List.sort (fun (k1,_) (k2,_) -> String.compare k1 k2)
+              in
+              let result_json =
+                `Assoc (
+                  ("ok", `Bool true)
+                  :: ("action", `String "get_env")
+                  :: ("prefix", `String prefix)
+                  :: ("count", `Int (List.length env_vars))
+                  :: (List.map (fun (k,v) -> (k, `String v)) env_vars)
+                )
+                |> Yojson.Safe.to_string
+              in
+              Lwt.return (tool_result ~content:result_json ~is_error:false)
+          | _ ->
+              Lwt.return
+                (tool_result
+                   ~content:(Printf.sprintf "debug: unknown action '%s'" action)
+                   ~is_error:true))
   | "poll_inbox" ->
       let req_sid = optional_string_member "session_id" arguments in
       let caller_sid =
