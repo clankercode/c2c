@@ -75,7 +75,7 @@ Command: `c2c agent run <role-name> [--prompt "..."] [--name <name>] [--timeout 
 
 - Fork-detached watchdog process (existing at c2c.ml:7706-7750)
 - Polls inbox + archive mtime every `min(30s, timeout/4)` seconds
-- Boot grace: 120s (pane) / 60s (background)
+- Boot grace: 60s (both pane and background modes — unified)
 - If no activity for `timeout` seconds: SIGTERM child, exit 0
 - Exits immediately when child exits
 
