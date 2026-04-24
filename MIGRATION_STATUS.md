@@ -141,33 +141,39 @@ deprecated/
 
 ## Still Needed (No OCaml Equivalent)
 
-These scripts provide functionality not yet in OCaml:
+These scripts are in `deprecated/` — some are still imported by `c2c_cli.py` (Python CLI shim),
+some have OCaml equivalents, and some are retained as experimental fallback paths.
 
-- `c2c_start.py` - Managed instance launcher (start/restart delegate here)
-- `c2c_install.py` - Installs wrapper scripts (OCaml install builds binary, not wrappers)
-- `c2c_cli.py` - Python CLI entry (legacy, OCaml `c2c` is primary)
-- `c2c_mcp.py` - Python MCP server (legacy, OCaml `c2c serve` is primary)
-- `c2c_registry.py` - Python registry library (still used by some tools)
-- `c2c_deliver_inbox.py` - Delivery daemon (inotify-based)
-- `c2c_claude_wake_daemon.py` - Claude Code wake daemon
-- `c2c_kimi_wake_daemon.py` - Kimi wake daemon
-- `c2c_kimi_wire_bridge.py` - Kimi Wire bridge
-- `c2c_opencode_wake_daemon.py` - OpenCode wake daemon
-- `c2c_crush_wake_daemon.py` - Crush wake daemon
-- `c2c_pts_inject.py` - PTY injection utility
-- `c2c_inject.py` - Injection utility
-- `c2c_poker.py` - PTY poker
-- `c2c_poker_sweep.py` - Poker sweep
-- `c2c_broker_gc.py` - Standalone broker GC
-- `c2c_sweep_dryrun.py` - Sweep dryrun
-- `c2c_kimi_prefill.py` - Kimi prefill
-- `c2c_relay_connector.py` - Relay connector
-- `c2c_relay_server.py` - Relay server
-- `c2c_relay_contract.py` - Relay contract
-- `c2c_relay_sqlite.py` - Relay SQLite
-- `c2c_room.py` - Room utilities
-- `c2c_wake_peer.py` - Wake peer utility
-- `relay.py`, `c2c_relay.py`, `c2c_auto_relay.py` - Legacy relay scripts
+| Script | Location | Status |
+|--------|----------|--------|
+| `c2c_start.py` | root | 🔄 OCaml `c2c start` is primary; Python still used for some launch paths |
+| `c2c_install.py` | root | 🔄 OCaml `just install-all` is primary; Python for wrapper scripts |
+| `c2c_cli.py` | root | 🔄 Python CLI shim; OCaml `c2c` is primary binary |
+| `c2c_mcp.py` | root | 🔄 Python MCP server; OCaml `c2c serve` is primary |
+| `c2c_registry.py` | root | 🔄 Python registry lib; OCaml has own implementation |
+| `c2c_deliver_inbox.py` | root | 🔄 inotify-based delivery daemon; OCaml `c2c-deliver-inbox` is primary |
+| `c2c_claude_wake_daemon.py` | deprecated/ | 🔄 PTY-based; retained for experimental use |
+| `c2c_kimi_wake_daemon.py` | deprecated/ | 🔄 PTY-based; retained for experimental use |
+| `c2c_kimi_wire_bridge.py` | deprecated/ | 🔄 Wire protocol bridge; OCaml `c2c wire-daemon` is primary |
+| `c2c_opencode_wake_daemon.py` | deprecated/ | 🔄 PTY-based; retained for experimental use |
+| `c2c_crush_wake_daemon.py` | deprecated/ | 🔄 PTY-based; Crush not first-class peer |
+| `c2c_pts_inject.py` | root | 🔄 PTY injection utility; deprecated path |
+| `c2c_inject.py` | deprecated/ | 🔄 Injection utility; root shim routes to deprecated/ |
+| `c2c_poker.py` | root | 🔄 PTY poker; OCaml `c2c poker` is primary |
+| `c2c_poker_sweep.py` | root | 🔄 Poker sweep |
+| `c2c_broker_gc.py` | root | 🔄 Standalone broker GC |
+| `c2c_sweep_dryrun.py` | root | 🔄 Sweep dryrun |
+| `c2c_kimi_prefill.py` | root | 🔄 Kimi prefill |
+| `c2c_relay_connector.py` | root | 🔄 Relay connector |
+| `c2c_relay_server.py` | deprecated/ | 🔄 Relay server; OCaml relay is primary |
+| `c2c_relay_contract.py` | deprecated/ | 🔄 Relay contract |
+| `c2c_relay_sqlite.py` | deprecated/ | 🔄 Root shim routes to deprecated/; OCaml relay uses SQLite directly |
+| `c2c_relay_gc.py` | deprecated/ | 🔄 Root shim routes to deprecated/; OCaml `c2c relay gc` is primary |
+| `c2c_room.py` | root | 🔄 Room utilities |
+| `c2c_wake_peer.py` | root | 🔄 Wake peer utility |
+| `relay.py`, `c2c_relay.py`, `c2c_auto_relay.py` | deprecated/ | 🔄 Legacy relay scripts |
+
+Key: 🔄 = deprecated/root but still imported or used as fallback; ✅ = fully deprecated with OCaml replacement
 
 ## Migration Checklist
 
