@@ -6260,9 +6260,6 @@ let serve_cmd =
     | Some v when String.trim v <> "" -> Some (String.trim v)
     | _ -> None
   in
-  let assoc_opt name json =
-    match json with `Assoc fields -> List.assoc_opt name fields | _ -> None
-  in
   let starts_with_ci ~prefix s =
     let p = String.lowercase_ascii prefix in
     let v = String.lowercase_ascii s in

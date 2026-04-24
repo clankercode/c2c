@@ -80,6 +80,36 @@ let repo_config_git_attribution () : bool =
     in
     loop ()
 
+let repo_config_git_sign () : bool =
+  let path = repo_config_path () in
+  if not (Sys.file_exists path) then true
+  else
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) @@ fun () ->
+    let rec loop () =
+      match try Some (input_line ic) with End_of_file -> None with
+      | None -> true
+      | Some line ->
+        let trimmed = String.trim line in
+        if trimmed = "" || String.length trimmed > 0 && trimmed.[0] = '#' then loop ()
+        else if String.length trimmed >= 8 &&
+                String.sub trimmed 0 8 = "git_sign" &&
+                (String.length trimmed = 8 ||
+                 String.get trimmed 8 = ' ' ||
+                 String.get trimmed 8 = '=') then
+          let rest =
+            let i = try String.index trimmed '=' with Not_found -> 8 in
+            String.trim (String.sub trimmed (i + 1) (String.length trimmed - i - 1))
+          in
+          let v = if String.length rest >= 2 && rest.[0] = '"' && rest.[String.length rest - 1] = '"'
+            then String.sub rest 1 (String.length rest - 2)
+            else rest
+          in
+          v = "true" || v = "1" || v = "yes" || v = "on"
+        else loop ()
+    in
+    loop ()
+
 (* ---------------------------------------------------------------------------
  * pmodel (provider:model) preferences
  *
@@ -903,10 +933,17 @@ let build_env ?(broker_root_override : string option = None)
        clients that don't declare experimental.claude/channel in initialize,
        so harmless where unsupported. *)
     "C2C_MCP_CHANNEL_DELIVERY", "1";
-    (* Pin the c2c binary used by the plugin to the running binary's absolute
-       path so a CWD-relative ./c2c shim can never be accidentally preferred. *)
-    "C2C_CLI_COMMAND", c2c_bin;
     ] in
+    let base =
+      if client = Some "claude" then
+        (* For claude managed sessions, force claude_channel capability so
+           channel-push works without requiring the client to advertise
+           experimental.claude/channel in its initialize request. *)
+        base @ [ "C2C_MCP_FORCE_CAPABILITIES", "claude_channel" ]
+      else
+        base
+    in
+    let base = base @ [ "C2C_CLI_COMMAND", c2c_bin ] in
     let base = base @ client_session_additions in
     if enable_git_shim then
       let shim_bin_dir = instance_dir name // "bin" in
@@ -1585,8 +1622,9 @@ let wire_bridge_script_path ~(broker_root : string) : string option =
 
 let start_deliver_daemon ~(name : string) ~(client : string)
     ~(broker_root : string) ?(child_pid_opt : int option)
+    ?command_override
     ?(xml_output_fd : string option) ?(xml_output_path : string option) () : int option =
-  match deliver_command ~broker_root with
+  match (match command_override with Some cmd -> Some cmd | None -> deliver_command ~broker_root) with
   | None -> None
   | Some (command, prefix_args) ->
       let args =

@@ -48,6 +48,18 @@ let channel_delivery_enabled () =
       not (List.mem normalized [ "0"; "false"; "no"; "off" ])
   | None -> true (* default: ON *)
 
+let force_capabilities_from_env () =
+  match Sys.getenv_opt "C2C_MCP_FORCE_CAPABILITIES" with
+  | None -> []
+  | Some "" -> []
+  | Some value ->
+      value
+      |> String.split_on_char ','
+      |> List.map String.trim
+      |> List.filter ((<>) "")
+      |> List.filter_map C2c_capability.of_string
+      |> List.map C2c_capability.to_string
+
 let auto_drain_channel_enabled () =
   match Sys.getenv_opt "C2C_MCP_AUTO_DRAIN_CHANNEL" with
   | Some value ->
@@ -273,11 +285,15 @@ let () =
   debug_log ("starting pid=" ^ string_of_int (Unix.getpid ()));
   (match session_id () with Some s -> debug_log ("session_id=" ^ s) | None -> debug_log "no session_id");
   debug_log ("channel_delivery=" ^ string_of_bool (channel_delivery_enabled ()));
+  let forced_caps = force_capabilities_from_env () in
+  (match forced_caps with
+   | [] -> ()
+   | caps -> debug_log ("forced_capabilities=" ^ String.concat "," caps));
   let root = broker_root () in
   debug_log ("broker_root=" ^ root);
   C2c_mcp.auto_register_startup ~broker_root:root;
   C2c_mcp.auto_join_rooms_startup ~broker_root:root;
-  let negotiated_capabilities_ref = ref [] in
+  let negotiated_capabilities_ref = ref (force_capabilities_from_env ()) in
   (match (channel_delivery_enabled (), session_id ()) with
    | true, Some sid -> debug_log ("starting inbox watcher for " ^ sid); Lwt.async (fun () ->
          start_inbox_watcher ~broker_root:root ~session_id:sid

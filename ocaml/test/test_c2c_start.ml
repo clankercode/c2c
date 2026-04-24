@@ -137,12 +137,13 @@ let test_prepare_launch_args_adds_model_flag_for_opencode () =
 let test_build_env_keeps_channel_delivery_without_force_flag () =
   let env =
     C2c_start.build_env ~broker_root_override:(Some "/tmp/c2c-test-broker")
+      ~client:(Some "claude")
       "claude-proof" (Some "claude-proof")
   in
   check bool "keeps managed channel delivery opt-in" true
     (env_contains env "C2C_MCP_CHANNEL_DELIVERY=1");
-  check bool "does not export force channel delivery" false
-    (env_has_key env "C2C_MCP_FORCE_CHANNEL_DELIVERY");
+  check bool "exports force capabilities for claude" true
+    (env_contains env "C2C_MCP_FORCE_CAPABILITIES=claude_channel");
   ()
 
 let test_build_env_does_not_seed_codex_thread_id () =
@@ -154,7 +155,85 @@ let test_build_env_does_not_seed_codex_thread_id () =
   check bool "does not seed CODEX_THREAD_ID" false
     (env_has_key env "CODEX_THREAD_ID");
   check bool "does not export legacy CODEX_SESSION_ID" false
-    (env_has_key env "CODEX_SESSION_ID")
+    (env_has_key env "CODEX_SESSION_ID");
+  check bool "does not export force capabilities for non-claude" false
+    (env_has_key env "C2C_MCP_FORCE_CAPABILITIES")
+
+let test_start_deliver_daemon_detaches_from_terminal_stdio_and_group () =
+  with_temp_dir @@ fun dir ->
+  let bin_dir = Filename.concat dir "bin" in
+  Unix.mkdir bin_dir 0o755;
+  let output_path = Filename.concat dir "deliver-daemon-state.txt" in
+  let script_path = Filename.concat bin_dir "c2c-deliver-inbox" in
+  let oc = open_out script_path in
+  Fun.protect
+    ~finally:(fun () -> close_out oc)
+    (fun () ->
+      output_string oc
+        (Printf.sprintf "%s"
+           (String.concat ""
+              [ "#!/usr/bin/env python3\n"
+              ; "import os\n"
+              ; "import time\n"
+              ; Printf.sprintf "with open(%S, 'w', encoding='utf-8') as f:\n" output_path
+              ; "    f.write('stdin=' + os.readlink('/proc/self/fd/0') + '\\n')\n"
+              ; "    f.write('stdout=' + os.readlink('/proc/self/fd/1') + '\\n')\n"
+              ; "    f.write('stderr=' + os.readlink('/proc/self/fd/2') + '\\n')\n"
+              ; "    f.write('pid=' + str(os.getpid()) + '\\n')\n"
+              ; "    f.write('pgid=' + str(os.getpgrp()) + '\\n')\n"
+              ; "time.sleep(30)\n"
+              ])));
+  Unix.chmod script_path 0o755;
+  let pid_opt =
+    C2c_start.start_deliver_daemon ~name:"deliver-proof" ~client:"codex"
+      ~broker_root:dir ~command_override:(script_path, []) ()
+  in
+  match pid_opt with
+  | None -> fail "expected deliver daemon pid"
+  | Some pid ->
+      let rec wait_for_output attempts_remaining =
+        if attempts_remaining <= 0 then fail "deliver daemon never wrote state"
+        else if Sys.file_exists output_path then ()
+        else (
+          Unix.sleepf 0.1;
+          wait_for_output (attempts_remaining - 1)
+        )
+      in
+      wait_for_output 50;
+      let ic = open_in output_path in
+      let lines =
+        Fun.protect
+          ~finally:(fun () -> close_in ic)
+          (fun () ->
+            let rec collect acc =
+              try collect (input_line ic :: acc)
+              with End_of_file -> List.rev acc
+            in
+            collect [])
+      in
+      let assoc =
+        List.filter_map
+          (fun line ->
+            match String.split_on_char '=' line with
+            | [ key; value ] -> Some (key, value)
+            | _ -> None)
+          lines
+      in
+      let find key =
+        match List.assoc_opt key assoc with
+        | Some value -> value
+        | None -> fail ("missing key in sidecar state: " ^ key)
+      in
+      check string "stdin" "/dev/null" (find "stdin");
+      check bool "stdout is not controlling tty"
+        false
+        (String.starts_with ~prefix:"/dev/pts/" (find "stdout"));
+      check bool "stderr is not controlling tty"
+        false
+        (String.starts_with ~prefix:"/dev/pts/" (find "stderr"));
+      (try Unix.kill pid Sys.sigterm with _ -> ());
+      Unix.sleepf 0.1;
+      (try Unix.kill pid Sys.sigkill with _ -> ())
 
 let test_probed_capabilities_for_claude_include_channel () =
   let caps =
@@ -693,6 +772,8 @@ let () =
             `Quick, test_build_env_keeps_channel_delivery_without_force_flag )
         ; ( "build_env_does_not_seed_codex_thread_id",
             `Quick, test_build_env_does_not_seed_codex_thread_id )
+        ; ( "start_deliver_daemon_detaches_from_terminal_stdio_and_group",
+            `Quick, test_start_deliver_daemon_detaches_from_terminal_stdio_and_group )
         ; ( "probed_capabilities_for_claude_include_channel",
             `Quick, test_probed_capabilities_for_claude_include_channel )
         ; ( "probed_capabilities_for_opencode_include_plugin",
@@ -749,4 +830,3 @@ let () =
         [ ("body_stripped_of_frontmatter", `Quick,
            test_body_stripped_of_frontmatter) ] )
     ]
-
