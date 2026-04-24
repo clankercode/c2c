@@ -1086,6 +1086,64 @@ class TestDerivedSessionId:
             proc.terminate()
             proc.wait(timeout=5)
 
+
+class TestDebugTool:
+    def test_debug_send_msg_to_self_enqueues_payload(self, broker_dir: Path) -> None:
+        env = {
+            **os.environ,
+            "C2C_MCP_BROKER_ROOT": str(broker_dir),
+            "C2C_MCP_SESSION_ID": "debug-session",
+            "C2C_MCP_AUTO_REGISTER_ALIAS": "debug-agent",
+            "C2C_MCP_CHANNEL_DELIVERY": "0",
+            "C2C_MCP_AUTO_DRAIN_CHANNEL": "0",
+            "C2C_MCP_AUTO_JOIN_ROOMS": "",
+            "C2C_MCP_INBOX_WATCHER_DELAY": "0",
+        }
+        proc = spawn_tracked(
+            [str(MCP_SERVER_EXE)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            text=True,
+            bufsize=1,
+        )
+        try:
+            initialize_server(proc)
+            req = {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "tools/call",
+                "params": {
+                    "name": "debug",
+                    "arguments": {
+                        "action": "send_msg_to_self",
+                        "payload": {"probe": "codex-delivery"},
+                    },
+                },
+            }
+            send_jsonrpc(proc, req)
+            response = read_jsonrpc(proc)
+            result_text = response["result"]["content"][0]["text"]
+            result = json.loads(result_text)
+            assert result["ok"] is True
+            assert result["action"] == "send_msg_to_self"
+            assert result["alias"] == "debug-agent"
+
+            inbox_path = broker_dir / "debug-session.inbox.json"
+            inbox = json.loads(inbox_path.read_text())
+            assert len(inbox) == 1
+            msg = inbox[0]
+            assert msg["from_alias"] == "debug-agent"
+            assert msg["to_alias"] == "debug-agent"
+            content = json.loads(msg["content"])
+            assert content["kind"] == "c2c_debug"
+            assert content["action"] == "send_msg_to_self"
+            assert content["payload"] == {"probe": "codex-delivery"}
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
     def test_codex_turn_metadata_maps_to_managed_session_id(
         self, broker_dir: Path, tmp_path: Path
     ) -> None:

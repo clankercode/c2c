@@ -568,6 +568,29 @@ let test_tools_list_includes_register_list_send_and_whoami () =
             (fun expected -> check bool expected true (List.mem expected names))
             [ "register"; "list"; "send"; "whoami"; "poll_inbox" ])
 
+let test_tools_list_includes_debug_when_build_flag_enabled () =
+  with_temp_dir (fun dir ->
+      let request =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 2002)
+          ; ("method", `String "tools/list")
+          ; ("params", `Assoc [])
+          ]
+      in
+      let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+      match response with
+      | None -> fail "expected tools/list response"
+      | Some json ->
+          let open Yojson.Safe.Util in
+          let names =
+            json |> member "result" |> member "tools" |> to_list
+            |> List.map (fun item -> item |> member "name" |> to_string)
+          in
+          check bool "debug tool matches build flag"
+            Build_flags.mcp_debug_tool_enabled
+            (List.mem "debug" names))
+
 let test_tools_list_marks_register_and_whoami_session_id_as_optional () =
   with_temp_dir (fun dir ->
       let request =
@@ -853,6 +876,56 @@ let test_tools_call_send_returns_receipt_json () =
             (receipt |> member "to_alias" |> to_string);
           let ts = receipt |> member "ts" |> to_float in
           check bool "ts is positive" true (ts > 0.0))
+
+let test_tools_call_debug_send_msg_to_self_enqueues_payload () =
+  with_temp_dir (fun dir ->
+      if not Build_flags.mcp_debug_tool_enabled then ()
+      else
+        let broker = C2c_mcp.Broker.create ~root:dir in
+        C2c_mcp.Broker.register broker ~session_id:"session-debug"
+          ~alias:"storm-debug" ~pid:None ~pid_start_time:None ();
+        Unix.putenv "C2C_MCP_SESSION_ID" "session-debug";
+        Fun.protect
+          ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+          (fun () ->
+            let request =
+              `Assoc
+                [ ("jsonrpc", `String "2.0")
+                ; ("id", `Int 3200)
+                ; ("method", `String "tools/call")
+                ; ( "params",
+                    `Assoc
+                      [ ("name", `String "debug")
+                      ; ( "arguments",
+                          `Assoc
+                            [ ("action", `String "send_msg_to_self")
+                            ; ("payload", `Assoc [ ("probe", `String "codex-delivery") ])
+                            ] )
+                      ] )
+                ]
+            in
+            let response =
+              Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+            in
+            (match response with None -> fail "expected debug response" | Some _ -> ());
+            let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-debug" in
+            check int "one inbox message" 1 (List.length inbox);
+            let msg = List.hd inbox in
+            check string "from alias" "storm-debug" msg.from_alias;
+            check string "to alias" "storm-debug" msg.to_alias;
+            let payload =
+              match Yojson.Safe.from_string msg.content with
+              | `Assoc fields -> fields
+              | _ -> fail "expected debug payload json"
+            in
+            let find_string key =
+              match List.assoc_opt key payload with
+              | Some (`String value) -> value
+              | _ -> fail ("missing string field: " ^ key)
+            in
+            check string "kind" "c2c_debug" (find_string "kind");
+            check string "action" "send_msg_to_self" (find_string "action");
+            check string "alias" "storm-debug" (find_string "alias")))
 
 (* MCP ping must return empty result, not -32601. Claude Code sends periodic
    pings; an error response triggers "server unhealthy" and a 3-5min disconnect
@@ -5765,6 +5838,8 @@ let () =
          ; test_case "initialize reports supported protocol version" `Quick
              test_initialize_reports_supported_protocol_version
          ; test_case "tools/list exposes core tools" `Quick test_tools_list_includes_register_list_send_and_whoami
+         ; test_case "tools/list includes debug when build flag enabled" `Quick
+             test_tools_list_includes_debug_when_build_flag_enabled
          ; test_case "tools/list makes current-session args optional" `Quick
              test_tools_list_marks_register_and_whoami_session_id_as_optional
          ; test_case "tools/call send routes through broker" `Quick test_tools_call_send_routes_message_through_broker
@@ -5777,6 +5852,8 @@ let () =
          ; test_case "tools/call send binds sender even if own pid is stale" `Quick
              test_tools_call_send_uses_current_alias_even_if_pid_stale
          ; test_case "tools/call send returns receipt JSON" `Quick test_tools_call_send_returns_receipt_json
+         ; test_case "tools/call debug send_msg_to_self enqueues payload" `Quick
+             test_tools_call_debug_send_msg_to_self_enqueues_payload
          ; test_case "MCP ping returns empty result not -32601 (e107929)" `Quick
              test_mcp_ping_returns_empty_result
          ; test_case "tools/call register uses current session id when omitted" `Quick

@@ -131,6 +131,7 @@ let server_features =
   ; "provisional_registration"
   ; "client_type"
   ]
+  @ if Build_flags.mcp_debug_tool_enabled then [ "mcp_debug_tool" ] else []
 
 let server_info =
   `Assoc
@@ -2221,7 +2222,16 @@ let room_info_json (r : Broker.room_info) =
     ; ("invited_members", `List (List.map (fun a -> `String a) r.ri_invited_members))
     ]
 
-let tool_definitions =
+let debug_tool_definition =
+  tool_definition ~name:"debug"
+    ~description:"Dev-build-only debug surface for controlled broker diagnostics. `action` selects the operation; unknown actions are rejected. `send_msg_to_self` enqueues a broker message from the current alias to itself and optionally embeds `payload`."
+    ~required:["action"]
+    ~properties:
+      [ prop "action" "Debug action name."
+      ; ("payload", `Assoc [ ("type", `String "object"); ("description", `String "Optional arbitrary JSON payload for the debug action.") ])
+      ]
+
+let base_tool_definitions =
   [ tool_definition ~name:"register"
       ~description:"Register a C2C alias for the current session. `alias` is optional: if omitted the server falls back to the C2C_MCP_AUTO_REGISTER_ALIAS environment variable. Calling register with no arguments is a safe way to refresh your registration (e.g. after a process restart that changed your PID)."
       ~required:[]
@@ -2355,6 +2365,11 @@ let tool_definitions =
         [ prop "reason" "Optional short reason logged in the stop report (e.g. 'task complete')." ]
   ]
 
+let tool_definitions =
+  if Build_flags.mcp_debug_tool_enabled
+  then base_tool_definitions @ [ debug_tool_definition ]
+  else base_tool_definitions
+
 let string_member name json =
   let open Yojson.Safe.Util in
   match json |> member name with
@@ -2416,6 +2431,14 @@ let optional_string_member name json =
     | value ->
         let text = to_string value in
         if String.trim text = "" then None else Some text
+  with _ -> None
+
+let optional_member name json =
+  let open Yojson.Safe.Util in
+  try
+    match json |> member name with
+    | `Null -> None
+    | value -> Some value
   with _ -> None
 
 let first_nonempty_env keys =
@@ -3308,6 +3331,58 @@ let ts = Unix.gettimeofday () in
              | None -> reg.alias)
       in
       Lwt.return (tool_result ~content ~is_error:false)
+  | "debug" ->
+      let action = string_member "action" arguments in
+      if not Build_flags.mcp_debug_tool_enabled then
+        Lwt.return (tool_result ~content:"unknown tool" ~is_error:true)
+      else
+        (match action with
+         | "send_msg_to_self" ->
+             let session_id = resolve_session_id ?session_id_override arguments in
+             let sender_alias =
+               match current_registered_alias ?session_id_override broker with
+               | Some alias -> alias
+               | None ->
+                   (match auto_register_alias () with
+                    | Some alias -> alias
+                    | None ->
+                        raise
+                          (Invalid_argument
+                             "debug.send_msg_to_self: current session is not registered"))
+             in
+             let payload_json =
+               optional_member "payload" arguments |> Option.value ~default:`Null
+             in
+             let content =
+               `Assoc
+                 [ ("kind", `String "c2c_debug")
+                 ; ("action", `String action)
+                 ; ("payload", payload_json)
+                 ; ("ts", `Float (Unix.gettimeofday ()))
+                 ; ("session_id", `String session_id)
+                 ; ("alias", `String sender_alias)
+                 ]
+               |> Yojson.Safe.to_string
+             in
+             Broker.enqueue_message broker ~from_alias:sender_alias
+               ~to_alias:sender_alias ~content ();
+             let result_json =
+               `Assoc
+                 [ ("ok", `Bool true)
+                 ; ("action", `String action)
+                 ; ("session_id", `String session_id)
+                 ; ("alias", `String sender_alias)
+                 ; ("delivered_to", `String sender_alias)
+                 ; ("content_preview", `String content)
+                 ]
+               |> Yojson.Safe.to_string
+             in
+             Lwt.return (tool_result ~content:result_json ~is_error:false)
+         | _ ->
+             Lwt.return
+               (tool_result
+                  ~content:(Printf.sprintf "debug: unknown action '%s'" action)
+                  ~is_error:true))
   | "poll_inbox" ->
       let req_sid = optional_string_member "session_id" arguments in
       let caller_sid =
