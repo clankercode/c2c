@@ -18,7 +18,9 @@ let artifact_path ~sha ~alias =
 let resolve_current_alias () =
   match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
   | Some alias when alias <> "" -> alias
-  | _ -> "unknown"
+  | _ ->
+      Printf.eprintf "error: C2C_MCP_AUTO_REGISTER_ALIAS is not set — cannot sign peer-PASS artifact without a known identity.\n%!";
+      exit 1
 
 let resolve_identity () =
   match Relay_identity.load () with
