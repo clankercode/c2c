@@ -186,6 +186,45 @@ let test_build_env_does_not_seed_codex_thread_id () =
   check bool "does not export force capabilities for non-claude" false
     (env_has_key env "C2C_MCP_FORCE_CAPABILITIES")
 
+let test_codex_heartbeat_interval_is_four_minutes () =
+  check (float 0.001) "interval seconds" 240.0
+    C2c_start.codex_heartbeat_interval_s
+
+let test_codex_heartbeat_enabled_for_codex_family_only () =
+  check bool "codex enabled" true
+    (C2c_start.codex_heartbeat_enabled ~client:"codex");
+  check bool "codex-headless enabled" true
+    (C2c_start.codex_heartbeat_enabled ~client:"codex-headless");
+  check bool "claude disabled" false
+    (C2c_start.codex_heartbeat_enabled ~client:"claude");
+  check bool "opencode disabled" false
+    (C2c_start.codex_heartbeat_enabled ~client:"opencode");
+  check bool "kimi disabled" false
+    (C2c_start.codex_heartbeat_enabled ~client:"kimi")
+
+let test_enqueue_codex_heartbeat_uses_broker_inbox_transport () =
+  with_temp_dir @@ fun dir ->
+  let broker = C2c_mcp.Broker.create ~root:dir in
+  let pid = Unix.getpid () in
+  C2c_mcp.Broker.register broker ~session_id:"codex-heartbeat-session"
+    ~alias:"codex-heartbeat-alias" ~pid:(Some pid)
+    ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time pid)
+    ~client_type:(Some "codex") ();
+  C2c_start.enqueue_codex_heartbeat ~broker_root:dir
+    ~alias:"codex-heartbeat-alias";
+  match
+    C2c_mcp.Broker.read_inbox broker ~session_id:"codex-heartbeat-session"
+  with
+  | [ msg ] ->
+      check string "from alias" "codex-heartbeat-alias" msg.from_alias;
+      check string "to alias" "codex-heartbeat-alias" msg.to_alias;
+      check string "content" C2c_start.codex_heartbeat_content msg.content;
+      check bool "not deferrable" false msg.deferrable
+  | msgs ->
+      fail
+        (Printf.sprintf "expected exactly one heartbeat message, got %d"
+           (List.length msgs))
+
 let test_start_deliver_daemon_detaches_from_terminal_stdio_and_group () =
   with_temp_dir @@ fun dir ->
   let bin_dir = Filename.concat dir "bin" in
@@ -791,6 +830,12 @@ let () =
             `Quick, test_build_env_keeps_channel_delivery_without_force_flag )
         ; ( "build_env_does_not_seed_codex_thread_id",
             `Quick, test_build_env_does_not_seed_codex_thread_id )
+        ; ( "codex_heartbeat_interval_is_four_minutes",
+            `Quick, test_codex_heartbeat_interval_is_four_minutes )
+        ; ( "codex_heartbeat_enabled_for_codex_family_only",
+            `Quick, test_codex_heartbeat_enabled_for_codex_family_only )
+        ; ( "enqueue_codex_heartbeat_uses_broker_inbox_transport",
+            `Quick, test_enqueue_codex_heartbeat_uses_broker_inbox_transport )
         ; ( "finalize_outer_loop_exit_cleans_before_print",
             `Quick, test_finalize_outer_loop_exit_cleans_before_print )
         ; ( "start_deliver_daemon_detaches_from_terminal_stdio_and_group",

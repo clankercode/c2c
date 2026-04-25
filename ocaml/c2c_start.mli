@@ -303,6 +303,19 @@ val start_poker :
 (** [start_poker ~name ~client ~broker_root ?child_pid_opt ()] spawns c2c_poker.py
     for clients that need it (needs_poker = true) and returns its PID, or [None]. *)
 
+val codex_heartbeat_interval_s : float
+(** Interval, in seconds, between managed Codex heartbeat messages. *)
+
+val codex_heartbeat_content : string
+(** Message body delivered to managed Codex agents as a heartbeat. *)
+
+val codex_heartbeat_enabled : client:string -> bool
+(** Return whether [client] should receive managed Codex heartbeat messages. *)
+
+val enqueue_codex_heartbeat : broker_root:string -> alias:string -> unit
+(** Enqueue one heartbeat message to [alias] through the broker inbox, using the
+    same delivery path as regular inbound messages. *)
+
 (** {1 Outer loop} *)
 
 val run_outer_loop :

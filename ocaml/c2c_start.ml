@@ -91,7 +91,7 @@ let start_title_ticker ~(broker_root : string) ~(session_id : string)
       set_terminal_title ~alias ~client ~glyph;
       loop ()
     in
-    loop ()))
+    loop ()) ())
 
 (* Codex heartbeat — broker-mail-based heartbeat for codex sessions.
    Sends a heartbeat message to the session's own inbox every [interval_s] seconds.
@@ -99,19 +99,28 @@ let start_title_ticker ~(broker_root : string) ~(session_id : string)
    picks up the message on its next poll and delivers it to codex.
    Unlike the PTY poker (which injects directly into the TTY), this uses
    the broker inbox like regular mail — more reliable for headless/codex sessions. *)
-let start_codex_heartbeat ~(broker_root : string) ~(session_id : string)
-    ~(alias : string) ~(interval_s : float) : unit =
+let codex_heartbeat_interval_s = 240.0
+
+let codex_heartbeat_content =
+  "Session heartbeat. Poll your C2C inbox and handle any messages."
+
+let codex_heartbeat_enabled ~(client : string) : bool =
+  client = "codex" || client = "codex-headless"
+
+let enqueue_codex_heartbeat ~(broker_root : string) ~(alias : string) : unit =
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  C2c_mcp.Broker.enqueue_message broker ~from_alias:alias ~to_alias:alias
+    ~content:codex_heartbeat_content ()
+
+let start_codex_heartbeat ~(broker_root : string) ~(alias : string)
+    ~(interval_s : float) : unit =
   ignore (Thread.create (fun () ->
     let rec loop () =
       Unix.sleepf interval_s;
-      (try
-        let broker = C2c_mcp.Broker.create ~root:broker_root in
-        let content = "Session heartbeat. Poll your C2C inbox and handle any messages." in
-        C2c_mcp.Broker.enqueue_message broker ~from_alias:alias ~to_alias:alias ~content ()
-      with _ -> ());
+      (try enqueue_codex_heartbeat ~broker_root ~alias with _ -> ());
       loop ()
     in
-    loop ()))
+    loop ()) ())
 
 (* setpgid(2) binding — OCaml 5.x's Unix module omits this call.
    Implementation in ocaml/cli/c2c_posix_stubs.c. *)
@@ -2701,9 +2710,9 @@ let run_outer_loop ~(name : string) ~(client : string)
           (* Start codex heartbeat — broker-mail-based heartbeat every 4 minutes.
              Codex has no PTY poker, so without this the session can go stale.
              Uses Broker.enqueue_message (like mail) so the deliver daemon picks it up. *)
-          (if client = "codex" then
-             start_codex_heartbeat ~broker_root ~session_id:name
-               ~alias:effective_alias ~interval_s:240.0);
+          (if codex_heartbeat_enabled ~client then
+             start_codex_heartbeat ~broker_root ~alias:effective_alias
+               ~interval_s:codex_heartbeat_interval_s);
           pid
         with Unix.Unix_error (Unix.EINTR, _, _) -> 0
       in
