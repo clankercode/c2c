@@ -763,7 +763,9 @@ let repo_config_pmodel_lookup (use_case : string) : pmodel option =
    that lacks features needed for xml-fd delivery).
    Example .c2c/config.toml entry:
      [default_binary]
-     codex = "/home/user/.local/bin/codex"   # alpha build with --xml-input-fd
+     codex = "/home/user/.local/bin/codex"
+   Note: inline comments (# ...) after values are not supported; put comments
+   on their own lines above the key.
 *)
 let repo_config_default_binary (client : string) : string option =
   let path = repo_config_path () in

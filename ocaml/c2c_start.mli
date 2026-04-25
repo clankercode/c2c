@@ -152,6 +152,13 @@ val repo_config_pmodel_lookup : string -> pmodel option
 (** [repo_config_pmodel_lookup class_key] looks up a class (e.g. "coder",
     "coordinator") in the repo pmodel table. Returns [None] if absent. *)
 
+val repo_config_default_binary : string -> string option
+(** [repo_config_default_binary client] looks up a per-client binary override
+    in the [default_binary] table of .c2c/config.toml (e.g. "codex" key when
+    client = "codex"). Returns [None] when the table or key is absent. Values
+    must be quoted strings; inline comments after values are not supported. *)
+
+
 val repo_config_git_attribution : unit -> bool
 (** [repo_config_git_attribution ()] reads git_attribution from .c2c/config.toml.
     Returns [true] if absent (default on). When true, `c2c git` injects

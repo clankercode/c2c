@@ -1073,6 +1073,52 @@ let test_repo_config_pmodel_reads_table () =
    | Some _ -> fail "unset role should not resolve"
    | None -> ())
 
+let test_repo_config_default_binary_reads_table () =
+  with_temp_dir @@ fun dir ->
+  let c2c_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let config_path = Filename.concat c2c_dir "config.toml" in
+  let oc = open_out config_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc
+      "[pmodel]\n\
+       default = \"anthropic:claude-opus-4-7\"\n\
+       \n\
+       [default_binary]\n\
+       codex = \"/usr/local/bin/my-codex\"\n\
+       kimi  = \"/opt/kimi/kimi\"\n");
+  with_cwd dir @@ fun () ->
+  (match C2c_start.repo_config_default_binary "codex" with
+   | Some p -> check string "codex binary" "/usr/local/bin/my-codex" p
+   | None -> fail "codex entry missing");
+  (match C2c_start.repo_config_default_binary "kimi" with
+   | Some p -> check string "kimi binary" "/opt/kimi/kimi" p
+   | None -> fail "kimi entry missing");
+  (match C2c_start.repo_config_default_binary "claude" with
+   | Some _ -> fail "claude should not resolve (not in table)"
+   | None -> ())
+
+let test_repo_config_default_binary_missing_table () =
+  with_temp_dir @@ fun dir ->
+  let c2c_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let config_path = Filename.concat c2c_dir "config.toml" in
+  let oc = open_out config_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc "[pmodel]\ndefault = \"anthropic:claude-opus-4-7\"\n");
+  with_cwd dir @@ fun () ->
+  (match C2c_start.repo_config_default_binary "codex" with
+   | Some _ -> fail "should return None when table absent"
+   | None -> ())
+
+let test_repo_config_default_binary_no_config_file () =
+  with_temp_dir @@ fun dir ->
+  (* No .c2c/config.toml at all *)
+  with_cwd dir @@ fun () ->
+  (match C2c_start.repo_config_default_binary "codex" with
+   | Some _ -> fail "should return None when config file absent"
+   | None -> ())
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_start"
@@ -1186,5 +1232,11 @@ let () =
             test_likes_shell_substitution_detects_parens_and_backticks )
         ; ("repo_config_pmodel_reads_table", `Quick,
            test_repo_config_pmodel_reads_table)
+        ; ("repo_config_default_binary_reads_table", `Quick,
+           test_repo_config_default_binary_reads_table)
+        ; ("repo_config_default_binary_missing_table", `Quick,
+           test_repo_config_default_binary_missing_table)
+        ; ("repo_config_default_binary_no_config_file", `Quick,
+           test_repo_config_default_binary_no_config_file)
         ] )
     ]
