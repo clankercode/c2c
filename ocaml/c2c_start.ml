@@ -3214,6 +3214,9 @@ let build_start_argv ~(cfg : instance_config) : string array =
   (match cfg.agent_name with
    | Some n -> argv := !argv @ [ "--agent"; n ]
    | None -> ());
+  (* --auto-join-rooms — only if non-default *)
+  if cfg.auto_join_rooms <> "swarm-lounge" then
+    argv := !argv @ [ "--auto-join"; cfg.auto_join_rooms ];
   (* extra_args — preserve any non-standard flags *)
   argv := !argv @ cfg.extra_args;
   Array.of_list !argv
@@ -3237,16 +3240,20 @@ let cmd_restart ?(session_id_override : string option) (name : string) ~(timeout
          | _ -> cfg
        in
        write_config updated);
-  (* Kill inner — SIGTERM propagates to whole process group via kill(-pid, SIGTERM)
-     for TUI clients; codex-headless gets a single-pid SIGTERM. *)
+  (* Kill inner — SIGTERM to whole process group for TUI clients (inner ran with
+     setpgid 0 0 so PGID == inner PID; kill(-pid) kills the whole group).
+     codex-headless stays in outer's PGID so use positive kill(pid). *)
   let inner_pid = read_pid (inner_pid_path name) in
   let outer_pid = read_pid (outer_pid_path name) in
   (match inner_pid with
    | Some pid when pid_alive pid ->
-       Printf.printf "[c2c restart] signalling inner pid %d for '%s'\n%!" pid name;
-       (try Unix.kill pid Sys.sigterm
+       let target_pid = if cfg.client = "codex-headless" then pid else -pid in
+       Printf.printf "[c2c restart] signalling inner pid %d (pgid=%s) for '%s'\n%!"
+         pid (if target_pid = pid then "self" else "group") name;
+       (try Unix.kill target_pid Sys.sigterm
         with Unix.Unix_error (e, _, _) ->
-          Printf.eprintf "warning: kill inner %d failed: %s\n%!" pid (Unix.error_message e))
+          Printf.eprintf "warning: kill %s %d failed: %s\n%!"
+            (if target_pid = pid then "inner" else "inner-group") pid (Unix.error_message e))
    | _ ->
        Printf.printf "[c2c restart] no live inner for '%s'\n%!" name);
   (* Wait for outer to exit so we don't have two instances racing on the lock.
