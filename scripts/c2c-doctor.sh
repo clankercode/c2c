@@ -348,6 +348,23 @@ if [[ $SUMMARY -eq 0 && $JSON -eq 0 && -x "$SCRIPT_DIR/c2c-dup-scanner.py" ]]; t
 fi
 
 # ---------------------------------------------------------------------------
+# Worktree base staleness
+# ---------------------------------------------------------------------------
+WORKTREE_BASE_OUTPUT=""
+if [[ $JSON -eq 0 ]]; then
+  WT_CLI="${C2C_CLI:-c2c}"
+  if [[ -x "$WT_CLI" ]] || command -v c2c &>/dev/null; then
+    WORKTREE_BASE_OUTPUT=$("$WT_CLI" worktree check-bases 2>&1 || true)
+    if [[ -n "$WORKTREE_BASE_OUTPUT" ]]; then
+      bold "=== worktree base drift ==="
+      echo ""
+      echo "$WORKTREE_BASE_OUTPUT"
+      echo ""
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 3. Verdict
 # ---------------------------------------------------------------------------
 

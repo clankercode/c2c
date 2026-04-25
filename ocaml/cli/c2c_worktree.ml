@@ -12,8 +12,8 @@ let rec mkdir_p dir =
     try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
   end
 
-(** [git_command ?cwd ?(quiet=false) ?git_path args] runs `git <args>` in [cwd]
-    (default: current dir) and returns (exit_code, stdout, stderr).
+(** [git_command ?cwd ?(quiet=false) args] runs `git <args>` in [cwd] (default: current dir)
+    and returns (exit_code, stdout, stderr).
     Uses `sh -c` to change directory and optionally suppress stderr.
     [git_path] defaults to Git_helpers.find_real_git (). *)
 let git_command ?(cwd=".") ?(quiet=false) ?(git_path=None) args =
