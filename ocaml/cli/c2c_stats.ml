@@ -5,6 +5,7 @@ type agent_stats =
   ; session_id : string
   ; live : bool
   ; registered_at : float option
+  ; last_activity : float option
   ; role : string option
   ; msgs_sent : int
   ; msgs_received : int
@@ -131,6 +132,7 @@ let run ~root ~json ~alias_filter ~since_str =
                  ; session_id = reg.session_id
                  ; live
                  ; registered_at = reg.registered_at
+                 ; last_activity = reg.last_activity_ts
                  ; role = reg.role
                  ; msgs_sent
                  ; msgs_received
@@ -160,6 +162,10 @@ let run ~root ~json ~alias_filter ~since_str =
                   match s.registered_at with
                   | Some ts -> `Float ts
                   | None -> `Null)
+               ; ("last_activity_ts",
+                  match s.last_activity with
+                  | Some ts -> `Float ts
+                  | None -> `Null)
                ; ("role",
                   match s.role with
                   | Some r -> `String r
@@ -181,8 +187,8 @@ let run ~root ~json ~alias_filter ~since_str =
       | Some s -> "last " ^ s
     in
     Printf.printf "## Swarm stats — %s UTC (window: %s)\n\n" now_str window_str;
-    Printf.printf "| alias | live | msgs in | msgs out | compactions | registered | role |\n";
-    Printf.printf "|---|---|---|---|---|---|---|\n";
+    Printf.printf "| alias | live | msgs in | msgs out | compactions | registered | last seen | role |\n";
+    Printf.printf "|---|---|---|---|---|---|---|---|\n";
     List.iter
       (fun s ->
         let live_str = if s.live then "\xe2\x9c\x93" else "\xe2\x80\x93" in
@@ -191,9 +197,14 @@ let run ~root ~json ~alias_filter ~since_str =
           | Some ts -> fmt_time ts
           | None -> ""
         in
+        let last_seen_str =
+          match s.last_activity with
+          | Some ts -> fmt_time ts
+          | None -> "never"
+        in
         let role_str = match s.role with Some r -> r | None -> "" in
-        Printf.printf "| %s | %s | %d | %d | %d | %s | %s |\n"
-          s.alias live_str s.msgs_received s.msgs_sent s.compaction_count reg_str role_str)
+        Printf.printf "| %s | %s | %d | %d | %d | %s | %s | %s |\n"
+          s.alias live_str s.msgs_received s.msgs_sent s.compaction_count reg_str last_seen_str role_str)
       stats;
     if stats = [] then
       Printf.printf "(no registrations found)\n"

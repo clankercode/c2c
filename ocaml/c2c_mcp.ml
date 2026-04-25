@@ -3550,6 +3550,7 @@ let ts = Unix.gettimeofday () in
                 let { Broker.sent_to; skipped } =
                   Broker.send_all broker ~from_alias ~content ~exclude_aliases
                 in
+                (match session_id_override with Some sid -> Broker.touch_session broker ~session_id:sid | None -> (match current_session_id () with Some sid -> Broker.touch_session broker ~session_id:sid | None -> ()));
                 let result_json =
                   `Assoc
                     [ ( "sent_to",
@@ -3766,6 +3767,7 @@ let ts = Unix.gettimeofday () in
                 ~content:"peek_inbox: no session_id in env (set C2C_MCP_SESSION_ID)"
                 ~is_error:true)
        | Some session_id ->
+           Broker.touch_session broker ~session_id;
            let messages =
              Broker.with_inbox_lock broker ~session_id (fun () ->
                  Broker.read_inbox broker ~session_id)
@@ -3950,6 +3952,7 @@ let ts = Unix.gettimeofday () in
           | _ -> None
         with _ -> None
       in
+      Broker.touch_session broker ~session_id;
       let new_dnd = Broker.set_dnd broker ~session_id ~dnd:on ?until:until_epoch () in
       let content =
         (match new_dnd with
@@ -3962,6 +3965,7 @@ let ts = Unix.gettimeofday () in
       Lwt.return (tool_result ~content ~is_error:false)
   | "dnd_status" ->
       let session_id = resolve_session_id ?session_id_override arguments in
+      Broker.touch_session broker ~session_id;
       let reg_opt =
         Broker.list_registrations broker
         |> List.find_opt (fun r -> r.session_id = session_id)
@@ -3993,6 +3997,7 @@ let ts = Unix.gettimeofday () in
        | None -> Lwt.return (missing_member_alias_result "join_room")
        | Some alias ->
            let session_id = resolve_session_id ?session_id_override arguments in
+           Broker.touch_session broker ~session_id;
            let members = Broker.join_room broker ~room_id ~alias ~session_id in
            let history_limit =
              match Broker.int_opt_member "history_limit" arguments with
@@ -4030,6 +4035,8 @@ let ts = Unix.gettimeofday () in
       (match alias_for_current_session_or_argument ?session_id_override broker arguments with
        | None -> Lwt.return (missing_member_alias_result "leave_room")
        | Some alias ->
+           let session_id = resolve_session_id ?session_id_override arguments in
+           Broker.touch_session broker ~session_id;
            let members = Broker.leave_room broker ~room_id ~alias in
            let content =
              `Assoc
@@ -4077,6 +4084,8 @@ let ts = Unix.gettimeofday () in
                           from_alias conflict.session_id)
                      ~is_error:true)
             | None ->
+                let session_id = resolve_session_id ?session_id_override arguments in
+                Broker.touch_session broker ~session_id;
                 let { Broker.sr_delivered_to; sr_skipped; sr_ts } =
                   Broker.send_room broker ~from_alias ~room_id ~content
                 in
@@ -4158,6 +4167,8 @@ let ts = Unix.gettimeofday () in
                           from_alias conflict.session_id)
                      ~is_error:true)
             | None ->
+                let session_id = resolve_session_id ?session_id_override arguments in
+                Broker.touch_session broker ~session_id;
                 Broker.send_room_invite broker ~room_id ~from_alias ~invitee_alias;
                 let content =
                   `Assoc
@@ -4217,6 +4228,7 @@ let ts = Unix.gettimeofday () in
         | _ -> []
       in
       let session_id = resolve_session_id ?session_id_override arguments in
+      Broker.touch_session broker ~session_id;
       let alias =
         match List.find_opt (fun r -> r.session_id = session_id)
                 (Broker.list_registrations broker) with
