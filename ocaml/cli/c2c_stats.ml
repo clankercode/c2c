@@ -557,7 +557,7 @@ let scan_archives_by_day ~archive_dir ~session_to_alias ~cutoff ?(grain = Daily)
     files;
   counts
 
-let run_history ~root ~json ~markdown ~csv ~compact ~alias_filter ~days ?(grain = Daily) () =
+let run_history ~root ~json ~markdown ~csv ~compact ~alias_filter ~days ?(grain = Daily) ?(top = None) () =
    let broker = C2c_mcp.Broker.create ~root in
    let regs = C2c_mcp.Broker.list_registrations broker in
    let session_to_alias = Hashtbl.create 32 in
@@ -586,6 +586,31 @@ let run_history ~root ~json ~markdown ~csv ~compact ~alias_filter ~days ?(grain 
        | _ -> (day, alias, s, r) :: acc) agg []
      |> List.sort (fun (d1, a1, _, _) (d2, a2, _, _) ->
          match String.compare d1 d2 with 0 -> String.compare a1 a2 | c -> c)
+   in
+   (* Apply --top N filter: keep top-N aliases per bucket (by msgs_out + msgs_in). *)
+   let rows = match top with
+     | None -> rows
+     | Some n when n <= 0 -> rows
+     | Some n ->
+         let by_day = Hashtbl.create 16 in
+         List.iter (fun ((d, _, _, _) as row) ->
+           let prev = try Hashtbl.find by_day d with Not_found -> [] in
+           Hashtbl.replace by_day d (row :: prev)) rows;
+         let kept =
+           Hashtbl.fold (fun _ entries acc ->
+             let sorted = List.sort
+               (fun (_, _, s1, r1) (_, _, s2, r2) -> compare (s2 + r2) (s1 + r1))
+               entries
+             in
+             let rec take k = function
+               | [] -> []
+               | _ when k = 0 -> []
+               | x :: xs -> x :: take (k - 1) xs
+             in
+             take n sorted @ acc) by_day []
+         in
+         List.sort (fun (d1, a1, _, _) (d2, a2, _, _) ->
+           match String.compare d1 d2 with 0 -> String.compare a1 a2 | c -> c) kept
    in
     if json then begin
       let arr = `List (List.map (fun (day, alias, sent, recv) ->

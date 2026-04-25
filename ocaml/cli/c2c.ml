@@ -5144,13 +5144,18 @@ let stats_history_cmd =
     Cmdliner.Arg.(value & opt string "day" & info [ "bucket"; "b" ] ~docv:"GRAIN"
       ~doc:"Bucket granularity: hour | day | week (default: day).")
   in
+  let top_flag =
+    Cmdliner.Arg.(value & opt (some int) None & info [ "top"; "t" ] ~docv:"N"
+      ~doc:"Keep only the top-N busiest aliases per bucket, ranked by msgs_out + msgs_in.")
+  in
   let+ json = json_flag
   and+ markdown = markdown_flag
   and+ csv = csv_flag
   and+ compact = compact_flag
   and+ alias_filter = alias_flag
   and+ days = days_flag
-  and+ bucket = bucket_flag in
+  and+ bucket = bucket_flag
+  and+ top = top_flag in
   let grain = match C2c_stats.parse_bucket bucket with
     | Some g -> g
     | None ->
@@ -5158,7 +5163,7 @@ let stats_history_cmd =
         exit 1
   in
   let root = resolve_broker_root () in
-  C2c_stats.run_history ~root ~json ~markdown ~csv ~compact ~alias_filter ~days ~grain ()
+  C2c_stats.run_history ~root ~json ~markdown ~csv ~compact ~alias_filter ~days ~grain ~top ()
 
 let stats =
   Cmdliner.Cmd.group
