@@ -5248,6 +5248,12 @@ let start_cmd =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"CLIENT"
       ~doc:(Printf.sprintf "Client to start (%s)." C2c_setup.start_client_list))
   in
+  (* Trailing args after `--`: appended verbatim to the client's argv.
+     e.g. `c2c start claude -- --foo bar` runs claude with `--foo bar`. *)
+  let extra_argv =
+    Cmdliner.Arg.(value & pos_right 1 (list string) [] & info [] ~docv:"ARG"
+      ~doc:"Extra arguments passed to the client after `--`. Anything after `--` is appended verbatim to the client's argv.")
+  in
   let name =
     Cmdliner.Arg.(value & opt (some string) None & info [ "name"; "n" ] ~docv:"NAME" ~doc:"Instance name (default: auto-generated).")
   in
@@ -5314,7 +5320,9 @@ let start_cmd =
   and+ worktree_flag = worktree
   and+ branch_flag = branch_opt
   and+ tmux_loc = tmux_loc
-  and+ tmux_tail = tmux_tail in
+  and+ tmux_tail = tmux_tail
+  and+ extra_argv = extra_argv in
+  let extra_argv = List.concat extra_argv in
   let kickoff_prompt_text =
     match kickoff_prompt_text_raw, kickoff_prompt_file with
     | Some _, Some _ ->
@@ -5599,7 +5607,7 @@ let start_cmd =
         Printf.eprintf "warning: failed to chdir to worktree %s: %s\n%!" wt_dir e);
       Printf.printf "[c2c] worktree: %s (branch: %s)\n%!" wt_dir branch
   | _ -> ());
-  exit (C2c_start.cmd_start ~client ~name ~extra_args:[]
+  exit (C2c_start.cmd_start ~client ~name ~extra_args:extra_argv
       ?binary_override:bin_opt
       ?alias_override
       ?session_id_override:session_id_opt

@@ -1123,6 +1123,50 @@ let test_prepare_launch_args_codex_uses_exact_resume_target_when_set () =
   check (list string) "codex exact resume"
     [ "resume"; "thread-abc" ] args
 
+let rec last_n n lst =
+  let rec aux n acc = function
+    | [] -> List.rev acc
+    | _ when n <= 0 -> List.rev acc
+    | x :: xs -> aux (n - 1) (x :: acc) xs
+  in
+  aux n [] (List.rev lst)
+
+let test_prepare_launch_args_extra_args_appended_verbatim () =
+  let extra = [ "--foo"; "bar"; "--baz" ] in
+  let args =
+    C2c_start.prepare_launch_args ~name:"claude-test" ~client:"claude"
+      ~extra_args:extra ~broker_root:"/tmp/broker" ()
+  in
+  (* extra_args are appended at the end of the argv *)
+  check bool "extra args are appended at the end" true
+    (List.exists (fun a -> a = "--foo") args);
+  let last3 = last_n 3 args in
+  check (list string) "extra args appended verbatim"
+    [ "--foo"; "bar"; "--baz" ] last3
+
+let test_prepare_launch_args_extra_args_empty_by_default () =
+  let args =
+    C2c_start.prepare_launch_args ~name:"claude-test" ~client:"claude"
+      ~extra_args:[] ~broker_root:"/tmp/broker" ()
+  in
+  (* no --foo in args when extra_args is empty *)
+  check bool "no extra flags when extra_args is empty" false
+    (List.exists (fun a -> a = "--foo") args)
+
+let test_prepare_launch_args_extra_args_preserves_flags_around_extra () =
+  (* flags before extra_args should remain; extra_args append at end *)
+  let extra = [ "--debug" ] in
+  let args =
+    C2c_start.prepare_launch_args ~name:"claude-test" ~client:"claude"
+      ~extra_args:extra ~broker_root:"/tmp/broker" ()
+  in
+  (* --dangerously-load-development-channels must still be present *)
+  check bool "standard flags preserved with extra_args" true
+    (List.mem "--dangerously-load-development-channels" args);
+  (* --debug must be at the end *)
+  let last = last_n 1 args in
+  check (list string) "extra args at end" [ "--debug" ] last
+
 let test_cmd_reset_thread_persists_codex_resume_target () =
   let name = Printf.sprintf "codex-reset-%d" (Random.bits ()) in
   with_instance_dir name @@ fun _dir ->
@@ -1454,6 +1498,12 @@ let () =
             `Quick, test_prepare_launch_args_codex_uses_exact_resume_target_when_set )
         ; ( "cmd_reset_thread_persists_codex_resume_target",
             `Quick, test_cmd_reset_thread_persists_codex_resume_target )
+        ; ( "prepare_launch_args_extra_args_appended_verbatim",
+            `Quick, test_prepare_launch_args_extra_args_appended_verbatim )
+        ; ( "prepare_launch_args_extra_args_empty_by_default",
+            `Quick, test_prepare_launch_args_extra_args_empty_by_default )
+        ; ( "prepare_launch_args_extra_args_preserves_flags_around_extra",
+            `Quick, test_prepare_launch_args_extra_args_preserves_flags_around_extra )
         ] )
     ; ( "pmodel",
         [ ("parse_pmodel_plain", `Quick, test_parse_pmodel_plain)
