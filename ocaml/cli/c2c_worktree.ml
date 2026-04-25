@@ -142,6 +142,53 @@ let setup_worktree ~(alias : string) : (string * int) =
   if code_add = 0 then (wt_dir, 0)
   else (wt_dir, if Sys.file_exists wt_dir then 0 else 1)
 
+(** [worktrees_dir ()] returns .worktrees/ under the main repo root.
+    Uses git_common_dir_parent to always resolve to the main repo, not a
+    worktree subdirectory. This ensures all worktrees land at the repo root
+    regardless of where the command is invoked from. *)
+let worktrees_dir () =
+  match Git_helpers.git_common_dir_parent () with
+  | Some parent -> parent // ".worktrees"
+  | None -> failwith "not in a git repository"
+
+(** [is_valid_slice_name s] returns true if [s] is safe to use in a worktree path.
+    Uses [a-zA-Z0-9_-] only — no slash, no spaces, no special chars. *)
+let is_valid_slice_name (s : string) : bool =
+  String.length s > 0 &&
+  let valid_chars = Str.regexp "^[a-zA-Z0-9_-]+$" in
+  try Str.string_match valid_chars s 0 && Str.match_end () = String.length s
+  with Not_found -> false
+
+(** [is_valid_branch_name s] returns true if [s] is a valid git branch name.
+    Allows alphanumerics, hyphens, underscores, and forward slashes (for
+    hierarchical branch names like fix/my-slice). *)
+let is_valid_branch_name (s : string) : bool =
+  String.length s > 0 &&
+  let valid_chars = Str.regexp "^[a-zA-Z0-9_/-]+$" in
+  try Str.string_match valid_chars s 0 && Str.match_end () = String.length s
+  with Not_found -> false
+
+(** [start_worktree ~slice_name ~branch_name] creates an isolated worktree for a slice.
+    Creates branch [branch_name] off origin/master, places worktree at .worktrees/<slice_name>.
+    Returns the worktree path on success, raises on failure. *)
+let start_worktree ~(slice_name : string) ~(branch_name : string) : string =
+  let wt_dir = worktrees_dir () // slice_name in
+  (* Ensure parent exists *)
+  let parent = Filename.dirname wt_dir in
+  C2c_utils.mkdir_p parent;
+  (* Check for existing worktree at this path *)
+  if is_worktree_dir ~path:wt_dir then
+    raise (Failure ("worktree already exists: " ^ wt_dir));
+  if Sys.file_exists wt_dir then
+    raise (Failure ("path already exists and is not a worktree: " ^ wt_dir));
+  (* Fetch origin/master to ensure we have it *)
+  let (_code_fetch, _, _) = git_command [ "fetch"; "origin"; "master" ] in
+  (* Create worktree with new branch from origin/master *)
+  let (code, _stdout, stderr) = git_command [ "worktree"; "add"; "--force"; "-b"; branch_name; wt_dir; "origin/master" ] in
+  if code <> 0 then
+    raise (Failure ("git worktree add failed (exit " ^ string_of_int code ^ "): " ^ stderr));
+  wt_dir
+
 (** [worktree_status ()] prints status of current worktree (or all worktrees). *)
 let worktree_status () =
   let alias = current_worktree_alias () in
@@ -164,20 +211,34 @@ let worktree_status () =
 
 (* --- CLI ----------------------------------------------------------- *)
 
-let worktree_setup_term =
-  let alias_opt =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS" ~doc:"Agent alias for this worktree.")
+let worktree_start_term =
+  let slice_term =
+    let doc = "Slice name — used for both the worktree directory (.worktrees/<slice>) and branch (fix/<slice>)." in
+    Cmdliner.Arg.(required & pos ~rev:true 0 (some string) None & info [] ~docv:"SLICE" ~doc)
   in
-  let+ alias_val = alias_opt in
-  let alias = match alias_val with
-    | Some a -> a
-    | None -> auto_alias ()
+  let branch_overrides =
+    let doc = "Override the branch name. Default is fix/<slice>." in
+    Cmdliner.Arg.(value & opt (some string) None & info [ "branch" ] ~docv:"BRANCH" ~doc)
   in
-  let (wt_dir, exit_code) = setup_worktree ~alias in
-  if exit_code = 0 then
-    Printf.printf "Worktree created: %s\nBranch: agent/%s\nTo enter: cd %s\n" wt_dir alias wt_dir
+  let+ slice_name = slice_term
+  and+ branch_override = branch_overrides in
+  let branch_name = match branch_override with
+    | Some b -> b
+    | None -> "fix/" ^ slice_name
+  in
+  if not (is_valid_slice_name slice_name) then
+    Printf.eprintf "error: slice name must be alphanumeric, hyphens, and underscores only.\n%!"
+  else if not (is_valid_branch_name branch_name) then
+    Printf.eprintf "error: branch name must be alphanumeric, hyphens, underscores, and forward slashes only.\n%!"
   else
-    Printf.eprintf "Worktree may exist: %s\n" wt_dir
+    match start_worktree ~slice_name ~branch_name with
+    | wt_dir ->
+        Printf.printf "Worktree created: %s\n" wt_dir;
+        Printf.printf "Branch: %s\n" branch_name;
+        Printf.printf "To enter: cd %s\n" wt_dir;
+        Printf.printf "To enter (eval): eval $(c2c worktree start %s)\n" slice_name
+    | exception Failure msg ->
+        Printf.eprintf "error: %s\n%!" msg
 
 let worktree_status_term =
   let+ () = Cmdliner.Term.const () in
@@ -202,6 +263,21 @@ let worktree_prune_term =
   else
     Printf.eprintf "worktree prune: failed\n%!"
 
+let worktree_setup_term =
+  let alias_opt =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS" ~doc:"Agent alias for this worktree.")
+  in
+  let+ alias_val = alias_opt in
+  let alias = match alias_val with
+    | Some a -> a
+    | None -> auto_alias ()
+  in
+  let (wt_dir, exit_code) = setup_worktree ~alias in
+  if exit_code = 0 then
+    Printf.printf "Worktree created: %s\nBranch: agent/%s\nTo enter: cd %s\n" wt_dir alias wt_dir
+  else
+    Printf.eprintf "Worktree may exist: %s\n" wt_dir
+
 let worktree_group =
   Cmdliner.Cmd.group
     ~default:worktree_list_term
@@ -209,4 +285,5 @@ let worktree_group =
     [ Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List all worktrees.") worktree_list_term
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "prune" ~doc:"Remove stale worktree entries.") worktree_prune_term
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "setup" ~doc:"Create an isolated git worktree for this agent.") worktree_setup_term
-    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "status" ~doc:"Show current worktree state.") worktree_status_term ]
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "status" ~doc:"Show current worktree state.") worktree_status_term
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Create an isolated git worktree for a new slice, branched from origin/master.") worktree_start_term ]
