@@ -3114,6 +3114,58 @@ let send_alias_impersonation_check ?session_id_override broker from_alias =
           && Broker.registration_is_alive reg)
         (Broker.list_registrations broker)
 
+(** Self-PASS detector strictness: "warn" (default) adds warning to receipt,
+    "strict" rejects the message. *)
+let self_pass_detector_strictness () =
+  match Sys.getenv_opt "C2C_SELF_PASS_DETECTOR" with
+  | Some "strict" -> `Strict
+  | Some "warn" | None -> `Warn
+  | Some _ -> `Warn
+
+(** Extract the alias identifier that follows "peer-PASS by " in content.
+    Aliases are alphanumeric with hyphens/underscores, case-insensitive.
+    Returns the alias if found immediately after the marker (delimited by whitespace),
+    or None if no valid alias follows. *)
+let extract_alias_after_peer_pass content start_pos =
+  let len = String.length content in
+  let rec read_alias acc i =
+    if i >= len then Some (acc, i)
+    else
+      let c = content.[i] in
+      if c = ' ' || c = '\n' || c = '\t' || c = '\r' || c = '.' || c = ',' || c = ':'
+      then Some (acc, i)
+      else if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+              || (c >= '0' && c <= '9') || c = '-' || c = '_'
+      then read_alias (acc ^ String.make 1 c) (i + 1)
+      else None
+  in
+  read_alias "" start_pos
+
+(** Detect "peer-PASS by <alias>" self-review violation in message content.
+    Returns Some warning_message if sender's own alias appears in that pattern,
+    None otherwise. Case-insensitive alias comparison. *)
+let check_self_pass_content ~from_alias content =
+  let needle = "peer-PASS by " in
+  let needle_len = String.length needle in
+  let lc = String.lowercase_ascii content in
+  let lc_from_alias = String.lowercase_ascii from_alias in
+  let rec search pos =
+    match String.index_from_opt lc pos needle.[0] with
+    | None -> None
+    | Some i ->
+        if i + needle_len <= String.length lc
+           && String.sub lc i needle_len = needle
+        then
+          match extract_alias_after_peer_pass content (i + needle_len) with
+          | Some (claimed_alias, _) ->
+              if String.lowercase_ascii claimed_alias = lc_from_alias
+              then Some (Printf.sprintf "self-review-via-skill violation: 'peer-PASS by %s' detected in message content (your own alias)" from_alias)
+              else search (i + 1)
+          | None -> search (i + 1)
+        else search (i + 1)
+  in
+  search 0
+
 let handle_tool_call ~(broker : Broker.t) ?session_id_override ~tool_name ~arguments =
   match tool_name with
   | "register" ->
@@ -3466,56 +3518,71 @@ let ts = Unix.gettimeofday () in
                    let err = Printf.sprintf "send rejected: enc_status:key-changed — %s's x25519 key differs from known pin (possible relay tamper). Re-send after trust --repin %s." alias alias in
                    Lwt.return (tool_result ~content:err ~is_error:true)
                   | `Plain s | `Encrypted s ->
-                    Broker.enqueue_message broker ~from_alias ~to_alias ~content:s ~deferrable ();
-                    (match session_id_override with
-                     | Some sid -> Broker.touch_session broker ~session_id:sid
-                     | None ->
-                       (match current_session_id () with
-                        | Some sid -> Broker.touch_session broker ~session_id:sid
-                        | None -> ()));
-                    let ts = Unix.gettimeofday () in
-                    let recipient_dnd =
-                  match Broker.list_registrations broker
-                        |> List.find_opt (fun r -> r.alias = to_alias) with
-                  | Some r -> Broker.is_dnd broker ~session_id:r.session_id
-                  | None -> false
-                in
-                let recipient_compacting =
-                  match Broker.list_registrations broker
-                        |> List.find_opt (fun r -> r.alias = to_alias) with
-                  | Some r ->
-                      (match Broker.is_compacting broker ~session_id:r.session_id with
-                       | Some c ->
-                           let dur = Unix.gettimeofday () -. c.started_at in
-                           Some (dur, c.reason)
-                       | None -> None)
-                  | None -> None
-                in
-                let receipt_fields =
-                  [ ("queued", `Bool true)
-                  ; ("ts", `Float ts)
-                  ; ("from_alias", `String from_alias)
-                  ; ("to_alias", `String to_alias)
-                  ]
-                in
-                let receipt_fields =
-                  if recipient_dnd then receipt_fields @ [("recipient_dnd", `Bool true)]
-                  else receipt_fields
-                in
-                let receipt_fields =
-                  match recipient_compacting with
-                  | Some (dur, reason) ->
-                      let reason_str = match reason with Some r -> " (" ^ r ^ ")" | None -> "" in
-                      let warning = Printf.sprintf "recipient compacting for %.0fs%s" dur reason_str in
-                      receipt_fields @ [("compacting_warning", `String warning)]
-                  | None -> receipt_fields
-                in
-                let receipt_fields =
-                  if deferrable then receipt_fields @ [("deferrable", `Bool true)]
-                  else receipt_fields
-                in
-                let receipt = `Assoc receipt_fields |> Yojson.Safe.to_string in
-                Lwt.return (tool_result ~content:receipt ~is_error:false)))
+                    let self_pass_warning =
+                      match check_self_pass_content ~from_alias content with
+                      | Some msg when self_pass_detector_strictness () = `Strict -> Some (`Reject msg)
+                      | Some msg -> Some (`Warn msg)
+                      | None -> None
+                    in
+                    match self_pass_warning with
+                    | Some (`Reject msg) ->
+                        Lwt.return (tool_result ~content:("send rejected: " ^ msg) ~is_error:true)
+                    | Some (`Warn _) | None ->
+                        Broker.enqueue_message broker ~from_alias ~to_alias ~content:s ~deferrable ();
+                        (match session_id_override with
+                         | Some sid -> Broker.touch_session broker ~session_id:sid
+                         | None ->
+                           (match current_session_id () with
+                            | Some sid -> Broker.touch_session broker ~session_id:sid
+                            | None -> ()));
+                        let ts = Unix.gettimeofday () in
+                        let recipient_dnd =
+                          match Broker.list_registrations broker
+                                |> List.find_opt (fun r -> r.alias = to_alias) with
+                          | Some r -> Broker.is_dnd broker ~session_id:r.session_id
+                          | None -> false
+                        in
+                        let recipient_compacting =
+                          match Broker.list_registrations broker
+                                |> List.find_opt (fun r -> r.alias = to_alias) with
+                          | Some r ->
+                              (match Broker.is_compacting broker ~session_id:r.session_id with
+                               | Some c ->
+                                   let dur = Unix.gettimeofday () -. c.started_at in
+                                   Some (dur, c.reason)
+                               | None -> None)
+                          | None -> None
+                        in
+                        let receipt_fields =
+                          [ ("queued", `Bool true)
+                          ; ("ts", `Float ts)
+                          ; ("from_alias", `String from_alias)
+                          ; ("to_alias", `String to_alias)
+                          ]
+                        in
+                        let receipt_fields =
+                          match self_pass_warning with
+                          | Some (`Warn msg) -> receipt_fields @ [("self_pass_warning", `String msg)]
+                          | _ -> receipt_fields
+                        in
+                        let receipt_fields =
+                          if recipient_dnd then receipt_fields @ [("recipient_dnd", `Bool true)]
+                          else receipt_fields
+                        in
+                        let receipt_fields =
+                          match recipient_compacting with
+                          | Some (dur, reason) ->
+                              let reason_str = match reason with Some r -> " (" ^ r ^ ")" | None -> "" in
+                              let warning = Printf.sprintf "recipient compacting for %.0fs%s" dur reason_str in
+                              receipt_fields @ [("compacting_warning", `String warning)]
+                          | None -> receipt_fields
+                        in
+                        let receipt_fields =
+                          if deferrable then receipt_fields @ [("deferrable", `Bool true)]
+                          else receipt_fields
+                        in
+                        let receipt = `Assoc receipt_fields |> Yojson.Safe.to_string in
+                        Lwt.return (tool_result ~content:receipt ~is_error:false)))
   | "send_all" ->
       let content = string_member "content" arguments in
       (match alias_for_current_session_or_argument ?session_id_override broker arguments with
