@@ -6,6 +6,7 @@ import html
 import json
 import os
 import re
+import select
 import subprocess
 import sys
 import time
@@ -560,6 +561,7 @@ def run_loop(
     watched_pid: int | None,
     xml_output_fd: int | None = None,
     xml_output_path: Path | None = None,
+    event_fifo: Path | None = None,
 ) -> dict[str, Any]:
     iterations = 0
     total_delivered = 0
@@ -567,6 +569,13 @@ def run_loop(
     stopped_reason: str | None = None
     last_notify_at = 0.0
     last_notify_signature = ""
+
+    event_fd = -1
+    if event_fifo is not None:
+        try:
+            event_fd = os.open(str(event_fifo), os.O_RDONLY | os.O_NONBLOCK)
+        except OSError:
+            event_fd = -1
 
     while max_iterations is None or iterations < max_iterations:
         if watched_pid_exited(watched_pid):
@@ -596,6 +605,27 @@ def run_loop(
             xml_output_fd=xml_output_fd,
             xml_output_path=xml_output_path,
         )
+
+        if event_fd >= 0:
+            try:
+                ready, _, _ = select.select([event_fd], [], [], 0)
+                if ready:
+                    data = os.read(event_fd, 8192)
+                    if data:
+                        for line in data.decode("utf-8").strip().split("\n"):
+                            if line:
+                                event = parse_managed_server_request_event(line)
+                                if event is not None:
+                                    supervisors = ["coordinator1"]
+                                    forward_permission_to_supervisors(
+                                        event,
+                                        supervisors=supervisors,
+                                        timeout_ms=300000,
+                                        session_id=session_id,
+                                        broker_root=broker_root,
+                                    )
+            except (OSError, IOError, UnicodeDecodeError):
+                pass
         if notify_only and last_result.get("notified"):
             last_notify_at = time.monotonic()
             last_notify_signature = current_notify_signature or messages_signature(
@@ -624,6 +654,11 @@ def run_loop(
         result["watched_pid"] = watched_pid
     if stopped_reason:
         result["stopped_reason"] = stopped_reason
+    if event_fd >= 0:
+        try:
+            os.close(event_fd)
+        except OSError:
+            pass
     return result
 
 
@@ -690,6 +725,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="write Codex XML user-turn frames by opening this fifo/path for write",
     )
+    parser.add_argument(
+        "--event-fifo",
+        type=Path,
+        default=None,
+        help="read Codex bridge permission events from this named FIFO path",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(raw_argv)
 
@@ -751,6 +792,7 @@ def main(argv: list[str] | None = None) -> int:
                 watched_pid=watched_pid,
                 xml_output_fd=args.xml_output_fd,
                 xml_output_path=args.xml_output_path,
+                event_fifo=args.event_fifo,
             )
         else:
             result = deliver_once(

@@ -160,6 +160,7 @@ val prepare_launch_args :
   ?codex_xml_input_fd:string ->
   ?codex_resume_target:string ->
   ?thread_id_fd:string ->
+  ?server_request_events_fd:string ->
   ?agent_name:string ->
   ?kickoff_prompt:string ->
   unit ->
@@ -283,6 +284,7 @@ val start_deliver_daemon :
   ?command_override:(string * string list) ->
   ?xml_output_fd:string ->
   ?xml_output_path:string ->
+  ?event_fifo_path:string ->
   unit ->
   int option
 (** [start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt
