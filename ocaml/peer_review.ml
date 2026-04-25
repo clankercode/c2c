@@ -169,3 +169,115 @@ let verify (art : t) : (bool, verify_error) result =
         match Relay_identity.verify ~pk:pk_bytes ~msg:canonical ~sig_:sig_bytes with
         | true -> Ok true
         | false -> Error Invalid_signature
+
+(* --- peer-pass claim extraction and auto-verify ----------------------------- *)
+
+(** Artifact file path for a given sha+alias pair. Uses git common dir parent
+    so peer-passes are shared across all worktrees clones. *)
+let artifact_path ~sha ~alias =
+  let base = match Git_helpers.git_common_dir_parent () with
+    | Some parent -> Filename.concat parent ".c2c"
+    | None -> ".c2c"
+  in
+  Filename.concat base (Printf.sprintf "peer-passes/%s-%s.json" sha alias)
+
+(** Parse "peer-PASS by <alias>" and "SHA=<sha>" from message content.
+    Returns (alias, sha) if both patterns found, None otherwise.
+    Case-insensitive for the peer-PASS marker; SHA is case-sensitive hex. *)
+let claim_of_content content =
+  let lc = String.lowercase_ascii content in
+  let needle = "peer-pass by" in
+  let needle_len = String.length needle in
+  let rec find_alias pos =
+    match String.index_from_opt lc pos needle.[0] with
+    | None -> None
+    | Some i ->
+        if i + needle_len <= String.length lc
+           && String.sub lc i needle_len = needle
+        then
+          let start = i + needle_len in
+          let rec skip_space j =
+            if j >= String.length lc then None
+            else if lc.[j] = ' ' || lc.[j] = '\t' || lc.[j] = '\n' || lc.[j] = '\r'
+            then skip_space (j + 1)
+            else Some j
+          in
+          match skip_space start with
+          | None -> None
+          | Some pos ->
+              let rec read_alias acc j =
+                if j >= String.length lc then Some (acc, j)
+                else
+                  let c = lc.[j] in
+                  if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c = '-' || c = '_'
+                  then read_alias (acc ^ String.make 1 c) (j + 1)
+                  else Some (acc, j)
+              in
+              read_alias "" pos
+        else find_alias (i + 1)
+  in
+  let sha_marker = "sha=" in
+  let sha_marker_len = String.length sha_marker in
+  let lc = String.lowercase_ascii content in
+  let rec find_sha pos =
+    match String.index_from_opt lc pos 's' with
+    | None -> None
+    | Some i ->
+        if i + sha_marker_len <= String.length lc
+           && String.sub lc i sha_marker_len = sha_marker
+        then
+          let start = i + sha_marker_len in
+          let rec read_sha acc j =
+            if j >= String.length lc then Some (acc, j)
+            else
+              let c = lc.[j] in
+              if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+              then read_sha (acc ^ String.make 1 c) (j + 1)
+              else if acc = "" then find_sha (j + 1) else Some (acc, j)
+          in
+          read_sha "" start
+        else find_sha (i + 1)
+  in
+  match find_alias 0 with
+  | None -> None
+  | Some (alias, _) ->
+      match find_sha 0 with
+      | None -> None
+      | Some (sha, _) ->
+          if sha <> "" then Some (alias, sha) else None
+
+(** Read a peer-pass artifact from a JSON file. *)
+let read_artifact path =
+  try
+    let content = Yojson.Safe.from_file path in
+    match t_of_json content with
+    | Some art -> Ok art
+    | None -> Error "JSON parse failed"
+  with e -> Error (Printexc.to_string e)
+
+(** Result of peer-pass claim verification. *)
+type claim_verification =
+  | Claim_valid of string        (* success message *)
+  | Claim_missing of string       (* artifact file not found *)
+  | Claim_invalid of string      (* signature/alias/sha mismatch *)
+
+(** Verify a peer-pass claim: load the artifact, check signature, confirm
+    alias and sha match. Returns Claim_valid on success. *)
+let verify_claim ~alias ~sha =
+  let path = artifact_path ~sha ~alias in
+  if not (Sys.file_exists path) then
+    Claim_missing (Printf.sprintf "no peer-pass artifact at %s" path)
+  else
+    match read_artifact path with
+    | Error e -> Claim_invalid (Printf.sprintf "artifact read error: %s" e)
+    | Ok art ->
+        match verify art with
+        | Error e -> Claim_invalid (Printf.sprintf "invalid signature: %s" (verify_error_to_string e))
+        | Ok false -> Claim_invalid "signature verification failed"
+        | Ok true ->
+            if art.sha <> sha then
+              Claim_invalid (Printf.sprintf "SHA mismatch: artifact is for %s, claim is for %s" art.sha sha)
+            else if String.lowercase_ascii art.reviewer <> String.lowercase_ascii alias then
+              Claim_invalid (Printf.sprintf "reviewer mismatch: artifact is by %s, claim is by %s" art.reviewer alias)
+            else
+              Claim_valid (Printf.sprintf "peer-pass artifact verified: %s for %s" art.verdict sha)

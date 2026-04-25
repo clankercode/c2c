@@ -3535,6 +3535,15 @@ let ts = Unix.gettimeofday () in
                       | Some msg -> Some (`Warn msg)
                       | None -> None
                     in
+                    let peer_pass_verification =
+                      match Peer_review.claim_of_content content with
+                      | None -> None
+                      | Some (alias, sha) ->
+                          match Peer_review.verify_claim ~alias ~sha with
+                          | Peer_review.Claim_valid msg -> Some (`Ok msg)
+                          | Peer_review.Claim_missing m -> Some (`Missing m)
+                          | Peer_review.Claim_invalid m -> Some (`Invalid m)
+                    in
                     match self_pass_warning with
                     | Some (`Reject msg) ->
                         Lwt.return (tool_result ~content:("send rejected: " ^ msg) ~is_error:true)
@@ -3575,6 +3584,13 @@ let ts = Unix.gettimeofday () in
                           match self_pass_warning with
                           | Some (`Warn msg) -> receipt_fields @ [("self_pass_warning", `String msg)]
                           | _ -> receipt_fields
+                        in
+                        let receipt_fields =
+                          match peer_pass_verification with
+                          | Some (`Ok msg) -> receipt_fields @ [("peer_pass_verification", `String msg)]
+                          | Some (`Missing m) -> receipt_fields @ [("peer_pass_verification", `String ("missing: " ^ m))]
+                          | Some (`Invalid m) -> receipt_fields @ [("peer_pass_verification", `String ("invalid: " ^ m))]
+                          | None -> receipt_fields
                         in
                         let receipt_fields =
                           if recipient_dnd then receipt_fields @ [("recipient_dnd", `Bool true)]
