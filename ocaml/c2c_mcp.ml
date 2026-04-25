@@ -1506,23 +1506,29 @@ module Broker = struct
     if not exists then []
     else with_inbox_lock t ~session_id (fun () -> load_inbox t ~session_id)
 
-  (* Delete the orphan inbox file for a session.
-     Called after capture_orphan_inbox_for_restart saves the messages to a
-     pending-replay file, so messages are not lost even though the file
-     is deleted before the new session starts. *)
-  let delete_orphan_inbox t ~session_id =
+  (* Atomically read and delete the orphan inbox for a session.
+     Used by cmd_restart to capture orphan messages: holds the inbox lock
+     across read+delete so a concurrent enqueue cannot race between them. *)
+  let read_and_delete_orphan_inbox t ~session_id =
     let path = inbox_path t ~session_id in
-    ignore (try_unlink path)
+    let exists =
+      (try ignore (Unix.stat path); true with Unix.Unix_error _ -> false)
+    in
+    if not exists then []
+    else
+      with_inbox_lock t ~session_id (fun () ->
+        let msgs = load_inbox t ~session_id in
+        ignore (try_unlink path);
+        msgs)
 
   (* Replay captured orphan messages into the new session's inbox.
      Called in the MCP server after auto_register_startup completes, so
      messages queued during the restart gap (between old outer-loop exit and
      new registration) are delivered to the new session.
-     The pending replay file is at broker_root/mcp/pending-orphan-replay.<session_id>.json. *)
+     The pending replay file is at broker_root/pending-orphan-replay.<session_id>.json. *)
   let replay_pending_orphan_inbox t ~session_id =
     let pending_path =
-      Filename.concat (Filename.concat t.root "mcp")
-        ("pending-orphan-replay." ^ session_id ^ ".json")
+      Filename.concat t.root ("pending-orphan-replay." ^ session_id ^ ".json")
     in
     if not (Sys.file_exists pending_path) then 0
     else
@@ -1550,8 +1556,11 @@ module Broker = struct
         (try Unix.unlink pending_path with _ -> ());
         0
       end else begin
-        let current = read_inbox t ~session_id in
-        save_inbox t ~session_id (current @ msgs);
+        (* Hold the inbox lock across read+save so a concurrent enqueue
+           during MCP startup cannot overwrite our appended messages. *)
+        with_inbox_lock t ~session_id (fun () ->
+          let current = read_inbox t ~session_id in
+          save_inbox t ~session_id (current @ msgs));
         (try Unix.unlink pending_path with _ -> ());
         List.length msgs
       end

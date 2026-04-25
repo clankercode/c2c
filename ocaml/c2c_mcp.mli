@@ -87,11 +87,14 @@ module Broker : sig
   val read_orphan_inbox_messages : t -> session_id:string -> message list
   (** Read orphan inbox messages without deleting. Returns [] when the orphan
       inbox does not exist or is empty. *)
-  val delete_orphan_inbox : t -> session_id:string -> unit
-  (** Delete the orphan inbox file for a session. Idempotent. *)
+  val read_and_delete_orphan_inbox : t -> session_id:string -> message list
+  (** Atomically read and delete the orphan inbox. Holds the inbox lock across
+      read+delete to prevent a concurrent enqueue from racing between reading
+      messages and deleting the file. Returns the messages. *)
   val replay_pending_orphan_inbox : t -> session_id:string -> int
-  (** Replay messages from a pending-orphan-replay file into the live inbox.
-      Returns the number of messages replayed. Deletes the pending file after. *)
+  (** Replay messages from broker_root/pending-orphan-replay.<session_id>.json
+      into the live inbox. Holds the inbox lock across read+save. Deletes the
+      pending file after replay. Returns the number of messages replayed. *)
   val drain_inbox : t -> session_id:string -> message list
   val drain_inbox_push : t -> session_id:string -> message list
   val with_inbox_lock : t -> session_id:string -> (unit -> 'a) -> 'a

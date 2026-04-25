@@ -2952,6 +2952,89 @@ let test_sweep_preserves_legacy_pidless_reg () =
       check bool "legacy inbox file still present" true
         (Sys.file_exists (Filename.concat dir "legacy-session.inbox.json")))
 
+(* ---- Orphan inbox capture and replay (c2c restart Slice 3) ---- *)
+
+let pending_replay_path dir session_id =
+  Filename.concat dir ("pending-orphan-replay." ^ session_id ^ ".json")
+
+let write_pending_replay_file path msgs =
+  let json_list = `List (List.map (fun (from_alias, to_alias, content) ->
+    `Assoc [
+      ("from_alias", `String from_alias);
+      ("to_alias", `String to_alias);
+      ("content", `String content);
+      ("deferrable", `Bool false);
+      ("reply_via", `Null);
+      ("enc_status", `Null);
+    ]) msgs)
+  in
+  Yojson.Safe.to_file path json_list
+
+let test_read_and_delete_orphan_inbox_captures_and_deletes () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* No registration — this is an orphan inbox *)
+      write_file (Filename.concat dir "orphan-sid.inbox.json")
+        {|[{"from_alias":"storm-ember","to_alias":"ghost-sid","content":"hello"},{"from_alias":"storm-beacon","to_alias":"ghost-sid","content":"world"}]|};
+      let msgs = C2c_mcp.Broker.read_and_delete_orphan_inbox broker ~session_id:"orphan-sid" in
+      check int "two messages captured" 2 (List.length msgs);
+      List.iter (fun m ->
+        check bool "from alias non-empty" true (m.C2c_mcp.from_alias <> "")) msgs;
+      check bool "orphan file deleted" false
+        (Sys.file_exists (Filename.concat dir "orphan-sid.inbox.json")))
+
+let test_read_and_delete_orphan_inbox_missing_file_returns_empty () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let msgs = C2c_mcp.Broker.read_and_delete_orphan_inbox broker ~session_id:"nonexistent" in
+      check int "no messages" 0 (List.length msgs))
+
+let test_replay_pending_orphan_inbox_appends_to_live_inbox () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Register session so inbox is live *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"live-sid" ~alias:"ghost-sid"
+        ~pid:None ~pid_start_time:None ();
+      (* Write pending replay file with 2 messages *)
+      write_pending_replay_file (pending_replay_path dir "live-sid")
+        [("storm-ember", "ghost-sid", "alpha"); ("storm-beacon", "ghost-sid", "beta")];
+      let n = C2c_mcp.Broker.replay_pending_orphan_inbox broker ~session_id:"live-sid" in
+      check int "replayed 2 messages" 2 n;
+      let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"live-sid" in
+      check int "live inbox has 2 messages" 2 (List.length inbox);
+      List.iter (fun m ->
+        check bool "from alias non-empty" true (m.C2c_mcp.from_alias <> "")) inbox;
+      check bool "pending file deleted" false
+        (Sys.file_exists (pending_replay_path dir "live-sid")))
+
+let test_replay_pending_orphan_inbox_missing_pending_file_returns_zero () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"live-sid" ~alias:"ghost-sid"
+        ~pid:None ~pid_start_time:None ();
+      let n = C2c_mcp.Broker.replay_pending_orphan_inbox broker ~session_id:"live-sid" in
+      check int "no pending file, returns 0" 0 n;
+      let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"live-sid" in
+      check int "inbox still empty" 0 (List.length inbox))
+
+let test_replay_pending_orphan_inbox_empty_pending_file_returns_zero_and_deletes () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"live-sid" ~alias:"ghost-sid"
+        ~pid:None ~pid_start_time:None ();
+      write_pending_replay_file (pending_replay_path dir "live-sid") [];
+      let n = C2c_mcp.Broker.replay_pending_orphan_inbox broker ~session_id:"live-sid" in
+      check int "empty pending file, returns 0" 0 n;
+      check bool "pending file deleted" false
+        (Sys.file_exists (pending_replay_path dir "live-sid"));
+      let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"live-sid" in
+      check int "inbox still empty" 0 (List.length inbox))
+
+(* ----------------------------------------------------------- *)
+
 let test_sweep_preserves_nonempty_orphan_to_dead_letter () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -6434,4 +6517,14 @@ let () =
                test_prompts_get_via_subprocess
            ; test_case "prompts/get unknown skill returns error" `Quick
                test_prompts_get_unknown_via_subprocess
+           ; test_case "read_and_delete_orphan_inbox captures and deletes" `Quick
+               test_read_and_delete_orphan_inbox_captures_and_deletes
+           ; test_case "read_and_delete_orphan_inbox missing file returns empty" `Quick
+               test_read_and_delete_orphan_inbox_missing_file_returns_empty
+           ; test_case "replay_pending_orphan_inbox appends to live inbox" `Quick
+               test_replay_pending_orphan_inbox_appends_to_live_inbox
+           ; test_case "replay_pending_orphan_inbox missing pending file returns zero" `Quick
+               test_replay_pending_orphan_inbox_missing_pending_file_returns_zero
+           ; test_case "replay_pending_orphan_inbox empty pending file returns zero and deletes" `Quick
+               test_replay_pending_orphan_inbox_empty_pending_file_returns_zero_and_deletes
            ] ) ]

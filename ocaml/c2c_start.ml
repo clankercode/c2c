@@ -1265,8 +1265,12 @@ let tmux_info_path name = instance_dir name // "tmux.json"
    messages queued during the restart gap are preserved. *)
 let capture_orphan_inbox_for_restart ~(broker_root : string) ~(session_id : string) : int =
   let broker = C2c_mcp.Broker.create ~root:broker_root in
-  let pending_path = broker_root // "mcp" // "pending-orphan-replay." ^ session_id ^ ".json" in
-  match C2c_mcp.Broker.read_orphan_inbox_messages broker ~session_id with
+  (* broker_root IS the mcp broker dir — write pending file directly there. *)
+  let pending_path = broker_root // "pending-orphan-replay." ^ session_id ^ ".json" in
+  (* read_and_delete_orphan_inbox holds the inbox lock across read+delete,
+     so a concurrent enqueue cannot race between reading messages and deleting
+     the file. *)
+  match C2c_mcp.Broker.read_and_delete_orphan_inbox broker ~session_id with
   | [] -> 0
   | msgs ->
       (* Save as a JSON list of message objects, same format as inbox files. *)
@@ -1279,7 +1283,6 @@ let capture_orphan_inbox_for_restart ~(broker_root : string) ~(session_id : stri
                   ; ("reply_via", match m.C2c_mcp.reply_via with None -> `Null | Some s -> `String s)
                   ; ("enc_status", match m.C2c_mcp.enc_status with None -> `Null | Some s -> `String s)
                   ]) msgs));
-      C2c_mcp.Broker.delete_orphan_inbox broker ~session_id;
       List.length msgs
 
 (* Replay captured orphan messages into the new session's inbox.
