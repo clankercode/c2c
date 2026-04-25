@@ -243,10 +243,14 @@ let heartbeat_command_allowed (cmd : string) : bool =
   let words = split_command_words cmd in
   List.exists (fun allowed -> words = allowed) command_allowlist
 
-let run_allowed_heartbeat_command (cmd : string) : string =
+let run_allowed_heartbeat_command ~(timeout_s : float) (cmd : string) : string =
   if not (heartbeat_command_allowed cmd) then
     Printf.sprintf "[skipped disallowed heartbeat command: %s]" cmd
   else
+    let timeout_s = max 1.0 timeout_s |> ceil |> int_of_float in
+    let cmd =
+      Printf.sprintf "timeout %ds %s" timeout_s cmd
+    in
     let ic = Unix.open_process_in cmd in
     try
       let buf = Buffer.create 256 in
@@ -274,7 +278,9 @@ let render_heartbeat_content (hb : managed_heartbeat) : string =
   match hb.command with
   | None -> hb.message
   | Some cmd ->
-      let output = run_allowed_heartbeat_command cmd in
+      let output =
+        run_allowed_heartbeat_command ~timeout_s:hb.command_timeout_s cmd
+      in
       if String.trim output = "" then hb.message
       else
         Printf.sprintf "%s\n\n[heartbeat:%s command output]\n%s"
@@ -415,9 +421,8 @@ let repo_config_git_sign () : bool =
     in
     loop ()
 
-let read_toml_sections_with_prefix (prefix : string) :
+let read_toml_sections_with_prefix_from_path (path : string) (prefix : string) :
     (string * (string * string) list) list =
-  let path = repo_config_path () in
   if not (Sys.file_exists path) then []
   else
     let ic = open_in path in
@@ -461,6 +466,10 @@ let read_toml_sections_with_prefix (prefix : string) :
      with End_of_file ->
        List.map (fun (section, entries) -> (section, List.rev entries))
          (List.rev !acc))
+
+let read_toml_sections_with_prefix (prefix : string) :
+    (string * (string * string) list) list =
+  read_toml_sections_with_prefix_from_path (repo_config_path ()) prefix
 
 let assoc_bool key entries default =
   match List.assoc_opt key entries with
@@ -515,6 +524,13 @@ let heartbeat_from_entries ~(name : string) (base : managed_heartbeat)
 
 let repo_config_managed_heartbeats () : managed_heartbeat list =
   read_toml_sections_with_prefix "heartbeat"
+  |> List.map (fun (name, entries) ->
+       heartbeat_from_entries ~name
+         { builtin_managed_heartbeat with heartbeat_name = name }
+         entries)
+
+let managed_heartbeats_from_toml_path (path : string) : managed_heartbeat list =
+  read_toml_sections_with_prefix_from_path path "heartbeat"
   |> List.map (fun (name, entries) ->
        heartbeat_from_entries ~name
          { builtin_managed_heartbeat with heartbeat_name = name }
@@ -597,10 +613,12 @@ let should_heartbeat_apply_to_role ~(role : C2c_role.t option)
        | None -> false)
 
 let resolve_managed_heartbeats ~(client : string) ~(deliver_started : bool)
-    ~(role : C2c_role.t option) (config_specs : managed_heartbeat list) :
+    ~(role : C2c_role.t option)
+    ?(per_agent_specs : managed_heartbeat list = [])
+    (config_specs : managed_heartbeat list) :
     managed_heartbeat list =
   let merged_config = merge_heartbeats (builtin_managed_heartbeat :: config_specs) in
-  let merged =
+  let merged_role =
     match role with
     | None -> merged_config
     | Some r ->
@@ -632,6 +650,7 @@ let resolve_managed_heartbeats ~(client : string) ~(deliver_started : bool)
         in
         merge_heartbeats (merged_config @ role_default @ role_named)
   in
+  let merged = merge_heartbeats (merged_role @ per_agent_specs) in
   merged
   |> List.filter (should_heartbeat_apply_to_client ~client ~deliver_started)
   |> List.filter (should_heartbeat_apply_to_role ~role)
@@ -1173,6 +1192,9 @@ let eager_register_managed_alias ~(broker_root : string) ~(session_id : string)
     write_json_file_atomic reg_path (`List (row :: kept)))
 
 let instance_dir name = instances_dir // name
+let per_agent_managed_heartbeats ~(name : string) : managed_heartbeat list =
+  managed_heartbeats_from_toml_path (instance_dir name // "heartbeat.toml")
+
 let config_path name = instance_dir name // "config.json"
 let meta_json_path name = instance_dir name // "meta.json"
 let outer_pid_path name = instance_dir name // "outer.pid"
@@ -3131,6 +3153,7 @@ let run_outer_loop ~(name : string) ~(client : string)
             resolve_managed_heartbeats ~client
               ~deliver_started:(Option.is_some !deliver_pid)
               ~role:heartbeat_role
+              ~per_agent_specs:(per_agent_managed_heartbeats ~name)
               (repo_config_managed_heartbeats ())
           in
           List.iter

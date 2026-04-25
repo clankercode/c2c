@@ -127,10 +127,15 @@ val next_heartbeat_delay_s : now:float -> managed_heartbeat -> float
 val repo_config_managed_heartbeats : unit -> managed_heartbeat list
 (** Read managed heartbeat defaults and named specs from [.c2c/config.toml]. *)
 
+val per_agent_managed_heartbeats : name:string -> managed_heartbeat list
+(** Read managed heartbeat overrides from the instance-local
+    [heartbeat.toml], if present. *)
+
 val resolve_managed_heartbeats :
   client:string ->
   deliver_started:bool ->
   role:C2c_role.t option ->
+  ?per_agent_specs:managed_heartbeat list ->
   managed_heartbeat list ->
   managed_heartbeat list
 (** Resolve effective heartbeats after built-in defaults, repo config, role

@@ -32,9 +32,9 @@ Resolution order is last-wins:
 1. Built-in defaults.
 2. `.c2c/config.toml` global defaults and named heartbeat specs.
 3. Role file overrides from `.c2c/roles/<agent>.md`.
-4. Per-agent override file, reserved for follow-up: `.c2c/agents/<name>/heartbeat.toml` or instance config extension.
+4. Per-agent override file: `~/.local/share/c2c/instances/<name>/heartbeat.toml`.
 
-The first implementation covers layers 1-3 in OCaml. Layer 4 is represented in the resolver API shape but not wired to a persisted file unless implementation time allows; the stable-ID model makes that addition straightforward.
+The first implementation covers all four layers in OCaml.
 
 ## Schema
 
@@ -80,6 +80,15 @@ c2c:
     quota:
       interval: 15m
       command: "c2c quota"
+```
+
+Per-agent override:
+
+```toml
+# ~/.local/share/c2c/instances/<name>/heartbeat.toml
+[heartbeat]
+interval = "2m"
+message = "This single managed instance gets a faster tick."
 ```
 
 Stable IDs are `default` for the base heartbeat and table names for named heartbeats (`sitrep`, `idle_check`, `quota`). Setting `enabled = false` for an ID disables that heartbeat at that layer.
@@ -149,5 +158,4 @@ Add focused OCaml tests for:
 
 ## Open Follow-up
 
-- Persisted per-agent override file is designed but may land as a follow-up if the first slice is large enough already.
 - GUI should later expose heartbeats as named toggles by stable ID.

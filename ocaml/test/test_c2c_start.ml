@@ -372,6 +372,43 @@ let test_resolve_managed_heartbeats_role_override_preserves_config_fields () =
         hb.role_classes
   | _ -> fail "expected one resolved default heartbeat"
 
+let test_resolve_managed_heartbeats_per_agent_override_wins_last () =
+  let role =
+    C2c_role.parse_string
+      "---\n\
+       description: Coordinator\n\
+       role: primary\n\
+       role_class: coordinator\n\
+       c2c:\n\
+       \  heartbeat:\n\
+       \    message: \"Role message\"\n\
+       ---\n\
+       body\n"
+  in
+  let per_agent =
+    C2c_start.
+      { heartbeat_name = "default"
+      ; schedule = Interval 120.0
+      ; interval_s = 120.0
+      ; message = "Per-agent message"
+      ; command = None
+      ; command_timeout_s = 30.0
+      ; clients = [ "claude" ]
+      ; role_classes = [ "coordinator" ]
+      ; enabled = true
+      }
+  in
+  let specs =
+    C2c_start.resolve_managed_heartbeats ~client:"claude"
+      ~deliver_started:false ~role:(Some role)
+      ~per_agent_specs:[ per_agent ] []
+  in
+  match specs with
+  | [ hb ] ->
+      check string "per-agent message wins" "Per-agent message" hb.message;
+      check (float 0.001) "per-agent interval wins" 120.0 hb.interval_s
+  | _ -> fail "expected one resolved default heartbeat"
+
 let test_resolve_managed_heartbeats_filters_clients_and_role_classes () =
   let role =
     C2c_role.parse_string
@@ -438,6 +475,24 @@ let test_render_heartbeat_content_appends_command_output () =
   check bool "skips disallowed command" true
     (try ignore (Str.search_forward (Str.regexp_string "skipped disallowed heartbeat command") content 0); true
      with Not_found -> false)
+
+let test_per_agent_managed_heartbeats_reads_instance_file () =
+  let name = Printf.sprintf "heartbeat-agent-%d" (Random.bits ()) in
+  with_instance_dir name @@ fun dir ->
+  let path = Filename.concat dir "heartbeat.toml" in
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc
+      "[heartbeat]\n\
+       interval = \"2m\"\n\
+       message = \"Per-agent tick\"\n");
+  let specs = C2c_start.per_agent_managed_heartbeats ~name in
+  match specs with
+  | [ hb ] ->
+      check string "name" "default" hb.heartbeat_name;
+      check string "message" "Per-agent tick" hb.message;
+      check (float 0.001) "interval" 120.0 hb.interval_s
+  | _ -> fail "expected one per-agent heartbeat"
 
 let test_start_deliver_daemon_detaches_from_terminal_stdio_and_group () =
   with_temp_dir @@ fun dir ->
@@ -1064,10 +1119,15 @@ let () =
         ; ( "resolve_managed_heartbeats_role_override_preserves_config_fields",
             `Quick,
             test_resolve_managed_heartbeats_role_override_preserves_config_fields )
+        ; ( "resolve_managed_heartbeats_per_agent_override_wins_last",
+            `Quick,
+            test_resolve_managed_heartbeats_per_agent_override_wins_last )
         ; ( "resolve_managed_heartbeats_filters_clients_and_role_classes",
             `Quick, test_resolve_managed_heartbeats_filters_clients_and_role_classes )
         ; ( "render_heartbeat_content_appends_command_output",
             `Quick, test_render_heartbeat_content_appends_command_output )
+        ; ( "per_agent_managed_heartbeats_reads_instance_file",
+            `Quick, test_per_agent_managed_heartbeats_reads_instance_file )
         ; ( "finalize_outer_loop_exit_cleans_before_print",
             `Quick, test_finalize_outer_loop_exit_cleans_before_print )
         ; ( "start_deliver_daemon_detaches_from_terminal_stdio_and_group",
