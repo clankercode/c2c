@@ -4451,7 +4451,7 @@ let log_rpc ~broker_root ~tool_name ~is_error =
 *)
 
 let skills_dir () =
-  let top = match Git_helpers.git_repo_toplevel () with
+  let top = match Git_helpers.git_common_dir_parent () with
     | Some t -> t
     | None -> Sys.getcwd ()
   in
