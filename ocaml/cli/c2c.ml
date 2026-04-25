@@ -4965,32 +4965,6 @@ let diag_cmd =
 
 let diag = Cmdliner.Cmd.v (Cmdliner.Cmd.info "diag" ~doc:"Show diagnostic info (last death + stderr tail) for a managed instance.") diag_cmd
 
-(* --- subcommand: worktree ------------------------------------------------- *)
-
-let worktree_list_cmd =
-  let+ () = Cmdliner.Term.const () in
-  let worktrees = C2c_worktree.list_worktrees () in
-  match worktrees with
-  | [] -> Printf.printf "  (no worktrees)\n"
-  | items ->
-      List.iter (fun (alias, path, branch) ->
-        Printf.printf "%s  %s  (branch: %s)\n" alias path branch
-      ) items
-
-let worktree_prune_cmd =
-  let+ () = Cmdliner.Term.const () in
-  if C2c_worktree.prune_worktrees () then
-    Printf.printf "worktree prune: done\n"
-  else
-    Printf.eprintf "worktree prune: failed\n%!"
-
-let worktree_group =
-  Cmdliner.Cmd.group
-    ~default:worktree_list_cmd
-    (Cmdliner.Cmd.info "worktree" ~doc:"Manage per-agent git worktrees.")
-    [ Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List all worktrees.") worktree_list_cmd
-    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "prune" ~doc:"Remove stale worktree entries.") worktree_prune_cmd ]
-
 (* --- subcommand: doctor --------------------------------------------------- *)
 
 let doctor_cmd =
@@ -5217,6 +5191,9 @@ let start_cmd =
   let auto_join =
     Cmdliner.Arg.(value & opt (some string) None & info [ "auto-join" ] ~docv:"ROOMS" ~doc:"Comma-separated room IDs to auto-join on startup. Overrides the default swarm-lounge.")
   in
+  let worktree =
+    Cmdliner.Arg.(value & flag & info [ "worktree" ] ~doc:"Create an isolated git worktree for this agent before launching. Useful for parallel feature work. Implied when C2C_AUTO_WORKTREE=1.")
+  in
   let+ client = client
   and+ name_opt = name
   and+ alias_opt = alias
@@ -5229,7 +5206,8 @@ let start_cmd =
   and+ agent_opt = agent
   and+ model_opt = model
   and+ reply_to = reply_to
-  and+ auto_join = auto_join in
+  and+ auto_join = auto_join
+  and+ worktree_flag = worktree in
   let kickoff_prompt_text =
     match kickoff_prompt_text_raw, kickoff_prompt_file with
     | Some _, Some _ ->
@@ -5475,12 +5453,16 @@ let start_cmd =
     | Some rooms -> Some rooms
     | None -> auto_join_rooms
   in
-  if Sys.getenv_opt "C2C_NO_WORKTREE" = None then begin
-    let wt_dir = C2c_worktree.ensure_worktree ~alias:effective_alias ~branch:"master" in
-    (try Unix.chdir wt_dir with Sys_error e ->
-      Printf.eprintf "warning: failed to chdir to worktree %s: %s\n%!" wt_dir e);
-    Printf.printf "[c2c] worktree: %s\n%!" wt_dir
-  end;
+  let auto_worktree = worktree_flag || (match Sys.getenv_opt "C2C_AUTO_WORKTREE" with Some "1" -> true | _ -> false) in
+  (match session_id_opt with
+  | Some _ ->
+      Printf.printf "[c2c] resume mode — staying at parent cwd\n%!"
+  | None when auto_worktree ->
+      let wt_dir = C2c_worktree.ensure_worktree ~alias:effective_alias ~branch:"master" in
+      (try Unix.chdir wt_dir with Sys_error e ->
+        Printf.eprintf "warning: failed to chdir to worktree %s: %s\n%!" wt_dir e);
+      Printf.printf "[c2c] worktree: %s\n%!" wt_dir
+  | _ -> ());
   exit (C2c_start.cmd_start ~client ~name ~extra_args:[]
       ?binary_override:bin_opt
       ?alias_override
@@ -8501,7 +8483,7 @@ let () =
     [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; send_all; sweep
     ; sweep_dryrun; history; health; setcap; status; verify; git; register; refresh_peer
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; smoke_test; init; install; completion_cmd
-    ; serve; mcp; start; agent_group; config_group; roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; C2c_rooms.rooms_group; C2c_rooms.room_group; relay_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_peer_pass.peer_pass_group; worktree_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
+    ; serve; mcp; start; agent_group; config_group; roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; C2c_rooms.rooms_group; C2c_rooms.room_group; relay_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in
   exit

@@ -1,5 +1,7 @@
 (* c2c_worktree.ml — git worktree management helpers for per-agent isolation. *)
 
+open Cmdliner.Term.Syntax
+
 let ( // ) = Filename.concat
 
 (** [git_command args] runs `git <args>` and returns (exit_code, stdout, stderr).
@@ -30,6 +32,21 @@ let worktrees_root () =
   | Some parent -> parent // ".c2c" // "worktrees"
   | None -> failwith "not in a git repository"
 
+(** [is_worktree_dir ~path] returns true if [path] is a registered git worktree
+    by checking git worktree list output for that path. *)
+let is_worktree_dir ~(path : string) : bool =
+  let (_, output, _) = git_command [ "worktree"; "list"; "--porcelain" ] in
+  let lines = String.split_on_char '\n' output in
+  let prefix = "worktree " in
+  let pfx_len = String.length prefix in
+  List.exists (fun line ->
+    let trimmed = String.trim line in
+    String.length trimmed >= pfx_len &&
+    String.sub trimmed 0 pfx_len = prefix &&
+    (let wt_path = String.sub trimmed pfx_len (String.length trimmed - pfx_len) in
+     wt_path = path)
+  ) lines
+
 (** [ensure_worktree ~alias ~branch] creates a worktree for [alias] if it doesn't
     exist, using [branch]. Uses `git worktree add --force` so it handles
     partially-created worktrees from crashes. Returns the worktree directory. *)
@@ -37,16 +54,11 @@ let ensure_worktree ~(alias : string) ~(branch : string) : string =
   let root = worktrees_root () in
   let wt_dir = root // alias in
   C2c_utils.mkdir_p root;
-  if Sys.file_exists wt_dir then begin
-    let (code, _, _) = git_command [ "worktree"; "list"; "--porcelain"; wt_dir ] in
-    if code = 0 then wt_dir
-    else begin
+  if Sys.file_exists wt_dir && is_worktree_dir ~path:wt_dir then wt_dir
+  else begin
+    if Sys.file_exists wt_dir then begin
       ignore (git_command [ "worktree"; "remove"; "--force"; wt_dir ]);
-      let (code2, _, _) = git_command [ "worktree"; "add"; "--force"; wt_dir; branch ] in
-      if code2 <> 0 then Printf.eprintf "warning: worktree add failed for %s\n%!" alias;
-      wt_dir
-    end
-  end else begin
+    end;
     let (code, _, _) = git_command [ "worktree"; "add"; "--force"; wt_dir; branch ] in
     if code <> 0 then Printf.eprintf "warning: worktree add failed for %s\n%!" alias;
     wt_dir
@@ -88,3 +100,105 @@ let list_worktrees () =
 let prune_worktrees () =
   let (code, _, _) = git_command [ "worktree"; "prune" ] in
   code = 0
+
+(** [auto_alias ()] returns the alias from C2C_MCP_AUTO_REGISTER_ALIAS env var,
+    falling back to the hostname. *)
+let auto_alias () =
+  match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
+  | Some alias when alias <> "" -> alias
+  | _ ->
+      let hostname = try Unix.gethostname () with _ -> "unknown" in
+      hostname
+
+(** [current_worktree_alias ()] returns the alias of the current worktree if we're
+    in one, None otherwise. *)
+let current_worktree_alias () =
+  let wt_root = worktrees_root () in
+  let rec aux cur =
+    if cur = Filename.dirname cur || cur = "/" then None
+    else if String.length cur >= String.length wt_root &&
+            String.sub cur 0 (String.length wt_root) = wt_root then
+      Some (Filename.basename cur)
+    else aux (Filename.dirname cur)
+  in
+  try aux (Sys.getcwd ()) with _ -> None
+
+(** [setup_worktree ~alias] creates a new worktree for [alias].
+    Creates branch [agent/<alias>] off origin/master if it doesn't exist.
+    Returns the worktree directory path and exit code. *)
+let setup_worktree ~(alias : string) : (string * int) =
+  let branch = "agent/" ^ alias in
+  let wt_dir = worktrees_root () // alias in
+  let (_code_fetch, _, _) = git_command [ "fetch"; "origin"; "master" ] in
+  let (code_add, _, _stderr) = git_command [ "worktree"; "add"; "--force"; wt_dir; branch ] in
+  if code_add = 0 then (wt_dir, 0)
+  else (wt_dir, if Sys.file_exists wt_dir then 0 else 1)
+
+(** [worktree_status ()] prints status of current worktree (or all worktrees). *)
+let worktree_status () =
+  let alias = current_worktree_alias () in
+  match alias with
+  | Some a ->
+      Printf.printf "Current worktree: %s\n" a;
+      Printf.printf "Worktree path:   %s\n" (worktrees_root () // a);
+      Printf.printf "Branch:         agent/%s\n" a
+  | None ->
+      let all = list_worktrees () in
+      if all = [] then Printf.printf "No worktrees found.\n"
+      else begin
+        Printf.printf "Worktrees:\n";
+        List.iter (fun (a, path, branch) ->
+          let current = if String.length path >= String.length (Sys.getcwd ()) &&
+                           String.sub path 0 (String.length (Sys.getcwd ())) = Sys.getcwd () then " (current)" else "" in
+          Printf.printf "  %s%s — %s\n" a current branch
+        ) all
+      end
+
+(* --- CLI ----------------------------------------------------------- *)
+
+let worktree_setup_term =
+  let alias_opt =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS" ~doc:"Agent alias for this worktree.")
+  in
+  let+ alias_val = alias_opt in
+  let alias = match alias_val with
+    | Some a -> a
+    | None -> auto_alias ()
+  in
+  let (wt_dir, exit_code) = setup_worktree ~alias in
+  if exit_code = 0 then
+    Printf.printf "Worktree created: %s\nBranch: agent/%s\nTo enter: cd %s\n" wt_dir alias wt_dir
+  else
+    Printf.eprintf "Worktree may exist: %s\n" wt_dir
+
+let worktree_status_term =
+  let+ () = Cmdliner.Term.const () in
+  worktree_status ()
+
+let worktree_list_term =
+  let+ () = Cmdliner.Term.const () in
+  let worktrees = list_worktrees () in
+  match worktrees with
+  | [] -> Printf.printf "  (no worktrees)\n"
+  | items ->
+      List.iter (fun (a, path, branch) ->
+        let current = if String.length path >= String.length (Sys.getcwd ()) &&
+                         String.sub path 0 (String.length (Sys.getcwd ())) = Sys.getcwd () then " (current)" else "" in
+        Printf.printf "  %s%s — %s\n" a current branch
+      ) items
+
+let worktree_prune_term =
+  let+ () = Cmdliner.Term.const () in
+  if prune_worktrees () then
+    Printf.printf "worktree prune: done\n"
+  else
+    Printf.eprintf "worktree prune: failed\n%!"
+
+let worktree_group =
+  Cmdliner.Cmd.group
+    ~default:worktree_list_term
+    (Cmdliner.Cmd.info "worktree" ~doc:"Manage per-agent git worktrees.")
+    [ Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List all worktrees.") worktree_list_term
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "prune" ~doc:"Remove stale worktree entries.") worktree_prune_term
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "setup" ~doc:"Create an isolated git worktree for this agent.") worktree_setup_term
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "status" ~doc:"Show current worktree state.") worktree_status_term ]
