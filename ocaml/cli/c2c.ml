@@ -5662,7 +5662,7 @@ let restart_cmd =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME" ~doc:"Instance name to restart.")
   in
   let+ name = name in
-  exit (C2c_start.cmd_restart name)
+  exit (C2c_start.cmd_restart name ~timeout_s:5.0)
 
 let restart = Cmdliner.Cmd.v (Cmdliner.Cmd.info "restart" ~doc:"Restart a managed c2c instance.") restart_cmd
 

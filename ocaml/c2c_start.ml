@@ -1008,6 +1008,10 @@ let write_config (cfg : instance_config) =
     (match cfg.model_override with
      | Some m -> [ ("model_override", `String m) ]
      | None -> [])
+    @
+    (match cfg.agent_name with
+     | Some n -> [ ("agent_name", `String n) ]
+     | None -> [])
   in
   let oc = open_out path in
   Fun.protect ~finally:(fun () -> close_out oc)
@@ -3174,37 +3178,95 @@ let read_kickoff_prompt_opt (name : string) : string option =
     with _ -> None
   else None
 
-let cmd_restart ?(session_id_override : string option) (name : string) : int =
-  match load_config_opt name with
-  | None ->
-      Printf.eprintf "error: no config found for instance '%s'\n%!" name;
-      exit 1
-  | Some cfg ->
-      (match session_id_override with
-       | None -> ()
-       | Some sid ->
-           let updated =
-             match cfg.client with
-             | "codex" -> { cfg with codex_resume_target = Some sid }
-             | "codex-headless" -> { cfg with resume_session_id = sid }
-             | "claude" | "opencode" | "kimi" | "crush" ->
-                 { cfg with resume_session_id = sid }
-             | _ -> cfg
-           in
-           write_config updated);
-      (* Signal the inner client → existing outer loop relaunches in its own pane.
-         Previously this killed the outer and respawned it in the caller's process,
-         which caused "new pane" when the coordinator ran `c2c restart <peer>`. *)
-      (match read_pid (inner_pid_path name) with
-       | Some pid when pid_alive pid ->
-           Printf.printf "[c2c restart] signalling inner pid %d for '%s'\n%!" pid name;
-           (try Unix.kill pid Sys.sigterm; 0
-            with Unix.Unix_error (e, _, _) ->
-              Printf.eprintf "kill failed: %s\n%!" (Unix.error_message e); 1)
-       | _ ->
-           Printf.eprintf
-             "error: '%s' has no live inner process; use 'c2c start' to launch it\n%!" name;
-           1)
+(** Wait for a PID to exit using kill(pid, 0) + progressive backoff.
+    Returns true if the process exited within the timeout, false otherwise. *)
+let wait_for_exit ~(pid : int) ~(timeout_s : float) : bool =
+  let interval_s = 0.05 in
+  let rec loop elapsed =
+    if elapsed >= timeout_s then false
+    else if not (pid_alive pid) then true
+    else begin
+      let sleep_time = min interval_s (timeout_s -. elapsed) in
+      if sleep_time <= 0.0 then false
+      else (Unix.sleepf sleep_time; loop (elapsed +. sleep_time))
+    end
+  in
+  loop 0.0
+
+(** Build the argv list for re-launching `c2c start` from instance config.
+    Preserves all user-facing flags so the restarted session is identical. *)
+let build_start_argv ~(cfg : instance_config) : string array =
+  let c2c = current_c2c_command () in
+  let argv = ref [ c2c; "start"; cfg.client; "-n"; cfg.name ] in
+  (* --session-id *)
+  argv := !argv @ [ "--session-id"; cfg.resume_session_id ];
+  (* --alias *)
+  if cfg.alias <> cfg.name then argv := !argv @ [ "--alias"; cfg.alias ];
+  (* --bin (binary_override) *)
+  (match cfg.binary_override with
+   | Some b -> argv := !argv @ [ "--bin"; b ]
+   | None -> ());
+  (* --model (model_override) *)
+  (match cfg.model_override with
+   | Some m -> argv := !argv @ [ "--model"; m ]
+   | None -> ());
+  (* --agent (agent_name) *)
+  (match cfg.agent_name with
+   | Some n -> argv := !argv @ [ "--agent"; n ]
+   | None -> ());
+  (* extra_args — preserve any non-standard flags *)
+  argv := !argv @ cfg.extra_args;
+  Array.of_list !argv
+
+let cmd_restart ?(session_id_override : string option) (name : string) ~(timeout_s : float) : int =
+  let cfg = match load_config_opt name with
+    | None ->
+        Printf.eprintf "error: no config found for instance '%s'\n%!" name;
+        exit 1
+    | Some cfg -> cfg
+  in
+  (* Apply session-id override if given *)
+  (match session_id_override with
+   | None -> ()
+   | Some sid ->
+       let updated = match cfg.client with
+         | "codex" -> { cfg with codex_resume_target = Some sid }
+         | "codex-headless" -> { cfg with resume_session_id = sid }
+         | "claude" | "opencode" | "kimi" | "crush" ->
+             { cfg with resume_session_id = sid }
+         | _ -> cfg
+       in
+       write_config updated);
+  (* Kill inner — SIGTERM propagates to whole process group via kill(-pid, SIGTERM)
+     for TUI clients; codex-headless gets a single-pid SIGTERM. *)
+  let inner_pid = read_pid (inner_pid_path name) in
+  let outer_pid = read_pid (outer_pid_path name) in
+  (match inner_pid with
+   | Some pid when pid_alive pid ->
+       Printf.printf "[c2c restart] signalling inner pid %d for '%s'\n%!" pid name;
+       (try Unix.kill pid Sys.sigterm
+        with Unix.Unix_error (e, _, _) ->
+          Printf.eprintf "warning: kill inner %d failed: %s\n%!" pid (Unix.error_message e))
+   | _ ->
+       Printf.printf "[c2c restart] no live inner for '%s'\n%!" name);
+  (* Wait for outer to exit so we don't have two instances racing on the lock.
+     Use kill(pid, 0) + exponential backoff. *)
+  (match outer_pid with
+   | Some pid when pid_alive pid ->
+       Printf.printf "[c2c restart] waiting for outer pid %d to exit (timeout %.0fs)...\n%!" pid timeout_s;
+       if not (wait_for_exit ~pid ~timeout_s) then begin
+         Printf.eprintf "error: outer pid %d did not exit within %.0fs.\n%!" pid timeout_s;
+         Printf.eprintf "  Try 'c2c stop %s' first, then 'c2c start %s -n %s --session-id %s'.\n%!"
+           name name name (match load_config_opt name with Some c -> c.resume_session_id | None -> name);
+         exit 1
+       end
+       else Printf.printf "[c2c restart] outer exited cleanly.\n%!"
+   | _ -> ());
+  (* Re-launch via exec so we replace this process — preserves c2c start's
+     non-looping supervisor contract (this process becomes the new outer). *)
+  let argv = build_start_argv ~cfg in
+  Printf.printf "[c2c restart] launching: %s\n%!" (String.concat " " (Array.to_list argv));
+  Unix.execvp argv.(0) argv
 
 let cmd_reset_thread (name : string) (thread_id : string) : int =
   if String.trim thread_id = "" then begin
@@ -3226,7 +3288,7 @@ let cmd_reset_thread (name : string) (thread_id : string) : int =
              "error: reset-thread currently supports codex and codex-headless instances only (got %s)\n%!"
              cfg.client;
            exit 1);
-      cmd_restart name
+      cmd_restart name ~timeout_s:5.0
 
 let cmd_instances () : int =
   if not (Sys.file_exists instances_dir) then

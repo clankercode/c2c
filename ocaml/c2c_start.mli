@@ -362,10 +362,12 @@ val cmd_start :
 val cmd_stop : string -> int
 (** [cmd_stop name] stops a running instance. Returns 0. *)
 
-val cmd_restart : ?session_id_override:string -> string -> int
-(** [cmd_restart ?session_id_override name] stops then restarts an instance.
-    When [session_id_override] is provided, it becomes the persisted exact
-    resume target for clients that support it. Returns exit code. *)
+val cmd_restart : ?session_id_override:string -> string -> timeout_s:float -> int
+(** [cmd_restart ?session_id_override name ~timeout_s] stops then restarts an instance.
+    [timeout_s] is how long to wait for the outer process to exit before
+    spawning the new start (default 5s). When [session_id_override] is provided,
+    it becomes the persisted exact resume target for clients that support it.
+    Returns exit code. *)
 
 val cmd_reset_thread : string -> string -> int
 (** [cmd_reset_thread name thread_id] stores an explicit thread/session target
