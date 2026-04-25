@@ -35,16 +35,13 @@ let resolve_claude_dir () =
          resolve_link dot_claude 10
        with _ -> dot_claude)
 
-(* --- broker root resolution ------------------------------------------------ *)
+(* --- broker root resolution (delegated to C2c_utils) ---------------------- *)
+
+let resolve_broker_root = C2c_utils.resolve_broker_root
 
 let broker_root_from_env () =
   match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
   | Some path when String.trim path <> "" -> Some path
-  | _ -> None
-
-let git_common_dir () =
-  match Git_helpers.git_common_dir () with
-  | Some line when Sys.is_directory line -> Some line
   | _ -> None
 
 let git_repo_toplevel () =
@@ -71,31 +68,6 @@ let find_python_script script =
       let path = dir // script in
       if Sys.file_exists path then Some path else None
   | None -> None
-
-let xdg_state_home () =
-  match Sys.getenv_opt "XDG_STATE_HOME" with
-  | Some v when String.trim v <> "" -> String.trim v
-  | _ ->
-      (match Sys.getenv_opt "HOME" with
-       | Some h when String.trim h <> "" -> String.trim h // ".local" // "state"
-       | _ -> "/tmp")
-
-let fallback_broker_root () = xdg_state_home () // "c2c" // "default" // "mcp"
-
-(* Pure path resolution — no side effects. The broker creates the directory
-   lazily on first use via [Broker.ensure_root]. Callers that need the
-   directory to exist on disk (e.g. to write auxiliary files at setup time)
-   should create it themselves. *)
-let resolve_broker_root () =
-  let abs_path p =
-    if Filename.is_relative p then Sys.getcwd () // p else p
-  in
-  match broker_root_from_env () with
-  | Some dir -> abs_path dir
-  | None -> (
-      match git_common_dir () with
-      | Some git_dir -> abs_path git_dir // "c2c" // "mcp"
-      | None -> fallback_broker_root ())
 
 (* --- session / alias resolution ------------------------------------------- *)
 
