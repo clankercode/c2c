@@ -215,6 +215,78 @@ class DoctorScriptClassificationTests(unittest.TestCase):
             shutil.rmtree(d)
 
 
+class ManagedInstanceDriftTests(unittest.TestCase):
+    """Test managed instance drift detection in c2c-doctor.sh."""
+
+    def test_drift_check_reports_dead_managed_pid_only(self):
+        """Registry with one alive + one dead managed PID → only dead one drifted."""
+        import shutil, json, os
+        d = tempfile.mkdtemp()
+        try:
+            # broker_root is a subdir of temp dir (NOT the same as the c2c stub)
+            broker_root = Path(d) / "broker_root"
+            broker_root.mkdir()
+            registry = broker_root / "registry.json"
+            alive_pid = os.getpid()
+            dead_pid = 1  # init is always pid 1 but is not our managed session
+            registry.write_text(json.dumps([
+                {
+                    "session_id": "alive-session",
+                    "alias": "alive-agent",
+                    "pid": alive_pid,
+                    "pid_start_time": 12345678,
+                    "registered_at": "2026-04-25T00:00:00Z",
+                },
+                {
+                    "session_id": "dead-session",
+                    "alias": "dead-agent",
+                    "pid": dead_pid,
+                    "pid_start_time": 99999999,
+                    "registered_at": "2026-04-25T00:00:00Z",
+                },
+                {
+                    "session_id": "non-managed-session",
+                    "alias": "regular-peer",
+                    "pid": None,
+                    "registered_at": "2026-04-25T00:00:00Z",
+                },
+            ]))
+            # c2c stub must be on PATH and NOT conflict with broker_root dir
+            c2c_stub = Path(d) / "bin" / "c2c"
+            c2c_stub.parent.mkdir()
+            c2c_stub.write_text(
+                "#!/bin/bash\n"
+                "if [[ \"$1\" == \"health\" ]]; then\n"
+                "  echo '{\"ok\":true}'\n"
+                "elif [[ \"$1\" == \"instances\" ]]; then\n"
+                "  echo 'alive-agent         codex      running      xml_fd (pid %d)'\n"
+                "else\n"
+                "  echo 'stub'\n"
+                "fi\n" % alive_pid
+            )
+            c2c_stub.chmod(0o755)
+            result = subprocess.run(
+                ["bash", str(DOCTOR_SCRIPT)],
+                capture_output=True, text=True,
+                cwd=DOCTOR_SCRIPT.parent.parent,
+                env={
+                    **os.environ,
+                    "PATH": str(c2c_stub.parent) + ":" + os.environ["PATH"],
+                    "C2C_MCP_BROKER_ROOT": str(broker_root),
+                }
+            )
+            self.assertIn("dead-agent", result.stdout)
+            self.assertIn("alive-agent", result.stdout)  # printed but not drifted
+            # dead-agent should appear in drift section with dead pid
+            self.assertRegex(result.stdout, r"dead-agent.*pid.*1.*dead")
+            # alive-agent should NOT appear in the drift section
+            drift_section = result.stdout.split("managed instance drift")[1].split("uncommitted WIP")[0]
+            self.assertNotIn("alive-agent", drift_section)
+            self.assertIn("c2c refresh-peer dead-agent", result.stdout)
+        finally:
+            shutil.rmtree(d)
+
+
 @unittest.skipUnless(C2C_BIN.exists(), f"c2c binary not found at {C2C_BIN}")
 class DoctorCLITests(unittest.TestCase):
     """Test that the c2c CLI has a doctor subcommand."""

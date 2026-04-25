@@ -84,6 +84,87 @@ else
   c2c instances 2>&1 || true
   echo ""
 
+  # Check for drifted managed PIDs: registry entries with pid_start_time set
+  # whose processes have died without cleaning up registration.
+  bold "=== managed instance drift ==="
+  echo ""
+  DRIFT_OUTPUT=$(python3 - << 'PYEOF'
+import json, os, sys
+from pathlib import Path
+
+def find_broker_root():
+    root = os.environ.get("C2C_MCP_BROKER_ROOT")
+    if root:
+        p = Path(root)
+        if p.exists(): return p
+    # Try git common dir fallback
+    try:
+        import subprocess
+        git_dir = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True
+        ).stdout.strip()
+        if git_dir and git_dir != ".git":
+            p = Path(git_dir).parent / "c2c"
+            if p.exists(): return p
+    except: pass
+    # Try home config
+    p = Path.home() / ".config" / "c2c"
+    if p.exists(): return p
+    return None
+
+broker_root = find_broker_root()
+if not broker_root:
+    print("  (broker root not found — skipping drift check)")
+    sys.exit(0)
+
+registry_path = broker_root / "registry.json"
+if not registry_path.exists():
+    print("  (no registry — skipping drift check)")
+    sys.exit(0)
+
+try:
+    with open(registry_path) as f:
+        registry = json.load(f)
+except Exception as e:
+    print(f"  (registry parse error: {e})")
+    sys.exit(0)
+
+drifted = []
+for entry in registry:
+    pid = entry.get("pid")
+    pid_start_time = entry.get("pid_start_time")
+    if not isinstance(pid, int) or not pid_start_time:
+        continue  # not a managed instance
+    alias = entry.get("alias", "?")
+    # Check if process is alive
+    try:
+        import signal
+        os.kill(pid, 0)  # signal 0 = existence check only
+        alive = True
+    except OSError:
+        alive = False
+
+    if not alive:
+        drifted.append({
+            "alias": alias,
+            "pid": pid,
+            "pid_start_time": pid_start_time,
+        })
+
+RED = '\033[31m'
+RESET = '\033[0m'
+if not drifted:
+    print("  no drifted managed instances")
+else:
+    for d in drifted:
+        print(f"  {RED}✗{RESET} {d['alias']} — pid {d['pid']} is dead (last seen at pid_start_time {d['pid_start_time']})")
+        print(f"    → fix: c2c refresh-peer {d['alias']}  or restart the managed session")
+PYEOF
+)
+  echo "$DRIFT_OUTPUT"
+  echo ""
+
   if [[ $MAIN_TREE_SHARED -eq 1 ]]; then
     bold "=== shared-tree warning ==="
     echo ""
