@@ -216,12 +216,21 @@ fi
 # ---------------------------------------------------------------------------
 AHEAD=$(git rev-list --count origin/master..HEAD 2>/dev/null || echo "?")
 if [[ "$AHEAD" == "0" ]]; then
-  if [[ $SUMMARY -eq 0 && $JSON -eq 0 && -x "$SCRIPT_DIR/c2c-command-test-audit.py" ]]; then
-    echo ""
-    bold "=== command test audit ==="
-    echo ""
-    "$SCRIPT_DIR/c2c-command-test-audit.py" --repo "$PWD" --summary --warn-only || true
-    echo ""
+  if [[ $SUMMARY -eq 0 && $JSON -eq 0 ]]; then
+    if [[ -x "$SCRIPT_DIR/c2c-command-test-audit.py" ]]; then
+      echo ""
+      bold "=== command test audit ==="
+      echo ""
+      "$SCRIPT_DIR/c2c-command-test-audit.py" --repo "$PWD" --summary --warn-only || true
+      echo ""
+    fi
+    if [[ -x "$SCRIPT_DIR/c2c-dup-scanner.py" ]]; then
+      echo ""
+      bold "=== duplication scan ==="
+      echo ""
+      "$SCRIPT_DIR/c2c-dup-scanner.py" --repo "$PWD" --full --warn-only || true
+      echo ""
+    fi
   fi
   bold "=== Push status: "
   green "up-to-date"
