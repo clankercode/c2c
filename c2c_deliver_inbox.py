@@ -782,5 +782,51 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def parse_managed_server_request_event(raw: str):
+    """Parse a ManagedServerRequestEvent JSON string.
+
+    Returns a dict with at least 'kind' and 'request_id', plus 'permission',
+    'command', 'reason' from the 'raw' field for permissions_approval_request
+    events. Returns None for events we don't care about (thread_resolved, etc.)
+    or on any parse failure.
+
+    The 'raw' field is a JSON object on the wire (not a string containing JSON).
+    If it arrives as a string, we attempt to parse it as JSON.
+    """
+    try:
+        event = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    if not isinstance(event, dict):
+        return None
+
+    kind = event.get("kind")
+    if kind != "permissions_approval_request":
+        return None
+
+    raw_field = event.get("raw")
+    inner = {}
+    if isinstance(raw_field, dict):
+        inner = raw_field
+    elif isinstance(raw_field, str):
+        try:
+            inner = json.loads(raw_field)
+        except (json.JSONDecodeError, TypeError):
+            inner = {}
+
+    return {
+        "kind": kind,
+        "request_id": event.get("request_id", ""),
+        "thread_id": event.get("thread_id", ""),
+        "turn_id": event.get("turn_id", ""),
+        "item_id": event.get("item_id", ""),
+        "server_name": event.get("server_name", ""),
+        "permission": inner.get("permission", "") if isinstance(inner, dict) else "",
+        "command": inner.get("command", "") if isinstance(inner, dict) else "",
+        "reason": inner.get("reason", "") if isinstance(inner, dict) else "",
+    }
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
