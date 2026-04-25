@@ -2819,7 +2819,7 @@ let run_outer_loop ~(name : string) ~(client : string)
         | "codex-headless", Some fifo_path, Some handoff_path, Some events_fifo_path, Some responses_fifo_path ->
             [ "/bin/bash"; "-lc";
               "bridge=\"$1\"; fifo=\"$2\"; handoff=\"$3\"; events=\"$4\"; responses=\"$5\"; shift 5; \
-               exec \"$bridge\" \"$@\" < \"$fifo\" 5> \"$handoff\" 6> \"$events\" 7< \"$responses\"";
+               exec \"$bridge\" \"$@\" < \"$fifo\" 5> \"$handoff\" 6> \"$events\" 7<> \"$responses\"";
               "c2c-codex-headless";
               binary_path;
               fifo_path;

@@ -338,6 +338,7 @@ val start_deliver_daemon :
   ?xml_output_fd:string ->
   ?xml_output_path:string ->
   ?event_fifo_path:string ->
+  ?response_fifo_path:string ->
   unit ->
   int option
 (** [start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt
