@@ -2243,6 +2243,16 @@ let run_outer_loop ~(name : string) ~(client : string)
             Array.append env [| Printf.sprintf "C2C_OPENCODE_SESSION_ID=%s" s |]
         | _ -> env
       in
+      (* Surface the active agent name to the c2c plugin so promptAsync
+         calls can pass body.agent and preserve the session mode. Without
+         this, every inbound c2c message resets the active OpenCode
+         agent/mode back to the default. See #167 Thread B. *)
+      let env =
+        match client, agent_name with
+        | "opencode", Some n ->
+            Array.append env [| Printf.sprintf "C2C_AGENT_NAME=%s" n |]
+        | _ -> env
+      in
 
       (* Launch args *)
       (* cc- wrappers (cc-mm, cc-w, etc.) are profile launchers designed to be called

@@ -225,6 +225,11 @@ const C2CDelivery: Plugin = async (ctx) => {
   const brokerRoot: string = process.env.C2C_MCP_BROKER_ROOT || sidecar.broker_root || "";
   const configuredOpenCodeSessionId: string =
     process.env.C2C_OPENCODE_SESSION_ID || sidecar.opencode_session_id || "";
+  // Agent name set by `c2c start opencode --agent <name>`. When present, every
+  // promptAsync call passes body.agent so OpenCode preserves the session
+  // mode instead of resetting to the default agent. See #167 Thread B.
+  const configuredAgentName: string | null =
+    (process.env.C2C_AGENT_NAME?.trim() || (sidecar.agent_name as string | undefined)?.trim() || null) || null;
   const c2cAlias: string =
     (sidecar.alias as string | undefined) || sessionId || "";
   const pollIntervalMs: number = parseInt(process.env.C2C_PLUGIN_POLL_INTERVAL_MS || "5000", 10);
@@ -1434,10 +1439,15 @@ const C2CDelivery: Plugin = async (ctx) => {
       const envelope = formatEnvelope(msg);
       const callArgs = {
         path: { id: targetSessionId },
-        body: { parts: [{ type: "text", text: envelope }] },
+        body: {
+          // Pass agent name when known so OpenCode preserves the active
+          // session mode instead of resetting to default. See #167 Thread B.
+          ...(configuredAgentName ? { agent: configuredAgentName } : {}),
+          parts: [{ type: "text", text: envelope }],
+        },
         url: "/session/{id}/prompt_async",
       };
-      await log(`promptAsync CALL: path.id=${targetSessionId} body.text.slice(0,400)=${envelope.slice(0, 400)}`);
+      await log(`promptAsync CALL: path.id=${targetSessionId} agent=${configuredAgentName ?? "none"} body.text.slice(0,400)=${envelope.slice(0, 400)}`);
       try {
         const result = await (ctx.client.session as any).promptAsync(callArgs);
         await log(`promptAsync RESULT: ${JSON.stringify(result).slice(0, 300)}`);
@@ -1483,10 +1493,15 @@ const C2CDelivery: Plugin = async (ctx) => {
       return;
     }
     if (!text) { kickoffDelivered = true; return; }
-    await log(`kickoff: delivering prompt (${text.length} chars) to ${targetSessionId}`);
+    await log(`kickoff: delivering prompt (${text.length} chars) to ${targetSessionId} agent=${configuredAgentName ?? "none"}`);
     const callArgs = {
       path: { id: targetSessionId },
-      body: { parts: [{ type: "text", text }] },
+      body: {
+        // Pass agent name so the kickoff lands in the correct agent context
+        // and mode is not reset to default. See #167 Thread B.
+        ...(configuredAgentName ? { agent: configuredAgentName } : {}),
+        parts: [{ type: "text", text }],
+      },
       url: "/session/{id}/prompt_async",
     };
     try {
