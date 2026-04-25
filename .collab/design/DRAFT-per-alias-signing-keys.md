@@ -153,11 +153,10 @@ new artifacts carry the per-alias pk.
 Identical pattern in `ocaml/cli/c2c_stickers.ml:301`. `sender_pk`
 field becomes per-alias. Wire format unchanged.
 
-### Slice C — fallback tightening (one minor version later)
+### Slice C — fallback tightening (after concrete migration signal)
 
-Once Slice A+B have been in the wild for ~a week and no one has
-hit the missing-per-alias-key fallback path in practice, flip the
-fallback to an error:
+Once Slice A+B have been in the wild long enough for the swarm to
+have actually exercised them, flip the fallback to an error:
 
 ```ocaml
 | _ ->
@@ -170,6 +169,25 @@ fallback to an error:
 This catches the "forgot to re-register" case loudly instead of
 producing a signed-with-host-key artifact that looks right but
 breaks the alias-binding invariant.
+
+**When to flip — concrete signal, not calendar.** "Wait a week" is
+too squishy and pushes the timing decision onto the implementer.
+Tie the flip to one of:
+
+- **Coverage signal** (preferred): coordinator1 + at least one
+  other agent confirm they've each signed ≥1 artifact with a
+  per-alias key (i.e., the lazy-create path actually fired and
+  produced a per-alias-pk artifact). Verifiable from the artifact
+  on disk: `reviewer_pk != host_pk`.
+- **Quiescence signal** (fallback): no
+  `warning: no per-alias key at ...` line emitted by any agent's
+  c2c invocation in the last 7 days, measured from a centralized
+  log surface. Requires a log surface that doesn't exist yet —
+  use the coverage signal in practice.
+
+Either way the implementer of Slice C looks at the agreed signal,
+sees it satisfied, and flips. No "is it Tuesday yet?" judgement
+calls.
 
 ## Why this is cheap
 
@@ -185,7 +203,28 @@ breaks the alias-binding invariant.
 
 3. **Two tiny diffs.** Each slice is <30 LOC. Reviewable in one
    read. Testable by signing an artifact and confirming
-   `reviewer_pk != host_pk`.
+   `reviewer_pk != host_pk` — see test stub below.
+
+### Test invariant for the migration
+
+A single test in `ocaml/test/` (~5 LOC) locks in the success
+criterion of Slices A and B:
+
+```ocaml
+(* test_per_alias_signing.ml *)
+let () =
+  let host_id  = Relay_identity.load () |> Result.get_ok in
+  let alias    = "test-stanza-coda" in
+  let path     = ... (* tmp <broker>/keys/<alias>.ed25519 *) in
+  let alias_id = Relay_identity.load_or_create_at ~path ~alias_hint:alias in
+  assert (alias_id.public_key <> host_id.public_key);
+  (* sign an artifact through the migrated path, parse it back, assert
+     the embedded reviewer_pk matches alias_id.public_key, not host's *)
+```
+
+If this test ever fails, either the migration regressed or the
+host-vs-per-alias key paths got re-conflated. Cheap to add, hard
+to lose accidentally.
 
 ## Distributed relay (future, not blocking)
 
