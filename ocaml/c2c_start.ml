@@ -2884,12 +2884,13 @@ let parse_pty_cmd_argv (extra_args : string list) : (string * string list) =
   in
   split_on_dashdash [] extra_args
 
-(* PTY deliver loop: polls broker inbox and writes messages to PTY master fd. *)
+(* PTY deliver loop: polls broker inbox and writes messages to PTY master fd.
+   Exits when child_pid is no longer alive (child exited). *)
 let pty_deliver_loop ~(master_fd : Unix.file_descr) ~(broker_root : string)
-    ~(session_id : string) ~(name : string) : unit =
+    ~(session_id : string) ~(name : string) ~(child_pid : int) : unit =
   let broker = C2c_mcp.Broker.create ~root:broker_root in
   let poll_interval = 0.1 in  (* 100ms *)
-  while true do
+  while pid_alive child_pid do
     let messages = C2c_mcp.Broker.drain_inbox broker ~session_id in
     List.iter (fun (msg : C2c_mcp.message) ->
       pty_inject ~master_fd msg.content
@@ -2933,7 +2934,7 @@ let run_pty_loop ~(name : string) ~(extra_args : string list)
     with e ->
       Printf.eprintf "warning: registration failed: %s\n%!" (Printexc.to_string e));
     (* PTY deliver loop (runs in parent, polling broker and writing to master) *)
-    (try pty_deliver_loop ~master_fd ~broker_root ~session_id ~name with _ -> ());
+    (try pty_deliver_loop ~master_fd ~broker_root ~session_id ~name ~child_pid:pid with _ -> ());
     (* When pty_deliver_loop exits (e.g. on error), kill the child and wait *)
     (try Unix.kill pid Sys.sigterm with _ -> ());
     ignore (Unix.waitpid [] pid);
