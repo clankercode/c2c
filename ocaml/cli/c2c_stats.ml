@@ -557,44 +557,61 @@ let scan_archives_by_day ~archive_dir ~session_to_alias ~cutoff ?(grain = Daily)
     files;
   counts
 
-let run_history ~root ~json ~alias_filter ~days ?(grain = Daily) () =
-  let broker = C2c_mcp.Broker.create ~root in
-  let regs = C2c_mcp.Broker.list_registrations broker in
-  let session_to_alias = Hashtbl.create 32 in
-  List.iter (fun (reg : C2c_mcp.registration) ->
-    Hashtbl.replace session_to_alias reg.session_id reg.alias) regs;
-  let cutoff =
-    if days <= 0 then None
-    else Some (Unix.gettimeofday () -. (float_of_int days *. 86400.0))
-  in
-  let archive_dir = Filename.concat root "archive" in
-  let counts = scan_archives_by_day ~archive_dir ~session_to_alias ~cutoff ~grain () in
-  (* Aggregate to (day, alias) -> {sent; recv} *)
-  let agg : (string * string, int * int) Hashtbl.t = Hashtbl.create 64 in
-  Hashtbl.iter (fun (day, alias, kind) n ->
-    let (s, r) = try Hashtbl.find agg (day, alias) with Not_found -> (0, 0) in
-    let v = match kind with
-      | `Sent -> (s + n, r)
-      | `Recv -> (s, r + n)
-    in
-    Hashtbl.replace agg (day, alias) v) counts;
-  (* Build sorted rows. *)
-  let rows =
-    Hashtbl.fold (fun (day, alias) (s, r) acc ->
-      match alias_filter with
-      | Some a when a <> alias -> acc
-      | _ -> (day, alias, s, r) :: acc) agg []
-    |> List.sort (fun (d1, a1, _, _) (d2, a2, _, _) ->
-        match String.compare d1 d2 with 0 -> String.compare a1 a2 | c -> c)
-  in
-  if json then begin
-    let arr = `List (List.map (fun (day, alias, sent, recv) ->
-      `Assoc [ ("day", `String day); ("alias", `String alias);
-               ("msgs_out", `Int sent); ("msgs_in", `Int recv) ]) rows) in
-    print_string (Yojson.Safe.pretty_to_string arr);
-    print_newline ()
-  end else begin
-    print_string "day,alias,msgs_out,msgs_in\n";
-    List.iter (fun (day, alias, sent, recv) ->
-      Printf.printf "%s,%s,%d,%d\n" day alias sent recv) rows
-  end
+let run_history ~root ~json ~markdown ~alias_filter ~days ?(grain = Daily) () =
+   let broker = C2c_mcp.Broker.create ~root in
+   let regs = C2c_mcp.Broker.list_registrations broker in
+   let session_to_alias = Hashtbl.create 32 in
+   List.iter (fun (reg : C2c_mcp.registration) ->
+     Hashtbl.replace session_to_alias reg.session_id reg.alias) regs;
+   let cutoff =
+     if days <= 0 then None
+     else Some (Unix.gettimeofday () -. (float_of_int days *. 86400.0))
+   in
+   let archive_dir = Filename.concat root "archive" in
+   let counts = scan_archives_by_day ~archive_dir ~session_to_alias ~cutoff ~grain () in
+   (* Aggregate to (day, alias) -> {sent; recv} *)
+   let agg : (string * string, int * int) Hashtbl.t = Hashtbl.create 64 in
+   Hashtbl.iter (fun (day, alias, kind) n ->
+     let (s, r) = try Hashtbl.find agg (day, alias) with Not_found -> (0, 0) in
+     let v = match kind with
+       | `Sent -> (s + n, r)
+       | `Recv -> (s, r + n)
+     in
+     Hashtbl.replace agg (day, alias) v) counts;
+   (* Build sorted rows. *)
+   let rows =
+     Hashtbl.fold (fun (day, alias) (s, r) acc ->
+       match alias_filter with
+       | Some a when a <> alias -> acc
+       | _ -> (day, alias, s, r) :: acc) agg []
+     |> List.sort (fun (d1, a1, _, _) (d2, a2, _, _) ->
+         match String.compare d1 d2 with 0 -> String.compare a1 a2 | c -> c)
+   in
+   if json then begin
+     let arr = `List (List.map (fun (day, alias, sent, recv) ->
+       `Assoc [ ("day", `String day); ("alias", `String alias);
+                ("msgs_out", `Int sent); ("msgs_in", `Int recv) ]) rows) in
+     print_string (Yojson.Safe.pretty_to_string arr);
+     print_newline ()
+   end else if markdown then begin
+     let by_day = Hashtbl.create 16 in
+     List.iter (fun (day, alias, sent, recv) ->
+       let existing = try Hashtbl.find by_day day with Not_found -> [] in
+       Hashtbl.replace by_day day ((alias, sent, recv) :: existing)) rows;
+     let days_sorted = Hashtbl.fold (fun d _ acc -> d :: acc) by_day [] |> List.sort String.compare in
+     List.iter (fun day ->
+       let entries = try Hashtbl.find by_day day with Not_found -> [] in
+       let entries = List.sort (fun (a, _, _) (b, _, _) -> String.compare a b) entries in
+       let day_total_out = List.fold_left (fun s (_, o, _) -> s + o) 0 entries in
+       let day_total_in = List.fold_left (fun s (_, _, i) -> s + i) 0 entries in
+       Printf.printf "### %s\n\n" day;
+       Printf.printf "| alias | msgs out | msgs in |\n";
+       Printf.printf "|-------|-----------|--------|\n";
+       List.iter (fun (alias, sent, recv) ->
+         Printf.printf "| %s | %d | %d |\n" alias sent recv) entries;
+       Printf.printf "| **total** | **%d** | **%d** |\n\n" day_total_out day_total_in) days_sorted
+   end else begin
+     print_string "day,alias,msgs_out,msgs_in\n";
+     List.iter (fun (day, alias, sent, recv) ->
+       Printf.printf "%s,%s,%d,%d\n" day alias sent recv) rows
+   end
