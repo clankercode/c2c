@@ -650,6 +650,7 @@ let test_cmd_reset_thread_persists_codex_resume_target () =
     ; auto_join_rooms = "swarm-lounge"
     ; binary_override = Some "/bin/true"
     ; model_override = None
+    ; agent_name = None
     }
   in
   C2c_start.write_config cfg;

@@ -43,6 +43,7 @@ type instance_config = {
   auto_join_rooms : string;
   binary_override : string option;
   model_override : string option;
+  agent_name : string option;
 }
 
 (** {1 Client Configurations} *)
