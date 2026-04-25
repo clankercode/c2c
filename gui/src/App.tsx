@@ -45,7 +45,7 @@ export function App() {
     () => localStorage.getItem(SELECTED_ROOM_KEY)
   );
   const [selectedPeer, setSelectedPeer] = useState<string | null>(
-    () => localStorage.getItem(SELECTED_PEER_KEY)
+    () => localStorage.getItem(SELECTED_ROOM_KEY) ? null : localStorage.getItem(SELECTED_PEER_KEY)
   );
   const [focusHistoryEvents, setFocusHistoryEvents] = useState<C2cEvent[]>([]);
   const [unreadRooms, setUnreadRooms] = useState<Set<string>>(new Set());
