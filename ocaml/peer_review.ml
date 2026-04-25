@@ -83,6 +83,7 @@ let t_to_json (art : t) : Yojson.Safe.t =
     "targets_built", targets_built_to_json art.targets_built;
     "notes", `String art.notes;
     "ts", `Float art.ts;
+    "signature", `String art.signature;
   ])
 
 (* Canonical JSON for signing: same as to_json but without the signature field.
