@@ -155,9 +155,14 @@ let memory_entry_descriptions ~alias ~maxEntries =
                count := !count + 1
              done
            with End_of_file -> ());
-          close_in_noerr ic;
-          let desc =
-            List.fold_left (fun acc line ->
+           close_in_noerr ic;
+           (* Description is the first non-empty, non---- frontmatter line after name.
+              We process in reverse then reverse the result so list.fold_left can
+              build up acc while we traverse — this gives us "first occurrence wins"
+              without needing mutable state. fragile: relies on description appearing
+              after name in the frontmatter block. *)
+           let desc =
+             List.fold_left (fun acc line ->
               let line = String.trim line in
               if line = "---" then acc
               else if acc <> "" then acc
@@ -177,7 +182,7 @@ let memory_entry_descriptions ~alias ~maxEntries =
       else acc
     ) "" entries
 
-let emit_context_json ~alias ~session_id ~broker_root ~ts =
+let emit_context_json ~alias ~ts =
   let logs = personal_logs_entries ~alias ~maxEntries:10 in
   let findings = recent_findings ~alias ~maxFindings:5 ~maxChars:200 in
   let memory = memory_entry_descriptions ~alias ~maxEntries:5 in
@@ -232,7 +237,7 @@ let () =
   (try mkdir_p marker_dir with _ -> ());
 
   (* Emit context to stdout (hookSpecificOutput injection) *)
-  (try emit_context_json ~alias ~session_id ~broker_root ~ts with e ->
+  (try emit_context_json ~alias ~ts with e ->
     prerr_endline ("emit_context: " ^ Printexc.to_string e));
 
   (* Create marker to prevent re-emit on subsequent tool calls *)
