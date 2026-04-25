@@ -409,6 +409,144 @@ let test_resolve_managed_heartbeats_per_agent_override_wins_last () =
       check (float 0.001) "per-agent interval wins" 120.0 hb.interval_s
   | _ -> fail "expected one resolved default heartbeat"
 
+(* ---------------------------------------------------------------------------
+ * Layered config precedence: builtin → config.toml → role frontmatter → per-agent
+ *)
+
+let test_resolve_managed_heartbeats_full_4layer_precedence () =
+  (* Role: overrides message only *)
+  let role =
+    C2c_role.parse_string
+      "---\n\
+       description: Coder\n\
+       role: primary\n\
+       role_class: coder\n\
+       c2c:\n\
+       \  heartbeat:\n\
+       \    message: \"Role message\"\n\
+       ---\n\
+       body\n"
+  in
+  (* Config: overrides interval and message *)
+  let config_default =
+    C2c_start.
+      { heartbeat_name = "default"
+      ; schedule = Interval 180.0
+      ; interval_s = 180.0
+      ; message = "Config message"
+      ; command = None
+      ; command_timeout_s = 30.0
+      ; clients = [ "claude"; "codex" ]
+      ; role_classes = []
+      ; enabled = true
+      }
+  in
+  (* Per-agent: overrides everything *)
+  let per_agent =
+    C2c_start.
+      { heartbeat_name = "default"
+      ; schedule = Interval 120.0
+      ; interval_s = 120.0
+      ; message = "Per-agent message"
+      ; command = None
+      ; command_timeout_s = 30.0
+      ; clients = [ "claude" ]
+      ; role_classes = []
+      ; enabled = true
+      }
+  in
+  let specs =
+    C2c_start.resolve_managed_heartbeats ~client:"claude"
+      ~deliver_started:false ~role:(Some role)
+      ~per_agent_specs:[ per_agent ] [ config_default ]
+  in
+  match specs with
+  | [ hb ] ->
+      (* Per-agent wins for all fields it specifies *)
+      check string "per-agent message wins" "Per-agent message" hb.message;
+      check (float 0.001) "per-agent interval wins" 120.0 hb.interval_s;
+      (* Clients from per-agent *)
+      check (list string) "per-agent clients" [ "claude" ] hb.clients
+  | _ -> fail "expected one resolved default heartbeat"
+
+(* Config provides sitrep; role also adds sitrep with different values *)
+let test_resolve_managed_heartbeats_role_adds_named_not_in_config () =
+  let role =
+    C2c_role.parse_string
+      "---\n\
+       description: Coordinator\n\
+       role: primary\n\
+       role_class: coordinator\n\
+       c2c:\n\
+       \  heartbeats:\n\
+       \    sitrep:\n\
+       \      interval: 2h\n\
+       \      message: \"Role sitrep\"\n\
+       ---\n\
+       body\n"
+  in
+  (* Config has default only *)
+  let config_default =
+    C2c_start.
+      { heartbeat_name = "default"
+      ; schedule = Interval 300.0
+      ; interval_s = 300.0
+      ; message = "Config default"
+      ; command = None
+      ; command_timeout_s = 30.0
+      ; clients = [ "claude" ]
+      ; role_classes = []
+      ; enabled = true
+      }
+  in
+  let specs =
+    C2c_start.resolve_managed_heartbeats ~client:"claude"
+      ~deliver_started:false ~role:(Some role) [ config_default ]
+  in
+  (* Should have default + sitrep *)
+  check int "two heartbeats" 2 (List.length specs);
+  let sitrep = List.find (fun hb -> hb.C2c_start.heartbeat_name = "sitrep") specs in
+  check (float 0.001) "role sitrep interval wins" 7200.0 sitrep.interval_s;
+  check string "role sitrep message wins" "Role sitrep" sitrep.message
+
+(* Role disables a heartbeat via c2c.heartbeat.enabled = false *)
+let test_resolve_managed_heartbeats_role_disables_heartbeat () =
+  let role =
+    C2c_role.parse_string
+      "---\n\
+       description: Silent agent\n\
+       role: primary\n\
+       c2c:\n\
+       \  heartbeat:\n\
+       \    enabled: false\n\
+       ---\n\
+       body\n"
+  in
+  let specs =
+    C2c_start.resolve_managed_heartbeats ~client:"claude"
+      ~deliver_started:false ~role:(Some role) []
+  in
+  (* Role disables the only heartbeat; filtering removes it *)
+  check int "role-disabled heartbeat filtered out" 0 (List.length specs)
+
+(* No config, no role, no per-agent = builtin defaults *)
+let test_resolve_managed_heartbeats_builtin_baseline () =
+  let specs =
+    C2c_start.resolve_managed_heartbeats ~client:"claude"
+      ~deliver_started:false ~role:None []
+  in
+  match specs with
+  | [ hb ] ->
+      check string "builtin message"
+        "Session heartbeat. Poll your C2C inbox and handle any messages."
+        hb.message;
+      check (float 0.001) "builtin interval" 240.0 hb.interval_s;
+      check (list string) "builtin clients"
+        [ "claude"; "codex"; "opencode"; "kimi"; "crush" ]
+        hb.clients;
+      check bool "builtin enabled" true hb.enabled
+  | _ -> fail "expected one resolved default heartbeat"
+
 let test_resolve_managed_heartbeats_filters_clients_and_role_classes () =
   let role =
     C2c_role.parse_string
@@ -1200,6 +1338,18 @@ let () =
         ; ( "resolve_managed_heartbeats_per_agent_override_wins_last",
             `Quick,
             test_resolve_managed_heartbeats_per_agent_override_wins_last )
+        ; ( "resolve_managed_heartbeats_full_4layer_precedence",
+            `Quick,
+            test_resolve_managed_heartbeats_full_4layer_precedence )
+        ; ( "resolve_managed_heartbeats_role_adds_named_not_in_config",
+            `Quick,
+            test_resolve_managed_heartbeats_role_adds_named_not_in_config )
+        ; ( "resolve_managed_heartbeats_role_disables_heartbeat",
+            `Quick,
+            test_resolve_managed_heartbeats_role_disables_heartbeat )
+        ; ( "resolve_managed_heartbeats_builtin_baseline",
+            `Quick,
+            test_resolve_managed_heartbeats_builtin_baseline )
         ; ( "resolve_managed_heartbeats_filters_clients_and_role_classes",
             `Quick, test_resolve_managed_heartbeats_filters_clients_and_role_classes )
         ; ( "render_heartbeat_content_appends_command_output",
