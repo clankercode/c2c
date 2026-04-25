@@ -32,6 +32,14 @@ let worktrees_root () =
   | Some parent -> parent // ".c2c" // "worktrees"
   | None -> failwith "not in a git repository"
 
+(** [current_branch ()] returns the current git branch name, or None if detached/unavailable. *)
+let current_branch () =
+  let (code, output, _) = git_command [ "rev-parse"; "--abbrev-ref"; "HEAD" ] in
+  if code = 0 then
+    let b = String.trim output in
+    if b = "" || b = "HEAD" then None else Some b
+  else None
+
 (** [is_worktree_dir ~path] returns true if [path] is a registered git worktree
     by checking git worktree list output for that path. *)
 let is_worktree_dir ~(path : string) : bool =
