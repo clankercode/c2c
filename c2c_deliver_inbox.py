@@ -873,15 +873,15 @@ def parse_managed_server_request_event(raw: str):
 
 def _find_c2c_binary() -> str:
     """Find the c2c binary. Prefers installed OCaml binary, falls back to repo-local shim."""
-    local = Path(__file__).resolve().parent / "c2c"
-    if local.exists():
-        return str(local)
-    for p in ["c2c", "/home/xertrov/.local/bin/c2c"]:
+    for p in ["/home/xertrov/.local/bin/c2c", "c2c"]:
         result = subprocess.run(
             ["which", p], capture_output=True, text=True,
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
+    local = Path(__file__).resolve().parent / "c2c"
+    if local.exists():
+        return str(local)
     return "c2c"
 
 
