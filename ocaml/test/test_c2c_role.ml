@@ -207,6 +207,111 @@ let pmodel_tests = [
   "resolve_pmodel_none_when_lookup_empty", `Quick, test_resolve_pmodel_none_when_lookup_empty;
 ]
 
+(* ---------- model field suppression by compatible_clients ---------- *)
+
+let role_single_client_with_model = {|
+---
+description: Single-client role
+role: primary
+model: claude-sonnet-4-6
+compatible_clients: [claude]
+---
+
+You are a test agent.
+|}
+
+let role_multi_client_with_model = {|
+---
+description: Multi-client role
+role: primary
+model: claude-sonnet-4-6
+compatible_clients: [claude, opencode, codex]
+---
+
+You are a test agent.
+|}
+
+let role_single_client_no_model = {|
+---
+description: Single-client role no model
+role: primary
+compatible_clients: [opencode]
+---
+
+You are a test agent.
+|}
+
+let role_multi_client_no_model = {|
+---
+description: Multi-client role no model
+role: primary
+compatible_clients: [claude, codex]
+---
+
+You are a test agent.
+|}
+
+let test_model_single_client_emits () =
+  let r = C2c_role.parse_string role_single_client_with_model in
+  Alcotest.(check (option string)) "single-client: model parsed" (Some "claude-sonnet-4-6") r.C2c_role.model;
+  Alcotest.(check int) "single-client: compatible_clients count" 1 (List.length r.C2c_role.compatible_clients);
+  let output = C2c_role.Claude_renderer.render r ~name:"test" in
+  Alcotest.(check bool) "single-client: model emitted in claude renderer" true
+    (try ignore (Str.search_forward (Str.regexp_string "model: claude-sonnet-4-6") output 0); true with Not_found -> false)
+
+let test_model_multi_client_suppressed () =
+  let r = C2c_role.parse_string role_multi_client_with_model in
+  Alcotest.(check (option string)) "multi-client: model parsed" (Some "claude-sonnet-4-6") r.C2c_role.model;
+  Alcotest.(check int) "multi-client: compatible_clients count" 3 (List.length r.C2c_role.compatible_clients);
+  let output = C2c_role.Claude_renderer.render r ~name:"test" in
+  Alcotest.(check bool) "multi-client: model SUPPRESSED in claude renderer" true
+    (try ignore (Str.search_forward (Str.regexp_string "model:") output 0); false with Not_found -> true)
+
+let test_model_opencode_single_client_emits () =
+  let r = C2c_role.parse_string role_single_client_with_model in
+  let r_opencode = { r with C2c_role.compatible_clients = ["opencode"] } in
+  let output = C2c_role.OpenCode_renderer.render r_opencode in
+  Alcotest.(check bool) "opencode single-client: model emitted" true
+    (try ignore (Str.search_forward (Str.regexp_string "model: claude-sonnet-4-6") output 0); true with Not_found -> false)
+
+let test_model_opencode_multi_client_suppressed () =
+  let r = C2c_role.parse_string role_multi_client_with_model in
+  let output = C2c_role.OpenCode_renderer.render r in
+  Alcotest.(check bool) "opencode multi-client: model SUPPRESSED" true
+    (try ignore (Str.search_forward (Str.regexp_string "model:") output 0); false with Not_found -> true)
+
+let test_model_codex_multi_client_suppressed () =
+  let r = C2c_role.parse_string role_multi_client_with_model in
+  let output = C2c_role.Codex_renderer.render r in
+  Alcotest.(check bool) "codex multi-client: model SUPPRESSED" true
+    (try ignore (Str.search_forward (Str.regexp_string "model:") output 0); false with Not_found -> true)
+
+let test_model_kimi_multi_client_suppressed () =
+  let r = C2c_role.parse_string role_multi_client_with_model in
+  let output = C2c_role.Kimi_renderer.render r in
+  Alcotest.(check bool) "kimi multi-client: model SUPPRESSED" true
+    (try ignore (Str.search_forward (Str.regexp_string "model:") output 0); false with Not_found -> true)
+
+let test_no_model_always_ok () =
+  let r_multi = C2c_role.parse_string role_multi_client_no_model in
+  let r_single = C2c_role.parse_string role_single_client_no_model in
+  let output_multi = C2c_role.Claude_renderer.render r_multi ~name:"test" in
+  let output_single = C2c_role.Claude_renderer.render r_single ~name:"test" in
+  Alcotest.(check bool) "no model multi-client: no model field" true
+    (try ignore (Str.search_forward (Str.regexp_string "model:") output_multi 0); false with Not_found -> true);
+  Alcotest.(check bool) "no model single-client: no model field (pmodel not set)" true
+    (try ignore (Str.search_forward (Str.regexp_string "model:") output_single 0); false with Not_found -> true)
+
+let model_suppression_tests = [
+  "single_client_emits",      `Quick, test_model_single_client_emits;
+  "multi_client_suppressed",   `Quick, test_model_multi_client_suppressed;
+  "opencode_single_client_emits", `Quick, test_model_opencode_single_client_emits;
+  "opencode_multi_client_suppressed", `Quick, test_model_opencode_multi_client_suppressed;
+  "codex_multi_client_suppressed", `Quick, test_model_codex_multi_client_suppressed;
+  "kimi_multi_client_suppressed", `Quick, test_model_kimi_multi_client_suppressed;
+  "no_model_always_ok",       `Quick, test_no_model_always_ok;
+]
+
 (* ---------- split_frontmatter noise-line tolerance ---------- *)
 
 let role_with_html_comment_before_frontmatter = {|
@@ -309,4 +414,5 @@ let () =
     "pmodel", pmodel_tests;
     "frontmatter", frontmatter_tests;
     "role_class", role_class_tests;
+    "model_suppression", model_suppression_tests;
   ]
