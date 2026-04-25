@@ -46,8 +46,8 @@ MAIN_TREE_DIRTY=0
 MAIN_TREE_DIRTY_COUNT=0
 if [[ -n "$MAIN_TREE_UNSTAGED" || -n "$MAIN_TREE_STAGED" ]]; then
   MAIN_TREE_DIRTY=1
-  _u=$(echo "$MAIN_TREE_UNSTAGED" | grep -c . 2>/dev/null || true)
-  _s=$(echo "$MAIN_TREE_STAGED" | grep -c . 2>/dev/null || true)
+  _u=0; [[ -n "$MAIN_TREE_UNSTAGED" ]] && _u=$(echo "$MAIN_TREE_UNSTAGED" | grep -c . 2>/dev/null || true)
+  _s=0; [[ -n "$MAIN_TREE_STAGED"   ]] && _s=$(echo "$MAIN_TREE_STAGED"   | grep -c . 2>/dev/null || true)
   MAIN_TREE_DIRTY_COUNT=$(( _u + _s ))
 fi
 
