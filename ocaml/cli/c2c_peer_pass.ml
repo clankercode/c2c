@@ -36,6 +36,21 @@ let resolve_identity () =
         alias;
       exit 1
 
+(* --- anti-cheat helpers -------------------------------------------------- *)
+
+(** Compare reviewer alias against commit author. The repo convention records
+    authors as "<alias>@c2c.im" / name "<alias>". Match either. *)
+let reviewer_is_author ~reviewer ~sha =
+  let email = Git_helpers.git_commit_author_email sha in
+  let name = Git_helpers.git_commit_author_name sha in
+  let local_part_eq e =
+    match String.index_opt e '@' with
+    | Some i -> String.equal (String.sub e 0 i) reviewer
+    | None -> String.equal e reviewer
+  in
+  (match email with Some e -> local_part_eq e | None -> false)
+  || (match name with Some n -> String.equal n reviewer | None -> false)
+
 (* --- sign command -------------------------------------------------------- *)
 
 let peer_pass_sign_cmd =
@@ -73,6 +88,11 @@ let peer_pass_sign_cmd =
   let json =
     Cmdliner.Arg.(value & flag & info [ "json"; "j" ] ~doc:"Output machine-readable JSON.")
   in
+  let allow_self =
+    Cmdliner.Arg.(value & flag & info [ "allow-self" ]
+      ~doc:"Override the self-review anti-cheat check (reviewer == commit author). \
+            Use only with explicit coordinator approval.")
+  in
   let+ sha = sha
   and+ verdict = verdict
   and+ criteria = criteria
@@ -80,8 +100,25 @@ let peer_pass_sign_cmd =
   and+ commit_range = commit_range
   and+ all_targets = all_targets
   and+ notes = notes
-  and+ json = json in
+  and+ json = json
+  and+ allow_self = allow_self in
   let alias = resolve_current_alias () in
+  (* Anti-cheat 1: SHA must resolve to a real commit. *)
+  if not (Git_helpers.git_commit_exists sha) then begin
+    Printf.eprintf "error: SHA %s does not resolve to a commit in this repository.\n%!" sha;
+    Printf.eprintf "  fix: confirm the SHA is correct and the branch is fetched locally.\n%!";
+    exit 1
+  end;
+  (* Anti-cheat 2: reviewer must not be the commit author (no self-review). *)
+  if reviewer_is_author ~reviewer:alias ~sha && not allow_self then begin
+    Printf.eprintf
+      "error: refusing to sign — reviewer alias %S matches commit author of %s.\n\
+      \  Self-review-via-skill is NOT a peer-PASS (see git-workflow.md rule 3).\n\
+      \  Get another swarm agent to run review-and-fix on this SHA.\n\
+      \  If a coordinator has explicitly approved this, re-run with --allow-self.\n%!"
+      alias sha;
+    exit 1
+  end;
   let identity = resolve_identity () in
   let criteria_list = match criteria with
     | Some s when s <> "" -> String.split_on_char ',' s |> List.map String.trim |> List.filter ((<>) "")
@@ -151,7 +188,13 @@ let peer_pass_verify_cmd =
          Printf.printf "  reviewer: %s\n  ts: %.0f\n  criteria: [%s]\n%!"
            art.Peer_review.reviewer
            art.Peer_review.ts
-           (String.concat ", " art.Peer_review.criteria_checked)
+           (String.concat ", " art.Peer_review.criteria_checked);
+         (* Anti-cheat surface: warn if reviewer == commit author. *)
+         if Git_helpers.git_commit_exists art.Peer_review.sha
+            && reviewer_is_author ~reviewer:art.Peer_review.reviewer ~sha:art.Peer_review.sha
+         then
+           Printf.printf "  WARN: reviewer %S matches commit author — self-review (not a true peer-PASS).\n%!"
+             art.Peer_review.reviewer
        | Ok false ->
          Printf.eprintf "VERIFY FAILED: invalid signature\n%!"; exit 1
        | Error e ->

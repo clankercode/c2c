@@ -61,3 +61,17 @@ let git_shorthash () =
   match git_first_line [ "rev-parse"; "--short"; "HEAD" ] with
   | Some line when int_of_string_opt line = None -> Some line
   | _ -> None
+
+(** Verify a SHA resolves to a real commit object in the repo. *)
+let git_commit_exists sha =
+  match git_first_line [ "cat-file"; "-t"; sha ] with
+  | Some "commit" -> true
+  | _ -> false
+
+(** Author email of a commit (e.g. "stanza-coder@c2c.im"), or None. *)
+let git_commit_author_email sha =
+  git_first_line [ "show"; "-s"; "--format=%ae"; sha ]
+
+(** Author name of a commit (e.g. "stanza-coder"), or None. *)
+let git_commit_author_name sha =
+  git_first_line [ "show"; "-s"; "--format=%an"; sha ]
