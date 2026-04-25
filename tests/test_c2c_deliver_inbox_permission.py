@@ -93,6 +93,36 @@ class ParseManagedServerRequestEventTests(unittest.TestCase):
         self.assertEqual(result["request_id"], "req-789")
         self.assertEqual(result["permission"], "bash")
 
+    def test_drains_split_utf8_jsonl_event_across_reads(self):
+        event_json = json.dumps({
+            "kind": "permissions_approval_request",
+            "request_id": "req-utf8",
+            "thread_id": "thread-utf8",
+            "turn_id": "turn-utf8",
+            "item_id": "item-utf8",
+            "server_name": "bash",
+            "raw": {
+                "permission": "bash",
+                "command": "echo hello",
+                "reason": "fix 🪨",
+            },
+        }, ensure_ascii=False).encode("utf-8") + b"\n"
+
+        split_at = event_json.index("🪨".encode("utf-8")) + 1
+        first_buffer, first_events = c2c_deliver_inbox.drain_managed_server_request_events(
+            b"", event_json[:split_at]
+        )
+        self.assertEqual(first_events, [])
+        self.assertTrue(first_buffer)
+
+        second_buffer, second_events = c2c_deliver_inbox.drain_managed_server_request_events(
+            first_buffer, event_json[split_at:]
+        )
+        self.assertEqual(second_buffer, b"")
+        self.assertEqual(len(second_events), 1)
+        self.assertEqual(second_events[0]["request_id"], "req-utf8")
+        self.assertEqual(second_events[0]["reason"], "fix 🪨")
+
 
 class ForwardPermissionToSupervisorsTests(unittest.TestCase):
     @mock.patch("c2c_deliver_inbox.run_c2c_command")

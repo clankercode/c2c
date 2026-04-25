@@ -571,6 +571,7 @@ def run_loop(
     last_notify_signature = ""
 
     event_fd = -1
+    event_buffer = b""
     if event_fifo is not None:
         try:
             event_fd = os.open(str(event_fifo), os.O_RDONLY | os.O_NONBLOCK)
@@ -612,9 +613,23 @@ def run_loop(
                 if ready:
                     data = os.read(event_fd, 8192)
                     if data:
-                        for line in data.decode("utf-8").strip().split("\n"):
-                            if line:
-                                event = parse_managed_server_request_event(line)
+                        event_buffer, events = drain_managed_server_request_events(
+                            event_buffer, data
+                        )
+                        for event in events:
+                            supervisors = ["coordinator1"]
+                            forward_permission_to_supervisors(
+                                event,
+                                supervisors=supervisors,
+                                timeout_ms=300000,
+                                session_id=session_id,
+                                broker_root=broker_root,
+                            )
+                    else:
+                        try:
+                            if event_buffer.strip():
+                                tail = event_buffer.decode("utf-8").strip()
+                                event = parse_managed_server_request_event(tail)
                                 if event is not None:
                                     supervisors = ["coordinator1"]
                                     forward_permission_to_supervisors(
@@ -624,6 +639,13 @@ def run_loop(
                                         session_id=session_id,
                                         broker_root=broker_root,
                                     )
+                        except (UnicodeDecodeError, OSError, IOError):
+                            pass
+                        try:
+                            os.close(event_fd)
+                        except OSError:
+                            pass
+                        event_fd = -1
             except (OSError, IOError, UnicodeDecodeError):
                 pass
         if notify_only and last_result.get("notified"):
@@ -869,6 +891,31 @@ def parse_managed_server_request_event(raw: str):
         "command": inner.get("command", "") if isinstance(inner, dict) else "",
         "reason": inner.get("reason", "") if isinstance(inner, dict) else "",
     }
+
+
+def drain_managed_server_request_events(
+    buffer: bytes, chunk: bytes
+) -> tuple[bytes, list[dict[str, Any]]]:
+    """Accumulate FIFO bytes and return parsed permission events from full lines.
+
+    The bridge writes JSONL to the sideband FIFO. Reads may split either JSON
+    lines or UTF-8 code points, so we keep a byte buffer and only decode full
+    newline-delimited records."""
+    buffer += chunk
+    lines = buffer.split(b"\n")
+    buffer = lines.pop()
+    events: list[dict[str, Any]] = []
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            event = parse_managed_server_request_event(line.decode("utf-8"))
+        except UnicodeDecodeError:
+            continue
+        if event is not None:
+            events.append(event)
+    return buffer, events
 
 
 def _find_c2c_binary() -> str:
