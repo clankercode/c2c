@@ -191,6 +191,7 @@ let commands_by_safety_cmd =
     ("prune-rooms", "Evict dead members from all rooms");
     ("instances", "List managed c2c instances");
     ("doctor", "Health snapshot + push-pending analysis");
+    ("stats", "Show per-agent message statistics across the swarm");
     ("set-compact", "Mark this session as compacting");
     ("clear-compact", "Clear the compacting flag");
     ("open-pending-reply", "Open a pending permission reply slot");
@@ -5096,6 +5097,26 @@ let doctor_cmd =
 let doctor = Cmdliner.Cmd.v (Cmdliner.Cmd.info "doctor"
     ~doc:"Health snapshot + push-pending analysis (for Max / human operators).") doctor_cmd
 
+(* --- subcommand: stats ---------------------------------------------------- *)
+
+let stats_cmd =
+  let alias_flag =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS"
+      ~doc:"Filter to a single agent alias.")
+  in
+  let since_flag =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "since" ] ~docv:"DUR"
+      ~doc:"Only count messages within this duration (e.g. 1h, 30m, 7d).")
+  in
+  let+ json = json_flag
+  and+ alias_filter = alias_flag
+  and+ since_str = since_flag in
+  let root = resolve_broker_root () in
+  C2c_stats.run ~root ~json ~alias_filter ~since_str
+
+let stats = Cmdliner.Cmd.v (Cmdliner.Cmd.info "stats"
+    ~doc:"Show per-agent message statistics across the swarm.") stats_cmd
+
 (* --- subcommand: start ---------------------------------------------------- *)
 
 let roles_dir () = C2c_role.canonical_roles_dir ()
@@ -7815,7 +7836,7 @@ let () =
     [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; send_all; sweep
     ; sweep_dryrun; history; health; setcap; status; verify; git; register; refresh_peer
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test; init; install; completion_cmd
-    ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; C2c_rooms.rooms_group; C2c_rooms.room_group; relay_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
+    ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; stats; C2c_rooms.rooms_group; C2c_rooms.room_group; relay_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in
   exit
