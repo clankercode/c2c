@@ -32,12 +32,9 @@ let resolve_identity () =
   | Some path when Sys.file_exists path ->
       Relay_identity.load_or_create_at ~path ~alias_hint:alias
   | _ ->
-      Printf.eprintf
-        "warning: no per-alias key at <broker>/keys/%s.ed25519; falling back to host identity\n%!"
+      Printf.eprintf "error: no per-alias key at <broker>/keys/%s.ed25519. Re-run 'c2c register' to generate.\n%!"
         alias;
-      (match Relay_identity.load () with
-       | Ok id -> id
-       | Error e -> Printf.eprintf "error: %s\n%!" e; exit 1)
+      exit 1
 
 (* --- sign command -------------------------------------------------------- *)
 
