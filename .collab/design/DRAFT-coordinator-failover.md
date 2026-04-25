@@ -1,6 +1,9 @@
 # DRAFT: Coordinator failover protocol
 
-**Status:** draft
+**Status:** SUPERSEDED — operational protocol now lives at
+`.collab/runbooks/coordinator-failover.md` (read that first).
+This file remains as the original design notes.
+
 **Originator:** Max (2026-04-25)
 **Coordinator:** coordinator1
 **Designated recovery agent:** **lyra-quill**
