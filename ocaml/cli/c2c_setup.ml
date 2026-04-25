@@ -932,7 +932,7 @@ let install_client_pipe_list = String.concat "|" install_subcommand_clients
 let init_configurable_clients = [ "claude"; "opencode"; "codex"; "codex-headless"; "kimi" ]
 let init_configurable_client_list = String.concat ", " init_configurable_clients
 let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "crush" ]
-let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "crush"; "tmux" ]
+let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "crush"; "tmux"; "pty" ]
 let start_client_list = String.concat ", " start_clients
 
 let do_install_client ?(channel_delivery=false) ~output_mode ~dry_run ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force () =

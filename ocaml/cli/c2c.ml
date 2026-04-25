@@ -5249,7 +5249,8 @@ let start_cmd =
       ~doc:(Printf.sprintf "Client to start (%s)." C2c_setup.start_client_list))
   in
   (* Trailing args after `--`: appended verbatim to the client's argv.
-     e.g. `c2c start claude -- --foo bar` runs claude with `--foo bar`. *)
+     e.g. `c2c start claude -- --foo bar` runs claude with `--foo bar`;
+     `c2c start pty -- bash -i` runs bash with `-i`. *)
   let extra_argv =
     Cmdliner.Arg.(value & pos_right 1 (list string) [] & info [] ~docv:"ARG"
       ~doc:"Extra arguments passed to the client after `--`. Anything after `--` is appended verbatim to the client's argv.")
@@ -5305,6 +5306,7 @@ let start_cmd =
       ~doc:"For CLIENT=tmux, optional command argv to type into the target pane. Use -- before the command.")
   in
   let+ client = client
+  and+ extra_argv = extra_argv
   and+ name_opt = name
   and+ alias_opt = alias
   and+ bin_opt = bin

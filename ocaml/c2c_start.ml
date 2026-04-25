@@ -3774,6 +3774,10 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
    | None, Some _, Some _ -> ()  (* alias + wrapper_self → OK (managed client) *)
    | Some _, Some _, Some _ -> ());
 
+  (* PTY client: enter run_pty_loop directly (no outer-loop wrapper needed) *)
+  if client = "pty" then
+    (let _ = run_pty_loop ~name ~extra_args ~broker_root:(broker_root ()) () in ());
+
   (* Validate --session-id. OpenCode accepts ses_* session IDs from its TUI.
      codex / codex-headless accept non-empty explicit thread/session targets. *)
   (match session_id_override with
