@@ -3,7 +3,7 @@
 c2c-dup-scanner: detect copy-pasted code blocks across .py/.ml/.mli files.
 
 Usage:
-    c2c-dup-scanner.py --repo <repo_path> [--summary|--full] [--warn-only] [--json]
+    c2c-dup-scanner.py --repo <repo_path> [--summary|--full] [--warn-only] [--json] [--min-cluster-size N]
     c2c-dup-scanner.py --repo . --summary --warn-only
 
 Wired into c2c-doctor.sh like c2c-command-test-audit.py.
@@ -404,7 +404,7 @@ def get_file_loc(filepath: str, all_file_datas: dict) -> int | None:
     return None
 
 
-def run_scanner(repo_path: str, summary: bool, full: bool, warn_only: bool, json_output: bool, ignore_patterns: list[re.Pattern] = None) -> int:
+def run_scanner(repo_path: str, summary: bool, full: bool, warn_only: bool, json_output: bool, ignore_patterns: list[re.Pattern] = None, min_cluster_size: int = 1) -> int:
     """Run the duplication scanner."""
     repo = Path(repo_path)
     if not repo.exists():
@@ -440,6 +440,9 @@ def run_scanner(repo_path: str, summary: bool, full: bool, warn_only: bool, json
 
     # Apply suppression filters
     clusters, suppressed = filter_clusters(clusters, ignore_patterns)
+    # Filter by minimum cluster size
+    if min_cluster_size > 1:
+        clusters = [c for c in clusters if c["n_windows"] >= min_cluster_size]
 
     if json_output:
         output = {
@@ -537,6 +540,13 @@ def main():
         default=[],
         help="Suppress clusters where all files match this regex pattern (can be specified multiple times)",
     )
+    parser.add_argument(
+        "--min-cluster-size",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Only report clusters with at least N duplicate windows (default: 1, show all)",
+    )
     args = parser.parse_args()
 
     # Compile ignore patterns
@@ -552,6 +562,7 @@ def main():
         warn_only=args.warn_only,
         json_output=args.json,
         ignore_patterns=ignore_patterns,
+        min_cluster_size=args.min_cluster_size,
     )
 
     if args.warn_only:
