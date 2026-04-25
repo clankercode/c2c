@@ -10,23 +10,40 @@ import { discoverPeers, discoverRooms, fetchHealth, HealthInfo } from "./useDisc
 import { WelcomeWizard } from "./components/WelcomeWizard";
 
 const MAX_EVENTS = 1000;
+const MAX_CACHED_EVENTS = 100;
 const ALIAS_KEY = "c2c-gui-my-alias";
 const SESSION_ID_KEY = "c2c-gui-my-session-id";
+const EVENTS_CACHE_KEY = "c2c-gui-events-cache";
+const SELECTED_ROOM_KEY = "c2c-gui-selected-room";
+const SELECTED_PEER_KEY = "c2c-gui-selected-peer";
 
 function generateSessionId(): string {
   return "gui-" + Math.random().toString(36).slice(2, 11) + "-" + Math.random().toString(36).slice(2, 11);
 }
 
 export function App() {
-  const [events, setEvents] = useState<C2cEvent[]>([]);
+  const [events, setEvents] = useState<C2cEvent[]>(() => {
+    try {
+      const cached = localStorage.getItem(EVENTS_CACHE_KEY);
+      return cached ? (JSON.parse(cached) as C2cEvent[]) : [];
+    } catch { return []; }
+  });
   const [status, setStatus] = useState<"connecting" | "live" | "error">("connecting");
   const [peers, setPeers] = useState<Set<string>>(new Set());
   const [rooms, setRooms] = useState<Set<string>>(new Set());
   const [roomMembers, setRoomMembers] = useState<Map<string, Set<string>>>(new Map());
-  const [composeTo, setComposeTo] = useState("");
-  const [composeIsRoom, setComposeIsRoom] = useState(false);
-  const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
-  const [selectedPeer, setSelectedPeer] = useState<string | null>(null);
+  const [composeTo, setComposeTo] = useState(
+    () => localStorage.getItem(SELECTED_ROOM_KEY) ?? localStorage.getItem(SELECTED_PEER_KEY) ?? ""
+  );
+  const [composeIsRoom, setComposeIsRoom] = useState(
+    () => !!localStorage.getItem(SELECTED_ROOM_KEY)
+  );
+  const [selectedRoom, setSelectedRoom] = useState<string | null>(
+    () => localStorage.getItem(SELECTED_ROOM_KEY)
+  );
+  const [selectedPeer, setSelectedPeer] = useState<string | null>(
+    () => localStorage.getItem(SELECTED_PEER_KEY)
+  );
   const [focusHistoryEvents, setFocusHistoryEvents] = useState<C2cEvent[]>([]);
   const [unreadRooms, setUnreadRooms] = useState<Set<string>>(new Set());
   const [unreadPeers, setUnreadPeers] = useState<Set<string>>(new Set());
@@ -223,6 +240,19 @@ export function App() {
       );
       if (combined.length > 0) setEvents(combined);
       startMonitor();
+
+      // Restore focus history for persisted selection
+      const restoredRoom = localStorage.getItem(SELECTED_ROOM_KEY);
+      const restoredPeer = localStorage.getItem(SELECTED_PEER_KEY);
+      if (restoredRoom) {
+        loadRoomHistory(restoredRoom, 100).then(hist => {
+          if (!cancelledRef.current) setFocusHistoryEvents(hist);
+        });
+      } else if (restoredPeer) {
+        loadPeerHistory(restoredPeer, storedSessionId ?? "", myAliasRef.current, 100).then(hist => {
+          if (!cancelledRef.current) setFocusHistoryEvents(hist);
+        });
+      }
     });
 
     return () => {
@@ -238,6 +268,23 @@ export function App() {
   useEffect(() => { selectedPeerRef.current = selectedPeer; }, [selectedPeer]);
   useEffect(() => { myAliasRef.current = myAlias; }, [myAlias]);
   useEffect(() => { mySessionIdRef.current = mySessionId; }, [mySessionId]);
+
+  // Persist last N events to localStorage for cold-open pre-population
+  useEffect(() => {
+    try {
+      localStorage.setItem(EVENTS_CACHE_KEY, JSON.stringify(events.slice(-MAX_CACHED_EVENTS)));
+    } catch { /* storage quota exceeded — ignore */ }
+  }, [events]);
+
+  // Persist selected room/peer so sidebar selection survives reload
+  useEffect(() => {
+    if (selectedRoom) localStorage.setItem(SELECTED_ROOM_KEY, selectedRoom);
+    else localStorage.removeItem(SELECTED_ROOM_KEY);
+  }, [selectedRoom]);
+  useEffect(() => {
+    if (selectedPeer) localStorage.setItem(SELECTED_PEER_KEY, selectedPeer);
+    else localStorage.removeItem(SELECTED_PEER_KEY);
+  }, [selectedPeer]);
 
   async function applyAlias() {
     const a = aliasInput.trim();
