@@ -22,10 +22,25 @@ let resolve_current_alias () =
       Printf.eprintf "error: C2C_MCP_AUTO_REGISTER_ALIAS is not set — cannot sign peer-PASS artifact without a known identity.\n%!";
       exit 1
 
+let xdg_state_home () =
+  match Sys.getenv_opt "XDG_STATE_HOME" with
+  | Some v when String.trim v <> "" -> String.trim v
+  | _ ->
+      (match Sys.getenv_opt "HOME" with
+       | Some h when String.trim h <> "" -> String.trim h // ".local" // "state"
+       | _ -> "/tmp")
+
 let per_alias_key_path ~alias =
-  match Git_helpers.git_common_dir_parent () with
-  | Some parent -> Some (parent // ".c2c" // "keys" // (alias ^ ".ed25519"))
-  | None -> None
+  let abs_path p = if Filename.is_relative p then Sys.getcwd () // p else p in
+  let broker_root =
+    match Sys.getenv_opt "C2C_BROKER_ROOT" with
+    | Some dir -> abs_path dir
+    | None -> (
+        match Git_helpers.git_common_dir () with
+        | Some git_dir -> abs_path git_dir // "c2c" // "mcp"
+        | None -> xdg_state_home () // "c2c" // "default" // "mcp")
+  in
+  Some (broker_root // "keys" // (alias ^ ".ed25519"))
 
 let resolve_identity () =
   let alias = resolve_current_alias () in
