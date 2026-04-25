@@ -5632,14 +5632,12 @@ let gui_batch () =
      | _ -> add_check "cli_mcp_availability" false "CLI --version killed or stopped"
    with e ->
      add_check "cli_mcp_availability" false (Printexc.to_string e));
-  (* Check 4: inbox polling — do a poll_inbox via broker directly *)
+  (* Check 4: inbox polling — non-destructive read via broker *)
   (try
      let session_id = match C2c_mcp.session_id_from_env () with
        | Some s -> s | None -> "batch-smoke-session" in
-     let msgs = C2c_mcp.Broker.drain_inbox broker ~session_id in
-     add_check "inbox_polling" true (Printf.sprintf "polled successfully (%d messages)" (List.length msgs));
-     (* re-enqueue any drained messages so we don't lose them *)
-     List.iter (fun m -> C2c_mcp.Broker.enqueue_message broker ~from_alias:m.from_alias ~to_alias:m.to_alias ~content:m.content ()) msgs
+     let msgs = C2c_mcp.Broker.read_inbox broker ~session_id in
+     add_check "inbox_polling" true (Printf.sprintf "read successfully (%d messages)" (List.length msgs))
    with e ->
      add_check "inbox_polling" false (Printexc.to_string e));
   (* Check 5: render-model build — check gui dist/ and src-tauri/target exist *)
@@ -5671,6 +5669,46 @@ let gui_batch () =
        (Printf.sprintf "%d rooms" (List.length rooms))
    with e ->
      add_check "room_list" false (Printexc.to_string e));
+  (* Check 8: pending permissions — read pending_permissions.json directly *)
+  (try
+     let path = Filename.concat broker_root "pending_permissions.json" in
+     if not (Sys.file_exists path) then begin
+       pending_perms_json := `List [];
+       add_check "pending_permissions" true "no pending_permissions.json (none active)"
+     end else begin
+       let json = Yojson.Safe.from_file path in
+       let open Yojson.Safe.Util in
+       match json with
+       | `List items ->
+           let now = Unix.gettimeofday () in
+           let active =
+             List.filter_map
+               (fun item ->
+                 match item with
+                 | `Assoc _ ->
+                     (match member "expires_at" item with
+                      | `Float f when f > now ->
+                          Some (`Assoc
+                            [ ("perm_id", member "perm_id" item)
+                            ; ("kind", member "kind" item)
+                            ; ("requester_alias", member "requester_alias" item)
+                            ; ("supervisors", member "supervisors" item)
+                            ; ("expires_at", member "expires_at" item)
+                            ])
+                      | _ -> None)
+                 | _ -> None)
+               items
+           in
+           pending_perms_json := `List active;
+           add_check "pending_permissions" true
+             (Printf.sprintf "%d active pending" (List.length active))
+       | _ ->
+           pending_perms_json := `List [];
+           add_check "pending_permissions" true "pending_permissions.json empty"
+     end
+   with e ->
+     pending_perms_json := `List [];
+     add_check "pending_permissions" false (Printexc.to_string e));
   (* Assemble JSON output matching DRAFT-gui-requirements lines 160-162:
      snapshot of current swarm state: peers, rooms, and pending permissions *)
   let all_ok = List.for_all (fun c -> c.ok) !checks in
