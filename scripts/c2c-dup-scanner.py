@@ -36,23 +36,68 @@ EXCLUDE_DIRS = {
 GENERATED_MARKERS = {"# GENERATED", "# DO NOT EDIT", "(* GENERATED", "(* DO NOT EDIT"}
 
 
+def _remove_strings(line: str) -> str:
+    """Remove all string literals from a Python source line, leaving code."""
+    result = []
+    i = 0
+    n = len(line)
+    while i < n:
+        c = line[i]
+        # Comment: skip to end of line
+        if c == '#':
+            break
+        # Check for triple-quoted strings (f""" or """ or f''' or ''')
+        if (i + 5 <= n and line[i:i+3] in ('f"""', '"""', "f'''", "'''")):
+            delim = line[i:i+3]
+            i += 3
+            result.append(' STR ')
+            # Find closing triple-quote
+            end = i
+            quote_count = 0
+            while end < n:
+                if line[end] == '\\':
+                    end += 2
+                    continue
+                if line[end] == delim[0]:
+                    quote_count += 1
+                    end += 1
+                    if quote_count == 3:
+                        break
+                else:
+                    quote_count = 0
+                    end += 1
+            i = end
+            continue
+        if c in ('"', "'"):
+            quote = c
+            j = i + 1
+            while j < n:
+                if line[j] == '\\':
+                    j += 2
+                    continue
+                if line[j] == quote:
+                    i = j + 1
+                    result.append(' STR ')
+                    break
+                j += 1
+            else:
+                result.append(c)
+                i += 1
+            continue
+        result.append(c)
+        i += 1
+    return ''.join(result)
+
+
 def tokenize_python(content: str) -> list[str]:
     """Tokenize Python: strip comments/strings, normalize whitespace."""
     lines = content.splitlines()
     tokens = []
     for line in lines:
-        # Strip trailing comment
-        code_part = line.split("#")[0]
-        # Remove string literals (simple approach: keep tokens inside strings as separate)
-        # Replace string literals with TOKEN to normalize them
-        s = re.sub(r'f?"""[^"]*"""', ' STRING ', code_part)
-        s = re.sub(r"f?'''[^']*'''", ' STRING ', s)
-        s = re.sub(r'f?"[^"]*"', ' STRING ', s)
-        s = re.sub(r"f?'[^']*'", ' STRING ', s)
-        # Normalize whitespace
-        s = re.sub(r'\s+', ' ', s).strip()
-        if s:
-            tokens.append(s)
+        code_part = _remove_strings(line)
+        code_part = re.sub(r'\s+', ' ', code_part).strip()
+        if code_part:
+            tokens.append(code_part)
     return tokens
 
 
@@ -116,8 +161,7 @@ def token_to_line_mapping(tokens: list[str], content_lines: list[str]) -> dict[i
     mapping = {}
     token_idx = 0
     for line_no, line in enumerate(content_lines, 1):
-        # Strip comments to count "code tokens" per line
-        code_part = line.split("#")[0] if content_lines[0] else line
+        code_part = line.split("#")[0]
         code_part = code_part.split("(*")[0]
         s = re.sub(r'"(?:[^"\\]|\\.)*"', ' STRING ', code_part)
         s = re.sub(r'\s+', ' ', s).strip()
@@ -187,21 +231,27 @@ def find_clusters(file_datas: list[dict]) -> list[dict]:
                 "files": list(files_involved),
             })
 
-    # Merge overlapping clusters (same files, nearby windows)
+    # Merge clusters that share the same files AND have windows within MAX_GAP_TOKENS
     merged_clusters = []
     for cluster in sorted(clusters, key=lambda c: -c["n_windows"]):
-        # Check if it overlaps with an existing merged cluster
         merged = False
-        for mc in merged_clusters:
-            # If same files and windows within MAX_GAP, merge
-            if set(mc["files"]) == set(cluster["files"]):
-                # Merge locations
-                mc["locations"].extend(cluster["locations"])
-                mc["locations"].sort(key=lambda x: (x[0], x[1]))
-                mc["n_windows"] = len(mc["locations"])
-                mc["files"] = list(set(mc["files"]))
-                mc["n_files"] = len(mc["files"])
-                merged = True
+        for mc in list(merged_clusters):
+            if set(mc["files"]) != set(cluster["files"]):
+                continue
+            # Check if any window from cluster is within MAX_GAP of any window in mc
+            cluster_starts = {loc[1] for loc in cluster["locations"]}
+            mc_starts = {loc[1] for loc in mc["locations"]}
+            for cs in cluster_starts:
+                for ms in mc_starts:
+                    if abs(cs - ms) <= MAX_GAP_TOKENS:
+                        mc["locations"].extend(cluster["locations"])
+                        mc["locations"].sort(key=lambda x: (x[0], x[1]))
+                        mc["n_windows"] = len(mc["locations"])
+                        merged = True
+                        break
+                if merged:
+                    break
+            if merged:
                 break
         if not merged:
             merged_clusters.append(cluster)
@@ -209,21 +259,47 @@ def find_clusters(file_datas: list[dict]) -> list[dict]:
     return merged_clusters
 
 
+def merge_token_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Merge overlapping/adjacent token ranges."""
+    if not ranges:
+        return []
+    sorted_ranges = sorted(ranges)
+    merged = [sorted_ranges[0]]
+    for start, end in sorted_ranges[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end + 1:  # overlapping or adjacent
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
 def format_cluster_summary(cluster: dict, all_file_datas: dict) -> str:
     """Format a cluster as a readable summary."""
     files = cluster["files"]
     n_windows = cluster["n_windows"]
-    dup_tokens = n_windows * WINDOW_TOKENS
-    # Estimate LOC: ~4 tokens per line
-    est_loc = dup_tokens // 4
 
-    # Similarity: % of the smaller file that is duplicated
+    # Estimate duplicate coverage using merged token ranges (avoids overlap inflation)
+    file_ranges: dict[str, list[tuple[int, int]]] = {f: [] for f in files}
+    for loc in cluster["locations"]:
+        filepath, token_start, _ = loc
+        file_ranges[filepath].append((token_start, token_start + WINDOW_TOKENS))
+
+    # Compute union span per file
+    total_dup_span = 0
+    for f in files:
+        merged = merge_token_ranges(file_ranges[f])
+        total_dup_span += sum(end - start for start, end in merged)
+
+    est_loc = total_dup_span // 4  # ~4 tokens per line
+
+    # Similarity: union span vs smaller file's total tokens
     if len(files) == 2:
         loc0 = get_file_loc(files[0], all_file_datas) or 0
         loc1 = get_file_loc(files[1], all_file_datas) or 0
         smaller = min(loc0, loc1) if (loc0 or loc1) else 0
         if smaller > 0:
-            sim = min(dup_tokens / max(smaller, 1), 1.0)
+            sim = min(total_dup_span / max(smaller, 1), 1.0)
             sim_pct = int(sim * 100)
             sim_str = f"{sim_pct}%"
         else:
@@ -231,7 +307,6 @@ def format_cluster_summary(cluster: dict, all_file_datas: dict) -> str:
     else:
         sim_str = "?"
 
-    # Show all files (basename only for brevity)
     file_names = [Path(f).name for f in files]
     files_str = ", ".join(file_names[:4])
     if len(files) > 4:
