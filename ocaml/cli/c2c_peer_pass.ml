@@ -33,7 +33,7 @@ let xdg_state_home () =
 let per_alias_key_path ~alias =
   let abs_path p = if Filename.is_relative p then Sys.getcwd () // p else p in
   let broker_root =
-    match Sys.getenv_opt "C2C_BROKER_ROOT" with
+    match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
     | Some dir -> abs_path dir
     | None -> (
         match Git_helpers.git_common_dir () with
