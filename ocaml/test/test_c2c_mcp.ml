@@ -2556,6 +2556,7 @@ let test_start_time_mismatch_is_not_alive () =
     ; compacting = None
     ; last_activity_ts = None
     ; role = None
+    ; compaction_count = 0
     }
   in
   check bool "mismatched start_time → not alive" false
@@ -2580,6 +2581,7 @@ let test_start_time_match_is_alive () =
     ; compacting = None
     ; last_activity_ts = None
     ; role = None
+    ; compaction_count = 0
     }
   in
   check bool "matching start_time → alive" true
@@ -2604,6 +2606,7 @@ let test_start_time_none_falls_back_to_proc_exists () =
     ; compacting = None
     ; last_activity_ts = None
     ; role = None
+    ; compaction_count = 0
     }
   in
   check bool "pid exists + no stored start_time → alive" true
