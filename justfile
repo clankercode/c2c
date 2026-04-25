@@ -54,11 +54,11 @@ codegen-role-designer:
 
 # Build the OCaml MCP server
 build: codegen-role-designer
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
+    REPO_ROOT=$(git rev-parse --show-toplevel) && cd "$REPO_ROOT" && scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$REPO_ROOT" ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
 
 # Build the OCaml CLI binary
 build-cli: codegen-role-designer
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build ./ocaml/cli/c2c.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
+    REPO_ROOT=$(git rev-parse --show-toplevel) && cd "$REPO_ROOT" && scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$REPO_ROOT" ./ocaml/cli/c2c.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
 
 # Build both MCP server and CLI
 build-all: build build-cli
@@ -71,7 +71,7 @@ test-py:
 
 # Run OCaml tests only
 test-ocaml:
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune runtest ocaml/
+    REPO_ROOT=$(git rev-parse --show-toplevel) && cd "$REPO_ROOT" && scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune runtest --root "$REPO_ROOT" ocaml/
 
 # Run TypeScript (vitest) unit tests for the .opencode plugin
 # Installs devDependencies on demand (idempotent if already installed).
