@@ -94,6 +94,12 @@ val poker_pid_path : string -> string
 val generate_alias : unit -> string
 (** [generate_alias ()] returns a random two-word alias like "ember-frost". *)
 
+val fds_to_close : preserve:Unix.file_descr list -> Unix.file_descr list
+(** [fds_to_close ~preserve] is a pure function that returns the list of
+    file descriptors that [close_unlisted_fds] would close — i.e. all fds in
+    /proc/self/fd except those in [preserve] and stdin/stdout/stderr.
+    This is testable without closing anything. *)
+
 val default_name : string -> string
 (** [default_name client] returns "<client>-<word1>-<word2>" using random words. *)
 
@@ -362,7 +368,8 @@ val start_deliver_daemon :
   ?xml_output_fd:string ->
   ?xml_output_path:string ->
   ?event_fifo_path:string ->
-  ?response_fifo_path:string ->
+?response_fifo_path:string ->
+  ?preserve_fds:Unix.file_descr list ->
   unit ->
   int option
 (** [start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt

@@ -2,6 +2,43 @@
 
 let ( // ) = Filename.concat
 
+(** [fds_to_close ~preserve] is a pure function that returns the list of
+    file descriptors that [close_unlisted_fds] would close — i.e. all fds in
+    /proc/self/fd except those in [preserve] and stdin/stdout/stderr.
+    This is testable without closing anything.
+
+    Structural errors (permission denied accessing /proc/self/fd, malformed fd
+    names) are propagated — only EINTR is retried. A bare [] on error would
+    silently disable all fd closing, creating the exact leak we're trying to fix. *)
+let fds_to_close ~(preserve : Unix.file_descr list) : Unix.file_descr list =
+  let stdio = [Unix.stdin; Unix.stdout; Unix.stderr] in
+  let rec with_eintr thunk =
+    match thunk () with
+    | exception Unix.Unix_error (Unix.EINTR, _, _) -> with_eintr thunk
+    | result -> result
+  in
+  try
+    let fd_dir = with_eintr (fun () -> Unix.opendir "/proc/self/fd") in
+    Fun.protect ~finally:(fun () -> try Unix.closedir fd_dir with _ -> ())
+      (fun () ->
+        let rec loop fds =
+          match with_eintr (fun () -> Unix.readdir fd_dir) with
+          | exception End_of_file -> List.rev fds
+          | "." | ".." -> loop fds
+          | name ->
+              let fd = int_of_string name in
+              if List.mem fd (List.map Obj.magic stdio) then loop fds
+              else if List.mem fd (List.map Obj.magic preserve) then loop fds
+              else loop ((Obj.magic fd) :: fds)
+        in
+        loop [])
+  with Unix.Unix_error (e, _, _) as ex ->
+    if e = Unix.EINTR then []
+    else raise ex
+
+let close_unlisted_fds ~(preserve : Unix.file_descr list) =
+  List.iter (fun fd -> try Unix.close fd with _ -> ()) (fds_to_close ~preserve)
+
 let likes_shell_substitution (s : string) : bool =
   let len = String.length s in
   let is_escaped i =
@@ -46,6 +83,35 @@ let likes_shell_substitution (s : string) : bool =
       | _ -> scan (i + 1)
   in
   scan 0
+=======
+(** [fds_to_close ~preserve] is a pure function that returns the list of
+    file descriptors that [close_unlisted_fds] would close — i.e. all fds in
+    /proc/self/fd except those in [preserve] and stdin/stdout/stderr.
+    This is testable without closing anything. *)
+let fds_to_close ~(preserve : Unix.file_descr list) : Unix.file_descr list =
+  let stdio = [Unix.stdin; Unix.stdout; Unix.stderr] in
+  try
+    let fd_dir = Unix.opendir "/proc/self/fd" in
+    Fun.protect ~finally:(fun () -> Unix.closedir fd_dir)
+      (fun () ->
+        let rec loop fds =
+          match Unix.readdir fd_dir with
+          | exception End_of_file -> List.rev fds
+          | "." | ".." -> loop fds
+          | name ->
+              (try
+                 let fd = int_of_string name in
+                 if List.mem fd (List.map Obj.magic stdio) then loop fds
+                 else if List.mem fd (List.map Obj.magic preserve) then loop fds
+                 else loop ((Obj.magic fd) :: fds)
+               with _ -> loop fds)
+        in
+        loop [])
+  with _ -> []
+
+let close_unlisted_fds ~(preserve : Unix.file_descr list) =
+  List.iter (fun fd -> try Unix.close fd with _ -> ()) (fds_to_close ~preserve)
+>>>>>>> 724001c (fix-codex-hang-143: close inherited non-stdio fds before exec in deliver daemon)
 
 (* Terminal title — OSC-0 / tmux pane title.
    Respects NO_COLOR and TERM=dumb. Title format: "<glyph> <alias> (<client>)"
@@ -2742,7 +2808,7 @@ let start_deliver_daemon ~(name : string) ~(client : string)
     ~(broker_root : string) ?(child_pid_opt : int option)
     ?command_override
     ?(xml_output_fd : string option) ?(xml_output_path : string option)
-    ?(event_fifo_path : string option) ?(response_fifo_path : string option) () : int option =
+?(event_fifo_path : string option) ?(response_fifo_path : string option) ?(preserve_fds : Unix.file_descr list option) () : int option =
   match (match command_override with Some cmd -> Some cmd | None -> deliver_command ~broker_root) with
   | None -> None
   | Some (command, prefix_args) ->
@@ -2773,10 +2839,16 @@ let start_deliver_daemon ~(name : string) ~(client : string)
             (try Unix.dup2 devnull Unix.stdin with _ -> ());
             (try Unix.dup2 devnull Unix.stdout with _ -> ());
             (try Unix.dup2 devnull Unix.stderr with _ -> ());
-            (try
-               if devnull <> Unix.stdin && devnull <> Unix.stdout && devnull <> Unix.stderr
-               then Unix.close devnull
-             with _ -> ());
+             (try
+                if devnull <> Unix.stdin && devnull <> Unix.stdout && devnull <> Unix.stderr
+                then Unix.close devnull
+              with _ -> ());
+            (* Close all inherited non-stdio fds before exec to prevent
+               sidecar-fd-leak hang: unrelated parent fds (xml pipes, tees)
+               can keep shutdown paths alive after the managed client exits.
+               Preserve preserve_fds: includes the xml output fd when set,
+               plus any caller-passed fds (e.g. event fifo). *)
+            close_unlisted_fds ~preserve:(Option.value preserve_fds ~default:[]);
             (try Unix.execvpe command argv env
              with _ -> exit 127)
         | pid -> Some pid
@@ -3453,34 +3525,40 @@ let run_outer_loop ~(name : string) ~(client : string)
                    (try Unix.dup2 write_fd fd4 with _ -> ());
                    (Some ("4", fd4), None)
                | _ -> (None, None)
-             in
-              begin
-                match
-                  start_deliver_daemon
-                    ~name
-                    ~client
-                    ~broker_root
-                    ?child_pid_opt:(Some pid)
-                    ?xml_output_fd:(Option.map fst xml_output_fd)
-                    ?xml_output_path
-                    ?event_fifo_path:headless_events_fifo_opt
-                    ?response_fifo_path:headless_responses_fifo_opt
-                    ()
-                with
-               | Some p ->
-                   deliver_pid := Some p;
-                   write_pid (deliver_pid_path name) p
-               | None ->
-                   (match xml_output_fd with
-                    | Some _ ->
-                        (match
-                           start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt:(Some pid) ()
-                         with
-                         | Some p ->
-                             deliver_pid := Some p;
-                             write_pid (deliver_pid_path name) p
-                         | None -> ())
-                    | None -> ());
+              in
+               let preserve_fds =
+                 match xml_output_fd with
+                 | Some (_, fd) -> [fd]
+                 | None -> []
+               in
+               begin
+                 match
+                   start_deliver_daemon
+                     ~name
+                     ~client
+                     ~broker_root
+                     ?child_pid_opt:(Some pid)
+                     ?xml_output_fd:(Option.map fst xml_output_fd)
+                     ?xml_output_path
+                     ?event_fifo_path:headless_events_fifo_opt
+                     ?response_fifo_path:headless_responses_fifo_opt
+                     ~preserve_fds
+                     ()
+                 with
+                | Some p ->
+                    deliver_pid := Some p;
+                    write_pid (deliver_pid_path name) p
+                | None ->
+                    (match xml_output_fd with
+                      | Some _ ->
+                          (match
+                            start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt:(Some pid) ?response_fifo_path:headless_responses_fifo_opt ~preserve_fds:[] ()
+                          with
+                          | Some p ->
+                              deliver_pid := Some p;
+                              write_pid (deliver_pid_path name) p
+                          | None -> ())
+                      | None -> ());
                match xml_output_fd with
                | Some (_, fd4) -> (try Unix.close fd4 with _ -> ())
                | None -> ()

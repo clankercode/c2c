@@ -1298,7 +1298,69 @@ let test_repo_config_pmodel_reads_table () =
    | None -> fail "coordinator missing");
   (match C2c_start.repo_config_pmodel_lookup "nope" with
    | Some _ -> fail "unset role should not resolve"
-   | None -> ())
+    | None -> ())
+
+let test_fds_to_close_closes_non_preserved () =
+  if not (Sys.file_exists "/proc/self/fd") then (
+    print_endline "SKIP fds_to_close_closes_non_preserved (no /proc/self/fd)";
+    ()
+  ) else
+    let r, w = Unix.pipe () in
+    (try
+       let would_close = C2c_start.fds_to_close ~preserve:[w] in
+       if not (List.mem r would_close) then
+         fail "fds_to_close: pipe read-end should be slated for closing";
+       if List.mem w would_close then
+         fail "fds_to_close: preserved fd should not be slated for closing";
+       if List.mem Unix.stdin would_close then
+         fail "fds_to_close: stdin should not be slated for closing";
+       if List.mem Unix.stdout would_close then
+         fail "fds_to_close: stdout should not be slated for closing";
+       if List.mem Unix.stderr would_close then
+         fail "fds_to_close: stderr should not be slated for closing";
+       Unix.close r; Unix.close w
+     with e ->
+       (try Unix.close r with _ -> ());
+       (try Unix.close w with _ -> ());
+       raise e)
+
+let test_fds_to_close_preserves_preserved_fd () =
+  if not (Sys.file_exists "/proc/self/fd") then (
+    print_endline "SKIP fds_to_close_preserves_preserved_fd (no /proc/self/fd)";
+    ()
+  ) else
+    let r, w = Unix.pipe () in
+    (try
+       let would_close = C2c_start.fds_to_close ~preserve:[w] in
+       if List.mem w would_close then
+         fail "fds_to_close: preserved fd should not be slated for closing";
+       if not (List.mem r would_close) then
+         fail "fds_to_close: non-preserved fd should be slated for closing";
+       Unix.close r; Unix.close w
+     with e ->
+       (try Unix.close r with _ -> ());
+       (try Unix.close w with _ -> ());
+       raise e)
+
+let test_fds_to_close_preserves_stdio () =
+  if not (Sys.file_exists "/proc/self/fd") then (
+    print_endline "SKIP fds_to_close_preserves_stdio (no /proc/self/fd)";
+    ()
+  ) else
+    let r, w = Unix.pipe () in
+    (try
+       let would_close = C2c_start.fds_to_close ~preserve:[r; w] in
+       if List.mem Unix.stdin would_close then
+         fail "fds_to_close: stdin should not be slated for closing";
+       if List.mem Unix.stdout would_close then
+         fail "fds_to_close: stdout should not be slated for closing";
+       if List.mem Unix.stderr would_close then
+         fail "fds_to_close: stderr should not be slated for closing";
+       Unix.close r; Unix.close w
+     with e ->
+       (try Unix.close r with _ -> ());
+       (try Unix.close w with _ -> ());
+       raise e)
 
 let test_repo_config_default_binary_reads_table () =
   with_temp_dir @@ fun dir ->
@@ -1545,5 +1607,13 @@ let () =
                       check bool "JSON output is a string starting with quote"
                         true
                         (String.length output > 0 && output.[0] = '"'))) ))
+        ] )
+    ; ( "fds_to_close",
+        [ ( "fds_to_close_closes_non_preserved",
+            `Quick, test_fds_to_close_closes_non_preserved )
+        ; ( "fds_to_close_preserves_preserved_fd",
+            `Quick, test_fds_to_close_preserves_preserved_fd )
+        ; ( "fds_to_close_preserves_stdio",
+            `Quick, test_fds_to_close_preserves_stdio )
         ] )
     ]
