@@ -159,11 +159,10 @@ Headless smoke tests should be runnable in CI without a display server (Xvfb or 
 
 ### Batch mode proposal
 
-Add `c2c gui --batch` as a non-visual smoke path that exercises the GUI's backend adapter without starting the Tauri window. This should validate broker discovery, config loading, CLI/MCP command availability, inbox polling, and a no-op render-model build. It should not replace real UI tests, but it gives CI a stable way to catch broken prerequisites before human testing.
+Add `c2c gui --batch` as a v1 non-visual smoke path that exercises the GUI's backend adapter without starting the Tauri window. This should validate broker discovery, config loading, CLI/MCP command availability, inbox polling, and a no-op render-model build. It should emit a JSON snapshot of current swarm state (peers, rooms, and pending permissions) and exit. It is a headless CI smoke path and lightweight operator inspection tool, not a full terminal dashboard.
 
 ### Open questions
 
-- Should `c2c gui --batch` be part of v1, or should v1 only document that CI tests the underlying CLI?
 - Should GUI log to a machine-readable format for CI observability?
 
 ## Human-as-Peer Experience (jungle-coder)
