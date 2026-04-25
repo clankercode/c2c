@@ -65,11 +65,19 @@ let git_stash_push repo msg =
   in
   run cmd = 0
 
+(** git stash pop that also detects silent conflicts (git exits 0 but leaves UU markers).
+    This happens when stash's working-tree changes conflict with current working-tree
+    changes and git resolves in favor of current state, silently discarding stash changes. *)
 let git_stash_pop repo =
   let cmd = Printf.sprintf "git -C %s stash pop" (Filename.quote repo) in
-  match run cmd with
-  | 0 -> `Success
-  | _ -> `Conflict
+  let rc = run cmd in
+  if rc <> 0 then `Conflict
+  else
+    (* rc=0 but git stash pop can still have silently resolved conflicts.
+       Check for unmerged (UU/AA/DD) markers in the working tree. *)
+    let _, _, lines = git_status repo in
+    if List.exists is_conflict_line lines then `Conflict
+    else `Success
 
 let git_cherry_pick repo sha =
   let cmd = Printf.sprintf "git -C %s cherry-pick %s"
