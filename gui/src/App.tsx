@@ -203,7 +203,7 @@ export function App() {
 
     // Periodic re-discovery: picks up peers that registered after the initial
     // seed but before/between monitor events (e.g. restarts, alias changes).
-    const refreshTimer = setInterval(() => refreshBroker(), 60_000);
+    const refreshTimer = setInterval(() => refreshBroker(), 10_000);
 
     // If we have a stored alias, ensure we're joined to the default social room.
     const storedAlias = localStorage.getItem(ALIAS_KEY) ?? undefined;

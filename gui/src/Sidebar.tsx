@@ -88,9 +88,13 @@ export function Sidebar({ peers, rooms, roomMembers = new Map(), selectedRoom, s
       overflow: "hidden",
       flexShrink: 0,
     }}>
-      {rooms.length > 0 && (
+      <div style={SECTION_STYLE}>Rooms</div>
+      {rooms.length === 0 ? (
+        <div style={{ padding: "2px 10px 6px", fontSize: 11, color: "#45475a" }}>
+          No rooms joined
+        </div>
+      ) : (
         <>
-          <div style={SECTION_STYLE}>Rooms</div>
           {rooms.map(r => {
             const isActive = selectedRoom === r;
             const members = roomMembers.get(r);
@@ -165,9 +169,13 @@ export function Sidebar({ peers, rooms, roomMembers = new Map(), selectedRoom, s
         </>
       )}
 
-      {peers.length > 0 && (
+      <div style={{ ...SECTION_STYLE, marginTop: 8 }}>Peers</div>
+      {peers.length === 0 ? (
+        <div style={{ padding: "2px 10px 6px", fontSize: 11, color: "#45475a" }}>
+          No peers yet
+        </div>
+      ) : (
         <>
-          <div style={{ ...SECTION_STYLE, marginTop: 8 }}>Peers</div>
           {peers.map(p => (
             <div
               key={p}
@@ -182,12 +190,6 @@ export function Sidebar({ peers, rooms, roomMembers = new Map(), selectedRoom, s
             </div>
           ))}
         </>
-      )}
-
-      {peers.length === 0 && rooms.length === 0 && (
-        <div style={{ padding: "12px 10px", fontSize: 11, color: "#45475a" }}>
-          No peers yet
-        </div>
       )}
 
       {/* Spacer + join room footer */}
