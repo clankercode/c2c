@@ -1262,28 +1262,13 @@ let tmux_info_path name = instance_dir name // "tmux.json"
 
 (* Capture orphan inbox messages before restart, save to pending-replay file,
    and delete the orphan inbox. Called in cmd_restart before execvp so
-   messages queued during the restart gap are preserved. *)
+   messages queued during the restart gap are preserved.
+   The Broker.capture_orphan_for_restart call handles the full atomic sequence:
+   read → write pending → delete orphan, all under inbox lock, so a write
+   failure leaves the orphan intact. *)
 let capture_orphan_inbox_for_restart ~(broker_root : string) ~(session_id : string) : int =
   let broker = C2c_mcp.Broker.create ~root:broker_root in
-  (* broker_root IS the mcp broker dir — write pending file directly there. *)
-  let pending_path = broker_root // "pending-orphan-replay." ^ session_id ^ ".json" in
-  (* read_and_delete_orphan_inbox holds the inbox lock across read+delete,
-     so a concurrent enqueue cannot race between reading messages and deleting
-     the file. *)
-  match C2c_mcp.Broker.read_and_delete_orphan_inbox broker ~session_id with
-  | [] -> 0
-  | msgs ->
-      (* Save as a JSON list of message objects, same format as inbox files. *)
-      write_json_file_atomic pending_path
-        (`List (List.map (fun m ->
-           `Assoc [ ("from_alias", `String m.C2c_mcp.from_alias)
-                  ; ("to_alias", `String m.C2c_mcp.to_alias)
-                  ; ("content", `String m.C2c_mcp.content)
-                  ; ("deferrable", `Bool m.C2c_mcp.deferrable)
-                  ; ("reply_via", match m.C2c_mcp.reply_via with None -> `Null | Some s -> `String s)
-                  ; ("enc_status", match m.C2c_mcp.enc_status with None -> `Null | Some s -> `String s)
-                  ]) msgs));
-      List.length msgs
+  C2c_mcp.Broker.capture_orphan_for_restart broker ~session_id
 
 (* Replay captured orphan messages into the new session's inbox.
    Called in the MCP server after auto_register_startup, so messages

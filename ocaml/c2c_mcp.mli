@@ -91,6 +91,12 @@ module Broker : sig
   (** Atomically read and delete the orphan inbox. Holds the inbox lock across
       read+delete to prevent a concurrent enqueue from racing between reading
       messages and deleting the file. Returns the messages. *)
+  val capture_orphan_for_restart : t -> session_id:string -> int
+  (** Atomically capture orphan inbox messages for restart: reads the orphan
+      inbox, writes a pending replay file, then deletes the orphan — all under
+      the inbox lock.  The pending file is written BEFORE the orphan is deleted,
+      so a write failure leaves the orphan intact.  Returns the number of
+      messages captured, or 0 if no orphan existed. *)
   val replay_pending_orphan_inbox : t -> session_id:string -> int
   (** Replay messages from broker_root/pending-orphan-replay.<session_id>.json
       into the live inbox. Holds the inbox lock across read+save. Deletes the

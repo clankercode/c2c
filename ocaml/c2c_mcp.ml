@@ -1521,6 +1521,59 @@ module Broker = struct
         ignore (try_unlink path);
         msgs)
 
+  (* Capture orphan inbox messages for restart: atomically read the orphan inbox,
+     write a pending replay file, and delete the orphan — all under the inbox
+     lock.  The pending file is written BEFORE the inbox is deleted, so a write
+     failure leaves the orphan intact (not partially-captured).  Holds the
+     inbox lock across all three steps (read, write, delete) to prevent any
+     concurrent enqueue from racing.
+     Returns the number of messages captured, or 0 if no orphan existed. *)
+  let capture_orphan_for_restart t ~session_id =
+    let inbox_path = inbox_path t ~session_id in
+    let pending_path =
+      Filename.concat t.root ("pending-orphan-replay." ^ session_id ^ ".json")
+    in
+    let orphan_exists =
+      (try ignore (Unix.stat inbox_path); true with Unix.Unix_error _ -> false)
+    in
+    if not orphan_exists then 0
+    else
+      with_inbox_lock t ~session_id (fun () ->
+        let msgs = load_inbox t ~session_id in
+        if msgs = [] then (
+          (* Empty orphan — delete it so it doesn't persist across restarts *)
+          ignore (try_unlink inbox_path);
+          0
+        ) else (
+          (* Write pending replay file BEFORE deleting the orphan.
+             Atomic write: write to tmp, fsync, rename. *)
+          let tmp = pending_path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+          let oc = open_out_gen
+            [Open_wronly; Open_creat; Open_trunc; Open_text] 0o600 tmp
+          in
+           (try
+             Fun.protect
+               ~finally:(fun () -> try close_out oc with _ -> ())
+               (fun () -> Yojson.Safe.to_channel oc (`List (List.map (fun m ->
+                 `Assoc [
+                   ("from_alias", `String m.from_alias);
+                   ("to_alias", `String m.to_alias);
+                   ("content", `String m.content);
+                   ("deferrable", `Bool m.deferrable);
+                   ("reply_via", match m.reply_via with None -> `Null | Some s -> `String s);
+                   ("enc_status", match m.enc_status with None -> `Null | Some s -> `String s);
+                 ]) msgs)))
+            with e ->
+              ignore (try_unlink tmp);
+              raise e);
+          (try Unix.rename tmp pending_path
+           with e ->
+             ignore (try_unlink tmp);
+             raise e);
+          ignore (try_unlink inbox_path);
+          List.length msgs
+        ))
+
   (* Replay captured orphan messages into the new session's inbox.
      Called in the MCP server after auto_register_startup completes, so
      messages queued during the restart gap (between old outer-loop exit and
