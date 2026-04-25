@@ -5127,6 +5127,10 @@ let csv_flag =
   Cmdliner.Arg.(value & flag & info [ "csv"; "c" ]
     ~doc:"Output stats as CSV (columns: day,alias,msgs_out,msgs_in). This is the default.")
 
+let compact_flag =
+  Cmdliner.Arg.(value & flag & info [ "compact" ]
+    ~doc:"Output compact (non-pretty) JSON when used with --json.")
+
 let stats_history_cmd =
   let alias_flag =
     Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS"
@@ -5143,6 +5147,7 @@ let stats_history_cmd =
   let+ json = json_flag
   and+ markdown = markdown_flag
   and+ csv = csv_flag
+  and+ compact = compact_flag
   and+ alias_filter = alias_flag
   and+ days = days_flag
   and+ bucket = bucket_flag in
@@ -5153,14 +5158,14 @@ let stats_history_cmd =
         exit 1
   in
   let root = resolve_broker_root () in
-  C2c_stats.run_history ~root ~json ~markdown ~csv ~alias_filter ~days ~grain ()
+  C2c_stats.run_history ~root ~json ~markdown ~csv ~compact ~alias_filter ~days ~grain ()
 
 let stats =
   Cmdliner.Cmd.group
     ~default:stats_cmd
     (Cmdliner.Cmd.info "stats" ~doc:"Show per-agent message statistics across the swarm.")
     [ Cmdliner.Cmd.v (Cmdliner.Cmd.info "history"
-        ~doc:"Per-day rollup of swarm message counts (CSV by default; --json for JSON; --markdown for grouped markdown tables; --csv for explicit CSV).")
+        ~doc:"Per-day rollup of swarm message counts (CSV by default; --json for JSON; --markdown for grouped markdown tables; --csv for explicit CSV; --compact for compact JSON).")
         stats_history_cmd ]
 
 (* --- subcommand: start ---------------------------------------------------- *)
