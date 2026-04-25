@@ -1365,43 +1365,39 @@ let prepare_launch_args ~(name : string) ~(client : string)
   let args =
     match client with
     | "claude" ->
-        (* Use --session-id <uuid> to create a brand-new session with a known id,
-           or --resume <sid> to reattach an existing one. --session-id errors out
-           if a session with that id already exists; --resume errors out if it
-           doesn't. So probe ~/.claude/projects/*/<uuid>.jsonl to pick.
-            --dangerously-load-development-channels server:c2c enables Claude Code to
-            process notifications/claude/channel as <channel> tags. --channels is
-            removed (Max 2026-04-24) to prevent parser confusion in cc-* wrappers. *)
-        let dev_channel_args =
-          [ "--dangerously-load-development-channels"; "server:c2c"
-          ]
-        in
+        (* Dispatch to ClaudeAdapter; agent_name and kickoff_prompt are appended
+           here since they are not in the adapter interface. *)
+        let module A = (val (Stdlib.Hashtbl.find client_adapters "claude") : CLIENT_ADAPTER) in
         let agent_args =
           match agent_name with
-          | Some name -> [ "--agent"; name ]
+          | Some n -> [ "--agent"; n ]
           | None -> []
         in
         let kickoff_args =
           match kickoff_prompt with
-          | Some p when p <> "" -> [ p ]
+          | Some p when p <> "" && resume_session_id = None -> [ p ]
           | _ -> []
         in
-        (match resume_session_id with
-         | Some sid ->
-             let flag =
-               if claude_session_exists sid then "--resume" else "--session-id"
-             in
-             [ flag; sid; "--name"; name;
-             ] @ dev_channel_args @ agent_args
-         | None -> [ "--name"; name ] @ dev_channel_args @ agent_args @ kickoff_args)
+        (A.build_start_args ~name ?alias_override ?model_override ?resume_session_id ())
+        @ agent_args @ kickoff_args
     | "opencode" ->
         let module A = (val (Stdlib.Hashtbl.find client_adapters "opencode") : CLIENT_ADAPTER) in
         A.build_start_args ~name ?alias_override ?model_override ?resume_session_id ()
     | "codex" ->
-        (match codex_resume_target with
-         | Some sid when String.trim sid <> "" -> [ "resume"; sid ]
-         | _ ->
-             (match resume_session_id with Some _ -> [ "resume"; "--last" ] | None -> []))
+        (* Normalise the two resume signals into the single resume_session_id understood
+           by CodexAdapter: non-empty = specific session; "" = resume --last; None = fresh. *)
+        let module A = (val (Stdlib.Hashtbl.find client_adapters "codex") : CLIENT_ADAPTER) in
+        let eff_resume =
+          match codex_resume_target with
+          | Some sid when String.trim sid <> "" -> Some sid
+          | _ -> (match resume_session_id with Some _ -> Some "" | None -> None)
+        in
+        A.build_start_args ~name ?alias_override ?model_override
+          ?resume_session_id:eff_resume ()
+    | "kimi" ->
+        (* KimiAdapter writes the per-instance MCP config and prepends the flag. *)
+        let module A = (val (Stdlib.Hashtbl.find client_adapters "kimi") : CLIENT_ADAPTER) in
+        A.build_start_args ~name ?alias_override ?model_override ?resume_session_id ()
     | "codex-headless" ->
         [ "--stdin-format"; "xml";
           "--codex-bin"; "codex";
@@ -1417,28 +1413,21 @@ let prepare_launch_args ~(name : string) ~(client : string)
            | None -> [])
     | _ -> []
   in
+  (* Adapter-dispatched clients apply model_override internally; skip the
+     generic append here to avoid passing --model twice. *)
   let args =
-    match model_override with
-    | Some model when String.trim model <> "" -> args @ [ "--model"; model ]
-    | _ -> args
+    if Stdlib.Hashtbl.mem client_adapters client then args
+    else
+      match model_override with
+      | Some model when String.trim model <> "" -> args @ [ "--model"; model ]
+      | _ -> args
   in
   let args =
     match client, codex_xml_input_fd with
     | "codex", Some fd -> [ "--xml-input-fd"; fd ] @ args
     | _ -> args
   in
-  if client = "kimi" && not (has_explicit_kimi_mcp_config extra_args) then
-    let cfg_path = kimi_mcp_config_path name in
-    let dir = Filename.dirname cfg_path in
-    mkdir_p dir;
-    let oc = open_out cfg_path in
-    Fun.protect ~finally:(fun () -> close_out oc)
-      (fun () ->
-        Yojson.Safe.pretty_to_channel oc (build_kimi_mcp_config name broker_root alias_override);
-        output_string oc "\n");
-    "--mcp-config-file" :: cfg_path :: (args @ extra_args)
-  else
-    args @ extra_args
+  args @ extra_args
 
 (* ---------------------------------------------------------------------------
  * Binary lookup
@@ -1601,6 +1590,158 @@ let probed_capabilities ~(client : string) ~(binary_path : string) : string list
   |> add_if Codex_headless_thread_id_fd
        (client = "codex-headless" && bridge_supports_thread_id_fd binary_path)
   |> List.rev
+
+(* ---------------------------------------------------------------------------
+ * Per-client adapter modules (Phase 2: claude + codex + kimi)
+ *
+ * All three satisfy CLIENT_ADAPTER.  model_override is applied inside the
+ * adapter so the outer prepare_launch_args skips the generic model append for
+ * adapter-dispatched clients (avoids the double-apply that would otherwise
+ * occur — see the guard in prepare_launch_args below).
+ * extra_args are NOT consumed by these adapters; prepare_launch_args appends
+ * them uniformly after the adapter call, consistent with the opencode pattern.
+ * --------------------------------------------------------------------------- *)
+
+module ClaudeAdapter : CLIENT_ADAPTER = struct
+  let name = "claude"
+  let config_dir = ".claude"
+  let agent_dir = "agents"
+  let instances_subdir = "claude"
+
+  let binary = "claude"
+  let needs_deliver = false
+  let needs_wire_daemon = false
+  let needs_poker = false
+  let poker_event = None
+  let poker_from = None
+  let extra_env = []
+  let session_id_env = Some "CLAUDE_CODE_PARENT_SESSION_ID"
+
+  let build_start_args ~name ?alias_override:_ ?model_override ?resume_session_id
+      ?(extra_args = []) () =
+    (* Note: agent_name and kickoff_prompt are not in the adapter interface.
+       prepare_launch_args appends them as part of extra_args before calling here. *)
+    ignore extra_args;
+    let dev_channel_args =
+      [ "--dangerously-load-development-channels"; "server:c2c" ]
+    in
+    let base =
+      match resume_session_id with
+      | Some sid ->
+          let flag = if claude_session_exists sid then "--resume" else "--session-id" in
+          [ flag; sid; "--name"; name ] @ dev_channel_args
+      | None -> [ "--name"; name ] @ dev_channel_args
+    in
+    match model_override with
+    | Some m when String.trim m <> "" -> base @ [ "--model"; m ]
+    | _ -> base
+
+  let refresh_identity ~name:_ ~alias:_ ~broker_root:_ ~project_dir:_ ~instances_dir:_ =
+    (* Claude configures itself via C2C_MCP_* env vars injected at launch;
+       no per-launch config-file update is required. *)
+    ()
+
+  let probe_capabilities ~binary_path:_ =
+    (* claude_channel: always available for managed claude sessions.
+       pty_inject: checked dynamically via check_pty_inject_capability in probed_capabilities. *)
+    [ "claude_channel", true ]
+end
+
+module CodexAdapter : CLIENT_ADAPTER = struct
+  let name = "codex"
+  let config_dir = ".codex"
+  let agent_dir = ""   (* codex has no agent-dir concept *)
+  let instances_subdir = "codex"
+
+  let binary = "codex"
+  let needs_deliver = true
+  let needs_wire_daemon = false
+  let needs_poker = false
+  let poker_event = None
+  let poker_from = None
+  let extra_env = []
+  let session_id_env = None   (* codex uses C2C_MCP_SESSION_ID directly *)
+
+  let build_start_args ~name:_ ?alias_override:_ ?model_override ?resume_session_id
+      ?(extra_args = []) () =
+    (* Note: codex_xml_input_fd is not in the adapter interface; prepare_launch_args
+       prepends [ "--xml-input-fd"; fd ] after the adapter call when needed.
+       resume_session_id="" signals "resume --last" (generic resume);
+       resume_session_id=<non-empty> is a specific codex session id. *)
+    ignore extra_args;
+    let base =
+      match resume_session_id with
+      | Some sid when String.trim sid <> "" -> [ "resume"; sid ]
+      | Some _ -> [ "resume"; "--last" ]
+      | None -> []
+    in
+    match model_override with
+    | Some m when String.trim m <> "" -> base @ [ "--model"; m ]
+    | _ -> base
+
+  let refresh_identity ~name:_ ~alias:_ ~broker_root:_ ~project_dir:_ ~instances_dir:_ =
+    (* Codex configures itself via C2C_MCP_* env vars and ~/.codex/config.toml
+       written by c2c install codex; no per-launch refresh is needed. *)
+    ()
+
+  let probe_capabilities ~binary_path =
+    (* codex_xml_fd: only if the installed binary supports --xml-input-fd.
+       pty_inject: checked dynamically via check_pty_inject_capability in probed_capabilities. *)
+    [ "codex_xml_fd", codex_supports_xml_input_fd binary_path ]
+end
+
+module KimiAdapter : CLIENT_ADAPTER = struct
+  let name = "kimi"
+  let config_dir = ".kimi"
+  let agent_dir = ""   (* kimi has no agent-dir concept *)
+  let instances_subdir = "kimi"
+
+  let binary = "kimi"
+  let needs_deliver = false
+  let needs_wire_daemon = true
+  let needs_poker = true
+  let poker_event = Some "heartbeat"
+  let poker_from = Some "kimi-poker"
+  let extra_env = []
+  let session_id_env = Some "KIMI_SESSION_ID"
+
+  let build_start_args ~name ?alias_override ?model_override ?resume_session_id:_
+      ?(extra_args = []) () =
+    (* Kimi doesn't support session resume via CLI args.
+       Write the per-instance MCP config to the instance dir and prepend the flag.
+       extra_args are ignored here; prepare_launch_args appends them after. *)
+    ignore extra_args;
+    let br = broker_root () in
+    let base =
+      match model_override with
+      | Some m when String.trim m <> "" -> [ "--model"; m ]
+      | _ -> []
+    in
+    if not (has_explicit_kimi_mcp_config []) then begin
+      let cfg_path = kimi_mcp_config_path name in
+      mkdir_p (Filename.dirname cfg_path);
+      let oc = open_out cfg_path in
+      Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+        Yojson.Safe.pretty_to_channel oc (build_kimi_mcp_config name br alias_override);
+        output_string oc "\n");
+      "--mcp-config-file" :: cfg_path :: base
+    end else
+      base
+
+  let refresh_identity ~name:_ ~alias:_ ~broker_root:_ ~project_dir:_ ~instances_dir:_ =
+    (* Kimi MCP config is written fresh at each launch via build_start_args;
+       no additional per-launch refresh is needed. *)
+    ()
+
+  let probe_capabilities ~binary_path:_ =
+    (* kimi_wire: always available for managed kimi sessions.
+       Wire bridge delivers via JSON-RPC; no PTY access needed. *)
+    [ "kimi_wire", true ]
+end
+
+let () = Stdlib.Hashtbl.add client_adapters "claude" (module ClaudeAdapter)
+let () = Stdlib.Hashtbl.add client_adapters "codex" (module CodexAdapter)
+let () = Stdlib.Hashtbl.add client_adapters "kimi" (module KimiAdapter)
 
 let parse_rfc3339_utc s =
   match Ptime.of_rfc3339 s with
