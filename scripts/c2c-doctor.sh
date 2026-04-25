@@ -52,6 +52,21 @@ if [[ -n "$MAIN_TREE_UNSTAGED" || -n "$MAIN_TREE_STAGED" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Stale binary detection
+# Check if OCaml source is newer than installed binary
+# ---------------------------------------------------------------------------
+BINARY_STALE=0
+LOCAL_BIN="${HOME}/.local/bin/c2c"
+if [[ -f "$LOCAL_BIN" ]]; then
+  binary_mtime=$(stat -c %Y "$LOCAL_BIN" 2>/dev/null || echo "0")
+  # Find most recent .ml or .mli file under ocaml/
+  newest_source=$(find ocaml/ -name "*.ml" -o -name "*.mli" 2>/dev/null | xargs stat -c %Y 2>/dev/null | sort -n | tail -1 || echo "0")
+  if [[ "$newest_source" -gt "$binary_mtime" ]]; then
+    BINARY_STALE=1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 1. Health (pass-through or summary)
 # ---------------------------------------------------------------------------
 if [[ $SUMMARY -eq 1 ]]; then
@@ -101,6 +116,15 @@ else
     echo ""
     echo "  WIP in the main tree contaminates the shared working tree."
     echo "  Either commit, or move to a worktree: c2c start --worktree --branch <slice> <client>"
+    echo ""
+  fi
+
+  if [[ $BINARY_STALE -eq 1 ]]; then
+    bold "=== stale binary warning ==="
+    echo ""
+    yellow "  ⚠ installed binary is older than OCaml source"
+    echo ""
+    echo "  Run 'just install-all' to rebuild and install the current version."
     echo ""
   fi
 fi
@@ -305,6 +329,10 @@ if [[ $SUMMARY -eq 1 ]]; then
 
   if [[ $MAIN_TREE_DIRTY -eq 1 ]]; then
     printf "  $COORD_CHAR WARN: %d file(s) uncommitted in main tree — WIP contaminates shared working tree (commit or move to worktree)\n" "$MAIN_TREE_DIRTY_COUNT" >&2
+  fi
+
+  if [[ $BINARY_STALE -eq 1 ]]; then
+    printf "  $COORD_CHAR WARN: binary older than OCaml source — run 'just install-all'\n" >&2
   fi
 
   # Print ALL CLEAR
