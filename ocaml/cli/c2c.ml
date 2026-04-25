@@ -5306,7 +5306,6 @@ let start_cmd =
       ~doc:"For CLIENT=tmux, optional command argv to type into the target pane. Use -- before the command.")
   in
   let+ client = client
-  and+ extra_argv = extra_argv
   and+ name_opt = name
   and+ alias_opt = alias
   and+ bin_opt = bin
