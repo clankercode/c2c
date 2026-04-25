@@ -25,6 +25,19 @@ CLEAR_CHAR="–"
 # Capture health output once for both full and summary modes
 HEALTH_OUTPUT=$(c2c health 2>&1 || true)
 
+# Detect if main working tree is on a non-master/main branch (agents sharing main tree)
+# Format: /path/to/main  <sha>  [<branch>]  — or [HEAD detached at <sha>]
+_wt_raw=$(git worktree list 2>/dev/null | head -1)
+MAIN_TREE_BRANCH=$(echo "$_wt_raw" | sed 's/.*\[\(.*\)\]/\1/')
+MAIN_TREE_SHARED=0
+# Warn only when main tree is on a real slice branch (not master/main/detached HEAD)
+if [[ -n "$MAIN_TREE_BRANCH" ]] \
+   && [[ "$MAIN_TREE_BRANCH" != "master" ]] \
+   && [[ "$MAIN_TREE_BRANCH" != "main" ]] \
+   && [[ "$MAIN_TREE_BRANCH" != *"detached"* ]]; then
+  MAIN_TREE_SHARED=1
+fi
+
 # ---------------------------------------------------------------------------
 # 1. Health (pass-through or summary)
 # ---------------------------------------------------------------------------
@@ -42,6 +55,18 @@ else
   echo ""
   c2c instances 2>&1 || true
   echo ""
+
+  if [[ $MAIN_TREE_SHARED -eq 1 ]]; then
+    bold "=== shared-tree warning ==="
+    echo ""
+    yellow "  ⚠ main tree is on branch '$MAIN_TREE_BRANCH'"
+    echo ""
+    echo "  Coordinator should own the main tree on master/main."
+    echo "  Agents should use per-agent worktrees instead:"
+    echo "    c2c start --worktree --branch <slice-branch> <client>"
+    echo "  See: .collab/runbooks/worktree-per-feature.md"
+    echo ""
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -236,6 +261,10 @@ if [[ $SUMMARY -eq 1 ]]; then
     printf "\n" >&2
   elif [[ $RELAY_STALE -eq 1 ]]; then
     printf "  $COORD_CHAR COORDINATOR:  relay-stale but no relay-critical commits\n" >&2
+  fi
+
+  if [[ $MAIN_TREE_SHARED -eq 1 ]]; then
+    printf "  $COORD_CHAR WARN: main tree on '%s' (not master/main) — agents should use worktrees (c2c start --worktree --branch <slice> <client>)\n" "$MAIN_TREE_BRANCH" >&2
   fi
 
   # Print ALL CLEAR
