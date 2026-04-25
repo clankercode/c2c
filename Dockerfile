@@ -33,7 +33,8 @@ RUN opam update -y \
         base64 digestif mirage-crypto-ec mirage-crypto-rng \
         mirage-crypto-rng-lwt \
         tls-lwt ca-certs \
-        conduit-lwt-unix x509 ptime
+        conduit-lwt-unix x509 ptime \
+        hacl-star
 
 # Layer: sources + build.
 COPY --chown=opam:opam dune-project ./
