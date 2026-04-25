@@ -50,3 +50,7 @@ module Kimi_renderer : sig
 end
 
 val role_class_to_room : string -> string option
+
+val canonical_roles_dir : unit -> string
+val client_agent_dir : client:string -> string
+val resolve_agent_path : name:string -> client:string -> string
