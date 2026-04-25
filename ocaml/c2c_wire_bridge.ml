@@ -29,17 +29,25 @@ let xml_escape s =
     s;
   Buffer.contents buf
 
-let format_envelope (msg : C2c_mcp.message) =
+let format_envelope ?(sender_role : string option) (msg : C2c_mcp.message) =
   let reply_via = xml_escape (Option.value msg.reply_via ~default:"c2c_send") in
+  let role_attr = match sender_role with
+    | Some r -> Printf.sprintf " role=\"%s\"" (xml_escape r)
+    | None -> ""
+  in
   Printf.sprintf
-    "<c2c event=\"message\" from=\"%s\" alias=\"%s\" source=\"broker\" reply_via=\"%s\" action_after=\"continue\">\n%s\n</c2c>"
+    "<c2c event=\"message\" from=\"%s\" alias=\"%s\" source=\"broker\" reply_via=\"%s\" action_after=\"continue\"%s>\n%s\n</c2c>"
     (xml_escape msg.from_alias)
     (xml_escape msg.to_alias)
     reply_via
+    role_attr
     msg.content
 
-let format_prompt messages =
-  String.concat "\n\n" (List.map format_envelope messages)
+let format_prompt ?(role_lookup : (string -> string option) = fun _ -> None) messages =
+  String.concat "\n\n"
+    (List.map (fun msg ->
+      let sender_role = role_lookup msg.C2c_mcp.from_alias in
+      format_envelope ?sender_role msg) messages)
 
 (* ---------------------------------------------------------------------------
  * Spool: write before deliver, clear after ACK (crash-safe)
@@ -194,7 +202,7 @@ let wire_initialize wc =
   in
   ignore (wire_request wc "initialize" params)
 
-let wire_prompt wc user_input =
+let wire_prompt ?(role_lookup : (string -> string option) = fun _ -> None) wc user_input =
   ignore (wire_request wc "prompt" (`Assoc [ ("user_input", `String user_input) ]))
 
 (* ---------------------------------------------------------------------------
@@ -265,14 +273,23 @@ let run_once_live ~broker_root ~session_id ~alias ~command ~work_dir =
                      | _, _ -> ()
                  in wait_loop ()
                with _ -> ()))
-         (fun () ->
-            let wc = wire_create ic oc in
-            wire_initialize wc;
-            let messages = drain_to_spool ~broker ~session_id ~spool in
-            if messages = [] then 0
-            else begin
-              wire_prompt wc (format_prompt messages);
-              let n = List.length messages in
-              spool_clear spool;
-              n
-            end))
+          (fun () ->
+             let wc = wire_create ic oc in
+             wire_initialize wc;
+             let messages = drain_to_spool ~broker ~session_id ~spool in
+             if messages = [] then 0
+             else begin
+               let role_lookup (from_alias : string) : string option =
+                 match C2c_mcp.Broker.list_registrations broker with
+                 | [] -> None
+                 | regs ->
+                     (try
+                       let reg = List.find (fun r -> r.C2c_mcp.alias = from_alias) regs in
+                       reg.C2c_mcp.role
+                     with Not_found -> None)
+               in
+               wire_prompt wc ~role_lookup (format_prompt ~role_lookup messages);
+               let n = List.length messages in
+               spool_clear spool;
+               n
+             end))
