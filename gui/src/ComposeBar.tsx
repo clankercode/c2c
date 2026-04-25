@@ -32,18 +32,22 @@ export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoo
   const [sending, setSending] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastOk, setLastOk] = useState(false);
+  // Keep the last attempted text so retry can re-send it
+  const [failedText, setFailedText] = useState<string | null>(null);
 
   const targets = [
     ...peers.map(p => ({ label: `👤 ${p}`, value: p, room: false })),
     ...rooms.map(r => ({ label: `🏠 ${r}`, value: r, room: true })),
   ];
 
-  async function send() {
-    if (!to.trim() || !text.trim() || sending) return;
+  async function send(overrideText?: string) {
+    const body = (overrideText ?? text).trim();
+    if (!to.trim() || !body || sending) return;
     setSending(true);
     setLastError(null);
     setLastOk(false);
-    const res = await sendMessage(to.trim(), text.trim(), isRoom, myAlias);
+    setFailedText(null);
+    const res = await sendMessage(to.trim(), body, isRoom, myAlias);
     setSending(false);
     if (res.ok) {
       const nowEpoch = String(Date.now() / 1000);
@@ -55,14 +59,21 @@ export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoo
         from_alias: myAlias,
         to_alias: to.trim(),
         room_id: isRoom ? to.trim() : undefined,
-        content: text.trim(),
+        content: body,
       });
       setText("");
       setLastOk(true);
       setTimeout(() => setLastOk(false), 1500);
     } else {
       setLastError(res.error ?? "unknown error");
+      setFailedText(body);
     }
+  }
+
+  function handleTextChange(val: string) {
+    setText(val);
+    // Clear error when user edits — they're fixing it
+    if (lastError) { setLastError(null); setFailedText(null); }
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
@@ -112,7 +123,7 @@ export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoo
         </label>
         <textarea
           value={text}
-          onChange={e => setText(e.target.value)}
+          onChange={e => handleTextChange(e.target.value)}
           onKeyDown={onKeyDown}
           rows={2}
           placeholder={to ? `message to ${isRoom ? "room " : ""}${to}…` : "select a target first"}
@@ -124,7 +135,7 @@ export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoo
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         <label style={{ fontSize: 10, color: "transparent" }}>send</label>
         <button
-          onClick={send}
+          onClick={() => send()}
           disabled={!to || !text.trim() || sending}
           style={{
             background: sending ? "#45475a" : "#89b4fa",
@@ -143,6 +154,22 @@ export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoo
           <div style={{ fontSize: 10, color: "#f38ba8", maxWidth: 120, wordBreak: "break-word" }}>
             {lastError}
           </div>
+        )}
+        {failedText && !sending && (
+          <button
+            onClick={() => send(failedText)}
+            style={{
+              background: "transparent",
+              border: "1px solid #f38ba8",
+              borderRadius: 4,
+              color: "#f38ba8",
+              padding: "2px 8px",
+              fontSize: 11,
+              cursor: "pointer",
+            }}
+          >
+            retry
+          </button>
         )}
         {lastOk && (
           <div style={{ fontSize: 10, color: "#a6e3a1" }}>sent ✓</div>
