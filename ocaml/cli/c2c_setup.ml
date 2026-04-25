@@ -1242,6 +1242,75 @@ let install_all_subcmd =
        ~doc:"Install c2c binary and auto-configure every detected client (scriptable, no prompts).")
     term
 
+let do_install_git_hook ~output_mode ~dry_run =
+  let repo_root =
+    match Git_helpers.git_repo_toplevel () with
+    | Some r -> r
+    | None ->
+      (match output_mode with
+       | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String "not in a git repository") ])
+       | Human -> Printf.eprintf "error: not in a git repository\n%!");
+      exit 1
+  in
+  let git_common =
+    match Git_helpers.git_common_dir () with
+    | Some d -> d
+    | None ->
+      (match output_mode with
+       | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String "cannot determine git common dir") ])
+       | Human -> Printf.eprintf "error: cannot determine git common dir\n%!");
+      exit 1
+  in
+  let hook_src = repo_root // ".c2c" // "hooks" // "pre-commit.sh" in
+  let hook_dst = git_common // "hooks" // "pre-commit" in
+  if not (Sys.file_exists hook_src) then begin
+    (match output_mode with
+     | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String ("hook source not found: " ^ hook_src)) ])
+     | Human -> Printf.eprintf "error: hook source not found: %s\n%!" hook_src);
+    exit 1
+  end;
+  let file_size path = try (Unix.stat path).Unix.st_size with Unix.Unix_error _ -> 0 in
+  let hook_src_size = file_size hook_src in
+  if dry_run then
+    (match output_mode with
+     | Json -> print_json (`Assoc [ ("ok", `Bool true); ("dry_run", `Bool true); ("src", `String hook_src); ("dst", `String hook_dst) ])
+     | Human -> Printf.printf "[DRY-RUN] would copy %d bytes from %s to %s and chmod 755\n%!" hook_src_size hook_src hook_dst)
+  else
+    (try
+       let ic = open_in_bin hook_src in
+       let oc = open_out_bin (hook_dst ^ ".tmp") in
+       Fun.protect ~finally:(fun () -> close_in ic; close_out oc) (fun () ->
+         let buf = Bytes.create 65536 in
+         let rec loop () =
+           let n = input ic buf 0 (Bytes.length buf) in
+           if n > 0 then (output oc buf 0 n; loop ())
+         in
+         loop ());
+       Unix.rename (hook_dst ^ ".tmp") hook_dst;
+       Unix.chmod hook_dst 0o755
+     with Unix.Unix_error (e, _, _) ->
+       (match output_mode with
+        | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String (Unix.error_message e)) ])
+        | Human -> Printf.eprintf "error: %s\n%!" (Unix.error_message e));
+       exit 1);
+    match output_mode with
+    | Json -> print_json (`Assoc [ ("ok", `Bool true); ("src", `String hook_src); ("dst", `String hook_dst) ])
+    | Human -> Printf.printf "→ Installed pre-commit hook: %s\n%!" hook_dst
+
+let install_git_hook_subcmd =
+  let term =
+    let+ json = json_flag
+    and+ dry_run =
+      Cmdliner.Arg.(value & flag & info [ "dry-run"; "n" ] ~doc:"Show what would be done without doing it.")
+    in
+    let output_mode = if json then Json else Human in
+    do_install_git_hook ~output_mode ~dry_run
+  in
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "git-hook"
+       ~doc:"Install the c2c pre-commit hook into the repo's .git/hooks directory.")
+    term
+
 let install_default_term =
   let (alias, broker_root, _, _, dry_run) = install_common_args () in
   let+ alias_opt = alias
