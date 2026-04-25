@@ -5,6 +5,7 @@ import argparse
 import html
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -826,6 +827,116 @@ def parse_managed_server_request_event(raw: str):
         "command": inner.get("command", "") if isinstance(inner, dict) else "",
         "reason": inner.get("reason", "") if isinstance(inner, dict) else "",
     }
+
+
+def _find_c2c_binary() -> str:
+    """Find the c2c binary. Prefers installed OCaml binary, falls back to repo-local shim."""
+    local = Path(__file__).resolve().parent / "c2c"
+    if local.exists():
+        return str(local)
+    for p in ["c2c", "/home/xertrov/.local/bin/c2c"]:
+        result = subprocess.run(
+            ["which", p], capture_output=True, text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    return "c2c"
+
+
+def run_c2c_command(args: list[str], timeout: float = 10.0) -> tuple[int, str, str]:
+    """Run c2c CLI command. Returns (returncode, stdout, stderr)."""
+    binary = _find_c2c_binary()
+    try:
+        result = subprocess.run(
+            [binary] + args,
+            capture_output=True, text=True,
+            cwd=Path(__file__).resolve().parent,
+            timeout=timeout,
+        )
+        return result.returncode, result.stdout, result.stderr
+    except subprocess.TimeoutExpired:
+        return -1, "", "timeout"
+    except Exception as e:
+        return -1, "", str(e)
+
+
+def await_supervisor_reply(
+    perm_id: str, timeout_ms: int, supervisors: list[str],
+    session_id: str, broker_root: Path,
+) -> str:
+    """Poll inbox for a permission reply from supervisors.
+    Returns 'approve-once', 'approve-always', 'reject', or 'timeout'.
+
+    Only accepts replies from aliases in the `supervisors` list."""
+    deadline = time.time() + (timeout_ms / 1000)
+    supervisor_set = set(supervisors)
+    while time.time() < deadline:
+        rc, stdout, _ = run_c2c_command(["poll-inbox", "--json", "--session-id", session_id])
+        if rc == 0:
+            try:
+                msgs = json.loads(stdout) if stdout.strip() else []
+                for m in msgs:
+                    content = str(m.get("content", ""))
+                    from_alias = str(m.get("from_alias", ""))
+                    if from_alias not in supervisor_set:
+                        continue
+                    match = re.match(
+                        r"permission:([a-zA-Z0-9_-]+):(approve-once|approve-always|reject)",
+                        content,
+                    )
+                    if match and match.group(1) == perm_id:
+                        return match.group(2)
+            except (json.JSONDecodeError, Exception):
+                pass
+        time.sleep(1)
+    return "timeout"
+
+
+def forward_permission_to_supervisors(
+    event: dict,
+    supervisors: list[str],
+    timeout_ms: int = 300000,
+    session_id: str | None = None,
+    broker_root: Path | None = None,
+) -> str:
+    """Route a permission event to supervisors and await a decision.
+
+    Returns 'approve-once', 'approve-always', 'reject', or 'timeout'.
+
+    Mirrors the c2c.ts permission flow (c2c.ts:1734-1827):
+    1. Open pending reply slot
+    2. Send DM to each supervisor
+    3. Await reply from any supervisor
+    """
+    perm_id = f"codex-{event.get('request_id', 'unknown')}"
+    permission = event.get("permission", "unknown")
+    command = event.get("command", "")
+    reason = event.get("reason", "")
+    thread_id = event.get("thread_id", "")
+
+    msg = (
+        f"Codex permission request:\n"
+        f"  permission: {permission}\n"
+        f"  command: {command}\n"
+        f"  reason: {reason}\n"
+        f"  thread: {thread_id}\n\n"
+        f"Reply with: permission:{perm_id}:approve-once|approve-always|reject"
+    )
+
+    run_c2c_command([
+        "open-pending-reply", perm_id,
+        "--kind", "permission",
+        "--supervisors", ",".join(supervisors),
+    ])
+
+    for sup in supervisors:
+        run_c2c_command(["send", sup, "--content", msg])
+
+    if session_id and broker_root:
+        return await_supervisor_reply(
+            perm_id, timeout_ms, supervisors, session_id, broker_root
+        )
+    return "timeout"
 
 
 if __name__ == "__main__":
