@@ -282,13 +282,29 @@ let send_cmd =
   let from_override =
     Cmdliner.Arg.(value & opt (some string) None & info [ "from"; "F" ] ~docv:"ALIAS" ~doc:"Send messages as this alias. The alias must already be registered with the broker; use $(b,c2c register --alias ALIAS) first. Useful for operators or tests running outside an agent session.")
   in
+  let no_warn_substitution =
+    Cmdliner.Arg.(value & flag & info [ "no-warn-substitution" ]
+      ~doc:"Suppress the shell-substitution warning.")
+  in
   let+ json = json_flag
   and+ to_alias = to_alias
   and+ message = message
-  and+ from_override = from_override in
+  and+ from_override = from_override
+  and+ no_warn_substitution = no_warn_substitution in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let from_alias = resolve_alias ~override:from_override broker in
   let content = String.concat " " message in
+  (* Class E: warn when message body looks like an un-expanded shell
+     substitution pattern that the shell failed to expand. *)
+  let _ =
+    if (not no_warn_substitution) && likes_shell_substitution content
+    then Printf.eprintf
+      "warning: message body appears to contain a shell substitution pattern \
+       (e.g. $(...) or `...`).\n\
+       If this was intended literally, re-send with --no-warn-substitution.\n\
+       To avoid this, quote the pattern: '$(date)' or escape the $.\n%!"
+    else ()
+  in
   let output_mode = if json then Json else Human in
   if from_alias = to_alias then (
     Printf.eprintf "error: cannot send a message to yourself (%s)\n%!" from_alias;
@@ -3488,11 +3504,16 @@ let relay_dm_cmd =
   let alias =
     Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Your alias (required for poll).")
   in
+  let no_warn_substitution =
+    Cmdliner.Arg.(value & flag & info [ "no-warn-substitution" ]
+      ~doc:"Suppress the shell-substitution warning.")
+  in
   let words =
     Cmdliner.Arg.(value & pos_right 0 string [] & info [] ~docv:"WORDS" ~doc:"For send: <to-alias> <message...>")
   in
   let+ subcmd = subcmd and+ relay_url = relay_url and+ token = token
-  and+ alias = alias and+ words = words in
+  and+ alias = alias and+ no_warn_substitution = no_warn_substitution
+  and+ words = words in
   match resolve_relay_url relay_url with
   | None ->
       Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
@@ -3513,6 +3534,18 @@ let relay_dm_cmd =
                       exit 1
                 in
                 let content = String.concat " " msg_words in
+                (* Class E: warn when message body looks like an un-expanded shell
+                   substitution pattern that the shell failed to expand. *)
+                let _ =
+                  if (not no_warn_substitution) && likes_shell_substitution content
+                  then Printf.eprintf
+                    "warning: message body appears to contain a shell substitution \
+                     pattern (e.g. $(...) or `...`).\n\
+                     If this was intended literally, re-send with \
+                     --no-warn-substitution.\n\
+                     To avoid this, quote the pattern: '$(date)' or escape the $.\n%!"
+                  else ()
+                in
                 let body_str = Yojson.Safe.to_string (`Assoc [
                   ("from_alias", `String from_alias);
                   ("to_alias", `String to_alias);

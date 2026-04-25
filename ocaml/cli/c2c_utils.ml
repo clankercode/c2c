@@ -3,6 +3,57 @@
 
 let ( // ) = Filename.concat
 
+(** [likes_shell_substitution s] returns true if [s] looks like it contains
+    an un-expanded shell substitution pattern — $(...) or backtick pairs that
+    were likely meant to be expanded by the shell but arrived literally.
+
+    Avoids false positives on:
+    - Makefile escapes: $$ (double dollar)
+    - Escaped dollar: \$ (backslash-dollar) *)
+let likes_shell_substitution (s : string) : bool =
+  let rec find_dollar i =
+    if i >= String.length s then None
+    else
+      let ch = s.[i] in
+      if ch = '$' then
+        if i + 1 < String.length s then
+          let next = s.[i + 1] in
+          if next = '$' then find_dollar (i + 2)  (* $$ skip, makefile escape *)
+          else if next = '\\' then find_dollar (i + 2)  (* \$ skip *)
+          else if next = '(' then
+            (* Dollar-open-paren: check balanced parens *)
+            let depth = ref 1 in
+            let j = ref (i + 2) in
+            while !j < String.length s && !depth > 0 do
+              (match s.[!j] with
+               | '(' -> incr depth
+               | ')' -> decr depth
+               | _ -> ());
+              incr j
+            done;
+            if !depth = 0 then Some (Printf.sprintf "$(...) at %d" i)
+            else find_dollar (!j + 1)
+          else if next = '`' then
+            (* Dollar-backtick: check balanced backticks *)
+            let depth = ref 1 in
+            let j = ref (i + 2) in
+            while !j < String.length s && !depth > 0 do
+              (match s.[!j] with
+               | '`' -> decr depth
+               | '$' ->
+                   (if !j + 1 < String.length s && s.[!j + 1] = '`' then incr depth);
+                   incr j
+               | _ -> ());
+              incr j
+            done;
+            if !depth = 0 then Some (Printf.sprintf "`...` at %d" i)
+            else find_dollar (!j + 1)
+          else find_dollar (i + 2)
+        else None
+      else find_dollar (i + 1)
+  in
+  find_dollar 0 <> None
+
 (** [mkdir_p dir] creates dir and all parents, like Unix mkdir -p.
     Idempotent: succeeds if dir already exists.
     Uses 0o755 permissions. *)
