@@ -21,10 +21,13 @@ let git_command args =
   let code = match status with Unix.WEXITED n -> n | _ -> 127 in
   (code, stdout_data, "")
 
-(** [worktrees_root ()] returns .c2c/worktrees/ under the repo root. *)
+(** [worktrees_root ()] returns .c2c/worktrees/ under the git common dir.
+    Uses git_common_dir_parent so it resolves to the main repo, not a worktree,
+    ensuring all worktrees share the same registry regardless of where they're
+    called from. *)
 let worktrees_root () =
-  match Git_helpers.git_repo_toplevel () with
-  | Some repo_root -> repo_root // ".c2c" // "worktrees"
+  match Git_helpers.git_common_dir_parent () with
+  | Some parent -> parent // ".c2c" // "worktrees"
   | None -> failwith "not in a git repository"
 
 (** [ensure_worktree ~alias ~branch] creates a worktree for [alias] if it doesn't
