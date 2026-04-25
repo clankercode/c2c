@@ -3085,31 +3085,31 @@ let cmd_restart ?(session_id_override : string option) (name : string) : int =
       Printf.eprintf "error: no config found for instance '%s'\n%!" name;
       exit 1
   | Some cfg ->
-      let cfg =
-        match session_id_override with
-        | None -> cfg
-        | Some sid ->
-            let updated =
-              match cfg.client with
-              | "codex" -> { cfg with codex_resume_target = Some sid }
-              | "codex-headless" -> { cfg with resume_session_id = sid }
-              | "claude" | "opencode" | "kimi" | "crush" ->
-                  { cfg with resume_session_id = sid }
-              | _ -> cfg
-            in
-            write_config updated;
-            updated
-      in
-      ignore (cmd_stop name);
-      let kickoff_prompt = read_kickoff_prompt_opt name in
-      run_outer_loop ~name ~client:cfg.client ~extra_args:cfg.extra_args
-        ~broker_root:cfg.broker_root
-        ?binary_override:cfg.binary_override
-        ?alias_override:(Some cfg.alias)
-        ?resume_session_id:(Some cfg.resume_session_id)
-        ?codex_resume_target:cfg.codex_resume_target
-        ?model_override:cfg.model_override
-        ?kickoff_prompt ()
+      (match session_id_override with
+       | None -> ()
+       | Some sid ->
+           let updated =
+             match cfg.client with
+             | "codex" -> { cfg with codex_resume_target = Some sid }
+             | "codex-headless" -> { cfg with resume_session_id = sid }
+             | "claude" | "opencode" | "kimi" | "crush" ->
+                 { cfg with resume_session_id = sid }
+             | _ -> cfg
+           in
+           write_config updated);
+      (* Signal the inner client → existing outer loop relaunches in its own pane.
+         Previously this killed the outer and respawned it in the caller's process,
+         which caused "new pane" when the coordinator ran `c2c restart <peer>`. *)
+      (match read_pid (inner_pid_path name) with
+       | Some pid when pid_alive pid ->
+           Printf.printf "[c2c restart] signalling inner pid %d for '%s'\n%!" pid name;
+           (try Unix.kill pid Sys.sigterm; 0
+            with Unix.Unix_error (e, _, _) ->
+              Printf.eprintf "kill failed: %s\n%!" (Unix.error_message e); 1)
+       | _ ->
+           Printf.eprintf
+             "error: '%s' has no live inner process; use 'c2c start' to launch it\n%!" name;
+           1)
 
 let cmd_reset_thread (name : string) (thread_id : string) : int =
   if String.trim thread_id = "" then begin
