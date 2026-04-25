@@ -22,6 +22,11 @@ else
   input_file="$SL_OUT_DIR/last.json"
 fi
 
+# If session-specific file missing, fall back to last.json for standalone use
+if [ ! -f "$input_file" ]; then
+  input_file="$SL_OUT_DIR/last.json"
+fi
+
 if [ ! -f "$input_file" ]; then
   echo "N/A: no statusline data found"
   exit 0
