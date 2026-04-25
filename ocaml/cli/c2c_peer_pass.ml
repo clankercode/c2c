@@ -22,10 +22,23 @@ let resolve_current_alias () =
       Printf.eprintf "error: C2C_MCP_AUTO_REGISTER_ALIAS is not set — cannot sign peer-PASS artifact without a known identity.\n%!";
       exit 1
 
+let per_alias_key_path ~alias =
+  match Git_helpers.git_common_dir_parent () with
+  | Some parent -> Some (parent // ".c2c" // "keys" // (alias ^ ".ed25519"))
+  | None -> None
+
 let resolve_identity () =
-  match Relay_identity.load () with
-  | Ok id -> id
-  | Error e -> Printf.eprintf "error: cannot load identity: %s\n%!" e; exit 1
+  let alias = resolve_current_alias () in
+  match per_alias_key_path ~alias with
+  | Some path when Sys.file_exists path ->
+      Relay_identity.load_or_create_at ~path ~alias_hint:alias
+  | _ ->
+      Printf.eprintf
+        "warning: no per-alias key at <broker>/keys/%s.ed25519; falling back to host identity\n%!"
+        alias;
+      (match Relay_identity.load () with
+       | Ok id -> id
+       | Error e -> Printf.eprintf "error: %s\n%!" e; exit 1)
 
 (* --- sign command -------------------------------------------------------- *)
 

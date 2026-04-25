@@ -3,6 +3,8 @@
 
 open Cmdliner.Term.Syntax
 
+let ( // ) = Filename.concat
+
 (* --- shared helpers ------------------------------------------------------- *)
 
 let is_interactive_stdin () =
