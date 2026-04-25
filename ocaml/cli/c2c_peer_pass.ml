@@ -167,7 +167,12 @@ let peer_pass_verify_cmd =
     Cmdliner.Arg.(required & pos 0 (some string) None & info []
       ~docv:"FILE" ~doc:"Path to peer-PASS JSON artifact (or SHA for default location)")
   in
-  let+ file = file in
+  let strict =
+    Cmdliner.Arg.(value & flag & info [ "strict" ]
+      ~doc:"Exit non-zero on anti-cheat WARN (e.g. self-review). Useful for CI/scripted gates.")
+  in
+  let+ file = file
+  and+ strict = strict in
   let path =
     if Sys.file_exists file then file
     else
@@ -190,11 +195,17 @@ let peer_pass_verify_cmd =
            art.Peer_review.ts
            (String.concat ", " art.Peer_review.criteria_checked);
          (* Anti-cheat surface: warn if reviewer == commit author. *)
-         if Git_helpers.git_commit_exists art.Peer_review.sha
-            && reviewer_is_author ~reviewer:art.Peer_review.reviewer ~sha:art.Peer_review.sha
-         then
+         let self_review =
+           Git_helpers.git_commit_exists art.Peer_review.sha
+           && reviewer_is_author ~reviewer:art.Peer_review.reviewer ~sha:art.Peer_review.sha
+         in
+         if self_review then
            Printf.printf "  WARN: reviewer %S matches commit author — self-review (not a true peer-PASS).\n%!"
-             art.Peer_review.reviewer
+             art.Peer_review.reviewer;
+         if strict && self_review then begin
+           Printf.eprintf "STRICT: failing on self-review WARN.\n%!";
+           exit 1
+         end
        | Ok false ->
          Printf.eprintf "VERIFY FAILED: invalid signature\n%!"; exit 1
        | Error e ->
@@ -208,28 +219,45 @@ let peer_pass_verify_cmd =
 
 let peer_pass_list_cmd =
   let json = Cmdliner.Arg.(value & flag & info [ "json"; "j" ] ~doc:"Output machine-readable JSON.") in
-  let+ json = json in
+  let warn_only =
+    Cmdliner.Arg.(value & flag & info [ "warn-only" ]
+      ~doc:"Show only artifacts where reviewer matches the commit author (self-review WARN).")
+  in
+  let+ json = json
+  and+ warn_only = warn_only in
   let dir = peer_passes_dir () in
+  let is_self_review art =
+    Git_helpers.git_commit_exists art.Peer_review.sha
+    && reviewer_is_author ~reviewer:art.Peer_review.reviewer ~sha:art.Peer_review.sha
+  in
   if not (Sys.file_exists dir) then (
     if json then Printf.printf "[]\n%!" else Printf.printf "No peer passes stored.\n%!";
   ) else (
     try
       let files = Array.to_list (Sys.readdir dir) |> List.filter (fun f -> Filename.check_suffix f ".json") in
       if json then (
-        let items = List.map (fun f ->
+        let items = List.filter_map (fun f ->
           let path = dir // f in
           match try Some (String.trim (read_json_file path)) with _ -> None with
           | Some content -> (
             match Peer_review.t_of_string content with
-            | Some art -> `Assoc [
+            | Some art ->
+              let self_review = is_self_review art in
+              if warn_only && not self_review then None
+              else Some (`Assoc [
                 ("file", `String f);
                 ("reviewer", `String art.Peer_review.reviewer);
                 ("sha", `String art.Peer_review.sha);
                 ("verdict", `String art.Peer_review.verdict);
                 ("ts", `Float art.Peer_review.ts);
-              ]
-            | None -> `Assoc [("file", `String f); ("parse_error", `Bool true)])
-          | None -> `Assoc [("file", `String f); ("read_error", `Bool true)]
+                ("self_review", `Bool self_review);
+              ])
+            | None ->
+              if warn_only then None
+              else Some (`Assoc [("file", `String f); ("parse_error", `Bool true)]))
+          | None ->
+            if warn_only then None
+            else Some (`Assoc [("file", `String f); ("read_error", `Bool true)])
         ) files in
         Printf.printf "%s\n%!" (Yojson.Safe.pretty_to_string (`List items))
       ) else (
@@ -239,12 +267,17 @@ let peer_pass_list_cmd =
           | Some content -> (
             match Peer_review.t_of_string content with
             | Some art ->
-              Printf.printf "%s  %s  %s  %s  (%.0f)\n%!" f art.Peer_review.reviewer art.Peer_review.sha art.Peer_review.verdict art.Peer_review.ts
+              let self_review = is_self_review art in
+              if warn_only && not self_review then ()
+              else
+                Printf.printf "%s  %s  %s  %s  (%.0f)%s\n%!"
+                  f art.Peer_review.reviewer art.Peer_review.sha art.Peer_review.verdict art.Peer_review.ts
+                  (if self_review then "  WARN:self-review" else "")
             | None ->
-              Printf.printf "%s  [parse error]\n%!" f
+              if not warn_only then Printf.printf "%s  [parse error]\n%!" f
           )
           | None ->
-            Printf.printf "%s  [read error]\n%!" f
+            if not warn_only then Printf.printf "%s  [read error]\n%!" f
         ) files
       )
     with e ->
