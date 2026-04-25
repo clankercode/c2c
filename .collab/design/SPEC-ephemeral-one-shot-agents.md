@@ -1,6 +1,14 @@
-# DRAFT — Ephemeral one-shot agents
+# SPEC — Ephemeral one-shot agents
 
-**Status**: DRAFT — all 7 design questions resolved with Max 2026-04-23. Ready for implementation sketch + first-consumer slice. Cron / scheduled invocation is explicitly **out of scope for v1** and belongs in a future sidequest.
+**Status**: SHIPPED — implementation complete.
+
+Key commits:
+- `b129fd0` — fix #143: suppress default auto-join for ephemerals; thread --auto-join to c2c start
+- `4219062` — feat(ephemeral): add mode dispatch + reply-to + no-autojoin for agent run
+- `c835c2d` — feat(agent refine): add --agent-mode for peer invocation
+- `ef91d58` — design: add ephemeral agents implementation notes from galaxy review
+
+CLI commands: `c2c agent run`, `c2c agent refine`. MCP tool: `c2c stop_self`.
 
 **Authors**: coordinator1 (Cairn-Vigil), responding to Max's 2026-04-23 prompt; resolutions folded in from Max's inline comments same day.
 
@@ -134,22 +142,6 @@ Dogfood-first: once the primitive lands, Max runs `c2c agent refine <new-role>` 
 - hits idle-timeout correctly when unattended
 
 Then: unit tests around prompt template composition, name allocation, flag parsing, timeout watcher. Integration: end-to-end with a minimal role file in a test harness.
-
-## Implementation notes (galaxy-coder review 2026-04-24)
-
-1. **`c2c_stop_self` needs `C2C_MCP_SESSION_ID`**: the ephemeral needs its own session ID to call `c2c stop <self>`. Must read from env and pass through to the kickoff prompt context.
-
-2. **Prompt template not yet specified**: actual template text needs defining — who composes it, where it's stored. Suggest: a `.c2c/snippets/ephemeral-kickoff-template.md` loaded at runtime.
-
-3. **`eph-` prefix on `--name` override**: should the system enforce the prefix, or silently allow non-prefixed names? Recommend: warn but allow — don't block.
-
-4. **Idle timeout vs inbox race**: timer resets on poll responses only; any inbox message (not just responses) should reset. Fix: drain check on any `c2c event` message, not just tool responses.
-
-5. **tmux autodetect edge case**: `--pane` with no tmux in SSH environment — doc assumes tmux available. Handle gracefully: fall back to `--background`.
-
-6. **Client compatibility**: `--ephemeral` and `--kickoff-prompt` flags need verification across all 5 clients before claiming full support.
-
-Overall: design is ready. These are implementation-time resolved, not blockers.
 
 ## References
 
