@@ -2,6 +2,7 @@
 
 **Status:** Living doc. Append freely. Don't delete (move to "implemented" or "abandoned" instead).
 **Originator:** coordinator1 + Max (2026-04-25)
+**Last reviewed:** 2026-04-26 by galaxy-coder (wishlist update pass)
 
 This is a tracking doc for things that would make the swarm work better
 but that we haven't built or integrated yet. It feeds future
@@ -37,7 +38,8 @@ at `scripts/c2c-command-test-audit.py`, wired into `c2c doctor`;
 ### `c2c doctor` "did the docs lie?" check
 Periodically diff CLAUDE.md claims (file paths, command surfaces,
 script names) against actual repo state. Flag drift.
-**Status**: implemented in slice/doctor-docs-drift (lyra); pending merge.
+**Status**: implemented (SHA 7bb6abd, `scripts/c2c-docs-drift.py`) in
+slice/doctor-docs-drift (lyra); pending merge to origin/master.
 
 ---
 
@@ -46,16 +48,16 @@ script names) against actual repo state. Flag drift.
 ### `c2c coord-cherry-pick` helper
 Auto-stash dirty state, cherry-pick, restore, build+install — the
 workflow I do by hand on every peer-PASS. Recurring friction this
-session. **Status**: implemented as `c2c coord-cherry-pick` (C2c_coord module);
-auto-stash on dirty tree, cherry-pick sequence, abort+restore on conflict,
-optional `just install-all` after cherry-pick.
+session. **Status**: shipped — OCaml port on origin/master (SHA 96b16ad);
+Python prototype (SHA e1cec4e); `c2c coord-cherry-pick` command live.
 
 ### Branch-from-origin-master vs local-master mismatch detector
 When a peer branches from `origin/master` but coord hasn't pushed in
 N commits, their cherry-pick target conflicts. Warn at branch-creation
-time or at peer-PASS-DM time. **Status**: implemented in `start_worktree`;
-warns when origin/master is behind local master by N commits; uses
-`local_master_ahead_of_origin` + `stale_origin_warning`.
+time or at peer-PASS-DM time. **Status**: shipped — `start_worktree`
+warns when origin/master is behind local master by N commits (SHA b80e8e9);
+uses `local_master_ahead_of_origin` + `stale_origin_warning`; `check-bases`
+subcommand available for on-demand worktree hygiene.
 
 ---
 
@@ -63,11 +65,15 @@ warns when origin/master is behind local master by N commits; uses
 
 ### `c2c stats` v2 — token cost data per session
 Slice 4 of `DRAFT-agent-stats-command.md`. Per-client tokens-in/out
-for cost analysis + business-target tracking. **Status**: design-stage.
+for cost analysis + business-target tracking. **Status**: shipped —
+`c2c stats history` (--compact/--csv/--markdown/--bucket flags, SHAs
+0012aff/79eb696/9ae19d1/22790c0/c614860) and token cost per session
+(stats-s4, SHA ec479e6) both on origin/master.
 
 ### Sitrep auto-append from `c2c stats`
 Slice 5 of stats. Hourly sitreps gain a swarm-perf section auto-appended.
-**Status**: design-stage; depends on stats S2-S4.
+**Status**: design-stage; depends on stats S2-S4 (S4 now shipped; S5
+still design-gated).
 
 ### Longitudinal swarm-perf dashboard
 Beyond per-sitrep stats: a viewer that shows trends across days/weeks,
@@ -81,9 +87,9 @@ the sitrep timeseries.
 
 ### Generic pty/tmux clients
 Run any CLI (Gemini, Cursor, etc.) via pty injection or tmux send-keys.
-**Status**: shipping in 4 slices, design at
-`.collab/design/DRAFT-generic-pty-tmux-clients.md`. Slices 2 + S1
-in flight.
+**Status**: shipped — `c2c start pty` and `c2c start tmux` subcommands
+live on origin/master (SHAs 54735d0/fb1454a/827dae5/d992412); design at
+`.collab/design/DRAFT-generic-pty-tmux-clients.md`.
 
 ### Codex interactive-TUI server-request fds
 Permission forwarding for normal interactive Codex blocked on upstream
@@ -99,12 +105,17 @@ forward upstream.
 The `c2c peer-pass sign` flow exists but we don't verify the signing
 matches the actual review-and-fix invocation. Could add a
 broker-side check that the sig + claim are consistent.
-**Status**: idea only.
+**Status**: shipped — broker auto-verifies peer-pass claims in DM receipts
+(SHA a4eb88b); anti-cheat checks at sign + verify (SHA 9983943);
+`--warn-only` on list, `--strict` on verify (SHA dacc2b7); self-pass
+detector fix (SHA a5c05ad).
 
 ### Auto-detect "self-review-via-skill ≠ peer-PASS" violations
 The convention has been re-broken three times in one session. Could
 the broker detect when a DM says "peer-PASS by <self>" and
-gently correct? **Status**: idea only.
+gently correct? **Status**: shipped — broker detects self-review-via-skill
+violations in DM bodies (SHA 38f5bed) and refuses to record them as
+valid peer-PASS.
 
 ---
 
