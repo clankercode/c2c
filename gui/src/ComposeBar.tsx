@@ -1,5 +1,6 @@
 import { useState, useEffect, KeyboardEvent } from "react";
 import { sendMessage } from "./useSend";
+import { MessageEvent } from "./types";
 
 interface Props {
   peers: string[];
@@ -7,6 +8,7 @@ interface Props {
   myAlias: string;
   initialTo?: string;
   initialIsRoom?: boolean;
+  onSent?: (event: MessageEvent) => void;
 }
 
 const INPUT_STYLE: React.CSSProperties = {
@@ -19,7 +21,7 @@ const INPUT_STYLE: React.CSSProperties = {
   outline: "none",
 };
 
-export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoom = false }: Props) {
+export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoom = false, onSent }: Props) {
   const [to, setTo] = useState(initialTo);
   const [isRoom, setIsRoom] = useState(initialIsRoom);
 
@@ -44,6 +46,16 @@ export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoo
     const res = await sendMessage(to.trim(), text.trim(), isRoom, myAlias);
     setSending(false);
     if (res.ok) {
+      const now = new Date().toISOString();
+      onSent?.({
+        event_type: "message",
+        monitor_ts: now,
+        ts: now,
+        from_alias: myAlias,
+        to_alias: isRoom ? "" : to.trim(),
+        room_id: isRoom ? to.trim() : undefined,
+        content: text.trim(),
+      });
       setText("");
       setLastOk(true);
       setTimeout(() => setLastOk(false), 1500);

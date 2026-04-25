@@ -34,9 +34,9 @@ export function App() {
   const selectedPeerRef = useRef<string | null>(null);
   const myAliasRef = useRef<string>("");
   const mySessionIdRef = useRef<string>("");
-  const [myAlias, setMyAlias] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "");
+  const [myAlias, setMyAlias] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "human");
   const [mySessionId, setMySessionId] = useState<string>(() => localStorage.getItem(SESSION_ID_KEY) ?? "");
-  const [aliasInput, setAliasInput] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "");
+  const [aliasInput, setAliasInput] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "human");
   const [showWizard, setShowWizard] = useState(() => !localStorage.getItem(ALIAS_KEY));
   const [aliasStatus, setAliasStatus] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -438,6 +438,10 @@ export function App() {
           myAlias={myAlias}
           initialTo={composeTo}
           initialIsRoom={composeIsRoom}
+          onSent={event => setEvents(prev => {
+            const next = [...prev, event];
+            return next.length > MAX_EVENTS ? next.slice(-MAX_EVENTS) : next;
+          })}
         />
     </div>
   );
