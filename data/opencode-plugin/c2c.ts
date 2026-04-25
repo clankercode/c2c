@@ -1870,22 +1870,28 @@ const C2CDelivery: Plugin = async (ctx) => {
             id: qId,
             text: first.question || "",
             header: first.header || "",
-            options: (first.options || []).map((o: any) => String(o.value || o)),
+            options: (first.options || []).map((o: any) => String(o.label || o.value || o)),
           };
           writeStateSnapshot();
         }
 
+        // Collect per-question option labels for numeric-index resolution on reply.
+        const questionOpts: string[][] = [];
         const lines = [`QUESTION REQUEST from ${from}:`];
         for (let i = 0; i < questions.length; i++) {
           const q = questions[i];
           lines.push(`  Q${i + 1}: ${q.header || q.question}`);
           if (q.question !== q.header) lines.push(`       ${q.question}`);
-          const opts = (q.options || []).map((o: any) => String(o.value || o));
-          if (opts.length > 0) lines.push(`       Options: ${opts.join(" | ")}`);
+          // Options use {label, description}; show numbered so supervisors can reply by index.
+          const opts: string[] = (q.options || []).map((o: any) => String(o.label || o.value || o));
+          questionOpts.push(opts);
+          if (opts.length > 0) {
+            opts.forEach((label, idx) => lines.push(`       ${idx + 1}. ${label}`));
+          }
         }
         lines.push(`  id: ${qId}`, `  session: ${sid}`);
         lines.push(`Reply within ${timeoutSec}s:`);
-        lines.push(`  c2c send ${c2cAlias} "question:${qId}:answer:<your answer>"`);
+        lines.push(`  c2c send ${c2cAlias} "question:${qId}:answer:1"  (or label text, or free text)`);
         lines.push(`  c2c send ${c2cAlias} "question:${qId}:reject"`);
 
         void (async () => {
@@ -1902,8 +1908,19 @@ const C2CDelivery: Plugin = async (ctx) => {
           const reply = await waitForQuestionReply(qId, timeoutSec * 1000);
           pluginState.pendingQuestion = null;
           writeStateSnapshot();
-          const answers: string[][] = questions.map(() =>
-            reply.answer !== null ? [reply.answer] : []
+          // Resolve the supervisor's answer for each question.
+          // If the raw answer is a 1-based numeric index (e.g. "1", "2"), map it to
+          // the corresponding option label so the API receives the expected label string.
+          // Free-text answers and exact label matches pass through unchanged.
+          function resolveAnswer(raw: string, opts: string[]): string {
+            const n = parseInt(raw, 10);
+            if (!isNaN(n) && n >= 1 && n <= opts.length && String(n) === raw.trim()) {
+              return opts[n - 1];
+            }
+            return raw;
+          }
+          const answers: string[][] = questions.map((_, qi) =>
+            reply.answer !== null ? [resolveAnswer(reply.answer, questionOpts[qi] ?? [])] : []
           );
           try {
             if (reply.rejected || reply.answer === null) {
