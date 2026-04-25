@@ -18,20 +18,6 @@ let print_json json =
 
 (* --- path helpers ---------------------------------------------------------- *)
 
-let memory_dir () =
-  let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
-  let base = Filename.concat home ".local/share/c2c" in
-  match Sys.getenv_opt "C2C_INSTANCES_DIR" with
-  | Some d when String.trim d <> "" -> String.trim d
-  | _ -> base
-
-let resolve_alias_for_memory () =
-  match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
-  | Some a when String.trim a <> "" -> String.trim a
-  | _ ->
-    (try Sys.getenv "USER" with Not_found -> "anonymous")
-    ^ "-memory"
-
 let memory_base_dir alias =
   (* Use git_common_dir_parent to get main repo root, not worktree root *)
   let git_dir =
@@ -75,15 +61,16 @@ let entry_filename alias name =
 let read_file path =
   try
     let ic = open_in path in
-    let content = really_input_string ic (in_channel_length ic) in
-    close_in ic;
-    content
-  with _ -> ""
+    Fun.protect ~finally:(fun () -> close_in ic)
+      (fun () -> really_input_string ic (in_channel_length ic))
+  with
+  | Sys_error _ -> ""
+  | End_of_file -> ""
 
 let write_file path content =
   let oc = open_out path in
-  output_string oc content;
-  close_out oc
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc content)
 
 let parse_frontmatter content =
   let lines = String.split_on_char '\n' content in
@@ -120,7 +107,9 @@ let memory_list_cmd =
       Array.to_list (Sys.readdir dir)
       |> List.filter (fun n -> n <> "MEMORY.md" && String.length n > 3 && String.sub n (String.length n - 3) 3 = ".md")
       |> List.sort String.compare
-    with _ -> []
+    with
+    | Sys_error _ -> []
+    | Unix.Unix_error _ -> []
   in
   if json then
     let items = List.map (fun name ->
@@ -191,7 +180,8 @@ let memory_write_cmd =
   let body =
     Cmdliner.Arg.(non_empty & pos_right 0 string [] & info [] ~docv:"CONTENT" ~doc:"Memory body text (remaining args joined with newlines).")
   in
-  let+ name = name
+  let+ json = json_flag
+  and+ name = name
   and+ desc = desc
   and+ shared = shared
   and+ body = body in
@@ -207,7 +197,8 @@ let memory_write_cmd =
     name (Option.value desc ~default:"") shared (String.concat "\n" body)
   in
   write_file path content;
-  Printf.printf "saved: %s\n" name
+  if json then print_json (`Assoc [("saved", `String name)])
+  else Printf.printf "saved: %s\n" name
 
 (* --- memory delete --------------------------------------------------------- *)
 
@@ -215,7 +206,8 @@ let memory_delete_cmd =
   let name =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME" ~doc:"Entry name to delete")
   in
-  let+ name = name in
+  let+ json = json_flag
+  and+ name = name in
   let alias = match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
     | Some a -> a | None -> ""
   in
@@ -223,8 +215,9 @@ let memory_delete_cmd =
   if not (Sys.file_exists path) then (
     Printf.eprintf "error: memory entry '%s' not found\n%!" name;
     exit 1);
-  Sys.remove path;
-  Printf.printf "deleted: %s\n" name
+  (try Sys.remove path with Sys_error _ -> ());
+  if json then print_json (`Assoc [("deleted", `String name)])
+  else Printf.printf "deleted: %s\n" name
 
 (* --- group ----------------------------------------------------------------- *)
 
