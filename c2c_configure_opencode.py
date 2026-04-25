@@ -100,7 +100,7 @@ def install_plugin(config_dir: Path, *, force: bool) -> tuple[bool, str]:
     Returns (installed: bool, note: str).
     """
     if not PLUGIN_SRC.exists():
-        return False, "plugin source not found (expected .opencode/plugins/c2c.ts in c2c repo)"
+        return False, "plugin source not found (expected data/opencode-plugin/c2c.ts in c2c repo)"
 
     plugins_dir = config_dir / "plugins"
     plugins_dir.mkdir(parents=True, exist_ok=True)
@@ -135,7 +135,7 @@ def install_plugin_global(*, force: bool) -> tuple[bool, str]:
     Returns (installed: bool, note: str).
     """
     if not PLUGIN_SRC.exists():
-        return False, "plugin source not found (expected .opencode/plugins/c2c.ts in c2c repo)"
+        return False, "plugin source not found (expected data/opencode-plugin/c2c.ts in c2c repo)"
 
     GLOBAL_PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
     dest = GLOBAL_PLUGIN_DIR / "c2c.ts"
