@@ -5024,7 +5024,7 @@ let doctor = Cmdliner.Cmd.v (Cmdliner.Cmd.info "doctor"
 
 (* --- subcommand: start ---------------------------------------------------- *)
 
-let roles_dir () = Filename.concat (Sys.getcwd ()) ".c2c" // "roles"
+let roles_dir () = C2c_role.canonical_roles_dir ()
 
 let role_file_path ~alias =
   roles_dir () // (alias ^ ".md")
@@ -5110,12 +5110,7 @@ let default_kickoff_prompt ~name ~alias ?role () =
     name alias role_section
 
 let agent_file_path ~client ~name =
-  match client with
-  | "opencode" -> ".opencode" // "agents" // (name ^ ".md")
-  | "claude" -> ".claude" // "agents" // (name ^ ".md")
-  | "codex" -> ".codex" // "agents" // (name ^ ".md")
-  | "kimi" -> ".kimi" // "agents" // (name ^ ".md")
-  | _ -> ".c2c" // "agents" // (name ^ ".md")
+  C2c_role.client_agent_dir ~client // (name ^ ".md")
 
 let render_role_for_client ?(model_override : string option) (r : C2c_role.t) ~client ~name =
   let pmodel_lookup (key : string) : string option =
@@ -5260,9 +5255,10 @@ let start_cmd =
              exit 1)
   in
   let effective_alias = Option.value alias_opt ~default:name in
-  (* Agent-file path: canonical .c2c/roles/<agent>.md *)
+  (* Resolve agent file path: canonical .c2c/roles/<agent>.md first,
+     falling back to client-native agent path if canonical doesn't exist. *)
   let agent_role_path agent_name =
-    Filename.concat (Sys.getcwd ()) ".c2c" // "roles" // (agent_name ^ ".md")
+    C2c_role.resolve_agent_path ~name:agent_name ~client
   in
   (* --agent mode: load canonical role, render for client, write compiled file *)
   let (kickoff_prompt, alias_override, auto_join_rooms, agent_name) =
