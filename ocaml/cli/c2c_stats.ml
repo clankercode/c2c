@@ -398,7 +398,7 @@ let repo_root_for_sitrep () =
   | Some root -> root
   | None -> Sys.getcwd ()
 
-let run ~root ~json ~alias_filter ~since_str ~append_sitrep =
+let run ~root ~json ~alias_filter ~since_str ~append_sitrep ~top_n =
   let broker = C2c_mcp.Broker.create ~root in
   let cutoff =
     match since_str with
@@ -446,14 +446,26 @@ let run ~root ~json ~alias_filter ~since_str ~append_sitrep =
       regs
   in
   (* Sort: live first, then by alias *)
+  let display_sort a b =
+    match (a.live, b.live) with
+    | (true, false) -> -1
+    | (false, true) -> 1
+    | _ -> String.compare a.alias b.alias
+  in
   let stats =
-    List.sort
-      (fun a b ->
-        match (a.live, b.live) with
-        | (true, false) -> -1
-        | (false, true) -> 1
-        | _ -> String.compare a.alias b.alias)
-      stats
+    match top_n with
+    | None -> List.sort display_sort stats
+    | Some n when n > 0 ->
+        let by_total a b =
+          let ta = a.msgs_sent + a.msgs_received in
+          let tb = b.msgs_sent + b.msgs_received in
+          Int.compare tb ta
+        in
+        let sorted = List.sort by_total stats in
+        let top = List.fold_left (fun acc s ->
+          if List.length acc >= n then acc else s :: acc) [] sorted in
+        List.sort display_sort top
+    | Some _ -> List.sort display_sort stats
   in
   let now = Unix.gettimeofday () in
   let markdown = lazy (render_markdown ~stats ~since_str ~now) in
@@ -578,12 +590,32 @@ let run_history ~root ~json ~markdown ~csv ~compact ~alias_filter ~days ?(grain 
        | `Recv -> (s, r + n)
      in
      Hashtbl.replace agg (day, alias) v) counts;
-   (* Build sorted rows. *)
+   (* If top_n is set, find top agents by total message count *)
+   let top_aliases =
+     match top_n with
+     | None -> None
+     | Some n ->
+         let totals : (string, int) Hashtbl.t = Hashtbl.create 32 in
+         Hashtbl.iter (fun (_, alias) (s, r) ->
+           let prev = try Hashtbl.find totals alias with Not_found -> 0 in
+           Hashtbl.replace totals alias (prev + s + r)) agg;
+         let sorted = Hashtbl.fold (fun alias total acc -> (alias, total) :: acc) totals []
+                        |> List.sort (fun (_, a) (_, b) -> Int.compare b a) in
+         let top = List.fold_left (fun acc (alias, _) ->
+           if List.length acc >= n then acc else alias :: acc) [] sorted in
+         Some (List.sort String.compare top)
+   in
+   (* Build sorted rows, filtered by alias_filter and optionally top_aliases *)
    let rows =
      Hashtbl.fold (fun (day, alias) (s, r) acc ->
        match alias_filter with
        | Some a when a <> alias -> acc
-       | _ -> (day, alias, s, r) :: acc) agg []
+       | _ ->
+           (match top_aliases with
+            | None -> (day, alias, s, r) :: acc
+            | Some top ->
+                if List.mem alias top then (day, alias, s, r) :: acc
+                else acc)) agg []
      |> List.sort (fun (d1, a1, _, _) (d2, a2, _, _) ->
          match String.compare d1 d2 with 0 -> String.compare a1 a2 | c -> c)
    in

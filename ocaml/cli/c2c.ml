@@ -5112,12 +5112,17 @@ let stats_cmd =
     Cmdliner.Arg.(value & flag & info [ "append-sitrep" ]
       ~doc:"Append or replace a Swarm stats section in the current UTC hourly sitrep.")
   in
+  let top_flag =
+    Cmdliner.Arg.(value & opt (some int) None & info [ "top"; "t" ] ~docv:"N"
+      ~doc:"Show only the top N agents by total message count.")
+  in
   let+ json = json_flag
   and+ alias_filter = alias_flag
   and+ since_str = since_flag
-  and+ append_sitrep = append_sitrep_flag in
+  and+ append_sitrep = append_sitrep_flag
+  and+ top_n = top_flag in
   let root = resolve_broker_root () in
-  C2c_stats.run ~root ~json ~alias_filter ~since_str ~append_sitrep
+  C2c_stats.run ~root ~json ~alias_filter ~since_str ~append_sitrep ~top_n
 
 let markdown_flag =
   Cmdliner.Arg.(value & flag & info [ "markdown"; "m" ]
