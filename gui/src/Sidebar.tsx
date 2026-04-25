@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { joinRoom, leaveRoom } from "./useSend";
+import { discoverRooms } from "./useDiscovery";
 
 interface Props {
   peers: string[];
@@ -53,6 +54,11 @@ export function Sidebar({ peers, rooms, roomMembers = new Map(), selectedRoom, s
   const [joining, setJoining] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
   const [leavingRoom, setLeavingRoom] = useState<string | null>(null);
+  const [knownRooms, setKnownRooms] = useState<string[]>([]);
+
+  useEffect(() => {
+    discoverRooms().then(rs => setKnownRooms(rs.map(r => r.room_id)));
+  }, []);
 
   async function handleLeave(rid: string) {
     if (leavingRoom) return;
@@ -202,10 +208,14 @@ export function Sidebar({ peers, rooms, roomMembers = new Map(), selectedRoom, s
         gap: 4,
       }}>
         <div style={{ fontSize: 10, color: "#585b70", textTransform: "uppercase", letterSpacing: 1 }}>
-          Join room
+          Join / create room
         </div>
+        <datalist id="sidebar-known-rooms">
+          {knownRooms.map(r => <option key={r} value={r} />)}
+        </datalist>
         <div style={{ display: "flex", gap: 4 }}>
           <input
+            list="sidebar-known-rooms"
             value={joinInput}
             onChange={e => { setJoinInput(e.target.value); setJoinError(null); }}
             onKeyDown={e => e.key === "Enter" && handleJoin()}
