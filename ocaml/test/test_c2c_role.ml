@@ -158,6 +158,33 @@ let test_c2c_heartbeat_frontmatter_parse () =
     (List.assoc_opt "c2c.heartbeats.quota.command"
        role.C2c_role.c2c_heartbeats)
 
+let test_c2c_heartbeat_roundtrip_opencode () =
+  let role =
+    C2c_role.parse_string
+      "---\n\
+       description: Heartbeat role\n\
+       role: primary\n\
+       c2c:\n\
+       \  heartbeat:\n\
+       \    message: \"Role default tick\"\n\
+       \  heartbeats:\n\
+       \    sitrep:\n\
+       \      schedule: \"@1h+7m\"\n\
+       \      message: \"Write sitrep\"\n\
+       ---\n\
+       body\n"
+  in
+  let rendered = C2c_role.OpenCode_renderer.render role in
+  let reparsed = C2c_role.parse_string rendered in
+  Alcotest.(check (option string)) "roundtrip default message"
+    (Some "Role default tick")
+    (List.assoc_opt "c2c.heartbeat.message"
+       reparsed.C2c_role.c2c_heartbeat);
+  Alcotest.(check (option string)) "roundtrip named schedule"
+    (Some "@1h+7m")
+    (List.assoc_opt "c2c.heartbeats.sitrep.schedule"
+       reparsed.C2c_role.c2c_heartbeats)
+
 let tests = [
   "opencode_renderer",            `Quick, test_opencode_renderer;
   "opencode_renderer_default_steps", `Quick, test_opencode_renderer_default_steps;
@@ -173,6 +200,7 @@ let tests = [
   "pronouns_render_kimi",         `Quick, test_pronouns_render_kimi;
   "pronouns_roundtrip",           `Quick, test_pronouns_roundtrip;
   "c2c_heartbeat_frontmatter_parse", `Quick, test_c2c_heartbeat_frontmatter_parse;
+  "c2c_heartbeat_roundtrip_opencode", `Quick, test_c2c_heartbeat_roundtrip_opencode;
 ]
 
 (* ---------- pmodel resolution ---------- *)

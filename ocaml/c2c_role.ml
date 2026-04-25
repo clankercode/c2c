@@ -316,6 +316,71 @@ let yaml_scalar s =
     "\"" ^ String.escaped s ^ "\""
   else s
 
+let heartbeat_field_from_key ~prefix key =
+  if String.length key > String.length prefix
+     && String.sub key 0 (String.length prefix) = prefix then
+    Some (String.sub key (String.length prefix)
+            (String.length key - String.length prefix))
+  else None
+
+let named_heartbeat_entries entries =
+  let acc = ref [] in
+  let add name field value =
+    let existing = Option.value (List.assoc_opt name !acc) ~default:[] in
+    acc := (name, (field, value) :: existing) :: List.remove_assoc name !acc
+  in
+  List.iter
+    (fun (key, value) ->
+      match heartbeat_field_from_key ~prefix:"c2c.heartbeats." key with
+      | None -> ()
+      | Some rest ->
+          (match String.index_opt rest '.' with
+           | None -> ()
+           | Some idx ->
+               let name = String.sub rest 0 idx in
+               let field =
+                 String.sub rest (idx + 1) (String.length rest - idx - 1)
+               in
+               add name field value))
+    entries;
+  List.map (fun (name, fields) -> (name, List.rev fields)) (List.rev !acc)
+
+let emit_c2c_section lines ?(comment = "") (r : t) =
+  if r.c2c_alias <> None || r.c2c_auto_join_rooms <> []
+     || r.c2c_heartbeat <> [] || r.c2c_heartbeats <> [] then begin
+    lines := (comment ^ "c2c:") :: !lines;
+    (match r.c2c_alias with
+     | Some a -> lines := (comment ^ "  alias: " ^ a) :: !lines
+     | None -> ());
+    if r.c2c_auto_join_rooms <> [] then
+      lines := (comment ^ "  auto_join_rooms: ["
+                ^ String.concat ", " r.c2c_auto_join_rooms ^ "]") :: !lines;
+    if r.c2c_heartbeat <> [] then begin
+      lines := (comment ^ "  heartbeat:") :: !lines;
+      List.iter
+        (fun (key, value) ->
+          match heartbeat_field_from_key ~prefix:"c2c.heartbeat." key with
+          | Some field ->
+              lines := (comment ^ "    " ^ field ^ ": " ^ yaml_scalar value)
+                       :: !lines
+          | None -> ())
+        r.c2c_heartbeat
+    end;
+    let named = named_heartbeat_entries r.c2c_heartbeats in
+    if named <> [] then begin
+      lines := (comment ^ "  heartbeats:") :: !lines;
+      List.iter
+        (fun (name, fields) ->
+          lines := (comment ^ "    " ^ name ^ ":") :: !lines;
+          List.iter
+            (fun (field, value) ->
+              lines := (comment ^ "      " ^ field ^ ": "
+                        ^ yaml_scalar value) :: !lines)
+            fields)
+        named
+    end
+  end
+
 module OpenCode_renderer = struct
   let render ?resolved_pmodel (r : t) =
     let lines = ref [] in
@@ -325,12 +390,7 @@ module OpenCode_renderer = struct
     let single_client = List.length r.compatible_clients = 1 in
     let model_to_emit = if single_client then (match resolved_pmodel with Some m -> Some m | None -> r.model) else None in
     (match model_to_emit with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
-    if r.c2c_alias <> None || r.c2c_auto_join_rooms <> [] then begin
-      lines := "c2c:" :: !lines;
-      (match r.c2c_alias with Some a -> lines := ("  alias: " ^ a) :: !lines | None -> ());
-      if r.c2c_auto_join_rooms <> [] then
-        lines := ("  auto_join_rooms: [" ^ String.concat ", " r.c2c_auto_join_rooms ^ "]") :: !lines;
-    end;
+    emit_c2c_section lines r;
     let rec emit_entries current_section entries =
       match entries with
       | [] -> ()
@@ -388,12 +448,7 @@ module Codex_renderer = struct
     let single_client = List.length r.compatible_clients = 1 in
     let model_to_emit = if single_client then (match resolved_pmodel with Some m -> Some m | None -> r.model) else None in
     (match model_to_emit with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
-    if r.c2c_alias <> None || r.c2c_auto_join_rooms <> [] then begin
-      lines := "# c2c:" :: !lines;
-      (match r.c2c_alias with Some a -> lines := ("#   alias: " ^ a) :: !lines | None -> ());
-      if r.c2c_auto_join_rooms <> [] then
-        lines := ("#   auto_join_rooms: [" ^ String.concat ", " r.c2c_auto_join_rooms ^ "]") :: !lines;
-    end;
+    emit_c2c_section lines ~comment:"# " r;
     if r.codex <> [] then begin
       lines := "codex:" :: !lines;
       List.iter (fun (k, v) ->
@@ -416,12 +471,7 @@ module Kimi_renderer = struct
     let single_client = List.length r.compatible_clients = 1 in
     let model_to_emit = if single_client then (match resolved_pmodel with Some m -> Some m | None -> r.model) else None in
     (match model_to_emit with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
-    if r.c2c_alias <> None || r.c2c_auto_join_rooms <> [] then begin
-      lines := "# c2c:" :: !lines;
-      (match r.c2c_alias with Some a -> lines := ("#   alias: " ^ a) :: !lines | None -> ());
-      if r.c2c_auto_join_rooms <> [] then
-        lines := ("#   auto_join_rooms: [" ^ String.concat ", " r.c2c_auto_join_rooms ^ "]") :: !lines;
-    end;
+    emit_c2c_section lines ~comment:"# " r;
     if r.kimi <> [] then begin
       lines := "kimi:" :: !lines;
       List.iter (fun (k, v) ->
