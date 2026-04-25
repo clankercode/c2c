@@ -1,3 +1,23 @@
 # Agent sticker storage — shared across worktrees via git common dir
 .c2c/stickers/
 !.c2c/stickers/registry.json
+.c2c/personal-logs/
+.c2c/memory/
+.c2c/roles/*.md
+
+node_modules/
+__pycache__/
+*.out
+_build/
+.worktrees/
+.opencode/agents
+.claude/
+.codex/
+.kimi/
+.c2c/worktrees/
+.c2c/*.md
+.opencode/agent.bak/
+*.db
+.artifacts/
+.c2c/peer-passes/
+.collab/personal-logs/
