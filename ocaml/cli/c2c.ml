@@ -4576,6 +4576,7 @@ let install =
   Cmdliner.Cmd.group ~default:C2c_setup.install_default_term info
     ([ C2c_setup.install_self_subcmd
      ; C2c_setup.install_all_subcmd
+     ; C2c_setup.install_git_hook_subcmd
      ]
      @ List.map C2c_setup.install_client_subcmd C2c_setup.install_subcommand_clients)
 
@@ -4964,32 +4965,6 @@ let diag_cmd =
 
 let diag = Cmdliner.Cmd.v (Cmdliner.Cmd.info "diag" ~doc:"Show diagnostic info (last death + stderr tail) for a managed instance.") diag_cmd
 
-(* --- subcommand: worktree ------------------------------------------------- *)
-
-let worktree_list_cmd =
-  let+ () = Cmdliner.Term.const () in
-  let worktrees = C2c_worktree.list_worktrees () in
-  match worktrees with
-  | [] -> Printf.printf "  (no worktrees)\n"
-  | items ->
-      List.iter (fun (alias, path, branch) ->
-        Printf.printf "%s  %s  (branch: %s)\n" alias path branch
-      ) items
-
-let worktree_prune_cmd =
-  let+ () = Cmdliner.Term.const () in
-  if C2c_worktree.prune_worktrees () then
-    Printf.printf "worktree prune: done\n"
-  else
-    Printf.eprintf "worktree prune: failed\n%!"
-
-let worktree_group =
-  Cmdliner.Cmd.group
-    ~default:worktree_list_cmd
-    (Cmdliner.Cmd.info "worktree" ~doc:"Manage per-agent git worktrees.")
-    [ Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List all worktrees.") worktree_list_cmd
-    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "prune" ~doc:"Remove stale worktree entries.") worktree_prune_cmd ]
-
 (* --- subcommand: doctor --------------------------------------------------- *)
 
 let doctor_cmd =
@@ -5001,21 +4976,47 @@ let doctor_cmd =
     Cmdliner.Arg.(value & flag & info [ "json" ]
       ~doc:"Output machine-readable JSON.")
   in
+  let check_rebase_base =
+    Cmdliner.Arg.(value & flag & info [ "check-rebase-base" ]
+      ~doc:"Check if HEAD is based on origin/master (exit 0 = OK, exit 1 = STALE).")
+  in
   let+ summary = summary
-  and+ json = json in
-  let args = [] |> (if summary then fun l -> "--summary" :: l else Fun.id)
-              |> (if json then fun l -> "--json" :: l else Fun.id) in
-  match git_repo_toplevel () with
-  | None ->
-      Printf.eprintf "error: must run from inside the c2c git repo.\n%!";
+  and+ json = json
+  and+ check_rebase_base = check_rebase_base in
+  if check_rebase_base then
+    let git_dir = match git_repo_toplevel () with
+      | None ->
+          Printf.eprintf "error: must run from inside the c2c git repo.\n%!";
+          exit 1
+      | Some d -> d
+    in
+    let git cmd = Sys.command (Printf.sprintf "git -C %s %s" (Filename.quote git_dir) cmd) in
+    let fetch_rc = git "fetch origin master" in
+    if fetch_rc <> 0 then begin
+      Printf.eprintf "warning: git fetch origin master returned %d (assuming origin is up-to-date)\n%!" fetch_rc
+    end;
+    let merge_base_rc = git "merge-base --is-ancestor origin/master HEAD" in
+    if merge_base_rc = 0 then begin
+      Printf.printf "BASE OK\n%!";
+      exit 0
+    end else begin
+      Printf.printf "STALE — run: git rebase origin/master\n%!";
       exit 1
-  | Some toplevel ->
-      let script = toplevel // "scripts" // "c2c-doctor.sh" in
-      if not (Sys.file_exists script) then begin
-        Printf.eprintf "error: scripts/c2c-doctor.sh not found.\n%!";
+    end
+  else
+    let args = [] |> (if summary then fun l -> "--summary" :: l else Fun.id)
+                |> (if json then fun l -> "--json" :: l else Fun.id) in
+    match git_repo_toplevel () with
+    | None ->
+        Printf.eprintf "error: must run from inside the c2c git repo.\n%!";
         exit 1
-      end;
-      Unix.execvp "bash" (Array.of_list (["bash"; script] @ args))
+    | Some toplevel ->
+        let script = toplevel // "scripts" // "c2c-doctor.sh" in
+        if not (Sys.file_exists script) then begin
+          Printf.eprintf "error: scripts/c2c-doctor.sh not found.\n%!";
+          exit 1
+        end;
+        Unix.execvp "bash" (Array.of_list (["bash"; script] @ args))
 
 let doctor = Cmdliner.Cmd.v (Cmdliner.Cmd.info "doctor"
     ~doc:"Health snapshot + push-pending analysis (for Max / human operators).") doctor_cmd
@@ -5149,40 +5150,6 @@ let write_agent_file ~client ~name ~content =
 let get_opencode_theme (r : C2c_role.t) : string option =
   List.assoc_opt "theme" r.C2c_role.opencode
 
-(* Build the --agents JSON for claude from a role.
-   Format: {"<name>": {"description": "...", "prompt": "<body>", "model": "...", "tools": []}}
-   The prompt is the role body (strip frontmatter from the rendered output). *)
-let build_agent_json ~(agent_name : string) ~(role : C2c_role.t) ~(rendered : string) : string =
-  let marker = "---\n" in
-  let mlen = String.length marker in
-  let rec find_next after off =
-    if off + mlen > String.length after then None
-    else if String.sub after off mlen = marker then Some off
-    else find_next after (off + 1)
-  in
-  let body =
-    match find_next rendered 0 with
-    | None -> rendered
-    | Some first_off ->
-        let after_first = String.sub rendered (first_off + mlen) (String.length rendered - first_off - mlen) in
-        match find_next after_first 0 with
-        | None -> String.trim after_first
-        | Some second_off ->
-            let raw = String.sub after_first (second_off + mlen) (String.length after_first - second_off - mlen) in
-            String.trim raw
-  in
-  let model_field = match role.C2c_role.model with
-    | Some m -> [("model", `String m)]
-    | None -> []
-  in
-  let agent_obj = `Assoc (
-    ("description", `String role.C2c_role.description)
-    :: ("prompt", `String body)
-    :: ("tools", `List [])
-    :: model_field
-  ) in
-  Yojson.Safe.to_string (`Assoc [(agent_name, agent_obj)])
-
 let start_cmd =
   let client =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"CLIENT"
@@ -5224,6 +5191,9 @@ let start_cmd =
   let auto_join =
     Cmdliner.Arg.(value & opt (some string) None & info [ "auto-join" ] ~docv:"ROOMS" ~doc:"Comma-separated room IDs to auto-join on startup. Overrides the default swarm-lounge.")
   in
+  let worktree =
+    Cmdliner.Arg.(value & flag & info [ "worktree" ] ~doc:"Create an isolated git worktree for this agent before launching. Useful for parallel feature work. Implied when C2C_AUTO_WORKTREE=1.")
+  in
   let+ client = client
   and+ name_opt = name
   and+ alias_opt = alias
@@ -5236,7 +5206,8 @@ let start_cmd =
   and+ agent_opt = agent
   and+ model_opt = model
   and+ reply_to = reply_to
-  and+ auto_join = auto_join in
+  and+ auto_join = auto_join
+  and+ worktree_flag = worktree in
   let kickoff_prompt_text =
     match kickoff_prompt_text_raw, kickoff_prompt_file with
     | Some _, Some _ ->
@@ -5293,7 +5264,7 @@ let start_cmd =
     Filename.concat (Sys.getcwd ()) ".c2c" // "roles" // (agent_name ^ ".md")
   in
   (* --agent mode: load canonical role, render for client, write compiled file *)
-  let (kickoff_prompt, alias_override, auto_join_rooms, agent_json) =
+  let (kickoff_prompt, alias_override, auto_join_rooms, agent_name) =
     match agent_opt with
     | Some agent_name ->
         let role_path = agent_role_path agent_name in
@@ -5350,12 +5321,10 @@ let start_cmd =
                let theme = get_opencode_theme role in
                let subtitle = Printf.sprintf "%s  |  %s" client name in
                Banner.print_banner ?theme_name:theme ~subtitle (Printf.sprintf "c2c start --agent %s" agent_name);
-               let agent_json =
-                 if client = "claude" then
-                   Some (build_agent_json ~agent_name ~role ~rendered)
-                 else None
+               let agent_name =
+                 if client = "claude" then Some agent_name else None
                in
-               (kickoff, alias_override, auto_join_rooms, agent_json)
+               (kickoff, alias_override, auto_join_rooms, agent_name)
           | None ->
               Printf.eprintf "error: --agent is not supported for client '%s' yet.\n%!" client;
               exit 1
@@ -5417,12 +5386,10 @@ let start_cmd =
                      then Some (String.concat ", " role.C2c_role.c2c_auto_join_rooms)
                      else None
                    in
-                   let agent_json =
-                     if client = "claude" then
-                       Some (build_agent_json ~agent_name:name ~role ~rendered)
-                     else None
+                   let agent_name =
+                     if client = "claude" then Some name else None
                    in
-                   (kickoff, alias_override, auto_join_rooms, agent_json)
+                   (kickoff, alias_override, auto_join_rooms, agent_name)
               | None ->
                         (* Role file exists but not supported for this client — fall through
                            to structured role path so user can still start with the role. *)
@@ -5486,12 +5453,16 @@ let start_cmd =
     | Some rooms -> Some rooms
     | None -> auto_join_rooms
   in
-  if Sys.getenv_opt "C2C_NO_WORKTREE" = None then begin
-    let wt_dir = C2c_worktree.ensure_worktree ~alias:effective_alias ~branch:"master" in
-    (try Unix.chdir wt_dir with Sys_error e ->
-      Printf.eprintf "warning: failed to chdir to worktree %s: %s\n%!" wt_dir e);
-    Printf.printf "[c2c] worktree: %s\n%!" wt_dir
-  end;
+  let auto_worktree = worktree_flag || (match Sys.getenv_opt "C2C_AUTO_WORKTREE" with Some "1" -> true | _ -> false) in
+  (match session_id_opt with
+  | Some _ ->
+      Printf.printf "[c2c] resume mode — staying at parent cwd\n%!"
+  | None when auto_worktree ->
+      let wt_dir = C2c_worktree.ensure_worktree ~alias:effective_alias ~branch:"master" in
+      (try Unix.chdir wt_dir with Sys_error e ->
+        Printf.eprintf "warning: failed to chdir to worktree %s: %s\n%!" wt_dir e);
+      Printf.printf "[c2c] worktree: %s\n%!" wt_dir
+  | _ -> ());
   exit (C2c_start.cmd_start ~client ~name ~extra_args:[]
       ?binary_override:bin_opt
       ?alias_override
@@ -5499,7 +5470,7 @@ let start_cmd =
       ?model_override
       ~one_hr_cache
       ?kickoff_prompt
-      ?agent_json
+      ?agent_name
       ?auto_join_rooms
       ?reply_to ())
 
@@ -8512,7 +8483,7 @@ let () =
     [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; send_all; sweep
     ; sweep_dryrun; history; health; setcap; status; verify; git; register; refresh_peer
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; smoke_test; init; install; completion_cmd
-    ; serve; mcp; start; agent_group; config_group; roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; C2c_rooms.rooms_group; C2c_rooms.room_group; relay_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
+    ; serve; mcp; start; agent_group; config_group; roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; C2c_rooms.rooms_group; C2c_rooms.room_group; relay_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in
   exit

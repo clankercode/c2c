@@ -160,7 +160,7 @@ val prepare_launch_args :
   ?codex_xml_input_fd:string ->
   ?codex_resume_target:string ->
   ?thread_id_fd:string ->
-  ?agent_json:string ->
+  ?agent_name:string ->
   ?kickoff_prompt:string ->
   unit ->
   string list
@@ -169,7 +169,7 @@ val prepare_launch_args :
     for opencode, resume --last or resume <target> for codex, optional
     --xml-input-fd for Codex,
     optional --thread-id/--thread-id-fd for codex-headless,
-    optional --agent-file for Claude/agent launches, and
+    optional --agent for Claude/agent launches, and
     --mcp-config-file for kimi. *)
 
 val bridge_supports_thread_id_fd : string -> bool
@@ -312,7 +312,7 @@ val run_outer_loop :
   ?one_hr_cache:bool ->
   ?kickoff_prompt:string ->
   ?auto_join_rooms:string ->
-  ?agent_json:string ->
+  ?agent_name:string ->
   ?reply_to:string ->
   unit ->
   int
@@ -344,7 +344,7 @@ val cmd_start :
   ?one_hr_cache:bool ->
   ?kickoff_prompt:string ->
   ?auto_join_rooms:string ->
-  ?agent_json:string ->
+  ?agent_name:string ->
   ?reply_to:string ->
   unit ->
   int

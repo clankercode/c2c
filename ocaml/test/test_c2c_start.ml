@@ -124,6 +124,15 @@ let test_prepare_launch_args_adds_model_flag_for_claude () =
   in
   check bool "adds --model" true (has_adjacent_pair "--model" "claude-sonnet-4-7" args)
 
+let test_prepare_launch_args_adds_agent_flag_for_claude () =
+  let args =
+    C2c_start.prepare_launch_args ~name:"claude-proof" ~client:"claude"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~agent_name:"AgentName" ()
+  in
+  check bool "adds --agent" true (has_adjacent_pair "--agent" "AgentName" args);
+  check bool "does not add --agents" false (List.mem "--agents" args)
+
 let test_prepare_launch_args_adds_model_flag_for_opencode () =
   let args =
     C2c_start.prepare_launch_args ~name:"oc-proof" ~client:"opencode"
@@ -732,40 +741,6 @@ let test_repo_config_pmodel_reads_table () =
    | Some _ -> fail "unset role should not resolve"
    | None -> ())
 
-let test_body_stripped_of_frontmatter () =
-  let marker = "---\n" in
-  let mlen = String.length marker in
-  let rec find_next after off =
-    if off + mlen > String.length after then None
-    else if String.sub after off mlen = marker then Some off
-    else find_next after (off + 1)
-  in
-  let extract_body rendered =
-    match find_next rendered 0 with
-    | None -> rendered
-    | Some first_off ->
-        let after_first =
-          String.sub rendered (first_off + mlen)
-            (String.length rendered - first_off - mlen)
-        in
-        match find_next after_first 0 with
-        | None -> String.trim after_first
-        | Some second_off ->
-            let raw =
-              String.sub after_first (second_off + mlen)
-                (String.length after_first - second_off - mlen)
-            in
-            String.trim raw
-  in
-  check string "body extracted exactly" "Body"
-    (extract_body "---\ndesc: foo\n---\n\nBody");
-  check string "body extracted with trailing newline" "You are a agent."
-    (extract_body "---\ndesc: test\nrole: primary\n---\n\nYou are a agent.\n");
-  check string "no frontmatter returns trimmed" "No frontmatter Just body"
-    (extract_body "No frontmatter Just body");
-  check string "double fence body" "Double fence"
-    (extract_body "---\n---\n\nDouble fence")
-
 let () =
   Random.self_init ();
   Alcotest.run "c2c_start"
@@ -784,6 +759,8 @@ let () =
             `Quick, test_normalize_model_override_for_claude_discards_provider_prefix )
         ; ( "prepare_launch_args_adds_model_flag_for_claude",
             `Quick, test_prepare_launch_args_adds_model_flag_for_claude )
+        ; ( "prepare_launch_args_adds_agent_flag_for_claude",
+            `Quick, test_prepare_launch_args_adds_agent_flag_for_claude )
         ; ( "prepare_launch_args_adds_model_flag_for_opencode",
             `Quick, test_prepare_launch_args_adds_model_flag_for_opencode )
         ; ( "build_env_keeps_channel_delivery_without_force_flag",
@@ -846,7 +823,4 @@ let () =
         ; ("repo_config_pmodel_reads_table", `Quick,
            test_repo_config_pmodel_reads_table)
         ] )
-    ; ( "build_agent_json_body_extraction",
-        [ ("body_stripped_of_frontmatter", `Quick,
-           test_body_stripped_of_frontmatter) ] )
     ]

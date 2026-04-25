@@ -292,7 +292,8 @@ module OpenCode_renderer = struct
     lines := ("description: " ^ yaml_scalar r.description) :: !lines;
     lines := ("role: " ^ r.role) :: !lines;
     (match r.pronouns with Some p -> lines := ("pronouns: " ^ yaml_scalar p) :: !lines | None -> ());
-    let model_to_emit = match resolved_pmodel with Some m -> Some m | None -> r.model in
+    let single_client = List.length r.compatible_clients = 1 in
+    let model_to_emit = if single_client then (match resolved_pmodel with Some m -> Some m | None -> r.model) else None in
     (match model_to_emit with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
     if r.c2c_alias <> None || r.c2c_auto_join_rooms <> [] then begin
       lines := "c2c:" :: !lines;
@@ -332,7 +333,8 @@ module Claude_renderer = struct
     let lines = ref [] in
     lines := ("name: " ^ yaml_scalar name) :: !lines;
     lines := ("description: " ^ yaml_scalar r.description) :: !lines;
-    let model_to_emit = match resolved_pmodel with Some m -> Some m | None -> r.model in
+    let single_client = List.length r.compatible_clients = 1 in
+    let model_to_emit = if single_client then (match resolved_pmodel with Some m -> Some m | None -> r.model) else None in
     (match model_to_emit with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
     if r.claude <> [] then begin
       lines := "claude:" :: !lines;
@@ -353,7 +355,8 @@ module Codex_renderer = struct
     lines := ("description: " ^ yaml_scalar r.description) :: !lines;
     lines := ("role: " ^ r.role) :: !lines;
     (match r.pronouns with Some p -> lines := ("pronouns: " ^ yaml_scalar p) :: !lines | None -> ());
-    let model_to_emit = match resolved_pmodel with Some m -> Some m | None -> r.model in
+    let single_client = List.length r.compatible_clients = 1 in
+    let model_to_emit = if single_client then (match resolved_pmodel with Some m -> Some m | None -> r.model) else None in
     (match model_to_emit with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
     if r.c2c_alias <> None || r.c2c_auto_join_rooms <> [] then begin
       lines := "# c2c:" :: !lines;
@@ -380,7 +383,8 @@ module Kimi_renderer = struct
     lines := ("description: " ^ yaml_scalar r.description) :: !lines;
     lines := ("role: " ^ r.role) :: !lines;
     (match r.pronouns with Some p -> lines := ("pronouns: " ^ yaml_scalar p) :: !lines | None -> ());
-    let model_to_emit = match resolved_pmodel with Some m -> Some m | None -> r.model in
+    let single_client = List.length r.compatible_clients = 1 in
+    let model_to_emit = if single_client then (match resolved_pmodel with Some m -> Some m | None -> r.model) else None in
     (match model_to_emit with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
     if r.c2c_alias <> None || r.c2c_auto_join_rooms <> [] then begin
       lines := "# c2c:" :: !lines;
