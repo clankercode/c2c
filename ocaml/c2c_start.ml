@@ -105,7 +105,11 @@ let codex_heartbeat_content =
   "Session heartbeat. Poll your C2C inbox and handle any messages."
 
 let codex_heartbeat_enabled ~(client : string) : bool =
-  client = "codex" || client = "codex-headless"
+  client = "codex"
+
+let should_start_codex_heartbeat ~(client : string) ~(deliver_started : bool) :
+    bool =
+  codex_heartbeat_enabled ~client && deliver_started
 
 let enqueue_codex_heartbeat ~(broker_root : string) ~(alias : string) : unit =
   let broker = C2c_mcp.Broker.create ~root:broker_root in
@@ -2710,7 +2714,9 @@ let run_outer_loop ~(name : string) ~(client : string)
           (* Start codex heartbeat — broker-mail-based heartbeat every 4 minutes.
              Codex has no PTY poker, so without this the session can go stale.
              Uses Broker.enqueue_message (like mail) so the deliver daemon picks it up. *)
-          (if codex_heartbeat_enabled ~client then
+          (if should_start_codex_heartbeat ~client
+                ~deliver_started:(Option.is_some !deliver_pid)
+           then
              start_codex_heartbeat ~broker_root ~alias:effective_alias
                ~interval_s:codex_heartbeat_interval_s);
           pid

@@ -312,6 +312,10 @@ val codex_heartbeat_content : string
 val codex_heartbeat_enabled : client:string -> bool
 (** Return whether [client] should receive managed Codex heartbeat messages. *)
 
+val should_start_codex_heartbeat : client:string -> deliver_started:bool -> bool
+(** Return whether [run_outer_loop] should start the heartbeat thread for this
+    launch. Requires the regular Codex deliver daemon to be running. *)
+
 val enqueue_codex_heartbeat : broker_root:string -> alias:string -> unit
 (** Enqueue one heartbeat message to [alias] through the broker inbox, using the
     same delivery path as regular inbound messages. *)

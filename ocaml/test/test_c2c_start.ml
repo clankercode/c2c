@@ -193,7 +193,7 @@ let test_codex_heartbeat_interval_is_four_minutes () =
 let test_codex_heartbeat_enabled_for_codex_family_only () =
   check bool "codex enabled" true
     (C2c_start.codex_heartbeat_enabled ~client:"codex");
-  check bool "codex-headless enabled" true
+  check bool "codex-headless disabled" false
     (C2c_start.codex_heartbeat_enabled ~client:"codex-headless");
   check bool "claude disabled" false
     (C2c_start.codex_heartbeat_enabled ~client:"claude");
@@ -201,6 +201,20 @@ let test_codex_heartbeat_enabled_for_codex_family_only () =
     (C2c_start.codex_heartbeat_enabled ~client:"opencode");
   check bool "kimi disabled" false
     (C2c_start.codex_heartbeat_enabled ~client:"kimi")
+
+let test_should_start_codex_heartbeat_requires_codex_deliver_daemon () =
+  check bool "codex with deliver daemon" true
+    (C2c_start.should_start_codex_heartbeat ~client:"codex"
+       ~deliver_started:true);
+  check bool "codex without deliver daemon" false
+    (C2c_start.should_start_codex_heartbeat ~client:"codex"
+       ~deliver_started:false);
+  check bool "codex-headless excluded" false
+    (C2c_start.should_start_codex_heartbeat ~client:"codex-headless"
+       ~deliver_started:true);
+  check bool "opencode excluded" false
+    (C2c_start.should_start_codex_heartbeat ~client:"opencode"
+       ~deliver_started:true)
 
 let test_enqueue_codex_heartbeat_uses_broker_inbox_transport () =
   with_temp_dir @@ fun dir ->
@@ -834,6 +848,8 @@ let () =
             `Quick, test_codex_heartbeat_interval_is_four_minutes )
         ; ( "codex_heartbeat_enabled_for_codex_family_only",
             `Quick, test_codex_heartbeat_enabled_for_codex_family_only )
+        ; ( "should_start_codex_heartbeat_requires_codex_deliver_daemon",
+            `Quick, test_should_start_codex_heartbeat_requires_codex_deliver_daemon )
         ; ( "enqueue_codex_heartbeat_uses_broker_inbox_transport",
             `Quick, test_enqueue_codex_heartbeat_uses_broker_inbox_transport )
         ; ( "finalize_outer_loop_exit_cleans_before_print",
