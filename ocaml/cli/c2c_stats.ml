@@ -174,9 +174,8 @@ let append_stats_to_sitrep ~repo_root ~now ~stats_markdown =
   | Sys_error msg | Unix.Unix_error (_, msg, _) ->
       Error msg
 
-let render_markdown ~stats ~since_str =
+let render_markdown ~stats ~since_str ~now =
   let buf = Buffer.create 4096 in
-  let now = Unix.gettimeofday () in
   let now_str = fmt_time now in
   let window_str =
     match since_str with
@@ -296,7 +295,8 @@ let run ~root ~json ~alias_filter ~since_str ~append_sitrep =
         | _ -> String.compare a.alias b.alias)
       stats
   in
-  let markdown = lazy (render_markdown ~stats ~since_str) in
+  let now = Unix.gettimeofday () in
+  let markdown = lazy (render_markdown ~stats ~since_str ~now) in
   if json then
     print_string (render_json ~stats)
   else
@@ -304,7 +304,7 @@ let run ~root ~json ~alias_filter ~since_str ~append_sitrep =
   if append_sitrep then
     match append_stats_to_sitrep
             ~repo_root:(repo_root_for_sitrep ())
-            ~now:(Unix.gettimeofday ())
+            ~now
             ~stats_markdown:(Lazy.force markdown) with
     | Ok path -> Printf.eprintf "appended swarm stats to %s\n%!" path
     | Error msg ->
