@@ -134,6 +134,13 @@ The scheduler hooks in `C2c_start.run_outer_loop` after client delivery sidecars
 
 Transport remains `Broker.enqueue_message ~from_alias:alias ~to_alias:alias`, which is the proven path from the Codex heartbeat slice.
 
+Heartbeat messages are intentionally not special-cased during restart gaps. If
+the managed client is temporarily down while the outer loop or delivery sidecar
+reconnects, heartbeat messages accumulate in the normal broker inbox and are
+drained by the same reconnect path as ordinary inbound messages. This preserves
+the "heartbeats are just c2c messages" invariant and avoids a second queueing
+mechanism.
+
 Default client policy:
 
 - Included by default: `claude`, `codex`, `opencode`, `kimi`, `crush`.
