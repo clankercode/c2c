@@ -5290,10 +5290,8 @@ let start_cmd =
                let theme = get_opencode_theme role in
                let subtitle = Printf.sprintf "%s  |  %s" client name in
                Banner.print_banner ?theme_name:theme ~subtitle (Printf.sprintf "c2c start --agent %s" agent_name);
-               let agent_name =
-                 if client = "claude" then Some agent_name else None
-               in
-               (kickoff, alias_override, auto_join_rooms, agent_name)
+                let effective_agent_name = Some agent_name in
+                (kickoff, alias_override, auto_join_rooms, effective_agent_name)
           | None ->
               Printf.eprintf "error: --agent is not supported for client '%s' yet.\n%!" client;
               exit 1
@@ -5362,10 +5360,8 @@ let start_cmd =
                      then Some (String.concat ", " role.C2c_role.c2c_auto_join_rooms)
                      else None
                    in
-                   let agent_name =
-                     if client = "claude" then Some name else None
-                   in
-                   (kickoff, alias_override, auto_join_rooms, agent_name)
+                    let agent_name = Some name in
+                    (kickoff, alias_override, auto_join_rooms, agent_name)
               | None ->
                         (* Role file exists but not supported for this client — fall through
                            to structured role path so user can still start with the role. *)
