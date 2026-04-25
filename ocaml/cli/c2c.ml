@@ -5108,11 +5108,16 @@ let stats_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "since" ] ~docv:"DUR"
       ~doc:"Only count messages within this duration (e.g. 1h, 30m, 7d).")
   in
+  let append_sitrep_flag =
+    Cmdliner.Arg.(value & flag & info [ "append-sitrep" ]
+      ~doc:"Append or replace a Swarm stats section in the current UTC hourly sitrep.")
+  in
   let+ json = json_flag
   and+ alias_filter = alias_flag
-  and+ since_str = since_flag in
+  and+ since_str = since_flag
+  and+ append_sitrep = append_sitrep_flag in
   let root = resolve_broker_root () in
-  C2c_stats.run ~root ~json ~alias_filter ~since_str
+  C2c_stats.run ~root ~json ~alias_filter ~since_str ~append_sitrep
 
 let stats = Cmdliner.Cmd.v (Cmdliner.Cmd.info "stats"
     ~doc:"Show per-agent message statistics across the swarm.") stats_cmd
