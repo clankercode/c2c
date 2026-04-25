@@ -333,9 +333,6 @@ module Claude_renderer = struct
     let lines = ref [] in
     lines := ("name: " ^ yaml_scalar name) :: !lines;
     lines := ("description: " ^ yaml_scalar r.description) :: !lines;
-    let single_client = List.length r.compatible_clients = 1 in
-    let model_to_emit = if single_client then (match resolved_pmodel with Some m -> Some m | None -> r.model) else None in
-    (match model_to_emit with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
     if r.claude <> [] then begin
       lines := "claude:" :: !lines;
       List.iter (fun (k, v) ->
@@ -412,6 +409,26 @@ let render_for_client ?resolved_pmodel (r : t) ~(client : string) ~(name : strin
   | "codex" -> Some (Codex_renderer.render ?resolved_pmodel r)
   | "kimi" -> Some (Kimi_renderer.render ?resolved_pmodel r)
   | _ -> None
+
+(* --- Path resolution ------------------------------------------------------- *)
+
+let ( // ) a b = Filename.concat a b
+
+let canonical_roles_dir () : string =
+  Sys.getcwd () // ".c2c" // "roles"
+
+let client_agent_dir ~(client : string) : string =
+  match client with
+  | "opencode" -> ".opencode" // "agents"
+  | "claude" -> ".claude" // "agents"
+  | "codex" -> ".codex" // "agents"
+  | "kimi" -> ".kimi" // "agents"
+  | _ -> ".c2c" // "agents"
+
+let resolve_agent_path ~(name : string) ~(client : string) : string =
+  let canonical = canonical_roles_dir () // (name ^ ".md") in
+  if Sys.file_exists canonical then canonical
+  else client_agent_dir ~client // (name ^ ".md")
 
 let role_class_to_room (role_class : string) : string option =
   match String.trim role_class with
