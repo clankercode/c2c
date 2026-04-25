@@ -13,6 +13,7 @@ FROM ocaml/opam:debian-12-ocaml-${OCAML_VERSION} AS builder
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
+        cmake \
         pkg-config \
         libgmp-dev \
         libssl-dev \
