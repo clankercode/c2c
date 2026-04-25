@@ -7,7 +7,7 @@
 (library
  (name c2c_mcp)
  (wrapped false)
- (modules Build_flags Version Git_helpers C2c_name C2c_capability c2c_role Banner c2c_mcp C2c_start Relay Relay_identity Relay_nudge Relay_signed_ops C2c_wire_bridge C2c_wire_daemon C2c_poker Relay_remote_broker C2c_relay_connector Relay_enc Relay_ratelimit Relay_e2e Relay_ws_frame Relay_short_queue)
+ (modules Build_flags Version Git_helpers C2c_name C2c_capability c2c_role Banner Peer_review c2c_mcp C2c_start Relay Relay_identity Relay_nudge Relay_signed_ops C2c_wire_bridge C2c_wire_daemon C2c_poker Relay_remote_broker C2c_relay_connector Relay_enc Relay_ratelimit Relay_e2e Relay_ws_frame Relay_short_queue)
  (foreign_stubs (language c) (names c2c_posix_stubs))
  (libraries yojson logs lwt.unix cohttp-lwt-unix uuidm sqlite3
               base64 digestif.ocaml mirage-crypto-ec mirage-crypto-rng.unix

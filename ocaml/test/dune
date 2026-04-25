@@ -111,3 +111,8 @@
  (name test_agent_refine)
  (modules test_agent_refine)
  (libraries c2c_mcp alcotest unix str))
+
+(test
+ (name test_peer_review)
+ (modules test_peer_review)
+ (libraries c2c_mcp alcotest base64 unix))
