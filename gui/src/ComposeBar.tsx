@@ -32,22 +32,24 @@ export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoo
   const [sending, setSending] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastOk, setLastOk] = useState(false);
-  // Keep the last attempted text so retry can re-send it
-  const [failedText, setFailedText] = useState<string | null>(null);
+  // Store the full failed attempt so retry sends to the exact same target
+  const [failedAttempt, setFailedAttempt] = useState<{ text: string; to: string; isRoom: boolean } | null>(null);
 
   const targets = [
     ...peers.map(p => ({ label: `👤 ${p}`, value: p, room: false })),
     ...rooms.map(r => ({ label: `🏠 ${r}`, value: r, room: true })),
   ];
 
-  async function send(overrideText?: string) {
-    const body = (overrideText ?? text).trim();
-    if (!to.trim() || !body || sending) return;
+  async function send(attempt?: { text: string; to: string; isRoom: boolean }) {
+    const target = attempt?.to ?? to.trim();
+    const body = (attempt?.text ?? text).trim();
+    const room = attempt?.isRoom ?? isRoom;
+    if (!target || !body || sending) return;
     setSending(true);
     setLastError(null);
     setLastOk(false);
-    setFailedText(null);
-    const res = await sendMessage(to.trim(), body, isRoom, myAlias);
+    setFailedAttempt(null);
+    const res = await sendMessage(target, body, room, myAlias);
     setSending(false);
     if (res.ok) {
       const nowEpoch = String(Date.now() / 1000);
@@ -57,8 +59,8 @@ export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoo
         monitor_ts: nowEpoch,
         ts: nowIso,
         from_alias: myAlias,
-        to_alias: to.trim(),
-        room_id: isRoom ? to.trim() : undefined,
+        to_alias: target,
+        room_id: room ? target : undefined,
         content: body,
       });
       setText("");
@@ -66,14 +68,14 @@ export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoo
       setTimeout(() => setLastOk(false), 1500);
     } else {
       setLastError(res.error ?? "unknown error");
-      setFailedText(body);
+      setFailedAttempt({ text: body, to: target, isRoom: room });
     }
   }
 
   function handleTextChange(val: string) {
     setText(val);
     // Clear error when user edits — they're fixing it
-    if (lastError) { setLastError(null); setFailedText(null); }
+    if (lastError) { setLastError(null); setFailedAttempt(null); }
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
@@ -155,9 +157,9 @@ export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoo
             {lastError}
           </div>
         )}
-        {failedText && !sending && (
+        {failedAttempt && !sending && (
           <button
-            onClick={() => send(failedText)}
+            onClick={() => send(failedAttempt)}
             style={{
               background: "transparent",
               border: "1px solid #f38ba8",
@@ -168,7 +170,7 @@ export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoo
               cursor: "pointer",
             }}
           >
-            retry
+            retry → {failedAttempt.to}
           </button>
         )}
         {lastOk && (
