@@ -4,7 +4,7 @@ open Cmdliner.Term.Syntax
 let ( // ) = Filename.concat
 
 (* shared per-alias signing key helpers *)
-let xdg_state_home = C2c_signing_helpers.xdg_state_home
+let xdg_state_home = C2c_utils.xdg_state_home
 let per_alias_key_path = C2c_signing_helpers.per_alias_key_path
 
 (* --- path helpers ------------------------------------------------------- *)
