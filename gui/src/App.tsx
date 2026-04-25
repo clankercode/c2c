@@ -25,7 +25,9 @@ export function App() {
   const [events, setEvents] = useState<C2cEvent[]>(() => {
     try {
       const cached = localStorage.getItem(EVENTS_CACHE_KEY);
-      return cached ? (JSON.parse(cached) as C2cEvent[]) : [];
+      if (!cached) return [];
+      const parsed: unknown = JSON.parse(cached);
+      return Array.isArray(parsed) ? (parsed as C2cEvent[]).slice(-MAX_CACHED_EVENTS) : [];
     } catch { return []; }
   });
   const [status, setStatus] = useState<"connecting" | "live" | "error">("connecting");
