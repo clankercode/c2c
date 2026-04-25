@@ -8,6 +8,7 @@ set -euo pipefail
 
 JSON=0
 SUMMARY=0
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [[ "${1:-}" == "--summary" ]] && SUMMARY=1 && shift
 [[ "${1:-}" == "--json" ]] && JSON=1 && shift
 
@@ -27,7 +28,7 @@ HEALTH_OUTPUT=$(c2c health 2>&1 || true)
 
 # Detect if main working tree is on a non-master/main branch (agents sharing main tree)
 # Format: /path/to/main  <sha>  [<branch>]  — or [HEAD detached at <sha>]
-_wt_raw=$(git worktree list 2>/dev/null | head -1)
+_wt_raw=$(git worktree list 2>/dev/null | sed -n '1p')
 MAIN_TREE_BRANCH=$(echo "$_wt_raw" | sed 's/.*\[\(.*\)\]/\1/')
 MAIN_TREE_SHARED=0
 # Warn only when main tree is on a real slice branch (not master/main/detached HEAD)
@@ -215,6 +216,13 @@ fi
 # ---------------------------------------------------------------------------
 AHEAD=$(git rev-list --count origin/master..HEAD 2>/dev/null || echo "?")
 if [[ "$AHEAD" == "0" ]]; then
+  if [[ $SUMMARY -eq 0 && $JSON -eq 0 && -x "$SCRIPT_DIR/c2c-command-test-audit.py" ]]; then
+    echo ""
+    bold "=== command test audit ==="
+    echo ""
+    "$SCRIPT_DIR/c2c-command-test-audit.py" --repo "$PWD" --summary --warn-only || true
+    echo ""
+  fi
   bold "=== Push status: "
   green "up-to-date"
   echo ""
@@ -309,6 +317,23 @@ if [[ ${#LOCAL_ONLY[@]} -gt 0 ]]; then
     msg="${entry#* }"
     printf "    $(dim '○') %s  %s\n" "$sha" "$msg"
   done
+  echo ""
+fi
+
+# ---------------------------------------------------------------------------
+# 2b. Public command test audit
+# ---------------------------------------------------------------------------
+COMMAND_TEST_AUDIT_OUTPUT=""
+COMMAND_TEST_AUDIT_GAPS=0
+if [[ -x "$SCRIPT_DIR/c2c-command-test-audit.py" ]]; then
+  COMMAND_TEST_AUDIT_OUTPUT=$("$SCRIPT_DIR/c2c-command-test-audit.py" --repo "$PWD" --summary --warn-only 2>&1 || true)
+  COMMAND_TEST_AUDIT_GAPS=$(echo "$COMMAND_TEST_AUDIT_OUTPUT" | grep -oE '[0-9]+ gap\(s\)' | head -1 | grep -oE '[0-9]+' || echo "0")
+fi
+
+if [[ $SUMMARY -eq 0 && $JSON -eq 0 && -n "$COMMAND_TEST_AUDIT_OUTPUT" ]]; then
+  bold "=== command test audit ==="
+  echo ""
+  echo "$COMMAND_TEST_AUDIT_OUTPUT"
   echo ""
 fi
 
@@ -414,6 +439,10 @@ if [[ $SUMMARY -eq 1 ]]; then
 
   if [[ $BINARY_STALE -eq 1 ]]; then
     printf "  $COORD_CHAR WARN: binary older than OCaml source — run 'just install-all'\n" >&2
+  fi
+
+  if [[ ${COMMAND_TEST_AUDIT_GAPS:-0} -gt 0 ]]; then
+    printf "  $COORD_CHAR WARN: %d Tier 1/2 command(s) lack obvious test references — run scripts/c2c-command-test-audit.py\n" "$COMMAND_TEST_AUDIT_GAPS" >&2
   fi
 
   # Print ALL CLEAR

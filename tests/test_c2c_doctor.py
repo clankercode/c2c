@@ -9,6 +9,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 C2C_BIN = Path(os.environ.get("C2C_BIN", str(Path.home() / ".local" / "bin" / "c2c")))
 DOCTOR_SCRIPT = REPO / "scripts" / "c2c-doctor.sh"
+COMMAND_AUDIT_SCRIPT = REPO / "scripts" / "c2c-command-test-audit.py"
 
 
 class DoctorScriptExistenceTests(unittest.TestCase):
@@ -35,6 +36,69 @@ class DoctorScriptExistenceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0,
                          f"bash -n failed: {result.stderr}")
 
+    def test_command_test_audit_script_exists(self):
+        self.assertTrue(COMMAND_AUDIT_SCRIPT.exists())
+
+    def test_command_test_audit_script_is_executable(self):
+        self.assertTrue(os.access(COMMAND_AUDIT_SCRIPT, os.X_OK))
+
+
+class CommandTestAuditTests(unittest.TestCase):
+    """Test the static Tier 1/2 command test-reference audit."""
+
+    def _make_repo(self):
+        d = Path(tempfile.mkdtemp())
+        (d / "ocaml" / "cli").mkdir(parents=True)
+        (d / "tests").mkdir()
+        (d / "ocaml" / "cli" / "c2c.ml").write_text(
+            'let tier1 = [\n'
+            '  ("send", "Send a message");\n'
+            '  ("poll-inbox", "Poll inbox");\n'
+            '] in\n'
+            'let tier2 = [\n'
+            '  ("start", "Start managed instance");\n'
+            '  ("rooms send", "Send to room");\n'
+            '] in\n',
+            encoding="utf-8",
+        )
+        return d
+
+    def test_command_test_audit_reports_missing_references(self):
+        d = self._make_repo()
+        try:
+            (d / "tests" / "test_cli.py").write_text(
+                'subprocess.run(["c2c", "send", "peer", "hello"])\n'
+                'subprocess.run(["c2c", "rooms", "send", "lounge", "hello"])\n',
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [sys.executable, str(COMMAND_AUDIT_SCRIPT), "--repo", str(d), "--summary"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("2 gap(s)", result.stdout)
+            self.assertIn("poll-inbox", result.stdout)
+            self.assertIn("start", result.stdout)
+            self.assertNotIn("send, rooms send", result.stdout)
+        finally:
+            import shutil
+            shutil.rmtree(d)
+
+    def test_command_test_audit_warn_only_exits_zero(self):
+        d = self._make_repo()
+        try:
+            result = subprocess.run(
+                [sys.executable, str(COMMAND_AUDIT_SCRIPT), "--repo", str(d), "--summary", "--warn-only"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("4 gap(s)", result.stdout)
+        finally:
+            import shutil
+            shutil.rmtree(d)
+
 
 class DoctorScriptClassificationTests(unittest.TestCase):
     """Test commit classification logic in c2c-doctor.sh using a temp git repo."""
@@ -43,7 +107,8 @@ class DoctorScriptClassificationTests(unittest.TestCase):
         """Create a minimal git repo with fake origin/master + local commits."""
         d = tempfile.mkdtemp()
         env = {**os.environ, "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t",
-               "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t"}
+               "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t",
+               "C2C_COORDINATOR": "1"}
 
         def git(*args):
             return subprocess.run(["git", "-C", d] + list(args),
@@ -214,6 +279,50 @@ class DoctorScriptClassificationTests(unittest.TestCase):
             import shutil
             shutil.rmtree(d)
 
+    def test_script_prints_command_test_audit(self):
+        d, git, env = self._make_temp_repo()
+        try:
+            (Path(d) / "ocaml" / "cli").mkdir(parents=True)
+            (Path(d) / "tests").mkdir()
+            (Path(d) / "ocaml" / "cli" / "c2c.ml").write_text(
+                'let tier1 = [\n'
+                '  ("send", "Send a message");\n'
+                '  ("poll-inbox", "Poll inbox");\n'
+                '] in\n',
+                encoding="utf-8",
+            )
+            (Path(d) / "tests" / "test_cli.py").write_text(
+                'subprocess.run(["c2c", "send", "peer", "hello"])\n',
+                encoding="utf-8",
+            )
+            git("commit", "--allow-empty", "-m", "docs: queued local work")
+            stub = Path(d) / "c2c"
+            stub.write_text(
+                "#!/bin/bash\n"
+                "if [[ \"$1\" == \"health\" ]]; then\n"
+                "  echo '{\"ok\":true}'\n"
+                "elif [[ \"$1\" == \"instances\" ]]; then\n"
+                "  echo 'No managed instances.'\n"
+                "else\n"
+                "  echo 'stub'\n"
+                "fi\n"
+            )
+            stub.chmod(0o755)
+            result = subprocess.run(
+                ["bash", str(DOCTOR_SCRIPT)],
+                capture_output=True,
+                text=True,
+                cwd=d,
+                env={**env, "PATH": str(d) + ":" + os.environ["PATH"]},
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("=== command test audit ===", result.stdout)
+            self.assertIn("1 gap(s)", result.stdout)
+            self.assertIn("poll-inbox", result.stdout)
+        finally:
+            import shutil
+            shutil.rmtree(d)
+
 
 class ManagedInstanceDriftTests(unittest.TestCase):
     """Test managed instance drift detection in c2c-doctor.sh."""
@@ -228,7 +337,7 @@ class ManagedInstanceDriftTests(unittest.TestCase):
             broker_root.mkdir()
             registry = broker_root / "registry.json"
             alive_pid = os.getpid()
-            dead_pid = 1  # init is always pid 1 but is not our managed session
+            dead_pid = 99999999
             registry.write_text(json.dumps([
                 {
                     "session_id": "alive-session",
@@ -278,7 +387,7 @@ class ManagedInstanceDriftTests(unittest.TestCase):
             self.assertIn("dead-agent", result.stdout)
             self.assertIn("alive-agent", result.stdout)  # printed but not drifted
             # dead-agent should appear in drift section with dead pid
-            self.assertRegex(result.stdout, r"dead-agent.*pid.*1.*dead")
+            self.assertRegex(result.stdout, r"dead-agent.*pid.*is dead")
             # alive-agent should NOT appear in the drift section
             drift_section = result.stdout.split("managed instance drift")[1].split("uncommitted WIP")[0]
             self.assertNotIn("alive-agent", drift_section)
