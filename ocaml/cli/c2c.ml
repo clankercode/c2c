@@ -5022,7 +5022,7 @@ let doctor = Cmdliner.Cmd.v (Cmdliner.Cmd.info "doctor"
 
 (* --- subcommand: start ---------------------------------------------------- *)
 
-let roles_dir () = Filename.concat (Sys.getcwd ()) ".c2c" // "roles"
+let roles_dir () = C2c_role.canonical_roles_dir ()
 
 let role_file_path ~alias =
   roles_dir () // (alias ^ ".md")
@@ -5108,12 +5108,7 @@ let default_kickoff_prompt ~name ~alias ?role () =
     name alias role_section
 
 let agent_file_path ~client ~name =
-  match client with
-  | "opencode" -> ".opencode" // "agents" // (name ^ ".md")
-  | "claude" -> ".claude" // "agents" // (name ^ ".md")
-  | "codex" -> ".codex" // "agents" // (name ^ ".md")
-  | "kimi" -> ".kimi" // "agents" // (name ^ ".md")
-  | _ -> ".c2c" // "agents" // (name ^ ".md")
+  C2c_role.client_agent_dir ~client // (name ^ ".md")
 
 let render_role_for_client ?(model_override : string option) (r : C2c_role.t) ~client ~name =
   let pmodel_lookup (key : string) : string option =
@@ -5288,9 +5283,10 @@ let start_cmd =
              exit 1)
   in
   let effective_alias = Option.value alias_opt ~default:name in
-  (* Agent-file path: canonical .c2c/roles/<agent>.md *)
+  (* Resolve agent file path: canonical .c2c/roles/<agent>.md first,
+     falling back to client-native agent path if canonical doesn't exist. *)
   let agent_role_path agent_name =
-    Filename.concat (Sys.getcwd ()) ".c2c" // "roles" // (agent_name ^ ".md")
+    C2c_role.resolve_agent_path ~name:agent_name ~client
   in
   (* --agent mode: load canonical role, render for client, write compiled file *)
   let (kickoff_prompt, alias_override, auto_join_rooms, agent_json) =
@@ -5511,7 +5507,7 @@ let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Start a managed c2c 
 
 let agent_list_term =
   let+ () = Cmdliner.Term.const () in
-  let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
+  let roles_dir = C2c_role.canonical_roles_dir () in
   mkdir_p roles_dir;
   match Array.to_list (Sys.readdir roles_dir) |> List.filter (fun f -> String.ends_with ~suffix:".md" f) with
   | [] -> Printf.printf "  (no roles found)\n"
@@ -5534,7 +5530,7 @@ let agent_delete_term =
   in
   let+ name = name
   and+ force = force in
-  let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
+  let roles_dir = C2c_role.canonical_roles_dir () in
   let path = Filename.concat roles_dir (name ^ ".md") in
   if not (Sys.file_exists path) then begin
     Printf.eprintf "error: role not found: %s\n%!" path;
@@ -5561,7 +5557,7 @@ let agent_rename_term =
   in
   let+ old_name = old_name
   and+ new_name = new_name in
-  let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
+  let roles_dir = C2c_role.canonical_roles_dir () in
   let old_path = Filename.concat roles_dir (old_name ^ ".md") in
   let new_path = Filename.concat roles_dir (new_name ^ ".md") in
   if not (Sys.file_exists old_path) then begin
@@ -5750,7 +5746,7 @@ let agent_new_term =
     else
       agent_new_interactive name
   in
-  let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
+  let roles_dir = C2c_role.canonical_roles_dir () in
   mkdir_p roles_dir;
   let path = Filename.concat roles_dir (name ^ ".md") in
   if Sys.file_exists path then begin
@@ -5961,7 +5957,7 @@ let run_ephemeral_agent
     ~(reply_to_opt : string option)
     ~(auto_join_rooms_opt : string option)
     () =
-  let role_path = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" // (role ^ ".md") in
+  let role_path = C2c_role.canonical_roles_dir () // (role ^ ".md") in
   if not (Sys.file_exists role_path) then begin
     Printf.eprintf "error: role file not found: %s\n  create it first with: c2c agent new %s\n%!" role_path role;
     exit 1
@@ -6241,7 +6237,7 @@ let agent_refine_term =
   and+ dry_run = dry_run_arg
   and+ reply_to_opt = reply_to_arg
   and+ agent_mode = agent_mode_arg in
-  let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
+  let roles_dir = C2c_role.canonical_roles_dir () in
   let role_file_path = Filename.concat roles_dir (name ^ ".md") in
   if not (Sys.file_exists role_file_path) then begin
     Printf.eprintf "error: role file not found: %s\n  create it first with: c2c agent new %s\n%!" role_file_path name;
@@ -6401,7 +6397,7 @@ let roles_compile_term =
   let+ name_opt = name_arg
   and+ client = client
   and+ dry_run = dry_run in
-  let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
+  let roles_dir = C2c_role.canonical_roles_dir () in
   let roles =
     match name_opt with
     | Some n -> [(n, Filename.concat roles_dir (n ^ ".md"))]
@@ -6468,7 +6464,7 @@ let roles_compile_cmd = Cmdliner.Cmd.v
 
 let roles_validate_term =
   let+ () = Cmdliner.Term.const () in
-  let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
+  let roles_dir = C2c_role.canonical_roles_dir () in
   let roles =
     try
       Array.to_list (Sys.readdir roles_dir)
@@ -6504,7 +6500,7 @@ let roles_validate_cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "validate" ~doc:"Vali
 
 let roles_default_term =
   let+ () = Cmdliner.Term.const () in
-  let roles_dir = Filename.concat (Sys.getcwd ()) ".c2c" // "roles" in
+  let roles_dir = C2c_role.canonical_roles_dir () in
   let roles =
     try
       Array.to_list (Sys.readdir roles_dir)
