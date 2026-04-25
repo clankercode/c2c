@@ -557,7 +557,7 @@ let scan_archives_by_day ~archive_dir ~session_to_alias ~cutoff ?(grain = Daily)
     files;
   counts
 
-let run_history ~root ~json ~markdown ~csv ~alias_filter ~days ?(grain = Daily) () =
+let run_history ~root ~json ~markdown ~csv ~compact ~alias_filter ~days ?(grain = Daily) () =
    let broker = C2c_mcp.Broker.create ~root in
    let regs = C2c_mcp.Broker.list_registrations broker in
    let session_to_alias = Hashtbl.create 32 in
@@ -587,12 +587,14 @@ let run_history ~root ~json ~markdown ~csv ~alias_filter ~days ?(grain = Daily) 
      |> List.sort (fun (d1, a1, _, _) (d2, a2, _, _) ->
          match String.compare d1 d2 with 0 -> String.compare a1 a2 | c -> c)
    in
-   if json then begin
-     let arr = `List (List.map (fun (day, alias, sent, recv) ->
-       `Assoc [ ("day", `String day); ("alias", `String alias);
-                ("msgs_out", `Int sent); ("msgs_in", `Int recv) ]) rows) in
-     print_string (Yojson.Safe.pretty_to_string arr);
-     print_newline ()
+    if json then begin
+      let arr = `List (List.map (fun (day, alias, sent, recv) ->
+        `Assoc [ ("day", `String day); ("alias", `String alias);
+                 ("msgs_out", `Int sent); ("msgs_in", `Int recv) ]) rows) in
+      let json_str = if compact then Yojson.Safe.to_string arr
+                     else Yojson.Safe.pretty_to_string arr in
+      print_string json_str;
+      print_newline ()
    end else if markdown then begin
      let by_day = Hashtbl.create 16 in
      List.iter (fun (day, alias, sent, recv) ->
