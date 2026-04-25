@@ -71,13 +71,29 @@ let rooms_send_cmd =
   let from_override =
     Cmdliner.Arg.(value & opt (some string) None & info [ "from"; "F" ] ~docv:"ALIAS" ~doc:"Override sender alias. Useful for operators/tests running outside an agent session.")
   in
+  let no_warn_substitution =
+    Cmdliner.Arg.(value & flag & info [ "no-warn-substitution" ]
+      ~doc:"Suppress the shell-substitution warning.")
+  in
   let+ json = json_flag
   and+ room_id = room_id
   and+ message = message
-  and+ from_override = from_override in
+  and+ from_override = from_override
+  and+ no_warn_substitution = no_warn_substitution in
   let broker = Broker.create ~root:(resolve_broker_root ()) in
   let from_alias = resolve_alias_with_broker ?override:from_override broker in
   let content = String.concat " " message in
+  (* Class E: warn when message body looks like an un-expanded shell
+     substitution pattern that the shell failed to expand. *)
+  let _ =
+    if (not no_warn_substitution) && likes_shell_substitution content
+    then Printf.eprintf
+      "warning: message body appears to contain a shell substitution pattern \
+       (e.g. $(...) or `...`).\n\
+       If this was intended literally, re-send with --no-warn-substitution.\n\
+       To avoid this, quote the pattern: '$(date)' or escape the $.\n%!"
+    else ()
+  in
   let output_mode = if json then Json else Human in
   (try
      let result =

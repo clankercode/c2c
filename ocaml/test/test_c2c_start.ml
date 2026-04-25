@@ -725,8 +725,13 @@ let test_likes_shell_substitution_detects_parens_and_backticks () =
     (C2c_start.likes_shell_substitution "`");
   (* escaped parens: \$(...) — backslash before dollar, not a substitution *)
   check bool "ignores \\$(...) (escaped parens)" false
-    (C2c_start.likes_shell_substitution "\\$(date)")
-
+    (C2c_start.likes_shell_substitution "\\$(date)");
+  (* $$ is a makefile variable reference, not a shell substitution *)
+  check bool "ignores $$ (makefile)" false
+    (C2c_start.likes_shell_substitution "$$HOME");
+  (* $\ is an escaped dollar, not a shell substitution *)
+  check bool "ignores $\\ (escaped dollar)" false
+    (C2c_start.likes_shell_substitution "$\\date")
 
 let test_repo_config_pmodel_reads_table () =
   with_temp_dir @@ fun dir ->
