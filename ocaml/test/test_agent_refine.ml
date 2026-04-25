@@ -288,9 +288,9 @@ let test_refine_dry_run_pane_flag () =
       ---\n\
       \n\
       You are a test agent.\n");
-  let (out, _) = capture_refine_dryrun ~extra_args:["--pane"] "test-ephemeral" in
-  check bool "contains pane=true" true
-    (contains ~sub:"pane=true" out)
+  let (out, _) = capture_refine_dryrun "test-ephemeral" in
+  check bool "contains mode=pane" true
+    (contains ~sub:"mode=pane" out)
 
 (* ---------- agent new tests ---------- *)
 
