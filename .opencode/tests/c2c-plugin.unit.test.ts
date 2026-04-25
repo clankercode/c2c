@@ -731,6 +731,56 @@ describe('c2c plugin unit tests', () => {
     delete process.env.C2C_PERMISSION_TIMEOUT_MS;
   });
 
+  it('question.asked: resolves numeric index reply to option label', async () => {
+    // cold-boot drain
+    queueSpawn({ messages: [] });
+    // supervisor liveness query
+    spawnQueue.push({
+      stdout: JSON.stringify({ sessions: [{ alias: 'coordinator1', alive: true, last_seen: Date.now() / 1000 }] }),
+      stderr: '', code: 0,
+    });
+    // send DM to supervisor
+    spawnQueue.push({ stdout: '', stderr: '', code: 0 });
+    // session.idle drain: supervisor replies with "2" (numeric index for "no")
+    queueSpawn({
+      messages: [{ from_alias: 'coordinator1', to_alias: 'test-session', content: 'question:q-idx:answer:2' }],
+    });
+
+    const ctx = makeCtx();
+    process.env.C2C_PERMISSION_TIMEOUT_MS = '10000';
+    const hooks = await C2CDelivery(ctx as any);
+    await fireEvent(hooks, sessionCreated('root-session'));
+
+    await fireEvent(hooks, {
+      type: 'question.asked',
+      properties: {
+        id: 'q-idx',
+        sessionID: 'root-session',
+        // Use SDK-shaped options (label/description, not value).
+        questions: [{ question: 'Proceed?', header: 'Confirm', options: [{ label: 'yes please', description: '' }, { label: 'no', description: '' }] }],
+      },
+    });
+
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+
+    await fireEvent(hooks, sessionIdle('root-session'));
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+
+    // Numeric "2" should resolve to the second option label "no".
+    expect(ctx.client.question.reply).toHaveBeenCalledTimes(1);
+    const replyCall = ctx.client.question.reply.mock.calls[0]![0];
+    expect(replyCall.path.id).toBe('q-idx');
+    expect(replyCall.body.answers[0][0]).toBe('no');
+    expect(ctx.client.question.reject).not.toHaveBeenCalled();
+
+    // DM should show numbered options (1. yes please, 2. no)
+    const sendCall = spawnCalls.find((c) => c.args[0] === 'send');
+    expect(sendCall!.args[2]).toContain('1. yes please');
+    expect(sendCall!.args[2]).toContain('2. no');
+
+    delete process.env.C2C_PERMISSION_TIMEOUT_MS;
+  });
+
   it('question.asked: snapshots pendingQuestion when opened and clears it after reply', async () => {
     queueSpawn({ messages: [] });
     spawnQueue.push({
