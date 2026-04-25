@@ -2,6 +2,7 @@
    Goal: eliminate duplicated boilerplate, centralize idioms. *)
 
 let ( // ) = Filename.concat
+let likes_shell_substitution = C2c_start.likes_shell_substitution
 
 (** [mkdir_p dir] creates dir and all parents, like Unix mkdir -p.
     Idempotent: succeeds if dir already exists.
