@@ -1262,13 +1262,7 @@ let do_install_git_hook ~output_mode ~dry_run =
       exit 1
   in
   let hook_src = repo_root // ".c2c" // "hooks" // "pre-commit.sh" in
-  let hook_dst =
-    try
-      let hooks_path = match Git_helpers.git_first_line ["config"; "--global"; "core.hooksPath"] with Some s -> String.trim s | None -> "" in
-      if hooks_path <> "" then Filename.concat hooks_path "pre-commit"
-      else git_common // "hooks" // "pre-commit"
-    with _ -> git_common // "hooks" // "pre-commit"
-  in
+  let hook_dst = git_common // "hooks" // "pre-commit" in
   if not (Sys.file_exists hook_src) then begin
     (match output_mode with
      | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String ("hook source not found: " ^ hook_src)) ])
