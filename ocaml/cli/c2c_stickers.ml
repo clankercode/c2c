@@ -19,27 +19,9 @@ let sent_dir ~alias =
 let public_dir () =
   sticker_dir () // "public"
 
-(* --- identity helpers (shared with c2c_peer_pass.ml) -------------------- *)
-
-let xdg_state_home () =
-  match Sys.getenv_opt "XDG_STATE_HOME" with
-  | Some v when String.trim v <> "" -> String.trim v
-  | _ ->
-      (match Sys.getenv_opt "HOME" with
-       | Some h when String.trim h <> "" -> String.trim h // ".local" // "state"
-       | _ -> "/tmp")
-
-let per_alias_key_path ~alias =
-  let abs_path p = if Filename.is_relative p then Sys.getcwd () // p else p in
-  let broker_root =
-    match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
-    | Some dir -> abs_path dir
-    | None -> (
-        match Git_helpers.git_common_dir () with
-        | Some git_dir -> abs_path git_dir // "c2c" // "mcp"
-        | None -> xdg_state_home () // "c2c" // "default" // "mcp")
-  in
-  Some (broker_root // "keys" // (alias ^ ".ed25519"))
+(* shared per-alias signing key helpers (c2c_signing_helpers.ml) *)
+let xdg_state_home = C2c_signing_helpers.xdg_state_home
+let per_alias_key_path = C2c_signing_helpers.per_alias_key_path
 
 (* --- registry ----------------------------------------------------------- *)
 
