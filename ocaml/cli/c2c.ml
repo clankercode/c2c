@@ -3684,14 +3684,14 @@ let relay_mobile_pair_cmd =
            | Ok id ->
                let bid = match binding_id with
                  | Some b -> b
-                 | None -> Uuidm.to_string (Uuidm.v `V4)
+                 | None -> Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
                in
                let now = Unix.gettimeofday () in
                let ttl_val = match ttl with Some t -> t | None -> 300.0 in
                let ttl_val = min ttl_val 300.0 in
                let issued_at = now in
                let expires_at = issued_at +. ttl_val in
-               let nonce = Uuidm.to_string (Uuidm.v `V4) in
+               let nonce = Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
                let machine_pk_b64 =
                  Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet id.Relay_identity.public_key
                in
