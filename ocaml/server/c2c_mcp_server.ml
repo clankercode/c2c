@@ -272,7 +272,7 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
             | true, true, None -> Lwt.return_unit
             | true, true, Some sid ->
                 let broker = C2c_mcp.Broker.create ~root:broker_root in
-                let queued = C2c_mcp.Broker.drain_inbox broker ~session_id:sid in
+                let queued = C2c_mcp.Broker.drain_inbox_push broker ~session_id:sid in
                 emit_notifications ~session_id:sid queued
           in
           loop ~broker_root ~negotiated_capabilities_ref)

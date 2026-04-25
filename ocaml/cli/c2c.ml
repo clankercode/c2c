@@ -4652,7 +4652,7 @@ let serve_cmd =
               | true, true, None -> Lwt.return_unit
               | true, true, Some sid ->
                   let broker = C2c_mcp.Broker.create ~root in
-                  let queued = C2c_mcp.Broker.drain_inbox broker ~session_id:sid in
+                  let queued = C2c_mcp.Broker.drain_inbox_push broker ~session_id:sid in
                   let rec emit = function
                     | [] -> Lwt.return_unit
                     | m :: rest ->
