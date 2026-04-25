@@ -217,6 +217,7 @@ let commands_by_safety_cmd =
     ("config generation-client", "Show generation-client config");
     ("wire-daemon list", "List all wire-daemon state files");
     ("wire-daemon status", "Show status of a wire-daemon");
+    ("get-tmux-location", "Print the current tmux pane address (session:window.pane)");
   ] in
   let tier3 = [
     ("relay serve", "Start relay server (background, requires operator)");
@@ -1972,6 +1973,32 @@ let register_cmd =
           ])
   | Human ->
       Printf.printf "registered %s (session %s)\n" alias session_id
+
+(* --- subcommand: get-tmux-location ---------------------------------------- *)
+
+let get_tmux_location_cmd =
+  let+ json = json_flag in
+  match Sys.getenv_opt "TMUX" with
+  | None ->
+      Printf.eprintf "error: not running inside a tmux session (TMUX is not set).\n%!";
+      exit 1
+  | Some _ ->
+      let capture cmd =
+        try
+          let ic = Unix.open_process_in cmd in
+          Fun.protect ~finally:(fun () -> ignore (Unix.close_process_in ic))
+            (fun () -> Some (input_line ic))
+        with _ -> None
+      in
+      match capture "tmux display-message -p '#S:#I.#P'" with
+      | None ->
+          Printf.eprintf "error: tmux display-message failed. Is tmux running?\n%!";
+          exit 1
+      | Some addr ->
+          let output_mode = if json then Json else Human in
+          match output_mode with
+          | Json -> print_json (`String addr)
+          | Human -> Printf.printf "%s\n" addr
 
 (* --- subcommand: tail-log ------------------------------------------------ *)
 
@@ -4252,6 +4279,7 @@ let server_info = Cmdliner.Cmd.v (Cmdliner.Cmd.info "server-info" ~doc:"Show c2c
 let my_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "my-rooms" ~doc:"List rooms you are a member of.") my_rooms_cmd
 let dead_letter = Cmdliner.Cmd.v (Cmdliner.Cmd.info "dead-letter" ~doc:"Show dead-letter entries.") dead_letter_cmd
 let prune_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "prune-rooms" ~doc:"Evict dead members from all rooms.") prune_rooms_cmd
+let get_tmux_location = Cmdliner.Cmd.v (Cmdliner.Cmd.info "get-tmux-location" ~doc:"Print the current tmux pane address (session:window.pane).") get_tmux_location_cmd
 
 (* --- subcommand: smoke-test ----------------------------------------------- *)
 
@@ -7786,7 +7814,7 @@ let () =
   let all_cmds =
     [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; send_all; sweep
     ; sweep_dryrun; history; health; setcap; status; verify; git; register; refresh_peer
-    ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; smoke_test; init; install; completion_cmd
+    ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test; init; install; completion_cmd
     ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; C2c_rooms.rooms_group; C2c_rooms.room_group; relay_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in

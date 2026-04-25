@@ -1423,4 +1423,26 @@ let () =
         ; ("repo_config_default_binary_preflight_uses_config", `Quick,
            test_repo_config_default_binary_preflight_uses_config)
         ] )
+    ; ( "get_tmux_location",
+        [ ( "get_tmux_location_exits_nonzero_when_not_in_tmux",
+            `Quick,
+            (fun () ->
+              let rc = Sys.command "env -u TMUX c2c get-tmux-location > /dev/null 2>&1" in
+              check int "non-zero exit when not in tmux" 1 rc) )
+        ; ( "get_tmux_location_json_flag",
+            `Quick,
+            (fun () ->
+              let tmpfile = Filename.temp_file "c2c-tmux-test" ".out" in
+              Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+                (fun () ->
+                  ignore (Sys.command (Printf.sprintf "c2c get-tmux-location --json > %s" tmpfile));
+                  let ch = open_in tmpfile in
+                  Fun.protect ~finally:(fun () -> close_in ch)
+                    (fun () ->
+                      let output = input_line ch in
+                      close_in ch;
+                      check bool "JSON output is a string starting with quote"
+                        true
+                        (String.length output > 0 && output.[0] = '"'))) ))
+        ] )
     ]
