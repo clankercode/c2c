@@ -33,6 +33,8 @@ type registration =
   ; last_activity_ts : float option
   (** Epoch of the session's most recent broker interaction. None = Phase 0
       compatibility (session predates this field). *)
+  ; role : string option
+  (** Sender role for envelope attribution. None = no role. *)
   }
 type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
@@ -70,7 +72,7 @@ module Broker : sig
       is available (up to 5 tries: primes 2,3,5,7,11), or [None] when all
       candidates are exhausted (ALIAS_COLLISION_EXHAUSTED). *)
 
-  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> ?plugin_version:string option -> ?enc_pubkey:string option -> unit -> unit
+  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> ?plugin_version:string option -> ?enc_pubkey:string option -> ?role:string option -> unit -> unit
   val list_registrations : t -> registration list
   val save_registrations : t -> registration list -> unit
   val with_registry_lock : t -> (unit -> 'a) -> 'a

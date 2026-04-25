@@ -36,6 +36,9 @@ type registration =
   (** Epoch of the session's most recent broker interaction (poll_inbox,
       send, register). None = session predates this field (Phase 0 compat).
       Updated by [touch_session]. *)
+  ; role : string option
+  (** Sender role for envelope attribution (coordinator, reviewer, agent, user).
+      Set explicitly via register tool. None = no role. *)
   }
 type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
@@ -384,6 +387,7 @@ module Broker = struct
     ; enc_pubkey = str_opt "enc_pubkey" json
     ; compacting = compacting_of_json json
     ; last_activity_ts = float_opt_member "last_activity_ts" json
+    ; role = str_opt "role" json
     }
 
   let message_to_json { from_alias; to_alias; content; deferrable; reply_via; enc_status } =
@@ -919,7 +923,7 @@ module Broker = struct
     with_registry_lock t (fun () ->
       suggest_alias_prime (load_registrations t) ~base_alias:alias)
 
-  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) () =
+  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(role = None) () =
     if List.mem alias reserved_system_aliases then
       invalid_arg (Printf.sprintf
         "register rejected: '%s' is a reserved system alias" alias);
@@ -940,15 +944,15 @@ module Broker = struct
         in
         (* Same-session re-registration (alias changed or pid/registered_at
            refresh): update in-place by replacing the old entry in [rest]. *)
-        (* Look up old entry to preserve DND state + confirmed_at + client_type + plugin_version + compacting
+        (* Look up old entry to preserve DND state + confirmed_at + client_type + plugin_version + compacting + role
            across re-registration. *)
         let old_state =
           match List.find_opt (fun reg -> reg.session_id = session_id) rest with
-          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting, r.enc_pubkey, r.last_activity_ts)
-          | None -> (false, None, None, None, client_type, None, None, enc_pubkey, None)
+          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting, r.enc_pubkey, r.last_activity_ts, r.role)
+          | None -> (false, None, None, None, client_type, None, None, enc_pubkey, None, role)
         in
         let new_reg =
-          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting, old_enc_pubkey, old_last_activity_ts) = old_state in
+          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting, old_enc_pubkey, old_last_activity_ts, old_role) = old_state in
           let effective_client_type = match client_type with
             | Some _ -> client_type
             | None -> old_client_type
@@ -961,6 +965,10 @@ module Broker = struct
             | Some _ -> enc_pubkey
             | None -> old_enc_pubkey
           in
+          let effective_role = match role with
+            | Some _ -> role
+            | None -> old_role
+          in
           { session_id; alias; pid; pid_start_time
           ; registered_at = Some (Unix.gettimeofday ())
           ; canonical_alias = Some (compute_canonical_alias ~alias ~broker_root:(root t))
@@ -970,7 +978,8 @@ module Broker = struct
           ; confirmed_at = old_confirmed_at
           ; enc_pubkey = effective_enc_pubkey
           ; compacting = old_compacting
-          ; last_activity_ts = old_last_activity_ts }
+          ; last_activity_ts = old_last_activity_ts
+          ; role = effective_role }
         in
         let kept =
           match
@@ -2311,6 +2320,7 @@ let base_tool_definitions =
       ~properties:
         [ prop "alias" "New alias to register for this session. Pass a different alias to rename without changing env vars."
         ; prop "session_id" "Optional session id override; defaults to the current MCP session."
+        ; prop "role" "Optional sender role for envelope attribution (coordinator, reviewer, agent, user)."
         ]
   ; tool_definition ~name:"list"
       ~description:"List registered C2C peers."
@@ -3096,6 +3106,7 @@ let handle_tool_call ~(broker : Broker.t) ?session_id_override ~tool_name ~argum
                 ~is_error:true)
             else begin
               let plugin_version = optional_string_member "plugin_version" arguments in
+              let role = optional_string_member "role" arguments in
               let enc_pubkey =
                 match Relay_enc.load_or_generate ~session_id () with
                 | Ok enc -> Some (Relay_enc.public_key_b64 enc)
@@ -3104,7 +3115,7 @@ let handle_tool_call ~(broker : Broker.t) ?session_id_override ~tool_name ~argum
                     None
               in
               Broker.register broker ~session_id ~alias ~pid ~pid_start_time
-                ~client_type ~plugin_version ~enc_pubkey ();
+                ~client_type ~plugin_version ~enc_pubkey ~role ();
               Broker.touch_session broker ~session_id;
               List.iter
                 (fun room_id ->
