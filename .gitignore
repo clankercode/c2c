@@ -21,3 +21,5 @@ _build/
 .artifacts/
 .c2c/peer-passes/
 .collab/personal-logs/
+.opencode/c2c-plugin.json
+.opencode/package-lock.json
