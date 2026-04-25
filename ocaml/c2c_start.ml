@@ -324,6 +324,10 @@ external setpgid : int -> int -> unit = "caml_c2c_setpgid"
 external tcsetpgrp : Unix.file_descr -> int -> unit = "caml_c2c_tcsetpgrp"
 external getpgrp : unit -> int = "caml_c2c_getpgrp"
 
+(* forkpty(3) binding — fork with PTY. Parent gets master_fd and child_pid;
+   child gets slave as stdin/stdout/stderr. Used by the generic PTY client. *)
+external forkpty_MasterChild : unit -> int * int = "caml_c2c_forkpty_MasterChild"
+
 (* ---------------------------------------------------------------------------
  * Repo-level .c2c/config.toml reader
  * --------------------------------------------------------------------------- *)
@@ -947,6 +951,13 @@ let () =
   Stdlib.Hashtbl.add clients "codex-headless"
     { binary = "codex-turn-start-bridge"; deliver_client = "codex-headless";
       needs_deliver = true; needs_wire_daemon = false; needs_poker = false;
+      poker_event = None; poker_from = None; extra_env = [] };
+  (* pty: generic PTY-backed client. forks a PTY pair, execs the user's command
+     on the slave, and delivers inbound c2c messages by writing to the master fd
+     (bracketed paste + delay + Enter, a la pty_inject). *)
+  Stdlib.Hashtbl.add clients "pty"
+    { binary = "pty"; deliver_client = "pty";
+      needs_deliver = false; needs_wire_daemon = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] }
   ;
   (* tmux: generic lifecycle-decoupled delivery to an existing pane. The
@@ -2832,6 +2843,103 @@ let start_headless_thread_id_watcher ~(name : string) ~(path : string) : Thread.
          pipe for the current headless unblocker path. *)
       wait_for_line 1200)
     ()
+
+(* ---------------------------------------------------------------------------
+ * PTY generic client
+ * --------------------------------------------------------------------------- *)
+
+(* Write a message to the PTY master fd using bracketed paste mode.
+   content: the message text to inject *)
+let pty_inject ~(master_fd : Unix.file_descr) (content : string) : unit =
+  let oc = Unix.out_channel_of_descr master_fd in
+  (* Bracketed paste mode: ESC [ 200 ~ ... ESC [ 201 ~
+     Tells the terminal to treat the content as a paste, not typing *)
+  let esc = "\027" in  (* 0x1b = ESC, xterm C1 control *)  let paste_start = esc ^ "[200~" in
+  let paste_end = esc ^ "[201~" in
+  output_string oc paste_start;
+  output_string oc content;
+  output_string oc paste_end;
+  flush oc;
+  (* Brief delay to let the application process the paste before we send Enter *)
+  ignore (Unix.select [] [] [] 0.01);
+  (* Send Enter to submit *)
+  output_char oc '\n';
+  flush oc
+
+(* Parse -- separator from extra_args. Returns (cmd, argv) if found, or exits with error. *)
+let parse_pty_cmd_argv (extra_args : string list) : (string * string list) =
+  let rec split_on_dashdash (before : string list) (after : string list) : (string * string list) =
+    match after with
+    | [] ->
+        Printf.eprintf "error: c2c start pty requires '--' followed by the command to run.\n%!";
+        Printf.eprintf "  Example: c2c start pty -- bash\n%!";
+        exit 1
+    | "--" :: rest ->
+        if rest = [] then begin
+          Printf.eprintf "error: -- must be followed by a command.\n%!";
+          exit 1
+        end else
+          (List.hd rest, List.tl rest)
+    | x :: xs -> split_on_dashdash (x :: before) xs
+  in
+  split_on_dashdash [] extra_args
+
+(* PTY deliver loop: polls broker inbox and writes messages to PTY master fd. *)
+let pty_deliver_loop ~(master_fd : Unix.file_descr) ~(broker_root : string)
+    ~(session_id : string) ~(name : string) : unit =
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  let poll_interval = 0.1 in  (* 100ms *)
+  while true do
+    let messages = C2c_mcp.Broker.drain_inbox broker ~session_id in
+    List.iter (fun (msg : C2c_mcp.message) ->
+      pty_inject ~master_fd msg.content
+    ) messages;
+    ignore (Unix.select [] [] [] poll_interval)
+  done
+
+(* run_pty_loop: fork PTY pair, exec user's command on slave, deliver via master *)
+let run_pty_loop ~(name : string) ~(extra_args : string list)
+    ~(broker_root : string) ?(alias_override : string option) () : int =
+  let session_id = name in
+  let cmd, cmd_argv = parse_pty_cmd_argv extra_args in
+  let full_cmd = cmd :: cmd_argv in
+  (* forkpty: atomically fork and set up PTY. Parent gets master fd + child pid.
+     Child already has slave as stdin/stdout/stderr. *)
+  let master_fd, pid = forkpty_MasterChild () in
+  let master_fd : Unix.file_descr = Obj.magic master_fd in
+  if pid = 0 then begin
+    (* Child: exec the user's command (slave is already stdin/stdout/stderr) *)
+    (try
+      (* Reset signals before exec *)
+      ignore (Sys.signal Sys.sigchld Sys.Signal_default);
+      ignore (Sys.signal Sys.sigpipe Sys.Signal_default);
+      (* Set process group in child too (double-set for safety) *)
+      (try ignore (setpgid 0 0) with _ -> ());
+      (* Exec the command — slave fd is already dup'd to stdin/out/err *)
+      Unix.execvp cmd (Array.of_list full_cmd)
+    with
+    | Unix.Unix_error (e, _, _) ->
+        Printf.eprintf "error: exec %s failed: %s\n%!" cmd (Unix.error_message e);
+        exit 127
+    | e ->
+        Printf.eprintf "error: exec %s failed: %s\n%!" cmd (Printexc.to_string e);
+        exit 127)
+  end else begin
+    (* Parent *)
+    (* Register the managed alias *)
+    (try
+      eager_register_managed_alias ~broker_root ~session_id ~alias:name
+        ~pid ~client_type:"pty"
+    with e ->
+      Printf.eprintf "warning: registration failed: %s\n%!" (Printexc.to_string e));
+    (* PTY deliver loop (runs in parent, polling broker and writing to master) *)
+    (try pty_deliver_loop ~master_fd ~broker_root ~session_id ~name with _ -> ());
+    (* When pty_deliver_loop exits (e.g. on error), kill the child and wait *)
+    (try Unix.kill pid Sys.sigterm with _ -> ());
+    ignore (Unix.waitpid [] pid);
+    Unix.close master_fd;
+    0
+  end
 
 (* ---------------------------------------------------------------------------
  * Outer loop

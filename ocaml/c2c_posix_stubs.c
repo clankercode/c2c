@@ -1,16 +1,21 @@
 #define CAML_NAME_SPACE
 #include <caml/mlvalues.h>
 #include <caml/alloc.h>
+#include <caml/memory.h>
 #include <caml/fail.h>
 #include <caml/unixsupport.h>
 #include <unistd.h>
 #include <errno.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <sys/types.h>
+#include <pty.h>
 
 /* setpgid(2): place the calling process in a new process group.
    OCaml 5.x's Unix module does not expose setpgid, so we bind it here. */
-CAMLprim value caml_c2c_setpgid(value vpid, value vpgid)
+CAMLprim value caml_c2c_setpgid(value vpid, value vpgrp)
 {
-    int ret = setpgid((pid_t)Int_val(vpid), (pid_t)Int_val(vpgid));
+    int ret = setpgid((pid_t)Int_val(vpid), (pid_t)Int_val(vpgrp));
     if (ret < 0)
         caml_unix_error(errno, "setpgid", Nothing);
     return Val_unit;
@@ -30,8 +35,6 @@ CAMLprim value caml_c2c_getpgrp(value unit)
    exits 109 when reading the TTY. Errors are silently ignored because
    a) SIGTTOU is blocked in the caller to keep the call itself from
    suspending us, and b) the fd may not be a tty (detached launch). */
-#include <signal.h>
-#include <sys/types.h>
 CAMLprim value caml_c2c_tcsetpgrp(value vfd, value vpgrp)
 {
     struct sigaction sa, old_sa;
@@ -43,4 +46,20 @@ CAMLprim value caml_c2c_tcsetpgrp(value vfd, value vpgrp)
     sigaction(SIGTTOU, &old_sa, NULL);
     (void)ret; /* intentionally ignore error */
     return Val_unit;
+}
+
+/* forkpty_MasterChild: fork a child with a new PTY, return master fd to parent.
+   Parent gets master_fd and child_pid; child already has slave as stdin/stdout/stderr.
+   Returns pair (master_fd, child_pid). On error raises Unix error. */
+CAMLprim value caml_c2c_forkpty_MasterChild(value vunit)
+{
+    (void)vunit;
+    int master;
+    pid_t pid = forkpty(&master, NULL, NULL, NULL);
+    if (pid < 0)
+        caml_unix_error(errno, "forkpty", Nothing);
+    value result = caml_alloc_tuple(2);
+    Store_field(result, 0, Val_int(master));
+    Store_field(result, 1, Val_int(pid));
+    return result;
 }
