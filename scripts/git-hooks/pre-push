@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# pre-push hook — enforces coordinator-only push to origin/master
+# Installed to .git/hooks/pre-push by just install-git-hooks.
+#
+# To bypass (coordinators only): set C2C_COORDINATOR=1 in your environment
+# when running `git push`. e.g.:
+#   C2C_COORDINATOR=1 git push origin master
+#
+# Exits 0 (allow) if:
+#   - Not pushing to origin/master, OR
+#   - C2C_COORDINATOR=1 is set
+# Exits 1 (reject) otherwise.
+
+set -euo pipefail
+
+# Git provides two pieces on stdin:
+#   Line 1: "<remote_name> <remote_url>"
+#   Subsequent lines: "<local_ref> <local_sha> <remote_ref> <remote_sha>"
+
+# Read remote name and URL from the first line
+read -r remote_name remote_url
+
+# If no remote (e.g. git push with no remote configured), allow
+if [[ -z "$remote_name" ]]; then
+  exit 0
+fi
+
+# Check if this is a push to the c2c shared repo (origin or local file:// paths)
+is_c2c_repo=false
+if [[ "$remote_name" == "origin" ]]; then
+  is_c2c_repo=true
+elif [[ "$remote_url" == *"c2c"* ]] || [[ "$remote_url" == *"xertrov"* ]]; then
+  # Local file:// paths to the c2c repo
+  is_c2c_repo=true
+fi
+
+# If not pushing to the c2c repo, allow
+if [[ "$is_c2c_repo" != "true" ]]; then
+  exit 0
+fi
+
+# Coordinator bypass
+if [[ "${C2C_COORDINATOR:-}" == "1" ]]; then
+  echo "pre-push hook: coordinator bypass — pushing to origin/master" >&2
+  exit 0
+fi
+
+# Process all ref lines; reject if any pushes to master
+reject_master_push() {
+  local local_ref="$1"
+  local branch="${local_ref#refs/heads/}"
+
+  if [[ "$branch" == "master" ]]; then
+    echo "pre-push hook: REJECTED push to origin/master" >&2
+    echo "  Only coordinators may push to origin/master." >&2
+    echo "  Set C2C_COORDINATOR=1 to bypass (e.g. C2C_COORDINATOR=1 git push)." >&2
+    echo "  Or push to a feature branch and open a PR." >&2
+    return 1
+  fi
+  return 0
+}
+
+# Read and check each ref line
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [[ -z "$local_ref" ]] && continue
+  [[ "$local_ref" != "refs/heads/"* ]] && continue
+
+  reject_master_push "$local_ref" || exit 1
+done
+
+exit 0
