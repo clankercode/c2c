@@ -52,16 +52,15 @@ export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoo
     const res = await sendMessage(target, body, room, myAlias);
     setSending(false);
     if (res.ok) {
-      const nowEpoch = String(Date.now() / 1000);
-      const nowIso = new Date().toISOString();
+      const now = new Date().toISOString();
       onSent?.({
         event_type: "message",
-        monitor_ts: nowEpoch,
-        ts: nowIso,
+        monitor_ts: now,
+        ts: now,
         from_alias: myAlias,
-        to_alias: target,
-        room_id: room ? target : undefined,
-        content: body,
+        to_alias: isRoom ? "" : to.trim(),
+        room_id: isRoom ? to.trim() : undefined,
+        content: text.trim(),
       });
       setText("");
       setLastOk(true);
