@@ -491,6 +491,15 @@ export function App() {
               myAlias={myAlias}
               focusHistoryEvents={focusHistoryEvents}
               onClearFocus={() => { setSelectedRoom(null); setSelectedPeer(null); setFocusHistoryEvents([]); }}
+              onPeerClick={alias => {
+                setComposeTo(alias);
+                setComposeIsRoom(false);
+                setFocusHistoryEvents([]);
+                setSelectedPeer(alias);
+                setSelectedRoom(null);
+                setUnreadPeers(prev => { const s = new Set(prev); s.delete(alias); return s; });
+                loadPeerHistory(alias, mySessionIdRef.current, myAlias, 100).then(hist => setFocusHistoryEvents(hist));
+              }}
             />
           )}
         </div>

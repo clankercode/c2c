@@ -113,9 +113,10 @@ interface Props {
   myAlias?: string;
   focusHistoryEvents?: C2cEvent[];
   onClearFocus?: () => void;
+  onPeerClick?: (alias: string) => void;
 }
 
-export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", focusHistoryEvents = [], onClearFocus }: Props) {
+export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", focusHistoryEvents = [], onClearFocus, onPeerClick }: Props) {
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
@@ -247,7 +248,15 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
                   opacity: isHistorical ? 0.6 : 1,
                 }}>
                   <div style={{ display: "flex", gap: 6, alignItems: "baseline", marginBottom: 2 }}>
-                    {!isMine && <span style={{ fontSize: 11, fontWeight: 700, color: "#89b4fa" }}>{m.from_alias}</span>}
+                    {!isMine && (
+                      <span
+                        style={{ fontSize: 11, fontWeight: 700, color: "#89b4fa", cursor: onPeerClick ? "pointer" : "default" }}
+                        onClick={() => onPeerClick?.(m.from_alias)}
+                        title={onPeerClick ? `DM ${m.from_alias}` : undefined}
+                      >
+                        {m.from_alias}
+                      </span>
+                    )}
                     <span style={{ fontSize: 10, color: "#45475a" }}>{ts}</span>
                     {isMine && <span style={{ fontSize: 11, fontWeight: 700, color: "#cba6f7" }}>{m.from_alias}</span>}
                   </div>
@@ -290,7 +299,14 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
                   {isMsg && m ? (
                     isExpanded ? (
                       <>
-                        <span style={{ color: "#89b4fa" }}>{m.from_alias} → {m.to_alias}: </span>
+                        <span
+                          style={{ color: "#89b4fa", cursor: onPeerClick && m.from_alias !== myAlias ? "pointer" : "default" }}
+                          onClick={e2 => { e2.stopPropagation(); if (m.from_alias !== myAlias) onPeerClick?.(m.from_alias); }}
+                          title={onPeerClick && m.from_alias !== myAlias ? `DM ${m.from_alias}` : undefined}
+                        >
+                          {m.from_alias}
+                        </span>
+                        <span style={{ color: "#89b4fa" }}>{" → "}{m.to_alias}: </span>
                         <span style={{ whiteSpace: "pre-wrap" }}>{m.content}</span>
                       </>
                     ) : eventLabel(e)
