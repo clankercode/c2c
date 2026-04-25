@@ -3124,28 +3124,39 @@ let self_pass_detector_strictness () =
 
 (** Extract the alias identifier that follows "peer-PASS by " in content.
     Aliases are alphanumeric with hyphens/underscores, case-insensitive.
-    Returns the alias if found immediately after the marker (delimited by whitespace),
+    Returns the alias if found after the marker (skipping whitespace, delimited by whitespace/punct),
     or None if no valid alias follows. *)
 let extract_alias_after_peer_pass content start_pos =
   let len = String.length content in
-  let rec read_alias acc i =
-    if i >= len then Some (acc, i)
+  let rec skip_whitespace i =
+    if i >= len then None
     else
       let c = content.[i] in
       if c = ' ' || c = '\n' || c = '\t' || c = '\r' || c = '.' || c = ',' || c = ':'
-      then Some (acc, i)
-      else if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-              || (c >= '0' && c <= '9') || c = '-' || c = '_'
-      then read_alias (acc ^ String.make 1 c) (i + 1)
-      else None
+      then skip_whitespace (i + 1)
+      else Some i
   in
-  read_alias "" start_pos
+  match skip_whitespace start_pos with
+  | None -> None
+  | Some pos ->
+      let rec read_alias acc i =
+        if i >= len then Some (acc, i)
+        else
+          let c = content.[i] in
+          if c = ' ' || c = '\n' || c = '\t' || c = '\r' || c = '.' || c = ',' || c = ':'
+          then Some (acc, i)
+          else if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                  || (c >= '0' && c <= '9') || c = '-' || c = '_'
+          then read_alias (acc ^ String.make 1 c) (i + 1)
+          else None
+      in
+      read_alias "" pos
 
 (** Detect "peer-PASS by <alias>" self-review violation in message content.
     Returns Some warning_message if sender's own alias appears in that pattern,
     None otherwise. Case-insensitive alias comparison. *)
 let check_self_pass_content ~from_alias content =
-  let needle = "peer-PASS by " in
+  let needle = String.lowercase_ascii "peer-PASS by" in
   let needle_len = String.length needle in
   let lc = String.lowercase_ascii content in
   let lc_from_alias = String.lowercase_ascii from_alias in
