@@ -187,7 +187,7 @@ def deliver_xml_messages(*, fd: int, messages: list[dict[str, Any]]) -> None:
 
 def deliver_xml_messages_to_path(*, path: Path, messages: list[dict[str, Any]]) -> None:
     payload = "".join(xml_message_payload(message) for message in messages).encode("utf-8")
-    fd = os.open(path, os.O_WRONLY)
+    fd = os.open(path, os.O_RDWR)
     try:
         view = memoryview(payload)
         while view:

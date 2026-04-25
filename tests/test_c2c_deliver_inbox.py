@@ -607,5 +607,35 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
             self.assertEqual(json.loads(inbox_path.read_text(encoding="utf-8")), [message])
 
 
+class FifoRegressionTests(unittest.TestCase):
+    def test_xml_output_path_fifo_open_with_rdwr_does_not_deadlock(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fifo_path = Path(temp_dir) / "test-fifo"
+            os.mkfifo(fifo_path)
+
+            reader_pid = os.fork()
+            if reader_pid == 0:
+                with open(fifo_path, "rb") as rf:
+                    os.read(rf.fileno(), 1)
+                os._exit(0)
+
+            try:
+                import threading
+                result = [None]
+                def open_rdwr():
+                    result[0] = os.open(fifo_path, os.O_RDWR)
+
+                t = threading.Thread(target=open_rdwr)
+                t.start()
+                t.join(timeout=2.0)
+                self.assertFalse(t.is_alive(), "O_RDWR open blocked — deadlock detected")
+                fd = result[0]
+                self.assertIsNotNone(fd)
+                os.write(fd, b"x")
+                os.close(fd)
+            finally:
+                os.waitpid(reader_pid, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
