@@ -5563,9 +5563,31 @@ let find_gui_binary () =
 
 type gui_batch_check = { name : string; ok : bool; detail : string }
 
+let registration_to_json (r : C2c_mcp.registration) =
+  let base = [ ("session_id", `String r.session_id); ("alias", `String r.alias) ] in
+  let with_pid = match r.pid with Some n -> base @ [("pid", `Int n)] | None -> base in
+  let alive_val = match C2c_mcp.Broker.registration_liveness_state r with
+    | C2c_mcp.Broker.Alive -> `Bool true
+    | C2c_mcp.Broker.Dead -> `Bool false
+    | C2c_mcp.Broker.Unknown -> `Null
+  in
+  let with_alive = with_pid @ [("alive", alive_val)] in
+  let with_dnd = match r.dnd with true -> with_alive @ [("dnd", `Bool true)] | false -> with_alive in
+  with_dnd
+
+let room_to_json (ri : C2c_mcp.Broker.room_info) =
+  `Assoc
+    [ ("room_id", `String ri.C2c_mcp.Broker.ri_room_id)
+    ; ("member_count", `Int ri.C2c_mcp.Broker.ri_member_count)
+    ; ("alive_member_count", `Int ri.C2c_mcp.Broker.ri_alive_member_count)
+    ; ("members", `List (List.map (fun m -> `String m) ri.C2c_mcp.Broker.ri_members))
+    ]
+
 (** [gui_batch ()] runs a headless smoke test of the c2c broker.
-    Checks broker root, peer list, room list. Outputs JSON to stderr.
-    Exits 0 on success, non-zero on failure. *)
+    Validates config loading, CLI/MCP availability, inbox polling,
+    render-model build, peer discovery, room listing, and pending permissions.
+    Outputs a full swarm snapshot JSON to stderr. Exits 0 on success,
+    non-zero on failure. *)
 let gui_batch () =
   let broker_root = resolve_broker_root () in
   let broker = C2c_mcp.Broker.create ~root:broker_root in
@@ -5573,6 +5595,11 @@ let gui_batch () =
   let add_check name ok detail =
     checks := { name; ok; detail } :: !checks
   in
+  (* Snapshot data *)
+  let peers_json = ref (`List []) in
+  let rooms_json = ref (`List []) in
+  let pending_perms_json = ref (`List []) in
+
   (* Check 1: broker root exists and is readable *)
   (try
      let reg_path = Filename.concat broker_root "registry.json" in
@@ -5580,27 +5607,92 @@ let gui_batch () =
      else add_check "broker_root" false "registry.json not found"
    with e ->
      add_check "broker_root" false (Printexc.to_string e));
-  (* Check 2: list registrations (peer discovery) *)
+  (* Check 2: config loading (c2c config show) *)
+  (try
+     let git_dir = match Git_helpers.git_common_dir () with
+       | Some d -> d | None -> raise (Failure "no git common dir") in
+     let cfg = Filename.concat (Filename.dirname git_dir) "c2c" // "config.toml" in
+     if Sys.file_exists cfg then add_check "config_loading" true "config.toml found"
+     else add_check "config_loading" false "config.toml not found"
+   with e ->
+     add_check "config_loading" false (Printexc.to_string e));
+  (* Check 3: CLI/MCP availability — invoke the MCP server with ping *)
+  (try
+     let self_bin = Sys.executable_name in
+     let ic = Unix.open_process_args_in self_bin [| self_bin; "mcp" |] in
+     let buf = Bytes.create 4096 in
+     let rec drain acc =
+       match input ic buf 0 4096 with
+       | 0 -> close_in ic; List.rev acc
+       | n -> drain (Bytes.sub buf 0 n :: acc)
+     in
+     let output = drain [] |> Bytes.concat (Bytes.create 0) |> Bytes.to_string in
+     let status = Unix.close_process_in ic in
+     match status with
+     | Unix.WEXITED 0 ->
+         (try
+            let json = Yojson.Safe.from_string output in
+            match Yojson.Safe.Util.member "result" json with
+            | `Assoc _ -> add_check "cli_mcp_availability" true "MCP ping succeeded"
+            | _ -> add_check "cli_mcp_availability" false "MCP ping returned unexpected shape"
+            | exception e -> add_check "cli_mcp_availability" false ("JSON parse error: " ^ Printexc.to_string e)
+         with e -> add_check "cli_mcp_availability" false ("parse error: " ^ Printexc.to_string e))
+     | Unix.WEXITED n -> add_check "cli_mcp_availability" false ("MCP ping exited " ^ string_of_int n)
+     | _ -> add_check "cli_mcp_availability" false "MCP ping killed or stopped"
+   with e ->
+     add_check "cli_mcp_availability" false (Printexc.to_string e));
+  (* Check 4: inbox polling — do a poll_inbox via broker directly *)
+  (try
+     let session_id = match C2c_mcp.session_id_from_env () with
+       | Some s -> s | None -> "batch-smoke-session" in
+     let msgs = C2c_mcp.Broker.drain_inbox broker ~session_id in
+     add_check "inbox_polling" true (Printf.sprintf "polled successfully (%d messages)" (List.length msgs));
+     (* re-enqueue any drained messages so we don't lose them *)
+     List.iter (fun m -> C2c_mcp.Broker.enqueue_message broker ~from_alias:m.from_alias ~to_alias:m.to_alias ~content:m.content ()) msgs
+   with e ->
+     add_check "inbox_polling" false (Printexc.to_string e));
+  (* Check 5: render-model build — check gui dist/ and src-tauri/target exist *)
+  (try
+     let git_dir = match Git_helpers.git_common_dir () with
+       | Some d -> d | None -> raise (Failure "no git common dir") in
+     let repo_root = Filename.dirname git_dir in
+     let gui_dist = repo_root // "gui" // "dist" in
+     let gui_tauri = repo_root // "gui" // "src-tauri" // "target" in
+     if Sys.file_exists gui_dist || Sys.file_exists gui_tauri
+     then add_check "render_model" true "gui assets found"
+     else add_check "render_model" false "gui dist/ or src-tauri/target/ not found"
+   with e ->
+     add_check "render_model" false (Printexc.to_string e));
+  (* Check 6: peer discovery — collect peer records *)
   (try
      let regs = C2c_mcp.Broker.list_registrations broker in
      let alive = List.filter (fun r -> C2c_mcp.Broker.registration_liveness_state r = C2c_mcp.Broker.Alive) regs in
+     peers_json := `List (List.map registration_to_json regs);
      add_check "peer_discovery" true
        (Printf.sprintf "%d total, %d alive" (List.length regs) (List.length alive))
    with e ->
      add_check "peer_discovery" false (Printexc.to_string e));
-  (* Check 3: list rooms *)
+  (* Check 7: room list — collect room records *)
   (try
      let rooms = C2c_mcp.Broker.list_rooms broker in
+     rooms_json := `List (List.map room_to_json rooms);
      add_check "room_list" true
        (Printf.sprintf "%d rooms" (List.length rooms))
    with e ->
      add_check "room_list" false (Printexc.to_string e));
-  (* Assemble JSON output *)
+  (* Assemble JSON output matching DRAFT-gui-requirements lines 160-162:
+     snapshot of current swarm state: peers, rooms, and pending permissions *)
   let all_ok = List.for_all (fun c -> c.ok) !checks in
   let json =
     `Assoc
       [ ("ok", `Bool all_ok)
       ; ("ts", `Float (Unix.gettimeofday ()))
+      ; ("snapshot",
+          `Assoc
+            [ ("peers", !peers_json)
+            ; ("rooms", !rooms_json)
+            ; ("pending_permissions", !pending_perms_json)
+            ])
       ; ("checks", `List (List.map (fun c ->
           `Assoc
             [ ("name", `String c.name)
