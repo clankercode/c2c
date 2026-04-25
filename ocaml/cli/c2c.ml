@@ -5176,40 +5176,6 @@ let write_agent_file ~client ~name ~content =
 let get_opencode_theme (r : C2c_role.t) : string option =
   List.assoc_opt "theme" r.C2c_role.opencode
 
-(* Build the --agents JSON for claude from a role.
-   Format: {"<name>": {"description": "...", "prompt": "<body>", "model": "...", "tools": []}}
-   The prompt is the role body (strip frontmatter from the rendered output). *)
-let build_agent_json ~(agent_name : string) ~(role : C2c_role.t) ~(rendered : string) : string =
-  let marker = "---\n" in
-  let mlen = String.length marker in
-  let rec find_next after off =
-    if off + mlen > String.length after then None
-    else if String.sub after off mlen = marker then Some off
-    else find_next after (off + 1)
-  in
-  let body =
-    match find_next rendered 0 with
-    | None -> rendered
-    | Some first_off ->
-        let after_first = String.sub rendered (first_off + mlen) (String.length rendered - first_off - mlen) in
-        match find_next after_first 0 with
-        | None -> String.trim after_first
-        | Some second_off ->
-            let raw = String.sub after_first (second_off + mlen) (String.length after_first - second_off - mlen) in
-            String.trim raw
-  in
-  let model_field = match role.C2c_role.model with
-    | Some m -> [("model", `String m)]
-    | None -> []
-  in
-  let agent_obj = `Assoc (
-    ("description", `String role.C2c_role.description)
-    :: ("prompt", `String body)
-    :: ("tools", `List [])
-    :: model_field
-  ) in
-  Yojson.Safe.to_string (`Assoc [(agent_name, agent_obj)])
-
 let start_cmd =
   let client =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"CLIENT"
@@ -5320,7 +5286,7 @@ let start_cmd =
     Filename.concat (Sys.getcwd ()) ".c2c" // "roles" // (agent_name ^ ".md")
   in
   (* --agent mode: load canonical role, render for client, write compiled file *)
-  let (kickoff_prompt, alias_override, auto_join_rooms, agent_json) =
+  let (kickoff_prompt, alias_override, auto_join_rooms, agent_name) =
     match agent_opt with
     | Some agent_name ->
         let role_path = agent_role_path agent_name in
@@ -5377,12 +5343,10 @@ let start_cmd =
                let theme = get_opencode_theme role in
                let subtitle = Printf.sprintf "%s  |  %s" client name in
                Banner.print_banner ?theme_name:theme ~subtitle (Printf.sprintf "c2c start --agent %s" agent_name);
-               let agent_json =
-                 if client = "claude" then
-                   Some (build_agent_json ~agent_name ~role ~rendered)
-                 else None
+               let agent_name =
+                 if client = "claude" then Some agent_name else None
                in
-               (kickoff, alias_override, auto_join_rooms, agent_json)
+               (kickoff, alias_override, auto_join_rooms, agent_name)
           | None ->
               Printf.eprintf "error: --agent is not supported for client '%s' yet.\n%!" client;
               exit 1
@@ -5444,12 +5408,10 @@ let start_cmd =
                      then Some (String.concat ", " role.C2c_role.c2c_auto_join_rooms)
                      else None
                    in
-                   let agent_json =
-                     if client = "claude" then
-                       Some (build_agent_json ~agent_name:name ~role ~rendered)
-                     else None
+                   let agent_name =
+                     if client = "claude" then Some name else None
                    in
-                   (kickoff, alias_override, auto_join_rooms, agent_json)
+                   (kickoff, alias_override, auto_join_rooms, agent_name)
               | None ->
                         (* Role file exists but not supported for this client — fall through
                            to structured role path so user can still start with the role. *)
@@ -5526,7 +5488,7 @@ let start_cmd =
       ?model_override
       ~one_hr_cache
       ?kickoff_prompt
-      ?agent_json
+      ?agent_name
       ?auto_join_rooms
       ?reply_to ())
 

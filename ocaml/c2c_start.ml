@@ -1288,7 +1288,7 @@ let prepare_launch_args ~(name : string) ~(client : string)
     ?(codex_xml_input_fd : string option)
     ?(codex_resume_target : string option)
     ?(thread_id_fd : string option)
-    ?(agent_json : string option)
+    ?(agent_name : string option)
     ?(kickoff_prompt : string option) () : string list =
   let args =
     match client with
@@ -1305,8 +1305,8 @@ let prepare_launch_args ~(name : string) ~(client : string)
           ]
         in
         let agent_args =
-          match agent_json with
-          | Some json -> [ "--agents"; json ]
+          match agent_name with
+          | Some name -> [ "--agent"; name ]
           | None -> []
         in
         let kickoff_args =
@@ -1865,7 +1865,7 @@ let run_outer_loop ~(name : string) ~(client : string)
     ?(model_override : string option)
     ?(one_hr_cache = false) ?(kickoff_prompt : string option)
     ?(auto_join_rooms : string option)
-    ?(agent_json : string option) ?(reply_to : string option) () : int =
+    ?(agent_name : string option) ?(reply_to : string option) () : int =
   let session_id = Option.value session_id ~default:name in
   let cfg =
     try Stdlib.Hashtbl.find clients client
@@ -2052,7 +2052,7 @@ let run_outer_loop ~(name : string) ~(client : string)
             ?codex_resume_target
             ?codex_xml_input_fd
             ?thread_id_fd
-            ?agent_json
+            ?agent_name
             ?kickoff_prompt ()
       in
       let headless_xml_fifo =
@@ -2534,7 +2534,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?(session_id_override : string option) ?(model_override : string option)
     ?(one_hr_cache = false)
     ?(kickoff_prompt : string option) ?(auto_join_rooms : string option)
-    ?(agent_json : string option) ?(reply_to : string option) () : int =
+    ?(agent_name : string option) ?(reply_to : string option) () : int =
   if not (Stdlib.Hashtbl.mem clients client) then
     (Printf.eprintf "error: unknown client: '%s'. Choose from: %s\n%!"
        client (String.concat ", " (List.sort String.compare supported_clients));
@@ -2802,7 +2802,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?codex_resume_target:cfg.codex_resume_target
     ?model_override:cfg.model_override
     ~one_hr_cache ?kickoff_prompt ?auto_join_rooms
-    ?agent_json ?reply_to ()
+    ?agent_name ?reply_to ()
 
 (* Signal the managed inner client so the outer loop relaunches it. Designed
    to be callable by an agent running *inside* that client, so the outer
