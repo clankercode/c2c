@@ -83,35 +83,37 @@ let likes_shell_substitution (s : string) : bool =
       | _ -> scan (i + 1)
   in
   scan 0
-=======
-(** [fds_to_close ~preserve] is a pure function that returns the list of
-    file descriptors that [close_unlisted_fds] would close — i.e. all fds in
-    /proc/self/fd except those in [preserve] and stdin/stdout/stderr.
-    This is testable without closing anything. *)
+
 let fds_to_close ~(preserve : Unix.file_descr list) : Unix.file_descr list =
   let stdio = [Unix.stdin; Unix.stdout; Unix.stderr] in
+  let rec with_eintr thunk =
+    match thunk () with
+    | exception Unix.Unix_error (Unix.EINTR, _, _) -> with_eintr thunk
+    | result -> result
+  in
   try
-    let fd_dir = Unix.opendir "/proc/self/fd" in
-    Fun.protect ~finally:(fun () -> Unix.closedir fd_dir)
+    let fd_dir = with_eintr (fun () -> Unix.opendir "/proc/self/fd") in
+    Fun.protect ~finally:(fun () -> try Unix.closedir fd_dir with _ -> ())
       (fun () ->
         let rec loop fds =
-          match Unix.readdir fd_dir with
+          match with_eintr (fun () -> Unix.readdir fd_dir) with
           | exception End_of_file -> List.rev fds
           | "." | ".." -> loop fds
           | name ->
-              (try
-                 let fd = int_of_string name in
-                 if List.mem fd (List.map Obj.magic stdio) then loop fds
-                 else if List.mem fd (List.map Obj.magic preserve) then loop fds
-                 else loop ((Obj.magic fd) :: fds)
-               with _ -> loop fds)
+              let fd = int_of_string name in
+              if List.mem fd (List.map Obj.magic stdio) then loop fds
+              else if List.mem fd (List.map Obj.magic preserve) then loop fds
+              else loop ((Obj.magic fd) :: fds)
         in
         loop [])
-  with _ -> []
+  with Unix.Unix_error (e, _, _) as ex ->
+    (* Only silently return [] for EINTR; all other errors are structural and must
+       propagate so the caller knows fd-closing was skipped. *)
+    if e = Unix.EINTR then []
+    else raise ex
 
 let close_unlisted_fds ~(preserve : Unix.file_descr list) =
   List.iter (fun fd -> try Unix.close fd with _ -> ()) (fds_to_close ~preserve)
->>>>>>> 724001c (fix-codex-hang-143: close inherited non-stdio fds before exec in deliver daemon)
 
 (* Terminal title — OSC-0 / tmux pane title.
    Respects NO_COLOR and TERM=dumb. Title format: "<glyph> <alias> (<client>)"
