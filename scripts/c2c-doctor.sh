@@ -338,6 +338,16 @@ if [[ $SUMMARY -eq 0 && $JSON -eq 0 && -n "$COMMAND_TEST_AUDIT_OUTPUT" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Duplication scan
+# ---------------------------------------------------------------------------
+if [[ $SUMMARY -eq 0 && $JSON -eq 0 && -x "$SCRIPT_DIR/c2c-dup-scanner.py" ]]; then
+  bold "=== duplication scan ==="
+  echo ""
+  "$SCRIPT_DIR/c2c-dup-scanner.py" --repo "$PWD" --full --warn-only || true
+  echo ""
+fi
+
+# ---------------------------------------------------------------------------
 # 3. Verdict
 # ---------------------------------------------------------------------------
 
