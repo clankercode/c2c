@@ -1395,9 +1395,13 @@ let prepare_launch_args ~(name : string) ~(client : string)
         A.build_start_args ~name ?alias_override ?model_override
           ?resume_session_id:eff_resume ()
     | "kimi" ->
-        (* KimiAdapter writes the per-instance MCP config and prepends the flag. *)
+        (* KimiAdapter writes the per-instance MCP config and prepends the flag.
+           Pass extra_args so the adapter can detect an already-present --mcp-config-file;
+           extra_args are NOT consumed by the adapter (prepare_launch_args appends them
+           uniformly at the end, so they won't be doubled). *)
         let module A = (val (Stdlib.Hashtbl.find client_adapters "kimi") : CLIENT_ADAPTER) in
-        A.build_start_args ~name ?alias_override ?model_override ?resume_session_id ()
+        A.build_start_args ~name ?alias_override ?model_override ?resume_session_id
+          ~extra_args:extra_args ()
     | "codex-headless" ->
         [ "--stdin-format"; "xml";
           "--codex-bin"; "codex";
@@ -1709,15 +1713,15 @@ module KimiAdapter : CLIENT_ADAPTER = struct
       ?(extra_args = []) () =
     (* Kimi doesn't support session resume via CLI args.
        Write the per-instance MCP config to the instance dir and prepend the flag.
-       extra_args are ignored here; prepare_launch_args appends them after. *)
-    ignore extra_args;
+       extra_args are inspected for an existing --mcp-config-file flag but are NOT
+       included in the return — prepare_launch_args appends them uniformly after. *)
     let br = broker_root () in
     let base =
       match model_override with
       | Some m when String.trim m <> "" -> [ "--model"; m ]
       | _ -> []
     in
-    if not (has_explicit_kimi_mcp_config []) then begin
+    if not (has_explicit_kimi_mcp_config extra_args) then begin
       let cfg_path = kimi_mcp_config_path name in
       mkdir_p (Filename.dirname cfg_path);
       let oc = open_out cfg_path in
