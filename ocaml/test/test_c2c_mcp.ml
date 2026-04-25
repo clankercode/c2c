@@ -149,6 +149,28 @@ let test_drain_inbox_empty_does_not_create_archive () =
       check bool "empty drain does not create archive file" false
         (Sys.file_exists archive_file))
 
+let test_drain_inbox_push_suppresses_deferrable () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"sender" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-b"
+        ~alias:"receiver" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
+        ~to_alias:"receiver" ~content:"urgent" ();
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender"
+        ~to_alias:"receiver" ~content:"deferred" ~deferrable:true ();
+      let pushed = C2c_mcp.Broker.drain_inbox_push broker ~session_id:"session-b" in
+      check int "push returns only non-deferrable" 1 (List.length pushed);
+      check string "pushed message is urgent" "urgent"
+        (List.hd pushed).content;
+      let remaining = C2c_mcp.Broker.read_inbox broker ~session_id:"session-b" in
+      check int "deferrable remains in inbox" 1 (List.length remaining);
+      check string "remaining is deferred" "deferred"
+        (List.hd remaining).content;
+      let all = C2c_mcp.Broker.drain_inbox broker ~session_id:"session-b" in
+      check int "drain returns only deferred (urgent was pushed)" 1 (List.length all))
+
 let test_read_archive_missing_session_returns_empty () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -6058,6 +6080,8 @@ let () =
             test_drain_inbox_archives_messages_before_clearing
         ; test_case "empty drain does not create archive" `Quick
             test_drain_inbox_empty_does_not_create_archive
+        ; test_case "drain_inbox_push suppresses deferrable" `Quick
+            test_drain_inbox_push_suppresses_deferrable
         ; test_case "read_archive missing session returns empty" `Quick
             test_read_archive_missing_session_returns_empty
         ; test_case "read_archive respects limit" `Quick
