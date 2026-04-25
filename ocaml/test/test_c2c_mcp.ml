@@ -103,6 +103,31 @@ let test_blank_inbox_file_is_treated_as_empty () =
       let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-z" in
       check int "blank inbox treated as empty" 0 (List.length inbox))
 
+let test_read_inbox_is_non_destructive () =
+  (* Regression test: gui --batch uses Broker.read_inbox (non-destructive)
+     instead of Broker.drain_inbox. Verify read_inbox leaves messages intact. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-alice"
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-bob"
+        ~alias:"bob" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"alice"
+        ~to_alias:"bob" ~content:"ping-one" ();
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"alice"
+        ~to_alias:"bob" ~content:"ping-two" ();
+      (* First read — should return both messages *)
+      let first = C2c_mcp.Broker.read_inbox broker ~session_id:"session-bob" in
+      check int "first read returns 2 messages" 2 (List.length first);
+      (* Second read immediately — messages must still be there (non-destructive) *)
+      let second = C2c_mcp.Broker.read_inbox broker ~session_id:"session-bob" in
+      check int "second read still returns 2 messages" 2 (List.length second);
+      (* Verify content preserved *)
+      check string "first message content" "ping-one"
+        (List.hd first).content;
+      check string "second message content" "ping-two"
+        (List.nth first 1).content)
+
 (* ---------- inbox archive (v0.6.2) ---------- *)
 
 let test_drain_inbox_archives_messages_before_clearing () =
@@ -6076,7 +6101,9 @@ let () =
         ; test_case "empty drain does not rewrite existing empty inbox file" `Quick
             test_drain_inbox_empty_does_not_rewrite_existing_empty_file
         ; test_case "blank inbox file treated as empty" `Quick test_blank_inbox_file_is_treated_as_empty
-        ; test_case "drain archives messages before clearing" `Quick
+        ; test_case "read_inbox is non-destructive (gui --batch regression)" `Quick
+            test_read_inbox_is_non_destructive
+         ; test_case "drain archives messages before clearing" `Quick
             test_drain_inbox_archives_messages_before_clearing
         ; test_case "empty drain does not create archive" `Quick
             test_drain_inbox_empty_does_not_create_archive
