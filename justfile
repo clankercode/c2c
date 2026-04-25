@@ -200,4 +200,4 @@ gac MSG FILES:
 # Stage and commit .collab/findings/ and .collab/updates/ explicitly (gitignored to suppress ?? noise)
 # Usage: just collab-commit "findings: describe what you found"
 collab-commit MSG:
-    git add -f .collab/findings/ .collab/updates/ && git commit -m {{MSG}}
+    git add -f .collab/findings/ .collab/updates/ && git commit -m {{ quote(MSG) }}
