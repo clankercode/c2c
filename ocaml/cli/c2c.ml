@@ -737,6 +737,30 @@ let send_all_cmd =
 
 (* --- subcommand: sweep ---------------------------------------------------- *)
 
+let instances_dir_base =
+  Filename.concat (Sys.getenv "HOME") (".local" // "share" // "c2c" // "instances")
+
+(** Read session_ids of all c2c start managed sessions.
+    These sessions should be excluded from sweep (they're recoverable via
+    operator re-running the printed resume command). *)
+let c2c_start_session_ids () =
+  let base = instances_dir_base in
+  if not (Sys.file_exists base) then []
+  else
+    Array.fold_left (fun acc name ->
+      let full = base // name in
+      if Sys.is_directory full && Sys.file_exists (full // "config.json") then
+        (try
+          match Yojson.Safe.from_file (full // "config.json") with
+          | `Assoc fields ->
+              (match List.assoc_opt "session_id" fields with
+               | Some (`String sid) -> sid :: acc
+               | _ -> acc)
+          | _ -> acc
+        with _ -> acc)
+      else acc)
+      [] (Sys.readdir base)
+
 let sweep_cmd =
   let+ json = json_flag in
   let outer_loops_running =
@@ -745,9 +769,18 @@ let sweep_cmd =
   if outer_loops_running then begin
     Printf.eprintf "warning: managed client outer loops detected. Sweep may drop live sessions.\n";
     Printf.eprintf "  Use 'c2c instances' or 'c2c list' to check before proceeding.\n%!";
+  let c2c_start_count = List.length (c2c_start_session_ids ()) in
+  if c2c_start_count > 0 then begin
+    Printf.eprintf "info: %d c2c start managed session(s) excluded from sweep (recoverable).\n" c2c_start_count;
+  end
   end;
+  let c2c_start_sids = c2c_start_session_ids () in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let result = C2c_mcp.Broker.sweep broker in
+  let dropped_regs, deleted_inboxes =
+    List.filter (fun (r : C2c_mcp.registration) -> not (List.mem r.session_id c2c_start_sids)) result.dropped_regs,
+    List.filter (fun sid -> not (List.mem sid c2c_start_sids)) result.deleted_inboxes
+  in
   let output_mode = if json then Json else Human in
   match output_mode with
   | Json ->
@@ -761,19 +794,19 @@ let sweep_cmd =
                        [ ("session_id", `String r.session_id)
                        ; ("alias", `String r.alias)
                        ])
-                   result.dropped_regs) )
+                   dropped_regs) )
           ; ( "deleted_inboxes",
-              `List (List.map (fun s -> `String s) result.deleted_inboxes) )
+              `List (List.map (fun s -> `String s) deleted_inboxes) )
           ; ("preserved_messages", `Int result.preserved_messages)
           ])
   | Human ->
       Printf.printf "Dropped %d registrations, %d inboxes, %d messages preserved.\n"
-        (List.length result.dropped_regs)
-        (List.length result.deleted_inboxes)
+        (List.length dropped_regs)
+        (List.length deleted_inboxes)
         result.preserved_messages;
       List.iter
         (fun (r : C2c_mcp.registration) -> Printf.printf "  dropped: %s (%s)\n" r.alias r.session_id)
-        result.dropped_regs
+        dropped_regs
 
 (* --- subcommand: sweep-dryrun --------------------------------------------- *)
 
@@ -1328,8 +1361,7 @@ type managed_instance_view =
 
 let read_managed_instances () =
   let base =
-    Filename.concat (Sys.getenv "HOME")
-      (".local" // "share" // "c2c" // "instances")
+    Filename.concat (Sys.getenv "HOME") (".local" // "share" // "c2c" // "instances")
   in
   let dirs =
     if not (Sys.file_exists base) then []
