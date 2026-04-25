@@ -5168,7 +5168,7 @@ let stats_history_cmd =
         exit 1
   in
   let root = resolve_broker_root () in
-  C2c_stats.run_history ~root ~json ~markdown ~csv ~compact ~alias_filter ~days ~grain ~top ()
+  C2c_stats.run_history ~root ~json ~markdown ~csv ~compact ~alias_filter ~days ~grain ~top_n:top ()
 
 let stats =
   Cmdliner.Cmd.group

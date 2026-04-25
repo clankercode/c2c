@@ -569,7 +569,7 @@ let scan_archives_by_day ~archive_dir ~session_to_alias ~cutoff ?(grain = Daily)
     files;
   counts
 
-let run_history ~root ~json ~markdown ~csv ~compact ~alias_filter ~days ?(grain = Daily) ?(top = None) () =
+let run_history ~root ~json ~markdown ~csv ~compact ~alias_filter ~days ?(grain = Daily) ?(top_n = None) () =
    let broker = C2c_mcp.Broker.create ~root in
    let regs = C2c_mcp.Broker.list_registrations broker in
    let session_to_alias = Hashtbl.create 32 in
@@ -620,7 +620,7 @@ let run_history ~root ~json ~markdown ~csv ~compact ~alias_filter ~days ?(grain 
          match String.compare d1 d2 with 0 -> String.compare a1 a2 | c -> c)
    in
    (* Apply --top N filter: keep top-N aliases per bucket (by msgs_out + msgs_in). *)
-   let rows = match top with
+   let rows = match top_n with
      | None -> rows
      | Some n when n <= 0 -> rows
      | Some n ->
