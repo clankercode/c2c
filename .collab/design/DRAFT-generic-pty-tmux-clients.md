@@ -27,6 +27,9 @@ c2c start pty -- gemini --yolo --some-other-arg
 # tmux-targeted variant (driver attaches to an existing tmux pane)
 c2c start tmux --loc <tmux-SWP-address> -- cursor-agent --foo
 
+# attach-only mode is valid: c2c registers + delivers to an existing pane
+c2c start tmux --loc <tmux-SWP-address>
+
 # helper to get the current pane's address
 c2c get-tmux-location
 # → e.g. "0:1.2"  (session:window.pane)  — exact format TBD
@@ -57,9 +60,10 @@ User flow:
 2. In another pane, they run `c2c get-tmux-location` from the target
    pane to print the address. Or have the start command print it.
 3. They invoke `c2c start tmux --loc <addr> -- <their-cli> <args>` from
-   wherever — c2c spawns the CLI inside the addressed pane (or attaches
-   if already running, TBD), and inbound messages arrive via
-   `tmux send-keys` to that pane.
+   wherever — c2c sends the optional startup command into the addressed
+   pane. If no `-- <cmd>` is supplied, c2c attaches delivery to whatever
+   is already running there. Inbound messages arrive via tmux paste /
+   `send-keys` to that pane.
 
 ## Inbound delivery design
 
@@ -68,12 +72,12 @@ User flow:
   master fd (with a brief delay + Enter, à la `pty_inject`). This is the
   same mechanism `claude_send_msg.py` uses for legacy PTY injection.
   Owns the lifecycle of the child process, like `c2c start <managed>`.
-- **`tmux` mode**: c2c does NOT fork the user's CLI. It just registers
-  a session, runs a delivery daemon that watches the inbox, and on each
-  inbound message issues `tmux send-keys -t <addr> "<text>" Enter`
-  (with bracketed-paste wrapping for safety). Lifecycle is decoupled
-  from the user's CLI process — c2c can come and go without taking the
-  CLI down.
+- **`tmux` mode**: c2c does NOT fork the user's CLI. It registers a
+  session, validates the target with `tmux display-message`, and on each
+  inbound message pastes the c2c XML envelope into the target pane and
+  submits Enter. Lifecycle is decoupled from the user's CLI process:
+  `c2c stop <name>` stops delivery/registration only and must not kill
+  the process running in the tmux pane.
 
 Both modes register an alias and run `c2c-deliver-inbox` in a delivery
 mode appropriate to the transport.
@@ -114,6 +118,20 @@ supports it. We do not auto-wire MCP for these generic clients.
    managed clients?**: probably yes — periodic poke to keep the CLI
    from idle-shutting-down.
 
+### Slice 3 decisions
+
+- **Attach-only mode is v1 behavior**: `c2c start tmux --loc <addr>` is
+  valid with no `-- <cmd>`. This supports already-running CLIs and keeps
+  c2c lifecycle-decoupled from the target process.
+- **Optional startup command**: when `-- <cmd> ...` is provided, c2c
+  sends the shell-quoted command to the target pane once, then runs the
+  delivery loop.
+- **Pane loss**: if the target can no longer be resolved by tmux, the
+  delivery loop exits non-zero after printing a diagnostic. Existing
+  inbox messages remain in the broker if paste/send fails.
+- **Transport scope**: v1 uses tmux paste/send-keys only. It does not
+  auto-wire outgoing MCP or inspect the target CLI process.
+
 ## Slicing suggestion
 
 - **Slice 1**: `c2c start pty -- <cmd>`. Forks PTY, execs cmd, runs
@@ -122,10 +140,11 @@ supports it. We do not auto-wire MCP for these generic clients.
   appears at the prompt.
 - **Slice 2**: `c2c get-tmux-location`. Prints the SWP address from
   inside a tmux pane. Trivial wrapper around `tmux display-message`.
-- **Slice 3**: `c2c start tmux --loc <addr> -- <cmd>`. Spawns the cmd
-  inside the addressed pane via `tmux send-keys "<cmd>" Enter`, runs
-  delivery daemon issuing `tmux send-keys` for inbound. Smoke test
-  with Gemini.
+- **Slice 3**: `c2c start tmux --loc <addr> [-- <cmd>]`. Optionally
+  sends the startup command into the addressed pane, then runs a
+  lifecycle-decoupled delivery loop that pastes c2c envelopes into the
+  pane for inbound messages. Smoke test with Gemini or a disposable
+  shell pane.
 - **Slice 4**: `--` passthrough convention for ALL `c2c start`
   variants. Documentation + tests that extra argv survives.
 

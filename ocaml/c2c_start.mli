@@ -46,6 +46,23 @@ type instance_config = {
   agent_name : string option;
 }
 
+type tmux_target_info = { tmux_location : string; tmux_pane_id : string }
+
+val parse_tmux_target_info : string -> tmux_target_info option
+(** Parse [tmux display-message -p '#S:#I.#P #{pane_id}'] output. *)
+
+val tmux_shell_command_of_argv : string list -> string
+(** Shell-quote an argv vector for typing into a tmux pane's shell. *)
+
+val tmux_message_payload : C2c_mcp.message list -> string
+(** Render broker messages for generic tmux delivery. *)
+
+val tmux_deliver_once :
+  broker_root:string -> session_id:string -> target:string -> int
+(** Drain and deliver one batch of inbox messages to a tmux target. Returns the
+    number of messages delivered. Leaves the inbox intact if tmux delivery
+    fails. *)
+
 (** {1 Client Configurations} *)
 
 val clients : (string, client_config) Stdlib.Hashtbl.t
@@ -426,6 +443,8 @@ val cmd_start :
   ?auto_join_rooms:string ->
   ?agent_name:string ->
   ?reply_to:string ->
+  ?tmux_location:string ->
+  ?tmux_command:string list ->
   unit ->
   int
 (** [cmd_start] validates and starts a managed instance. Returns 0 on success,

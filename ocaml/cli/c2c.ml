@@ -5290,6 +5290,14 @@ let start_cmd =
   let branch_opt =
     Cmdliner.Arg.(value & opt (some string) None & info [ "branch" ] ~docv:"BRANCH" ~doc:"Branch to check out in the new worktree (requires --worktree). Defaults to caller's current branch. Must not be 'master'.")
   in
+  let tmux_loc =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "loc" ] ~docv:"TMUX_TARGET"
+      ~doc:"Tmux target for generic tmux mode (e.g. 0:1.2 or %42). Required when CLIENT=tmux.")
+  in
+  let tmux_tail =
+    Cmdliner.Arg.(value & pos_right 1 string [] & info [] ~docv:"CMD"
+      ~doc:"For CLIENT=tmux, optional command argv to type into the target pane. Use -- before the command.")
+  in
   let+ client = client
   and+ name_opt = name
   and+ alias_opt = alias
@@ -5304,7 +5312,9 @@ let start_cmd =
   and+ reply_to = reply_to
   and+ auto_join = auto_join
   and+ worktree_flag = worktree
-  and+ branch_flag = branch_opt in
+  and+ branch_flag = branch_opt
+  and+ tmux_loc = tmux_loc
+  and+ tmux_tail = tmux_tail in
   let kickoff_prompt_text =
     match kickoff_prompt_text_raw, kickoff_prompt_file with
     | Some _, Some _ ->
@@ -5327,6 +5337,14 @@ let start_cmd =
   if Sys.getenv_opt "C2C_INSTANCE_NAME" <> None then begin
     Printf.eprintf "error: cannot run 'c2c start' from inside a c2c session.\n";
     Printf.eprintf "  Hint: use the outer shell or a separate terminal instead.\n%!";
+    exit 1
+  end;
+  if client <> "tmux" && tmux_loc <> None then begin
+    Printf.eprintf "error: --loc is only valid with `c2c start tmux`.\n%!";
+    exit 1
+  end;
+  if client <> "tmux" && tmux_tail <> [] then begin
+    Printf.eprintf "error: extra argv after CLIENT is only supported for `c2c start tmux` in this slice.\n%!";
     exit 1
   end;
   let name = match name_opt with
@@ -5536,7 +5554,7 @@ let start_cmd =
                    role prompt — the caller knows what they want. This is the
                    path hit by `c2c agent run --pane` which pre-composes the
                    full kickoff and passes it via --kickoff-prompt-file. *)
-                if kickoff_prompt_text <> None then None
+                if client = "tmux" || kickoff_prompt_text <> None then None
                 else prompt_for_role ~alias:effective_alias
           in
           let kickoff_prompt =
@@ -5590,7 +5608,10 @@ let start_cmd =
       ?kickoff_prompt
       ?agent_name
       ?auto_join_rooms
-      ?reply_to ())
+      ?reply_to
+      ?tmux_location:tmux_loc
+      ~tmux_command:tmux_tail
+      ())
 
 let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Start a managed c2c instance.") start_cmd
 

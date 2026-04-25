@@ -948,6 +948,14 @@ let () =
     { binary = "codex-turn-start-bridge"; deliver_client = "codex-headless";
       needs_deliver = true; needs_wire_daemon = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] }
+  ;
+  (* tmux: generic lifecycle-decoupled delivery to an existing pane. The
+     "binary" is only used for preflight availability; c2c owns no inner
+     client process in this mode. *)
+  Stdlib.Hashtbl.add clients "tmux"
+    { binary = "tmux"; deliver_client = "tmux";
+      needs_deliver = false; needs_wire_daemon = false; needs_poker = false;
+      poker_event = None; poker_from = None; extra_env = [] }
 
 let supported_clients = Stdlib.Hashtbl.fold (fun k _ acc -> k :: acc) clients []
 
@@ -1306,6 +1314,136 @@ let capture_and_write_tmux_location name =
               (fun () -> output_string oc tmux_json)
           with _ -> ())
       | _ -> ()
+
+type tmux_target_info = { tmux_location : string; tmux_pane_id : string }
+
+let parse_tmux_target_info line =
+  match String.split_on_char ' ' (String.trim line) |> List.filter ((<>) "") with
+  | loc :: pane_id :: _ -> Some { tmux_location = loc; tmux_pane_id = pane_id }
+  | _ -> None
+
+let tmux_shell_command_of_argv argv =
+  String.concat " " (List.map Filename.quote argv)
+
+let tmux_message_payload messages =
+  C2c_wire_bridge.format_prompt messages
+
+let run_process ?stdin_file command args =
+  let stdin_fd =
+    match stdin_file with
+    | Some path -> Unix.openfile path [ Unix.O_RDONLY ] 0
+    | None -> Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0
+  in
+  Fun.protect
+    ~finally:(fun () -> try Unix.close stdin_fd with _ -> ())
+    (fun () ->
+      try
+        let pid =
+          Unix.create_process command (Array.of_list (command :: args))
+            stdin_fd Unix.stdout Unix.stderr
+        in
+        match Unix.waitpid [] pid with
+        | _, Unix.WEXITED 0 -> true
+        | _, Unix.WEXITED _ | _, Unix.WSIGNALED _ | _, Unix.WSTOPPED _ -> false
+      with _ -> false)
+
+let capture_process command args =
+  try
+    let ic = Unix.open_process_args_in command (Array.of_list (command :: args)) in
+    let output =
+      let buf = Buffer.create 128 in
+      (try
+         while true do
+           Buffer.add_string buf (input_line ic);
+           Buffer.add_char buf '\n'
+         done
+       with End_of_file -> ());
+      Buffer.contents buf
+    in
+    match Unix.close_process_in ic with
+    | Unix.WEXITED 0 -> Some (String.trim output)
+    | Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> None
+  with _ -> None
+
+let validate_tmux_target loc =
+  match
+    capture_process "tmux"
+      [ "display-message"; "-t"; loc; "-p"; "#S:#I.#P #{pane_id}" ]
+  with
+  | Some line -> parse_tmux_target_info line
+  | None -> None
+
+let tmux_send_enter loc =
+  let prev_ext =
+    match capture_process "tmux" [ "show"; "-sv"; "extended-keys" ] with
+    | Some s when String.trim s <> "" -> String.trim s
+    | _ -> "off"
+  in
+  ignore (run_process "tmux" [ "set"; "-s"; "extended-keys"; "off" ]);
+  let ok = run_process "tmux" [ "send-keys"; "-t"; loc; "Enter" ] in
+  ignore (run_process "tmux" [ "set"; "-s"; "extended-keys"; prev_ext ]);
+  ok
+
+let tmux_send_shell_command loc argv =
+  match argv with
+  | [] -> true
+  | _ ->
+      let command = tmux_shell_command_of_argv argv in
+      run_process "tmux" [ "send-keys"; "-t"; loc; command ]
+      && tmux_send_enter loc
+
+let tmux_paste_and_submit loc payload =
+  let tmp =
+    Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "c2c-tmux-payload-%d-%06x" (Unix.getpid ()) (Random.bits ()))
+  in
+  let buffer_name = Printf.sprintf "c2c-%d-%06x" (Unix.getpid ()) (Random.bits ()) in
+  let write_payload () =
+    let oc = open_out tmp in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () -> output_string oc payload)
+  in
+  try
+    write_payload ();
+    let ok =
+      run_process "tmux" [ "load-buffer"; "-b"; buffer_name; tmp ]
+      && run_process "tmux" [ "paste-buffer"; "-t"; loc; "-b"; buffer_name ]
+      && tmux_send_enter loc
+    in
+    ignore (run_process "tmux" [ "delete-buffer"; "-b"; buffer_name ]);
+    (try Sys.remove tmp with _ -> ());
+    ok
+  with e ->
+    (try Sys.remove tmp with _ -> ());
+    raise e
+
+let write_tmux_target_info name (info : tmux_target_info) =
+  let path = tmux_info_path name in
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () ->
+      Yojson.Safe.pretty_to_channel oc
+        (`Assoc
+          [ ("session", `String info.tmux_location)
+          ; ("pane_id", `String info.tmux_pane_id)
+          ; ("captured_at", `Float (Unix.gettimeofday ()))
+          ]);
+      output_char oc '\n')
+
+let tmux_deliver_once ~broker_root ~session_id ~target =
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  C2c_mcp.Broker.with_inbox_lock broker ~session_id (fun () ->
+      let messages = C2c_mcp.Broker.read_inbox broker ~session_id in
+      match messages with
+      | [] -> 0
+      | _ ->
+          let payload = tmux_message_payload messages in
+          if tmux_paste_and_submit target payload then begin
+            C2c_mcp.Broker.append_archive broker ~session_id ~messages;
+            C2c_mcp.Broker.save_inbox broker ~session_id [];
+            List.length messages
+          end else
+            0)
 
 (* Tee stderr to inst_dir/stderr.log with 2 MB ring rotation.
    Returns (pipe_write_fd, stop_write_fd, tee_thread). The explicit stop pipe
@@ -1673,6 +1811,78 @@ let acquire_instance_lock ~(name : string) : Unix.file_descr =
         (Option.fold ~none:"unknown" ~some:string_of_int existing_pid)
         name;
       exit 1
+
+let run_tmux_loop ~(name : string) ~(tmux_location : string)
+    ~(tmux_command : string list) ~(broker_root : string)
+    ?(alias_override : string option) ?(auto_join_rooms : string option) () : int =
+  let loc = String.trim tmux_location in
+  if loc = "" then begin
+    Printf.eprintf "error: c2c start tmux requires --loc <tmux-target>\n%!";
+    exit 1
+  end;
+  let target_info =
+    match validate_tmux_target loc with
+    | Some info -> info
+    | None ->
+        Printf.eprintf "error: tmux target %S not found or not accessible\n%!" loc;
+        exit 1
+  in
+  let effective_alias = Option.value alias_override ~default:name in
+  let inst_dir = instance_dir name in
+  mkdir_p inst_dir;
+  check_registry_alias_alive ~broker_root ~name;
+  let _lock_fd = acquire_instance_lock ~name in
+  write_pid (outer_pid_path name) (Unix.getpid ());
+  write_tmux_target_info name target_info;
+  let cleanup_and_exit code =
+    remove_pidfile (outer_pid_path name);
+    (try clear_registration_pid ~broker_root ~session_id:name with _ -> ());
+    code
+  in
+  ignore (Sys.signal Sys.sigterm (Sys.Signal_handle (fun _ ->
+      ignore (cleanup_and_exit 0);
+      exit 0)));
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  C2c_mcp.Broker.register broker ~session_id:name ~alias:effective_alias
+    ~pid:(Some (Unix.getpid ()))
+    ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time (Unix.getpid ()))
+    ~client_type:(Some "tmux") ();
+  let rooms =
+    Option.value auto_join_rooms ~default:"swarm-lounge"
+    |> String.split_on_char ','
+    |> List.map String.trim
+    |> List.filter ((<>) "")
+  in
+  List.iter
+    (fun room_id ->
+      try ignore (C2c_mcp.Broker.join_room broker ~room_id
+                    ~alias:effective_alias ~session_id:name)
+      with _ -> ())
+    rooms;
+  Printf.printf "[c2c-start/%s] tmux target=%s pane_id=%s outer pid=%d\n%!"
+    name target_info.tmux_location target_info.tmux_pane_id (Unix.getpid ());
+  if tmux_command <> [] then begin
+    Printf.printf "[c2c-start/%s] starting command in tmux target: %s\n%!"
+      name (tmux_shell_command_of_argv tmux_command);
+    if not (tmux_send_shell_command target_info.tmux_location tmux_command) then begin
+      Printf.eprintf "error: failed to send startup command to tmux target %s\n%!"
+        target_info.tmux_location;
+      exit (cleanup_and_exit 1)
+    end
+  end;
+  let rec loop () =
+    match validate_tmux_target target_info.tmux_location with
+    | None ->
+        Printf.eprintf "[c2c-start/%s] tmux target disappeared: %s\n%!"
+          name target_info.tmux_location;
+        cleanup_and_exit 1
+    | Some _ ->
+        ignore (tmux_deliver_once ~broker_root ~session_id:name
+                  ~target:target_info.tmux_location);
+        Unix.sleepf 2.0;
+        loop ()
+  in
+  loop ()
 
 (* ---------------------------------------------------------------------------
  * Cleanup stale OpenUI Zig cache
@@ -2440,6 +2650,7 @@ let delivery_mode ?(now = Unix.gettimeofday ()) ?(startup_grace_s = 60.0)
   | "codex-headless" ->
       if has C2c_capability.Codex_headless_thread_id_fd then "xml_fifo"
       else "unavailable"
+  | "tmux" -> "tmux_send_keys"
   | "crush" ->
       if has C2c_capability.Pty_inject then "pty_notify" else "unavailable"
   | _ -> "unknown"
@@ -3388,7 +3599,8 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?(session_id_override : string option) ?(model_override : string option)
     ?(one_hr_cache = false)
     ?(kickoff_prompt : string option) ?(auto_join_rooms : string option)
-    ?(agent_name : string option) ?(reply_to : string option) () : int =
+    ?(agent_name : string option) ?(reply_to : string option)
+    ?(tmux_location : string option) ?(tmux_command : string list option) () : int =
   if not (Stdlib.Hashtbl.mem clients client) then
     (Printf.eprintf "error: unknown client: '%s'. Choose from: %s\n%!"
        client (String.concat ", " (List.sort String.compare supported_clients));
@@ -3646,6 +3858,17 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
   }
   in
   write_config cfg;
+
+  if client = "tmux" then
+    match tmux_location with
+    | None ->
+        Printf.eprintf "error: c2c start tmux requires --loc <tmux-target>\n%!";
+        exit 1
+    | Some loc ->
+        run_tmux_loop ~name ~tmux_location:loc
+          ~tmux_command:(Option.value tmux_command ~default:extra_args)
+          ~broker_root ?alias_override ?auto_join_rooms ()
+  else
 
   (* The persisted empty string sentinel means "no thread id yet" for a fresh
      headless launch and must not become `--thread-id ""` on argv. *)

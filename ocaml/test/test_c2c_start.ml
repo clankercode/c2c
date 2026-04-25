@@ -45,6 +45,15 @@ let env_has_key env key =
       && String.sub entry 0 len = prefix)
     env
 
+let string_contains haystack needle =
+  let hay_len = String.length haystack in
+  let needle_len = String.length needle in
+  let rec loop i =
+    i + needle_len <= hay_len
+    && (String.sub haystack i needle_len = needle || loop (i + 1))
+  in
+  needle_len = 0 || loop 0
+
 let test_prepare_launch_args_claude_uses_development_channel_flag () =
   with_temp_dir @@ fun dir ->
   with_cwd dir @@ fun () ->
@@ -142,6 +151,42 @@ let test_prepare_launch_args_adds_model_flag_for_opencode () =
   check bool "adds --model"
     true
     (has_adjacent_pair "--model" "minimax-coding-plan/MiniMax-M2.7-highspeed" args)
+
+let test_tmux_shell_command_quotes_argv () =
+  check string "quotes spaces and shell metacharacters"
+    "'gemini' 'hello world' '$(date)' 'a'\\''b'"
+    (C2c_start.tmux_shell_command_of_argv
+       [ "gemini"; "hello world"; "$(date)"; "a'b" ])
+
+let test_tmux_message_payload_uses_c2c_envelope () =
+  let msg : C2c_mcp.message =
+    { from_alias = "alice"
+    ; to_alias = "tmux-agent"
+    ; content = "hello"
+    ; deferrable = false
+    ; reply_via = Some "c2c_send"
+    ; enc_status = None
+    }
+  in
+  let payload = C2c_start.tmux_message_payload [ msg ] in
+  check bool "contains c2c envelope" true
+    (String.starts_with ~prefix:"<c2c event=\"message\"" payload);
+  check bool "contains sender" true
+    (string_contains payload "from=\"alice\"");
+  check bool "contains message content" true
+    (string_contains payload "hello");
+  check bool "closes envelope" true
+    (String.ends_with ~suffix:"</c2c>" payload)
+
+let test_parse_tmux_target_info_requires_loc_and_pane_id () =
+  let parsed = C2c_start.parse_tmux_target_info "0:1.2 %42" in
+  (match parsed with
+   | Some info ->
+       check string "location" "0:1.2" info.C2c_start.tmux_location;
+       check string "pane id" "%42" info.C2c_start.tmux_pane_id
+   | None -> fail "expected target info");
+  check bool "missing pane id rejected" false
+    (Option.is_some (C2c_start.parse_tmux_target_info "0:1.2"))
 
 let test_build_env_keeps_channel_delivery_without_force_flag () =
   let env =
@@ -1311,6 +1356,12 @@ let () =
             `Quick, test_prepare_launch_args_adds_agent_flag_for_claude )
         ; ( "prepare_launch_args_adds_model_flag_for_opencode",
             `Quick, test_prepare_launch_args_adds_model_flag_for_opencode )
+        ; ( "tmux_shell_command_quotes_argv",
+            `Quick, test_tmux_shell_command_quotes_argv )
+        ; ( "tmux_message_payload_uses_c2c_envelope",
+            `Quick, test_tmux_message_payload_uses_c2c_envelope )
+        ; ( "parse_tmux_target_info_requires_loc_and_pane_id",
+            `Quick, test_parse_tmux_target_info_requires_loc_and_pane_id )
         ; ( "build_env_keeps_channel_delivery_without_force_flag",
             `Quick, test_build_env_keeps_channel_delivery_without_force_flag )
         ; ( "build_env_does_not_seed_codex_thread_id",
