@@ -2391,7 +2391,32 @@ let run_outer_loop ~(name : string) ~(client : string)
                 "  [c2c start] skipping install — \
                  session may not auto-register without opencode.json\n%!"
           end);
-          refresh_opencode_identity ~name ~alias ~broker_root ~project_dir ~instances_dir
+          refresh_opencode_identity ~name ~alias ~broker_root ~project_dir ~instances_dir;
+          (* Write the canonical plugin from data/opencode-plugin/c2c.ts to
+             .opencode/plugins/c2c.ts so that branch switches in the shared
+             working tree cannot clobber the live plugin file.  Always-overwrite:
+             data/opencode-plugin/ is the source of truth; the written artifact
+             is intentionally .gitignore-d. *)
+          let plugin_src = project_dir // "data" // "opencode-plugin" // "c2c.ts" in
+          let plugin_dir = project_dir // ".opencode" // "plugins" in
+          let plugin_dst = plugin_dir // "c2c.ts" in
+          (if Sys.file_exists plugin_src then begin
+            (try ignore (Unix.mkdir plugin_dir 0o755)
+             with Unix.Unix_error _ -> ());
+            (try
+              let ic = open_in plugin_src in
+              let n = in_channel_length ic in
+              let content = Bytes.create n in
+              Fun.protect ~finally:(fun () -> close_in ic)
+                (fun () -> really_input ic content 0 n);
+              let oc = open_out plugin_dst in
+              Fun.protect ~finally:(fun () -> close_out oc)
+                (fun () -> output_bytes oc content)
+            with e ->
+              Printf.eprintf
+                "  [c2c start] warning: failed to write opencode plugin: %s\n%!"
+                (Printexc.to_string e))
+          end)
         end
       end);
 

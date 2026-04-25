@@ -24,7 +24,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent
 C2C_MCP_PATH = REPO_ROOT / "c2c_mcp.py"
 BROKER_ROOT = REPO_ROOT / ".git" / "c2c" / "mcp"
-PLUGIN_SRC = REPO_ROOT / ".opencode" / "plugins" / "c2c.ts"
+PLUGIN_SRC = REPO_ROOT / "data" / "opencode-plugin" / "c2c.ts"
 PLUGIN_PACKAGE_JSON = {"dependencies": {"@opencode-ai/plugin": "1.4.3"}}
 GLOBAL_PLUGIN_DIR = Path.home() / ".config" / "opencode" / "plugins"
 C2C_CLI_PATH = Path.home() / ".local" / "bin" / "c2c"

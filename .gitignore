@@ -23,4 +23,5 @@ _build/
 .collab/personal-logs/
 .opencode/c2c-plugin.json
 .opencode/package-lock.json
+.opencode/plugins/c2c.ts
 .c2c/roles/*.md
