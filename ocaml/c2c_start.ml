@@ -1525,17 +1525,9 @@ let is_cc_wrapper_str (name : string) : bool =
  * --------------------------------------------------------------------------- *)
 
 let deliver_command ~(broker_root : string) : (string * string list) option =
-  (* Prefer the installed sidecar entrypoint so managed sessions launched in
-     arbitrary target repos still find delivery tooling. Fall back to the
-     repo-local Python script for in-repo development. *)
-  match find_binary "c2c-deliver-inbox" with
-  | Some binary_path -> Some (binary_path, [])
-  | None ->
-      match resolve_repo_root ~broker_root with
-      | "" -> None
-      | dir ->
-          let p = dir // "c2c_deliver_inbox.py" in
-          if Sys.file_exists p then Some ("python3", [ p ]) else None
+  (* OCaml c2c-deliver-inbox is the only supported delivery daemon.
+     Python fallback is deprecated and removed. *)
+  Option.map (fun path -> (path, [])) (find_binary "c2c-deliver-inbox")
 
 let command_help_contains (binary_path : string) (needle : string) : bool =
   let contains needle haystack =
