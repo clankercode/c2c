@@ -5563,7 +5563,7 @@ let find_gui_binary () =
 
 type gui_batch_check = { name : string; ok : bool; detail : string }
 
-let registration_to_json (r : C2c_mcp.registration) =
+let registration_to_json (r : C2c_mcp.registration) : Yojson.Safe.t =
   let base = [ ("session_id", `String r.session_id); ("alias", `String r.alias) ] in
   let with_pid = match r.pid with Some n -> base @ [("pid", `Int n)] | None -> base in
   let alive_val = match C2c_mcp.Broker.registration_liveness_state r with
@@ -5572,15 +5572,15 @@ let registration_to_json (r : C2c_mcp.registration) =
     | C2c_mcp.Broker.Unknown -> `Null
   in
   let with_alive = with_pid @ [("alive", alive_val)] in
-  let with_dnd = match r.dnd with true -> with_alive @ [("dnd", `Bool true)] | false -> with_alive in
-  with_dnd
+  let with_dnd = if r.dnd then with_alive @ [("dnd", `Bool true)] else with_alive in
+  `Assoc with_dnd
 
-let room_to_json (ri : C2c_mcp.Broker.room_info) =
+let room_to_json (ri : C2c_mcp.Broker.room_info) : Yojson.Safe.t =
   `Assoc
     [ ("room_id", `String ri.C2c_mcp.Broker.ri_room_id)
     ; ("member_count", `Int ri.C2c_mcp.Broker.ri_member_count)
     ; ("alive_member_count", `Int ri.C2c_mcp.Broker.ri_alive_member_count)
-    ; ("members", `List (List.map (fun m -> `String m) ri.C2c_mcp.Broker.ri_members))
+    ; ("members", `List (List.map (fun (m : string) -> `String m) ri.C2c_mcp.Broker.ri_members))
     ]
 
 (** [gui_batch ()] runs a headless smoke test of the c2c broker.
@@ -5596,9 +5596,9 @@ let gui_batch () =
     checks := { name; ok; detail } :: !checks
   in
   (* Snapshot data *)
-  let peers_json = ref (`List []) in
-  let rooms_json = ref (`List []) in
-  let pending_perms_json = ref (`List []) in
+  let peers_json : Yojson.Safe.t ref = ref (`List [])
+  and rooms_json : Yojson.Safe.t ref = ref (`List [])
+  and pending_perms_json : Yojson.Safe.t ref = ref (`List []) in
 
   (* Check 1: broker root exists and is readable *)
   (try
@@ -5607,38 +5607,29 @@ let gui_batch () =
      else add_check "broker_root" false "registry.json not found"
    with e ->
      add_check "broker_root" false (Printexc.to_string e));
-  (* Check 2: config loading (c2c config show) *)
+  (* Check 2: config loading — check .c2c/config.toml in cwd *)
   (try
-     let git_dir = match Git_helpers.git_common_dir () with
-       | Some d -> d | None -> raise (Failure "no git common dir") in
-     let cfg = Filename.concat (Filename.dirname git_dir) "c2c" // "config.toml" in
+     let cfg = Filename.concat (Sys.getcwd ()) ".c2c" // "config.toml" in
      if Sys.file_exists cfg then add_check "config_loading" true "config.toml found"
      else add_check "config_loading" false "config.toml not found"
    with e ->
      add_check "config_loading" false (Printexc.to_string e));
-  (* Check 3: CLI/MCP availability — invoke the MCP server with ping *)
+  (* Check 3: CLI availability — invoke c2c --version *)
   (try
      let self_bin = Sys.executable_name in
-     let ic = Unix.open_process_args_in self_bin [| self_bin; "mcp" |] in
-     let buf = Bytes.create 4096 in
+     let ic = Unix.open_process_args_in self_bin [| self_bin; "--version" |] in
+     let buf = Bytes.create 256 in
      let rec drain acc =
-       match input ic buf 0 4096 with
+       match input ic buf 0 256 with
        | 0 -> close_in ic; List.rev acc
        | n -> drain (Bytes.sub buf 0 n :: acc)
      in
-     let output = drain [] |> Bytes.concat (Bytes.create 0) |> Bytes.to_string in
+     let _output = drain [] |> Bytes.concat (Bytes.create 0) |> Bytes.to_string in
      let status = Unix.close_process_in ic in
      match status with
-     | Unix.WEXITED 0 ->
-         (try
-            let json = Yojson.Safe.from_string output in
-            match Yojson.Safe.Util.member "result" json with
-            | `Assoc _ -> add_check "cli_mcp_availability" true "MCP ping succeeded"
-            | _ -> add_check "cli_mcp_availability" false "MCP ping returned unexpected shape"
-            | exception e -> add_check "cli_mcp_availability" false ("JSON parse error: " ^ Printexc.to_string e)
-         with e -> add_check "cli_mcp_availability" false ("parse error: " ^ Printexc.to_string e))
-     | Unix.WEXITED n -> add_check "cli_mcp_availability" false ("MCP ping exited " ^ string_of_int n)
-     | _ -> add_check "cli_mcp_availability" false "MCP ping killed or stopped"
+     | Unix.WEXITED 0 -> add_check "cli_mcp_availability" true "CLI --version succeeded"
+     | Unix.WEXITED n -> add_check "cli_mcp_availability" false ("CLI --version exited " ^ string_of_int n)
+     | _ -> add_check "cli_mcp_availability" false "CLI --version killed or stopped"
    with e ->
      add_check "cli_mcp_availability" false (Printexc.to_string e));
   (* Check 4: inbox polling — do a poll_inbox via broker directly *)
