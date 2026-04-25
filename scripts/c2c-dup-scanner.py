@@ -35,6 +35,33 @@ EXCLUDE_DIRS = {
 }
 GENERATED_MARKERS = {"# GENERATED", "# DO NOT EDIT", "(* GENERATED", "(* DO NOT EDIT"}
 
+# Deprecated scripts — duplication is intentional (no maintenance, these are dead code).
+# Per AGENTS.md Python Scripts section deprecation list.
+DEPRECATED_PATTERNS = [
+    re.compile(r"^c2c_crush_wake_daemon\.py$"),
+    re.compile(r"^c2c_kimi_wake_daemon\.py$"),
+    re.compile(r"^c2c_opencode_wake_daemon\.py$"),
+    re.compile(r"^c2c_claude_wake_daemon\.py$"),
+    re.compile(r"^c2c_auto_relay\.py$"),
+    re.compile(r"^c2c_relay\.py$"),
+    re.compile(r"^relay\.py$"),
+    re.compile(r"^c2c_inject\.py$"),
+    re.compile(r"^c2c_pts_inject\.py$"),
+]
+
+# OCaml .mli/.ml pairs naturally share docstrings, type declarations, and
+# interface boilerplate — 100%% similarity is expected, not copy-paste.
+def is_ml_mli_pair(files: list[str]) -> bool:
+    if len(files) != 2:
+        return False
+    names = [Path(f).name for f in files]
+    if len(names) != 2:
+        return False
+    base0, ext0 = os.path.splitext(names[0])
+    base1, ext1 = os.path.splitext(names[1])
+    return (ext0 in {".ml", ".mli"} and ext1 in {".ml", ".mli"}
+            and base0 == base1)
+
 
 def _remove_strings(line: str) -> str:
     """Remove all string literals from a Python source line, leaving code."""
@@ -204,6 +231,45 @@ def scan_file(filepath: Path) -> dict | None:
     }
 
 
+def is_deprecated_script(filepath: str) -> bool:
+    """Check if a file is a deprecated script (dead code, no maintenance value)."""
+    name = os.path.basename(filepath)
+    return any(p.match(name) for p in DEPRECATED_PATTERNS)
+
+
+def is_test_file(filepath: str) -> bool:
+    """Check if a file is a test file (test boilerplate, not production code)."""
+    name = os.path.basename(filepath)
+    return name.startswith("test_") or name.startswith("test-")
+
+
+def cluster_is_suppressed(cluster: dict, ignore_patterns: list[re.Pattern]) -> tuple[bool, str]:
+    """Check if a cluster should be suppressed.
+    Returns (suppressed, reason).
+    reason is empty string if not suppressed.
+    """
+    files = cluster["files"]
+
+    # Suppress if all files are deprecated scripts
+    if all(is_deprecated_script(f) for f in files):
+        return (True, "all files are deprecated scripts")
+
+    # Suppress if all files are test files
+    if all(is_test_file(f) for f in files):
+        return (True, "all files are test boilerplate")
+
+    # Suppress .ml/.mli interface/implementation pairs
+    if is_ml_mli_pair(files):
+        return (True, "OCaml .ml/.mli pair (interface/implementation duplication expected)")
+
+    # Suppress if user provided --ignore patterns matching all files
+    if ignore_patterns:
+        if all(any(p.search(os.path.basename(f)) for p in ignore_patterns) for f in files):
+            return (True, "matches --ignore pattern")
+
+    return (False, "")
+
+
 def find_clusters(file_datas: list[dict]) -> list[dict]:
     """Find clusters of duplicate windows across files."""
     # Build hash -> [(filepath, token_start, line_start), ...]
@@ -257,6 +323,21 @@ def find_clusters(file_datas: list[dict]) -> list[dict]:
             merged_clusters.append(cluster)
 
     return merged_clusters
+
+
+def filter_clusters(clusters: list[dict], ignore_patterns: list[re.Pattern]) -> tuple[list[dict], list[tuple[str, str]]]:
+    """Filter suppressed clusters and return (kept, suppressed_with_reason)."""
+    if ignore_patterns is None:
+        ignore_patterns = []
+    kept = []
+    suppressed = []
+    for cluster in clusters:
+        suppressed_flag, reason = cluster_is_suppressed(cluster, ignore_patterns)
+        if suppressed_flag:
+            suppressed.append((cluster["files"], reason))
+        else:
+            kept.append(cluster)
+    return kept, suppressed
 
 
 def merge_token_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -323,7 +404,7 @@ def get_file_loc(filepath: str, all_file_datas: dict) -> int | None:
     return None
 
 
-def run_scanner(repo_path: str, summary: bool, full: bool, warn_only: bool, json_output: bool) -> int:
+def run_scanner(repo_path: str, summary: bool, full: bool, warn_only: bool, json_output: bool, ignore_patterns: list[re.Pattern] = None) -> int:
     """Run the duplication scanner."""
     repo = Path(repo_path)
     if not repo.exists():
@@ -357,9 +438,13 @@ def run_scanner(repo_path: str, summary: bool, full: bool, warn_only: bool, json
     # Find clusters
     clusters = find_clusters(file_datas)
 
+    # Apply suppression filters
+    clusters, suppressed = filter_clusters(clusters, ignore_patterns)
+
     if json_output:
         output = {
             "n_clusters": len(clusters),
+            "n_suppressed": len(suppressed),
             "total_dup_windows": sum(c["n_windows"] for c in clusters),
             "clusters": [
                 {
@@ -372,13 +457,19 @@ def run_scanner(repo_path: str, summary: bool, full: bool, warn_only: bool, json
                 }
                 for c in clusters
             ],
+            "suppressed": [
+                {"files": f, "reason": r} for f, r in suppressed
+            ],
         }
         print(json.dumps(output, indent=2))
         return 0
 
     if not clusters:
         if summary or full:
-            print("no duplication clusters found")
+            if suppressed:
+                print(f"no production-quality duplication found ({len(suppressed)} cluster(s) suppressed: deprecated/test/boilerplate)")
+            else:
+                print("no duplication clusters found")
         return 0
 
     # Sort clusters by total wasted LOC (n_windows * WINDOW_TOKENS / 4)
@@ -387,6 +478,8 @@ def run_scanner(repo_path: str, summary: bool, full: bool, warn_only: bool, json
     if summary:
         total_dup_loc = sum(c["n_windows"] * WINDOW_TOKENS // 4 for c in clusters)
         print(f"{len(clusters)} duplication cluster(s) found (~{total_dup_loc} total duplicate LOC)")
+        if suppressed:
+            print(f"  ({len(suppressed)} cluster(s) suppressed: deprecated/test/boilerplate)")
 
     if full:
         print(f"\n{'='*60}")
@@ -395,6 +488,12 @@ def run_scanner(repo_path: str, summary: bool, full: bool, warn_only: bool, json
         for i, cluster in enumerate(clusters, 1):
             print(f"CLUSTER {i}:")
             print(format_cluster_summary(cluster, file_datas))
+            print()
+        if suppressed:
+            print(f"[Suppressed {len(suppressed)} cluster(s): deprecated/test/boilerplate]")
+            for files, reason in suppressed:
+                names = [Path(f).name for f in files]
+                print(f"  - {', '.join(names)}: {reason}")
             print()
 
     if warn_only:
@@ -432,7 +531,16 @@ def main():
         action="store_true",
         help="Machine-readable JSON output",
     )
+    parser.add_argument(
+        "--ignore",
+        action="append",
+        default=[],
+        help="Suppress clusters where all files match this regex pattern (can be specified multiple times)",
+    )
     args = parser.parse_args()
+
+    # Compile ignore patterns
+    ignore_patterns = [re.compile(p) for p in args.ignore]
 
     if not args.summary and not args.full and not args.json:
         args.summary = True  # default to summary mode
@@ -443,6 +551,7 @@ def main():
         full=args.full,
         warn_only=args.warn_only,
         json_output=args.json,
+        ignore_patterns=ignore_patterns,
     )
 
     if args.warn_only:
