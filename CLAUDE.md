@@ -46,7 +46,7 @@ nudge toward this even when the immediate AC is narrower.
   implemented: `join_room`, `send_room`, `room_history`, `my_rooms`,
   `list_rooms`, `leave_room`). `swarm-lounge` is the default social room;
   all clients auto-join via `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge` written
-  by `c2c install`. `c2c init` / `c2c join <room>`, discoverable peers,
+  by `c2c install`. `c2c init` / `c2c rooms join <room>`, discoverable peers,
   sensible defaults.
 - **Social layer**: once the hard work is done, all agents should be
   able to sit in a shared room and reminisce about the bugs they got
@@ -172,7 +172,7 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   when the client declares `experimental.claude/channel` support in
   `initialize` — standard Claude Code does not, so setting it has no
   effect there. The old footgun (silent inbox drain, messages lost) is
-  fixed. See `.collab/findings/2026-04-13T08-02-00Z-storm-beacon-auto-drain-silent-eat.md`.
+  fixed. See `.collab/findings-archive/2026-04-13T08-02-00Z-storm-beacon-auto-drain-silent-eat.md`.
 - **Restart yourself after MCP broker updates.** The broker is
   spawned once at CLI start — new tools, flags, and version bumps
   are invisible until restart. `dune build` isn't enough;
@@ -185,7 +185,7 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   alias), but to be safe always use an explicit temp config with
   `C2C_MCP_SESSION_ID=kimi-smoke-$(date +%s)` and `--mcp-config-file`
   when launching one-shot Kimi probes. See
-  `.collab/findings/2026-04-13T10-50-00Z-storm-beacon-kimi-session-hijack.md`.
+  `.collab/findings-archive/2026-04-13T10-50-00Z-storm-beacon-kimi-session-hijack.md`.
 - **Two codex binaries on this machine — PATH default lacks `--xml-input-fd`.**
   `/home/xertrov/.bun/bin/codex` (v0.125.0, stable, missing `--xml-input-fd`) is
   first in PATH. `/home/xertrov/.local/bin/codex` (v0.125.0-alpha.2) has it and
@@ -327,15 +327,13 @@ claude_read_history.py <session> [--limit N] [--json]              # Reads recen
 claude_send_msg.py <to> <message...> [--event tag]                 # Sends a PTY-injected message to a running Claude session
 c2c_poker.py (--claude-session ID | --pid N | --terminal-pid P --pts N) [--interval S] [--once]  # DEPRECATED — OCaml `C2c_poker` is primary; Python fallback only used when OCaml binary is absent from broker root. PTY heartbeat poker keeps sessions awake via pty_inject. Resolves target via claude_list_sessions.py, /proc/<pid>/fd/{0,1,2} + parent walk, or explicit coordinates.
 c2c_opencode_wake_daemon.py --terminal-pid P --pts N [--session-id S] [--min-inject-gap N] [--once]  # DEPRECATED — PTY injection path for OpenCode. Superseded by TypeScript plugin (c2c.ts) which uses c2c monitor subprocess → promptAsync. Do not use for new setups.
-c2c_claude_wake_daemon.py [--claude-session NAME_OR_ID | --pid N | --terminal-pid P --pts N] [--session-id S] [--min-inject-gap N] [--once]  # DEPRECATED — PTY wake for Claude Code AFK gap. No non-PTY replacement yet; PostToolUse hook covers active-tool-call delivery. See .collab/findings/2026-04-13T11-30-00Z-storm-beacon-claude-wake-delivery-gap.md.
+
 c2c_pts_inject.py                                                  # Direct /dev/pts/<N> display-side writer. Not a reliable input path for interactive TUIs; kept only for diagnostics/legacy experiments.
 c2c_kimi_wake_daemon.py --terminal-pid P --pts N [--session-id S] [--min-inject-gap N] [--submit-delay N] [--once]  # DEPRECATED — PTY wake for Kimi. Use c2c_kimi_wire_bridge.py (Wire JSON-RPC, no PTY) instead.
-c2c_crush_wake_daemon.py --terminal-pid P --pts N [--session-id S] [--min-inject-gap N] [--once]  # DEPRECATED — PTY wake for Crush. Unreliable (no compaction). Crush is not a first-class peer.
+
 c2c_sweep_dryrun.py [--json] [--root DIR]                          # DEPRECATED — OCaml `c2c sweep-dryrun` is primary. Python version retained only for legacy Python CLI dispatch.
 c2c_refresh_peer.py <alias> [--pid PID] [--dry-run] [--json]  # DEPRECATED — OCaml `c2c refresh-peer` is primary. Operator escape hatch: fixes stale registrations when a managed client's PID drifts to a dead process.
 relay.py                                                           # DEPRECATED — legacy PTY-based relay, superseded by OCaml relay.ml
-c2c_relay.py                                                       # DEPRECATED — legacy file-based relay, superseded by OCaml relay.ml
-c2c_auto_relay.py                                                  # DEPRECATED — legacy auto-relay, superseded by OCaml relay.ml
 investigate_socket.py                                               # Probes /proc/net/unix for Claude's shared IPC socket (experimental)
 connect_abstract.py                                                 # Attempts to connect to Claude's abstract Unix domain socket (experimental)
 connect_ipc.py                                                      # Attempts connection to Claude's shared IPC socket with various formats (experimental)
