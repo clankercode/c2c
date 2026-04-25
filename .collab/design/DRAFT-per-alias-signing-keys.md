@@ -120,6 +120,24 @@ let resolve_identity () =
 
 with:
 
+> **Correction (2026-04-25, post-impl)**: the snippet below contains
+> a path bug — `git_common_dir_parent ()` returns the **repo root**,
+> but per-alias keys live under the **broker root**
+> (`.git/c2c/mcp/keys/`). The correct helper is
+> `resolve_broker_root ()` (c2c.ml:89; may need lifting to
+> `c2c_utils.ml`). Jungle's drive-by Slice A impl in `b856472`
+> picked up the bug verbatim and quietly falls back to host
+> identity for everyone. Full writeup:
+> `.collab/findings/2026-04-25T03-10-00Z-stanza-coder-signed-pass-reveals-path-bug.md`.
+> Leaving the buggy snippet below as-was-written so the finding
+> doc's historical narrative is intact; the correct shape is:
+>
+> ```ocaml
+> let per_alias_key_path ~alias =
+>   let broker_root = resolve_broker_root () in
+>   Some (broker_root // "keys" // (alias ^ ".ed25519"))
+> ```
+
 ```ocaml
 let per_alias_key_path ~alias =
   match Git_helpers.git_common_dir_parent () with
