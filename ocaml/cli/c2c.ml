@@ -5847,8 +5847,15 @@ let restart_cmd =
   let name =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME" ~doc:"Instance name to restart.")
   in
-  let+ name = name in
-  exit (C2c_start.cmd_restart name ~timeout_s:5.0)
+  let timeout =
+    Cmdliner.Arg.(value & opt (some float) None & info [ "timeout" ]
+      ~docv:"SECONDS"
+      ~doc:"Seconds to wait for outer process to exit before spawning restart (default: 5).")
+  in
+  let+ name = name
+  and+ timeout = timeout in
+  let timeout_s = Option.value timeout ~default:5.0 in
+  exit (C2c_start.cmd_restart name ~timeout_s)
 
 let restart = Cmdliner.Cmd.v (Cmdliner.Cmd.info "restart" ~doc:"Restart a managed c2c instance.") restart_cmd
 
