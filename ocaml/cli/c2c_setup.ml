@@ -1261,7 +1261,9 @@ let do_install_git_hook ~output_mode ~dry_run =
        | Human -> Printf.eprintf "error: cannot determine git common dir\n%!");
       exit 1
   in
-  let hook_src = repo_root // ".c2c" // "hooks" // "pre-commit.sh" in
+  let hook_src =
+    let parent = Option.value (Git_helpers.git_common_dir_parent ()) ~default:repo_root in
+    parent // ".c2c" // "hooks" // "pre-commit.sh" in
   let hook_dst = git_common // "hooks" // "pre-commit" in
   if not (Sys.file_exists hook_src) then begin
     (match output_mode with
