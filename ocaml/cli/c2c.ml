@@ -5301,9 +5301,16 @@ let start_cmd =
           Printf.eprintf "error: role file not found: %s\n%!" role_path;
           exit 1)
     | None ->
-        (* Auto-inference: if .c2c/roles/<name>.md exists as a structured role,
-           auto-apply --agent=<name> (silent, no banner). Explicit --agent always wins. *)
-        let role_path = role_file_path ~alias:name in
+        (* Auto-inference: if .c2c/roles/<name>.md or <client-native>/<name>.md exists
+           as a structured role, auto-apply --agent=<name> (silent, no banner).
+           Explicit --agent always wins. *)
+        let canonical_path = role_file_path ~alias:name in
+        let client_native_path = C2c_role.client_agent_dir ~client // (name ^ ".md") in
+        let role_path =
+          if Sys.file_exists canonical_path then canonical_path
+          else if Sys.file_exists client_native_path then client_native_path
+          else canonical_path (* non-existent, will trigger Sys_error below *)
+        in
         if Sys.file_exists role_path then
           (try
              let role = C2c_role.parse_file role_path in

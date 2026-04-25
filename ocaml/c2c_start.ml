@@ -1382,7 +1382,9 @@ let prepare_launch_args ~(name : string) ~(client : string)
         @ agent_args @ kickoff_args
     | "opencode" ->
         let module A = (val (Stdlib.Hashtbl.find client_adapters "opencode") : CLIENT_ADAPTER) in
+        let agent_args = match agent_name with Some n -> [ "--agent"; n ] | None -> [] in
         A.build_start_args ~name ?alias_override ?model_override ?resume_session_id ()
+        @ agent_args
     | "codex" ->
         (* Normalise the two resume signals into the single resume_session_id understood
            by CodexAdapter: non-empty = specific session; "" = resume --last; None = fresh. *)
