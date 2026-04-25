@@ -13,12 +13,14 @@
 
 set -euo pipefail
 
-# Git provides two pieces on stdin:
-#   Line 1: "<remote_name> <remote_url>"
-#   Subsequent lines: "<local_ref> <local_sha> <remote_ref> <remote_sha>"
+# Git provides:
+#   $1 = remote name (e.g. "origin")
+#   $2 = remote URL  (e.g. "git@github.com:user/repo.git")
+#   stdin = ref lines: "<local_ref> <local_sha> <remote_ref> <remote_sha>"
 
-# Read remote name and URL from the first line
-read -r remote_name remote_url
+# Positional args from git
+remote_name="${1:-}"
+remote_url="${2:-}"
 
 # If no remote (e.g. git push with no remote configured), allow
 if [[ -z "$remote_name" ]]; then
