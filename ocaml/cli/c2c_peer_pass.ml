@@ -284,6 +284,63 @@ let peer_pass_list_cmd =
       Printf.eprintf "error listing peer passes: %s\n%!" (Printexc.to_string e); exit 1
   )
 
+(* --- clean command ------------------------------------------------------- *)
+
+let peer_pass_clean_cmd =
+  let apply =
+    Cmdliner.Arg.(value & flag & info [ "apply" ]
+      ~doc:"Actually delete the matched artifacts. Default is dry-run (print only).")
+  in
+  let json =
+    Cmdliner.Arg.(value & flag & info [ "json"; "j" ] ~doc:"Output machine-readable JSON.")
+  in
+  let+ apply = apply
+  and+ json = json in
+  let dir = peer_passes_dir () in
+  if not (Sys.file_exists dir) then begin
+    if json then Printf.printf "{\"matched\":0,\"deleted\":0}\n%!"
+    else Printf.printf "No peer passes stored.\n%!"
+  end else begin
+    let files = Array.to_list (Sys.readdir dir) |> List.filter (fun f -> Filename.check_suffix f ".json") in
+    let matched = List.filter_map (fun f ->
+      let path = dir // f in
+      match try Some (String.trim (read_json_file path)) with _ -> None with
+      | Some content -> (
+        match Peer_review.t_of_string content with
+        | Some art when Git_helpers.git_commit_exists art.Peer_review.sha
+                       && reviewer_is_author ~reviewer:art.Peer_review.reviewer ~sha:art.Peer_review.sha ->
+          Some (f, path, art)
+        | _ -> None)
+      | None -> None) files
+    in
+    let deleted =
+      if apply then
+        List.fold_left (fun n (_, path, _) ->
+          try Sys.remove path; n + 1 with _ -> n) 0 matched
+      else 0
+    in
+    if json then
+      Printf.printf "%s\n%!" (Yojson.Safe.pretty_to_string (`Assoc [
+        ("matched", `Int (List.length matched));
+        ("deleted", `Int deleted);
+        ("dry_run", `Bool (not apply));
+        ("files", `List (List.map (fun (f, _, art) -> `Assoc [
+          ("file", `String f);
+          ("reviewer", `String art.Peer_review.reviewer);
+          ("sha", `String art.Peer_review.sha);
+        ]) matched));
+      ]))
+    else begin
+      let header = if apply then "Deleted self-review artifacts:" else "Would delete self-review artifacts (dry-run; pass --apply):" in
+      Printf.printf "%s\n" header;
+      List.iter (fun (f, _, art) ->
+        Printf.printf "  %s  %s  %s\n" f art.Peer_review.reviewer art.Peer_review.sha) matched;
+      Printf.printf "(%d matched%s)\n%!"
+        (List.length matched)
+        (if apply then Printf.sprintf ", %d deleted" deleted else "")
+    end
+  end
+
 (* --- group --------------------------------------------------------------- *)
 
 let peer_pass_group =
@@ -292,4 +349,6 @@ let peer_pass_group =
     (Cmdliner.Cmd.info "peer-pass" ~doc:"Sign and verify signed peer-PASS review artifacts")
     [ Cmdliner.Cmd.v (Cmdliner.Cmd.info "sign" ~doc:"Sign a peer-PASS artifact.") peer_pass_sign_cmd
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "verify" ~doc:"Verify a signed peer-PASS artifact.") peer_pass_verify_cmd
-    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List stored peer-PASS artifacts.") peer_pass_list_cmd ]
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List stored peer-PASS artifacts.") peer_pass_list_cmd
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "clean"
+        ~doc:"Delete self-review peer-PASS artifacts (dry-run by default).") peer_pass_clean_cmd ]
