@@ -166,10 +166,10 @@ let memory_entry_descriptions ~alias ~maxEntries =
               let line = String.trim line in
               if line = "---" then acc
               else if acc <> "" then acc
-              else if String.length line >= 14 && String.sub line 0 14 = "description: " then
-                String.sub line 14 (String.length line - 14)
-              else if String.length line >= 6 && String.sub line 0 6 = "name: " then
-                "[no description]"
+               else if String.length line >= 13 && String.sub line 0 13 = "description: " then
+                 String.sub line 13 (String.length line - 13)
+               else if String.length line >= 6 && String.sub line 0 6 = "name: " then
+                 "[no description]"
               else acc
             ) "" (List.rev !lines)
           in
