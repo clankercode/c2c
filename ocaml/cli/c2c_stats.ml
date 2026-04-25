@@ -8,6 +8,7 @@ type agent_stats =
   ; role : string option
   ; msgs_sent : int
   ; msgs_received : int
+  ; compaction_count : int
   }
 
 (** Parse a duration string like "1h", "30m", "7d", "24h" into seconds.
@@ -132,7 +133,8 @@ let run ~root ~json ~alias_filter ~since_str =
                  ; registered_at = reg.registered_at
                  ; role = reg.role
                  ; msgs_sent
-                 ; msgs_received })
+                 ; msgs_received
+                 ; compaction_count = reg.compaction_count })
       regs
   in
   (* Sort: live first, then by alias *)
@@ -164,6 +166,7 @@ let run ~root ~json ~alias_filter ~since_str =
                   | None -> `Null)
                ; ("msgs_sent", `Int s.msgs_sent)
                ; ("msgs_received", `Int s.msgs_received)
+               ; ("compaction_count", `Int s.compaction_count)
                ])
            stats)
     in
@@ -178,8 +181,8 @@ let run ~root ~json ~alias_filter ~since_str =
       | Some s -> "last " ^ s
     in
     Printf.printf "## Swarm stats — %s UTC (window: %s)\n\n" now_str window_str;
-    Printf.printf "| alias | live | msgs in | msgs out | registered | role |\n";
-    Printf.printf "|---|---|---|---|---|---|\n";
+    Printf.printf "| alias | live | msgs in | msgs out | compactions | registered | role |\n";
+    Printf.printf "|---|---|---|---|---|---|---|\n";
     List.iter
       (fun s ->
         let live_str = if s.live then "\xe2\x9c\x93" else "\xe2\x80\x93" in
@@ -189,8 +192,8 @@ let run ~root ~json ~alias_filter ~since_str =
           | None -> ""
         in
         let role_str = match s.role with Some r -> r | None -> "" in
-        Printf.printf "| %s | %s | %d | %d | %s | %s |\n"
-          s.alias live_str s.msgs_received s.msgs_sent reg_str role_str)
+        Printf.printf "| %s | %s | %d | %d | %d | %s | %s |\n"
+          s.alias live_str s.msgs_received s.msgs_sent s.compaction_count reg_str role_str)
       stats;
     if stats = [] then
       Printf.printf "(no registrations found)\n"

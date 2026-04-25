@@ -35,6 +35,8 @@ type registration =
       compatibility (session predates this field). *)
   ; role : string option
   (** Sender role for envelope attribution. None = no role. *)
+  ; compaction_count : int
+  (** Cumulative count of compacting→idle transitions. Defaults to 0. *)
   }
 type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }

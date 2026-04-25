@@ -39,6 +39,10 @@ type registration =
   ; role : string option
   (** Sender role for envelope attribution (coordinator, reviewer, agent, user).
       Set explicitly via register tool. None = no role. *)
+  ; compaction_count : int
+  (** Cumulative count of compacting→idle transitions for this session.
+      Incremented by clear_compacting and clear_stale_compacting.
+      Defaults to 0 for sessions predating this field. *)
   }
 type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
@@ -262,7 +266,7 @@ module Broker = struct
       cleanup_tmp ();
       raise e
 
-  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; enc_pubkey; compacting; last_activity_ts; role } =
+  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; enc_pubkey; compacting; last_activity_ts; role; compaction_count } =
     let base =
       [ ("session_id", `String session_id); ("alias", `String alias) ]
     in
@@ -338,7 +342,11 @@ module Broker = struct
       | Some r -> with_last_activity_ts @ [ ("role", `String r) ]
       | None -> with_last_activity_ts
     in
-    `Assoc with_role
+    let with_compaction_count =
+      if compaction_count > 0 then with_role @ [ ("compaction_count", `Int compaction_count) ]
+      else with_role
+    in
+    `Assoc with_compaction_count
 
   let int_opt_member name json =
     let open Yojson.Safe.Util in
@@ -393,6 +401,7 @@ module Broker = struct
     ; compacting = compacting_of_json json
     ; last_activity_ts = float_opt_member "last_activity_ts" json
     ; role = str_opt "role" json
+    ; compaction_count = (match json |> member "compaction_count" with `Int n -> n | _ -> 0)
     }
 
   let message_to_json { from_alias; to_alias; content; deferrable; reply_via; enc_status } =
@@ -874,7 +883,8 @@ module Broker = struct
       match List.find_opt (fun r -> r.session_id = session_id) regs with
       | None -> false
       | Some existing ->
-          let updated = { existing with compacting = None } in
+          let updated = { existing with compacting = None
+                        ; compaction_count = existing.compaction_count + 1 } in
           let new_regs =
             List.map (fun r -> if r.session_id = session_id then updated else r) regs
           in
@@ -893,8 +903,10 @@ module Broker = struct
       in
       if to_clear = [] then 0
       else begin
-        save_registrations t to_keep;
-        List.length to_clear
+        let cleared = List.map (fun r -> { r with compacting = None
+                                         ; compaction_count = r.compaction_count + 1 }) to_clear in
+        save_registrations t (cleared @ to_keep);
+        List.length cleared
       end)
 
   (* Suggest a free alias by appending the next prime suffix.
@@ -953,11 +965,11 @@ module Broker = struct
            across re-registration. *)
         let old_state =
           match List.find_opt (fun reg -> reg.session_id = session_id) rest with
-          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting, r.enc_pubkey, r.last_activity_ts, r.role)
-          | None -> (false, None, None, None, client_type, None, None, enc_pubkey, None, role)
+          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting, r.enc_pubkey, r.last_activity_ts, r.role, r.compaction_count)
+          | None -> (false, None, None, None, client_type, None, None, enc_pubkey, None, role, 0)
         in
         let new_reg =
-          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting, old_enc_pubkey, old_last_activity_ts, old_role) = old_state in
+          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting, old_enc_pubkey, old_last_activity_ts, old_role, old_compaction_count) = old_state in
           let effective_client_type = match client_type with
             | Some _ -> client_type
             | None -> old_client_type
@@ -984,7 +996,8 @@ module Broker = struct
           ; enc_pubkey = effective_enc_pubkey
           ; compacting = old_compacting
           ; last_activity_ts = old_last_activity_ts
-          ; role = effective_role }
+          ; role = effective_role
+          ; compaction_count = old_compaction_count }
         in
         let kept =
           match
