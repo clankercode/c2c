@@ -20,7 +20,7 @@ signature, verified by `git log --show-signature`).
 
 **Gap**: the two app-layer signed artifact types (peer-PASS and
 stickers) still call the host-scoped `Relay_identity.load ()` instead.
-Two modules, two-line change each. Wire format unchanged — both
+Two modules, ~15-line `resolve_identity` rewrite each. Wire format unchanged — both
 embed `*_pk` in the artifact, so old signatures keep verifying.
 
 **Observation in the wild, 2026-04-25**: test-agent has
