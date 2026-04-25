@@ -33,6 +33,7 @@ import c2c_sweep_dryrun
 import c2c_verify
 import c2c_watch
 import c2c_whoami
+import c2c_coord_cherry_pick
 
 
 SAFE_AUTO_APPROVE_SUBCOMMANDS = {
@@ -59,7 +60,7 @@ USAGE = (
     "history|init|inject|install|instances|list|mcp|peek-inbox|poker-sweep|"
     "poll-inbox|prune|refresh-peer|register|restart|restart-me|room|send|"
     "send-all|setcap|setup|smoke-test|start|status|stop|sweep|sweep-dryrun|verify|"
-    "wake-peer|watch|whoami|wire-daemon> [...args]"
+    "wake-peer|watch|whoami|wire-daemon|coord-cherry-pick> [...args]"
 )
 
 
@@ -210,6 +211,9 @@ def main(argv: list[str] | None = None) -> int:
     if subcommand == "wire-daemon":
         import c2c_wire_daemon
         return c2c_wire_daemon.main(remainder)
+    if subcommand == "coord-cherry-pick":
+        os.environ["C2C_COORDINATOR"] = "1"
+        return c2c_coord_cherry_pick.main(remainder)
 
     print(f"unknown c2c subcommand: {subcommand}", file=sys.stderr)
     return 2

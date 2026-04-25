@@ -1,0 +1,4 @@
+#!/bin/bash
+# c2c-coord-cherry-pick — standalone wrapper
+# Calls c2c_coord_cherry_pick.py with C2C_COORDINATOR=1
+exec python3 "${BASH_SOURCE[0]%.sh}.py" "$@"
