@@ -5447,8 +5447,8 @@ let start_cmd =
                  Printf.eprintf "error: --worktree requires a branch but git reports detached HEAD. Pass --branch <name> explicitly.\n%!";
                  exit 1)
       in
-      if branch = "master" then begin
-        Printf.eprintf "error: --worktree refused on 'master'. Create a slice branch first (e.g. git checkout -b slice/my-work) or pass --branch <name>.\n%!";
+      if branch = "master" || branch = "main" then begin
+        Printf.eprintf "error: --worktree refused on '%s'. Create a slice branch first (e.g. git checkout -b slice/my-work) or pass --branch <name>.\n%!" branch;
         exit 1
       end;
       let wt_dir = C2c_worktree.ensure_worktree ~alias:effective_alias ~branch in
