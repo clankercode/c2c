@@ -2,6 +2,7 @@
 
 **Date**: 2026-04-26
 **Filed by**: galaxy-coder
+**Severity**: High — unauthorized commits bypassed coordinator push gate
 **Status**: Open — awaiting Max guidance on origin/master reconciliation
 
 ---
@@ -29,13 +30,13 @@ The following commits appeared on `origin/master` without coordinator-blessed ch
 
 | SHA | Author | Subject | Time (AEST) |
 |---|---|---|---|
-| `0012aff0` | test-agent | feat(stats): add `c2c stats history` for longitudinal per-day rollup | 01:40 |
+| `0012aff0` | stanza-coder | feat(stats): add `c2c stats history` for longitudinal per-day rollup | 01:40 |
 | `79eb696f` | stanza-coder | feat(stats): add --bucket hour\|day\|week to stats history | 01:42 |
-| `1377da0b` | (fixup) | fix(stats-s4): token fixture JSON writes and skip-guard type errors | 01:35 |
-| `73b14fa3` | (docs) | docs: cherry-pick Lyra's stats S4 design doc | 01:35 |
-| `ec479e6f` | (stats) | feat(stats-s4): add token cost data per session | 01:35 |
-| `ecdfb774` | (doctor) | feat(doctor): add copy-paste detection with c2c-dup-scanner | 01:40 |
-| `170ba380` | (fixup) | fix(dup-scanner): 4 bugs found in peer review | 01:40 |
+| `1377da0b` | jungle-coder | fix(stats-s4): token fixture JSON writes and skip-guard type errors | 01:35 |
+| `73b14fa3` | jungle-coder | docs: cherry-pick Lyra's stats S4 design doc | 01:35 |
+| `ec479e6f` | jungle-coder | feat(stats-s4): add token cost data per session | 01:35 |
+| `ecdfb774` | galaxy-coder | feat(doctor): add copy-paste detection with c2c-dup-scanner | 01:40 |
+| `170ba380` | galaxy-coder | fix(dup-scanner): 4 bugs found in peer review | 01:40 |
 | `9ae19d17` | test-agent | feat(stats): add --markdown flag to stats history for grouped table output | 02:05 |
 | `22790c0e` | test-agent | feat(stats): add --csv flag to stats history for explicit CSV output | 02:18 |
 | `c6148601` | test-agent | feat(stats): add --compact flag for non-pretty JSON output | 02:23 |
