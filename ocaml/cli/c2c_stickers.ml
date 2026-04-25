@@ -19,6 +19,28 @@ let sent_dir ~alias =
 let public_dir () =
   sticker_dir () // "public"
 
+(* --- identity helpers (shared with c2c_peer_pass.ml) -------------------- *)
+
+let xdg_state_home () =
+  match Sys.getenv_opt "XDG_STATE_HOME" with
+  | Some v when String.trim v <> "" -> String.trim v
+  | _ ->
+      (match Sys.getenv_opt "HOME" with
+       | Some h when String.trim h <> "" -> String.trim h // ".local" // "state"
+       | _ -> "/tmp")
+
+let per_alias_key_path ~alias =
+  let abs_path p = if Filename.is_relative p then Sys.getcwd () // p else p in
+  let broker_root =
+    match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
+    | Some dir -> abs_path dir
+    | None -> (
+        match Git_helpers.git_common_dir () with
+        | Some git_dir -> abs_path git_dir // "c2c" // "mcp"
+        | None -> xdg_state_home () // "c2c" // "default" // "mcp")
+  in
+  Some (broker_root // "keys" // (alias ^ ".ed25519"))
+
 (* --- registry ----------------------------------------------------------- *)
 
 type registry_entry = {
@@ -298,9 +320,17 @@ let sticker_send_cmd =
     | Some a -> a
     | None -> (Printf.eprintf "error: no alias set. Set C2C_MCP_AUTO_REGISTER_ALIAS or run 'c2c register' first.\n%!"; exit 1)
   in
-  let identity = match Relay_identity.load () with
-    | Ok id -> id
-    | Error _ -> (Printf.eprintf "error: no identity found. Run 'c2c install' first.\n%!"; exit 1)
+  let identity =
+    match per_alias_key_path ~alias:from_alias with
+    | Some path when Sys.file_exists path ->
+        Relay_identity.load_or_create_at ~path ~alias_hint:from_alias
+    | _ ->
+        Printf.eprintf
+          "warning: no per-alias key at <broker>/keys/%s.ed25519; falling back to host identity\n%!"
+          from_alias;
+        (match Relay_identity.load () with
+         | Ok id -> id
+         | Error _ -> (Printf.eprintf "error: no identity found. Run 'c2c install' first.\n%!"; exit 1))
   in
   (match note with Some n when String.length n > 280 ->
     (Printf.eprintf "error: note exceeds 280 characters\n%!"; exit 1)
