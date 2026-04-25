@@ -30,13 +30,14 @@ would want it weekly or on-demand.
 
 ### Untested-public-surface scanner
 For every Tier-1/Tier-2 c2c subcommand, verify there's at least one
-test that exercises the cmdliner entry point. **Status**: not started;
-would belong in `c2c doctor` extensions.
+test that exercises the cmdliner entry point. **Status**: implemented
+at `scripts/c2c-command-test-audit.py`, wired into `c2c doctor`;
+29/43 Tier 1/2 commands have test references; 14 gaps remain.
 
 ### `c2c doctor` "did the docs lie?" check
 Periodically diff CLAUDE.md claims (file paths, command surfaces,
 script names) against actual repo state. Flag drift.
-**Status**: not started.
+**Status**: implemented in slice/doctor-docs-drift (lyra); pending merge.
 
 ---
 
@@ -45,14 +46,16 @@ script names) against actual repo state. Flag drift.
 ### `c2c coord-cherry-pick` helper
 Auto-stash dirty state, cherry-pick, restore, build+install — the
 workflow I do by hand on every peer-PASS. Recurring friction this
-session. **Status**: not started; would slot into `c2c worktree` or
-new `c2c coord` subgroup.
+session. **Status**: implemented as `c2c coord-cherry-pick` (C2c_coord module);
+auto-stash on dirty tree, cherry-pick sequence, abort+restore on conflict,
+optional `just install-all` after cherry-pick.
 
 ### Branch-from-origin-master vs local-master mismatch detector
 When a peer branches from `origin/master` but coord hasn't pushed in
 N commits, their cherry-pick target conflicts. Warn at branch-creation
-time or at peer-PASS-DM time. **Status**: not started; ~30 LoC in `c2c
-worktree start`?
+time or at peer-PASS-DM time. **Status**: implemented in `start_worktree`;
+warns when origin/master is behind local master by N commits; uses
+`local_master_ahead_of_origin` + `stale_origin_warning`.
 
 ---
 
