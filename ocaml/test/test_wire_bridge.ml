@@ -49,6 +49,70 @@ let test_envelope_empty_from () =
             let nl = String.length needle and ll = String.length got in
             let rec f i = i + nl <= ll && (String.sub got i nl = needle || f (i+1)) in f 0)
 
+(* ---- Role attribute in envelope (slice #150) ---- *)
+
+let test_envelope_with_role () =
+  let m = msg ~from_alias:"alice" ~to_alias:"bob" "hello" in
+  let role : string option = Some "coder" in
+  let got = C2c_wire_bridge.format_envelope ?sender_role:role m in
+  Alcotest.(check bool) "role attr emitted"
+    true (let needle = "role=\"coder\"" in
+            let nl = String.length needle and ll = String.length got in
+            let rec f i = i + nl <= ll && (String.sub got i nl = needle || f (i+1)) in f 0)
+
+let test_envelope_role_xml_escaped () =
+  (* role value with special chars must be escaped *)
+  let m = msg ~from_alias:"alice" ~to_alias:"bob" "hello" in
+  let role : string option = Some "a&b" in
+  let got = C2c_wire_bridge.format_envelope ?sender_role:role m in
+  Alcotest.(check bool) "role value escaped"
+    true (let needle = "role=\"a&amp;b\"" in
+            let nl = String.length needle and ll = String.length got in
+            let rec f i = i + nl <= ll && (String.sub got i nl = needle || f (i+1)) in f 0)
+
+let test_envelope_role_absent_when_none () =
+  (* absent sender_role must not emit any role attr *)
+  let m = msg ~from_alias:"alice" ~to_alias:"bob" "hello" in
+  let got = C2c_wire_bridge.format_envelope m in
+  Alcotest.(check bool) "no role attr when sender_role is None"
+    false (let needle = "role=" in
+            let nl = String.length needle and ll = String.length got in
+            let rec f i = i + nl <= ll && (String.sub got i nl = needle || f (i+1)) in f 0)
+
+let test_prompt_with_role_lookup () =
+  let m1 = msg ~from_alias:"alice" ~to_alias:"bob" "hello" in
+  let m2 = msg ~from_alias:"carol" ~to_alias:"bob" "world" in
+  let lookup : string -> string option = function
+    | "alice" -> Some "coordinator"
+    | "carol" -> Some "reviewer"
+    | _ -> None
+  in
+  let got = C2c_wire_bridge.format_prompt ~role_lookup:lookup [m1; m2] in
+  (* Check alice's envelope has role="coordinator" *)
+  Alcotest.(check bool) "alice role present"
+    true (let needle = "role=\"coordinator\"" in
+            let nl = String.length needle and ll = String.length got in
+            let rec f i = i + nl <= ll && (String.sub got i nl = needle || f (i+1)) in f 0);
+  (* Check carol's envelope has role="reviewer" *)
+  Alcotest.(check bool) "carol role present"
+    true (let needle = "role=\"reviewer\"" in
+            let nl = String.length needle and ll = String.length got in
+            let rec f i = i + nl <= ll && (String.sub got i nl = needle || f (i+1)) in f 0);
+  (* Check alice's from_alias is in output *)
+  Alcotest.(check bool) "alice from_alias present"
+    true (let needle = "from=\"alice\"" in
+            let nl = String.length needle and ll = String.length got in
+            let rec f i = i + nl <= ll && (String.sub got i nl = needle || f (i+1)) in f 0)
+
+let test_prompt_role_omitted_when_lookup_returns_none () =
+  let m = msg ~from_alias:"unknown" ~to_alias:"bob" "hello" in
+  let lookup (_ : string) : string option = None in
+  let got = C2c_wire_bridge.format_prompt ~role_lookup:lookup [m] in
+  Alcotest.(check bool) "no role attr for unknown sender"
+    false (let needle = "role=" in
+            let nl = String.length needle and ll = String.length got in
+            let rec f i = i + nl <= ll && (String.sub got i nl = needle || f (i+1)) in f 0)
+
 (* ---------------------------------------------------------------------------
  * format_prompt parity (vs Python format_prompt = "\n\n".join(...))
  * --------------------------------------------------------------------------- *)
@@ -142,11 +206,16 @@ let () =
         ; Alcotest.test_case "xml_escaping"    `Quick test_envelope_xml_escaping
         ; Alcotest.test_case "multiline"       `Quick test_envelope_multiline_content
         ; Alcotest.test_case "empty_from"      `Quick test_envelope_empty_from
+        ; Alcotest.test_case "with_role"       `Quick test_envelope_with_role
+        ; Alcotest.test_case "role_xml_escaped" `Quick test_envelope_role_xml_escaped
+        ; Alcotest.test_case "role_absent_when_none" `Quick test_envelope_role_absent_when_none
         ] )
     ; ( "prompt"
       , [ Alcotest.test_case "single"          `Quick test_prompt_single
         ; Alcotest.test_case "multiple"        `Quick test_prompt_multiple
         ; Alcotest.test_case "empty"           `Quick test_prompt_empty
+        ; Alcotest.test_case "with_role_lookup" `Quick test_prompt_with_role_lookup
+        ; Alcotest.test_case "role_omitted_when_none" `Quick test_prompt_role_omitted_when_lookup_returns_none
         ] )
     ; ( "spool"
       , [ Alcotest.test_case "roundtrip"       `Quick test_spool_roundtrip

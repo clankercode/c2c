@@ -43,7 +43,9 @@ let format_envelope ?(sender_role : string option) (msg : C2c_mcp.message) =
     role_attr
     msg.content
 
-let format_prompt ?(role_lookup : (string -> string option) = fun _ -> None) messages =
+let format_prompt
+    ?(role_lookup : string -> string option = fun _ -> None)
+    (messages : C2c_mcp.message list) =
   String.concat "\n\n"
     (List.map (fun msg ->
       let sender_role = role_lookup msg.C2c_mcp.from_alias in
@@ -202,7 +204,7 @@ let wire_initialize wc =
   in
   ignore (wire_request wc "initialize" params)
 
-let wire_prompt ?(role_lookup : (string -> string option) = fun _ -> None) wc user_input =
+let wire_prompt wc user_input =
   ignore (wire_request wc "prompt" (`Assoc [ ("user_input", `String user_input) ]))
 
 (* ---------------------------------------------------------------------------
@@ -288,7 +290,7 @@ let run_once_live ~broker_root ~session_id ~alias ~command ~work_dir =
                        reg.C2c_mcp.role
                      with Not_found -> None)
                in
-               wire_prompt wc ~role_lookup (format_prompt ~role_lookup messages);
+               wire_prompt wc (format_prompt ~role_lookup messages);
                let n = List.length messages in
                spool_clear spool;
                n
