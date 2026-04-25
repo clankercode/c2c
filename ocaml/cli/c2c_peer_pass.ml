@@ -3,6 +3,10 @@
 open Cmdliner.Term.Syntax
 let ( // ) = Filename.concat
 
+(* shared per-alias signing key helpers *)
+let xdg_state_home = C2c_signing_helpers.xdg_state_home
+let per_alias_key_path = C2c_signing_helpers.per_alias_key_path
+
 (* --- path helpers ------------------------------------------------------- *)
 
 let peer_passes_dir () =
@@ -23,9 +27,17 @@ let resolve_current_alias () =
       exit 1
 
 let resolve_identity () =
-  match Relay_identity.load () with
-  | Ok id -> id
-  | Error e -> Printf.eprintf "error: cannot load identity: %s\n%!" e; exit 1
+  let alias = resolve_current_alias () in
+  match per_alias_key_path ~alias with
+  | Some path when Sys.file_exists path ->
+      Relay_identity.load_or_create_at ~path ~alias_hint:alias
+  | _ ->
+      Printf.eprintf
+        "warning: no per-alias key at <broker>/keys/%s.ed25519; falling back to host identity\n%!"
+        alias;
+      (match Relay_identity.load () with
+       | Ok id -> id
+       | Error e -> Printf.eprintf "error: %s\n%!" e; exit 1)
 
 (* --- sign command -------------------------------------------------------- *)
 

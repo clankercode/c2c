@@ -19,6 +19,10 @@ let sent_dir ~alias =
 let public_dir () =
   sticker_dir () // "public"
 
+(* shared per-alias signing key helpers (c2c_signing_helpers.ml) *)
+let xdg_state_home = C2c_signing_helpers.xdg_state_home
+let per_alias_key_path = C2c_signing_helpers.per_alias_key_path
+
 (* --- registry ----------------------------------------------------------- *)
 
 type registry_entry = {
@@ -298,9 +302,17 @@ let sticker_send_cmd =
     | Some a -> a
     | None -> (Printf.eprintf "error: no alias set. Set C2C_MCP_AUTO_REGISTER_ALIAS or run 'c2c register' first.\n%!"; exit 1)
   in
-  let identity = match Relay_identity.load () with
-    | Ok id -> id
-    | Error _ -> (Printf.eprintf "error: no identity found. Run 'c2c install' first.\n%!"; exit 1)
+  let identity =
+    match per_alias_key_path ~alias:from_alias with
+    | Some path when Sys.file_exists path ->
+        Relay_identity.load_or_create_at ~path ~alias_hint:from_alias
+    | _ ->
+        Printf.eprintf
+          "warning: no per-alias key at <broker>/keys/%s.ed25519; falling back to host identity\n%!"
+          from_alias;
+        (match Relay_identity.load () with
+         | Ok id -> id
+         | Error _ -> (Printf.eprintf "error: no identity found. Run 'c2c install' first.\n%!"; exit 1))
   in
   (match note with Some n when String.length n > 280 ->
     (Printf.eprintf "error: note exceeds 280 characters\n%!"; exit 1)

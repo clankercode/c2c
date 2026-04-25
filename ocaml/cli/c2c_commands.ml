@@ -1,7 +1,9 @@
-(* c2c_commands.ml — command tier map and visibility filtering.
-   Extracted from c2c.ml (#152 Phase 2). *)
+(* c2c_commands.ml — command tier map and visibility filtering + shared role helpers.
+   Extracted from c2c.ml (#152 Phase 2, Phase 4). *)
 
 open C2c_types
+open C2c_role
+open C2c_utils
 
 let safety_to_string = function
   | Tier1 -> "tier1" | Tier2 -> "tier2" | Tier3 -> "tier3" | Tier4 -> "tier4"
@@ -126,3 +128,35 @@ let filter_commands ~cmds =
       let cmd_name = Cmdliner.Cmd.name cmd in
       tier_visible (get_tier cmd_name))
     cmds
+
+(* --- shared role/agent helpers (used by start_cmd and roles commands) ----- *)
+
+let ( // ) a b = Filename.concat a b
+
+let agent_file_path ~(client : string) ~(name : string) : string =
+  client_agent_dir ~client // (name ^ ".md")
+
+let write_agent_file ~(client : string) ~(name : string) ~(content : string) : unit =
+  let path = agent_file_path ~client ~name in
+  let dir = Filename.dirname path in
+  mkdir_p dir;
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc content; output_char oc '\n')
+
+let render_role_for_client ?(model_override : string option) (r : C2c_role.t) ~(client : string) ~(name : string) : string option =
+  let pmodel_lookup (key : string) : string option =
+    match Sys.getenv_opt ("C2C_MODEL_" ^ key) with
+    | Some _ as v -> v
+    | None ->
+        match Sys.getenv_opt "C2C_MODEL" with
+        | Some _ as v -> v
+        | None -> None
+  in
+  let resolved_pmodel = resolve_pmodel r ~class_lookup:pmodel_lookup in
+  match client with
+  | "opencode" -> Some (OpenCode_renderer.render ?resolved_pmodel r)
+  | "claude" -> Some (Claude_renderer.render ?resolved_pmodel r ~name)
+  | "codex" -> Some (Codex_renderer.render ?resolved_pmodel r)
+  | "kimi" -> Some (Kimi_renderer.render ?resolved_pmodel r)
+  | _ -> None
