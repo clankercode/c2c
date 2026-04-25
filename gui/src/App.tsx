@@ -8,6 +8,7 @@ import { registerAlias, joinRoom } from "./useSend";
 import { loadHistory, loadRoomHistory, loadPeerHistory, pollInbox } from "./useHistory";
 import { discoverPeers, discoverRooms, fetchHealth, HealthInfo } from "./useDiscovery";
 import { WelcomeWizard } from "./components/WelcomeWizard";
+import { ArchivePanel } from "./ArchivePanel";
 
 const MAX_EVENTS = 1000;
 const MAX_CACHED_EVENTS = 100;
@@ -60,6 +61,7 @@ export function App() {
   const [aliasStatus, setAliasStatus] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [health, setHealth] = useState<HealthInfo | null>(null);
+  const [showArchive, setShowArchive] = useState(false);
   const childRef = useRef<Child | null>(null);
   const cancelledRef = useRef(false);
   const reconnectAttemptRef = useRef(0);
@@ -327,6 +329,9 @@ export function App() {
       background: "#1e1e2e", color: "#cdd6f4",
     }}>
       <WelcomeWizard open={showWizard} onComplete={handleWizardComplete} onSkip={() => setShowWizard(false)} />
+      {showArchive && (
+        <ArchivePanel mySessionId={mySessionId} onClose={() => setShowArchive(false)} />
+      )}
       {/* Header */}
       <div style={{
         padding: "6px 16px", background: "#181825",
@@ -379,6 +384,17 @@ export function App() {
             )}
           </>
         )}
+        <button
+          onClick={() => setShowArchive(true)}
+          title="Browse message archive"
+          style={{
+            background: "transparent", border: "1px solid #45475a",
+            borderRadius: 4, color: "#cba6f7",
+            padding: "2px 6px", fontSize: 11, cursor: "pointer",
+          }}
+        >
+          📜 archive
+        </button>
         <button
           onClick={() => refreshBroker()}
           disabled={refreshing}
