@@ -470,3 +470,109 @@ let run ~root ~json ~alias_filter ~since_str ~append_sitrep =
     | Error msg ->
         Printf.eprintf "error: could not append swarm stats to sitrep: %s\n%!" msg;
         exit 1
+
+(* --- history runner: longitudinal per-day rollup --------------------------- *)
+
+(** Bucket archive messages by UTC day. Returns (day_key, alias, kind) -> count
+    where day_key is "YYYY-MM-DD" and kind is `Sent | `Received. The session_id
+    -> alias map is provided externally so we can attribute received-counts. *)
+let scan_archives_by_day ~archive_dir ~session_to_alias ~cutoff =
+  let counts : (string * string * [ `Sent | `Recv ], int) Hashtbl.t = Hashtbl.create 256 in
+  let bump key =
+    let prev = try Hashtbl.find counts key with Not_found -> 0 in
+    Hashtbl.replace counts key (prev + 1)
+  in
+  let day_of ts =
+    let t = Unix.gmtime ts in
+    Printf.sprintf "%04d-%02d-%02d" (1900 + t.tm_year) (1 + t.tm_mon) t.tm_mday
+  in
+  let files =
+    try Array.to_list (Sys.readdir archive_dir) with Sys_error _ -> []
+  in
+  List.iter (fun fname ->
+    if not (Filename.check_suffix fname ".jsonl") then ()
+    else
+      let session_id = Filename.chop_suffix fname ".jsonl" in
+      let recv_alias =
+        try Some (Hashtbl.find session_to_alias session_id) with Not_found -> None
+      in
+      let path = Filename.concat archive_dir fname in
+      try
+        let ic = open_in path in
+        Fun.protect ~finally:(fun () -> try close_in ic with _ -> ()) (fun () ->
+          try
+            while true do
+              let line = String.trim (input_line ic) in
+              if line <> "" then
+                try
+                  let json = Yojson.Safe.from_string line in
+                  let open Yojson.Safe.Util in
+                  let drained_at =
+                    match json |> member "drained_at" with
+                    | `Float f -> f
+                    | `Int i -> float_of_int i
+                    | _ -> 0.0
+                  in
+                  let from_alias =
+                    try json |> member "from_alias" |> to_string with _ -> ""
+                  in
+                  let after_cutoff = match cutoff with
+                    | None -> true
+                    | Some c -> drained_at >= c
+                  in
+                  if after_cutoff && from_alias <> "" && from_alias <> "c2c-system"
+                     && drained_at > 0.0 then begin
+                    let day = day_of drained_at in
+                    bump (day, from_alias, `Sent);
+                    match recv_alias with
+                    | Some ra -> bump (day, ra, `Recv)
+                    | None -> ()
+                  end
+                with _ -> ()
+            done
+          with End_of_file -> ())
+      with Sys_error _ -> ())
+    files;
+  counts
+
+let run_history ~root ~json ~alias_filter ~days =
+  let broker = C2c_mcp.Broker.create ~root in
+  let regs = C2c_mcp.Broker.list_registrations broker in
+  let session_to_alias = Hashtbl.create 32 in
+  List.iter (fun (reg : C2c_mcp.registration) ->
+    Hashtbl.replace session_to_alias reg.session_id reg.alias) regs;
+  let cutoff =
+    if days <= 0 then None
+    else Some (Unix.gettimeofday () -. (float_of_int days *. 86400.0))
+  in
+  let archive_dir = Filename.concat root "archive" in
+  let counts = scan_archives_by_day ~archive_dir ~session_to_alias ~cutoff in
+  (* Aggregate to (day, alias) -> {sent; recv} *)
+  let agg : (string * string, int * int) Hashtbl.t = Hashtbl.create 64 in
+  Hashtbl.iter (fun (day, alias, kind) n ->
+    let (s, r) = try Hashtbl.find agg (day, alias) with Not_found -> (0, 0) in
+    let v = match kind with
+      | `Sent -> (s + n, r)
+      | `Recv -> (s, r + n)
+    in
+    Hashtbl.replace agg (day, alias) v) counts;
+  (* Build sorted rows. *)
+  let rows =
+    Hashtbl.fold (fun (day, alias) (s, r) acc ->
+      match alias_filter with
+      | Some a when a <> alias -> acc
+      | _ -> (day, alias, s, r) :: acc) agg []
+    |> List.sort (fun (d1, a1, _, _) (d2, a2, _, _) ->
+        match String.compare d1 d2 with 0 -> String.compare a1 a2 | c -> c)
+  in
+  if json then begin
+    let arr = `List (List.map (fun (day, alias, sent, recv) ->
+      `Assoc [ ("day", `String day); ("alias", `String alias);
+               ("msgs_out", `Int sent); ("msgs_in", `Int recv) ]) rows) in
+    print_string (Yojson.Safe.pretty_to_string arr);
+    print_newline ()
+  end else begin
+    print_string "day,alias,msgs_out,msgs_in\n";
+    List.iter (fun (day, alias, sent, recv) ->
+      Printf.printf "%s,%s,%d,%d\n" day alias sent recv) rows
+  end

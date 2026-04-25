@@ -5119,8 +5119,28 @@ let stats_cmd =
   let root = resolve_broker_root () in
   C2c_stats.run ~root ~json ~alias_filter ~since_str ~append_sitrep
 
-let stats = Cmdliner.Cmd.v (Cmdliner.Cmd.info "stats"
-    ~doc:"Show per-agent message statistics across the swarm.") stats_cmd
+let stats_history_cmd =
+  let alias_flag =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS"
+      ~doc:"Filter to a single agent alias.")
+  in
+  let days_flag =
+    Cmdliner.Arg.(value & opt int 7 & info [ "days"; "d" ] ~docv:"N"
+      ~doc:"Lookback window in days (0 = all archive history).")
+  in
+  let+ json = json_flag
+  and+ alias_filter = alias_flag
+  and+ days = days_flag in
+  let root = resolve_broker_root () in
+  C2c_stats.run_history ~root ~json ~alias_filter ~days
+
+let stats =
+  Cmdliner.Cmd.group
+    ~default:stats_cmd
+    (Cmdliner.Cmd.info "stats" ~doc:"Show per-agent message statistics across the swarm.")
+    [ Cmdliner.Cmd.v (Cmdliner.Cmd.info "history"
+        ~doc:"Per-day rollup of swarm message counts (CSV by default; --json for JSON).")
+        stats_history_cmd ]
 
 (* --- subcommand: start ---------------------------------------------------- *)
 
