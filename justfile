@@ -196,3 +196,8 @@ gc *MSG:
 # Usage: just gac "fix: something" ocaml/c2c_start.ml
 gac MSG FILES:
     git add {{FILES}} && git commit -m {{MSG}}
+
+# Stage and commit .collab/findings/ and .collab/updates/ explicitly (gitignored to suppress ?? noise)
+# Usage: just collab-commit "findings: describe what you found"
+collab-commit MSG:
+    git add -f .collab/findings/ .collab/updates/ && git commit -m {{MSG}}

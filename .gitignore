@@ -21,6 +21,9 @@ _build/
 .artifacts/
 .c2c/peer-passes/
 .collab/personal-logs/
+# Suppress ?? noise for uncommitted collab docs — commit explicitly with `just collab-commit`
+.collab/findings/
+.collab/updates/
 .opencode/c2c-plugin.json
 .opencode/package-lock.json
 .opencode/plugins/c2c.ts
