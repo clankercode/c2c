@@ -288,6 +288,76 @@ let normalize_model_override_for_client ~(client : string) (raw : string)
         else Ok value
     | _ -> Error (Printf.sprintf "unknown client for --model normalization: %s" client)
 
+let current_c2c_command () =
+  let fallback =
+    if Array.length Sys.argv > 0 then Sys.argv.(0) else "c2c"
+  in
+  let resolved =
+    try Unix.readlink "/proc/self/exe"
+    with Unix.Unix_error _ -> fallback
+  in
+  if Filename.is_relative resolved then Sys.getcwd () // resolved else resolved
+
+let write_json_file_atomic (path : string) (json : Yojson.Safe.t) : unit =
+  let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+  let oc =
+    open_out_gen [ Open_wronly; Open_creat; Open_trunc; Open_text ] 0o600 tmp
+  in
+  let cleanup_tmp () = try Unix.unlink tmp with _ -> () in
+  (try
+     Fun.protect
+       ~finally:(fun () -> try close_out oc with _ -> ())
+       (fun () -> Yojson.Safe.to_channel oc json)
+   with e ->
+     cleanup_tmp ();
+     raise e);
+  try Unix.rename tmp path
+  with e ->
+    cleanup_tmp ();
+    raise e
+
+(* ---------------------------------------------------------------------------
+ * Client adapter — unified client abstraction (Phase 1: opencode POC)
+ * --------------------------------------------------------------------------- *)
+
+(** CLIENT_ADAPTER: per-client behavior capsule.
+   Replaces bespoke per-client functions scattered through c2c_start.ml.
+   Phase 1 implements opencode as proof-of-concept; remaining clients follow. *)
+module type CLIENT_ADAPTER = sig
+  val name : string
+
+  val config_dir : string
+  val agent_dir : string
+  val instances_subdir : string
+
+  val binary : string
+  val needs_deliver : bool
+  val needs_wire_daemon : bool
+  val needs_poker : bool
+  val poker_event : string option
+  val poker_from : string option
+  val extra_env : (string * string) list
+  val session_id_env : string option
+
+  val build_start_args :
+    name:string ->
+    ?alias_override:string ->
+    ?model_override:string ->
+    ?resume_session_id:string ->
+    ?extra_args:string list ->
+    unit -> string list
+
+  val refresh_identity :
+    name:string ->
+    alias:string ->
+    broker_root:string ->
+    project_dir:string ->
+    instances_dir:string ->
+    unit
+
+  val probe_capabilities : binary_path:string -> (string * bool) list
+end
+
 (* ---------------------------------------------------------------------------
  * Client configurations
  * --------------------------------------------------------------------------- *)
@@ -347,6 +417,111 @@ let () =
       poker_event = None; poker_from = None; extra_env = [] }
 
 let supported_clients = Stdlib.Hashtbl.fold (fun k _ acc -> k :: acc) clients []
+
+(* ---------------------------------------------------------------------------
+ * Per-client adapter modules (Phase 1: opencode POC)
+ * --------------------------------------------------------------------------- *)
+
+let client_adapters : (string, (module CLIENT_ADAPTER)) Stdlib.Hashtbl.t =
+  Stdlib.Hashtbl.create 5
+
+module OpenCodeAdapter : CLIENT_ADAPTER = struct
+  let name = "opencode"
+
+  let config_dir = ".opencode"
+  let agent_dir = "agents"
+  let instances_subdir = "opencode"
+
+  let binary = "opencode"
+  let needs_deliver = false
+  let needs_wire_daemon = false
+  let needs_poker = false
+  let poker_event = None
+  let poker_from = None
+  let extra_env = []
+  let session_id_env = Some "OPENCODE_SESSION_ID"
+
+  let build_start_args ~name ?alias_override ?model_override ?resume_session_id
+      ?(extra_args=[]) () =
+    let session_arg = match resume_session_id with
+     | Some sid when String.length sid >= 3 && String.sub sid 0 3 = "ses" ->
+         [ "--session"; sid ]
+     | _ -> []
+    in
+    let base = [ "--log-level"; "INFO" ] @ session_arg in
+    match model_override with
+    | Some m when String.trim m <> "" -> base @ [ "--model"; m ]
+    | _ -> base
+
+  let refresh_identity ~name ~alias ~broker_root ~project_dir ~instances_dir =
+    let config_dir = project_dir // ".opencode" in
+    let config_path = config_dir // "opencode.json" in
+    (if Sys.file_exists config_path then
+      (try
+        let cfg = Yojson.Safe.from_file config_path in
+        let identity_env = [
+          ("C2C_MCP_BROKER_ROOT", `String broker_root);
+          ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge");
+          ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0");
+          ("C2C_CLI_COMMAND", `String (current_c2c_command ()));
+        ] in
+        let merge_env env_obj new_pairs =
+          let existing = match env_obj with `Assoc p -> p | _ -> [] in
+          let keys = List.map fst new_pairs in
+          let drop_keys = ["C2C_MCP_AUTO_REGISTER_ALIAS"; "C2C_MCP_SESSION_ID"] in
+          let kept = List.filter (fun (k, _) ->
+            not (List.mem k keys) && not (List.mem k drop_keys)) existing in
+          `Assoc (kept @ new_pairs)
+        in
+        let put key v pairs =
+          if List.mem_assoc key pairs
+          then List.map (fun (k, x) -> if k = key then (k, v) else (k, x)) pairs
+          else pairs @ [(key, v)]
+        in
+        let updated = match cfg with
+          | `Assoc top ->
+              let mcp_obj = match List.assoc_opt "mcp" top with Some m -> m | None -> `Assoc [] in
+              let mcp_pairs = match mcp_obj with `Assoc p -> p | _ -> [] in
+              let c2c_obj = match List.assoc_opt "c2c" mcp_pairs with Some c -> c | None -> `Assoc [] in
+              let c2c_pairs = match c2c_obj with `Assoc p -> p | _ -> [] in
+              let env_obj = match List.assoc_opt "environment" c2c_pairs with Some e -> e | None -> `Assoc [] in
+              let env_updated = merge_env env_obj identity_env in
+              let c2c_updated = `Assoc (put "environment" env_updated c2c_pairs) in
+              let mcp_updated = `Assoc (put "c2c" c2c_updated mcp_pairs) in
+              `Assoc (put "mcp" mcp_updated top)
+          | other -> other
+        in
+        let tmp = config_path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+        (try
+          let oc = open_out tmp in
+          (try Yojson.Safe.pretty_to_channel oc updated; output_char oc '\n'
+           with e -> close_out_noerr oc; raise e);
+          close_out oc;
+          Unix.rename tmp config_path
+        with _ -> ())
+      with _ -> ()));
+    let sidecar_path = instances_dir // name // "c2c-plugin.json" in
+    (try
+      let existing = if Sys.file_exists sidecar_path then
+        (match Yojson.Safe.from_file sidecar_path with `Assoc p -> p | _ -> [])
+      else []
+      in
+      let identity = [
+        ("session_id", `String name);
+        ("alias", `String alias);
+        ("broker_root", `String broker_root);
+      ] in
+      let keys = List.map fst identity in
+      let kept = List.filter (fun (k, _) -> not (List.mem k keys)) existing in
+      write_json_file_atomic sidecar_path (`Assoc (kept @ identity))
+    with _ -> ())
+
+  let probe_capabilities ~binary_path =
+    let plugin_path = Filename.concat (Sys.getcwd ()) ".opencode" // "plugins" // "c2c.ts" in
+    ["opencode_plugin", Sys.file_exists plugin_path]
+end
+
+let () = Stdlib.Hashtbl.add client_adapters "opencode" (module OpenCodeAdapter)
 
 (* ---------------------------------------------------------------------------
  * Paths
@@ -417,18 +592,8 @@ let ensure_fifo path =
      else
        Unix.mkfifo path 0o600
    with
-   | Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-   | Sys_error _ -> ())
-
-let current_c2c_command () =
-  let fallback =
-    if Array.length Sys.argv > 0 then Sys.argv.(0) else "c2c"
-  in
-  let resolved =
-    try Unix.readlink "/proc/self/exe"
-    with Unix.Unix_error _ -> fallback
-  in
-  if Filename.is_relative resolved then Sys.getcwd () // resolved else resolved
+    | Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+    | Sys_error _ -> ())
 
 let with_file_lock (path : string) (f : unit -> 'a) : 'a =
   let fd = Unix.openfile path [ Unix.O_RDWR; Unix.O_CREAT ] 0o644 in
@@ -439,24 +604,6 @@ let with_file_lock (path : string) (f : unit -> 'a) : 'a =
     (fun () ->
       Unix.lockf fd Unix.F_LOCK 0;
       f ())
-
-let write_json_file_atomic (path : string) (json : Yojson.Safe.t) : unit =
-  let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
-  let oc =
-    open_out_gen [ Open_wronly; Open_creat; Open_trunc; Open_text ] 0o600 tmp
-  in
-  let cleanup_tmp () = try Unix.unlink tmp with _ -> () in
-  (try
-     Fun.protect
-       ~finally:(fun () -> try close_out oc with _ -> ())
-       (fun () -> Yojson.Safe.to_channel oc json)
-   with e ->
-     cleanup_tmp ();
-     raise e);
-  try Unix.rename tmp path
-  with e ->
-    cleanup_tmp ();
-    raise e
 
 let clear_registration_pid ~(broker_root : string) ~(session_id : string) : unit =
   let reg_path = broker_root // "registry.json" in
@@ -1112,83 +1259,8 @@ let build_env ?(broker_root_override : string option = None)
  * --------------------------------------------------------------------------- *)
 
 let refresh_opencode_identity ~name ~alias ~broker_root ~project_dir ~instances_dir =
-  let ( // ) = Filename.concat in
-  let config_dir = project_dir // ".opencode" in
-  (* Patch opencode.json mcp.c2c.environment with identity vars. *)
-  let config_path = config_dir // "opencode.json" in
-  (if Sys.file_exists config_path then
-    (try
-      let cfg = Yojson.Safe.from_file config_path in
-      (* Do NOT write per-instance values (C2C_MCP_SESSION_ID, C2C_MCP_AUTO_REGISTER_ALIAS)
-         to the shared project opencode.json — two concurrent `c2c start opencode`
-         instances in the same workdir would race to write different aliases and the
-         last writer would overwrite the other, causing broker session_id collisions
-         (#60). build_env already sets these correctly in the process environment;
-         OpenCode may override inherited env with opencode.json values, so only write
-         stable shared config that is safe across all concurrent sessions. *)
-      let identity_env = [
-        ("C2C_MCP_BROKER_ROOT", `String broker_root);
-        ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge");
-        ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0");
-        ("C2C_CLI_COMMAND", `String (current_c2c_command ()));
-      ] in
-      let merge_env env_obj new_pairs =
-        let existing = match env_obj with `Assoc p -> p | _ -> [] in
-        let keys = List.map fst new_pairs in
-        (* Also strip per-instance keys that must never appear in the shared
-           project config — old Python installs wrote AUTO_REGISTER_ALIAS here. *)
-        let drop_keys = ["C2C_MCP_AUTO_REGISTER_ALIAS"; "C2C_MCP_SESSION_ID"] in
-        let kept = List.filter (fun (k, _) ->
-          not (List.mem k keys) && not (List.mem k drop_keys)) existing in
-        `Assoc (kept @ new_pairs)
-      in
-      let put key v pairs =
-        if List.mem_assoc key pairs
-        then List.map (fun (k, x) -> if k = key then (k, v) else (k, x)) pairs
-        else pairs @ [(key, v)]
-      in
-      let updated = match cfg with
-        | `Assoc top ->
-            let mcp_obj = match List.assoc_opt "mcp" top with Some m -> m | None -> `Assoc [] in
-            let mcp_pairs = match mcp_obj with `Assoc p -> p | _ -> [] in
-            let c2c_obj = match List.assoc_opt "c2c" mcp_pairs with Some c -> c | None -> `Assoc [] in
-            let c2c_pairs = match c2c_obj with `Assoc p -> p | _ -> [] in
-            let env_obj = match List.assoc_opt "environment" c2c_pairs with Some e -> e | None -> `Assoc [] in
-            let env_updated = merge_env env_obj identity_env in
-            let c2c_updated = `Assoc (put "environment" env_updated c2c_pairs) in
-            let mcp_updated = `Assoc (put "c2c" c2c_updated mcp_pairs) in
-            `Assoc (put "mcp" mcp_updated top)
-        | other -> other
-      in
-      (* Write with indentation to keep the project config human-readable. *)
-      let tmp = config_path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
-      (try
-        let oc = open_out tmp in
-        (try Yojson.Safe.pretty_to_channel oc updated; output_char oc '\n'
-         with e -> close_out_noerr oc; raise e);
-        close_out oc;
-        Unix.rename tmp config_path
-      with _ -> ())
-    with _ -> ()));
-  (* Update sidecar c2c-plugin.json with current identity.
-     Write to per-instance path (instances/<name>/) to avoid concurrent
-     instances in the same project dir from clobbering each other's identity.
-     The plugin reads from the same path (with project-level fallback). *)
-  let sidecar_path = instances_dir // name // "c2c-plugin.json" in
-  (try
-    let existing = if Sys.file_exists sidecar_path then
-      (match Yojson.Safe.from_file sidecar_path with `Assoc p -> p | _ -> [])
-    else []
-    in
-    let identity = [
-      ("session_id", `String name);
-      ("alias", `String alias);
-      ("broker_root", `String broker_root);
-    ] in
-    let keys = List.map fst identity in
-    let kept = List.filter (fun (k, _) -> not (List.mem k keys)) existing in
-    write_json_file_atomic sidecar_path (`Assoc (kept @ identity))
-  with _ -> ())
+  let module A = (val (Stdlib.Hashtbl.find client_adapters "opencode") : CLIENT_ADAPTER) in
+  A.refresh_identity ~name ~alias ~broker_root ~project_dir ~instances_dir
 
 (* ---------------------------------------------------------------------------
  * Kimi MCP config generation
@@ -1323,17 +1395,8 @@ let prepare_launch_args ~(name : string) ~(client : string)
              ] @ dev_channel_args @ agent_args
          | None -> [ "--name"; name ] @ dev_channel_args @ agent_args @ kickoff_args)
     | "opencode" ->
-        (* OpenCode rejects UUIDs — session IDs must start with "ses". Only
-           pass --session when resuming a prior OpenCode-generated ID.
-           --log-level INFO writes to the log dir. Do NOT add --print-logs:
-           it streams to stdout and floods the TUI. client.log symlink in
-           the instance dir is the supported forensic path. *)
-        let session_arg = match resume_session_id with
-         | Some sid when String.length sid >= 3 && String.sub sid 0 3 = "ses" ->
-             [ "--session"; sid ]
-         | _ -> []
-        in
-        [ "--log-level"; "INFO" ] @ session_arg
+        let module A = (val (Stdlib.Hashtbl.find client_adapters "opencode") : CLIENT_ADAPTER) in
+        A.build_start_args ~name ?alias_override ?model_override ?resume_session_id ()
     | "codex" ->
         (match codex_resume_target with
          | Some sid when String.trim sid <> "" -> [ "resume"; sid ]
