@@ -557,7 +557,7 @@ let scan_archives_by_day ~archive_dir ~session_to_alias ~cutoff ?(grain = Daily)
     files;
   counts
 
-let run_history ~root ~json ~markdown ~alias_filter ~days ?(grain = Daily) () =
+let run_history ~root ~json ~markdown ~csv ~alias_filter ~days ?(grain = Daily) () =
    let broker = C2c_mcp.Broker.create ~root in
    let regs = C2c_mcp.Broker.list_registrations broker in
    let session_to_alias = Hashtbl.create 32 in
