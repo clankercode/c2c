@@ -262,7 +262,7 @@ module Broker = struct
       cleanup_tmp ();
       raise e
 
-  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; enc_pubkey; compacting; last_activity_ts } =
+  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; enc_pubkey; compacting; last_activity_ts; role } =
     let base =
       [ ("session_id", `String session_id); ("alias", `String alias) ]
     in
@@ -333,7 +333,12 @@ module Broker = struct
       | Some ts -> fields @ [ ("last_activity_ts", `Float ts) ]
       | None -> fields
     in
-    `Assoc with_last_activity_ts
+    let with_role =
+      match role with
+      | Some r -> with_last_activity_ts @ [ ("role", `String r) ]
+      | None -> with_last_activity_ts
+    in
+    `Assoc with_role
 
   let int_opt_member name json =
     let open Yojson.Safe.Util in
