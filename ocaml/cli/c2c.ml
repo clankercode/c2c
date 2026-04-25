@@ -5128,11 +5128,22 @@ let stats_history_cmd =
     Cmdliner.Arg.(value & opt int 7 & info [ "days"; "d" ] ~docv:"N"
       ~doc:"Lookback window in days (0 = all archive history).")
   in
+  let bucket_flag =
+    Cmdliner.Arg.(value & opt string "day" & info [ "bucket"; "b" ] ~docv:"GRAIN"
+      ~doc:"Bucket granularity: hour | day | week (default: day).")
+  in
   let+ json = json_flag
   and+ alias_filter = alias_flag
-  and+ days = days_flag in
+  and+ days = days_flag
+  and+ bucket = bucket_flag in
+  let grain = match C2c_stats.parse_bucket bucket with
+    | Some g -> g
+    | None ->
+        Printf.eprintf "error: --bucket must be hour|day|week (got %S)\n%!" bucket;
+        exit 1
+  in
   let root = resolve_broker_root () in
-  C2c_stats.run_history ~root ~json ~alias_filter ~days
+  C2c_stats.run_history ~root ~json ~alias_filter ~days ~grain ()
 
 let stats =
   Cmdliner.Cmd.group

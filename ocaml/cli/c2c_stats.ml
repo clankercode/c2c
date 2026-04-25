@@ -473,19 +473,41 @@ let run ~root ~json ~alias_filter ~since_str ~append_sitrep =
 
 (* --- history runner: longitudinal per-day rollup --------------------------- *)
 
-(** Bucket archive messages by UTC day. Returns (day_key, alias, kind) -> count
-    where day_key is "YYYY-MM-DD" and kind is `Sent | `Received. The session_id
-    -> alias map is provided externally so we can attribute received-counts. *)
-let scan_archives_by_day ~archive_dir ~session_to_alias ~cutoff =
+type bucket_grain = Hourly | Daily | Weekly
+
+let parse_bucket = function
+  | "hour" | "hourly" -> Some Hourly
+  | "day" | "daily" -> Some Daily
+  | "week" | "weekly" -> Some Weekly
+  | _ -> None
+
+let bucket_key grain ts =
+  let t = Unix.gmtime ts in
+  match grain with
+  | Hourly ->
+      Printf.sprintf "%04d-%02d-%02dT%02d"
+        (1900 + t.tm_year) (1 + t.tm_mon) t.tm_mday t.tm_hour
+  | Daily ->
+      Printf.sprintf "%04d-%02d-%02d"
+        (1900 + t.tm_year) (1 + t.tm_mon) t.tm_mday
+  | Weekly ->
+      (* Snap to Monday in UTC. tm_wday: 0=Sun..6=Sat. *)
+      let days_since_monday = (t.tm_wday + 6) mod 7 in
+      let monday_ts = ts -. (float_of_int days_since_monday *. 86400.0) in
+      let mt = Unix.gmtime monday_ts in
+      Printf.sprintf "%04d-%02d-%02d (week)"
+        (1900 + mt.tm_year) (1 + mt.tm_mon) mt.tm_mday
+
+(** Bucket archive messages by [grain]. Returns (bucket_key, alias, kind) -> count
+    where kind is `Sent | `Recv. The session_id -> alias map is provided
+    externally so we can attribute received-counts. *)
+let scan_archives_by_day ~archive_dir ~session_to_alias ~cutoff ?(grain = Daily) () =
   let counts : (string * string * [ `Sent | `Recv ], int) Hashtbl.t = Hashtbl.create 256 in
   let bump key =
     let prev = try Hashtbl.find counts key with Not_found -> 0 in
     Hashtbl.replace counts key (prev + 1)
   in
-  let day_of ts =
-    let t = Unix.gmtime ts in
-    Printf.sprintf "%04d-%02d-%02d" (1900 + t.tm_year) (1 + t.tm_mon) t.tm_mday
-  in
+  let day_of ts = bucket_key grain ts in
   let files =
     try Array.to_list (Sys.readdir archive_dir) with Sys_error _ -> []
   in
@@ -535,7 +557,7 @@ let scan_archives_by_day ~archive_dir ~session_to_alias ~cutoff =
     files;
   counts
 
-let run_history ~root ~json ~alias_filter ~days =
+let run_history ~root ~json ~alias_filter ~days ?(grain = Daily) () =
   let broker = C2c_mcp.Broker.create ~root in
   let regs = C2c_mcp.Broker.list_registrations broker in
   let session_to_alias = Hashtbl.create 32 in
@@ -546,7 +568,7 @@ let run_history ~root ~json ~alias_filter ~days =
     else Some (Unix.gettimeofday () -. (float_of_int days *. 86400.0))
   in
   let archive_dir = Filename.concat root "archive" in
-  let counts = scan_archives_by_day ~archive_dir ~session_to_alias ~cutoff in
+  let counts = scan_archives_by_day ~archive_dir ~session_to_alias ~cutoff ~grain () in
   (* Aggregate to (day, alias) -> {sent; recv} *)
   let agg : (string * string, int * int) Hashtbl.t = Hashtbl.create 64 in
   Hashtbl.iter (fun (day, alias, kind) n ->
