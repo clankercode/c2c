@@ -130,8 +130,9 @@ def enumerate_swarm() -> list[Pane]:
     return [q for q in (_enrich(p) for p in _iter_panes()) if q.alias]
 
 
-def target_for_alias(alias: str, allow_cache: bool = True) -> tuple[str, bool]:
-    """Return (target, is_live). Falls back to cache when alive lookup fails."""
+def target_for_alias(alias: str, allow_cache: bool = True) -> tuple[str, bool] | None:
+    """Return (target, is_live), or None if alias not found in live panes or cache.
+    Does NOT sys.exit — callers decide how to handle a missing alias."""
     for p in enumerate_swarm():
         if p.alias == alias:
             _remember_alias(alias, p.target)
@@ -146,9 +147,22 @@ def target_for_alias(alias: str, allow_cache: bool = True) -> tuple[str, bool]:
                 file=sys.stderr,
             )
             return cached, False
+    return None
+
+
+def _resolve_target(arg: str) -> tuple[str, bool, bool]:
+    """Resolve an alias to (target, is_live, is_bare_target).
+    is_bare_target=True means arg was used directly as a tmux target (not from alias cache).
+    Bare tmux targets look like 'window.pane' (e.g. '0:1.1')."""
+    result = target_for_alias(arg)
+    if result is not None:
+        return result[0], result[1], False
+    # No alias found — treat arg as a bare tmux target if it looks like one
+    if any(c in arg for c in ":%."):
+        return arg, False, True
     sys.exit(
-        f"c2c_tmux: no alias '{alias}' found (no live pane, no cache entry); try "
-        f"`{sys.argv[0]} list`"
+        f"c2c_tmux: '{arg}' is not a known alias and does not look like a tmux target "
+        f"(expected format: window.pane, e.g. '0:1.1'); try `{sys.argv[0]} list`"
     )
 
 
@@ -197,7 +211,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def cmd_peek(args: argparse.Namespace) -> int:
-    target, live = target_for_alias(args.alias)
+    target, live, _is_bare = _resolve_target(args.alias)
     tag = "live" if live else "CACHED"
     print(f"-- peek {args.alias} @ {target} ({tag}) --", file=sys.stderr)
     out = tmux("capture-pane", "-t", target, "-p").stdout
@@ -210,7 +224,7 @@ def cmd_peek(args: argparse.Namespace) -> int:
 def cmd_capture(args: argparse.Namespace) -> int:
     target = args.target
     if not any(c in target for c in ":%."):
-        target, live = target_for_alias(target)
+        target, live, _is_bare = _resolve_target(target)
         tag = "live" if live else "CACHED"
         print(f"-- capture {args.target} @ {target} ({tag}) --", file=sys.stderr)
     out = tmux("capture-pane", "-t", target, "-p", "-S", f"-{args.lines}").stdout
@@ -219,8 +233,8 @@ def cmd_capture(args: argparse.Namespace) -> int:
 
 
 def cmd_send(args: argparse.Namespace) -> int:
-    target, live = target_for_alias(args.alias)
-    if not live:
+    target, live, is_bare = _resolve_target(args.alias)
+    if not live and not is_bare:
         print(
             f"c2c_tmux: refusing to send to CACHED target {target} (pane may belong to another process). "
             f"Use `c2c_tmux list` to confirm.",
@@ -233,8 +247,8 @@ def cmd_send(args: argparse.Namespace) -> int:
 
 
 def cmd_enter(args: argparse.Namespace) -> int:
-    target, live = target_for_alias(args.alias)
-    if not live:
+    target, live, is_bare = _resolve_target(args.alias)
+    if not live and not is_bare:
         print(
             f"c2c_tmux: refusing to enter CACHED target {target}. "
             f"Use `c2c_tmux list` to confirm.",
@@ -253,11 +267,11 @@ def _send_enter(target: str) -> int:
 
 
 def cmd_keys(args: argparse.Namespace) -> int:
-    target, live = target_for_alias(args.alias)
-    if not live:
+    target, live, is_bare = _resolve_target(args.alias)
+    if not live and not is_bare:
         print(
             f"c2c_tmux: refusing to send keys to CACHED target {target}. "
-            f"Use `c2c_tmux list` to confirm.",
+            f"Use `c2c_tmux list` to confirm, or pass a bare tmux target directly.",
             file=sys.stderr,
         )
         return 2
