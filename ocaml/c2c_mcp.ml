@@ -1493,6 +1493,69 @@ module Broker = struct
     if msgs <> [] then enqueue_by_session_id t ~session_id ~messages:msgs;
     List.length msgs
 
+  (* Read orphan inbox messages for a session without deleting.
+     Returns [] when the orphan inbox does not exist or is empty.
+     The orphan inbox is the session's inbox file — it is an "orphan" when
+     the session has no live registration (e.g. between c2c restart's old
+     outer-loop exit and new outer-loop registration). *)
+  let read_orphan_inbox_messages t ~session_id =
+    let path = inbox_path t ~session_id in
+    let exists =
+      (try ignore (Unix.stat path); true with Unix.Unix_error _ -> false)
+    in
+    if not exists then []
+    else with_inbox_lock t ~session_id (fun () -> load_inbox t ~session_id)
+
+  (* Delete the orphan inbox file for a session.
+     Called after capture_orphan_inbox_for_restart saves the messages to a
+     pending-replay file, so messages are not lost even though the file
+     is deleted before the new session starts. *)
+  let delete_orphan_inbox t ~session_id =
+    let path = inbox_path t ~session_id in
+    ignore (try_unlink path)
+
+  (* Replay captured orphan messages into the new session's inbox.
+     Called in the MCP server after auto_register_startup completes, so
+     messages queued during the restart gap (between old outer-loop exit and
+     new registration) are delivered to the new session.
+     The pending replay file is at broker_root/mcp/pending-orphan-replay.<session_id>.json. *)
+  let replay_pending_orphan_inbox t ~session_id =
+    let pending_path =
+      Filename.concat (Filename.concat t.root "mcp")
+        ("pending-orphan-replay." ^ session_id ^ ".json")
+    in
+    if not (Sys.file_exists pending_path) then 0
+    else
+      let pending_json =
+        try Yojson.Safe.from_file pending_path with _ -> `List []
+      in
+      let msgs =
+        match pending_json with
+        | `List items ->
+            List.map (fun json ->
+              let open Yojson.Safe.Util in
+              { from_alias = json |> member "from_alias" |> to_string
+              ; to_alias = json |> member "to_alias" |> to_string
+              ; content = json |> member "content" |> to_string
+              ; deferrable =
+                  (match json |> member "deferrable" with `Bool b -> b | _ -> false)
+              ; reply_via =
+                  (match json |> member "reply_via" with `String s -> Some s | _ -> None)
+              ; enc_status =
+                  (match json |> member "enc_status" with `String s -> Some s | _ -> None)
+              }) items
+        | _ -> []
+      in
+      if msgs = [] then begin
+        (try Unix.unlink pending_path with _ -> ());
+        0
+      end else begin
+        let current = read_inbox t ~session_id in
+        save_inbox t ~session_id (current @ msgs);
+        (try Unix.unlink pending_path with _ -> ());
+        List.length msgs
+      end
+
   (* ---------- N:N rooms (phase 2) ---------- *)
 
   let valid_room_id room_id =

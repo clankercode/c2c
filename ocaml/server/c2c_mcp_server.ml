@@ -297,10 +297,18 @@ let () =
   (match forced_caps with
    | [] -> ()
    | caps -> debug_log ("forced_capabilities=" ^ String.concat "," caps));
-  let root = broker_root () in
-  debug_log ("broker_root=" ^ root);
-  C2c_mcp.auto_register_startup ~broker_root:root;
-  C2c_mcp.auto_join_rooms_startup ~broker_root:root;
+   let root = broker_root () in
+   debug_log ("broker_root=" ^ root);
+   C2c_mcp.auto_register_startup ~broker_root:root;
+   (* Replay any orphan messages that arrived during the restart gap
+      (between old outer-loop exit and new registration). *)
+   (match session_id () with
+    | Some sid ->
+        let broker = C2c_mcp.Broker.create ~root in
+        let replayed = C2c_mcp.Broker.replay_pending_orphan_inbox broker ~session_id:sid in
+        if replayed > 0 then debug_log ("replayed " ^ string_of_int replayed ^ " orphan messages")
+    | None -> ());
+   C2c_mcp.auto_join_rooms_startup ~broker_root:root;
   let broker = C2c_mcp.Broker.create ~root in
   Relay_nudge.start_nudge_scheduler ~broker_root:root ~broker ();
   let negotiated_capabilities_ref = ref (force_capabilities_from_env ()) in

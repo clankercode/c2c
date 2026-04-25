@@ -1254,6 +1254,41 @@ let bridge_responses_fifo_path name = instance_dir name // "bridge-responses.fif
 let deaths_jsonl_path broker_root = broker_root // "deaths.jsonl"
 let tmux_info_path name = instance_dir name // "tmux.json"
 
+(* Orphan-inbox replay: persists across the c2c restart exec gap.
+   cmd_restart saves orphan messages here before exec; the MCP server
+   injects them into the new session's inbox after auto_register_startup.
+   Path is in the broker root (not instance dir) so the MCP server can
+   find it without knowing the instance name. *)
+
+(* Capture orphan inbox messages before restart, save to pending-replay file,
+   and delete the orphan inbox. Called in cmd_restart before execvp so
+   messages queued during the restart gap are preserved. *)
+let capture_orphan_inbox_for_restart ~(broker_root : string) ~(session_id : string) : int =
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  let pending_path = broker_root // "mcp" // "pending-orphan-replay." ^ session_id ^ ".json" in
+  match C2c_mcp.Broker.read_orphan_inbox_messages broker ~session_id with
+  | [] -> 0
+  | msgs ->
+      (* Save as a JSON list of message objects, same format as inbox files. *)
+      write_json_file_atomic pending_path
+        (`List (List.map (fun m ->
+           `Assoc [ ("from_alias", `String m.C2c_mcp.from_alias)
+                  ; ("to_alias", `String m.C2c_mcp.to_alias)
+                  ; ("content", `String m.C2c_mcp.content)
+                  ; ("deferrable", `Bool m.C2c_mcp.deferrable)
+                  ; ("reply_via", match m.C2c_mcp.reply_via with None -> `Null | Some s -> `String s)
+                  ; ("enc_status", match m.C2c_mcp.enc_status with None -> `Null | Some s -> `String s)
+                  ]) msgs));
+      C2c_mcp.Broker.delete_orphan_inbox broker ~session_id;
+      List.length msgs
+
+(* Replay captured orphan messages into the new session's inbox.
+   Called in the MCP server after auto_register_startup, so messages
+   queued during the restart gap are delivered to the new session. *)
+let replay_pending_orphan_inbox ~(broker_root : string) ~(session_id : string) : int =
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  C2c_mcp.Broker.replay_pending_orphan_inbox broker ~session_id
+
 (* Capture tmux location if running inside a tmux session.
    Writes {session, pane_pid, pane_tty, captured_at} to tmux_info_path.
    Silently skips if $TMUX is not set or tmux commands fail. *)
@@ -3790,11 +3825,21 @@ let cmd_restart ?(session_id_override : string option) (name : string) ~(timeout
            name name name (match load_config_opt name with Some c -> c.resume_session_id | None -> name);
          exit 1
        end
-       else Printf.printf "[c2c restart] outer exited cleanly.\n%!"
-   | _ -> ());
-  (* Re-launch via exec so we replace this process — preserves c2c start's
-     non-looping supervisor contract (this process becomes the new outer). *)
-  let argv = build_start_argv ~cfg in
+        else Printf.printf "[c2c restart] outer exited cleanly.\n%!"
+    | _ -> ());
+   (* Capture orphan inbox — messages that arrived while the old outer loop
+      was shutting down.  Saved to pending-replay so the MCP server can inject
+      them into the new session's inbox after auto_register_startup completes. *)
+   let replayed = capture_orphan_inbox_for_restart
+     ~broker_root:cfg.broker_root
+     ~session_id:cfg.resume_session_id
+   in
+   if replayed > 0 then
+     Printf.printf "[c2c restart] captured %d orphan message%s for replay\n%!"
+       replayed (if replayed = 1 then "" else "s");
+   (* Re-launch via exec so we replace this process — preserves c2c start's
+      non-looping supervisor contract (this process becomes the new outer). *)
+   let argv = build_start_argv ~cfg in
   Printf.printf "[c2c restart] launching: %s\n%!" (String.concat " " (Array.to_list argv));
   Unix.execvp argv.(0) argv
 
