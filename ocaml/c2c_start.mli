@@ -80,6 +80,10 @@ val generate_alias : unit -> string
 val default_name : string -> string
 (** [default_name client] returns "<client>-<word1>-<word2>" using random words. *)
 
+val likes_shell_substitution : string -> bool
+(** [likes_shell_substitution s] returns true when [s] looks like an unexpanded
+    shell substitution pattern such as [$(...)] or bare backticks. *)
+
 (** {1 Per-role-class pmodel preferences} *)
 
 type pmodel = { provider : string; model : string }

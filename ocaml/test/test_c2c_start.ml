@@ -710,6 +710,24 @@ let test_parse_pmodel_errors () =
   check bool "empty model after colon -> error" true
     (is_error (C2c_start.parse_pmodel "openai:"))
 
+let test_likes_shell_substitution_detects_parens_and_backticks () =
+  check bool "detects $(...)" true
+    (C2c_start.likes_shell_substitution "$(date)");
+  check bool "detects bare backticks" true
+    (C2c_start.likes_shell_substitution "`date`");
+  check bool "ignores plain text" false
+    (C2c_start.likes_shell_substitution "hello");
+  (* AC4: \$VAR — backslash escapes the dollar, not a substitution *)
+  check bool "ignores \\$VAR (escaped dollar)" false
+    (C2c_start.likes_shell_substitution "\\$VAR");
+  (* AC5: lone backtick — no matching close, not a substitution *)
+  check bool "ignores lone backtick" false
+    (C2c_start.likes_shell_substitution "`");
+  (* escaped parens: \$(...) — backslash before dollar, not a substitution *)
+  check bool "ignores \\$(...) (escaped parens)" false
+    (C2c_start.likes_shell_substitution "\\$(date)")
+
+
 let test_repo_config_pmodel_reads_table () =
   with_temp_dir @@ fun dir ->
   let c2c_dir = Filename.concat dir ".c2c" in
@@ -821,6 +839,9 @@ let () =
         ; ("parse_pmodel_prefix_colon", `Quick, test_parse_pmodel_prefix_colon)
         ; ("parse_pmodel_anthropic", `Quick, test_parse_pmodel_anthropic)
         ; ("parse_pmodel_errors", `Quick, test_parse_pmodel_errors)
+        ; ( "likes_shell_substitution_detects_parens_and_backticks",
+            `Quick,
+            test_likes_shell_substitution_detects_parens_and_backticks )
         ; ("repo_config_pmodel_reads_table", `Quick,
            test_repo_config_pmodel_reads_table)
         ] )

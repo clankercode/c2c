@@ -2,6 +2,51 @@
 
 let ( // ) = Filename.concat
 
+let likes_shell_substitution (s : string) : bool =
+  let len = String.length s in
+  let is_escaped i =
+    let rec count j =
+      if j < 0 then 0
+      else if s.[j] = '\\' then 1 + count (j - 1)
+      else 0
+    in
+    let n = count (i - 1) in n > 0 && n mod 2 = 1
+  in
+  let rec scan i =
+    if i >= len then false
+    else
+      match s.[i] with
+      | '$' when i + 1 < len && not (is_escaped i) ->
+          let next = s.[i + 1] in
+          if next = '$' then scan (i + 2)
+          else if next = '\\' then scan (i + 2)
+          else if next = '(' then
+            let depth = ref 1 in
+            let j = ref (i + 2) in
+            while !j < len && !depth > 0 do
+              (match s.[!j] with
+               | '(' -> incr depth
+               | ')' -> decr depth
+               | _ -> ());
+              incr j
+            done;
+            if !depth = 0 then true else scan (i + 1)
+          else scan (i + 1)
+      | '`' when not (is_escaped i) ->
+          let rec find_close j escaped =
+            if j >= len then false
+            else if escaped then find_close (j + 1) false
+            else
+              match s.[j] with
+              | '\\' -> find_close (j + 1) true
+              | '`' -> true
+              | _ -> find_close (j + 1) false
+          in
+          if find_close (i + 1) false then true else scan (i + 1)
+      | _ -> scan (i + 1)
+  in
+  scan 0
+
 (* Terminal title — OSC-0 / tmux pane title.
    Respects NO_COLOR and TERM=dumb. Title format: "<glyph> <alias> (<client>)"
    Called from run_outer_loop so operators can scan tmux panes at a glance. *)
@@ -934,6 +979,7 @@ type instance_config = {
   auto_join_rooms : string;
   binary_override : string option;
   model_override : string option;
+  agent_name : string option;
 }
 
 let write_config (cfg : instance_config) =
@@ -985,7 +1031,8 @@ let load_config_opt (name : string) : instance_config option =
              extra_args = gl "extra_args"; created_at = gf "created_at";
              broker_root = gs "broker_root"; auto_join_rooms = gs "auto_join_rooms";
              binary_override = gso "binary_override";
-             model_override = gso "model_override" }
+             model_override = gso "model_override";
+             agent_name = gso "agent_name" }
     with _ -> None
 
 let load_config (name : string) : instance_config =
@@ -3049,6 +3096,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     auto_join_rooms = Option.value auto_join_rooms ~default:"swarm-lounge";
     binary_override;
     model_override;
+    agent_name;
   }
   in
   write_config cfg;
