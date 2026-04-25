@@ -3612,12 +3612,16 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
         (binary_override, alias_override, extra_args, Some rs, codex_target, broker_root (), model_override)
   in
 
+  (* Use same resolution order as run_outer_loop: --binary > [default_binary] > client default. *)
   let binary_to_check =
     match binary_override with
     | Some b -> b
     | None ->
-        let client_cfg = Stdlib.Hashtbl.find clients client in
-        client_cfg.binary
+      (match repo_config_default_binary client with
+       | Some b -> b
+       | None ->
+           let client_cfg = Stdlib.Hashtbl.find clients client in
+           client_cfg.binary)
   in
   (match client, find_binary binary_to_check with
    | "codex-headless", Some binary_path when not (bridge_supports_thread_id_fd binary_path) ->

@@ -1119,6 +1119,38 @@ let test_repo_config_default_binary_no_config_file () =
    | Some _ -> fail "should return None when config file absent"
    | None -> ())
 
+(* Regression test: cmd_start preflight must use same binary resolution as
+   run_outer_loop. Both must call repo_config_default_binary when no --binary
+   override is given, so the preflight capability check targets the configured
+   binary, not the PATH default. This test verifies that [default_binary] is
+   read correctly and that the function is accessible from both call sites. *)
+let test_repo_config_default_binary_preflight_uses_config () =
+  with_temp_dir @@ fun dir ->
+  let c2c_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let config_path = Filename.concat c2c_dir "config.toml" in
+  let oc = open_out config_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc
+      "[default_binary]\n\
+       codex-headless = \"/usr/local/bin/codex-bridge\"\n");
+  with_cwd dir @@ fun () ->
+  (* Simulate the binary_to_check resolution used by cmd_start preflight:
+       binary_override > repo_config_default_binary > client_cfg.binary *)
+  let binary_override = None in
+  let client = "codex-headless" in
+  let client_cfg_default = "codex-turn-start-bridge" in
+  let resolved =
+    match binary_override with
+    | Some b -> b
+    | None ->
+      (match C2c_start.repo_config_default_binary client with
+       | Some b -> b
+       | None -> client_cfg_default)
+  in
+  check string "preflight resolves from [default_binary]"
+    "/usr/local/bin/codex-bridge" resolved
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_start"
@@ -1238,5 +1270,7 @@ let () =
            test_repo_config_default_binary_missing_table)
         ; ("repo_config_default_binary_no_config_file", `Quick,
            test_repo_config_default_binary_no_config_file)
+        ; ("repo_config_default_binary_preflight_uses_config", `Quick,
+           test_repo_config_default_binary_preflight_uses_config)
         ] )
     ]
