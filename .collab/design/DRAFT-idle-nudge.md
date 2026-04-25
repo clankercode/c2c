@@ -140,3 +140,13 @@ c2c.ts plugin:
 3. Add nudge message pool JSON file to repo
 4. OpenCode plugin: ensure nudge messages render cleanly in transcript
 5. Smoke test with 2-3 live peers
+
+---
+
+## DEFERRED post-GUI-v1
+
+This design is complete and ready to implement. Implementation deferred until the GUI v1 social layer is running, so operators have a useful surface to act on nudge signals.
+
+### Implementation gap for future implementer
+
+**`last_activity_ts` tracking**: Design calls for updating `last_activity_ts` on "ANY broker interaction" — current tool handlers do NOT write this timestamp. Implementation requires adding `touch_session` call to every broker tool handler (~15 sites): poll_inbox, peek_inbox, drain_inbox, send, send_all, send_room, send_room_invite, register, refresh_peer, sweep, prune_rooms, join_room, leave_room, set_dnd, dnd_status. Broker module needs a `touch_session` function added.
