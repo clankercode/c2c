@@ -38,6 +38,19 @@ if [[ -n "$MAIN_TREE_BRANCH" ]] \
   MAIN_TREE_SHARED=1
 fi
 
+# Detect uncommitted modifications in the main working tree (staged or unstaged).
+# An agent accumulating WIP directly in the main tree is a contamination risk.
+MAIN_TREE_UNSTAGED=$(git diff --name-only 2>/dev/null)
+MAIN_TREE_STAGED=$(git diff --cached --name-only 2>/dev/null)
+MAIN_TREE_DIRTY=0
+MAIN_TREE_DIRTY_COUNT=0
+if [[ -n "$MAIN_TREE_UNSTAGED" || -n "$MAIN_TREE_STAGED" ]]; then
+  MAIN_TREE_DIRTY=1
+  _u=$(echo "$MAIN_TREE_UNSTAGED" | grep -c . 2>/dev/null || true)
+  _s=$(echo "$MAIN_TREE_STAGED" | grep -c . 2>/dev/null || true)
+  MAIN_TREE_DIRTY_COUNT=$(( _u + _s ))
+fi
+
 # ---------------------------------------------------------------------------
 # 1. Health (pass-through or summary)
 # ---------------------------------------------------------------------------
@@ -65,6 +78,29 @@ else
     echo "  Agents should use per-agent worktrees instead:"
     echo "    c2c start --worktree --branch <slice-branch> <client>"
     echo "  See: .collab/runbooks/worktree-per-feature.md"
+    echo ""
+  fi
+
+  if [[ $MAIN_TREE_DIRTY -eq 1 ]]; then
+    bold "=== uncommitted WIP in main tree ==="
+    echo ""
+    yellow "  ⚠ $MAIN_TREE_DIRTY_COUNT file(s) modified but not committed"
+    echo ""
+    if [[ -n "$MAIN_TREE_STAGED" ]]; then
+      echo "  Staged (will be in next commit):"
+      echo "$MAIN_TREE_STAGED" | head -10 | while IFS= read -r f; do
+        printf "    + %s\n" "$f"
+      done
+    fi
+    if [[ -n "$MAIN_TREE_UNSTAGED" ]]; then
+      echo "  Unstaged (not yet staged):"
+      echo "$MAIN_TREE_UNSTAGED" | head -10 | while IFS= read -r f; do
+        printf "    ~ %s\n" "$f"
+      done
+    fi
+    echo ""
+    echo "  WIP in the main tree contaminates the shared working tree."
+    echo "  Either commit, or move to a worktree: c2c start --worktree --branch <slice> <client>"
     echo ""
   fi
 fi
@@ -265,6 +301,10 @@ if [[ $SUMMARY -eq 1 ]]; then
 
   if [[ $MAIN_TREE_SHARED -eq 1 ]]; then
     printf "  $COORD_CHAR WARN: main tree on '%s' (not master/main) — agents should use worktrees (c2c start --worktree --branch <slice> <client>)\n" "$MAIN_TREE_BRANCH" >&2
+  fi
+
+  if [[ $MAIN_TREE_DIRTY -eq 1 ]]; then
+    printf "  $COORD_CHAR WARN: %d file(s) uncommitted in main tree — WIP contaminates shared working tree (commit or move to worktree)\n" "$MAIN_TREE_DIRTY_COUNT" >&2
   fi
 
   # Print ALL CLEAR
