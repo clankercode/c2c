@@ -1206,6 +1206,7 @@ let client_log_path name = instance_dir name // "client.log"
 let headless_thread_id_handoff_path name = instance_dir name // "thread-id-handoff.jsonl"
 let headless_xml_fifo_path name = instance_dir name // "xml-input.fifo"
 let bridge_events_fifo_path name = instance_dir name // "bridge-events.fifo"
+let bridge_responses_fifo_path name = instance_dir name // "bridge-responses.fifo"
 let deaths_jsonl_path broker_root = broker_root // "deaths.jsonl"
 let tmux_info_path name = instance_dir name // "tmux.json"
 
@@ -1907,10 +1908,11 @@ let prepare_launch_args ~(name : string) ~(client : string)
     | "codex-headless" ->
         [ "--stdin-format"; "xml";
           "--codex-bin"; "codex";
-          (* Keep headless on approval-policy=never until the bridge exposes a
-             machine-readable approval handoff. See APPROVAL_FLOW_REQ.md in the
-             Codex fork. *)
-          "--approval-policy"; "never" ]
+          (* approval-policy=on-request: bridge forwards permission events via
+             --server-request-events-fd (fd 6) and reads decisions from
+             --server-request-responses-fd (fd 7). The deliver daemon handles
+             the full supervisor round-trip and writes the response back. *)
+          "--approval-policy"; "on-request" ]
         @ (match resume_session_id with
            | Some sid when String.trim sid <> "" -> [ "--thread-id"; sid ]
            | _ -> [])
@@ -1920,6 +1922,7 @@ let prepare_launch_args ~(name : string) ~(client : string)
         @ (match server_request_events_fd with
            | Some fd -> [ "--server-request-events-fd"; fd ]
            | None -> [])
+        @ [ "--server-request-responses-fd"; "7" ]
     | _ -> []
   in
   (* Adapter-dispatched clients apply model_override internally; skip the
@@ -2450,7 +2453,7 @@ let start_deliver_daemon ~(name : string) ~(client : string)
     ~(broker_root : string) ?(child_pid_opt : int option)
     ?command_override
     ?(xml_output_fd : string option) ?(xml_output_path : string option)
-    ?(event_fifo_path : string option) () : int option =
+    ?(event_fifo_path : string option) ?(response_fifo_path : string option) () : int option =
   match (match command_override with Some cmd -> Some cmd | None -> deliver_command ~broker_root) with
   | None -> None
   | Some (command, prefix_args) ->
@@ -2464,6 +2467,7 @@ let start_deliver_daemon ~(name : string) ~(client : string)
         @ (match xml_output_fd with None -> [] | Some fd -> [ "--xml-output-fd"; fd ])
         @ (match xml_output_path with None -> [] | Some path -> [ "--xml-output-path"; path ])
         @ (match event_fifo_path with None -> [] | Some path -> [ "--event-fifo"; path ])
+        @ (match response_fifo_path with None -> [] | Some path -> [ "--response-fifo"; path ])
         @ (match child_pid_opt with None -> [] | Some p -> [ "--pid"; string_of_int p ])
       in
       try
@@ -2803,17 +2807,25 @@ let run_outer_loop ~(name : string) ~(client : string)
           Some path
         else None
       in
+      let headless_responses_fifo_opt =
+        if client = "codex-headless" then
+          let path = bridge_responses_fifo_path name in
+          ensure_fifo path;
+          Some path
+        else None
+      in
       let cmd =
-        match client, headless_xml_fifo, thread_id_handoff_path_opt, headless_events_fifo_opt with
-        | "codex-headless", Some fifo_path, Some handoff_path, Some events_fifo_path ->
+        match client, headless_xml_fifo, thread_id_handoff_path_opt, headless_events_fifo_opt, headless_responses_fifo_opt with
+        | "codex-headless", Some fifo_path, Some handoff_path, Some events_fifo_path, Some responses_fifo_path ->
             [ "/bin/bash"; "-lc";
-              "bridge=\"$1\"; fifo=\"$2\"; handoff=\"$3\"; events=\"$4\"; shift 4; \
-               exec \"$bridge\" \"$@\" < \"$fifo\" 5> \"$handoff\" 6> \"$events\"";
+              "bridge=\"$1\"; fifo=\"$2\"; handoff=\"$3\"; events=\"$4\"; responses=\"$5\"; shift 5; \
+               exec \"$bridge\" \"$@\" < \"$fifo\" 5> \"$handoff\" 6> \"$events\" 7< \"$responses\"";
               "c2c-codex-headless";
               binary_path;
               fifo_path;
               handoff_path;
-              events_fifo_path ]
+              events_fifo_path;
+              responses_fifo_path ]
             @ launch_args
         | _ -> binary_path :: launch_args
       in
@@ -3054,6 +3066,7 @@ let run_outer_loop ~(name : string) ~(client : string)
                     ?xml_output_fd:(Option.map fst xml_output_fd)
                     ?xml_output_path
                     ?event_fifo_path:headless_events_fifo_opt
+                    ?response_fifo_path:headless_responses_fifo_opt
                     ()
                 with
                | Some p ->

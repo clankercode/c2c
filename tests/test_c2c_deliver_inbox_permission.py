@@ -260,5 +260,98 @@ class RunC2cCommandTests(unittest.TestCase):
             self.assertEqual(call_cmd[0], "/custom/bin/c2c")
 
 
+class SendCallFixTests(unittest.TestCase):
+    """send call must not use --content flag (unknown option in OCaml c2c send)."""
+
+    @mock.patch("c2c_deliver_inbox.run_c2c_command")
+    def test_send_uses_positional_message_not_content_flag(self, mock_run_c2c):
+        mock_run_c2c.return_value = (0, "", "")
+        event = {
+            "kind": "permissions_approval_request",
+            "request_id": "req-send",
+            "thread_id": "thread-1",
+            "permission": "bash",
+            "command": "echo hi",
+            "reason": "test",
+        }
+        c2c_deliver_inbox.forward_permission_to_supervisors(
+            event, supervisors=["coordinator1"], timeout_ms=1000,
+        )
+        send_calls = [
+            c[0][0] for c in mock_run_c2c.call_args_list
+            if len(c[0][0]) > 0 and c[0][0][0] == "send"
+        ]
+        self.assertTrue(len(send_calls) > 0, "expected at least one send call")
+        for args in send_calls:
+            self.assertNotIn("--content", args, "send must not use --content flag")
+            # Message body should be at position 2 (after "send" and alias)
+            self.assertGreaterEqual(len(args), 3, "send args should be: send <alias> <msg>")
+
+
+class WritePermissionResponseTests(unittest.TestCase):
+    def test_writes_approved_for_session_on_approve_once(self):
+        import tempfile, os, stat
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fifo = Path(tmpdir) / "resp.fifo"
+            os.mkfifo(str(fifo))
+            # Open reader side in non-blocking mode before writing
+            rfd = os.open(str(fifo), os.O_RDONLY | os.O_NONBLOCK)
+            event = {"request_id": "req-1", "permission": "bash"}
+            c2c_deliver_inbox.write_permission_response(fifo, event, "approve-once")
+            data = b""
+            try:
+                data = os.read(rfd, 4096)
+            except BlockingIOError:
+                pass
+            finally:
+                os.close(rfd)
+            payload = json.loads(data.decode())
+            self.assertEqual(payload["request_id"], "req-1")
+            self.assertEqual(payload["kind"], "permissions_approval_response")
+            self.assertEqual(payload["raw"]["scope"], "approved_for_session")
+            self.assertEqual(payload["raw"]["permissions"], ["bash"])
+
+    def test_writes_denied_on_reject(self):
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fifo = Path(tmpdir) / "resp.fifo"
+            os.mkfifo(str(fifo))
+            rfd = os.open(str(fifo), os.O_RDONLY | os.O_NONBLOCK)
+            event = {"request_id": "req-2", "permission": "network"}
+            c2c_deliver_inbox.write_permission_response(fifo, event, "reject")
+            data = b""
+            try:
+                data = os.read(rfd, 4096)
+            except BlockingIOError:
+                pass
+            finally:
+                os.close(rfd)
+            payload = json.loads(data.decode())
+            self.assertEqual(payload["raw"]["scope"], "denied")
+
+    def test_writes_denied_on_timeout(self):
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fifo = Path(tmpdir) / "resp.fifo"
+            os.mkfifo(str(fifo))
+            rfd = os.open(str(fifo), os.O_RDONLY | os.O_NONBLOCK)
+            event = {"request_id": "req-3", "permission": "bash"}
+            c2c_deliver_inbox.write_permission_response(fifo, event, "timeout")
+            data = b""
+            try:
+                data = os.read(rfd, 4096)
+            except BlockingIOError:
+                pass
+            finally:
+                os.close(rfd)
+            payload = json.loads(data.decode())
+            self.assertEqual(payload["raw"]["scope"], "denied")
+
+    def test_no_op_when_fifo_is_none(self):
+        event = {"request_id": "req-4", "permission": "bash"}
+        # Should not raise
+        c2c_deliver_inbox.write_permission_response(None, event, "approve-once")
+
+
 if __name__ == "__main__":
     unittest.main()

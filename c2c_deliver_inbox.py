@@ -562,6 +562,7 @@ def run_loop(
     xml_output_fd: int | None = None,
     xml_output_path: Path | None = None,
     event_fifo: Path | None = None,
+    response_fifo: Path | None = None,
 ) -> dict[str, Any]:
     iterations = 0
     total_delivered = 0
@@ -618,13 +619,14 @@ def run_loop(
                         )
                         for event in events:
                             supervisors = ["coordinator1"]
-                            forward_permission_to_supervisors(
+                            decision = forward_permission_to_supervisors(
                                 event,
                                 supervisors=supervisors,
                                 timeout_ms=300000,
                                 session_id=session_id,
                                 broker_root=broker_root,
                             )
+                            write_permission_response(response_fifo, event, decision)
                     else:
                         try:
                             if event_buffer.strip():
@@ -632,13 +634,14 @@ def run_loop(
                                 event = parse_managed_server_request_event(tail)
                                 if event is not None:
                                     supervisors = ["coordinator1"]
-                                    forward_permission_to_supervisors(
+                                    decision = forward_permission_to_supervisors(
                                         event,
                                         supervisors=supervisors,
                                         timeout_ms=300000,
                                         session_id=session_id,
                                         broker_root=broker_root,
                                     )
+                                    write_permission_response(response_fifo, event, decision)
                         except (UnicodeDecodeError, OSError, IOError):
                             pass
                         try:
@@ -753,6 +756,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="read Codex bridge permission events from this named FIFO path",
     )
+    parser.add_argument(
+        "--response-fifo",
+        type=Path,
+        default=None,
+        help="write permission approval decisions back to Codex bridge via this FIFO path",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(raw_argv)
 
@@ -815,6 +824,7 @@ def main(argv: list[str] | None = None) -> int:
                 xml_output_fd=args.xml_output_fd,
                 xml_output_path=args.xml_output_path,
                 event_fifo=args.event_fifo,
+                response_fifo=args.response_fifo,
             )
         else:
             result = deliver_once(
@@ -981,6 +991,47 @@ def await_supervisor_reply(
     return "timeout"
 
 
+def write_permission_response(
+    response_fifo: Path | None,
+    event: dict,
+    decision: str,
+) -> None:
+    """Write a permission approval decision back to the Codex bridge via the
+    responses FIFO (--server-request-responses-fd).
+
+    The bridge expects JSONL where each line is a SidebandResponseEnvelope:
+      {"request_id": "...", "kind": "permissions_approval_response",
+       "raw": {"permissions": ["<perm>"], "scope": "<scope>"}}
+
+    decision → scope mapping:
+      approve-once / approve-always → "approved_for_session"
+      reject / timeout              → "denied"
+    """
+    if response_fifo is None:
+        return
+    scope = "approved_for_session" if decision in ("approve-once", "approve-always") else "denied"
+    permission = event.get("permission", "")
+    request_id = event.get("request_id", "")
+    payload = json.dumps({
+        "request_id": request_id,
+        "kind": "permissions_approval_response",
+        "raw": {
+            "permissions": [permission] if permission else [],
+            "scope": scope,
+        },
+    })
+    try:
+        # Open in non-blocking mode first to avoid hanging if the bridge is not
+        # reading; fall back silently if the FIFO is not available.
+        fd = os.open(str(response_fifo), os.O_WRONLY | os.O_NONBLOCK)
+        try:
+            os.write(fd, (payload + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
+    except (OSError, IOError):
+        pass
+
+
 def forward_permission_to_supervisors(
     event: dict,
     supervisors: list[str],
@@ -1019,7 +1070,7 @@ def forward_permission_to_supervisors(
     ])
 
     for sup in supervisors:
-        run_c2c_command(["send", sup, "--content", msg])
+        run_c2c_command(["send", sup, msg])
 
     if session_id and broker_root:
         return await_supervisor_reply(
