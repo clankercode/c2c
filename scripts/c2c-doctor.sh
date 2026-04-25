@@ -224,6 +224,13 @@ if [[ "$AHEAD" == "0" ]]; then
       "$SCRIPT_DIR/c2c-command-test-audit.py" --repo "$PWD" --summary --warn-only || true
       echo ""
     fi
+    if [[ -x "$SCRIPT_DIR/c2c-docs-drift.py" ]]; then
+      echo ""
+      bold "=== docs drift audit ==="
+      echo ""
+      "$SCRIPT_DIR/c2c-docs-drift.py" --repo "$PWD" --summary --warn-only || true
+      echo ""
+    fi
     if [[ -x "$SCRIPT_DIR/c2c-dup-scanner.py" ]]; then
       echo ""
       bold "=== duplication scan ==="
@@ -343,6 +350,23 @@ if [[ $SUMMARY -eq 0 && $JSON -eq 0 && -n "$COMMAND_TEST_AUDIT_OUTPUT" ]]; then
   bold "=== command test audit ==="
   echo ""
   echo "$COMMAND_TEST_AUDIT_OUTPUT"
+  echo ""
+fi
+
+# ---------------------------------------------------------------------------
+# Docs drift audit
+# ---------------------------------------------------------------------------
+DOCS_DRIFT_OUTPUT=""
+DOCS_DRIFT_COUNT=0
+if [[ -x "$SCRIPT_DIR/c2c-docs-drift.py" ]]; then
+  DOCS_DRIFT_OUTPUT=$("$SCRIPT_DIR/c2c-docs-drift.py" --repo "$PWD" --summary --warn-only 2>&1 || true)
+  DOCS_DRIFT_COUNT=$(echo "$DOCS_DRIFT_OUTPUT" | grep -oE '[0-9]+ drift finding\(s\)' | sed -n '1p' | grep -oE '[0-9]+' || echo "0")
+fi
+
+if [[ $SUMMARY -eq 0 && $JSON -eq 0 && -n "$DOCS_DRIFT_OUTPUT" ]]; then
+  bold "=== docs drift audit ==="
+  echo ""
+  echo "$DOCS_DRIFT_OUTPUT"
   echo ""
 fi
 
@@ -479,6 +503,10 @@ if [[ $SUMMARY -eq 1 ]]; then
 
   if [[ ${COMMAND_TEST_AUDIT_GAPS:-0} -gt 0 ]]; then
     printf "  $COORD_CHAR WARN: %d Tier 1/2 command(s) lack obvious test references — run scripts/c2c-command-test-audit.py\n" "$COMMAND_TEST_AUDIT_GAPS" >&2
+  fi
+
+  if [[ ${DOCS_DRIFT_COUNT:-0} -gt 0 ]]; then
+    printf "  $COORD_CHAR WARN: %d CLAUDE.md docs drift finding(s) — run scripts/c2c-docs-drift.py\n" "$DOCS_DRIFT_COUNT" >&2
   fi
 
   # Print ALL CLEAR

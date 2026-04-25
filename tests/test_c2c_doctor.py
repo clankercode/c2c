@@ -10,6 +10,7 @@ REPO = Path(__file__).resolve().parents[1]
 C2C_BIN = Path(os.environ.get("C2C_BIN", str(Path.home() / ".local" / "bin" / "c2c")))
 DOCTOR_SCRIPT = REPO / "scripts" / "c2c-doctor.sh"
 COMMAND_AUDIT_SCRIPT = REPO / "scripts" / "c2c-command-test-audit.py"
+DOCS_DRIFT_SCRIPT = REPO / "scripts" / "c2c-docs-drift.py"
 
 
 class DoctorScriptExistenceTests(unittest.TestCase):
@@ -41,6 +42,12 @@ class DoctorScriptExistenceTests(unittest.TestCase):
 
     def test_command_test_audit_script_is_executable(self):
         self.assertTrue(os.access(COMMAND_AUDIT_SCRIPT, os.X_OK))
+
+    def test_docs_drift_script_exists(self):
+        self.assertTrue(DOCS_DRIFT_SCRIPT.exists())
+
+    def test_docs_drift_script_is_executable(self):
+        self.assertTrue(os.access(DOCS_DRIFT_SCRIPT, os.X_OK))
 
 
 class CommandTestAuditTests(unittest.TestCase):
@@ -95,6 +102,63 @@ class CommandTestAuditTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0)
             self.assertIn("4 gap(s)", result.stdout)
+        finally:
+            import shutil
+            shutil.rmtree(d)
+
+
+class DocsDriftTests(unittest.TestCase):
+    """Test the static CLAUDE.md drift audit."""
+
+    def _make_repo(self):
+        d = Path(tempfile.mkdtemp())
+        (d / "scripts").mkdir()
+        (d / "ocaml" / "cli").mkdir(parents=True)
+        (d / "ocaml" / "cli" / "c2c.ml").write_text(
+            'let send = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send" ~doc:"Send.") send_cmd\n'
+            'let rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "rooms" ~doc:"Rooms.") rooms_cmd\n'
+            'let all_cmds = [ send; rooms ] in\n',
+            encoding="utf-8",
+        )
+        (d / "scripts" / "relay-smoke-test.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+        return d
+
+    def test_docs_drift_reports_missing_path_and_command(self):
+        d = self._make_repo()
+        try:
+            (d / "CLAUDE.md").write_text(
+                "Run `./scripts/relay-smoke-test.sh` after deploy.\n"
+                "Bad path: `.collab/runbooks/missing.md`.\n"
+                "Good command: `c2c send peer hello`.\n"
+                "Bad command: `c2c join room`.\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [sys.executable, str(DOCS_DRIFT_SCRIPT), "--repo", str(d), "--summary"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("2 drift finding(s)", result.stdout)
+            self.assertIn(".collab/runbooks/missing.md", result.stdout)
+            self.assertIn("c2c join", result.stdout)
+            self.assertNotIn("relay-smoke-test.sh (repo path does not exist)", result.stdout)
+            self.assertNotIn("c2c send (top-level", result.stdout)
+        finally:
+            import shutil
+            shutil.rmtree(d)
+
+    def test_docs_drift_warn_only_exits_zero(self):
+        d = self._make_repo()
+        try:
+            (d / "CLAUDE.md").write_text("Bad command: `c2c missing`.\n", encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(DOCS_DRIFT_SCRIPT), "--repo", str(d), "--summary", "--warn-only"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("1 drift finding(s)", result.stdout)
         finally:
             import shutil
             shutil.rmtree(d)
@@ -319,6 +383,44 @@ class DoctorScriptClassificationTests(unittest.TestCase):
             self.assertIn("=== command test audit ===", result.stdout)
             self.assertIn("1 gap(s)", result.stdout)
             self.assertIn("poll-inbox", result.stdout)
+        finally:
+            import shutil
+            shutil.rmtree(d)
+
+    def test_script_prints_docs_drift_audit(self):
+        d, git, env = self._make_temp_repo()
+        try:
+            (Path(d) / "ocaml" / "cli").mkdir(parents=True)
+            (Path(d) / "ocaml" / "cli" / "c2c.ml").write_text(
+                'let send = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send" ~doc:"Send.") send_cmd\n'
+                'let all_cmds = [ send ] in\n',
+                encoding="utf-8",
+            )
+            (Path(d) / "CLAUDE.md").write_text("Bad command: `c2c missing`.\n", encoding="utf-8")
+            git("commit", "--allow-empty", "-m", "docs: queued local work")
+            stub = Path(d) / "c2c"
+            stub.write_text(
+                "#!/bin/bash\n"
+                "if [[ \"$1\" == \"health\" ]]; then\n"
+                "  echo '{\"ok\":true}'\n"
+                "elif [[ \"$1\" == \"instances\" ]]; then\n"
+                "  echo 'No managed instances.'\n"
+                "else\n"
+                "  echo 'stub'\n"
+                "fi\n"
+            )
+            stub.chmod(0o755)
+            result = subprocess.run(
+                ["bash", str(DOCTOR_SCRIPT)],
+                capture_output=True,
+                text=True,
+                cwd=d,
+                env={**env, "PATH": str(d) + ":" + os.environ["PATH"]},
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("=== docs drift audit ===", result.stdout)
+            self.assertIn("1 drift finding(s)", result.stdout)
+            self.assertIn("c2c missing", result.stdout)
         finally:
             import shutil
             shutil.rmtree(d)
