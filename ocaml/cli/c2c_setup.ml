@@ -1262,7 +1262,13 @@ let do_install_git_hook ~output_mode ~dry_run =
       exit 1
   in
   let hook_src = repo_root // ".c2c" // "hooks" // "pre-commit.sh" in
-  let hook_dst = git_common // "hooks" // "pre-commit" in
+  let hook_dst =
+    try
+      let hooks_path = match Git_helpers.git_first_line ["config"; "--global"; "core.hooksPath"] with Some s -> String.trim s | None -> "" in
+      if hooks_path <> "" then Filename.concat hooks_path "pre-commit"
+      else git_common // "hooks" // "pre-commit"
+    with _ -> git_common // "hooks" // "pre-commit"
+  in
   if not (Sys.file_exists hook_src) then begin
     (match output_mode with
      | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String ("hook source not found: " ^ hook_src)) ])
@@ -1286,16 +1292,16 @@ let do_install_git_hook ~output_mode ~dry_run =
            if n > 0 then (output oc buf 0 n; loop ())
          in
          loop ());
-       Unix.rename (hook_dst ^ ".tmp") hook_dst;
-       Unix.chmod hook_dst 0o755
-     with Unix.Unix_error (e, _, _) ->
-       (match output_mode with
-        | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String (Unix.error_message e)) ])
-        | Human -> Printf.eprintf "error: %s\n%!" (Unix.error_message e));
-       exit 1);
-    match output_mode with
-    | Json -> print_json (`Assoc [ ("ok", `Bool true); ("src", `String hook_src); ("dst", `String hook_dst) ])
-    | Human -> Printf.printf "→ Installed pre-commit hook: %s\n%!" hook_dst
+        Unix.rename (hook_dst ^ ".tmp") hook_dst;
+        Unix.chmod hook_dst 0o755;
+        (match output_mode with
+         | Json -> print_json (`Assoc [ ("ok", `Bool true); ("src", `String hook_src); ("dst", `String hook_dst) ])
+         | Human -> Printf.printf "→ Installed pre-commit hook: %s\n%!" hook_dst)
+      with Unix.Unix_error (e, _, _) ->
+        (match output_mode with
+         | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String (Unix.error_message e)) ])
+         | Human -> Printf.eprintf "error: %s\n%!" (Unix.error_message e));
+        exit 1)
 
 let install_git_hook_subcmd =
   let term =
