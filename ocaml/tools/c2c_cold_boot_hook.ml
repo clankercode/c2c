@@ -28,16 +28,22 @@ let mkdir_p dir =
 let cold_boot_marker_path broker_root session_id =
   Filename.concat (Filename.concat broker_root ".cold_boot_done") session_id
 
-(* Find repo root using git to resolve relative paths *)
+(* Find repo root from C2C_REPO_ROOT env var (set by wrapper script).
+   Fallback: git rev-parse --git-common-dir then strip last path component
+   (returns main repo root even in worktrees). *)
 let repo_root () =
-  let cwd = Sys.getcwd () in
-  let rec find_root dir =
-    if Sys.file_exists (Filename.concat dir ".git") then Some dir
-    else
-      let parent = Filename.dirname dir in
-      if parent = dir then None else find_root parent
-  in
-  find_root cwd
+  match Sys.getenv_opt "C2C_REPO_ROOT" with
+  | Some dir when Sys.is_directory dir -> Some dir
+  | _ ->
+    let ic = Unix.open_process_in "git rev-parse --git-common-dir 2>/dev/null" in
+    try
+      let line = input_line ic in
+      ignore (Unix.close_process_in ic);
+      let parent = Filename.dirname line in
+      if Sys.is_directory parent then Some parent else None
+    with _ ->
+      ignore (Unix.close_process_in ic);
+      None
 
 let rec dotfile_entries dir prefix =
   try
