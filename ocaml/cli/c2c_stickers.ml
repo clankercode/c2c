@@ -20,7 +20,7 @@ let public_dir () =
   sticker_dir () // "public"
 
 (* shared per-alias signing key helpers (c2c_signing_helpers.ml) *)
-let xdg_state_home = C2c_signing_helpers.xdg_state_home
+let xdg_state_home = C2c_utils.xdg_state_home
 let per_alias_key_path = C2c_signing_helpers.per_alias_key_path
 
 (* --- registry ----------------------------------------------------------- *)
