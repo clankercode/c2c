@@ -4576,6 +4576,7 @@ let install =
   Cmdliner.Cmd.group ~default:C2c_setup.install_default_term info
     ([ C2c_setup.install_self_subcmd
      ; C2c_setup.install_all_subcmd
+     ; C2c_setup.install_git_hook_subcmd
      ]
      @ List.map C2c_setup.install_client_subcmd C2c_setup.install_subcommand_clients)
 
@@ -5001,21 +5002,47 @@ let doctor_cmd =
     Cmdliner.Arg.(value & flag & info [ "json" ]
       ~doc:"Output machine-readable JSON.")
   in
+  let check_rebase_base =
+    Cmdliner.Arg.(value & flag & info [ "check-rebase-base" ]
+      ~doc:"Check if HEAD is based on origin/master (exit 0 = OK, exit 1 = STALE).")
+  in
   let+ summary = summary
-  and+ json = json in
-  let args = [] |> (if summary then fun l -> "--summary" :: l else Fun.id)
-              |> (if json then fun l -> "--json" :: l else Fun.id) in
-  match git_repo_toplevel () with
-  | None ->
-      Printf.eprintf "error: must run from inside the c2c git repo.\n%!";
+  and+ json = json
+  and+ check_rebase_base = check_rebase_base in
+  if check_rebase_base then
+    let git_dir = match git_repo_toplevel () with
+      | None ->
+          Printf.eprintf "error: must run from inside the c2c git repo.\n%!";
+          exit 1
+      | Some d -> d
+    in
+    let git cmd = Sys.command (Printf.sprintf "git -C %s %s" (Filename.quote git_dir) cmd) in
+    let fetch_rc = git "fetch origin master" in
+    if fetch_rc <> 0 then begin
+      Printf.eprintf "warning: git fetch origin master returned %d (assuming origin is up-to-date)\n%!" fetch_rc
+    end;
+    let merge_base_rc = git "merge-base --is-ancestor origin/master HEAD" in
+    if merge_base_rc = 0 then begin
+      Printf.printf "BASE OK\n%!";
+      exit 0
+    end else begin
+      Printf.printf "STALE — run: git rebase origin/master\n%!";
       exit 1
-  | Some toplevel ->
-      let script = toplevel // "scripts" // "c2c-doctor.sh" in
-      if not (Sys.file_exists script) then begin
-        Printf.eprintf "error: scripts/c2c-doctor.sh not found.\n%!";
+    end
+  else
+    let args = [] |> (if summary then fun l -> "--summary" :: l else Fun.id)
+                |> (if json then fun l -> "--json" :: l else Fun.id) in
+    match git_repo_toplevel () with
+    | None ->
+        Printf.eprintf "error: must run from inside the c2c git repo.\n%!";
         exit 1
-      end;
-      Unix.execvp "bash" (Array.of_list (["bash"; script] @ args))
+    | Some toplevel ->
+        let script = toplevel // "scripts" // "c2c-doctor.sh" in
+        if not (Sys.file_exists script) then begin
+          Printf.eprintf "error: scripts/c2c-doctor.sh not found.\n%!";
+          exit 1
+        end;
+        Unix.execvp "bash" (Array.of_list (["bash"; script] @ args))
 
 let doctor = Cmdliner.Cmd.v (Cmdliner.Cmd.info "doctor"
     ~doc:"Health snapshot + push-pending analysis (for Max / human operators).") doctor_cmd
