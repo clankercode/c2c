@@ -2740,12 +2740,22 @@ let hook_cmd =
        | [] -> ()
        | _ ->
          let buf = Buffer.create 256 in
+         let lookup_role from_alias =
+           match C2c_mcp.Broker.list_registrations broker
+                 |> List.find_opt (fun r -> r.C2c_mcp.alias = from_alias) with
+           | Some reg -> reg.C2c_mcp.role
+           | None     -> None
+         in
          List.iter
            (fun (m : C2c_mcp.message) ->
               Buffer.add_string buf
                 (let reply_via = Option.value m.reply_via ~default:"c2c_send" in
-                 Printf.sprintf "<c2c event=\"message\" from=\"%s\" alias=\"%s\" source=\"broker\" reply_via=\"%s\" action_after=\"continue\">%s</c2c>\n"
-                   m.from_alias m.to_alias reply_via m.content))
+                 let role_attr = match lookup_role m.from_alias with
+                   | Some r -> Printf.sprintf " role=\"%s\"" r
+                   | None   -> ""
+                 in
+                 Printf.sprintf "<c2c event=\"message\" from=\"%s\" alias=\"%s\" source=\"broker\" reply_via=\"%s\" action_after=\"continue\"%s>%s</c2c>\n"
+                   m.from_alias m.to_alias reply_via role_attr m.content))
            messages;
          let json : Yojson.Safe.t =
            `Assoc [

@@ -145,7 +145,7 @@ end
 
 (* Native OCaml relay modules *)
 
-val channel_notification : message -> Yojson.Safe.t
+val channel_notification : ?role:string option -> message -> Yojson.Safe.t
 val decrypt_message_for_push : message -> session_id:string -> message
 val session_id_from_env : ?client_type:string -> unit -> string option
 (** Resolve the current broker session id from the ambient client env. Prefers

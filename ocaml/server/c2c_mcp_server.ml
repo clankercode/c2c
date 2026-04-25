@@ -189,10 +189,18 @@ let start_inbox_watcher ~broker_root ~session_id ~emit_notification
   in
   loop 0
 
+let lookup_sender_role from_alias =
+  let broker = C2c_mcp.Broker.create ~root:(broker_root ()) in
+  match C2c_mcp.Broker.list_registrations broker
+        |> List.find_opt (fun r -> r.C2c_mcp.alias = from_alias) with
+  | Some reg -> reg.C2c_mcp.role
+  | None     -> None
+
 let emit_notification ~session_id msg =
   debug_log ("emit_notification -> " ^ session_id);
   let decrypted_msg = C2c_mcp.decrypt_message_for_push msg ~session_id in
-  write_message (C2c_mcp.channel_notification decrypted_msg)
+  let role = lookup_sender_role msg.C2c_mcp.from_alias in
+  write_message (C2c_mcp.channel_notification ~role decrypted_msg)
 
 let emit_notifications ?(inter_message_delay = 0.0) ~session_id messages =
   let open Lwt.Syntax in

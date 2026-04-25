@@ -415,6 +415,26 @@ let test_channel_notification_method_is_correct () =
   check bool "not channel/ prefix" true
     (not (String.length method_str >= 8 && String.sub method_str 0 8 = "channel/"))
 
+let test_channel_notification_with_role () =
+  let json =
+    C2c_mcp.channel_notification ~role:(Some "coordinator")
+      { from_alias = "cairn-vigil"; to_alias = "stanza-coder"; content = "hi"; deferrable = false; reply_via = None; enc_status = None }
+  in
+  let open Yojson.Safe.Util in
+  let meta = json |> member "params" |> member "meta" in
+  check string "role in meta" "coordinator" (meta |> member "role" |> to_string);
+  check string "from_alias preserved" "cairn-vigil" (meta |> member "from_alias" |> to_string)
+
+let test_channel_notification_without_role_omits () =
+  let json =
+    C2c_mcp.channel_notification
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "hi"; deferrable = false; reply_via = None; enc_status = None }
+  in
+  let open Yojson.Safe.Util in
+  let meta = json |> member "params" |> member "meta" in
+  (* role attribute must be absent (not null, not empty string) when not set *)
+  check bool "no role field when None" true (member "role" meta = `Null)
+
 let test_initialize_returns_mcp_capabilities () =
   with_temp_dir (fun dir ->
       let request =
@@ -6059,6 +6079,10 @@ let () =
             test_initialize_without_channel_capability
         ; test_case "channel notification method is correct" `Quick
             test_channel_notification_method_is_correct
+        ; test_case "channel notification with role" `Quick
+            test_channel_notification_with_role
+        ; test_case "channel notification without role omits" `Quick
+            test_channel_notification_without_role_omits
         ; test_case "initialize returns capabilities" `Quick test_initialize_returns_mcp_capabilities
         ; test_case "initialize experimental capability values are objects" `Quick
             test_initialize_experimental_capability_values_are_objects

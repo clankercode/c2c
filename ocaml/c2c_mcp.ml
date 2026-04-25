@@ -2210,18 +2210,20 @@ module Broker = struct
       if !changed then save_registrations t regs')
 end
 
-let channel_notification ({ from_alias; to_alias; content; deferrable = _ } : message) =
+let channel_notification ?(role : string option = None) ({ from_alias; to_alias; content; deferrable = _ } : message) =
+  let meta =
+    let base = [ ("from_alias", `String from_alias); ("to_alias", `String to_alias) ] in
+    match role with
+    | Some r -> base @ [ ("role", `String r) ]
+    | None   -> base
+  in
   `Assoc
     [ ("jsonrpc", `String "2.0")
     ; ("method", `String "notifications/claude/channel")
     ; ( "params",
         `Assoc
           [ ("content", `String content)
-          ; ( "meta",
-              `Assoc
-                [ ("from_alias", `String from_alias)
-                ; ("to_alias", `String to_alias)
-                ] )
+          ; ("meta", `Assoc meta)
           ] )
     ]
 
