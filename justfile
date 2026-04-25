@@ -54,11 +54,11 @@ codegen-role-designer:
 
 # Build the OCaml MCP server
 build: codegen-role-designer
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
+    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
 
 # Build the OCaml CLI binary
 build-cli: codegen-role-designer
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build ./ocaml/cli/c2c.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
+    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
 
 # Build both MCP server and CLI
 build-all: build build-cli
@@ -71,7 +71,7 @@ test-py:
 
 # Run OCaml tests only
 test-ocaml:
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune runtest ocaml/
+    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune runtest --root "$PWD" ocaml/
 
 # Run TypeScript (vitest) unit tests for the .opencode plugin
 # Installs devDependencies on demand (idempotent if already installed).
@@ -110,26 +110,26 @@ install-git-hooks:
 
 # Install OCaml CLI binary to ~/.local/bin (build + copy)
 install-cli:
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build -j1 ./ocaml/cli/c2c.exe
+    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/cli/c2c.exe
     rm -f ~/.local/bin/c2c
     cp _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c
 
 # Install OCaml MCP server binary to ~/.local/bin (build + copy)
 install-mcp:
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build -j1 ./ocaml/server/c2c_mcp_server.exe
+    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/server/c2c_mcp_server.exe
     rm -f ~/.local/bin/c2c-mcp-server
     cp _build/default/ocaml/server/c2c_mcp_server.exe ~/.local/bin/c2c-mcp-server
 
 # Install OCaml inbox hook binary to ~/.local/bin (build + copy)
 install-hook:
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build -j1 ./ocaml/tools/c2c_inbox_hook.exe
+    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/tools/c2c_inbox_hook.exe
     rm -f ~/.local/bin/c2c-inbox-hook-ocaml
     cp _build/default/ocaml/tools/c2c_inbox_hook.exe ~/.local/bin/c2c-inbox-hook-ocaml
 
 # Install all OCaml binaries (CLI + MCP server + inbox hook)
 # Build all first, then copy all; avoids half-updated state on build failure.
 install-all: codegen-role-designer
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build -j1 ./ocaml/cli/c2c.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
+    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/cli/c2c.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
     rm -f ~/.local/bin/c2c ~/.local/bin/c2c-mcp-server ~/.local/bin/c2c-inbox-hook-ocaml ~/.local/bin/c2c-cold-boot-hook
     cp _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c
     cp _build/default/ocaml/server/c2c_mcp_server.exe ~/.local/bin/c2c-mcp-server
