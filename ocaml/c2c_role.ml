@@ -17,6 +17,8 @@ type t = {
   pronouns : string option;
   c2c_alias : string option;
   c2c_auto_join_rooms : string list;
+  c2c_heartbeat : (string * string) list;
+  c2c_heartbeats : (string * string) list;
   include_ : string list;
   compatible_clients : string list;
   required_capabilities : string list;
@@ -36,6 +38,8 @@ let empty = {
   pronouns = None;
   c2c_alias = None;
   c2c_auto_join_rooms = [];
+  c2c_heartbeat = [];
+  c2c_heartbeats = [];
   include_ = [];
   compatible_clients = [];
   required_capabilities = [];
@@ -116,7 +120,7 @@ let is_list_section_key fm_lines idx =
 
 let parse_yaml_entries fm_lines =
   let entries = ref [] in
-  let current_section = ref "" in
+  let section_stack = ref [] in
   let current_list_key = ref "" in
   let list_items = ref [] in
   let flush_list () =
@@ -125,26 +129,50 @@ let parse_yaml_entries fm_lines =
     current_list_key := "";
     list_items := []
   in
+  let indent_of raw_line =
+    let rec loop i =
+      if i >= String.length raw_line then i
+      else match raw_line.[i] with
+        | ' ' -> loop (i + 1)
+        | '\t' -> loop (i + 2)
+        | _ -> i
+    in
+    loop 0
+  in
+  let trim_stack indent =
+    section_stack :=
+      List.filter (fun (section_indent, _) -> section_indent < indent)
+        !section_stack
+  in
+  let current_prefix () =
+    !section_stack
+    |> List.sort (fun (a, _) (b, _) -> compare a b)
+    |> List.map snd
+    |> String.concat "."
+  in
   let n = List.length fm_lines in
   for i = 0 to n - 1 do
     let raw_line = List.nth fm_lines i in
     let line = String.trim raw_line in
     if line = "" || starts_with line '#' then ()
     else if starts_with line '-' then (
-      let item = String.sub raw_line 1 (String.length raw_line - 1) |> String.trim in
+      let item = String.sub line 1 (String.length line - 1) |> String.trim in
       list_items := item :: !list_items
     ) else
       match String.index_opt line ':' with
       | None -> ()
       | Some colon_pos ->
           flush_list ();
+          let indent = indent_of raw_line in
+          trim_stack indent;
           let key = String.sub line 0 colon_pos in
           let rest_trimmed = String.trim (String.sub line (colon_pos + 1) (String.length line - colon_pos - 1)) in
-          let is_root = raw_line.[0] <> ' ' && raw_line.[0] <> '\t' in
-          if is_root && not (is_list_section_key fm_lines i) then current_section := "";
-          let full_key = if !current_section = "" then key else !current_section ^ "." ^ key in
+          let prefix = current_prefix () in
+          let full_key = if prefix = "" then key else prefix ^ "." ^ key in
           if rest_trimmed = "" && is_section_key fm_lines i && not (is_list_section_key fm_lines i) then
-            current_section := full_key
+            section_stack := (indent, key) :: !section_stack
+          else if rest_trimmed = "" && is_list_section_key fm_lines i then
+            current_list_key := full_key
           else if rest_trimmed = "" then
             entries := (full_key, "") :: !entries
           else if starts_with rest_trimmed '[' then
@@ -227,6 +255,8 @@ let parse_string ?(snippets_dir = ".c2c/snippets") ?(filename = "(string)") cont
     c2c_alias = find "c2c.alias";
     c2c_auto_join_rooms =
       (match find "c2c.auto_join_rooms" with Some v -> parse_list v | None -> []);
+    c2c_heartbeat = find_section "c2c.heartbeat";
+    c2c_heartbeats = find_section "c2c.heartbeats";
     include_ = (match find "include" with Some v -> parse_list v | None -> []);
     compatible_clients =
       (match find "compatible_clients" with Some v -> parse_list v | None -> []);

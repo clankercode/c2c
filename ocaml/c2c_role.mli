@@ -7,6 +7,8 @@ type t = {
   pronouns : string option;
   c2c_alias : string option;
   c2c_auto_join_rooms : string list;
+  c2c_heartbeat : (string * string) list;
+  c2c_heartbeats : (string * string) list;
   include_ : string list;
   compatible_clients : string list;
   required_capabilities : string list;

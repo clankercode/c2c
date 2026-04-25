@@ -239,6 +239,206 @@ let test_enqueue_codex_heartbeat_uses_broker_inbox_transport () =
         (Printf.sprintf "expected exactly one heartbeat message, got %d"
            (List.length msgs))
 
+let test_parse_heartbeat_duration_units () =
+  check (result (float 0.001) string) "seconds"
+    (Ok 45.0) (C2c_start.parse_heartbeat_duration_s "45s");
+  check (result (float 0.001) string) "minutes"
+    (Ok 240.0) (C2c_start.parse_heartbeat_duration_s "4m");
+  check (result (float 0.001) string) "hours"
+    (Ok 7200.0) (C2c_start.parse_heartbeat_duration_s "2h");
+  check bool "bad duration errors" true
+    (match C2c_start.parse_heartbeat_duration_s "soon" with
+     | Error _ -> true
+     | Ok _ -> false)
+
+let test_heartbeat_aligned_schedule_next_delay () =
+  let hb = C2c_start.
+    { heartbeat_name = "sitrep"
+    ; schedule = Aligned_interval { interval_s = 3600.0; offset_s = 420.0 }
+    ; interval_s = 3600.0
+    ; message = "sitrep"
+    ; command = None
+    ; command_timeout_s = 30.0
+    ; clients = []
+    ; role_classes = []
+    ; enabled = true
+    }
+  in
+  check (float 0.001) "before hour+7"
+    120.0 (C2c_start.next_heartbeat_delay_s ~now:300.0 hb);
+  check (float 0.001) "after hour+7 moves to next hour+7"
+    3500.0 (C2c_start.next_heartbeat_delay_s ~now:520.0 hb)
+
+let test_repo_config_managed_heartbeats_reads_default_and_named () =
+  with_temp_dir @@ fun dir ->
+  let c2c_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let config_path = Filename.concat c2c_dir "config.toml" in
+  let oc = open_out config_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc
+      "[heartbeat]\n\
+       interval = \"4m\"\n\
+       message = \"Default tick\"\n\
+       clients = [\"claude\", \"codex\", \"opencode\"]\n\
+       \n\
+       [heartbeat.sitrep]\n\
+       interval = \"1h\"\n\
+       message = \"Write sitrep\"\n\
+       role_classes = [\"coordinator\"]\n\
+       \n\
+       [heartbeat.quota]\n\
+       interval = \"15m\"\n\
+       message = \"Quota report\"\n\
+       command = \"printf quota\"\n\
+       role_classes = [\"coordinator\"]\n");
+  with_cwd dir @@ fun () ->
+  let specs = C2c_start.repo_config_managed_heartbeats () in
+  check int "three specs" 3 (List.length specs);
+  let default = List.find (fun hb -> hb.C2c_start.heartbeat_name = "default") specs in
+  check (float 0.001) "default interval" 240.0 default.interval_s;
+  check string "default message" "Default tick" default.message;
+  check (list string) "default clients" [ "claude"; "codex"; "opencode" ]
+    default.clients;
+  let quota = List.find (fun hb -> hb.C2c_start.heartbeat_name = "quota") specs in
+  check (float 0.001) "quota interval" 900.0 quota.interval_s;
+  check (option string) "quota command" (Some "printf quota") quota.command;
+  check (list string) "quota role classes" [ "coordinator" ] quota.role_classes
+
+let test_resolve_managed_heartbeats_applies_role_override_and_named_entries () =
+  let role =
+    C2c_role.parse_string
+      "---\n\
+       description: Coordinator\n\
+       role: primary\n\
+       role_class: coordinator\n\
+       c2c:\n\
+       \  heartbeat:\n\
+       \    message: \"Role tick\"\n\
+       \  heartbeats:\n\
+       \    sitrep:\n\
+       \      interval: 1h\n\
+       \      message: \"Coordinator sitrep\"\n\
+       ---\n\
+       body\n"
+  in
+  let specs =
+    C2c_start.resolve_managed_heartbeats ~client:"claude"
+      ~deliver_started:false ~role:(Some role) []
+  in
+  check int "default plus sitrep" 2 (List.length specs);
+  let default = List.find (fun hb -> hb.C2c_start.heartbeat_name = "default") specs in
+  check string "role default message wins" "Role tick" default.message;
+  let sitrep = List.find (fun hb -> hb.C2c_start.heartbeat_name = "sitrep") specs in
+  check (float 0.001) "sitrep interval" 3600.0 sitrep.interval_s;
+  check string "sitrep message" "Coordinator sitrep" sitrep.message
+
+let test_resolve_managed_heartbeats_role_override_preserves_config_fields () =
+  let role =
+    C2c_role.parse_string
+      "---\n\
+       description: Coordinator\n\
+       role: primary\n\
+       role_class: coordinator\n\
+       c2c:\n\
+       \  heartbeat:\n\
+       \    message: \"Role message only\"\n\
+       ---\n\
+       body\n"
+  in
+  let config_default =
+    C2c_start.
+      { heartbeat_name = "default"
+      ; schedule = Interval 600.0
+      ; interval_s = 600.0
+      ; message = "Config message"
+      ; command = None
+      ; command_timeout_s = 30.0
+      ; clients = [ "claude" ]
+      ; role_classes = [ "coordinator" ]
+      ; enabled = true
+      }
+  in
+  let specs =
+    C2c_start.resolve_managed_heartbeats ~client:"claude"
+      ~deliver_started:false ~role:(Some role) [ config_default ]
+  in
+  match specs with
+  | [ hb ] ->
+      check string "role message wins" "Role message only" hb.message;
+      check (float 0.001) "config interval preserved" 600.0 hb.interval_s;
+      check (list string) "config clients preserved" [ "claude" ] hb.clients;
+      check (list string) "config role classes preserved" [ "coordinator" ]
+        hb.role_classes
+  | _ -> fail "expected one resolved default heartbeat"
+
+let test_resolve_managed_heartbeats_filters_clients_and_role_classes () =
+  let role =
+    C2c_role.parse_string
+      "---\n\
+       description: Coder\n\
+       role: primary\n\
+       role_class: coder\n\
+       ---\n\
+       body\n"
+  in
+  let specs =
+    [ C2c_start.
+        { heartbeat_name = "default"
+        ; schedule = Interval 240.0
+        ; interval_s = 240.0
+        ; message = "default"
+        ; command = None
+        ; command_timeout_s = 30.0
+        ; clients = [ "codex" ]
+        ; role_classes = []
+        ; enabled = true
+        }
+    ; { heartbeat_name = "sitrep"
+      ; schedule = Interval 3600.0
+      ; interval_s = 3600.0
+      ; message = "sitrep"
+      ; command = None
+      ; command_timeout_s = 30.0
+      ; clients = []
+      ; role_classes = [ "coordinator" ]
+      ; enabled = true
+      }
+    ]
+  in
+  check int "claude not in clients" 0
+    (List.length
+       (C2c_start.resolve_managed_heartbeats ~client:"claude"
+          ~deliver_started:false ~role:(Some role) specs));
+  check int "codex needs deliver daemon" 0
+    (List.length
+       (C2c_start.resolve_managed_heartbeats ~client:"codex"
+          ~deliver_started:false ~role:(Some role) specs));
+  check int "codex with deliver daemon" 1
+    (List.length
+       (C2c_start.resolve_managed_heartbeats ~client:"codex"
+          ~deliver_started:true ~role:(Some role) specs))
+
+let test_render_heartbeat_content_appends_command_output () =
+  let hb = C2c_start.
+    { heartbeat_name = "quota"
+    ; schedule = Interval 900.0
+    ; interval_s = 900.0
+    ; message = "Quota report"
+    ; command = Some "printf 'remaining=42'"
+    ; command_timeout_s = 30.0
+    ; clients = []
+    ; role_classes = []
+    ; enabled = true
+    }
+  in
+  let content = C2c_start.render_heartbeat_content hb in
+  check bool "keeps base message" true
+    (String.contains content 'Q');
+  check bool "skips disallowed command" true
+    (try ignore (Str.search_forward (Str.regexp_string "skipped disallowed heartbeat command") content 0); true
+     with Not_found -> false)
+
 let test_start_deliver_daemon_detaches_from_terminal_stdio_and_group () =
   with_temp_dir @@ fun dir ->
   let bin_dir = Filename.concat dir "bin" in
@@ -852,6 +1052,22 @@ let () =
             `Quick, test_should_start_codex_heartbeat_requires_codex_deliver_daemon )
         ; ( "enqueue_codex_heartbeat_uses_broker_inbox_transport",
             `Quick, test_enqueue_codex_heartbeat_uses_broker_inbox_transport )
+        ; ( "parse_heartbeat_duration_units",
+            `Quick, test_parse_heartbeat_duration_units )
+        ; ( "heartbeat_aligned_schedule_next_delay",
+            `Quick, test_heartbeat_aligned_schedule_next_delay )
+        ; ( "repo_config_managed_heartbeats_reads_default_and_named",
+            `Quick, test_repo_config_managed_heartbeats_reads_default_and_named )
+        ; ( "resolve_managed_heartbeats_applies_role_override_and_named_entries",
+            `Quick,
+            test_resolve_managed_heartbeats_applies_role_override_and_named_entries )
+        ; ( "resolve_managed_heartbeats_role_override_preserves_config_fields",
+            `Quick,
+            test_resolve_managed_heartbeats_role_override_preserves_config_fields )
+        ; ( "resolve_managed_heartbeats_filters_clients_and_role_classes",
+            `Quick, test_resolve_managed_heartbeats_filters_clients_and_role_classes )
+        ; ( "render_heartbeat_content_appends_command_output",
+            `Quick, test_render_heartbeat_content_appends_command_output )
         ; ( "finalize_outer_loop_exit_cleans_before_print",
             `Quick, test_finalize_outer_loop_exit_cleans_before_print )
         ; ( "start_deliver_daemon_detaches_from_terminal_stdio_and_group",

@@ -93,16 +93,42 @@ let start_title_ticker ~(broker_root : string) ~(session_id : string)
     in
     loop ()) ())
 
-(* Codex heartbeat — broker-mail-based heartbeat for codex sessions.
-   Sends a heartbeat message to the session's own inbox every [interval_s] seconds.
-   This keeps codex sessions alive without PTY injection. The deliver daemon
-   picks up the message on its next poll and delivers it to codex.
-   Unlike the PTY poker (which injects directly into the TTY), this uses
-   the broker inbox like regular mail — more reliable for headless/codex sessions. *)
-let codex_heartbeat_interval_s = 240.0
+type heartbeat_schedule =
+  | Interval of float
+  | Aligned_interval of { interval_s : float; offset_s : float }
 
-let codex_heartbeat_content =
+type managed_heartbeat = {
+  heartbeat_name : string;
+  schedule : heartbeat_schedule;
+  interval_s : float;
+  message : string;
+  command : string option;
+  command_timeout_s : float;
+  clients : string list;
+  role_classes : string list;
+  enabled : bool;
+}
+
+let default_managed_heartbeat_content =
   "Session heartbeat. Poll your C2C inbox and handle any messages."
+
+let codex_heartbeat_interval_s = 240.0
+let codex_heartbeat_content = default_managed_heartbeat_content
+
+let default_heartbeat_clients =
+  [ "claude"; "codex"; "opencode"; "kimi"; "crush" ]
+
+let builtin_managed_heartbeat =
+  { heartbeat_name = "default"
+  ; schedule = Interval codex_heartbeat_interval_s
+  ; interval_s = codex_heartbeat_interval_s
+  ; message = default_managed_heartbeat_content
+  ; command = None
+  ; command_timeout_s = 30.0
+  ; clients = default_heartbeat_clients
+  ; role_classes = []
+  ; enabled = true
+  }
 
 let codex_heartbeat_enabled ~(client : string) : bool =
   client = "codex"
@@ -111,20 +137,175 @@ let should_start_codex_heartbeat ~(client : string) ~(deliver_started : bool) :
     bool =
   codex_heartbeat_enabled ~client && deliver_started
 
-let enqueue_codex_heartbeat ~(broker_root : string) ~(alias : string) : unit =
+let parse_bool_like (s : string) : bool option =
+  match String.lowercase_ascii (String.trim s) with
+  | "true" | "1" | "yes" | "on" -> Some true
+  | "false" | "0" | "no" | "off" -> Some false
+  | _ -> None
+
+let strip_quotes (s : string) : string =
+  let s = String.trim s in
+  if String.length s >= 2
+     && ((s.[0] = '"' && s.[String.length s - 1] = '"')
+         || (s.[0] = '\'' && s.[String.length s - 1] = '\'')) then
+    String.sub s 1 (String.length s - 2)
+  else s
+
+let parse_string_list_literal (s : string) : string list =
+  let s = String.trim s in
+  if String.length s >= 2 && s.[0] = '[' && s.[String.length s - 1] = ']' then
+    let inner = String.sub s 1 (String.length s - 2) in
+    String.split_on_char ',' inner
+    |> List.map (fun item -> strip_quotes (String.trim item))
+    |> List.filter (fun item -> item <> "")
+  else
+    let v = strip_quotes s in
+    if v = "" then [] else [ v ]
+
+let parse_heartbeat_duration_s (raw : string) : (float, string) result =
+  let s = String.trim raw |> strip_quotes in
+  if s = "" then Error "heartbeat duration is empty"
+  else
+    let len = String.length s in
+    let unit_char = s.[len - 1] in
+    let multiplier, number_part =
+      match unit_char with
+      | 's' | 'S' -> (1.0, String.sub s 0 (len - 1))
+      | 'm' | 'M' -> (60.0, String.sub s 0 (len - 1))
+      | 'h' | 'H' -> (3600.0, String.sub s 0 (len - 1))
+      | _ -> (1.0, s)
+    in
+    try
+      let value = float_of_string (String.trim number_part) *. multiplier in
+      if value <= 0.0 then Error ("heartbeat duration must be positive: " ^ raw)
+      else Ok value
+    with Failure _ ->
+      Error ("invalid heartbeat duration: " ^ raw)
+
+let parse_heartbeat_schedule (raw : string) : (heartbeat_schedule, string) result =
+  let s = String.trim raw |> strip_quotes in
+  if s = "" then Error "heartbeat schedule is empty"
+  else if s.[0] <> '@' then
+    match parse_heartbeat_duration_s s with
+    | Ok n -> Ok (Interval n)
+    | Error _ as e -> e
+  else
+    let body = String.sub s 1 (String.length s - 1) in
+    let interval_part, offset_part =
+      match String.index_opt body '+' with
+      | None -> (body, "0s")
+      | Some idx ->
+          ( String.sub body 0 idx
+          , String.sub body (idx + 1) (String.length body - idx - 1) )
+    in
+    match parse_heartbeat_duration_s interval_part,
+          parse_heartbeat_duration_s offset_part with
+    | Ok interval_s, Ok offset_s ->
+        Ok (Aligned_interval { interval_s; offset_s })
+    | Error e, _ | _, Error e -> Error e
+
+let interval_s_of_schedule = function
+  | Interval n -> n
+  | Aligned_interval { interval_s; _ } -> interval_s
+
+let next_heartbeat_delay_s ~(now : float) (hb : managed_heartbeat) : float =
+  match hb.schedule with
+  | Interval n -> n
+  | Aligned_interval { interval_s; offset_s } ->
+      let shifted = now -. offset_s in
+      let slots = floor (shifted /. interval_s) +. 1.0 in
+      let next = (slots *. interval_s) +. offset_s in
+      max 0.001 (next -. now)
+
+let enqueue_heartbeat ~(broker_root : string) ~(alias : string)
+    ~(content : string) : unit =
   let broker = C2c_mcp.Broker.create ~root:broker_root in
   C2c_mcp.Broker.enqueue_message broker ~from_alias:alias ~to_alias:alias
-    ~content:codex_heartbeat_content ()
+    ~content ()
+
+let enqueue_codex_heartbeat ~(broker_root : string) ~(alias : string) : unit =
+  enqueue_heartbeat ~broker_root ~alias ~content:codex_heartbeat_content
+
+let command_allowlist =
+  [ [ "c2c"; "quota" ]
+  ; [ "c2c"; "history" ]
+  ; [ "c2c"; "list" ]
+  ; [ "c2c"; "doctor" ]
+  ; [ "c2c"; "instances" ]
+  ]
+
+let split_command_words (cmd : string) : string list =
+  String.split_on_char ' ' (String.trim cmd)
+  |> List.map String.trim
+  |> List.filter ((<>) "")
+
+let heartbeat_command_allowed (cmd : string) : bool =
+  let words = split_command_words cmd in
+  List.exists (fun allowed -> words = allowed) command_allowlist
+
+let run_allowed_heartbeat_command (cmd : string) : string =
+  if not (heartbeat_command_allowed cmd) then
+    Printf.sprintf "[skipped disallowed heartbeat command: %s]" cmd
+  else
+    let ic = Unix.open_process_in cmd in
+    try
+      let buf = Buffer.create 256 in
+      (try
+         while true do
+           Buffer.add_string buf (input_line ic);
+           Buffer.add_char buf '\n'
+         done
+       with End_of_file -> ());
+      let status = Unix.close_process_in ic in
+      let output = String.trim (Buffer.contents buf) in
+      match status with
+      | Unix.WEXITED 0 -> output
+      | Unix.WEXITED n ->
+          Printf.sprintf "[heartbeat command exited %d]\n%s" n output
+      | Unix.WSIGNALED n ->
+          Printf.sprintf "[heartbeat command signaled %d]" n
+      | Unix.WSTOPPED n ->
+          Printf.sprintf "[heartbeat command stopped %d]" n
+    with e ->
+      (try ignore (Unix.close_process_in ic) with _ -> ());
+      Printf.sprintf "[heartbeat command failed: %s]" (Printexc.to_string e)
+
+let render_heartbeat_content (hb : managed_heartbeat) : string =
+  match hb.command with
+  | None -> hb.message
+  | Some cmd ->
+      let output = run_allowed_heartbeat_command cmd in
+      if String.trim output = "" then hb.message
+      else
+        Printf.sprintf "%s\n\n[heartbeat:%s command output]\n%s"
+          hb.message hb.heartbeat_name output
+
+let start_managed_heartbeat ~(broker_root : string) ~(alias : string)
+    (hb : managed_heartbeat) : unit =
+  ignore (Thread.create (fun () ->
+    let rec loop first =
+      let sleep_s =
+        if first then next_heartbeat_delay_s ~now:(Unix.gettimeofday ()) hb
+        else hb.interval_s
+      in
+      Unix.sleepf sleep_s;
+      (try
+         enqueue_heartbeat ~broker_root ~alias
+           ~content:(render_heartbeat_content hb)
+       with _ -> ());
+      loop false
+    in
+    loop true) ())
 
 let start_codex_heartbeat ~(broker_root : string) ~(alias : string)
     ~(interval_s : float) : unit =
-  ignore (Thread.create (fun () ->
-    let rec loop () =
-      Unix.sleepf interval_s;
-      (try enqueue_codex_heartbeat ~broker_root ~alias with _ -> ());
-      loop ()
-    in
-    loop ()) ())
+  start_managed_heartbeat ~broker_root ~alias
+    { builtin_managed_heartbeat with
+      heartbeat_name = "codex";
+      schedule = Interval interval_s;
+      interval_s;
+      clients = [ "codex" ];
+    }
 
 (* setpgid(2) binding — OCaml 5.x's Unix module omits this call.
    Implementation in ocaml/cli/c2c_posix_stubs.c. *)
@@ -233,6 +414,237 @@ let repo_config_git_sign () : bool =
         else loop ()
     in
     loop ()
+
+let read_toml_sections_with_prefix (prefix : string) :
+    (string * (string * string) list) list =
+  let path = repo_config_path () in
+  if not (Sys.file_exists path) then []
+  else
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) @@ fun () ->
+    let current = ref None in
+    let acc = ref [] in
+    let add section k v =
+      let existing = Option.value (List.assoc_opt section !acc) ~default:[] in
+      acc := (section, (k, v) :: existing)
+             :: List.remove_assoc section !acc
+    in
+    (try
+       while true do
+         let line = input_line ic in
+         let t = String.trim line in
+         if t = "" || (String.length t > 0 && t.[0] = '#') then ()
+         else if String.length t > 2 && t.[0] = '['
+                 && t.[String.length t - 1] = ']' then begin
+           let section = String.sub t 1 (String.length t - 2) in
+           current :=
+             if section = prefix then Some "default"
+             else
+               let dotted = prefix ^ "." in
+               if String.length section > String.length dotted
+                  && String.sub section 0 (String.length dotted) = dotted then
+                 Some (String.sub section (String.length dotted)
+                         (String.length section - String.length dotted))
+               else None
+         end else
+           match !current, String.index_opt t '=' with
+           | Some section, Some eq ->
+               let k = String.trim (String.sub t 0 eq) in
+               let v =
+                 String.sub t (eq + 1) (String.length t - eq - 1)
+                 |> String.trim |> strip_quotes
+               in
+               if k <> "" then add section k v
+           | _ -> ()
+       done;
+       assert false
+     with End_of_file ->
+       List.map (fun (section, entries) -> (section, List.rev entries))
+         (List.rev !acc))
+
+let assoc_bool key entries default =
+  match List.assoc_opt key entries with
+  | None -> default
+  | Some v -> Option.value (parse_bool_like v) ~default
+
+let assoc_duration key entries default =
+  match List.assoc_opt key entries with
+  | None -> default
+  | Some v ->
+      (match parse_heartbeat_duration_s v with
+       | Ok n -> n
+       | Error _ -> default)
+
+let assoc_list key entries default =
+  match List.assoc_opt key entries with
+  | None -> default
+  | Some v -> parse_string_list_literal v
+
+let heartbeat_from_entries ~(name : string) (base : managed_heartbeat)
+    (entries : (string * string) list) : managed_heartbeat =
+  let schedule =
+    match List.assoc_opt "schedule" entries with
+    | Some raw ->
+        (match parse_heartbeat_schedule raw with
+         | Ok schedule -> schedule
+         | Error _ -> base.schedule)
+    | None ->
+        (match List.assoc_opt "interval" entries with
+         | Some raw ->
+             (match parse_heartbeat_duration_s raw with
+              | Ok interval_s -> Interval interval_s
+              | Error _ -> base.schedule)
+         | None -> base.schedule)
+  in
+  { heartbeat_name = name
+  ; schedule
+  ; interval_s = interval_s_of_schedule schedule
+  ; message =
+      Option.value (List.assoc_opt "message" entries) ~default:base.message
+  ; command =
+      (match List.assoc_opt "command" entries with
+       | Some "" -> None
+       | Some v -> Some v
+       | None -> base.command)
+  ; command_timeout_s =
+      assoc_duration "command_timeout" entries base.command_timeout_s
+  ; clients = assoc_list "clients" entries base.clients
+  ; role_classes = assoc_list "role_classes" entries base.role_classes
+  ; enabled = assoc_bool "enabled" entries base.enabled
+  }
+
+let repo_config_managed_heartbeats () : managed_heartbeat list =
+  read_toml_sections_with_prefix "heartbeat"
+  |> List.map (fun (name, entries) ->
+       heartbeat_from_entries ~name
+         { builtin_managed_heartbeat with heartbeat_name = name }
+         entries)
+
+let heartbeat_name_from_role_key ~(prefix : string) (key : string) :
+    (string * string) option =
+  let dotted = prefix ^ "." in
+  if String.length key <= String.length dotted
+     || String.sub key 0 (String.length dotted) <> dotted then
+    None
+  else
+    let rest = String.sub key (String.length dotted)
+        (String.length key - String.length dotted) in
+    match String.index_opt rest '.' with
+    | None -> None
+    | Some dot ->
+        let name = String.sub rest 0 dot in
+        let field = String.sub rest (dot + 1) (String.length rest - dot - 1) in
+        Some (name, field)
+
+let role_named_heartbeat_entries (role : C2c_role.t) :
+    (string * (string * string) list) list =
+  let acc = ref [] in
+  let add name field value =
+    let existing = Option.value (List.assoc_opt name !acc) ~default:[] in
+    acc := (name, (field, value) :: existing) :: List.remove_assoc name !acc
+  in
+  List.iter
+    (fun (key, value) ->
+      match heartbeat_name_from_role_key ~prefix:"c2c.heartbeats" key with
+      | Some (name, field) -> add name field value
+      | None -> ())
+    role.C2c_role.c2c_heartbeats;
+  List.map (fun (name, entries) -> (name, List.rev entries)) (List.rev !acc)
+
+let merge_heartbeats (specs : managed_heartbeat list) :
+    managed_heartbeat list =
+  let acc = ref [] in
+  List.iter
+    (fun hb ->
+      acc := (hb.heartbeat_name, hb)
+             :: List.remove_assoc hb.heartbeat_name !acc)
+    specs;
+  List.rev_map snd !acc
+
+let normalized_role_default_entries (role : C2c_role.t) =
+  List.map
+    (fun (key, value) ->
+      let prefix = "c2c.heartbeat." in
+      if String.length key > String.length prefix
+         && String.sub key 0 (String.length prefix) = prefix then
+        (String.sub key (String.length prefix)
+           (String.length key - String.length prefix), value)
+      else (key, value))
+    role.C2c_role.c2c_heartbeat
+
+let should_heartbeat_apply_to_client ~(client : string)
+    ~(deliver_started : bool) (hb : managed_heartbeat) : bool =
+  let client_allowed =
+    if hb.clients = [] then
+      client <> "codex-headless"
+    else
+      List.mem client hb.clients
+  in
+  hb.enabled
+  && client_allowed
+  && (client <> "codex" || deliver_started)
+
+let should_heartbeat_apply_to_role ~(role : C2c_role.t option)
+    (hb : managed_heartbeat) : bool =
+  match hb.role_classes with
+  | [] -> true
+  | classes ->
+      (match role with
+       | Some r ->
+           (match r.C2c_role.role_class with
+            | Some rc -> List.mem rc classes
+            | None -> false)
+       | None -> false)
+
+let resolve_managed_heartbeats ~(client : string) ~(deliver_started : bool)
+    ~(role : C2c_role.t option) (config_specs : managed_heartbeat list) :
+    managed_heartbeat list =
+  let merged_config = merge_heartbeats (builtin_managed_heartbeat :: config_specs) in
+  let merged =
+    match role with
+    | None -> merged_config
+    | Some r ->
+        let role_default =
+          if r.C2c_role.c2c_heartbeat = [] then []
+          else
+            let base =
+              Option.value
+                (List.find_opt
+                   (fun hb -> hb.heartbeat_name = "default")
+                   merged_config)
+                ~default:builtin_managed_heartbeat
+            in
+            [ heartbeat_from_entries ~name:"default" base
+                (normalized_role_default_entries r) ]
+        in
+        let role_named =
+          role_named_heartbeat_entries r
+          |> List.map (fun (name, entries) ->
+               let base =
+                 Option.value
+                   (List.find_opt
+                      (fun hb -> hb.heartbeat_name = name)
+                      merged_config)
+                   ~default:{ builtin_managed_heartbeat with
+                              heartbeat_name = name }
+               in
+               heartbeat_from_entries ~name base entries)
+        in
+        merge_heartbeats (merged_config @ role_default @ role_named)
+  in
+  merged
+  |> List.filter (should_heartbeat_apply_to_client ~client ~deliver_started)
+  |> List.filter (should_heartbeat_apply_to_role ~role)
+
+let load_role_for_heartbeat ~(client : string) (agent_name : string option) :
+    C2c_role.t option =
+  match agent_name with
+  | None -> None
+  | Some name ->
+      (try
+         let path = C2c_role.resolve_agent_path ~name ~client in
+         if Sys.file_exists path then Some (C2c_role.parse_file path) else None
+       with _ -> None)
 
 (* ---------------------------------------------------------------------------
  * pmodel (provider:model) preferences
@@ -2711,14 +3123,19 @@ let run_outer_loop ~(name : string) ~(client : string)
           (* Start periodic title ticker — updates glyph based on broker state (✉ ⏸). *)
           start_title_ticker ~broker_root ~session_id:name ~alias:effective_alias
             ~client ~poll_interval_s:30.0;
-          (* Start codex heartbeat — broker-mail-based heartbeat every 4 minutes.
-             Codex has no PTY poker, so without this the session can go stale.
-             Uses Broker.enqueue_message (like mail) so the deliver daemon picks it up. *)
-          (if should_start_codex_heartbeat ~client
-                ~deliver_started:(Option.is_some !deliver_pid)
-           then
-             start_codex_heartbeat ~broker_root ~alias:effective_alias
-               ~interval_s:codex_heartbeat_interval_s);
+          (* Start managed heartbeats — broker-mail-based self messages. They
+             use the same inbox transport as ordinary c2c messages; per-client
+             delivery sidecars/plugins then handle actual presentation. *)
+          let heartbeat_role = load_role_for_heartbeat ~client agent_name in
+          let heartbeat_specs =
+            resolve_managed_heartbeats ~client
+              ~deliver_started:(Option.is_some !deliver_pid)
+              ~role:heartbeat_role
+              (repo_config_managed_heartbeats ())
+          in
+          List.iter
+            (start_managed_heartbeat ~broker_root ~alias:effective_alias)
+            heartbeat_specs;
           pid
         with Unix.Unix_error (Unix.EINTR, _, _) -> 0
       in

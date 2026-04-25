@@ -96,6 +96,49 @@ val parse_pmodel : string -> (pmodel, string) result
     when the model contains ':'). Returns [Error msg] on empty provider, empty
     model, or missing separator. *)
 
+(** {1 Managed heartbeats} *)
+
+type heartbeat_schedule =
+  | Interval of float
+  | Aligned_interval of { interval_s : float; offset_s : float }
+
+type managed_heartbeat = {
+  heartbeat_name : string;
+  schedule : heartbeat_schedule;
+  interval_s : float;
+  message : string;
+  command : string option;
+  command_timeout_s : float;
+  clients : string list;
+  role_classes : string list;
+  enabled : bool;
+}
+
+val parse_heartbeat_duration_s : string -> (float, string) result
+(** Parse heartbeat durations like ["240s"], ["4m"], and ["1h"]. *)
+
+val parse_heartbeat_schedule : string -> (heartbeat_schedule, string) result
+(** Parse relative schedules like ["4m"] or aligned schedules like ["@1h+7m"]. *)
+
+val next_heartbeat_delay_s : now:float -> managed_heartbeat -> float
+(** Compute the next sleep delay for a heartbeat, including wall-clock aligned
+    schedules. *)
+
+val repo_config_managed_heartbeats : unit -> managed_heartbeat list
+(** Read managed heartbeat defaults and named specs from [.c2c/config.toml]. *)
+
+val resolve_managed_heartbeats :
+  client:string ->
+  deliver_started:bool ->
+  role:C2c_role.t option ->
+  managed_heartbeat list ->
+  managed_heartbeat list
+(** Resolve effective heartbeats after built-in defaults, repo config, role
+    overrides, and runtime client/delivery gates. *)
+
+val render_heartbeat_content : managed_heartbeat -> string
+(** Render one heartbeat message, appending allowed command output when set. *)
+
 val repo_config_pmodel : unit -> (string * pmodel) list
 (** Read the [pmodel] table from .c2c/config.toml in the repo root. Returns the
     list of (class_key, pmodel) pairs. Malformed entries are silently dropped. *)

@@ -122,6 +122,42 @@ let test_pronouns_roundtrip () =
   let re_parsed = C2c_role.parse_string rendered in
   Alcotest.(check (option string)) "roundtrip: pronouns preserved" (Some "she/her") re_parsed.C2c_role.pronouns
 
+let test_c2c_heartbeat_frontmatter_parse () =
+  let role =
+    C2c_role.parse_string
+      "---\n\
+       description: Heartbeat role\n\
+       role: primary\n\
+       role_class: coordinator\n\
+       c2c:\n\
+       \  heartbeat:\n\
+       \    message: \"Role default tick\"\n\
+       \    interval: 5m\n\
+       \  heartbeats:\n\
+       \    sitrep:\n\
+       \      interval: 1h\n\
+       \      message: \"Write sitrep\"\n\
+       \    quota:\n\
+       \      interval: 15m\n\
+       \      command: \"printf quota\"\n\
+       ---\n\
+       body\n"
+  in
+  Alcotest.(check (option string)) "default message"
+    (Some "Role default tick")
+    (List.assoc_opt "c2c.heartbeat.message" role.C2c_role.c2c_heartbeat);
+  Alcotest.(check (option string)) "default interval"
+    (Some "5m")
+    (List.assoc_opt "c2c.heartbeat.interval" role.C2c_role.c2c_heartbeat);
+  Alcotest.(check (option string)) "named sitrep interval"
+    (Some "1h")
+    (List.assoc_opt "c2c.heartbeats.sitrep.interval"
+       role.C2c_role.c2c_heartbeats);
+  Alcotest.(check (option string)) "named quota command"
+    (Some "printf quota")
+    (List.assoc_opt "c2c.heartbeats.quota.command"
+       role.C2c_role.c2c_heartbeats)
+
 let tests = [
   "opencode_renderer",            `Quick, test_opencode_renderer;
   "opencode_renderer_default_steps", `Quick, test_opencode_renderer_default_steps;
@@ -136,6 +172,7 @@ let tests = [
   "pronouns_render_codex",        `Quick, test_pronouns_render_codex;
   "pronouns_render_kimi",         `Quick, test_pronouns_render_kimi;
   "pronouns_roundtrip",           `Quick, test_pronouns_roundtrip;
+  "c2c_heartbeat_frontmatter_parse", `Quick, test_c2c_heartbeat_frontmatter_parse;
 ]
 
 (* ---------- pmodel resolution ---------- *)
