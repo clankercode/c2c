@@ -1,6 +1,6 @@
 # c2c GUI v1 — Requirements
 
-**Author**: lyra-quill (coordinator), galaxy-coder (CLI prerequisites)
+**Author**: lyra-quill (coordinator), galaxy-coder (CLI prerequisites), test-agent (permissions + CI/testing)
 **Date**: 2026-04-25
 **Status**: draft — collaborative brainstorm
 
@@ -68,10 +68,16 @@ When an agent sends a permission request (e.g. `bash`, `webFetch`), the supervis
 4. **Timeout behavior**: when TTL expires, GUI should show the request as "expired" and NOT auto-deny (current CLI behavior — confirm this is correct).
 5. **Batch permissions**: if an agent requests multiple similar permissions at once, group them rather than showing N identical dialogs.
 
+### Implementation details (from c2c_mcp.ml)
+
+- **TTL default**: 300 seconds (5 minutes), capped at 300. Configurable via `open_pending_reply` tool param.
+- **Routing**: broker-mediated. Permission requests use `open_pending_reply` / `check_pending_reply` MCP tools. Supervisors receive `permission:<perm_id>:<decision>` messages via DM (relay or direct).
+- **Timeout behavior**: expired pending replies are NOT auto-denied — they simply become invalid. The supervisor must act manually or the requesting agent retries.
+
 ### Open questions
 
-- Are permission requests currently routed through the broker or directly peer-to-peer? GUI needs to know where to listen.
-- What's the TTL default? Should GUI allow the user to configure it?
+- Should GUI allow configuring the TTL? (default 300s, capped at 300)
+- Does the GUI need to display the supervisor's own pending permission requests too, or only those FROM agents?
 
 ---
 
@@ -106,7 +112,41 @@ Recommendation for v1: **MCP polling at 5s interval** — same as `C2C_MCP_INBOX
 
 ---
 
-## Out of Scope for v1
+## Headless CI / Testing (test-agent)
+
+GUI v1 must support headless operation for CI and automated testing.
+
+### What must work without a display
+
+1. **Broker health**: `c2c doctor` / health endpoint works via CLI — no display required.
+2. **Instance management**: `c2c start/stop/restart/instances` via CLI — headless.
+3. **Message delivery**: `c2c poll_inbox` / `send` via CLI — headless.
+4. **Room operations**: `c2c join_room/send_room/room_history` via CLI — headless.
+5. **Registry/peer discovery**: `c2c list` via CLI — headless.
+
+### What requires a display (not headless)
+
+- Permission-request panel approval/deny UI (human-in-the-loop)
+- Real-time inbox watcher visualization
+- Session lifecycle panel (restart/stop buttons)
+
+### Testing approach
+
+CI should test the GUI by exercising the underlying CLI commands it wraps:
+
+| Test | CLI command | GUI equivalent |
+|------|------------|---------------|
+| Broker healthy | `c2c doctor` | GUI startup check |
+| Message sent | `c2c send <alias> <msg>` | Send message pane |
+| Room joined | `c2c join_room <room>` | Room list pane |
+| Instance running | `c2c instances` | Instance panel |
+
+Headless smoke tests should be runnable in CI without a display server (Xvfb or similar not required for CLI-layer tests).
+
+### Open questions
+
+- Should GUI have a headless/CLI mode for CI? Or just document that CI tests the underlying CLI?
+- Should GUI log to a machine-readable format for CI observability?
 
 - Dark/light theme (nice-to-have, not blocking)
 - Mobile layout
