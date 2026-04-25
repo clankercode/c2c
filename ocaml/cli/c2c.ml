@@ -5561,39 +5561,102 @@ let find_gui_binary () =
           if Sys.file_exists sibling then Some sibling else None)
   | None -> None
 
+type gui_batch_check = { name : string; ok : bool; detail : string }
+
+(** [gui_batch ()] runs a headless smoke test of the c2c broker.
+    Checks broker root, peer list, room list. Outputs JSON to stderr.
+    Exits 0 on success, non-zero on failure. *)
+let gui_batch () =
+  let broker_root = resolve_broker_root () in
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  let checks : gui_batch_check list ref = ref [] in
+  let add_check name ok detail =
+    checks := { name; ok; detail } :: !checks
+  in
+  (* Check 1: broker root exists and is readable *)
+  (try
+     let reg_path = Filename.concat broker_root "registry.json" in
+     if Sys.file_exists reg_path then add_check "broker_root" true "registry.json found"
+     else add_check "broker_root" false "registry.json not found"
+   with e ->
+     add_check "broker_root" false (Printexc.to_string e));
+  (* Check 2: list registrations (peer discovery) *)
+  (try
+     let regs = C2c_mcp.Broker.list_registrations broker in
+     let alive = List.filter (fun r -> C2c_mcp.Broker.registration_liveness_state r = C2c_mcp.Broker.Alive) regs in
+     add_check "peer_discovery" true
+       (Printf.sprintf "%d total, %d alive" (List.length regs) (List.length alive))
+   with e ->
+     add_check "peer_discovery" false (Printexc.to_string e));
+  (* Check 3: list rooms *)
+  (try
+     let rooms = C2c_mcp.Broker.list_rooms broker in
+     add_check "room_list" true
+       (Printf.sprintf "%d rooms" (List.length rooms))
+   with e ->
+     add_check "room_list" false (Printexc.to_string e));
+  (* Assemble JSON output *)
+  let all_ok = List.for_all (fun c -> c.ok) !checks in
+  let json =
+    `Assoc
+      [ ("ok", `Bool all_ok)
+      ; ("ts", `Float (Unix.gettimeofday ()))
+      ; ("checks", `List (List.map (fun c ->
+          `Assoc
+            [ ("name", `String c.name)
+            ; ("ok", `Bool c.ok)
+            ; ("detail", `String c.detail)
+            ]) !checks))
+      ]
+  in
+  output_string stderr (Yojson.Safe.to_string json ^ "\n");
+  flush stderr;
+  exit (if all_ok then 0 else 1)
+
 let gui_cmd =
   let detach =
     Cmdliner.Arg.(value & flag & info [ "detach"; "d" ] ~doc:"Detach from terminal (run in background).")
   in
-  let+ detach = detach in
-  match find_gui_binary () with
-  | None ->
-      Printf.eprintf "c2c gui: c2c-gui binary not found.\n";
-      Printf.eprintf "  Build it with: cd gui && cargo tauri build\n";
-      Printf.eprintf "  Or install the .deb/.rpm from gui/src-tauri/target/release/bundle/\n";
-      exit 1
-  | Some bin ->
-      if detach then begin
-        (match Unix.fork () with
-        | 0 ->
-            Unix.setsid () |> ignore;
-            Unix.execv bin [| bin |]
-        | _ -> exit 0)
-      end else begin
-        let pid = Unix.create_process bin [| bin |] Unix.stdin Unix.stdout Unix.stderr in
-        let _, status = Unix.waitpid [] pid in
-        exit (match status with
-          | Unix.WEXITED code -> code
-          | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> 1)
-      end
+  let batch =
+    Cmdliner.Arg.(value & flag & info [ "batch"; "b" ]
+      ~doc:"Headless smoke test: verify broker, peers, and rooms. Outputs JSON to stderr and exits.")
+  in
+  let+ detach = detach
+  and+ batch = batch in
+  if batch then gui_batch ()
+  else
+    match find_gui_binary () with
+    | None ->
+        Printf.eprintf "c2c gui: c2c-gui binary not found.\n";
+        Printf.eprintf "  Build it with: cd gui && cargo tauri build\n";
+        Printf.eprintf "  Or install the .deb/.rpm from gui/src-tauri/target/release/bundle/\n";
+        exit 1
+    | Some bin ->
+        if detach then begin
+          (match Unix.fork () with
+          | 0 ->
+              Unix.setsid () |> ignore;
+              Unix.execv bin [| bin |]
+          | _ -> exit 0)
+        end else begin
+          let pid = Unix.create_process bin [| bin |] Unix.stdin Unix.stdout Unix.stderr in
+          let _, status = Unix.waitpid [] pid in
+          exit (match status with
+            | Unix.WEXITED code -> code
+            | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> 1)
+        end
 
 let gui = Cmdliner.Cmd.v
   (Cmdliner.Cmd.info "gui"
-     ~doc:"Launch the c2c desktop GUI."
+     ~doc:"Launch the c2c desktop GUI, or run a headless smoke test."
      ~man:[ `S "DESCRIPTION"
-          ; `P "Launches the c2c-gui Tauri desktop application. Searches for the \
-                c2c-gui binary in PATH and alongside the c2c binary. Use \
-                $(b,--detach) to run it in the background."
+          ; `P "With no flags, launches the c2c-gui Tauri desktop application. \
+                Searches for the c2c-gui binary in PATH and alongside the c2c binary. \
+                Use $(b,--detach) to run it in the background."
+          ; `P "$(b,c2c gui --batch) runs a headless smoke test that verifies the \
+                broker is reachable and exercises peer discovery and room listing. \
+                Outputs a JSON snapshot to stderr and exits 0 on success, non-zero on failure. \
+                Suitable for CI and operator inspection without a display."
           ])
   gui_cmd
 

@@ -73,7 +73,7 @@ let command_tier_map () : (string * safety) list =
       are not top-level commands. *)
    ; "setcap", Tier3
    ; "install", Tier2
-   ; "gui", Tier3
+    ; "gui", Tier1
    ; "diag", Tier3
    ; "smoke-test", Tier3
   ; "inject", Tier4
