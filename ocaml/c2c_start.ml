@@ -757,6 +757,48 @@ let repo_config_pmodel () : (string * pmodel) list =
 let repo_config_pmodel_lookup (use_case : string) : pmodel option =
   List.assoc_opt use_case (repo_config_pmodel ())
 
+(* Minimal TOML-ish reader for the [default_binary] table.
+   Allows repo-local overrides for client binaries (e.g. when multiple versions
+   of the same client are installed and the system PATH resolves a release build
+   that lacks features needed for xml-fd delivery).
+   Example .c2c/config.toml entry:
+     [default_binary]
+     codex = "/home/user/.local/bin/codex"   # alpha build with --xml-input-fd
+*)
+let repo_config_default_binary (client : string) : string option =
+  let path = repo_config_path () in
+  if not (Sys.file_exists path) then None
+  else
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) @@ fun () ->
+    let in_table = ref false in
+    let result = ref None in
+    (try
+      while !result = None do
+        let line = input_line ic in
+        let t = String.trim line in
+        if t = "" || (String.length t > 0 && t.[0] = '#') then ()
+        else if String.length t > 0 && t.[0] = '[' then
+          in_table := (t = "[default_binary]")
+        else if !in_table then begin
+          match String.index_opt t '=' with
+          | None -> ()
+          | Some eq ->
+            let k = String.trim (String.sub t 0 eq) in
+            if k = client then begin
+              let v = String.trim (String.sub t (eq + 1) (String.length t - eq - 1)) in
+              let v =
+                if String.length v >= 2 && v.[0] = '"' && v.[String.length v - 1] = '"'
+                then String.sub v 1 (String.length v - 2)
+                else v
+              in
+              if v <> "" then result := Some v
+            end
+        end
+      done
+    with End_of_file -> ());
+    !result
+
 let normalize_model_override_for_client ~(client : string) (raw : string)
     : (string, string) result =
   let value = String.trim raw in
@@ -2583,7 +2625,18 @@ let run_outer_loop ~(name : string) ~(client : string)
     with Not_found ->
       Printf.eprintf "error: unknown client '%s'\n%!" client; exit 1
   in
-  let binary = Option.value binary_override ~default:cfg.binary in
+  (* Binary resolution order:
+     1. explicit --binary flag (binary_override)
+     2. [default_binary] table in .c2c/config.toml
+     3. client config default (e.g. "codex") *)
+  let binary =
+    match binary_override with
+    | Some b -> b
+    | None ->
+      (match repo_config_default_binary client with
+       | Some b -> b
+       | None -> cfg.binary)
+  in
   match find_binary binary with
   | None ->
       Printf.eprintf "error: '%s' not found in PATH. Install %s first.\n%!" binary client;

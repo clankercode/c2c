@@ -188,6 +188,13 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   `C2C_MCP_SESSION_ID=kimi-smoke-$(date +%s)` and `--mcp-config-file`
   when launching one-shot Kimi probes. See
   `.collab/findings/2026-04-13T10-50-00Z-storm-beacon-kimi-session-hijack.md`.
+- **Two codex binaries on this machine — PATH default lacks `--xml-input-fd`.**
+  `/home/xertrov/.bun/bin/codex` (v0.125.0, stable, missing `--xml-input-fd`) is
+  first in PATH. `/home/xertrov/.local/bin/codex` (v0.125.0-alpha.2) has it and
+  enables the xml_fd deliver mode. `.c2c/config.toml` has a `[default_binary]`
+  entry pointing `codex` at the alpha binary so `c2c start codex` picks it up
+  automatically. If you see `unavailable` deliver mode after a codex upgrade, check
+  that `[default_binary] codex` still points to a binary that advertises `--xml-input-fd`.
 - **Use `c2c start <client>` to launch managed sessions.** This is the preferred
   way to start any managed client (claude, codex, opencode, kimi, crush). It
   replaces all 10 `run-*-inst`/`run-*-inst-outer` scripts with a single command

@@ -32,3 +32,10 @@ researcher   = "anthropic:claude-sonnet-4-6"
 release      = "anthropic:claude-opus-4-7"
 qa           = "anthropic:claude-sonnet-4-6"
 gui          = "anthropic:claude-sonnet-4-6"
+
+# Per-client binary overrides for `c2c start <client>`.
+# Use when multiple versions of a client are installed and the PATH default
+# lacks features needed for full delivery (e.g. --xml-input-fd on codex).
+# Priority: --binary flag > [default_binary] > client config default.
+[default_binary]
+codex = "/home/xertrov/.local/bin/codex"
