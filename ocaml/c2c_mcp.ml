@@ -4194,7 +4194,7 @@ let ts = Unix.gettimeofday () in
            in
             Lwt.return (tool_result ~content ~is_error:(not ok)))
   | "memory_list" ->
-      let memory_base_dir ~alias =
+      let memory_base_dir alias =
         let git_dir =
           let ic = Unix.open_process_in "git rev-parse --git-common-dir 2>/dev/null" in
           try
@@ -4207,12 +4207,44 @@ let ts = Unix.gettimeofday () in
           | Some d -> Filename.dirname d
           | None -> Sys.getcwd ()
         in
-        Filename.concat (Filename.concat base ".c2c") "memory"
+        Filename.concat (Filename.concat base ".c2c") "memory" |> fun d -> Filename.concat d alias
+      in
+      let entry_path alias name =
+        let safe = Stdlib.String.map (fun c ->
+          match c with
+          | ' ' | '/' | '\\' | ':' | '"' | '\'' -> '_'
+          | _ -> let code = Char.code c in
+                 if (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code = 95 || code = 45
+                 then c else '_')
+          name
+        in
+        Filename.concat (memory_base_dir alias) (safe ^ ".md")
+      in
+      let parse_frontmatter content =
+        let lines = String.split_on_char '\n' content in
+        let rec parse lines in_fm name desc shared acc =
+          match lines with
+          | [] -> (name, desc, shared, List.rev acc)
+          | line :: rest ->
+              let line = String.trim line in
+              if line = "---" then parse rest (not in_fm) name desc shared acc
+              else if in_fm then
+                if 0 = String.length line then parse rest in_fm name desc shared acc
+                else if Str.string_match (Str.regexp "^name:[ ]*\\(.+\\)$") line 0
+                then parse rest in_fm (Some (Str.matched_group 1 line)) desc shared acc
+                else if Str.string_match (Str.regexp "^description:[ ]*\\(.+\\)$") line 0
+                then parse rest in_fm name (Some (Str.matched_group 1 line)) shared acc
+                else if Str.string_match (Str.regexp "^shared:[ ]*\\(true\\|false\\)$") line 0
+                then parse rest in_fm name desc (Str.matched_group 1 line = "true") acc
+                else parse rest in_fm name desc shared acc
+              else parse rest in_fm name desc shared (line :: acc)
+        in
+        parse lines false None None false []
       in
       (match alias_for_current_session_or_argument ?session_id_override broker arguments with
        | None -> Lwt.return (missing_member_alias_result "memory_list")
        | Some alias ->
-           let dir = memory_base_dir ~alias in
+           let dir = memory_base_dir alias in
            let entries =
              try
                Array.to_list (Sys.readdir dir)
@@ -4220,49 +4252,26 @@ let ts = Unix.gettimeofday () in
                |> List.sort String.compare
              with Sys_error _ -> []
            in
-            let read_frontmatter name =
-              let path = Filename.concat dir name in
-              let content =
-                try
-                  let ic = open_in path in
-                  Fun.protect ~finally:(fun () -> close_in ic)
-                    (fun () -> really_input_string ic (in_channel_length ic))
-                with _ -> ""
-              in
-              if content = "" then (None, None, false, [])
-              else
-                let lines = String.split_on_char '\n' content in
-                let rec parse lines in_fm name desc body_lines shared =
-                   match lines with
-                   | [] -> (name, desc, shared, List.rev body_lines)
-                   | line :: rest ->
-                       let line = String.trim line in
-                       if line = "---" then parse rest (not in_fm) name desc body_lines shared
-                       else if in_fm then
-                         if 0 = String.length line then parse rest in_fm name desc body_lines shared
-                         else if Stdlib.String.length line >= 6 && Stdlib.String.sub line 0 6 = "name: " then
-                           parse rest in_fm (Some (Stdlib.String.sub line 6 (Stdlib.String.length line - 6))) desc body_lines shared
-                         else if Stdlib.String.length line >= 14 && Stdlib.String.sub line 0 14 = "description: " then
-                           parse rest in_fm name (Some (Stdlib.String.sub line 14 (Stdlib.String.length line - 14))) body_lines shared
-                         else if Stdlib.String.length line >= 9 && Stdlib.String.sub line 0 9 = "shared: " then
-                           parse rest in_fm name desc body_lines (Stdlib.String.sub line 9 (Stdlib.String.length line - 9) = "true")
-                         else parse rest in_fm name desc body_lines shared
-                       else parse rest in_fm name desc (line :: body_lines) shared
-                 in
-                 parse lines false None None [] false
+           let items = List.map (fun name ->
+             let path = Filename.concat dir name in
+             let content =
+               try
+                 let ic = open_in path in
+                 Fun.protect ~finally:(fun () -> close_in ic)
+                   (fun () -> really_input_string ic (in_channel_length ic))
+               with _ -> ""
+             in
+             let (mname, desc, shared, _) = parse_frontmatter content in
+             `Assoc (
+               ("name", match mname with Some n -> `String n | None -> `Null)
+               :: ("description", match desc with Some d -> `String d | None -> `Null)
+               :: ("shared", `Bool shared)
+               :: []))
+             entries
            in
-            let items = List.map (fun name ->
-              let (mname, desc, shared, _) = read_frontmatter name in
-              `Assoc (
-                ("name", match mname with Some n -> `String n | None -> `Null)
-                :: ("description", match desc with Some d -> `String d | None -> `Null)
-                :: ("shared", `Bool shared)
-                :: []))
-              entries
-            in
-            Lwt.return (tool_result ~content:(Yojson.Safe.to_string (`List items)) ~is_error:false))
+           Lwt.return (tool_result ~content:(`List items |> Yojson.Safe.to_string) ~is_error:false))
   | "memory_read" ->
-      let memory_base_dir ~alias =
+      let memory_base_dir alias =
         let git_dir =
           let ic = Unix.open_process_in "git rev-parse --git-common-dir 2>/dev/null" in
           try
@@ -4275,9 +4284,9 @@ let ts = Unix.gettimeofday () in
           | Some d -> Filename.dirname d
           | None -> Sys.getcwd ()
         in
-        Filename.concat (Filename.concat base ".c2c") "memory"
+        Filename.concat (Filename.concat base ".c2c") "memory" |> fun d -> Filename.concat d alias
       in
-      let entry_path ~alias ~name =
+      let entry_path alias name =
         let safe = Stdlib.String.map (fun c ->
           match c with
           | ' ' | '/' | '\\' | ':' | '"' | '\'' -> '_'
@@ -4286,55 +4295,57 @@ let ts = Unix.gettimeofday () in
                  then c else '_')
           name
         in
-        Filename.concat (memory_base_dir ~alias) (safe ^ ".md")
+        Filename.concat (memory_base_dir alias) (safe ^ ".md")
+      in
+      let parse_frontmatter content =
+        let lines = String.split_on_char '\n' content in
+        let rec parse lines in_fm name desc shared acc =
+          match lines with
+          | [] -> (name, desc, shared, List.rev acc)
+          | line :: rest ->
+              let line = String.trim line in
+              if line = "---" then parse rest (not in_fm) name desc shared acc
+              else if in_fm then
+                if 0 = String.length line then parse rest in_fm name desc shared acc
+                else if Str.string_match (Str.regexp "^name:[ ]*\\(.+\\)$") line 0
+                then parse rest in_fm (Some (Str.matched_group 1 line)) desc shared acc
+                else if Str.string_match (Str.regexp "^description:[ ]*\\(.+\\)$") line 0
+                then parse rest in_fm name (Some (Str.matched_group 1 line)) shared acc
+                else if Str.string_match (Str.regexp "^shared:[ ]*\\(true\\|false\\)$") line 0
+                then parse rest in_fm name desc (Str.matched_group 1 line = "true") acc
+                else parse rest in_fm name desc shared acc
+              else parse rest in_fm name desc shared (line :: acc)
+        in
+        parse lines false None None false []
       in
       let name = string_member "name" arguments in
       (match alias_for_current_session_or_argument ?session_id_override broker arguments with
        | None -> Lwt.return (missing_member_alias_result "memory_read")
        | Some alias ->
-           let path = entry_path ~alias ~name in
+           let path = entry_path alias name in
            if not (Sys.file_exists path) then
              Lwt.return (tool_result ~content:("memory entry not found: " ^ name) ~is_error:true)
-            else
-              let content =
-                try
-                  let ic = open_in path in
-                  Fun.protect ~finally:(fun () -> close_in ic)
-                    (fun () -> really_input_string ic (in_channel_length ic))
-                with _ -> ""
-              in
-              if content = "" then
-                Lwt.return (tool_result ~content:("error reading memory entry: " ^ name) ~is_error:true)
-              else
-                let lines = String.split_on_char '\n' content in
-                let rec parse lines in_fm name desc body_lines shared =
-                   match lines with
-                   | [] -> (name, desc, shared, List.rev body_lines)
-                   | line :: rest ->
-                       let line = String.trim line in
-                       if line = "---" then parse rest (not in_fm) name desc body_lines shared
-                       else if in_fm then
-                         if 0 = String.length line then parse rest in_fm name desc body_lines shared
-                         else if Stdlib.String.length line >= 6 && Stdlib.String.sub line 0 6 = "name: " then
-                           parse rest in_fm (Some (Stdlib.String.sub line 6 (Stdlib.String.length line - 6))) desc body_lines shared
-                         else if Stdlib.String.length line >= 14 && Stdlib.String.sub line 0 14 = "description: " then
-                           parse rest in_fm name (Some (Stdlib.String.sub line 14 (Stdlib.String.length line - 14))) body_lines shared
-                         else if Stdlib.String.length line >= 9 && Stdlib.String.sub line 0 9 = "shared: " then
-                           parse rest in_fm name desc body_lines (Stdlib.String.sub line 9 (Stdlib.String.length line - 9) = "true")
-                         else parse rest in_fm name desc body_lines shared
-                       else parse rest in_fm name desc (line :: body_lines) shared
-                 in
-                 let (mname, desc, shared, body) = parse lines false None None [] false in
-                 let result = `Assoc [
-                   ("name", match mname with Some n -> `String n | None -> `Null);
-                   ("description", match desc with Some d -> `String d | None -> `Null);
-                   ("shared", `Bool shared);
-                   ("content", `String (String.concat "\n" body))
-                 ] |> Yojson.Safe.to_string in
-                  Lwt.return (tool_result ~content:result ~is_error:false)
-              )
+           else
+             let content =
+               try
+                 let ic = open_in path in
+                 Fun.protect ~finally:(fun () -> close_in ic)
+                   (fun () -> really_input_string ic (in_channel_length ic))
+               with _ -> ""
+             in
+             if content = "" then
+               Lwt.return (tool_result ~content:("error reading memory entry: " ^ name) ~is_error:true)
+             else
+               let (mname, desc, shared, body) = parse_frontmatter content in
+               let result = `Assoc [
+                 ("name", match mname with Some n -> `String n | None -> `Null);
+                 ("description", match desc with Some d -> `String d | None -> `Null);
+                 ("shared", `Bool shared);
+                 ("content", `String (String.concat "\n" body))
+               ] |> Yojson.Safe.to_string in
+               Lwt.return (tool_result ~content:result ~is_error:false))
   | "memory_write" ->
-      let memory_base_dir ~alias =
+      let memory_base_dir alias =
         let git_dir =
           let ic = Unix.open_process_in "git rev-parse --git-common-dir 2>/dev/null" in
           try
@@ -4347,9 +4358,9 @@ let ts = Unix.gettimeofday () in
           | Some d -> Filename.dirname d
           | None -> Sys.getcwd ()
         in
-        Filename.concat (Filename.concat base ".c2c") "memory"
+        Filename.concat (Filename.concat base ".c2c") "memory" |> fun d -> Filename.concat d alias
       in
-      let entry_path ~alias ~name =
+      let entry_path alias name =
         let safe = Stdlib.String.map (fun c ->
           match c with
           | ' ' | '/' | '\\' | ':' | '"' | '\'' -> '_'
@@ -4358,19 +4369,19 @@ let ts = Unix.gettimeofday () in
                  then c else '_')
           name
         in
-        Filename.concat (memory_base_dir ~alias) (safe ^ ".md")
+        Filename.concat (memory_base_dir alias) (safe ^ ".md")
       in
       let name = string_member "name" arguments in
       let desc = optional_string_member "description" arguments in
       let shared =
-        try match arguments |> Yojson.Safe.Util.member "shared" with | `Bool b -> b | _ -> false
+        try match arguments |> Yojson.Safe.Util.member "shared" with `Bool b -> b | _ -> false
         with _ -> false
       in
       let body_content = string_member "content" arguments in
       (match alias_for_current_session_or_argument ?session_id_override broker arguments with
        | None -> Lwt.return (missing_member_alias_result "memory_write")
        | Some alias ->
-           let dir = memory_base_dir ~alias in
+           let dir = memory_base_dir alias in
            let rec mkdir_p d =
              if not (Sys.file_exists d) then (
                (try Unix.mkdir d 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
@@ -4378,17 +4389,17 @@ let ts = Unix.gettimeofday () in
            in
            mkdir_p (Filename.dirname dir);
            if not (Sys.file_exists dir) then Unix.mkdir dir 0o755;
-           let path = entry_path ~alias ~name in
+           let path = entry_path alias name in
            let fm_content = Printf.sprintf "---\nname: %s\ndescription: %s\nshared: %b\n---\n%s\n"
              name (Option.value desc ~default:"") shared body_content in
-           (try
-              let oc = open_out path in
-              Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
-                output_string oc fm_content);
-              let result = `Assoc [("saved", `String name)] |> Yojson.Safe.to_string in
-              Lwt.return (tool_result ~content:result ~is_error:false)
-            with _ ->
-              Lwt.return (tool_result ~content:("error writing memory entry: " ^ name) ~is_error:true)))
+           try
+             let oc = open_out path in
+             Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+               output_string oc fm_content);
+             let result = `Assoc [("saved", `String name)] |> Yojson.Safe.to_string in
+             Lwt.return (tool_result ~content:result ~is_error:false)
+           with _ ->
+             Lwt.return (tool_result ~content:("error writing memory entry: " ^ name) ~is_error:true))
   | _ -> Lwt.return (tool_result ~content:("unknown tool: " ^ tool_name) ~is_error:true)
 
 (* Append one structured line to <broker_root>/broker.log for every
