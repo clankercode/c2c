@@ -39,6 +39,23 @@ class ParseManagedServerRequestEventTests(unittest.TestCase):
         self.assertEqual(result["command"], "touch /tmp/test")
         self.assertEqual(result["reason"], "testing")
 
+    def test_preserves_requested_permissions_profile(self):
+        permissions = {
+            "network": {"enabled": True},
+            "fileSystem": {"read": ["/tmp"], "write": ["/tmp/out"]},
+        }
+        event_json = json.dumps({
+            "kind": "permissions_approval_request",
+            "request_id": "req-perms",
+            "raw": {
+                "permissions": permissions,
+                "reason": "testing",
+            },
+        })
+        result = c2c_deliver_inbox.parse_managed_server_request_event(event_json)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["permissions"], permissions)
+
     def test_ignores_thread_resolved_event(self):
         event_json = json.dumps({
             "kind": "thread_resolved",
@@ -289,63 +306,60 @@ class SendCallFixTests(unittest.TestCase):
 
 
 class WritePermissionResponseTests(unittest.TestCase):
-    def test_writes_approved_for_session_on_approve_once(self):
-        import tempfile, os, stat
-        with tempfile.TemporaryDirectory() as tmpdir:
-            fifo = Path(tmpdir) / "resp.fifo"
-            os.mkfifo(str(fifo))
-            # Open reader side in non-blocking mode before writing
-            rfd = os.open(str(fifo), os.O_RDONLY | os.O_NONBLOCK)
-            event = {"request_id": "req-1", "permission": "bash"}
-            c2c_deliver_inbox.write_permission_response(fifo, event, "approve-once")
-            data = b""
-            try:
-                data = os.read(rfd, 4096)
-            except BlockingIOError:
-                pass
-            finally:
-                os.close(rfd)
-            payload = json.loads(data.decode())
-            self.assertEqual(payload["request_id"], "req-1")
-            self.assertEqual(payload["kind"], "permissions_approval_response")
-            self.assertEqual(payload["raw"]["scope"], "approved_for_session")
-            self.assertEqual(payload["raw"]["permissions"], ["bash"])
-
-    def test_writes_denied_on_reject(self):
+    def _write_and_read_response(self, event, decision):
         import tempfile, os
         with tempfile.TemporaryDirectory() as tmpdir:
             fifo = Path(tmpdir) / "resp.fifo"
             os.mkfifo(str(fifo))
             rfd = os.open(str(fifo), os.O_RDONLY | os.O_NONBLOCK)
-            event = {"request_id": "req-2", "permission": "network"}
-            c2c_deliver_inbox.write_permission_response(fifo, event, "reject")
-            data = b""
             try:
+                c2c_deliver_inbox.write_permission_response(fifo, event, decision)
                 data = os.read(rfd, 4096)
-            except BlockingIOError:
-                pass
             finally:
                 os.close(rfd)
-            payload = json.loads(data.decode())
-            self.assertEqual(payload["raw"]["scope"], "denied")
+            return json.loads(data.decode())
 
-    def test_writes_denied_on_timeout(self):
-        import tempfile, os
-        with tempfile.TemporaryDirectory() as tmpdir:
-            fifo = Path(tmpdir) / "resp.fifo"
-            os.mkfifo(str(fifo))
-            rfd = os.open(str(fifo), os.O_RDONLY | os.O_NONBLOCK)
-            event = {"request_id": "req-3", "permission": "bash"}
-            c2c_deliver_inbox.write_permission_response(fifo, event, "timeout")
-            data = b""
-            try:
-                data = os.read(rfd, 4096)
-            except BlockingIOError:
-                pass
-            finally:
-                os.close(rfd)
-            payload = json.loads(data.decode())
-            self.assertEqual(payload["raw"]["scope"], "denied")
+    def test_writes_turn_scoped_sideband_response_on_approve_once(self):
+        event = {
+            "request_id": "req-1",
+            "permissions": {
+                "network": {"enabled": True},
+                "fileSystem": {"read": ["/tmp"], "write": ["/tmp/out"]},
+            },
+        }
+        payload = self._write_and_read_response(event, "approve-once")
+        self.assertEqual(payload["request_id"], "req-1")
+        self.assertEqual(payload["kind"], "permissions_approval_response")
+        self.assertNotIn("raw", payload)
+        self.assertEqual(payload["response"]["scope"], "turn")
+        self.assertEqual(payload["response"]["permissions"], event["permissions"])
+
+    def test_writes_session_scoped_sideband_response_on_approve_always(self):
+        event = {
+            "request_id": "req-2",
+            "permissions": {"network": {"enabled": True}},
+        }
+        payload = self._write_and_read_response(event, "approve-always")
+        self.assertEqual(payload["response"]["scope"], "session")
+        self.assertEqual(payload["response"]["permissions"], event["permissions"])
+
+    def test_writes_empty_permissions_on_reject(self):
+        event = {
+            "request_id": "req-3",
+            "permissions": {"network": {"enabled": True}},
+        }
+        payload = self._write_and_read_response(event, "reject")
+        self.assertEqual(payload["response"]["scope"], "turn")
+        self.assertEqual(payload["response"]["permissions"], {})
+
+    def test_writes_empty_permissions_on_timeout(self):
+        event = {
+            "request_id": "req-4",
+            "permissions": {"network": {"enabled": True}},
+        }
+        payload = self._write_and_read_response(event, "timeout")
+        self.assertEqual(payload["response"]["scope"], "turn")
+        self.assertEqual(payload["response"]["permissions"], {})
 
     def test_no_op_when_fifo_is_none(self):
         event = {"request_id": "req-4", "permission": "bash"}

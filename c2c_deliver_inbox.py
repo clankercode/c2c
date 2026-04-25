@@ -897,6 +897,7 @@ def parse_managed_server_request_event(raw: str):
         "turn_id": event.get("turn_id", ""),
         "item_id": event.get("item_id", ""),
         "server_name": event.get("server_name", ""),
+        "permissions": inner.get("permissions", {}) if isinstance(inner, dict) else {},
         "permission": inner.get("permission", "") if isinstance(inner, dict) else "",
         "command": inner.get("command", "") if isinstance(inner, dict) else "",
         "reason": inner.get("reason", "") if isinstance(inner, dict) else "",
@@ -999,24 +1000,26 @@ def write_permission_response(
     """Write a permission approval decision back to the Codex bridge via the
     responses FIFO (--server-request-responses-fd).
 
-    The bridge expects JSONL where each line is a SidebandResponseEnvelope:
+    The bridge expects JSONL where each line is a SidebandResponseEnvelope with
+    a `response` field containing PermissionsRequestApprovalResponse:
       {"request_id": "...", "kind": "permissions_approval_response",
-       "raw": {"permissions": ["<perm>"], "scope": "<scope>"}}
-
-    decision → scope mapping:
-      approve-once / approve-always → "approved_for_session"
-      reject / timeout              → "denied"
+       "response": {"permissions": {...}, "scope": "turn"|"session"}}
     """
     if response_fifo is None:
         return
-    scope = "approved_for_session" if decision in ("approve-once", "approve-always") else "denied"
-    permission = event.get("permission", "")
+    approved = decision in ("approve-once", "approve-always")
+    scope = "session" if decision == "approve-always" else "turn"
+    permissions = event.get("permissions", {})
+    if not isinstance(permissions, dict):
+        permissions = {}
+    if not approved:
+        permissions = {}
     request_id = event.get("request_id", "")
     payload = json.dumps({
         "request_id": request_id,
         "kind": "permissions_approval_response",
-        "raw": {
-            "permissions": [permission] if permission else [],
+        "response": {
+            "permissions": permissions,
             "scope": scope,
         },
     })
