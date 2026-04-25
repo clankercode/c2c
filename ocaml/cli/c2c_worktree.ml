@@ -4,6 +4,14 @@ open Cmdliner.Term.Syntax
 
 let ( // ) = Filename.concat
 
+let rec mkdir_p dir =
+  if dir = "/" || dir = "." || dir = "" then ()
+  else if Sys.file_exists dir then ()
+  else begin
+    mkdir_p (Filename.dirname dir);
+    try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+  end
+
 (** [git_command args] runs `git <args>` and returns (exit_code, stdout, stderr).
     Uses Unix.open_process_in for stdout and ignores stderr (git worktree list
     only writes to stdout on success). This is the simplest safe approach. *)
@@ -61,7 +69,7 @@ let is_worktree_dir ~(path : string) : bool =
 let ensure_worktree ~(alias : string) ~(branch : string) : string =
   let root = worktrees_root () in
   let wt_dir = root // alias in
-  C2c_utils.mkdir_p root;
+  mkdir_p root;
   if Sys.file_exists wt_dir && is_worktree_dir ~path:wt_dir then wt_dir
   else begin
     if Sys.file_exists wt_dir then begin
@@ -168,6 +176,18 @@ let is_valid_branch_name (s : string) : bool =
   try Str.string_match valid_chars s 0 && Str.match_end () = String.length s
   with Not_found -> false
 
+let stale_origin_warning ~local_master_ahead =
+  if local_master_ahead <= 0 then None
+  else
+    Some
+      (Printf.sprintf
+         "warning: origin/master is %d commit(s) behind local master; this worktree will still branch from origin/master, but coordinator cherry-pick conflicts are more likely."
+         local_master_ahead)
+
+let local_master_ahead_of_origin () =
+  let (code, stdout, _) = git_command [ "rev-list"; "--count"; "origin/master..master" ] in
+  if code <> 0 then None else int_of_string_opt (String.trim stdout)
+
 (** [start_worktree ~slice_name ~branch_name] creates an isolated worktree for a slice.
     Creates branch [branch_name] off origin/master, places worktree at .worktrees/<slice_name>.
     Returns the worktree path on success, raises on failure. *)
@@ -175,7 +195,7 @@ let start_worktree ~(slice_name : string) ~(branch_name : string) : string =
   let wt_dir = worktrees_dir () // slice_name in
   (* Ensure parent exists *)
   let parent = Filename.dirname wt_dir in
-  C2c_utils.mkdir_p parent;
+  mkdir_p parent;
   (* Check for existing worktree at this path *)
   if is_worktree_dir ~path:wt_dir then
     raise (Failure ("worktree already exists: " ^ wt_dir));
@@ -183,6 +203,12 @@ let start_worktree ~(slice_name : string) ~(branch_name : string) : string =
     raise (Failure ("path already exists and is not a worktree: " ^ wt_dir));
   (* Fetch origin/master to ensure we have it *)
   let (_code_fetch, _, _) = git_command [ "fetch"; "origin"; "master" ] in
+  (match local_master_ahead_of_origin () with
+   | Some count ->
+       (match stale_origin_warning ~local_master_ahead:count with
+        | Some msg -> Printf.eprintf "%s\n%!" msg
+        | None -> ())
+   | None -> ());
   (* Create worktree with new branch from origin/master *)
   let (code, _stdout, stderr) = git_command [ "worktree"; "add"; "--force"; "-b"; branch_name; wt_dir; "origin/master" ] in
   if code <> 0 then

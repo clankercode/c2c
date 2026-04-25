@@ -7,3 +7,8 @@
  (name test_c2c_stats)
  (modules test_c2c_stats c2c_stats)
  (libraries c2c_mcp alcotest yojson unix))
+
+(test
+ (name test_c2c_worktree)
+ (modules test_c2c_worktree c2c_worktree)
+ (libraries c2c_mcp alcotest cmdliner str unix))
