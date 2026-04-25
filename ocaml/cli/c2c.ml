@@ -5162,6 +5162,9 @@ let start_cmd =
   let worktree =
     Cmdliner.Arg.(value & flag & info [ "worktree" ] ~doc:"Create an isolated git worktree for this agent before launching. Useful for parallel feature work. Implied when C2C_AUTO_WORKTREE=1.")
   in
+  let branch_opt =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "branch" ] ~docv:"BRANCH" ~doc:"Branch to check out in the new worktree (requires --worktree). Defaults to caller's current branch. Must not be 'master'.")
+  in
   let+ client = client
   and+ name_opt = name
   and+ alias_opt = alias
@@ -5175,7 +5178,8 @@ let start_cmd =
   and+ model_opt = model
   and+ reply_to = reply_to
   and+ auto_join = auto_join
-  and+ worktree_flag = worktree in
+  and+ worktree_flag = worktree
+  and+ branch_flag = branch_opt in
   let kickoff_prompt_text =
     match kickoff_prompt_text_raw, kickoff_prompt_file with
     | Some _, Some _ ->
@@ -5430,10 +5434,27 @@ let start_cmd =
   | Some _ ->
       Printf.printf "[c2c] resume mode — staying at parent cwd\n%!"
   | None when auto_worktree ->
-      let wt_dir = C2c_worktree.ensure_worktree ~alias:effective_alias ~branch:"master" in
+      (* Resolve which branch the worktree should track:
+         1. --branch flag (explicit override)
+         2. caller's current git branch (auto-detected)
+         3. error if neither is available or if branch is 'master' *)
+      let branch = match branch_flag with
+        | Some b -> b
+        | None ->
+            (match C2c_worktree.current_branch () with
+             | Some b -> b
+             | None ->
+                 Printf.eprintf "error: --worktree requires a branch but git reports detached HEAD. Pass --branch <name> explicitly.\n%!";
+                 exit 1)
+      in
+      if branch = "master" then begin
+        Printf.eprintf "error: --worktree refused on 'master'. Create a slice branch first (e.g. git checkout -b slice/my-work) or pass --branch <name>.\n%!";
+        exit 1
+      end;
+      let wt_dir = C2c_worktree.ensure_worktree ~alias:effective_alias ~branch in
       (try Unix.chdir wt_dir with Sys_error e ->
         Printf.eprintf "warning: failed to chdir to worktree %s: %s\n%!" wt_dir e);
-      Printf.printf "[c2c] worktree: %s\n%!" wt_dir
+      Printf.printf "[c2c] worktree: %s (branch: %s)\n%!" wt_dir branch
   | _ -> ());
   exit (C2c_start.cmd_start ~client ~name ~extra_args:[]
       ?binary_override:bin_opt
