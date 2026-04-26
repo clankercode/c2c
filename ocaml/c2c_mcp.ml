@@ -1153,13 +1153,19 @@ module Broker = struct
   let read_inbox t ~session_id = load_inbox t ~session_id
 
   (* ---------- inbox archive (drain is append-only, not destructive) ----------
-     Every message drained via poll_inbox is appended to
+     Non-ephemeral messages drained via poll_inbox are appended to
      <root>/archive/<session_id>.jsonl BEFORE the live inbox is cleared.
-     This means drained messages become part of a per-session, append-only
-     history that tools like `history` can read back. If the archive append
-     fails (disk full, permission, etc.) we do NOT clear the inbox, so the
-     "drained messages are never deleted" invariant holds atomically under
-     the per-inbox lock. *)
+     This means drained non-ephemeral messages become part of a per-session,
+     append-only history that tools like `history` can read back.
+
+     Messages sent with [ephemeral=true] are filtered out of the archive
+     append in [drain_inbox] / [drain_inbox_push] (#284). They are still
+     returned to the caller and removed from the live inbox; they simply
+     leave no persistent server-side record post-delivery.
+
+     If the archive append fails (disk full, permission, etc.) we do NOT
+     clear the inbox, so the "drained non-ephemeral messages are never
+     deleted" invariant holds atomically under the per-inbox lock. *)
 
   let archive_dir t = Filename.concat t.root "archive"
 
@@ -2609,7 +2615,7 @@ let base_tool_definitions =
       ~required:["room_id"]
       ~properties:[ prop "room_id" "Room whose history to retrieve."; int_prop "limit" "Max messages to return (default 50)."; float_prop "since" "Only return messages with ts > since (Unix epoch float, optional)." ]
   ; tool_definition ~name:"history"
-      ~description:"Return your own archived inbox messages, newest first. Every message drained via poll_inbox is archived to a per-session append-only log before the live inbox is cleared, so this tool gives you a durable record of everything you've ever received. Caller's session_id is always resolved from the MCP env (C2C_MCP_SESSION_ID); passing a session_id argument is ignored for isolation — you can only read your own history. Optional `limit` (default 50). Returns a JSON array of {drained_at, from_alias, to_alias, content} objects."
+      ~description:"Return your own archived inbox messages, newest first. Non-ephemeral messages drained via poll_inbox are appended to a per-session log before the live inbox is cleared. Messages sent with `ephemeral:true` are explicitly NOT archived — they have no permanent record after delivery, so history will not include them. Caller's session_id is always resolved from the MCP env (C2C_MCP_SESSION_ID); passing a session_id argument is ignored for isolation — you can only read your own history. Optional `limit` (default 50). Returns a JSON array of {drained_at, from_alias, to_alias, content} objects."
       ~required:[]
       ~properties:[ int_prop "limit" "Max messages to return (default 50)." ]
   ; tool_definition ~name:"tail_log"
