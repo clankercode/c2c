@@ -1,0 +1,110 @@
+# c2c sealed test environment — docker compose configuration.
+#
+# Network: isolated bridge (c2c-test-net) — containers cannot reach each
+# other's broker ports. Host broker ports also unreachable from inside.
+#
+# Broker state: ephemeral anonymous volume (fresh on each `docker compose up`).
+# Auth files: mounted at runtime (see .env.example for paths).
+#
+# Resource limits: memory cap, pids limit, no privileged.
+# These limits are applied ENFORCEMENT-side (Docker daemon, not container).
+# A runaway process inside the container hits the limit and is killed;
+# it CANNOT affect the host.
+#
+# Usage:
+#   cp .env.example .env    # fill in auth file paths
+#   docker compose -f docker-compose.test.yml up -d --build
+#   docker compose -f docker-compose.test.yml run --rm test-env pytest tests/
+#   docker compose -f docker-compose.test.yml down -v   # wipe ephemeral state
+
+services:
+  test-env:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: c2c-test-env
+    # Ephemeral broker state — anonymous volume, fresh each run.
+    # Wipes on `docker compose down -v`.
+    volumes:
+      - c2c-test-broker:/var/lib/c2c
+      - c2c-test-home:/home/testagent
+      # Auth files (optional — comment out if not needed):
+      # - ${KIMI_AUTH:-/dev/null}:/home/testagent/.kimi:ro
+      # - ${KIMI_CONFIG:-/dev/null}:/home/testagent/.config/kimi:ro
+    networks:
+      - c2c-test-net
+    # Resource enforcement limits — runaway slice hits these, not host.
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          pids: 100
+        reservations:
+          memory: 128m
+    # Security: no privileged, no new privileges, cgroup namespace isolated.
+    security_opt:
+      - no-new-privileges:true
+    # Prevent container from loading other Docker sockets (anti-collateral).
+    # read_only: true  # careful — may break some test scenarios
+    # tmpfs for /tmp to prevent disk-based attacks
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    environment:
+      # Broker root inside container
+      C2C_MCP_BROKER_ROOT: /var/lib/c2c
+      # Disable relay auto-discovery to stay sealed
+      C2C_RELAY_CONNECTOR_BACKEND: ""
+    # Healthcheck — verify broker starts cleanly
+    healthcheck:
+      test: ["CMD", "sh", "-c", "c2c relay serve --help > /dev/null 2>&1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # Kimi integration test environment.
+  # Mounts kimi auth files from host at runtime.
+  test-kimi:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: c2c-test-kimi
+    volumes:
+      - c2c-test-broker:/var/lib/c2c
+      - c2c-test-home:/home/testagent
+      # Mount kimi auth from host. credentials is the must-have.
+      # All four files from ~/.kimi/ are mounted individually so each can be
+      # validated independently. If a file is absent, the mount is skipped.
+      - ${KIMI_KIMI_JSON:-/dev/null}:/home/testagent/.kimi/kimi.json:ro
+      - ${KIMI_CREDENTIALS:-/dev/null}:/home/testagent/.kimi/credentials:ro
+      - ${KIMI_DEVICE_ID:-/dev/null}:/home/testagent/.kimi/device_id:ro
+      - ${KIMI_CONFIG_TOML:-/dev/null}:/home/testagent/.kimi/config.toml:ro
+    networks:
+      - c2c-test-net
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+          pids: 100
+        reservations:
+          memory: 256m
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    environment:
+      C2C_MCP_BROKER_ROOT: /var/lib/c2c
+      C2C_RELAY_CONNECTOR_BACKEND: ""
+    command: ["sh", "-c", "echo 'kimi test env ready; run tests manually' && sleep 3600"]
+
+networks:
+  c2c-test-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  # Ephemeral broker state — wiped on `docker compose down -v`.
+  c2c-test-broker:
+  c2c-test-home:

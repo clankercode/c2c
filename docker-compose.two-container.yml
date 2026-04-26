@@ -1,0 +1,36 @@
+# Docker Compose override for two-container integration tests.
+# Extends test-env with a peer-b service that shares the broker volume.
+# Usage:
+#   docker compose -f docker-compose.test.yml -f docker-compose.two-container.yml up -d
+#   docker compose -f docker-compose.test.yml -f docker-compose.two-container.yml run --rm peer-b sh
+
+services:
+  peer-a:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: c2c-test-peer-a
+    volumes:
+      - c2c-test-broker:/var/lib/c2c
+      - c2c-test-home:/home/testagent
+    networks:
+      - c2c-test-net
+    environment:
+      C2C_MCP_BROKER_ROOT: /var/lib/c2c
+      C2C_RELAY_CONNECTOR_BACKEND: ""
+    command: ["sleep", "3600"]
+
+  peer-b:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: c2c-test-peer-b
+    volumes:
+      - c2c-test-broker:/var/lib/c2c
+      - c2c-test-home:/home/testagent
+    networks:
+      - c2c-test-net
+    environment:
+      C2C_MCP_BROKER_ROOT: /var/lib/c2c
+      C2C_RELAY_CONNECTOR_BACKEND: ""
+    command: ["sleep", "3600"]

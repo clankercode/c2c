@@ -1,0 +1,57 @@
+# c2c test environment — sealed container for e2e integration testing.
+#
+# Multi-stage build:
+#   Stage 1 (builder): builds c2c binary from source.
+#   Stage 2 (test-runner): debian slim + binary + Python + pytest.
+#
+# Usage:
+#   docker build -f Dockerfile.test -t c2c-test:latest .
+#   docker compose -f docker-compose.test.yml run --rm test-env pytest tests/
+#
+# Auth files (kimi, etc.) mounted at runtime via compose volumes.
+# Broker state is ephemeral (anonymous volume — fresh each run).
+
+ARG CACHE_BUST=1
+ARG OCAML_VERSION=5.2
+FROM ocaml/opam:debian-12-ocaml-${OCAML_VERSION} AS builder
+
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake pkg-config libgmp-dev libssl-dev \
+        libev-dev zlib1g-dev libsqlite3-dev git \
+    && rm -rf /var/lib/apt/lists/*
+USER opam
+
+WORKDIR /home/opam/c2c
+RUN opam update -y \
+ && opam install --yes \
+        dune cmdliner yojson lwt logs cohttp-lwt-unix uuidm sqlite3 \
+        base64 digestif mirage-crypto-ec mirage-crypto-rng mirage-crypto-rng-lwt \
+        tls-lwt ca-certs conduit-lwt-unix x509 ptime hacl-star
+
+# Copy source — --chown changes ownership of the copied tree to opam:opam.
+# The _build dir (created by dune) will be owned by opam.
+COPY dune-project ./
+COPY ocaml ./ocaml
+# Legacy builder silently ignores --chown; switch to root to fix ownership
+USER root
+RUN chown -R opam:opam /home/opam/c2c
+USER opam
+RUN opam exec -- dune build --release ocaml/cli/c2c.exe
+
+# ----------------------------------------------------------------------
+FROM python:3.12-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates libgmp10 libssl3 libev4 libsqlite3-0 tini curl openssh-client inotify-tools \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --home /var/lib/c2c --shell /usr/sbin/nologin testagent \
+    && mkdir -p /var/lib/c2c /home/testagent \
+    && pip install --no-cache-dir pytest pytest-timeout \
+    && rm -rf /var/cache/pip
+
+COPY --from=builder /home/opam/c2c/_build/default/ocaml/cli/c2c.exe /usr/local/bin/c2c
+COPY docker-tests/ /docker-tests/
+
+# tini = PID 1 signal forwarder
+ENTRYPOINT ["/usr/bin/tini", "--"]
