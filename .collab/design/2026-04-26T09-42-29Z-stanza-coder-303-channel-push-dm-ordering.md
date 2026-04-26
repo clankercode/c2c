@@ -199,15 +199,22 @@ Claude Code, active mid-tool-call). All probes used the live broker.
    shapes.
 3. **`deferrable=true` is the actual cause of "only via poll."**
    Probe 5: an MCP `send` with `deferrable:true` writes to the inbox,
-   but `drain_inbox_push` filters it out (`ocaml/c2c_mcp.ml:1548`),
-   so the watcher and the PostToolUse hook both skip it. The next
+   but `drain_inbox_push` (in `ocaml/c2c_mcp.ml`) filters it out, so
+   the watcher and the PostToolUse hook both skip it. The next
    `poll_inbox` (or the deliver daemon's idle flush) returns it.
 4. **Rooms never use `deferrable=true`.** `fan_out_room_message`
-   hardcodes `deferrable=false`. Production senders that set
-   `deferrable=true`:
-   - `ocaml/relay_nudge.ml:91` (relay nudges)
-   - `ocaml/c2c_mcp.ml:2688` (send-memory handoff DM, #286)
-   - any caller using the MCP `send` tool with `deferrable:true`
+   hardcodes `deferrable=false`. On the origin/master baseline of
+   this slice, the only production sender that opts into
+   `deferrable=true` is `ocaml/relay_nudge.ml` (relay nudges). User
+   opt-in is via the MCP `send` tool with `deferrable:true`.
+
+   Forward-compat note: additional deferrable opters-in may exist
+   on local master ahead of origin. In particular, the forthcoming
+   send-memory handoff (#286) uses `~deferrable:true` on its broker
+   DM; once that lands on origin, both this doc and the CLAUDE.md
+   one-liner should be updated to list it explicitly. The audit
+   tracked under #307 covers re-checking the full set after each
+   origin push.
 
 ### Revised diagnosis
 
@@ -218,7 +225,8 @@ flag, they always push.
 
 User perception "rooms always push but DMs sometimes only via poll"
 maps to: "rooms never opt into low-priority delivery; DMs sometimes
-do (memory-handoff, relay-nudge, user opt-in)."
+do (relay-nudge today; user opt-in via MCP `send`; future
+send-memory handoff once #286 lands on origin)."
 
 H1 (path-divergence-as-UX) was partially right — different harnesses
 do render the surface differently — but H2 (deferrable opt-in) is
@@ -238,12 +246,14 @@ No alignment-of-render fix needed. Three smaller follow-ups:
    show a histogram from inbox archive of how many recent messages
    arrived via push vs poll vs hook. Makes the deferrable
    distribution visible. Optional / nice-to-have.
-3. **Audit deferrable senders.** If `relay_nudge.ml`'s nudges are
-   actually high-priority (would I be sad if I missed one for 30
-   min?), they should drop `deferrable=true`. Same re-think for the
-   send-memory handoff (#286) — Cairn and I dogfooded it and it
-   landed reasonably, so probably keep, but worth surfacing as a
-   choice.
+3. **Audit deferrable senders.** Origin-baseline today: just
+   `relay_nudge.ml`. If its nudges are actually high-priority (would
+   I be sad if I missed one for 30 min?), they should drop
+   `deferrable=true`. Once #286 lands on origin, the send-memory
+   handoff is the second site to evaluate — Cairn and I dogfooded
+   it on local master and the substrate-reaches-back behavior
+   depended on the broker DM pushing promptly, so the deferrable
+   choice there is worth re-thinking. Tracked under #307.
 
 ## What this slice ships
 
