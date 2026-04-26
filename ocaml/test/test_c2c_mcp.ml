@@ -698,6 +698,43 @@ let test_tools_list_marks_register_and_whoami_session_id_as_optional () =
           check bool "send advertises content" true
             (List.mem "content" (property_names (find_tool "send"))))
 
+let test_send_and_set_dnd_schema_types_are_correct () =
+  with_temp_dir (fun dir ->
+      let request =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 999)
+          ; ("method", `String "tools/list")
+          ; ("params", `Assoc [])
+          ]
+      in
+      let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+      match response with
+      | None -> fail "expected tools/list response"
+      | Some json ->
+          let open Yojson.Safe.Util in
+          let tools = json |> member "result" |> member "tools" |> to_list in
+          let find_tool name =
+            tools |> List.find (fun item -> item |> member "name" |> to_string = name)
+          in
+          let send_tool = find_tool "send" in
+          let set_dnd_tool = find_tool "set_dnd" in
+          let send_props = send_tool |> member "inputSchema" |> member "properties" in
+          let set_dnd_props = set_dnd_tool |> member "inputSchema" |> member "properties" in
+          let prop_type_string tool_props prop_name =
+            tool_props |> member prop_name |> member "type" |> to_string
+          in
+          (* Regression test: send.deferrable and send.ephemeral must be boolean *)
+          check string "send.deferrable is boolean" "boolean"
+            (prop_type_string send_props "deferrable");
+          check string "send.ephemeral is boolean" "boolean"
+            (prop_type_string send_props "ephemeral");
+          (* Regression test: set_dnd.on must be boolean, until_epoch must be number *)
+          check string "set_dnd.on is boolean" "boolean"
+            (prop_type_string set_dnd_props "on");
+          check string "set_dnd.until_epoch is number" "number"
+            (prop_type_string set_dnd_props "until_epoch"))
+
 let test_tools_call_send_routes_message_through_broker () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -6743,9 +6780,11 @@ let () =
          ; test_case "tools/list exposes core tools" `Quick test_tools_list_includes_register_list_send_and_whoami
          ; test_case "tools/list includes debug when build flag enabled" `Quick
              test_tools_list_includes_debug_when_build_flag_enabled
-         ; test_case "tools/list makes current-session args optional" `Quick
-             test_tools_list_marks_register_and_whoami_session_id_as_optional
-         ; test_case "tools/call send routes through broker" `Quick test_tools_call_send_routes_message_through_broker
+          ; test_case "tools/list makes current-session args optional" `Quick
+              test_tools_list_marks_register_and_whoami_session_id_as_optional
+          ; test_case "tools/list schema types: send.deferrable+ephemeral bool, set_dnd.on bool, set_dnd.until_epoch number" `Quick
+              test_send_and_set_dnd_schema_types_are_correct
+          ; test_case "tools/call send routes through broker" `Quick test_tools_call_send_routes_message_through_broker
          ; test_case "tools/call send accepts `alias` as to_alias synonym" `Quick
              test_tools_call_send_accepts_alias_as_to_alias_synonym
          ; test_case "tools/call send missing to_alias returns named error" `Quick
