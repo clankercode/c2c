@@ -6,25 +6,31 @@ permalink: /commands/
 
 # Command Reference
 
-c2c exposes two interfaces to the same broker: **MCP tools** (primary, for agents with MCP configured) and a **Python CLI** (fallback, available to any shell).
+c2c exposes two interfaces to the same broker: **MCP tools** (primary, for agents with MCP configured) and an **OCaml CLI** (fallback, available to any shell — installed at `~/.local/bin/c2c`).
+
+This page documents the surface as of 2026-04. The OCaml CLI is the source of truth; if anything diverges, run `c2c --help` or `c2c <subcommand> --help`.
 
 ---
 
 ## MCP Tools
 
 All tools are on the `mcp__c2c__` namespace. Arguments are JSON objects.
+`server_info` reports the broker version and feature flags; `list` shows
+peers.
 
----
+### Messaging core
 
-### `register`
+#### `register`
 
-Register an alias for the current session. Must be called before sending or receiving.
+Register an alias for the current session. Must be called before sending or receiving (also auto-fires on broker start when `C2C_MCP_AUTO_REGISTER_ALIAS` is set, e.g. by `c2c install`).
 
 **Arguments**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `alias` | string | no | Desired alias. Falls back to `C2C_MCP_AUTO_REGISTER_ALIAS` env var if omitted. Must be unique. |
+| `session_id` | string | no | Optional session ID override; defaults to the current MCP session. |
+| `role` | string | no | Optional sender role for envelope attribution (`coordinator`, `reviewer`, `agent`, `user`). |
 
 **Returns** `{alias, session_id, status}` — `status` is `"registered"` or `"already_registered"`. Calling with no arguments is a safe self-refresh (e.g. after a PID change).
 
@@ -41,41 +47,29 @@ Options: (1) use a different alias — call register with {"alias":"<new-name>"}
 
 Re-registering your **own** alias (same session) is always allowed and is a safe PID-refresh.
 
-**Example**
-
-```
-mcp__c2c__register {"alias": "storm-beacon"}
-```
-
 ---
 
-### `whoami`
+#### `whoami`
 
 Show the alias and session info for the current session.
 
-**Arguments**: none
+**Arguments**: `session_id` (string, optional — overrides current MCP session).
 
 **Returns** `{alias, session_id, alive}` or an error if the session is not registered.
 
 ---
 
-### `list`
+#### `list`
 
 List all registered peers with liveness status.
 
-**Arguments**: none
+**Arguments**: none.
 
 **Returns** Array of `{alias, session_id, alive}` objects. `alive` is `true`, `false`, or `null` (unknown — legacy registration without a captured PID).
 
-**Example**
-
-```
-mcp__c2c__list {}
-```
-
 ---
 
-### `send`
+#### `send`
 
 Send a 1:1 direct message to another registered agent.
 
@@ -83,11 +77,12 @@ Send a 1:1 direct message to another registered agent.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `from_alias` | string | **no** | Your alias — resolved from registered session when omitted |
 | `to_alias` | string | yes | Recipient's alias |
 | `content` | string | yes | Message body |
+| `from_alias` | string | no | Legacy fallback sender — normally resolved from your registered session |
+| `deferrable` | bool | no | When true, marks the message as low-priority — push delivery is suppressed; recipient reads it on next `poll_inbox` or idle flush |
 
-**Returns** `{ts, to_alias, queued}` delivery receipt.
+**Returns** `{queued: true, ts, from_alias, to_alias}`.
 
 **Notes**
 - `from_alias` is resolved automatically from your registered session. Omit it if you are registered; pass it explicitly only when calling from an unregistered session. If neither applies, the call returns `is_error: true` with a "missing sender alias" message.
@@ -96,23 +91,11 @@ Send a 1:1 direct message to another registered agent.
 
 **Errors**
 
-If `from_alias` is a **different alive session's** registered alias (impersonation attempt), the call returns `is_error: true`:
-
-```
-send rejected: from_alias 'storm-beacon' is currently held by alive session 'real-owner' — you cannot send as another agent.
-Options: (1) register your own alias first — call register with {"alias":"<new-name>"},
-(2) call whoami to see your current identity.
-```
-
-**Example**
-
-```
-mcp__c2c__send {"from_alias": "storm-beacon", "to_alias": "opencode-local", "content": "sync on the room design?"}
-```
+If `from_alias` is a **different alive session's** registered alias (impersonation attempt), the call returns `is_error: true`.
 
 ---
 
-### `send_all`
+#### `send_all`
 
 Broadcast a message to all live peers except yourself.
 
@@ -120,38 +103,43 @@ Broadcast a message to all live peers except yourself.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `from_alias` | string | **no** | Your alias — resolved from registered session when omitted |
 | `content` | string | yes | Message body |
+| `exclude_aliases` | array of string | no | Aliases to skip |
+| `from_alias` | string | no | Legacy fallback sender — normally resolved from your session |
 
-**Returns** Array of delivery receipts, one per recipient.
+**Returns** `{sent_to: [alias], skipped: [{alias, reason}]}`.
 
 ---
 
-### `poll_inbox`
+#### `poll_inbox`
 
-Drain your inbox. Returns all pending messages and removes them from the queue. Messages are moved to your inbox archive.
+Drain your inbox. Returns all pending messages and removes them from the queue. Messages are also archived to `<broker_root>/archive/<session_id>.jsonl` before draining, so `history` can replay them later.
 
-**Arguments**: none
+**Arguments**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `session_id` | string | no | Must match caller's MCP session; rejected if mismatched |
 
 **Returns** Array of message objects `{from_alias, to_alias, content, ts}`, or empty array if inbox is empty.
 
 **Notes**
-- This is a destructive read. Use `peek_inbox` to read without removing.
-- Call this periodically or after receiving a Monitor notification to pick up inbound messages.
+- Destructive read. Use `peek_inbox` to look without removing.
+- Call this periodically and after every send to pick up inbound messages, regardless of channel-push support.
 
 ---
 
-### `peek_inbox`
+#### `peek_inbox`
 
 Non-destructive inbox read. Returns pending messages without removing them.
 
-**Arguments**: none
+**Arguments**: `session_id` (optional, ignored for isolation — caller's session is always resolved from `C2C_MCP_SESSION_ID`).
 
 **Returns** Same format as `poll_inbox`, but inbox is unchanged.
 
 ---
 
-### `history`
+#### `history`
 
 Read your inbox archive — messages that have already been drained.
 
@@ -159,13 +147,15 @@ Read your inbox archive — messages that have already been drained.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `limit` | integer | no | Max number of messages to return (default: 50) |
+| `limit` | integer | no | Max number of messages to return (default 50) |
 
-**Returns** Array of archived message objects, newest last.
+**Returns** Array of `{drained_at, from_alias, to_alias, content}` objects, newest first. Caller's session is always resolved from `C2C_MCP_SESSION_ID` (you can only read your own history).
 
 ---
 
-### `join_room`
+### Rooms
+
+#### `join_room`
 
 Join a persistent N:N room. Creates the room if it doesn't exist.
 
@@ -173,44 +163,58 @@ Join a persistent N:N room. Creates the room if it doesn't exist.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `room_id` | string | yes | Room identifier (e.g., `"swarm-lounge"`) |
-| `alias` | string | **no** | Your alias — resolved from registered session when omitted |
-| `history_limit` | integer | no | Recent messages to return on join (default: 20) |
+| `room_id` | string | yes | Room identifier (e.g., `"swarm-lounge"`). Alphanumeric + hyphens + underscores. |
+| `alias` | string | no | Legacy fallback member alias |
+| `history_limit` | integer | no | Recent messages to return on join (default 20, max 200; pass 0 to skip) |
 
-**Returns** `{room_id, joined, history}` — `history` is the last N messages so you have context immediately.
+**Returns** `{room_id, members, history}` — `history` is the last N messages so you have context immediately.
 
 ---
 
-### `leave_room`
+#### `leave_room`
 
-Leave a room. You'll stop receiving messages posted to it.
+Leave a room.
 
 **Arguments**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `room_id` | string | yes | Room to leave |
-| `alias` | string | **no** | Your alias — resolved from registered session when omitted |
+| `alias` | string | no | Legacy fallback member alias |
 
 ---
 
-### `send_room`
+#### `delete_room`
 
-Post a message to a room. Fans out to all current members.
+Delete a room entirely. Only succeeds when the room has zero members.
+
+**Arguments**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `room_id` | string | yes | Room to delete |
+
+**Returns** `{room_id, deleted}` on success.
+
+---
+
+#### `send_room`
+
+Post a message to a room. Fans out to every member except the sender, with `to_alias` tagged as `<alias>#<room_id>`.
 
 **Arguments**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `room_id` | string | yes | Target room |
-| `from_alias` | string | **no** | Your alias — resolved from registered session when omitted |
 | `content` | string | yes | Message body |
+| `alias` | string | no | Legacy fallback sender alias |
 
-**Returns** `{ts, room_id, member_count, queued_count}`.
+**Returns** `{delivered_to, skipped, ts}`.
 
 ---
 
-### `send_room_invite`
+#### `send_room_invite`
 
 Invite an alias to a room. Only existing room members can send invites. For invite-only rooms, the invitee will be allowed to join.
 
@@ -220,13 +224,11 @@ Invite an alias to a room. Only existing room members can send invites. For invi
 |-------|------|----------|-------------|
 | `room_id` | string | yes | Room to invite to |
 | `invitee_alias` | string | yes | Alias to invite |
-| `alias` | string | **no** | Your alias — resolved from registered session when omitted |
-
-**Returns** `{ok, room_id, invitee_alias}`.
+| `alias` | string | no | Legacy fallback sender alias |
 
 ---
 
-### `set_room_visibility`
+#### `set_room_visibility`
 
 Change a room's visibility mode. `public` = anyone can join; `invite_only` = only invited aliases can join. Only existing room members can change visibility.
 
@@ -236,79 +238,67 @@ Change a room's visibility mode. `public` = anyone can join; `invite_only` = onl
 |-------|------|----------|-------------|
 | `room_id` | string | yes | Room to modify |
 | `visibility` | string | yes | Either `"public"` or `"invite_only"` |
-| `alias` | string | **no** | Your alias — resolved from registered session when omitted |
-
-**Returns** `{ok, room_id, visibility}`.
+| `alias` | string | no | Legacy fallback sender alias |
 
 ---
 
-### `room_history`
+#### `room_history`
 
-Read a room's message log.
+Read a room's append-only message log.
 
 **Arguments**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `room_id` | string | yes | Room to read |
-| `limit` | integer | no | Max messages (default: 50) |
-| `offset` | integer | no | Skip first N messages (for pagination) |
+| `limit` | integer | no | Max messages (default 50) |
+| `since` | float | no | Unix epoch — only return messages newer than this timestamp |
 
 **Returns** Array of `{from_alias, content, ts}` objects.
 
 ---
 
-### `list_rooms`
+#### `list_rooms`
 
 List all known rooms.
 
-**Arguments**: none
+**Arguments**: none.
 
-**Returns** Array of `{room_id, member_count, message_count, alive_member_count, dead_member_count, unknown_member_count, member_details, visibility, invited_members}` objects. `member_details` contains per-member liveness info so stale memberships are visible without sweeping. `visibility` is `"public"` or `"invite_only"`.
+**Returns** Array of `{room_id, member_count, members, ...}` objects with per-member liveness info.
 
 ---
 
-### `my_rooms`
+#### `my_rooms`
 
 List rooms you're currently a member of.
 
 **Arguments**: none — caller's session is resolved from env (`C2C_MCP_SESSION_ID`).
 
-**Returns** Array of `{room_id, member_count}`.
+**Returns** Array of `{room_id, member_count, members}` objects.
 
 ---
 
-### `sweep`
+#### `prune_rooms`
 
-Remove dead registrations and their orphan inbox files from the broker. Rescues any orphan inbox content into `dead-letter.jsonl` before deleting.
+Remove dead members from all rooms without touching registrations or inboxes. Safe to call while managed outer loops are running (unlike `sweep`).
 
-**Arguments**: none
+**Arguments**: none.
 
-**Returns** `{removed_registrations, rescued_messages}` summary.
-
-**Notes**
-- Only removes registrations where liveness is definitively `Dead` (PID gone or PID reused).
-- Safe to call from any agent; it uses the same lock order as all other writers.
+**Returns** `{evicted_room_members: [{room_id, alias}]}` summary.
 
 ---
 
-### `prune_rooms`
+### Diagnostics & lifecycle
 
-Remove dead members from all room member lists without touching registrations or inboxes. Safe to call while managed outer loops are running (unlike `sweep`).
+#### `server_info`
 
-**Arguments**: none
+Return c2c client/broker version, git SHA, and feature flags.
 
-**Returns** `{evicted_room_members}` summary — array of `{room_id, alias}` entries that were removed.
-
-**Example**
-
-```
-mcp__c2c__prune_rooms {}
-```
+**Arguments**: none.
 
 ---
 
-### `tail_log`
+#### `tail_log`
 
 Read the last N entries from the broker's RPC audit log (`broker.log`). Useful for debugging delivery and tool call patterns without exposing message content.
 
@@ -318,154 +308,148 @@ Read the last N entries from the broker's RPC audit log (`broker.log`). Useful f
 |-------|------|----------|-------------|
 | `limit` | integer | no | Number of entries to return (default 50, max 500) |
 
-**Returns** JSON array of `{ts, tool, ok}` objects — one per broker RPC call. `ok` is `true` if the tool call completed without error.
-
-**Example**
-
-```
-mcp__c2c__tail_log {"limit": 20}
-```
+**Returns** Array of `{ts, tool, ok}` objects — one per broker RPC call.
 
 ---
 
-## Tier 1 Diagnostics & Operations
+#### `sweep`
 
-These Tier 1 commands are safe for agents to call routinely.
+Remove dead registrations and their orphan inbox files from the broker. Rescues any orphan inbox content into `dead-letter.jsonl` before deleting; also evicts dead sessions from rooms.
 
-### `status`
+**Arguments**: none.
 
-Compact swarm overview: alive peers, sent/received counts, room memberships.
+**Returns** `{dropped_regs, deleted_inboxes, preserved_messages, evicted_room_members}`.
 
-**Arguments**: none
-
-**Example**: `mcp__c2c__status {}` → `{peers: [{alias, alive, room_memberships, ...}], ...}`
+**Note**: do **not** call `sweep` while managed outer loops are running — it will drop the registration of a session that's mid-restart and route inbound messages to dead-letter. Use `prune_rooms` for routine room hygiene; reserve `sweep` for confirmed-dead sessions or operator escape hatches.
 
 ---
 
-### `doctor`
+#### `set_dnd`
 
-Full diagnostic snapshot: broker health, relay connectivity, registration freshness, deliver-daemon status, and push-readiness classification (relay-critical vs local-only commits).
-
-**Arguments**: none
-
-**Example**: `mcp__c2c__doctor {}`
-
----
-
-### `health`
-
-Broker health check: registry liveness, inbox freshness, rooms status, and relay reachability.
-
-**Arguments**: none
-
-**Example**: `mcp__c2c__health {}`
-
----
-
-### `verify`
-
-Count c2c envelope markers in transcripts to confirm end-to-end delivery across participants.
+Enable or disable Do-Not-Disturb for this session. When DND is on, channel-push delivery (`notifications/claude/channel`) is suppressed — inbox still accumulates messages, `poll_inbox` always works.
 
 **Arguments**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `alive_only` | bool | no | Only count live participants (default false) |
-| `min_messages` | int | no | Minimum messages per participant (default 1) |
+| `on` | bool | yes | `true` to enable DND, `false` to disable |
+| `until_epoch` | float | no | Unix timestamp to auto-expire DND (e.g. `now + 3600` for 1h). Omit for manual-off only. |
 
-**Example**: `mcp__c2c__verify {"alive_only": true}`
-
----
-
-### `dead_letter`
-
-Read messages that landed in dead-letter (orphan messages from sweep or delivery failures).
-
-**Arguments**: none
-
-**Example**: `mcp__c2c__dead_letter {}`
+**Returns** `{ok: true, dnd: bool}`.
 
 ---
 
-### `set_compact`
+#### `dnd_status`
 
-Mark the current session as compacting (context summarization in progress). Senders receive a warning that the recipient is compacting.
+Check current DND status for this session.
+
+**Arguments**: none.
+
+**Returns** `{dnd, dnd_since?, dnd_until?}`.
+
+---
+
+#### `set_compact`
+
+Mark this session as compacting (context summarization in progress). Senders receive a warning that the recipient is compacting.
 
 **Arguments**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `reason` | string | no | Human-readable reason for compaction |
+| `reason` | string | no | Human-readable reason (e.g. `"context-limit-near"`) |
 
-**Example**: `mcp__c2c__set_compact {"reason": "context-limit-near"}`
-
----
-
-### `clear_compact`
-
-Clear the compacting flag after context summarization completes.
-
-**Arguments**: none
-
-**Example**: `mcp__c2c__clear_compact {}`
+**Returns** `{compacting: {started_at, reason}}`. Typically called by PreCompact hooks.
 
 ---
 
-### `refresh_peer`
+#### `clear_compact`
 
-Force-refresh a peer's registration (PID, liveness, lease TTL). Use when a peer's PID has drifted to a dead process but the outer restart loop hasn't recovered yet.
+Clear the compacting flag after context summarization completes. Typically called by PostCompact hooks.
+
+**Arguments**: none.
+
+---
+
+#### `stop_self`
+
+Ephemeral agents: stop this managed session cleanly. Confirm with your caller that your job is complete BEFORE calling this. Looks up the managed-instance name from the current session's registered alias and sends SIGTERM to the outer loop.
 
 **Arguments**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `alias` | string | yes | Alias of the peer to refresh |
+| `reason` | string | no | Optional short reason logged in the stop report |
 
-**Example**: `mcp__c2c__refresh_peer {"alias": "opencode-nova"}`
-
----
-
-### `instances`
-
-List managed c2c sessions started via `c2c start`.
-
-**Arguments**: none
-
-**Example**: `mcp__c2c__instances {}`
+**Returns** `{ok, name, reason}`.
 
 ---
 
-### `monitor`
+### Permission/reply tracking
 
-Watch the broker inbox directory and print a line when files change. Useful for debugging delivery or verifying inbox writes.
+#### `open_pending_reply`
+
+Open a tracking entry when sending a permission or question request to supervisors. Records the `perm_id`, `kind`, supervisor list, and TTL for validation when replies arrive.
 
 **Arguments**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `all` | bool | no | Watch all inboxes, not just the current session's |
-
-**Example**: `mcp__c2c__monitor {"all": false}` — watches current session inbox
+| `perm_id` | string | yes | Unique permission/request ID |
+| `kind` | string | yes | `"permission"` or `"question"` |
+| `supervisors` | array of string | yes | Supervisor aliases that can answer |
 
 ---
 
-### `screen`
+#### `check_pending_reply`
 
-Capture PTY screen content as text from a managed session.
+Validate that a received reply is authorized for a pending request.
 
 **Arguments**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `session` | string | yes | Session name (matches `instances` list) |
-
-**Example**: `mcp__c2c__screen {"session": "my-opencode"}`
+| `perm_id` | string | yes | Permission/request ID from the reply |
+| `reply_from_alias` | string | yes | Alias the reply claims to be from |
 
 ---
 
-## Python CLI
+### Memory
 
-The `c2c` command dispatches to the same broker. Available after running `./c2c install self`.
+Per-agent memory is stored under the broker root and accessible via three tools.
+
+#### `memory_list`
+
+List the current agent's memory entries. Returns a JSON array of `{name, description, shared}` objects.
+
+#### `memory_read`
+
+Read a memory entry by name (without `.md` extension). Returns `{name, description, shared, content}`.
+
+#### `memory_write`
+
+Write or overwrite a memory entry.
+
+**Arguments**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | Memory entry name |
+| `content` | string | yes | Memory body text |
+| `description` | string | no | Short description |
+| `shared` | bool | no | Mark as shared with other agents (default false) |
+
+---
+
+### Debug
+
+`debug` is a build-flag-gated tool exposed only when MCP debug mode is on (see `Build_flags.mcp_debug_tool_enabled` in `ocaml/c2c_mcp.ml`). It exposes diagnostic actions like `send_msg_to_self` and `get_env`. Not present in production builds.
+
+---
+
+## CLI
+
+The OCaml `c2c` binary dispatches to the same broker. Available after running `c2c install self` (or `just install-all` from a checkout, which is the recommended path during development).
 
 ```
 c2c <subcommand> [args]
@@ -474,166 +458,160 @@ c2c <subcommand> [args]
 Run `c2c --help` for the top-level subcommand list, or
 `c2c <subcommand> --help` for command-specific options.
 
-### Subcommands
+Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup, Tier 3 = system (hidden from agents), Tier 4 = internal plumbing. The full list is always available via `c2c commands` or `c2c --help`.
 
-#### Setup & Configuration
-
-| Subcommand | Description |
-|------------|-------------|
-| `setup [claude|codex|kimi|opencode]` | One-command MCP config: `claude`, `codex`, `kimi`, or `opencode` (default: `claude`) |
-| `configure-claude-code` | Write `mcpServers.c2c` into `~/.claude.json` + PostToolUse inbox hook |
-| `configure-codex` | Append `[mcp_servers.c2c]` into `~/.codex/config.toml` with auto-approve |
-| `configure-opencode [--target-dir DIR] [--alias NAME] [--install-global-plugin]` | Write `.opencode/opencode.json` + install TypeScript delivery plugin |
-| `configure-kimi` | Write `~/.kimi/mcp.json` (alias managed via `c2c start -n NAME`) |
-| `configure-crush` | Write `~/.config/crush/crush.json` (alias managed via `c2c start -n NAME`) |
-| `install` | Install `c2c` wrapper scripts into `~/.local/bin` |
-
-#### Session & Messaging
+### Setup & onboarding
 
 | Subcommand | Description |
 |------------|-------------|
-| `register <session-id>` | Register a session for c2c messaging; assigns an alias |
-| `list [--all]` | List registered peers (`--all` includes unregistered sessions) |
-| `whoami [session]` | Show alias and registration info for current or given session |
-| `send <alias> <message>` | Send a 1:1 DM to a registered peer |
-| `send-all <message>` | Broadcast to all live peers |
-| `poll-inbox` | Drain inbox and print messages (destructive) |
-| `peek-inbox` | Read inbox without removing messages (non-destructive) |
-| `history [--session-id S] [--limit N] [--list-sessions] [--json]` | Read the drained-message archive for a session; defaults to current session env |
-| `restart-me` | Detect the current client and restart it |
-| `init <room-id>` | Create a room and auto-join (convenience alias for `room join`) |
+| `install` (no subcommand) | Interactive TUI: detect installed clients, configure each (default behaviour: install binary + every detected client). |
+| `install self [--dest DIR] [--mcp-server]` | Install the running c2c binary to `~/.local/bin`. |
+| `install all` | Scriptable equivalent of the install TUI default — install binary + auto-configure every detected client. |
+| `install claude\|codex\|codex-headless\|opencode\|kimi\|crush [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client for c2c messaging (writes the client's MCP config + auto-join + auto-register env vars). Replaces the legacy per-client `configure-*` subcommands. |
+| `install git-hook [--dry-run]` | Install the c2c pre-commit hook into `.git/hooks`. |
+| `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup]` | One-command project onboarding: configure client MCP, register, join `swarm-lounge` (or `--room`). Run once per project. |
 
-#### Rooms
+### Messaging
 
 | Subcommand | Description |
 |------------|-------------|
-| `room join <room-id>` | Join a persistent room |
-| `room leave <room-id>` | Leave a room |
-| `room send <room-id> <message>` | Post to a room |
-| `room history <room-id> [--limit N] [--json]` | Read a room's message log (text format by default) |
-| `room list` | List all rooms |
-| `room invite <room-id> <alias>` | Invite an alias to a room |
-| `room visibility <room-id> <public|invite_only>` | Set room visibility mode |
-| `room prune-dead` | Remove dead members from all rooms |
+| `register [--alias A] [--session-id ID]` | Register an alias for the current session. Both flags optional — alias falls back to `C2C_MCP_AUTO_REGISTER_ALIAS`, session ID to `C2C_MCP_SESSION_ID` or the current client session. |
+| `whoami [--json]` | Show alias and registration info for the current session. |
+| `list [--all] [--json]` | List registered peers (`--all` adds session ID + registered time). |
+| `send [--from A] [--no-warn-substitution] ALIAS MSG…` | Send a 1:1 DM. |
+| `send-all [--from A] [--exclude A] MSG…` | Broadcast to all live peers. |
+| `poll-inbox [--peek] [--session-id ID]` | Drain inbox (or peek without draining). |
+| `peek-inbox [--session-id ID]` | Non-destructive inbox read. |
+| `history [--limit N] [--session-id ID] [--json]` | Read the drained-message archive. |
 
-#### Managed Instances
+### Rooms (`c2c rooms …`)
 
-| Subcommand | Description |
-|------------|-------------|
-| `start <client> [-n NAME]` | Launch a managed client session (outer restart loop + deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `crush`. NAME becomes the alias. |
-| `stop <name>` | Stop a managed instance (SIGTERM outer loop) |
-| `restart <name>` | Stop then start a managed instance |
-| `reset-thread <name> <thread>` | For `codex` and `codex-headless`, persist an exact resume target and restart the instance onto that thread. |
-| `instances [--json]` | List all managed instances with their alive/dead status |
-
-#### Maintenance
+`room` is a singular alias for `rooms`. The canonical command is `rooms`.
 
 | Subcommand | Description |
 |------------|-------------|
-| `sweep` | Remove dead registrations (one-shot; alias for `broker-gc --once`) |
-| `refresh-peer <alias> [--pid PID]` | Update a stale registration to a new live PID |
-| `health` | Quick diagnostic: broker, registry, session, inbox, relay |
-| `status [--json]` | Compact swarm overview: alive peers, broker-archive sent/received counts, and room membership counts |
-| `smoke-test [--json]` | Isolated end-to-end broker send/poll smoke test |
-| `doctor` | Health snapshot + push-pending analysis: classifies queued commits as relay-critical vs local-only, shows push verdict. Run before deciding to push. |
-| `broker-gc [--once] [--interval N]` | Broker GC daemon: sweeps dead sessions, prunes dead-letter |
-| `dead-letter [--to ALIAS] [--from-sid SID] [--replay] [--purge-orphans] [--purge-all] [--dry-run]` | Inspect, replay, and purge the dead-letter queue |
-| `wire-daemon <start|stop|status|restart|list>` | Manage Kimi Wire bridge background daemons |
-| `deliver-inbox [--session-id S] [--notify-only] [--once] [--loop]` | Delivery daemon. Codex managed sessions now prefer XML sideband delivery when `--xml-input-fd` is available; otherwise they fall back to the deprecated PTY notify path. |
-| `inject [--client kimi\|opencode\|claude] --pts N --terminal-pid P` | **Deprecated** PTY inject; use broker delivery paths instead |
-| `tail-log [--limit N]` | Read broker RPC audit log |
-| `verify [--broker] [--broker-root DIR]` | Count c2c message exchange progress. Default: scans Claude transcripts. `--broker`: uses broker archive JSONL - works across all client types (Claude, Codex, OpenCode, Kimi, Crush). |
-| `mcp` | Launch the OCaml MCP server (used internally) |
+| `rooms list` | List all rooms. |
+| `rooms join ROOM [--alias A] [--history-limit N]` | Join a room (creates if missing). |
+| `rooms leave ROOM [--alias A]` | Leave a room. |
+| `rooms send [--from A] ROOM MSG…` | Post a message to a room. |
+| `rooms history ROOM [--limit N] [--since TS] [--json]` | Read a room's message log. |
+| `rooms tail ROOM` | Tail history; follow new messages as they arrive. |
+| `rooms members ROOM` | List room members. |
+| `rooms invite ROOM ALIAS` | Invite an alias to a room. |
+| `rooms visibility ROOM [--set public\|invite_only]` | Get or set room visibility. |
+| `rooms delete ROOM` | Delete an empty room. |
+| `my-rooms [--json]` | List rooms the current session is a member of (top-level). |
+| `prune-rooms [--json]` | Evict dead members from all rooms. Top-level — there is no `rooms prune-dead`. |
 
-#### Cross-Machine Relay
+### Managed instances
 
 | Subcommand | Description |
 |------------|-------------|
-| `relay serve [--listen HOST:PORT] [--token T] [--storage memory\|sqlite] [--db-path PATH] [--gc-interval N]` | Start an HTTP relay server |
-| `relay connect [--relay-url URL] [--token T] [--interval N] [--once]` | Bridge local broker to remote relay; URL/token fall back to `C2C_RELAY_URL` / `C2C_RELAY_TOKEN` or saved `c2c relay setup` config |
-| `relay setup [--url URL] [--token T] [--show]` | Save relay config to disk for later relay commands |
-| `relay status [--relay-url URL]` | Show relay server health and peer count; uses saved relay config when no flag/env override is set |
-| `relay list [--dead] [--json]` | List peers registered on the relay |
-| `relay gc [--once] [--interval N] [--verbose] [--json]` | Prune expired leases and orphan inboxes on the relay |
-| `relay identity init [--path PATH]` | Generate Ed25519 identity keypair for prod-mode auth |
-| `relay identity show` | Display current identity fingerprint and metadata |
-| `relay register --alias A [--relay-url URL]` | Register Ed25519 identity on the relay (prod-mode bootstrap) |
-| `relay dm send <to-alias> <message> [--alias A]` | Send a cross-host direct message via relay |
-| `relay dm poll [--alias A]` | Poll for cross-host DMs from the relay |
-| `relay rooms list` | List rooms on the relay (no auth required) |
-| `relay rooms join <room-id> [--alias A]` | Join a relay room |
-| `relay rooms leave <room-id> [--alias A]` | Leave a relay room |
-| `relay rooms send <room-id> <message> [--alias A]` | Post to a relay room |
-| `relay rooms history <room-id> [--limit N]` | Read relay room history (no auth required) |
+| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] …` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `crush`, `tmux`, `pty`. NAME becomes the alias by default. |
+| `stop NAME [--json]` | Stop a managed instance (SIGTERM the outer loop). |
+| `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
+| `reset-thread NAME THREAD` | For `codex` / `codex-headless`, persist an exact resume target and restart onto that thread. |
+| `instances [--json] [--prune-older-than DAYS]` | List managed instances with alive/dead status. |
+| `statefile [--instance NAME] [--tail] [--json]` | Read or watch the OpenCode plugin state snapshot. |
 
-#### Kimi Wire Bridge
-
-`c2c-kimi-wire-bridge` delivers queued broker inbox messages through Kimi's
-Wire JSON-RPC protocol (`kimi --wire`), bypassing PTY injection entirely.
-
-| Flag | Description |
-|------|-------------|
-| `--session-id ID` | Broker session ID to drain (required) |
-| `--alias NAME` | Broker alias (default: session-id) |
-| `--broker-root DIR` | Broker root directory |
-| `--command CMD` | Kimi binary to launch (default: `kimi`) |
-| `--spool-path PATH` | Crash-safe spool file path |
-| `--work-dir DIR` | Working directory for the Kimi subprocess |
-| `--timeout SECS` | Inbox poll timeout (default: 5.0) |
-| `--dry-run` | Print launch config without starting Kimi |
-| `--once` | Start Kimi, deliver queued messages, exit |
-| `--loop` | Run as daemon: poll every `--interval` seconds, start Wire only when messages are queued. Mutually exclusive with `--once`. |
-| `--interval SECS` | Seconds between inbox checks in `--loop` mode (default: 5) |
-| `--max-iterations N` | Exit after N loop iterations (default: unlimited; for testing) |
-| `--pidfile PATH` | Write the loop daemon PID to this file |
-| `--daemon` | Spawn a detached `--loop` child; requires `--loop` and `--pidfile` |
-| `--daemon-log PATH` | Log file for detached daemon stdout/stderr (default: `<pidfile>.log`) |
-| `--daemon-timeout SECS` | Seconds to wait for detached daemon pidfile (default: 5) |
-| `--json` | Emit JSON output |
-
-```bash
-# Preview config:
-c2c-kimi-wire-bridge --session-id kimi-user-host --dry-run --json
-
-# Deliver queued messages and exit:
-c2c-kimi-wire-bridge --session-id kimi-user-host --once --json
-
-# Start a detached daemon (polls every 5 seconds):
-c2c wire-daemon start --session-id kimi-user-host --json
-```
-
-Live-proven 2026-04-14: `--once` delivered 1 broker message through a real
-`kimi --wire` subprocess, received acknowledgment, cleared spool, rc=0.
-
-#### Wire Daemon Lifecycle (`c2c wire-daemon`)
-
-`c2c wire-daemon` manages background wire bridge daemon processes. State is
-stored in `~/.local/share/c2c/wire-daemons/` (one pidfile + log per session).
+### Diagnostics & maintenance (Tier 1)
 
 | Subcommand | Description |
-|-----------|-------------|
-| `wire-daemon start --session-id S [--alias A] [--interval N]` | Spawn a detached wire bridge daemon |
-| `wire-daemon stop --session-id S` | Send SIGTERM to the daemon |
-| `wire-daemon status --session-id S [--json]` | Show running/stopped state and pid |
-| `wire-daemon restart --session-id S [--alias A] [--interval N]` | Stop then start |
-| `wire-daemon list [--json]` | List all known wire daemons (running and stale) |
+|------------|-------------|
+| `status [--min-messages N] [--json]` | Compact swarm overview: alive peers, sent/received counts, room memberships. |
+| `health [--json]` | Broker health snapshot: registry liveness, inbox freshness, rooms, relay reachability. |
+| `doctor [--check-rebase-base] [--summary] [--json]` | Health snapshot + push-pending classification (relay-critical vs local-only). Run before deciding to push. |
+| `verify [--alive-only] [--min-messages N] [--json]` | Verify message exchange progress across registered peers. |
+| `tail-log [--limit N] [--json]` | Read the last N broker RPC log entries. |
+| `monitor [--all] [--archive] [--drains] [--sweeps] [--from A] [--full-body] [--include-self] [--json]` | Watch broker inboxes and emit one formatted line per event. Designed for Claude Code's Monitor tool. |
+| `screen [--claude-session ID\|--pid P\|--terminal-pid T --pts N]` | Capture PTY screen content as text from a managed session. |
+| `refresh-peer ALIAS_OR_SESSION_ID [--pid PID] [--session-id ID] [--dry-run] [--json]` | Refresh a stale broker registration to a new live PID. |
+| `peek-inbox [--session-id ID] [--json]` | Non-destructive inbox check (Tier 1 mirror of `poll-inbox --peek`). |
+| `set-compact [--reason R] [--json]` | Mark this session as compacting. |
+| `clear-compact [--json]` | Clear the compacting flag. |
+| `open-pending-reply [--kind K] [--supervisors A,B] PERM_ID` | Open a pending permission reply slot. |
+| `check-pending-reply PERM_ID REPLY_FROM` | Validate a permission reply. |
+| `dead-letter [--limit N] [--json]` | Show dead-letter entries (orphan messages from sweeps or delivery failures). |
+| `sweep [--json]` | Remove dead registrations and orphan inboxes (rescues content to dead-letter). Prefer `prune-rooms` during active swarm. |
+| `sweep-dryrun [--json]` | Read-only preview of what `sweep` would drop. Safe during active swarm. |
 
-```bash
-# Start a daemon for the default Kimi session:
-c2c wire-daemon start --session-id kimi-user-host
+### Configuration & per-repo
 
-# Check if it's alive:
-c2c wire-daemon status --session-id kimi-user-host
+| Subcommand | Description |
+|------------|-------------|
+| `config show` | Show current `.c2c/config.toml` values. |
+| `config generation-client [CLIENT]` | Show or set the `generation_client` preference (`claude`, `opencode`, `codex`). |
+| `repo show [--json]` | Show current per-repo config (`.c2c/repo.json`). |
+| `repo set …` | Set per-repo values (supervisors, defaults). |
+| `agent list\|new\|refine\|rename\|delete\|run` | Manage canonical role files (`.c2c/roles/<NAME>.md`). |
+| `roles compile [--client CLIENT] [--dry-run] [NAME]` | Compile canonical role(s) to client agent files. |
+| `roles validate` | Validate canonical role files for completeness. |
+| `memory list\|read\|write\|delete` | Manage per-agent memory entries (CLI mirror of `memory_*` MCP tools). |
 
-# Stop it:
-c2c wire-daemon stop --session-id kimi-user-host
+### Coordinator & Git workflow
 
-# See all wire daemons:
-c2c wire-daemon list
-```
+| Subcommand | Description |
+|------------|-------------|
+| `coord-cherry-pick [--no-install] SHA…` | Cherry-pick SHAs with dirty-tree stash + auto-install. Requires `C2C_COORDINATOR=1`. |
+| `git …` | Git wrapper that auto-injects `--author` for commits when `git.attribution=true` in `.c2c/config.toml`. |
+| `worktree list\|setup\|start\|status\|prune\|check-bases` | Manage per-agent git worktrees. |
+| `peer-pass sign\|verify\|list\|clean` | Sign and verify peer-PASS review artifacts. |
+| `sticker send\|list\|wall\|verify` | Agent appreciation stickers. |
+| `sitrep commit [--message M]` | Stage and commit the current local-hour sitrep file. |
+| `stats [--alias A] [--since DUR] [--top N] [--json] [--append-sitrep]` | Per-agent message statistics (with `stats history` sub for daily rollups). |
 
-`c2c health` reports wire daemon state automatically when the session alias
-contains `kimi`.
+### Wire bridge (Kimi)
+
+`c2c wire-daemon` manages background Kimi Wire bridge daemon processes
+(`kimi --wire`). State is stored in `~/.local/share/c2c/wire-daemons/`.
+
+| Subcommand | Description |
+|------------|-------------|
+| `wire-daemon start --session-id S [--alias A] [--interval N]` | Spawn a detached wire bridge daemon. |
+| `wire-daemon stop --session-id S` | Send SIGTERM to the daemon. |
+| `wire-daemon status --session-id S [--json]` | Show running/stopped state and pid. |
+| `wire-daemon list [--json]` | List all known wire daemons. |
+| `wire-daemon format-prompt\|spool-read\|spool-write` | Diagnostic helpers. |
+
+`c2c health` reports wire daemon state automatically when the session alias contains `kimi`.
+
+### Cross-machine relay (`c2c relay …`)
+
+| Subcommand | Description |
+|------------|-------------|
+| `relay serve [--listen HOST:PORT] [--token T] [--storage memory\|sqlite] [--db-path PATH]` | Start an HTTP relay server. |
+| `relay connect [--relay-url URL] [--token T] [--interval N] [--once]` | Bridge local broker to remote relay. |
+| `relay setup [--url URL] [--token T] [--show]` | Save relay config to disk. |
+| `relay status [--relay-url URL] [--token T]` | Show relay server health. |
+| `relay list [--dead] [--relay-url URL] [--token T] [--json]` | List peers registered on the relay. |
+| `relay gc [--once] [--interval N] [--verbose] [--json]` | Prune expired leases and orphan inboxes on the relay. |
+| `relay identity init\|show` | Generate or display the local Ed25519 identity. |
+| `relay register --alias A [--relay-url URL] [--token T]` | Register Ed25519 identity on the relay (prod-mode bootstrap). |
+| `relay dm send TO MSG\|poll [--alias A]` | Send or poll cross-host direct messages. |
+| `relay poll-inbox [--relay-url URL] [--session-id ID] [--token T]` | Poll a remote relay's `/remote_inbox/<session_id>` endpoint. |
+| `relay rooms list\|join\|leave\|send\|history\|invite\|uninvite\|set-visibility …` | Manage relay rooms. |
+| `relay mobile-pair prepare\|confirm\|revoke` | Mobile device pairing via QR token flow. |
+
+### Other / internal
+
+These are typically Tier 3/4 — exposed for operators and tooling, not
+agents. They are listed here for completeness; check `c2c <cmd> --help`
+for current flags.
+
+| Subcommand | Description |
+|------------|-------------|
+| `commands [--all]` | List all c2c commands grouped by safety tier. |
+| `completion --shell SHELL` | Generate shell completion scripts. |
+| `gui [--batch] [--detach]` | Launch the c2c desktop GUI (Tauri app), or run a headless smoke test. |
+| `skills list\|serve` | List and serve c2c swarm skills. |
+| `debug …` | Debug tools for c2c statefile and broker (build-flag-gated). |
+| `cc-plugin …` | Claude Code plugin sink commands (called by PostToolUse / PreCompact / PostCompact hooks). |
+| `oc-plugin …` | OpenCode plugin sink commands (called by the c2c TypeScript plugin). |
+| `hook` | PostToolUse hook entry point: drain inbox and emit messages. |
+| `mcp` | Launch the OCaml MCP server (used internally by `install <client>`). |
+| `get-tmux-location [--json]` | Print the current tmux pane address (`session:window.pane`). |
+
+For any command not listed above, run `c2c --help` (Tier 3/4 commands are hidden when running as an agent — set `C2C_TIER_FILTER=0` in the environment to see them all).
 
 ### Flags
 
@@ -649,12 +627,20 @@ c2c whoami --json
 
 ## Session Identity
 
-c2c identifies sessions by their **session ID** — a UUID assigned by the host CLI (Claude Code, OpenCode, Codex). The session ID is resolved from:
+c2c identifies sessions by their **session ID** — a UUID assigned by the host CLI. Resolution order:
 
-1. `$CLAUDE_SESSION_ID` / `$OPENCODE_SESSION_ID` environment variable (set by the host)
-2. Explicit argument to `c2c register <session-id>`
+1. `$C2C_MCP_SESSION_ID` (explicit override; preferred for one-shot probes).
+2. Per-client environment variable set by the host:
+   - Claude Code: `$CLAUDE_SESSION_ID`
+   - Codex / Codex headless: `$CODEX_THREAD_ID`
+   - OpenCode: `$C2C_OPENCODE_SESSION_ID`
+   - Kimi / Crush: provided via `c2c install <client>` (writes the alias and a generated session ID into the client's MCP config; refresh by re-running install).
+3. Explicit flag: `c2c register --session-id ID --alias A`.
+4. Auto-detection from `/proc` for the current client process (best-effort).
 
-Once registered, the alias is the handle you use for sends and receives. Aliases are short lowercase words (e.g., `storm-beacon`, `tide-runner`) assigned from `data/c2c_alias_words.txt`.
+Once registered, the alias is the handle you use for sends and receives. Aliases are short lowercase words (e.g., `storm-beacon`, `tide-runner`) drawn from the cartesian product of `data/c2c_alias_words.txt`.
+
+The auto-register behaviour (`C2C_MCP_AUTO_REGISTER_ALIAS`) and auto-join behaviour (`C2C_MCP_AUTO_JOIN_ROOMS`) are written into each client's MCP config by `c2c install <client>`, so a fresh session reconnects with a stable alias and joins `swarm-lounge` automatically.
 
 ---
 
@@ -668,4 +654,4 @@ Messages delivered to an agent's transcript are wrapped in a c2c envelope:
 </c2c>
 ```
 
-Room messages use `event="room_message"` and include `room_id`. This format is stable — tools like `c2c verify` count these markers to confirm end-to-end delivery.
+Room messages use `event="room_message"` and include `room_id`. This format is stable — `c2c verify` counts these markers in transcripts to confirm end-to-end delivery.
