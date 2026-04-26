@@ -563,10 +563,59 @@ let worktree_age_seconds path =
     [active_window_hours] as POSSIBLY_ACTIVE — a soft REFUSE that
     `--clean` skips, so a peer who set up a worktree minutes ago and
     went to read code elsewhere doesn't lose their setup. *)
+(** Read `<worktree>/.git` (a "gitdir: <abs>" pointer file written by
+    `git worktree add`) and return the admin dir's absolute path
+    without invoking git — the read does NOT bump admin-dir mtime,
+    unlike `git rev-parse --git-dir`. Falls back to [worktree_admin_dir]
+    if the .git file isn't there or doesn't have the expected shape. *)
+let admin_dir_no_git_call path =
+  let dotgit = Filename.concat path ".git" in
+  let from_pointer =
+    try
+      let ic = open_in dotgit in
+      Fun.protect
+        ~finally:(fun () -> try close_in ic with _ -> ())
+        (fun () ->
+          let line = try input_line ic with End_of_file -> "" in
+          let prefix = "gitdir: " in
+          let plen = String.length prefix in
+          if String.length line >= plen
+             && String.sub line 0 plen = prefix then
+            let rel = String.trim (String.sub line plen (String.length line - plen)) in
+            Some (if Filename.is_relative rel then Filename.concat path rel else rel)
+          else
+            None)
+    with _ -> None
+  in
+  match from_pointer with
+  | Some p -> Some p
+  | None -> worktree_admin_dir path
+
+(** Stat the admin dir mtime via the pointer-file path, BEFORE any git
+    commands run against the worktree. (#314 lyra review: `git status`,
+    `merge-base`, and `rev-parse` all touch the admin dir and refresh
+    its mtime — measurement perturbs the system. Snapshot first.) *)
+let snapshot_age_seconds path =
+  match admin_dir_no_git_call path with
+  | None -> None
+  | Some d ->
+      (try
+         let st = Unix.stat d in
+         Some (Unix.gettimeofday () -. st.Unix.st_mtime)
+       with _ -> None)
+
 let classify_worktree ~main_path ~ignore_active ~active_window_hours
     (_alias, path, branch) =
   let size = worktree_size_bytes path in
   let mk st = { gc_path = path; gc_branch = branch; gc_size = size; gc_status = st } in
+  (* #314 lyra review fix: snapshot the admin-dir age BEFORE any git
+     command runs. is_dirty (git status), head_ancestor_of_origin_master
+     (merge-base), and head_sha / origin_master_sha (rev-parse) all
+     touch the admin dir and bump its mtime to "now". Without this
+     snapshot, an actually-old worktree at HEAD==origin/master would
+     classify as POSSIBLY_ACTIVE because the act of classifying made
+     it appear fresh. *)
+  let age_snapshot = snapshot_age_seconds path in
   (* Defense-in-depth: never offer the main worktree even if list_worktrees
      surfaced it. *)
   if (match main_path with
@@ -591,23 +640,20 @@ let classify_worktree ~main_path ~ignore_active ~active_window_hours
     | [] ->
         (* Freshness heuristic (#314). HEAD == origin/master + admin dir
            young = "set up but no work yet, owner may be reading
-           elsewhere." *)
+           elsewhere." Uses [age_snapshot] (taken before git commands)
+           so the heuristic doesn't measure its own classification time. *)
         let head = head_sha path in
         let origin_head = origin_master_sha path in
         let head_eq_origin =
           head <> "" && origin_head <> "" && head = origin_head
         in
         let young =
-          match worktree_age_seconds path with
+          match age_snapshot with
           | Some age -> age < active_window_hours *. 3600.0
           | None -> false
         in
         if head_eq_origin && young then
-          let age =
-            match worktree_age_seconds path with
-            | Some s -> s
-            | None -> 0.0
-          in
+          let age = match age_snapshot with Some s -> s | None -> 0.0 in
           let age_h = age /. 3600.0 in
           mk (GcPossiblyActive
                 { reason = Printf.sprintf

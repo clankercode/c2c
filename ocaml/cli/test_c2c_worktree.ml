@@ -169,6 +169,42 @@ let test_possibly_active_when_head_eq_origin_and_within_window () =
           fail "fresh detached-at-origin should be POSSIBLY_ACTIVE \
                 with active_window_hours=2.0")
 
+(* Regression for lyra's #314 FAIL repro: classify_worktree must
+   snapshot admin-dir mtime BEFORE running git commands. is_dirty,
+   head_ancestor, and rev-parse all bump admin mtime to "now"; if
+   the freshness check stats fresh, an actually-old worktree at
+   HEAD==origin/master gets soft-refused as POSSIBLY_ACTIVE. *)
+let test_old_worktree_at_origin_classifies_removable_not_possibly_active () =
+  with_tmp_dir (fun dir ->
+      let (_repo, wt) = make_repo_with_worktree dir `Detached_at_origin_master in
+      (* Force the admin-dir mtime older than any reasonable active
+         window. The admin dir is at <wt>/.git → "gitdir: <path>". *)
+      let admin =
+        let dotgit = Filename.concat wt ".git" in
+        let ic = open_in dotgit in
+        Fun.protect
+          ~finally:(fun () -> close_in ic)
+          (fun () ->
+            let line = input_line ic in
+            let prefix = "gitdir: " in
+            String.trim
+              (String.sub line (String.length prefix)
+                 (String.length line - String.length prefix)))
+      in
+      sh "touch -d '5 hours ago' %s" (Filename.quote admin);
+      let c =
+        classify_in_worktree
+          ~active_window_hours:2.0 ~main_path:None ~ignore_active:true wt
+      in
+      match c.C2c_worktree.gc_status with
+      | C2c_worktree.GcRemovable _ -> ()
+      | C2c_worktree.GcPossiblyActive { reason } ->
+          fail (Printf.sprintf
+                  "5-hours-old admin dir + window=2.0 must be REMOVABLE; \
+                   got POSSIBLY_ACTIVE: %s" reason)
+      | C2c_worktree.GcRefused { reason } ->
+          fail (Printf.sprintf "expected REMOVABLE; got REFUSE: %s" reason))
+
 let test_possibly_active_disabled_when_window_zero () =
   with_tmp_dir (fun dir ->
       let (_repo, wt) = make_repo_with_worktree dir `Detached_at_origin_master in
@@ -224,6 +260,8 @@ let () =
             test_possibly_active_when_head_eq_origin_and_within_window
         ; test_case "active_window_hours=0 disables heuristic (#314)" `Quick
             test_possibly_active_disabled_when_window_zero
+        ; test_case "old admin mtime + HEAD==origin → REMOVABLE (#314 lyra regress)" `Quick
+            test_old_worktree_at_origin_classifies_removable_not_possibly_active
         ] )
     ; ( "gc_json",
         [ test_case "json_of_int64 small → `Int" `Quick
