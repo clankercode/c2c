@@ -32,13 +32,8 @@ Key layers:
 ### 2. ~~`MAX_EVENTS` cap does not apply to `events` state~~ ✅ Fixed
 `setEvents` calls at lines 88-90 and 515-517 cap the array to `MAX_EVENTS` elements before storing. Both the monitor event path and the send path are covered.
 
-### 3. `pollInbox` timestamps are poll time, not message time
-**Location**: `useHistory.ts` line 51
-```typescript
-ts: new Date(now * 1000).toISOString(),
-```
-`now = Date.now() / 1000` is the poll time, not the original message timestamp.
-**Broker limitation** — the `message` type in c2c_mcp.ml only has `from_alias/to_alias/content/deferrable`; no timestamp field. Fixing properly requires broker changes.
+### 3. ~~`pollInbox` timestamps are poll time, not message time~~ ✅ Fixed
+Added `ts : float` to the broker `message` type (set to `Unix.gettimeofday()` on enqueue), emitted in `c2c poll-inbox --json` output, consumed in `useHistory.ts` — `m.ts ?? now` so messages show their actual enqueue time. Falls back to poll time for legacy messages read from old inbox files lacking the field.
 
 ---
 

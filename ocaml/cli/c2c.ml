@@ -683,6 +683,7 @@ let poll_inbox_cmd =
                  [ ("from_alias", `String m.from_alias)
                  ; ("to_alias", `String m.to_alias)
                  ; ("content", `String m.content)
+                 ; ("ts", `Float m.ts)
                  ])
              messages))
   | Human ->
@@ -4252,6 +4253,7 @@ let peek_inbox_cmd =
                  [ ("from_alias", `String m.from_alias)
                  ; ("to_alias", `String m.to_alias)
                  ; ("content", `String m.content)
+                 ; ("ts", `Float m.ts)
                  ])
              messages))
   | Human ->
@@ -7051,7 +7053,8 @@ let wire_daemon_format_prompt_cmd =
                           ; content    = get_str "content"
                           ; deferrable = false
                           ; reply_via = None
-                          ; enc_status = None }
+                          ; enc_status = None
+                          ; ts = 0.0 }
         | _ -> None) items
     | _ -> []
   in
@@ -7078,7 +7081,8 @@ let wire_daemon_spool_write_cmd =
                           ; content    = get_str "content"
                           ; deferrable = false
                           ; reply_via = None
-                          ; enc_status = None }
+                          ; enc_status = None
+                          ; ts = 0.0 }
         | _ -> None) items
     | _ -> []
   in

@@ -166,6 +166,7 @@ let test_tmux_message_payload_uses_c2c_envelope () =
     ; deferrable = false
     ; reply_via = Some "c2c_send"
     ; enc_status = None
+    ; ts = 0.0
     }
   in
   let payload = C2c_start.tmux_message_payload [ msg ] in

@@ -38,7 +38,7 @@ type registration =
   ; compaction_count : int
   (** Cumulative count of compacting→idle transitions. Defaults to 0. *)
   }
-type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option }
+type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option; ts : float }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 type room_visibility = Public | Invite_only

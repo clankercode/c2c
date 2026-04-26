@@ -44,7 +44,7 @@ type registration =
       Incremented by clear_compacting and clear_stale_compacting.
       Defaults to 0 for sessions predating this field. *)
   }
-type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option }
+type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option; ts : float }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 type room_visibility = Public | Invite_only
@@ -404,11 +404,12 @@ module Broker = struct
     ; compaction_count = (match json |> member "compaction_count" with `Int n -> n | _ -> 0)
     }
 
-  let message_to_json { from_alias; to_alias; content; deferrable; reply_via; enc_status } =
+  let message_to_json { from_alias; to_alias; content; deferrable; reply_via; enc_status; ts } =
     let base =
       [ ("from_alias", `String from_alias)
       ; ("to_alias", `String to_alias)
       ; ("content", `String content)
+      ; ("ts", `Float ts)
       ]
     in
     let with_deferrable = if deferrable then base @ [("deferrable", `Bool true)] else base in
@@ -434,6 +435,11 @@ module Broker = struct
         (match json |> member "enc_status" with
          | `String s -> Some s
          | _ -> None)
+    ; ts =
+        (match json |> member "ts" with
+         | `Float f -> f
+         | `Int i -> float_of_int i
+         | _ -> 0.0)
     }
 
   let load_registrations t =
@@ -1068,7 +1074,7 @@ module Broker = struct
             with_inbox_lock t ~session_id (fun () ->
                 let current = load_inbox t ~session_id in
                 let next =
-                  current @ [ { from_alias; to_alias; content; deferrable; reply_via = None; enc_status = None } ]
+                  current @ [ { from_alias; to_alias; content; deferrable; reply_via = None; enc_status = None; ts = Unix.gettimeofday () } ]
                 in
                 save_inbox t ~session_id next))
 
@@ -1103,7 +1109,7 @@ module Broker = struct
                         let current = load_inbox t ~session_id in
                         let next =
                           current
-                          @ [ { from_alias; to_alias = reg.alias; content; deferrable = false; reply_via = None; enc_status = None } ]
+                          @ [ { from_alias; to_alias = reg.alias; content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday () } ]
                         in
                         save_inbox t ~session_id next);
                     sent := reg.alias :: !sent
@@ -1623,6 +1629,9 @@ module Broker = struct
                   (match json |> member "reply_via" with `String s -> Some s | _ -> None)
               ; enc_status =
                   (match json |> member "enc_status" with `String s -> Some s | _ -> None)
+              ; ts =
+                  (match json |> member "ts" with
+                   | `Float f -> f | `Int i -> float_of_int i | _ -> 0.0)
               }) items
         | _ -> []
       in
@@ -1814,7 +1823,7 @@ module Broker = struct
                     with_inbox_lock t ~session_id (fun () ->
                         let current = load_inbox t ~session_id in
                         let next =
-                          current @ [ { from_alias; to_alias = tagged_to; content; deferrable = false; reply_via = None; enc_status = None } ]
+                          current @ [ { from_alias; to_alias = tagged_to; content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday () } ]
                         in
                         save_inbox t ~session_id next);
                     delivered := m.rm_alias :: !delivered

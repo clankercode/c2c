@@ -32,6 +32,7 @@ interface InboxMessage {
   from_alias: string;
   to_alias: string;
   content: string;
+  ts?: number;
 }
 
 export async function pollInbox(sessionId: string): Promise<C2cEvent[]> {
@@ -42,14 +43,17 @@ export async function pollInbox(sessionId: string): Promise<C2cEvent[]> {
     if (result.code !== 0) return [];
     const messages: InboxMessage[] = JSON.parse(result.stdout);
     const now = Date.now() / 1000;
-    return messages.map((m, i) => ({
-      event_type: "message" as const,
-      monitor_ts: String(now + i * 0.001),
-      from_alias: m.from_alias,
-      to_alias: m.to_alias,
-      content: m.content,
-      ts: new Date(now * 1000).toISOString(),
-    }));
+    return messages.map((m, i) => {
+      const msgTs = m.ts ?? (now + i * 0.001);
+      return {
+        event_type: "message" as const,
+        monitor_ts: String(msgTs),
+        from_alias: m.from_alias,
+        to_alias: m.to_alias,
+        content: m.content,
+        ts: new Date(msgTs * 1000).toISOString(),
+      };
+    });
   } catch {
     return [];
   }
