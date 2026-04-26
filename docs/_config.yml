@@ -15,6 +15,7 @@ header_pages:
   - architecture.md
   - relay-quickstart.md
   - client-delivery.md
+  - clients/feature-matrix.md
   - known-issues.md
   - get-started.md
 
