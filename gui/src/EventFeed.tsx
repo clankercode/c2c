@@ -1,4 +1,4 @@
-import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { C2cEvent, MessageEvent } from "./types";
 
@@ -214,22 +214,22 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
   }
 
   const isFocused = !!(selectedRoom || selectedPeer);
-  let visible: C2cEvent[];
-  if (selectedRoom) {
-    const liveRoomEvents = events.filter(e => isRoomEvent(e, selectedRoom) && !(e as { _historical?: boolean })._historical);
-    visible = dedupeAndSort(focusHistoryEvents, liveRoomEvents, true);
-  } else if (selectedPeer) {
-    const livePeerEvents = events.filter(e => isPeerEvent(e, selectedPeer, myAlias) && !(e as { _historical?: boolean })._historical);
-    visible = dedupeAndSort(focusHistoryEvents, livePeerEvents, true);
-  } else {
-    visible = events.filter(e => matchesFilter(e, filter)).slice().reverse();
-  }
+  const filteredVisible = useMemo(() => {
+    if (selectedRoom) {
+      const liveRoomEvents = events.filter(e => isRoomEvent(e, selectedRoom) && !(e as { _historical?: boolean })._historical);
+      return dedupeAndSort(focusHistoryEvents, liveRoomEvents, true);
+    } else if (selectedPeer) {
+      const livePeerEvents = events.filter(e => isPeerEvent(e, selectedPeer, myAlias) && !(e as { _historical?: boolean })._historical);
+      return dedupeAndSort(focusHistoryEvents, livePeerEvents, true);
+    } else {
+      return events.filter(e => matchesFilter(e, filter)).slice().reverse();
+    }
+  }, [selectedRoom, selectedPeer, events, focusHistoryEvents, myAlias, filter]);
 
-  // Apply search filter
-  if (search.trim()) {
-    const q = search.trim().toLowerCase();
-    visible = visible.filter(e => eventLabel(e).toLowerCase().includes(q));
-  }
+  // Apply search filter (runs every render since search changes frequently)
+  const visible = search.trim()
+    ? filteredVisible.filter(e => eventLabel(e).toLowerCase().includes(search.trim().toLowerCase()))
+    : filteredVisible;
 
   // Track user scroll position for focused mode
   const isAtBottomRef = useRef(true);
