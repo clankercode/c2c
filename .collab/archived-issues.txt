@@ -88,3 +88,11 @@ IDs/subjects archived in that batch.
 #276 [stanza] Peer-PASS jungle #261
 #279 [galaxy] GUI README / getting-started doc
 #280 [jungle] DRAFT-idle-nudge → SPEC + impl design
+
+## 2026-04-26 16:44 UTC+10 — second batch (15:00–16:44 work)
+
+#285 [coord+stanza co-design, subagent impl] Per-agent memory: private-shared tier (Phase 1)
+#289 [stanza, lyra-PASSed] #282 broker liveness-respawn-pid (3-commit chain)
+#290 [jungle, stanza-PASSed] Mobile S5b /device-login web UI (3-commit chain)
+#291 [galaxy, jungle-PASSed] pmodel preferences wire-through (4-commit chain)
+#282 [lyra, stanza+galaxy-PASSed] Codex MCP transport stale (48f66eb9 + 5c4acf99 cross-client fix)
