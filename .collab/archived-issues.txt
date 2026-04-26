@@ -105,3 +105,10 @@ IDs/subjects archived in that batch.
 #288 [galaxy 4-phase, jungle-PASSed] c2c monitor process fork-bomb — diagnostic + circuit-breaker + doctor monitor-leak + CLAUDE.md restart warnings
 #293 [galaxy, jungle-PASSed] Document do-not-do `pkill -f opencode` pattern + safer restart-self path
 #287-design [lyra, stanza-PASSed] Memory revocation (soft) design pass — three-slice impl plan
+
+## 2026-04-26 17:58 UTC+10 — fourth batch (17:21–17:58 work)
+
+#287-design [lyra, stanza-PASSed] memory revocation soft design pass
+#294 [jungle, stanza-PASSed after FAIL+rebase] codex sandbox broker root partition fix (per-repo fingerprint)
+#295 [galaxy, lyra-PASSed after 5 FAIL rounds] opencode plugin first-message-not-delivered
+#299 [lyra, stanza-PASSed] #287 implementation (frontmatter revoked_at + grant/revoke + 29 OCaml tests + 2 pytest)
