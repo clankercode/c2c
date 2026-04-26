@@ -41,10 +41,11 @@ fixtures but are no longer the primary delivery surface.
 ```
 
 The broker is a stdio JSON-RPC server. Each agent's host client
-(Claude Code, OpenCode, Codex, Kimi) launches it as an MCP
-server via `c2c_mcp.py`, which builds the OCaml binary with
-`opam exec -- dune build` and execs
-`_build/default/ocaml/server/c2c_mcp_server.exe` directly.
+(Claude Code, OpenCode, Codex, Kimi) launches the installed
+`c2c-mcp` binary directly (built and copied into `~/.local/bin/`
+via `just install-all`). `c2c install <client>` writes the binary
+path into the client's MCP configuration, so no Python wrapper is
+in the boot path.
 
 The broker root is the **git common dir** (`git rev-parse --git-common-dir`),
 so all worktrees and clones of the same repo share the same inboxes
@@ -94,7 +95,7 @@ and [Cross-Machine Broker](/cross-machine-broker/) for the design.
 |------------|---------------------------------------------|
 | `tail_log` | Tail the broker debug log                    |
 
-The `dead-letter` CLI command (not an MCP tool) inspects messages
+The `c2c dead-letter` CLI command (not an MCP tool) inspects messages
 orphaned by sweep.
 
 `initialize` advertises `serverInfo.features` so callers can detect
@@ -116,7 +117,7 @@ auto-delivery, PTY injection fallback), the content is wrapped in:
 <c2c event="message" from="<name>" alias="<alias>">body</c2c>
 ```
 
-`c2c_verify.py` counts these markers to prove delivery end-to-end.
+`c2c verify` counts these markers to prove delivery end-to-end.
 
 ## Liveness model
 
@@ -195,10 +196,12 @@ messages into the fresh inbox.
 
 This means managed sessions that restart between outer-loop iterations
 do not lose messages sent during the gap. Dead-letter entries older
-than the configurable TTL are pruned by `c2c_broker_gc.py` to prevent
-unbounded growth. Use `c2c dead-letter` (CLI) to inspect the queue,
-manually replay filtered entries with `--replay`, or purge stale
-records.
+than the configurable TTL are pruned by `c2c broker-gc` to prevent
+unbounded growth. Use `c2c dead-letter` (CLI) to inspect the queue or
+purge stale records. Manual replay of filtered entries (`--replay`) is
+only available on the legacy Python shim (`c2c_cli.py dead-letter
+--replay`); the installed OCaml `c2c dead-letter` does not currently
+support it.
 
 ## Delivery surfaces
 
@@ -207,30 +210,35 @@ See [Per-Client Delivery](/client-delivery/) for per-client diagrams covering se
 1. **MCP tool path** — the primary surface. Agents call `send`,
    recipients call `poll_inbox` (or receive auto-delivered messages
    on clients that support the experimental MCP extension).
-2. **CLI fallback** — `c2c send <alias> <message>` and `c2c poll`
+2. **CLI fallback** — `c2c send <alias> <message>` and `c2c poll-inbox`
    for agents whose host client has no MCP support or has MCP
-   auto-approval disabled. This path goes through `c2c_send.py`,
-   which uses `resolve_alias` (YAML + live Claude sessions) with a
-   `resolve_broker_only_alias` fallback that targets broker
-   registrations directly.
+   auto-approval disabled. The OCaml CLI resolves aliases against the
+   broker registry directly; the legacy Python shim (`c2c_send.py`)
+   additionally falls back to `resolve_alias` (YAML + live Claude
+   sessions) and is retained only for Python-CLI dispatch.
 3. **PTY injection (legacy / deprecated)** — `claude_send_msg.py`
-   and `pty_inject`. Still available for Claude Code sessions that
-   never registered with the broker, but no new work should rely on
-   this path.
+   and `pty_inject`. Historically used to drive Claude Code sessions
+   from the outside; not on the live delivery path. PostToolUse hook
+   delivery (installed by `c2c install claude`) is the only supported
+   path for Claude Code today, and no new work should rely on PTY
+   injection.
 
 ## Historical artifacts
 
-The Python scripts listed in `docs/commands.md` are mostly either:
+The OCaml `c2c` binary at `~/.local/bin/c2c` (built from
+`ocaml/cli/c2c.ml`) is the canonical CLI entrypoint. The Python
+scripts listed in `docs/commands.md` are mostly either:
 
-- CLI wrappers that dispatch into the broker (`c2c_cli.py`,
-  `c2c_register.py`, `c2c_send.py`),
+- legacy CLI wrappers that predate the OCaml port (`c2c_cli.py`,
+  `c2c_register.py`, `c2c_send.py`) — kept only for the handful of
+  subcommands the Python CLI still dispatches,
 - session discovery helpers (`claude_list_sessions.py`),
 - test / debug utilities, or
 - pre-broker relays (`relay.py`, `c2c_relay.py`, `c2c_auto_relay.py`,
-  `investigate_socket.py`, `connect_abstract.py`, `send_to_session.py`,
-  `c2c_auto_relay.py`) which are kept for reference but are not on
-  the current delivery path.
+  `investigate_socket.py`, `connect_abstract.py`, `send_to_session.py`)
+  which are kept for reference but are not on the current delivery
+  path.
 
-If you're not sure whether a script is live, check whether
-`c2c_cli.py` dispatches to it. That file is the canonical CLI
-entrypoint.
+If you're not sure whether a script is live, check the OCaml CLI
+first (`c2c <subcommand> --help`); the Python shim is only relevant
+for the few legacy subcommands the OCaml binary has not yet absorbed.

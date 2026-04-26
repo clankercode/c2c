@@ -52,10 +52,10 @@ turn manually.
 |--------|--------|---------|-------|
 | **PostToolUse hook** (`c2c-inbox-check.sh`) | Working ✓ | Claude Code | Drains inbox after every tool call. Installed by `c2c install claude`. Fast path ~3ms (bash builtin). |
 | **Monitor tool + inotifywait** on broker dir | Working ✓ | Claude Code | `inotifywait -m -e close_write,modify,delete,moved_to .git/c2c/mcp --include '.*\.inbox\.json$'`. Persistent. `moved_to` required for atomic writes (tmp+rename). Use `c2c monitor --all` instead of raw inotifywait. |
-| **Codex notify daemon** (`c2c_deliver_inbox --notify-only`) | Working ✓ | Codex | Managed harness (`run-codex-inst-outer`) starts daemon alongside Codex. PTY-injects a poll sentinel; message bodies stay in broker. |
+| **Codex notify daemon** (`c2c-deliver-inbox --notify-only`, OCaml binary) | Working ✓ | Codex | Managed harness (`c2c start codex`) starts the OCaml daemon alongside Codex; legacy Python `c2c_deliver_inbox.py` is a fallback only when the binary is missing. PTY-injects a poll sentinel; message bodies stay in broker. |
 | **OpenCode native TypeScript plugin** (`.opencode/plugins/c2c.ts`) | Proven ✓ | OpenCode | Background-polls broker every 2s, delivers via `client.session.promptAsync` — messages appear as first-class user turns. No PTY. Proven 2026-04-14. |
-| **Kimi Wire bridge** (`c2c-kimi-wire-bridge`) | Proven ✓ | Kimi | Delivers broker inbox messages via Kimi Wire JSON-RPC `prompt`. No PTY needed. `--once` live-proven 2026-04-14 by codex (1 message delivered, ack received, spool cleared). `--loop` daemon mode polls every N seconds, starts Wire subprocess only when messages are queued. Preferred over PTY wake when `kimi --wire` is available. |
-| **Kimi PTY wake daemon** (`c2c_kimi_wake_daemon.py`) | **Deprecated** | Kimi | PTY injection path; superseded by Wire bridge (`c2c_kimi_wire_bridge.py`). Do not use for new setups. |
+| **Kimi Wire bridge** (`c2c wire-daemon`, OCaml) | Proven ✓ | Kimi | Delivers broker inbox messages via Kimi Wire JSON-RPC `prompt`. No PTY needed. Live-proven 2026-04-14 by codex (1 message delivered, ack received, spool cleared). Daemon mode polls every N seconds, starts Wire subprocess only when messages are queued. Preferred over PTY wake when `kimi --wire` is available. (Legacy Python `c2c_kimi_wire_bridge.py` retained only for the Python CLI shim.) |
+| **Kimi PTY wake daemon** (`c2c_kimi_wake_daemon.py`) | **Deprecated** | Kimi | PTY injection path; superseded by `c2c wire-daemon`. Do not use for new setups. |
 | **OpenCode PTY wake daemon** (`c2c_opencode_wake_daemon.py`) | **Deprecated** | OpenCode | PTY injection path; superseded by TypeScript plugin + `c2c monitor` subprocess. Do not use for new setups. |
 | **Crush PTY wake daemon** (`c2c_crush_wake_daemon.py`) | Experimental / unsupported | Crush | Crush lacks context compaction and interactive TUI wake is unreliable. Not a first-class peer. One-shot `crush run` poll-and-reply works for brief tasks only. |
 | **CronCreate / ScheduleWakeup** | Working ✓ | Claude Code | Periodic self-wake. `/loop 15m <prompt>` or dynamic self-pacing. |
@@ -70,7 +70,7 @@ primary delivery path.
 | Method | Status | Clients | Notes |
 |--------|--------|---------|-------|
 | **PTY injection** (`claude_send_msg.py` + `pty_inject`) | Legacy | Claude Code | Writes to PTY master fd via `pidfd_getfd()` with `cap_sys_ptrace=ep`. Fragile: needs terminal PID and master fd, goes stale on restart. Not used for new delivery paths. |
-| **`c2c_deliver_inbox.py`** (poll + PTY inject loop) | Legacy | Claude Code | Polls inbox, delivers via PTY injection. Superseded by PostToolUse hook + notify daemon. |
+| **`c2c_deliver_inbox.py`** (poll + PTY inject loop) | Legacy / deprecated | Claude Code | Polls inbox, delivers via PTY injection. Superseded by PostToolUse hook for Claude Code and by the OCaml `c2c-deliver-inbox` binary for Codex. |
 | **`send_to_session.py`** (history.jsonl injection) | Experimental | Claude Code | Appends directly to a session's `history.jsonl`. Recipient sees it on next reload — not real-time. |
 | **`notifications/claude/channel`** (MCP push) | Gated | Claude Code | Real push delivery into transcript. Requires `--dangerously-load-development-channels` and `experimental.claude/channel` in `initialize`. Standard Claude Code does not declare this; do NOT set `C2C_MCP_AUTO_DRAIN_CHANNEL=1`. |
 
@@ -104,7 +104,7 @@ coordinate cleanly.
 | **`run-*-inst-outer`** | *(Deprecated)* Per-client outer restart loops. Replaced by `c2c start`. | All |
 | **`./restart-self`** | SIGTERM self to trigger outer-loop respawn. Picks up CLAUDE.md / MCP config changes. | Claude Code |
 | **`c2c restart-me`** | Detects current client; signals managed harness or prints per-client instructions. | All |
-| **`c2c_poker.py`** | Heartbeat injector — keeps sessions alive that would otherwise idle-timeout. | Claude Code, Codex |
+| **`C2c_poker`** (`ocaml/c2c_poker.ml`) | Heartbeat injector — keeps sessions alive that would otherwise idle-timeout. The Python `c2c_poker.py` is a deprecated fallback used only when the OCaml binary is absent from the broker root. | Claude Code, Codex |
 | **`c2c sweep` (MCP + CLI)** | Removes dead registrations and orphan inbox files from the broker. | Any |
 | **`c2c dead-letter`** | Inspects or purges orphaned messages from the dead-letter queue. | Any |
 | **`c2c health`** | Full health check: broker, registry, rooms, hooks, outer loops, relay status. | Any |

@@ -10,7 +10,7 @@ A single reference tracking every delivery method in c2c: how messages
 get from one agent to another, which clients support each method, what
 implements it, and where the sharp edges are.
 
-Last updated: 2026-04-16
+Last updated: 2026-04-26
 
 ---
 
@@ -155,7 +155,7 @@ calling tools will not receive messages via this path -- see
 
 | File | Role |
 |------|------|
-| `c2c_configure_claude_code.py` | Writes MCP server entry to `~/.claude.json` and registers PostToolUse hook in `~/.claude/settings.json` |
+| `ocaml/cli/c2c_setup.ml` | Writes MCP server entry to `~/.claude.json` and registers PostToolUse hook in `~/.claude/settings.json` (invoked by `c2c install claude`) |
 | `~/.claude/hooks/c2c-inbox-check.sh` | The hook script itself (installed by `c2c install claude`) |
 | `ocaml/cli/c2c.ml` | `hook` subcommand that drains inbox and prints envelopes |
 
@@ -205,9 +205,9 @@ it as keyboard input.
 
 | File | Role |
 |------|------|
-| `c2c_inject.py` | One-shot PTY injection with bracketed paste, keycode support, and history.jsonl fallback |
-| `c2c_deliver_inbox.py` | Daemon: watches inbox via inotifywait, delivers via PTY (notify-only or full mode) |
-| `c2c_poker.py` | Generic PTY heartbeat poker; injects `<c2c event="heartbeat">` envelopes to keep sessions alive |
+| `c2c-deliver-inbox` (OCaml binary, installed by `just install-all`) | Daemon: watches inbox via inotifywait, delivers via PTY (notify-only or full mode). The legacy `c2c_deliver_inbox.py` is only used as a fallback if the binary is missing. |
+| `ocaml/c2c_poker.ml` (`C2c_poker`) | Generic PTY heartbeat poker; injects `<c2c event="heartbeat">` envelopes to keep sessions alive. The Python `c2c_poker.py` is a fallback. |
+| `c2c_inject.py` | Legacy one-shot PTY injection with bracketed paste, keycode support, and history.jsonl fallback. Deprecated. |
 | `claude_send_msg.py` | Legacy: sends PTY-injected messages to Claude Code sessions |
 | External: `pty_inject` binary | Hardcoded at `/home/xertrov/src/meta-agent/apps/ma_adapter_claude/priv/pty_inject`. Requires `cap_sys_ptrace=ep`. |
 
@@ -349,9 +349,9 @@ injection text and PTY coordination:
 | Daemon | Client | Injection text |
 |--------|--------|----------------|
 | `c2c_claude_wake_daemon.py` (**deprecated**) | Claude Code | Wake prompt asking the agent to call `poll_inbox` |
-| `c2c_deliver_inbox.py --notify-only` | Codex | `<c2c event="message_pending">poll mcp__c2c__poll_inbox</c2c>` sentinel |
+| `c2c-deliver-inbox --notify-only` (OCaml binary) | Codex | `<c2c event="message_pending">poll mcp__c2c__poll_inbox</c2c>` sentinel |
 | `c2c_opencode_wake_daemon.py` (**deprecated**) | OpenCode | Superseded by TypeScript plugin + `c2c monitor` subprocess |
-| `c2c_kimi_wake_daemon.py` (**deprecated**) | Kimi | Superseded by `c2c_kimi_wire_bridge.py` (Wire JSON-RPC, no PTY) |
+| `c2c_kimi_wake_daemon.py` (**deprecated**) | Kimi | Superseded by `c2c wire-daemon` (Wire JSON-RPC, no PTY) |
 | `c2c_crush_wake_daemon.py` (**deprecated**) | Crush | Unreliable; Crush not a first-class peer |
 
 #### Client support
@@ -359,9 +359,9 @@ injection text and PTY coordination:
 | Client | Supported | Notes |
 |--------|-----------|-------|
 | Claude Code | Yes (gap) | PostToolUse hook covers active tool calls. AFK gap (idle session) has no non-PTY fix yet; `c2c_claude_wake_daemon.py` deprecated. |
-| Codex | Yes | `c2c_deliver_inbox.py --notify-only --loop` started by managed harness. |
+| Codex | Yes | `c2c-deliver-inbox --notify-only --loop` (OCaml binary) started by managed harness. |
 | OpenCode | Yes ✓ | TypeScript plugin (`c2c.ts`) delivers via `c2c monitor` subprocess → `promptAsync`. No PTY. |
-| Kimi | Yes ✓ | `c2c_kimi_wire_bridge.py` (Wire JSON-RPC). Preferred over deprecated PTY wake. |
+| Kimi | Yes ✓ | `c2c wire-daemon` (Wire JSON-RPC). Preferred over deprecated PTY wake. |
 | Crush | Deprecated | Unreliable; Crush lacks context compaction. |
 
 #### Key files
@@ -369,11 +369,11 @@ injection text and PTY coordination:
 | File | Role |
 |------|------|
 | `c2c_claude_wake_daemon.py` | Claude Code PTY wake — **deprecated** |
-| `c2c_deliver_inbox.py` | Codex notify daemon (with `--notify-only --loop`) |
+| `c2c-deliver-inbox` (OCaml binary) | Codex notify daemon (with `--notify-only --loop`); Python `c2c_deliver_inbox.py` is a fallback |
 | `c2c_opencode_wake_daemon.py` | OpenCode PTY wake — **deprecated**; use TypeScript plugin |
 | `c2c_kimi_wake_daemon.py` | Kimi PTY wake — **deprecated**; use Wire bridge |
 | `c2c_crush_wake_daemon.py` | Crush PTY wake — **deprecated** |
-| `c2c_poker.py` | Shared PTY injection helper used by all daemons |
+| `ocaml/c2c_poker.ml` (`C2c_poker`) | Shared PTY injection helper used by all daemons; Python `c2c_poker.py` is a fallback |
 
 #### Limitations
 
@@ -396,8 +396,12 @@ Wire protocol.
 
 #### How it works
 
-The Kimi Wire protocol (`kimi --wire`) exposes a newline-delimited JSON-RPC 2.0
-interface over stdin/stdout. The bridge:
+The canonical implementation is the OCaml `c2c_wire_bridge.ml` /
+`c2c_wire_daemon.ml` modules, exposed as the `c2c wire-daemon`
+subcommand. (The Python `c2c_kimi_wire_bridge.py` is retained only for
+the legacy Python CLI shim.) The Kimi Wire protocol (`kimi --wire`)
+exposes a newline-delimited JSON-RPC 2.0 interface over stdin/stdout.
+The bridge:
 
 1. Polls or watches the c2c broker inbox for the Kimi session.
 2. Drains broker messages and persists them to a crash-safe spool file.
@@ -429,8 +433,9 @@ daemon pidfiles and logs under `~/.local/share/c2c/wire-daemons/`.
 
 | File | Role |
 |------|------|
-| `c2c_kimi_wire_bridge.py` | Bridge implementation: inbox drain, spool, Wire delivery |
-| `c2c_wire_daemon.py` | Lifecycle manager for Wire bridge background daemons |
+| `ocaml/c2c_wire_bridge.ml` | Bridge implementation (OCaml, primary): inbox drain, spool, Wire delivery |
+| `ocaml/c2c_wire_daemon.ml` / `c2c wire-daemon` | Lifecycle manager (OCaml, primary) for Wire bridge background daemons |
+| `c2c_kimi_wire_bridge.py` / `c2c_wire_daemon.py` | Legacy Python implementations retained only for the Python CLI shim |
 
 #### Limitations
 
@@ -480,7 +485,7 @@ until the plugin drains them and injects them through the official plugin API.
 
 | File | Role |
 |------|------|
-| `c2c_configure_opencode.py` | Setup script; writes `.opencode/opencode.json` and installs the plugin |
+| `ocaml/cli/c2c_setup.ml` | Setup logic invoked by `c2c install opencode`; writes `.opencode/opencode.json`, the `.opencode/c2c-plugin.json` sidecar, and installs the plugin |
 | `.opencode/plugins/c2c.ts` | The TypeScript plugin itself (installed per-project) |
 
 #### Limitations

@@ -8,7 +8,7 @@ permalink: /known-issues/
 
 ## Codex Auto-Delivery Uses Notify Daemon
 
-Codex does not have a PostToolUse hook. Instead, a `c2c_deliver_inbox.py --notify-only --loop` daemon watches the inbox file and PTY-injects a brief notification telling the agent to call `mcp__c2c__poll_inbox`. This is near-real-time but the message body travels broker-native (not in the PTY notification text).
+Codex does not have a PostToolUse hook. Instead, the OCaml `c2c-deliver-inbox --notify-only --loop` binary watches the inbox file and PTY-injects a brief notification telling the agent to call `mcp__c2c__poll_inbox`. This is near-real-time but the message body travels broker-native (not in the PTY notification text). (The legacy Python `c2c_deliver_inbox.py` is used only as a fallback when the OCaml binary is missing from the broker root.)
 
 `c2c start codex` (the managed session launcher) starts the deliver daemon automatically alongside each managed Codex instance. For non-managed Codex sessions, run the daemon manually or add `poll_inbox` to the startup prompt.
 
@@ -97,9 +97,11 @@ c2c relay connect  # runs every 30s by default
 
 If you launch one agent from inside another (e.g. `kimi` from a Codex session), the child may inherit the parent's `C2C_MCP_CLIENT_PID`. Without a guard, this can overwrite the child's own liveness entry in the broker with the parent's PID. The broker now blocks this specific case in `auto_register_startup`, but the safest practice is to use `c2c start <client>` for managed sessions rather than nesting one interactive TUI inside another.
 
-### Child Processes Can Hijack the Parent's `C2C_MCP_SESSION_ID`
+### ~~Child Processes Can Hijack the Parent's `C2C_MCP_SESSION_ID`~~ (Mitigated)
 
-When spawning a child agent from inside an agent session (e.g. `c2c start opencode` from inside Claude Code), the child inherits the parent's `C2C_MCP_SESSION_ID`. This causes the child to register with the parent's session ID, effectively taking over the parent's identity in the broker. The broker now blocks this specific case in `auto_register_startup`, but the safest practice is to always set an explicit session ID:
+~~When spawning a child agent from inside an agent session (e.g. `c2c start opencode` from inside Claude Code), the child inherits the parent's `C2C_MCP_SESSION_ID`. This causes the child to register with the parent's session ID, effectively taking over the parent's identity in the broker.~~
+
+**Mitigated:** the broker now blocks this case in `auto_register_startup` — `auto_register_startup` skips when the session already has a live alias, so a child inheriting `C2C_MCP_SESSION_ID` does not silently take over the parent's registration. Belt-and-braces practice for one-shot child probes is still to set an explicit override:
 
 ```bash
 C2C_MCP_SESSION_ID=my-child-session c2c start opencode -n my-open
@@ -109,9 +111,11 @@ C2C_MCP_SESSION_ID=my-child-session c2c start opencode -n my-open
 
 The server defaults to `0` (safe). Even when set to `1`, auto-drain only works if the client declares `experimental.claude/channel` support in its `initialize` handshake — standard Claude Code does not. Setting this env var has no benefit and can cause confusion. The PostToolUse hook is the production auto-delivery path for Claude Code.
 
-### PTY Wake Requires `CAP_SYS_PTRACE` on Python
+### Codex PTY Notify Requires `CAP_SYS_PTRACE` on Python
 
-Managed kimi, codex, opencode, and crush sessions use `c2c_pty_inject` (via `pidfd_getfd`) to wake idle TUIs. When `kernel.yama.ptrace_scope >= 1` (the default on most distros) and the Python interpreter lacks `CAP_SYS_PTRACE`, every wake returns `EPERM` and the session silently misses new messages until it polls manually.
+Of the four first-class clients, only **Codex** still relies on PTY injection for the wake/notify path (the OCaml `c2c-deliver-inbox --notify-only` daemon under managed Codex). OpenCode now uses the TypeScript plugin, Kimi uses the Wire bridge (`c2c wire-daemon`), and Claude Code uses the PostToolUse hook — none of those paths require `CAP_SYS_PTRACE`.
+
+When the Codex notify daemon falls back to `c2c_pty_inject` (via `pidfd_getfd`), `kernel.yama.ptrace_scope >= 1` (the default on most distros) plus a Python interpreter lacking `CAP_SYS_PTRACE` causes every wake to return `EPERM`, and the Codex session silently misses new messages until it polls manually.
 
 **Fix:** grant the capability once per interpreter install:
 
@@ -119,7 +123,7 @@ Managed kimi, codex, opencode, and crush sessions use `c2c_pty_inject` (via `pid
 sudo setcap cap_sys_ptrace=ep "$(command -v python3)"
 ```
 
-`c2c health` and the bare `c2c` landing flag this case with the exact command to run. Claude Code is unaffected — its wake path is the PostToolUse hook (and `C2C_MCP_CHANNEL_DELIVERY=1` for managed sessions), which does not require the capability.
+`c2c health` and the bare `c2c` landing flag this case with the exact command to run.
 
 ### tmux `extended-keys on` Breaks `send-keys Enter` Against Claude TUIs
 

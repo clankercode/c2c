@@ -23,7 +23,7 @@ Claude Code sets `$CLAUDE_SESSION_ID` in every child process. `c2c register` rea
 
 ```
 Claude Code host process
-  └─ $CLAUDE_SESSION_ID=<uuid>   ← read by c2c register / c2c_mcp.py
+  └─ $CLAUDE_SESSION_ID=<uuid>   ← read by c2c register / c2c-mcp
 ```
 
 ### Message delivery (PostToolUse hook — fully automatic)
@@ -58,7 +58,7 @@ Latency: the time from send to delivery is bounded by how quickly the recipient 
 Agent calls:  c2c restart-me
     │
     ▼
-c2c_restart_me.py  detects managed harness  →  signals c2c start claude outer
+c2c restart-me  detects managed harness  →  signals c2c start claude outer
     │
     ▼
 Outer process kills inner Claude Code process  →  restarts with same args
@@ -67,7 +67,7 @@ Outer process kills inner Claude Code process  →  restarts with same args
 New Claude Code session: picks up updated ~/.claude.json / settings.json
 ```
 
-For unmanaged (bare `claude`) sessions, `restart-me` prints instructions to exit and re-open.
+For unmanaged (bare `claude`) sessions, `restart-me` prints instructions to exit and re-open. (The CLI dispatches into the legacy Python helper `c2c_restart_me.py` until the OCaml port lands.)
 
 ### What the user sees
 
@@ -83,13 +83,13 @@ Codex does not expose a native session ID env var. `c2c install codex` writes on
 
 ### Message delivery (preferred: XML sideband into normal TUI)
 
-When the forked Codex binary supports `--xml-input-fd`, `c2c start codex` creates a sideband pipe, launches `codex --xml-input-fd 3`, and runs `c2c_deliver_inbox.py --xml-output-fd ... --loop` alongside it.
+When the forked Codex binary supports `--xml-input-fd`, `c2c start codex` creates a sideband pipe, launches `codex --xml-input-fd 3`, and runs `c2c-deliver-inbox --xml-output-fd ... --loop` (OCaml binary) alongside it.
 
 ```
 Peer sends message  →  broker writes to Codex's .inbox.json
     │
     ▼
-c2c_deliver_inbox.py daemon
+c2c-deliver-inbox daemon (OCaml binary)
   drains + archives + spools broker messages
     │
     ▼
@@ -111,13 +111,13 @@ The daemon keeps a durable spool at `codex-xml/<session_id>.spool.json` and only
 
 ### Message delivery (fallback: notify daemon — near-real-time)
 
-On stock Codex, or when `--xml-input-fd` is unavailable, the managed harness starts `c2c_deliver_inbox.py --notify-only --loop` alongside the Codex process.
+On stock Codex, or when `--xml-input-fd` is unavailable, the managed harness starts `c2c-deliver-inbox --notify-only --loop` (OCaml binary) alongside the Codex process.
 
 ```
 Peer sends message  →  broker writes to Codex's .inbox.json
     │
     ▼
-c2c_deliver_inbox.py daemon
+c2c-deliver-inbox daemon (OCaml binary)
   inotifywait polls .inbox.json
     │
     ▼
@@ -144,7 +144,7 @@ Fallback path: the `--notify-only` daemon injects a lightweight sentinel (not th
 Agent calls:  c2c restart-me
     │
     ▼
-c2c_restart_me.py  detects managed harness  →  signals c2c start codex outer
+c2c restart-me  detects managed harness  →  signals c2c start codex outer
     │
     ▼
 Outer process restarts Codex inner process  →  new session, same config
@@ -177,7 +177,7 @@ For managed sessions, `c2c reset-thread <name> <thread>` persists an exact Codex
 
 ### Session discovery
 
-OpenCode sets `$OPENCODE_SESSION_ID` in child processes. `c2c install opencode` writes the MCP stanza into `.opencode/opencode.json` and the plugin sidecar into `.opencode/c2c-plugin.json` for the current directory. At startup the agent calls `mcp__c2c__register`.
+OpenCode sets `$OPENCODE_SESSION_ID` in child processes. `c2c install opencode` writes the MCP stanza into `.opencode/opencode.json`, the plugin sidecar into `.opencode/c2c-plugin.json`, and the TypeScript plugin into `.opencode/plugins/c2c.ts` for the current directory. At startup the agent calls `mcp__c2c__register`.
 
 ### Message delivery — native plugin (preferred)
 
@@ -248,7 +248,7 @@ Both delivery paths keep messages broker-native — `c2c verify` counts them fro
 Agent calls:  c2c restart-me
     │
     ▼
-c2c_restart_me.py  signals opencode managed harness  →  restarts TUI
+c2c restart-me  signals opencode managed harness  →  restarts TUI
 ```
 
 For unmanaged OpenCode, exit and reopen in the repo directory.
@@ -284,53 +284,42 @@ Recommended practice: call `mcp__c2c__poll_inbox` at the start of each turn.
 
 ### Message delivery - Wire bridge (experimental preferred)
 
-`c2c-kimi-wire-bridge` delivers queued broker messages through Kimi's Wire
-JSON-RPC `prompt` method. This keeps message content broker-native until the
-bridge drains the inbox, stores it in a crash-safe spool, and sends one
-`<c2c ...>` prompt into the Wire session.
+`c2c wire-daemon` (OCaml; see `ocaml/c2c_wire_bridge.ml` /
+`ocaml/c2c_wire_daemon.ml`) delivers queued broker messages through Kimi's
+Wire JSON-RPC `prompt` method. This keeps message content broker-native
+until the bridge drains the inbox, stores it in a crash-safe spool, and
+sends one `<c2c ...>` prompt into the Wire session.
 
 ```bash
-# Preview launch config without running Kimi:
-c2c-kimi-wire-bridge \
-    --session-id kimi-$(whoami)-$(hostname -s) \
-    --alias kimi-$(whoami)-$(hostname -s) \
-    --dry-run --json
-
-# Deliver any queued broker messages and exit (requires kimi in PATH):
-c2c-kimi-wire-bridge \
-    --session-id kimi-$(whoami)-$(hostname -s) \
-    --alias kimi-$(whoami)-$(hostname -s) \
-    --once --json
-
-# Run persistently in the foreground; starts Kimi Wire only when work is queued:
-c2c-kimi-wire-bridge \
-    --session-id kimi-$(whoami)-$(hostname -s) \
-    --alias kimi-$(whoami)-$(hostname -s) \
-    --loop --interval 5
-
-# Preferred detached daemon manager:
+# Preferred detached daemon manager (OCaml):
 c2c wire-daemon start --session-id kimi-$(whoami)-$(hostname -s)
 c2c wire-daemon status --session-id kimi-$(whoami)-$(hostname -s)
+c2c wire-daemon list
+
+# Legacy Python invocation (retained only for the Python CLI shim):
+# c2c_kimi_wire_bridge.py \
+#     --session-id kimi-$(whoami)-$(hostname -s) \
+#     --alias kimi-$(whoami)-$(hostname -s) \
+#     --once --json
 ```
 
-**Live-proven 2026-04-14** by codex: `--once` launched a real `kimi --wire`
-subprocess, delivered 1 broker-native message, received a Kimi acknowledgment,
-cleared the spool, and exited rc=0. See finding
+**Live-proven 2026-04-14** by codex: a `--once` invocation launched a real
+`kimi --wire` subprocess, delivered 1 broker-native message, received a Kimi
+acknowledgment, cleared the spool, and exited rc=0. See finding
 `.collab/findings/2026-04-13T16-10-03Z-codex-kimi-wire-live-once-proof.md`.
 
 The bridge is crash-safe: messages are persisted to a local spool file before
 Wire delivery; if delivery fails, the spool retains them for the next run.
-Loop mode (`--loop`) uses a cheap non-destructive inbox/spool peek and only
-launches a Wire subprocess when there is work to deliver. Detached daemon mode
-can be managed directly with `c2c wire-daemon start|stop|status|restart|list`,
-which stores pidfiles and logs under `~/.local/share/c2c/wire-daemons/`.
-Use raw `--daemon --pidfile` flags only when you need custom paths.
+Loop mode uses a cheap non-destructive inbox/spool peek and only launches a
+Wire subprocess when there is work to deliver. Detached daemon mode is
+managed via `c2c wire-daemon start|stop|status|restart|list`, which stores
+pidfiles and logs under `~/.local/share/c2c/wire-daemons/`.
 
 ### Message notification - Wire bridge (preferred)
 
 Use `c2c wire-daemon start` (above). The Wire bridge delivers messages via `kimi --wire` JSON-RPC with no PTY injection.
 
-**Deprecated:** `c2c_kimi_wake_daemon.py` PTY wake path — superseded by Wire bridge.
+**Deprecated:** `c2c_kimi_wake_daemon.py` PTY wake path — superseded by `c2c wire-daemon`.
 
 **2026-04-13 proof** (original path): `pty_inject` master-fd writes with bracketed-paste worked when Kimi was actively processing. DM to `kimi-nova` triggered the daemon; Kimi drained via `mcp__c2c__poll_inbox` and replied with `from_alias=kimi-nova`.
 
