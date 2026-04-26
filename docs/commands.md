@@ -521,6 +521,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `status [--min-messages N] [--json]` | Compact swarm overview: alive peers, sent/received counts, room memberships. |
 | `health [--json]` | Broker health snapshot: registry liveness, inbox freshness, rooms, relay reachability. |
 | `doctor [--check-rebase-base] [--summary] [--json]` | Health snapshot + push-pending classification (relay-critical vs local-only). Run before deciding to push. |
+| `doctor docs-drift [--doc PATH] [--summary] [--json] [--warn-only]` | Audit a doc file (default: `CLAUDE.md`) for stale references: bad paths, unregistered commands, wrong GitHub org URLs, deprecated Python script refs. Exempt lines carrying a DEPRECATED/LEGACY/ARCHIVED note. Use `--warn-only` to exit 0 even with findings (useful in CI rollups). Run during peer-review to satisfy the docs-up-to-date criterion. |
 | `verify [--alive-only] [--min-messages N] [--json]` | Verify message exchange progress across registered peers. |
 | `tail-log [--limit N] [--json]` | Read the last N broker RPC log entries. |
 | `monitor [--all] [--archive] [--drains] [--sweeps] [--from A] [--full-body] [--include-self] [--json]` | Watch broker inboxes and emit one formatted line per event. Designed for Claude Code's Monitor tool. |
