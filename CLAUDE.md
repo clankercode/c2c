@@ -426,6 +426,7 @@ read manually from your CLAUDE.md startup checklist.
 - **`C2C_NUDGE_CADENCE_MINUTES`**: how often the broker nudge scheduler wakes to check for idle sessions (default 30). Must be greater than `C2C_NUDGE_IDLE_MINUTES`.
 - **`C2C_NUDGE_IDLE_MINUTES`**: how long a session must be idle before receiving a nudge (default 25). Must be less than `C2C_NUDGE_CADENCE_MINUTES`.
 - **Tier filter is top-level only**: `filter_commands` in `c2c.ml` enforces tier visibility per command name at the top level. Subcommands inherit their parent group's visibility — per-subcommand tiers within a group are documentation/enforcement at the group level, not independently enforced by the CLI filter. When reclassifying a subcommand's tier, also consider its parent group's tier.
+- **Model resolution priority on resume**: `c2c start` resolves models via 3-way priority: explicit `--model` flag > role file `pmodel:` field > saved instance config. Role pmodel is advisory — it takes priority over a saved config on resume but an explicit `--model` always wins. Only an explicit `--model` is persisted to instance config; role pmodel is never locked in.
 
 ## Python Scripts
 TODO: Remove this section when deprecated. 
