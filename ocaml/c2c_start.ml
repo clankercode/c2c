@@ -3935,6 +3935,20 @@ let run_outer_loop ~(name : string) ~(client : string)
  * Commands
  * --------------------------------------------------------------------------- *)
 
+(** Resolve the effective model for a client launch using 3-way priority:
+    explicit --model flag > role pmodel > saved instance config.
+    Pure function for testability. Used by cmd_start on resume. *)
+let resolve_model_override
+    ~(model_override : string option)
+    ~(role_pmodel_override : string option)
+    ~(saved_model_override : string option) : string option =
+  match model_override with
+  | Some _ -> model_override
+  | None ->
+      (match role_pmodel_override with
+       | Some _ -> role_pmodel_override
+       | None -> saved_model_override)
+
 let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?(binary_override : string option) ?(alias_override : string option)
     ?(session_id_override : string option) ?(model_override : string option)
@@ -4089,7 +4103,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
 
   (* Resume: inherit saved settings *)
   let existing = load_config_opt name in
-  let (binary_override, alias_override, extra_args, resume_session_id, codex_resume_target, broker_root, model_override) =
+  let (binary_override, alias_override, extra_args, resume_session_id, codex_resume_target, broker_root, model_override, mo) =
     match existing with
     | Some ex ->
         if ex.client <> client then
@@ -4100,14 +4114,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
         let bo = if binary_override = None then None else binary_override in
         let ao = if alias_override = None then Some ex.alias else alias_override in
         let ea = if extra_args = [] then ex.extra_args else extra_args in
-        let mo =
-          match model_override with
-          | Some _ -> model_override
-          | None ->
-              (match role_pmodel_override with
-               | Some _ -> role_pmodel_override
-               | None -> ex.model_override)
-        in
+        let mo = resolve_model_override ~model_override ~role_pmodel_override ~saved_model_override:ex.model_override in
         (* For OpenCode: prefer the ses_* session ID captured by the plugin
            in opencode-session.txt over the UUID stored in instance config.
            The plugin writes this file when it first sees a session.created
@@ -4153,7 +4160,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
           | "codex", None -> ex.codex_resume_target
           | _, _ -> ex.codex_resume_target
         in
-        (bo, ao, ea, rs, codex_target, ex.broker_root, mo)
+        (bo, ao, ea, rs, codex_target, ex.broker_root, model_override, mo)
     | None ->
         let rs =
           match client, session_id_override with
@@ -4174,7 +4181,8 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
           | "codex", Some sid -> Some sid
           | _ -> None
         in
-        (binary_override, alias_override, extra_args, Some rs, codex_target, broker_root (), model_override)
+        let mo = resolve_model_override ~model_override ~role_pmodel_override ~saved_model_override:None in
+        (binary_override, alias_override, extra_args, Some rs, codex_target, broker_root (), model_override, mo)
   in
 
   (* Use same resolution order as run_outer_loop: --binary > [default_binary] > client default. *)

@@ -490,6 +490,15 @@ val finalize_outer_loop_exit :
 
 (** {1 Commands} *)
 
+(** Resolve the effective model using 3-way priority:
+    explicit --model flag > role pmodel > saved instance config.
+    Pure function for testability. *)
+val resolve_model_override :
+  model_override:string option ->
+  role_pmodel_override:string option ->
+  saved_model_override:string option ->
+  string option
+
 val cmd_start :
   client:string ->
   name:string ->

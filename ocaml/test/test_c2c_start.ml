@@ -123,7 +123,40 @@ let test_normalize_model_override_for_claude_discards_provider_prefix () =
              "anthropic:claude-sonnet-4-7"
      with
      | Ok model -> model
-     | Error msg -> fail msg)
+      | Error msg -> fail msg)
+
+let test_resolve_model_override_explicit_wins_over_role () =
+  let result =
+    C2c_start.resolve_model_override
+      ~model_override:(Some "anthropic:claude-sonnet-4-7")
+      ~role_pmodel_override:(Some "anthropic:claude-opus-4-0")
+      ~saved_model_override:(Some "openai:gpt-4o")
+  in
+  match result with
+  | Some v -> check string "explicit --model wins over role pmodel" "anthropic:claude-sonnet-4-7" v
+  | None -> fail "expected Some, got None"
+
+let test_resolve_model_override_role_wins_over_saved () =
+  let result =
+    C2c_start.resolve_model_override
+      ~model_override:None
+      ~role_pmodel_override:(Some "anthropic:claude-opus-4-0")
+      ~saved_model_override:(Some "openai:gpt-4o")
+  in
+  match result with
+  | Some v -> check string "role pmodel wins over saved config" "anthropic:claude-opus-4-0" v
+  | None -> fail "expected Some, got None"
+
+let test_resolve_model_override_saved_used_when_neither_explicit_nor_role () =
+  let result =
+    C2c_start.resolve_model_override
+      ~model_override:None
+      ~role_pmodel_override:None
+      ~saved_model_override:(Some "openai:gpt-4o")
+  in
+  match result with
+  | Some v -> check string "saved config used when no explicit or role" "openai:gpt-4o" v
+  | None -> fail "expected Some, got None"
 
 let test_prepare_launch_args_adds_model_flag_for_claude () =
   let args =
@@ -1692,6 +1725,12 @@ let () =
             `Quick, test_normalize_model_override_for_claude_accepts_plain_model )
         ; ( "normalize_model_override_for_claude_discards_provider_prefix",
             `Quick, test_normalize_model_override_for_claude_discards_provider_prefix )
+        ; ( "resolve_model_override_explicit_wins_over_role",
+            `Quick, test_resolve_model_override_explicit_wins_over_role )
+        ; ( "resolve_model_override_role_wins_over_saved",
+            `Quick, test_resolve_model_override_role_wins_over_saved )
+        ; ( "resolve_model_override_saved_used_when_neither_explicit_nor_role",
+            `Quick, test_resolve_model_override_saved_used_when_neither_explicit_nor_role )
         ; ( "prepare_launch_args_adds_model_flag_for_claude",
             `Quick, test_prepare_launch_args_adds_model_flag_for_claude )
         ; ( "prepare_launch_args_adds_agent_flag_for_claude",

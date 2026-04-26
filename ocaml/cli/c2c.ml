@@ -5900,12 +5900,11 @@ let start_cmd =
         Printf.eprintf "warning: failed to chdir to worktree %s: %s\n%!" wt_dir e);
       Printf.printf "[c2c] worktree: %s (branch: %s)\n%!" wt_dir branch
   | _ -> ());
-  let model_for_cmd = match model_override with Some _ -> model_override | None -> role_pmodel_override in
   exit (C2c_start.cmd_start ~client ~name ~extra_args:extra_argv
       ?binary_override:bin_opt
       ?alias_override
       ?session_id_override:session_id_opt
-      ?model_override:model_for_cmd
+      ?model_override
       ?role_pmodel_override
       ~one_hr_cache
       ?kickoff_prompt
