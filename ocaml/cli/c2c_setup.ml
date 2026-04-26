@@ -458,9 +458,12 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
       ]
   in
   json_write_file_or_dryrun dry_run sidecar sidecar_json;
-  (* Find plugin source: prefer CWD-relative (c2c dev repo), fall back to global install path. *)
+  (* Find canonical plugin source. When running from the c2c repo, the canonical
+     source is data/opencode-plugin/c2c.ts. Use a symlink so the installed
+     plugin auto-picks up future c2c repo updates without re-install. *)
   let home = try Sys.getenv "HOME" with Not_found -> "" in
   let global_plugin_path = home // ".config" // "opencode" // "plugins" // "c2c.ts" in
+  let canonical_plugin = "data" // "opencode-plugin" // "c2c.ts" in
   let file_size path =
     try (Unix.stat path).Unix.st_size with Unix.Unix_error _ -> 0
   in
@@ -481,12 +484,18 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
       Unix.rename (dst ^ ".tmp") dst
     end
   in
-  let file_size path =
-    try (Unix.stat path).Unix.st_size with Unix.Unix_error _ -> 0
+  let make_symlink ~src ~dst =
+    (* dst may be an existing file (regular or stale symlink). Remove it first. *)
+    if dry_run then
+      Printf.printf "[DRY-RUN] would symlink %s -> %s\n%!" dst src
+    else begin
+      (try Unix.unlink dst with Unix.Unix_error (Unix.ENOENT, _, _) -> ());
+      Unix.symlink src dst
+    end
   in
-  let local_plugin = ".opencode" // "plugins" // "c2c.ts" in
+  let canonical_exists = Sys.file_exists canonical_plugin && file_size canonical_plugin >= 1024 in
   let plugin_src =
-    if Sys.file_exists local_plugin then Some local_plugin
+    if canonical_exists then Some canonical_plugin
     else if Sys.file_exists global_plugin_path && file_size global_plugin_path >= 1024 then
       Some global_plugin_path
     else None
@@ -500,22 +509,25 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
         mkdir_or_dryrun dry_run plugins_dir;
         let dest = plugins_dir // "c2c.ts" in
         (try
-           copy_file ~src ~dst:dest;
-           (* When source is local (real plugin from c2c repo), always update the
-              global plugin so ~/.config/opencode/plugins/c2c.ts gets the real
-              content with self-detect defer logic. Idempotent if already correct. *)
-           let global_note =
-             if src = local_plugin && file_size local_plugin >= 1024 then begin
+           if canonical_exists then begin
+             (* Canonical source available: use symlinks so installed plugin
+                tracks repo changes automatically. *)
+             make_symlink ~src:canonical_plugin ~dst:dest;
+             let global_note =
                (try
                   let gdir = Filename.dirname global_plugin_path in
                   mkdir_or_dryrun dry_run gdir;
-                  copy_file ~src ~dst:global_plugin_path;
-                  " + global updated"
-                with _ -> " (global update failed)")
-             end else ""
-           in
-           Printf.sprintf "plugin installed to %s%s" dest global_note
-         with _ -> "plugin copy failed")
+                  make_symlink ~src:canonical_plugin ~dst:global_plugin_path;
+                  " + global symlinked"
+                with _ -> " (global symlink failed)")
+             in
+             Printf.sprintf "plugin symlinked to %s%s" dest global_note
+           end else begin
+             (* No canonical source: copy from existing global plugin. *)
+             copy_file ~src ~dst:dest;
+             Printf.sprintf "plugin installed to %s (copied)" dest
+           end
+         with _ -> "plugin install failed")
   in
   match output_mode with
   | Json ->

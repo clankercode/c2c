@@ -5489,7 +5489,7 @@ let doctor = Cmdliner.Cmd.group
     ~default:doctor_cmd
     (Cmdliner.Cmd.info "doctor"
        ~doc:"Health snapshot + push-pending analysis (for Max / human operators).")
-    [ doctor_docs_drift; monitor_leak ]
+    [ doctor_docs_drift; monitor_leak; C2c_opencode_plugin_drift.opencode_plugin_drift_cmd ]
 
 (* --- subcommand: stats ---------------------------------------------------- *)
 
