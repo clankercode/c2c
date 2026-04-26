@@ -77,6 +77,12 @@ type pending_permission =
   ; expires_at : float
   }
 
+val parse_alias_list : string -> string list
+(** Parse a YAML-flow list value (e.g. ["[alice, bob]"] or ["[]"]) into a
+    string list. Also accepts a bare comma-separated form (["alice, bob"])
+    for resilience. Whitespace and surrounding quotes are stripped, empty
+    entries dropped. Used by memory frontmatter parsers in CLI + MCP. *)
+
 module Broker : sig
   type t
   val create : root:string -> t
@@ -152,7 +158,7 @@ module Broker : sig
   val clear_proc_hooks_for_test : unit -> unit
   (** Restore real-/proc behaviour for the proc-scan hooks. *)
 
-  val enqueue_message : t -> from_alias:string -> to_alias:string -> content:string -> ?deferrable:bool -> unit -> unit
+  val enqueue_message : t -> from_alias:string -> to_alias:string -> content:string -> ?deferrable:bool -> ?ephemeral:bool -> unit -> unit
   type send_all_result = { sent_to : string list; skipped : (string * string) list }
   val send_all : t -> from_alias:string -> content:string -> exclude_aliases:string list -> send_all_result
   val read_inbox : t -> session_id:string -> message list

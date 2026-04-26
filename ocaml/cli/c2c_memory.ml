@@ -100,26 +100,9 @@ type entry = {
   body : string;
 }
 
-(* Parse a YAML-flow list value (e.g. "[alice, bob]" or "[]") into a string
-   list. Also accepts a bare comma-separated form ("alice, bob") for
-   resilience. Whitespace and surrounding quotes are stripped. *)
-let parse_alias_list raw =
-  let s = String.trim raw in
-  let stripped =
-    if String.length s >= 2 && s.[0] = '[' && s.[String.length s - 1] = ']'
-    then String.sub s 1 (String.length s - 2)
-    else s
-  in
-  String.split_on_char ',' stripped
-  |> List.map String.trim
-  |> List.map (fun a ->
-       let n = String.length a in
-       if n >= 2
-          && ((a.[0] = '"' && a.[n-1] = '"')
-              || (a.[0] = '\'' && a.[n-1] = '\''))
-       then String.sub a 1 (n - 2)
-       else a)
-  |> List.filter (fun a -> a <> "")
+(* parse_alias_list lifted to C2c_mcp top-level (#296). Re-exported here
+   so callers within the c2c_memory module + tests don't have to qualify. *)
+let parse_alias_list = C2c_mcp.parse_alias_list
 
 let parse_frontmatter content =
   let lines = String.split_on_char '\n' content in

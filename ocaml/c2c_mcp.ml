@@ -223,6 +223,29 @@ let tool_definition ~name ~description ~required ~properties =
 
 module Relay = Relay
 
+(* Parse a YAML-flow list value (e.g. "[alice, bob]" or "[]") into a string
+   list. Also accepts a bare comma-separated form ("alice, bob") for
+   resilience. Whitespace and surrounding quotes are stripped, empties
+   dropped. Used by memory frontmatter parsers in both the CLI and the
+   MCP server. (#296: deduplicates three identical copies.) *)
+let parse_alias_list raw =
+  let s = String.trim raw in
+  let stripped =
+    if String.length s >= 2 && s.[0] = '[' && s.[String.length s - 1] = ']'
+    then String.sub s 1 (String.length s - 2)
+    else s
+  in
+  String.split_on_char ',' stripped
+  |> List.map String.trim
+  |> List.map (fun a ->
+       let n = String.length a in
+       if n >= 2
+          && ((a.[0] = '"' && a.[n-1] = '"')
+              || (a.[0] = '\'' && a.[n-1] = '\''))
+       then String.sub a 1 (n - 2)
+       else a)
+  |> List.filter (fun a -> a <> "")
+
 module Broker = struct
   type t = { root : string }
 
@@ -4824,24 +4847,7 @@ let ts = Unix.gettimeofday () in
         in
         Filename.concat (memory_base_dir alias) (safe ^ ".md")
       in
-      let parse_alias_list raw =
-        let s = String.trim raw in
-        let stripped =
-          if String.length s >= 2 && s.[0] = '[' && s.[String.length s - 1] = ']'
-          then String.sub s 1 (String.length s - 2)
-          else s
-        in
-        String.split_on_char ',' stripped
-        |> List.map String.trim
-        |> List.map (fun a ->
-             let n = String.length a in
-             if n >= 2
-                && ((a.[0] = '"' && a.[n-1] = '"')
-                    || (a.[0] = '\'' && a.[n-1] = '\''))
-             then String.sub a 1 (n - 2)
-             else a)
-        |> List.filter (fun a -> a <> "")
-      in
+      (* parse_alias_list lifted to top-level (#296). *)
       let parse_frontmatter content =
         let lines = String.split_on_char '\n' content in
         let rec parse lines in_fm name desc shared shared_with acc =
@@ -4961,24 +4967,7 @@ let ts = Unix.gettimeofday () in
         in
         Filename.concat (memory_base_dir alias) (safe ^ ".md")
       in
-      let parse_alias_list raw =
-        let s = String.trim raw in
-        let stripped =
-          if String.length s >= 2 && s.[0] = '[' && s.[String.length s - 1] = ']'
-          then String.sub s 1 (String.length s - 2)
-          else s
-        in
-        String.split_on_char ',' stripped
-        |> List.map String.trim
-        |> List.map (fun a ->
-             let n = String.length a in
-             if n >= 2
-                && ((a.[0] = '"' && a.[n-1] = '"')
-                    || (a.[0] = '\'' && a.[n-1] = '\''))
-             then String.sub a 1 (n - 2)
-             else a)
-        |> List.filter (fun a -> a <> "")
-      in
+      (* parse_alias_list lifted to top-level (#296). *)
       let parse_frontmatter content =
         let lines = String.split_on_char '\n' content in
         let rec parse lines in_fm name desc shared shared_with acc =
