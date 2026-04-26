@@ -270,7 +270,7 @@ let c2c_tools_list = [
   "sweep"; "tail_log"; "server_info";
 ]
 
-let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~client =
+let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client =
   let config_path = Filename.concat (Sys.getenv "HOME") (".codex" // "config.toml") in
   let existing =
     if Sys.file_exists config_path then
@@ -302,8 +302,13 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~client =
   in
   let buf = Buffer.create 1024 in
   Buffer.add_string buf "\n[mcp_servers.c2c]\n";
-  Buffer.add_string buf "command = \"opam\"\n";
-  Buffer.add_string buf (Printf.sprintf "args = [\"exec\", \"--\", \"%s\"]\n" server_path);
+  if mcp_command = "c2c-mcp-server" then begin
+    Buffer.add_string buf "command = \"c2c-mcp-server\"\n";
+    Buffer.add_string buf "args = []\n"
+  end else begin
+    Buffer.add_string buf "command = \"opam\"\n";
+    Buffer.add_string buf (Printf.sprintf "args = [\"exec\", \"--\", \"%s\"]\n" server_path)
+  end;
   Buffer.add_string buf "\n[mcp_servers.c2c.env]\n";
   Buffer.add_string buf (Printf.sprintf "C2C_MCP_BROKER_ROOT = \"%s\"\n" root);
   Buffer.add_string buf "C2C_MCP_CLIENT_TYPE = \"codex\"\n";
@@ -900,6 +905,9 @@ let setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path =
 (* --- install: shared dispatcher (used by `c2c install <client>` and TUI) --- *)
 
 let resolve_mcp_server_paths ~output_mode =
+  match which_binary "c2c-mcp-server" with
+  | Some _ -> ("", "c2c-mcp-server")
+  | None ->
   let server_path =
     match find_ocaml_server_path () with
     | Some p -> p
@@ -914,10 +922,7 @@ let resolve_mcp_server_paths ~output_mode =
     if Filename.is_relative server_path then Sys.getcwd () // server_path
     else server_path
   in
-  let mcp_command = match which_binary "c2c-mcp-server" with
-    | Some _ -> "c2c-mcp-server"
-    | None -> server_path
-  in
+  let mcp_command = "opam" in
   (server_path, mcp_command)
 
 let canonical_install_client client =
@@ -953,7 +958,7 @@ let do_install_client ?(channel_delivery=false) ~output_mode ~dry_run ~client ~a
   let (server_path, mcp_command) = resolve_mcp_server_paths ~output_mode in
   match client with
   | "claude" -> setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery
-  | "codex" -> setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~client
+  | "codex" -> setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client
   | "kimi" -> setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path
   | "opencode" -> setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~force ()
   | "crush" -> setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path

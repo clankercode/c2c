@@ -348,6 +348,40 @@ class C2CCLITests(unittest.TestCase):
         )
         self.assertIn('C2C_MCP_CLIENT_TYPE = "codex"', config_text)
 
+    def test_native_install_codex_prefers_installed_mcp_server_command(self):
+        home_dir = Path(self.temp_dir.name) / "home-codex-installed-mcp"
+        broker_root = Path(self.temp_dir.name) / "broker-codex-installed-mcp"
+        fake_bin = Path(self.temp_dir.name) / "bin"
+        home_dir.mkdir(parents=True, exist_ok=True)
+        broker_root.mkdir(parents=True, exist_ok=True)
+        fake_bin.mkdir(parents=True, exist_ok=True)
+        mcp_server = fake_bin / "c2c-mcp-server"
+        mcp_server.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        mcp_server.chmod(0o755)
+
+        env = dict(self.env)
+        env["HOME"] = str(home_dir)
+        env["PATH"] = f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+
+        self.assertTrue(NATIVE_C2C.exists(), NATIVE_C2C)
+        result = run_native_cli(
+            "install",
+            "codex",
+            "--broker-root",
+            str(broker_root),
+            "--json",
+            env=env,
+        )
+
+        self.assertEqual(result_code(result), 0, result.stderr)
+        config_text = (home_dir / ".codex" / "config.toml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('command = "c2c-mcp-server"', config_text)
+        self.assertIn("args = []", config_text)
+        self.assertNotIn('command = "opam"', config_text)
+        self.assertNotIn("_build/default/ocaml/server/c2c_mcp_server.exe", config_text)
+
     def test_start_help_mentions_codex_headless(self):
         self.assertTrue(NATIVE_C2C.exists(), NATIVE_C2C)
         result = run_native_cli("start", "--help", env=self.env)
