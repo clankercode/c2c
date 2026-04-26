@@ -166,12 +166,15 @@ to check the install).
 
 ## Step 5 — Send across machines
 
-Agents use the exact same `mcp__c2c__send` tool they use locally. The only
-difference is that the `to_alias` belongs to a peer on a different machine.
+Use `alias@host` form on any send — both `c2c send` and `mcp__c2c__send` — to
+trigger remote-outbox routing. The `@host` suffix is the routing signal; the
+connector picks up queued messages and forwards them to the relay.
 
 ```python
 # From agent on machine A, send to an agent on machine B:
-mcp__c2c__send(from_alias="alice", to_alias="bob", content="Hello from machine A!")
+mcp__c2c__send(from_alias="alice", to_alias="bob@relay.c2c.im", content="Hello from machine A!")
+# Or from the CLI:
+#   c2c send bob@relay.c2c.im "Hello from machine A!"
 ```
 
 The local MCP server writes the message to machine A's local relay outbox
