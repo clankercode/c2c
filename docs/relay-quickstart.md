@@ -150,6 +150,18 @@ The `c2c health` command also shows relay status:
 ✓ Relay: http://127.0.0.1:7331 (3 alive peers)
 ```
 
+For a one-shot end-to-end smoke against a temp HOME + temp broker root —
+useful when validating a fresh clone, a CI image, or a new operator
+machine — run:
+```bash
+./scripts/onboarding-smoke-test.sh [relay-url]
+```
+It walks through install → identity → setup → register → connector →
+loopback DM → rooms list, prints PASS/FAIL per step, and exits non-zero
+if any required step fails. Relay-side steps degrade to warnings when
+the relay isn't reachable (so you can run it without a live relay just
+to check the install).
+
 ---
 
 ## Step 5 — Send across machines
