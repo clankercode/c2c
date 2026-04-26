@@ -166,6 +166,36 @@ let current_c2c_command () =
   in
   if Filename.is_relative resolved then Sys.getcwd () // resolved else resolved
 
+(* --- MCP nudge: steer agents toward MCP tools when available ---------------- *)
+
+(** Print a one-line nudge to stderr when the agent could use an MCP tool
+    instead of the CLI. Fires only when:
+    - MCP session env vars are present (C2C_MCP_SESSION_ID, C2C_MCP_AUTO_REGISTER_ALIAS)
+    - C2C_CLI_FORCE is not set
+    Does not affect command exit code — always returns unit. *)
+let mcp_nudge_if_needed ~cmd =
+  if Sys.getenv_opt "C2C_CLI_FORCE" = Some "1" then ()
+  else
+    let env_has_value var =
+      match Sys.getenv_opt var with
+      | Some s when String.trim s <> "" -> true
+      | _ -> false
+    in
+    if env_has_value "C2C_MCP_SESSION_ID" && env_has_value "C2C_MCP_AUTO_REGISTER_ALIAS" then
+      let tool_name =
+        match cmd with
+        | "send"      -> "mcp__c2c__send"
+        | "poll-inbox"| "peek-inbox" -> "mcp__c2c__poll_inbox"
+        | "list"      -> "mcp__c2c__list"
+        | "whoami"    -> "mcp__c2c__whoami"
+        | _ -> ""
+      in
+      if tool_name <> "" then
+        Printf.eprintf
+          "hint: MCP is available — consider using %s instead of `c2c %s`\n\
+           (suppress with C2C_CLI_FORCE=1)\n%!"
+          tool_name cmd
+
 (* --- subcommand: commands (audit by safety tier) --------------------------- *)
 
 let commands_by_safety_cmd =
@@ -293,6 +323,7 @@ let send_cmd =
   and+ message = message
   and+ from_override = from_override
   and+ no_warn_substitution = no_warn_substitution in
+  mcp_nudge_if_needed ~cmd:"send";
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let from_alias = resolve_alias ~override:from_override broker in
   let content = String.concat " " message in
@@ -365,6 +396,7 @@ let list_cmd =
   in
   let+ json = json_flag
   and+ all = all in
+  mcp_nudge_if_needed ~cmd:"list";
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let regs = C2c_mcp.Broker.list_registrations broker in
   let output_mode = if json then Json else Human in
@@ -447,6 +479,7 @@ let list_cmd =
 
 let whoami_cmd =
   let+ json = json_flag in
+  mcp_nudge_if_needed ~cmd:"whoami";
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let output_mode = if json then Json else Human in
   match env_session_id () with
@@ -661,6 +694,7 @@ let poll_inbox_cmd =
   let+ json = json_flag
   and+ peek = peek
   and+ session_id_opt = session_id_flag in
+  mcp_nudge_if_needed ~cmd:"poll-inbox";
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let session_id = match session_id_opt with
     | Some sid -> sid
@@ -4236,6 +4270,7 @@ let peek_inbox_cmd =
   in
   let+ json = json_flag
   and+ session_id_opt = session_id_flag in
+  mcp_nudge_if_needed ~cmd:"peek-inbox";
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let session_id = match session_id_opt with
     | Some sid -> sid
