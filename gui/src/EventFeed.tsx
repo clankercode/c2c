@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { C2cEvent, MessageEvent } from "./types";
 
 type Filter = "all" | "messages" | "peers" | "rooms";
@@ -106,6 +107,9 @@ const FILTER_BTN_ACTIVE: React.CSSProperties = {
   borderColor: "#89b4fa",
 };
 
+// Row height estimate for global feed
+const GLOBAL_ROW_HEIGHT = 28;
+
 interface Props {
   events: C2cEvent[];
   selectedRoom?: string | null;
@@ -122,6 +126,9 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const listRef = useRef<HTMLDivElement>(null);
   const prevLenRef = useRef(0);
+
+  // Refs for dynamic row measurement
+  const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
   function toggleExpand(i: number) {
     setExpanded(prev => {
@@ -143,11 +150,14 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
     visible = events.filter(e => matchesFilter(e, filter)).slice().reverse();
   }
 
-  // Apply search filter across all modes
+  // Apply search filter
   if (search.trim()) {
     const q = search.trim().toLowerCase();
     visible = visible.filter(e => eventLabel(e).toLowerCase().includes(q));
   }
+
+  // Track user scroll position for focused mode
+  const isAtBottomRef = useRef(true);
 
   // Auto-scroll: global feed → top (newest first); focused chat → bottom (oldest first)
   useEffect(() => {
@@ -158,13 +168,50 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
               : events.length;
     if (len > prevLenRef.current) {
       if (selectedRoom || selectedPeer) {
-        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+        // Focused mode: only auto-scroll if already at bottom
+        if (isAtBottomRef.current) {
+          el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+        }
       } else {
         el.scrollTo({ top: 0, behavior: "smooth" });
       }
     }
     prevLenRef.current = len;
   }, [events, selectedRoom, selectedPeer, myAlias]);
+
+  // Virtualizer for global feed (fixed-height rows)
+  const globalVirtualizer = useVirtualizer({
+    count: visible.length,
+    getScrollElement: () => listRef.current,
+    estimateSize: () => GLOBAL_ROW_HEIGHT,
+    overscan: 10,
+  });
+
+  // Dynamic measurement for focused chat bubbles
+  const registerRowRef = useCallback((index: number, el: HTMLDivElement | null) => {
+    if (el) {
+      rowRefs.current.set(index, el);
+    } else {
+      rowRefs.current.delete(index);
+    }
+  }, []);
+
+  const estimateSize = useCallback((index: number) => {
+    const el = rowRefs.current.get(index);
+    if (el) return el.getBoundingClientRect().height + 8; // +8 for padding
+    // Heuristic: focused chat bubbles average ~80px, global feed uses GLOBAL_ROW_HEIGHT
+    return isFocused ? 80 : GLOBAL_ROW_HEIGHT;
+  }, [isFocused]);
+
+  const dynamicVirtualizer = useVirtualizer({
+    count: visible.length,
+    getScrollElement: () => listRef.current,
+    estimateSize,
+    measureElement: (el) => el.getBoundingClientRect().height + 8,
+    overscan: 5,
+  });
+
+  const virtualizer = isFocused ? dynamicVirtualizer : globalVirtualizer;
 
   const focusLabel = selectedRoom ? `🏠 ${selectedRoom}` : selectedPeer ? `👤 ${selectedPeer}` : null;
 
@@ -217,107 +264,154 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
         </span>
       </div>
 
-      {/* Event list — global: newest-first log lines; focused: oldest-first chat bubbles */}
-      <div ref={listRef} style={{ fontFamily: "monospace", fontSize: "13px", overflowY: "auto", flex: 1 }}>
+      {/* Virtualized event list */}
+      <div
+        ref={listRef}
+        style={{ fontFamily: "monospace", fontSize: "13px", overflowY: "auto", flex: 1 }}
+        onScroll={() => {
+          const el = listRef.current;
+          if (!el) return;
+          if (isFocused) {
+            const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
+            isAtBottomRef.current = atBottom;
+          }
+        }}
+      >
         {visible.length === 0 ? (
           <div style={{ padding: 16, color: "#45475a" }}>
             {focusLabel ? `No messages with ${selectedRoom ?? selectedPeer} yet.` : "No events match filter."}
           </div>
         ) : (
-          visible.map((e, i) => {
-            const isMsg = e.event_type === "message";
-            const m = isMsg ? (e as MessageEvent) : null;
-            const isMine = isMsg && m!.from_alias === myAlias;
-            const ts = (() => {
-              const d = new Date(parseFloat(e.monitor_ts) * 1000);
-              const now = new Date();
-              return d.toDateString() === now.toDateString()
-                ? d.toLocaleTimeString()
-                : d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString();
-            })();
-            const isHistorical = !!(e as { _historical?: boolean })._historical;
+          <div
+            style={{
+              height: `${virtualizer.getTotalSize()}px`,
+              width: "100%",
+              position: "relative",
+            }}
+          >
+            {virtualizer.getVirtualItems().map(virtualRow => {
+              const e = visible[virtualRow.index];
+              const i = virtualRow.index;
+              const isMsg = e.event_type === "message";
+              const m = isMsg ? (e as MessageEvent) : null;
+              const isMine = isMsg && m!.from_alias === myAlias;
+              const ts = (() => {
+                const d = new Date(parseFloat(e.monitor_ts) * 1000);
+                const now = new Date();
+                return d.toDateString() === now.toDateString()
+                  ? d.toLocaleTimeString()
+                  : d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString();
+              })();
+              const isHistorical = !!(e as { _historical?: boolean })._historical;
 
-            // Focused chat view: bubble layout, oldest-first
-            if (isFocused && isMsg && m) {
-              return (
-                <div key={i} style={{
-                  padding: "4px 10px",
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: isMine ? "flex-end" : "flex-start",
-                  opacity: isHistorical ? 0.6 : 1,
-                }}>
-                  <div style={{ display: "flex", gap: 6, alignItems: "baseline", marginBottom: 2 }}>
-                    {!isMine && (
-                      <span
-                        style={{ fontSize: 11, fontWeight: 700, color: "#89b4fa", cursor: onPeerClick ? "pointer" : "default" }}
-                        onClick={() => onPeerClick?.(m.from_alias)}
-                        title={onPeerClick ? `DM ${m.from_alias}` : undefined}
-                      >
-                        {m.from_alias}
-                      </span>
-                    )}
-                    <span style={{ fontSize: 10, color: "#45475a" }}>{ts}</span>
-                    {isMine && <span style={{ fontSize: 11, fontWeight: 700, color: "#cba6f7" }}>{m.from_alias}</span>}
-                  </div>
-                  <div style={{
-                    background: isMine ? "#313244" : "#1e1e2e",
-                    border: `1px solid ${isMine ? "#45475a" : "#313244"}`,
-                    borderRadius: isMine ? "10px 10px 2px 10px" : "10px 10px 10px 2px",
-                    padding: "5px 10px",
-                    maxWidth: "70%",
-                    color: "#cdd6f4",
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-word",
-                    fontFamily: "monospace",
-                    fontSize: 13,
-                  }}>
-                    {m.content}
-                  </div>
-                </div>
-              );
-            }
-
-            // Global feed: compact log line, newest-first
-            const isExpanded = expanded.has(i);
-            const isTruncated = isMsg && m!.content.length > 120;
-            return (
-              <div
-                key={i}
-                onClick={() => isMsg && isTruncated && toggleExpand(i)}
-                style={{
-                  padding: "3px 8px",
-                  borderBottom: "1px solid #1e1e2e",
-                  opacity: isHistorical ? 0.65 : 1,
-                  cursor: isMsg && isTruncated ? "pointer" : "default",
-                  background: isExpanded ? "#1e1e2e" : "transparent",
-                }}
-              >
-                <span style={{ color: "#45475a", marginRight: 8, fontSize: 11 }}>{ts}</span>
-                <span style={{ marginRight: 6 }}>{eventIcon(e)}</span>
-                <span style={{ color: eventColor(e) }}>
-                  {isMsg && m ? (
-                    isExpanded ? (
-                      <>
+              // Focused chat bubble layout
+              if (isFocused && isMsg && m) {
+                return (
+                  <div
+                    key={i}
+                    data-index={i}
+                    ref={(el) => registerRowRef(i, el)}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      transform: `translateY(${virtualRow.start}px)`,
+                      padding: "4px 10px",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: isMine ? "flex-end" : "flex-start",
+                      opacity: isHistorical ? 0.6 : 1,
+                      boxSizing: "border-box",
+                    }}
+                  >
+                    <div style={{ display: "flex", gap: 6, alignItems: "baseline", marginBottom: 2 }}>
+                      {!isMine && (
                         <span
-                          style={{ color: "#89b4fa", cursor: onPeerClick && m.from_alias !== myAlias ? "pointer" : "default" }}
-                          onClick={e2 => { e2.stopPropagation(); if (m.from_alias !== myAlias) onPeerClick?.(m.from_alias); }}
-                          title={onPeerClick && m.from_alias !== myAlias ? `DM ${m.from_alias}` : undefined}
+                          style={{ fontSize: 11, fontWeight: 700, color: "#89b4fa", cursor: onPeerClick ? "pointer" : "default" }}
+                          onClick={() => onPeerClick?.(m.from_alias)}
+                          title={onPeerClick ? `DM ${m.from_alias}` : undefined}
                         >
                           {m.from_alias}
                         </span>
-                        <span style={{ color: "#89b4fa" }}>{" → "}{m.to_alias}: </span>
-                        <span style={{ whiteSpace: "pre-wrap" }}>{m.content}</span>
-                      </>
-                    ) : eventLabel(e)
-                  ) : eventLabel(e)}
-                </span>
-                {isMsg && isTruncated && !isExpanded && (
-                  <span style={{ color: "#45475a", fontSize: 10, marginLeft: 6 }}>▸</span>
-                )}
-              </div>
-            );
-          })
+                      )}
+                      <span style={{ fontSize: 10, color: "#45475a" }}>{ts}</span>
+                      {isMine && <span style={{ fontSize: 11, fontWeight: 700, color: "#cba6f7" }}>{m.from_alias}</span>}
+                    </div>
+                    <div style={{
+                      background: isMine ? "#313244" : "#1e1e2e",
+                      border: `1px solid ${isMine ? "#45475a" : "#313244"}`,
+                      borderRadius: isMine ? "10px 10px 2px 10px" : "10px 10px 10px 2px",
+                      padding: "5px 10px",
+                      maxWidth: "70%",
+                      color: "#cdd6f4",
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                      fontFamily: "monospace",
+                      fontSize: 13,
+                    }}>
+                      {m.content}
+                    </div>
+                  </div>
+                );
+              }
+
+              // Global feed compact log line
+              const isExpanded = expanded.has(i);
+              const isTruncated = isMsg && m!.content.length > 120;
+              return (
+                <div
+                  key={i}
+                  data-index={i}
+                  ref={(el) => {
+                    // Store ref for global feed — fixed height so no measurement needed
+                    if (el) rowRefs.current.set(i, el);
+                    else rowRefs.current.delete(i);
+                  }}
+                  onClick={() => isMsg && isTruncated && toggleExpand(i)}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    height: `${virtualRow.size}px`,
+                    transform: `translateY(${virtualRow.start}px)`,
+                    padding: "3px 8px",
+                    borderBottom: "1px solid #1e1e2e",
+                    opacity: isHistorical ? 0.65 : 1,
+                    cursor: isMsg && isTruncated ? "pointer" : "default",
+                    background: isExpanded ? "#1e1e2e" : "transparent",
+                    boxSizing: "border-box",
+                    display: "flex",
+                    alignItems: "center",
+                  }}
+                >
+                  <span style={{ color: "#45475a", marginRight: 8, fontSize: 11, flexShrink: 0 }}>{ts}</span>
+                  <span style={{ marginRight: 6, flexShrink: 0 }}>{eventIcon(e)}</span>
+                  <span style={{ color: eventColor(e), overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {isMsg && m ? (
+                      isExpanded ? (
+                        <>
+                          <span
+                            style={{ color: "#89b4fa", cursor: onPeerClick && m.from_alias !== myAlias ? "pointer" : "default" }}
+                            onClick={e2 => { e2.stopPropagation(); if (m.from_alias !== myAlias) onPeerClick?.(m.from_alias); }}
+                            title={onPeerClick && m.from_alias !== myAlias ? `DM ${m.from_alias}` : undefined}
+                          >
+                            {m.from_alias}
+                          </span>
+                          <span style={{ color: "#89b4fa" }}>{" → "}{m.to_alias}: </span>
+                          <span style={{ whiteSpace: "pre-wrap", overflow: "hidden" }}>{m.content}</span>
+                        </>
+                      ) : eventLabel(e)
+                    ) : eventLabel(e)}
+                  </span>
+                  {isMsg && isTruncated && !isExpanded && (
+                    <span style={{ color: "#45475a", fontSize: 10, marginLeft: 6, flexShrink: 0 }}>▸</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
     </div>
