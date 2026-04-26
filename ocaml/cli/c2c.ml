@@ -5200,8 +5200,18 @@ let doctor_cmd =
         end;
         Unix.execvp "bash" (Array.of_list (["bash"; script] @ args))
 
-let doctor = Cmdliner.Cmd.v (Cmdliner.Cmd.info "doctor"
-    ~doc:"Health snapshot + push-pending analysis (for Max / human operators).") doctor_cmd
+let doctor_docs_drift = Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "docs-drift"
+       ~doc:"Audit CLAUDE.md for stale repo paths, unregistered c2c \
+             commands, wrong GitHub org URLs, and deprecated Python script \
+             references. Use --warn-only inside `c2c doctor` rollups.")
+    C2c_docs_drift.docs_drift_cmd
+
+let doctor = Cmdliner.Cmd.group
+    ~default:doctor_cmd
+    (Cmdliner.Cmd.info "doctor"
+       ~doc:"Health snapshot + push-pending analysis (for Max / human operators).")
+    [ doctor_docs_drift ]
 
 (* --- subcommand: stats ---------------------------------------------------- *)
 
