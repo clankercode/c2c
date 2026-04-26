@@ -5527,7 +5527,7 @@ let start_cmd =
   let relay_url_opt =
     Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL"
       ~doc:"For CLIENT=relay-connect: relay URL to connect to. Falls back to \
-            $$C2C_RELAY_URL when omitted. Ignored for other clients.")
+            \\$C2C_RELAY_URL when omitted. Ignored for other clients.")
   in
   let interval_opt =
     Cmdliner.Arg.(value & opt int 30 & info [ "interval" ] ~docv:"SECS"
