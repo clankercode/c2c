@@ -5,6 +5,18 @@ let debug_enabled () =
       not (List.mem n [ "0"; "false"; "no"; "" ])
   | None -> false
 
+let nudge_cadence_minutes () =
+  match Sys.getenv_opt "C2C_NUDGE_CADENCE_MINUTES" with
+  | Some v ->
+      (try float_of_string (String.trim v) with _ -> 30.0)
+  | None -> 30.0
+
+let nudge_idle_minutes () =
+  match Sys.getenv_opt "C2C_NUDGE_IDLE_MINUTES" with
+  | Some v ->
+      (try float_of_string (String.trim v) with _ -> 25.0)
+  | None -> 25.0
+
 let debug_log_path () =
   let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
   let base = Filename.concat home ".local/share/c2c" in
@@ -310,7 +322,12 @@ let () =
     | None -> ());
    C2c_mcp.auto_join_rooms_startup ~broker_root:root;
   let broker = C2c_mcp.Broker.create ~root in
-  Relay_nudge.start_nudge_scheduler ~broker_root:root ~broker ();
+  Relay_nudge.start_nudge_scheduler
+    ~broker_root:root
+    ~broker
+    ~cadence_minutes:(nudge_cadence_minutes ())
+    ~idle_minutes:(nudge_idle_minutes ())
+    ();
   let negotiated_capabilities_ref = ref (force_capabilities_from_env ()) in
   (match (channel_delivery_enabled (), session_id ()) with
    | true, Some sid -> debug_log ("starting inbox watcher for " ^ sid); Lwt.async (fun () ->

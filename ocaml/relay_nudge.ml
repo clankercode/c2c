@@ -14,27 +14,52 @@ let nudge_sender_alias = "c2c-nudge"
 
 type nudge_message = { text : string }
 
+let default_messages_json = {|
+{
+  "messages": [
+    { "text": "grab a task? check the swarm-lounge for open items." },
+    { "text": "you've been quiet — want to review a PR?" },
+    { "text": "write an e2e test for something that's been nagging you?" },
+    { "text": "check in on a peer — someone might need a hand." },
+    { "text": "your move: pick up a slice or brainstorm an improvement." },
+    { "text": "quiet here — drop a status update in swarm-lounge?" }
+  ]
+}
+|}
+
+let ensure_default_messages path =
+  let dir = Filename.dirname path in
+  try
+    (try ignore (Unix.mkdir dir 0o755) with Unix.Unix_error _ -> ());
+    if not (Sys.file_exists path) then
+      let ch = open_out path in
+      output_string ch default_messages_json;
+      close_out ch;
+      Log.info (fun f -> f "relay_nudge: created default messages at %s" path)
+  with e ->
+    Log.warn (fun f -> f "relay_nudge: could not create default messages at %s: %s"
+                path (Printexc.to_string e))
+
 let load_messages ~broker_root =
   let path = Filename.concat (Filename.concat broker_root "nudge") "messages.json" in
-  if not (Sys.file_exists path) then []
-  else
-    try
-      let json = Yojson.Safe.from_file path in
-      let open Yojson.Safe.Util in
-      match json |> member "messages" with
-      | `List items ->
-          List.filter_map
-            (function
-             | `Assoc _ as msg ->
-                 (match msg |> member "text" with
-                  | `String t when String.trim t <> "" -> Some { text = String.trim t }
-                  | _ -> None)
-             | _ -> None)
-            items
-      | _ -> []
-    with e ->
-      Log.warn (fun f -> f "relay_nudge: failed to load messages from %s: %s" path (Printexc.to_string e));
-      []
+  ensure_default_messages path;
+  try
+    let json = Yojson.Safe.from_file path in
+    let open Yojson.Safe.Util in
+    match json |> member "messages" with
+    | `List items ->
+        List.filter_map
+          (function
+           | `Assoc _ as msg ->
+               (match msg |> member "text" with
+                | `String t when String.trim t <> "" -> Some { text = String.trim t }
+                | _ -> None)
+           | _ -> None)
+          items
+    | _ -> []
+  with e ->
+    Log.warn (fun f -> f "relay_nudge: failed to load messages from %s: %s" path (Printexc.to_string e));
+    []
 
 let random_message messages =
   match messages with

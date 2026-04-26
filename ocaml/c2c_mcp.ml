@@ -4360,8 +4360,10 @@ let ts = Unix.gettimeofday () in
                            alive session '%s' — you cannot change visibility as another agent."
                           from_alias conflict.session_id)
                      ~is_error:true)
-            | None ->
-                Broker.set_room_visibility broker ~room_id ~from_alias ~visibility;
+             | None ->
+                 let session_id = resolve_session_id ?session_id_override arguments in
+                 Broker.touch_session broker ~session_id;
+                 Broker.set_room_visibility broker ~room_id ~from_alias ~visibility;
                 let content =
                   `Assoc
                     [ ("ok", `Bool true)
