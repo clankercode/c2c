@@ -51,7 +51,11 @@ type registration =
       not yet handshaked). Set in the initialize handler; consumers
       treat [None] conservatively as "not push-capable". *)
   }
-type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option; ts : float }
+type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option; ts : float; ephemeral : bool }
+(** [ephemeral=true] messages are delivered normally but skipped on the
+    archive append in [drain_inbox] / [drain_inbox_push]. The recipient's
+    in-memory channel notification + transcript are the only persistent
+    trace post-delivery. Default false (#284). *)
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 type room_visibility = Public | Invite_only
@@ -421,7 +425,7 @@ module Broker = struct
          with _ -> None)
     }
 
-  let message_to_json { from_alias; to_alias; content; deferrable; reply_via; enc_status; ts } =
+  let message_to_json { from_alias; to_alias; content; deferrable; reply_via; enc_status; ts; ephemeral } =
     let base =
       [ ("from_alias", `String from_alias)
       ; ("to_alias", `String to_alias)
@@ -430,7 +434,8 @@ module Broker = struct
       ]
     in
     let with_deferrable = if deferrable then base @ [("deferrable", `Bool true)] else base in
-    let with_reply_via = match reply_via with None -> with_deferrable | Some rv -> with_deferrable @ [("reply_via", `String rv)] in
+    let with_ephemeral = if ephemeral then with_deferrable @ [("ephemeral", `Bool true)] else with_deferrable in
+    let with_reply_via = match reply_via with None -> with_ephemeral | Some rv -> with_ephemeral @ [("reply_via", `String rv)] in
     match enc_status with
     | None -> `Assoc with_reply_via
     | Some es -> `Assoc (with_reply_via @ [("enc_status", `String es)])
@@ -457,6 +462,10 @@ module Broker = struct
          | `Float f -> f
          | `Int i -> float_of_int i
          | _ -> 0.0)
+    ; ephemeral =
+        (match json |> member "ephemeral" with
+         | `Bool b -> b
+         | _ -> false)
     }
 
   let load_registrations t =
@@ -1074,13 +1083,16 @@ module Broker = struct
   let is_remote_alias alias =
     String.exists (fun c -> c = '@') alias
 
-  let enqueue_message t ~from_alias ~to_alias ~content ?(deferrable = false) () =
+  let enqueue_message t ~from_alias ~to_alias ~content ?(deferrable = false) ?(ephemeral = false) () =
     (* Reject messages claiming a reserved system from_alias — prevents spoofing. *)
     if List.mem from_alias reserved_system_aliases then
       invalid_arg (Printf.sprintf
         "send rejected: from_alias '%s' is a reserved system alias" from_alias)
     else if is_remote_alias to_alias then
-      (* Remote alias: append to relay outbox for async forwarding by sync loop. *)
+      (* Remote alias: append to relay outbox for async forwarding by sync loop.
+         Note: ephemeral semantics over the relay are not yet wired in v1 —
+         the relay outbox path persists by design. Cross-host ephemeral is a
+         follow-up. For now, [ephemeral] only takes effect on local delivery. *)
       C2c_relay_connector.append_outbox_entry t.root ~from_alias ~to_alias ~content ()
     else
     with_registry_lock t (fun () ->
@@ -1092,7 +1104,7 @@ module Broker = struct
             with_inbox_lock t ~session_id (fun () ->
                 let current = load_inbox t ~session_id in
                 let next =
-                  current @ [ { from_alias; to_alias; content; deferrable; reply_via = None; enc_status = None; ts = Unix.gettimeofday () } ]
+                  current @ [ { from_alias; to_alias; content; deferrable; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral } ]
                 in
                 save_inbox t ~session_id next))
 
@@ -1127,7 +1139,7 @@ module Broker = struct
                         let current = load_inbox t ~session_id in
                         let next =
                           current
-                          @ [ { from_alias; to_alias = reg.alias; content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday () } ]
+                          @ [ { from_alias; to_alias = reg.alias; content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false } ]
                         in
                         save_inbox t ~session_id next);
                     sent := reg.alias :: !sent
@@ -1297,7 +1309,14 @@ module Broker = struct
         (match messages with
          | [] -> ()
          | _ ->
-             append_archive t ~session_id ~messages;
+             (* #284: ephemeral messages are returned to the caller for
+                delivery but never appended to the archive. Their only
+                persistent trace is the recipient's transcript / channel
+                notification, which is per-session-local. *)
+             let to_archive = List.filter (fun m -> not m.ephemeral) messages in
+             (match to_archive with
+              | [] -> ()
+              | _ -> append_archive t ~session_id ~messages:to_archive);
              save_inbox t ~session_id []);
         messages)
 
@@ -1313,7 +1332,11 @@ module Broker = struct
         (match to_push with
          | [] -> ()
          | _ ->
-             append_archive t ~session_id ~messages:to_push;
+             (* #284: same archive-skip rule applies on the push path. *)
+             let to_archive = List.filter (fun m -> not m.ephemeral) to_push in
+             (match to_archive with
+              | [] -> ()
+              | _ -> append_archive t ~session_id ~messages:to_archive);
              save_inbox t ~session_id to_keep);
         to_push)
 
@@ -1650,6 +1673,8 @@ module Broker = struct
               ; ts =
                   (match json |> member "ts" with
                    | `Float f -> f | `Int i -> float_of_int i | _ -> 0.0)
+              ; ephemeral =
+                  (match json |> member "ephemeral" with `Bool b -> b | _ -> false)
               }) items
         | _ -> []
       in
@@ -1841,7 +1866,7 @@ module Broker = struct
                     with_inbox_lock t ~session_id (fun () ->
                         let current = load_inbox t ~session_id in
                         let next =
-                          current @ [ { from_alias; to_alias = tagged_to; content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday () } ]
+                          current @ [ { from_alias; to_alias = tagged_to; content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false } ]
                         in
                         save_inbox t ~session_id next);
                     delivered := m.rm_alias :: !delivered
@@ -2529,9 +2554,9 @@ let base_tool_definitions =
       ~required:[]
       ~properties:[]
   ; tool_definition ~name:"send"
-      ~description:"Send a C2C message to a registered peer alias. The sender alias is resolved from the current MCP session when possible; `from_alias` remains a legacy fallback for non-session callers. Optional `deferrable:true` marks the message as low-priority: push paths (channel notification, PostToolUse hook) skip it — recipient reads it on next explicit poll_inbox or idle flush. Returns JSON {queued:true, ts:<epoch-seconds>, from_alias:<string>, to_alias:<string>} on success."
+      ~description:"Send a C2C message to a registered peer alias. The sender alias is resolved from the current MCP session when possible; `from_alias` remains a legacy fallback for non-session callers. Optional `deferrable:true` marks the message as low-priority: push paths (channel notification, PostToolUse hook) skip it — recipient reads it on next explicit poll_inbox or idle flush. Optional `ephemeral:true` delivers normally but skips the recipient-side archive append, so post-delivery the only persistent trace is the recipient's transcript / channel notification (per-session-local, gets compacted). Use for off-the-record DMs that should not become permanent history. Receipt confirmation is impossible by design. Returns JSON {queued:true, ts:<epoch-seconds>, from_alias:<string>, to_alias:<string>} on success."
       ~required:["to_alias"; "content"]
-      ~properties:[ prop "to_alias" "Target peer alias."; prop "from_alias" "Legacy fallback sender alias (deprecated)."; prop "content" "Message body."; prop "deferrable" "Optional bool. When true, marks the message as low-priority — push delivery is suppressed; recipient reads it on next poll_inbox or idle flush." ]
+      ~properties:[ prop "to_alias" "Target peer alias."; prop "from_alias" "Legacy fallback sender alias (deprecated)."; prop "content" "Message body."; prop "deferrable" "Optional bool. When true, marks the message as low-priority — push delivery is suppressed; recipient reads it on next poll_inbox or idle flush."; prop "ephemeral" "Optional bool. When true, the message is delivered normally but never written to the archive; it has no permanent record after delivery." ]
   ; tool_definition ~name:"whoami"
       ~description:"Resolve the current C2C session registration."
       ~required:[]
@@ -3517,6 +3542,11 @@ let handle_tool_call ~(broker : Broker.t) ?session_id_override ~tool_name ~argum
                      | `Bool b -> b | _ -> false
                    with _ -> false
                  in
+                 let ephemeral =
+                   try match Yojson.Safe.Util.member "ephemeral" arguments with
+                     | `Bool b -> b | _ -> false
+                   with _ -> false
+                 in
 let ts = Unix.gettimeofday () in
                   let effective_content =
                     let recipient_reg =
@@ -3605,7 +3635,7 @@ let ts = Unix.gettimeofday () in
                     | Some (`Reject msg) ->
                         Lwt.return (tool_result ~content:("send rejected: " ^ msg) ~is_error:true)
                     | Some (`Warn _) | None ->
-                        Broker.enqueue_message broker ~from_alias ~to_alias ~content:s ~deferrable ();
+                        Broker.enqueue_message broker ~from_alias ~to_alias ~content:s ~deferrable ~ephemeral ();
                         (match session_id_override with
                          | Some sid -> Broker.touch_session broker ~session_id:sid
                          | None ->

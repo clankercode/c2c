@@ -331,7 +331,7 @@ let test_tools_call_history_ignores_session_id_argument () =
 let test_channel_notification_matches_claude_channel_shape () =
   let json =
     C2c_mcp.channel_notification
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "debate me"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0 }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "debate me"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false }
   in
   let open Yojson.Safe.Util in
   check string "jsonrpc" "2.0" (json |> member "jsonrpc" |> to_string);
@@ -345,7 +345,7 @@ let test_channel_notification_matches_claude_channel_shape () =
 let test_channel_notification_empty_content () =
   let json =
     C2c_mcp.channel_notification
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = ""; deferrable = false; reply_via = None; enc_status = None; ts = 0.0 }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = ""; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false }
   in
   let open Yojson.Safe.Util in
   check string "jsonrpc" "2.0" (json |> member "jsonrpc" |> to_string);
@@ -362,7 +362,7 @@ let test_channel_notification_special_chars () =
   let content = "line1\nline2\t\"quoted\" <angle> \xc3\xa9\xc3\xa0\xc3\xbc" in
   let json =
     C2c_mcp.channel_notification
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content; deferrable = false; reply_via = None; enc_status = None; ts = 0.0 }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false }
   in
   let open Yojson.Safe.Util in
   (* Round-trip through Yojson serialization to verify escaping is valid *)
@@ -377,7 +377,7 @@ let test_channel_notification_special_chars () =
 let test_channel_notification_has_no_id_field () =
   let json =
     C2c_mcp.channel_notification
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "test"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0 }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "test"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false }
   in
   let open Yojson.Safe.Util in
   (* JSON-RPC 2.0 notifications MUST NOT include an "id" field *)
@@ -452,7 +452,7 @@ let test_initialize_without_channel_capability () =
 let test_channel_notification_method_is_correct () =
   let json =
     C2c_mcp.channel_notification
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "check method"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0 }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "check method"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false }
   in
   let open Yojson.Safe.Util in
   let method_str = json |> member "method" |> to_string in
@@ -465,7 +465,7 @@ let test_channel_notification_method_is_correct () =
 let test_channel_notification_with_role () =
   let json =
     C2c_mcp.channel_notification ~role:(Some "coordinator")
-      { from_alias = "cairn-vigil"; to_alias = "stanza-coder"; content = "hi"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0 }
+      { from_alias = "cairn-vigil"; to_alias = "stanza-coder"; content = "hi"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false }
   in
   let open Yojson.Safe.Util in
   let meta = json |> member "params" |> member "meta" in
@@ -475,7 +475,7 @@ let test_channel_notification_with_role () =
 let test_channel_notification_without_role_omits () =
   let json =
     C2c_mcp.channel_notification
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "hi"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0 }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "hi"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false }
   in
   let open Yojson.Safe.Util in
   let meta = json |> member "params" |> member "meta" in
@@ -6284,6 +6284,119 @@ let test_register_rejects_alias_with_pending_permission_from_alive_owner () =
                in
                check bool "thief not registered" true (thief = None))))
 
+(* --- ephemeral DMs (#284): drained but never archived --- *)
+
+let test_ephemeral_message_drained_returned_to_caller () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-eph-recv" ~alias:"recv-test"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-eph-send" ~alias:"send-test"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.enqueue_message broker
+        ~from_alias:"send-test" ~to_alias:"recv-test"
+        ~content:"off the record" ~ephemeral:true ();
+      let drained = C2c_mcp.Broker.drain_inbox broker ~session_id:"s-eph-recv" in
+      check int "ephemeral drained, returned to caller" 1 (List.length drained);
+      let msg = List.hd drained in
+      check bool "ephemeral flag preserved" true msg.ephemeral)
+
+let test_ephemeral_message_not_archived () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-eph-archive" ~alias:"recv2-test"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-eph-archive-send" ~alias:"send2-test"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.enqueue_message broker
+        ~from_alias:"send2-test" ~to_alias:"recv2-test"
+        ~content:"silence" ~ephemeral:true ();
+      let _ = C2c_mcp.Broker.drain_inbox broker ~session_id:"s-eph-archive" in
+      let archived =
+        C2c_mcp.Broker.read_archive broker ~session_id:"s-eph-archive" ~limit:100
+      in
+      check int "ephemeral message NOT in archive" 0 (List.length archived))
+
+let test_non_ephemeral_still_archived () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-arc-recv" ~alias:"recv3-test"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-arc-send" ~alias:"send3-test"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.enqueue_message broker
+        ~from_alias:"send3-test" ~to_alias:"recv3-test"
+        ~content:"on the record" ();
+      let _ = C2c_mcp.Broker.drain_inbox broker ~session_id:"s-arc-recv" in
+      let archived =
+        C2c_mcp.Broker.read_archive broker ~session_id:"s-arc-recv" ~limit:100
+      in
+      check int "non-ephemeral message IS archived" 1 (List.length archived))
+
+let test_mixed_batch_archives_only_non_ephemeral () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-mix-recv" ~alias:"recv4-test"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-mix-send" ~alias:"send4-test"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.enqueue_message broker
+        ~from_alias:"send4-test" ~to_alias:"recv4-test"
+        ~content:"keep me" ();
+      C2c_mcp.Broker.enqueue_message broker
+        ~from_alias:"send4-test" ~to_alias:"recv4-test"
+        ~content:"forget me" ~ephemeral:true ();
+      C2c_mcp.Broker.enqueue_message broker
+        ~from_alias:"send4-test" ~to_alias:"recv4-test"
+        ~content:"keep me 2" ();
+      let drained = C2c_mcp.Broker.drain_inbox broker ~session_id:"s-mix-recv" in
+      check int "all 3 returned to caller" 3 (List.length drained);
+      let archived =
+        C2c_mcp.Broker.read_archive broker ~session_id:"s-mix-recv" ~limit:100
+      in
+      check int "only the 2 non-ephemeral archived" 2 (List.length archived);
+      let archived_contents =
+        List.map (fun (e : C2c_mcp.Broker.archive_entry) -> e.ae_content) archived
+      in
+      check bool "ephemeral content NOT in archive" false
+        (List.mem "forget me" archived_contents);
+      check bool "non-ephemeral 'keep me' IS in archive" true
+        (List.mem "keep me" archived_contents);
+      check bool "non-ephemeral 'keep me 2' IS in archive" true
+        (List.mem "keep me 2" archived_contents))
+
+let test_ephemeral_drain_push_skips_archive () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-push-recv" ~alias:"recv5-test"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-push-send" ~alias:"send5-test"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.enqueue_message broker
+        ~from_alias:"send5-test" ~to_alias:"recv5-test"
+        ~content:"vanish on push" ~ephemeral:true ();
+      let pushed = C2c_mcp.Broker.drain_inbox_push broker ~session_id:"s-push-recv" in
+      check int "ephemeral pushed to caller" 1 (List.length pushed);
+      let archived =
+        C2c_mcp.Broker.read_archive broker ~session_id:"s-push-recv" ~limit:100
+      in
+      check int "ephemeral NOT archived on push path either" 0 (List.length archived))
+
+let test_ephemeral_round_trip_serialization () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-serial-recv" ~alias:"recv6-test"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-serial-send" ~alias:"send6-test"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.enqueue_message broker
+        ~from_alias:"send6-test" ~to_alias:"recv6-test"
+        ~content:"json roundtrip" ~ephemeral:true ();
+      let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"s-serial-recv" in
+      check int "one message" 1 (List.length inbox);
+      let msg = List.hd inbox in
+      check bool "ephemeral flag survived JSON round-trip" true msg.ephemeral)
+
 let () =
   run "c2c_mcp"
     [ ( "broker",
@@ -6644,4 +6757,16 @@ let () =
                test_replay_pending_orphan_inbox_missing_pending_file_returns_zero
            ; test_case "replay_pending_orphan_inbox empty pending file returns zero and deletes" `Quick
                test_replay_pending_orphan_inbox_empty_pending_file_returns_zero_and_deletes
+           ; test_case "ephemeral message drained returned to caller" `Quick
+               test_ephemeral_message_drained_returned_to_caller
+           ; test_case "ephemeral message NOT archived" `Quick
+               test_ephemeral_message_not_archived
+           ; test_case "non-ephemeral still archived" `Quick
+               test_non_ephemeral_still_archived
+           ; test_case "mixed batch archives only non-ephemeral" `Quick
+               test_mixed_batch_archives_only_non_ephemeral
+           ; test_case "ephemeral drain_inbox_push skips archive" `Quick
+               test_ephemeral_drain_push_skips_archive
+           ; test_case "ephemeral round-trip serialization" `Quick
+               test_ephemeral_round_trip_serialization
            ] ) ]

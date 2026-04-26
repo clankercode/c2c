@@ -318,11 +318,16 @@ let send_cmd =
     Cmdliner.Arg.(value & flag & info [ "no-warn-substitution" ]
       ~doc:"Suppress the shell-substitution warning.")
   in
+  let ephemeral_flag =
+    Cmdliner.Arg.(value & flag & info [ "ephemeral" ]
+      ~doc:"Mark the message as ephemeral: it is delivered normally but never written to the recipient's archive. Use for off-the-record DMs that should not become permanent history. Receipt confirmation is impossible by design.")
+  in
   let+ json = json_flag
   and+ to_alias = to_alias
   and+ message = message
   and+ from_override = from_override
-  and+ no_warn_substitution = no_warn_substitution in
+  and+ no_warn_substitution = no_warn_substitution
+  and+ ephemeral = ephemeral_flag in
   mcp_nudge_if_needed ~cmd:"send";
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let from_alias = resolve_alias ~override:from_override broker in
@@ -344,7 +349,7 @@ let send_cmd =
     exit 1
   );
   (try
-     C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content ();
+     C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content ~ephemeral ();
      let ts = Unix.gettimeofday () in
      let compacting_warning =
        let regs = C2c_mcp.Broker.list_registrations broker in
@@ -7089,7 +7094,7 @@ let wire_daemon_format_prompt_cmd =
                           ; deferrable = false
                           ; reply_via = None
                           ; enc_status = None
-                          ; ts = 0.0 }
+                          ; ts = 0.0; ephemeral = false }
         | _ -> None) items
     | _ -> []
   in
@@ -7117,7 +7122,7 @@ let wire_daemon_spool_write_cmd =
                           ; deferrable = false
                           ; reply_via = None
                           ; enc_status = None
-                          ; ts = 0.0 }
+                          ; ts = 0.0; ephemeral = false }
         | _ -> None) items
     | _ -> []
   in
