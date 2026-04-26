@@ -5485,11 +5485,164 @@ let monitor_leak = Cmdliner.Cmd.v
              Exits 1 if any alias has more than --threshold monitor processes.")
     monitor_leak_cmd
 
+(* --- subcommand: doctor delivery-mode (#307a) --- *)
+
+let delivery_mode_cmd =
+  let open Cmdliner in
+  let alias_flag =
+    Arg.(value & opt (some string) None & info ["alias"; "a"] ~docv:"ALIAS"
+           ~doc:"Recipient alias whose archive to histogram. Defaults to the \
+                 caller's MCP-session alias (C2C_MCP_AUTO_REGISTER_ALIAS).")
+  in
+  let since_flag =
+    Arg.(value & opt (some string) None & info ["since"] ~docv:"DUR"
+           ~doc:"Window of time, e.g. 1h, 30m, 7d. Default: 24h when --last \
+                 is also unset.")
+  in
+  let last_flag =
+    Arg.(value & opt (some int) None & info ["last"] ~docv:"N"
+           ~doc:"Window of last N most-recent messages. Combines with --since \
+                 (--since wins when both bound the result).")
+  in
+  let json_flag = Arg.(value & flag & info ["json"]
+                         ~doc:"Output machine-readable JSON.") in
+  let+ alias_opt = alias_flag
+  and+ since_opt = since_flag
+  and+ last_opt = last_flag
+  and+ json_out = json_flag in
+  let alias =
+    match alias_opt with
+    | Some a -> a
+    | None ->
+        match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
+        | Some a when String.trim a <> "" -> String.trim a
+        | _ ->
+            Printf.eprintf "error: --alias is required (no \
+                            C2C_MCP_AUTO_REGISTER_ALIAS in env)\n%!";
+            exit 1
+  in
+  let since_str_default =
+    match since_opt, last_opt with
+    | Some _, _ | None, Some _ -> since_opt
+    | None, None -> Some "24h"
+  in
+  let min_ts =
+    match since_str_default with
+    | None -> None
+    | Some s ->
+        match C2c_stats.parse_duration s with
+        | Some secs -> Some (Unix.gettimeofday () -. secs)
+        | None ->
+            Printf.eprintf "error: --since must be Nm|Nh|Nd (got %S)\n%!" s;
+            exit 1
+  in
+  let root = resolve_broker_root () in
+  let broker = C2c_mcp.Broker.create ~root in
+  let session_id =
+    match C2c_mcp.Broker.list_registrations broker
+          |> List.find_opt (fun r -> r.C2c_mcp.alias = alias) with
+    | Some reg -> reg.C2c_mcp.session_id
+    | None ->
+        Printf.eprintf "error: alias %S not registered\n%!" alias;
+        exit 1
+  in
+  let result =
+    C2c_mcp.Broker.delivery_mode_histogram broker ~session_id
+      ?min_ts ?last_n:last_opt ()
+  in
+  let total = result.C2c_mcp.Broker.dmh_total in
+  let push = result.C2c_mcp.Broker.dmh_push in
+  let poll = result.C2c_mcp.Broker.dmh_poll in
+  let pct n =
+    if total = 0 then 0.0
+    else 100.0 *. float_of_int n /. float_of_int total
+  in
+  if json_out then begin
+    let window =
+      let base = [("messages", `Int total)] in
+      let with_since = match since_str_default with
+        | Some s -> ("since", `String s) :: base
+        | None -> base
+      in
+      let with_last = match last_opt with
+        | Some n -> ("last", `Int n) :: with_since
+        | None -> with_since
+      in
+      `Assoc with_last
+    in
+    let by_sender =
+      `List (List.map (fun s ->
+          `Assoc
+            [ ("alias", `String s.C2c_mcp.Broker.dms_alias)
+            ; ("total", `Int s.dms_total)
+            ; ("push", `Int s.dms_push)
+            ; ("poll", `Int s.dms_poll)
+            ])
+          result.dmh_by_sender)
+    in
+    let obj = `Assoc
+      [ ("alias", `String alias)
+      ; ("window", window)
+      ; ("counts", `Assoc
+            [ ("push_intent", `Int push)
+            ; ("poll_only", `Int poll)
+            ])
+      ; ("by_sender", by_sender)
+      ; ("caveats", `List
+            [ `String "sender_intent_not_actuals"
+            ; `String "ephemeral_excluded"
+            ])
+      ]
+    in
+    print_endline (Yojson.Safe.to_string obj)
+  end else begin
+    let window_label =
+      match since_str_default, last_opt with
+      | Some s, Some n -> Printf.sprintf "last %s, capped to %d" s n
+      | Some s, None -> Printf.sprintf "last %s" s
+      | None, Some n -> Printf.sprintf "last %d messages" n
+      | None, None -> "all archived"
+    in
+    Printf.printf "Delivery mode for %s (%s, %d archived messages)\n\n"
+      alias window_label total;
+    Printf.printf "Push intent (deferrable=false): %5d  (%5.1f%%)\n"
+      push (pct push);
+    Printf.printf "Poll-only (deferrable=true):    %5d  (%5.1f%%)\n\n"
+      poll (pct poll);
+    if result.dmh_by_sender = [] then
+      Printf.printf "(no senders in window)\n"
+    else begin
+      Printf.printf "By sender:\n";
+      Printf.printf "  %-22s %6s  %6s  %5s  %6s\n"
+        "ALIAS" "TOTAL" "PUSH" "POLL" "POLL%";
+      List.iter (fun s ->
+          let p =
+            if s.C2c_mcp.Broker.dms_total = 0 then 0.0
+            else 100.0 *. float_of_int s.dms_poll
+                 /. float_of_int s.dms_total
+          in
+          Printf.printf "  %-22s %6d  %6d  %5d  %5.1f%%\n"
+            s.dms_alias s.dms_total s.dms_push s.dms_poll p)
+        result.dmh_by_sender
+    end;
+    Printf.printf "\nNOTE: counts measure sender intent (deferrable flag), \
+                   not which delivery path actually surfaced the message. \
+                   Ephemeral messages (#284) are not archived and not \
+                   counted. See #303 design doc for the deferrable contract.\n"
+  end
+
+let delivery_mode = Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "delivery-mode"
+       ~doc:"Histogram of an alias's recent inbox by deferrable flag (#307a). \
+             Counts measure sender intent, not delivery actuals.")
+    delivery_mode_cmd
+
 let doctor = Cmdliner.Cmd.group
     ~default:doctor_cmd
     (Cmdliner.Cmd.info "doctor"
        ~doc:"Health snapshot + push-pending analysis (for Max / human operators).")
-    [ doctor_docs_drift; monitor_leak; C2c_opencode_plugin_drift.opencode_plugin_drift_cmd ]
+    [ doctor_docs_drift; monitor_leak; delivery_mode;
+      C2c_opencode_plugin_drift.opencode_plugin_drift_cmd ]
 
 (* --- subcommand: stats ---------------------------------------------------- *)
 

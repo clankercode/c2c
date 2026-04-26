@@ -186,10 +186,29 @@ module Broker : sig
   type sweep_result = { dropped_regs : registration list; deleted_inboxes : string list; preserved_messages : int }
   val sweep : t -> sweep_result
   val dead_letter_path : t -> string
-  type archive_entry = { ae_drained_at : float; ae_from_alias : string; ae_to_alias : string; ae_content : string }
+  type archive_entry = { ae_drained_at : float; ae_from_alias : string; ae_to_alias : string; ae_content : string; ae_deferrable : bool }
   val archive_path : t -> session_id:string -> string
   val append_archive : t -> session_id:string -> messages:message list -> unit
   val read_archive : t -> session_id:string -> limit:int -> archive_entry list
+  type delivery_mode_sender_count =
+    { dms_alias : string
+    ; dms_total : int
+    ; dms_push : int
+    ; dms_poll : int
+    }
+  type delivery_mode_histogram_result =
+    { dmh_total : int
+    ; dmh_push : int
+    ; dmh_poll : int
+    ; dmh_by_sender : delivery_mode_sender_count list
+    }
+  val delivery_mode_histogram :
+    t -> session_id:string -> ?min_ts:float -> ?last_n:int -> unit ->
+    delivery_mode_histogram_result
+  (** [delivery_mode_histogram] (#307a) counts archived inbound messages
+      for [session_id] by `deferrable` flag, grouped by sender alias.
+      [min_ts] filters by drained_at >= ts; [last_n] caps to most-recent
+      N entries. Measures sender intent, not delivery actuals. *)
   type liveness_state = Alive | Dead | Unknown
   val registration_liveness_state : registration -> liveness_state
   val int_opt_member : string -> Yojson.Safe.t -> int option

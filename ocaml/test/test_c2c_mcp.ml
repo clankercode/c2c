@@ -235,6 +235,89 @@ let test_read_archive_respects_limit () =
            check string "second-newest is msg-4" "msg-4" second.C2c_mcp.Broker.ae_content
        | _ -> fail "expected exactly 2 entries"))
 
+(* #307a: delivery_mode_histogram counts by deferrable flag and groups
+   by sender alias. The archive carries the deferrable field at write
+   time (see append_archive); v1 of this slice exposes it through
+   archive_entry.ae_deferrable so the histogram can count without new
+   broker instrumentation. *)
+let test_delivery_mode_histogram_counts_and_by_sender () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-coord"
+        ~alias:"coord" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-relay"
+        ~alias:"relay" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-recv307"
+        ~alias:"recv307" ~pid:None ~pid_start_time:None ();
+      (* coord: 4 push (deferrable=false), 0 poll. *)
+      for i = 1 to 4 do
+        C2c_mcp.Broker.enqueue_message broker ~from_alias:"coord"
+          ~to_alias:"recv307" ~content:(Printf.sprintf "c%d" i) ()
+      done;
+      (* relay: 1 push, 2 poll (deferrable=true). *)
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"relay"
+        ~to_alias:"recv307" ~content:"r-push" ();
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"relay"
+        ~to_alias:"recv307" ~content:"r-def-1" ~deferrable:true ();
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"relay"
+        ~to_alias:"recv307" ~content:"r-def-2" ~deferrable:true ();
+      (* drain to archive. *)
+      let _ = C2c_mcp.Broker.drain_inbox broker ~session_id:"s-recv307" in
+      let result =
+        C2c_mcp.Broker.delivery_mode_histogram broker
+          ~session_id:"s-recv307" ()
+      in
+      check int "total = 7" 7 result.C2c_mcp.Broker.dmh_total;
+      check int "push intent = 5" 5 result.dmh_push;
+      check int "poll-only = 2" 2 result.dmh_poll;
+      check int "two senders" 2 (List.length result.dmh_by_sender);
+      (* coord first (sorted by total desc). *)
+      let coord = List.hd result.dmh_by_sender in
+      check string "first sender by total = coord" "coord" coord.dms_alias;
+      check int "coord total = 4" 4 coord.dms_total;
+      check int "coord push = 4" 4 coord.dms_push;
+      check int "coord poll = 0" 0 coord.dms_poll;
+      let relay = List.nth result.dmh_by_sender 1 in
+      check string "second sender = relay" "relay" relay.dms_alias;
+      check int "relay total = 3" 3 relay.dms_total;
+      check int "relay push = 1" 1 relay.dms_push;
+      check int "relay poll = 2" 2 relay.dms_poll)
+
+let test_delivery_mode_histogram_last_n_filter () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-snd-ln"
+        ~alias:"snd-ln" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-rcv-ln"
+        ~alias:"rcv-ln" ~pid:None ~pid_start_time:None ();
+      for i = 1 to 6 do
+        let deferrable = i mod 2 = 0 in
+        C2c_mcp.Broker.enqueue_message broker ~from_alias:"snd-ln"
+          ~to_alias:"rcv-ln" ~content:(Printf.sprintf "m%d" i)
+          ~deferrable ()
+      done;
+      let _ = C2c_mcp.Broker.drain_inbox broker ~session_id:"s-rcv-ln" in
+      (* last 3 should be m4 (def), m5 (push), m6 (def) → 1 push, 2 poll. *)
+      let result =
+        C2c_mcp.Broker.delivery_mode_histogram broker
+          ~session_id:"s-rcv-ln" ~last_n:3 ()
+      in
+      check int "last_n=3 total" 3 result.C2c_mcp.Broker.dmh_total;
+      check int "last_n=3 push = 1" 1 result.dmh_push;
+      check int "last_n=3 poll = 2" 2 result.dmh_poll)
+
+let test_delivery_mode_histogram_empty_archive_is_zero () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let result =
+        C2c_mcp.Broker.delivery_mode_histogram broker
+          ~session_id:"never-archived" ()
+      in
+      check int "empty archive => total 0" 0 result.C2c_mcp.Broker.dmh_total;
+      check int "empty archive => push 0" 0 result.dmh_push;
+      check int "empty archive => poll 0" 0 result.dmh_poll;
+      check int "no senders" 0 (List.length result.dmh_by_sender))
+
 let test_tools_call_history_returns_archived_messages () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-histcaller";
@@ -7220,4 +7303,10 @@ let () =
                test_notify_empty_shared_with_is_noop
            ; test_case "notify_shared_with appears in drain_inbox_push (#307b)" `Quick
                test_notify_shared_with_appears_in_push_drain
+           ; test_case "delivery_mode_histogram counts and by-sender (#307a)" `Quick
+               test_delivery_mode_histogram_counts_and_by_sender
+           ; test_case "delivery_mode_histogram --last-N filter (#307a)" `Quick
+               test_delivery_mode_histogram_last_n_filter
+           ; test_case "delivery_mode_histogram empty archive (#307a)" `Quick
+               test_delivery_mode_histogram_empty_archive_is_zero
            ] ) ]

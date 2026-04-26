@@ -1483,6 +1483,7 @@ module Broker = struct
     ; ae_from_alias : string
     ; ae_to_alias : string
     ; ae_content : string
+    ; ae_deferrable : bool
     }
 
   let archive_entry_of_json json =
@@ -1498,6 +1499,10 @@ module Broker = struct
         (try json |> member "to_alias" |> to_string with _ -> "")
     ; ae_content =
         (try json |> member "content" |> to_string with _ -> "")
+    ; ae_deferrable =
+        (* Older archive records omit the field; default false matches
+           the implicit default at write time. *)
+        (try json |> member "deferrable" |> to_bool with _ -> false)
     }
 
   (* Return up to [limit] most-recent archive entries for [session_id],
@@ -1542,6 +1547,76 @@ module Broker = struct
                   | xs -> xs
                 in
                 List.rev (drop_n drop all)))
+
+  (* #307a: histogram-compute over recent archive entries for a session.
+     Counts inbound messages by deferrable flag and groups by sender.
+     Filters: drop entries older than [min_ts] when set; cap to most
+     recent [limit] when set. Both filters compose; if both unset, all
+     archived entries are counted.
+
+     The histogram measures sender INTENT (the deferrable flag at write
+     time), not delivery actuals. See #303 / #307a design. *)
+  type delivery_mode_sender_count =
+    { dms_alias : string
+    ; dms_total : int
+    ; dms_push : int
+    ; dms_poll : int
+    }
+
+  type delivery_mode_histogram_result =
+    { dmh_total : int
+    ; dmh_push : int
+    ; dmh_poll : int
+    ; dmh_by_sender : delivery_mode_sender_count list
+    }
+
+  let delivery_mode_histogram t ~session_id ?min_ts ?last_n () =
+    let limit = match last_n with
+      | Some n when n > 0 -> n
+      | Some _ -> 0
+      | None -> max_int / 2
+    in
+    let entries = read_archive t ~session_id ~limit in
+    let entries = match min_ts with
+      | Some ts -> List.filter (fun e -> e.ae_drained_at >= ts) entries
+      | None -> entries
+    in
+    let total = List.length entries in
+    let push = List.length (List.filter (fun e -> not e.ae_deferrable) entries) in
+    let poll = total - push in
+    (* Group by from_alias. Hashtbl preserves first-seen order via the
+       ordered list of keys we accumulate. *)
+    let counts : (string, int * int) Hashtbl.t = Hashtbl.create 16 in
+    let order = ref [] in
+    List.iter
+      (fun e ->
+        let a = e.ae_from_alias in
+        let (p, l) =
+          match Hashtbl.find_opt counts a with
+          | Some pair -> pair
+          | None -> order := a :: !order; (0, 0)
+        in
+        let pair' =
+          if e.ae_deferrable then (p, l + 1) else (p + 1, l)
+        in
+        Hashtbl.replace counts a pair')
+      entries;
+    let by_sender =
+      List.rev_map
+        (fun a ->
+          let (p, l) = Hashtbl.find counts a in
+          { dms_alias = a; dms_total = p + l; dms_push = p; dms_poll = l })
+        !order
+    in
+    (* Sort by total desc; ties broken by alias asc for stable output. *)
+    let by_sender =
+      List.sort
+        (fun a b ->
+          let c = compare b.dms_total a.dms_total in
+          if c <> 0 then c else compare a.dms_alias b.dms_alias)
+        by_sender
+    in
+    { dmh_total = total; dmh_push = push; dmh_poll = poll; dmh_by_sender = by_sender }
 
   (* Skip the file write when the inbox is already empty. This keeps
      close_write events out of inotify streams — every tool call that
@@ -4348,6 +4423,7 @@ let ts = Unix.gettimeofday () in
                         ; ae_from_alias
                         ; ae_to_alias
                         ; ae_content
+                        ; ae_deferrable = _
                         } : Broker.archive_entry) ->
                     `Assoc
                       [ ("drained_at", `Float ae_drained_at)
