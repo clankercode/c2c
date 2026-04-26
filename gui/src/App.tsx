@@ -9,6 +9,7 @@ import { loadHistory, loadRoomHistory, loadPeerHistory, pollInbox } from "./useH
 import { discoverPeers, discoverRooms, fetchHealth, HealthInfo } from "./useDiscovery";
 import { WelcomeWizard } from "./components/WelcomeWizard";
 import { ArchivePanel } from "./ArchivePanel";
+import { PermissionPanel } from "./PermissionPanel";
 
 const MAX_EVENTS = 1000;
 const MAX_CACHED_EVENTS = 100;
@@ -517,6 +518,8 @@ export function App() {
             return next.length > MAX_EVENTS ? next.slice(-MAX_EVENTS) : next;
           })}
         />
+
+      <PermissionPanel events={events} myAlias={myAlias} mySessionId={mySessionId} />
     </div>
   );
 }
