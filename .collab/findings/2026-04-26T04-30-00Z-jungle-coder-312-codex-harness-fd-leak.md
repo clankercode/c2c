@@ -2,7 +2,7 @@
 
 **Author:** jungle-coder
 **Started:** 2026-04-26
-**Status:** Root cause identified; fix in progress
+**Status:** Fix committed (2ec67689), peer review in progress
 
 ## Summary
 
