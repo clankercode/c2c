@@ -107,6 +107,7 @@ class C2CInstallTests(unittest.TestCase):
                 "c2c-wake-peer",
                 "c2c-watch",
                 "c2c-whoami",
+                "cc-quota",
                 "restart-codex-self",
                 "restart-crush-self",
                 "restart-kimi-self",
@@ -127,6 +128,20 @@ class C2CInstallTests(unittest.TestCase):
         self.assertTrue((install_dir / "c2c-poker-sweep").exists())
         self.assertTrue((install_dir / "c2c-poll-inbox").exists())
         self.assertTrue((install_dir / "c2c-prune").exists())
+        self.assertTrue((install_dir / "cc-quota").exists())
+        git_common_dir = subprocess.check_output(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=REPO,
+            text=True,
+        ).strip()
+        common_path = Path(git_common_dir)
+        if not common_path.is_absolute():
+            common_path = (REPO / common_path).resolve()
+        installed_repo = common_path.parent
+        self.assertIn(
+            'exec "' + str(installed_repo / "scripts" / "cc-quota") + '" "$@"',
+            (install_dir / "cc-quota").read_text(encoding="utf-8"),
+        )
         self.assertTrue((install_dir / "c2c-register").exists())
         self.assertTrue((install_dir / "c2c-room").exists())
         self.assertTrue((install_dir / "c2c-setup").exists())

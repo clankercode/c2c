@@ -10,7 +10,7 @@ fi
 session_id=$(echo "$input" | jq -r '.session_id // empty')
 
 if [ -z "$session_id" ]; then
-  session_id="${CLAUDE_SESSION_ID:-${C2C_MCP_SESSION_ID:-}}"
+  session_id="${CLAUDE_SESSION_ID:-}"
 fi
 
 CC_PROFILE=${CLAUDE_CONFIG_DIR:-$HOME/.claude}

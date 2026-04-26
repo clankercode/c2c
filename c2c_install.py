@@ -42,6 +42,7 @@ COMMANDS = [
     "c2c-wake-peer",
     "c2c-watch",
     "c2c-whoami",
+    "cc-quota",
     "restart-codex-self",
     "restart-crush-self",
     "restart-kimi-self",
@@ -64,8 +65,11 @@ def install_bin_dir() -> Path:
 
 def write_wrapper(target_dir: Path, command: str, repo_root: Path) -> None:
     wrapper_path = target_dir / command
+    command_path = repo_root / command
+    if not command_path.exists():
+        command_path = repo_root / "scripts" / command
     wrapper_path.write_text(
-        f'#!/usr/bin/env bash\nset -euo pipefail\nexec "{repo_root / command}" "$@"\n',
+        f'#!/usr/bin/env bash\nset -euo pipefail\nexec "{command_path}" "$@"\n',
         encoding="utf-8",
     )
     wrapper_path.chmod(0o755)
