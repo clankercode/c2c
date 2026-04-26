@@ -12,3 +12,8 @@
  (name test_c2c_worktree)
  (modules test_c2c_worktree c2c_worktree)
  (libraries c2c_mcp alcotest cmdliner str unix))
+
+(test
+ (name test_c2c_onboarding)
+ (modules test_c2c_onboarding)
+ (libraries c2c_mcp alcotest yojson unix))
