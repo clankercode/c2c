@@ -6443,6 +6443,67 @@ let test_resolve_alias_self_heals_dead_target_via_inject () =
       let msg = List.hd inbox in
       check string "content delivered" "after-respawn delivery" msg.content)
 
+(* True end-to-end regression for the resolver self-heal: addresses
+   lyra's follow-up ask after 3b8c1cea. Drives `enqueue_message` → which
+   internally calls `resolve_live_session_id_by_alias` → which on the
+   All_dead branch calls `refresh_pid_if_dead` → which now reads the
+   `set_proc_hooks_for_test` overrides. The test never touches real
+   /proc and exercises the full delivery path including the heal. *)
+let test_enqueue_self_heals_dead_target_via_resolver_hooks () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-target-eh" ~alias:"galaxy-eh"
+        ~pid:(Some dead_pid) ~pid_start_time:(Some 99) ();
+      let live_pid = Unix.getpid () in
+      let scan_pids () = [ live_pid ] in
+      let read_environ pid =
+        if pid = live_pid then Some [ ("C2C_MCP_SESSION_ID", "s-target-eh") ]
+        else None
+      in
+      Fun.protect
+        ~finally:C2c_mcp.Broker.clear_proc_hooks_for_test
+        (fun () ->
+          C2c_mcp.Broker.set_proc_hooks_for_test ~scan_pids ~read_environ ();
+          (* Pre-flight: resolver still sees target as dead until heal. *)
+          (let regs = C2c_mcp.Broker.list_registrations broker in
+           let reg = List.find (fun (r : C2c_mcp.registration) -> r.session_id = "s-target-eh") regs in
+           check bool "pre-heal: registration_is_alive=false" false (C2c_mcp.Broker.registration_is_alive reg));
+          (* Sender enqueues — resolver should heal target during dispatch. *)
+          C2c_mcp.Broker.register broker ~session_id:"s-sender-eh" ~alias:"sender-eh"
+            ~pid:(Some live_pid)
+            ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time live_pid) ();
+          C2c_mcp.Broker.enqueue_message broker
+            ~from_alias:"sender-eh" ~to_alias:"galaxy-eh"
+            ~content:"resolver-heal e2e" ();
+          (* Post: target's pid was healed, message delivered. *)
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          let reg =
+            List.find (fun (r : C2c_mcp.registration) -> r.session_id = "s-target-eh") regs
+          in
+          check (option int) "target pid healed by resolver" (Some live_pid) reg.pid;
+          let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"s-target-eh" in
+          check int "message delivered after resolver heal" 1 (List.length inbox);
+          let msg = List.hd inbox in
+          check string "delivered content" "resolver-heal e2e" msg.content))
+
+let test_proc_hooks_clear_restores_real_proc () =
+  (* Sanity: after clear_proc_hooks_for_test, the broker no longer uses
+     the test scanners. We assert this by setting hooks that would heal,
+     clearing them, and verifying refresh_pid_if_dead returns false
+     (real /proc has no process claiming our synthetic session_id). *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let synth_sid = Printf.sprintf "synth-%d" (Random.bits ()) in
+      C2c_mcp.Broker.register broker ~session_id:synth_sid ~alias:"alpha-clear"
+        ~pid:(Some dead_pid) ~pid_start_time:(Some 1) ();
+      C2c_mcp.Broker.set_proc_hooks_for_test
+        ~scan_pids:(fun () -> [ Unix.getpid () ])
+        ~read_environ:(fun _ -> Some [ ("C2C_MCP_SESSION_ID", synth_sid) ])
+        ();
+      C2c_mcp.Broker.clear_proc_hooks_for_test ();
+      let healed = C2c_mcp.Broker.refresh_pid_if_dead broker ~session_id:synth_sid in
+      check bool "refresh did NOT happen post-clear (real /proc has no match)" false healed)
+
 (* Note: an end-to-end test using the real /proc scan is impractical here.
    /proc/<pid>/environ is a kernel snapshot taken at exec time; calling
    Unix.putenv inside the test process does NOT update it, so the test
@@ -6827,4 +6888,8 @@ let () =
                test_refresh_pid_if_dead_noops_when_no_replacement_discovered
            ; test_case "resolve alias self-heals dead target via inject" `Quick
                test_resolve_alias_self_heals_dead_target_via_inject
+           ; test_case "enqueue self-heals dead target via resolver hooks (end-to-end)" `Quick
+               test_enqueue_self_heals_dead_target_via_resolver_hooks
+           ; test_case "proc hooks clear restores real /proc" `Quick
+               test_proc_hooks_clear_restores_real_proc
            ] ) ]

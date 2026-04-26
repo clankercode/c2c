@@ -134,7 +134,23 @@ module Broker : sig
       session_id, update the registration's pid + pid_start_time to
       the live pid and return true. Returns false on no-op (reg
       missing, pidless, already alive, or no replacement discoverable).
-      Called automatically from [touch_session]. *)
+      Called automatically from [touch_session] and from
+      [resolve_live_session_id_by_alias] on the All_dead branch. *)
+
+  val set_proc_hooks_for_test :
+    ?scan_pids:(unit -> int list) ->
+    ?read_environ:(int -> (string * string) list option) ->
+    unit ->
+    unit
+  (** Test seam: replace the default /proc scanners used by
+      [discover_live_pid_for_session] / [refresh_pid_if_dead] /
+      [resolve_live_session_id_by_alias] for the duration of a test.
+      Both hooks are independently overridable. Module-global state — a
+      single test at a time is the norm in this suite. Call
+      [clear_proc_hooks_for_test] in a [Fun.protect] finally to undo. *)
+
+  val clear_proc_hooks_for_test : unit -> unit
+  (** Restore real-/proc behaviour for the proc-scan hooks. *)
 
   val enqueue_message : t -> from_alias:string -> to_alias:string -> content:string -> ?deferrable:bool -> unit -> unit
   type send_all_result = { sent_to : string list; skipped : (string * string) list }

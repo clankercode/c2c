@@ -226,6 +226,23 @@ module Relay = Relay
 module Broker = struct
   type t = { root : string }
 
+  (* Process-scan hooks for the pid self-heal path. Default to real
+     /proc; tests can swap in mocks via [set_proc_hooks_for_test]. The
+     hooks are module-globals (a single test running at a time is the
+     norm in this suite). Set back to None to clear. *)
+  let proc_scan_pids_override : (unit -> (unit -> int list)) option ref = ref None
+  let proc_read_environ_override : (unit -> (int -> (string * string) list option)) option ref = ref None
+
+  let set_proc_hooks_for_test ?scan_pids ?read_environ () =
+    proc_scan_pids_override :=
+      (match scan_pids with None -> None | Some f -> Some (fun () -> f));
+    proc_read_environ_override :=
+      (match read_environ with None -> None | Some f -> Some (fun () -> f))
+
+  let clear_proc_hooks_for_test () =
+    proc_scan_pids_override := None;
+    proc_read_environ_override := None
+
   let registry_path t = Filename.concat t.root "registry.json"
   let inbox_path t ~session_id = Filename.concat t.root (session_id ^ ".inbox.json")
 
@@ -763,10 +780,20 @@ module Broker = struct
              | _ -> None))
       candidates
 
+  let effective_scan_pids () =
+    match !proc_scan_pids_override with
+    | Some f -> f ()
+    | None -> default_scan_pids
+
+  let effective_read_environ () =
+    match !proc_read_environ_override with
+    | Some f -> f ()
+    | None -> read_proc_environ
+
   let discover_live_pid_for_session ~session_id =
     discover_live_pid_for_session_with
-      ~scan_pids:default_scan_pids
-      ~read_environ:read_proc_environ
+      ~scan_pids:(effective_scan_pids ())
+      ~read_environ:(effective_read_environ ())
       ~session_id
 
   let registration_is_alive reg =
@@ -855,8 +882,8 @@ module Broker = struct
 
   let refresh_pid_if_dead t ~session_id =
     refresh_pid_if_dead_with
-      ~scan_pids:default_scan_pids
-      ~read_environ:read_proc_environ
+      ~scan_pids:(effective_scan_pids ())
+      ~read_environ:(effective_read_environ ())
       t ~session_id
 
   let resolve_live_session_id_by_alias t alias =
