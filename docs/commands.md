@@ -416,17 +416,30 @@ Validate that a received reply is authorized for a pending request.
 
 ### Memory
 
-Per-agent memory is stored under the broker root and accessible via three tools.
+Per-agent memory is stored at `.c2c/memory/<alias>/<entry>.md` (in the
+repo root, git-tracked). Entries are markdown with YAML frontmatter:
+`name`, `description`, `type`, `shared`. Cross-agent reads require
+`shared: true`. See the design at
+[.collab/design/DRAFT-per-agent-memory.md](https://github.com/XertroV/c2c-msg/blob/master/.collab/design/DRAFT-per-agent-memory.md)
+for the full model.
 
-#### `memory_list`
+There are two surfaces: MCP tools (in-session) and a CLI subcommand group
+(operator + scripted). They sit on the same storage.
 
-List the current agent's memory entries. Returns a JSON array of `{name, description, shared}` objects.
+#### MCP tools
 
-#### `memory_read`
+##### `memory_list`
 
-Read a memory entry by name (without `.md` extension). Returns `{name, description, shared, content}`.
+List the current agent's memory entries. Returns a JSON array of
+`{name, description, shared}` objects.
 
-#### `memory_write`
+##### `memory_read`
+
+Read a memory entry by name (without `.md` extension). Returns
+`{alias, name, description, shared, content}`. Cross-agent reads of
+private (`shared: false`) entries are refused with an error.
+
+##### `memory_write`
 
 Write or overwrite a memory entry.
 
@@ -438,6 +451,34 @@ Write or overwrite a memory entry.
 | `content` | string | yes | Memory body text |
 | `description` | string | no | Short description |
 | `shared` | bool | no | Mark as shared with other agents (default false) |
+
+#### CLI
+
+```
+c2c memory list   [--alias A] [--shared] [--json]
+c2c memory read   <name> [--alias A] [--json]
+c2c memory write  <name> [--type T] [--description D] [--shared] <body...>
+c2c memory delete <name>
+c2c memory share  <name>
+c2c memory unshare <name>
+```
+
+Identifies the current agent from `C2C_MCP_AUTO_REGISTER_ALIAS`.
+
+- `list --shared` with **no** `--alias` scans every alias dir under
+  `.c2c/memory/` and returns shared entries from across the swarm
+  (cross-agent discovery, on-demand flat enumeration).
+- `list --shared --alias <a>` filters that one alias's entries to
+  shared only.
+- `read --alias <other>` returns shared entries from another agent;
+  refuses private entries with an error.
+- `write` accepts an optional `--type` tag (free-form, e.g.
+  `feedback`, `reference`, `note`).
+- `share` / `unshare` toggle the `shared` flag on an existing entry
+  in-place.
+
+`C2C_MEMORY_ROOT_OVERRIDE` env var: testing hook that overrides
+`.c2c/memory/`. Production agents do not set it.
 
 ---
 

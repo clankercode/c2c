@@ -160,35 +160,65 @@ let list_entry_files dir =
   | Sys_error _ -> []
   | Unix.Unix_error _ -> []
 
+(* List all alias subdirs under the memory root. Used by global --shared scan. *)
+let list_all_aliases () =
+  let root = memory_root () in
+  try
+    Array.to_list (Sys.readdir root)
+    |> List.filter (fun n ->
+        let p = Filename.concat root n in
+        try Sys.is_directory p with Sys_error _ -> false)
+    |> List.sort String.compare
+  with
+  | Sys_error _ -> []
+  | Unix.Unix_error _ -> []
+
 (* --- memory list ----------------------------------------------------------- *)
 
 let alias_arg =
-  let doc = "Read another agent's memory dir (must contain shared entries to be visible cross-agent — but list returns whatever is in the dir)." in
+  let doc = "Operate against another agent's memory dir. For read, only shared entries are visible cross-agent. For list, shows that alias's entries (or with --shared, just the shared ones). Defaults to the current agent." in
   Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS" ~doc)
 
 let shared_filter_flag =
-  let doc = "Show only entries with shared:true." in
+  let doc = "Show only entries with shared:true. Without --alias, scans every agent's memory dir for shared entries (cross-agent discovery)." in
   Cmdliner.Arg.(value & flag & info [ "shared" ] ~doc)
 
 let memory_list_cmd =
   let+ json = json_flag
   and+ alias_opt = alias_arg
   and+ shared_only = shared_filter_flag in
-  let alias = resolve_alias_arg alias_opt in
-  let dir = memory_base_dir alias in
-  let entries = list_entry_files dir in
+  (* Global shared discovery: --shared with no --alias scans every alias dir.
+     The design (.collab/design/DRAFT-per-agent-memory.md §"Open Questions" #3)
+     resolves this as on-demand flat enumeration. *)
+  let global_scan = shared_only && alias_opt = None in
   let parsed =
-    List.map (fun fname ->
-      let path = Filename.concat dir fname in
-      let entry = parse_frontmatter (read_file path) in
-      (fname, entry))
-      entries
-    |> (if shared_only then List.filter (fun (_, e) -> e.shared) else fun x -> x)
+    if global_scan then
+      List.concat_map (fun alias ->
+        let dir = memory_base_dir alias in
+        let entries = list_entry_files dir in
+        List.filter_map (fun fname ->
+          let path = Filename.concat dir fname in
+          let e = parse_frontmatter (read_file path) in
+          if e.shared then Some (alias, fname, e) else None)
+          entries)
+        (list_all_aliases ())
+    else begin
+      let alias = resolve_alias_arg alias_opt in
+      let dir = memory_base_dir alias in
+      let entries = list_entry_files dir in
+      List.filter_map (fun fname ->
+        let path = Filename.concat dir fname in
+        let e = parse_frontmatter (read_file path) in
+        if shared_only && not e.shared then None
+        else Some (alias, fname, e))
+        entries
+    end
   in
   if json then
-    let items = List.map (fun (fname, e) ->
+    let items = List.map (fun (alias, fname, e) ->
       `Assoc (
-        ("file", `String fname)
+        ("alias", `String alias)
+        :: ("file", `String fname)
         :: ("name", match e.name with Some n -> `String n | None -> `Null)
         :: ("description", match e.description with Some d -> `String d | None -> `Null)
         :: ("type", match e.type_ with Some t -> `String t | None -> `Null)
@@ -199,8 +229,8 @@ let memory_list_cmd =
   else if parsed = [] then
     print_endline (if shared_only then "(no shared memory entries)" else "(no memory entries)")
   else
-    List.iter (fun (fname, e) ->
-      Printf.printf "%s%s\n" fname
+    List.iter (fun (alias, fname, e) ->
+      Printf.printf "%s/%s%s\n" alias fname
         (match e.name with Some n -> " — " ^ n | None -> "");
       (match e.description with Some d -> Printf.printf "  %s\n" d | None -> ());
       (match e.type_ with Some t -> Printf.printf "  type: %s\n" t | None -> ());
@@ -210,6 +240,26 @@ let memory_list_cmd =
 
 (* --- memory read ----------------------------------------------------------- *)
 
+(* Pure privacy-guard predicate: is the caller allowed to read this entry?
+   Self-reads (target == current) always pass. Cross-agent reads require
+   shared:true. Returned as a boolean rather than exiting so it's testable. *)
+let cross_agent_read_allowed ~target_alias ~current_alias ~entry =
+  target_alias = current_alias || entry.shared
+
+(* Read entry, then enforce privacy. Exits 1 with a helpful message on
+   refusal. Caller-owned reads bypass the check entirely. *)
+let read_with_privacy_check ~target_alias ~current_alias ~name path =
+  let content = read_file path in
+  let e = parse_frontmatter content in
+  if not (cross_agent_read_allowed ~target_alias ~current_alias ~entry:e) then (
+    Printf.eprintf
+      "error: memory entry '%s' in alias '%s' is private (shared: false). \
+       Cross-agent reads require shared:true. Owner can run \
+       `c2c memory share %s` to allow this.\n%!"
+      name target_alias name;
+    exit 1);
+  (content, e)
+
 let memory_read_cmd =
   let name =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME" ~doc:"Entry name (filename without .md)")
@@ -217,15 +267,18 @@ let memory_read_cmd =
   let+ json = json_flag
   and+ name = name
   and+ alias_opt = alias_arg in
-  let alias = resolve_alias_arg alias_opt in
-  let path = entry_filename alias name in
+  let target_alias = resolve_alias_arg alias_opt in
+  let current_alias = current_alias_or_die () in
+  let path = entry_filename target_alias name in
   if not (Sys.file_exists path) then (
-    Printf.eprintf "error: memory entry '%s' not found in %s\n%!" name alias;
+    Printf.eprintf "error: memory entry '%s' not found in %s\n%!" name target_alias;
     exit 1);
-  let content = read_file path in
+  let (content, e) =
+    read_with_privacy_check ~target_alias ~current_alias ~name path
+  in
   if json then
-    let e = parse_frontmatter content in
     print_json (`Assoc [
+      ("alias", `String target_alias);
       ("name", match e.name with Some n -> `String n | None -> `Null);
       ("description", match e.description with Some d -> `String d | None -> `Null);
       ("type", match e.type_ with Some t -> `String t | None -> `Null);

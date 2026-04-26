@@ -2,7 +2,8 @@
 .c2c/stickers/
 !.c2c/stickers/registry.json
 .c2c/personal-logs/
-.c2c/memory/
+.c2c/memory/*
+!.c2c/memory/.gitkeep
 .c2c/roles/*.md
 
 node_modules/

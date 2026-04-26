@@ -134,6 +134,49 @@ let test_list_entry_files_missing_dir_is_empty () =
 
 (* shared-flag toggle (in-memory) -------------------------------------------- *)
 
+(* cross-agent privacy guard ------------------------------------------------ *)
+
+let test_self_read_always_allowed () =
+  let e_private = { C2c_memory.name = Some "x"; description = None; type_ = None;
+                    shared = false; body = "" } in
+  let e_shared = { e_private with C2c_memory.shared = true } in
+  check bool "self private allowed" true
+    (C2c_memory.cross_agent_read_allowed ~target_alias:"alice" ~current_alias:"alice" ~entry:e_private);
+  check bool "self shared allowed" true
+    (C2c_memory.cross_agent_read_allowed ~target_alias:"alice" ~current_alias:"alice" ~entry:e_shared)
+
+let test_cross_agent_private_refused () =
+  let e_private = { C2c_memory.name = Some "x"; description = None; type_ = None;
+                    shared = false; body = "" } in
+  check bool "bob reads alice private → refused" false
+    (C2c_memory.cross_agent_read_allowed ~target_alias:"alice" ~current_alias:"bob" ~entry:e_private)
+
+let test_cross_agent_shared_allowed () =
+  let e_shared = { C2c_memory.name = Some "x"; description = None; type_ = None;
+                   shared = true; body = "" } in
+  check bool "bob reads alice shared → allowed" true
+    (C2c_memory.cross_agent_read_allowed ~target_alias:"alice" ~current_alias:"bob" ~entry:e_shared)
+
+(* list_all_aliases / global shared scan ------------------------------------- *)
+
+let test_list_all_aliases_finds_subdirs () =
+  with_temp_dir (fun dir ->
+    Unix.putenv "C2C_MEMORY_ROOT_OVERRIDE" dir;
+    let _ = C2c_memory.ensure_memory_dir "alice" in
+    let _ = C2c_memory.ensure_memory_dir "bob" in
+    (* a file (not a dir) should not be reported as an alias *)
+    let stray = open_out (Filename.concat dir "stray.txt") in
+    output_string stray "x"; close_out stray;
+    let aliases = C2c_memory.list_all_aliases () in
+    check (list string) "alphabetical alias list" ["alice"; "bob"] aliases;
+    Unix.putenv "C2C_MEMORY_ROOT_OVERRIDE" "")
+
+let test_list_all_aliases_empty_root () =
+  with_temp_dir (fun dir ->
+    Unix.putenv "C2C_MEMORY_ROOT_OVERRIDE" dir;
+    check (list string) "empty root → []" [] (C2c_memory.list_all_aliases ());
+    Unix.putenv "C2C_MEMORY_ROOT_OVERRIDE" "")
+
 let test_render_shared_toggle () =
   let initial = C2c_memory.render_entry ~name:"r" ~description:"d" ~shared:false
     ~body:"hello\n" () in
@@ -172,5 +215,12 @@ let () =
         ] )
     ; ( "shared",
         [ test_case "render shared toggle" `Quick test_render_shared_toggle
+        ; test_case "self read always allowed" `Quick test_self_read_always_allowed
+        ; test_case "cross-agent private refused" `Quick test_cross_agent_private_refused
+        ; test_case "cross-agent shared allowed" `Quick test_cross_agent_shared_allowed
+        ] )
+    ; ( "global-scan",
+        [ test_case "list_all_aliases finds subdirs" `Quick test_list_all_aliases_finds_subdirs
+        ; test_case "list_all_aliases empty root" `Quick test_list_all_aliases_empty_root
         ] )
     ]

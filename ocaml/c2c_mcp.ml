@@ -4647,6 +4647,14 @@ let ts = Unix.gettimeofday () in
         parse lines false None None false []
       in
       let name = string_member "name" arguments in
+      (* Caller's own registered alias for the current session. Required to
+         enforce the cross-agent privacy guard below — without a current alias
+         we cannot tell whether a read is "self" or "other". *)
+      let caller_alias =
+        match current_registered_alias ?session_id_override broker with
+        | Some a -> Some a
+        | None -> auto_register_alias ()
+      in
       (match alias_for_current_session_or_argument ?session_id_override broker arguments with
        | None -> Lwt.return (missing_member_alias_result "memory_read")
        | Some alias ->
@@ -4665,13 +4673,31 @@ let ts = Unix.gettimeofday () in
                Lwt.return (tool_result ~content:("error reading memory entry: " ^ name) ~is_error:true)
              else
                let (mname, desc, shared, body) = parse_frontmatter content in
-               let result = `Assoc [
-                 ("name", match mname with Some n -> `String n | None -> `Null);
-                 ("description", match desc with Some d -> `String d | None -> `Null);
-                 ("shared", `Bool shared);
-                 ("content", `String (String.concat "\n" body))
-               ] |> Yojson.Safe.to_string in
-               Lwt.return (tool_result ~content:result ~is_error:false))
+               (* Privacy guard: cross-agent reads of private (shared:false)
+                  entries are refused. Self-reads bypass. If we cannot resolve
+                  the caller's alias and the target is not shared, refuse — the
+                  fail-closed default is safer than leaking. *)
+               let is_self =
+                 match caller_alias with
+                 | Some a -> a = alias
+                 | None -> false
+               in
+               if (not is_self) && (not shared) then
+                 Lwt.return (tool_result
+                   ~content:(Printf.sprintf
+                     "memory entry '%s' in alias '%s' is private (shared: false). \
+                      Cross-agent reads require shared:true."
+                     name alias)
+                   ~is_error:true)
+               else
+                 let result = `Assoc [
+                   ("alias", `String alias);
+                   ("name", match mname with Some n -> `String n | None -> `Null);
+                   ("description", match desc with Some d -> `String d | None -> `Null);
+                   ("shared", `Bool shared);
+                   ("content", `String (String.concat "\n" body))
+                 ] |> Yojson.Safe.to_string in
+                 Lwt.return (tool_result ~content:result ~is_error:false))
   | "memory_write" ->
       let memory_base_dir alias =
         let git_dir =
