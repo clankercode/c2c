@@ -118,12 +118,24 @@ let active_slices ~alias ~repo =
         else Some (Printf.sprintf "%s — %s" name (truncate_to line 90))
     ) entries
   in
-  (* Filter by alias appearing in the slice name OR include all if alias
-     is empty/unknown. We keep this loose: the agent can spot which are
-     theirs from the row text. The point is "what slices are in flight",
-     not strict ownership. *)
-  let _ = alias in
-  truncate_to (String.concat "\n" rows) slices_budget_chars
+  (* Sort with alias-matched rows first, so the agent's own slices
+     don't get truncation-dropped when the section's 600-char budget
+     overflows on a busy swarm with many concurrent worktrees. We keep
+     all rows (peer slices are useful situational awareness), but the
+     ordering means truncation eats peer slices first, not own. *)
+  let alias_match s =
+    let alen = String.length alias in
+    let slen = String.length s in
+    if alen = 0 then false
+    else
+      let rec scan i =
+        if i + alen > slen then false
+        else if String.sub s i alen = alias then true
+        else scan (i + 1)
+      in scan 0
+  in
+  let own, peer = List.partition alias_match rows in
+  truncate_to (String.concat "\n" (own @ peer)) slices_budget_chars
 
 (* First *content* paragraph of a markdown file: skip leading blank
    lines and pure-header lines (starting with `#`), then accumulate the
@@ -329,8 +341,8 @@ let memory_descriptions ~alias ~repo ~max_entries =
           in
           let needle = alias in
           let nlen = String.length needle in
-          let contains_alias =
-            let s = frontmatter in
+          (* Will be tightened to scope-by-shared_with-line below. *)
+          let contains_alias_in s =
             let slen = String.length s in
             let rec scan i =
               if i + nlen > slen then false
@@ -347,8 +359,32 @@ let memory_descriptions ~alias ~repo ~max_entries =
               else scan (i + 1)
             in scan 0
           in
-          let has_shared_with = contains_substr frontmatter "shared_with" in
-          if has_shared_with && contains_alias then
+          (* Scope the alias check to the line that starts with
+             `shared_with` to avoid false positives where the alias
+             appears in a `description:` or other field that mentions
+             us in passing. *)
+          let shared_with_line =
+            let lines = String.split_on_char '\n' frontmatter in
+            List.find_opt (fun l ->
+              let t =
+                let s = l in
+                let n = String.length s in
+                let i = ref 0 in
+                while !i < n && (s.[!i] = ' ' || s.[!i] = '\t') do
+                  incr i
+                done;
+                if !i >= n then "" else String.sub s !i (n - !i)
+              in
+              String.length t >= 11 && String.sub t 0 11 = "shared_with"
+            ) lines
+          in
+          let has_shared_with = shared_with_line <> None in
+          let alias_in_share_line =
+            match shared_with_line with
+            | Some line -> contains_alias_in line
+            | None -> false
+          in
+          if has_shared_with && alias_in_share_line then
             let safe = String.sub fname 0 (String.length fname - 3) in
             let desc = read_desc path in
             let row =
