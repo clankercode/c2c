@@ -76,13 +76,6 @@ services:
     volumes:
       - c2c-test-broker:/var/lib/c2c
       - c2c-test-home:/home/testagent
-      # Mount kimi auth from host. credentials is the must-have.
-      # All four files from ~/.kimi/ are mounted individually so each can be
-      # validated independently. If a file is absent, the mount is skipped.
-      - ${KIMI_KIMI_JSON:-/dev/null}:/home/testagent/.kimi/kimi.json:ro
-      - ${KIMI_CREDENTIALS:-/dev/null}:/home/testagent/.kimi/credentials:ro
-      - ${KIMI_DEVICE_ID:-/dev/null}:/home/testagent/.kimi/device_id:ro
-      - ${KIMI_CONFIG_TOML:-/dev/null}:/home/testagent/.kimi/config.toml:ro
     networks:
       - c2c-test-net
     deploy:
@@ -99,6 +92,7 @@ services:
     environment:
       C2C_MCP_BROKER_ROOT: /var/lib/c2c
       C2C_RELAY_CONNECTOR_BACKEND: ""
+      C2C_IN_DOCKER: "1"
     command: ["sh", "-c", "echo 'kimi test env ready; run tests manually' && sleep 3600"]
 
 networks:

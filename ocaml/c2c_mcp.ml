@@ -887,10 +887,11 @@ module Broker = struct
     try
       ensure_lease_dir t;
       let path = lease_file_path t ~session_id in
-      (* Unix.utimes updates mtime; creates the file if absent *)
+      (* Use open+O_CREAT to create the file atomically if absent, then utimes to set mtime *)
+      let fd = Unix.openfile path [Unix.O_CREAT; Unix.O_NOCTTY; Unix.O_NONBLOCK; Unix.O_WRONLY] 0o644 in
+      Unix.close fd;
       Unix.utimes path 0.0 (Unix.gettimeofday ())
-    with Unix.Unix_error (e, fn, msg) ->
-      Printf.eprintf "[touch_lease] ERROR: %s in %s: %s\n%!" (Unix.error_message e) fn msg
+    with Unix.Unix_error _ -> ()
 
   let docker_broker_root () =
     match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
@@ -1411,11 +1412,14 @@ module Broker = struct
       (try
          let root = docker_broker_root () in
          let dir = Filename.concat root docker_lease_dir_name in
-         if not (Sys.file_exists dir) then
-           (try Unix.mkdir dir 0o755 with Unix.Unix_error _ -> ());
+         if not (Sys.file_exists dir) then Unix.mkdir dir 0o755;
          let path = Filename.concat dir session_id in
+         (* Use open+O_CREAT to create, then utimes to set mtime *)
+         let fd = Unix.openfile path [Unix.O_CREAT; Unix.O_NOCTTY; Unix.O_NONBLOCK; Unix.O_WRONLY] 0o644 in
+         Unix.close fd;
          Unix.utimes path 0.0 (Unix.gettimeofday ())
-       with Unix.Unix_error _ -> ())
+       with Unix.Unix_error (e,fn,msg) ->
+         Printf.eprintf "[DEBUG BR] ERROR: %s in %s: %s\n%!" (Unix.error_message e) fn msg)
 
   (** True if [alias] contains '@' — indicating a remote alias that cannot be
       resolved via the local registry and must be sent via the relay outbox. *)

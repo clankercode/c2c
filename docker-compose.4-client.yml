@@ -21,10 +21,6 @@ services:
     volumes:
       - c2c-test-broker:/var/lib/c2c
       - c2c-test-home:/home/testagent
-      - ${CLAUDE_AUTH:-/dev/null}:/home/testagent/.claude:ro
-      - ${CODEX_AUTH:-/dev/null}:/home/testagent/.codex:ro
-      - ${OPENCODE_AUTH:-/dev/null}:/home/testagent/.opencode:ro
-      - ${KIMI_AUTH:-/dev/null}:/home/testagent/.kimi:ro
     networks:
       - c2c-test-net
     environment:
@@ -41,10 +37,6 @@ services:
     volumes:
       - c2c-test-broker:/var/lib/c2c
       - c2c-test-home:/home/testagent
-      - ${CLAUDE_AUTH:-/dev/null}:/home/testagent/.claude:ro
-      - ${CODEX_AUTH:-/dev/null}:/home/testagent/.codex:ro
-      - ${OPENCODE_AUTH:-/dev/null}:/home/testagent/.opencode:ro
-      - ${KIMI_AUTH:-/dev/null}:/home/testagent/.kimi:ro
     networks:
       - c2c-test-net
     environment:
