@@ -314,6 +314,25 @@ let write_outbox broker_root entries =
           output_string oc (Yojson.Safe.to_string json ^ "\n")
         ) entries)
 
+(** Append a single outbox entry to remote-outbox.jsonl (append-only, not rewrite).
+    Used by enqueue_message when the target alias is remote (contains '@'). *)
+let append_outbox_entry broker_root ~from_alias ~to_alias ~content ?message_id () =
+  let path = outbox_path broker_root in
+  let msg_id_assoc = match message_id with
+    | Some m -> ["message_id", `String m]
+    | None -> []
+  in
+  let json = `Assoc (
+    ["from_alias", `String from_alias;
+     "to_alias", `String to_alias;
+     "content", `String content]
+    @ msg_id_assoc
+  ) in
+  let line = Yojson.Safe.to_string json ^ "\n" in
+  let oc = open_out_gen [Open_text; Open_append; Open_creat] 0o644 path in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc line)
+
 (* ---------------------------------------------------------------------------
  * HTTP client (inline — minimal, matches Relay_client in relay.ml)
  *

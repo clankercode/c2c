@@ -1045,11 +1045,19 @@ module Broker = struct
             end)
           conflicting)
 
+  (** True if [alias] contains '@' — indicating a remote alias that cannot be
+      resolved via the local registry and must be sent via the relay outbox. *)
+  let is_remote_alias alias =
+    String.exists (fun c -> c = '@') alias
+
   let enqueue_message t ~from_alias ~to_alias ~content ?(deferrable = false) () =
     (* Reject messages claiming a reserved system from_alias — prevents spoofing. *)
     if List.mem from_alias reserved_system_aliases then
       invalid_arg (Printf.sprintf
         "send rejected: from_alias '%s' is a reserved system alias" from_alias)
+    else if is_remote_alias to_alias then
+      (* Remote alias: append to relay outbox for async forwarding by sync loop. *)
+      C2c_relay_connector.append_outbox_entry t.root ~from_alias ~to_alias ~content ()
     else
     with_registry_lock t (fun () ->
         match resolve_live_session_id_by_alias t to_alias with
