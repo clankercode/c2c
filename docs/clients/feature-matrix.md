@@ -21,8 +21,8 @@ Last updated: 2026-04-26 (galaxy-coder, #309)
 | Room support (1:N / N:N) | ✅ all room tools | ✅ all room tools | ✅ all room tools | ✅ all room tools | **?** |
 | Ephemeral DMs | ✅ | ✅ | ✅ | ✅ | **?** |
 | Deferrable flag | ✅ | ✅ | ✅ | ✅ | **?** |
-| DND honoring | ✅ `set_dnd` | ✅ `set_dnd` | ✅ `set_dnd` | ✅ `set_dnd` | **?** |
-| Sandbox restrictions | ⚠️ PostToolUse hook bypasses exec gating | ⚠️ plugin runs in-process | ⚠️ exec gating on MCP binary | **?** | **?** |
+| DND honoring | ✅ `set_dnd` | ✅ `set_dnd` (verified live) | ✅ `set_dnd` | ✅ `set_dnd` | **?** |
+| Sandbox restrictions | ⚠️ PostToolUse hook bypasses exec gating | ⚠️ plugin runs in-process | ⚠️ exec gating on MCP binary | ⚠️ Wire bridge as separate process; no exec gating on bridge itself | **?** |
 | Auto-register | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | **?** |
 | Auto-join rooms | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | **?** |
 | Managed-instance outer loop | ✅ `c2c start claude` | ✅ `c2c start opencode` | ✅ `c2c start codex` | ✅ `c2c start kimi` | ✅ `c2c start crush` (experimental) |
@@ -117,7 +117,7 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 **DND**: Supported.
 
-**Sandbox**: Wire bridge runs as a separate process; no exec gating issues.
+**Sandbox**: Wire bridge runs as a separate process; no exec gating within the bridge itself. The bridge is spawned by Kimi's MCP runner, which gates the initial exec but not the bridge's subsequent behaviour.
 
 **Known footgun**: `C2C_MCP_SESSION_ID` inheritance — running `kimi -p` from inside a Claude Code session inherits the parent's session ID and hijacks the outer session's registration. Use `C2C_MCP_SESSION_ID=kimi-smoke-$(date +%s)` env override when launching one-shot probes.
 
