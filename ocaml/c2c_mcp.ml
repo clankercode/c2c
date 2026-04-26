@@ -889,7 +889,8 @@ module Broker = struct
       let path = lease_file_path t ~session_id in
       (* Unix.utimes updates mtime; creates the file if absent *)
       Unix.utimes path 0.0 (Unix.gettimeofday ())
-    with Unix.Unix_error _ -> ()
+    with Unix.Unix_error (e, fn, msg) ->
+      Printf.eprintf "[touch_lease] ERROR: %s in %s: %s\n%!" (Unix.error_message e) fn msg
 
   let docker_broker_root () =
     match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
@@ -1401,7 +1402,20 @@ module Broker = struct
                     let current = load_inbox t ~session_id in
                     save_inbox t ~session_id (current @ migrated))
             end)
-          conflicting)
+          conflicting);
+    (* Docker: touch the lease file so cross-container peers see this session
+       as alive via the shared broker volume. Inlined here (instead of calling
+       touch_session) because touch_session is defined later in this module and
+       OCaml requires forward declarations for cross-references. *)
+    if in_docker_mode () then
+      (try
+         let root = docker_broker_root () in
+         let dir = Filename.concat root docker_lease_dir_name in
+         if not (Sys.file_exists dir) then
+           (try Unix.mkdir dir 0o755 with Unix.Unix_error _ -> ());
+         let path = Filename.concat dir session_id in
+         Unix.utimes path 0.0 (Unix.gettimeofday ())
+       with Unix.Unix_error _ -> ())
 
   (** True if [alias] contains '@' — indicating a remote alias that cannot be
       resolved via the local registry and must be sent via the relay outbox. *)
