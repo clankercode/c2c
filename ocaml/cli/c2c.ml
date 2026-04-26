@@ -5443,6 +5443,23 @@ let render_role_for_client ?(model_override : string option) (r : C2c_role.t) ~c
   | Some p -> C2c_role.render_for_client r ~client ~resolved_pmodel:p ~name
   | None -> C2c_role.render_for_client r ~client ~name
 
+(** Resolve the effective pmodel from a role and normalize it for launch args.
+    Returns None if the role has no pmodel set.
+    Used by cmd_start to derive --model from the role when no explicit --model
+    flag is given. *)
+let resolve_role_pmodel_for_launch (r : C2c_role.t) ~(client : string) : string option =
+  let pmodel_lookup (key : string) : string option =
+    match C2c_start.repo_config_pmodel_lookup key with
+    | None -> None
+    | Some p -> Some (p.C2c_start.provider ^ ":" ^ p.C2c_start.model)
+  in
+  match C2c_role.resolve_pmodel r ~class_lookup:pmodel_lookup with
+  | None -> None
+  | Some raw ->
+      (match C2c_start.normalize_model_override_for_client ~client raw with
+       | Ok normalized -> Some normalized
+       | Error _ -> None)
+
 let write_agent_file ~client ~name ~content =
   let path = agent_file_path ~client ~name in
   let dir = Filename.dirname path in
@@ -5662,7 +5679,7 @@ let start_cmd =
     C2c_role.resolve_agent_path ~name:agent_name ~client
   in
   (* --agent mode: load canonical role, render for client, write compiled file *)
-  let (kickoff_prompt, alias_override, auto_join_rooms, agent_name) =
+  let (kickoff_prompt, alias_override, auto_join_rooms, agent_name, role_pmodel_override) =
     match agent_opt with
     | Some agent_name ->
         let role_path = agent_role_path agent_name in
@@ -5688,6 +5705,7 @@ let start_cmd =
                (if available = [] then "(none)" else String.concat ", " available);
              exit 1
            end;
+            let role_pmodel = resolve_role_pmodel_for_launch role ~client in
             match render_role_for_client ?model_override role ~client ~name:agent_name with
             | Some rendered ->
                 let effective_alias = Option.value role.C2c_role.c2c_alias ~default:agent_name in
@@ -5720,7 +5738,7 @@ let start_cmd =
                let subtitle = Printf.sprintf "%s  |  %s" client name in
                Banner.print_banner ?theme_name:theme ~subtitle (Printf.sprintf "c2c start --agent %s" agent_name);
                 let effective_agent_name = Some agent_name in
-                (kickoff, alias_override, auto_join_rooms, effective_agent_name)
+                (kickoff, alias_override, auto_join_rooms, effective_agent_name, role_pmodel)
           | None ->
               Printf.eprintf "error: --agent is not supported for client '%s' yet.\n%!" client;
               exit 1
@@ -5761,37 +5779,38 @@ let start_cmd =
                  (if available = [] then "(none)" else String.concat ", " available);
                exit 1
              end;
-              (match render_role_for_client ?model_override role ~client ~name with
-               | Some rendered ->
-                   let effective_alias = Option.value role.C2c_role.c2c_alias ~default:name in
-                   if client = "opencode" || client = "claude" then
-                     write_agent_file ~client ~name ~content:rendered;
-                   let onboarding_preamble =
-                     Printf.sprintf
-                       "You are now running as %s. Complete these startup steps:\n\
-                        1. Call `whoami` to confirm your identity and registration.\n\
-                        2. Join the `swarm-lounge` room: use `join_room` with {\"room_id\": \"swarm-lounge\"}.\n\
-                        3. Send a message to coordinator1 introducing yourself: use `send` with \
-                        {\"to_alias\": \"coordinator1\", \"content\": \"<brief intro of your role and capabilities>\"}.\n\
-                        4. Call `poll_inbox` to check for any messages addressed to you.\n\
-                        5. Arm a heartbeat Monitor: use Monitor tool with \
-                        command `heartbeat 4.1m \"<wake message>\"`, persistent:true.\n\
-                        Begin now."
-                       name
-                   in
-                   let kickoff =
-                     if client = "claude" then Some onboarding_preamble
-                     else Some (default_kickoff_prompt ~name ~alias:effective_alias ~role:role.C2c_role.body ())
-                   in
-                   let alias_override = role.C2c_role.c2c_alias in
-                   let auto_join_rooms =
-                     if role.C2c_role.c2c_auto_join_rooms <> []
-                     then Some (String.concat ", " role.C2c_role.c2c_auto_join_rooms)
-                     else None
-                   in
-                    let agent_name = Some name in
-                    (kickoff, alias_override, auto_join_rooms, agent_name)
-              | None ->
+               let role_pmodel = resolve_role_pmodel_for_launch role ~client in
+               (match render_role_for_client ?model_override role ~client ~name with
+                | Some rendered ->
+                    let effective_alias = Option.value role.C2c_role.c2c_alias ~default:name in
+                    if client = "opencode" || client = "claude" then
+                      write_agent_file ~client ~name ~content:rendered;
+                    let onboarding_preamble =
+                      Printf.sprintf
+                        "You are now running as %s. Complete these startup steps:\n\
+                         1. Call `whoami` to confirm your identity and registration.\n\
+                         2. Join the `swarm-lounge` room: use `join_room` with {\"room_id\": \"swarm-lounge\"}.\n\
+                         3. Send a message to coordinator1 introducing yourself: use `send` with \
+                         {\"to_alias\": \"coordinator1\", \"content\": \"<brief intro of your role and capabilities>\"}.\n\
+                         4. Call `poll_inbox` to check for any messages addressed to you.\n\
+                         5. Arm a heartbeat Monitor: use Monitor tool with \
+                         command `heartbeat 4.1m \"<wake message>\"`, persistent:true.\n\
+                         Begin now."
+                        name
+                    in
+                    let kickoff =
+                      if client = "claude" then Some onboarding_preamble
+                      else Some (default_kickoff_prompt ~name ~alias:effective_alias ~role:role.C2c_role.body ())
+                    in
+                    let alias_override = role.C2c_role.c2c_alias in
+                    let auto_join_rooms =
+                      if role.C2c_role.c2c_auto_join_rooms <> []
+                      then Some (String.concat ", " role.C2c_role.c2c_auto_join_rooms)
+                      else None
+                    in
+                     let agent_name = Some name in
+                     (kickoff, alias_override, auto_join_rooms, agent_name, role_pmodel)
+               | None ->
                         (* Role file exists but not supported for this client — fall through
                            to structured role path so user can still start with the role. *)
                         let role_opt =
@@ -5806,10 +5825,10 @@ let start_cmd =
                            | None ->
                                (match role_opt with
                                 | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
-                                | None -> None)
-                         in
-                         (kickoff_prompt, alias_opt, None, None))
-            with Sys_error _ ->
+                                 | None -> None)
+                          in
+                          (kickoff_prompt, alias_opt, None, None, None))
+             with Sys_error _ ->
               (* Role file exists but can't be read as structured role — fall through. *)
               let role_opt =
                 match read_role ~alias:effective_alias with
@@ -5823,9 +5842,9 @@ let start_cmd =
                 | None ->
                     (match role_opt with
                      | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
-                     | None -> None)
-                in
-                (kickoff_prompt, alias_opt, None, None))
+                      | None -> None)
+                 in
+                 (kickoff_prompt, alias_opt, None, None, None))
         else
           (* No structured role file — structured role path. *)
           let role_opt =
@@ -5847,10 +5866,10 @@ let start_cmd =
                 (match role_opt with
                  | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
                  | None -> None)
-          in
-          (kickoff_prompt, alias_opt, None, None)
-  in
-  let auto_join_rooms = match auto_join with
+           in
+           (kickoff_prompt, alias_opt, None, None, None)
+   in
+   let auto_join_rooms = match auto_join with
     | Some rooms -> Some rooms
     | None -> auto_join_rooms
   in
@@ -5881,11 +5900,12 @@ let start_cmd =
         Printf.eprintf "warning: failed to chdir to worktree %s: %s\n%!" wt_dir e);
       Printf.printf "[c2c] worktree: %s (branch: %s)\n%!" wt_dir branch
   | _ -> ());
+  let model_for_cmd = match model_override with Some _ -> model_override | None -> role_pmodel_override in
   exit (C2c_start.cmd_start ~client ~name ~extra_args:extra_argv
       ?binary_override:bin_opt
       ?alias_override
       ?session_id_override:session_id_opt
-      ?model_override
+      ?model_override:model_for_cmd
       ~one_hr_cache
       ?kickoff_prompt
       ?agent_name

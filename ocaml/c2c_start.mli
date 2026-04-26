@@ -498,6 +498,7 @@ val cmd_start :
   ?alias_override:string ->
   ?session_id_override:string ->
   ?model_override:string ->
+  ?role_pmodel_override:string ->
   ?one_hr_cache:bool ->
   ?kickoff_prompt:string ->
   ?auto_join_rooms:string ->

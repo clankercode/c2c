@@ -3938,6 +3938,7 @@ let run_outer_loop ~(name : string) ~(client : string)
 let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?(binary_override : string option) ?(alias_override : string option)
     ?(session_id_override : string option) ?(model_override : string option)
+    ?(role_pmodel_override : string option)
     ?(one_hr_cache = false)
     ?(kickoff_prompt : string option) ?(auto_join_rooms : string option)
     ?(agent_name : string option) ?(reply_to : string option)
@@ -4099,7 +4100,14 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
         let bo = if binary_override = None then None else binary_override in
         let ao = if alias_override = None then Some ex.alias else alias_override in
         let ea = if extra_args = [] then ex.extra_args else extra_args in
-        let mo = match model_override with Some _ -> model_override | None -> ex.model_override in
+        let mo =
+          match model_override with
+          | Some _ -> model_override
+          | None ->
+              (match role_pmodel_override with
+               | Some _ -> role_pmodel_override
+               | None -> ex.model_override)
+        in
         (* For OpenCode: prefer the ses_* session ID captured by the plugin
            in opencode-session.txt over the UUID stored in instance config.
            The plugin writes this file when it first sees a session.created
