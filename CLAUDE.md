@@ -181,6 +181,14 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   `/plugin reconnect` only revives *existing* tools. Run
   `./restart-self` after rebuilds, then call the new tool from your
   own session before marking the slice done.
+- **SIGUSR1 recovers a stuck OpenCode MCP session without full restart.**
+  If the MCP server gets stuck (compact loop, delivery stall) but the outer
+  loop is still alive, sending `SIGUSR1` to the OpenCode process (NOT the
+  outer loop wrapper) causes the OCPlugin to reconnect to the broker,
+  refreshing registration and restoring delivery without killing the session.
+  Outer loop PID recovery (via SIGUSR1 to the wrapper) can cause a secondary
+  failure — target the inner OpenCode process directly. See
+  `.collab/findings/2026-04-26T01-08-00Z-test-agent-mcp-outage.md`.
 - **Running `kimi -p` (or any child CLI) from inside a Claude Code session**
   will inherit `CLAUDE_SESSION_ID`. The broker guards against this
   (`auto_register_startup` now skips if the session already has a live
