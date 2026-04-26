@@ -98,7 +98,20 @@ The connector:
 3. Pulls inbound remote messages into local session inboxes.
 4. Heartbeats all sessions every tick to keep leases alive.
 
-For production, run as a daemon:
+For production, the connector ships with a managed-instance wrapper —
+same shape as `c2c start <client>` for harness sessions, integrates with
+`c2c instances` and `c2c stop`:
+
+```bash
+c2c start relay-connect --relay-url "$C2C_RELAY_URL" --interval 15
+# → daemonizes; pid + log at ~/.local/share/c2c/instances/relay-connect/
+c2c instances                # shows relay-connect alongside other managed sessions
+c2c stop relay-connect       # SIGTERM (then SIGKILL after 5s) the daemon
+```
+
+Pass `--foreground` to run in the current shell instead of forking — handy
+for tmux-managed dogfooding. The legacy bare invocation still works:
+
 ```bash
 nohup c2c relay connect --interval 15 >> ~/.local/share/c2c/relay-connector.log 2>&1 &
 ```

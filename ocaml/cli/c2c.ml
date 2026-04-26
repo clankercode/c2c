@@ -5385,6 +5385,21 @@ let start_cmd =
     Cmdliner.Arg.(value & pos_right 1 string [] & info [] ~docv:"CMD"
       ~doc:"For CLIENT=tmux, optional command argv to type into the target pane. Use -- before the command.")
   in
+  let foreground_flag =
+    Cmdliner.Arg.(value & flag & info [ "foreground"; "fg" ]
+      ~doc:"For CLIENT=relay-connect: run connector in the foreground instead of \
+            daemonizing. Useful for tmux-managed dogfooding. Ignored for other clients.")
+  in
+  let relay_url_opt =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL"
+      ~doc:"For CLIENT=relay-connect: relay URL to connect to. Falls back to \
+            $$C2C_RELAY_URL when omitted. Ignored for other clients.")
+  in
+  let interval_opt =
+    Cmdliner.Arg.(value & opt int 30 & info [ "interval" ] ~docv:"SECS"
+      ~doc:"For CLIENT=relay-connect: poll interval in seconds (default 30). \
+            Ignored for other clients.")
+  in
   let+ client = client
   and+ name_opt = name
   and+ alias_opt = alias
@@ -5402,7 +5417,10 @@ let start_cmd =
   and+ branch_flag = branch_opt
   and+ tmux_loc = tmux_loc
   and+ tmux_tail = tmux_tail
-  and+ extra_argv = extra_argv in
+  and+ extra_argv = extra_argv
+  and+ foreground_flag = foreground_flag
+  and+ relay_url_opt = relay_url_opt
+  and+ interval_opt = interval_opt in
   let extra_argv = List.concat extra_argv in
   let kickoff_prompt_text =
     match kickoff_prompt_text_raw, kickoff_prompt_file with
@@ -5423,9 +5441,45 @@ let start_cmd =
            exit 1)
     | None, None -> None
   in
-  if Sys.getenv_opt "C2C_INSTANCE_NAME" <> None then begin
+  (* The nested-session guard below applies to harness clients
+     (claude/codex/etc.) where running `c2c start` from inside another
+     agent session can hijack session IDs. relay-connect is a pure
+     background daemon — no inheritance hazard — so it dispatches before
+     the guard. *)
+  if client <> "relay-connect" && Sys.getenv_opt "C2C_INSTANCE_NAME" <> None then begin
     Printf.eprintf "error: cannot run 'c2c start' from inside a c2c session.\n";
     Printf.eprintf "  Hint: use the outer shell or a separate terminal instead.\n%!";
+    exit 1
+  end;
+  (* relay-connect: managed connector daemon. Branches off the harness-client
+     pipeline early — connectors don't need session ids, role files, kickoff
+     prompts, or tmux integration. The instance dir + outer.pid plumbing is
+     shared with `c2c instances` / `c2c stop` so they Just Work. *)
+  if client = "relay-connect" then begin
+    let name = match name_opt with
+      | Some n -> n
+      | None -> "relay-connect"
+    in
+    let resolved_url =
+      match relay_url_opt with
+      | Some _ as some -> some
+      | None -> Sys.getenv_opt "C2C_RELAY_URL"
+    in
+    if resolved_url = None then begin
+      Printf.eprintf
+        "error: relay-connect requires a relay URL.\n\
+        \  Either pass --relay-url URL or export C2C_RELAY_URL.\n%!";
+      exit 1
+    end;
+    C2c_relay_managed.start
+      ~name
+      ~daemon:(not foreground_flag)
+      ~relay_url:resolved_url
+      ~interval:interval_opt
+      ~extra_args:extra_argv
+      ();
+    (* foreground mode exec'd in place; daemon mode parent has exit 0'd
+       inside C2c_relay_managed.start. We only return here on error. *)
     exit 1
   end;
   if client <> "tmux" && tmux_loc <> None then begin
