@@ -2240,7 +2240,10 @@ let prepare_launch_args ~(name : string) ~(client : string)
         @ agent_args @ kickoff_args
     | "opencode" ->
         let module A = (val (Stdlib.Hashtbl.find client_adapters "opencode") : CLIENT_ADAPTER) in
-        let agent_args = match agent_name with Some n -> [ "--agent"; n ] | None -> [] in
+        (* The compiled agent file is written at .opencode/agents/<name>.md
+           (instance name), so opencode's --agent flag must resolve to the
+           instance name (= compiled-file basename), not the role name. *)
+        let agent_args = match agent_name with Some _ -> [ "--agent"; name ] | None -> [] in
         A.build_start_args ~name ?alias_override ?model_override ?resume_session_id ()
         @ agent_args
     | "codex" ->

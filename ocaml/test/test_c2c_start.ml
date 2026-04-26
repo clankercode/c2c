@@ -142,6 +142,21 @@ let test_prepare_launch_args_adds_agent_flag_for_claude () =
   check bool "adds --agent" true (has_adjacent_pair "--agent" "AgentName" args);
   check bool "does not add --agents" false (List.mem "--agents" args)
 
+let test_prepare_launch_args_opencode_agent_flag_uses_instance_name () =
+  (* Regression: c2c start opencode --agent <role> -n <instance>
+     used to pass `--agent <role>` to opencode, but the compiled
+     agent file is written at .opencode/agents/<instance>.md, so
+     opencode could not resolve the agent. Fix: pass instance name. *)
+  let args =
+    C2c_start.prepare_launch_args ~name:"test-agent-oc" ~client:"opencode"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~agent_name:"test-agent" ()
+  in
+  check bool "--agent uses instance name (compiled-file basename)" true
+    (has_adjacent_pair "--agent" "test-agent-oc" args);
+  check bool "--agent does NOT pass role name" false
+    (has_adjacent_pair "--agent" "test-agent" args)
+
 let test_prepare_launch_args_adds_model_flag_for_opencode () =
   let args =
     C2c_start.prepare_launch_args ~name:"oc-proof" ~client:"opencode"
@@ -1511,6 +1526,8 @@ let () =
             `Quick, test_prepare_launch_args_adds_model_flag_for_claude )
         ; ( "prepare_launch_args_adds_agent_flag_for_claude",
             `Quick, test_prepare_launch_args_adds_agent_flag_for_claude )
+        ; ( "prepare_launch_args_opencode_agent_flag_uses_instance_name",
+            `Quick, test_prepare_launch_args_opencode_agent_flag_uses_instance_name )
         ; ( "prepare_launch_args_adds_model_flag_for_opencode",
             `Quick, test_prepare_launch_args_adds_model_flag_for_opencode )
         ; ( "tmux_shell_command_quotes_argv",
