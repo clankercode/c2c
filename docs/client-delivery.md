@@ -55,10 +55,10 @@ Latency: the time from send to delivery is bounded by how quickly the recipient 
 ### Self-restart
 
 ```
-Agent calls:  c2c restart-me
+Agent calls:  ./restart-self
     │
     ▼
-c2c restart-me  detects managed harness  →  signals c2c start claude outer
+./restart-self  detects managed harness  →  signals c2c start claude outer
     │
     ▼
 Outer process kills inner Claude Code process  →  restarts with same args
@@ -67,7 +67,7 @@ Outer process kills inner Claude Code process  →  restarts with same args
 New Claude Code session: picks up updated ~/.claude.json / settings.json
 ```
 
-For unmanaged (bare `claude`) sessions, `restart-me` prints instructions to exit and re-open. (The CLI dispatches into the legacy Python helper `c2c_restart_me.py` until the OCaml port lands.)
+For unmanaged (bare `claude`) sessions, `./restart-self` prints instructions to exit and re-open. (`./restart-self` is the Python helper at the repo root — it drives the existing managed-harness pidfile dance. There is no OCaml `c2c restart-me` subcommand today.)
 
 ### What the user sees
 
@@ -141,16 +141,16 @@ Fallback path: the `--notify-only` daemon injects a lightweight sentinel (not th
 ### Self-restart
 
 ```
-Agent calls:  c2c restart-me
+Agent calls:  ./restart-self
     │
     ▼
-c2c restart-me  detects managed harness  →  signals c2c start codex outer
+./restart-self  detects managed harness  →  signals c2c start codex outer
     │
     ▼
 Outer process restarts Codex inner process  →  new session, same config
 ```
 
-For unmanaged sessions, `restart-me` prints exit instructions.
+For unmanaged sessions, `./restart-self` prints exit instructions.
 
 ### What the user sees
 
@@ -245,10 +245,10 @@ Both delivery paths keep messages broker-native — `c2c verify` counts them fro
 ### Self-restart
 
 ```
-Agent calls:  c2c restart-me
+Agent calls:  ./restart-self
     │
     ▼
-c2c restart-me  signals opencode managed harness  →  restarts TUI
+./restart-self  signals opencode managed harness  →  restarts TUI
 ```
 
 For unmanaged OpenCode, exit and reopen in the repo directory.
