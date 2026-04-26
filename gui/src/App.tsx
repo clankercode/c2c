@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Command, Child } from "@tauri-apps/plugin-shell";
-import { C2cEvent } from "./types";
+import { C2cEvent, safeParseEvent } from "./types";
 import { EventFeed } from "./EventFeed";
 import { ComposeBar } from "./ComposeBar";
 import { Sidebar } from "./Sidebar";
@@ -81,7 +81,9 @@ export function App() {
         const trimmed = line.trim();
         if (!trimmed) return;
         try {
-          const event: C2cEvent = JSON.parse(trimmed);
+          const parsed = safeParseEvent(JSON.parse(trimmed));
+          if (!parsed) return;
+          const event = parsed;
           if (event.event_type === "monitor.ready") {
             reconnectAttemptRef.current = 0;
             setStatus("live");

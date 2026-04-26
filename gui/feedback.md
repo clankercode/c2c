@@ -132,10 +132,10 @@ Tests cover happy paths and basic error paths at the CLI wrapper layer. **Notabl
 | Priority | Item |
 |----------|------|
 | ~~**High**~~ | ~~Fix `room.leave` to remove alias from `roomMembers`~~ — ✅ fixed 2fd82ea |
-| **High** | Add Zod validation at monitor JSON ingestion point |
-| **Medium** | Virtualize EventFeed (react-virtual or similar) |
+| ~~**High**~~ | ~~Add Zod validation at monitor JSON ingestion point~~ — ✅ fixed (safeParseEvent in types.ts + App.tsx wiring)
+| ~~**Medium**~~ | ~~Virtualize EventFeed (react-virtual or similar)~~ — ✅ fixed 8056920 |
 | ~~**Medium**~~ | ~~Add error toasts for transient CLI failures~~ — ✅ fixed (useToast singleton + ToastContainer) |
-| **Medium** | Reduce discovery polling from 60s to ~10s |
+| ~~**Medium**~~ | ~~Reduce discovery polling from 60s to ~10s~~ — ✅ fixed |
 | **Low** | Implement sent-message local outbox |
 | **Low** | Memoize `dedupeAndSort` or move to useMemo |
 | ~~**Low**~~ | ~~Add markdown rendering for messages~~ — ✅ fixed |

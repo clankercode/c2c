@@ -55,3 +55,39 @@ export type C2cEvent =
   | RoomJoinEvent
   | RoomLeaveEvent
   | (BaseEvent & Record<string, unknown>);
+
+/** Validate and type-check a raw JSON object as a C2cEvent.
+    Returns null if the object is malformed or missing required fields.
+    This guards the monitor JSON ingestion point against malformed data. */
+export function safeParseEvent(raw: unknown): C2cEvent | null {
+  if (raw === null || raw === undefined || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.event_type !== "string") return null;
+  if (typeof obj.monitor_ts !== "string") return null;
+  if (isNaN(parseFloat(obj.monitor_ts))) return null;
+
+  switch (obj.event_type) {
+    case "message":
+      if (typeof obj.from_alias !== "string") return null;
+      if (typeof obj.to_alias !== "string") return null;
+      if (typeof obj.content !== "string") return null;
+      return obj as unknown as MessageEvent;
+    case "drain":
+    case "sweep":
+    case "peer.alive":
+    case "peer.dead":
+      if (typeof obj.alias !== "string") return null;
+      return obj as unknown as DrainEvent;
+    case "room.join":
+    case "room.leave":
+      if (typeof obj.room_id !== "string") return null;
+      if (typeof obj.alias !== "string") return null;
+      return obj as unknown as RoomJoinEvent;
+    case "monitor.ready":
+      // Internal sentinel — pass through as opaque record
+      return obj as unknown as BaseEvent & Record<string, unknown>;
+    default:
+      // Unknown event type — allow as opaque record
+      return obj as unknown as BaseEvent & Record<string, unknown>;
+  }
+}
