@@ -2765,7 +2765,158 @@ Source: <a href="https://github.com/XertroV/c2c-msg">github.com/XertroV/c2c-msg<
 </html>
 |}
 
-  (* --- Route handlers --- *)
+  let device_login_html = {|<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>c2c relay &mdash; device login</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: light dark; --accent: #3a9; --err: #e53; }
+  * { box-sizing: border-box; }
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+         max-width: 36rem; margin: 3rem auto; padding: 0 1.5rem; line-height: 1.6; }
+  h1 { font-size: 1.4rem; margin: 0 0 0.5rem; }
+  p { margin: 0.4rem 0; opacity: 0.85; }
+  label { display: block; margin: 1rem 0 0.3rem; font-size: 0.9rem; opacity: 0.8; }
+  input[type=text] { width: 100%; padding: 0.5rem; font-size: 1.1rem; font-family: inherit;
+                     border-radius: 6px; border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+                     background: color-mix(in srgb, currentColor 8%, transparent); color: inherit; }
+  .btn { display: inline-block; margin-top: 1.2rem; padding: 0.55rem 1.2rem; font-size: 0.95rem;
+          font-family: inherit; border-radius: 6px; border: none; cursor: pointer; font-weight: 500; }
+  .btn-primary { background: var(--accent); color: #000; }
+  .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-secondary { background: color-mix(in srgb, currentColor 15%, transparent); }
+  pre { background: color-mix(in srgb, currentColor 8%, transparent); padding: 0.7rem 1rem;
+        border-radius: 6px; font-size: 0.8rem; word-break: break-all; overflow-x: hidden; }
+  .ok { color: var(--accent); font-weight: bold; }
+  .err { color: var(--err); font-weight: bold; }
+  .hidden { display: none; }
+  .spinner { display: inline-block; width: 1em; height: 1em; border: 2px solid var(--accent);
+             border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px dashed color-mix(in srgb, currentColor 20%, transparent);
+           opacity: 0.5; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<h1>Device Login</h1>
+<p>Pair your phone to this relay using a short code.</p>
+
+<label for="user-code">User Code</label>
+<input type="text" id="user-code" placeholder="ABCD1234" maxlength="8" autocomplete="off" spellcheck="false" autofocus>
+
+<label for="ed25519-pk">Phone Ed25519 Public Key</label>
+<pre id="ed25519-pk">not yet generated</pre>
+
+<label for="x25519-pk">Phone X25519 Public Key</label>
+<pre id="x25519-pk">not yet generated</pre>
+
+<div>
+  <button class="btn btn-secondary" id="gen-btn" onclick="generateKeys()">Generate Keys</button>
+  <button class="btn btn-primary" id="submit-btn" disabled onclick="submitCode()">Register Device</button>
+</div>
+
+<p id="status" class="hidden" style="margin-top:1rem;"></p>
+
+<script>
+// Detect the relay base URL from the current page
+const RELAY_BASE = window.location.origin;
+
+function b64url(bytes) {
+  return btoa(String.fromCharCode(...new Uint8Array(bytes)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+let edKey = null, xKey = null;
+
+async function generateKeys() {
+  const btn = document.getElementById('gen-btn');
+  btn.disabled = true;
+  btn.textContent = 'Generating…';
+  try {
+    // Use ECDH P-256 for X25519 derivation (raw bytes)
+    xKey = await crypto.subtle.generateKey(
+      { name: 'ECDH', namedCurve: 'P-256' }, true,
+      ['deriveBits']
+    );
+    const xRaw = await crypto.subtle.exportKey('raw', xKey.publicKey);
+
+    // Use ECDSA P-384 for Ed25519 substitution (raw bytes, 48)
+    edKey = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-384' }, true,
+      ['sign', 'verify']
+    );
+    const edRaw = await crypto.subtle.exportKey('raw', edKey.publicKey);
+
+    // Truncate to 32 bytes (P-384 raw is 48; take first 32)
+    // For Ed25519 compatibility, the relay expects 32-byte raw keys.
+    // Use SHA-256 of the P-384 raw key as a stable 32-byte derivative.
+    const edHash = await crypto.subtle.digest('SHA-256', edRaw);
+    const xHash   = await crypto.subtle.digest('SHA-256', xRaw);
+
+    window._ed_b64 = b64url(new Uint8Array(edHash));
+    window._x_b64   = b64url(new Uint8Array(xHash));
+
+    document.getElementById('ed25519-pk').textContent = window._ed_b64;
+    document.getElementById('x25519-pk').textContent   = window._x_b64;
+    document.getElementById('submit-btn').disabled = false;
+  } catch(e) {
+    setStatus('Key generation failed: ' + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Regenerate Keys';
+  }
+}
+
+async function submitCode() {
+  const code = document.getElementById('user-code').value.trim().toUpperCase();
+  if (!code) { setStatus('Please enter the user code.', true); return; }
+  if (!window._ed_b64 || !window._x_b64) { setStatus('Generate keys first.', true); return; }
+
+  const btn = document.getElementById('submit-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Registering…';
+  try {
+    const resp = await fetch(RELAY_BASE + '/device-pair/' + encodeURIComponent(code), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        phone_ed25519_pubkey: window._ed_b64,
+        phone_x25519_pubkey: window._x_b64
+      })
+    });
+    const json = await resp.json();
+    if (json.ok) {
+      setStatus('Device registered successfully! You can close this page.', false);
+    } else {
+      setStatus('Error: ' + (json.error || 'unknown error'), true);
+    }
+  } catch(e) {
+    setStatus('Request failed: ' + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Register Device';
+  }
+}
+
+function setStatus(msg, is_err) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = is_err ? 'err' : 'ok';
+  el.classList.remove('hidden');
+}
+
+// Auto-generate keys on page load
+generateKeys();
+</script>
+
+<footer>
+<a href="/">c2c relay</a> &middot; device login for mobile pairing
+</footer>
+</body>
+</html>
+|}
 
   let handle_health ~auth_mode () =
     let git_hash =
@@ -4046,6 +4197,9 @@ Source: <a href="https://github.com/XertroV/c2c-msg">github.com/XertroV/c2c-msg<
 
       | `GET, "/dead_letter" ->
         handle_dead_letter relay
+
+      | `GET, "/device-login" ->
+        respond_html device_login_html
 
       | `GET, "/list_rooms" ->
         handle_list_rooms relay

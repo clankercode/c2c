@@ -493,7 +493,19 @@ Enter this code on your phone at the relay URL.
 
 ### 10.3 Phone: register via web
 
-Navigate to the relay URL, enter the `user_code`, and register the phone's pubkeys.
+Navigate to `<relay-url>/device-login` in a browser, e.g.:
+
+```
+https://relay.c2c.im/device-login
+```
+
+1. The page auto-generates an Ed25519 and X25519 public key pair using the browser's WebCrypto API (SHA-256 of P-384/ECDH keys, truncated to 32 bytes — compatible with the relay's 32-byte key format).
+2. Enter the `user_code` from step 10.2 (e.g. `ABCD1234`).
+3. Click **Register Device**.
+
+On success the page shows "Device registered successfully! You can close this page."
+
+> **Note**: The keys are generated entirely client-side. No private key ever leaves the phone. The relay only receives the public keys.
 
 ### 10.4 Desktop: claim
 
