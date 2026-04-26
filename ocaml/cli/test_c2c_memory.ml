@@ -208,6 +208,28 @@ let test_shared_true_overrides_shared_with () =
   check bool "non-listed alias reads global shared → allowed" true
     (C2c_memory.cross_agent_read_allowed ~target_alias:"alice" ~current_alias:"carol" ~entry:e)
 
+(* grant/revoke -------------------------------------------------------------- *)
+
+let test_grant_aliases_deduplicates () =
+  check (list string) "existing + new aliases"
+    ["alice"; "bob"; "carol"]
+    (C2c_memory.grant_aliases ["bob"; "carol"; "alice"] ["alice"; "bob"])
+
+let test_revoke_aliases_removes_only_requested () =
+  check (list string) "bob removed, others preserved"
+    ["alice"; "carol"]
+    (C2c_memory.revoke_aliases ["bob"] ["alice"; "bob"; "carol"])
+
+let test_revoke_aliases_missing_is_idempotent () =
+  check (list string) "missing alias leaves list unchanged"
+    ["alice"; "carol"]
+    (C2c_memory.revoke_aliases ["bob"] ["alice"; "carol"])
+
+let test_revoke_all_targeted_clears_aliases () =
+  check (list string) "all targeted grants cleared"
+    []
+    (C2c_memory.revoke_aliases ~all_targeted:true [] ["alice"; "bob"])
+
 (* list_all_aliases / global shared scan ------------------------------------- *)
 
 let test_list_all_aliases_finds_subdirs () =
@@ -279,6 +301,12 @@ let () =
         ; test_case "render round-trip" `Quick test_render_shared_with_roundtrip
         ; test_case "grants cross-agent read" `Quick test_shared_with_grants_cross_agent_read
         ; test_case "shared:true overrides" `Quick test_shared_true_overrides_shared_with
+        ] )
+    ; ( "grant-revoke",
+        [ test_case "grant aliases deduplicates" `Quick test_grant_aliases_deduplicates
+        ; test_case "revoke removes requested aliases" `Quick test_revoke_aliases_removes_only_requested
+        ; test_case "revoke missing alias is idempotent" `Quick test_revoke_aliases_missing_is_idempotent
+        ; test_case "revoke all targeted clears aliases" `Quick test_revoke_all_targeted_clears_aliases
         ] )
     ; ( "global-scan",
         [ test_case "list_all_aliases finds subdirs" `Quick test_list_all_aliases_finds_subdirs

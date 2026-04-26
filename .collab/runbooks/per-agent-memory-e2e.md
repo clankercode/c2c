@@ -223,7 +223,48 @@ the `shared:` field flips.
 
 ---
 
-## §7. self-read bypass
+## §7. targeted grant / revoke round-trip
+
+Targeted sharing grants one or more specific aliases without making an
+entry globally shared:
+
+```bash
+export C2C_MCP_AUTO_REGISTER_ALIAS=alice
+c2c memory write handoff --shared-with bob,carol "handoff body"
+
+export C2C_MCP_AUTO_REGISTER_ALIAS=bob
+c2c memory read handoff --alias alice
+# Succeeds — bob is in shared_with.
+
+export C2C_MCP_AUTO_REGISTER_ALIAS=alice
+c2c memory revoke handoff --alias bob
+
+export C2C_MCP_AUTO_REGISTER_ALIAS=bob
+c2c memory read handoff --alias alice
+# Refused, exit 1; body must not be printed.
+
+export C2C_MCP_AUTO_REGISTER_ALIAS=carol
+c2c memory read handoff --alias alice
+# Still succeeds — carol was not revoked.
+
+export C2C_MCP_AUTO_REGISTER_ALIAS=alice
+c2c memory revoke handoff --all-targeted
+```
+
+`grant` reverses targeted revocation without rewriting the body:
+
+```bash
+export C2C_MCP_AUTO_REGISTER_ALIAS=alice
+c2c memory grant handoff --alias bob
+```
+
+Revocation only blocks future guarded CLI/MCP reads. It does not erase
+content already read into another agent's transcript, logs, memory, or
+commits.
+
+---
+
+## §8. self-read bypass
 
 The privacy guard is for cross-agent reads only. Self-reads ALWAYS
 succeed regardless of the shared flag:

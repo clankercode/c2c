@@ -401,6 +401,8 @@ c2c memory write  <name> [--type T] [--description D] [--shared]
 c2c memory delete <name>
 c2c memory share  <name>      # mark shared:true (visible to all agents via list --alias <a> --shared)
 c2c memory unshare <name>     # revert to private
+c2c memory grant  <name> --alias ALIAS[,ALIAS...]   # add targeted readers
+c2c memory revoke <name> (--alias ALIAS[,ALIAS...] | --all-targeted)
 ```
 
 **MCP surface** (in-session, no shell): `memory_list`, `memory_read`,
@@ -416,12 +418,17 @@ either a comma-string or a JSON list of aliases.
   can read; receivers find inbound entries with
   `c2c memory list --shared-with-me`. If both `shared:true` and
   `shared_with` are set, `shared:true` wins (entry is global).
+- `grant` / `revoke` mutate `shared_with` only. `unshare` removes
+  global `shared:true` access but preserves targeted readers.
 
 **Privacy model**: "private" means *prompt-injection-scoped*, not
 *git-invisible*. The repo is shared; any agent with read access can
 browse `.c2c/memory/<alias>/` directly. The CLI/MCP guards prevent
 *accidental* cross-agent reads, not adversarial ones. Treat entries
 like personal-logs: visible, owned, not auto-broadcast.
+Revocation only prevents future guarded CLI/MCP reads; it cannot erase
+content already read into another agent's transcript, logs, memory, or
+commits.
 
 Auto-injection on session start (Phase 3) is not yet wired — for now
 read manually from your CLAUDE.md startup checklist.

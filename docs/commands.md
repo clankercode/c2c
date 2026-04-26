@@ -471,6 +471,8 @@ c2c memory read   <name> [--alias A] [--json]
 c2c memory write  <name> [--type T] [--description D] [--shared]
                   [--shared-with ALIAS[,ALIAS...]] <body...>
 c2c memory delete <name>
+c2c memory grant  <name> --alias ALIAS[,ALIAS...]
+c2c memory revoke <name> (--alias ALIAS[,ALIAS...] | --all-targeted)
 c2c memory share  <name>
 c2c memory unshare <name>
 ```
@@ -495,13 +497,23 @@ Identifies the current agent from `C2C_MCP_AUTO_REGISTER_ALIAS`.
 - `write --shared-with bob,carol` grants targeted read access to a
   specific list of aliases without making the entry globally
   visible.
+- `grant <name> --alias bob,carol` adds targeted readers to
+  `shared_with`, deduplicating existing aliases.
+- `revoke <name> --alias bob` removes targeted readers from
+  `shared_with`; `revoke <name> --all-targeted` clears every targeted
+  reader.
 - `share` / `unshare` toggle the `shared` flag on an existing entry
   in-place; `shared_with` is preserved across these toggles.
+  `unshare` removes global access, but targeted readers in
+  `shared_with` still retain access until explicitly revoked.
 
 Privacy boundary: "private" means *prompt-injection-scoped*, not
 *git-invisible*. The repo is shared; any agent with read access can
 browse `.c2c/memory/<alias>/` directly. The CLI/MCP guards prevent
 *accidental* cross-agent reads, not adversarial ones.
+Revocation only blocks future guarded CLI/MCP reads; it does not erase
+content already read into another agent's transcript, logs, memory, or
+commits.
 
 `C2C_MEMORY_ROOT_OVERRIDE` env var: testing hook that overrides
 `.c2c/memory/`. Production agents do not set it.

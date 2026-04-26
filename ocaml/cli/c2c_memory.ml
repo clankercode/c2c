@@ -153,6 +153,24 @@ let render_entry ~name ?description ?type_ ~shared ?(shared_with=[]) ~body () =
   then Buffer.add_char buf '\n';
   Buffer.contents buf
 
+let normalize_aliases aliases =
+  aliases
+  |> List.map String.trim
+  |> List.filter (fun alias -> alias <> "")
+
+let grant_aliases aliases existing =
+  let acc = ref existing in
+  List.iter (fun alias ->
+    if not (List.mem alias !acc) then acc := !acc @ [alias])
+    (normalize_aliases aliases);
+  !acc
+
+let revoke_aliases ?(all_targeted=false) aliases existing =
+  if all_targeted then []
+  else
+    let revoked = normalize_aliases aliases in
+    List.filter (fun alias -> not (List.mem alias revoked)) existing
+
 let current_alias_or_die () =
   match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
   | Some a when String.trim a <> "" -> String.trim a
@@ -419,6 +437,43 @@ let set_shared_flag ~name ~shared =
     ~shared_with:e.shared_with ~body:e.body () in
   write_file path new_content
 
+let update_shared_with ~name ~f =
+  let alias = current_alias_or_die () in
+  let path = entry_filename alias name in
+  if not (Sys.file_exists path) then (
+    Printf.eprintf "error: memory entry '%s' not found\n%!" name;
+    exit 1);
+  let e = parse_frontmatter (read_file path) in
+  let entry_name = Option.value e.name ~default:name in
+  let shared_with = f e.shared_with in
+  let new_content = render_entry ~name:entry_name
+    ?description:e.description ?type_:e.type_ ~shared:e.shared
+    ~shared_with ~body:e.body () in
+  write_file path new_content;
+  (e, shared_with)
+
+let alias_list_arg =
+  let doc = "Comma-separated list of aliases to grant or revoke." in
+  Cmdliner.Arg.(value & opt string "" & info [ "alias"; "a" ] ~docv:"ALIAS[,ALIAS...]" ~doc)
+
+let all_targeted_flag =
+  let doc = "Clear all targeted shared_with grants for this entry." in
+  Cmdliner.Arg.(value & flag & info [ "all-targeted" ] ~doc)
+
+let print_share_update_json ~name ~shared ~shared_with =
+  print_json (`Assoc [
+    ("name", `String name);
+    ("shared", `Bool shared);
+    ("shared_with", `List (List.map (fun alias -> `String alias) shared_with));
+  ])
+
+let warn_if_global_shared ~name =
+  Printf.eprintf
+    "warning: memory entry '%s' is globally shared; targeted grant/revoke \
+     changes do not restrict global reads. Run `c2c memory unshare %s` \
+     to remove global access.\n%!"
+    name name
+
 let memory_share_cmd =
   let name =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME"
@@ -441,6 +496,46 @@ let memory_unshare_cmd =
   if json then print_json (`Assoc [("unshared", `String name)])
   else Printf.printf "unshared: %s\n" name
 
+let memory_grant_cmd =
+  let name =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME"
+      ~doc:"Entry name to grant targeted read access for.")
+  in
+  let+ json = json_flag
+  and+ name = name
+  and+ aliases = alias_list_arg in
+  let grants = parse_alias_list aliases in
+  if grants = [] then (
+    Printf.eprintf "error: pass at least one alias via --alias\n%!";
+    exit 1);
+  let (entry, shared_with) =
+    update_shared_with ~name ~f:(grant_aliases grants)
+  in
+  if entry.shared then warn_if_global_shared ~name;
+  if json then print_share_update_json ~name ~shared:entry.shared ~shared_with
+  else Printf.printf "granted: %s -> %s\n" name (String.concat ", " grants)
+
+let memory_revoke_cmd =
+  let name =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME"
+      ~doc:"Entry name to revoke targeted read access for.")
+  in
+  let+ json = json_flag
+  and+ name = name
+  and+ aliases = alias_list_arg
+  and+ all_targeted = all_targeted_flag in
+  let revokes = parse_alias_list aliases in
+  if (not all_targeted) && revokes = [] then (
+    Printf.eprintf "error: pass --alias ALIAS[,ALIAS...] or --all-targeted\n%!";
+    exit 1);
+  let (entry, shared_with) =
+    update_shared_with ~name ~f:(revoke_aliases ~all_targeted revokes)
+  in
+  if entry.shared then warn_if_global_shared ~name;
+  if json then print_share_update_json ~name ~shared:entry.shared ~shared_with
+  else if all_targeted then Printf.printf "revoked all targeted grants: %s\n" name
+  else Printf.printf "revoked: %s -> %s\n" name (String.concat ", " revokes)
+
 (* --- group ----------------------------------------------------------------- *)
 
 let memory_default = memory_list_cmd
@@ -452,5 +547,7 @@ let memory_group =
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "read" ~doc:"Read a memory entry.") memory_read_cmd
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "write" ~doc:"Write a memory entry.") memory_write_cmd
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "delete" ~doc:"Delete a memory entry.") memory_delete_cmd
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "grant" ~doc:"Grant targeted read access to a memory entry.") memory_grant_cmd
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "revoke" ~doc:"Revoke targeted read access from a memory entry.") memory_revoke_cmd
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "share" ~doc:"Mark a memory entry as shared.") memory_share_cmd
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "unshare" ~doc:"Revert a memory entry to private.") memory_unshare_cmd ]
