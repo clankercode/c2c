@@ -846,6 +846,98 @@ class C2CCLITests(unittest.TestCase):
             ],
         )
 
+    def test_resolve_broker_root_env_override(self):
+        """C2C_MCP_BROKER_ROOT env var takes absolute precedence over repo fingerprint."""
+        home_dir = Path(self.temp_dir.name) / "home-env-override"
+        custom_broker = Path(self.temp_dir.name) / "my-custom-broker"
+        home_dir.mkdir(parents=True, exist_ok=True)
+        custom_broker.mkdir(parents=True, exist_ok=True)
+
+        env = dict(self.env)
+        env["HOME"] = str(home_dir)
+        env["C2C_MCP_BROKER_ROOT"] = str(custom_broker)
+
+        result = run_native_cli(
+            "install", "codex",
+            "--json",
+            env=env,
+        )
+        self.assertEqual(result_code(result), 0, result.stderr)
+        config_text = (home_dir / ".codex" / "config.toml").read_text(encoding="utf-8")
+        self.assertIn(f'C2C_MCP_BROKER_ROOT = "{custom_broker}"', config_text)
+
+    def test_migrate_broker_dry_run_does_not_write(self):
+        """--dry-run prints planned copies but creates no files."""
+        legacy = Path(self.temp_dir.name) / "legacy-broker"
+        legacy.mkdir(parents=True, exist_ok=True)
+        (legacy / "registry.json").write_text('{"registrations":[]}', encoding="utf-8")
+        sub_dir = legacy / "archive"
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        (sub_dir / "test-agent.jsonl").write_text(
+            '{"ts":1,"from":"a","to":"b","content":"hello"}\n', encoding="utf-8"
+        )
+
+        new_root = Path(self.temp_dir.name) / "new-broker"
+        env = dict(self.env)
+        env["HOME"] = str(Path(self.temp_dir.name) / "home-migrate")
+
+        result = run_native_cli(
+            "migrate-broker",
+            "--from", str(legacy),
+            "--to", str(new_root),
+            "--dry-run",
+            env=env,
+        )
+        self.assertEqual(result_code(result), 0, result.stderr)
+        self.assertIn("DRY RUN", result.stdout)
+        self.assertIn("registry.json", result.stdout)
+        self.assertIn("test-agent.jsonl", result.stdout)
+        # dry-run should NOT create any files (only mkdir_p may run inside copy_dir
+        # but files themselves should not be written)
+        self.assertFalse((new_root / "registry.json").exists())
+        self.assertFalse((new_root / "archive" / "test-agent.jsonl").exists())
+
+    def test_migrate_broker_live_copies_nested_dirs(self):
+        """Live migrate correctly copies nested directory structures."""
+        legacy = Path(self.temp_dir.name) / "legacy-broker"
+        legacy.mkdir(parents=True, exist_ok=True)
+        # Simulate memory/ subdir with nested alias entries
+        mem_dir = legacy / "memory" / "test-alias"
+        mem_dir.mkdir(parents=True, exist_ok=True)
+        (mem_dir / "entry.md").write_text("# test entry\ncontent", encoding="utf-8")
+        # archive/session.jsonl
+        arch_dir = legacy / "archive"
+        arch_dir.mkdir(parents=True, exist_ok=True)
+        (arch_dir / "test-session.jsonl").write_text(
+            '{"ts":1,"from":"a","to":"b","content":"hello"}\n', encoding="utf-8"
+        )
+        # inbox.json.d/
+        inbox_dir = legacy / "inbox.json.d"
+        inbox_dir.mkdir(parents=True, exist_ok=True)
+        (inbox_dir / "inbox.json").write_text('[]', encoding="utf-8")
+
+        new_root = Path(self.temp_dir.name) / "new-broker"
+        env = dict(self.env)
+        env["HOME"] = str(Path(self.temp_dir.name) / "home-migrate-live")
+
+        result = run_native_cli(
+            "migrate-broker",
+            "--from", str(legacy),
+            "--to", str(new_root),
+            "--json",
+            env=env,
+        )
+        self.assertEqual(result_code(result), 0, result.stderr)
+
+        # Verify all nested content made it
+        self.assertTrue((new_root / "memory" / "test-alias" / "entry.md").exists())
+        content = (new_root / "memory" / "test-alias" / "entry.md").read_text(encoding="utf-8")
+        self.assertEqual(content, "# test entry\ncontent")
+
+        self.assertTrue((new_root / "archive" / "test-session.jsonl").exists())
+        self.assertTrue((new_root / "inbox.json.d" / "inbox.json").exists())
+
+
 def result_code(result):
     return result.returncode
 

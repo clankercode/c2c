@@ -1011,8 +1011,6 @@ let sweep_dryrun =
     (Cmdliner.Cmd.info "sweep-dryrun" ~doc:"Read-only preview of what sweep would drop (safe during active swarm).")
     sweep_dryrun_cmd
 
-(* --- subcommand: migrate-broker ------------------------------------------ *)
-
 (** Compute the legacy broker root: <git-common-dir>/c2c/mcp.
     This is what resolve_broker_root used before the #294 per-repo fingerprint change. *)
 let legacy_broker_root () =
@@ -1082,45 +1080,45 @@ let migrate_broker_run ~from_path ~to_path ~dry_run ~json =
   in
   let from = Option.value from_path ~default:(legacy_broker_root ()) in
   let to_ = Option.value to_path ~default:(resolve_broker_root ()) in
-  if json then print_json (`Assoc [
-    "ok", `Bool true;
-    "from", `String from;
-    "to", `String to_;
-    "dry_run", `Bool dry_run
-  ])
-  else begin
+  if not (Sys.file_exists from) then begin
+    if json then print_json (`Assoc ["ok", `Bool false; "error", `String ("source broker does not exist: " ^ from)])
+    else Printf.eprintf "error: source broker does not exist: %s\n" from;
+    exit 1
+  end;
+  if from = to_ then begin
+    if json then print_json (`Assoc ["ok", `Bool false; "error", `String "from and to paths are the same"])
+    else Printf.eprintf "error: from and to paths are the same\n";
+    exit 1
+  end;
+  if not json then begin
     Printf.printf "Migrating broker data:\n";
     Printf.printf "  from: %s\n" from;
     Printf.printf "  to:   %s\n" to_;
     if dry_run then Printf.printf "  mode: DRY RUN (no files will be written)\n"
-    else Printf.printf "  mode: LIVE (files will be written)\n";
-    if not (Sys.file_exists from) then begin
-      Printf.eprintf "error: source broker does not exist: %s\n" from;
-      exit 1
-    end;
-    if from = to_ then begin
-      Printf.eprintf "error: from and to paths are the same\n";
-      exit 1
-    end;
-    (* Copy individual files *)
-    List.iter (fun f ->
-      let src = from // f in
-      if Sys.file_exists src then copy_file src (to_ // f)
-    ) ["registry.json"; "registry.json.lock"; "deaths.jsonl"];
-    (* Copy subdirs: inboxes, memory, archive *)
-    let _ = copy_dir (from // "inbox.json.d") (to_ // "inbox.json.d") [] in
-    let _ = copy_dir (from // "memory") (to_ // "memory") [] in
-    let _ = copy_dir (from // "archive") (to_ // "archive") [] in
-    if not dry_run then begin
-      mkdir_p to_;
-      (* Verify by checking for key files at destination *)
-      let verified = Sys.file_exists (to_ // "registry.json") in
-      if verified then
-        Printf.printf "\nMigration complete. Verify: ls %s\n" to_
-      else
-        Printf.eprintf "\nMigration completed but registry.json not found at destination.\n"
-    end else
-      Printf.printf "\nDRY RUN complete. Run without --dry-run to execute.\n"
+    else Printf.printf "  mode: LIVE (files will be written)\n"
+  end;
+  (* Copy individual files *)
+  List.iter (fun f ->
+    let src = from // f in
+    if Sys.file_exists src then copy_file src (to_ // f)
+  ) ["registry.json"; "registry.json.lock"; "deaths.jsonl"];
+  (* Copy subdirs: inboxes, memory, archive *)
+  let _ = copy_dir (from // "inbox.json.d") (to_ // "inbox.json.d") [] in
+  let _ = copy_dir (from // "memory") (to_ // "memory") [] in
+  let _ = copy_dir (from // "archive") (to_ // "archive") [] in
+  if not dry_run then begin
+    mkdir_p to_;
+    (* Verify by checking for key files at destination *)
+    let verified = Sys.file_exists (to_ // "registry.json") in
+    if json then
+      if verified then print_json (`Assoc ["ok", `Bool true; "from", `String from; "to", `String to_; "dry_run", `Bool false])
+      else print_json (`Assoc ["ok", `Bool false; "error", `String "migration completed but registry.json not found at destination"; "from", `String from; "to", `String to_])
+    else
+      if verified then Printf.printf "\nMigration complete. Verify: ls %s\n" to_
+      else Printf.eprintf "\nMigration completed but registry.json not found at destination.\n"
+  end else begin
+    if json then print_json (`Assoc ["ok", `Bool true; "from", `String from; "to", `String to_; "dry_run", `Bool dry_run])
+    else Printf.printf "\nDRY RUN complete. Run without --dry-run to execute.\n"
   end
 
 let migrate_broker_cmd =
@@ -1148,6 +1146,8 @@ let migrate_broker =
     (Cmdliner.Cmd.info "migrate-broker"
        ~doc:"Migrate broker data from the legacy .git/c2c/mcp path to the new per-repo path. Use --dry-run first.")
     migrate_broker_cmd
+
+(* --- subcommand: history -------------------------------------------------- *)
 
 (* --- subcommand: history -------------------------------------------------- *)
 
