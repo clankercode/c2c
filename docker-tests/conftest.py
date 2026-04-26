@@ -22,6 +22,8 @@ def _run_c2c(argv, session_id=None, alias=None, timeout=10):
     """Run c2c CLI and return stdout with correct C2C_MCP_CLIENT_PID."""
     env = dict(os.environ)
     env["C2C_CLI_FORCE"] = "1"
+    # Enable Docker cross-container liveness (file-based lease, not /proc/<pid>)
+    env["C2C_IN_DOCKER"] = "1"
     if session_id:
         env["C2C_MCP_SESSION_ID"] = session_id
     if alias:

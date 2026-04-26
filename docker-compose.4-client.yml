@@ -1,20 +1,26 @@
-# Docker Compose override for two-container integration tests.
-# Extends test-env with a peer-b service that shares the broker volume.
+# Docker Compose override for four-container mesh tests.
+# Extends docker-compose.two-container.yml (which adds peer-a, peer-b).
 # Usage:
-#   docker compose -f docker-compose.test.yml -f docker-compose.two-container.yml up -d
-#   docker compose -f docker-compose.test.yml -f docker-compose.two-container.yml run --rm peer-b sh
+#   docker compose \
+#     -f docker-compose.test.yml \
+#     -f docker-compose.two-container.yml \
+#     -f docker-compose.4-client.yml \
+#     up -d
+#   docker compose \
+#     -f docker-compose.test.yml \
+#     -f docker-compose.two-container.yml \
+#     -f docker-compose.4-client.yml \
+#     run --rm peer-c sh
 
 services:
-  peer-a:
+  peer-c:
     build:
       context: .
       dockerfile: Dockerfile.test
-    container_name: c2c-test-peer-a
+    container_name: c2c-test-peer-c
     volumes:
       - c2c-test-broker:/var/lib/c2c
       - c2c-test-home:/home/testagent
-      # Auth files — all 5 CLI types mounted read-only when present on host.
-      # Crush is experimental/unsupported — no auth mount.
       - ${CLAUDE_AUTH:-/dev/null}:/home/testagent/.claude:ro
       - ${CODEX_AUTH:-/dev/null}:/home/testagent/.codex:ro
       - ${OPENCODE_AUTH:-/dev/null}:/home/testagent/.opencode:ro
@@ -27,11 +33,11 @@ services:
       C2C_IN_DOCKER: "1"
     command: ["sleep", "3600"]
 
-  peer-b:
+  peer-d:
     build:
       context: .
       dockerfile: Dockerfile.test
-    container_name: c2c-test-peer-b
+    container_name: c2c-test-peer-d
     volumes:
       - c2c-test-broker:/var/lib/c2c
       - c2c-test-home:/home/testagent

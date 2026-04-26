@@ -54,6 +54,8 @@ services:
       C2C_MCP_BROKER_ROOT: /var/lib/c2c
       # Disable relay auto-discovery to stay sealed
       C2C_RELAY_CONNECTOR_BACKEND: ""
+      # Docker cross-container liveness via file-based lease
+      C2C_IN_DOCKER: "1"
     # Healthcheck — verifies binary accepts --help, NOT that relay is healthy.
     # In sealed mode C2C_RELAY_CONNECTOR_BACKEND="" so relay is not used;
     # this check only confirms the binary is present and runnable.

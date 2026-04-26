@@ -72,10 +72,6 @@ def docker_compose_exec(service, command):
 class TestTwoContainerRoundtrip:
     """Case 6: Two-container roundtrip validation."""
 
-    @pytest.mark.xfail(
-        reason="cross-container c2c send currently rejects peer PIDs from another PID namespace as not alive",
-        strict=False,
-    )
     def test_two_container_dm_alice_to_bob(self):
         """Alice container registers, Bob container registers, Alice DMs Bob."""
         ts = int(time.time())
@@ -120,10 +116,6 @@ class TestTwoContainerRoundtrip:
         msgs = json.loads(r_poll.stdout)
         assert any(msg in m.get("content", "") for m in msgs), f"bob did not receive {msg}: {msgs}"
 
-    @pytest.mark.xfail(
-        reason="cross-container c2c send currently rejects peer PIDs from another PID namespace as not alive",
-        strict=False,
-    )
     def test_two_container_dm_bob_to_alice(self):
         """Bob container registers, then DMs Alice."""
         ts = int(time.time())
@@ -168,10 +160,6 @@ class TestTwoContainerRoundtrip:
         msgs = json.loads(r_poll.stdout)
         assert any(msg in m.get("content", "") for m in msgs), f"alice did not receive {msg}: {msgs}"
 
-    @pytest.mark.xfail(
-        reason="cross-container c2c send currently rejects peer PIDs from another PID namespace as not alive",
-        strict=False,
-    )
     def test_bob_receives_from_alice(self):
         """Bob polls and receives Alice's message after both register."""
         ts = int(time.time())
