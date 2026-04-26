@@ -5113,6 +5113,30 @@ let test_large_inbox_drains_all_messages () =
       let after = C2c_mcp.Broker.read_inbox broker ~session_id:"s-dst" in
       check int "inbox empty after drain" 0 (List.length after))
 
+(* Remote alias: to_alias containing '@' is appended to remote-outbox.jsonl
+   for async relay forwarding, not written to a local inbox. *)
+let test_send_remote_alias_appends_to_outbox () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Remote alias with '@' should go to outbox, not local inbox. *)
+      C2c_mcp.Broker.enqueue_message broker
+        ~from_alias:"jungle-coder"
+        ~to_alias:"lyra@relay"
+        ~content:"hello across machines"
+        ();
+      let outbox_path = Filename.concat dir "remote-outbox.jsonl" in
+      check bool "outbox file created" true (Sys.file_exists outbox_path);
+      (* Read and verify the JSON line. *)
+      let json_str = Stdlib.input_line (open_in outbox_path) in
+      let json = Yojson.Safe.from_string json_str in
+      let open Yojson.Safe.Util in
+      check string "from_alias" "jungle-coder"
+        (match json |> member "from_alias" with `String s -> s | _ -> "");
+      check string "to_alias" "lyra@relay"
+        (match json |> member "to_alias" with `String s -> s | _ -> "");
+      check string "content" "hello across machines"
+        (match json |> member "content" with `String s -> s | _ -> ""))
+
 (* Quality: limit=1 returns only the most recent message, not the oldest. *)
 let test_room_history_limit_one_returns_last () =
   with_temp_dir (fun dir ->
@@ -6468,10 +6492,12 @@ let () =
              test_room_history_limit_larger_than_total_returns_all
          ; test_case "room_history preserves sender identity across multiple senders" `Quick
              test_room_history_preserves_multiple_senders
-         ; test_case "large inbox drains all messages correctly" `Quick
-             test_large_inbox_drains_all_messages
-         ; test_case "room_history limit=1 returns only last message" `Quick
-             test_room_history_limit_one_returns_last
+          ; test_case "large inbox drains all messages correctly" `Quick
+              test_large_inbox_drains_all_messages
+          ; test_case "send remote alias appends to outbox" `Quick
+              test_send_remote_alias_appends_to_outbox
+          ; test_case "room_history limit=1 returns only last message" `Quick
+              test_room_history_limit_one_returns_last
          ; test_case "register rename fans out peer_renamed notification" `Quick
              test_register_rename_fans_out_peer_renamed_notification
          ; test_case "new peer registration broadcasts peer_register to swarm-lounge" `Quick
