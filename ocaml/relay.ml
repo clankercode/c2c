@@ -2850,11 +2850,6 @@ async function generateKeys() {
     );
     const edRaw = await crypto.subtle.exportKey('raw', edKey.publicKey);
 
-    // Truncate to 32 bytes (P-384 raw is 48; take first 32)
-    // For Ed25519 compatibility, the relay expects 32-byte raw keys.
-    // Use SHA-256 of the P-384 raw key as a stable 32-byte derivative.
-    // Use ECDSA P-384 for Ed25519 compat (raw 48 bytes → SHA-256 → 32 bytes).
-    // Use ECDH P-256 for X25519 compat (raw 32 bytes → SHA-256 → 32 bytes).
     const edHash = await crypto.subtle.digest('SHA-256', edRaw);
     const xHash   = await crypto.subtle.digest('SHA-256', xRaw);
 
