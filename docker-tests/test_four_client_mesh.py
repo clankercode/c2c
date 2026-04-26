@@ -9,6 +9,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 import pytest
 
@@ -82,7 +83,7 @@ def register_and_send(sender, recipient, msg, ts):
     sender_alias = f"{sender}-{ts}"
     r = docker_compose_run(
         sender,
-        f"c2c register --alias {sender_alias} && c2c send {recipient} {msg}",
+        f"sh -c 'c2c register --alias {sender_alias} && c2c send {recipient} {msg}'",
         env={
             "C2C_MCP_SESSION_ID": sender_sid,
             "C2C_MCP_AUTO_REGISTER_ALIAS": sender_alias,
@@ -169,14 +170,28 @@ class TestFourClientMesh:
         failures = []
         for sender, recipient in _PAIRS:
             r, msg, sender_sid, sender_alias = send_results[(sender, recipient)]
-            found, _ = poll_for_msg(
+            # The docker_compose_run returns (returncode, stdout, stderr)
+            send_stderr = r.stderr if hasattr(r, 'stderr') else ''
+            found, inbox_content = poll_for_msg(
                 services[recipient],
                 sids[recipient],
                 aliases[recipient],
                 msg,
             )
             if not found:
-                failures.append(f"{sender}->{recipient} ({msg})")
+                failures.append(f"{sender}->{recipient}: inbox={inbox_content} send_stderr={send_stderr[:500]}")
+            else:
+                print(f"OK: {sender}->{recipient}", flush=True)
+
+        # Debug: check leases and inbox files
+        r_debug = subprocess.run(
+            ["docker", "compose", "-f", "docker-compose.test.yml", "-f", "docker-compose.two-container.yml", "-f", "docker-compose.4-client.yml",
+             "run", "--rm", "test-env", "sh", "-c",
+             "echo '=== LEASES ===' && ls -la /var/lib/c2c/.leases/ && echo '=== INBOXES ===' && ls -la /var/lib/c2c/inboxes/ 2>/dev/null || echo 'no inboxes dir' && echo '=== REGISTRY ===' && cat /var/lib/c2c/registry.json | python3 -c 'import json,sys; d=json.load(sys.stdin); [print(r[\"alias\"], r[\"session_id\"]) for r in d]'"],
+            capture_output=True, text=True, timeout=30,
+        )
+        sys.stderr.write(f"\nDEBUG state:\n{r_debug.stdout}\n")
+        sys.stderr.flush()
 
         assert not failures, f"Messages not received: {failures}"
 

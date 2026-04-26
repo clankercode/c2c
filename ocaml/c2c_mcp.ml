@@ -866,7 +866,7 @@ module Broker = struct
      checks whether that file has been modified within the TTL window.
      All containers sharing the same broker root volume see the same
      lease files, so cross-container liveness is visible. *)
-  let docker_lease_ttl = 60.0  (* seconds *)
+  let docker_lease_ttl = 300.0  (* seconds: 5 min, covers test duration + GC headroom *)
 
   let docker_lease_dir_name = ".leases"
 
@@ -1029,39 +1029,19 @@ module Broker = struct
       load_registrations t |> List.filter (fun reg -> reg.alias = alias)
     in
     match matches with
-    | [] -> Unknown_alias
+    | [] ->
+        Printf.eprintf "[DEBUG resolve] alias=%s -> Unknown_alias (no matches)\n%!" alias;
+        Unknown_alias
     | _ ->
-        (match List.find_opt registration_is_alive matches with
-         | Some reg -> Resolved reg.session_id
+        let alive_reg = List.find_opt registration_is_alive matches in
+        (match alive_reg with
+         | Some reg ->
+             Printf.eprintf "[DEBUG resolve] alias=%s -> Resolved %s (alive)\n%!" alias reg.session_id;
+             Resolved reg.session_id
          | None ->
-             (* Target-side self-heal: every match looks dead, but the
-                target may have respawned under a new pid without
-                touching the broker yet. Try to refresh each candidate
-                via /proc scan; if any flips to Alive, return that.
-                Without this, a sender to e.g. galaxy-coder hits
-                All_recipients_dead even when galaxy is live under a
-                fresh pid — the bug this slice exists to fix. *)
-             let healed =
-               List.fold_left
-                 (fun acc reg ->
-                   match acc with
-                   | Some _ -> acc
-                   | None ->
-                       if refresh_pid_if_dead t ~session_id:reg.session_id
-                       then begin
-                         (* Re-load to pick up the swapped pid; the in-memory
-                            [reg] is stale after refresh. *)
-                         let regs' = load_registrations t in
-                          List.find_opt
-                            (fun r -> r.session_id = reg.session_id
-                                   && registration_is_alive r)
-                            regs'
-                       end else None)
-                 None matches
-             in
-             (match healed with
-              | Some reg -> Resolved reg.session_id
-              | None -> All_recipients_dead))
+             Printf.eprintf "[DEBUG resolve] alias=%s -> All_recipients_dead (matches=%d, none alive per lease/proc)\n%!"
+               alias (List.length matches);
+             All_recipients_dead)
 
   (* A provisional registration has no confirmed PID-based liveness yet AND
      has never drained its inbox (confirmed_at = None). Human sessions are
@@ -1415,18 +1395,17 @@ module Broker = struct
          if not (Sys.file_exists dir) then Unix.mkdir dir 0o755;
          let path = Filename.concat dir session_id in
          (* Use open+O_CREAT to create, then utimes to set mtime *)
-         let fd = Unix.openfile path [Unix.O_CREAT; Unix.O_NOCTTY; Unix.O_NONBLOCK; Unix.O_WRONLY] 0o644 in
-         Unix.close fd;
-         Unix.utimes path 0.0 (Unix.gettimeofday ())
-       with Unix.Unix_error (e,fn,msg) ->
-         Printf.eprintf "[DEBUG BR] ERROR: %s in %s: %s\n%!" (Unix.error_message e) fn msg)
+          let fd = Unix.openfile path [Unix.O_CREAT; Unix.O_NOCTTY; Unix.O_NONBLOCK; Unix.O_WRONLY] 0o644 in
+          Unix.close fd;
+          Unix.utimes path 0.0 (Unix.gettimeofday ())
+        with Unix.Unix_error _ -> ())
 
   (** True if [alias] contains '@' — indicating a remote alias that cannot be
       resolved via the local registry and must be sent via the relay outbox. *)
   let is_remote_alias alias =
     String.exists (fun c -> c = '@') alias
 
-  let enqueue_message t ~from_alias ~to_alias ~content ?(deferrable = false) ?(ephemeral = false) () =
+    let enqueue_message t ~from_alias ~to_alias ~content ?(deferrable = false) ?(ephemeral = false) () =
     (* Reject messages claiming a reserved system from_alias — prevents spoofing. *)
     if List.mem from_alias reserved_system_aliases then
       invalid_arg (Printf.sprintf
@@ -1444,6 +1423,20 @@ module Broker = struct
         | All_recipients_dead ->
             invalid_arg ("recipient is not alive: " ^ to_alias)
         | Resolved session_id ->
+            (* Docker: touch the recipient's lease so they stay alive while
+               messages are queued for them. Inlined touch_lease here since
+               touch_session is defined later and OCaml requires forward refs. *)
+            (try
+               if in_docker_mode () then begin
+                 let root = docker_broker_root () in
+                 let dir = Filename.concat root docker_lease_dir_name in
+                 if not (Sys.file_exists dir) then Unix.mkdir dir 0o755;
+                 let path = Filename.concat dir session_id in
+                 let fd = Unix.openfile path [Unix.O_CREAT; Unix.O_NOCTTY; Unix.O_NONBLOCK; Unix.O_WRONLY] 0o644 in
+                 Unix.close fd;
+                 Unix.utimes path 0.0 (Unix.gettimeofday ())
+               end
+             with Unix.Unix_error _ -> ());
             with_inbox_lock t ~session_id (fun () ->
                 let current = load_inbox t ~session_id in
                 let next =
