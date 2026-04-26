@@ -68,7 +68,7 @@ const m = event as { to_alias: string; from_alias: string; content?: string };
 
 1. **No sent-message local record** — sent messages only appear if the monitor broadcasts them. Direct DM to a dead peer = no record.
 
-2. **60s discovery polling** — `setInterval(() => refreshBroker(), 60_000)` means new peers take up to 60s to appear after startup.
+2. ~~**60s discovery polling**~~ — ✅ fixed. `refreshBroker()` now polls at 10s interval (`10_000`ms). New peers appear within ~10s of startup.
 
 3. **WelcomeWizard skip puts app in observer mode** — no way to send messages, no prompt to register later.
 
