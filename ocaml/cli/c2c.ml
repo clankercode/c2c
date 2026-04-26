@@ -1149,8 +1149,6 @@ let migrate_broker =
 
 (* --- subcommand: history -------------------------------------------------- *)
 
-(* --- subcommand: history -------------------------------------------------- *)
-
 let history_cmd =
   let limit =
     Cmdliner.Arg.(value & opt int 50 & info [ "limit"; "l" ] ~docv:"N" ~doc:"Max messages to return.")
