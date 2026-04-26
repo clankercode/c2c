@@ -238,6 +238,26 @@ let mkdir_or_dryrun dry_run dir =
   else
     (try Unix.mkdir dir 0o755 with Unix.Unix_error _ -> ())
 
+let mkdir_p dry_run dir =
+  (* Recursive mkdir: creates dir and all intermediate parents, like mkdir -p. *)
+  if dry_run then
+    Printf.printf "[DRY-RUN] would create directory tree %s\n%!" dir
+  else
+    let rec loop remaining =
+      if remaining = "/" || remaining = "" || remaining = "." then ()
+      else
+        let st =
+          try Some (Unix.stat remaining) with Unix.Unix_error _ -> None
+        in
+        match st with
+        | Some s when s.Unix.st_kind = Unix.S_DIR -> ()
+        | Some _ -> ()
+        | None ->
+            loop (Filename.dirname remaining);
+            (try Unix.mkdir remaining 0o755 with Unix.Unix_error _ -> ())
+    in
+    loop dir
+
 let default_alias_for_client client =
   let client = match String.lowercase_ascii client with
     | "codex-headless" -> "codex"
@@ -517,8 +537,8 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
              make_symlink ~src:canonical_plugin ~dst:dest;
              let global_note =
                (try
-                  let gdir = Filename.dirname global_plugin_path in
-                  mkdir_or_dryrun dry_run gdir;
+                   let gdir = Filename.dirname global_plugin_path in
+                   mkdir_p dry_run gdir;
                   make_symlink ~src:canonical_plugin ~dst:global_plugin_path;
                   " + global symlinked"
                 with _ -> " (global symlink failed)")
