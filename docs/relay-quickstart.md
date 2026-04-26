@@ -65,6 +65,18 @@ if `C2C_MCP_BROKER_ROOT` is set). You can verify:
 c2c relay setup --show
 ```
 
+Relay command resolution order is:
+
+```text
+--relay-url / --token > C2C_RELAY_URL / C2C_RELAY_TOKEN > saved relay config
+```
+
+The saved config path is selected in this order:
+
+```text
+C2C_RELAY_CONFIG > C2C_MCP_BROKER_ROOT/relay.json > ~/.config/c2c/relay.json
+```
+
 ---
 
 ## Step 3 — Run the connector

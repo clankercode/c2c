@@ -550,9 +550,9 @@ Run `c2c --help` for the top-level subcommand list, or
 | Subcommand | Description |
 |------------|-------------|
 | `relay serve [--listen HOST:PORT] [--token T] [--storage memory\|sqlite] [--db-path PATH] [--gc-interval N]` | Start an HTTP relay server |
-| `relay connect [--relay-url URL] [--token T] [--interval N] [--once]` | Bridge local broker to remote relay |
-| `relay setup [--url URL] [--token T] [--show]` | Save relay config to disk |
-| `relay status` | Show relay server health and peer count |
+| `relay connect [--relay-url URL] [--token T] [--interval N] [--once]` | Bridge local broker to remote relay; URL/token fall back to `C2C_RELAY_URL` / `C2C_RELAY_TOKEN` or saved `c2c relay setup` config |
+| `relay setup [--url URL] [--token T] [--show]` | Save relay config to disk for later relay commands |
+| `relay status [--relay-url URL]` | Show relay server health and peer count; uses saved relay config when no flag/env override is set |
 | `relay list [--dead] [--json]` | List peers registered on the relay |
 | `relay gc [--once] [--interval N] [--verbose] [--json]` | Prune expired leases and orphan inboxes on the relay |
 | `relay identity init [--path PATH]` | Generate Ed25519 identity keypair for prod-mode auth |

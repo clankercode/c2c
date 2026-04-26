@@ -3061,6 +3061,15 @@ let relay_config_string_field key =
        | _ -> None)
   | _ -> None
 
+let relay_url_resolution_doc =
+  "Relay server URL (or C2C_RELAY_URL or saved c2c relay setup config)."
+
+let relay_token_resolution_doc =
+  "Bearer token (or C2C_RELAY_TOKEN or saved c2c relay setup config)."
+
+let relay_url_required_error =
+  "error: --relay-url required (or set C2C_RELAY_URL or run c2c relay setup).\n"
+
 let resolve_relay_url opt =
   match opt with
   | Some v when v <> "" -> Some v
@@ -3079,10 +3088,10 @@ let resolve_relay_token opt =
 
 let relay_connect_cmd =
   let relay_url =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL.")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:relay_url_resolution_doc)
   in
   let token =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token.")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:relay_token_resolution_doc)
   in
   let token_file =
     Cmdliner.Arg.(value & opt (some string) None & info [ "token-file" ] ~docv:"PATH" ~doc:"Read bearer token from a file.")
@@ -3233,16 +3242,16 @@ let relay_setup_cmd =
 
 let relay_status_cmd =
   let relay_url =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL (or C2C_RELAY_URL).")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:relay_url_resolution_doc)
   in
   let token =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token (or C2C_RELAY_TOKEN).")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:relay_token_resolution_doc)
   in
   let+ relay_url = relay_url
   and+ token = token in
   match resolve_relay_url relay_url with
   | None ->
-      Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+      Printf.eprintf "%s%!" relay_url_required_error;
       exit 1
   | Some url ->
       let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
@@ -3255,10 +3264,10 @@ let relay_status_cmd =
 
 let relay_list_cmd =
   let relay_url =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL.")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:relay_url_resolution_doc)
   in
   let token =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token.")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:relay_token_resolution_doc)
   in
   let dead =
     Cmdliner.Arg.(value & flag & info [ "dead" ] ~doc:"Include dead sessions.")
@@ -3268,7 +3277,7 @@ let relay_list_cmd =
   and+ dead = dead in
   match resolve_relay_url relay_url with
   | None ->
-      Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+      Printf.eprintf "%s%!" relay_url_required_error;
       exit 1
   | Some url ->
       let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
@@ -3292,10 +3301,10 @@ let relay_rooms_cmd =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"list|join|leave|send|history|invite|uninvite|set-visibility" ~doc:"Rooms subcommand.")
   in
   let relay_url =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL.")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:relay_url_resolution_doc)
   in
   let token =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token.")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:relay_token_resolution_doc)
   in
   let room =
     Cmdliner.Arg.(value & opt (some string) None & info [ "room" ] ~docv:"ROOM" ~doc:"Room id (required for history).")
@@ -3330,7 +3339,7 @@ let relay_rooms_cmd =
                      else Relay.room_leave_sign_ctx in
       (match resolve_relay_url relay_url, room, alias with
        | None, _, _ ->
-           Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+           Printf.eprintf "%s%!" relay_url_required_error;
            exit 1
        | _, None, _ ->
            Printf.eprintf "error: --room required for 'rooms %s'.\n%!" subcmd;
@@ -3363,7 +3372,7 @@ let relay_rooms_cmd =
   | "send" ->
       (match resolve_relay_url relay_url, room, alias, words with
        | None, _, _, _ ->
-           Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+           Printf.eprintf "%s%!" relay_url_required_error;
            exit 1
        | _, None, _, _ ->
            Printf.eprintf "error: --room required for 'rooms send'.\n%!";
@@ -3403,7 +3412,7 @@ let relay_rooms_cmd =
   | "history" ->
       (match resolve_relay_url relay_url, room with
        | None, _ ->
-           Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+           Printf.eprintf "%s%!" relay_url_required_error;
            exit 1
        | _, None ->
            Printf.eprintf "error: --room required for 'rooms history'.\n%!";
@@ -3449,7 +3458,7 @@ let relay_rooms_cmd =
   | "list" ->
       (match resolve_relay_url relay_url with
        | None ->
-           Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+           Printf.eprintf "%s%!" relay_url_required_error;
            exit 1
        | Some url ->
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
@@ -3462,7 +3471,7 @@ let relay_rooms_cmd =
   | "invite" | "uninvite" ->
       (match resolve_relay_url relay_url, room, alias, invitee_pk with
        | None, _, _, _ ->
-           Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+           Printf.eprintf "%s%!" relay_url_required_error;
            exit 1
        | _, None, _, _ ->
            Printf.eprintf "error: --room required for 'rooms %s'.\n%!" subcmd;
@@ -3502,7 +3511,7 @@ let relay_rooms_cmd =
   | "set-visibility" ->
       (match resolve_relay_url relay_url, room, visibility with
        | None, _, _ ->
-           Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+           Printf.eprintf "%s%!" relay_url_required_error;
            exit 1
        | _, None, _ ->
            Printf.eprintf "error: --room required for 'rooms set-visibility'.\n%!";
@@ -3524,10 +3533,10 @@ let relay_rooms_cmd =
 (* c2c relay register — bind Ed25519 identity on the relay (§8.2) *)
 let relay_register_cmd =
   let relay_url =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL.")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:relay_url_resolution_doc)
   in
   let token =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token.")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:relay_token_resolution_doc)
   in
   let alias =
     Cmdliner.Arg.(required & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Alias to register.")
@@ -3535,7 +3544,7 @@ let relay_register_cmd =
   let+ relay_url = relay_url and+ token = token and+ alias = alias in
   match resolve_relay_url relay_url with
   | None ->
-      Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+      Printf.eprintf "%s%!" relay_url_required_error;
       exit 1
   | Some url ->
       let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
@@ -3566,10 +3575,10 @@ let relay_dm_cmd =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"send|poll" ~doc:"DM subcommand: send or poll.")
   in
   let relay_url =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL.")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:relay_url_resolution_doc)
   in
   let token =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token.")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:relay_token_resolution_doc)
   in
   let alias =
     Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Your alias (required for poll).")
@@ -3586,7 +3595,7 @@ let relay_dm_cmd =
   and+ no_warn_substitution = no_warn_substitution in
   match resolve_relay_url relay_url with
   | None ->
-      Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+      Printf.eprintf "%s%!" relay_url_required_error;
       exit 1
   | Some url ->
       let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
@@ -3672,11 +3681,11 @@ let relay_mobile_pair_cmd =
   in
   let relay_url =
     Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ]
-       ~docv:"URL" ~doc:"Relay server URL.")
+       ~docv:"URL" ~doc:relay_url_resolution_doc)
   in
   let token =
     Cmdliner.Arg.(value & opt (some string) None & info [ "token" ]
-       ~docv:"TOKEN" ~doc:"Bearer token (admin relay only).")
+       ~docv:"TOKEN" ~doc:relay_token_resolution_doc)
   in
   let binding_id =
     Cmdliner.Arg.(value & opt (some string) None & info [ "binding-id" ]
@@ -3709,7 +3718,7 @@ let relay_mobile_pair_cmd =
   and+ json = json_flag in
   match resolve_relay_url relay_url with
   | None ->
-      Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+      Printf.eprintf "%s%!" relay_url_required_error;
       exit 1
   | Some url ->
       let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
@@ -3858,10 +3867,10 @@ let relay_mobile_pair_cmd =
 
 let relay_gc_cmd =
   let relay_url =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL.")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:relay_url_resolution_doc)
   in
   let token =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token.")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:relay_token_resolution_doc)
   in
   let interval =
     Cmdliner.Arg.(value & opt (some int) None & info [ "interval" ] ~docv:"SECONDS" ~doc:"GC interval in seconds.")
@@ -3879,7 +3888,7 @@ let relay_gc_cmd =
   and+ verbose = verbose in
   match resolve_relay_url relay_url with
   | None ->
-      Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+      Printf.eprintf "%s%!" relay_url_required_error;
       exit 1
   | Some url ->
       let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
@@ -3910,10 +3919,10 @@ let relay_gc_cmd =
    Used by a remote node to receive messages ferried through the relay from a remote broker. *)
 let relay_poll_inbox_cmd =
   let relay_url =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL (or C2C_RELAY_URL).")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:relay_url_resolution_doc)
   in
   let token =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token.")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:relay_token_resolution_doc)
   in
   let session_id =
     Cmdliner.Arg.(value & opt (some string) None & info [ "session-id" ] ~docv:"ID" ~doc:"Session ID to poll (required).")
@@ -3923,7 +3932,7 @@ let relay_poll_inbox_cmd =
   and+ session_id = session_id in
   match resolve_relay_url relay_url with
   | None ->
-      Printf.eprintf "error: --relay-url required (or set C2C_RELAY_URL).\n%!";
+      Printf.eprintf "%s%!" relay_url_required_error;
       exit 1
   | Some url ->
       let session_id = match session_id with
