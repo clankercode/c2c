@@ -198,40 +198,18 @@ let local_master_ahead_of_origin () =
   let (code, stdout, _) = git_command [ "rev-list"; "--count"; "origin/master..master" ] in
   if code <> 0 then None else int_of_string_opt (String.trim stdout)
 
-(** [worktree_behind_origin ~wt_path ~threshold] checks if the worktree at [wt_path]
-    is [threshold] or more commits behind origin/master.
-    Returns a warning message if so, None otherwise. *)
-let worktree_behind_origin ?(threshold=5) ~(wt_path:string) : string option =
-  (* Refresh origin/master ref silently *)
-  let (_code_fetch, _, _) = git_command ~cwd:wt_path ~quiet:true
-    [ "fetch"; "origin"; "master" ] in
-  (* Count commits from worktree HEAD to origin/master using rev-list (handles divergent branches) *)
-  let (code, stdout, _) = git_command ~cwd:wt_path
-    [ "rev-list"; "--count"; "HEAD..origin/master" ] in
-  if code <> 0 then None
-  else
-    match int_of_string_opt (String.trim stdout) with
-    | Some n when n >= threshold ->
-        Some (Printf.sprintf
-          "WARN: worktree '%s' is %d commit(s) behind origin/master — rebase recommended to avoid cherry-pick conflicts"
-          (Filename.basename wt_path) n)
-    | Some _ -> None
-    | None -> None
+let local_master_behind_origin () =
+  let (code, stdout, _) = git_command [ "rev-list"; "--count"; "master..origin/master" ] in
+  if code <> 0 then None else int_of_string_opt (String.trim stdout)
 
-(** [check_all_worktree_bases ()] checks all worktrees for base staleness.
-    Prints warnings for any that have drifted [threshold] or more commits behind origin/master.
-    Returns true if any warnings were printed. *)
-let check_all_worktree_bases () =
-  let all = list_worktrees () in
-  let has_warnings = ref false in
-  List.iter (fun (alias, wt_path, _branch) ->
-    match worktree_behind_origin ~threshold:5 ~wt_path with
-    | Some msg ->
-        has_warnings := true;
-        Printf.eprintf "%s\n%!" msg
-    | None -> ()
-  ) all;
-  !has_warnings
+let stale_local_master_warning ~local_master_behind =
+  if local_master_behind <= 0 then None
+  else
+    Some
+      (Printf.sprintf
+         "warning: local master is %d commit(s) behind origin/master — run `git fetch origin && git merge --ff-only origin/master` to sync before manually branching. `c2c worktree start` still branches from origin/master correctly, but agents using `git checkout -b branch master` will get a stale base."
+         local_master_behind)
+
 (** [start_worktree ~slice_name ~branch_name] creates an isolated worktree for a slice.
     Creates branch [branch_name] off origin/master, places worktree at .worktrees/<slice_name>.
     Returns the worktree path on success, raises on failure. *)
@@ -250,6 +228,12 @@ let start_worktree ~(slice_name : string) ~(branch_name : string) : string =
   (match local_master_ahead_of_origin () with
    | Some count ->
        (match stale_origin_warning ~local_master_ahead:count with
+        | Some msg -> Printf.eprintf "%s\n%!" msg
+        | None -> ())
+   | None -> ());
+  (match local_master_behind_origin () with
+   | Some count ->
+       (match stale_local_master_warning ~local_master_behind:count with
         | Some msg -> Printf.eprintf "%s\n%!" msg
         | None -> ())
    | None -> ());
