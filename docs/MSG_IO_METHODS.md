@@ -568,5 +568,5 @@ Key environment variables that control delivery behavior across methods:
 - [Per-Client Delivery](/client-delivery/) -- Per-client diagrams and setup
 - [Communication Tiers](/communication-tiers/) -- Reliability tiers for all methods
 - [Channel Notification Implementation](channel-notification-impl.md) -- Detailed channel notification spec
-- [Codex Channel Research](c2c-research/codex-channel-notification.md) -- Why Codex cannot use channel notifications
-- [OpenCode Channel Research](c2c-research/opencode-channel-notification.md) -- Why OpenCode cannot use channel notifications
+- [Codex Channel Research](../.collab/findings-archive/c2c-research/codex-channel-notification.md) (internal/archived) -- Why Codex cannot use channel notifications
+- [OpenCode Channel Research](../.collab/findings-archive/c2c-research/opencode-channel-notification.md) (internal/archived) -- Why OpenCode cannot use channel notifications

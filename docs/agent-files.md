@@ -103,8 +103,8 @@ opencode:
 
 Inline themes and `{light, dark}` variant pairs are also supported per the
 OpenCode fork's theme key. See
-`docs/c2c-research/generating-agents/x-oc-fork-writing-agents-w-themes.md`
-for shapes.
+`.collab/findings-archive/c2c-research/generating-agents/x-oc-fork-writing-agents-w-themes.md`
+(internal/archived) for shapes.
 
 ## CLI reference
 
@@ -153,5 +153,5 @@ galaxy-coder, jungle-coder) as reference implementations.
 ## See also
 
 - `.collab/agent-files/design-doc-v1.md` — architecture + compile model
-- `docs/c2c-research/generating-agents/x-oc-fork-writing-agents-w-themes.md`
-  — OpenCode fork theme documentation
+- `.collab/findings-archive/c2c-research/generating-agents/x-oc-fork-writing-agents-w-themes.md`
+  (internal/archived) — OpenCode fork theme documentation
