@@ -3031,6 +3031,52 @@ match storage with
     let module Server = Relay.Relay_server(Relay.InMemoryRelay) in
     Lwt_main.run (Server.start_server ~host ~port ~relay ~token ~verbose ~gc_interval ?tls:tls_cfg ~allowlist ())
 
+let relay_config_path () =
+  match Sys.getenv_opt "C2C_RELAY_CONFIG" with
+  | Some p when p <> "" -> p
+  | _ ->
+      (match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
+       | Some d when d <> "" -> Filename.concat d "relay.json"
+       | _ ->
+           let home = try Sys.getenv "HOME" with Not_found -> "." in
+           Filename.concat home ".config/c2c/relay.json")
+
+let read_file_trimmed path =
+  let ic = open_in path in
+  Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+    String.trim (really_input_string ic (in_channel_length ic)))
+
+let load_relay_config () =
+  let path = relay_config_path () in
+  if not (Sys.file_exists path) then `Assoc []
+  else
+    try Yojson.Safe.from_file path
+    with _ -> `Assoc []
+
+let relay_config_string_field key =
+  match load_relay_config () with
+  | `Assoc fields ->
+      (match List.assoc_opt key fields with
+       | Some (`String v) when v <> "" -> Some v
+       | _ -> None)
+  | _ -> None
+
+let resolve_relay_url opt =
+  match opt with
+  | Some v when v <> "" -> Some v
+  | _ ->
+      (match Sys.getenv_opt "C2C_RELAY_URL" with
+       | Some v when v <> "" -> Some v
+       | _ -> relay_config_string_field "url")
+
+let resolve_relay_token opt =
+  match opt with
+  | Some v when v <> "" -> Some v
+  | _ ->
+      (match Sys.getenv_opt "C2C_RELAY_TOKEN" with
+       | Some v when v <> "" -> Some v
+       | _ -> relay_config_string_field "token")
+
 let relay_connect_cmd =
   let relay_url =
     Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:"Relay server URL.")
@@ -3074,15 +3120,9 @@ let relay_connect_cmd =
     | None -> "unknown-node"
   in
   let effective_token = match token, token_file with
-    | Some t, _ -> Some t
-    | None, Some f ->
-        (try
-          let ic = open_in f in
-          let content = Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
-            let n = in_channel_length ic in really_input_string ic n) in
-          Some (String.trim content)
-         with _ -> None)
-    | None, None -> None
+    | Some t, _ when t <> "" -> Some t
+    | _, Some f -> (try Some (read_file_trimmed f) with _ -> None)
+    | _, None -> resolve_relay_token None
   in
   let effective_interval = float_of_int (Option.value interval ~default:30) in
   let effective_identity_path = match Sys.getenv_opt "C2C_RELAY_IDENTITY_PATH" with
@@ -3096,9 +3136,10 @@ let relay_connect_cmd =
     | Some p -> (match Relay_identity.load ~path:p () with | Ok id -> Some id | Error _ -> None)
     | None -> None
   in
+  let effective_relay_url = Option.value (resolve_relay_url relay_url) ~default:"http://localhost:7331" in
   if not use_python then
     exit (C2c_relay_connector.start
-      ~relay_url:(Option.value relay_url ~default:"http://localhost:7331")
+      ~relay_url:effective_relay_url
       ~token:effective_token
       ~identity:effective_identity
       ~broker_root:effective_broker_root
@@ -3113,9 +3154,12 @@ let relay_connect_cmd =
         Printf.eprintf "error: cannot find c2c_relay_connector.py. Run from inside the c2c git repo.\n%!";
         exit 1
     | Some script ->
-        let args = [ "python3"; script ] in
-        let args = match relay_url with None -> args | Some v -> args @ [ "--relay-url"; v ] in
-        let args = match token with None -> args | Some v -> args @ [ "--token"; v ] in
+        let args = [ "python3"; script; "--relay-url"; effective_relay_url ] in
+        let args = match token, token_file with
+          | Some v, _ when v <> "" -> args @ [ "--token"; v ]
+          | _, Some _ -> args
+          | _ -> (match resolve_relay_token None with None -> args | Some v -> args @ [ "--token"; v ])
+        in
         let args = match token_file with None -> args | Some v -> args @ [ "--token-file"; v ] in
         let args = match node_id with None -> args | Some v -> args @ [ "--node-id"; v ] in
         let args = match broker_root with None -> args | Some v -> args @ [ "--broker-root"; v ] in
@@ -3149,30 +3193,6 @@ let relay_setup_cmd =
   and+ token_file = token_file
   and+ node_id = node_id
   and+ show = show in
-  (* Native OCaml relay config management. Mirrors c2c_relay_config.py:
-     priority = $C2C_RELAY_CONFIG > $C2C_MCP_BROKER_ROOT/relay.json >
-     ~/.config/c2c/relay.json. Fields: url, token, node_id. *)
-  let config_path () =
-    match Sys.getenv_opt "C2C_RELAY_CONFIG" with
-    | Some p when p <> "" -> p
-    | _ ->
-        (match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
-         | Some d when d <> "" -> Filename.concat d "relay.json"
-         | _ ->
-             let home = try Sys.getenv "HOME" with Not_found -> "." in
-             Filename.concat home ".config/c2c/relay.json")
-  in
-  let read_all path =
-    let ic = open_in path in
-    Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
-      really_input_string ic (in_channel_length ic))
-  in
-  let load path =
-    match try Some (read_all path) with _ -> None with
-    | None -> `Assoc []
-    | Some s ->
-        (try Yojson.Safe.from_string s with _ -> `Assoc [])
-  in
   let save path json =
     mkdir_p (Filename.dirname path);
     let oc = open_out path in
@@ -3180,9 +3200,9 @@ let relay_setup_cmd =
       output_string oc (Yojson.Safe.pretty_to_string json);
       output_char oc '\n')
   in
-  let path = config_path () in
+  let path = relay_config_path () in
   if show then begin
-    let cfg = load path in
+    let cfg = load_relay_config () in
     print_endline (Yojson.Safe.pretty_to_string cfg);
     exit 0
   end;
@@ -3191,15 +3211,15 @@ let relay_setup_cmd =
     | Some _ as v -> v
     | None ->
         (match token_file with
-         | Some f -> (try Some (String.trim (read_all f)) with _ -> None)
+         | Some f -> (try Some (read_file_trimmed f) with _ -> None)
          | None -> None)
   in
   (* Merge: keep existing fields, override with provided ones. *)
-  let existing = match load path with `Assoc l -> l | _ -> [] in
+  let existing = match load_relay_config () with `Assoc l -> l | _ -> [] in
   let set_field fields key = function
     | None -> fields
     | Some v ->
-        (key, `String v) :: List.filter (fun (k, _) -> k <> key) fields
+      (key, `String v) :: List.filter (fun (k, _) -> k <> key) fields
   in
   let merged =
     existing
@@ -3210,16 +3230,6 @@ let relay_setup_cmd =
   save path (`Assoc merged);
   Printf.printf "wrote %s\n" path;
   exit 0
-
-let resolve_relay_url opt =
-  match opt with
-  | Some v -> Some v
-  | None -> (try Some (Sys.getenv "C2C_RELAY_URL") with Not_found -> None)
-
-let resolve_relay_token opt =
-  match opt with
-  | Some v -> Some v
-  | None -> (try Some (Sys.getenv "C2C_RELAY_TOKEN") with Not_found -> None)
 
 let relay_status_cmd =
   let relay_url =

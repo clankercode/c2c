@@ -27,6 +27,8 @@ BINARY = REPO / "_build" / "default" / "ocaml" / "cli" / "c2c.exe"
 # Port 1 is reserved (tcpmux) and refuses connections on Linux; 127.0.0.1
 # keeps the test localhost-only and deterministic.
 DEAD_URL = "http://127.0.0.1:1"
+ENV_URL = "http://127.0.0.1:2"
+CLI_URL = "http://127.0.0.1:3"
 
 
 class NativeRelaySubcommandTests(unittest.TestCase):
@@ -72,6 +74,24 @@ class NativeRelaySubcommandTests(unittest.TestCase):
             f"different error_code suggests the subcommand regressed to "
             f"the Python shellout. Payload: {payload}",
         )
+
+    def _env_without_relay_overrides(self, **extra):
+        env = {**os.environ, **extra}
+        env.pop("C2C_RELAY_URL", None)
+        env.pop("C2C_RELAY_TOKEN", None)
+        return env
+
+    def _run_connect_once(self, env, *extra_args):
+        import tempfile
+        with tempfile.TemporaryDirectory() as broker_root:
+            return subprocess.run(
+                [
+                    str(BINARY), "relay", "connect",
+                    "--once", "--verbose", "--broker-root", broker_root,
+                    *extra_args,
+                ],
+                env=env, capture_output=True, text=True, timeout=10,
+            )
 
     def test_relay_status_native(self):
         self._assert_native_connection_error(self._run("status"), "relay status")
@@ -162,6 +182,137 @@ class NativeRelaySubcommandTests(unittest.TestCase):
                 os.unlink(path)
             except OSError:
                 pass
+
+    def test_relay_status_uses_saved_setup_config(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+            path = tf.name
+        try:
+            env = self._env_without_relay_overrides(C2C_RELAY_CONFIG=path)
+            r = subprocess.run(
+                [str(BINARY), "relay", "setup", "--url", DEAD_URL],
+                env=env, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+            r = subprocess.run(
+                [str(BINARY), "relay", "status"],
+                env=env, capture_output=True, text=True, timeout=10,
+            )
+            self._assert_native_connection_error(r, "relay status via saved config")
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def test_relay_connect_uses_saved_setup_config(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+            path = tf.name
+        try:
+            env = self._env_without_relay_overrides(C2C_RELAY_CONFIG=path)
+            r = subprocess.run(
+                [str(BINARY), "relay", "setup", "--url", DEAD_URL],
+                env=env, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+            r = self._run_connect_once(env)
+            self.assertEqual(
+                r.returncode,
+                0,
+                f"relay connect --once should complete even when sync reports "
+                f"a connection error\nstdout: {r.stdout}\nstderr: {r.stderr}",
+            )
+            self.assertIn(f"relay={DEAD_URL}", r.stdout)
+            self.assertNotIn("relay=http://localhost:7331", r.stdout)
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def test_relay_connect_env_url_overrides_saved_config(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+            path = tf.name
+        try:
+            env = self._env_without_relay_overrides(C2C_RELAY_CONFIG=path)
+            r = subprocess.run(
+                [str(BINARY), "relay", "setup", "--url", DEAD_URL],
+                env=env, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+            env["C2C_RELAY_URL"] = ENV_URL
+            r = self._run_connect_once(env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn(f"relay={ENV_URL}", r.stdout)
+            self.assertNotIn(f"relay={DEAD_URL}", r.stdout)
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def test_relay_connect_flag_url_overrides_env_and_saved_config(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+            path = tf.name
+        try:
+            env = self._env_without_relay_overrides(C2C_RELAY_CONFIG=path)
+            r = subprocess.run(
+                [str(BINARY), "relay", "setup", "--url", DEAD_URL],
+                env=env, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+            env["C2C_RELAY_URL"] = ENV_URL
+            r = self._run_connect_once(env, "--relay-url", CLI_URL)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn(f"relay={CLI_URL}", r.stdout)
+            self.assertNotIn(f"relay={ENV_URL}", r.stdout)
+            self.assertNotIn(f"relay={DEAD_URL}", r.stdout)
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def test_relay_status_uses_broker_root_relay_config(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as broker_root:
+            env = self._env_without_relay_overrides(C2C_MCP_BROKER_ROOT=broker_root)
+            r = subprocess.run(
+                [str(BINARY), "relay", "setup", "--url", DEAD_URL],
+                env=env, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+            r = subprocess.run(
+                [str(BINARY), "relay", "status"],
+                env=env, capture_output=True, text=True, timeout=10,
+            )
+            self._assert_native_connection_error(r, "relay status via broker-root config")
+
+    def test_relay_status_uses_home_relay_config(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as home:
+            env = self._env_without_relay_overrides(HOME=home)
+            env.pop("C2C_RELAY_CONFIG", None)
+            env.pop("C2C_MCP_BROKER_ROOT", None)
+            r = subprocess.run(
+                [str(BINARY), "relay", "setup", "--url", DEAD_URL],
+                env=env, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+            r = subprocess.run(
+                [str(BINARY), "relay", "status"],
+                env=env, capture_output=True, text=True, timeout=10,
+            )
+            self._assert_native_connection_error(r, "relay status via home config")
 
 
 if __name__ == "__main__":
