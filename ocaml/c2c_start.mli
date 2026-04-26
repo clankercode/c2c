@@ -244,6 +244,7 @@ val prepare_launch_args :
   ?codex_resume_target:string ->
   ?thread_id_fd:string ->
   ?server_request_events_fd:string ->
+  ?server_request_responses_fd:string ->
   ?agent_name:string ->
   ?kickoff_prompt:string ->
   unit ->
@@ -255,6 +256,10 @@ val prepare_launch_args :
     optional --thread-id/--thread-id-fd for codex-headless,
     optional --agent for Claude/agent launches, and
     --mcp-config-file for kimi. *)
+
+val codex_supports_server_request_fds : string -> bool
+(** [codex_supports_server_request_fds binary_path] returns whether the Codex
+    binary advertises both server request event and response sideband flags. *)
 
 val bridge_supports_thread_id_fd : string -> bool
 (** [bridge_supports_thread_id_fd binary_path] returns whether the Codex

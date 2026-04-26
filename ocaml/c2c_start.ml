@@ -2217,6 +2217,7 @@ let prepare_launch_args ~(name : string) ~(client : string)
     ?(codex_resume_target : string option)
     ?(thread_id_fd : string option)
     ?(server_request_events_fd : string option)
+    ?(server_request_responses_fd : string option)
     ?(agent_name : string option)
     ?(kickoff_prompt : string option) () : string list =
   let args =
@@ -2278,8 +2279,22 @@ let prepare_launch_args ~(name : string) ~(client : string)
         @ (match server_request_events_fd with
            | Some fd -> [ "--server-request-events-fd"; fd ]
            | None -> [])
-        @ [ "--server-request-responses-fd"; "7" ]
+        @ (match server_request_responses_fd with
+           | Some fd -> [ "--server-request-responses-fd"; fd ]
+           | None -> [])
     | _ -> []
+  in
+  let args =
+    match client with
+    | "codex" ->
+        (match server_request_events_fd with
+         | Some fd -> [ "--server-request-events-fd"; fd ]
+         | None -> [])
+        @ (match server_request_responses_fd with
+           | Some fd -> [ "--server-request-responses-fd"; fd ]
+           | None -> [])
+        @ args
+    | _ -> args
   in
   (* Adapter-dispatched clients apply model_override internally; skip the
      generic append here to avoid passing --model twice. *)
@@ -2367,6 +2382,10 @@ let command_help_contains (binary_path : string) (needle : string) : bool =
 
 let codex_supports_xml_input_fd (binary_path : string) : bool =
   command_help_contains binary_path "--xml-input-fd"
+
+let codex_supports_server_request_fds (binary_path : string) : bool =
+  command_help_contains binary_path "--server-request-events-fd"
+  && command_help_contains binary_path "--server-request-responses-fd"
 
 let bridge_supports_thread_id_fd (binary_path : string) : bool =
   command_help_contains binary_path "--thread-id-fd"
@@ -3224,6 +3243,12 @@ let run_outer_loop ~(name : string) ~(client : string)
       (* cc- wrappers (cc-mm, cc-w, etc.) are profile launchers designed to be called
          directly without extra args. They handle their own session/profile management.
          For these, we invoke them directly so they start an interactive session. *)
+      let codex_permission_sideband_enabled =
+        client = "codex" && codex_supports_server_request_fds binary_path
+      in
+      let permission_sideband_enabled =
+        client = "codex-headless" || codex_permission_sideband_enabled
+      in
       let launch_args =
         let codex_xml_input_fd =
           if client = "codex" && codex_supports_xml_input_fd binary_path then Some "3"
@@ -3233,7 +3258,10 @@ let run_outer_loop ~(name : string) ~(client : string)
           if client = "codex-headless" then Some "5" else None
         in
         let server_request_events_fd =
-          if client = "codex-headless" then Some "6" else None
+          if permission_sideband_enabled then Some "6" else None
+        in
+        let server_request_responses_fd =
+          if permission_sideband_enabled then Some "7" else None
         in
         if is_cc_wrapper binary_path then
           (* cc-* wrappers supply their own session + channel flags.
@@ -3249,6 +3277,7 @@ let run_outer_loop ~(name : string) ~(client : string)
             ?codex_xml_input_fd
             ?thread_id_fd
             ?server_request_events_fd
+            ?server_request_responses_fd
             ?agent_name
             ?kickoff_prompt ()
       in
@@ -3272,22 +3301,22 @@ let run_outer_loop ~(name : string) ~(client : string)
           Some path
         else None
       in
-      let headless_events_fifo_opt =
-        if client = "codex-headless" then
+      let request_events_fifo_opt =
+        if permission_sideband_enabled then
           let path = bridge_events_fifo_path name in
           ensure_fifo path;
           Some path
         else None
       in
-      let headless_responses_fifo_opt =
-        if client = "codex-headless" then
+      let request_responses_fifo_opt =
+        if permission_sideband_enabled then
           let path = bridge_responses_fifo_path name in
           ensure_fifo path;
           Some path
         else None
       in
       let cmd =
-        match client, headless_xml_fifo, thread_id_handoff_path_opt, headless_events_fifo_opt, headless_responses_fifo_opt with
+        match client, headless_xml_fifo, thread_id_handoff_path_opt, request_events_fifo_opt, request_responses_fifo_opt with
         | "codex-headless", Some fifo_path, Some handoff_path, Some events_fifo_path, Some responses_fifo_path ->
             [ "/bin/bash"; "-lc";
               "bridge=\"$1\"; fifo=\"$2\"; handoff=\"$3\"; events=\"$4\"; responses=\"$5\"; shift 5; \
@@ -3489,6 +3518,22 @@ let run_outer_loop ~(name : string) ~(client : string)
                      if read_fd <> fd3 then (try Unix.close read_fd with _ -> ());
                      (try Unix.close write_fd with _ -> ())
                  | None -> ());
+                (let dup_fifo_to_fd path flags target_fd =
+                   let fd = Unix.openfile path flags 0o600 in
+                   try
+                     Unix.dup2 fd target_fd;
+                     if fd <> target_fd then Unix.close fd
+                   with e ->
+                     (try Unix.close fd with _ -> ());
+                     raise e
+                 in
+                 match request_events_fifo_opt, request_responses_fifo_opt with
+                 | Some events_path, Some responses_path when client = "codex" ->
+                     let fd6 : Unix.file_descr = Obj.magic 6 in
+                     let fd7 : Unix.file_descr = Obj.magic 7 in
+                     dup_fifo_to_fd events_path [ Unix.O_WRONLY ] fd6;
+                     dup_fifo_to_fd responses_path [ Unix.O_RDWR ] fd7
+                 | _ -> ());
                 (try Unix.close outer_stderr_fd with _ -> ());
                 (try Unix.execvpe (List.hd cmd) (Array.of_list cmd) env
                  with e ->
@@ -3542,8 +3587,8 @@ let run_outer_loop ~(name : string) ~(client : string)
                      ?child_pid_opt:(Some pid)
                      ?xml_output_fd:(Option.map fst xml_output_fd)
                      ?xml_output_path
-                     ?event_fifo_path:headless_events_fifo_opt
-                     ?response_fifo_path:headless_responses_fifo_opt
+                     ?event_fifo_path:request_events_fifo_opt
+                     ?response_fifo_path:request_responses_fifo_opt
                      ~preserve_fds
                      ()
                  with
@@ -3554,7 +3599,7 @@ let run_outer_loop ~(name : string) ~(client : string)
                     (match xml_output_fd with
                       | Some _ ->
                           (match
-                            start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt:(Some pid) ?response_fifo_path:headless_responses_fifo_opt ~preserve_fds:[] ()
+                            start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt:(Some pid) ?response_fifo_path:request_responses_fifo_opt ~preserve_fds:[] ()
                           with
                           | Some p ->
                               deliver_pid := Some p;

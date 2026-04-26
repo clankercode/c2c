@@ -1123,6 +1123,56 @@ let test_prepare_launch_args_codex_uses_exact_resume_target_when_set () =
   check (list string) "codex exact resume"
     [ "resume"; "thread-abc" ] args
 
+let test_prepare_launch_args_codex_adds_permission_sideband_fds () =
+  let args =
+    C2c_start.prepare_launch_args ~name:"codex-proof" ~client:"codex"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~codex_xml_input_fd:"3"
+      ~server_request_events_fd:"6"
+      ~server_request_responses_fd:"7"
+      ~resume_session_id:"placeholder-uuid"
+      ()
+  in
+  check bool "xml input fd" true
+    (has_adjacent_pair "--xml-input-fd" "3" args);
+  check bool "server request events fd" true
+    (has_adjacent_pair "--server-request-events-fd" "6" args);
+  check bool "server request responses fd" true
+    (has_adjacent_pair "--server-request-responses-fd" "7" args)
+
+let test_codex_supports_server_request_fds_requires_both_flags () =
+  with_temp_dir @@ fun dir ->
+  let make_bin name help =
+    let path = Filename.concat dir name in
+    let oc = open_out path in
+    Fun.protect
+      ~finally:(fun () -> close_out oc)
+      (fun () ->
+        output_string oc "#!/bin/sh\n";
+        output_string oc "if [ \"$1\" = \"--help\" ]; then\n";
+        List.iter
+          (fun line -> Printf.fprintf oc "  printf '%%s\\n' %S\n" line)
+          help;
+        output_string oc "fi\n");
+    Unix.chmod path 0o755;
+    path
+  in
+  let full =
+    make_bin "codex-full"
+      [ "--xml-input-fd <FD>"
+      ; "--server-request-events-fd <FD>"
+      ; "--server-request-responses-fd <FD>"
+      ]
+  in
+  let events_only =
+    make_bin "codex-events-only"
+      [ "--xml-input-fd <FD>"; "--server-request-events-fd <FD>" ]
+  in
+  check bool "full sideband support" true
+    (C2c_start.codex_supports_server_request_fds full);
+  check bool "requires response fd too" false
+    (C2c_start.codex_supports_server_request_fds events_only)
+
 let rec last_n n lst =
   let rec aux n acc = function
     | [] -> List.rev acc
@@ -1558,6 +1608,10 @@ let () =
             `Quick, test_prepare_launch_args_codex_resume_last_by_default )
         ; ( "prepare_launch_args_codex_uses_exact_resume_target_when_set",
             `Quick, test_prepare_launch_args_codex_uses_exact_resume_target_when_set )
+        ; ( "prepare_launch_args_codex_adds_permission_sideband_fds",
+            `Quick, test_prepare_launch_args_codex_adds_permission_sideband_fds )
+        ; ( "codex_supports_server_request_fds_requires_both_flags",
+            `Quick, test_codex_supports_server_request_fds_requires_both_flags )
         ; ( "cmd_reset_thread_persists_codex_resume_target",
             `Quick, test_cmd_reset_thread_persists_codex_resume_target )
         ; ( "prepare_launch_args_extra_args_appended_verbatim",
