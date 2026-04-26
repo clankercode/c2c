@@ -9,6 +9,14 @@ interface Props {
   initialTo?: string;
   initialIsRoom?: boolean;
   onSent?: (event: MessageEvent) => void;
+  outboxCount?: number;
+  /** Called before send attempt so App can add a pending outbox entry.
+      Receives (toAlias, content, isRoom) — returns the outbox entry id. */
+  onSendAttempt?: (toAlias: string, content: string, isRoom: boolean) => string;
+  /** Called after send attempt succeeds. Receives the outbox entry id. */
+  onSendSuccess?: (id: string) => void;
+  /** Called after send attempt fails. Receives the outbox entry id. */
+  onSendFailure?: (id: string) => void;
 }
 
 const INPUT_STYLE: React.CSSProperties = {
@@ -21,7 +29,13 @@ const INPUT_STYLE: React.CSSProperties = {
   outline: "none",
 };
 
-export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoom = false, onSent }: Props) {
+export function ComposeBar({
+  peers, rooms, myAlias,
+  initialTo = "", initialIsRoom = false,
+  onSent,
+  outboxCount = 0,
+  onSendAttempt, onSendSuccess, onSendFailure,
+}: Props) {
   const [to, setTo] = useState(initialTo);
   const [isRoom, setIsRoom] = useState(initialIsRoom);
 
@@ -49,9 +63,12 @@ export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoo
     setLastError(null);
     setLastOk(false);
     setFailedAttempt(null);
+    // Create pending outbox entry before send attempt
+    const outboxId = onSendAttempt?.(target, body, room) ?? "";
     const res = await sendMessage(target, body, room, myAlias);
     setSending(false);
     if (res.ok) {
+      onSendSuccess?.(outboxId);
       const nowEpoch = String(Date.now() / 1000);
       const nowIso = new Date().toISOString();
       onSent?.({
@@ -67,6 +84,7 @@ export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoo
       setLastOk(true);
       setTimeout(() => setLastOk(false), 1500);
     } else {
+      onSendFailure?.(outboxId);
       setLastError(res.error ?? "unknown error");
       setFailedAttempt({ text: body, to: target, isRoom: room });
     }
@@ -175,6 +193,11 @@ export function ComposeBar({ peers, rooms, myAlias, initialTo = "", initialIsRoo
         )}
         {lastOk && (
           <div style={{ fontSize: 10, color: "#a6e3a1" }}>sent ✓</div>
+        )}
+        {outboxCount > 0 && !lastOk && (
+          <div style={{ fontSize: 10, color: "#fab387" }}>
+            {outboxCount} pending
+          </div>
         )}
       </div>
     </div>

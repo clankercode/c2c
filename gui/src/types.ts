@@ -56,6 +56,17 @@ export type C2cEvent =
   | RoomLeaveEvent
   | (BaseEvent & Record<string, unknown>);
 
+// Sent-message local outbox — stores pending messages until delivery confirmed
+
+export interface PendingMessage {
+  id: string;           // unique outbox entry id
+  toAlias: string;      // recipient alias or room id
+  content: string;      // message body
+  isRoom: boolean;      // true = room DM, false = direct
+  sentAt: number;       // Date.now() at send time
+  status: "pending" | "confirmed" | "failed";
+}
+
 /** Validate and type-check a raw JSON object as a C2cEvent.
     Returns null if the object is malformed or missing required fields.
     This guards the monitor JSON ingestion point against malformed data. */

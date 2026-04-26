@@ -11,6 +11,7 @@ import { WelcomeWizard } from "./components/WelcomeWizard";
 import { ArchivePanel } from "./ArchivePanel";
 import { PermissionPanel } from "./PermissionPanel";
 import { ToastContainer } from "./ToastContainer";
+import { useOutbox } from "./useOutbox";
 
 const MAX_EVENTS = 1000;
 const MAX_CACHED_EVENTS = 100;
@@ -64,6 +65,7 @@ export function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [health, setHealth] = useState<HealthInfo | null>(null);
   const [showArchive, setShowArchive] = useState(false);
+  const { outbox, addOutboxEntry, confirmOutboxEntry, failOutboxEntry } = useOutbox();
   const childRef = useRef<Child | null>(null);
   const cancelledRef = useRef(false);
   const reconnectAttemptRef = useRef(0);
@@ -520,6 +522,10 @@ export function App() {
             const next = [...prev, event];
             return next.length > MAX_EVENTS ? next.slice(-MAX_EVENTS) : next;
           })}
+          outboxCount={outbox.filter(m => m.status === "pending").length}
+          onSendAttempt={addOutboxEntry}
+          onSendSuccess={confirmOutboxEntry}
+          onSendFailure={failOutboxEntry}
         />
 
       <PermissionPanel events={events} myAlias={myAlias} mySessionId={mySessionId} />
