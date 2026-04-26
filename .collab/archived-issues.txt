@@ -1,0 +1,90 @@
+# Archived completed tasks
+
+Tasks moved out of the live TaskList once completed, so we can see what we did
+and when. Newest entries at top. Format: timestamp + a list of completed task
+IDs/subjects archived in that batch.
+
+---
+
+## 2026-04-26 14:30 UTC+10 — bulk archive (today's session)
+
+#196 [stanza] Add [default_binary] config table for codex PATH ambiguity
+#198 [jungle] Restart Slice 3 — orphan inbox replay + --timeout (in rework)
+#199 Fix `just install-all` from worktree (cwd handling)
+#200 [stanza] stats S2 — compaction count tracking
+#201 [lyra] pty/tmux Slice 3 — c2c start tmux --loc -- cmd
+#202 [jungle] pty/tmux Slice 4 — argv passthrough convention
+#203 [test-agent] pty/tmux Slice 1 — c2c start pty -- cmd
+#204 [galaxy] #143 codex c2c start exit-hang — tests rework
+#205 codex perms — wait for upstream sideband fd support
+#206 stats S3 — last_activity_ts tracking
+#207 stats S5 — --append-sitrep integration
+#208 [galaxy] GUI --batch rebase + land
+#209 [test-agent] c2c coord-cherry-pick helper
+#210 [lyra] stale-origin/master detector in c2c worktree start
+#211 [test-agent] Port coord-cherry-pick helper to OCaml
+#212 [jungle] stats S4 — token cost data per session
+#213 [lyra] untested-public-surface scanner in c2c doctor
+#214 [lyra] CLAUDE.md docs-drift check in c2c doctor
+#215 [test-agent] coord-cherry-pick stash-pop conflict detection
+#216 [test-agent] Self-PASS-detector in broker
+#217 [galaxy] code-duplication scanner in c2c doctor
+#218 [stanza] peer-pass list/verify --warn-only/--strict
+#219 [test-agent] Broker auto-verify peer-pass references in DMs
+#220 [stanza] peer-pass clean self-review artifacts
+#221 [stanza] Longitudinal swarm-perf rollup S1
+#222 [test-agent] stats history --markdown report
+#223 [stanza] stats-history --bucket grain
+#224 [jungle] dup-scanner false-positive suppression
+#225 [galaxy] stale-origin v2 commit-time warning
+#226 [test-agent] stats history --csv flag
+#227 [test-agent] dup-scanner --min-cluster-size
+#228 [galaxy] pre-push hook for coord-only origin/master
+#229 [galaxy] CLAUDE.md drift fixes
+#230 [galaxy] push-incident postmortem
+#231 [jungle] c2c stats --top N flag
+#232 [galaxy] c2c doctor integration test
+#233 [galaxy] DRAFT→SPEC rename pass
+#234 [test-agent] Failover protocol drill
+#235 [stanza] c2c sitrep commit auto-commit
+#236 [stanza] sitrep commit + stats --append-sitrep localtime fix
+#237 [lyra] Cross-machine onboarding gap review
+#238 [lyra] Relay config load fix — resolve_relay_url/_token honor saved relay.json
+#239 [stanza] Managed relay connector — c2c start relay-connect --daemon
+#240 [jungle] Clarify local send vs relay DM — wire-through
+#241 [stanza] Fresh-machine onboarding smoke test
+#242 Docs/landing page cleanup (closed redundant)
+#243 [galaxy] c2c init --relay URL — one-shot init+identity+register
+#244 [stanza] Build-break fix: implement C2c_stats.get_opencode_tokens
+#245 Peer-PASS docs-sweep batch — 7 slices from stanza
+#246 [stanza] c2c doctor docs-drift OCaml port
+#247 [galaxy] Peer-PASS docs-deeptech-fix
+#248 [coord] Peer-PASS docs-archive-internals
+#249 [lyra] Peer-PASS jungle's slice 4
+#250 [lyra] Peer-PASS #246 doctor docs-drift OCaml port
+#251 [jungle] Peer-PASS relay-landing-fix
+#252 [lyra] Peer-PASS docs-relay-fix
+#253 [lyra] Peer-PASS galaxy slice 2
+#254 [jungle] Peer-PASS slice 3 (managed relay-connect)
+#255 [jungle] Peer-PASS slice 5 (onboarding smoke)
+#256 [coord] Push-readiness audit + push to origin/master
+#257 [stanza] Stale-origin/master detection enhancement (post-mortem)
+#258 [jungle] #143 codex c2c start exit-hang fix
+#259 [galaxy] GUI permission-request panel
+#260 [lyra] Bundle `c2c peer-pass sign` into `c2c send` (peer-pass-send)
+#261 [jungle] CLI nudges agents to MCP when MCP is available
+#262 [stanza] Heartbeat sender — fire only when agent is idle
+#263 [stanza] `c2c start --agent X -n Y` writes Y.md but loads X agentfile
+#264 [test-agent] Cross-machine onboarding integration tests
+#265 [lyra] GUI markdown rendering (rebase + reland)
+#266 [stanza] DRAFT-per-agent-memory Phase 1
+#267 [galaxy] GUI EventFeed virtualization
+#269 [stanza] c2c_debug action=send_raw_to_self — raw payload via existing channel send path
+#270 [jungle] Peer-PASS lyra's #260
+#271 [lyra] Peer-PASS stanza's #266
+#273 [galaxy] GUI sent-message local outbox
+#274 [galaxy] Peer-PASS stanza #262
+#275 [stanza+lyra] Per-agent memory E2E regression — alice/bob shared/private
+#276 [stanza] Peer-PASS jungle #261
+#279 [galaxy] GUI README / getting-started doc
+#280 [jungle] DRAFT-idle-nudge → SPEC + impl design
