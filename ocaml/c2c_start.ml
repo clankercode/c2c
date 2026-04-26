@@ -1774,39 +1774,9 @@ let git_common_dir () =
       (fun () -> String.trim (input_line ic))
   with _ -> ""
 
-let resolve_broker_root () =
-  match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
-  | Some dir when String.trim dir <> "" -> String.trim dir
-  | _ ->
-      (* Compute repo fingerprint: SHA-256 of remote.origin.url (or toplevel path).
-         Uses Digestif via relay_identity which is already linked; we use stdlib
-         Digest for simplicity here to avoid circular deps with C2c_utils. *)
-      let fingerprint_data =
-        match Git_helpers.git_first_line ["config"; "--get"; "remote.origin.url"] with
-        | Some url when url <> "" -> url
-        | _ ->
-            (match Git_helpers.git_repo_toplevel () with
-             | Some t -> t
-             | None -> "")
-      in
-      let fp = if fingerprint_data = "" then "default" else
-        let h = Digest.string fingerprint_data in
-        let hex = Digest.to_hex h in
-        String.sub hex 0 12
-      in
-      let home = home_dir () in
-      let xdg_default =
-        let xdg = match Sys.getenv_opt "XDG_STATE_HOME" with
-          | Some x when x <> "" -> x
-          | _ -> Filename.concat home ".local" // "state"
-        in
-        xdg // "c2c" // "repos" // fp // "broker"
-      in
-      match Sys.getenv_opt "XDG_STATE_HOME" with
-      | Some xdg when xdg <> "" -> xdg_default
-      | _ ->
-          (* Canonical default: $HOME/.c2c/repos/<fp>/broker *)
-          Filename.concat home (".c2c" // "repos" // fp // "broker")
+(* Delegates to C2c_repo_fp.resolve_broker_root for the authoritative implementation.
+   Uses Digestif.SHA256 for repo fingerprint (same as C2c_utils). *)
+let resolve_broker_root () = C2c_repo_fp.resolve_broker_root ()
 
 let broker_root () = resolve_broker_root ()
 

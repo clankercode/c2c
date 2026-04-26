@@ -1,0 +1,58 @@
+(* c2c_repo_fp.ml — shared repo fingerprint + broker root resolution.
+   Lives in c2c_mcp library; used by c2c_start and c2c_utils. *)
+
+let ( // ) = Filename.concat
+
+(** Compute a short fingerprint for the current repo, used to derive
+    the per-repo broker root so distinct repos don't share a broker.
+    Uses SHA-256 of remote.origin.url (when present) so clones of the
+    same upstream share a broker; falls back to git toplevel path. *)
+let repo_fingerprint () =
+  let data =
+    match Git_helpers.git_first_line ["config"; "--get"; "remote.origin.url"] with
+    | Some url when url <> "" -> url
+    | _ ->
+        (match Git_helpers.git_repo_toplevel () with
+         | Some t -> t
+         | None -> "")
+  in
+  if data = "" then "default"
+  else
+    let hash = Digestif.SHA256.digest_string data in
+    let hex = Digestif.SHA256.to_hex hash in
+    String.sub hex 0 12
+
+(** XDG_STATE_HOME per XDG spec, with HOME fallback.
+    Duplicated here because c2c_utils (CLI executable) can't be called from
+    the library (c2c_mcp). *)
+let xdg_state_home () =
+  match Sys.getenv_opt "XDG_STATE_HOME" with
+  | Some v when String.trim v <> "" -> String.trim v
+  | _ ->
+      (match Sys.getenv_opt "HOME" with
+       | Some h when String.trim h <> "" -> String.trim h // ".local" // "state"
+       | _ -> "/tmp")
+
+(** Pure broker-root path resolution — no side effects.
+    Resolution order (coord1 2026-04-26):
+      1. C2C_MCP_BROKER_ROOT env var (explicit override)
+      2. $XDG_STATE_HOME/c2c/repos/<fp>/broker  (if XDG_STATE_HOME set)
+      3. $HOME/.c2c/repos/<fp>/broker  (canonical default)
+      4. ~/.local/state/c2c/repos/<fp>/broker  (XDG default fallback)
+    The broker directory is created lazily on first use via Broker.ensure_root. *)
+let resolve_broker_root () =
+  let fp = repo_fingerprint () in
+  match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
+  | Some dir when String.trim dir <> "" ->
+      let p = String.trim dir in
+      if Filename.is_relative p then Sys.getcwd () // p else p
+  | _ ->
+      let xdg_root = xdg_state_home () // "c2c" // "repos" // fp // "broker" in
+      match Sys.getenv_opt "XDG_STATE_HOME" with
+      | Some xdg when xdg <> "" -> xdg_root  (* XDG_STATE_HOME wins *)
+      | _ ->
+          (* Canonical default: $HOME/.c2c/repos/<fp>/broker *)
+          (match Sys.getenv_opt "HOME" with
+           | Some h when String.trim h <> "" ->
+               String.trim h // ".c2c" // "repos" // fp // "broker"
+           | _ -> xdg_root)  (* No HOME: fall back to XDG default *)
