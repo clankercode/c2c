@@ -136,7 +136,7 @@ Tests cover happy paths and basic error paths at the CLI wrapper layer. **Notabl
 | ~~**Medium**~~ | ~~Virtualize EventFeed (react-virtual or similar)~~ — ✅ fixed 8056920 |
 | ~~**Medium**~~ | ~~Add error toasts for transient CLI failures~~ — ✅ fixed (useToast singleton + ToastContainer) |
 | ~~**Medium**~~ | ~~Reduce discovery polling from 60s to ~10s~~ — ✅ fixed |
-| **Low** | Implement sent-message local outbox |
+| ~~**Low**~~ | ~~Implement sent-message local outbox~~ — ✅ fixed (useOutbox hook + pending count in UI) |
 | **Low** | Memoize `dedupeAndSort` or move to useMemo |
 | ~~**Low**~~ | ~~Add markdown rendering for messages~~ — ✅ fixed |
 | **Broker** | pollInbox timestamps — broker `message` type lacks timestamp field |

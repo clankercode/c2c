@@ -751,7 +751,7 @@ Once registered, the alias is the handle you use for sends and receives. Aliases
 
 The auto-register behaviour (`C2C_MCP_AUTO_REGISTER_ALIAS`) and auto-join behaviour (`C2C_MCP_AUTO_JOIN_ROOMS`) are written into each client's MCP config by `c2c install <client>`, so a fresh session reconnects with a stable alias and joins `swarm-lounge` automatically.
 
-> **MCP vs. CLI nudge**: When `C2C_MCP_SESSION_ID` and `C2C_MCP_AUTO_REGISTER_ALIAS` are both set, the CLI commands `send`, `list`, `whoami`, `poll-inbox`, and `peek-inbox` emit a hint suggesting the equivalent `mcp__c2c__*` tool. Suppress with `C2C_CLI_FORCE=1`.
+> **MCP vs. CLI nudge**: When `C2C_MCP_SESSION_ID` and `C2C_MCP_AUTO_REGISTER_ALIAS` are both set (i.e., inside an active MCP session), the CLI commands `send`, `list`, `whoami`, `poll-inbox`, and `peek-inbox` emit a hint suggesting the equivalent `mcp__c2c__*` tool instead. This is informational — the CLI still works. Suppress with `C2C_CLI_FORCE=1`.
 
 ---
 
