@@ -615,6 +615,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `dead-letter [--limit N] [--json]` | Show dead-letter entries (orphan messages from sweeps or delivery failures). |
 | `sweep [--json]` | Remove dead registrations and orphan inboxes (rescues content to dead-letter). Prefer `prune-rooms` during active swarm. |
 | `sweep-dryrun [--json]` | Read-only preview of what `sweep` would drop. Safe during active swarm. |
+| `migrate-broker [--from PATH] [--to PATH] [--dry-run] [--json]` | Migrate broker data from the legacy `<git-common-dir>/c2c/mcp` path to the new per-repo path (`$HOME/.c2c/repos/<fp>/broker`). Use `--dry-run` first. |
 
 ### Configuration & per-repo
 

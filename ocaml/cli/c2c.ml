@@ -1062,18 +1062,23 @@ let migrate_broker_run ~from_path ~to_path ~dry_run ~json =
         else Printf.eprintf "error copying %s: %s\n" src (Printexc.to_string e)
     end
   in
-  let copy_dir src dst =
-    if not (Sys.file_exists src) then []
+  let rec copy_dir src dst acc =
+    if not (Sys.file_exists src) then acc
     else
       try
-        Array.to_list (Sys.readdir src)
-        |> List.filter (fun f -> not (f = "." || f = ".."))
-        |> List.map (fun f ->
+        mkdir_p dst;
+        let entries = Array.to_list (Sys.readdir src) |> List.filter (fun f -> not (f = "." || f = "..")) in
+        List.fold_right (fun f acc' ->
           let s = src // f in
           let d = dst // f in
-          copy_file s d;
-          d)
-      with _ -> []
+          if Sys.is_directory s then
+            copy_dir s d acc'  (* recurse into subdirectory *)
+          else begin
+            copy_file s d;
+            d :: acc'
+          end
+        ) entries acc
+      with _ -> acc
   in
   let from = Option.value from_path ~default:(legacy_broker_root ()) in
   let to_ = Option.value to_path ~default:(resolve_broker_root ()) in
@@ -1103,9 +1108,9 @@ let migrate_broker_run ~from_path ~to_path ~dry_run ~json =
       if Sys.file_exists src then copy_file src (to_ // f)
     ) ["registry.json"; "registry.json.lock"; "deaths.jsonl"];
     (* Copy subdirs: inboxes, memory, archive *)
-    let _ = copy_dir (from // "inbox.json.d") (to_ // "inbox.json.d") in
-    let _ = copy_dir (from // "memory") (to_ // "memory") in
-    let _ = copy_dir (from // "archive") (to_ // "archive") in
+    let _ = copy_dir (from // "inbox.json.d") (to_ // "inbox.json.d") [] in
+    let _ = copy_dir (from // "memory") (to_ // "memory") [] in
+    let _ = copy_dir (from // "archive") (to_ // "archive") [] in
     if not dry_run then begin
       mkdir_p to_;
       (* Verify by checking for key files at destination *)
@@ -1123,12 +1128,12 @@ let migrate_broker_cmd =
   let from =
     Arg.(value & opt (some string) None & info ["from"; "f"]
            ~docv:"PATH"
-           ~doc:"Source broker root (default: <git-common-dir>/c2c/mcp)")
+           ~doc:"Source broker root (default: the legacy .git/c2c/mcp path)")
   in
   let to_ =
     Arg.(value & opt (some string) None & info ["to"; "t"]
            ~docv:"PATH"
-           ~doc:"Destination broker root (default: $HOME/.c2c/repos/<fp>/broker)")
+           ~doc:"Destination broker root (default: your HOME/.c2c/repos/<fp>/broker)")
   in
   let dry_run = Arg.(value & flag & info ["dry-run"; "n"] ~doc:"Show what would be copied without writing.") in
   let json = json_flag in
