@@ -225,6 +225,12 @@ const C2CDelivery: Plugin = async (ctx) => {
   const brokerRoot: string = process.env.C2C_MCP_BROKER_ROOT || sidecar.broker_root || "";
   const configuredOpenCodeSessionId: string =
     process.env.C2C_OPENCODE_SESSION_ID || sidecar.opencode_session_id || "";
+  // Only values starting with "ses_" are real OpenCode session IDs. Instance
+  // aliases (e.g. "galaxy-coder") must be treated as unset for session adoption
+  // — the real ses_* will be adopted via session.created/bootstrapRootSession.
+  // See #295.
+  const realConfiguredOpenCodeSessionId: string =
+    configuredOpenCodeSessionId.startsWith("ses") ? configuredOpenCodeSessionId : "";
   // Agent name set by `c2c start opencode --agent <name>`. When present, every
   // promptAsync call passes body.agent so OpenCode preserves the session
   // mode instead of resetting to the default agent. See #167 Thread B.
@@ -312,7 +318,12 @@ const C2CDelivery: Plugin = async (ctx) => {
   const pluginStartTimeMs = Date.now();
 
   // Track the active root session (set from session events)
-  let activeSessionId: string | null = configuredOpenCodeSessionId || null;
+  // Only initialize from configuredOpenCodeSessionId if it looks like a real
+  // OpenCode session ID ("ses_*"). If it's an instance alias (e.g.
+  // "galaxy-coder"), leave activeSessionId null so session.created can adopt
+  // the real ses_* session. See #295.
+  let activeSessionId: string | null =
+    (realConfiguredOpenCodeSessionId || null);
   let backgroundLoopStarted = false;
   let pendingToastShown = false; // debounce the "messages waiting" toast
 
@@ -468,7 +479,7 @@ const C2CDelivery: Plugin = async (ctx) => {
   const pluginState: PluginState = {
     c2c_session_id: sessionId,
     c2c_alias: typeof sidecar.alias === "string" && sidecar.alias.trim() ? sidecar.alias.trim() : null,
-    root_opencode_session_id: configuredOpenCodeSessionId || null,
+    root_opencode_session_id: realConfiguredOpenCodeSessionId || null,
     opencode_pid: process.pid,
     plugin_started_at: pluginStartedAt,
     state_last_updated_at: pluginStartedAt,
@@ -775,13 +786,13 @@ const C2CDelivery: Plugin = async (ctx) => {
       const roots = sessions
         .filter((s: any) => !s.parentID && s.id)
         .sort((a: any, b: any) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0));
-      const candidate = configuredOpenCodeSessionId
-        ? roots.find((s: any) => s.id === configuredOpenCodeSessionId)  // exact match only; no fallback to roots[0]
+      const candidate = realConfiguredOpenCodeSessionId
+        ? roots.find((s: any) => s.id === realConfiguredOpenCodeSessionId)  // exact match only; no fallback to roots[0]
         : (process.env.C2C_AUTO_KICKOFF === "1" ? undefined : roots[0]); // auto-kickoff: never adopt stale session, let session.create() fire
       if (!candidate?.id) {
         if (roots.length > 0) {
           const skipped = roots.map((s: any) => s.id).join(", ");
-          const reason = configuredOpenCodeSessionId ? "configured-id-mismatch" : "auto-kickoff";
+          const reason = realConfiguredOpenCodeSessionId ? "configured-id-mismatch" : "auto-kickoff";
           await log(`SKIP-ADOPT: would have adopted [${skipped}]; reason=${reason}; see finding 2026-04-21T09-00-00Z-coordinator1-oc-focus-test-session-cross-contamination.md`);
         }
         return;
@@ -806,7 +817,7 @@ const C2CDelivery: Plugin = async (ctx) => {
     if (event.type !== "session.idle") return null;
     const sessionID = eventSessionId(event);
     if (!sessionID) return null;
-    if (configuredOpenCodeSessionId && sessionID !== configuredOpenCodeSessionId) return null;
+    if (realConfiguredOpenCodeSessionId && sessionID !== realConfiguredOpenCodeSessionId) return null;
     return sessionID;
   }
 
@@ -828,7 +839,7 @@ const C2CDelivery: Plugin = async (ctx) => {
   function applyRootSessionCreated(event: Event): void {
     const info = (event as any).properties?.info;
     if (!info?.id || info?.parentID) return;
-    if (configuredOpenCodeSessionId && info.id !== configuredOpenCodeSessionId) return;
+    if (realConfiguredOpenCodeSessionId && info.id !== realConfiguredOpenCodeSessionId) return;
     // Reset kickoff flag so the new root session always receives the kickoff prompt.
     // Without this, if a second root session is created mid-run (e.g. agent ran a
     // command that triggered session.created), kickoffDelivered stays true and the
@@ -905,7 +916,7 @@ const C2CDelivery: Plugin = async (ctx) => {
     const props = (event as any).properties ?? {};
     const sessionID = firstString(props.sessionID, props.sessionId, activeSessionId) || null;
     if (!pluginState.root_opencode_session_id && sessionID && event.type === "permission.asked") {
-      if (!configuredOpenCodeSessionId || configuredOpenCodeSessionId === sessionID) {
+      if (!realConfiguredOpenCodeSessionId || realConfiguredOpenCodeSessionId === sessionID) {
         pluginState.root_opencode_session_id = sessionID;
       }
     }
@@ -950,7 +961,7 @@ const C2CDelivery: Plugin = async (ctx) => {
       const status = props?.status;
       const sessionID = props?.sessionID || activeSessionId || "";
       if (!sessionID) return;
-      if (configuredOpenCodeSessionId && sessionID !== configuredOpenCodeSessionId) return;
+      if (realConfiguredOpenCodeSessionId && sessionID !== realConfiguredOpenCodeSessionId) return;
       if (status?.type === "busy") {
         const now = Date.now();
         accountTransition("active", now);
@@ -1367,6 +1378,25 @@ const C2CDelivery: Plugin = async (ctx) => {
   /** Deliver drained messages to the active session via promptAsync. */
   async function deliverMessages(targetSessionId: string): Promise<void> {
     await log(`deliverMessages: targetSessionId=${JSON.stringify(targetSessionId)}`);
+
+    // Guard: skip promptAsync if activeSessionId is still the instance alias
+    // (sessionId), meaning session.created has not yet fired. Instance aliases
+    // work for broker inbox ops (resolve_session_id_for_inbox resolves them to
+    // real session IDs), but the OpenCode HTTP API rejects them with 404.
+    // This race occurs when a message arrives before session.created sets
+    // activeSessionId to the real session ID. The spool preserves messages.
+    // See #295.
+    if (activeSessionId === sessionId) {
+      const messages = await drainInbox();
+      if (messages.length > 0) {
+        await log(`deliverMessages: session not ready (activeSessionId="${activeSessionId}" === sessionId="${sessionId}"), spooled ${messages.length} message(s) for next cycle`);
+        writeSpool(messages);
+      } else {
+        await log(`deliverMessages: session not ready (activeSessionId="${activeSessionId}" === sessionId="${sessionId}"), no messages`);
+      }
+      return;
+    }
+
     const messages = await drainInbox();
     await log(`deliverMessages: pending=${messages.length}`);
     if (messages.length === 0) return;
@@ -1675,7 +1705,7 @@ const C2CDelivery: Plugin = async (ctx) => {
         const e = event as EventSessionCreated;
         const info = (e as any).properties?.info;
         if (info?.id && !info?.parentID) {
-          if (configuredOpenCodeSessionId && info.id !== configuredOpenCodeSessionId) return;
+    if (realConfiguredOpenCodeSessionId && info.id !== realConfiguredOpenCodeSessionId) return;
           activeSessionId = info.id;
           await log(`tracking root session: ${info.id} — triggering cold-boot delivery`);
           // Persist the TUI-generated ses_* ID for the instance so that a
@@ -1954,7 +1984,7 @@ const C2CDelivery: Plugin = async (ctx) => {
         const e = event as EventSessionCompacted;
         const compactedSessionId: string = (e as any).properties?.sessionID || activeSessionId || "";
         if (!compactedSessionId) return;
-        if (configuredOpenCodeSessionId && compactedSessionId !== configuredOpenCodeSessionId) return;
+        if (realConfiguredOpenCodeSessionId && compactedSessionId !== realConfiguredOpenCodeSessionId) return;
         try {
           // Re-register first so the new MCP server process has the correct alias
           // bound to its session_id before any tool calls (including send_room).
@@ -1977,7 +2007,7 @@ const C2CDelivery: Plugin = async (ctx) => {
         const e = event as EventSessionIdle;
         const idleSessionId: string = (e as any).properties?.sessionID || activeSessionId || "";
         if (!idleSessionId) return;
-        if (configuredOpenCodeSessionId && idleSessionId !== configuredOpenCodeSessionId) return;
+        if (realConfiguredOpenCodeSessionId && idleSessionId !== realConfiguredOpenCodeSessionId) return;
         // Only deliver for the root session (avoid interfering with sub-agents)
         if (activeSessionId && idleSessionId !== activeSessionId) return;
         activeSessionId = idleSessionId;

@@ -391,6 +391,54 @@ describe('c2c plugin unit tests', () => {
     expect(events[1].patch.agent.last_step.details.session_id).toBe('late-root');
   });
 
+  it('bootstraps root session from HTTP session.list when C2C_OPENCODE_SESSION_ID is alias-valued (#295 regression)', async () => {
+    // When C2C_OPENCODE_SESSION_ID is set to an instance alias (not a real ses_* ID),
+    // bootstrapRootSession must NOT treat it as authoritative — it must fall through
+    // to roots[0] and adopt the real session. Previously the raw
+    // configuredOpenCodeSessionId was used for the initial pluginState snapshot,
+    // causing bootstrapRootSession to skip adoption (pluginState.root_opencode_session_id
+    // was already set to the alias). Regression for #295.
+    process.env.C2C_OPENCODE_SESSION_ID = 'galaxy-coder'; // alias, not a real ses_*
+    const localCtx = makeCtx();
+    (localCtx.client.session.list as any).mockResolvedValue({
+      data: [{ id: 'ses-real', time: { updated: 1000, created: 900 } }],
+    });
+    const hooks = await C2CDelivery(localCtx as any);
+    // pump microtasks so void bootstrapRootSession() resolves
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+
+    const events = stateEvents();
+    // Initial snapshot: root_opencode_session_id must be null (not the alias)
+    const snapshot = events.find((e) => e.event === 'state.snapshot');
+    expect(snapshot).toBeDefined();
+    expect(snapshot!.state.root_opencode_session_id).toBeNull();
+    // Bootstrap patch: adopts the real ses_* from the HTTP list
+    const patch = events.find((e) => e.event === 'state.patch' && e.patch.root_opencode_session_id === 'ses-real');
+    expect(patch).toBeDefined();
+    expect(patch!.patch.root_opencode_session_id).toBe('ses-real');
+
+    delete process.env.C2C_OPENCODE_SESSION_ID;
+  });
+
+  it('session.created with alias-valued C2C_OPENCODE_SESSION_ID still adopts real ses_* session (#295 regression)', async () => {
+    // When C2C_OPENCODE_SESSION_ID is an alias, session.created must adopt a real
+    // ses_* session without filtering it out. Previously the raw alias value was used
+    // in the filter, causing real sessions to be rejected. Regression for #295.
+    process.env.C2C_OPENCODE_SESSION_ID = 'galaxy-coder'; // alias, not a real ses_*
+    queueSpawn({ messages: [] });
+    const localCtx = makeCtx();
+    const hooks = await C2CDelivery(localCtx as any);
+    await fireEvent(hooks, sessionCreated('ses-real-session'));
+
+    const events = stateEvents();
+    // session.created must have set root_opencode_session_id to the real session
+    const patch = events.find((e) => e.event === 'state.patch' && e.patch.root_opencode_session_id === 'ses-real-session');
+    expect(patch).toBeDefined();
+    expect(patch!.patch.root_opencode_session_id).toBe('ses-real-session');
+
+    delete process.env.C2C_OPENCODE_SESSION_ID;
+  });
+
   it('bootstraps root session from HTTP session.list on plugin start (resume scenario)', async () => {
     const ctx = makeCtx();
     (ctx.client.session.list as any).mockResolvedValue({
