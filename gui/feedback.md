@@ -84,7 +84,7 @@ const m = event as { to_alias: string; from_alias: string; content?: string };
 
 ## Performance
 
-1. **No virtualization on EventFeed** — renders all 1000 events as DOM nodes; scroll jank likely with busy swarm.
+1. ~~**No virtualization on EventFeed**~~ — ✅ fixed 8056920. `useVirtualizer` in EventFeed.tsx; globalVirtualizer + dynamicVirtualizer.
 
 2. **Re-render cascade on every monitor event** — `setEvents(prev => ...)` triggers App re-render, which propagates to Sidebar and EventFeed. Spread `[...peers]` / `[...rooms]` creates new array refs on every state change.
 
@@ -132,11 +132,12 @@ Tests cover happy paths and basic error paths at the CLI wrapper layer. **Notabl
 | Priority | Item |
 |----------|------|
 | ~~**High**~~ | ~~Fix `room.leave` to remove alias from `roomMembers`~~ — ✅ fixed 2fd82ea |
-| ~~**High**~~ | ~~Add Zod validation at monitor JSON ingestion point~~ — ✅ fixed (safeParseEvent in types.ts + App.tsx wiring)
+| ~~**High**~~ | ~~Add Zod validation at all CLI JSON ingestion points~~ — ✅ fixed (8 safeParse validators covering monitor, history×4, discovery×3, permissions, outbox; committed 04d8d49b)
 | ~~**Medium**~~ | ~~Virtualize EventFeed (react-virtual or similar)~~ — ✅ fixed 8056920 |
 | ~~**Medium**~~ | ~~Add error toasts for transient CLI failures~~ — ✅ fixed (useToast singleton + ToastContainer) |
 | ~~**Medium**~~ | ~~Reduce discovery polling from 60s to ~10s~~ — ✅ fixed |
 | ~~**Low**~~ | ~~Implement sent-message local outbox~~ — ✅ fixed (useOutbox hook + pending count in UI) |
 | ~~**Low**~~ | ~~Memoize `dedupeAndSort` or move to useMemo~~ — ✅ fixed (dedupeAndSort wrapped in useMemo, filteredVisible keyed on [selectedRoom,selectedPeer,events,focusHistoryEvents,myAlias,filter]) |
 | ~~**Low**~~ | ~~Add markdown rendering for messages~~ — ✅ fixed |
+| ~~**Medium**~~ | ~~PermissionPanel for pending permission requests~~ — ✅ fixed (PermissionPanel.tsx + usePermissions hook; lyra/stanza slice) |
 | **Broker** | pollInbox timestamps — broker `message` type lacks timestamp field |
