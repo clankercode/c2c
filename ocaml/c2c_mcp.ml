@@ -4364,8 +4364,8 @@ let ts = Unix.gettimeofday () in
                  let session_id = resolve_session_id ?session_id_override arguments in
                  Broker.touch_session broker ~session_id;
                  Broker.set_room_visibility broker ~room_id ~from_alias ~visibility;
-                let content =
-                  `Assoc
+                 let content =
+                   `Assoc
                     [ ("ok", `Bool true)
                     ; ("room_id", `String room_id)
                     ; ("visibility",
