@@ -1,5 +1,5 @@
 import { Command } from "@tauri-apps/plugin-shell";
-import { C2cEvent } from "./types";
+import { C2cEvent, safeParseInboxMessage, safeParseHistoryEntry } from "./types";
 import { toast } from "./useToast";
 
 interface HistoryEntry {
@@ -29,20 +29,16 @@ function entryToEvent(e: HistoryEntry, toAlias?: string): C2cEvent {
   };
 }
 
-interface InboxMessage {
-  from_alias: string;
-  to_alias: string;
-  content: string;
-  ts?: number;
-}
-
 export async function pollInbox(sessionId: string): Promise<C2cEvent[]> {
   try {
     const result = await Command.create("c2c", [
       "poll-inbox", "--json", "--session-id", sessionId,
     ]).execute();
     if (result.code !== 0) return [];
-    const messages: InboxMessage[] = JSON.parse(result.stdout);
+    let raw: unknown;
+    try { raw = JSON.parse(result.stdout); } catch { return []; }
+    if (!Array.isArray(raw)) return [];
+    const messages = (raw as unknown[]).map(safeParseInboxMessage).filter((m): m is NonNullable<typeof m> => m !== null);
     const now = Date.now() / 1000;
     return messages.map((m, i) => {
       const msgTs = m.ts ?? (now + i * 0.001);
@@ -69,7 +65,10 @@ export async function loadHistory(limit = 100, sessionId?: string): Promise<C2cE
       toast.error(`history: ${result.stderr || `exit ${result.code}`}`, 5);
       return [];
     }
-    const entries: HistoryEntry[] = JSON.parse(result.stdout);
+    let raw: unknown;
+    try { raw = JSON.parse(result.stdout); } catch { toast.error("history: JSON parse error", 5); return []; }
+    if (!Array.isArray(raw)) { toast.error("history: expected array", 5); return []; }
+    const entries = (raw as unknown[]).map(safeParseHistoryEntry).filter((e): e is NonNullable<typeof e> => e !== null);
     return entries.map(e => entryToEvent(e));
   } catch (err) {
     toast.error(`history: ${String(err)}`, 5);
@@ -86,7 +85,10 @@ export async function loadRoomHistory(roomId: string, limit = 50): Promise<C2cEv
       toast.error(`room history: ${result.stderr || `exit ${result.code}`}`, 5);
       return [];
     }
-    const entries: HistoryEntry[] = JSON.parse(result.stdout);
+    let raw: unknown;
+    try { raw = JSON.parse(result.stdout); } catch { toast.error("room history: JSON parse error", 5); return []; }
+    if (!Array.isArray(raw)) { toast.error("room history: expected array", 5); return []; }
+    const entries = (raw as unknown[]).map(safeParseHistoryEntry).filter((e): e is NonNullable<typeof e> => e !== null);
     return entries.map(e => entryToEvent(e, roomId));
   } catch (err) {
     toast.error(`room history: ${String(err)}`, 5);
@@ -103,7 +105,10 @@ export async function loadPeerHistory(peerAlias: string, mySessionId: string, my
       toast.error(`history: ${result.stderr || `exit ${result.code}`}`, 5);
       return [];
     }
-    const entries: HistoryEntry[] = JSON.parse(result.stdout);
+    let raw: unknown;
+    try { raw = JSON.parse(result.stdout); } catch { toast.error("peer history: JSON parse error", 5); return []; }
+    if (!Array.isArray(raw)) { toast.error("peer history: expected array", 5); return []; }
+    const entries = (raw as unknown[]).map(safeParseHistoryEntry).filter((e): e is NonNullable<typeof e> => e !== null);
     return entries
       .map(e => entryToEvent(e))
       .filter(e => {

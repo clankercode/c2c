@@ -1,12 +1,19 @@
 import { useState, useCallback, useEffect } from "react";
 import type { PendingMessage } from "./types";
+import { safeParsePendingMessage } from "./types";
 
 const OUTBOX_KEY = "c2c_outbox";
 
 function loadOutbox(): PendingMessage[] {
   try {
     const raw = localStorage.getItem(OUTBOX_KEY);
-    return raw ? (JSON.parse(raw) as PendingMessage[]) : [];
+    if (!raw) return [];
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw); } catch { return []; }
+    if (!Array.isArray(parsed)) return [];
+    return (parsed as unknown[])
+      .map(safeParsePendingMessage)
+      .filter((m): m is PendingMessage => m !== null);
   } catch {
     return [];
   }

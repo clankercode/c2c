@@ -67,6 +67,115 @@ export interface PendingMessage {
   status: "pending" | "confirmed" | "failed";
 }
 
+// --- CLI JSON safe parsers ---
+
+/** Guards poll-inbox --json output (InboxMessage[]) */
+export function safeParseInboxMessage(raw: unknown): { from_alias: string; to_alias: string; content: string; ts?: number } | null {
+  if (raw === null || raw === undefined || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.from_alias !== "string") return null;
+  if (typeof obj.to_alias !== "string") return null;
+  if (typeof obj.content !== "string") return null;
+  return {
+    from_alias: obj.from_alias,
+    to_alias: obj.to_alias,
+    content: obj.content,
+    ts: typeof obj.ts === "number" ? obj.ts : undefined,
+  };
+}
+
+/** Guards history --json / room history --json output (HistoryEntry[]) */
+export function safeParseHistoryEntry(raw: unknown): { drained_at?: number; ts?: number; from_alias: string; to_alias?: string; content: string } | null {
+  if (raw === null || raw === undefined || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.from_alias !== "string") return null;
+  // content is required; missing content means malformed entry
+  if (!Object.prototype.hasOwnProperty.call(obj, "content") || typeof obj.content !== "string") return null;
+  return {
+    drained_at: typeof obj.drained_at === "number" ? obj.drained_at : undefined,
+    ts: typeof obj.ts === "number" ? obj.ts : undefined,
+    from_alias: obj.from_alias,
+    to_alias: typeof obj.to_alias === "string" ? obj.to_alias : undefined,
+    content: obj.content,
+  };
+}
+
+/** Guards list --json output (PeerInfo[]) */
+export function safeParsePeerInfo(raw: unknown): { alias: string; alive: boolean } | null {
+  if (raw === null || raw === undefined || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.alias !== "string") return null;
+  return { alias: obj.alias, alive: obj.alive === true };
+}
+
+/** Guards health --json output (HealthInfo) */
+export function safeParseHealthInfo(raw: unknown): {
+  alive: number; registrations: number; rooms: number;
+  relay: { status: string; message: string } | null;
+} | null {
+  if (raw === null || raw === undefined || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  return {
+    alive: typeof obj.alive === "number" ? obj.alive : 0,
+    registrations: typeof obj.registrations === "number" ? obj.registrations : 0,
+    rooms: typeof obj.rooms === "number" ? obj.rooms : 0,
+    relay: (obj.relay && typeof obj.relay === "object")
+      ? {
+          status: typeof (obj.relay as Record<string, unknown>).status === "string"
+            ? (obj.relay as Record<string, unknown>).status as string : "",
+          message: typeof (obj.relay as Record<string, unknown>).message === "string"
+            ? (obj.relay as Record<string, unknown>).message as string : "",
+        }
+      : null,
+  };
+}
+
+/** Guards room list --json output (RoomInfo[]) */
+export function safeParseRoomInfo(raw: unknown): { room_id: string; member_count: number; alive_count: number; alive_members?: string[] } | null {
+  if (raw === null || raw === undefined || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.room_id !== "string") return null;
+  return {
+    room_id: obj.room_id,
+    member_count: typeof obj.member_count === "number" ? obj.member_count : 0,
+    alive_count: typeof obj.alive_count === "number" ? obj.alive_count : 0,
+    alive_members: Array.isArray(obj.alive_members)
+      ? (obj.alive_members as unknown[]).filter((s): s is string => typeof s === "string")
+      : undefined,
+  };
+}
+
+/** Guards PendingMessage from localStorage (useOutbox) */
+export function safeParsePendingMessage(raw: unknown): { id: string; toAlias: string; content: string; isRoom: boolean; sentAt: number; status: "pending" | "confirmed" | "failed" } | null {
+  if (raw === null || raw === undefined || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.id !== "string") return null;
+  if (typeof obj.toAlias !== "string") return null;
+  if (typeof obj.content !== "string") return null;
+  if (typeof obj.isRoom !== "boolean") return null;
+  if (typeof obj.sentAt !== "number") return null;
+  if (obj.status !== "pending" && obj.status !== "confirmed" && obj.status !== "failed") return null;
+  return {
+    id: obj.id,
+    toAlias: obj.toAlias,
+    content: obj.content,
+    isRoom: obj.isRoom,
+    sentAt: obj.sentAt,
+    status: obj.status,
+  };
+}
+
+/** Guards check-pending-reply --json output */
+export function safeParsePendingReply(raw: unknown): { valid: boolean; error?: string } | null {
+  if (raw === null || raw === undefined || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.valid !== "boolean") return null;
+  return {
+    valid: obj.valid,
+    error: typeof obj.error === "string" ? obj.error : undefined,
+  };
+}
+
 /** Validate and type-check a raw JSON object as a C2cEvent.
     Returns null if the object is malformed or missing required fields.
     This guards the monitor JSON ingestion point against malformed data. */

@@ -1,4 +1,5 @@
 import { Command } from "@tauri-apps/plugin-shell";
+import { safeParsePendingReply } from "./types";
 
 export interface PendingPermission {
   permId: string;
@@ -66,9 +67,13 @@ export async function approvePermission(
     if (result.code !== 0) {
       return { ok: false, error: result.stderr || `exit ${result.code}` };
     }
-    const data = JSON.parse(result.stdout);
-    if (!data.valid) {
-      return { ok: false, error: data.error || "invalid reply" };
+    let raw: unknown;
+    try { raw = JSON.parse(result.stdout); } catch {
+      return { ok: false, error: "JSON parse error" };
+    }
+    const data = safeParsePendingReply(raw);
+    if (!data || !data.valid) {
+      return { ok: false, error: data?.error || "invalid reply" };
     }
   } catch (e) {
     return { ok: false, error: String(e) };
