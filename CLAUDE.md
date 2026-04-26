@@ -108,6 +108,11 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   `just bii` chains `install-all` with `./restart-self`, but restart-self
   hasn't been proven across every harness — verify it works in your context
   before relying on it; otherwise install and restart separately.
+  **Never run `./restart-self` from inside a managed OpenCode session** — it
+  kills the `c2c start` supervisor and tears down the whole tmux pane. It is
+  safe only for bare CLI sessions started outside tmux. After install, prefer
+  `kill -USR1 <opencode-pid>` for a soft reconnect or `/exit` + respawn for a
+  clean restart.
   `just --list` shows every available recipe (build, install, test, gc, …).
   **Use `just` for iterative dev too**, not just final install: `just build`
   for a compile check, `just test-ocaml` / `just test` for the test suite,

@@ -28,10 +28,18 @@ just install-all          # rebuild c2c binary (plugin spawns `c2c` subcommands)
 **Do NOT run `./restart-self`** — it kills the `c2c start` supervisor process,
 which tears down the entire tmux pane and loses your session.
 
-Safe restart recipe from INSIDE the session:
+**NEVER run `pkill -f opencode`** from any terminal — it matches on cmdline
+substring and kills every OpenCode process on the host, including your peers.
+This caused a swarm-wide outage on 2026-04-26. Use one of the safe methods below.
+
+Safe restart options from INSIDE the session:
 ```
-/exit
+/exit                              # clean exit — Max can respawn
+kill -USR1 <your-opencode-pid>    # soft reconnect (if MCP is stuck but session is healthy)
 ```
+
+To find your opencode PID: `pgrep -f "opencode.*--agent YOUR_ALIAS"`
+
 Then from an external terminal:
 ```bash
 c2c start opencode -n <your-name> -s <your-session-id>
