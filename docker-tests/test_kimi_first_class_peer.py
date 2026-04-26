@@ -24,13 +24,28 @@ def run(argv, session_id=None, alias=None, timeout=15):
     import os
     env = dict(os.environ)
     env["C2C_CLI_FORCE"] = "1"
-    env["C2C_MCP_CLIENT_PID"] = str(os.getpid())
     if session_id:
         env["C2C_MCP_SESSION_ID"] = session_id
     if alias:
         env["C2C_MCP_AUTO_REGISTER_ALIAS"] = alias
     env["C2C_MCP_BROKER_ROOT"] = BROKER_ROOT
-    r = subprocess.run([C2C] + argv, capture_output=True, text=True, timeout=timeout, env=env)
+    # Use Popen so we capture the real subprocess PID before it exits.
+    # Setting C2C_MCP_CLIENT_PID before Popen uses a placeholder; the real PID
+    # is captured from proc.pid and stored for the *next* call's env so the
+    # broker tracks the subprocess PID rather than the pytest PID.
+    env["C2C_MCP_CLIENT_PID"] = "0"
+    proc = subprocess.Popen(
+        [C2C] + argv,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+    )
+    env["C2C_MCP_CLIENT_PID"] = str(proc.pid)
+    stdout, stderr = proc.communicate(timeout=timeout)
+    r = subprocess.CompletedProcess(
+        args=[C2C] + argv,
+        returncode=proc.returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
     return r
 
 
@@ -142,11 +157,12 @@ class TestKimiFirstClassPeer:
 
         # Verify kimi alias appears in peer list (if it managed to register)
         r = run(["list", "--json"], session_id=host_sid)
-        if r.returncode == 0:
-            peers = json.loads(r.stdout)
-            kimi_in_list = any(kimi_alias in p.get("alias", "") for p in peers)
-            if kimi_in_list:
-                # If kimi registered, host can try to send
-                r = run(["send", kimi_alias, "hello from docker host"],
-                        session_id=host_sid, alias=host_alias)
-                assert r.returncode == 0, f"send to kimi failed: {r.stderr}"
+        assert r.returncode == 0, f"list failed: {r.stderr}"
+        peers = json.loads(r.stdout)
+        kimi_in_list = any(kimi_alias in p.get("alias", "") for p in peers)
+        assert kimi_in_list, \
+            f"kimi ({kimi_alias}) did not register — not found in peer list: {peers}"
+        # If kimi registered, host can try to send
+        r = run(["send", kimi_alias, "hello from docker host"],
+                session_id=host_sid, alias=host_alias)
+        assert r.returncode == 0, f"send to kimi failed: {r.stderr}"

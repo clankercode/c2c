@@ -55,3 +55,5 @@ COPY docker-tests/ /docker-tests/
 
 # tini = PID 1 signal forwarder
 ENTRYPOINT ["/usr/bin/tini", "--"]
+# Default command: keep container alive for `docker compose up -d` (tests use `run --rm` override).
+CMD ["sh", "-c", "echo c2c-test ready && sleep 3600"]

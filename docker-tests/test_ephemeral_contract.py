@@ -18,13 +18,20 @@ def run(argv, session_id=None, alias=None):
     env = dict(os.environ)
     env["C2C_CLI_FORCE"] = "1"
     env["C2C_MCP_BROKER_ROOT"] = BROKER_ROOT
-    env["C2C_MCP_CLIENT_PID"] = str(os.getpid())
-    if session_id:
-        env["C2C_MCP_SESSION_ID"] = session_id
-    if alias:
-        env["C2C_MCP_AUTO_REGISTER_ALIAS"] = alias
-    r = subprocess.run([C2C] + argv, capture_output=True, text=True, env=env)
-    return r
+    # Use Popen to capture real subprocess PID instead of pytest PID.
+    env["C2C_MCP_CLIENT_PID"] = "0"
+    proc = subprocess.Popen(
+        [C2C] + argv,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+    )
+    env["C2C_MCP_CLIENT_PID"] = str(proc.pid)
+    stdout, stderr = proc.communicate()
+    return subprocess.CompletedProcess(
+        args=[C2C] + argv,
+        returncode=proc.returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
 
 
 class TestEphemeralContract:

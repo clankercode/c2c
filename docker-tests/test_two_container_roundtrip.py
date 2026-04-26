@@ -48,7 +48,7 @@ def docker_compose_run(service, command, env=None):
     env_args = []
     for key, value in container_env.items():
         env_args.extend(["-e", f"{key}={value}"])
-    argv = ["docker", "compose"] + COMPOSE_FILES + ["run", "--rm"] + env_args + [service] + shlex.split(command)
+    argv = ["docker", "compose"] + COMPOSE_FILES + ["run", "-T", "--rm"] + env_args + [service] + shlex.split(command)
     r = subprocess.run(argv, capture_output=True, text=True, env=full_env, timeout=60)
     return r
 
@@ -85,7 +85,7 @@ class TestTwoContainerRoundtrip:
         bob_sid = f"{bob}-session"
 
         r_bob = docker_compose_run(
-            "test-env",
+            "peer-b",
             f"c2c register --alias {bob}",
             env={
                 "C2C_MCP_SESSION_ID": bob_sid,
@@ -97,7 +97,7 @@ class TestTwoContainerRoundtrip:
 
         msg = f"hello-bob-from-{alice}"
         r = docker_compose_run(
-            "test-env",
+            "peer-a",
             f"sh -c 'c2c register --alias {alice} && c2c send {bob} {msg}'",
             env={
                 "C2C_MCP_SESSION_ID": alice_sid,
@@ -108,7 +108,7 @@ class TestTwoContainerRoundtrip:
         assert r.returncode == 0, f"alice->bob send failed: {r.stderr} {r.stdout}"
 
         r_poll = docker_compose_run(
-            "test-env",
+            "peer-b",
             "c2c poll-inbox --json",
             env={
                 "C2C_MCP_SESSION_ID": bob_sid,
@@ -133,7 +133,7 @@ class TestTwoContainerRoundtrip:
         bob_sid = f"{bob}-session"
 
         r_alice = docker_compose_run(
-            "test-env",
+            "peer-a",
             f"c2c register --alias {alice}",
             env={
                 "C2C_MCP_SESSION_ID": alice_sid,
@@ -145,7 +145,7 @@ class TestTwoContainerRoundtrip:
 
         msg = f"hello-alice-from-{bob}"
         r = docker_compose_run(
-            "test-env",
+            "peer-b",
             f"sh -c 'c2c register --alias {bob} && c2c send {alice} {msg}'",
             env={
                 "C2C_MCP_SESSION_ID": bob_sid,
@@ -156,7 +156,7 @@ class TestTwoContainerRoundtrip:
         assert r.returncode == 0, f"bob->alice send failed: {r.stderr} {r.stdout}"
 
         r_poll = docker_compose_run(
-            "test-env",
+            "peer-a",
             "c2c poll-inbox --json",
             env={
                 "C2C_MCP_SESSION_ID": alice_sid,
@@ -181,7 +181,7 @@ class TestTwoContainerRoundtrip:
         bob_sid = f"{bob}-session"
 
         r_bob = docker_compose_run(
-            "test-env",
+            "peer-b",
             f"c2c register --alias {bob}",
             env={
                 "C2C_MCP_SESSION_ID": bob_sid,
@@ -193,7 +193,7 @@ class TestTwoContainerRoundtrip:
 
         msg = f"poll-message-{ts}"
         r_send = docker_compose_run(
-            "test-env",
+            "peer-a",
             f"sh -c 'c2c register --alias {alice} && c2c send {bob} {msg}'",
             env={
                 "C2C_MCP_SESSION_ID": alice_sid,
@@ -204,7 +204,7 @@ class TestTwoContainerRoundtrip:
         assert r_send.returncode == 0, f"alice send failed: {r_send.stderr} {r_send.stdout}"
 
         r = docker_compose_run(
-            "test-env",
+            "peer-b",
             "c2c poll-inbox --json",
             env={
                 "C2C_MCP_SESSION_ID": bob_sid,
@@ -224,7 +224,7 @@ class TestTwoContainerRoundtrip:
 
         # Register alice
         r1 = docker_compose_run(
-            "test-env",
+            "peer-a",
             f"c2c register --alias alice-{ts}",
             env={
                 "C2C_MCP_SESSION_ID": alice_sid,
@@ -234,7 +234,7 @@ class TestTwoContainerRoundtrip:
         )
         # Register bob
         r2 = docker_compose_run(
-            "test-env",
+            "peer-b",
             f"c2c register --alias bob-{ts}",
             env={
                 "C2C_MCP_SESSION_ID": bob_sid,
@@ -247,7 +247,7 @@ class TestTwoContainerRoundtrip:
 
         # Both list peers
         r1 = docker_compose_run(
-            "test-env",
+            "peer-a",
             "c2c list --json",
             env={
                 "C2C_MCP_SESSION_ID": alice_sid,

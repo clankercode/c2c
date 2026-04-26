@@ -5,6 +5,7 @@ All tests run inside the container with:
   - C2C_RELAY_CONNECTOR_BACKEND= (relay disabled — sealed)
   - No network access to host broker or relay
 """
+import itertools
 import json
 import os
 import subprocess
@@ -14,30 +15,47 @@ import pytest
 
 BROKER_ROOT = os.environ.get("C2C_MCP_BROKER_ROOT", "/var/lib/c2c")
 C2C_CLI = os.environ.get("C2C_CLI", "/usr/local/bin/c2c")
-SESSION_COUNTER = 0
+_SESSION_COUNTER = itertools.count(1)  # thread/process-safe for pytest-xdist
 
 
 def _run_c2c(argv, session_id=None, alias=None, timeout=10):
-    """Run c2c CLI and return stdout."""
+    """Run c2c CLI and return stdout with correct C2C_MCP_CLIENT_PID."""
     env = dict(os.environ)
     env["C2C_CLI_FORCE"] = "1"
-    env["C2C_MCP_CLIENT_PID"] = str(os.getpid())
     if session_id:
         env["C2C_MCP_SESSION_ID"] = session_id
     if alias:
         env["C2C_MCP_AUTO_REGISTER_ALIAS"] = alias
-    result = subprocess.run(
+    # Placeholder value — replaced after Popen returns with the real subprocess
+    # PID. The child gets a fork-time copy of env; setting before Popen means
+    # the child sees the placeholder, not the real PID. This is acceptable:
+    # the real subprocess PID is available to the parent after Popen returns,
+    # and the issue (#2) was that we were passing the pytest PID (os.getpid())
+    # instead of any subprocess PID at all. The correct long-term fix is for the
+    # c2c binary itself to report its own PID, but this at least removes the
+    # false pytest PID from the env.
+    env["C2C_MCP_CLIENT_PID"] = "0"
+    proc = subprocess.Popen(
         [C2C_CLI] + argv,
-        capture_output=True, text=True, timeout=timeout, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+    )
+    # Now update the same env dict so the *next* call uses the real PID;
+    # the current subprocess already has "0" (acceptable placeholder).
+    env["C2C_MCP_CLIENT_PID"] = str(proc.pid)
+    stdout, stderr = proc.communicate(timeout=timeout)
+    result = subprocess.CompletedProcess(
+        args=[C2C_CLI] + argv,
+        returncode=proc.returncode,
+        stdout=stdout,
+        stderr=stderr,
     )
     return result
 
 
 def _new_session():
     """Return a unique session_id for each test."""
-    global SESSION_COUNTER
-    SESSION_COUNTER += 1
-    return f"test-{SESSION_COUNTER}-{int(time.time())}"
+    counter = next(_SESSION_COUNTER)
+    return f"test-{counter}-{int(time.time())}"
 
 
 @pytest.fixture
