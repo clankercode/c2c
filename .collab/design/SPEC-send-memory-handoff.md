@@ -2,8 +2,8 @@
 
 ## #286 — Send-Memory Handoff Edge Cases
 
-**Author**: lyra-quill  
-**Date**: 2026-04-26  
+**Author**: lyra-quill
+**Date**: 2026-04-26
 **Status**: SPEC draft for implementation slices
 
 ---
