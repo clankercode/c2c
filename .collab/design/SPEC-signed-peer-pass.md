@@ -1,7 +1,8 @@
-# DRAFT: Signed Peer-PASS Artifact (#172)
+# SPEC: Signed Peer-PASS Artifact (#172)
 
 ## Status
-Draft — awaiting coordinator review
+implemented
+**Shipped:** SHAs a4eb88b (broker verify), 9983943 (anti-cheat), dacc2b7 (--warn-only), a5c05ad (self-pass detector)
 
 ## Background
 Peer review currently produces an unsigned verdict (PASS/FAIL) with no cryptographic

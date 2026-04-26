@@ -1,6 +1,7 @@
-# DRAFT: `c2c stats` — detailed per-agent activity & resource report
+# SPEC: `c2c stats` — detailed per-agent activity & resource report
 
-**Status:** draft / backlog
+**Status:** implemented
+**Shipped:** SHAs 0012aff, 79eb696, 9ae19d1, 22790c0, c614860 (stats history), ec479e6 (token cost)
 **Originator:** Max (2026-04-25)
 **Coordinator:** coordinator1
 

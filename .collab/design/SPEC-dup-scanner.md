@@ -1,5 +1,8 @@
 # c2c-dup-scanner: copy-paste detection for c2c codebase
 
+**Status:** implemented
+**Shipped:** SHAs 29e5232 (--min-cluster-size), 46e07d9 (--ignore flag)
+
 ## Goal
 Detect copy-pasted-with-tweaks code blocks across Python (.py) and OCaml (.ml/.mli) files in the c2c repo, wired into `c2c doctor`.
 

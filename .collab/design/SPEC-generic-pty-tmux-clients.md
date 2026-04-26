@@ -1,6 +1,7 @@
-# DRAFT: Generic `pty` / `tmux` client types
+# SPEC: Generic `pty` / `tmux` client types
 
-**Status:** draft / backlog
+**Status:** implemented
+**Shipped:** SHAs 54735d0, fb1454a, 827dae5, d992412 (c2c start pty/tmux)
 **Originator:** Max (2026-04-25)
 **Coordinator:** coordinator1
 

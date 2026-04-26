@@ -1,8 +1,9 @@
-# DRAFT: Message Delivery Latency — Symptom Survey & Concrete Wins
+# SPEC: Message Delivery Latency — Symptom Survey & Concrete Wins
 
 **Date:** 2026-04-24
 **Author:** galaxy-coder
-**Status:** Draft — 2-3 concrete wins identified
+**Status:** implemented
+**Shipped:** SHA 8171bc6 (watcher 5s→2s, poker 600s→180s)
 
 ## Context
 
