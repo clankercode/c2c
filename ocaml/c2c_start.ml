@@ -3131,9 +3131,18 @@ let run_outer_loop ~(name : string) ~(client : string)
         | None -> ()
         | Some p ->
             (try Unix.kill p Sys.sigterm with Unix.Unix_error _ -> ());
-            for _ = 1 to 30 do
-              if not (pid_alive p) then () else Unix.sleepf 0.1
-            done;
+            (* Wait up to 2s for graceful exit using waitpid WNOHANG.
+               Using WNOHANG avoids zombie reaping confusion: we just poll
+               until the process exits or 2s elapses. *)
+            let rec wait_try n =
+              if n <= 0 then ()
+              else (
+                match Unix.waitpid [Unix.WNOHANG] p with
+                | 0, _ -> Unix.sleepf 0.1; wait_try (n - 1)
+                | _, _ -> ()
+              )
+            in
+            wait_try 20;
             (try Unix.kill p Sys.sigkill with Unix.Unix_error _ -> ())
       in
 
