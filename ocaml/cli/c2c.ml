@@ -4416,13 +4416,18 @@ let init_cmd =
     Arg.(value & opt (some string) None & info ["supervisor-strategy"] ~docv:"STRATEGY"
            ~doc:"Supervisor dispatch strategy: first-alive (default), round-robin, broadcast.")
   in
+  let relay_url_arg =
+    Arg.(value & opt (some string) None & info ["relay"]
+           ~docv:"URL" ~doc:"Configure and register with a relay at this URL. Prints connector start command as next step.")
+  in
   let+ json = json_flag
   and+ client_opt = client_opt
   and+ alias_opt = alias_opt_arg
   and+ room = room_arg
   and+ no_setup = no_setup
   and+ supervisor_opt = supervisor_arg
-  and+ supervisor_strategy_opt = supervisor_strategy_arg in
+  and+ supervisor_strategy_opt = supervisor_strategy_arg
+  and+ relay_url = relay_url_arg in
   let output_mode = if json then Json else Human in
   let root = resolve_broker_root () in
   let broker = C2c_mcp.Broker.create ~root in
@@ -4515,6 +4520,74 @@ let init_cmd =
         end
   in
 
+  (* Relay attachment: setup + register when --relay URL is given. *)
+  let relay_result = match relay_url with
+    | None -> `Skipped
+    | Some rurl ->
+        (try
+           (* Save relay config: same path resolution as relay_setup_cmd. *)
+           let config_path =
+             match Sys.getenv_opt "C2C_RELAY_CONFIG" with
+             | Some p when p <> "" -> p
+             | _ ->
+                 (match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
+                  | Some d when d <> "" -> Filename.concat d "relay.json"
+                  | _ ->
+                      let home = try Sys.getenv "HOME" with Not_found -> "." in
+                      Filename.concat home ".config/c2c/relay.json")
+           in
+           let existing = try
+             let ic = open_in config_path in
+             Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+               Yojson.Safe.from_channel ic)
+           with _ -> `Assoc [] in
+           let set_field fields key v =
+             (key, `String v) :: List.filter (fun (k, _) -> k <> key) fields
+           in
+           let merged = match existing with
+             | `Assoc l -> set_field l "url" rurl
+             | _ -> [("url", `String rurl)]
+           in
+           let oc = open_out config_path in
+           Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+             output_string oc (Yojson.Safe.pretty_to_string (`Assoc merged)));
+           Printf.printf "  relay:     saved config\n";
+           (* Register with relay. *)
+           (match Relay_identity.load () with
+            | Ok id ->
+                let client = Relay.Relay_client.make rurl in
+                let node_id = Printf.sprintf "cli-%s" alias in
+                let session_id = node_id in
+                let p = Relay_signed_ops.sign_register id ~alias ~relay_url:rurl in
+                let result = Lwt_main.run (Relay.Relay_client.register_signed client
+                  ~node_id ~session_id ~alias ~client_type:"cli"
+                  ~identity_pk_b64:p.Relay_signed_ops.identity_pk_b64
+                  ~sig_b64:p.Relay_signed_ops.sig_b64
+                  ~nonce:p.Relay_signed_ops.nonce
+                  ~ts:p.Relay_signed_ops.ts ()) in
+                (match result with
+                 | `Assoc fields ->
+                     (match List.assoc_opt "ok" fields with
+                      | Some (`Bool true) -> Printf.printf "  relay:     registered %s\n" alias
+                      | _ -> Printf.printf "  relay:     registration returned non-ok\n")
+                 | _ -> Printf.printf "  relay:     unexpected response\n")
+            | Error _ ->
+                (* Unauthenticated registration. *)
+                let client = Relay.Relay_client.make rurl in
+                let node_id = Printf.sprintf "cli-%s" alias in
+                let session_id = node_id in
+                let result = Lwt_main.run (Relay.Relay_client.register client
+                  ~node_id ~session_id ~alias ~client_type:"cli" ~identity_pk:"" ()) in
+                (match result with
+                 | `Assoc fields ->
+                     (match List.assoc_opt "ok" fields with
+                      | Some (`Bool true) -> Printf.printf "  relay:     registered %s (unauthenticated)\n" alias
+                      | _ -> Printf.printf "  relay:     registration returned non-ok\n")
+                 | _ -> Printf.printf "  relay:     unexpected response\n"));
+           `Ok rurl
+         with e -> `Error (Printexc.to_string e))
+  in
+
   (match output_mode with
    | Json ->
        let setup_json = match setup_result with
@@ -4528,21 +4601,27 @@ let init_cmd =
          | `Skipped -> `Null
          | `Error e -> `String (Printf.sprintf "error: %s" e)
        in
-       let supervisor_json = match supervisor_result with
-         | `Set (aliases, strat) ->
-             `Assoc ([ ("ok", `Bool true); ("aliases", `List (List.map (fun a -> `String a) aliases)) ]
-                     @ (match strat with Some s -> [("strategy", `String s)] | None -> []))
-         | `Skipped -> `Null
-         | `Error e -> `Assoc [("ok", `Bool false); ("error", `String e)]
-       in
-       print_json (`Assoc
-         [ ("ok", `Bool true)
-         ; ("session_id", `String session_id)
-         ; ("alias", `String alias)
-         ; ("broker_root", `String root)
-         ; ("setup", setup_json)
-         ; ("room", room_json)
-         ; ("supervisor", supervisor_json)
+        let supervisor_json = match supervisor_result with
+          | `Set (aliases, strat) ->
+              `Assoc ([ ("ok", `Bool true); ("aliases", `List (List.map (fun a -> `String a) aliases)) ]
+                      @ (match strat with Some s -> [("strategy", `String s)] | None -> []))
+          | `Skipped -> `Null
+          | `Error e -> `Assoc [("ok", `Bool false); ("error", `String e)]
+        in
+        let relay_json = match relay_result with
+          | `Ok url -> `Assoc [("ok", `Bool true); ("relay_url", `String url)]
+          | `Skipped -> `Null
+          | `Error e -> `Assoc [("ok", `Bool false); ("error", `String e)]
+        in
+        print_json (`Assoc
+          [ ("ok", `Bool true)
+          ; ("session_id", `String session_id)
+          ; ("alias", `String alias)
+          ; ("broker_root", `String root)
+          ; ("setup", setup_json)
+          ; ("room", room_json)
+          ; ("supervisor", supervisor_json)
+          ; ("relay", relay_json)
          ])
    | Human ->
        Printf.printf "\nc2c init complete!\n";
@@ -4558,17 +4637,25 @@ let init_cmd =
         | `Joined r -> Printf.printf "  room:     joined #%s\n" r
         | `Skipped -> ()
         | `Error e -> Printf.printf "  room:     error joining — %s\n" e);
-       (match supervisor_result with
-        | `Set (aliases, strat) ->
-            Printf.printf "  supervisor: %s%s\n" (String.concat ", " aliases)
-              (match strat with Some s -> Printf.sprintf " (strategy: %s)" s | None -> "")
-        | `Skipped -> ()
-        | `Error e -> Printf.printf "  supervisor: error — %s\n" e);
-       Printf.printf "\nYou're ready! Try:\n";
-       Printf.printf "  c2c list              — see peers\n";
-       Printf.printf "  c2c send ALIAS MSG    — send a message\n";
-       Printf.printf "  c2c poll-inbox        — check your inbox\n";
-       Printf.printf "  c2c send-room %s MSG  — chat in the room\n" room)
+         (match supervisor_result with
+          | `Set (aliases, strat) ->
+              Printf.printf "  supervisor: %s%s\n" (String.concat ", " aliases)
+                (match strat with Some s -> Printf.sprintf " (strategy: %s)" s | None -> "")
+          | `Skipped -> ()
+          | `Error e -> Printf.printf "  supervisor: error — %s\n" e);
+
+         (match relay_result with
+          | `Ok rurl ->
+              Printf.printf "\nRelay attached. Start the connector with:\n";
+              Printf.printf "  c2c relay connect --relay-url %s\n" rurl
+          | `Skipped -> ()
+          | `Error e -> Printf.printf "  relay:     error — %s\n" e);
+
+         Printf.printf "\nYou're ready! Try:\n";
+        Printf.printf "  c2c list              — see peers\n";
+        Printf.printf "  c2c send ALIAS MSG    — send a message\n";
+        Printf.printf "  c2c poll-inbox        — check your inbox\n";
+        Printf.printf "  c2c send-room %s MSG  — chat in the room\n" room)
 
 let completion_cmd =
   let shell_arg =
