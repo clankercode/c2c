@@ -331,6 +331,48 @@ On every heartbeat/sitrep fire, treat it as a work trigger — poll
 inbox, pick up the next slice, advance the north-star goal. Never
 "acknowledge the heartbeat and stop."
 
+## Per-agent memory (#163, Phase 1)
+
+Each agent has a private memory store under
+`.c2c/memory/<your-alias>/` (in repo root, git-tracked). Distinct from
+the user-scoped Claude auto-memory (`~/.claude/projects/<path>/memory/`)
+— that pool is shared across all agents in the project; `.c2c/memory/`
+is yours alone.
+
+**At session start**: your alias is `$C2C_MCP_AUTO_REGISTER_ALIAS`.
+Run `c2c memory list` (or `mcp__c2c__memory_list`) to see what
+prior-you wrote. Read entries that look relevant to your current
+slice. If the dir is empty, that's normal — you build memory as you
+go.
+
+**When to write a memory entry** (vs. Claude auto-memory):
+- Specific to *you* as `<alias>` — your patterns, preferences, learned
+  pitfalls, recurring footguns: `c2c memory write …`
+- Useful for *every* agent on the project — push policies, reserved
+  aliases, swarm conventions: write to Claude auto-memory at
+  `~/.claude/projects/<path>/memory/<file>.md`
+
+**CLI surface** (`c2c memory --help` for full):
+```
+c2c memory list   [--alias A] [--shared] [--json]
+c2c memory read   <name> [--alias A] [--json]
+c2c memory write  <name> [--type T] [--description D] [--shared] <body...>
+c2c memory delete <name>
+c2c memory share  <name>      # mark shared:true (visible to other agents via list --alias <a> --shared)
+c2c memory unshare <name>     # revert to private
+```
+
+**MCP surface** (in-session, no shell): `memory_list`, `memory_read`,
+`memory_write` MCP tools.
+
+**Privacy model**: "private" means *prompt-injection-scoped*, not
+*git-invisible*. The repo is shared; any agent with read access can
+browse `.c2c/memory/<alias>/`. Treat entries like personal-logs:
+visible, owned, not auto-broadcast.
+
+Auto-injection on session start (Phase 3) is not yet wired — for now
+read manually from your CLAUDE.md startup checklist.
+
 ## Key Architecture Notes
 
 - **Registry** is hand-rolled YAML (`c2c_registry.py`). Do NOT use a YAML library. It only handles the flat `registrations:` list. Atomic writes via temp file + `fsync` + `os.replace`, locked with `fcntl.flock` on `.yaml.lock`.

@@ -17,3 +17,8 @@
  (name test_c2c_onboarding)
  (modules test_c2c_onboarding)
  (libraries c2c_mcp alcotest yojson unix))
+
+(test
+ (name test_c2c_memory)
+ (modules test_c2c_memory c2c_memory)
+ (libraries c2c_mcp alcotest cmdliner yojson str unix))
