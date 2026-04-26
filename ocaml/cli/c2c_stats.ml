@@ -145,11 +145,37 @@ let get_codex_tokens ~session_id =
             | None -> empty_token_data)
     with Sys_error _ -> empty_token_data
 
+(** Extract token data from the OpenCode plugin statefile.
+    Path: ~/.local/share/c2c/instances/<alias>/oc-plugin-state.json
+    Reads `state.context_usage.{tokens_input,tokens_output,cost_usd}`.
+    Indexed by alias because that is the directory key the OpenCode
+    plugin uses for managed instances. *)
+let get_opencode_tokens ~alias =
+  let home = Sys.getenv_opt "HOME" |> Option.value ~default:"/home/xertrov" in
+  let state_path =
+    Filename.concat home
+      (Printf.sprintf ".local/share/c2c/instances/%s/oc-plugin-state.json" alias)
+  in
+  match read_json_file state_path with
+  | None -> empty_token_data
+  | Some json ->
+      let open Yojson.Safe.Util in
+      (try
+         let usage = json |> member "state" |> member "context_usage" in
+         let tokens_in = usage |> member "tokens_input" |> to_int_option in
+         let tokens_out = usage |> member "tokens_output" |> to_int_option in
+         let cost_usd = usage |> member "cost_usd" |> to_float_option in
+         { tokens_in; tokens_out; cost_usd; token_source = Some "opencode" }
+       with _ -> empty_token_data)
+
 (** Try to get token data for a session from any available source.
-    Claude Code sessions store data in ~/.claude/sl_out/<session_id>/input.json
-    Codex sessions store data in ~/.codex/state_5.sqlite threads table
-    OpenCode: not available, return empty.
-    We try Claude Code first (most common), then Codex. *)
+    - Claude Code: ~/.claude/sl_out/<session_id>/input.json
+    - Codex: ~/.codex/state_5.sqlite threads table
+    - OpenCode: ~/.local/share/c2c/instances/<alias>/oc-plugin-state.json
+    For OpenCode the lookup key is the alias, which c2c sessions commonly
+    use as their session_id (see find_sl_out_uuid_by_alias for the same
+    convention on the Claude side). We try Claude Code first (most
+    common), then Codex, then OpenCode. *)
 let get_token_data ~session_id =
   (* Try Claude Code first *)
   let data = get_claude_code_tokens ~session_id in
@@ -158,7 +184,11 @@ let get_token_data ~session_id =
     (* Try Codex *)
     let data = get_codex_tokens ~session_id in
     if data.token_source <> None then data
-    else empty_token_data
+    else
+      (* Try OpenCode (session_id is typically the alias) *)
+      let data = get_opencode_tokens ~alias:session_id in
+      if data.token_source <> None then data
+      else empty_token_data
 
 (** Scan all archive files and count sent/received messages.
     sent_counts:      from_alias -> count
