@@ -26,16 +26,11 @@ Key layers:
 
 ## Bugs
 
-### 1. `room.leave` never removes alias from `roomMembers`
-**Location**: `App.tsx` line ~91-92
-```typescript
-// Keep room in list even if it's empty (alias may rejoin)
-```
-The `roomMembers` map is never cleaned up when an alias leaves. A long-running session accumulates stale members.
+### 1. ~~`room.leave` never removes alias from `roomMembers`~~ ✅ Fixed (2fd82ea)
+`App.tsx` lines 115-125 now delete the alias from the `roomMembers` map on `room.leave`, and clean up the room entry if it becomes empty. Fixed 2026-04-22.
 
-### 2. `MAX_EVENTS` cap does not apply to `events` state
-**Location**: `App.tsx` line ~67-69
-The cap only limits what gets displayed (`events.slice(-MAX_EVENTS)`). The full `events` array grows unbounded.
+### 2. ~~`MAX_EVENTS` cap does not apply to `events` state~~ ✅ Fixed
+`setEvents` calls at lines 88-90 and 515-517 cap the array to `MAX_EVENTS` elements before storing. Both the monitor event path and the send path are covered.
 
 ### 3. `pollInbox` timestamps are poll time, not message time
 **Location**: `useHistory.ts` line 51
@@ -139,7 +134,7 @@ Tests cover happy paths and basic error paths at the CLI wrapper layer. **Notabl
 
 | Priority | Item |
 |----------|------|
-| **High** | Fix `room.leave` to remove alias from `roomMembers` (galaxy-coder on it) |
+| ~~**High**~~ | ~~Fix `room.leave` to remove alias from `roomMembers`~~ — ✅ fixed 2fd82ea |
 | **High** | Add Zod validation at monitor JSON ingestion point |
 | **Medium** | Virtualize EventFeed (react-virtual or similar) |
 | **Medium** | Add error toasts for transient CLI failures |
