@@ -41,7 +41,7 @@ let check_drift () : unit =
 
   if not (Sys.file_exists deployed) then begin
     Printf.printf "MISSING: deployed plugin not found at %s\n" deployed;
-    Printf.printf "  Run: cd /path/to/c2c && just install\n";
+    Printf.printf "  Run: cd /path/to/c2c && just install-all\n";
     exit 1
   end else if deployed_is_symlink then begin
     let target = match read_link deployed with Some t -> t | None -> "" in
@@ -82,7 +82,7 @@ let check_drift () : unit =
             Printf.printf "DRIFT: deployed plugin has diverged from canonical source\n";
             Printf.printf "  deployed:  %s (size=%d mtime=%.0f)\n" deployed d_size d_mtime;
             Printf.printf "  canonical: %s (size=%d mtime=%.0f)\n" canonical c_size c_mtime;
-            Printf.printf "  Run: cd /path/to/c2c && just install\n";
+            Printf.printf "  Run: cd /path/to/c2c && just install-all\n";
             exit 1
           end
         end

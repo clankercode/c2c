@@ -485,12 +485,14 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
     end
   in
   let make_symlink ~src ~dst =
-    (* dst may be an existing file (regular or stale symlink). Remove it first. *)
+    (* Unix.symlink stores src as-is; the kernel resolves it relative to the
+       symlink's parent directory, not CWD. Always use an absolute src path. *)
+    let src_abs = if Filename.is_relative src then Filename.concat (Sys.getcwd ()) src else src in
     if dry_run then
-      Printf.printf "[DRY-RUN] would symlink %s -> %s\n%!" dst src
+      Printf.printf "[DRY-RUN] would symlink %s -> %s\n%!" dst src_abs
     else begin
       (try Unix.unlink dst with Unix.Unix_error (Unix.ENOENT, _, _) -> ());
-      Unix.symlink src dst
+      Unix.symlink src_abs dst
     end
   in
   let canonical_exists = Sys.file_exists canonical_plugin && file_size canonical_plugin >= 1024 in

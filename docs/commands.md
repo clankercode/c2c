@@ -614,6 +614,8 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `health [--json]` | Broker health snapshot: registry liveness, inbox freshness, rooms, relay reachability. |
 | `doctor [--check-rebase-base] [--summary] [--json]` | Health snapshot + push-pending classification (relay-critical vs local-only). Run before deciding to push. |
 | `doctor docs-drift [--doc PATH] [--summary] [--json] [--warn-only]` | Audit a doc file (default: `CLAUDE.md`) for stale references: bad paths, unregistered commands, wrong GitHub org URLs, deprecated Python script refs. Exempt lines carrying a DEPRECATED/LEGACY/ARCHIVED note. Use `--warn-only` to exit 0 even with findings (useful in CI rollups). Run during peer-review to satisfy the docs-up-to-date criterion. |
+| `doctor monitor-leak [--json] [--threshold N]` | Check for duplicate c2c monitor processes per alias. Exits 1 if any alias has more than `--threshold` monitor processes (default: 1). Run to detect leaked monitors after session churn. |
+| `doctor opencode-plugin-drift` | Check whether the deployed OpenCode plugin is a symlink to the canonical source (`data/opencode-plugin/c2c.ts`), a drifted regular file, or a stale symlink. Reports OK / DRIFT / STALE / MISSING. Run `just install-all` to repair a drifted plugin. |
 | `verify [--alive-only] [--min-messages N] [--json]` | Verify message exchange progress across registered peers. |
 | `tail-log [--limit N] [--json]` | Read the last N broker RPC log entries. |
 | `monitor [--all] [--archive] [--drains] [--sweeps] [--from A] [--full-body] [--include-self] [--json]` | Watch broker inboxes and emit one formatted line per event. Designed for Claude Code's Monitor tool. |
