@@ -186,6 +186,20 @@ binary/stamp-sha drift (#322).
   WARN? Lean no — that's an "old stamp, can't compare" case, not a
   drift case. AC5 covers it as silent no-op.
 
+## Resolutions (post-implementation)
+
+- **Q1 — RESOLVED yes:** drift check iterates over all 4 binaries
+  (`c2c`, `c2c-mcp-server`, `c2c-inbox-hook-ocaml`,
+  `c2c-cold-boot-hook`). Per-binary DRIFT log + summary WARN names
+  the drifted set. Test case 13 (drift on `c2c-mcp-server`) covers
+  the non-`c2c` arm.
+- **Q2 — DEFERRED:** `c2c doctor` surface for drift remains a
+  follow-up. Filed as the natural next-slice after #322 lands.
+- **Q3 — RESOLVED yes (silent no-op):** old-format stamps that lack
+  the `binaries.<name>.sha256` field cause `extract_binary_sha256`
+  to return empty; `check_drift` short-circuits via
+  `[ -z "$expected" ] && return 0`. Tested in case 14 and case 20.
+
 ## Sequencing
 
 1. **Wait for push** — origin/master needs the evening chain

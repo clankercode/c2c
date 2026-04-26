@@ -269,6 +269,78 @@ else
   ok "stamp omits previous_drift_detected when env unset"
 fi
 
+# Case 19: drift detection on the production multi-line stamp format.
+# write_stamp_with_binaries() uses single-line stanzas; production stamp
+# from c2c-install-stamp.sh is multi-line. Drive through stamp.sh
+# directly so we exercise the multi-line code path the production stamp
+# hits, then tamper a binary and verify drift fires.
+echo "c2c-bin-v1" > "$BIN_DIR/c2c"
+echo "mcp-bin-v1" > "$BIN_DIR/c2c-mcp-server"
+echo "hook-bin-v1" > "$BIN_DIR/c2c-inbox-hook-ocaml"
+echo "cb-bin-v1" > "$BIN_DIR/c2c-cold-boot-hook"
+rm -f "$STAMP_FILE"
+# Stamp script's bin_dir = dirname of stamp_file. Place the stamp in
+# $BIN_DIR so it captures sha256s of our test binaries.
+ML_STAMP="$BIN_DIR/.c2c-version"
+git -C "$WORK" checkout -q "$SHA_B"
+( cd "$WORK" && C2C_INSTALL_STAMP="$ML_STAMP" bash "$STAMP" )
+# Verify it's actually multi-line (sanity check on fixture).
+if [ "$(wc -l < "$ML_STAMP")" -lt 10 ]; then
+  fail "production stamp fixture should be multi-line (got <10 lines)"
+fi
+echo "tampered" > "$BIN_DIR/c2c"
+out=$(cd "$WORK" && \
+  C2C_INSTALL_STAMP="$ML_STAMP" \
+  C2C_INSTALL_TARGET="$BIN_DIR/c2c" \
+  C2C_INSTALL_BIN_DIR="$BIN_DIR" \
+  C2C_INSTALL_QUIET=0 \
+  bash "$GUARD" 2>&1 || true)
+if echo "$out" | grep -q "DRIFT: c2c stamp says"; then
+  ok "drift detected on multi-line production stamp format"
+else
+  fail "drift NOT detected on multi-line stamp format"
+  echo "  stamp:" >&2; head -25 "$ML_STAMP" >&2
+  echo "  output: $out" >&2
+fi
+echo "c2c-bin-v1" > "$BIN_DIR/c2c"
+
+# Case 20: sha256sum unavailable → drift check is silent no-op (AC5).
+# Build a hermetic PATH containing all commands the guard needs EXCEPT
+# sha256sum. Naive PATH-empty hits the "not in git repo" early-exit
+# branch before drift check even runs (false-positive pass).
+SAFE_PATH=$(mktemp -d)
+trap 'rm -rf "$SAFE_PATH" "$WORK"' EXIT
+for cmd in bash sh git tr sed awk head grep cat ls touch rm chmod date dirname basename printf find env mkdir; do
+  src=$(command -v "$cmd" 2>/dev/null) || continue
+  [ -n "$src" ] && ln -sf "$src" "$SAFE_PATH/$cmd"
+done
+# Confirm sha256sum genuinely absent from SAFE_PATH (sanity check).
+if PATH="$SAFE_PATH" command -v sha256sum >/dev/null 2>&1; then
+  fail "test setup error: sha256sum still on hermetic PATH"
+fi
+write_stamp_with_binaries "$SHA_B"
+echo "tampered-but-sha256sum-missing" > "$BIN_DIR/c2c"
+git -C "$WORK" checkout -q "$SHA_B"
+out=$( cd "$WORK" && \
+  PATH="$SAFE_PATH" \
+  C2C_INSTALL_STAMP="$STAMP_FILE" \
+  C2C_INSTALL_TARGET="$BIN_DIR/c2c" \
+  C2C_INSTALL_BIN_DIR="$BIN_DIR" \
+  C2C_INSTALL_QUIET=0 \
+  bash "$GUARD" 2>&1 || true)
+# Make sure we didn't trip the "not in git repo" early-exit branch
+# (would mean we're testing the wrong thing).
+if echo "$out" | grep -q "not in a git repo"; then
+  fail "sha256sum-missing test hit not-in-repo branch (PATH too empty)"
+  echo "  output: $out" >&2
+elif echo "$out" | grep -q "DRIFT"; then
+  fail "sha256sum-missing should silence drift check; got DRIFT log"
+  echo "  output: $out" >&2
+else
+  ok "sha256sum unavailable → drift check silent no-op"
+fi
+echo "c2c-bin-v1" > "$BIN_DIR/c2c"
+
 echo
 echo "summary: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

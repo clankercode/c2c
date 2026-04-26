@@ -104,6 +104,10 @@ if command -v sha256sum >/dev/null 2>&1; then
     # lines. Squash newlines to spaces, then regex-extract the first
     # sha256 inside the named binary's {...} block. We anchor on the
     # opening { after the name so we don't read past into the next stanza.
+    # NOTE: hex class is lowercase only because sha256sum emits lowercase.
+    # If a future stamp writer uses uppercase hex this becomes a silent
+    # no-op for that binary (drift undetectable). Widen to [0-9a-fA-F] if
+    # that ever happens.
     tr '\n' ' ' < "$stamp_file" \
       | sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*{[^}]*"sha256"[[:space:]]*:[[:space:]]*"\([0-9a-f]\+\)".*/\1/p' \
       | head -n1
