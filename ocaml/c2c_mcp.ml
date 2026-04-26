@@ -858,18 +858,78 @@ module Broker = struct
       ~read_environ:(effective_read_environ ())
       ~session_id
 
+  (* Docker-in-Docker liveness: when C2C_IN_DOCKER=1 is set (e.g. in
+     docker-compose test containers), PID namespaces are isolated — a
+     process in container A cannot see /proc/<pid> of a process in
+     container B even when they share a volume. Instead, each session
+     touches a lease file in the shared broker root; registration_is_alive
+     checks whether that file has been modified within the TTL window.
+     All containers sharing the same broker root volume see the same
+     lease files, so cross-container liveness is visible. *)
+  let docker_lease_ttl = 60.0  (* seconds *)
+
+  let docker_lease_dir_name = ".leases"
+
+  let lease_file_path t ~session_id =
+    Filename.concat (Filename.concat t.root docker_lease_dir_name) session_id
+
+  (* Ensure the .leases directory exists; errors are swallowed — touch_lease
+     is best-effort and must never block registration or delivery. *)
+  let ensure_lease_dir t =
+    let dir = Filename.concat t.root docker_lease_dir_name in
+    if not (Sys.file_exists dir) then
+      (try Unix.mkdir dir 0o755 with Unix.Unix_error _ -> ())
+
+  (* Touch the lease file for session_id, creating it if absent.
+     Called on every broker interaction via touch_session so the mtime
+     advances whenever the session is alive. Errors swallowed. *)
+  let touch_lease t ~session_id =
+    try
+      ensure_lease_dir t;
+      let path = lease_file_path t ~session_id in
+      (* Unix.utimes updates mtime; creates the file if absent *)
+      Unix.utimes path 0.0 (Unix.gettimeofday ())
+    with Unix.Unix_error _ -> ()
+
+  let docker_broker_root () =
+    match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
+    | Some root -> root
+    | None -> failwith "C2C_IN_DOCKER=1 requires C2C_MCP_BROKER_ROOT to be set"
+
+  let in_docker_mode () =
+    match Sys.getenv_opt "C2C_IN_DOCKER" with
+    | Some "1" | Some "true" | Some "yes" -> true
+    | _ -> false
+
   let registration_is_alive reg =
-    match reg.pid with
-    | None -> true
-    | Some pid ->
-        if not (Sys.file_exists ("/proc/" ^ string_of_int pid)) then false
-        else
-          (match reg.pid_start_time with
-           | None -> true
-           | Some stored ->
-               (match read_pid_start_time pid with
-                | Some current -> current = stored
-                | None -> false))
+    (* When Docker mode is active, use the file-based lease instead of
+       /proc/<pid> checks. The lease is touched on every touch_session
+       call, so a recent mtime means the session is alive in its container. *)
+    if in_docker_mode () then
+      match reg.pid with
+      | None -> true
+      | Some _pid ->
+          let root = docker_broker_root () in
+          let path = lease_file_path { root } ~session_id:reg.session_id in
+          if not (Sys.file_exists path) then false
+          else
+            (try
+              let stat = Unix.stat path in
+              let age = Unix.gettimeofday () -. stat.st_mtime in
+              age <= docker_lease_ttl
+             with Unix.Unix_error _ -> false)
+    else
+      match reg.pid with
+      | None -> true
+      | Some pid ->
+          if not (Sys.file_exists ("/proc/" ^ string_of_int pid)) then false
+          else
+            (match reg.pid_start_time with
+             | None -> true
+             | Some stored ->
+                 (match read_pid_start_time pid with
+                  | Some current -> current = stored
+                  | None -> false))
 
   (* Tristate liveness for the list tool: distinguishes "we cannot
      tell" (legacy pidless row) from "we checked and the kernel says
@@ -881,17 +941,31 @@ module Broker = struct
   type liveness_state = Alive | Dead | Unknown
 
   let registration_liveness_state reg =
-    match reg.pid with
-    | None -> Unknown
-    | Some pid ->
-        if not (Sys.file_exists ("/proc/" ^ string_of_int pid)) then Dead
-        else
-          (match reg.pid_start_time with
-           | None -> Unknown
-           | Some stored ->
-               (match read_pid_start_time pid with
-                | Some current -> if current = stored then Alive else Dead
-                | None -> Dead))
+    if in_docker_mode () then
+      match reg.pid with
+      | None -> Unknown
+      | Some _pid ->
+          let root = docker_broker_root () in
+          let path = lease_file_path { root } ~session_id:reg.session_id in
+          if not (Sys.file_exists path) then Unknown
+          else
+            (try
+              let stat = Unix.stat path in
+              let age = Unix.gettimeofday () -. stat.st_mtime in
+              if age <= docker_lease_ttl then Alive else Dead
+             with Unix.Unix_error _ -> Unknown)
+    else
+      match reg.pid with
+      | None -> Unknown
+      | Some pid ->
+          if not (Sys.file_exists ("/proc/" ^ string_of_int pid)) then Dead
+          else
+            (match reg.pid_start_time with
+             | None -> Unknown
+             | Some stored ->
+                 (match read_pid_start_time pid with
+                  | Some current -> if current = stored then Alive else Dead
+                  | None -> Dead))
 
   type resolve_result =
     | Resolved of string
@@ -920,7 +994,7 @@ module Broker = struct
       | Some reg ->
           (match reg.pid with
            | None -> false
-           | Some _ when registration_is_alive reg -> false
+            | Some _ when registration_is_alive reg -> false
            | Some old_pid ->
                (match discover_live_pid_for_session_with
                         ~scan_pids ~read_environ ~session_id with
@@ -976,10 +1050,10 @@ module Broker = struct
                          (* Re-load to pick up the swapped pid; the in-memory
                             [reg] is stale after refresh. *)
                          let regs' = load_registrations t in
-                         List.find_opt
-                           (fun r -> r.session_id = reg.session_id
-                                  && registration_is_alive r)
-                           regs'
+                          List.find_opt
+                            (fun r -> r.session_id = reg.session_id
+                                   && registration_is_alive r)
+                            regs'
                        end else None)
                  None matches
              in
@@ -2727,6 +2801,9 @@ module Broker = struct
        liveness checks downstream return Alive. Errors swallowed —
        this is best-effort and must never block the touch. *)
     (try ignore (refresh_pid_if_dead t ~session_id) with _ -> ());
+    (* In Docker mode, touch the lease file so cross-container peers can
+       see this session is alive via the shared broker volume. *)
+    (try touch_lease t ~session_id with _ -> ());
     let now = Unix.gettimeofday () in
     with_registry_lock t (fun () ->
       let regs = load_registrations t in
@@ -3873,7 +3950,7 @@ let handle_tool_call ~(broker : Broker.t) ?session_id_override ~tool_name ~argum
                   legacy pidless rows. Operators can filter on this
                   to identify zombie peers before broadcasting. *)
                let alive_field =
-                 match Broker.registration_liveness_state reg with
+                  match Broker.registration_liveness_state reg with
                  | Broker.Alive -> `Bool true
                  | Broker.Dead -> `Bool false
                  | Broker.Unknown -> `Null
