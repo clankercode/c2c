@@ -6,5 +6,5 @@
   (name c2c)
   (depends dune cmdliner yojson lwt logs alcotest cohttp-lwt-unix uuidm
            base64 digestif mirage-crypto-ec mirage-crypto-rng
-           tls-lwt mirage-crypto-rng-lwt ca-certs hacl-star)
+           tls-lwt mirage-crypto-rng-lwt ca-certs hacl-star sqlite3)
   (allow_empty))

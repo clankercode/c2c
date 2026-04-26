@@ -7,7 +7,9 @@ default:
 # Install OCaml deps into the current opam switch.
 # Keep in sync with the `depends` list in dune-project.
 install-deps:
-    opam install --yes dune cmdliner yojson lwt logs alcotest cohttp-lwt-unix uuidm
+    opam install --yes dune cmdliner yojson lwt logs alcotest cohttp-lwt-unix uuidm \
+        base64 digestif mirage-crypto-ec mirage-crypto-rng \
+        tls-lwt mirage-crypto-rng-lwt ca-certs hacl-star sqlite3
 
 # One-shot OCaml toolchain bootstrap: creates the 'c2c' opam switch if missing,
 # then installs deps. Assumes opam + a system ocaml are already installed
