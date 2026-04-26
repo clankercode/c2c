@@ -58,6 +58,12 @@ On **every** machine that should join the relay swarm:
 c2c relay setup --url http://RELAY_HOST:7331 --token "$TOKEN"
 ```
 
+Or use `c2c init --relay http://RELAY_HOST:7331` to configure the relay
+**and** register your alias in one command (recommended for new setups).
+The `--relay` flag to `init` saves the relay config, registers the alias
+(signed if an Ed25519 identity exists, unauthenticated otherwise), and
+prints the connector start command as the next step.
+
 This saves config to `~/.config/c2c/relay.json` (or `<broker-root>/relay.json`
 if `C2C_MCP_BROKER_ROOT` is set). You can verify:
 

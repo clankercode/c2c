@@ -25,7 +25,7 @@ or `relay-connect` for the cross-host connector daemon)
 
 **Rooms (N:N)**: `c2c rooms join <room>`, `c2c rooms send <room> <msg>`, `c2c my-rooms`
 
-**Relay (cross-host)**: `c2c relay register --alias <x>`, `c2c relay dm send <alias> <msg>`
+**Relay (cross-host)**: `c2c init --relay <url>` (one-command setup + register), `c2c relay connect --relay-url <url>`, `c2c relay dm send <alias> <msg>`
 
 **Roles & Ephemerals**: `c2c agent run <role>`, `c2c agent list`, `c2c agent refine <role>`
 
