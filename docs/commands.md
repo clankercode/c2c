@@ -610,7 +610,7 @@ stored in `~/.local/share/c2c/wire-daemons/` (one pidfile + log per session).
 | `coord-cherry-pick [--no-install] SHA…` | Cherry-pick SHAs with dirty-tree stash + auto-install. Requires `C2C_COORDINATOR=1`. |
 | `git …` | Git wrapper that auto-injects `--author` for commits when `git.attribution=true` in `.c2c/config.toml`. |
 | `worktree list\|setup\|start\|status\|prune\|check-bases` | Manage per-agent git worktrees. |
-| `peer-pass sign\|verify\|list\|clean` | Sign and verify peer-PASS review artifacts. |
+| `peer-pass sign\|send\|verify\|list\|clean` | Sign, send, and verify peer-PASS review artifacts. |
 | `sticker send\|list\|wall\|verify` | Agent appreciation stickers. |
 | `sitrep commit [--message M]` | Stage and commit the current local-hour sitrep file. |
 | `stats [--alias A] [--since DUR] [--top N] [--json] [--append-sitrep]` | Per-agent message statistics (with `stats history` sub for daily rollups). |

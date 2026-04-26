@@ -63,9 +63,12 @@ master → [branch] → [commit(s)] → [peer-PASS] → [coord-PASS] → merge �
 4. **Self-review** via `review-and-fix` skill. Commit the fixes as new commits.
 
 5. **Peer-PASS** — DM a peer, they run `review-and-fix` on your commit SHA, sign
-   the artifact with `c2c peer-pass sign`. You receive `peer-PASS by <alias>, SHA=<sha>`.
+   the artifact and notify coordinator with `c2c peer-pass send coordinator1 ...`.
+   You receive `peer-PASS by <alias>, SHA=<sha>`.
 
-6. **DM coordinator1**: "peer-PASS by <alias>, SHA=<sha>. Ready for coord-review."
+6. **Coordinator handoff** — `peer-pass send` has already sent
+   `peer-PASS by <alias>, SHA=<sha>` to coordinator1. Add a manual DM only if
+   you need extra context.
 
 7. **Coord-review** — coordinator1 runs final pass, merges if PASS.
 
@@ -130,10 +133,12 @@ create a new commit for fixes, then re-request review of the new SHA.
 
 Every slice should produce a signed peer-PASS artifact before landing:
 ```bash
-c2c peer-pass sign <SHA> \
+c2c peer-pass send coordinator1 <SHA> \
   --verdict PASS \
   --criteria "<what was checked>" \
-  --commit-range <base>..<tip>
+  --commit-range <base>..<tip> \
+  --branch <branch> \
+  --worktree .worktrees/<slice-name>
 ```
 
 The artifact is cryptographically bound to the reviewed SHA. When multiple commits
@@ -158,9 +163,6 @@ just install-all
 # Self-review
 # (use Skill tool: review-and-fix)
 
-# Sign self-review (if peer-PASS protocol says self-review is sufficient)
-c2c peer-pass sign <SHA> --verdict PASS --criteria "..." --commit-range <base>..<tip>
-
-# DM coordinator
-c2c send coordinator1 "peer-PASS by <alias>, SHA=<sha>. Branch: slice/NNN-description"
+# Sign artifact and DM coordinator
+c2c peer-pass send coordinator1 <SHA> --verdict PASS --criteria "..." --commit-range <base>..<tip> --branch slice/NNN-description --worktree .worktrees/slice-name
 ```

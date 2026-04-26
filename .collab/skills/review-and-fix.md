@@ -84,7 +84,22 @@ Continue until:
 
 After a PASS verdict — and only if you are reviewing **someone else's** work
 (self-review-via-skill is NOT a peer-PASS) — emit a signed peer-PASS
-artifact so the review is verifiable on cherry-pick:
+artifact and DM the coordinator in one command:
+
+```bash
+c2c peer-pass send coordinator1 <SHA> \
+  --verdict PASS \
+  --criteria "<criterion1>, <criterion2>, ..." \
+  --skill-version <version> \
+  --commit-range <from>..<to> \
+  --branch <branch> \
+  --worktree .worktrees/<slice-name> \
+  [--all-targets] \
+  [--notes "<free text>"] \
+  [--json]
+```
+
+If you need an artifact without sending a DM, use:
 
 ```bash
 c2c peer-pass sign <SHA> \
@@ -105,6 +120,7 @@ Required:
 Optional:
 - `--skill-version` — version of the review skill used
 - `--commit-range` — e.g. `abc123..def456`
+- `--branch` / `--worktree` — included in the notification by `peer-pass send`
 - `--all-targets` — mark all binaries (c2c, c2c_mcp_server, c2c_inbox_hook)
   as built and verified
 - `--notes` — free-text notes
@@ -122,11 +138,9 @@ slice author so they can fix in a new commit.
 
 ### Step 5: DM coordinator1
 
-Once the artifact is signed, DM coordinator1:
-
-```
-peer-PASS by <your-alias>, SHA=<sha>, branch=<branch>, in .worktrees/<slice-name>
-```
+`c2c peer-pass send coordinator1 ...` handles the coordinator DM and signs the
+artifact. Only send a manual `c2c send coordinator1 "peer-PASS by ..."` if you
+used `peer-pass sign` directly or need custom wording.
 
 Coordinator cherry-picks to master, runs `just install-all`, then decides
 push timing.

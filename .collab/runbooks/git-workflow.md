@@ -134,8 +134,8 @@ c2c send lyra-quill "Slice #200 ready for peer review. SHA=abc123 on slice/200-f
 git commit -m "fix(foo): address review note (variable shadowing)"
 c2c send lyra-quill "Re-review please. SHA=def456."
 
-# 7. Peer PASSes → DM coord
-c2c send coordinator1 "peer-PASS by lyra-quill, SHA=def456, branch=slice/200-foo-bar. Ready for coord review."
+# 7. Peer PASSes → sign artifact and DM coord
+c2c peer-pass send coordinator1 def456 --verdict PASS --criteria "build, tests, docs" --branch slice/200-foo-bar --worktree .worktrees/slice-foo-bar
 
 # 8. Coord cherry-picks to master, build+install, optionally pushes later
 ```
@@ -196,4 +196,4 @@ own review-and-fix loop) runs the review. Ping someone else.
 - `branch-per-slice.md` — slice sizing, naming, drive-by discipline
 - `CLAUDE.md` — top-level project rules (this runbook expands on them)
 - `c2c worktree --help` — CLI reference
-- `c2c peer-pass --help` — signed peer-PASS artifacts (optional, for crypto-relevant slices)
+- `c2c peer-pass --help` — signed peer-PASS artifacts and bundled coordinator notifications

@@ -51,6 +51,73 @@ let reviewer_is_author ~reviewer ~sha =
   (match email with Some e -> local_part_eq e | None -> false)
   || (match name with Some n -> String.equal n reviewer | None -> false)
 
+let validate_signing_allowed ~alias ~sha ~allow_self =
+  if not (Git_helpers.git_commit_exists sha) then begin
+    Printf.eprintf "error: SHA %s does not resolve to a commit in this repository.\n%!" sha;
+    Printf.eprintf "  fix: confirm the SHA is correct and the branch is fetched locally.\n%!";
+    exit 1
+  end;
+  if reviewer_is_author ~reviewer:alias ~sha && not allow_self then begin
+    Printf.eprintf
+      "error: refusing to sign — reviewer alias %S matches commit author of %s.\n\
+      \  Self-review-via-skill is NOT a peer-PASS (see git-workflow.md rule 3).\n\
+      \  Get another swarm agent to run review-and-fix on this SHA.\n\
+      \  If a coordinator has explicitly approved this, re-run with --allow-self.\n%!"
+      alias sha;
+    exit 1
+  end
+
+let criteria_list_of_string = function
+  | Some s when s <> "" ->
+      String.split_on_char ',' s |> List.map String.trim |> List.filter ((<>) "")
+  | _ -> []
+
+let targets_for_all all_targets =
+  {
+    Peer_review.c2c = all_targets;
+    Peer_review.c2c_mcp_server = all_targets;
+    Peer_review.c2c_inbox_hook = all_targets;
+  }
+
+let signed_artifact ~alias ~sha ~verdict ~criteria ~skill_version ~commit_range
+    ~all_targets ~notes ~allow_self =
+  validate_signing_allowed ~alias ~sha ~allow_self;
+  let identity = resolve_identity () in
+  let art = {
+    Peer_review.version = 1;
+    Peer_review.reviewer = alias;
+    Peer_review.reviewer_pk = "";
+    Peer_review.sha;
+    Peer_review.verdict = Option.value verdict ~default:"PASS";
+    Peer_review.criteria_checked = criteria_list_of_string criteria;
+    Peer_review.skill_version = Option.value skill_version ~default:"unknown";
+    Peer_review.commit_range = Option.value commit_range ~default:"";
+    Peer_review.targets_built = targets_for_all all_targets;
+    Peer_review.notes = Option.value notes ~default:"";
+    Peer_review.signature = "";
+    Peer_review.ts = Unix.gettimeofday ();
+  } in
+  Peer_review.sign ~identity art
+
+let write_artifact ~sha ~alias signed =
+  let path = artifact_path ~sha ~alias in
+  (try C2c_utils.mkdir_p (Filename.dirname path) with _ -> ());
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc (Peer_review.t_to_string signed);
+    output_string oc "\n");
+  path
+
+let peer_pass_message ~reviewer ~sha ?branch ?worktree () =
+  let base = Printf.sprintf "peer-PASS by %s, SHA=%s" reviewer sha in
+  let parts =
+    [ Some base
+    ; Option.map (Printf.sprintf "branch=%s") branch
+    ; Option.map (Printf.sprintf "in %s") worktree
+    ]
+  in
+  parts |> List.filter_map Fun.id |> String.concat ", "
+
 (* --- sign command -------------------------------------------------------- *)
 
 let peer_pass_sign_cmd =
@@ -103,57 +170,106 @@ let peer_pass_sign_cmd =
   and+ json = json
   and+ allow_self = allow_self in
   let alias = resolve_current_alias () in
-  (* Anti-cheat 1: SHA must resolve to a real commit. *)
-  if not (Git_helpers.git_commit_exists sha) then begin
-    Printf.eprintf "error: SHA %s does not resolve to a commit in this repository.\n%!" sha;
-    Printf.eprintf "  fix: confirm the SHA is correct and the branch is fetched locally.\n%!";
-    exit 1
-  end;
-  (* Anti-cheat 2: reviewer must not be the commit author (no self-review). *)
-  if reviewer_is_author ~reviewer:alias ~sha && not allow_self then begin
-    Printf.eprintf
-      "error: refusing to sign — reviewer alias %S matches commit author of %s.\n\
-      \  Self-review-via-skill is NOT a peer-PASS (see git-workflow.md rule 3).\n\
-      \  Get another swarm agent to run review-and-fix on this SHA.\n\
-      \  If a coordinator has explicitly approved this, re-run with --allow-self.\n%!"
-      alias sha;
-    exit 1
-  end;
-  let identity = resolve_identity () in
-  let criteria_list = match criteria with
-    | Some s when s <> "" -> String.split_on_char ',' s |> List.map String.trim |> List.filter ((<>) "")
-    | _ -> []
+  let signed =
+    signed_artifact ~alias ~sha ~verdict ~criteria ~skill_version ~commit_range
+      ~all_targets ~notes ~allow_self
   in
-  let targets = {
-    Peer_review.c2c = all_targets;
-    Peer_review.c2c_mcp_server = all_targets;
-    Peer_review.c2c_inbox_hook = all_targets;
-  } in
-  let art = {
-    Peer_review.version = 1;
-    Peer_review.reviewer = alias;
-    Peer_review.reviewer_pk = "";
-    Peer_review.sha;
-    Peer_review.verdict = Option.value verdict ~default:"PASS";
-    Peer_review.criteria_checked = criteria_list;
-    Peer_review.skill_version = Option.value skill_version ~default:"unknown";
-    Peer_review.commit_range = Option.value commit_range ~default:"";
-    Peer_review.targets_built = targets;
-    Peer_review.notes = Option.value notes ~default:"";
-    Peer_review.signature = "";
-    Peer_review.ts = Unix.gettimeofday ();
-  } in
-  let signed = Peer_review.sign ~identity art in
-  let path = artifact_path ~sha ~alias in
-  (try C2c_utils.mkdir_p (Filename.dirname path) with _ -> ());
-  let oc = open_out path in
-  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
-    output_string oc (Peer_review.t_to_string signed);
-    output_string oc "\n");
+  let path = write_artifact ~sha ~alias signed in
   if json then
     Printf.printf "%s\n" (Yojson.Safe.pretty_to_string (Peer_review.t_to_json signed))
   else
     Printf.printf "Signed artifact written to %s\n%!" path
+
+(* --- send command -------------------------------------------------------- *)
+
+let peer_pass_send_cmd =
+  let to_alias =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info []
+      ~docv:"ALIAS" ~doc:"Coordinator or peer alias to notify after signing")
+  in
+  let sha =
+    Cmdliner.Arg.(required & pos 1 (some string) None & info []
+      ~docv:"SHA" ~doc:"Git SHA of the reviewed commit")
+  in
+  let verdict_conv =
+    Cmdliner.Arg.enum [ "PASS", "PASS"; "FAIL", "FAIL" ]
+  in
+  let verdict =
+    Cmdliner.Arg.(value & opt (some verdict_conv) (Some "PASS") & info [ "verdict"; "v" ]
+      ~docv:"VERDICT" ~doc:"Review verdict (PASS or FAIL)")
+  in
+  let criteria =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "criteria"; "c" ]
+      ~docv:"CRITERIA" ~doc:"Comma-separated list of criteria checked")
+  in
+  let skill_version =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "skill-version" ]
+      ~docv:"VERSION" ~doc:"review-and-fix skill version (e.g. 1.0.0)")
+  in
+  let commit_range =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "commit-range" ]
+      ~docv:"RANGE" ~doc:"Commit range reviewed (e.g. abc123..def456)")
+  in
+  let all_targets =
+    Cmdliner.Arg.(value & flag & info [ "all-targets" ]
+      ~doc:"Mark all three binaries (c2c, c2c_mcp_server, c2c_inbox_hook) as built")
+  in
+  let notes =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "notes"; "n" ]
+      ~docv:"NOTES" ~doc:"Free-text notes from the review")
+  in
+  let branch =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "branch"; "b" ]
+      ~docv:"BRANCH" ~doc:"Reviewed branch name to include in the notification")
+  in
+  let worktree =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "worktree"; "w" ]
+      ~docv:"PATH" ~doc:"Reviewed worktree path to include in the notification")
+  in
+  let json =
+    Cmdliner.Arg.(value & flag & info [ "json"; "j" ] ~doc:"Output machine-readable JSON.")
+  in
+  let allow_self =
+    Cmdliner.Arg.(value & flag & info [ "allow-self" ]
+      ~doc:"Override the self-review anti-cheat check (reviewer == commit author). \
+            Use only with explicit coordinator approval.")
+  in
+  let+ to_alias = to_alias
+  and+ sha = sha
+  and+ verdict = verdict
+  and+ criteria = criteria
+  and+ skill_version = skill_version
+  and+ commit_range = commit_range
+  and+ all_targets = all_targets
+  and+ notes = notes
+  and+ branch = branch
+  and+ worktree = worktree
+  and+ json = json
+  and+ allow_self = allow_self in
+  let alias = resolve_current_alias () in
+  let signed =
+    signed_artifact ~alias ~sha ~verdict ~criteria ~skill_version ~commit_range
+      ~all_targets ~notes ~allow_self
+  in
+  let path = write_artifact ~sha ~alias signed in
+  let content = peer_pass_message ~reviewer:alias ~sha ?branch ?worktree () in
+  let broker = C2c_mcp.Broker.create ~root:(C2c_utils.resolve_broker_root ()) in
+  (try C2c_mcp.Broker.enqueue_message broker ~from_alias:alias ~to_alias ~content ()
+   with Invalid_argument msg ->
+     Printf.eprintf "error: signed artifact written to %s, but notification send failed: %s\n%!"
+       path msg;
+     exit 1);
+  if json then
+    Printf.printf "%s\n%!" (Yojson.Safe.pretty_to_string (`Assoc [
+      ("ok", `Bool true);
+      ("artifact_path", `String path);
+      ("reviewer", `String alias);
+      ("sha", `String sha);
+      ("sent_to", `String to_alias);
+      ("message", `String content);
+    ]))
+  else
+    Printf.printf "Signed artifact written to %s\nSent peer-PASS notification to %s\n%!" path to_alias
 
 (* --- verify command ------------------------------------------------------ *)
 
@@ -346,8 +462,9 @@ let peer_pass_clean_cmd =
 let peer_pass_group =
   Cmdliner.Cmd.group
     ~default:peer_pass_list_cmd
-    (Cmdliner.Cmd.info "peer-pass" ~doc:"Sign and verify signed peer-PASS review artifacts")
+    (Cmdliner.Cmd.info "peer-pass" ~doc:"Sign, send, and verify signed peer-PASS review artifacts")
     [ Cmdliner.Cmd.v (Cmdliner.Cmd.info "sign" ~doc:"Sign a peer-PASS artifact.") peer_pass_sign_cmd
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "send" ~doc:"Sign a peer-PASS artifact and notify a peer.") peer_pass_send_cmd
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "verify" ~doc:"Verify a signed peer-PASS artifact.") peer_pass_verify_cmd
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List stored peer-PASS artifacts.") peer_pass_list_cmd
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "clean"
