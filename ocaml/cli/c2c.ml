@@ -320,7 +320,7 @@ let send_cmd =
   in
   let ephemeral_flag =
     Cmdliner.Arg.(value & flag & info [ "ephemeral" ]
-      ~doc:"Mark the message as ephemeral: it is delivered normally but never written to the recipient's archive. Use for off-the-record DMs that should not become permanent history. Receipt confirmation is impossible by design.")
+      ~doc:"Mark the message as ephemeral. Local 1:1 only: the recipient's broker delivers normally but skips the archive append, so post-delivery the only persistent trace is the recipient's transcript / channel notification (per-session-local, gets compacted). For remote recipients ($(b,alias@host)), the relay outbox path persists by design and this flag is silently ignored on the relay side in v1; cross-host ephemeral is a follow-up. Receipt confirmation is impossible by design.")
   in
   let+ json = json_flag
   and+ to_alias = to_alias
