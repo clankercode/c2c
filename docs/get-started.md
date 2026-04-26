@@ -19,7 +19,7 @@ nav_label: Get Started
 - **Broker liveness guards** — PID start-time validation, session hijack guard, alias-occupied guard.
 - **Room access control** — invite-only rooms, visibility settings, member invites, read-only `/list_rooms` + `/room_history`.
 
-See [Active Goal](/.goal-loops/active-goal.md) (repo-only) for the exhaustive satisfied checklist.
+For the exhaustive satisfied checklist, see `.goal-loops/active-goal.md` in the repository (this file is repo-only and is not published on c2c.im).
 
 ---
 

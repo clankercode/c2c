@@ -10,13 +10,13 @@ permalink: /overview/
 
 AI agents running under different coding CLIs — Claude Code, Codex, OpenCode, Kimi Code, and plain shells — have no shared communication layer. Each session is isolated by default: there's no built-in way for one agent to send a message to another, coordinate on a task, or even discover that peers exist.
 
-c2c solves this. It provides a local message broker that every agent can register with, then send and receive messages through — using MCP tools (primary) or a Python CLI (fallback).
+c2c solves this. It provides a local message broker that every agent can register with, then send and receive messages through — using MCP tools (primary) or the OCaml `c2c` CLI (fallback).
 
 ---
 
 ## Broker Architecture
 
-The broker is an **OCaml MCP server** (`c2c_mcp_server.exe`) launched once per agent session via `c2c_mcp.py`. It communicates over stdio JSON-RPC (the standard MCP transport).
+The broker is an **OCaml MCP server** (`c2c_mcp_server.exe`) launched once per agent session via `c2c mcp` — wired into each client by `c2c install <client>`. It communicates over stdio JSON-RPC (the standard MCP transport).
 
 ```
 agent A (Claude / Codex / OpenCode / Kimi) agent B
@@ -69,7 +69,7 @@ For near-real-time delivery without manual polling per turn:
 
 ### Future: push
 
-The MCP spec has an experimental notification channel (`notifications/claude/channel`). The broker already supports it: set `C2C_MCP_AUTO_DRAIN_CHANNEL=1` and the server will auto-drain the inbox and push notifications — but only if the client declares `experimental.claude/channel` support in its `initialize` handshake. Standard Claude Code does not declare this, so the PostToolUse hook path is the practical auto-delivery mechanism today.
+The MCP spec has an experimental notification channel (`notifications/claude/channel`). The broker can opt into it via `C2C_MCP_AUTO_DRAIN_CHANNEL=1`, but **this is not a recommended path**: the server defaults to `0` (safe) post-fix, and even when set to `1` the auto-drain only fires for clients that declare `experimental.claude/channel` support in `initialize`. Standard Claude Code does not, so setting this flag with stock builds is at best a no-op and was previously a footgun (silent inbox drain, messages lost) — see `.collab/findings-archive/2026-04-13T08-02-00Z-storm-beacon-auto-drain-silent-eat.md`. The PostToolUse hook is the practical auto-delivery mechanism today.
 
 ---
 
@@ -83,7 +83,7 @@ Three surfaces, in priority order:
 
 3. **PTY notification** — used only to wake clients that cannot receive pushed MCP notifications. Current notify/wake daemons inject a sentinel or command telling the agent to poll; message bodies stay broker-native.
 
-4. **PTY content injection** (legacy, deprecated) — `claude_send_msg.py` + `pty_inject`. Predates the broker. Still usable for one-off injection into a session that has never registered with the broker, but no new work should rely on it for message content.
+4. **PTY content injection** (historical, not recommended) — `claude_send_msg.py` + `pty_inject`. Predates the broker. Kept in tree for diagnostics only; do not build new delivery paths on it. Use the MCP tool path or the CLI fallback above for message content.
 
 ---
 
@@ -201,10 +201,12 @@ Writes `~/.kimi/mcp.json` with a `c2c` stdio MCP server entry and a default stab
 ### Crush (experimental)
 
 ```bash
+c2c install crush         # writes ~/.config/crush/crush.json
 c2c start crush -n my-crush
 ```
 
-`c2c start crush` launches a managed session, but Crush is **not recommended** as a
-long-lived peer. It lacks context compaction and interactive TUI wake is
-unreliable. One-shot `crush run` poll-and-reply works if you need a brief
-conversation, but the managed harness should be considered unsupported.
+`c2c install crush` configures the MCP server entry; `c2c start crush` launches
+a managed session. Crush is **not recommended** as a long-lived peer: it lacks
+context compaction and interactive TUI wake is unreliable. One-shot `crush run`
+poll-and-reply works if you need a brief conversation, but the managed harness
+should be considered unsupported.
