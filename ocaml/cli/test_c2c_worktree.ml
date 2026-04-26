@@ -23,6 +23,144 @@ let test_stale_origin_warning_mentions_risk_when_ahead () =
       check bool "mentions branch behavior" true (contains msg "will still branch");
       check bool "mentions conflicts" true (contains msg "conflicts")
 
+(* --- #313 worktree-gc tests --- *)
+
+let sh fmt =
+  Printf.ksprintf (fun cmd ->
+      let code = Sys.command (cmd ^ " >/dev/null 2>&1") in
+      if code <> 0 then
+        failwith (Printf.sprintf "shell command failed (%d): %s" code cmd))
+    fmt
+
+(* Build a minimal git repo with refs/remotes/origin/master pointing at
+   HEAD (faked via update-ref so we don't need an actual remote), plus
+   a worktree branched off origin/master in [wt_state]. *)
+let make_repo_with_worktree dir wt_state =
+  let repo = Filename.concat dir "repo" in
+  let wt = Filename.concat dir "wt" in
+  sh "git init -q -b master %s" (Filename.quote repo);
+  sh "git -C %s config user.email t@t" (Filename.quote repo);
+  sh "git -C %s config user.name t" (Filename.quote repo);
+  sh "echo a > %s/f" (Filename.quote repo);
+  sh "git -C %s add f" (Filename.quote repo);
+  sh "git -C %s commit -q -m a" (Filename.quote repo);
+  (* Synthesize origin/master without needing a real remote. *)
+  sh "git -C %s update-ref refs/remotes/origin/master HEAD" (Filename.quote repo);
+  (match wt_state with
+   | `Clean ->
+       sh "git -C %s worktree add %s origin/master"
+         (Filename.quote repo) (Filename.quote wt)
+   | `Dirty ->
+       sh "git -C %s worktree add %s origin/master"
+         (Filename.quote repo) (Filename.quote wt);
+       sh "echo modified > %s/dirty.txt" (Filename.quote wt)
+   | `Ahead ->
+       sh "git -C %s worktree add -b ahead %s origin/master"
+         (Filename.quote repo) (Filename.quote wt);
+       sh "echo b > %s/g" (Filename.quote wt);
+       sh "git -C %s add g" (Filename.quote wt);
+       sh "git -C %s commit -q -m b" (Filename.quote wt)
+   | `Detached_at_origin_master ->
+       sh "git -C %s worktree add --detach %s origin/master"
+         (Filename.quote repo) (Filename.quote wt));
+  (repo, wt)
+
+(* classify_worktree shells out to git inside the candidate path; chdir
+   to it so cwd-resolution works, restore cwd on exit. *)
+let classify_in_worktree ~main_path ~ignore_active wt =
+  let prev = Sys.getcwd () in
+  Fun.protect
+    ~finally:(fun () -> try Sys.chdir prev with _ -> ())
+    (fun () ->
+      Sys.chdir wt;
+      C2c_worktree.classify_worktree ~main_path ~ignore_active
+        (Filename.basename wt, wt, ""))
+
+let with_tmp_dir f =
+  let tmp = Filename.temp_file "c2c-wt-test-" "" in
+  Sys.remove tmp;
+  Unix.mkdir tmp 0o700;
+  Fun.protect
+    ~finally:(fun () ->
+      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote tmp))))
+    (fun () -> f tmp)
+
+let test_classify_clean_merged_is_removable () =
+  with_tmp_dir (fun dir ->
+      let (_repo, wt) = make_repo_with_worktree dir `Clean in
+      let c =
+        classify_in_worktree ~main_path:None ~ignore_active:true wt
+      in
+      match c.C2c_worktree.gc_status with
+      | C2c_worktree.GcRemovable _ -> ()
+      | C2c_worktree.GcRefused { reason } ->
+          fail (Printf.sprintf "clean+merged should be removable; got REFUSE: %s" reason))
+
+let test_classify_dirty_is_refused () =
+  with_tmp_dir (fun dir ->
+      let (_repo, wt) = make_repo_with_worktree dir `Dirty in
+      let c =
+        classify_in_worktree ~main_path:None ~ignore_active:true wt
+      in
+      match c.C2c_worktree.gc_status with
+      | C2c_worktree.GcRefused { reason } ->
+          check bool "refuse mentions dirty" true (contains reason "dirty")
+      | _ -> fail "dirty should be refused")
+
+let test_classify_ahead_is_refused () =
+  with_tmp_dir (fun dir ->
+      let (_repo, wt) = make_repo_with_worktree dir `Ahead in
+      let c =
+        classify_in_worktree ~main_path:None ~ignore_active:true wt
+      in
+      match c.C2c_worktree.gc_status with
+      | C2c_worktree.GcRefused { reason } ->
+          check bool "refuse mentions ancestor" true
+            (contains reason "ancestor of origin/master")
+      | _ -> fail "branch-ahead should be refused")
+
+let test_classify_detached_at_origin_master_is_removable () =
+  with_tmp_dir (fun dir ->
+      let (_repo, wt) = make_repo_with_worktree dir `Detached_at_origin_master in
+      let c =
+        classify_in_worktree ~main_path:None ~ignore_active:true wt
+      in
+      match c.C2c_worktree.gc_status with
+      | C2c_worktree.GcRemovable _ -> ()
+      | C2c_worktree.GcRefused { reason } ->
+          fail (Printf.sprintf "detached-at-origin/master should be removable; got REFUSE: %s" reason))
+
+let test_classify_main_worktree_is_refused_even_if_offered () =
+  with_tmp_dir (fun dir ->
+      let (repo, _wt) = make_repo_with_worktree dir `Clean in
+      (* Pretend the candidate IS the main worktree (defense-in-depth
+         check inside classify_worktree). *)
+      let c =
+        classify_in_worktree ~main_path:(Some repo) ~ignore_active:true repo
+      in
+      match c.C2c_worktree.gc_status with
+      | C2c_worktree.GcRefused { reason } ->
+          check bool "refuse mentions main worktree" true
+            (contains reason "main worktree")
+      | _ -> fail "main worktree should never be removable")
+
+let test_json_of_int64_small_is_int () =
+  match C2c_worktree.json_of_int64 1234L with
+  | `Int 1234 -> ()
+  | other ->
+      fail (Printf.sprintf "expected `Int 1234, got %s"
+              (Yojson.Safe.to_string other))
+
+let test_json_of_int64_large_is_numeric () =
+  (* On 63-bit int OCaml, this fits in `Int; on 31-bit it'd be `Intlit.
+     Either way, it must NOT be `String. *)
+  match C2c_worktree.json_of_int64 100000000000L with
+  | `Int _ | `Intlit _ -> ()
+  | `String _ -> fail "json_of_int64 must not emit `String"
+  | other ->
+      fail (Printf.sprintf "unexpected JSON kind: %s"
+              (Yojson.Safe.to_string other))
+
 let () =
   run "c2c_worktree"
     [ ( "stale_origin_warning",
@@ -30,5 +168,23 @@ let () =
             test_stale_origin_warning_absent_when_not_ahead
         ; test_case "mentions risk when local master is ahead" `Quick
             test_stale_origin_warning_mentions_risk_when_ahead
+        ] )
+    ; ( "gc_classify",
+        [ test_case "clean + merged → REMOVABLE" `Quick
+            test_classify_clean_merged_is_removable
+        ; test_case "dirty → REFUSE" `Quick
+            test_classify_dirty_is_refused
+        ; test_case "branch ahead → REFUSE" `Quick
+            test_classify_ahead_is_refused
+        ; test_case "detached at origin/master → REMOVABLE" `Quick
+            test_classify_detached_at_origin_master_is_removable
+        ; test_case "main worktree REFUSE even if offered" `Quick
+            test_classify_main_worktree_is_refused_even_if_offered
+        ] )
+    ; ( "gc_json",
+        [ test_case "json_of_int64 small → `Int" `Quick
+            test_json_of_int64_small_is_int
+        ; test_case "json_of_int64 large → numeric (not `String)" `Quick
+            test_json_of_int64_large_is_numeric
         ] )
     ]

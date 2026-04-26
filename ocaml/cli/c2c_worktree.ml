@@ -553,7 +553,10 @@ let scan_worktrees_for_gc ~ignore_active () =
         (match main_norm with
          | Some mn -> p_norm <> mn
          | None -> true)
-        && (let prefix = repo_root // ".worktrees" in
+        && (let prefix = repo_root // ".worktrees" ^ "/" in
+            (* Anchor on trailing slash so .worktrees-other/foo
+               doesn't match the .worktrees prefix. (#313 review by
+               lyra-quill.) *)
             String.length p_norm > String.length prefix
             && String.sub p_norm 0 (String.length prefix) = prefix))
       entries
@@ -602,12 +605,20 @@ let render_gc_human ~candidates ~clean =
   if not clean then
     Printf.printf "\nRun with --clean to remove the REMOVABLE set. (Dry-run by default.)\n"
 
+(* Emit byte counts as numeric JSON: `Int when in 63-bit OCaml int
+   range (effectively always for filesystem sizes), `Intlit otherwise.
+   Strings would force jq consumers to | tonumber. *)
+let json_of_int64 i =
+  if i >= Int64.of_int min_int && i <= Int64.of_int max_int
+  then `Int (Int64.to_int i)
+  else `Intlit (Int64.to_string i)
+
 let render_gc_json ~candidates =
   let item c =
     let base =
       [ ("path", `String c.gc_path)
       ; ("branch", `String c.gc_branch)
-      ; ("size_bytes", `String (Int64.to_string c.gc_size))
+      ; ("size_bytes", json_of_int64 c.gc_size)
       ]
     in
     match c.gc_status with
@@ -632,7 +643,7 @@ let render_gc_json ~candidates =
   `Assoc
     [ ("scan", `Assoc
          [ ("total_worktrees", `Int (List.length candidates))
-         ; ("total_bytes", `String (Int64.to_string (sum_size candidates)))
+         ; ("total_bytes", json_of_int64 (sum_size candidates))
          ])
     ; ("removable", `List (List.map item removable))
     ; ("refused", `List (List.map item refused))

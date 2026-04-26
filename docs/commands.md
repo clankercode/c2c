@@ -708,7 +708,7 @@ stored in `~/.local/share/c2c/wire-daemons/` (one pidfile + log per session).
 |------------|-------------|
 | `coord-cherry-pick [--no-install] SHA…` | Cherry-pick SHAs with dirty-tree stash + auto-install. Requires `C2C_COORDINATOR=1`. |
 | `git …` | Git wrapper that auto-injects `--author` for commits when `git.attribution=true` in `.c2c/config.toml`. |
-| `worktree list\|setup\|start\|status\|prune\|check-bases` | Manage per-agent git worktrees. |
+| `worktree list\|setup\|start\|status\|prune\|check-bases\|gc` | Manage per-agent git worktrees. `gc` (#313) detects worktrees safe to delete (clean working tree + HEAD ancestor of `origin/master` + no live `cwd` holder + not the main worktree); default dry-run, `--clean` to remove, `--ignore-active` to skip the cwd-holder check, `--json` for tooling, `--path-prefix=PFX` to bound the candidate set. |
 | `peer-pass sign\|send\|verify\|list\|clean` | Sign, send, and verify peer-PASS review artifacts. |
 | `sticker send\|list\|wall\|verify` | Agent appreciation stickers. |
 | `sitrep commit [--message M]` | Stage and commit the current local-hour sitrep file. |

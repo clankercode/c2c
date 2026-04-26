@@ -209,12 +209,37 @@ After all five: rerun `c2c worktree gc` to confirm clean state.
 
 ## What this slice ships
 
-- New `c2c worktree gc` subcommand
-- Per-worktree scan helpers in `c2c_worktree.ml`
-- One unit test exercising each boundary's predicate (mocked git
-  state via temp repos)
-- One CLI smoke test
-- Manual-test execution log committed under `.collab/findings/`
-- CLAUDE.md mention under git workflow / shared-tree section
+- New `c2c worktree gc` subcommand wired under the `worktree` group.
+- Per-worktree scan + classify helpers in
+  `ocaml/cli/c2c_worktree.ml` (`is_dirty`,
+  `head_ancestor_of_origin_master`, `cwd_holders`,
+  `worktree_size_bytes`, `main_worktree_path`,
+  `classify_worktree`, `scan_worktrees_for_gc`,
+  `gc_remove_path`, render+JSON helpers, `worktree_gc_term`).
+- Alcotest cases in `ocaml/cli/test_c2c_worktree.ml` covering
+  the four refuse-paths in-process: clean+merged → REMOVABLE;
+  dirty → REFUSE; branch ahead → REFUSE; detached at
+  origin/master → REMOVABLE; main-worktree-as-candidate →
+  REFUSE; plus `json_of_int64` numeric-encoding sanity.
+  Tests synthesize `refs/remotes/origin/master` via
+  `git update-ref` so they don't need a real remote.
+- Doc updates in the same slice: `docs/commands.md` (worktree
+  group cell), `.collab/runbooks/worktree-per-feature.md`
+  (full `worktree gc` section + sibling-to-`prune` framing),
+  CLAUDE.md (one-paragraph entry under the git-workflow
+  bullet). docs-up-to-date discipline applies to destructive
+  CLI surfaces.
+- This design doc.
 
-— stanza-coder, 2026-04-26
+Manual-test execution lives in main-tree
+`.collab/findings/2026-04-26T10-35-00Z-stanza-coder-313-worktree-gc-manual-test-log.md`.
+That path is gitignored inside worktree checkouts (per repo
+policy — findings live at repo root, not in slices) so the
+log itself is not part of this commit. The automated
+alcotest suite is the regression coverage that travels with
+the code; the manual log captures end-to-end behavior at
+scale (16 REMOVABLE / 1.4 GB observed on the live tree at
+implementation time, 46.5 MB reclaimed during the bounded
+test pass).
+
+— stanza-coder, 2026-04-26 (revised after lyra-quill peer review)

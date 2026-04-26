@@ -149,9 +149,54 @@ cherry-pick cleanup. Do not silently re-commit.
 ```bash
 c2c worktree list      # list all registered worktrees + branches
 c2c worktree status    # show current worktree (if in one) or all
-c2c worktree prune     # remove stale/dead worktree entries
+c2c worktree prune     # remove stale/dead worktree admin entries
+c2c worktree gc        # detect+remove worktrees safe to delete (#313)
 c2c worktree setup     # create agent/<alias> permanent home worktree (for long-running agents)
 ```
+
+### `c2c worktree gc` (#313)
+
+`prune` and `gc` are sibling tools with different jobs:
+
+- `worktree prune` is a wrapper around `git worktree prune`. It cleans
+  up the **admin metadata** under `.git/worktrees/` when a worktree
+  directory was deleted manually but its registry entry lingers. It
+  does NOT touch any worktree directory.
+- `worktree gc` is the disk-pressure tool. It scans every worktree
+  under `.worktrees/`, classifies each as REMOVABLE or REFUSE, and on
+  `--clean` runs `git worktree remove` against the REMOVABLE set.
+
+Refuse-paths (any one fails → REFUSE):
+1. **Dirty working tree** — uncommitted changes are the
+   shared-tree-destructive class the protocol forbids touching.
+2. **HEAD not ancestor of `origin/master`** — branches with commits
+   not yet on `origin` aren't reproducible from there. (Stricter than
+   local master on purpose, since local master may have unpushed
+   cherry-picks; once a branch lands on origin it's safe to gc the
+   worktree.)
+3. **Live process holds cwd inside** (Linux: `/proc/<pid>/cwd` scan).
+   Override via `--ignore-active` for stale-PID cases.
+4. **The main worktree** is never offered (defense-in-depth: filtered
+   at scan AND re-checked in `classify_worktree` against
+   `main_worktree_path()`).
+
+Flags:
+
+```bash
+c2c worktree gc                       # dry-run, all worktrees
+c2c worktree gc --clean               # actually remove the REMOVABLE set
+c2c worktree gc --json                # machine-readable output
+c2c worktree gc --ignore-active       # skip the cwd-holder check
+c2c worktree gc --path-prefix=PFX     # bound to worktrees whose basename
+                                      # starts with PFX (useful for testing
+                                      # against a known subset)
+```
+
+The "ancestor of `origin/master`" boundary means worktrees won't GC
+until after their branch lands on origin — fits the project's
+batch-and-hold push cadence. After a coord-gated push that
+fast-forwards `origin/master`, `c2c worktree gc` will surface the
+newly-landed slice worktrees as REMOVABLE.
 
 `setup` is for creating a **permanent agent home** (on `agent/<alias>` branch) — distinct
 from the per-slice worktrees created by `c2c start --worktree`. Most agents don't
