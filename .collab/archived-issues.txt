@@ -96,3 +96,12 @@ IDs/subjects archived in that batch.
 #290 [jungle, stanza-PASSed] Mobile S5b /device-login web UI (3-commit chain)
 #291 [galaxy, jungle-PASSed] pmodel preferences wire-through (4-commit chain)
 #282 [lyra, stanza+galaxy-PASSed] Codex MCP transport stale (48f66eb9 + 5c4acf99 cross-client fix)
+
+## 2026-04-26 17:21 UTC+10 — third batch (16:44–17:21 work)
+
+#296 [stanza, test-agent-PASSed] #285 cleanup nits — parse_alias_list dedup + .mli ephemeral plumbing fix
+#297 [galaxy hotfix, stanza+jungle retroactive PASS] GUI tauri.conf.json plugins.shell scope→open migration
+#298 [lyra, stanza-PASSed] just setup-ocaml dune skew (fresh-PC reproducibility)
+#288 [galaxy 4-phase, jungle-PASSed] c2c monitor process fork-bomb — diagnostic + circuit-breaker + doctor monitor-leak + CLAUDE.md restart warnings
+#293 [galaxy, jungle-PASSed] Document do-not-do `pkill -f opencode` pattern + safer restart-self path
+#287-design [lyra, stanza-PASSed] Memory revocation (soft) design pass — three-slice impl plan
