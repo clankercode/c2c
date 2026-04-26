@@ -2683,9 +2683,13 @@ let notify_shared_with_recipients
         if recipient = from_alias then None
         else
           try
+            (* #307b: handoff DMs are non-deferrable (push-immediately).
+               The substrate-reaches-back behavior depends on the recipient
+               seeing the path as soon as the entry is saved; deferrable
+               would require an explicit poll_inbox to surface it. *)
             Broker.enqueue_message broker
               ~from_alias ~to_alias:recipient
-              ~content:msg ~deferrable:true ();
+              ~content:msg ~deferrable:false ();
             Some recipient
           with _ -> None)
       shared_with

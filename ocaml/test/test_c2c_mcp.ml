@@ -6653,7 +6653,8 @@ let test_notify_shared_with_dms_listed_recipients () =
       check int "bob received DM" 1 (List.length bob_inbox);
       let msg = List.hd bob_inbox in
       check string "from is the author" "alice-h" msg.from_alias;
-      check bool "DM is deferrable" true msg.deferrable;
+      check bool "DM is non-deferrable (#307b — handoff pushes immediately)"
+        false msg.deferrable;
       check bool "msg references the path" true
         (let needle = ".c2c/memory/alice-h/handoff-note.md" in
          let h = msg.content in
@@ -6725,6 +6726,29 @@ let test_notify_empty_shared_with_is_noop () =
       in
       check int "no notifications for empty shared_with" 0
         (List.length notified))
+
+(* #307b: handoff DM must be visible to drain_inbox_push (the path the
+   PostToolUse hook + channel-notification watcher use). With #286's
+   original [~deferrable:true], drain_inbox_push filtered the handoff
+   out and the recipient only saw it on explicit poll_inbox. *)
+let test_notify_shared_with_appears_in_push_drain () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-author6" ~alias:"alice-push"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-bob6" ~alias:"bob-push"
+        ~pid:None ~pid_start_time:None ();
+      let notified =
+        C2c_mcp.notify_shared_with_recipients
+          ~broker ~from_alias:"alice-push" ~name:"push-note"
+          ~shared:false ~shared_with:["bob-push"] ()
+      in
+      check int "one recipient notified" 1 (List.length notified);
+      let pushed = C2c_mcp.Broker.drain_inbox_push broker ~session_id:"s-bob6" in
+      check int "push drain returns the handoff DM" 1 (List.length pushed);
+      let msg = List.hd pushed in
+      check string "pushed DM is from the author" "alice-push" msg.from_alias;
+      check bool "pushed DM is non-deferrable" false msg.deferrable)
 
 let () =
   run "c2c_mcp"
@@ -7122,4 +7146,6 @@ let () =
                test_notify_silently_skips_unknown_alias
            ; test_case "notify_shared_with empty shared_with is noop" `Quick
                test_notify_empty_shared_with_is_noop
+           ; test_case "notify_shared_with appears in drain_inbox_push (#307b)" `Quick
+               test_notify_shared_with_appears_in_push_drain
            ] ) ]

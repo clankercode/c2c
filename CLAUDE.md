@@ -436,12 +436,15 @@ Revocation only prevents future guarded CLI/MCP reads; it cannot erase
 content already read into another agent's transcript, logs, memory, or
 commits.
 
-**Send-memory handoff** (slice #286): when you write a `shared_with: [..]`
-entry (CLI `--shared-with` or MCP `memory_write`), each recipient is
-sent a deferrable C2C DM with the path:
+**Send-memory handoff** (slice #286, push semantics tightened in #307b):
+when you write a `shared_with: [..]` entry (CLI `--shared-with` or MCP
+`memory_write`), each recipient is sent a non-deferrable C2C DM with
+the path:
 `memory shared with you: .c2c/memory/<author>/<name>.md (from <author>)`.
-Recipients can then read at their own pace without having to know to
-run `c2c memory list --shared-with-me`. Globally-shared entries
+The DM pushes immediately via the recipient's channel-notification or
+PostToolUse hook path so the recipient sees the path on save (the
+substrate-reaches-back property — the system telling you something
+happened, in the moment, without you asking). Globally-shared entries
 (`shared:true`) skip the targeted handoff — the audience is everyone,
 so a per-recipient DM is noise. Notifications are best-effort; an
 unknown recipient alias is silently skipped, the entry write itself
@@ -464,7 +467,7 @@ read manually from your CLAUDE.md startup checklist.
 - **`C2C_MCP_AUTO_REGISTER_ALIAS`**: alias the broker auto-registers on startup, so you keep a stable alias across restarts without calling `register` manually. Also written by `c2c install`.
 - **`C2C_MCP_SESSION_ID`**: explicit session ID override. Set this when launching one-shot child CLI probes (kimi, crush) to prevent inheriting `CLAUDE_SESSION_ID` and hijacking the outer session's registration.
 - **`C2C_MCP_INBOX_WATCHER_DELAY`**: float seconds the background channel-notification watcher sleeps after detecting new inbox content before draining (default 5.0). Gives preferred delivery paths (Claude Code PostToolUse hook, Codex PTY sentinel, OpenCode plugin) time to drain first; if they win the race, `drain_inbox` returns `[]` and no channel notification is emitted. Set to `0` in integration tests to get near-immediate delivery. 5s is short enough to keep idle agents responsive (room broadcasts especially) while still giving active agents' preferred paths time to win the race.
-- **`deferrable=true` means no push** (#303): the MCP `send` tool's `deferrable` flag (and the equivalent `~deferrable:true` on `Broker.enqueue_message`) marks a message as low-priority. `drain_inbox_push` filters deferrable messages out, so neither the watcher nor the PostToolUse hook will surface them. The recipient only sees them on their next explicit `poll_inbox` (or the deliver daemon's idle flush). Rooms NEVER use `deferrable` (`fan_out_room_message` hardcodes `false`), which is why room broadcasts always push. Production opter-in on origin/master today: `relay_nudge.ml` (the send-memory handoff #286 also opts in but lands on origin once that slice ships). User opt-in: `mcp__c2c__send` with `deferrable: true`. If you actually want a DM to surface promptly, omit the flag. See `.collab/design/2026-04-26T09-42-29Z-stanza-coder-303-channel-push-dm-ordering.md` for full investigation + probe data.
+- **`deferrable=true` means no push** (#303): the MCP `send` tool's `deferrable` flag (and the equivalent `~deferrable:true` on `Broker.enqueue_message`) marks a message as low-priority. `drain_inbox_push` filters deferrable messages out, so neither the watcher nor the PostToolUse hook will surface them. The recipient only sees them on their next explicit `poll_inbox` (or the deliver daemon's idle flush). Rooms NEVER use `deferrable` (`fan_out_room_message` hardcodes `false`), which is why room broadcasts always push. Production opter-in: `relay_nudge.ml` (intentionally — its job is "nudge a poll-late agent without pushing again"). User opt-in: `mcp__c2c__send` with `deferrable: true`. If you actually want a DM to surface promptly, omit the flag. See `.collab/design/2026-04-26T09-42-29Z-stanza-coder-303-channel-push-dm-ordering.md` for full investigation + probe data; #307b dropped `deferrable` from the send-memory handoff.
 - **`C2C_CLI_FORCE`**: set to `1` to suppress the MCP nudge on Tier1 CLI commands (`send`, `list`, `whoami`, `poll-inbox`, `peek-inbox`). When both `C2C_MCP_SESSION_ID` and `C2C_MCP_AUTO_REGISTER_ALIAS` are set, these commands print a hint suggesting the equivalent `mcp__c2c__*` tool instead. Set `C2C_CLI_FORCE=1` to silence the hint when you genuinely need the CLI (e.g. operator scripts, non-MCP sessions).
 - **`C2C_NUDGE_CADENCE_MINUTES`**: how often the broker nudge scheduler wakes to check for idle sessions (default 30). Must be greater than `C2C_NUDGE_IDLE_MINUTES`.
 - **`C2C_NUDGE_IDLE_MINUTES`**: how long a session must be idle before receiving a nudge (default 25). Must be less than `C2C_NUDGE_CADENCE_MINUTES`.

@@ -257,10 +257,11 @@ val notify_shared_with_recipients :
 (** [notify_shared_with_recipients] is the send-memory handoff (#286).
     After a memory entry with [shared_with] is written, broker-DM each
     recipient with the path. Globally-shared entries (`shared:true`)
-    skip targeted handoff. Notifications are deferrable and best-effort
-    (try/with swallows enqueue failures). Returns the list of aliases
-    successfully notified; the empty list when [shared:true] OR
-    [shared_with] is empty. *)
+    skip targeted handoff. Notifications are non-deferrable (#307b —
+    they push immediately so the recipient sees the path on save) and
+    best-effort (try/with swallows enqueue failures). Returns the list
+    of aliases successfully notified; the empty list when [shared:true]
+    OR [shared_with] is empty. *)
 
 (* Native OCaml relay modules *)
 
