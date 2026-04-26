@@ -685,6 +685,90 @@ module Broker = struct
     | None -> None
     | Some n -> read_pid_start_time n
 
+  (* Read /proc/<pid>/environ as a list of (key, value) pairs. Environ
+     entries are NUL-separated KEY=VALUE strings. Returns None on any
+     IO error (e.g. permission denied for processes owned by other
+     users, or pid is gone). *)
+  let read_proc_environ pid =
+    let path = Printf.sprintf "/proc/%d/environ" pid in
+    try
+      let ic = open_in_bin path in
+      Fun.protect
+        ~finally:(fun () -> try close_in ic with _ -> ())
+        (fun () ->
+          let buf = Buffer.create 4096 in
+          (try
+             while true do
+               Buffer.add_channel buf ic 4096
+             done
+           with End_of_file -> ());
+          let raw = Buffer.contents buf in
+          let entries = String.split_on_char '\x00' raw in
+          let pairs =
+            List.filter_map
+              (fun e ->
+                if e = "" then None
+                else
+                  match String.index_opt e '=' with
+                  | None -> None
+                  | Some i ->
+                      let k = String.sub e 0 i in
+                      let v = String.sub e (i + 1) (String.length e - i - 1) in
+                      Some (k, v))
+              entries
+          in
+          Some pairs)
+    with Sys_error _ | End_of_file -> None
+
+  (* Default scanner: every numeric entry in /proc is a pid. *)
+  let default_scan_pids () =
+    try
+      let dh = Unix.opendir "/proc" in
+      Fun.protect
+        ~finally:(fun () -> try Unix.closedir dh with _ -> ())
+        (fun () ->
+          let acc = ref [] in
+          (try
+             while true do
+               let name = Unix.readdir dh in
+               match int_of_string_opt name with
+               | Some pid when pid > 0 -> acc := pid :: !acc
+               | _ -> ()
+             done
+           with End_of_file -> ());
+          !acc)
+    with _ -> []
+
+  (* Discover the live pid for a given C2C_MCP_SESSION_ID by scanning
+     /proc/*/environ. Used when an existing registration's pid is dead
+     but the session is in fact still alive under a new pid (e.g. an
+     opencode TUI respawn that does not also restart the MCP-launching
+     wrapper).
+
+     [scan_pids] and [read_environ] are injectable for tests; defaults
+     scan real /proc. Returns the FIRST matching pid. If multiple
+     processes claim the same session_id, that's a separate bug; we
+     return the first to keep this function deterministic for tests. *)
+  let discover_live_pid_for_session_with
+      ~scan_pids ~read_environ ~session_id =
+    let candidates = scan_pids () in
+    let candidates = List.sort compare candidates in
+    List.find_map
+      (fun pid ->
+        match read_environ pid with
+        | None -> None
+        | Some env ->
+            (match List.assoc_opt "C2C_MCP_SESSION_ID" env with
+             | Some sid when sid = session_id -> Some pid
+             | _ -> None))
+      candidates
+
+  let discover_live_pid_for_session ~session_id =
+    discover_live_pid_for_session_with
+      ~scan_pids:default_scan_pids
+      ~read_environ:read_proc_environ
+      ~session_id
+
   let registration_is_alive reg =
     match reg.pid with
     | None -> true
@@ -2394,7 +2478,63 @@ module Broker = struct
         joined
     end
 
+  (* Refresh a registration's pid + pid_start_time when the stored pid
+     is dead but a live process exists for the same session_id (e.g.
+     opencode TUI respawned under a new pid without restarting its
+     MCP-launching wrapper). The discovery is gated on
+     [scan_pids]/[read_environ] so tests can simulate /proc.
+
+     Returns true if a refresh happened, false otherwise. Only fires
+     when:
+       - the registration exists
+       - its pid is non-None and Dead per registration_is_alive
+       - discovery finds a different live pid claiming the same
+         C2C_MCP_SESSION_ID
+     A no-op for healthy regs, missing regs, or pidless legacy rows. *)
+  let refresh_pid_if_dead_with
+      ~scan_pids ~read_environ t ~session_id =
+    with_registry_lock t (fun () ->
+      let regs = load_registrations t in
+      match List.find_opt (fun reg -> reg.session_id = session_id) regs with
+      | None -> false
+      | Some reg ->
+          (match reg.pid with
+           | None -> false
+           | Some _ when registration_is_alive reg -> false
+           | Some old_pid ->
+               (match discover_live_pid_for_session_with
+                        ~scan_pids ~read_environ ~session_id with
+                | None -> false
+                | Some new_pid when new_pid = old_pid ->
+                    (* same pid, just dead — discovery couldn't find a
+                       live replacement. Don't update. *)
+                    false
+                | Some new_pid ->
+                    let new_start = read_pid_start_time new_pid in
+                    let regs' =
+                      List.map
+                        (fun r ->
+                          if r.session_id = session_id
+                          then { r with pid = Some new_pid; pid_start_time = new_start }
+                          else r)
+                        regs
+                    in
+                    save_registrations t regs';
+                    true)))
+
+  let refresh_pid_if_dead t ~session_id =
+    refresh_pid_if_dead_with
+      ~scan_pids:default_scan_pids
+      ~read_environ:read_proc_environ
+      t ~session_id
+
   let touch_session t ~session_id =
+    (* Self-heal stale pid before stamping last_activity_ts. If the
+       reg's pid points to a dead process but a live process claims
+       the same session_id, swap in the live pid + pid_start_time so
+       liveness checks downstream return Alive. Errors swallowed —
+       this is best-effort and must never block the touch. *)
+    (try ignore (refresh_pid_if_dead t ~session_id) with _ -> ());
     let now = Unix.gettimeofday () in
     with_registry_lock t (fun () ->
       let regs = load_registrations t in

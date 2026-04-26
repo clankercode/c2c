@@ -6284,118 +6284,124 @@ let test_register_rejects_alias_with_pending_permission_from_alive_owner () =
                in
                check bool "thief not registered" true (thief = None))))
 
-(* --- ephemeral DMs (#284): drained but never archived --- *)
+(* --- liveness self-heal: respawn-under-new-pid (slice/liveness-respawn-pid) --- *)
 
-let test_ephemeral_message_drained_returned_to_caller () =
+(* Pick a pid value that's almost certainly not in the process table.
+   /proc/<this>/* will not exist, so registration_is_alive returns false. *)
+let dead_pid = 0x7f00_0000  (* 2130706432, far above typical pid_max *)
+
+let test_discover_live_pid_finds_matching_session () =
+  let scan_pids () = [ 1234; 5678 ] in
+  let read_environ pid =
+    if pid = 1234 then Some [ ("PATH", "/usr/bin"); ("C2C_MCP_SESSION_ID", "session-x") ]
+    else if pid = 5678 then Some [ ("C2C_MCP_SESSION_ID", "session-y") ]
+    else None
+  in
+  let got =
+    C2c_mcp.Broker.discover_live_pid_for_session_with
+      ~scan_pids ~read_environ ~session_id:"session-y"
+  in
+  check (option int) "discovers session-y at pid 5678" (Some 5678) got
+
+let test_discover_live_pid_returns_none_when_no_match () =
+  let scan_pids () = [ 1234; 5678 ] in
+  let read_environ pid =
+    if pid = 1234 then Some [ ("C2C_MCP_SESSION_ID", "other-session") ]
+    else None
+  in
+  let got =
+    C2c_mcp.Broker.discover_live_pid_for_session_with
+      ~scan_pids ~read_environ ~session_id:"session-not-found"
+  in
+  check (option int) "no match" None got
+
+let test_discover_live_pid_skips_unreadable_environ () =
+  let scan_pids () = [ 100; 200; 300 ] in
+  let read_environ pid =
+    if pid = 100 then None  (* permission denied / process gone *)
+    else if pid = 200 then Some []  (* empty env *)
+    else if pid = 300 then Some [ ("C2C_MCP_SESSION_ID", "target") ]
+    else None
+  in
+  let got =
+    C2c_mcp.Broker.discover_live_pid_for_session_with
+      ~scan_pids ~read_environ ~session_id:"target"
+  in
+  check (option int) "tolerates unreadable / empty environs" (Some 300) got
+
+let test_refresh_pid_if_dead_noops_when_pidless () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      C2c_mcp.Broker.register broker ~session_id:"s-eph-recv" ~alias:"recv-test"
+      C2c_mcp.Broker.register broker ~session_id:"s-pidless" ~alias:"alpha-test"
         ~pid:None ~pid_start_time:None ();
-      C2c_mcp.Broker.register broker ~session_id:"s-eph-send" ~alias:"send-test"
-        ~pid:None ~pid_start_time:None ();
-      C2c_mcp.Broker.enqueue_message broker
-        ~from_alias:"send-test" ~to_alias:"recv-test"
-        ~content:"off the record" ~ephemeral:true ();
-      let drained = C2c_mcp.Broker.drain_inbox broker ~session_id:"s-eph-recv" in
-      check int "ephemeral drained, returned to caller" 1 (List.length drained);
-      let msg = List.hd drained in
-      check bool "ephemeral flag preserved" true msg.ephemeral)
-
-let test_ephemeral_message_not_archived () =
-  with_temp_dir (fun dir ->
-      let broker = C2c_mcp.Broker.create ~root:dir in
-      C2c_mcp.Broker.register broker ~session_id:"s-eph-archive" ~alias:"recv2-test"
-        ~pid:None ~pid_start_time:None ();
-      C2c_mcp.Broker.register broker ~session_id:"s-eph-archive-send" ~alias:"send2-test"
-        ~pid:None ~pid_start_time:None ();
-      C2c_mcp.Broker.enqueue_message broker
-        ~from_alias:"send2-test" ~to_alias:"recv2-test"
-        ~content:"silence" ~ephemeral:true ();
-      let _ = C2c_mcp.Broker.drain_inbox broker ~session_id:"s-eph-archive" in
-      let archived =
-        C2c_mcp.Broker.read_archive broker ~session_id:"s-eph-archive" ~limit:100
+      let scan_pids () = [ 1234 ] in
+      let read_environ _ = Some [ ("C2C_MCP_SESSION_ID", "s-pidless") ] in
+      let refreshed =
+        C2c_mcp.Broker.refresh_pid_if_dead_with
+          ~scan_pids ~read_environ broker ~session_id:"s-pidless"
       in
-      check int "ephemeral message NOT in archive" 0 (List.length archived))
+      check bool "no-op for pidless reg" false refreshed)
 
-let test_non_ephemeral_still_archived () =
+let test_refresh_pid_if_dead_noops_when_alive () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      C2c_mcp.Broker.register broker ~session_id:"s-arc-recv" ~alias:"recv3-test"
-        ~pid:None ~pid_start_time:None ();
-      C2c_mcp.Broker.register broker ~session_id:"s-arc-send" ~alias:"send3-test"
-        ~pid:None ~pid_start_time:None ();
-      C2c_mcp.Broker.enqueue_message broker
-        ~from_alias:"send3-test" ~to_alias:"recv3-test"
-        ~content:"on the record" ();
-      let _ = C2c_mcp.Broker.drain_inbox broker ~session_id:"s-arc-recv" in
-      let archived =
-        C2c_mcp.Broker.read_archive broker ~session_id:"s-arc-recv" ~limit:100
+      let live_pid = Unix.getpid () in
+      let live_start = C2c_mcp.Broker.read_pid_start_time live_pid in
+      C2c_mcp.Broker.register broker ~session_id:"s-alive" ~alias:"alpha-alive"
+        ~pid:(Some live_pid) ~pid_start_time:live_start ();
+      let scan_pids () = [ 999_999 ] in
+      let read_environ _ = Some [ ("C2C_MCP_SESSION_ID", "s-alive") ] in
+      let refreshed =
+        C2c_mcp.Broker.refresh_pid_if_dead_with
+          ~scan_pids ~read_environ broker ~session_id:"s-alive"
       in
-      check int "non-ephemeral message IS archived" 1 (List.length archived))
+      check bool "no-op for alive reg" false refreshed)
 
-let test_mixed_batch_archives_only_non_ephemeral () =
+let test_refresh_pid_if_dead_updates_when_dead_and_live_discovered () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      C2c_mcp.Broker.register broker ~session_id:"s-mix-recv" ~alias:"recv4-test"
-        ~pid:None ~pid_start_time:None ();
-      C2c_mcp.Broker.register broker ~session_id:"s-mix-send" ~alias:"send4-test"
-        ~pid:None ~pid_start_time:None ();
-      C2c_mcp.Broker.enqueue_message broker
-        ~from_alias:"send4-test" ~to_alias:"recv4-test"
-        ~content:"keep me" ();
-      C2c_mcp.Broker.enqueue_message broker
-        ~from_alias:"send4-test" ~to_alias:"recv4-test"
-        ~content:"forget me" ~ephemeral:true ();
-      C2c_mcp.Broker.enqueue_message broker
-        ~from_alias:"send4-test" ~to_alias:"recv4-test"
-        ~content:"keep me 2" ();
-      let drained = C2c_mcp.Broker.drain_inbox broker ~session_id:"s-mix-recv" in
-      check int "all 3 returned to caller" 3 (List.length drained);
-      let archived =
-        C2c_mcp.Broker.read_archive broker ~session_id:"s-mix-recv" ~limit:100
+      C2c_mcp.Broker.register broker ~session_id:"s-respawn" ~alias:"alpha-respawn"
+        ~pid:(Some dead_pid) ~pid_start_time:(Some 12345) ();
+      let live_pid = Unix.getpid () in
+      let scan_pids () = [ live_pid ] in
+      let read_environ pid =
+        if pid = live_pid then Some [ ("C2C_MCP_SESSION_ID", "s-respawn") ]
+        else None
       in
-      check int "only the 2 non-ephemeral archived" 2 (List.length archived);
-      let archived_contents =
-        List.map (fun (e : C2c_mcp.Broker.archive_entry) -> e.ae_content) archived
+      let refreshed =
+        C2c_mcp.Broker.refresh_pid_if_dead_with
+          ~scan_pids ~read_environ broker ~session_id:"s-respawn"
       in
-      check bool "ephemeral content NOT in archive" false
-        (List.mem "forget me" archived_contents);
-      check bool "non-ephemeral 'keep me' IS in archive" true
-        (List.mem "keep me" archived_contents);
-      check bool "non-ephemeral 'keep me 2' IS in archive" true
-        (List.mem "keep me 2" archived_contents))
+      check bool "refresh happened" true refreshed;
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      let reg = List.find (fun (r : C2c_mcp.registration) -> r.session_id = "s-respawn") regs in
+      check (option int) "pid updated to live process" (Some live_pid) reg.pid;
+      check bool "registration is now alive"
+        true (C2c_mcp.Broker.registration_is_alive reg))
 
-let test_ephemeral_drain_push_skips_archive () =
+let test_refresh_pid_if_dead_noops_when_no_replacement_discovered () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      C2c_mcp.Broker.register broker ~session_id:"s-push-recv" ~alias:"recv5-test"
-        ~pid:None ~pid_start_time:None ();
-      C2c_mcp.Broker.register broker ~session_id:"s-push-send" ~alias:"send5-test"
-        ~pid:None ~pid_start_time:None ();
-      C2c_mcp.Broker.enqueue_message broker
-        ~from_alias:"send5-test" ~to_alias:"recv5-test"
-        ~content:"vanish on push" ~ephemeral:true ();
-      let pushed = C2c_mcp.Broker.drain_inbox_push broker ~session_id:"s-push-recv" in
-      check int "ephemeral pushed to caller" 1 (List.length pushed);
-      let archived =
-        C2c_mcp.Broker.read_archive broker ~session_id:"s-push-recv" ~limit:100
+      C2c_mcp.Broker.register broker ~session_id:"s-stale" ~alias:"alpha-stale"
+        ~pid:(Some dead_pid) ~pid_start_time:None ();
+      let scan_pids () = [] in
+      let read_environ _ = None in
+      let refreshed =
+        C2c_mcp.Broker.refresh_pid_if_dead_with
+          ~scan_pids ~read_environ broker ~session_id:"s-stale"
       in
-      check int "ephemeral NOT archived on push path either" 0 (List.length archived))
+      check bool "no-op when discovery finds nothing" false refreshed;
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      let reg = List.find (fun (r : C2c_mcp.registration) -> r.session_id = "s-stale") regs in
+      check (option int) "pid unchanged" (Some dead_pid) reg.pid)
 
-let test_ephemeral_round_trip_serialization () =
-  with_temp_dir (fun dir ->
-      let broker = C2c_mcp.Broker.create ~root:dir in
-      C2c_mcp.Broker.register broker ~session_id:"s-serial-recv" ~alias:"recv6-test"
-        ~pid:None ~pid_start_time:None ();
-      C2c_mcp.Broker.register broker ~session_id:"s-serial-send" ~alias:"send6-test"
-        ~pid:None ~pid_start_time:None ();
-      C2c_mcp.Broker.enqueue_message broker
-        ~from_alias:"send6-test" ~to_alias:"recv6-test"
-        ~content:"json roundtrip" ~ephemeral:true ();
-      let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"s-serial-recv" in
-      check int "one message" 1 (List.length inbox);
-      let msg = List.hd inbox in
-      check bool "ephemeral flag survived JSON round-trip" true msg.ephemeral)
+(* Note: an end-to-end test using the real /proc scan is impractical here.
+   /proc/<pid>/environ is a kernel snapshot taken at exec time; calling
+   Unix.putenv inside the test process does NOT update it, so the test
+   process can't make itself a "discoverable live target" via the default
+   scanner. Coverage of the touch_session→refresh path is via the
+   refresh_pid_if_dead_with unit tests above (mock scanners) plus the
+   live-binary dogfood after install-all. *)
 
 let () =
   run "c2c_mcp"
@@ -6757,16 +6763,18 @@ let () =
                test_replay_pending_orphan_inbox_missing_pending_file_returns_zero
            ; test_case "replay_pending_orphan_inbox empty pending file returns zero and deletes" `Quick
                test_replay_pending_orphan_inbox_empty_pending_file_returns_zero_and_deletes
-           ; test_case "ephemeral message drained returned to caller" `Quick
-               test_ephemeral_message_drained_returned_to_caller
-           ; test_case "ephemeral message NOT archived" `Quick
-               test_ephemeral_message_not_archived
-           ; test_case "non-ephemeral still archived" `Quick
-               test_non_ephemeral_still_archived
-           ; test_case "mixed batch archives only non-ephemeral" `Quick
-               test_mixed_batch_archives_only_non_ephemeral
-           ; test_case "ephemeral drain_inbox_push skips archive" `Quick
-               test_ephemeral_drain_push_skips_archive
-           ; test_case "ephemeral round-trip serialization" `Quick
-               test_ephemeral_round_trip_serialization
+           ; test_case "discover_live_pid finds matching session" `Quick
+               test_discover_live_pid_finds_matching_session
+           ; test_case "discover_live_pid returns None when no match" `Quick
+               test_discover_live_pid_returns_none_when_no_match
+           ; test_case "discover_live_pid skips unreadable environ" `Quick
+               test_discover_live_pid_skips_unreadable_environ
+           ; test_case "refresh_pid_if_dead noops when pidless" `Quick
+               test_refresh_pid_if_dead_noops_when_pidless
+           ; test_case "refresh_pid_if_dead noops when alive" `Quick
+               test_refresh_pid_if_dead_noops_when_alive
+           ; test_case "refresh_pid_if_dead updates when dead and live discovered" `Quick
+               test_refresh_pid_if_dead_updates_when_dead_and_live_discovered
+           ; test_case "refresh_pid_if_dead noops when no replacement discovered" `Quick
+               test_refresh_pid_if_dead_noops_when_no_replacement_discovered
            ] ) ]

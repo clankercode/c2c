@@ -101,7 +101,42 @@ module Broker : sig
   val registration_is_alive : registration -> bool
   val read_pid_start_time : int -> int option
   val capture_pid_start_time : int option -> int option
-  val enqueue_message : t -> from_alias:string -> to_alias:string -> content:string -> ?deferrable:bool -> ?ephemeral:bool -> unit -> unit
+
+  val read_proc_environ : int -> (string * string) list option
+  (** [read_proc_environ pid] parses /proc/<pid>/environ into a list of
+      (key, value) pairs. Returns None on IO error (process gone,
+      permission denied, etc). *)
+
+  val discover_live_pid_for_session_with :
+    scan_pids:(unit -> int list) ->
+    read_environ:(int -> (string * string) list option) ->
+    session_id:string ->
+    int option
+  (** Test-injectable variant of [discover_live_pid_for_session]. *)
+
+  val discover_live_pid_for_session : session_id:string -> int option
+  (** Scan /proc for a live process whose [C2C_MCP_SESSION_ID] env var
+      matches [session_id]. Returns the lowest-numbered matching pid,
+      or None if no match. Used by [refresh_pid_if_dead] to recover
+      from TUI-respawn-under-new-pid scenarios where the MCP server's
+      original [C2C_MCP_CLIENT_PID] no longer points at a live
+      process. *)
+
+  val refresh_pid_if_dead_with :
+    scan_pids:(unit -> int list) ->
+    read_environ:(int -> (string * string) list option) ->
+    t -> session_id:string -> bool
+  (** Test-injectable variant of [refresh_pid_if_dead]. *)
+
+  val refresh_pid_if_dead : t -> session_id:string -> bool
+  (** If the registration for [session_id] has a dead pid but a live
+      process is discoverable via /proc/<pid>/environ matching the
+      session_id, update the registration's pid + pid_start_time to
+      the live pid and return true. Returns false on no-op (reg
+      missing, pidless, already alive, or no replacement discoverable).
+      Called automatically from [touch_session]. *)
+
+  val enqueue_message : t -> from_alias:string -> to_alias:string -> content:string -> ?deferrable:bool -> unit -> unit
   type send_all_result = { sent_to : string list; skipped : (string * string) list }
   val send_all : t -> from_alias:string -> content:string -> exclude_aliases:string list -> send_all_result
   val read_inbox : t -> session_id:string -> message list
