@@ -163,8 +163,9 @@ c2c worktree setup     # create agent/<alias> permanent home worktree (for long-
   directory was deleted manually but its registry entry lingers. It
   does NOT touch any worktree directory.
 - `worktree gc` is the disk-pressure tool. It scans every worktree
-  under `.worktrees/`, classifies each as REMOVABLE or REFUSE, and on
-  `--clean` runs `git worktree remove` against the REMOVABLE set.
+  under `.worktrees/`, classifies each as REMOVABLE, POSSIBLY_ACTIVE,
+  or REFUSE, and on `--clean` runs `git worktree remove` against the
+  REMOVABLE set only.
 
 Refuse-paths (any one fails → REFUSE):
 1. **Dirty working tree** — uncommitted changes are the
@@ -180,16 +181,39 @@ Refuse-paths (any one fails → REFUSE):
    at scan AND re-checked in `classify_worktree` against
    `main_worktree_path()`).
 
+Soft-refuse path (POSSIBLY_ACTIVE, #314):
+
+5. **Fresh setup, owner may be reading elsewhere.** When HEAD ==
+   `origin/master` AND the worktree's admin dir mtime is younger than
+   `--active-window-hours` (default `2`), the worktree is marked
+   `[!] POSSIBLY_ACTIVE` rather than REMOVABLE. `--clean` skips it.
+   Rationale: a peer who just ran `git worktree add origin/master`
+   to set up a slice, then went to read code in the main tree, has
+   /proc/cwd on the main tree — refuse-path 3 would miss them and
+   we'd nuke 30 minutes of mental setup. The freshness heuristic
+   covers that gap. **To clear the soft-refuse, the worktree's owner
+   commits anything (HEAD diverges from `origin/master`) or removes
+   the worktree manually.** Set `--active-window-hours=0` to disable
+   the heuristic entirely.
+
+**Convention to make the soft-refuse self-clearing**: in a fresh
+worktree, commit something — even a one-line stub — early. Any
+commit moves HEAD off `origin/master` and exits the heuristic, so
+fully-merged worktrees stay REMOVABLE without cluttering the
+POSSIBLY_ACTIVE list.
+
 Flags:
 
 ```bash
-c2c worktree gc                       # dry-run, all worktrees
-c2c worktree gc --clean               # actually remove the REMOVABLE set
-c2c worktree gc --json                # machine-readable output
-c2c worktree gc --ignore-active       # skip the cwd-holder check
-c2c worktree gc --path-prefix=PFX     # bound to worktrees whose basename
-                                      # starts with PFX (useful for testing
-                                      # against a known subset)
+c2c worktree gc                          # dry-run, all worktrees
+c2c worktree gc --clean                  # actually remove REMOVABLE set
+c2c worktree gc --json                   # machine-readable output
+c2c worktree gc --ignore-active          # skip cwd-holder check
+c2c worktree gc --path-prefix=PFX        # bound to worktrees whose
+                                         # basename starts with PFX
+c2c worktree gc --active-window-hours=H  # freshness window for
+                                         # POSSIBLY_ACTIVE (default 2,
+                                         # set 0 to disable)
 ```
 
 The "ancestor of `origin/master`" boundary means worktrees won't GC

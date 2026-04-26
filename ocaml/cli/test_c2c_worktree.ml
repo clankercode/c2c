@@ -66,14 +66,18 @@ let make_repo_with_worktree dir wt_state =
   (repo, wt)
 
 (* classify_worktree shells out to git inside the candidate path; chdir
-   to it so cwd-resolution works, restore cwd on exit. *)
-let classify_in_worktree ~main_path ~ignore_active wt =
+   to it so cwd-resolution works, restore cwd on exit. [active_window_hours]
+   defaults to 0.0 which disables the #314 freshness heuristic — the
+   #313-era tests don't depend on it; #314 tests pass an explicit value. *)
+let classify_in_worktree
+    ?(active_window_hours = 0.0) ~main_path ~ignore_active wt =
   let prev = Sys.getcwd () in
   Fun.protect
     ~finally:(fun () -> try Sys.chdir prev with _ -> ())
     (fun () ->
       Sys.chdir wt;
-      C2c_worktree.classify_worktree ~main_path ~ignore_active
+      C2c_worktree.classify_worktree
+        ~main_path ~ignore_active ~active_window_hours
         (Filename.basename wt, wt, ""))
 
 let with_tmp_dir f =
@@ -93,7 +97,7 @@ let test_classify_clean_merged_is_removable () =
       in
       match c.C2c_worktree.gc_status with
       | C2c_worktree.GcRemovable _ -> ()
-      | C2c_worktree.GcRefused { reason } ->
+      | C2c_worktree.GcRefused { reason } | C2c_worktree.GcPossiblyActive { reason } ->
           fail (Printf.sprintf "clean+merged should be removable; got REFUSE: %s" reason))
 
 let test_classify_dirty_is_refused () =
@@ -103,7 +107,7 @@ let test_classify_dirty_is_refused () =
         classify_in_worktree ~main_path:None ~ignore_active:true wt
       in
       match c.C2c_worktree.gc_status with
-      | C2c_worktree.GcRefused { reason } ->
+      | C2c_worktree.GcRefused { reason } | C2c_worktree.GcPossiblyActive { reason } ->
           check bool "refuse mentions dirty" true (contains reason "dirty")
       | _ -> fail "dirty should be refused")
 
@@ -114,7 +118,7 @@ let test_classify_ahead_is_refused () =
         classify_in_worktree ~main_path:None ~ignore_active:true wt
       in
       match c.C2c_worktree.gc_status with
-      | C2c_worktree.GcRefused { reason } ->
+      | C2c_worktree.GcRefused { reason } | C2c_worktree.GcPossiblyActive { reason } ->
           check bool "refuse mentions ancestor" true
             (contains reason "ancestor of origin/master")
       | _ -> fail "branch-ahead should be refused")
@@ -127,7 +131,7 @@ let test_classify_detached_at_origin_master_is_removable () =
       in
       match c.C2c_worktree.gc_status with
       | C2c_worktree.GcRemovable _ -> ()
-      | C2c_worktree.GcRefused { reason } ->
+      | C2c_worktree.GcRefused { reason } | C2c_worktree.GcPossiblyActive { reason } ->
           fail (Printf.sprintf "detached-at-origin/master should be removable; got REFUSE: %s" reason))
 
 let test_classify_main_worktree_is_refused_even_if_offered () =
@@ -139,10 +143,46 @@ let test_classify_main_worktree_is_refused_even_if_offered () =
         classify_in_worktree ~main_path:(Some repo) ~ignore_active:true repo
       in
       match c.C2c_worktree.gc_status with
-      | C2c_worktree.GcRefused { reason } ->
+      | C2c_worktree.GcRefused { reason } | C2c_worktree.GcPossiblyActive { reason } ->
           check bool "refuse mentions main worktree" true
             (contains reason "main worktree")
       | _ -> fail "main worktree should never be removable")
+
+(* #314: POSSIBLY_ACTIVE freshness heuristic. *)
+
+let test_possibly_active_when_head_eq_origin_and_within_window () =
+  with_tmp_dir (fun dir ->
+      (* `Detached_at_origin_master gives HEAD == origin/master HEAD
+         exactly. The worktree was just created so admin-dir mtime is
+         within any reasonable window. With active_window_hours=2.0 it
+         should classify as POSSIBLY_ACTIVE. *)
+      let (_repo, wt) = make_repo_with_worktree dir `Detached_at_origin_master in
+      let c =
+        classify_in_worktree
+          ~active_window_hours:2.0 ~main_path:None ~ignore_active:true wt
+      in
+      match c.C2c_worktree.gc_status with
+      | C2c_worktree.GcPossiblyActive { reason } ->
+          check bool "reason mentions HEAD==origin/master" true
+            (contains reason "HEAD==origin/master")
+      | _ ->
+          fail "fresh detached-at-origin should be POSSIBLY_ACTIVE \
+                with active_window_hours=2.0")
+
+let test_possibly_active_disabled_when_window_zero () =
+  with_tmp_dir (fun dir ->
+      let (_repo, wt) = make_repo_with_worktree dir `Detached_at_origin_master in
+      (* active_window_hours=0.0 disables the heuristic — should fall
+         through to REMOVABLE. *)
+      let c =
+        classify_in_worktree
+          ~active_window_hours:0.0 ~main_path:None ~ignore_active:true wt
+      in
+      match c.C2c_worktree.gc_status with
+      | C2c_worktree.GcRemovable _ -> ()
+      | _ ->
+          fail "active_window_hours=0.0 should disable the heuristic — \
+                expected REMOVABLE")
 
 let test_json_of_int64_small_is_int () =
   match C2c_worktree.json_of_int64 1234L with
@@ -180,6 +220,10 @@ let () =
             test_classify_detached_at_origin_master_is_removable
         ; test_case "main worktree REFUSE even if offered" `Quick
             test_classify_main_worktree_is_refused_even_if_offered
+        ; test_case "fresh HEAD==origin within window → POSSIBLY_ACTIVE (#314)" `Quick
+            test_possibly_active_when_head_eq_origin_and_within_window
+        ; test_case "active_window_hours=0 disables heuristic (#314)" `Quick
+            test_possibly_active_disabled_when_window_zero
         ] )
     ; ( "gc_json",
         [ test_case "json_of_int64 small → `Int" `Quick

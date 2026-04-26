@@ -487,6 +487,13 @@ let worktree_size_bytes path =
 type gc_status =
   | GcRemovable of { reason : string }
   | GcRefused of { reason : string }
+  | GcPossiblyActive of { reason : string }
+    (* #314: branch tip equals origin/master HEAD AND worktree was set
+       up within the active-window. Soft REFUSE — `--clean` skips it,
+       operator can override by committing-or-deleting. Heuristic
+       protects fresh `git worktree add` checkouts whose owner is
+       reading code in the main tree (so /proc/cwd misses them) but
+       hasn't committed anything yet. *)
 
 type gc_candidate =
   { gc_path : string
@@ -502,9 +509,62 @@ let format_bytes b =
   else if f >= 1.0e3 then Printf.sprintf "%.1f KB" (f /. 1.0e3)
   else Printf.sprintf "%Ld B" b
 
-(** [classify_worktree ~ignore_active (alias, path, branch)] runs the
-    four refuse-checks and returns a [gc_candidate]. *)
-let classify_worktree ~main_path ~ignore_active (_alias, path, branch) =
+(** [head_sha path] returns the resolved HEAD commit SHA for the
+    worktree at [path]. Empty string on error. *)
+let head_sha path =
+  let (code, out, _) =
+    git_command ~cwd:path ~quiet:true [ "rev-parse"; "HEAD" ]
+  in
+  if code = 0 then String.trim out else ""
+
+(** [origin_master_sha path] returns the SHA of refs/remotes/origin/master
+    as known to the worktree (its shared object DB). Empty string on
+    error. *)
+let origin_master_sha path =
+  let (code, out, _) =
+    git_command ~cwd:path ~quiet:true [ "rev-parse"; "origin/master" ]
+  in
+  if code = 0 then String.trim out else ""
+
+(** [worktree_admin_dir path] returns the per-worktree admin dir (under
+    [<git-common-dir>/worktrees/<name>/]) reported by `git rev-parse
+    --git-dir` from inside the worktree. None on error. *)
+let worktree_admin_dir path =
+  let (code, out, _) =
+    git_command ~cwd:path ~quiet:true [ "rev-parse"; "--git-dir" ]
+  in
+  if code <> 0 then None
+  else
+    let d = String.trim out in
+    (* If the path is relative, resolve it inside the worktree. *)
+    let abs =
+      if Filename.is_relative d then Filename.concat path d else d
+    in
+    Some abs
+
+(** [worktree_age_seconds path] returns the seconds since the worktree's
+    admin dir was last modified (mtime). The mtime is set when git
+    creates the admin dir at `worktree add` time and updated by certain
+    git operations; for "fresh, untouched worktree" detection it's
+    the load-bearing signal. None when the dir can't be stat'd. *)
+let worktree_age_seconds path =
+  match worktree_admin_dir path with
+  | None -> None
+  | Some d ->
+      (try
+         let st = Unix.stat d in
+         Some (Unix.gettimeofday () -. st.Unix.st_mtime)
+       with _ -> None)
+
+(** [classify_worktree ~ignore_active ~active_window_hours
+    (alias, path, branch)] runs the refuse-checks and returns a
+    [gc_candidate]. The freshness heuristic (#314) marks worktrees
+    where HEAD == origin/master AND the admin dir is within
+    [active_window_hours] as POSSIBLY_ACTIVE — a soft REFUSE that
+    `--clean` skips, so a peer who set up a worktree minutes ago and
+    went to read code elsewhere doesn't lose their setup. *)
+let classify_worktree ~main_path ~ignore_active ~active_window_hours
+    (_alias, path, branch) =
   let size = worktree_size_bytes path in
   let mk st = { gc_path = path; gc_branch = branch; gc_size = size; gc_status = st } in
   (* Defense-in-depth: never offer the main worktree even if list_worktrees
@@ -523,17 +583,44 @@ let classify_worktree ~main_path ~ignore_active (_alias, path, branch) =
   else
     let holders = if ignore_active then [] else cwd_holders path in
     match holders with
-    | [] -> mk (GcRemovable { reason = "ancestor of origin/master, clean" })
     | (pid, cmd) :: _ ->
         let snippet =
           if String.length cmd > 60 then String.sub cmd 0 60 ^ "…" else cmd
         in
         mk (GcRefused { reason = Printf.sprintf "active cwd: pid=%d (%s)" pid snippet })
+    | [] ->
+        (* Freshness heuristic (#314). HEAD == origin/master + admin dir
+           young = "set up but no work yet, owner may be reading
+           elsewhere." *)
+        let head = head_sha path in
+        let origin_head = origin_master_sha path in
+        let head_eq_origin =
+          head <> "" && origin_head <> "" && head = origin_head
+        in
+        let young =
+          match worktree_age_seconds path with
+          | Some age -> age < active_window_hours *. 3600.0
+          | None -> false
+        in
+        if head_eq_origin && young then
+          let age =
+            match worktree_age_seconds path with
+            | Some s -> s
+            | None -> 0.0
+          in
+          let age_h = age /. 3600.0 in
+          mk (GcPossiblyActive
+                { reason = Printf.sprintf
+                    "fresh setup (HEAD==origin/master, age %.1fh < %.1fh \
+                     window); owner may be working in another cwd"
+                    age_h active_window_hours })
+        else
+          mk (GcRemovable { reason = "ancestor of origin/master, clean" })
 
 (** [scan_worktrees_for_gc ~ignore_active ()] enumerates worktrees under
     .worktrees/ and classifies each. The main worktree is filtered out
     early (defense-in-depth: classify_worktree also refuses it). *)
-let scan_worktrees_for_gc ~ignore_active () =
+let scan_worktrees_for_gc ~ignore_active ~active_window_hours () =
   let main_path = main_worktree_path () in
   let main_norm = match main_path with
     | Some mp -> (try Some (Unix.realpath mp) with _ -> Some mp)
@@ -561,7 +648,9 @@ let scan_worktrees_for_gc ~ignore_active () =
             && String.sub p_norm 0 (String.length prefix) = prefix))
       entries
   in
-  List.map (classify_worktree ~main_path ~ignore_active) candidates
+  List.map
+    (classify_worktree ~main_path ~ignore_active ~active_window_hours)
+    candidates
 
 (** [gc_remove_path path] removes a worktree via `git worktree remove`.
     Returns true on success. *)
@@ -572,6 +661,10 @@ let gc_remove_path path =
 let render_gc_human ~candidates ~clean =
   let removable = List.filter (fun c ->
       match c.gc_status with GcRemovable _ -> true | _ -> false)
+      candidates
+  in
+  let possibly_active = List.filter (fun c ->
+      match c.gc_status with GcPossiblyActive _ -> true | _ -> false)
       candidates
   in
   let refused = List.filter (fun c ->
@@ -590,20 +683,37 @@ let render_gc_human ~candidates ~clean =
   List.iter (fun c ->
       let r = match c.gc_status with
         | GcRemovable { reason } -> reason
-        | GcRefused _ -> ""
+        | _ -> ""
       in
       Printf.printf "  %-50s %-30s %s\n" c.gc_path c.gc_branch r)
     removable;
+  if possibly_active <> [] then begin
+    (* `[!]` prefix flags POSSIBLY_ACTIVE as "review me" rather than
+       "blocked" — distinct from REFUSE so an operator's eye sees
+       "this is a fresh worktree, owner may be using it elsewhere"
+       not just "another refuse-path." *)
+    Printf.printf "\n[!] POSSIBLY_ACTIVE (%d worktrees, soft-refused — \
+                   --clean skips, override by committing or deleting):\n"
+      (List.length possibly_active);
+    List.iter (fun c ->
+        let r = match c.gc_status with
+          | GcPossiblyActive { reason } -> reason
+          | _ -> ""
+        in
+        Printf.printf "  [!] %-46s %-30s %s\n" c.gc_path c.gc_branch r)
+      possibly_active
+  end;
   Printf.printf "\nREFUSE (%d worktrees):\n" (List.length refused);
   List.iter (fun c ->
       let r = match c.gc_status with
         | GcRefused { reason } -> reason
-        | GcRemovable _ -> ""
+        | _ -> ""
       in
       Printf.printf "  %-50s %-30s REFUSE: %s\n" c.gc_path c.gc_branch r)
     refused;
   if not clean then
-    Printf.printf "\nRun with --clean to remove the REMOVABLE set. (Dry-run by default.)\n"
+    Printf.printf "\nRun with --clean to remove the REMOVABLE set \
+                   (POSSIBLY_ACTIVE skipped). Dry-run by default.\n"
 
 (* Emit byte counts as numeric JSON: `Int when in 63-bit OCaml int
    range (effectively always for filesystem sizes), `Intlit otherwise.
@@ -625,12 +735,19 @@ let render_gc_json ~candidates =
     | GcRemovable { reason } ->
         `Assoc (base @ [ ("status", `String "removable")
                        ; ("reason", `String reason) ])
+    | GcPossiblyActive { reason } ->
+        `Assoc (base @ [ ("status", `String "possibly_active")
+                       ; ("reason", `String reason) ])
     | GcRefused { reason } ->
         `Assoc (base @ [ ("status", `String "refused")
                        ; ("refuse_reason", `String reason) ])
   in
   let removable = List.filter (fun c ->
       match c.gc_status with GcRemovable _ -> true | _ -> false)
+      candidates
+  in
+  let possibly_active = List.filter (fun c ->
+      match c.gc_status with GcPossiblyActive _ -> true | _ -> false)
       candidates
   in
   let refused = List.filter (fun c ->
@@ -646,6 +763,7 @@ let render_gc_json ~candidates =
          ; ("total_bytes", json_of_int64 (sum_size candidates))
          ])
     ; ("removable", `List (List.map item removable))
+    ; ("possibly_active", `List (List.map item possibly_active))
     ; ("refused", `List (List.map item refused))
     ]
 
@@ -669,11 +787,21 @@ let worktree_gc_term =
                  Useful for bounding --clean to a known set, e.g. \
                  --path-prefix=gc-test- when manually exercising the GC.")
   in
+  let active_window_flag =
+    Arg.(value & opt float 2.0 & info ["active-window-hours"] ~docv:"HOURS"
+           ~doc:"Freshness window for the POSSIBLY_ACTIVE heuristic (#314): \
+                 worktrees whose HEAD == origin/master AND admin-dir mtime \
+                 is younger than HOURS are soft-refused (--clean skips). \
+                 Default: 2.0. Set 0 to disable the heuristic entirely.")
+  in
   let+ clean = clean_flag
   and+ json_out = json_flag
   and+ ignore_active = ignore_active_flag
-  and+ path_prefix = path_prefix_flag in
-  let all_candidates = scan_worktrees_for_gc ~ignore_active () in
+  and+ path_prefix = path_prefix_flag
+  and+ active_window_hours = active_window_flag in
+  let all_candidates =
+    scan_worktrees_for_gc ~ignore_active ~active_window_hours ()
+  in
   let candidates = match path_prefix with
     | None -> all_candidates
     | Some pfx ->
