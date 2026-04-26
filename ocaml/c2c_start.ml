@@ -84,34 +84,8 @@ let likes_shell_substitution (s : string) : bool =
   in
   scan 0
 
-let fds_to_close ~(preserve : Unix.file_descr list) : Unix.file_descr list =
-  let stdio = [Unix.stdin; Unix.stdout; Unix.stderr] in
-  let rec with_eintr thunk =
-    match thunk () with
-    | exception Unix.Unix_error (Unix.EINTR, _, _) -> with_eintr thunk
-    | result -> result
-  in
-  try
-    let fd_dir = with_eintr (fun () -> Unix.opendir "/proc/self/fd") in
-    Fun.protect ~finally:(fun () -> try Unix.closedir fd_dir with _ -> ())
-      (fun () ->
-        let rec loop fds =
-          match with_eintr (fun () -> Unix.readdir fd_dir) with
-          | exception End_of_file -> List.rev fds
-          | "." | ".." -> loop fds
-          | name ->
-              let fd = int_of_string name in
-              if List.mem fd (List.map Obj.magic stdio) then loop fds
-              else if List.mem fd (List.map Obj.magic preserve) then loop fds
-              else loop ((Obj.magic fd) :: fds)
-        in
-        loop [])
-  with Unix.Unix_error (e, _, _) as ex ->
-    (* Only silently return [] for EINTR; all other errors are structural and must
-       propagate so the caller knows fd-closing was skipped. *)
-    if e = Unix.EINTR then []
-    else raise ex
-
+(* Canonical [fds_to_close] and [close_unlisted_fds] — see lines 13–40.
+   The deliver daemon also defines these locally before exec; do not move. *)
 let close_unlisted_fds ~(preserve : Unix.file_descr list) =
   List.iter (fun fd -> try Unix.close fd with _ -> ()) (fds_to_close ~preserve)
 
@@ -3696,8 +3670,26 @@ let run_outer_loop ~(name : string) ~(client : string)
                     deliver_pid := Some p;
                     write_pid (deliver_pid_path name) p
                 | None ->
+                    (* If the daemon failed to start, close the xml fd we duplicated
+                       for it (fd4) and clean up any fifos we passed to it. The outer
+                       process keeps these fds open only for the daemon; if the daemon
+                       is not running we have no use for them. *)
+                    (match xml_output_fd with
+                      | Some (_, fd4) -> (try Unix.close fd4 with _ -> ())
+                      | None -> ());
+                    (* Also close and unlink the event/response fifos we passed to
+                       the failed daemon — they are not needed if the daemon is down. *)
+                    (match request_events_fifo_opt with
+                     | Some p -> (try Unix.unlink p with _ -> ())
+                     | None -> ());
+                    (match request_responses_fifo_opt with
+                     | Some p -> (try Unix.unlink p with _ -> ())
+                     | None -> ());
                     (match xml_output_fd with
                       | Some _ ->
+                          (* Fallback: try again without xml fd; the daemon will use
+                             notify-only mode. Still pass response fifo for permission
+                             sideband if it was set up. *)
                           (match
                             start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt:(Some pid) ?response_fifo_path:request_responses_fifo_opt ~preserve_fds:[] ()
                           with
