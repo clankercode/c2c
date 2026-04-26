@@ -13,27 +13,7 @@ let print_json json =
   Yojson.Safe.pretty_to_channel stdout json;
   print_newline ()
 
-let broker_root_from_env () =
-  match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
-  | Some p when String.trim p <> "" -> Some (String.trim p)
-  | _ -> None
-
-let git_common_dir () =
-  try
-    let ic = Unix.open_process_in "git rev-parse --git-common-dir 2>/dev/null" in
-    let result = input_line ic in
-    close_in ic;
-    if result <> "" then Some result else None
-  with _ -> None
-
-let resolve_broker_root () =
-  let abs_path p = if Filename.is_relative p then Filename.concat (Sys.getcwd ()) p else p in
-  match broker_root_from_env () with
-  | Some dir -> abs_path dir
-  | None ->
-      (match git_common_dir () with
-       | Some git_dir -> abs_path (Filename.concat (Filename.concat git_dir "c2c") "mcp")
-       | None -> Filename.concat (Sys.getenv "HOME") (Filename.concat ".local" (Filename.concat "share" (Filename.concat "c2c" "mcp"))))
+let resolve_broker_root () = C2c_utils.resolve_broker_root ()
 
 let env_auto_alias_rooms () =
   match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with

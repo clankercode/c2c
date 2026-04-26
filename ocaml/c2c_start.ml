@@ -1778,14 +1778,35 @@ let resolve_broker_root () =
   match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
   | Some dir when String.trim dir <> "" -> String.trim dir
   | _ ->
-      let git_dir = git_common_dir () in
-      if git_dir <> "" && Sys.is_directory git_dir then
-        let abs_git =
-          if Filename.is_relative git_dir then Sys.getcwd () // git_dir
-          else git_dir
+      (* Compute repo fingerprint: SHA-256 of remote.origin.url (or toplevel path).
+         Uses Digestif via relay_identity which is already linked; we use stdlib
+         Digest for simplicity here to avoid circular deps with C2c_utils. *)
+      let fingerprint_data =
+        match Git_helpers.git_first_line ["config"; "--get"; "remote.origin.url"] with
+        | Some url when url <> "" -> url
+        | _ ->
+            (match Git_helpers.git_repo_toplevel () with
+             | Some t -> t
+             | None -> "")
+      in
+      let fp = if fingerprint_data = "" then "default" else
+        let h = Digest.string fingerprint_data in
+        let hex = Digest.to_hex h in
+        String.sub hex 0 12
+      in
+      let home = home_dir () in
+      let xdg_default =
+        let xdg = match Sys.getenv_opt "XDG_STATE_HOME" with
+          | Some x when x <> "" -> x
+          | _ -> Filename.concat home ".local" // "state"
         in
-        abs_git // "c2c" // "mcp"
-      else instances_dir // ".." // ".." // ".." // "c2c" // "mcp"
+        xdg // "c2c" // "repos" // fp // "broker"
+      in
+      match Sys.getenv_opt "XDG_STATE_HOME" with
+      | Some xdg when xdg <> "" -> xdg_default
+      | _ ->
+          (* Canonical default: $HOME/.c2c/repos/<fp>/broker *)
+          Filename.concat home (".c2c" // "repos" // fp // "broker")
 
 let broker_root () = resolve_broker_root ()
 

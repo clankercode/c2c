@@ -42,23 +42,9 @@ let current_c2c_command () =
   in
   if Filename.is_relative resolved then Sys.getcwd () // resolved else resolved
 
-(* resolve_broker_root — duplicated from c2c.ml so c2c_setup.ml is self-contained *)
-let resolve_broker_root () =
-  let abs_path p =
-    if Filename.is_relative p then Sys.getcwd () // p else p
-  in
-  match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
-  | Some dir when String.trim dir <> "" -> abs_path (String.trim dir)
-  | _ ->
-      (match Git_helpers.git_common_dir () with
-       | Some git_dir ->
-           (try
-              if (Unix.stat git_dir).Unix.st_kind = Unix.S_DIR then
-                let abs_git = if Filename.is_relative git_dir then Sys.getcwd () // git_dir else git_dir in
-                abs_git // "c2c" // "mcp"
-              else failwith "not a dir"
-            with Unix.Unix_error _ -> failwith "stat failed")
-       | None -> Filename.concat (Sys.getenv "HOME") ".local" // "state" // "c2c" // "default" // "mcp")
+(* resolve_broker_root — delegates to C2c_utils.resolve_broker_root which has
+   the authoritative resolution order (coord1 2026-04-26). *)
+let resolve_broker_root () = C2c_utils.resolve_broker_root ()
 
 let print_json json =
   Yojson.Safe.pretty_to_channel stdout json;

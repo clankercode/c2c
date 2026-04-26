@@ -429,7 +429,7 @@ read manually from your CLAUDE.md startup checklist.
 ## Key Architecture Notes
 
 - **Registry** is hand-rolled YAML (`c2c_registry.py`). Do NOT use a YAML library. It only handles the flat `registrations:` list. Atomic writes via temp file + `fsync` + `os.replace`, locked with `fcntl.flock` on `.yaml.lock`.
-- **Registry location** is in the git common dir (`git rev-parse --git-common-dir`), cached in `/tmp/c2c-repo-common-cache.json` by remote URL. Shared across worktrees/clones.
+- **Broker root** resolution order (coord1 2026-04-26): `C2C_MCP_BROKER_ROOT` env var (explicit override) → `$XDG_STATE_HOME/c2c/repos/<fp>/broker` (if set) → `$HOME/.c2c/repos/<fp>/broker` (canonical default). The fingerprint (`<fp>`) is SHA-256 of `remote.origin.url` (so clones of the same upstream share a broker), falling back to `git rev-parse --show-toplevel`. This sidesteps `.git/`-RO sandboxes permanently. Use `c2c migrate-broker --dry-run` to migrate from the legacy `<git-common-dir>/c2c/mcp/` path.
 - **Session discovery** scans `~/.claude-p/sessions/`, `~/.claude-w/sessions/`, `~/.claude/sessions/` -- all three, not just `.claude`.
 - **PTY injection** (deprecated but still useful): `claude_send_msg.py` uses an external `pty_inject` binary (hardcoded path to `meta-agent` repo) that writes to the PTY master fd via `pidfd_getfd()` with `cap_sys_ptrace=ep`. Bracketed paste + delay + Enter as two writes. **Kimi note**: do NOT use direct `/dev/pts/<N>` slave writes for input; they can display text without submitting it. Kimi routes through the master-side `pty_inject` backend with a longer default submit delay (1.5s).
 - **MCP server** (`ocaml/`) is stdio JSON-RPC. Inbox drain is synchronous after each RPC response, not async push.

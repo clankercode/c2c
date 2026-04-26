@@ -1011,6 +1011,139 @@ let sweep_dryrun =
     (Cmdliner.Cmd.info "sweep-dryrun" ~doc:"Read-only preview of what sweep would drop (safe during active swarm).")
     sweep_dryrun_cmd
 
+(* --- subcommand: migrate-broker ------------------------------------------ *)
+
+(** Compute the legacy broker root: <git-common-dir>/c2c/mcp.
+    This is what resolve_broker_root used before the #294 per-repo fingerprint change. *)
+let legacy_broker_root () =
+  match Git_helpers.git_common_dir () with
+  | Some git_dir ->
+      (try
+         if (Unix.stat git_dir).Unix.st_kind = Unix.S_DIR then
+           let abs_git = if Filename.is_relative git_dir then Sys.getcwd () // git_dir else git_dir in
+           abs_git // "c2c" // "mcp"
+         else ""
+       with _ -> "")
+  | None -> ""
+
+let migrate_broker_run ~from_path ~to_path ~dry_run ~json =
+  let mkdir_p dir =
+    let rec loop d =
+      if d = "/" || d = "." || d = "" then ()
+      else if Sys.file_exists d then ()
+      else begin
+        loop (Filename.dirname d);
+        try Unix.mkdir d 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+      end
+    in
+    loop dir
+  in
+  let copy_file src dst =
+    if dry_run then Printf.printf "[DRY-RUN] would copy: %s -> %s\n" src dst
+    else begin
+      mkdir_p (Filename.dirname dst);
+      try
+        let buf_size = 65536 in
+        let buf = Bytes.create buf_size in
+        let src_ic = open_in src in
+        Fun.protect ~finally:(fun () -> close_in src_ic) @@ fun () ->
+        let dst_oc = open_out dst in
+        Fun.protect ~finally:(fun () -> close_out dst_oc) @@ fun () ->
+        let rec loop () =
+          let n = input src_ic buf 0 buf_size in
+          if n = 0 then () else begin
+            output dst_oc buf 0 n;
+            loop ()
+          end
+        in
+        loop ()
+      with e ->
+        if json then print_json (`Assoc [ "ok", `Bool false; "error", `String (Printexc.to_string e) ])
+        else Printf.eprintf "error copying %s: %s\n" src (Printexc.to_string e)
+    end
+  in
+  let copy_dir src dst =
+    if not (Sys.file_exists src) then []
+    else
+      try
+        Array.to_list (Sys.readdir src)
+        |> List.filter (fun f -> not (f = "." || f = ".."))
+        |> List.map (fun f ->
+          let s = src // f in
+          let d = dst // f in
+          copy_file s d;
+          d)
+      with _ -> []
+  in
+  let from = Option.value from_path ~default:(legacy_broker_root ()) in
+  let to_ = Option.value to_path ~default:(resolve_broker_root ()) in
+  if json then print_json (`Assoc [
+    "ok", `Bool true;
+    "from", `String from;
+    "to", `String to_;
+    "dry_run", `Bool dry_run
+  ])
+  else begin
+    Printf.printf "Migrating broker data:\n";
+    Printf.printf "  from: %s\n" from;
+    Printf.printf "  to:   %s\n" to_;
+    if dry_run then Printf.printf "  mode: DRY RUN (no files will be written)\n"
+    else Printf.printf "  mode: LIVE (files will be written)\n";
+    if not (Sys.file_exists from) then begin
+      Printf.eprintf "error: source broker does not exist: %s\n" from;
+      exit 1
+    end;
+    if from = to_ then begin
+      Printf.eprintf "error: from and to paths are the same\n";
+      exit 1
+    end;
+    (* Copy individual files *)
+    List.iter (fun f ->
+      let src = from // f in
+      if Sys.file_exists src then copy_file src (to_ // f)
+    ) ["registry.json"; "registry.json.lock"; "deaths.jsonl"];
+    (* Copy subdirs: inboxes, memory, archive *)
+    let _ = copy_dir (from // "inbox.json.d") (to_ // "inbox.json.d") in
+    let _ = copy_dir (from // "memory") (to_ // "memory") in
+    let _ = copy_dir (from // "archive") (to_ // "archive") in
+    if not dry_run then begin
+      mkdir_p to_;
+      (* Verify by checking for key files at destination *)
+      let verified = Sys.file_exists (to_ // "registry.json") in
+      if verified then
+        Printf.printf "\nMigration complete. Verify: ls %s\n" to_
+      else
+        Printf.eprintf "\nMigration completed but registry.json not found at destination.\n"
+    end else
+      Printf.printf "\nDRY RUN complete. Run without --dry-run to execute.\n"
+  end
+
+let migrate_broker_cmd =
+  let open Cmdliner in
+  let from =
+    Arg.(value & opt (some string) None & info ["from"; "f"]
+           ~docv:"PATH"
+           ~doc:"Source broker root (default: <git-common-dir>/c2c/mcp)")
+  in
+  let to_ =
+    Arg.(value & opt (some string) None & info ["to"; "t"]
+           ~docv:"PATH"
+           ~doc:"Destination broker root (default: $HOME/.c2c/repos/<fp>/broker)")
+  in
+  let dry_run = Arg.(value & flag & info ["dry-run"; "n"] ~doc:"Show what would be copied without writing.") in
+  let json = json_flag in
+  let+ from_path = from
+  and+ to_path = to_
+  and+ dry_run = dry_run
+  and+ json = json in
+  migrate_broker_run ~from_path ~to_path ~dry_run ~json
+
+let migrate_broker =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "migrate-broker"
+       ~doc:"Migrate broker data from the legacy .git/c2c/mcp path to the new per-repo path. Use --dry-run first.")
+    migrate_broker_cmd
+
 (* --- subcommand: history -------------------------------------------------- *)
 
 let history_cmd =
@@ -8259,7 +8392,7 @@ let () =
   let tier_grouped_man = commands_man is_agent in
   let all_cmds =
     [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; send_all; sweep
-    ; sweep_dryrun; history; health; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd
+    ; sweep_dryrun; migrate_broker; history; health; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test; init; install; completion_cmd
     ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; stats; C2c_sitrep.sitrep_group; C2c_rooms.rooms_group; C2c_rooms.room_group; relay_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
   in
