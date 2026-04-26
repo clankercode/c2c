@@ -196,7 +196,7 @@ messages into the fresh inbox.
 
 This means managed sessions that restart between outer-loop iterations
 do not lose messages sent during the gap. Dead-letter entries older
-than the configurable TTL are pruned by `c2c broker-gc` to prevent
+than the configurable TTL are pruned by `c2c sweep` to prevent
 unbounded growth. Use `c2c dead-letter` (CLI) to inspect the queue or
 purge stale records. Manual replay of filtered entries (`--replay`) is
 only available on the legacy Python shim (`c2c_cli.py dead-letter
