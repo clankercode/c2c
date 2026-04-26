@@ -5249,11 +5249,111 @@ let doctor_docs_drift = Cmdliner.Cmd.v
              references. Use --warn-only inside `c2c doctor` rollups.")
     C2c_docs_drift.docs_drift_cmd
 
+(* --- subcommand: doctor monitor-leak (Phase C #288) --- *)
+let monitor_leak_cmd =
+  let open Cmdliner in
+  let threshold =
+    Arg.(value & opt int 1 & info ["threshold"; "t"]
+           ~docv:"N"
+           ~doc:"Warn if any alias has more than N monitor processes (default: 1).")
+  in
+  let json = Arg.(value & flag & info ["json"] ~doc:"Output machine-readable JSON.") in
+  let+ threshold = threshold
+  and+ json = json in
+  let broker_root = resolve_broker_root () in
+  let lock_dir = broker_root // ".monitor-locks" in
+  let get_lock_aliases () =
+    if not (Sys.file_exists lock_dir) then []
+    else
+      try
+        Array.to_list (Sys.readdir lock_dir)
+        |> List.filter (fun f -> Filename.check_suffix f ".lock")
+        |> List.map (fun f -> String.sub f 0 (String.length f - 5)) (* strip .lock *)
+      with _ -> []
+  in
+  let lock_aliases = get_lock_aliases () in
+  (* For each lock, also check if the monitor process is actually alive.
+     A stale lock (crash/kill) means the process is gone — report it. *)
+  let cmd = Printf.sprintf "pgrep -af 'c2c monitor --alias' 2>/dev/null | grep -v pgrep || true" in
+  let ic = Unix.open_process_in cmd in
+  let raw =
+    Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+      let rec read_lines acc =
+        try read_lines ((input_line ic) :: acc)
+        with End_of_file -> List.rev acc
+      in read_lines [])
+  in
+  (* Parse pgrep output: "PID /path/to/c2c monitor --alias alias". Count per alias. *)
+  let count_per_alias =
+    let counts : (string, int ref) Hashtbl.t = Hashtbl.create 8 in
+    List.iter (fun line ->
+      let parts = String.split_on_char ' ' line in
+      (* last non-empty part is the alias *)
+      let alias = List.filter ((<>) "") parts |> List.rev |> function
+        | alias :: _ -> alias
+        | [] -> ""
+      in
+      if alias <> "" then begin
+        let r = try Hashtbl.find counts alias with Not_found ->
+          let r = ref 0 in Hashtbl.add counts alias r; r
+        in
+        incr r
+      end
+    ) raw;
+    counts
+  in
+  let threshold_exceeded =
+    List.filter (fun alias ->
+      let count = !(try Hashtbl.find count_per_alias alias with Not_found -> ref 0) in
+      count > threshold
+    ) lock_aliases
+  in
+  if json then begin
+    let obj = `Assoc [
+      "monitor_leak", `Bool (List.length threshold_exceeded > 0);
+      "threshold", `Int threshold;
+      "lock_aliases", `List (List.map (fun a -> `String a) lock_aliases);
+      "counts", `Assoc (
+        Hashtbl.fold (fun alias count acc ->
+          (alias, `Int !count) :: acc
+        ) count_per_alias []);
+      "exceeded", `List (List.map (fun a -> `String a) threshold_exceeded);
+    ] in
+    print_string (Yojson.Safe.to_string obj);
+    print_newline ()
+  end else begin
+    if List.length lock_aliases = 0 then
+      Printf.printf "✓ No monitor locks found (no active monitors with circuit-breaker protection)\n"
+    else begin
+      Printf.printf "Monitor locks active for %d alias(es):\n" (List.length lock_aliases);
+      List.iter (fun alias ->
+        let count = !(try Hashtbl.find count_per_alias alias with Not_found -> ref 0) in
+        let status = if count > threshold then "⚠ LEAK" else "✓" in
+        Printf.printf "  %s alias=%s process_count=%d lock_exists=true\n" status alias count
+      ) lock_aliases;
+      if List.length threshold_exceeded > 0 then begin
+        Printf.eprintf "\n⚠ WARNING: %d alias(es) exceeded threshold (count > %d):\n" (List.length threshold_exceeded) threshold;
+        List.iter (fun alias ->
+          let count = !(try Hashtbl.find count_per_alias alias with Not_found -> ref 0) in
+          Printf.eprintf "  - %s: %d processes (threshold=%d)\n" alias count threshold
+        ) threshold_exceeded;
+        Printf.eprintf "  Run: pkill -f 'c2c monitor --alias <alias>'\n"
+      end
+    end
+  end;
+  exit (if List.length threshold_exceeded > 0 then 1 else 0)
+
+let monitor_leak = Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "monitor-leak"
+       ~doc:"Check for duplicate c2c monitor processes per alias (Phase C #288). \
+             Exits 1 if any alias has more than --threshold monitor processes.")
+    monitor_leak_cmd
+
 let doctor = Cmdliner.Cmd.group
     ~default:doctor_cmd
     (Cmdliner.Cmd.info "doctor"
        ~doc:"Health snapshot + push-pending analysis (for Max / human operators).")
-    [ doctor_docs_drift ]
+    [ doctor_docs_drift; monitor_leak ]
 
 (* --- subcommand: stats ---------------------------------------------------- *)
 
