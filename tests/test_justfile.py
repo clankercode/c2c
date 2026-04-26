@@ -28,6 +28,7 @@ class JustfileTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("./ocaml/cli/c2c.exe", output)
         self.assertIn("./ocaml/server/c2c_mcp_server.exe", output)
+        self.assertIn("~/.local/bin/cc-quota", output)
         self.assertNotIn("c2c_install.py", output)
 
     def test_install_python_legacy_is_explicit(self):
