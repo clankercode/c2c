@@ -188,8 +188,30 @@ val resolve_managed_heartbeats :
 (** Resolve effective heartbeats after built-in defaults, repo config, role
     overrides, and runtime client/delivery gates. *)
 
-val render_heartbeat_content : managed_heartbeat -> string
-(** Render one heartbeat message, appending allowed command output when set. *)
+val render_heartbeat_content :
+  ?broker_root:string ->
+  ?alias:string ->
+  managed_heartbeat -> string
+(** Render one heartbeat message, appending allowed command output when set.
+    When [broker_root] and [alias] are provided, the body may be swapped to
+    a push-aware variant via {!heartbeat_body_for_alias}. *)
+
+val automated_delivery_for_alias :
+  broker_root:string -> alias:string -> bool option
+(** Look up the [automated_delivery] flag for an alias from the broker
+    registry. Returns [None] when the alias is unregistered or its
+    registration predates this field. *)
+
+val heartbeat_body_for_alias :
+  broker_root:string -> alias:string -> message:string -> string
+(** When [message] is the legacy default
+    ([default_managed_heartbeat_content]) and the alias is push-capable
+    ([automated_delivery = Some true]), returns
+    [push_aware_heartbeat_content]. Otherwise returns [message] unchanged.
+    Operator-authored custom heartbeat bodies are never rewritten. *)
+
+val default_managed_heartbeat_content : string
+val push_aware_heartbeat_content : string
 
 val repo_config_pmodel : unit -> (string * pmodel) list
 (** Read the [pmodel] table from .c2c/config.toml in the repo root. Returns the

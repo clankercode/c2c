@@ -37,6 +37,12 @@ type registration =
   (** Sender role for envelope attribution. None = no role. *)
   ; compaction_count : int
   (** Cumulative count of compacting→idle transitions. Defaults to 0. *)
+  ; automated_delivery : bool option
+  (** [Some true] = client negotiated [experimental.claude/channel] in
+      MCP initialize and receives messages via push (no manual poll
+      needed). [Some false] = explicitly negotiated without channel
+      support. [None] = unknown / pre-Phase compat. Conservative
+      consumers treat [None] as "not push-capable". *)
   }
 type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option; ts : float }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
@@ -149,6 +155,12 @@ module Broker : sig
       session if it is currently None, then emits deferred social broadcasts
       (peer_register + room-join) if the session was previously unconfirmed. *)
   val touch_session : t -> session_id:string -> unit
+  val set_automated_delivery :
+    t -> session_id:string -> automated_delivery:bool -> unit
+  (** [set_automated_delivery t ~session_id ~automated_delivery] sets the
+      registration's [automated_delivery] flag to [Some automated_delivery].
+      No-op if the session is not registered. Called from the MCP server's
+      initialize handler after capability negotiation. *)
   (** [touch_session t ~session_id] updates last_activity_ts to now for the
       session if the stored timestamp is None or older. Call on every broker
       interaction (poll_inbox, send, register) to drive idle-nudge detection. *)

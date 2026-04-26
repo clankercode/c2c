@@ -379,6 +379,90 @@ let test_should_fire_heartbeat_skips_recent_activity () =
     (C2c_start.should_fire_heartbeat
        ~broker_root:dir ~alias:"idle-test-alias" hb)
 
+(* #272 push-aware heartbeat content -------------------------------------- *)
+
+let test_automated_delivery_for_alias_unknown () =
+  with_temp_dir @@ fun dir ->
+  check (option bool) "unknown alias → None" None
+    (C2c_start.automated_delivery_for_alias ~broker_root:dir ~alias:"missing")
+
+let test_automated_delivery_for_alias_set_true () =
+  with_temp_dir @@ fun dir ->
+  let broker = C2c_mcp.Broker.create ~root:dir in
+  C2c_mcp.Broker.register broker
+    ~session_id:"push-test-session" ~alias:"push-alice"
+    ~pid:None ~pid_start_time:None ();
+  C2c_mcp.Broker.set_automated_delivery broker
+    ~session_id:"push-test-session" ~automated_delivery:true;
+  check (option bool) "after set true" (Some true)
+    (C2c_start.automated_delivery_for_alias ~broker_root:dir ~alias:"push-alice")
+
+let test_automated_delivery_for_alias_set_false () =
+  with_temp_dir @@ fun dir ->
+  let broker = C2c_mcp.Broker.create ~root:dir in
+  C2c_mcp.Broker.register broker
+    ~session_id:"poll-test-session" ~alias:"poll-bob"
+    ~pid:None ~pid_start_time:None ();
+  C2c_mcp.Broker.set_automated_delivery broker
+    ~session_id:"poll-test-session" ~automated_delivery:false;
+  check (option bool) "after set false" (Some false)
+    (C2c_start.automated_delivery_for_alias ~broker_root:dir ~alias:"poll-bob")
+
+let test_heartbeat_body_swap_for_push_capable () =
+  with_temp_dir @@ fun dir ->
+  let broker = C2c_mcp.Broker.create ~root:dir in
+  C2c_mcp.Broker.register broker
+    ~session_id:"swap-test-session" ~alias:"swap-alice"
+    ~pid:None ~pid_start_time:None ();
+  C2c_mcp.Broker.set_automated_delivery broker
+    ~session_id:"swap-test-session" ~automated_delivery:true;
+  let body =
+    C2c_start.heartbeat_body_for_alias ~broker_root:dir ~alias:"swap-alice"
+      ~message:C2c_start.default_managed_heartbeat_content
+  in
+  check string "push-capable + default → push-aware variant"
+    C2c_start.push_aware_heartbeat_content body
+
+let test_heartbeat_body_no_swap_for_non_push () =
+  with_temp_dir @@ fun dir ->
+  let broker = C2c_mcp.Broker.create ~root:dir in
+  C2c_mcp.Broker.register broker
+    ~session_id:"nopush-session" ~alias:"nopush-bob"
+    ~pid:None ~pid_start_time:None ();
+  C2c_mcp.Broker.set_automated_delivery broker
+    ~session_id:"nopush-session" ~automated_delivery:false;
+  let body =
+    C2c_start.heartbeat_body_for_alias ~broker_root:dir ~alias:"nopush-bob"
+      ~message:C2c_start.default_managed_heartbeat_content
+  in
+  check string "non-push + default → legacy body"
+    C2c_start.default_managed_heartbeat_content body
+
+let test_heartbeat_body_no_swap_when_unknown () =
+  with_temp_dir @@ fun dir ->
+  let body =
+    C2c_start.heartbeat_body_for_alias ~broker_root:dir ~alias:"never-registered"
+      ~message:C2c_start.default_managed_heartbeat_content
+  in
+  check string "unknown alias → conservative legacy body"
+    C2c_start.default_managed_heartbeat_content body
+
+let test_heartbeat_body_passes_custom_message_through () =
+  with_temp_dir @@ fun dir ->
+  let broker = C2c_mcp.Broker.create ~root:dir in
+  C2c_mcp.Broker.register broker
+    ~session_id:"custom-session" ~alias:"custom-carol"
+    ~pid:None ~pid_start_time:None ();
+  C2c_mcp.Broker.set_automated_delivery broker
+    ~session_id:"custom-session" ~automated_delivery:true;
+  let custom = "Operator-authored: please run a sitrep round." in
+  let body =
+    C2c_start.heartbeat_body_for_alias ~broker_root:dir ~alias:"custom-carol"
+      ~message:custom
+  in
+  check string "custom message passes through even for push agents"
+    custom body
+
 let test_heartbeat_aligned_schedule_next_delay () =
   let hb = C2c_start.
     { heartbeat_name = "sitrep"
@@ -1635,6 +1719,20 @@ let () =
             `Quick, test_enqueue_codex_heartbeat_uses_broker_inbox_transport )
         ; ( "parse_heartbeat_duration_units",
             `Quick, test_parse_heartbeat_duration_units )
+        ; ( "automated_delivery_for_alias_unknown",
+            `Quick, test_automated_delivery_for_alias_unknown )
+        ; ( "automated_delivery_for_alias_set_true",
+            `Quick, test_automated_delivery_for_alias_set_true )
+        ; ( "automated_delivery_for_alias_set_false",
+            `Quick, test_automated_delivery_for_alias_set_false )
+        ; ( "heartbeat_body_swap_for_push_capable",
+            `Quick, test_heartbeat_body_swap_for_push_capable )
+        ; ( "heartbeat_body_no_swap_for_non_push",
+            `Quick, test_heartbeat_body_no_swap_for_non_push )
+        ; ( "heartbeat_body_no_swap_when_unknown",
+            `Quick, test_heartbeat_body_no_swap_when_unknown )
+        ; ( "heartbeat_body_passes_custom_message_through",
+            `Quick, test_heartbeat_body_passes_custom_message_through )
         ; ( "heartbeat_aligned_schedule_next_delay",
             `Quick, test_heartbeat_aligned_schedule_next_delay )
         ; ( "agent_is_idle_no_activity_treated_as_idle",

@@ -260,6 +260,15 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
           let new_capable =
             C2c_capability.has new_capabilities C2c_capability.Claude_channel
           in
+          (* Persist push-delivery capability to the broker registry on
+             every initialize. The flag drives push-aware heartbeat
+             content selection (see C2c_start.heartbeat_body_for_alias). *)
+          (match method_name, session_id () with
+           | Some "initialize", Some sid ->
+               let broker = C2c_mcp.Broker.create ~root:broker_root in
+               C2c_mcp.Broker.set_automated_delivery broker
+                 ~session_id:sid ~automated_delivery:new_capable
+           | _ -> ());
           let* response = C2c_mcp.handle_request ~broker_root request in
           let* () = match response with
             | None -> debug_log "send: (no response)"; Lwt.return_unit

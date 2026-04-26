@@ -190,6 +190,14 @@ type managed_heartbeat = {
 let default_managed_heartbeat_content =
   "Session heartbeat. Poll your C2C inbox and handle any messages."
 
+(* Push-aware variant for clients that already receive inbound messages
+   via channel notifications (no manual poll needed). The "wake / pick
+   up next slice" framing is preserved; only the poll instruction is
+   dropped. *)
+let push_aware_heartbeat_content =
+  "Session heartbeat — pick up the next slice / advance the goal. \
+   (Messages arrive via channel notifications; no manual poll_inbox needed.)"
+
 let codex_heartbeat_interval_s = 240.0
 let codex_heartbeat_content = default_managed_heartbeat_content
 
@@ -389,17 +397,48 @@ let run_allowed_heartbeat_command ~(timeout_s : float) (cmd : string) : string =
       (try ignore (Unix.close_process_in ic) with _ -> ());
       Printf.sprintf "[heartbeat command failed: %s]" (Printexc.to_string e)
 
-let render_heartbeat_content (hb : managed_heartbeat) : string =
+(* Look up the [automated_delivery] flag for an alias from the broker
+   registry. Returns [None] when the alias is unregistered or the
+   registration predates this field — consumers treat that case as
+   "not push-capable" (conservative default). *)
+let automated_delivery_for_alias ~(broker_root : string) ~(alias : string)
+    : bool option =
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  match C2c_mcp.Broker.list_registrations broker
+        |> List.find_opt (fun (r : C2c_mcp.registration) -> r.alias = alias) with
+  | Some reg -> reg.automated_delivery
+  | None -> None
+
+(* Push-aware swap of the heartbeat body. The swap fires only when:
+   (1) the configured [message] equals the legacy default, and
+   (2) the target alias is push-capable (automated_delivery = Some true).
+   Operator-authored custom messages pass through verbatim. *)
+let heartbeat_body_for_alias ~(broker_root : string) ~(alias : string)
+    ~(message : string) : string =
+  if message <> default_managed_heartbeat_content then message
+  else
+    match automated_delivery_for_alias ~broker_root ~alias with
+    | Some true -> push_aware_heartbeat_content
+    | _ -> message
+
+let render_heartbeat_content ?(broker_root : string option)
+    ?(alias : string option) (hb : managed_heartbeat) : string =
+  let body =
+    match broker_root, alias with
+    | Some root, Some a ->
+        heartbeat_body_for_alias ~broker_root:root ~alias:a ~message:hb.message
+    | _ -> hb.message
+  in
   match hb.command with
-  | None -> hb.message
+  | None -> body
   | Some cmd ->
       let output =
         run_allowed_heartbeat_command ~timeout_s:hb.command_timeout_s cmd
       in
-      if String.trim output = "" then hb.message
+      if String.trim output = "" then body
       else
         Printf.sprintf "%s\n\n[heartbeat:%s command output]\n%s"
-          hb.message hb.heartbeat_name output
+          body hb.heartbeat_name output
 
 let start_managed_heartbeat ~(broker_root : string) ~(alias : string)
     (hb : managed_heartbeat) : unit =
@@ -413,7 +452,7 @@ let start_managed_heartbeat ~(broker_root : string) ~(alias : string)
       (try
          if should_fire_heartbeat ~broker_root ~alias hb then
            enqueue_heartbeat ~broker_root ~alias
-             ~content:(render_heartbeat_content hb)
+             ~content:(render_heartbeat_content ~broker_root ~alias hb)
          else
            (* Agent has been active within idle_threshold — skip this tick to
               avoid waking them mid-thought. The next interval re-checks. *)

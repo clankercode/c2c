@@ -43,6 +43,13 @@ type registration =
   (** Cumulative count of compacting→idle transitions for this session.
       Incremented by clear_compacting and clear_stale_compacting.
       Defaults to 0 for sessions predating this field. *)
+  ; automated_delivery : bool option
+  (** [Some true] = client negotiated [experimental.claude/channel] in
+      MCP initialize and receives messages via push (no manual poll
+      needed). [Some false] = explicitly negotiated without channel
+      support. [None] = unknown (pre-Phase compat or the session has
+      not yet handshaked). Set in the initialize handler; consumers
+      treat [None] conservatively as "not push-capable". *)
   }
 type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option; ts : float }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
@@ -266,7 +273,7 @@ module Broker = struct
       cleanup_tmp ();
       raise e
 
-  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; enc_pubkey; compacting; last_activity_ts; role; compaction_count } =
+  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; enc_pubkey; compacting; last_activity_ts; role; compaction_count; automated_delivery } =
     let base =
       [ ("session_id", `String session_id); ("alias", `String alias) ]
     in
@@ -346,7 +353,12 @@ module Broker = struct
       if compaction_count > 0 then with_role @ [ ("compaction_count", `Int compaction_count) ]
       else with_role
     in
-    `Assoc with_compaction_count
+    let with_automated_delivery =
+      match automated_delivery with
+      | Some b -> with_compaction_count @ [ ("automated_delivery", `Bool b) ]
+      | None -> with_compaction_count
+    in
+    `Assoc with_automated_delivery
 
   let int_opt_member name json =
     let open Yojson.Safe.Util in
@@ -402,6 +414,11 @@ module Broker = struct
     ; last_activity_ts = float_opt_member "last_activity_ts" json
     ; role = str_opt "role" json
     ; compaction_count = (match json |> member "compaction_count" with `Int n -> n | _ -> 0)
+    ; automated_delivery =
+        (try match json |> member "automated_delivery" with
+             | `Bool b -> Some b
+             | _ -> None
+         with _ -> None)
     }
 
   let message_to_json { from_alias; to_alias; content; deferrable; reply_via; enc_status; ts } =
@@ -971,11 +988,11 @@ module Broker = struct
            across re-registration. *)
         let old_state =
           match List.find_opt (fun reg -> reg.session_id = session_id) rest with
-          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting, r.enc_pubkey, r.last_activity_ts, r.role, r.compaction_count)
-          | None -> (false, None, None, None, client_type, None, None, enc_pubkey, None, role, 0)
+          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting, r.enc_pubkey, r.last_activity_ts, r.role, r.compaction_count, r.automated_delivery)
+          | None -> (false, None, None, None, client_type, None, None, enc_pubkey, None, role, 0, None)
         in
         let new_reg =
-          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting, old_enc_pubkey, old_last_activity_ts, old_role, old_compaction_count) = old_state in
+          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting, old_enc_pubkey, old_last_activity_ts, old_role, old_compaction_count, old_automated_delivery) = old_state in
           let effective_client_type = match client_type with
             | Some _ -> client_type
             | None -> old_client_type
@@ -1003,7 +1020,8 @@ module Broker = struct
           ; compacting = old_compacting
           ; last_activity_ts = old_last_activity_ts
           ; role = effective_role
-          ; compaction_count = old_compaction_count }
+          ; compaction_count = old_compaction_count
+          ; automated_delivery = old_automated_delivery }
         in
         let kept =
           match
@@ -2359,6 +2377,28 @@ module Broker = struct
               | _ ->
                 changed := true;
                 { reg with last_activity_ts = Some now }
+            end else reg)
+          regs
+      in
+      if !changed then save_registrations t regs')
+
+  (* Set the [automated_delivery] flag for a session's registration.
+     Called from the MCP server's initialize handler after capability
+     negotiation. No-op if the session is not registered (the flip will
+     happen on the next register call). *)
+  let set_automated_delivery t ~session_id ~automated_delivery =
+    with_registry_lock t (fun () ->
+      let regs = load_registrations t in
+      let changed = ref false in
+      let regs' =
+        List.map
+          (fun reg ->
+            if reg.session_id = session_id then begin
+              match reg.automated_delivery with
+              | Some b when b = automated_delivery -> reg
+              | _ ->
+                changed := true;
+                { reg with automated_delivery = Some automated_delivery }
             end else reg)
           regs
       in
