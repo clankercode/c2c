@@ -100,9 +100,6 @@ services:
 networks:
   c2c-test-net:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.28.0.0/16
 
 volumes:
   # Ephemeral broker state — wiped on `docker compose down -v`.
