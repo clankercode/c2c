@@ -906,24 +906,23 @@ let setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path =
 
 let resolve_mcp_server_paths ~output_mode =
   match which_binary "c2c-mcp-server" with
-  | Some _ -> ("", "c2c-mcp-server")
+  | Some p -> (p, "c2c-mcp-server")
   | None ->
-  let server_path =
-    match find_ocaml_server_path () with
-    | Some p -> p
-    | None ->
-        (match output_mode with
-         | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String "cannot find c2c_mcp_server binary") ])
-         | Human ->
-             Printf.eprintf "error: cannot find c2c_mcp_server binary. Build with: just build\n%!");
-        exit 1
-  in
-  let server_path =
-    if Filename.is_relative server_path then Sys.getcwd () // server_path
-    else server_path
-  in
-  let mcp_command = "opam" in
-  (server_path, mcp_command)
+      let server_path =
+        match find_ocaml_server_path () with
+        | Some p -> p
+        | None ->
+            (match output_mode with
+             | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String "cannot find c2c_mcp_server binary") ])
+             | Human ->
+                 Printf.eprintf "error: cannot find c2c_mcp_server binary. Build with: just build\n%!");
+            exit 1
+      in
+      let server_path =
+        if Filename.is_relative server_path then Sys.getcwd () // server_path
+        else server_path
+      in
+      (server_path, "opam")
 
 let canonical_install_client client =
   match String.lowercase_ascii client with

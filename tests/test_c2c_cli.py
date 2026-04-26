@@ -382,6 +382,51 @@ class C2CCLITests(unittest.TestCase):
         self.assertNotIn('command = "opam"', config_text)
         self.assertNotIn("_build/default/ocaml/server/c2c_mcp_server.exe", config_text)
 
+    def test_native_install_other_clients_keep_nonempty_mcp_server_path(self):
+        home_dir = Path(self.temp_dir.name) / "home-other-installed-mcp"
+        broker_root = Path(self.temp_dir.name) / "broker-other-installed-mcp"
+        fake_bin = Path(self.temp_dir.name) / "bin-other-installed-mcp"
+        opencode_target = Path(self.temp_dir.name) / "opencode-target"
+        home_dir.mkdir(parents=True, exist_ok=True)
+        broker_root.mkdir(parents=True, exist_ok=True)
+        fake_bin.mkdir(parents=True, exist_ok=True)
+        opencode_target.mkdir(parents=True, exist_ok=True)
+        mcp_server = fake_bin / "c2c-mcp-server"
+        mcp_server.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        mcp_server.chmod(0o755)
+
+        env = dict(self.env)
+        env["HOME"] = str(home_dir)
+        env["PATH"] = f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+
+        for client, extra_args in [
+            ("kimi", []),
+            ("opencode", ["--target-dir", str(opencode_target), "--force"]),
+            ("crush", []),
+        ]:
+            result = run_native_cli(
+                "install",
+                client,
+                "--broker-root",
+                str(broker_root),
+                "--json",
+                *extra_args,
+                env=env,
+            )
+            self.assertEqual(result_code(result), 0, result.stderr)
+
+        kimi = json.loads((home_dir / ".kimi" / "mcp.json").read_text(encoding="utf-8"))
+        kimi_args = kimi["mcpServers"]["c2c"]["args"]
+        self.assertEqual(kimi_args, ["exec", "--", str(mcp_server)])
+
+        opencode = json.loads((opencode_target / ".opencode" / "opencode.json").read_text(encoding="utf-8"))
+        opencode_command = opencode["mcp"]["c2c"]["command"]
+        self.assertEqual(opencode_command, ["opam", "exec", "--", str(mcp_server)])
+
+        crush = json.loads((home_dir / ".config" / "crush" / "crush.json").read_text(encoding="utf-8"))
+        crush_args = crush["mcpServers"]["c2c"]["args"]
+        self.assertEqual(crush_args, ["exec", "--", str(mcp_server)])
+
     def test_start_help_mentions_codex_headless(self):
         self.assertTrue(NATIVE_C2C.exists(), NATIVE_C2C)
         result = run_native_cli("start", "--help", env=self.env)
