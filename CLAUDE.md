@@ -430,6 +430,17 @@ Revocation only prevents future guarded CLI/MCP reads; it cannot erase
 content already read into another agent's transcript, logs, memory, or
 commits.
 
+**Send-memory handoff** (slice #286): when you write a `shared_with: [..]`
+entry (CLI `--shared-with` or MCP `memory_write`), each recipient is
+sent a deferrable C2C DM with the path:
+`memory shared with you: .c2c/memory/<author>/<name>.md (from <author>)`.
+Recipients can then read at their own pace without having to know to
+run `c2c memory list --shared-with-me`. Globally-shared entries
+(`shared:true`) skip the targeted handoff — the audience is everyone,
+so a per-recipient DM is noise. Notifications are best-effort; an
+unknown recipient alias is silently skipped, the entry write itself
+always succeeds.
+
 Auto-injection on session start (Phase 3) is not yet wired — for now
 read manually from your CLAUDE.md startup checklist.
 

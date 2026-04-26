@@ -6512,6 +6512,101 @@ let test_proc_hooks_clear_restores_real_proc () =
    refresh_pid_if_dead_with unit tests above (mock scanners) plus the
    live-binary dogfood after install-all. *)
 
+(* --- #286: send-memory handoff --- *)
+
+let test_notify_shared_with_dms_listed_recipients () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-author" ~alias:"alice-h"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-bob" ~alias:"bob-h"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-carol" ~alias:"carol-h"
+        ~pid:None ~pid_start_time:None ();
+      let notified =
+        C2c_mcp.notify_shared_with_recipients
+          ~broker ~from_alias:"alice-h" ~name:"handoff-note"
+          ~description:"shared with friends"
+          ~shared:false ~shared_with:["bob-h"; "carol-h"] ()
+      in
+      check int "two recipients notified" 2 (List.length notified);
+      let bob_inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"s-bob" in
+      check int "bob received DM" 1 (List.length bob_inbox);
+      let msg = List.hd bob_inbox in
+      check string "from is the author" "alice-h" msg.from_alias;
+      check bool "DM is deferrable" true msg.deferrable;
+      check bool "msg references the path" true
+        (let needle = ".c2c/memory/alice-h/handoff-note.md" in
+         let h = msg.content in
+         let nl = String.length needle in
+         let hl = String.length h in
+         let rec scan i = i + nl <= hl && (String.sub h i nl = needle || scan (i+1)) in
+         scan 0))
+
+let test_notify_skips_self_in_recipients () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-author2" ~alias:"alice-skip"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-bob2" ~alias:"bob-skip"
+        ~pid:None ~pid_start_time:None ();
+      let notified =
+        C2c_mcp.notify_shared_with_recipients
+          ~broker ~from_alias:"alice-skip" ~name:"self-note"
+          ~shared:false ~shared_with:["alice-skip"; "bob-skip"] ()
+      in
+      check int "self skipped, only one recipient" 1 (List.length notified);
+      check string "the one recipient is bob, not alice" "bob-skip"
+        (List.hd notified))
+
+let test_notify_skipped_when_globally_shared () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-author3" ~alias:"alice-global"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-bob3" ~alias:"bob-global"
+        ~pid:None ~pid_start_time:None ();
+      let notified =
+        C2c_mcp.notify_shared_with_recipients
+          ~broker ~from_alias:"alice-global" ~name:"global-note"
+          ~shared:true ~shared_with:["bob-global"] ()
+      in
+      check int "no targeted handoff for globally-shared entry" 0
+        (List.length notified);
+      let bob_inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"s-bob3" in
+      check int "bob received nothing" 0 (List.length bob_inbox))
+
+let test_notify_silently_skips_unknown_alias () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-author4" ~alias:"alice-unknown"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-bob4" ~alias:"bob-unknown"
+        ~pid:None ~pid_start_time:None ();
+      let notified =
+        C2c_mcp.notify_shared_with_recipients
+          ~broker ~from_alias:"alice-unknown" ~name:"mixed-note"
+          ~shared:false
+          ~shared_with:["bob-unknown"; "ghost-not-registered"] ()
+      in
+      check int "only the registered recipient notified" 1
+        (List.length notified);
+      check string "registered recipient is bob" "bob-unknown"
+        (List.hd notified))
+
+let test_notify_empty_shared_with_is_noop () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-author5" ~alias:"alice-empty"
+        ~pid:None ~pid_start_time:None ();
+      let notified =
+        C2c_mcp.notify_shared_with_recipients
+          ~broker ~from_alias:"alice-empty" ~name:"private-note"
+          ~shared:false ~shared_with:[] ()
+      in
+      check int "no notifications for empty shared_with" 0
+        (List.length notified))
+
 let () =
   run "c2c_mcp"
     [ ( "broker",
@@ -6892,4 +6987,14 @@ let () =
                test_enqueue_self_heals_dead_target_via_resolver_hooks
            ; test_case "proc hooks clear restores real /proc" `Quick
                test_proc_hooks_clear_restores_real_proc
+           ; test_case "notify_shared_with DMs listed recipients" `Quick
+               test_notify_shared_with_dms_listed_recipients
+           ; test_case "notify_shared_with skips self in recipients" `Quick
+               test_notify_skips_self_in_recipients
+           ; test_case "notify_shared_with skipped when globally shared" `Quick
+               test_notify_skipped_when_globally_shared
+           ; test_case "notify_shared_with silently skips unknown alias" `Quick
+               test_notify_silently_skips_unknown_alias
+           ; test_case "notify_shared_with empty shared_with is noop" `Quick
+               test_notify_empty_shared_with_is_noop
            ] ) ]

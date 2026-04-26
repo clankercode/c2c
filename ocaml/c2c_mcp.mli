@@ -245,6 +245,23 @@ module Broker : sig
   val write_allowed_signers_entry : t -> alias:string -> unit
 end
 
+val notify_shared_with_recipients :
+  broker:Broker.t ->
+  from_alias:string ->
+  name:string ->
+  ?description:string ->
+  shared:bool ->
+  shared_with:string list ->
+  unit ->
+  string list
+(** [notify_shared_with_recipients] is the send-memory handoff (#286).
+    After a memory entry with [shared_with] is written, broker-DM each
+    recipient with the path. Globally-shared entries (`shared:true`)
+    skip targeted handoff. Notifications are deferrable and best-effort
+    (try/with swallows enqueue failures). Returns the list of aliases
+    successfully notified; the empty list when [shared:true] OR
+    [shared_with] is empty. *)
+
 (* Native OCaml relay modules *)
 
 val channel_notification : ?role:string option -> message -> Yojson.Safe.t

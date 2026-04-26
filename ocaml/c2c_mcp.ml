@@ -2654,6 +2654,42 @@ module Broker = struct
       if !changed then save_registrations t regs')
 end
 
+(* #286: send-memory handoff.
+   After a per-agent memory entry with [shared_with] is written, broker-DM
+   each recipient with the path so they don't have to poll
+   `memory list --shared-with-me`. Returns the list of aliases successfully
+   notified (recipients we couldn't reach are silently skipped).
+
+   Globally-shared entries (`shared:true`) skip the targeted handoff: the
+   audience is everyone, so a per-recipient DM is noise.
+
+   Notifications are deferrable (no push-spam) and best-effort
+   (try/with swallows enqueue failures so the entry write itself never
+   fails because of a notification). *)
+let notify_shared_with_recipients
+    ~broker ~from_alias ~name ?description ~shared ~shared_with () =
+  if shared && shared_with <> [] then []
+  else
+    let descr_suffix = match description with
+      | Some d when d <> "" -> Printf.sprintf " — %s" d
+      | _ -> ""
+    in
+    let msg = Printf.sprintf
+      "memory shared with you: .c2c/memory/%s/%s.md (from %s)%s"
+      from_alias name from_alias descr_suffix
+    in
+    List.filter_map
+      (fun recipient ->
+        if recipient = from_alias then None
+        else
+          try
+            Broker.enqueue_message broker
+              ~from_alias ~to_alias:recipient
+              ~content:msg ~deferrable:true ();
+            Some recipient
+          with _ -> None)
+      shared_with
+
 let channel_notification ?(role : string option = None) ({ from_alias; to_alias; content; deferrable = _ } : message) =
   let meta =
     let base = [ ("from_alias", `String from_alias); ("to_alias", `String to_alias) ] in
@@ -2908,7 +2944,7 @@ let base_tool_definitions =
       ~required:["name"]
       ~properties:[ prop "name" "Memory entry name (without .md extension)." ]
   ; tool_definition ~name:"memory_write"
-      ~description:"Write a memory entry. Creates or overwrites. Returns {saved: name}."
+      ~description:"Write a memory entry. Creates or overwrites. When shared_with includes other aliases (and the entry is NOT globally shared), each recipient is sent a deferrable C2C DM with the path so they don't have to poll `memory list --shared-with-me` to discover it (#286). Globally-shared entries skip the targeted handoff — the audience is everyone. Returns {saved: name, notified: [alias]}."
       ~required:["name"; "content"]
       ~properties:
         [ prop "name" "Memory entry name."
@@ -5123,7 +5159,18 @@ let ts = Unix.gettimeofday () in
              let oc = open_out path in
              Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
                output_string oc fm_content);
-             let result = `Assoc [("saved", `String name)] |> Yojson.Safe.to_string in
+             (* #286: send-memory handoff via shared helper. *)
+             let notified =
+               notify_shared_with_recipients
+                 ~broker ~from_alias:alias ~name ?description:desc
+                 ~shared ~shared_with ()
+             in
+             let result =
+               `Assoc [
+                 ("saved", `String name)
+               ; ("notified", `List (List.map (fun a -> `String a) notified))
+               ] |> Yojson.Safe.to_string
+             in
              Lwt.return (tool_result ~content:result ~is_error:false)
            with _ ->
              Lwt.return (tool_result ~content:("error writing memory entry: " ^ name) ~is_error:true))

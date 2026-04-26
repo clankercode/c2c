@@ -401,8 +401,37 @@ let memory_write_cmd =
     ~body:(String.concat "\n" body) ()
   in
   write_file path content;
-  if json then print_json (`Assoc [("saved", `String name)])
-  else Printf.printf "saved: %s\n" name
+  (* #286: send-memory handoff via shared helper in C2c_mcp. Inline
+     broker-root resolver (env override > git-common-dir > xdg state)
+     mirrors c2c_utils.resolve_broker_root without pulling the full
+     module into test_c2c_memory's dep set. *)
+  let notified =
+    let broker_root =
+      match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
+      | Some d when String.trim d <> "" -> String.trim d
+      | _ ->
+          (match Git_helpers.git_common_dir () with
+           | Some gd -> Filename.concat gd (Filename.concat "c2c" "mcp")
+           | None ->
+               let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+               Filename.concat (Filename.concat (Filename.concat home ".local") "state")
+                 (Filename.concat (Filename.concat "c2c" "default") "mcp"))
+    in
+    let broker = C2c_mcp.Broker.create ~root:broker_root in
+    C2c_mcp.notify_shared_with_recipients
+      ~broker ~from_alias:alias ~name ?description:desc
+      ~shared ~shared_with:shared_with_list ()
+  in
+  if json then
+    print_json (`Assoc [
+      ("saved", `String name)
+    ; ("notified", `List (List.map (fun a -> `String a) notified))
+    ])
+  else begin
+    Printf.printf "saved: %s\n" name;
+    if notified <> [] then
+      Printf.printf "notified: %s\n" (String.concat ", " notified)
+  end
 
 (* --- memory delete --------------------------------------------------------- *)
 
