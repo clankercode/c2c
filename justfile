@@ -152,7 +152,7 @@ install-hook:
 # Build all first, then copy all; avoids half-updated state on build failure.
 # Also installs git hooks (including pre-push coordinator gate).
 install-all: codegen-role-designer install-git-hooks
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/cli/c2c.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
+    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/cli/c2c.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook.exe
     # Guard + atomic install + stamp under a single flock so concurrent
     # `just bi` runs from different worktrees can't race past the guard
     # then clobber each other. See scripts/c2c-install-guard.sh (#302).
@@ -160,11 +160,12 @@ install-all: codegen-role-designer install-git-hooks
     flock ~/.local/bin/.c2c-install.lock bash -c '\
       set -euo pipefail; \
       scripts/c2c-install-guard.sh; \
-      rm -f ~/.local/bin/c2c ~/.local/bin/c2c-mcp-server ~/.local/bin/c2c-inbox-hook-ocaml ~/.local/bin/c2c-cold-boot-hook ~/.local/bin/cc-quota; \
+      rm -f ~/.local/bin/c2c ~/.local/bin/c2c-mcp-server ~/.local/bin/c2c-inbox-hook-ocaml ~/.local/bin/c2c-cold-boot-hook ~/.local/bin/c2c-post-compact-hook ~/.local/bin/cc-quota; \
       cp _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c; \
       cp _build/default/ocaml/server/c2c_mcp_server.exe ~/.local/bin/c2c-mcp-server; \
       cp _build/default/ocaml/tools/c2c_inbox_hook.exe ~/.local/bin/c2c-inbox-hook-ocaml; \
       cp _build/default/ocaml/tools/c2c_cold_boot_hook.exe ~/.local/bin/c2c-cold-boot-hook; \
+      cp _build/default/ocaml/tools/c2c_post_compact_hook.exe ~/.local/bin/c2c-post-compact-hook; \
       printf "#!/usr/bin/env bash\nset -euo pipefail\nexec \"%s/scripts/cc-quota\" \"\$@\"\n" "$PWD" > ~/.local/bin/cc-quota; \
       chmod +x ~/.local/bin/cc-quota; \
       scripts/c2c-install-stamp.sh; \

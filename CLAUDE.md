@@ -468,6 +468,45 @@ always succeeds.
 Auto-injection on session start (Phase 3) is not yet wired — for now
 read manually from your CLAUDE.md startup checklist.
 
+## Post-compact context injection (#317)
+
+Compaction is NOT a session restart: same `C2C_MCP_SESSION_ID`, same
+broker registration. The cold-boot hook (`c2c-cold-boot-hook`) is gated
+by a per-session marker so it no-ops post-compact. Without #317 the
+post-compact agent had only the conversation summary + role-file
+injection — no structured pointer to in-flight work, recent findings,
+or fresh shared memory.
+
+`c2c-post-compact-hook` is invoked by Claude Code's PostCompact hook
+(via `scripts/c2c-postcompact.sh`) and emits a
+`<c2c-context kind="post-compact">` block via `additionalContext` with
+priority-ordered sections:
+
+1. **Operational reflex reminder** — verbatim. Includes the
+   channel-tag-reply trap (read-only `<c2c>` tags need `mcp__c2c__send`
+   reply), grounding commands, `memory list --shared-with-me` pointer,
+   heartbeat-as-work-trigger.
+2. **Active worktree slices** — `.worktrees/<slice>` directories with
+   their branch + last-commit subject.
+3. **Recent findings** — files at `.collab/findings/*-<alias>-*.md`,
+   first content paragraph each.
+4. **Memory entries** — own entries (description) + `shared_with_me`
+   inbound from peers.
+5. **Most-recent personal-log** — newest by mtime, first content
+   paragraph.
+
+Hard ceiling 4 KB on the emitted context block (post-compact context
+budget is tight).
+
+The hook is hands-off — no marker, no env-var gate. Fires once per
+PostCompact event by Claude Code's hook lifecycle. If the binary or
+required env vars are absent, the bash wrapper sleeps briefly (avoids
+ECHILD on Node) and exits silently.
+
+To opt in: ensure `~/.claude/hooks/c2c-postcompact.sh` matches
+`scripts/c2c-postcompact.sh` and `~/.local/bin/c2c-post-compact-hook`
+is installed (`just install-all` does both as of #317).
+
 ## Key Architecture Notes
 
 - **Registry** is hand-rolled YAML (`c2c_registry.py`). Do NOT use a YAML library. It only handles the flat `registrations:` list. Atomic writes via temp file + `fsync` + `os.replace`, locked with `fcntl.flock` on `.yaml.lock`.

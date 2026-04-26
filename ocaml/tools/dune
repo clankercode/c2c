@@ -7,3 +7,8 @@
  (name c2c_cold_boot_hook)
  (modules c2c_cold_boot_hook)
  (libraries c2c_mcp unix))
+
+(executable
+ (name c2c_post_compact_hook)
+ (modules c2c_post_compact_hook)
+ (libraries c2c_mcp unix))
