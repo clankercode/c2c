@@ -994,6 +994,87 @@ let test_tools_call_debug_send_msg_to_self_enqueues_payload () =
             check string "action" "send_msg_to_self" (find_string "action");
             check string "alias" "storm-debug" (find_string "alias")))
 
+let test_tools_call_debug_send_raw_to_self_enqueues_verbatim () =
+  with_temp_dir (fun dir ->
+      if not Build_flags.mcp_debug_tool_enabled then ()
+      else
+        let broker = C2c_mcp.Broker.create ~root:dir in
+        C2c_mcp.Broker.register broker ~session_id:"session-raw"
+          ~alias:"storm-raw" ~pid:None ~pid_start_time:None ();
+        Unix.putenv "C2C_MCP_SESSION_ID" "session-raw";
+        Fun.protect
+          ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+          (fun () ->
+            let raw_payload = "/compact" in
+            let request =
+              `Assoc
+                [ ("jsonrpc", `String "2.0")
+                ; ("id", `Int 3201)
+                ; ("method", `String "tools/call")
+                ; ( "params",
+                    `Assoc
+                      [ ("name", `String "debug")
+                      ; ( "arguments",
+                          `Assoc
+                            [ ("action", `String "send_raw_to_self")
+                            ; ("payload", `String raw_payload)
+                            ] )
+                      ] )
+                ]
+            in
+            let response =
+              Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+            in
+            (match response with None -> fail "expected debug response" | Some _ -> ());
+            let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-raw" in
+            check int "one inbox message" 1 (List.length inbox);
+            let msg = List.hd inbox in
+            check string "from alias" "storm-raw" msg.from_alias;
+            check string "to alias" "storm-raw" msg.to_alias;
+            (* The body is the payload verbatim — NOT wrapped in a JSON
+               c2c_debug envelope. This is the load-bearing assertion: the
+               content arrives unmodified through the channel-notification
+               path (which never adds the <c2c event="message"> envelope). *)
+            check string "content is verbatim payload" raw_payload msg.content))
+
+let test_tools_call_debug_send_raw_to_self_rejects_non_string_payload () =
+  with_temp_dir (fun dir ->
+      if not Build_flags.mcp_debug_tool_enabled then ()
+      else
+        let broker = C2c_mcp.Broker.create ~root:dir in
+        C2c_mcp.Broker.register broker ~session_id:"session-raw-bad"
+          ~alias:"storm-raw-bad" ~pid:None ~pid_start_time:None ();
+        Unix.putenv "C2C_MCP_SESSION_ID" "session-raw-bad";
+        Fun.protect
+          ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+          (fun () ->
+            let request =
+              `Assoc
+                [ ("jsonrpc", `String "2.0")
+                ; ("id", `Int 3202)
+                ; ("method", `String "tools/call")
+                ; ( "params",
+                    `Assoc
+                      [ ("name", `String "debug")
+                      ; ( "arguments",
+                          `Assoc
+                            [ ("action", `String "send_raw_to_self")
+                            (* object payload is invalid for raw — must be string *)
+                            ; ("payload", `Assoc [ ("oops", `String "object") ])
+                            ] )
+                      ] )
+                ]
+            in
+            let response =
+              Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+            in
+            (* Either the response carries an error envelope, or
+               send_raw_to_self raised — both are acceptable; the load-bearing
+               part is that the inbox stays empty. *)
+            ignore response;
+            let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-raw-bad" in
+            check int "no inbox message on bad payload" 0 (List.length inbox)))
+
 let test_tools_call_debug_get_env () =
   with_temp_dir (fun dir ->
       if not Build_flags.mcp_debug_tool_enabled then ()
@@ -6268,6 +6349,10 @@ let () =
          ; test_case "tools/call send returns receipt JSON" `Quick test_tools_call_send_returns_receipt_json
           ; test_case "tools/call debug send_msg_to_self enqueues payload" `Quick
               test_tools_call_debug_send_msg_to_self_enqueues_payload
+          ; test_case "tools/call debug send_raw_to_self enqueues verbatim" `Quick
+              test_tools_call_debug_send_raw_to_self_enqueues_verbatim
+          ; test_case "tools/call debug send_raw_to_self rejects non-string payload" `Quick
+              test_tools_call_debug_send_raw_to_self_rejects_non_string_payload
           ; test_case "tools/call debug get_env returns C2C_ vars" `Quick
               test_tools_call_debug_get_env
           ; test_case "MCP ping returns empty result not -32601 (e107929)" `Quick

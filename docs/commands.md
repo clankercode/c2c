@@ -443,7 +443,20 @@ Write or overwrite a memory entry.
 
 ### Debug
 
-`debug` is a build-flag-gated tool exposed only when MCP debug mode is on (see `Build_flags.mcp_debug_tool_enabled` in `ocaml/c2c_mcp.ml`). It exposes diagnostic actions like `send_msg_to_self` and `get_env`. Not present in production builds.
+`debug` is a build-flag-gated tool exposed only when MCP debug mode is on (see `Build_flags.mcp_debug_tool_enabled` in `ocaml/c2c_mcp.ml`). Not present in production builds.
+
+Available actions:
+
+- `send_msg_to_self` — enqueues a JSON-wrapped self-message containing
+  `{kind, action, payload, ts, session_id, alias}`. Used to probe the
+  delivery pipeline end-to-end.
+- `send_raw_to_self` — enqueues a self-message whose content is the
+  `payload` string verbatim (no JSON wrapper). Goal: test whether the
+  receiving harness treats the raw channel body as user input (e.g.
+  `payload="/compact"` to check slash-command firing). `payload` MUST
+  be a string; non-string payloads are rejected.
+- `get_env` — lists `C2C_*`-prefixed environment variables seen by the
+  broker (use `prefix` arg to override the filter).
 
 ---
 

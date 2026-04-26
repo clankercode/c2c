@@ -2468,11 +2468,11 @@ let room_info_json (r : Broker.room_info) =
 
 let debug_tool_definition =
   tool_definition ~name:"debug"
-    ~description:"Dev-build-only debug surface for controlled broker diagnostics. `action` selects the operation; unknown actions are rejected. `send_msg_to_self` enqueues a broker message from the current alias to itself and optionally embeds `payload`."
+    ~description:"Dev-build-only debug surface for controlled broker diagnostics. `action` selects the operation; unknown actions are rejected. `send_msg_to_self` enqueues a JSON-wrapped self-message; `send_raw_to_self` enqueues a self-message whose content is the raw `payload` string (skips the c2c_debug JSON wrapper, body goes verbatim through the channel-notification path); `get_env` lists C2C_*-prefixed env vars."
     ~required:["action"]
     ~properties:
-      [ prop "action" "Debug action name."
-      ; ("payload", `Assoc [ ("type", `String "object"); ("description", `String "Optional arbitrary JSON payload for the debug action.") ])
+      [ prop "action" "Debug action name (send_msg_to_self | send_raw_to_self | get_env)."
+      ; ("payload", `Assoc [ ("type", `String "object"); ("description", `String "Optional arbitrary JSON payload (object/string/etc.) for the debug action. For send_raw_to_self this MUST be a string and is delivered verbatim.") ])
       ]
 
 let base_tool_definitions =
@@ -3739,6 +3739,55 @@ let ts = Unix.gettimeofday () in
                  ; ("alias", `String sender_alias)
                  ; ("delivered_to", `String sender_alias)
                  ; ("content_preview", `String content)
+                 ]
+               |> Yojson.Safe.to_string
+             in
+             Lwt.return (tool_result ~content:result_json ~is_error:false)
+         | "send_raw_to_self" ->
+             (* Like send_msg_to_self, but content is the payload string verbatim
+                — no JSON wrapping, no c2c_debug envelope. The body that arrives in
+                the channel notification is exactly the payload. Use case: probe
+                whether a Claude harness treats raw channel body as user input
+                (e.g. payload="/compact" to test slash-command firing). *)
+             let session_id = resolve_session_id ?session_id_override arguments in
+             let sender_alias =
+               match current_registered_alias ?session_id_override broker with
+               | Some alias -> alias
+               | None ->
+                   (match auto_register_alias () with
+                    | Some alias -> alias
+                    | None ->
+                        raise
+                          (Invalid_argument
+                             "debug.send_raw_to_self: current session is not registered"))
+             in
+             let payload =
+               match optional_member "payload" arguments with
+               | Some (`String s) -> s
+               | Some _ ->
+                   raise
+                     (Invalid_argument
+                        "debug.send_raw_to_self: payload must be a string")
+               | None ->
+                   raise
+                     (Invalid_argument
+                        "debug.send_raw_to_self: payload is required")
+             in
+             Broker.enqueue_message broker ~from_alias:sender_alias
+               ~to_alias:sender_alias ~content:payload ();
+             let preview =
+               if String.length payload <= 200 then payload
+               else String.sub payload 0 200 ^ "…"
+             in
+             let result_json =
+               `Assoc
+                 [ ("ok", `Bool true)
+                 ; ("action", `String action)
+                 ; ("session_id", `String session_id)
+                 ; ("alias", `String sender_alias)
+                 ; ("delivered_to", `String sender_alias)
+                 ; ("payload_length", `Int (String.length payload))
+                 ; ("content_preview", `String preview)
                  ]
                |> Yojson.Safe.to_string
              in
