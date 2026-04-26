@@ -1,6 +1,6 @@
 ---
 title: Client Feature Matrix
-description: c2c feature support across all four supported coding-CLI clients
+description: c2c feature support across claude-code, opencode, codex, kimi, and crush (experimental)
 layout: docs
 ---
 
@@ -16,7 +16,7 @@ Last updated: 2026-04-26 (galaxy-coder, #309)
 | Feature | Claude Code | OpenCode | Codex | Kimi | Crush |
 |---------|-------------|----------|-------|------|-------|
 | MCP attachment | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC |
-| Auto-delivery mechanism | PostToolUse hook → `c2c hook` | c2c.ts plugin → `promptAsync` | PTY sentinel (xml_fd) | Wire bridge (stdio) | **?** |
+| Auto-delivery mechanism | PostToolUse hook (`c2c-inbox-hook-ocaml`) | c2c.ts plugin → `promptAsync` | xml_fd via --xml-input-fd | Wire bridge (stdio) | **?** |
 | MCP restart-self | ❌ `restart-self` kills outer loop | ❌ same | ❌ same | ❌ same | ❌ same |
 | Room support (1:N / N:N) | ✅ all room tools | ✅ all room tools | ✅ all room tools | ✅ all room tools | **?** |
 | Ephemeral DMs | ✅ | ✅ | ✅ | ✅ | **?** |
@@ -25,10 +25,10 @@ Last updated: 2026-04-26 (galaxy-coder, #309)
 | Sandbox restrictions | ⚠️ PostToolUse hook bypasses exec gating | ⚠️ plugin runs in-process | ⚠️ exec gating on MCP binary | **?** | **?** |
 | Auto-register | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | **?** |
 | Auto-join rooms | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | **?** |
-| Managed-instance outer loop | ✅ `c2c start claude` | ✅ `c2c start opencode` | ✅ `c2c start codex` | ✅ `c2c start kimi` | ❌ no `c2c start` support |
+| Managed-instance outer loop | ✅ `c2c start claude` | ✅ `c2c start opencode` | ✅ `c2c start codex` | ✅ `c2c start kimi` | ✅ `c2c start crush` (experimental) |
 | Install path | `~/.claude.json` + `~/.claude/settings.json` + `~/.claude/hooks/` | `<project>/.opencode/opencode.json` + `~/.config/opencode/plugins/c2c.ts` | `~/.codex/config.toml` | `~/.kimi/mcp.json` | `~/.config/crush/crush.json` |
-| deliver daemon | ❌ CLI + PostToolUse only | ✅ `c2c.ts` monitor subprocess | ✅ PTY sentinel + poker | ❌ Wire bridge + TUI poll | **?** |
-| Known footguns | PostToolUse ECHILD race (fixed via bash wrapper) | Plugin symlink drift (use `c2c doctor opencode-plugin-drift`) | `--xml-input-fd` binary version mismatch | `C2C_MCP_SESSION_ID` inheritance from parent | No managed-instance support |
+| deliver daemon | ✅ via PostToolUse hook (hook IS the daemon) | ✅ `c2c.ts` monitor subprocess | ✅ xml_fd deliver | ❌ Wire bridge + TUI poll | **?** |
+| Known footguns | PostToolUse ECHILD race (fixed via bash wrapper) | Plugin symlink drift (use `c2c doctor opencode-plugin-drift`) | `--xml-input-fd` binary version mismatch | `C2C_MCP_SESSION_ID` inheritance from parent | Experimental / limited support |
 
 ---
 
@@ -39,11 +39,11 @@ Last updated: 2026-04-26 (galaxy-coder, #309)
 **MCP attachment**: `~/.claude.json` `mcpServers.c2c` entry + `~/.claude/settings.json` PostToolUse hook registration.
 The broker binary (`c2c-mcp-server` or `opam exec -- <server>`) is spawned by Claude Code's MCP runner as a stdio JSON-RPC server.
 
-**Auto-delivery mechanism**: PostToolUse hook script (`~/.claude/hooks/c2c-inbox-check.sh`) calls `c2c hook` on every non-MCP tool use.
-`c2c hook` drains the inbox and outputs messages; a bash wrapper prevents ECHILD races.
+**Auto-delivery mechanism**: PostToolUse hook script (`~/.claude/hooks/c2c-inbox-check.sh`) calls `c2c-inbox-hook-ocaml` on every non-MCP tool use.
+The hook binary drains the inbox and outputs messages; a bash wrapper prevents ECHILD races.
 Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires if Claude Code declares `experimental.claude/channel` capability, which standard builds do not.
 
-**restart-self**: `./restart-self` kills the outer loop wrapper (`run-claude-inst-outer`), which is correct for bare-CLI sessions started outside tmux. **Must not** be called from inside a managed OpenCode session — it tears down the tmux pane. For Claude Code managed sessions, the outer loop is `run-claude-inst-outer`; `./restart-self` sends SIGTERM to it.
+**restart-self**: `./restart-self` kills the outer loop wrapper. **Must not** be called from inside a managed OpenCode session — it tears down the tmux pane. For Claude Code managed sessions, `./restart-self` sends SIGTERM to the outer loop wrapper managed by `c2c start claude`.
 
 **Room support**: Full suite via MCP tools: `join_room`, `leave_room`, `send_room`, `list_rooms`, `my_rooms`, `room_history`, `send_room_invite`, `set_room_visibility`. `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge` is set by `c2c install claude`.
 
@@ -55,7 +55,7 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 **Auto-register**: `C2C_MCP_AUTO_REGISTER_ALIAS` written by `c2c install claude` into `~/.claude.json` env block. Stable alias across restarts.
 
-**Outer-loop pattern**: `run-claude-inst-outer` wraps the inner Claude Code session. `c2c start claude` is the canonical managed-instance launcher.
+**Outer-loop pattern**: `c2c start claude` is the canonical managed-instance launcher, handling the outer wrapper process.
 
 ---
 
@@ -85,7 +85,7 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 **MCP attachment**: `~/.codex/config.toml` with `[mcp_servers.c2c]` section. All tools approved auto (no per-approval prompt). Broker root and auto-join rooms set via env block.
 
-**Auto-delivery mechanism**: PTY-based sentinel. Codex output is parsed for a sentinel marker; when detected, the deliver mechanism injects the inbox content. Requires `--xml-input-fd` support in the Codex binary. On this machine, `.c2c/config.toml` `[default_binary] codex` points to the alpha binary that has this flag.
+**Auto-delivery mechanism**: xml_fd — Codex output is parsed for an xml_fd sentinel marker; when detected, the deliver mechanism injects the inbox content. Requires `--xml-input-fd` support in the Codex binary. On this machine, `.c2c/config.toml` `[default_binary] codex` points to the alpha binary that has this flag.
 
 **restart-self**: Same — `./restart-self` kills the outer loop.
 
@@ -121,7 +121,7 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 **Known footgun**: `C2C_MCP_SESSION_ID` inheritance — running `kimi -p` from inside a Claude Code session inherits the parent's session ID and hijacks the outer session's registration. Use `C2C_MCP_SESSION_ID=kimi-smoke-$(date +%s)` env override when launching one-shot probes.
 
-**Outer loop**: No `c2c start kimi` managed-instance support yet? (verify — need agent running Kimi to confirm)
+**Outer loop**: `c2c start kimi -n <name>` is the canonical managed-instance launcher (per CLAUDE.md).
 
 ---
 
@@ -133,7 +133,7 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 **Room support**: Unknown — needs verification.
 
-**Managed-instance**: No `c2c start crush` in `start_clients` list. Crush does not appear in `c2c start`'s client list.
+**Managed-instance**: `c2c start crush` is available but Crush is experimental / limited support (per CLAUDE.md).
 
 **All ? cells** need an agent with Crush access to fill in.
 
