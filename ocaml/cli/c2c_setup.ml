@@ -42,9 +42,23 @@ let current_c2c_command () =
   in
   if Filename.is_relative resolved then Sys.getcwd () // resolved else resolved
 
-(* resolve_broker_root — delegates to C2c_utils.resolve_broker_root which has
-   the authoritative resolution order (coord1 2026-04-26). *)
-let resolve_broker_root () = C2c_utils.resolve_broker_root ()
+(* resolve_broker_root — duplicated from c2c.ml so c2c_setup.ml is self-contained *)
+let resolve_broker_root () =
+  let abs_path p =
+    if Filename.is_relative p then Sys.getcwd () // p else p
+  in
+  match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
+  | Some dir when String.trim dir <> "" -> abs_path (String.trim dir)
+  | _ ->
+      (match Git_helpers.git_common_dir () with
+       | Some git_dir ->
+           (try
+              if (Unix.stat git_dir).Unix.st_kind = Unix.S_DIR then
+                let abs_git = if Filename.is_relative git_dir then Sys.getcwd () // git_dir else git_dir in
+                abs_git // "c2c" // "mcp"
+              else failwith "not a dir"
+            with Unix.Unix_error _ -> failwith "stat failed")
+       | None -> Filename.concat (Sys.getenv "HOME") ".local" // "state" // "c2c" // "default" // "mcp")
 
 let print_json json =
   Yojson.Safe.pretty_to_channel stdout json;
@@ -99,6 +113,23 @@ let find_ocaml_server_path () =
   let all = candidates @ extra_candidates in
   List.find_opt Sys.file_exists all
 
+let find_ocaml_inner_path () =
+  (* Look for c2c_mcp_server_inner_bin.exe in _build, then try opam.
+     This is the inner MCP server — runs the same logic as c2c-mcp-server
+     but is the target of the outer-proxy design in #311. *)
+  let candidates = [
+    "_build/default/ocaml/server/c2c_mcp_server_inner_bin.exe";
+    "_build/ocaml/server/c2c_mcp_server_inner_bin.exe";
+  ] in
+  let extra_candidates =
+    try
+      let switch = Sys.getenv "OPAM_SWITCH_PREFIX" in
+      [ switch // "bin/c2c_mcp_inner" ]
+    with Not_found -> []
+  in
+  let all = candidates @ extra_candidates in
+  List.find_opt Sys.file_exists all
+
 let json_read_file path =
   let ic = open_in path in
   Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
@@ -144,24 +175,47 @@ let do_install_self ~output_mode ~dest_opt ~with_mcp_server =
         Unix.rename (dest_path ^ ".tmp") dest_path;
         let extras =
           if with_mcp_server then
-            match find_ocaml_server_path () with
-            | None -> [ Error "could not find c2c_mcp_server.exe to install" ]
-            | Some server_src ->
-                let mcp_dest = dest_dir // "c2c-mcp-server" in
-                try
-                  let ic = open_in_bin server_src in
-                  let oc = open_out_bin (mcp_dest ^ ".tmp") in
-                  Fun.protect ~finally:(fun () -> close_in ic; close_out oc) (fun () ->
-                    let buf = Bytes.create 65536 in
-                    let rec copy () =
-                      let n = input ic buf 0 (Bytes.length buf) in
-                      if n > 0 then (output oc buf 0 n; copy ())
-                    in
-                    copy ());
-                  Unix.chmod (mcp_dest ^ ".tmp") 0o755;
-                  Unix.rename (mcp_dest ^ ".tmp") mcp_dest;
-                  [ Ok mcp_dest ]
-                with Sys_error msg -> [ Error msg ]
+            let server_extra =
+              match find_ocaml_server_path () with
+              | None -> [ Error "could not find c2c_mcp_server.exe to install" ]
+              | Some server_src ->
+                  let mcp_dest = dest_dir // "c2c-mcp-server" in
+                  try
+                    let ic = open_in_bin server_src in
+                    let oc = open_out_bin (mcp_dest ^ ".tmp") in
+                    Fun.protect ~finally:(fun () -> close_in ic; close_out oc) (fun () ->
+                      let buf = Bytes.create 65536 in
+                      let rec copy () =
+                        let n = input ic buf 0 (Bytes.length buf) in
+                        if n > 0 then (output oc buf 0 n; copy ())
+                      in
+                      copy ());
+                    Unix.chmod (mcp_dest ^ ".tmp") 0o755;
+                    Unix.rename (mcp_dest ^ ".tmp") mcp_dest;
+                    [ Ok mcp_dest ]
+                  with Sys_error msg -> [ Error msg ]
+            in
+            let inner_extra =
+              match find_ocaml_inner_path () with
+              | None -> [ Error "could not find c2c_mcp_server_inner_bin.exe to install" ]
+              | Some inner_src ->
+                  let inner_dest = dest_dir // "c2c-mcp-inner" in
+                  try
+                    let ic = open_in_bin inner_src in
+                    let oc = open_out_bin (inner_dest ^ ".tmp") in
+                    Fun.protect ~finally:(fun () -> close_in ic; close_out oc) (fun () ->
+                      let buf = Bytes.create 65536 in
+                      let rec copy () =
+                        let n = input ic buf 0 (Bytes.length buf) in
+                        if n > 0 then (output oc buf 0 n; copy ())
+                      in
+                      copy ());
+                    Unix.chmod (inner_dest ^ ".tmp") 0o755;
+                    Unix.rename (inner_dest ^ ".tmp") inner_dest;
+                    [ Ok inner_dest ]
+                  with Sys_error msg -> [ Error msg ]
+            in
+            server_extra @ inner_extra
           else []
         in
         Ok (dest_path, extras)
@@ -170,19 +224,19 @@ let do_install_self ~output_mode ~dest_opt ~with_mcp_server =
           Error (Printf.sprintf "%s: %s" func (Unix.error_message code))
       | Sys_error msg -> Error msg
     in
-    (match result with
-     | Ok (dest_path, extras) ->
-         (match output_mode with
-          | Json ->
-              let items = [ ("ok", `Bool true); ("c2c", `String dest_path) ] in
-              let items =
-                let extra_json = List.map (fun x -> match x with Ok p -> `String p | Error m -> `String ("error: " ^ m)) extras in
-                if extra_json = [] then items else items @ [ ("mcp_server", `List extra_json) ]
-              in
-              print_json (`Assoc items)
-          | Human ->
-              Printf.printf "installed c2c to %s\n" dest_path;
-              List.iter (function Ok p -> Printf.printf "installed c2c-mcp-server to %s\n" p | Error m -> Printf.eprintf "error: %s\n%!" m) extras)
+     (match result with
+      | Ok (dest_path, extras) ->
+          (match output_mode with
+           | Json ->
+               let items = [ ("ok", `Bool true); ("c2c", `String dest_path) ] in
+               let items =
+                 let extra_json = List.map (fun x -> match x with Ok p -> `String p | Error m -> `String ("error: " ^ m)) extras in
+                 if extra_json = [] then items else items @ [ ("mcp_extra", `List extra_json) ]
+               in
+               print_json (`Assoc items)
+           | Human ->
+               Printf.printf "installed c2c to %s\n" dest_path;
+               List.iter (function Ok p -> Printf.printf "installed %s\n" p | Error m -> Printf.eprintf "error: %s\n%!" m) extras)
      | Error msg ->
          (match output_mode with
           | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
@@ -237,26 +291,6 @@ let mkdir_or_dryrun dry_run dir =
     Printf.printf "[DRY-RUN] would create directory %s\n%!" dir
   else
     (try Unix.mkdir dir 0o755 with Unix.Unix_error _ -> ())
-
-let mkdir_p dry_run dir =
-  (* Recursive mkdir: creates dir and all intermediate parents, like mkdir -p. *)
-  if dry_run then
-    Printf.printf "[DRY-RUN] would create directory tree %s\n%!" dir
-  else
-    let rec loop remaining =
-      if remaining = "/" || remaining = "" || remaining = "." then ()
-      else
-        let st =
-          try Some (Unix.stat remaining) with Unix.Unix_error _ -> None
-        in
-        match st with
-        | Some s when s.Unix.st_kind = Unix.S_DIR -> ()
-        | Some _ -> ()
-        | None ->
-            loop (Filename.dirname remaining);
-            (try Unix.mkdir remaining 0o755 with Unix.Unix_error _ -> ())
-    in
-    loop dir
 
 let default_alias_for_client client =
   let client = match String.lowercase_ascii client with
@@ -478,12 +512,9 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
       ]
   in
   json_write_file_or_dryrun dry_run sidecar sidecar_json;
-  (* Find canonical plugin source. When running from the c2c repo, the canonical
-     source is data/opencode-plugin/c2c.ts. Use a symlink so the installed
-     plugin auto-picks up future c2c repo updates without re-install. *)
+  (* Find plugin source: prefer CWD-relative (c2c dev repo), fall back to global install path. *)
   let home = try Sys.getenv "HOME" with Not_found -> "" in
   let global_plugin_path = home // ".config" // "opencode" // "plugins" // "c2c.ts" in
-  let canonical_plugin = "data" // "opencode-plugin" // "c2c.ts" in
   let file_size path =
     try (Unix.stat path).Unix.st_size with Unix.Unix_error _ -> 0
   in
@@ -504,20 +535,12 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
       Unix.rename (dst ^ ".tmp") dst
     end
   in
-  let make_symlink ~src ~dst =
-    (* Unix.symlink stores src as-is; the kernel resolves it relative to the
-       symlink's parent directory, not CWD. Always use an absolute src path. *)
-    let src_abs = if Filename.is_relative src then Filename.concat (Sys.getcwd ()) src else src in
-    if dry_run then
-      Printf.printf "[DRY-RUN] would symlink %s -> %s\n%!" dst src_abs
-    else begin
-      (try Unix.unlink dst with Unix.Unix_error (Unix.ENOENT, _, _) -> ());
-      Unix.symlink src_abs dst
-    end
+  let file_size path =
+    try (Unix.stat path).Unix.st_size with Unix.Unix_error _ -> 0
   in
-  let canonical_exists = Sys.file_exists canonical_plugin && file_size canonical_plugin >= 1024 in
+  let local_plugin = ".opencode" // "plugins" // "c2c.ts" in
   let plugin_src =
-    if canonical_exists then Some canonical_plugin
+    if Sys.file_exists local_plugin then Some local_plugin
     else if Sys.file_exists global_plugin_path && file_size global_plugin_path >= 1024 then
       Some global_plugin_path
     else None
@@ -531,25 +554,22 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
         mkdir_or_dryrun dry_run plugins_dir;
         let dest = plugins_dir // "c2c.ts" in
         (try
-           if canonical_exists then begin
-             (* Canonical source available: use symlinks so installed plugin
-                tracks repo changes automatically. *)
-             make_symlink ~src:canonical_plugin ~dst:dest;
-             let global_note =
+           copy_file ~src ~dst:dest;
+           (* When source is local (real plugin from c2c repo), always update the
+              global plugin so ~/.config/opencode/plugins/c2c.ts gets the real
+              content with self-detect defer logic. Idempotent if already correct. *)
+           let global_note =
+             if src = local_plugin && file_size local_plugin >= 1024 then begin
                (try
-                   let gdir = Filename.dirname global_plugin_path in
-                   mkdir_p dry_run gdir;
-                  make_symlink ~src:canonical_plugin ~dst:global_plugin_path;
-                  " + global symlinked"
-                with _ -> " (global symlink failed)")
-             in
-             Printf.sprintf "plugin symlinked to %s%s" dest global_note
-           end else begin
-             (* No canonical source: copy from existing global plugin. *)
-             copy_file ~src ~dst:dest;
-             Printf.sprintf "plugin installed to %s (copied)" dest
-           end
-         with _ -> "plugin install failed")
+                  let gdir = Filename.dirname global_plugin_path in
+                  mkdir_or_dryrun dry_run gdir;
+                  copy_file ~src ~dst:global_plugin_path;
+                  " + global updated"
+                with _ -> " (global update failed)")
+             end else ""
+           in
+           Printf.sprintf "plugin installed to %s%s" dest global_note
+         with _ -> "plugin copy failed")
   in
   match output_mode with
   | Json ->

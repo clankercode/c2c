@@ -82,10 +82,11 @@ let command_tier_map () : (string * safety) list =
      even inside agent sessions — the plugin running inside every managed session
      sets C2C_MCP_SESSION_ID and would otherwise be blocked from draining its own
      inbox. Tier1 so the filter accepts them unconditionally. *)
-  ; "hook", Tier1
-  ; "serve", Tier4
-  ; "mcp", Tier4
-  ; "oc-plugin", Tier1
+   ; "hook", Tier1
+   ; "serve", Tier4
+   ; "mcp", Tier4
+   ; "mcp-inner", Tier4
+   ; "oc-plugin", Tier1
   ; "cc-plugin", Tier1
   ; "state-read", Tier4
   ; "state-write", Tier4

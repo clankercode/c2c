@@ -1,17 +1,16 @@
-(* c2c_mcp_server — standalone MCP server binary entry point.
-    Thin shim that calls run_inner_server from c2c_mcp_server_inner.
+(* c2c_mcp_server_inner_bin — entry point for the c2c-mcp-inner binary.
+    Installed as: ~/.local/bin/c2c-mcp-inner
+    Runs the same full-featured MCP server as c2c-mcp-server.
+    Used by c2c mcp-inner CLI command (proxied via just).
 
-    Installed as: ~/.local/bin/c2c-mcp-server
-    Used by: c2c install (writes this path into client MCP configs)
-
-    Slice A: this is the binary installed as c2c-mcp-inner alongside.
-    Slice B: this becomes the outer proxy; the inner refactors behind run_inner_server.
+    Slice A: this binary is installed alongside c2c-mcp-server.
+    Slice B: this becomes the inner server behind the outer proxy.
  *)
 
 let ( // ) = Filename.concat
 
 let server_banner () =
-  Version.banner ~role:"mcp-server" ~git_hash:C2c_mcp.server_git_hash
+  Version.banner ~role:"mcp-inner" ~git_hash:C2c_mcp.server_git_hash
 
 let xdg_state_home () =
   match Sys.getenv_opt "XDG_STATE_HOME" with

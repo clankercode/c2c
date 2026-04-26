@@ -274,6 +274,7 @@ let commands_by_safety_cmd =
   let tier4 = [
     ("serve", "Run the MCP server (JSON-RPC over stdio)");
     ("mcp", "Alias for serve");
+    ("mcp-inner", "Run the MCP inner server (full-featured, respawnable behind outer proxy)");
     ("oc-plugin stream-write-statefile", "[internal] Stream statefile writes");
     ("oc-plugin drain-inbox-to-spool", "[internal] Drain inbox to spool");
     ("cc-plugin write-statefile", "[internal] Write Claude Code statefile");
@@ -1010,142 +1011,6 @@ let sweep_dryrun =
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "sweep-dryrun" ~doc:"Read-only preview of what sweep would drop (safe during active swarm).")
     sweep_dryrun_cmd
-
-(** Compute the legacy broker root: <git-common-dir>/c2c/mcp.
-    This is what resolve_broker_root used before the #294 per-repo fingerprint change. *)
-let legacy_broker_root () =
-  match Git_helpers.git_common_dir () with
-  | Some git_dir ->
-      (try
-         if (Unix.stat git_dir).Unix.st_kind = Unix.S_DIR then
-           let abs_git = if Filename.is_relative git_dir then Sys.getcwd () // git_dir else git_dir in
-           abs_git // "c2c" // "mcp"
-         else ""
-       with _ -> "")
-  | None -> ""
-
-let migrate_broker_run ~from_path ~to_path ~dry_run ~json =
-  let mkdir_p dir =
-    let rec loop d =
-      if d = "/" || d = "." || d = "" then ()
-      else if Sys.file_exists d then ()
-      else begin
-        loop (Filename.dirname d);
-        try Unix.mkdir d 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-      end
-    in
-    loop dir
-  in
-  let copy_file src dst =
-    if dry_run then Printf.printf "[DRY-RUN] would copy: %s -> %s\n" src dst
-    else begin
-      mkdir_p (Filename.dirname dst);
-      try
-        let buf_size = 65536 in
-        let buf = Bytes.create buf_size in
-        let src_ic = open_in src in
-        Fun.protect ~finally:(fun () -> close_in src_ic) @@ fun () ->
-        let dst_oc = open_out dst in
-        Fun.protect ~finally:(fun () -> close_out dst_oc) @@ fun () ->
-        let rec loop () =
-          let n = input src_ic buf 0 buf_size in
-          if n = 0 then () else begin
-            output dst_oc buf 0 n;
-            loop ()
-          end
-        in
-        loop ()
-      with e ->
-        if json then print_json (`Assoc [ "ok", `Bool false; "error", `String (Printexc.to_string e) ])
-        else Printf.eprintf "error copying %s: %s\n" src (Printexc.to_string e)
-    end
-  in
-  let rec copy_dir src dst acc =
-    if not (Sys.file_exists src) then acc
-    else
-      try
-        mkdir_p dst;
-        let entries = Array.to_list (Sys.readdir src) |> List.filter (fun f -> not (f = "." || f = "..")) in
-        List.fold_right (fun f acc' ->
-          let s = src // f in
-          let d = dst // f in
-          if Sys.is_directory s then
-            copy_dir s d acc'  (* recurse into subdirectory *)
-          else begin
-            copy_file s d;
-            d :: acc'
-          end
-        ) entries acc
-      with _ -> acc
-  in
-  let from = Option.value from_path ~default:(legacy_broker_root ()) in
-  let to_ = Option.value to_path ~default:(resolve_broker_root ()) in
-  if not (Sys.file_exists from) then begin
-    if json then print_json (`Assoc ["ok", `Bool false; "error", `String ("source broker does not exist: " ^ from)])
-    else Printf.eprintf "error: source broker does not exist: %s\n" from;
-    exit 1
-  end;
-  if from = to_ then begin
-    if json then print_json (`Assoc ["ok", `Bool false; "error", `String "from and to paths are the same"])
-    else Printf.eprintf "error: from and to paths are the same\n";
-    exit 1
-  end;
-  if not json then begin
-    Printf.printf "Migrating broker data:\n";
-    Printf.printf "  from: %s\n" from;
-    Printf.printf "  to:   %s\n" to_;
-    if dry_run then Printf.printf "  mode: DRY RUN (no files will be written)\n"
-    else Printf.printf "  mode: LIVE (files will be written)\n"
-  end;
-  (* Copy individual files *)
-  List.iter (fun f ->
-    let src = from // f in
-    if Sys.file_exists src then copy_file src (to_ // f)
-  ) ["registry.json"; "registry.json.lock"; "deaths.jsonl"];
-  (* Copy subdirs: inboxes, memory, archive *)
-  let _ = copy_dir (from // "inbox.json.d") (to_ // "inbox.json.d") [] in
-  let _ = copy_dir (from // "memory") (to_ // "memory") [] in
-  let _ = copy_dir (from // "archive") (to_ // "archive") [] in
-  if not dry_run then begin
-    mkdir_p to_;
-    (* Verify by checking for key files at destination *)
-    let verified = Sys.file_exists (to_ // "registry.json") in
-    if json then
-      if verified then print_json (`Assoc ["ok", `Bool true; "from", `String from; "to", `String to_; "dry_run", `Bool false])
-      else print_json (`Assoc ["ok", `Bool false; "error", `String "migration completed but registry.json not found at destination"; "from", `String from; "to", `String to_])
-    else
-      if verified then Printf.printf "\nMigration complete. Verify: ls %s\n" to_
-      else Printf.eprintf "\nMigration completed but registry.json not found at destination.\n"
-  end else begin
-    if json then print_json (`Assoc ["ok", `Bool true; "from", `String from; "to", `String to_; "dry_run", `Bool dry_run])
-    else Printf.printf "\nDRY RUN complete. Run without --dry-run to execute.\n"
-  end
-
-let migrate_broker_cmd =
-  let open Cmdliner in
-  let from =
-    Arg.(value & opt (some string) None & info ["from"; "f"]
-           ~docv:"PATH"
-           ~doc:"Source broker root (default: the legacy .git/c2c/mcp path)")
-  in
-  let to_ =
-    Arg.(value & opt (some string) None & info ["to"; "t"]
-           ~docv:"PATH"
-           ~doc:"Destination broker root (default: your HOME/.c2c/repos/<fp>/broker)")
-  in
-  let dry_run = Arg.(value & flag & info ["dry-run"; "n"] ~doc:"Show what would be copied without writing.") in
-  let json = json_flag in
-  let+ from_path = from
-  and+ to_path = to_
-  and+ dry_run = dry_run
-  and+ json = json in
-  migrate_broker_run ~from_path ~to_path ~dry_run ~json
-
-let migrate_broker =
-  Cmdliner.Cmd.v
-    (Cmdliner.Cmd.info "migrate-broker"
-       ~doc:"Migrate broker data from the legacy .git/c2c/mcp path to the new per-repo path. Use --dry-run first.")
-    migrate_broker_cmd
 
 (* --- subcommand: history -------------------------------------------------- *)
 
@@ -5056,6 +4921,123 @@ let serve = Cmdliner.Cmd.v (Cmdliner.Cmd.info "serve" ~doc:"Run the MCP server (
 
 let mcp = Cmdliner.Cmd.v (Cmdliner.Cmd.info "mcp" ~doc:"Alias for serve (runs the MCP server).") serve_cmd
 
+(* mcp-inner command: for Slice A, runs the same inline server as serve/mcp.
+   Slice B will make this the outer proxy command that spawns the inner binary.
+   The c2c-mcp-inner binary (installed alongside c2c-mcp-server by just install-all)
+   provides the full-featured inner server with nudge scheduler and inbox watcher. *)
+let mcp_inner_cmd =
+  let open Cmdliner.Term in
+  let+ () = const () in
+  (* For Slice A: same inline server as serve_cmd.
+     In Slice B: spawn c2c-mcp-inner binary as the inner server. *)
+  let root =
+    match broker_root_from_env () with
+    | Some r -> r
+    | None -> resolve_broker_root ()
+  in
+  C2c_mcp.auto_register_startup ~broker_root:root;
+  C2c_mcp.auto_join_rooms_startup ~broker_root:root;
+  let open Lwt.Syntax in
+  let auto_drain =
+    match Sys.getenv_opt "C2C_MCP_AUTO_DRAIN_CHANNEL" with
+    | Some v ->
+        let n = String.lowercase_ascii (String.trim v) in
+        not (List.mem n [ "0"; "false"; "no"; "off" ])
+    | None -> false
+  in
+  let session_id =
+    match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+    | Some v when String.trim v <> "" -> Some (String.trim v)
+    | _ -> None
+  in
+  let starts_with_ci ~prefix s =
+    let p = String.lowercase_ascii prefix in
+    let v = String.lowercase_ascii s in
+    String.length v >= String.length p && String.sub v 0 (String.length p) = p
+  in
+  let parse_content_length line =
+    match String.index_opt line ':' with
+    | None -> None
+    | Some i ->
+        let n = String.trim (String.sub line (i + 1) (String.length line - i - 1)) in
+        int_of_string_opt n
+  in
+  let rec read_until_blank () =
+    let* line = Lwt_io.read_line_opt Lwt_io.stdin in
+    match line with
+    | None -> Lwt.return_unit
+    | Some l -> if String.trim l = "" then Lwt.return_unit else read_until_blank ()
+  in
+  let rec read_message () =
+    let* first = Lwt_io.read_line_opt Lwt_io.stdin in
+    match first with
+    | None -> Lwt.return_none
+    | Some line ->
+        let trimmed = String.trim line in
+        if trimmed = "" then read_message ()
+        else if starts_with_ci ~prefix:"Content-Length:" trimmed then
+          match parse_content_length trimmed with
+          | None -> Lwt.return_none
+          | Some len ->
+              let* () = read_until_blank () in
+              let* body = Lwt_io.read ~count:len Lwt_io.stdin in
+              if String.length body = len then Lwt.return_some body else Lwt.return_none
+        else Lwt.return_some line
+  in
+  let write_message json =
+    let body = Yojson.Safe.to_string json in
+    let* () = Lwt_io.write_line Lwt_io.stdout body in
+    Lwt_io.flush Lwt_io.stdout
+  in
+  let jsonrpc_error ~id ~code ~message =
+    `Assoc
+      [ ("jsonrpc", `String "2.0")
+      ; ("id", id)
+      ; ("error", `Assoc [ ("code", `Int code); ("message", `String message) ])
+      ]
+  in
+  let negotiated_in_initialize capabilities req =
+    C2c_capability.negotiated_in_initialize ~current:capabilities req
+  in
+  let rec loop ~negotiated_capabilities =
+    let* msg = read_message () in
+    match msg with
+    | None -> Lwt.return_unit
+    | Some line ->
+        let json = try Ok (Yojson.Safe.from_string line) with _ -> Error () in
+        match json with
+        | Error () ->
+            let* () = write_message (jsonrpc_error ~id:`Null ~code:(-32700) ~message:"Parse error") in
+            loop ~negotiated_capabilities
+        | Ok request ->
+            let negotiated_capabilities = negotiated_in_initialize negotiated_capabilities request in
+            let channel_capable =
+              C2c_capability.has negotiated_capabilities C2c_capability.Claude_channel
+            in
+            let* response = C2c_mcp.handle_request ~broker_root:root request in
+            let* () = match response with None -> Lwt.return_unit | Some resp -> write_message resp in
+            let* () =
+              match (auto_drain, channel_capable, session_id) with
+              | false, _, _ -> Lwt.return_unit
+              | true, false, _ -> Lwt.return_unit
+              | true, true, None -> Lwt.return_unit
+              | true, true, Some sid ->
+                  let broker = C2c_mcp.Broker.create ~root in
+                  let queued = C2c_mcp.Broker.drain_inbox_push broker ~session_id:sid in
+                  let rec emit = function
+                    | [] -> Lwt.return_unit
+                    | m :: rest ->
+                        let* () = write_message (C2c_mcp.channel_notification m) in
+                        emit rest
+                  in
+                  emit queued
+            in
+            loop ~negotiated_capabilities
+  in
+  Lwt_main.run (loop ~negotiated_capabilities:[])
+
+let mcp_inner = Cmdliner.Cmd.v (Cmdliner.Cmd.info "mcp-inner" ~doc:"Run the MCP inner server (full-featured, respawnable behind outer proxy). Slice A: runs inline server. Slice B: spawns c2c-mcp-inner binary.") mcp_inner_cmd
+
 (* --- subcommand: refresh-peer ---------------------------------------------- *)
 
 let refresh_peer_run json target pid_opt session_id_opt dry_run =
@@ -5485,164 +5467,11 @@ let monitor_leak = Cmdliner.Cmd.v
              Exits 1 if any alias has more than --threshold monitor processes.")
     monitor_leak_cmd
 
-(* --- subcommand: doctor delivery-mode (#307a) --- *)
-
-let delivery_mode_cmd =
-  let open Cmdliner in
-  let alias_flag =
-    Arg.(value & opt (some string) None & info ["alias"; "a"] ~docv:"ALIAS"
-           ~doc:"Recipient alias whose archive to histogram. Defaults to the \
-                 caller's MCP-session alias (C2C_MCP_AUTO_REGISTER_ALIAS).")
-  in
-  let since_flag =
-    Arg.(value & opt (some string) None & info ["since"] ~docv:"DUR"
-           ~doc:"Window of time, e.g. 1h, 30m, 7d. Default: 24h when --last \
-                 is also unset.")
-  in
-  let last_flag =
-    Arg.(value & opt (some int) None & info ["last"] ~docv:"N"
-           ~doc:"Window of last N most-recent messages. Combines with --since \
-                 (--since wins when both bound the result).")
-  in
-  let json_flag = Arg.(value & flag & info ["json"]
-                         ~doc:"Output machine-readable JSON.") in
-  let+ alias_opt = alias_flag
-  and+ since_opt = since_flag
-  and+ last_opt = last_flag
-  and+ json_out = json_flag in
-  let alias =
-    match alias_opt with
-    | Some a -> a
-    | None ->
-        match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
-        | Some a when String.trim a <> "" -> String.trim a
-        | _ ->
-            Printf.eprintf "error: --alias is required (no \
-                            C2C_MCP_AUTO_REGISTER_ALIAS in env)\n%!";
-            exit 1
-  in
-  let since_str_default =
-    match since_opt, last_opt with
-    | Some _, _ | None, Some _ -> since_opt
-    | None, None -> Some "24h"
-  in
-  let min_ts =
-    match since_str_default with
-    | None -> None
-    | Some s ->
-        match C2c_stats.parse_duration s with
-        | Some secs -> Some (Unix.gettimeofday () -. secs)
-        | None ->
-            Printf.eprintf "error: --since must be Nm|Nh|Nd (got %S)\n%!" s;
-            exit 1
-  in
-  let root = resolve_broker_root () in
-  let broker = C2c_mcp.Broker.create ~root in
-  let session_id =
-    match C2c_mcp.Broker.list_registrations broker
-          |> List.find_opt (fun r -> r.C2c_mcp.alias = alias) with
-    | Some reg -> reg.C2c_mcp.session_id
-    | None ->
-        Printf.eprintf "error: alias %S not registered\n%!" alias;
-        exit 1
-  in
-  let result =
-    C2c_mcp.Broker.delivery_mode_histogram broker ~session_id
-      ?min_ts ?last_n:last_opt ()
-  in
-  let total = result.C2c_mcp.Broker.dmh_total in
-  let push = result.C2c_mcp.Broker.dmh_push in
-  let poll = result.C2c_mcp.Broker.dmh_poll in
-  let pct n =
-    if total = 0 then 0.0
-    else 100.0 *. float_of_int n /. float_of_int total
-  in
-  if json_out then begin
-    let window =
-      let base = [("messages", `Int total)] in
-      let with_since = match since_str_default with
-        | Some s -> ("since", `String s) :: base
-        | None -> base
-      in
-      let with_last = match last_opt with
-        | Some n -> ("last", `Int n) :: with_since
-        | None -> with_since
-      in
-      `Assoc with_last
-    in
-    let by_sender =
-      `List (List.map (fun s ->
-          `Assoc
-            [ ("alias", `String s.C2c_mcp.Broker.dms_alias)
-            ; ("total", `Int s.dms_total)
-            ; ("push", `Int s.dms_push)
-            ; ("poll", `Int s.dms_poll)
-            ])
-          result.dmh_by_sender)
-    in
-    let obj = `Assoc
-      [ ("alias", `String alias)
-      ; ("window", window)
-      ; ("counts", `Assoc
-            [ ("push_intent", `Int push)
-            ; ("poll_only", `Int poll)
-            ])
-      ; ("by_sender", by_sender)
-      ; ("caveats", `List
-            [ `String "sender_intent_not_actuals"
-            ; `String "ephemeral_excluded"
-            ])
-      ]
-    in
-    print_endline (Yojson.Safe.to_string obj)
-  end else begin
-    let window_label =
-      match since_str_default, last_opt with
-      | Some s, Some n -> Printf.sprintf "last %s, capped to %d" s n
-      | Some s, None -> Printf.sprintf "last %s" s
-      | None, Some n -> Printf.sprintf "last %d messages" n
-      | None, None -> "all archived"
-    in
-    Printf.printf "Delivery mode for %s (%s, %d archived messages)\n\n"
-      alias window_label total;
-    Printf.printf "Push intent (deferrable=false): %5d  (%5.1f%%)\n"
-      push (pct push);
-    Printf.printf "Poll-only (deferrable=true):    %5d  (%5.1f%%)\n\n"
-      poll (pct poll);
-    if result.dmh_by_sender = [] then
-      Printf.printf "(no senders in window)\n"
-    else begin
-      Printf.printf "By sender:\n";
-      Printf.printf "  %-22s %6s  %6s  %5s  %6s\n"
-        "ALIAS" "TOTAL" "PUSH" "POLL" "POLL%";
-      List.iter (fun s ->
-          let p =
-            if s.C2c_mcp.Broker.dms_total = 0 then 0.0
-            else 100.0 *. float_of_int s.dms_poll
-                 /. float_of_int s.dms_total
-          in
-          Printf.printf "  %-22s %6d  %6d  %5d  %5.1f%%\n"
-            s.dms_alias s.dms_total s.dms_push s.dms_poll p)
-        result.dmh_by_sender
-    end;
-    Printf.printf "\nNOTE: counts measure sender intent (deferrable flag), \
-                   not which delivery path actually surfaced the message. \
-                   Ephemeral messages (#284) are not archived and not \
-                   counted. See #303 design doc for the deferrable contract.\n"
-  end
-
-let delivery_mode = Cmdliner.Cmd.v
-    (Cmdliner.Cmd.info "delivery-mode"
-       ~doc:"Histogram of an alias's recent inbox by deferrable flag (#307a). \
-             Counts measure sender intent, not delivery actuals.")
-    delivery_mode_cmd
-
 let doctor = Cmdliner.Cmd.group
     ~default:doctor_cmd
     (Cmdliner.Cmd.info "doctor"
        ~doc:"Health snapshot + push-pending analysis (for Max / human operators).")
-    [ doctor_docs_drift; monitor_leak; delivery_mode;
-      C2c_opencode_plugin_drift.opencode_plugin_drift_cmd ]
+    [ doctor_docs_drift; monitor_leak ]
 
 (* --- subcommand: stats ---------------------------------------------------- *)
 
@@ -8548,9 +8377,9 @@ let () =
   let tier_grouped_man = commands_man is_agent in
   let all_cmds =
     [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; send_all; sweep
-    ; sweep_dryrun; migrate_broker; history; health; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd
+    ; sweep_dryrun; history; health; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test; init; install; completion_cmd
-    ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; stats; C2c_sitrep.sitrep_group; C2c_rooms.rooms_group; C2c_rooms.room_group; relay_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
+    ; serve; mcp; mcp_inner; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; stats; C2c_sitrep.sitrep_group; C2c_rooms.rooms_group; C2c_rooms.room_group; relay_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in
   exit
