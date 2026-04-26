@@ -2487,7 +2487,7 @@ end = struct
        treating them as peer routes (Ed25519 required) would break `c2c relay rooms list`
        and `room history` which have no natural signing alias in prod mode. Allow
        unauthenticated read access — same as /health. *)
-    let is_unauth = List.mem path ["/health"; "/"; "/list_rooms"; "/room_history"] in
+    let is_unauth = List.mem path ["/health"; "/"; "/list_rooms"; "/room_history"; "/device-login"] in
     let is_admin =
       path = "/gc"
       || path = "/dead_letter"
@@ -2723,6 +2723,7 @@ GET  /list          list peers              (?include_dead=1)
 GET  /list_rooms
 GET  /dead_letter
 GET  /gc            run gc now
+GET  /device-login  phone pairing UI (no auth required)
 POST /register      { node_id, session_id, alias, client_type?, ttl? }
 POST /heartbeat     { node_id, session_id }
 POST /send          { from_alias, to_alias, content, message_id? }
@@ -2852,6 +2853,8 @@ async function generateKeys() {
     // Truncate to 32 bytes (P-384 raw is 48; take first 32)
     // For Ed25519 compatibility, the relay expects 32-byte raw keys.
     // Use SHA-256 of the P-384 raw key as a stable 32-byte derivative.
+    // Use ECDSA P-384 for Ed25519 compat (raw 48 bytes → SHA-256 → 32 bytes).
+    // Use ECDH P-256 for X25519 compat (raw 32 bytes → SHA-256 → 32 bytes).
     const edHash = await crypto.subtle.digest('SHA-256', edRaw);
     const xHash   = await crypto.subtle.digest('SHA-256', xRaw);
 

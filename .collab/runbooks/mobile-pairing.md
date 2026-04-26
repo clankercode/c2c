@@ -499,7 +499,7 @@ Navigate to `<relay-url>/device-login` in a browser, e.g.:
 https://relay.c2c.im/device-login
 ```
 
-1. The page auto-generates an Ed25519 and X25519 public key pair using the browser's WebCrypto API (SHA-256 of P-384/ECDH keys, truncated to 32 bytes — compatible with the relay's 32-byte key format).
+1. The page auto-generates an Ed25519 and X25519 public key pair using the browser's WebCrypto API (ECDSA P-384 for Ed25519, ECDH P-256 for X25519; SHA-256 of each raw key produces a stable 32-byte value — compatible with the relay's 32-byte key format).
 2. Enter the `user_code` from step 10.2 (e.g. `ABCD1234`).
 3. Click **Register Device**.
 
