@@ -130,7 +130,9 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   currently-installed one (i.e. an older worktree clobbering a newer
   install). Override with `C2C_INSTALL_FORCE=1` if you really mean it.
   Cross-worktree concurrent installs are also serialized via flock on
-  `~/.local/bin/.c2c-install.lock`. Stamp at `~/.local/bin/.c2c-version`.
+  `~/.local/bin/.c2c-install.lock`. Stamp at `~/.local/bin/.c2c-version`;
+  it preserves the top-level `sha` for ancestry checks and records per-binary
+  SHA-256 values under `binaries` for stale-MCP diagnostics.
 - **Run the `review-and-fix` skill after finishing a meaningful work unit,
   before handing off or marking done.** The loop is only meaningful as a
   git-visible sequence, so commit your work first (so the reviewer targets

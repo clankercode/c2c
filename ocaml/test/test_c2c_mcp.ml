@@ -21,6 +21,14 @@ let string_contains haystack needle =
 
 let is_json_object = function `Assoc _ -> true | _ -> false
 
+let is_hex_sha256 s =
+  String.length s = 64
+  && String.for_all
+       (function
+         | '0' .. '9' | 'a' .. 'f' -> true
+         | _ -> false)
+       s
+
 let test_register_and_list () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -587,6 +595,66 @@ let test_initialize_reports_server_version_and_features () =
               check bool (Printf.sprintf "features contains %s" f) true
                 (List.mem f features))
             required)
+
+let assert_server_runtime_identity server_info =
+  let open Yojson.Safe.Util in
+  check int "runtime identity schema" 1
+    (server_info |> member "runtime_identity" |> member "schema" |> to_int);
+  check bool "runtime pid is positive" true
+    (server_info |> member "runtime_identity" |> member "pid" |> to_int > 0);
+  check bool "runtime started_at is positive" true
+    (server_info |> member "runtime_identity" |> member "started_at" |> to_float > 0.);
+  check bool "runtime executable path is present" true
+    (server_info |> member "runtime_identity" |> member "executable" |> to_string <> "");
+  check bool "runtime executable mtime is positive" true
+    (server_info |> member "runtime_identity" |> member "executable_mtime" |> to_float
+    > 0.);
+  check bool "runtime executable sha256 is hex" true
+    (server_info |> member "runtime_identity" |> member "executable_sha256" |> to_string
+    |> is_hex_sha256)
+
+let test_initialize_reports_server_runtime_identity () =
+  with_temp_dir (fun dir ->
+      let request =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 1201)
+          ; ("method", `String "initialize")
+          ; ("params", `Assoc [])
+          ]
+      in
+      let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+      match response with
+      | None -> fail "expected initialize response"
+      | Some json ->
+          let open Yojson.Safe.Util in
+          assert_server_runtime_identity
+            (json |> member "result" |> member "serverInfo"))
+
+let test_tools_call_server_info_reports_runtime_identity () =
+  with_temp_dir (fun dir ->
+      let request =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 1202)
+          ; ("method", `String "tools/call")
+          ; ( "params",
+              `Assoc
+                [ ("name", `String "server_info")
+                ; ("arguments", `Assoc [])
+                ] )
+          ]
+      in
+      let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+      match response with
+      | None -> fail "expected tools/call response"
+      | Some json ->
+          let open Yojson.Safe.Util in
+          let content =
+            json |> member "result" |> member "content" |> to_list |> List.hd
+            |> member "text" |> to_string |> Yojson.Safe.from_string
+          in
+          assert_server_runtime_identity content)
 
 let test_initialize_reports_supported_protocol_version () =
   with_temp_dir (fun dir ->
@@ -6799,6 +6867,10 @@ let () =
             test_initialize_experimental_capability_values_are_objects
          ; test_case "initialize reports server version and features" `Quick
              test_initialize_reports_server_version_and_features
+         ; test_case "initialize reports server runtime identity" `Quick
+             test_initialize_reports_server_runtime_identity
+         ; test_case "tools/call server_info reports runtime identity" `Quick
+             test_tools_call_server_info_reports_runtime_identity
          ; test_case "initialize reports supported protocol version" `Quick
              test_initialize_reports_supported_protocol_version
          ; test_case "tools/list exposes core tools" `Quick test_tools_list_includes_register_list_send_and_whoami

@@ -155,12 +155,48 @@ let server_features =
   ]
   @ if Build_flags.mcp_debug_tool_enabled then [ "mcp_debug_tool" ] else []
 
+let server_started_at = Unix.gettimeofday ()
+
+let best_effort_server_executable () =
+  match Unix.readlink "/proc/self/exe" with
+  | path -> path
+  | exception _ ->
+      if Array.length Sys.argv > 0 && Sys.argv.(0) <> "" then Sys.argv.(0)
+      else "unknown"
+
+let best_effort_file_sha256 path =
+  try
+    let ic = open_in_bin path in
+    Fun.protect
+      ~finally:(fun () -> close_in_noerr ic)
+      (fun () ->
+        let len = in_channel_length ic in
+        really_input_string ic len
+        |> Digestif.SHA256.digest_string
+        |> Digestif.SHA256.to_hex)
+  with _ -> "unknown"
+
+let server_runtime_identity =
+  let executable = best_effort_server_executable () in
+  let executable_mtime =
+    try `Float (Unix.stat executable).st_mtime with _ -> `Null
+  in
+  `Assoc
+    [ ("schema", `Int 1)
+    ; ("pid", `Int (Unix.getpid ()))
+    ; ("started_at", `Float server_started_at)
+    ; ("executable", `String executable)
+    ; ("executable_mtime", executable_mtime)
+    ; ("executable_sha256", `String (best_effort_file_sha256 executable))
+    ]
+
 let server_info =
   `Assoc
     [ ("name", `String "c2c")
     ; ("version", `String server_version)
     ; ("git_hash", `String server_git_hash)
     ; ("features", `List (List.map (fun f -> `String f) server_features))
+    ; ("runtime_identity", server_runtime_identity)
     ]
 
 let supported_protocol_version = "2024-11-05"

@@ -294,7 +294,11 @@ Remove dead members from all rooms without touching registrations or inboxes. Sa
 
 #### `server_info`
 
-Return c2c client/broker version, git SHA, and feature flags.
+Return c2c client/broker version, git SHA, feature flags, and the running MCP
+server binary identity (`runtime_identity`: schema version, PID, start time,
+executable path, executable mtime, and executable SHA-256). The runtime identity
+lets operators distinguish a freshly-built CLI from a stale MCP server process
+that still has an older binary mapped.
 
 **Arguments**: none.
 
