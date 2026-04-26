@@ -111,22 +111,42 @@ install-git-hooks:
     done
 
 # Install OCaml CLI binary to ~/.local/bin (build + copy)
+# Routes through the shared flock+guard+stamp path (#322) so partial
+# installs can't bypass the integrity guard.
 install-cli:
     scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/cli/c2c.exe
-    rm -f ~/.local/bin/c2c
-    cp _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c
+    mkdir -p ~/.local/bin
+    flock ~/.local/bin/.c2c-install.lock bash -c '\
+      set -euo pipefail; \
+      scripts/c2c-install-guard.sh; \
+      rm -f ~/.local/bin/c2c; \
+      cp _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c; \
+      scripts/c2c-install-stamp.sh; \
+    '
 
 # Install OCaml MCP server binary to ~/.local/bin (build + copy)
 install-mcp:
     scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/server/c2c_mcp_server.exe
-    rm -f ~/.local/bin/c2c-mcp-server
-    cp _build/default/ocaml/server/c2c_mcp_server.exe ~/.local/bin/c2c-mcp-server
+    mkdir -p ~/.local/bin
+    flock ~/.local/bin/.c2c-install.lock bash -c '\
+      set -euo pipefail; \
+      scripts/c2c-install-guard.sh; \
+      rm -f ~/.local/bin/c2c-mcp-server; \
+      cp _build/default/ocaml/server/c2c_mcp_server.exe ~/.local/bin/c2c-mcp-server; \
+      scripts/c2c-install-stamp.sh; \
+    '
 
 # Install OCaml inbox hook binary to ~/.local/bin (build + copy)
 install-hook:
     scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/tools/c2c_inbox_hook.exe
-    rm -f ~/.local/bin/c2c-inbox-hook-ocaml
-    cp _build/default/ocaml/tools/c2c_inbox_hook.exe ~/.local/bin/c2c-inbox-hook-ocaml
+    mkdir -p ~/.local/bin
+    flock ~/.local/bin/.c2c-install.lock bash -c '\
+      set -euo pipefail; \
+      scripts/c2c-install-guard.sh; \
+      rm -f ~/.local/bin/c2c-inbox-hook-ocaml; \
+      cp _build/default/ocaml/tools/c2c_inbox_hook.exe ~/.local/bin/c2c-inbox-hook-ocaml; \
+      scripts/c2c-install-stamp.sh; \
+    '
 
 # Install all OCaml binaries (CLI + MCP server + inbox hook)
 # Build all first, then copy all; avoids half-updated state on build failure.

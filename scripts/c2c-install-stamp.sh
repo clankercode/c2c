@@ -5,8 +5,16 @@
 #
 # Run AFTER the cp in `just install-all`. Atomic (write-temp + rename).
 #
+# Drift-recovery flag (#322): if c2c-install-guard.sh detected a stamp/
+# binary sha256 mismatch on entry, it sets C2C_INSTALL_DRIFT_DETECTED=1
+# in the env. We mirror that into the new stamp as
+# `"previous_drift_detected": true` so the recovery is forensically
+# traceable (next agent reading the stamp can tell that the previous
+# install was inconsistent before this one corrected it).
+#
 # Optional env:
 #   C2C_INSTALL_STAMP=PATH override the stamp path (testing)
+#   C2C_INSTALL_DRIFT_DETECTED=1   set by guard on drift; written into stamp
 set -euo pipefail
 
 stamp_file="${C2C_INSTALL_STAMP:-$HOME/.local/bin/.c2c-version}"
@@ -44,8 +52,21 @@ fi
 
 mkdir -p "$(dirname "$stamp_file")"
 tmp="$stamp_file.tmp.$$"
-cat >"$tmp" <<EOF
+
+# Drift-recovery flag (#322): mirror C2C_INSTALL_DRIFT_DETECTED set by
+# c2c-install-guard.sh into the stamp. Emitted as a top-level field so
+# `c2c doctor` (and future tooling) can see the recovery happened.
+drift_field=""
+if [ "${C2C_INSTALL_DRIFT_DETECTED:-0}" = "1" ]; then
+  drift_field='  "previous_drift_detected": true,'
+fi
+
 {
+  printf '{\n'
+  if [ -n "$drift_field" ]; then
+    printf '%s\n' "$drift_field"
+  fi
+  cat <<EOF
   "sha": "$sha",
   "branch": "$branch",
   "alias": "$alias_name",
@@ -71,4 +92,5 @@ cat >"$tmp" <<EOF
   }
 }
 EOF
+} > "$tmp"
 mv "$tmp" "$stamp_file"

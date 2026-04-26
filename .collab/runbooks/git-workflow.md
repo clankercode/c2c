@@ -150,9 +150,23 @@ c2c peer-pass send coordinator1 def456 --verdict PASS --criteria "build, tests, 
 2. From main tree on master: `git cherry-pick <sha-base>..<sha-tip>`.
 3. If dirty state blocks: `git stash push <files> -m "wip"`, cherry-pick, `git stash pop`.
 4. `just install-all` — build clean is the coord-PASS minimum.
-5. (Optional) `Skill: review-and-fix` for crypto/auth/data-touching slices (ultrascrutiny).
-6. DM peer with coord-PASS confirmation + new master SHA.
-7. Decide push timing separately based on what's live-relevant.
+5. **Post-install fresh-shell verification (#322):** invoke at least one
+   new command introduced by the slice from a fresh shell before marking
+   the cherry-pick "done". This catches:
+   - install-stamp drift (binary updated but stamp didn't, or vice versa)
+   - dune build cache collisions
+   - PATH-resolution issues (multiple `c2c` binaries in PATH)
+   - subcommand registration that compiles but isn't wired into
+     top-level dispatch
+   Example: after cherry-picking #313, run `c2c worktree gc --help` from
+   a clean shell. If it 404s, install-all silently failed and the
+   binary is stale. The install-guard's drift detection (#322) will log
+   a WARN on the *next* `just install-all` if the previous install
+   left the binary out-of-sync with the stamp; this fresh-shell check
+   surfaces the same class of bug before the next install.
+6. (Optional) `Skill: review-and-fix` for crypto/auth/data-touching slices (ultrascrutiny).
+7. DM peer with coord-PASS confirmation + new master SHA.
+8. Decide push timing separately based on what's live-relevant.
 
 Coord-side wart: leftover dirty files in main tree force a stash dance
 on every cherry-pick. If a peer's WIP keeps reappearing in `git
