@@ -3205,8 +3205,8 @@ let relay_connect_cmd =
           | _ -> (match resolve_relay_token None with None -> args | Some v -> args @ [ "--token"; v ])
         in
         let args = match token_file with None -> args | Some v -> args @ [ "--token-file"; v ] in
-        let args = match node_id with None -> args | Some v -> args @ [ "--node-id"; v ] in
-        let args = match broker_root with None -> args | Some v -> args @ [ "--broker-root"; v ] in
+        let args = match effective_node_id with "unknown-node" -> args | v -> args @ [ "--node-id"; v ] in
+        let args = args @ [ "--broker-root"; effective_broker_root ] in
         let args = match interval with None -> args | Some v -> args @ [ "--interval"; string_of_int v ] in
         let args = if once then args @ [ "--once" ] else args in
         let args = if verbose then args @ [ "--verbose" ] else args in
