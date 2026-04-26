@@ -367,6 +367,341 @@ let worktree_check_bases_term =
   let+ () = Cmdliner.Term.const () in
   ignore (check_all_worktree_bases ())
 
+(* --- subcommand: worktree gc (#313) --------------------------------------
+   Detect candidate worktrees safe to remove and (with --clean) delete them.
+   Refuses to touch:
+     - dirty working trees
+     - branches/HEADs not yet ancestors of origin/master
+     - worktrees with a live process holding cwd inside (override
+       --ignore-active for stale-PID cases)
+     - the main worktree itself (defense-in-depth: even if list_worktrees
+       returns it, it's filtered out)
+
+   The "ancestor of origin/master" boundary is the deliberately stricter
+   choice — local master may have unpushed cherry-picks, but origin is
+   the provably-reproducible baseline. Implication: worktrees won't GC
+   until after a push lands their branch on origin/master. *)
+
+(** [is_dirty path] returns true if the worktree at [path] has any
+    uncommitted changes (per `git status --porcelain`). *)
+let is_dirty path =
+  let (_, out, _) = git_command ~cwd:path ~quiet:true [ "status"; "--porcelain" ] in
+  String.trim out <> ""
+
+(** [head_ancestor_of_origin_master path] returns true if the worktree
+    HEAD is an ancestor of origin/master. Works for both attached
+    branches and detached HEADs. False if origin/master is unreachable
+    or if HEAD is ahead of origin. *)
+let head_ancestor_of_origin_master path =
+  let (code, _, _) =
+    git_command ~cwd:path ~quiet:true
+      [ "merge-base"; "--is-ancestor"; "HEAD"; "origin/master" ]
+  in
+  code = 0
+
+(** [main_worktree_path ()] returns the absolute path of the repo's main
+    worktree (the first entry in `git worktree list --porcelain`). *)
+let main_worktree_path () =
+  let (code, out, _) = git_command ~quiet:true [ "worktree"; "list"; "--porcelain" ] in
+  if code <> 0 then None
+  else
+    let lines = String.split_on_char '\n' out in
+    let prefix = "worktree " in
+    let plen = String.length prefix in
+    let rec find = function
+      | [] -> None
+      | line :: rest ->
+          let t = String.trim line in
+          if String.length t >= plen && String.sub t 0 plen = prefix then
+            Some (String.sub t plen (String.length t - plen))
+          else find rest
+    in
+    find lines
+
+(** [cwd_holders path] scans /proc/<pid>/cwd symlinks and returns
+    [(pid, cmdline)] pairs for any process whose cwd is inside [path].
+    Linux-only — on macOS/BSD this returns []. *)
+let cwd_holders path =
+  if not (Sys.file_exists "/proc") then []
+  else
+    let path_norm =
+      try Unix.realpath path with _ -> path
+    in
+    let path_with_slash = path_norm ^ "/" in
+    let pids =
+      try
+        Sys.readdir "/proc"
+        |> Array.to_list
+        |> List.filter (fun e ->
+            String.length e > 0 &&
+            let c = e.[0] in c >= '0' && c <= '9')
+      with _ -> []
+    in
+    List.filter_map
+      (fun pid_s ->
+        let cwd_link = "/proc/" ^ pid_s ^ "/cwd" in
+        match try Some (Unix.readlink cwd_link) with _ -> None with
+        | None -> None
+        | Some cwd ->
+            (* Match either exactly the path, or any descendant. *)
+            if cwd = path_norm
+               || (String.length cwd > String.length path_with_slash
+                   && String.sub cwd 0 (String.length path_with_slash)
+                      = path_with_slash) then begin
+              let cmdline_path = "/proc/" ^ pid_s ^ "/cmdline" in
+              let cmdline =
+                try
+                  let ic = open_in cmdline_path in
+                  Fun.protect ~finally:(fun () -> try close_in ic with _ -> ())
+                    (fun () ->
+                      let buf = Buffer.create 256 in
+                      (try
+                         while true do
+                           let c = input_char ic in
+                           Buffer.add_char buf (if c = '\x00' then ' ' else c)
+                         done
+                       with End_of_file -> ());
+                      String.trim (Buffer.contents buf))
+                with _ -> ""
+              in
+              Some (int_of_string pid_s, cmdline)
+            end else None)
+      pids
+
+(** [worktree_size_bytes path] returns the disk usage of [path] in
+    bytes via `du -sb`. Returns 0L on error. *)
+let worktree_size_bytes path =
+  let cmd = Printf.sprintf "du -sb %s 2>/dev/null" (Filename.quote path) in
+  let ic = Unix.open_process_in cmd in
+  let line =
+    try Some (input_line ic) with End_of_file -> None
+  in
+  ignore (Unix.close_process_in ic);
+  match line with
+  | None -> 0L
+  | Some l ->
+      (match String.split_on_char '\t' l with
+       | n :: _ -> (try Int64.of_string (String.trim n) with _ -> 0L)
+       | [] -> 0L)
+
+type gc_status =
+  | GcRemovable of { reason : string }
+  | GcRefused of { reason : string }
+
+type gc_candidate =
+  { gc_path : string
+  ; gc_branch : string
+  ; gc_size : int64
+  ; gc_status : gc_status
+  }
+
+let format_bytes b =
+  let f = Int64.to_float b in
+  if f >= 1.0e9 then Printf.sprintf "%.1f GB" (f /. 1.0e9)
+  else if f >= 1.0e6 then Printf.sprintf "%.1f MB" (f /. 1.0e6)
+  else if f >= 1.0e3 then Printf.sprintf "%.1f KB" (f /. 1.0e3)
+  else Printf.sprintf "%Ld B" b
+
+(** [classify_worktree ~ignore_active (alias, path, branch)] runs the
+    four refuse-checks and returns a [gc_candidate]. *)
+let classify_worktree ~main_path ~ignore_active (_alias, path, branch) =
+  let size = worktree_size_bytes path in
+  let mk st = { gc_path = path; gc_branch = branch; gc_size = size; gc_status = st } in
+  (* Defense-in-depth: never offer the main worktree even if list_worktrees
+     surfaced it. *)
+  if (match main_path with
+      | Some mp ->
+          let p_norm = try Unix.realpath path with _ -> path in
+          let m_norm = try Unix.realpath mp with _ -> mp in
+          p_norm = m_norm
+      | None -> false) then
+    mk (GcRefused { reason = "main worktree (never offered)" })
+  else if is_dirty path then
+    mk (GcRefused { reason = "dirty working tree" })
+  else if not (head_ancestor_of_origin_master path) then
+    mk (GcRefused { reason = "HEAD not ancestor of origin/master" })
+  else
+    let holders = if ignore_active then [] else cwd_holders path in
+    match holders with
+    | [] -> mk (GcRemovable { reason = "ancestor of origin/master, clean" })
+    | (pid, cmd) :: _ ->
+        let snippet =
+          if String.length cmd > 60 then String.sub cmd 0 60 ^ "…" else cmd
+        in
+        mk (GcRefused { reason = Printf.sprintf "active cwd: pid=%d (%s)" pid snippet })
+
+(** [scan_worktrees_for_gc ~ignore_active ()] enumerates worktrees under
+    .worktrees/ and classifies each. The main worktree is filtered out
+    early (defense-in-depth: classify_worktree also refuses it). *)
+let scan_worktrees_for_gc ~ignore_active () =
+  let main_path = main_worktree_path () in
+  let main_norm = match main_path with
+    | Some mp -> (try Some (Unix.realpath mp) with _ -> Some mp)
+    | None -> None
+  in
+  let entries = list_worktrees () in
+  (* Filter to .worktrees/<name> shape; never ad-hoc external worktrees. *)
+  let cwd = Sys.getcwd () in
+  let repo_root = match main_path with
+    | Some mp -> mp
+    | None -> cwd
+  in
+  let candidates =
+    List.filter
+      (fun (_, path, _) ->
+        let p_norm = try Unix.realpath path with _ -> path in
+        (match main_norm with
+         | Some mn -> p_norm <> mn
+         | None -> true)
+        && (let prefix = repo_root // ".worktrees" in
+            String.length p_norm > String.length prefix
+            && String.sub p_norm 0 (String.length prefix) = prefix))
+      entries
+  in
+  List.map (classify_worktree ~main_path ~ignore_active) candidates
+
+(** [gc_remove_path path] removes a worktree via `git worktree remove`.
+    Returns true on success. *)
+let gc_remove_path path =
+  let (code, _, _) = git_command [ "worktree"; "remove"; path ] in
+  code = 0
+
+let render_gc_human ~candidates ~clean =
+  let removable = List.filter (fun c ->
+      match c.gc_status with GcRemovable _ -> true | _ -> false)
+      candidates
+  in
+  let refused = List.filter (fun c ->
+      match c.gc_status with GcRefused _ -> true | _ -> false)
+      candidates
+  in
+  let sum_size cs =
+    List.fold_left (fun acc c -> Int64.add acc c.gc_size) 0L cs
+  in
+  let total_size = sum_size candidates in
+  let removable_size = sum_size removable in
+  Printf.printf "Worktree GC scan (%d worktrees, %s total)\n\n"
+    (List.length candidates) (format_bytes total_size);
+  Printf.printf "REMOVABLE (%d worktrees, %s):\n"
+    (List.length removable) (format_bytes removable_size);
+  List.iter (fun c ->
+      let r = match c.gc_status with
+        | GcRemovable { reason } -> reason
+        | GcRefused _ -> ""
+      in
+      Printf.printf "  %-50s %-30s %s\n" c.gc_path c.gc_branch r)
+    removable;
+  Printf.printf "\nREFUSE (%d worktrees):\n" (List.length refused);
+  List.iter (fun c ->
+      let r = match c.gc_status with
+        | GcRefused { reason } -> reason
+        | GcRemovable _ -> ""
+      in
+      Printf.printf "  %-50s %-30s REFUSE: %s\n" c.gc_path c.gc_branch r)
+    refused;
+  if not clean then
+    Printf.printf "\nRun with --clean to remove the REMOVABLE set. (Dry-run by default.)\n"
+
+let render_gc_json ~candidates =
+  let item c =
+    let base =
+      [ ("path", `String c.gc_path)
+      ; ("branch", `String c.gc_branch)
+      ; ("size_bytes", `String (Int64.to_string c.gc_size))
+      ]
+    in
+    match c.gc_status with
+    | GcRemovable { reason } ->
+        `Assoc (base @ [ ("status", `String "removable")
+                       ; ("reason", `String reason) ])
+    | GcRefused { reason } ->
+        `Assoc (base @ [ ("status", `String "refused")
+                       ; ("refuse_reason", `String reason) ])
+  in
+  let removable = List.filter (fun c ->
+      match c.gc_status with GcRemovable _ -> true | _ -> false)
+      candidates
+  in
+  let refused = List.filter (fun c ->
+      match c.gc_status with GcRefused _ -> true | _ -> false)
+      candidates
+  in
+  let sum_size cs =
+    List.fold_left (fun acc c -> Int64.add acc c.gc_size) 0L cs
+  in
+  `Assoc
+    [ ("scan", `Assoc
+         [ ("total_worktrees", `Int (List.length candidates))
+         ; ("total_bytes", `String (Int64.to_string (sum_size candidates)))
+         ])
+    ; ("removable", `List (List.map item removable))
+    ; ("refused", `List (List.map item refused))
+    ]
+
+let worktree_gc_term =
+  let open Cmdliner in
+  let clean_flag =
+    Arg.(value & flag & info ["clean"]
+           ~doc:"Actually remove the REMOVABLE set. Default is dry-run.")
+  in
+  let json_flag =
+    Arg.(value & flag & info ["json"] ~doc:"Output machine-readable JSON.")
+  in
+  let ignore_active_flag =
+    Arg.(value & flag & info ["ignore-active"]
+           ~doc:"Skip the live-cwd-holder check. Use only when the \
+                 cwd-holding process is known dead (stale /proc entry).")
+  in
+  let path_prefix_flag =
+    Arg.(value & opt (some string) None & info ["path-prefix"] ~docv:"PREFIX"
+           ~doc:"Filter to worktrees whose basename starts with PREFIX. \
+                 Useful for bounding --clean to a known set, e.g. \
+                 --path-prefix=gc-test- when manually exercising the GC.")
+  in
+  let+ clean = clean_flag
+  and+ json_out = json_flag
+  and+ ignore_active = ignore_active_flag
+  and+ path_prefix = path_prefix_flag in
+  let all_candidates = scan_worktrees_for_gc ~ignore_active () in
+  let candidates = match path_prefix with
+    | None -> all_candidates
+    | Some pfx ->
+        List.filter
+          (fun c ->
+            let base = Filename.basename c.gc_path in
+            String.length base >= String.length pfx
+            && String.sub base 0 (String.length pfx) = pfx)
+          all_candidates
+  in
+  if json_out then begin
+    print_endline (Yojson.Safe.to_string (render_gc_json ~candidates))
+  end else begin
+    render_gc_human ~candidates ~clean
+  end;
+  if clean then begin
+    let removable = List.filter (fun c ->
+        match c.gc_status with GcRemovable _ -> true | _ -> false)
+        candidates
+    in
+    let freed = ref 0L in
+    let removed = ref 0 in
+    if not json_out then
+      Printf.printf "\nRemoving %d worktrees...\n" (List.length removable);
+    List.iter (fun c ->
+        if gc_remove_path c.gc_path then begin
+          incr removed;
+          freed := Int64.add !freed c.gc_size;
+          if not json_out then
+            Printf.printf "  removed %s\n" c.gc_path
+        end else begin
+          if not json_out then
+            Printf.eprintf "  FAILED to remove %s\n" c.gc_path
+        end)
+      removable;
+    if not json_out then
+      Printf.printf "Done. %d removed, %s freed.\n" !removed (format_bytes !freed)
+  end
+
 let worktree_group =
   Cmdliner.Cmd.group
     ~default:worktree_list_term
@@ -376,4 +711,9 @@ let worktree_group =
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "setup" ~doc:"Create an isolated git worktree for this agent.") worktree_setup_term
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "status" ~doc:"Show current worktree state.") worktree_status_term
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Create an isolated git worktree for a new slice, branched from origin/master.") worktree_start_term
-    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "check-bases" ~doc:"Check all worktrees for stale origin/master bases.") worktree_check_bases_term ]
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "check-bases" ~doc:"Check all worktrees for stale origin/master bases.") worktree_check_bases_term
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "gc"
+        ~doc:"Detect and (with --clean) remove worktrees safe to delete: \
+              clean working tree, HEAD ancestor of origin/master, no live \
+              process holding cwd, and not the main worktree (#313).")
+        worktree_gc_term ]
