@@ -1,7 +1,7 @@
 # #311 mcp-inner / mcp-outer proxy design
 
-Author: lyra-quill  
-Date: 2026-04-26T10:47:15Z  
+Author: lyra-quill
+Date: 2026-04-26T10:47:15Z
 Status: design proposal
 
 ## Summary
