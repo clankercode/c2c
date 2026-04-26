@@ -64,7 +64,7 @@ c2c relay poll-inbox --relay-url http://relay-host:7331 --session-id my-session
 
 ## Operator Runbook
 
-For step-by-step deployment instructions, troubleshooting, and rollback procedures, see the [Remote Relay Operator Runbook](https://github.com/anomalyco/c2c/blob/master/.collab/runbooks/remote-relay-operator.md) (repo-only).
+For step-by-step deployment instructions, troubleshooting, and rollback procedures, see the [Remote Relay Operator Runbook](https://github.com/XertroV/c2c-msg/blob/master/.collab/runbooks/remote-relay-operator.md) (repo-only).
 
 ## v2 Direction
 
