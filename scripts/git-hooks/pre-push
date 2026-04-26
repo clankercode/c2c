@@ -27,14 +27,20 @@ if [[ -z "$remote_name" ]]; then
   exit 0
 fi
 
-# Check if this is a push to the c2c shared repo (origin or local file:// paths)
+# Identify the c2c shared repo by its known remote URLs.
+# Patterns covered:
+#   - GitHub:        git@github.com:clankercode/c2c.git
+#                    https://github.com/clankercode/c2c(.git)?
+#   - cachy mirror:  cachy:src/c2c (and any "<host>:src/c2c" SSH alias)
+#   - Local clone:   file:///path/to/c2c, /abs/path/to/c2c (rare; matched by trailing /c2c)
+# The previous detection ("any origin remote" + "URL contains xertrov") was too broad
+# and fired on unrelated repos — see c2c-push-hook-fixes.txt for the full rationale.
 is_c2c_repo=false
-if [[ "$remote_name" == "origin" ]]; then
-  is_c2c_repo=true
-elif [[ "$remote_url" == *"c2c"* ]] || [[ "$remote_url" == *"xertrov"* ]]; then
-  # Local file:// paths to the c2c repo
-  is_c2c_repo=true
-fi
+case "$remote_url" in
+  *"clankercode/c2c"|*"clankercode/c2c.git"|*":src/c2c"|*":src/c2c.git"|*"/c2c"|*"/c2c.git")
+    is_c2c_repo=true
+    ;;
+esac
 
 # If not pushing to the c2c repo, allow
 if [[ "$is_c2c_repo" != "true" ]]; then
