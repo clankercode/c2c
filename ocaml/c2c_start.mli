@@ -135,7 +135,31 @@ type managed_heartbeat = {
   clients : string list;
   role_classes : string list;
   enabled : bool;
+  idle_only : bool;
+  (** When true (default), the heartbeat fires only when the target agent's
+      broker [last_activity_ts] is older than [idle_threshold_s] (or absent).
+      Set false to restore legacy always-fire-on-tick behavior. *)
+  idle_threshold_s : float;
+  (** Activity-age cutoff for idle-only mode (seconds). *)
 }
+
+val agent_is_idle :
+  now:float ->
+  idle_threshold_s:float ->
+  last_activity_ts:float option ->
+  bool
+(** Pure idle predicate. [None] last_activity_ts is treated as idle (fire to
+    surface state). Otherwise idle iff [now - ts >= idle_threshold_s]. *)
+
+val should_fire_heartbeat :
+  broker_root:string ->
+  alias:string ->
+  managed_heartbeat ->
+  bool
+(** True when the heartbeat for [alias] should fire right now. Honors
+    [idle_only]: when false, always true; when true, fires only if the
+    agent has been quiet for at least [idle_threshold_s]. Looks up the
+    registration's [last_activity_ts] from the broker registry. *)
 
 val parse_heartbeat_duration_s : string -> (float, string) result
 (** Parse heartbeat durations like ["240s"], ["4m"], and ["1h"]. *)

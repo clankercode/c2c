@@ -175,6 +175,16 @@ type managed_heartbeat = {
   clients : string list;
   role_classes : string list;
   enabled : bool;
+  idle_only : bool;
+  (** When true (default), the heartbeat fires only when the target agent
+      appears idle — i.e. its broker registration's [last_activity_ts] is
+      older than [idle_threshold_s] (or absent). This avoids waking an
+      already-active agent mid-thought. Set false to restore the
+      always-fire-on-tick behavior. *)
+  idle_threshold_s : float;
+  (** Activity-age cutoff for idle-only mode. Defaults to [interval_s]:
+      if the agent has touched the broker within the last interval,
+      they're considered active and the heartbeat is skipped. *)
 }
 
 let default_managed_heartbeat_content =
@@ -196,6 +206,8 @@ let builtin_managed_heartbeat =
   ; clients = default_heartbeat_clients
   ; role_classes = []
   ; enabled = true
+  ; idle_only = true
+  ; idle_threshold_s = codex_heartbeat_interval_s
   }
 
 let codex_heartbeat_enabled ~(client : string) : bool =
@@ -291,6 +303,41 @@ let enqueue_heartbeat ~(broker_root : string) ~(alias : string)
   C2c_mcp.Broker.enqueue_message broker ~from_alias:alias ~to_alias:alias
     ~content ()
 
+(* Pure idle predicate. [now] is current epoch seconds, [last_activity_ts]
+   is the registration's most recent broker-touch timestamp (None if the
+   session has never touched the broker since registration was added).
+   Returns true when the agent should be considered idle and woken. *)
+let agent_is_idle ~(now : float) ~(idle_threshold_s : float)
+    ~(last_activity_ts : float option) : bool =
+  match last_activity_ts with
+  | None -> true
+  (* No activity recorded ⇒ treat as idle (fire heartbeat to surface state). *)
+  | Some ts -> now -. ts >= idle_threshold_s
+
+(* Look up the registration for [alias], returning its last_activity_ts.
+   Returns None when no live registration exists for the alias. *)
+let last_activity_ts_for_alias ~(broker_root : string) ~(alias : string)
+    : float option =
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  match C2c_mcp.Broker.list_registrations broker
+        |> List.find_opt (fun (r : C2c_mcp.registration) -> r.alias = alias) with
+  | Some reg -> reg.last_activity_ts
+  | None -> None
+
+(* True when the heartbeat should fire for [alias] right now. Honors
+   [idle_only] semantics: when false, always fire (legacy behavior); when
+   true, fire only if the agent has been quiet for at least
+   [idle_threshold_s] (or has no activity record). *)
+let should_fire_heartbeat ~(broker_root : string) ~(alias : string)
+    (hb : managed_heartbeat) : bool =
+  if not hb.idle_only then true
+  else
+    let now = Unix.gettimeofday () in
+    let last_activity_ts =
+      last_activity_ts_for_alias ~broker_root ~alias
+    in
+    agent_is_idle ~now ~idle_threshold_s:hb.idle_threshold_s ~last_activity_ts
+
 let enqueue_codex_heartbeat ~(broker_root : string) ~(alias : string) : unit =
   enqueue_heartbeat ~broker_root ~alias ~content:codex_heartbeat_content
 
@@ -364,8 +411,13 @@ let start_managed_heartbeat ~(broker_root : string) ~(alias : string)
       in
       Unix.sleepf sleep_s;
       (try
-         enqueue_heartbeat ~broker_root ~alias
-           ~content:(render_heartbeat_content hb)
+         if should_fire_heartbeat ~broker_root ~alias hb then
+           enqueue_heartbeat ~broker_root ~alias
+             ~content:(render_heartbeat_content hb)
+         else
+           (* Agent has been active within idle_threshold — skip this tick to
+              avoid waking them mid-thought. The next interval re-checks. *)
+           ()
        with _ -> ());
       loop false
     in
@@ -592,6 +644,9 @@ let heartbeat_from_entries ~(name : string) (base : managed_heartbeat)
   ; clients = assoc_list "clients" entries base.clients
   ; role_classes = assoc_list "role_classes" entries base.role_classes
   ; enabled = assoc_bool "enabled" entries base.enabled
+  ; idle_only = assoc_bool "idle_only" entries base.idle_only
+  ; idle_threshold_s =
+      assoc_duration "idle_threshold" entries base.idle_threshold_s
   }
 
 let repo_config_managed_heartbeats () : managed_heartbeat list =

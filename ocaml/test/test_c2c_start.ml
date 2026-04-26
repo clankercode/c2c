@@ -312,6 +312,73 @@ let test_parse_heartbeat_duration_units () =
      | Error _ -> true
      | Ok _ -> false)
 
+let test_agent_is_idle_no_activity_treated_as_idle () =
+  check bool "no activity → idle" true
+    (C2c_start.agent_is_idle
+       ~now:1000.0 ~idle_threshold_s:240.0 ~last_activity_ts:None)
+
+let test_agent_is_idle_recent_activity_not_idle () =
+  (* 60s since last activity, threshold 240s → still active *)
+  check bool "recent activity → not idle" false
+    (C2c_start.agent_is_idle
+       ~now:1000.0 ~idle_threshold_s:240.0 ~last_activity_ts:(Some 940.0))
+
+let test_agent_is_idle_stale_activity_is_idle () =
+  (* 300s since last activity, threshold 240s → idle *)
+  check bool "stale activity → idle" true
+    (C2c_start.agent_is_idle
+       ~now:1000.0 ~idle_threshold_s:240.0 ~last_activity_ts:(Some 700.0))
+
+let test_agent_is_idle_threshold_boundary_inclusive () =
+  (* Exactly at threshold → considered idle (>=, not >) *)
+  check bool "boundary inclusive" true
+    (C2c_start.agent_is_idle
+       ~now:1000.0 ~idle_threshold_s:240.0 ~last_activity_ts:(Some 760.0))
+
+let test_should_fire_heartbeat_idle_only_false_always_fires () =
+  with_temp_dir @@ fun dir ->
+  let hb : C2c_start.managed_heartbeat =
+    { C2c_start.heartbeat_name = "test"; schedule = Interval 240.0;
+      interval_s = 240.0; message = "x"; command = None;
+      command_timeout_s = 30.0; clients = []; role_classes = [];
+      enabled = true; idle_only = false; idle_threshold_s = 240.0 }
+  in
+  (* No registration at all — but idle_only=false bypasses the check. *)
+  check bool "always fires when idle_only=false" true
+    (C2c_start.should_fire_heartbeat
+       ~broker_root:dir ~alias:"never-registered" hb)
+
+let test_should_fire_heartbeat_idle_only_no_registration_fires () =
+  with_temp_dir @@ fun dir ->
+  let hb : C2c_start.managed_heartbeat =
+    { C2c_start.heartbeat_name = "test"; schedule = Interval 240.0;
+      interval_s = 240.0; message = "x"; command = None;
+      command_timeout_s = 30.0; clients = []; role_classes = [];
+      enabled = true; idle_only = true; idle_threshold_s = 60.0 }
+  in
+  (* No registration ⇒ last_activity_ts is None ⇒ treated as idle ⇒ fires. *)
+  check bool "no registration → fire" true
+    (C2c_start.should_fire_heartbeat
+       ~broker_root:dir ~alias:"unregistered-alias" hb)
+
+let test_should_fire_heartbeat_skips_recent_activity () =
+  with_temp_dir @@ fun dir ->
+  let broker = C2c_mcp.Broker.create ~root:dir in
+  C2c_mcp.Broker.register broker
+    ~session_id:"idle-test-session" ~alias:"idle-test-alias"
+    ~pid:None ~pid_start_time:None ();
+  (* Touch the session NOW so last_activity_ts is fresh. *)
+  C2c_mcp.Broker.touch_session broker ~session_id:"idle-test-session";
+  let hb : C2c_start.managed_heartbeat =
+    { C2c_start.heartbeat_name = "test"; schedule = Interval 240.0;
+      interval_s = 240.0; message = "x"; command = None;
+      command_timeout_s = 30.0; clients = []; role_classes = [];
+      enabled = true; idle_only = true; idle_threshold_s = 600.0 }
+  in
+  check bool "recent activity → skip" false
+    (C2c_start.should_fire_heartbeat
+       ~broker_root:dir ~alias:"idle-test-alias" hb)
+
 let test_heartbeat_aligned_schedule_next_delay () =
   let hb = C2c_start.
     { heartbeat_name = "sitrep"
@@ -323,6 +390,8 @@ let test_heartbeat_aligned_schedule_next_delay () =
     ; clients = []
     ; role_classes = []
     ; enabled = true
+    ; idle_only = false
+    ; idle_threshold_s = 0.0
     }
   in
   check (float 0.001) "before hour+7"
@@ -418,6 +487,8 @@ let test_resolve_managed_heartbeats_role_override_preserves_config_fields () =
       ; clients = [ "claude" ]
       ; role_classes = [ "coordinator" ]
       ; enabled = true
+      ; idle_only = false
+      ; idle_threshold_s = 0.0
       }
   in
   let specs =
@@ -457,6 +528,8 @@ let test_resolve_managed_heartbeats_per_agent_override_wins_last () =
       ; clients = [ "claude" ]
       ; role_classes = [ "coordinator" ]
       ; enabled = true
+      ; idle_only = false
+      ; idle_threshold_s = 0.0
       }
   in
   let specs =
@@ -500,6 +573,8 @@ let test_resolve_managed_heartbeats_full_4layer_precedence () =
       ; clients = [ "claude"; "codex" ]
       ; role_classes = []
       ; enabled = true
+      ; idle_only = false
+      ; idle_threshold_s = 0.0
       }
   in
   (* Per-agent: overrides everything *)
@@ -514,6 +589,8 @@ let test_resolve_managed_heartbeats_full_4layer_precedence () =
       ; clients = [ "claude" ]
       ; role_classes = []
       ; enabled = true
+      ; idle_only = false
+      ; idle_threshold_s = 0.0
       }
   in
   let specs =
@@ -558,6 +635,8 @@ let test_resolve_managed_heartbeats_role_adds_named_not_in_config () =
       ; clients = [ "claude" ]
       ; role_classes = []
       ; enabled = true
+      ; idle_only = false
+      ; idle_threshold_s = 0.0
       }
   in
   let specs =
@@ -629,6 +708,8 @@ let test_resolve_managed_heartbeats_filters_clients_and_role_classes () =
         ; clients = [ "codex" ]
         ; role_classes = []
         ; enabled = true
+        ; idle_only = false
+        ; idle_threshold_s = 0.0
         }
     ; { heartbeat_name = "sitrep"
       ; schedule = Interval 3600.0
@@ -639,6 +720,8 @@ let test_resolve_managed_heartbeats_filters_clients_and_role_classes () =
       ; clients = []
       ; role_classes = [ "coordinator" ]
       ; enabled = true
+      ; idle_only = false
+      ; idle_threshold_s = 0.0
       }
     ]
   in
@@ -666,6 +749,8 @@ let test_render_heartbeat_content_appends_command_output () =
     ; clients = []
     ; role_classes = []
     ; enabled = true
+    ; idle_only = false
+    ; idle_threshold_s = 0.0
     }
   in
   let content = C2c_start.render_heartbeat_content hb in
@@ -1552,6 +1637,20 @@ let () =
             `Quick, test_parse_heartbeat_duration_units )
         ; ( "heartbeat_aligned_schedule_next_delay",
             `Quick, test_heartbeat_aligned_schedule_next_delay )
+        ; ( "agent_is_idle_no_activity_treated_as_idle",
+            `Quick, test_agent_is_idle_no_activity_treated_as_idle )
+        ; ( "agent_is_idle_recent_activity_not_idle",
+            `Quick, test_agent_is_idle_recent_activity_not_idle )
+        ; ( "agent_is_idle_stale_activity_is_idle",
+            `Quick, test_agent_is_idle_stale_activity_is_idle )
+        ; ( "agent_is_idle_threshold_boundary_inclusive",
+            `Quick, test_agent_is_idle_threshold_boundary_inclusive )
+        ; ( "should_fire_heartbeat_idle_only_false_always_fires",
+            `Quick, test_should_fire_heartbeat_idle_only_false_always_fires )
+        ; ( "should_fire_heartbeat_idle_only_no_registration_fires",
+            `Quick, test_should_fire_heartbeat_idle_only_no_registration_fires )
+        ; ( "should_fire_heartbeat_skips_recent_activity",
+            `Quick, test_should_fire_heartbeat_skips_recent_activity )
         ; ( "repo_config_managed_heartbeats_reads_default_and_named",
             `Quick, test_repo_config_managed_heartbeats_reads_default_and_named )
         ; ( "resolve_managed_heartbeats_applies_role_override_and_named_entries",
