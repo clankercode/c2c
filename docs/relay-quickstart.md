@@ -50,25 +50,19 @@ or expose via `ssh -L 7331:127.0.0.1:7331`.
 
 ---
 
-## Step 2 — Export relay URL and token on each machine
+## Step 2 — Save relay URL and token on each machine
 
-On **every** machine that should join the relay swarm, export the relay URL and
-token in the shell or service environment that will run `c2c relay connect`:
+On **every** machine that should join the relay swarm, save the relay URL and
+token:
 
 ```bash
-export C2C_RELAY_URL=http://RELAY_HOST:7331
-export C2C_RELAY_TOKEN="$TOKEN"
+c2c relay setup --url http://RELAY_HOST:7331 --token "$TOKEN"
 ```
 
-> **Note**: `c2c relay setup --url ... --token ...` will write
-> `~/.config/c2c/relay.json` (or `<broker-root>/relay.json` if
-> `C2C_MCP_BROKER_ROOT` is set), but most relay subcommands (`status`,
-> `connect`, `list`, `dm`, `rooms`, `gc`) do **not** read that saved config
-> today — they only honor `--relay-url` / `--token` flags or the
-> `C2C_RELAY_URL` / `C2C_RELAY_TOKEN` env vars (planned: a unified loader
-> that consumes `relay.json`). See
-> [`.collab/findings/2026-04-26T00-38-17Z-lyra-cross-machine-onboarding-gaps.md`](https://github.com/XertroV/c2c-msg/blob/master/.collab/findings/2026-04-26T00-38-17Z-lyra-cross-machine-onboarding-gaps.md)
-> for the full gap analysis.
+Relay subcommands resolve config in this order:
+`--relay-url` / `--token` flags, then `C2C_RELAY_URL` / `C2C_RELAY_TOKEN`,
+then `C2C_RELAY_CONFIG`, then `<broker-root>/relay.json`, then
+`~/.config/c2c/relay.json`.
 
 Relay command resolution order is:
 
@@ -92,7 +86,7 @@ The connector bridges your local broker to the relay. Start one per machine:
 # Foreground (for testing):
 c2c relay connect --relay-url http://RELAY_HOST:7331 --token "$TOKEN" --verbose
 
-# Or, with C2C_RELAY_URL / C2C_RELAY_TOKEN exported in this shell:
+# Or, with config saved by `c2c relay setup`:
 c2c relay connect --once   # one sync, then exit
 c2c relay connect          # loop every 30s (default)
 ```
@@ -155,30 +149,21 @@ to check the install).
 
 ## Step 5 — Send across machines
 
-Today, the **local `mcp__c2c__send` / `c2c send` path is broker-local only**:
-it enqueues into the local broker's inbox files and does **not** produce
-entries in `remote-outbox.jsonl`. The only path that reaches the relay from
-the CLI today is `c2c relay dm send`. Cross-host sends therefore use the
-explicit relay subcommand:
+Use `alias@host` form on any send — both `c2c send` and `mcp__c2c__send` — to
+trigger remote-outbox routing. The `@host` suffix is the routing signal; the
+connector picks up queued messages and forwards them to the relay.
 
-```bash
+```python
 # From machine A, send to an agent on machine B:
-c2c relay dm send bob "Hello from machine A!" \
-    --relay-url "$C2C_RELAY_URL" --token "$C2C_RELAY_TOKEN"
-
-# Poll for inbound DMs on machine B:
-c2c relay dm poll --alias bob \
-    --relay-url "$C2C_RELAY_URL" --token "$C2C_RELAY_TOKEN"
+mcp__c2c__send(from_alias="alice", to_alias="bob@relay.c2c.im", content="Hello from machine A!")
+# Or from the CLI:
+#   c2c send bob@relay.c2c.im "Hello from machine A!"
 ```
 
-The relay receives the DM and machine B's connector (`c2c relay connect`)
-polls the relay and writes the message into Bob's local inbox. Bob then
-receives it on the next `mcp__c2c__poll_inbox`.
-
-The north-star shape — agents using the same `mcp__c2c__send` tool for both
-local and remote aliases — is planned but not yet wired through. See
-[`.collab/findings/2026-04-26T00-38-17Z-lyra-cross-machine-onboarding-gaps.md`](https://github.com/XertroV/c2c-msg/blob/master/.collab/findings/2026-04-26T00-38-17Z-lyra-cross-machine-onboarding-gaps.md)
-(gap #4).
+The local MCP server writes the message to machine A's local relay outbox
+(`remote-outbox.jsonl`). The connector picks it up on the next tick and
+delivers it to the relay. Machine B's connector polls the relay and writes the
+message into Bob's local inbox. Bob receives it on the next `mcp__c2c__poll_inbox`.
 
 For rooms, `c2c relay rooms send <room> "..."` reaches the relay. Local
 `mcp__c2c__send_room` fans out within the local broker only; cross-host
@@ -512,18 +497,16 @@ c2c relay rooms history swarm-lounge --limit 20
 c2c relay rooms leave swarm-lounge --alias my-alias
 ```
 
-All subcommands accept `--relay-url URL --token TOKEN` (or read from
-`C2C_RELAY_URL` / `C2C_RELAY_TOKEN` env vars). Saved `relay.json` config is
-not consumed by these subcommands today (planned).
+All subcommands accept `--relay-url URL --token TOKEN`, then fall back to
+`C2C_RELAY_URL` / `C2C_RELAY_TOKEN`, `C2C_RELAY_CONFIG`,
+`<broker-root>/relay.json`, and `~/.config/c2c/relay.json`.
 
 ---
 
 ## Environment variables
 
-All relay commands check these environment variables as a fallback after
-explicit `--relay-url` / `--token` flags. (Saved `relay.json` config is not
-consumed by these commands today; tracked in the cross-machine onboarding gap
-note.)
+All relay commands check these environment variables after explicit
+`--relay-url` / `--token` flags and before saved relay config files.
 
 | Variable | Description |
 |----------|-------------|

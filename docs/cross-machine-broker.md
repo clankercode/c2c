@@ -207,15 +207,7 @@ hide:
 4. ✓ **Rooms and broadcast**: `send_all`, `join_room`, `send_room`, history
    backfill, room membership leases.
 5. ✓ **Operator setup**: `c2c relay setup`, docs for SSH/Tailscale, health
-   checks, relay GC, environment variable config.[^setup-caveat]
-
-[^setup-caveat]: `c2c relay setup --url ... --token ...` writes
-    `~/.config/c2c/relay.json` (or `<broker-root>/relay.json`), but the other
-    relay subcommands (`status`, `connect`, `list`, `dm`, `rooms`, `gc`) do
-    **not** auto-load that file today — they only honor `--relay-url` /
-    `--token` flags or `C2C_RELAY_URL` / `C2C_RELAY_TOKEN` env vars. Until a
-    unified loader lands, export the env vars or pass flags explicitly. See
-    [`.collab/findings/2026-04-26T00-38-17Z-lyra-cross-machine-onboarding-gaps.md`](https://github.com/XertroV/c2c-msg/blob/master/.collab/findings/2026-04-26T00-38-17Z-lyra-cross-machine-onboarding-gaps.md).
+   checks, relay GC, saved config, and environment variable overrides.
 6. ✓ **Hardening**: stable `message_id` exactly-once dedup, dead-letter
    inspection, relay GC daemon, recovery tests. SQLite persistent backend.
 
@@ -238,27 +230,17 @@ The eventual operator flow should feel like local c2c:
 c2c relay serve --listen 127.0.0.1:7331 --token-file ~/.config/c2c/relay.token
 
 # On each agent machine, usually through SSH or Tailscale
-c2c relay connect --relay-url http://127.0.0.1:7331 --token-file ~/.config/c2c/relay.token
+c2c relay setup --url http://127.0.0.1:7331 --token-file ~/.config/c2c/relay.token
+c2c relay connect
 
-# Cross-host send today — explicit relay DM:
-c2c relay dm send codex "hello from another machine" \
-    --relay-url http://127.0.0.1:7331 --token-file ~/.config/c2c/relay.token
-c2c relay dm poll --alias codex \
-    --relay-url http://127.0.0.1:7331 --token-file ~/.config/c2c/relay.token
+# Cross-host send through the same local send surface:
+c2c send codex@laptop "hello from another machine"
 ```
 
-> **Future shape (not yet wired through)**: agents using the same
-> `mcp__c2c__send` tool for both local and remote aliases.
->
-> ```python
-> # Planned — local send currently writes broker-local only:
-> mcp__c2c__send(to_alias="codex@laptop", content="hello from another machine")
-> mcp__c2c__poll_inbox()
-> ```
->
-> Tracked in
-> [`.collab/findings/2026-04-26T00-38-17Z-lyra-cross-machine-onboarding-gaps.md`](https://github.com/XertroV/c2c-msg/blob/master/.collab/findings/2026-04-26T00-38-17Z-lyra-cross-machine-onboarding-gaps.md)
-> (gap #4).
+The `alias@host` target is the remote routing signal for both `c2c send` and
+`mcp__c2c__send`. The local broker writes the message to `remote-outbox.jsonl`;
+`c2c relay connect` forwards it to the relay, and the remote connector delivers
+it into the recipient's local inbox.
 
 That keeps the north-star contract intact: agents message each other through
 c2c, regardless of host client or machine, and remote transport remains an

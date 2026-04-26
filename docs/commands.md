@@ -540,16 +540,70 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 
 | Subcommand | Description |
 |------------|-------------|
-| `config show` | Show current `.c2c/config.toml` values. |
-| `config generation-client [CLIENT]` | Show or set the `generation_client` preference (`claude`, `opencode`, `codex`). |
-| `repo show [--json]` | Show current per-repo config (`.c2c/repo.json`). |
-| `repo set …` | Set per-repo values (supervisors, defaults). |
-| `agent list\|new\|refine\|rename\|delete\|run` | Manage canonical role files (`.c2c/roles/<NAME>.md`). |
-| `roles compile [--client CLIENT] [--dry-run] [NAME]` | Compile canonical role(s) to client agent files. |
-| `roles validate` | Validate canonical role files for completeness. |
-| `memory list\|read\|write\|delete` | Manage per-agent memory entries (CLI mirror of `memory_*` MCP tools). |
+| `relay serve [--listen HOST:PORT] [--token T] [--storage memory\|sqlite] [--db-path PATH] [--gc-interval N]` | Start an HTTP relay server |
+| `relay connect [--relay-url URL] [--token T] [--token-file PATH] [--interval N] [--once]` | Bridge local broker to remote relay. Falls back to env vars and saved `relay.json` config. |
+| `relay setup [--url URL] [--token T] [--token-file PATH] [--show]` | Save relay config to disk |
+| `relay status` | Show relay server health and peer count |
+| `relay list [--dead] [--json]` | List peers registered on the relay |
+| `relay gc [--once] [--interval N] [--verbose] [--json]` | Prune expired leases and orphan inboxes on the relay |
+| `relay identity init [--path PATH]` | Generate Ed25519 identity keypair for prod-mode auth |
+| `relay identity show` | Display current identity fingerprint and metadata |
+| `relay register --alias A [--relay-url URL]` | Register Ed25519 identity on the relay (prod-mode bootstrap) |
+| `relay dm send <to-alias> <message> [--alias A]` | Send a cross-host direct message via relay |
+| `relay dm poll [--alias A]` | Poll for cross-host DMs from the relay |
+| `relay rooms list` | List rooms on the relay (no auth required) |
+| `relay rooms join <room-id> [--alias A]` | Join a relay room |
+| `relay rooms leave <room-id> [--alias A]` | Leave a relay room |
+| `relay rooms send <room-id> <message> [--alias A]` | Post to a relay room |
+| `relay rooms history <room-id> [--limit N]` | Read relay room history (no auth required) |
 
-### Coordinator & Git workflow
+Use `c2c send <alias@host> <message>` or `mcp__c2c__send` with
+`to_alias="<alias@host>"` for relay-routed direct messages through
+`remote-outbox.jsonl`; keep `c2c relay connect` running to forward them.
+
+#### Kimi Wire Bridge
+
+`c2c-kimi-wire-bridge` delivers queued broker inbox messages through Kimi's
+Wire JSON-RPC protocol (`kimi --wire`), bypassing PTY injection entirely.
+
+| Flag | Description |
+|------|-------------|
+| `--session-id ID` | Broker session ID to drain (required) |
+| `--alias NAME` | Broker alias (default: session-id) |
+| `--broker-root DIR` | Broker root directory |
+| `--command CMD` | Kimi binary to launch (default: `kimi`) |
+| `--spool-path PATH` | Crash-safe spool file path |
+| `--work-dir DIR` | Working directory for the Kimi subprocess |
+| `--timeout SECS` | Inbox poll timeout (default: 5.0) |
+| `--dry-run` | Print launch config without starting Kimi |
+| `--once` | Start Kimi, deliver queued messages, exit |
+| `--loop` | Run as daemon: poll every `--interval` seconds, start Wire only when messages are queued. Mutually exclusive with `--once`. |
+| `--interval SECS` | Seconds between inbox checks in `--loop` mode (default: 5) |
+| `--max-iterations N` | Exit after N loop iterations (default: unlimited; for testing) |
+| `--pidfile PATH` | Write the loop daemon PID to this file |
+| `--daemon` | Spawn a detached `--loop` child; requires `--loop` and `--pidfile` |
+| `--daemon-log PATH` | Log file for detached daemon stdout/stderr (default: `<pidfile>.log`) |
+| `--daemon-timeout SECS` | Seconds to wait for detached daemon pidfile (default: 5) |
+| `--json` | Emit JSON output |
+
+```bash
+# Preview config:
+c2c-kimi-wire-bridge --session-id kimi-user-host --dry-run --json
+
+# Deliver queued messages and exit:
+c2c-kimi-wire-bridge --session-id kimi-user-host --once --json
+
+# Start a detached daemon (polls every 5 seconds):
+c2c wire-daemon start --session-id kimi-user-host --json
+```
+
+Live-proven 2026-04-14: `--once` delivered 1 broker message through a real
+`kimi --wire` subprocess, received acknowledgment, cleared spool, rc=0.
+
+#### Wire Daemon Lifecycle (`c2c wire-daemon`)
+
+`c2c wire-daemon` manages background wire bridge daemon processes. State is
+stored in `~/.local/share/c2c/wire-daemons/` (one pidfile + log per session).
 
 | Subcommand | Description |
 |------------|-------------|

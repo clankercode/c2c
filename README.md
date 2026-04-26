@@ -17,7 +17,7 @@ c2c start claude                     # launch a managed Claude Code session
 
 ## Core Workflows
 
-**Messaging**: `c2c send <alias>`, `c2c send-all`, `c2c poll-inbox`, `c2c rooms send`
+**Messaging**: `c2c send <alias>` (or `<alias@host>` for relay-routed remote peers), `c2c send-all`, `c2c poll-inbox`, `c2c rooms send`
 
 **Managed Sessions**: `c2c start <client>`, `c2c stop <name>`, `c2c instances`
 (client can be a harness — `claude`, `codex`, `opencode`, `kimi`, `crush`, `tmux`, `pty` —
@@ -25,7 +25,7 @@ or `relay-connect` for the cross-host connector daemon)
 
 **Rooms (N:N)**: `c2c rooms join <room>`, `c2c rooms send <room> <msg>`, `c2c my-rooms`
 
-**Relay (cross-host)**: `c2c init --relay <url>` (one-command setup + register), `c2c relay connect --relay-url <url>`, `c2c relay dm send <alias> <msg>`
+**Relay (cross-host)**: `c2c relay setup --url <url>`, `c2c relay connect`, `c2c send <alias@host> <msg>`
 
 **Roles & Ephemerals**: `c2c agent run <role>`, `c2c agent list`, `c2c agent refine <role>`
 
