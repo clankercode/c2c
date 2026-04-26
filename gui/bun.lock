@@ -8,6 +8,7 @@
         "@radix-ui/react-dialog": "^1.1.15",
         "@radix-ui/react-label": "^2.1.8",
         "@tailwindcss/vite": "^4.2.3",
+        "@tanstack/react-virtual": "^3.13.24",
         "@tauri-apps/api": "^2",
         "@tauri-apps/plugin-shell": "^2",
         "class-variance-authority": "^0.7.1",
@@ -260,6 +261,10 @@
     "@tailwindcss/oxide-win32-x64-msvc": ["@tailwindcss/oxide-win32-x64-msvc@4.2.3", "", { "os": "win32", "cpu": "x64" }, "sha512-dTRIlLRC5lCRHqO5DLb+A18HCvS394axmzqfnRNLptKVw7WuckpUwo1Z87Yw74mesbeIhnQTA2SZbRcIfVlwxg=="],
 
     "@tailwindcss/vite": ["@tailwindcss/vite@4.2.3", "", { "dependencies": { "@tailwindcss/node": "4.2.3", "@tailwindcss/oxide": "4.2.3", "tailwindcss": "4.2.3" }, "peerDependencies": { "vite": "^5.2.0 || ^6 || ^7 || ^8" } }, "sha512-pEvbC/NoOqxvqjy6IgelSakbzwin865CmOxJxmz3CSEbHJ2aF1B2183ALVasN0o6dOGhYfnVJOKKxVoyag+XeA=="],
+
+    "@tanstack/react-virtual": ["@tanstack/react-virtual@3.13.24", "", { "dependencies": { "@tanstack/virtual-core": "3.14.0" }, "peerDependencies": { "react": "^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0", "react-dom": "^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0" } }, "sha512-aIJvz5OSkhNIhZIpYivrxrPTKYsjW9Uzy+sP/mx0S3sev2HyvPb7xmjbYvokzEpfgYHy/HjzJ2zFAETuUfgCpg=="],
+
+    "@tanstack/virtual-core": ["@tanstack/virtual-core@3.14.0", "", {}, "sha512-JLANqGy/D6k4Ujmh8Tr25lGimuOXNiaVyXaCAZS0W+1390sADdGnyUdSWNIfd49gebtIxGMij4IktRVzrdr12Q=="],
 
     "@tauri-apps/api": ["@tauri-apps/api@2.10.1", "", {}, "sha512-hKL/jWf293UDSUN09rR69hrToyIXBb8CjGaWC7gfinvnQrBVvnLr08FeFi38gxtugAVyVcTa5/FD/Xnkb1siBw=="],
 

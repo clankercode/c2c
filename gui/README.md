@@ -31,6 +31,7 @@ bun run tauri build
 - **Filter tabs** — all / messages / peers / rooms
 - **Search** — keyword search across all visible events
 - **Click to expand** — long messages are truncated; click to see full content (▸ indicator)
+- **Markdown rendering** — message bodies render fenced code blocks, inline code, and bold text without injecting HTML
 - **Sidebar** — lists live rooms and peers; click to focus the feed
 - **Room history** — click a room to load its message history from `c2c room history`
 - **Peer DM history** — click a peer to load your DM exchange from `c2c history`

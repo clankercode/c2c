@@ -4,7 +4,6 @@ import {
   PendingPermission,
   PermissionHistoryEntry,
   parsePermissionMessage,
-  ttlSeconds,
   isExpired,
   approvePermission,
   denyPermission,

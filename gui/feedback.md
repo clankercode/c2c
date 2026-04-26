@@ -70,7 +70,7 @@ const m = event as { to_alias: string; from_alias: string; content?: string };
 
 3. **WelcomeWizard skip puts app in observer mode** — no way to send messages, no prompt to register later.
 
-4. **No markdown/code block rendering** — agent communication is often code-heavy; plain `white-space: pre-wrap` is inadequate.
+4. ~~**No markdown/code block rendering**~~ — ✅ fixed. Focused chat bubbles and expanded global messages now render fenced code blocks, inline code, and bold text.
 
 5. **No message delivery confirmation** — "sent ✓" disappears after 1.5s even if the broker rejected the message.
 
@@ -136,5 +136,5 @@ Tests cover happy paths and basic error paths at the CLI wrapper layer. **Notabl
 | **Medium** | Reduce discovery polling from 60s to ~10s |
 | **Low** | Implement sent-message local outbox |
 | **Low** | Memoize `dedupeAndSort` or move to useMemo |
-| **Low** | Add markdown rendering for messages |
+| ~~**Low**~~ | ~~Add markdown rendering for messages~~ — ✅ fixed |
 | **Broker** | pollInbox timestamps — broker `message` type lacks timestamp field |

@@ -56,7 +56,7 @@ export function isExpired(p: PendingPermission): boolean {
 export async function approvePermission(
   perm: PendingPermission,
   myAlias: string,
-  sessionId: string
+  _sessionId: string
 ): Promise<{ ok: boolean; error?: string }> {
   // 1. Validate with broker
   try {

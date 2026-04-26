@@ -184,9 +184,9 @@ relay-logs:
 gui-dev:
     cd gui && bun run tauri dev
 
-# GUI TypeScript type-check
+# GUI production build check
 gui-check:
-    cd gui && ./node_modules/.bin/tsc --noEmit
+    cd gui && bun run build
 
 # Stage and commit all staged changes with a message
 # Usage: just gc "fix: something"

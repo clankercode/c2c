@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { C2cEvent, MessageEvent } from "./types";
 
@@ -90,6 +90,80 @@ function dedupeAndSort(history: C2cEvent[], live: C2cEvent[], ascending = false)
   );
 }
 
+function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
+  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
+  return parts.filter(part => part.length > 0).map((part, i) => {
+    const key = `${keyPrefix}-inline-${i}`;
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return (
+        <code key={key} style={{
+          background: "#11111b",
+          border: "1px solid #313244",
+          borderRadius: 4,
+          padding: "0 4px",
+          color: "#f9e2af",
+          fontFamily: "monospace",
+        }}>
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={key}>{part.slice(2, -2)}</strong>;
+    }
+    return part;
+  });
+}
+
+function renderTextBlock(text: string, keyPrefix: string): ReactNode {
+  const lines = text.split("\n");
+  return (
+    <div key={keyPrefix}>
+      {lines.map((line, i) => (
+        <div key={`${keyPrefix}-line-${i}`} style={{ minHeight: "1em" }}>
+          {line ? renderInlineMarkdown(line, `${keyPrefix}-${i}`) : "\u00a0"}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MarkdownMessage({ content }: { content: string }) {
+  const nodes: ReactNode[] = [];
+  const fenceRe = /```([A-Za-z0-9_-]+)?\n?([\s\S]*?)```/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  let index = 0;
+
+  while ((match = fenceRe.exec(content)) !== null) {
+    if (match.index > cursor) {
+      nodes.push(renderTextBlock(content.slice(cursor, match.index), `text-${index++}`));
+    }
+    const language = match[1];
+    nodes.push(
+      <pre key={`code-${index++}`} style={{
+        background: "#11111b",
+        border: "1px solid #313244",
+        borderRadius: 6,
+        color: "#a6e3a1",
+        margin: "6px 0",
+        overflowX: "auto",
+        padding: "8px 10px",
+        whiteSpace: "pre",
+      }}>
+        <code data-language={language ?? undefined}>{match[2].replace(/\n$/, "")}</code>
+      </pre>,
+    );
+    cursor = fenceRe.lastIndex;
+  }
+
+  if (cursor < content.length || nodes.length === 0) {
+    nodes.push(renderTextBlock(content.slice(cursor), `text-${index}`));
+  }
+
+  return <>{nodes}</>;
+}
+
 const FILTER_BTN: React.CSSProperties = {
   background: "transparent",
   border: "1px solid #45475a",
@@ -109,6 +183,7 @@ const FILTER_BTN_ACTIVE: React.CSSProperties = {
 
 // Row height estimate for global feed
 const GLOBAL_ROW_HEIGHT = 28;
+const INITIAL_VIRTUAL_RECT = { height: 600, width: 800 };
 
 interface Props {
   events: C2cEvent[];
@@ -184,6 +259,7 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
     count: visible.length,
     getScrollElement: () => listRef.current,
     estimateSize: () => GLOBAL_ROW_HEIGHT,
+    initialRect: INITIAL_VIRTUAL_RECT,
     overscan: 10,
   });
 
@@ -207,11 +283,22 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
     count: visible.length,
     getScrollElement: () => listRef.current,
     estimateSize,
+    initialRect: INITIAL_VIRTUAL_RECT,
     measureElement: (el) => el.getBoundingClientRect().height + 8,
     overscan: 5,
   });
 
   const virtualizer = isFocused ? dynamicVirtualizer : globalVirtualizer;
+  const estimatedRowHeight = isFocused ? 80 : GLOBAL_ROW_HEIGHT;
+  const measuredVirtualItems = virtualizer.getVirtualItems();
+  const renderedVirtualItems = measuredVirtualItems.length > 0
+    ? measuredVirtualItems
+    : visible.map((_, index) => ({
+      index,
+      key: index,
+      size: estimatedRowHeight,
+      start: index * estimatedRowHeight,
+    }));
 
   const focusLabel = selectedRoom ? `🏠 ${selectedRoom}` : selectedPeer ? `👤 ${selectedPeer}` : null;
 
@@ -289,7 +376,7 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
               position: "relative",
             }}
           >
-            {virtualizer.getVirtualItems().map(virtualRow => {
+            {renderedVirtualItems.map(virtualRow => {
               const e = visible[virtualRow.index];
               const i = virtualRow.index;
               const isMsg = e.event_type === "message";
@@ -345,12 +432,11 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
                       padding: "5px 10px",
                       maxWidth: "70%",
                       color: "#cdd6f4",
-                      whiteSpace: "pre-wrap",
                       wordBreak: "break-word",
                       fontFamily: "monospace",
                       fontSize: 13,
                     }}>
-                      {m.content}
+                      <MarkdownMessage content={m.content} />
                     </div>
                   </div>
                 );
@@ -382,13 +468,21 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
                     cursor: isMsg && isTruncated ? "pointer" : "default",
                     background: isExpanded ? "#1e1e2e" : "transparent",
                     boxSizing: "border-box",
-                    display: "flex",
-                    alignItems: "center",
+                    display: isExpanded ? "block" : "flex",
+                    alignItems: isExpanded ? undefined : "center",
+                    overflow: isExpanded ? "visible" : "hidden",
                   }}
                 >
                   <span style={{ color: "#45475a", marginRight: 8, fontSize: 11, flexShrink: 0 }}>{ts}</span>
                   <span style={{ marginRight: 6, flexShrink: 0 }}>{eventIcon(e)}</span>
-                  <span style={{ color: eventColor(e), overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <div style={{
+                    color: eventColor(e),
+                    display: "inline-block",
+                    overflow: isExpanded ? "visible" : "hidden",
+                    textOverflow: isExpanded ? undefined : "ellipsis",
+                    verticalAlign: "top",
+                    whiteSpace: isExpanded ? "normal" : "nowrap",
+                  }}>
                     {isMsg && m ? (
                       isExpanded ? (
                         <>
@@ -400,11 +494,13 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
                             {m.from_alias}
                           </span>
                           <span style={{ color: "#89b4fa" }}>{" → "}{m.to_alias}: </span>
-                          <span style={{ whiteSpace: "pre-wrap", overflow: "hidden" }}>{m.content}</span>
+                          <div style={{ display: "inline-block", verticalAlign: "top" }}>
+                            <MarkdownMessage content={m.content} />
+                          </div>
                         </>
                       ) : eventLabel(e)
                     ) : eventLabel(e)}
-                  </span>
+                  </div>
                   {isMsg && isTruncated && !isExpanded && (
                     <span style={{ color: "#45475a", fontSize: 10, marginLeft: 6, flexShrink: 0 }}>▸</span>
                   )}
