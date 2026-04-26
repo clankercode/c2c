@@ -1885,4 +1885,28 @@ let () =
         ; ( "fds_to_close_preserves_stdio",
             `Quick, test_fds_to_close_preserves_stdio )
         ] )
+    ; ( "default_name",
+        [ ( "default_name_drops_client_prefix",
+            `Quick,
+            (fun () ->
+              (* #277: default_name should NOT prefix with the client name.
+                 The returned string should be a "<word1>-<word2>" pair, with
+                 no occurrence of the client substring at the start. *)
+              List.iter
+                (fun client ->
+                  let n = C2c_start.default_name client in
+                  check bool
+                    (Printf.sprintf "name %S does not start with %S-" n client)
+                    false
+                    (String.length n > String.length client + 1
+                     && String.sub n 0 (String.length client + 1)
+                        = client ^ "-");
+                  check bool
+                    (Printf.sprintf "name %S has exactly one '-' separator" n)
+                    true
+                    (let count = ref 0 in
+                     String.iter (fun c -> if c = '-' then incr count) n;
+                     !count = 1))
+                [ "claude"; "codex"; "opencode"; "kimi"; "crush" ]) )
+        ] )
     ]

@@ -1758,9 +1758,10 @@ let generate_alias () =
   let w2 = alias_words.(Random.int n) in
   Printf.sprintf "%s-%s" w1 w2
 
-let default_name client =
-  let suffix = generate_alias () in
-  Printf.sprintf "%s-%s" client suffix
+let default_name _client =
+  (* #277: drop the "<client>-" prefix; the random word pair is already
+     unique enough and the prefix added noise to instance/alias display. *)
+  generate_alias ()
 
 (* ---------------------------------------------------------------------------
  * Broker root

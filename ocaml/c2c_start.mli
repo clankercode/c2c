@@ -101,7 +101,9 @@ val fds_to_close : preserve:Unix.file_descr list -> Unix.file_descr list
     This is testable without closing anything. *)
 
 val default_name : string -> string
-(** [default_name client] returns "<client>-<word1>-<word2>" using random words. *)
+(** [default_name _client] returns "<word1>-<word2>" using random words.
+    The client argument is retained for call-site compatibility but is
+    no longer used in the returned name (#277). *)
 
 val likes_shell_substitution : string -> bool
 (** [likes_shell_substitution s] returns true when [s] looks like an unexpanded
