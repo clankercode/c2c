@@ -1,6 +1,16 @@
 import { Command } from "@tauri-apps/plugin-shell";
 import { toast } from "./useToast";
 
+// Guard: shell plugin is only available inside Tauri desktop app, not in web browser
+function isTauriDesktop(): boolean {
+  try {
+    // @ts-ignore — window.__TAURI__ only exists inside Tauri
+    return typeof window !== "undefined" && !!window.__TAURI__;
+  } catch {
+    return false;
+  }
+}
+
 export interface SendCallbacks {
   onConfirmed?: () => void;
   onFailed?: () => void;
@@ -13,6 +23,11 @@ export async function sendMessage(
   myAlias: string,
   cbs: SendCallbacks = {},
 ): Promise<{ ok: boolean; error?: string }> {
+  if (!isTauriDesktop()) {
+    const msg = "c2c desktop app required: open the installed Tauri app, not the web page";
+    cbs.onFailed?.();
+    return { ok: false, error: msg };
+  }
   if (!toAlias.trim() || !message.trim()) {
     return { ok: false, error: "target and message required" };
   }
@@ -37,6 +52,9 @@ export async function joinRoom(
   roomId: string,
   alias: string,
 ): Promise<{ ok: boolean; error?: string }> {
+  if (!isTauriDesktop()) {
+    return { ok: false, error: "c2c desktop app required: open the installed Tauri app, not the web page" };
+  }
   try {
     const args = alias
       ? ["room", "join", "--alias", alias, roomId]
@@ -55,6 +73,9 @@ export async function leaveRoom(
   roomId: string,
   alias: string,
 ): Promise<{ ok: boolean; error?: string }> {
+  if (!isTauriDesktop()) {
+    return { ok: false, error: "c2c desktop app required: open the installed Tauri app, not the web page" };
+  }
   try {
     const args = alias
       ? ["room", "leave", "--alias", alias, roomId]
@@ -73,6 +94,11 @@ export async function registerAlias(
   alias: string,
   sessionId: string,
 ): Promise<{ ok: boolean; error?: string }> {
+  if (!isTauriDesktop()) {
+    const err = "c2c desktop app required: open the installed Tauri app, not the web page";
+    toast.error(`register: ${err}`, 5);
+    return { ok: false, error: err };
+  }
   try {
     const result = await Command.create("c2c", [
       "register", "--alias", alias, "--session-id", sessionId,

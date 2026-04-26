@@ -5,6 +5,7 @@ import { EventFeed } from "./EventFeed";
 import { ComposeBar } from "./ComposeBar";
 import { Sidebar } from "./Sidebar";
 import { registerAlias, joinRoom } from "./useSend";
+import { toast } from "./useToast";
 import { loadHistory, loadRoomHistory, loadPeerHistory, pollInbox } from "./useHistory";
 import { discoverPeers, discoverRooms, fetchHealth, HealthInfo } from "./useDiscovery";
 import { WelcomeWizard } from "./components/WelcomeWizard";
@@ -237,7 +238,11 @@ export function App() {
     const storedSessionId = localStorage.getItem(SESSION_ID_KEY) ?? undefined;
     if (storedAlias) {
       joinRoom("swarm-lounge", storedAlias).then(res => {
-        if (res.ok) setRooms(prev => new Set([...prev, "swarm-lounge"]));
+        if (res.ok) {
+          setRooms(prev => new Set([...prev, "swarm-lounge"]));
+        } else {
+          toast.warning(`Could not auto-join swarm-lounge: ${res.error}. You can join manually from the sidebar.`);
+        }
       });
     }
     Promise.all([

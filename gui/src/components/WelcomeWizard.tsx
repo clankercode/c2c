@@ -10,6 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { registerAlias, joinRoom } from "@/useSend";
+import { toast } from "@/useToast";
 
 type Step = "name" | "registering" | "done";
 
@@ -46,8 +47,11 @@ export function WelcomeWizard({ open, preGeneratedSessionId, onComplete, onSkip 
     if (res.ok) {
       setRegisteredAlias(a);
       setRegisteredSessionId(sid);
-      // Best-effort join; ignore errors — user can join manually via sidebar
-      await joinRoom("swarm-lounge", a).catch(() => {});
+      // Best-effort join; surface errors so user knows swarm-lounge wasn't joined
+      const joinRes = await joinRoom("swarm-lounge", a);
+      if (!joinRes.ok) {
+        toast.warning(`Registered, but could not join swarm-lounge: ${joinRes.error}. You can join manually from the sidebar.`);
+      }
       setStep("done");
     } else {
       setError(res.error ?? "Registration failed — try a different alias");
