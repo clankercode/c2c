@@ -47,7 +47,8 @@ DEFAULT_MESSAGE = (
     "If you need orientation, read tmp_status.txt and tmp_collab_lock.md. "
     "Empty inbox is not a stop signal: pick the highest-leverage unblocked "
     "task, respect active locks, coordinate before overlapping edits, and "
-    "continue current work."
+    "continue current work. "
+    "If you have exhausted all work, ask coordinator1 (or swarm-lounge) for more."
 )
 
 

@@ -796,7 +796,7 @@ let test_resolve_managed_heartbeats_builtin_baseline () =
   match specs with
   | [ hb ] ->
       check string "builtin message"
-        "Session heartbeat. Poll your C2C inbox and handle any messages."
+        "Session heartbeat. Poll your C2C inbox and handle any messages. If you have exhausted all work, ask coordinator1 (or swarm-lounge) for more."
         hb.message;
       check (float 0.001) "builtin interval" 240.0 hb.interval_s;
       check (list string) "builtin clients"

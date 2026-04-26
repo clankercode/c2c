@@ -188,7 +188,8 @@ type managed_heartbeat = {
 }
 
 let default_managed_heartbeat_content =
-  "Session heartbeat. Poll your C2C inbox and handle any messages."
+  "Session heartbeat. Poll your C2C inbox and handle any messages. \
+If you have exhausted all work, ask coordinator1 (or swarm-lounge) for more."
 
 (* Push-aware variant for clients that already receive inbound messages
    via channel notifications (no manual poll needed). The "wake / pick
@@ -196,7 +197,8 @@ let default_managed_heartbeat_content =
    dropped. *)
 let push_aware_heartbeat_content =
   "Session heartbeat — pick up the next slice / advance the goal. \
-   (Messages arrive via channel notifications; no manual poll_inbox needed.)"
+   (Messages arrive via channel notifications; no manual poll_inbox needed.) \
+   If you have exhausted all work, ask coordinator1 (or swarm-lounge) for more."
 
 let codex_heartbeat_interval_s = 240.0
 let codex_heartbeat_content = default_managed_heartbeat_content
