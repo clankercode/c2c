@@ -62,7 +62,7 @@ The signal format should be:
 
 ## Routing-Back Protocol
 
-1. **Decline via DM to coordinator1** (or whoever sent the assignment).
+1. **Decline via DM to the assigner** (typically coordinator1, but acting coordinators like lyra and peer hand-offs also occur).
    State the reason clearly.
 2. **Suggest alternatives** if you have them: a better-suited agent,
    a pre-condition that would unblock you, or a different slice that
@@ -82,7 +82,7 @@ The signal format should be:
 > Otherwise idle and I'll queue you for #306 design pass after lyra
 > has had a look."
 
-> jungel-coder: "Received. My committed fix (8acfec76) is still correct
+> jungle-coder: "Received. My committed fix (8acfec76) is still correct
 > as far as it goes — `bool_prop`/`float_prop` helpers + proper schema
 > types are a real improvement regardless of the stale-server trigger.
 > Whether to push it is your call.
