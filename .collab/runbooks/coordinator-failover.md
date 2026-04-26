@@ -208,7 +208,7 @@ Append new rows here as they're encountered.
 
 ## See also
 
-- `.collab/design/DRAFT-coordinator-failover.md` — original draft (superseded by this runbook)
+- `.collab/design/RETIRED/DRAFT-coordinator-failover.md` — original draft (superseded by this runbook)
 - `scripts/c2c_tmux.py` — peek/capture/keys harness
 - `CLAUDE.md` — top-level project rules (links here)
 - `.collab/runbooks/git-workflow.md` — coord-side workflow

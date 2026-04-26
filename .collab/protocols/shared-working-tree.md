@@ -77,5 +77,5 @@ Work on `work/<alias>` branches; coordinator1 merges to master after peer-PASS +
 ## References
 
 - `CLAUDE.md` — existing rules on `git add -A`, file deletion, `pkill`
-- `.collab/design/DRAFT-shared-working-tree-protocol.md` — pre-adoption draft with full rationale
+- `.collab/design/RETIRED/DRAFT-shared-working-tree-protocol.md` — pre-adoption draft with full rationale
 - `.git/logs/HEAD`, `git reflog` — your friends when debugging clobbers

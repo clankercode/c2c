@@ -7,7 +7,7 @@ permalink: /security/pending-permissions/
 # Pending Permission RPCs — M2/M4 Broker Security Feature
 
 **Status**: Implemented (broker committed; plugin wired in c2c.ts d116139)
-**Threat model**: [broker-pending-permissions design doc](../../.collab/design/broker-pending-permissions.md)
+**Threat model**: [broker-pending-permissions design doc](../../.collab/design/LANDED/broker-pending-permissions.md)
 **Plugin integration**: `c2c.ts` lines 1039–1062, 1407–1417
 
 ---
@@ -243,6 +243,6 @@ Once `plugin_version` lands, the broker can surface warnings on `poll_inbox` for
 
 ## See Also
 
-- [Broker pending permissions design doc](../../.collab/design/broker-pending-permissions.md)
+- [Broker pending permissions design doc](../../.collab/design/LANDED/broker-pending-permissions.md)
 - [c2c.ts M2/M4 integration](https://github.com/xertrov/c2c/commit/d116139) — plugin wiring
 - [M4 alias-reuse guard commit](https://github.com/xertrov/c2c/commit/6e4c671) — broker fix for reply-to alias spoofing

@@ -5,7 +5,7 @@
 **Status**: draft — awaiting coordinator review
 **Related**:
   - `.collab/design/DRAFT-signed-peer-pass.md` (#172)
-  - `.collab/design/2026-04-24-per-agent-git-signing.md` (completed)
+  - `LANDED/2026-04-24-per-agent-git-signing.md` (completed)
   - #133 (per-alias Ed25519 key for allowed_signers) — **landed** 2026-04-24 (`fb83da9`, `75c8f51`)
   - `ocaml/cli/c2c_stickers.ml` (#170), `ocaml/peer_review.ml`, `ocaml/relay_identity.ml`
 
