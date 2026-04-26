@@ -60,6 +60,8 @@ const m = event as { to_alias: string; from_alias: string; content?: string };
 
 **No toast/notification system** for transient CLI errors. Errors disappear and the UI just doesn't update.
 
+→ ~~No toast/notification system~~ — ✅ fixed. `useToast.ts` singleton with `toast.error/success/warning()`, `ToastContainer` component, 5s cooldown dedup. `useHistory` and `useSend` errors now surface as toasts. ComposeBar retry button unchanged.
+
 ---
 
 ## UX Gaps
@@ -132,7 +134,7 @@ Tests cover happy paths and basic error paths at the CLI wrapper layer. **Notabl
 | ~~**High**~~ | ~~Fix `room.leave` to remove alias from `roomMembers`~~ — ✅ fixed 2fd82ea |
 | **High** | Add Zod validation at monitor JSON ingestion point |
 | **Medium** | Virtualize EventFeed (react-virtual or similar) |
-| **Medium** | Add error toasts for transient CLI failures |
+| ~~**Medium**~~ | ~~Add error toasts for transient CLI failures~~ — ✅ fixed (useToast singleton + ToastContainer) |
 | **Medium** | Reduce discovery polling from 60s to ~10s |
 | **Low** | Implement sent-message local outbox |
 | **Low** | Memoize `dedupeAndSort` or move to useMemo |

@@ -10,6 +10,7 @@ import { discoverPeers, discoverRooms, fetchHealth, HealthInfo } from "./useDisc
 import { WelcomeWizard } from "./components/WelcomeWizard";
 import { ArchivePanel } from "./ArchivePanel";
 import { PermissionPanel } from "./PermissionPanel";
+import { ToastContainer } from "./ToastContainer";
 
 const MAX_EVENTS = 1000;
 const MAX_CACHED_EVENTS = 100;
@@ -520,6 +521,7 @@ export function App() {
         />
 
       <PermissionPanel events={events} myAlias={myAlias} mySessionId={mySessionId} />
+      <ToastContainer />
     </div>
   );
 }

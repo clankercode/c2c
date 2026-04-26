@@ -1,4 +1,5 @@
 import { Command } from "@tauri-apps/plugin-shell";
+import { toast } from "./useToast";
 
 export async function sendMessage(
   toAlias: string,
@@ -68,10 +69,13 @@ export async function registerAlias(
       "register", "--alias", alias, "--session-id", sessionId,
     ]).execute();
     if (result.code !== 0) {
-      return { ok: false, error: result.stderr || `exit ${result.code}` };
+      const err = result.stderr || `exit ${result.code}`;
+      toast.error(`register: ${err}`, 5);
+      return { ok: false, error: err };
     }
     return { ok: true };
   } catch (e) {
+    toast.error(`register: ${String(e)}`, 5);
     return { ok: false, error: String(e) };
   }
 }

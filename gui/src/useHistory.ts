@@ -1,5 +1,6 @@
 import { Command } from "@tauri-apps/plugin-shell";
 import { C2cEvent } from "./types";
+import { toast } from "./useToast";
 
 interface HistoryEntry {
   drained_at?: number;
@@ -64,11 +65,14 @@ export async function loadHistory(limit = 100, sessionId?: string): Promise<C2cE
     const args = ["history", "--json", "--limit", String(limit)];
     if (sessionId) args.push("--session-id", sessionId);
     const result = await Command.create("c2c", args).execute();
-    if (result.code !== 0) return [];
+    if (result.code !== 0) {
+      toast.error(`history: ${result.stderr || `exit ${result.code}`}`, 5);
+      return [];
+    }
     const entries: HistoryEntry[] = JSON.parse(result.stdout);
     return entries.map(e => entryToEvent(e));
   } catch (err) {
-    console.error("[c2c/gui] loadHistory JSON.parse error:", err, "(CLI may have output non-JSON)");
+    toast.error(`history: ${String(err)}`, 5);
     return [];
   }
 }
@@ -78,11 +82,14 @@ export async function loadRoomHistory(roomId: string, limit = 50): Promise<C2cEv
     const result = await Command.create("c2c", [
       "room", "history", roomId, "--json", "--limit", String(limit),
     ]).execute();
-    if (result.code !== 0) return [];
+    if (result.code !== 0) {
+      toast.error(`room history: ${result.stderr || `exit ${result.code}`}`, 5);
+      return [];
+    }
     const entries: HistoryEntry[] = JSON.parse(result.stdout);
     return entries.map(e => entryToEvent(e, roomId));
   } catch (err) {
-    console.error("[c2c/gui] loadRoomHistory JSON.parse error:", err, "(CLI may have output non-JSON)");
+    toast.error(`room history: ${String(err)}`, 5);
     return [];
   }
 }
@@ -92,7 +99,10 @@ export async function loadPeerHistory(peerAlias: string, mySessionId: string, my
     const args = ["history", "--json", "--limit", String(limit)];
     if (mySessionId) args.push("--session-id", mySessionId);
     const result = await Command.create("c2c", args).execute();
-    if (result.code !== 0) return [];
+    if (result.code !== 0) {
+      toast.error(`history: ${result.stderr || `exit ${result.code}`}`, 5);
+      return [];
+    }
     const entries: HistoryEntry[] = JSON.parse(result.stdout);
     return entries
       .map(e => entryToEvent(e))
@@ -103,7 +113,7 @@ export async function loadPeerHistory(peerAlias: string, mySessionId: string, my
                (m.from_alias === myAlias && m.to_alias === peerAlias);
       });
   } catch (err) {
-    console.error("[c2c/gui] loadPeerHistory JSON.parse error:", err, "(CLI may have output non-JSON)");
+    toast.error(`history: ${String(err)}`, 5);
     return [];
   }
 }
