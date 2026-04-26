@@ -5888,6 +5888,88 @@ let test_tools_call_set_room_visibility_via_mcp () =
                 check bool "visibility is invite_only" true
                   (match meta.visibility with Invite_only -> true | Public -> false)))
 
+(* --- set_dnd string/bool parsing tests --- *)
+
+let test_tools_call_set_dnd_on_string_true_enables_dnd () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-dnd"
+        ~alias:"dnd-test" ~pid:None ~pid_start_time:None ();
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-dnd";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let request =
+             `Assoc
+               [ ("jsonrpc", `String "2.0")
+               ; ("id", `Int 9501)
+               ; ("method", `String "tools/call")
+               ; ( "params",
+                   `Assoc
+                     [ ("name", `String "set_dnd")
+                     ; ( "arguments",
+                         `Assoc [ ("on", `String "true") ] )
+                     ] )
+               ]
+           in
+           let response =
+             Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+           in
+           match response with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               let result = Yojson.Safe.from_string text in
+               let ok = result |> member "ok" |> to_bool in
+               let dnd_val = result |> member "dnd" |> to_bool in
+               check bool "set_dnd on:\"true\" ok" true ok;
+               check bool "set_dnd on:\"true\" enables dnd" true dnd_val))
+
+let test_tools_call_set_dnd_on_string_false_disables_dnd () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-dnd2"
+        ~alias:"dnd-test2" ~pid:None ~pid_start_time:None ();
+      (* Enable DND first via bool to test disable *)
+      ignore (C2c_mcp.Broker.set_dnd broker ~session_id:"session-dnd2" ~dnd:true ());
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-dnd2";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let request =
+             `Assoc
+               [ ("jsonrpc", `String "2.0")
+               ; ("id", `Int 9502)
+               ; ("method", `String "tools/call")
+               ; ( "params",
+                   `Assoc
+                     [ ("name", `String "set_dnd")
+                     ; ( "arguments",
+                         `Assoc [ ("on", `String "false") ] )
+                     ] )
+               ]
+           in
+           let response =
+             Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+           in
+           match response with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               let result = Yojson.Safe.from_string text in
+               let ok = result |> member "ok" |> to_bool in
+               let dnd_val = result |> member "dnd" |> to_bool in
+               check bool "set_dnd on:\"false\" ok" true ok;
+               check bool "set_dnd on:\"false\" disables dnd" false dnd_val))
+
 (* --- prompts/list and prompts/get tests (run via subprocess to isolate Sys.chdir) --- *)
 
 let run_prompts_test_skeleton ~dir ~skill_name ~test_code =
@@ -6950,7 +7032,11 @@ let () =
           ; test_case "check_pending_reply unknown perm_id via MCP" `Quick
               test_check_pending_reply_unknown_perm_id_via_mcp
            ; test_case "check_pending_reply non-supervisor via MCP" `Quick
-               test_check_pending_reply_non_supervisor_via_mcp
+                test_check_pending_reply_non_supervisor_via_mcp
+           ; test_case "tools/call set_dnd on:\"true\" string enables DND" `Quick
+                test_tools_call_set_dnd_on_string_true_enables_dnd
+           ; test_case "tools/call set_dnd on:\"false\" string disables DND" `Quick
+                test_tools_call_set_dnd_on_string_false_disables_dnd
            ; test_case "prompts/list returns skills as prompts" `Quick
                test_prompts_list_via_subprocess
            ; test_case "prompts/get returns skill content" `Quick
