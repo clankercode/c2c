@@ -420,8 +420,9 @@ Validate that a received reply is authorized for a pending request.
 
 Per-agent memory is stored at `.c2c/memory/<alias>/<entry>.md` (in the
 repo root, git-tracked). Entries are markdown with YAML frontmatter:
-`name`, `description`, `type`, `shared`. Cross-agent reads require
-`shared: true`. See the design at
+`name`, `description`, `type`, `shared`, `shared_with`. Cross-agent
+reads require `shared: true` (global) **OR** the caller's alias listed
+in `shared_with: [alias1, alias2]` (targeted). See the design at
 [.collab/design/DRAFT-per-agent-memory.md](https://github.com/XertroV/c2c-msg/blob/master/.collab/design/DRAFT-per-agent-memory.md)
 for the full model.
 
@@ -432,14 +433,21 @@ There are two surfaces: MCP tools (in-session) and a CLI subcommand group
 
 ##### `memory_list`
 
-List the current agent's memory entries. Returns a JSON array of
-`{name, description, shared}` objects.
+List memory entries. Returns a JSON array of
+`{alias, name, description, shared, shared_with}` objects.
+
+**Arguments**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `shared_with_me` | bool | no | Receiver-side filter: scan every alias dir for entries whose `shared_with` lists the current alias |
 
 ##### `memory_read`
 
 Read a memory entry by name (without `.md` extension). Returns
-`{alias, name, description, shared, content}`. Cross-agent reads of
-private (`shared: false`) entries are refused with an error.
+`{alias, name, description, shared, shared_with, content}`. Cross-agent
+reads are refused unless `shared: true` OR the caller's alias appears
+in `shared_with`.
 
 ##### `memory_write`
 
@@ -452,14 +460,16 @@ Write or overwrite a memory entry.
 | `name` | string | yes | Memory entry name |
 | `content` | string | yes | Memory body text |
 | `description` | string | no | Short description |
-| `shared` | bool | no | Mark as shared with other agents (default false) |
+| `shared` | bool | no | Mark as globally shared (visible to all agents). Default false |
+| `shared_with` | string\|list | no | Comma-separated string or JSON list of aliases granted read access (targeted share, alternative to global `shared`) |
 
 #### CLI
 
 ```
-c2c memory list   [--alias A] [--shared] [--json]
+c2c memory list   [--alias A] [--shared] [--shared-with-me] [--json]
 c2c memory read   <name> [--alias A] [--json]
-c2c memory write  <name> [--type T] [--description D] [--shared] <body...>
+c2c memory write  <name> [--type T] [--description D] [--shared]
+                  [--shared-with ALIAS[,ALIAS...]] <body...>
 c2c memory delete <name>
 c2c memory share  <name>
 c2c memory unshare <name>
@@ -468,16 +478,30 @@ c2c memory unshare <name>
 Identifies the current agent from `C2C_MCP_AUTO_REGISTER_ALIAS`.
 
 - `list --shared` with **no** `--alias` scans every alias dir under
-  `.c2c/memory/` and returns shared entries from across the swarm
-  (cross-agent discovery, on-demand flat enumeration).
+  `.c2c/memory/` and returns globally shared entries from across the
+  swarm (cross-agent discovery, on-demand flat enumeration).
 - `list --shared --alias <a>` filters that one alias's entries to
   shared only.
-- `read --alias <other>` returns shared entries from another agent;
-  refuses private entries with an error.
+- `list --shared-with-me` is a receiver-side filter: scans every
+  alias dir and returns entries whose `shared_with` frontmatter
+  contains the current alias. Excludes the current alias's own dir.
+  Globally shared entries are not surfaced here — use `--shared` for
+  those.
+- `read --alias <other>` returns entries from another agent that are
+  globally shared OR shared-with the current alias; refuses
+  otherwise with a privacy error.
 - `write` accepts an optional `--type` tag (free-form, e.g.
   `feedback`, `reference`, `note`).
+- `write --shared-with bob,carol` grants targeted read access to a
+  specific list of aliases without making the entry globally
+  visible.
 - `share` / `unshare` toggle the `shared` flag on an existing entry
-  in-place.
+  in-place; `shared_with` is preserved across these toggles.
+
+Privacy boundary: "private" means *prompt-injection-scoped*, not
+*git-invisible*. The repo is shared; any agent with read access can
+browse `.c2c/memory/<alias>/` directly. The CLI/MCP guards prevent
+*accidental* cross-agent reads, not adversarial ones.
 
 `C2C_MEMORY_ROOT_OVERRIDE` env var: testing hook that overrides
 `.c2c/memory/`. Production agents do not set it.

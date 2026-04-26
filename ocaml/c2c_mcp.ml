@@ -2875,11 +2875,13 @@ let base_tool_definitions =
       ~properties:
         [ prop "reason" "Optional short reason logged in the stop report (e.g. 'task complete')." ]
   ; tool_definition ~name:"memory_list"
-      ~description:"List the current agent's memory entries. Returns a JSON array of {name, description, shared} objects."
+      ~description:"List memory entries. Returns a JSON array of {name, description, shared, shared_with} objects. With shared_with_me=true, scans every agent's memory dir for entries that explicitly list the current alias in their shared_with frontmatter."
       ~required:[]
-      ~properties:[]
+      ~properties:
+        [ prop "shared_with_me" "When true, return entries (across every alias dir) where the current alias appears in shared_with. Receiver-side filter."
+        ]
   ; tool_definition ~name:"memory_read"
-      ~description:"Read a memory entry by name. Returns {name, description, shared, content} on success."
+      ~description:"Read a memory entry by name. Returns {name, description, shared, shared_with, content} on success. Cross-agent reads require shared:true OR caller's alias in shared_with."
       ~required:["name"]
       ~properties:[ prop "name" "Memory entry name (without .md extension)." ]
   ; tool_definition ~name:"memory_write"
@@ -2888,7 +2890,8 @@ let base_tool_definitions =
       ~properties:
         [ prop "name" "Memory entry name."
         ; prop "description" "Short description (optional)."
-        ; prop "shared" "Mark as shared with other agents (optional, default false)."
+        ; prop "shared" "Mark as globally shared (visible to all agents). Default false."
+        ; prop "shared_with" "Optional comma-separated list of aliases granted read access (alternative to global shared)."
         ; prop "content" "Memory body text." ]
   ]
 
@@ -4821,54 +4824,114 @@ let ts = Unix.gettimeofday () in
         in
         Filename.concat (memory_base_dir alias) (safe ^ ".md")
       in
+      let parse_alias_list raw =
+        let s = String.trim raw in
+        let stripped =
+          if String.length s >= 2 && s.[0] = '[' && s.[String.length s - 1] = ']'
+          then String.sub s 1 (String.length s - 2)
+          else s
+        in
+        String.split_on_char ',' stripped
+        |> List.map String.trim
+        |> List.map (fun a ->
+             let n = String.length a in
+             if n >= 2
+                && ((a.[0] = '"' && a.[n-1] = '"')
+                    || (a.[0] = '\'' && a.[n-1] = '\''))
+             then String.sub a 1 (n - 2)
+             else a)
+        |> List.filter (fun a -> a <> "")
+      in
       let parse_frontmatter content =
         let lines = String.split_on_char '\n' content in
-        let rec parse lines in_fm name desc shared acc =
+        let rec parse lines in_fm name desc shared shared_with acc =
           match lines with
-          | [] -> (name, desc, shared, List.rev acc)
+          | [] -> (name, desc, shared, shared_with, List.rev acc)
           | line :: rest ->
               let line = String.trim line in
-              if line = "---" then parse rest (not in_fm) name desc shared acc
+              if line = "---" then parse rest (not in_fm) name desc shared shared_with acc
               else if in_fm then
-                if 0 = String.length line then parse rest in_fm name desc shared acc
+                if 0 = String.length line then parse rest in_fm name desc shared shared_with acc
                 else if Str.string_match (Str.regexp "^name:[ ]*\\(.+\\)$") line 0
-                then parse rest in_fm (Some (Str.matched_group 1 line)) desc shared acc
+                then parse rest in_fm (Some (Str.matched_group 1 line)) desc shared shared_with acc
                 else if Str.string_match (Str.regexp "^description:[ ]*\\(.+\\)$") line 0
-                then parse rest in_fm name (Some (Str.matched_group 1 line)) shared acc
+                then parse rest in_fm name (Some (Str.matched_group 1 line)) shared shared_with acc
                 else if Str.string_match (Str.regexp "^shared:[ ]*\\(true\\|false\\)$") line 0
-                then parse rest in_fm name desc (Str.matched_group 1 line = "true") acc
-                else parse rest in_fm name desc shared acc
-              else parse rest in_fm name desc shared (line :: acc)
+                then parse rest in_fm name desc (Str.matched_group 1 line = "true") shared_with acc
+                else if Str.string_match (Str.regexp "^shared_with:[ ]*\\(.+\\)$") line 0
+                then parse rest in_fm name desc shared (parse_alias_list (Str.matched_group 1 line)) acc
+                else parse rest in_fm name desc shared shared_with acc
+              else parse rest in_fm name desc shared shared_with (line :: acc)
         in
-        parse lines false None None false []
+        parse lines false None None false [] []
+      in
+      let shared_with_me =
+        try match arguments |> Yojson.Safe.Util.member "shared_with_me" with `Bool b -> b | _ -> false
+        with _ -> false
+      in
+      let read_file path =
+        try
+          let ic = open_in path in
+          Fun.protect ~finally:(fun () -> close_in ic)
+            (fun () -> really_input_string ic (in_channel_length ic))
+        with _ -> ""
+      in
+      let list_md_entries dir =
+        try
+          Array.to_list (Sys.readdir dir)
+          |> List.filter (fun n -> String.length n > 3 && String.sub n (String.length n - 3) 3 = ".md")
+          |> List.sort String.compare
+        with Sys_error _ -> []
+      in
+      let render_item alias mname desc shared shared_with =
+        `Assoc (
+          ("alias", `String alias)
+          :: ("name", match mname with Some n -> `String n | None -> `Null)
+          :: ("description", match desc with Some d -> `String d | None -> `Null)
+          :: ("shared", `Bool shared)
+          :: ("shared_with", `List (List.map (fun a -> `String a) shared_with))
+          :: [])
       in
       (match alias_for_current_session_or_argument ?session_id_override broker arguments with
        | None -> Lwt.return (missing_member_alias_result "memory_list")
        | Some alias ->
-           let dir = memory_base_dir alias in
-           let entries =
-             try
-               Array.to_list (Sys.readdir dir)
-               |> List.filter (fun n -> String.length n > 3 && String.sub n (String.length n - 3) 3 = ".md")
-               |> List.sort String.compare
-             with Sys_error _ -> []
-           in
-           let items = List.map (fun name ->
-             let path = Filename.concat dir name in
-             let content =
-               try
-                 let ic = open_in path in
-                 Fun.protect ~finally:(fun () -> close_in ic)
-                   (fun () -> really_input_string ic (in_channel_length ic))
-               with _ -> ""
-             in
-             let (mname, desc, shared, _) = parse_frontmatter content in
-             `Assoc (
-               ("name", match mname with Some n -> `String n | None -> `Null)
-               :: ("description", match desc with Some d -> `String d | None -> `Null)
-               :: ("shared", `Bool shared)
-               :: []))
-             entries
+           let items =
+             if shared_with_me then begin
+               (* Receiver-side filter: scan every alias dir under the
+                  memory root, collect entries whose shared_with contains
+                  the current alias. *)
+               let root = Filename.dirname (memory_base_dir alias) in
+               let aliases =
+                 try
+                   Array.to_list (Sys.readdir root)
+                   |> List.filter (fun n ->
+                       let p = Filename.concat root n in
+                       try Sys.is_directory p with Sys_error _ -> false)
+                   |> List.sort String.compare
+                 with Sys_error _ -> []
+               in
+               List.concat_map (fun a ->
+                 if a = alias then []
+                 else
+                   let dir = Filename.concat root a in
+                   List.filter_map (fun fname ->
+                     let path = Filename.concat dir fname in
+                     let (mname, desc, shared, shared_with, _) =
+                       parse_frontmatter (read_file path) in
+                     if List.mem alias shared_with
+                     then Some (render_item a mname desc shared shared_with)
+                     else None)
+                   (list_md_entries dir))
+                 aliases
+             end else begin
+               let dir = memory_base_dir alias in
+               List.map (fun name ->
+                 let path = Filename.concat dir name in
+                 let (mname, desc, shared, shared_with, _) =
+                   parse_frontmatter (read_file path) in
+                 render_item alias mname desc shared shared_with)
+                 (list_md_entries dir)
+             end
            in
            Lwt.return (tool_result ~content:(`List items |> Yojson.Safe.to_string) ~is_error:false))
   | "memory_read" ->
@@ -4898,26 +4961,46 @@ let ts = Unix.gettimeofday () in
         in
         Filename.concat (memory_base_dir alias) (safe ^ ".md")
       in
+      let parse_alias_list raw =
+        let s = String.trim raw in
+        let stripped =
+          if String.length s >= 2 && s.[0] = '[' && s.[String.length s - 1] = ']'
+          then String.sub s 1 (String.length s - 2)
+          else s
+        in
+        String.split_on_char ',' stripped
+        |> List.map String.trim
+        |> List.map (fun a ->
+             let n = String.length a in
+             if n >= 2
+                && ((a.[0] = '"' && a.[n-1] = '"')
+                    || (a.[0] = '\'' && a.[n-1] = '\''))
+             then String.sub a 1 (n - 2)
+             else a)
+        |> List.filter (fun a -> a <> "")
+      in
       let parse_frontmatter content =
         let lines = String.split_on_char '\n' content in
-        let rec parse lines in_fm name desc shared acc =
+        let rec parse lines in_fm name desc shared shared_with acc =
           match lines with
-          | [] -> (name, desc, shared, List.rev acc)
+          | [] -> (name, desc, shared, shared_with, List.rev acc)
           | line :: rest ->
               let line = String.trim line in
-              if line = "---" then parse rest (not in_fm) name desc shared acc
+              if line = "---" then parse rest (not in_fm) name desc shared shared_with acc
               else if in_fm then
-                if 0 = String.length line then parse rest in_fm name desc shared acc
+                if 0 = String.length line then parse rest in_fm name desc shared shared_with acc
                 else if Str.string_match (Str.regexp "^name:[ ]*\\(.+\\)$") line 0
-                then parse rest in_fm (Some (Str.matched_group 1 line)) desc shared acc
+                then parse rest in_fm (Some (Str.matched_group 1 line)) desc shared shared_with acc
                 else if Str.string_match (Str.regexp "^description:[ ]*\\(.+\\)$") line 0
-                then parse rest in_fm name (Some (Str.matched_group 1 line)) shared acc
+                then parse rest in_fm name (Some (Str.matched_group 1 line)) shared shared_with acc
                 else if Str.string_match (Str.regexp "^shared:[ ]*\\(true\\|false\\)$") line 0
-                then parse rest in_fm name desc (Str.matched_group 1 line = "true") acc
-                else parse rest in_fm name desc shared acc
-              else parse rest in_fm name desc shared (line :: acc)
+                then parse rest in_fm name desc (Str.matched_group 1 line = "true") shared_with acc
+                else if Str.string_match (Str.regexp "^shared_with:[ ]*\\(.+\\)$") line 0
+                then parse rest in_fm name desc shared (parse_alias_list (Str.matched_group 1 line)) acc
+                else parse rest in_fm name desc shared shared_with acc
+              else parse rest in_fm name desc shared shared_with (line :: acc)
         in
-        parse lines false None None false []
+        parse lines false None None false [] []
       in
       let name = string_member "name" arguments in
       (* Caller's own registered alias for the current session. Required to
@@ -4945,21 +5028,27 @@ let ts = Unix.gettimeofday () in
              if content = "" then
                Lwt.return (tool_result ~content:("error reading memory entry: " ^ name) ~is_error:true)
              else
-               let (mname, desc, shared, body) = parse_frontmatter content in
-               (* Privacy guard: cross-agent reads of private (shared:false)
-                  entries are refused. Self-reads bypass. If we cannot resolve
-                  the caller's alias and the target is not shared, refuse — the
-                  fail-closed default is safer than leaking. *)
+               let (mname, desc, shared, shared_with, body) = parse_frontmatter content in
+               (* Privacy guard: cross-agent reads require shared:true OR
+                  caller's alias in shared_with. Self-reads bypass. If we
+                  cannot resolve the caller's alias, refuse cross-agent
+                  reads — fail-closed is safer than leaking. *)
                let is_self =
                  match caller_alias with
                  | Some a -> a = alias
                  | None -> false
                in
-               if (not is_self) && (not shared) then
+               let in_shared_with =
+                 match caller_alias with
+                 | Some a -> List.mem a shared_with
+                 | None -> false
+               in
+               if (not is_self) && (not shared) && (not in_shared_with) then
                  Lwt.return (tool_result
                    ~content:(Printf.sprintf
-                     "memory entry '%s' in alias '%s' is private (shared: false). \
-                      Cross-agent reads require shared:true."
+                     "memory entry '%s' in alias '%s' is private. \
+                      Cross-agent reads require shared:true or the caller's \
+                      alias in shared_with."
                      name alias)
                    ~is_error:true)
                else
@@ -4968,6 +5057,7 @@ let ts = Unix.gettimeofday () in
                    ("name", match mname with Some n -> `String n | None -> `Null);
                    ("description", match desc with Some d -> `String d | None -> `Null);
                    ("shared", `Bool shared);
+                   ("shared_with", `List (List.map (fun a -> `String a) shared_with));
                    ("content", `String (String.concat "\n" body))
                  ] |> Yojson.Safe.to_string in
                  Lwt.return (tool_result ~content:result ~is_error:false))
@@ -5004,6 +5094,20 @@ let ts = Unix.gettimeofday () in
         try match arguments |> Yojson.Safe.Util.member "shared" with `Bool b -> b | _ -> false
         with _ -> false
       in
+      let shared_with =
+        let raw =
+          match arguments |> Yojson.Safe.Util.member "shared_with" with
+          | `String s -> s
+          | `List xs ->
+              List.filter_map (fun j ->
+                match j with `String s -> Some s | _ -> None) xs
+              |> String.concat ","
+          | _ -> ""
+        in
+        String.split_on_char ',' raw
+        |> List.map String.trim
+        |> List.filter (fun a -> a <> "")
+      in
       let body_content = string_member "content" arguments in
       (match alias_for_current_session_or_argument ?session_id_override broker arguments with
        | None -> Lwt.return (missing_member_alias_result "memory_write")
@@ -5017,8 +5121,15 @@ let ts = Unix.gettimeofday () in
            mkdir_p (Filename.dirname dir);
            if not (Sys.file_exists dir) then Unix.mkdir dir 0o755;
            let path = entry_path alias name in
-           let fm_content = Printf.sprintf "---\nname: %s\ndescription: %s\nshared: %b\n---\n%s\n"
-             name (Option.value desc ~default:"") shared body_content in
+           let shared_with_line =
+             match shared_with with
+             | [] -> ""
+             | xs -> Printf.sprintf "shared_with: [%s]\n" (String.concat ", " xs)
+           in
+           let fm_content =
+             Printf.sprintf "---\nname: %s\ndescription: %s\nshared: %b\n%s---\n%s\n"
+               name (Option.value desc ~default:"") shared shared_with_line body_content
+           in
            try
              let oc = open_out path in
              Fun.protect ~finally:(fun () -> close_out oc) (fun () ->

@@ -389,21 +389,34 @@ go.
 
 **CLI surface** (`c2c memory --help` for full):
 ```
-c2c memory list   [--alias A] [--shared] [--json]
+c2c memory list   [--alias A] [--shared] [--shared-with-me] [--json]
 c2c memory read   <name> [--alias A] [--json]
-c2c memory write  <name> [--type T] [--description D] [--shared] <body...>
+c2c memory write  <name> [--type T] [--description D] [--shared]
+                  [--shared-with ALIAS[,ALIAS...]] <body...>
 c2c memory delete <name>
-c2c memory share  <name>      # mark shared:true (visible to other agents via list --alias <a> --shared)
+c2c memory share  <name>      # mark shared:true (visible to all agents via list --alias <a> --shared)
 c2c memory unshare <name>     # revert to private
 ```
 
 **MCP surface** (in-session, no shell): `memory_list`, `memory_read`,
-`memory_write` MCP tools.
+`memory_write` MCP tools. `memory_list` accepts `shared_with_me:true`
+for receiver-side filtering; `memory_write` accepts `shared_with` as
+either a comma-string or a JSON list of aliases.
+
+**Privacy tiers** (Phase 1, slice #285):
+- `private` — default; only the owning alias can read.
+- `shared: true` (global) — any agent in the swarm can read via
+  `c2c memory list --shared` / `read --alias <a>`.
+- `shared_with: [bob, carol]` (targeted) — only the listed aliases
+  can read; receivers find inbound entries with
+  `c2c memory list --shared-with-me`. If both `shared:true` and
+  `shared_with` are set, `shared:true` wins (entry is global).
 
 **Privacy model**: "private" means *prompt-injection-scoped*, not
 *git-invisible*. The repo is shared; any agent with read access can
-browse `.c2c/memory/<alias>/`. Treat entries like personal-logs:
-visible, owned, not auto-broadcast.
+browse `.c2c/memory/<alias>/` directly. The CLI/MCP guards prevent
+*accidental* cross-agent reads, not adversarial ones. Treat entries
+like personal-logs: visible, owned, not auto-broadcast.
 
 Auto-injection on session start (Phase 3) is not yet wired — for now
 read manually from your CLAUDE.md startup checklist.

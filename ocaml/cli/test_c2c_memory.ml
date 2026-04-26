@@ -138,7 +138,7 @@ let test_list_entry_files_missing_dir_is_empty () =
 
 let test_self_read_always_allowed () =
   let e_private = { C2c_memory.name = Some "x"; description = None; type_ = None;
-                    shared = false; body = "" } in
+                    shared = false; shared_with = []; body = "" } in
   let e_shared = { e_private with C2c_memory.shared = true } in
   check bool "self private allowed" true
     (C2c_memory.cross_agent_read_allowed ~target_alias:"alice" ~current_alias:"alice" ~entry:e_private);
@@ -147,15 +147,66 @@ let test_self_read_always_allowed () =
 
 let test_cross_agent_private_refused () =
   let e_private = { C2c_memory.name = Some "x"; description = None; type_ = None;
-                    shared = false; body = "" } in
+                    shared = false; shared_with = []; body = "" } in
   check bool "bob reads alice private → refused" false
     (C2c_memory.cross_agent_read_allowed ~target_alias:"alice" ~current_alias:"bob" ~entry:e_private)
 
 let test_cross_agent_shared_allowed () =
   let e_shared = { C2c_memory.name = Some "x"; description = None; type_ = None;
-                   shared = true; body = "" } in
+                   shared = true; shared_with = []; body = "" } in
   check bool "bob reads alice shared → allowed" true
     (C2c_memory.cross_agent_read_allowed ~target_alias:"alice" ~current_alias:"bob" ~entry:e_shared)
+
+(* shared_with --------------------------------------------------------------- *)
+
+let test_parse_shared_with_list () =
+  let content = "---\nname: t\nshared: false\nshared_with: [alice, bob]\n---\nbody\n" in
+  let e = C2c_memory.parse_frontmatter content in
+  check (list string) "shared_with parsed" ["alice"; "bob"] e.C2c_memory.shared_with;
+  check bool "shared remains false" false e.C2c_memory.shared
+
+let test_parse_shared_with_quoted_and_bare () =
+  (* Bare comma form (no brackets) and quoted aliases both accepted. *)
+  let content = "---\nname: t\nshared_with: \"carol\", 'dave'\n---\nx\n" in
+  let e = C2c_memory.parse_frontmatter content in
+  check (list string) "quoted aliases unquoted" ["carol"; "dave"] e.C2c_memory.shared_with
+
+let test_parse_shared_with_empty_list () =
+  let content = "---\nname: t\nshared_with: []\n---\nx\n" in
+  let e = C2c_memory.parse_frontmatter content in
+  check (list string) "empty bracket list → []" [] e.C2c_memory.shared_with
+
+let test_render_shared_with_emits_line () =
+  let r = C2c_memory.render_entry ~name:"t" ~shared:false
+    ~shared_with:["alice"; "bob"] ~body:"x" () in
+  check bool "frontmatter has shared_with line" true
+    (contains_substr ~needle:"shared_with: [alice, bob]" r)
+
+let test_render_shared_with_omits_when_empty () =
+  let r = C2c_memory.render_entry ~name:"t" ~shared:false ~body:"x" () in
+  check bool "no shared_with when empty" false
+    (contains_substr ~needle:"shared_with:" r)
+
+let test_render_shared_with_roundtrip () =
+  let r = C2c_memory.render_entry ~name:"t" ~shared:false
+    ~shared_with:["eve"; "frank"] ~body:"hi\n" () in
+  let p = C2c_memory.parse_frontmatter r in
+  check (list string) "round-trip" ["eve"; "frank"] p.C2c_memory.shared_with
+
+let test_shared_with_grants_cross_agent_read () =
+  let e = { C2c_memory.name = Some "x"; description = None; type_ = None;
+            shared = false; shared_with = ["bob"]; body = "" } in
+  check bool "bob (listed) reads alice → allowed" true
+    (C2c_memory.cross_agent_read_allowed ~target_alias:"alice" ~current_alias:"bob" ~entry:e);
+  check bool "carol (not listed) reads alice → refused" false
+    (C2c_memory.cross_agent_read_allowed ~target_alias:"alice" ~current_alias:"carol" ~entry:e)
+
+let test_shared_true_overrides_shared_with () =
+  (* shared:true means global; shared_with becomes a no-op widening. *)
+  let e = { C2c_memory.name = Some "x"; description = None; type_ = None;
+            shared = true; shared_with = ["bob"]; body = "" } in
+  check bool "non-listed alias reads global shared → allowed" true
+    (C2c_memory.cross_agent_read_allowed ~target_alias:"alice" ~current_alias:"carol" ~entry:e)
 
 (* list_all_aliases / global shared scan ------------------------------------- *)
 
@@ -218,6 +269,16 @@ let () =
         ; test_case "self read always allowed" `Quick test_self_read_always_allowed
         ; test_case "cross-agent private refused" `Quick test_cross_agent_private_refused
         ; test_case "cross-agent shared allowed" `Quick test_cross_agent_shared_allowed
+        ] )
+    ; ( "shared_with",
+        [ test_case "parse list form" `Quick test_parse_shared_with_list
+        ; test_case "parse quoted bare form" `Quick test_parse_shared_with_quoted_and_bare
+        ; test_case "parse empty list" `Quick test_parse_shared_with_empty_list
+        ; test_case "render emits line" `Quick test_render_shared_with_emits_line
+        ; test_case "render omits when empty" `Quick test_render_shared_with_omits_when_empty
+        ; test_case "render round-trip" `Quick test_render_shared_with_roundtrip
+        ; test_case "grants cross-agent read" `Quick test_shared_with_grants_cross_agent_read
+        ; test_case "shared:true overrides" `Quick test_shared_true_overrides_shared_with
         ] )
     ; ( "global-scan",
         [ test_case "list_all_aliases finds subdirs" `Quick test_list_all_aliases_finds_subdirs

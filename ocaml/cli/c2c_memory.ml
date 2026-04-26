@@ -91,34 +91,64 @@ type entry = {
   description : string option;
   type_ : string option;
   shared : bool;
+  shared_with : string list;
+  (* Aliases explicitly granted read access to this entry. Empty list = not
+     shared-with-specific-aliases. Distinct from [shared:true] (global) — an
+     entry with [shared_with = ["bob"]] is visible to bob but NOT to the
+     general swarm. If both [shared:true] and [shared_with] are set,
+     [shared:true] wins (entry is globally readable). *)
   body : string;
 }
 
+(* Parse a YAML-flow list value (e.g. "[alice, bob]" or "[]") into a string
+   list. Also accepts a bare comma-separated form ("alice, bob") for
+   resilience. Whitespace and surrounding quotes are stripped. *)
+let parse_alias_list raw =
+  let s = String.trim raw in
+  let stripped =
+    if String.length s >= 2 && s.[0] = '[' && s.[String.length s - 1] = ']'
+    then String.sub s 1 (String.length s - 2)
+    else s
+  in
+  String.split_on_char ',' stripped
+  |> List.map String.trim
+  |> List.map (fun a ->
+       let n = String.length a in
+       if n >= 2
+          && ((a.[0] = '"' && a.[n-1] = '"')
+              || (a.[0] = '\'' && a.[n-1] = '\''))
+       then String.sub a 1 (n - 2)
+       else a)
+  |> List.filter (fun a -> a <> "")
+
 let parse_frontmatter content =
   let lines = String.split_on_char '\n' content in
-  let rec parse lines in_frontmatter name desc type_ shared acc =
+  let rec parse lines in_frontmatter name desc type_ shared shared_with acc =
     match lines with
-    | [] -> { name; description = desc; type_; shared; body = String.concat "\n" (List.rev acc) }
+    | [] -> { name; description = desc; type_; shared; shared_with;
+              body = String.concat "\n" (List.rev acc) }
     | line :: rest ->
         let tline = String.trim line in
         if tline = "---" then
-          parse rest (not in_frontmatter) name desc type_ shared acc
+          parse rest (not in_frontmatter) name desc type_ shared shared_with acc
         else if in_frontmatter then
-          if 0 = String.length tline then parse rest in_frontmatter name desc type_ shared acc
+          if 0 = String.length tline then parse rest in_frontmatter name desc type_ shared shared_with acc
           else if Str.string_match (Str.regexp "^name:[ ]*\\(.+\\)$") tline 0
-          then parse rest in_frontmatter (Some (Str.matched_group 1 tline)) desc type_ shared acc
+          then parse rest in_frontmatter (Some (Str.matched_group 1 tline)) desc type_ shared shared_with acc
           else if Str.string_match (Str.regexp "^description:[ ]*\\(.+\\)$") tline 0
-          then parse rest in_frontmatter name (Some (Str.matched_group 1 tline)) type_ shared acc
+          then parse rest in_frontmatter name (Some (Str.matched_group 1 tline)) type_ shared shared_with acc
           else if Str.string_match (Str.regexp "^type:[ ]*\\(.+\\)$") tline 0
-          then parse rest in_frontmatter name desc (Some (Str.matched_group 1 tline)) shared acc
+          then parse rest in_frontmatter name desc (Some (Str.matched_group 1 tline)) shared shared_with acc
           else if Str.string_match (Str.regexp "^shared:[ ]*\\(true\\|false\\)$") tline 0
-          then parse rest in_frontmatter name desc type_ (Str.matched_group 1 tline = "true") acc
-          else parse rest in_frontmatter name desc type_ shared acc
-        else parse rest in_frontmatter name desc type_ shared (line :: acc)
+          then parse rest in_frontmatter name desc type_ (Str.matched_group 1 tline = "true") shared_with acc
+          else if Str.string_match (Str.regexp "^shared_with:[ ]*\\(.+\\)$") tline 0
+          then parse rest in_frontmatter name desc type_ shared (parse_alias_list (Str.matched_group 1 tline)) acc
+          else parse rest in_frontmatter name desc type_ shared shared_with acc
+        else parse rest in_frontmatter name desc type_ shared shared_with (line :: acc)
   in
-  parse lines false None None None false []
+  parse lines false None None None false [] []
 
-let render_entry ~name ?description ?type_ ~shared ~body () =
+let render_entry ~name ?description ?type_ ~shared ?(shared_with=[]) ~body () =
   let buf = Buffer.create 256 in
   Buffer.add_string buf "---\n";
   Buffer.add_string buf (Printf.sprintf "name: %s\n" name);
@@ -129,6 +159,11 @@ let render_entry ~name ?description ?type_ ~shared ~body () =
    | Some t -> Buffer.add_string buf (Printf.sprintf "type: %s\n" t)
    | None -> ());
   Buffer.add_string buf (Printf.sprintf "shared: %b\n" shared);
+  (match shared_with with
+   | [] -> ()
+   | xs ->
+       Buffer.add_string buf
+         (Printf.sprintf "shared_with: [%s]\n" (String.concat ", " xs)));
   Buffer.add_string buf "---\n";
   Buffer.add_string buf body;
   if String.length body = 0 || body.[String.length body - 1] <> '\n'
@@ -183,14 +218,22 @@ let shared_filter_flag =
   let doc = "Show only entries with shared:true. Without --alias, scans every agent's memory dir for shared entries (cross-agent discovery)." in
   Cmdliner.Arg.(value & flag & info [ "shared" ] ~doc)
 
+let shared_with_me_flag =
+  let doc = "Receiver-side filter: show entries (across every alias dir) whose shared_with list contains the current alias. Implies a global scan." in
+  Cmdliner.Arg.(value & flag & info [ "shared-with-me" ] ~doc)
+
 let memory_list_cmd =
   let+ json = json_flag
   and+ alias_opt = alias_arg
-  and+ shared_only = shared_filter_flag in
+  and+ shared_only = shared_filter_flag
+  and+ shared_with_me = shared_with_me_flag in
   (* Global shared discovery: --shared with no --alias scans every alias dir.
      The design (.collab/design/DRAFT-per-agent-memory.md §"Open Questions" #3)
      resolves this as on-demand flat enumeration. *)
-  let global_scan = shared_only && alias_opt = None in
+  let global_scan = (shared_only && alias_opt = None) || shared_with_me in
+  let me_opt =
+    if shared_with_me then Some (current_alias_or_die ()) else None
+  in
   let parsed =
     if global_scan then
       List.concat_map (fun alias ->
@@ -199,7 +242,16 @@ let memory_list_cmd =
         List.filter_map (fun fname ->
           let path = Filename.concat dir fname in
           let e = parse_frontmatter (read_file path) in
-          if e.shared then Some (alias, fname, e) else None)
+          let pass =
+            match me_opt with
+            | Some me ->
+                (* shared-with-me filter: skip own dir; include if alias is
+                   in shared_with. shared:true entries are intentionally NOT
+                   included here — they're surfaced by --shared. *)
+                alias <> me && List.mem me e.shared_with
+            | None -> e.shared
+          in
+          if pass then Some (alias, fname, e) else None)
           entries)
         (list_all_aliases ())
     else begin
@@ -223,11 +275,15 @@ let memory_list_cmd =
         :: ("description", match e.description with Some d -> `String d | None -> `Null)
         :: ("type", match e.type_ with Some t -> `String t | None -> `Null)
         :: ("shared", `Bool e.shared)
+        :: ("shared_with", `List (List.map (fun a -> `String a) e.shared_with))
         :: [])
     ) parsed in
     print_json (`List items)
   else if parsed = [] then
-    print_endline (if shared_only then "(no shared memory entries)" else "(no memory entries)")
+    print_endline
+      (if shared_with_me then "(no entries shared with you)"
+       else if shared_only then "(no shared memory entries)"
+       else "(no memory entries)")
   else
     List.iter (fun (alias, fname, e) ->
       Printf.printf "%s/%s%s\n" alias fname
@@ -235,16 +291,23 @@ let memory_list_cmd =
       (match e.description with Some d -> Printf.printf "  %s\n" d | None -> ());
       (match e.type_ with Some t -> Printf.printf "  type: %s\n" t | None -> ());
       if e.shared then print_endline "  [shared]";
+      (match e.shared_with with
+       | [] -> ()
+       | xs -> Printf.printf "  [shared_with: %s]\n" (String.concat ", " xs));
       print_endline ""
     ) parsed
 
 (* --- memory read ----------------------------------------------------------- *)
 
 (* Pure privacy-guard predicate: is the caller allowed to read this entry?
-   Self-reads (target == current) always pass. Cross-agent reads require
-   shared:true. Returned as a boolean rather than exiting so it's testable. *)
+   Self-reads (target == current) always pass. Cross-agent reads require:
+   - [shared: true] (global), OR
+   - the caller's alias appears in [shared_with].
+   Returned as a boolean rather than exiting so it's testable. *)
 let cross_agent_read_allowed ~target_alias ~current_alias ~entry =
-  target_alias = current_alias || entry.shared
+  target_alias = current_alias
+  || entry.shared
+  || List.mem current_alias entry.shared_with
 
 (* Read entry, then enforce privacy. Exits 1 with a helpful message on
    refusal. Caller-owned reads bypass the check entirely. *)
@@ -253,10 +316,11 @@ let read_with_privacy_check ~target_alias ~current_alias ~name path =
   let e = parse_frontmatter content in
   if not (cross_agent_read_allowed ~target_alias ~current_alias ~entry:e) then (
     Printf.eprintf
-      "error: memory entry '%s' in alias '%s' is private (shared: false). \
-       Cross-agent reads require shared:true. Owner can run \
-       `c2c memory share %s` to allow this.\n%!"
-      name target_alias name;
+      "error: memory entry '%s' in alias '%s' is private. \
+       Cross-agent reads require shared:true or the caller's alias \
+       in shared_with. Owner can run `c2c memory share %s` to allow \
+       global access, or rewrite with --shared-with %s.\n%!"
+      name target_alias name current_alias;
     exit 1);
   (content, e)
 
@@ -283,6 +347,7 @@ let memory_read_cmd =
       ("description", match e.description with Some d -> `String d | None -> `Null);
       ("type", match e.type_ with Some t -> `String t | None -> `Null);
       ("shared", `Bool e.shared);
+      ("shared_with", `List (List.map (fun a -> `String a) e.shared_with));
       ("content", `String e.body)
     ])
   else
@@ -303,8 +368,12 @@ let memory_write_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "type"; "t" ] ~docv:"TYPE" ~doc)
   in
   let shared =
-    let doc = "Mark this entry as shared (visible to other agents via list --shared)." in
+    let doc = "Mark this entry as globally shared (visible to all agents via list --shared)." in
     Cmdliner.Arg.(value & flag & info [ "shared"; "s" ] ~doc)
+  in
+  let shared_with =
+    let doc = "Comma-separated list of aliases granted read access. Receivers can list their inbound entries with `c2c memory list --shared-with-me`. Implies the entry is NOT globally shared (use --shared for that)." in
+    Cmdliner.Arg.(value & opt (some string) None & info [ "shared-with" ] ~docv:"ALIAS[,ALIAS...]" ~doc)
   in
   let body =
     Cmdliner.Arg.(non_empty & pos_right 0 string [] & info [] ~docv:"CONTENT" ~doc:"Memory body text (remaining args joined with newlines).")
@@ -314,11 +383,20 @@ let memory_write_cmd =
   and+ desc = desc
   and+ type_ = type_arg
   and+ shared = shared
+  and+ shared_with = shared_with
   and+ body = body in
   let alias = current_alias_or_die () in
   let _ = ensure_memory_dir alias in
   let path = entry_filename alias name in
+  let shared_with_list = match shared_with with
+    | None -> []
+    | Some s ->
+        String.split_on_char ',' s
+        |> List.map String.trim
+        |> List.filter (fun a -> a <> "")
+  in
   let content = render_entry ~name ?description:desc ?type_ ~shared
+    ~shared_with:shared_with_list
     ~body:(String.concat "\n" body) ()
   in
   write_file path content;
@@ -354,7 +432,8 @@ let set_shared_flag ~name ~shared =
   let e = parse_frontmatter (read_file path) in
   let entry_name = Option.value e.name ~default:name in
   let new_content = render_entry ~name:entry_name
-    ?description:e.description ?type_:e.type_ ~shared ~body:e.body () in
+    ?description:e.description ?type_:e.type_ ~shared
+    ~shared_with:e.shared_with ~body:e.body () in
   write_file path new_content
 
 let memory_share_cmd =
