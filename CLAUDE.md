@@ -127,7 +127,7 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   unavailable — `dune install` does NOT reliably update the binary.
   Then run `./restart-self` to pick up the new binary, and call at least one
   new tool from your own session before marking the slice done.
-  **Install guard (#302, #322)**: `just install-all` now refuses to overwrite
+  **Install guard (#302)**:   `just install-all` now refuses to overwrite
   `~/.local/bin/c2c` when the new binary's commit is an ancestor of the
   currently-installed one (i.e. an older worktree clobbering a newer
   install). Override with `C2C_INSTALL_FORCE=1` if you really mean it.
@@ -135,17 +135,8 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   `~/.local/bin/.c2c-install.lock`. Stamp at `~/.local/bin/.c2c-version`;
   it preserves the top-level `sha` for ancestry checks and records per-binary
   SHA-256 values under `binaries` for stale-MCP diagnostics.
-  **Drift detection (#322)**: at guard entry the per-binary sha256 in the
-  stamp is compared to the actual sha256 on disk. If any binary has drifted
-  (out-of-band `cp`, stale individual recipe, dune install, etc.), the
-  guard logs a loud WARN naming both shas, exits 0 (recover, not refuse —
-  refusing leaves the user stuck), and the new stamp records
-  `previous_drift_detected: true` for forensic traceability.
-  `C2C_INSTALL_FORCE=1` does NOT skip the drift check (drift is diagnostic,
-  not gating). The individual `just install-cli` / `install-mcp` /
-  `install-hook` recipes also route through the same flock + guard + stamp
-  path as `install-all`, so partial installs can't bypass the integrity
-  guard.
+  Installed binaries: `c2c`, `c2c-mcp-server`, `c2c-mcp-inner`,
+  `c2c-inbox-hook-ocaml`, `c2c-cold-boot-hook`.
 - **Run the `review-and-fix` skill after finishing a meaningful work unit,
   before handing off or marking done.** The loop is only meaningful as a
   git-visible sequence, so commit your work first (so the reviewer targets
@@ -215,6 +206,11 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   Outer loop PID recovery (via SIGUSR1 to the wrapper) can cause a secondary
   failure — target the inner OpenCode process directly. See
   `.collab/findings/2026-04-26T01-08-00Z-test-agent-mcp-outage.md`.
+- **`c2c mcp-inner`** (Tier4, hidden in agent sessions) runs the same
+  full-featured MCP server as `c2c mcp`/`serve`, plus nudge scheduler and
+  inbox watcher. The standalone binary at `~/.local/bin/c2c-mcp-inner` is
+  installed alongside `c2c-mcp-server` by `just install-all`. Slice B will
+  make `c2c mcp-inner` an outer proxy that spawns the inner binary.
 - **Running `kimi -p` (or any child CLI) from inside a Claude Code session**
   will inherit `CLAUDE_SESSION_ID`. The broker guards against this
   (`auto_register_startup` now skips if the session already has a live
