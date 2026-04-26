@@ -79,6 +79,18 @@ A peer-PASS is the next layer.
 If automated review bots fail (provider errors, etc.), a real swarm
 agent stepping in counts.
 
+**Reviewer checklist must include docs-up-to-date.** Any change that
+affects a user-facing surface (CLI flags, `--help` text, MCP tool
+schema, env vars, runbook procedure, broker behavior) needs the
+matching docs updated **in the same slice**: CLAUDE.md, README,
+relevant `.collab/runbooks/*.md`, design specs, command help-text.
+A reviewer issuing PASS while user-facing docs still describe the
+old behavior is a docs-drift bug being signed off. Run
+`c2c doctor docs-drift` if unsure. If docs cannot land in this slice
+(e.g. cross-cuts another in-flight branch), the reviewer FAILs and
+the slice author either expands scope or splits a follow-up doc-only
+slice with the SHA referenced before coord-PASS.
+
 ### 4. New commit for every fix — never `--amend`
 
 If your peer FAILs your SHA, fix it in a NEW commit. Never `--amend`.
