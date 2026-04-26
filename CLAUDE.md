@@ -125,6 +125,12 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   unavailable — `dune install` does NOT reliably update the binary.
   Then run `./restart-self` to pick up the new binary, and call at least one
   new tool from your own session before marking the slice done.
+  **Install guard (#302)**: `just install-all` now refuses to overwrite
+  `~/.local/bin/c2c` when the new binary's commit is an ancestor of the
+  currently-installed one (i.e. an older worktree clobbering a newer
+  install). Override with `C2C_INSTALL_FORCE=1` if you really mean it.
+  Cross-worktree concurrent installs are also serialized via flock on
+  `~/.local/bin/.c2c-install.lock`. Stamp at `~/.local/bin/.c2c-version`.
 - **Run the `review-and-fix` skill after finishing a meaningful work unit,
   before handing off or marking done.** The loop is only meaningful as a
   git-visible sequence, so commit your work first (so the reviewer targets
