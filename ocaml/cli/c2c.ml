@@ -5906,6 +5906,7 @@ let start_cmd =
       ?alias_override
       ?session_id_override:session_id_opt
       ?model_override:model_for_cmd
+      ?role_pmodel_override
       ~one_hr_cache
       ?kickoff_prompt
       ?agent_name
