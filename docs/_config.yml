@@ -33,3 +33,10 @@ author:
 
 github:
   repository_url: "https://github.com/XertroV/c2c-msg"
+
+# Files in docs/ that are kept on disk for editing context
+# but should NOT publish to https://c2c.im/.
+# (See docs/CLAUDE.md for the rationale around the
+# Jekyll-publishes-everything default.)
+exclude:
+  - CLAUDE.md
