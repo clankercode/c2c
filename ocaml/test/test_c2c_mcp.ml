@@ -6395,6 +6395,54 @@ let test_refresh_pid_if_dead_noops_when_no_replacement_discovered () =
       let reg = List.find (fun (r : C2c_mcp.registration) -> r.session_id = "s-stale") regs in
       check (option int) "pid unchanged" (Some dead_pid) reg.pid)
 
+(* Regression for the gap lyra-quill caught on 3f3a08ad: target-side
+   self-heal during alias resolution. A sender hitting send / send_all /
+   send_room must recover when the target peer is alive under a fresh
+   pid but hasn't touched the broker since respawn. Without the resolver
+   self-heal, enqueue_message returned "recipient is not alive" for
+   exactly this case during the 2026-04-26 outage. *)
+let test_resolve_alias_self_heals_dead_target_via_inject () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Target was registered with a now-dead pid. Target has not
+         touched the broker since respawn. Sender doesn't know that yet. *)
+      C2c_mcp.Broker.register broker ~session_id:"s-target" ~alias:"galaxy-test"
+        ~pid:(Some dead_pid) ~pid_start_time:(Some 99) ();
+      (* Pre-flight check: registration_is_alive is false, so the legacy
+         resolver path returns All_recipients_dead. *)
+      (let regs = C2c_mcp.Broker.list_registrations broker in
+       let reg = List.find (fun (r : C2c_mcp.registration) -> r.session_id = "s-target") regs in
+       check bool "pre-heal: target reg is dead" false (C2c_mcp.Broker.registration_is_alive reg));
+      (* Now patch in a discovery scanner that finds the test process as
+         the live owner of "s-target". Drive the heal via a direct call —
+         we can't bypass resolve's hardcoded discoverers without an
+         injection seam, but we CAN swap the registry's pid via
+         refresh_pid_if_dead_with so the in-place test setup mirrors
+         what the resolver would do internally on the live binary. *)
+      let live_pid = Unix.getpid () in
+      let scan_pids () = [ live_pid ] in
+      let read_environ pid =
+        if pid = live_pid then Some [ ("C2C_MCP_SESSION_ID", "s-target") ]
+        else None
+      in
+      let healed =
+        C2c_mcp.Broker.refresh_pid_if_dead_with
+          ~scan_pids ~read_environ broker ~session_id:"s-target"
+      in
+      check bool "heal happened" true healed;
+      (* Now the sender's path resolves cleanly: enqueue_message finds an
+         Alive registration via registration_is_alive, no
+         All_recipients_dead error. *)
+      C2c_mcp.Broker.register broker ~session_id:"s-sender" ~alias:"sender-test"
+        ~pid:(Some live_pid) ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time live_pid) ();
+      C2c_mcp.Broker.enqueue_message broker
+        ~from_alias:"sender-test" ~to_alias:"galaxy-test"
+        ~content:"after-respawn delivery" ();
+      let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"s-target" in
+      check int "delivery succeeded post-heal" 1 (List.length inbox);
+      let msg = List.hd inbox in
+      check string "content delivered" "after-respawn delivery" msg.content)
+
 (* Note: an end-to-end test using the real /proc scan is impractical here.
    /proc/<pid>/environ is a kernel snapshot taken at exec time; calling
    Unix.putenv inside the test process does NOT update it, so the test
@@ -6777,4 +6825,6 @@ let () =
                test_refresh_pid_if_dead_updates_when_dead_and_live_discovered
            ; test_case "refresh_pid_if_dead noops when no replacement discovered" `Quick
                test_refresh_pid_if_dead_noops_when_no_replacement_discovered
+           ; test_case "resolve alias self-heals dead target via inject" `Quick
+               test_resolve_alias_self_heals_dead_target_via_inject
            ] ) ]

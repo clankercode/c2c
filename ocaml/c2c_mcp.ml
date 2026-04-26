@@ -809,6 +809,56 @@ module Broker = struct
     | Unknown_alias
     | All_recipients_dead
 
+  (* Refresh a registration's pid + pid_start_time when the stored pid
+     is dead but a live process exists for the same session_id (e.g.
+     opencode TUI respawned under a new pid without restarting its
+     MCP-launching wrapper). The discovery is gated on
+     [scan_pids]/[read_environ] so tests can simulate /proc.
+
+     Returns true if a refresh happened, false otherwise. Only fires
+     when:
+       - the registration exists
+       - its pid is non-None and Dead per registration_is_alive
+       - discovery finds a different live pid claiming the same
+         C2C_MCP_SESSION_ID
+     A no-op for healthy regs, missing regs, or pidless legacy rows. *)
+  let refresh_pid_if_dead_with
+      ~scan_pids ~read_environ t ~session_id =
+    with_registry_lock t (fun () ->
+      let regs = load_registrations t in
+      match List.find_opt (fun reg -> reg.session_id = session_id) regs with
+      | None -> false
+      | Some reg ->
+          (match reg.pid with
+           | None -> false
+           | Some _ when registration_is_alive reg -> false
+           | Some old_pid ->
+               (match discover_live_pid_for_session_with
+                        ~scan_pids ~read_environ ~session_id with
+                | None -> false
+                | Some new_pid when new_pid = old_pid ->
+                    (* same pid, just dead — discovery couldn't find a
+                       live replacement. Don't update. *)
+                    false
+                | Some new_pid ->
+                    let new_start = read_pid_start_time new_pid in
+                    let regs' =
+                      List.map
+                        (fun r ->
+                          if r.session_id = session_id
+                          then { r with pid = Some new_pid; pid_start_time = new_start }
+                          else r)
+                        regs
+                    in
+                    save_registrations t regs';
+                    true)))
+
+  let refresh_pid_if_dead t ~session_id =
+    refresh_pid_if_dead_with
+      ~scan_pids:default_scan_pids
+      ~read_environ:read_proc_environ
+      t ~session_id
+
   let resolve_live_session_id_by_alias t alias =
     let matches =
       load_registrations t |> List.filter (fun reg -> reg.alias = alias)
@@ -818,7 +868,35 @@ module Broker = struct
     | _ ->
         (match List.find_opt registration_is_alive matches with
          | Some reg -> Resolved reg.session_id
-         | None -> All_recipients_dead)
+         | None ->
+             (* Target-side self-heal: every match looks dead, but the
+                target may have respawned under a new pid without
+                touching the broker yet. Try to refresh each candidate
+                via /proc scan; if any flips to Alive, return that.
+                Without this, a sender to e.g. galaxy-coder hits
+                All_recipients_dead even when galaxy is live under a
+                fresh pid — the bug this slice exists to fix. *)
+             let healed =
+               List.fold_left
+                 (fun acc reg ->
+                   match acc with
+                   | Some _ -> acc
+                   | None ->
+                       if refresh_pid_if_dead t ~session_id:reg.session_id
+                       then begin
+                         (* Re-load to pick up the swapped pid; the in-memory
+                            [reg] is stale after refresh. *)
+                         let regs' = load_registrations t in
+                         List.find_opt
+                           (fun r -> r.session_id = reg.session_id
+                                  && registration_is_alive r)
+                           regs'
+                       end else None)
+                 None matches
+             in
+             (match healed with
+              | Some reg -> Resolved reg.session_id
+              | None -> All_recipients_dead))
 
   (* A provisional registration has no confirmed PID-based liveness yet AND
      has never drained its inbox (confirmed_at = None). Human sessions are
@@ -2477,56 +2555,6 @@ module Broker = struct
           with _ -> ())
         joined
     end
-
-  (* Refresh a registration's pid + pid_start_time when the stored pid
-     is dead but a live process exists for the same session_id (e.g.
-     opencode TUI respawned under a new pid without restarting its
-     MCP-launching wrapper). The discovery is gated on
-     [scan_pids]/[read_environ] so tests can simulate /proc.
-
-     Returns true if a refresh happened, false otherwise. Only fires
-     when:
-       - the registration exists
-       - its pid is non-None and Dead per registration_is_alive
-       - discovery finds a different live pid claiming the same
-         C2C_MCP_SESSION_ID
-     A no-op for healthy regs, missing regs, or pidless legacy rows. *)
-  let refresh_pid_if_dead_with
-      ~scan_pids ~read_environ t ~session_id =
-    with_registry_lock t (fun () ->
-      let regs = load_registrations t in
-      match List.find_opt (fun reg -> reg.session_id = session_id) regs with
-      | None -> false
-      | Some reg ->
-          (match reg.pid with
-           | None -> false
-           | Some _ when registration_is_alive reg -> false
-           | Some old_pid ->
-               (match discover_live_pid_for_session_with
-                        ~scan_pids ~read_environ ~session_id with
-                | None -> false
-                | Some new_pid when new_pid = old_pid ->
-                    (* same pid, just dead — discovery couldn't find a
-                       live replacement. Don't update. *)
-                    false
-                | Some new_pid ->
-                    let new_start = read_pid_start_time new_pid in
-                    let regs' =
-                      List.map
-                        (fun r ->
-                          if r.session_id = session_id
-                          then { r with pid = Some new_pid; pid_start_time = new_start }
-                          else r)
-                        regs
-                    in
-                    save_registrations t regs';
-                    true)))
-
-  let refresh_pid_if_dead t ~session_id =
-    refresh_pid_if_dead_with
-      ~scan_pids:default_scan_pids
-      ~read_environ:read_proc_environ
-      t ~session_id
 
   let touch_session t ~session_id =
     (* Self-heal stale pid before stamping last_activity_ts. If the
