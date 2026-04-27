@@ -287,6 +287,8 @@ an automated abort.
 
 This is the same context-blindness pattern as #324(a) and (b):
 
+| Slice   | Failure mode |
+| ---     | --- |
 | #324(a) | slice-author can't see what their fix-touch-zone reverts of the bug class they're fixing |
 | #324(b) | slice-author can't see how their `just install-all` clobbers the shared `~/.local/bin/` stamp |
 | #325(c) | coord can't see what intermediate landings the cherry-pick reverts when slice's branch is from a divergent base |
@@ -303,9 +305,13 @@ Discipline (coord-side):
   - Ask the slice author to rebase onto fresh `origin/master` (or
     fresh local master if they coordinated with you), OR
   - Audit the cherry-pick diff for files outside the slice's stated
-    scope. `git show --stat <sha>` shows changed files; if any are
-    outside the scope (`justfile`, `dune`, `CLAUDE.md`,
-    `.collab/runbooks/`, `_build/...` exhibits), spot-check them.
+    scope. `git show --stat <sha>` shows changed files. **Rule of
+    thumb: if the slice claims to fix `X.ml`, every file in the
+    diff that is NOT `X.ml` (or its sibling test / findings doc) is
+    a candidate for scope-audit.** Anything in `justfile`, `dune`,
+    `CLAUDE.md`, `.collab/runbooks/`, or other agent's worktree
+    outputs that the slice author wouldn't have touched
+    intentionally is a red flag.
 - **After cherry-picking, run `just install-all` immediately.** Build
   failures are the cheapest way to surface a divergent-base revert.
   Don't batch cherry-picks then build at the end — the failure mode
@@ -318,11 +324,16 @@ Discipline (coord-side):
 
 Recovery if it already happened (the 2026-04-27 #312 case):
 1. `git diff <pre-cherry-pick> <slice-cherry-pick> -- <reverted-files>` to see what was lost.
-2. `git checkout <pre-cherry-pick> -- <reverted-files>` (CAUTION: this
-   is one of the destructive ops — only safe in main tree where you
-   own the WIP, never in shared worktrees).
-3. Commit the restore explicitly, naming the slice that triggered it.
-4. `just install-all` to re-establish canonical binaries + stamp.
+2. **SAFETY GATE before step 3**: confirm `git status` is clean of
+   any unrelated WIP. The next step uses `git checkout -- <files>`,
+   which is in CLAUDE.md's destructive-ops list — it silently
+   discards staged AND unstaged edits. ONLY safe in the main tree
+   where you own all WIP. NEVER in a shared worktree where peers
+   might have unstaged work.
+3. `git checkout <pre-cherry-pick> -- <reverted-files>` to restore
+   the lost content.
+4. Commit the restore explicitly, naming the slice that triggered it.
+5. `just install-all` to re-establish canonical binaries + stamp.
 
 The #322 install-guard's drift detection will log a WARN if the
 restore puts the binary at a different SHA than the previous stamp

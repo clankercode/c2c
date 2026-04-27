@@ -11,8 +11,10 @@
 Third bullet in the context-blindness pattern series the swarm has
 been documenting:
 
-| #324(a) | slice-author can't see what their fix-touch-zone reverts of the bug class they're fixing |
-| #324(b) | slice-author can't see how their `just install-all` clobbers the shared `~/.local/bin/` stamp |
+| Slice       | Failure mode |
+| ---         | --- |
+| #324(a)     | slice-author can't see what their fix-touch-zone reverts of the bug class they're fixing |
+| #324(b)     | slice-author can't see how their `just install-all` clobbers the shared `~/.local/bin/` stamp |
 | **#325(c)** | **coord can't see what intermediate landings the cherry-pick reverts when slice's branch is from a divergent base** |
 
 Real case from 2026-04-27 11:00 AEST: cherry-picking jungle's
