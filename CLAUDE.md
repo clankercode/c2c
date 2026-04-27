@@ -127,7 +127,7 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   unavailable — `dune install` does NOT reliably update the binary.
   Then run `./restart-self` to pick up the new binary, and call at least one
   new tool from your own session before marking the slice done.
-  **Install guard (#302)**:   `just install-all` now refuses to overwrite
+  **Install guard (#302)**: `just install-all` now refuses to overwrite
   `~/.local/bin/c2c` when the new binary's commit is an ancestor of the
   currently-installed one (i.e. an older worktree clobbering a newer
   install). Override with `C2C_INSTALL_FORCE=1` if you really mean it.
@@ -135,8 +135,6 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   `~/.local/bin/.c2c-install.lock`. Stamp at `~/.local/bin/.c2c-version`;
   it preserves the top-level `sha` for ancestry checks and records per-binary
   SHA-256 values under `binaries` for stale-MCP diagnostics.
-  Installed binaries: `c2c`, `c2c-mcp-server`, `c2c-mcp-inner`,
-  `c2c-inbox-hook-ocaml`, `c2c-cold-boot-hook`.
 - **Run the `review-and-fix` skill after finishing a meaningful work unit,
   before handing off or marking done.** The loop is only meaningful as a
   git-visible sequence, so commit your work first (so the reviewer targets
@@ -206,11 +204,6 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   Outer loop PID recovery (via SIGUSR1 to the wrapper) can cause a secondary
   failure — target the inner OpenCode process directly. See
   `.collab/findings/2026-04-26T01-08-00Z-test-agent-mcp-outage.md`.
-- **`c2c mcp-inner`** (Tier4, hidden in agent sessions) runs the same
-  full-featured MCP server as `c2c mcp`/`serve`, plus nudge scheduler and
-  inbox watcher. The standalone binary at `~/.local/bin/c2c-mcp-inner` is
-  installed alongside `c2c-mcp-server` by `just install-all`. Slice B will
-  make `c2c mcp-inner` an outer proxy that spawns the inner binary.
 - **Running `kimi -p` (or any child CLI) from inside a Claude Code session**
   will inherit `CLAUDE_SESSION_ID`. The broker guards against this
   (`auto_register_startup` now skips if the session already has a live
@@ -463,45 +456,6 @@ always succeeds.
 
 Auto-injection on session start (Phase 3) is not yet wired — for now
 read manually from your CLAUDE.md startup checklist.
-
-## Post-compact context injection (#317)
-
-Compaction is NOT a session restart: same `C2C_MCP_SESSION_ID`, same
-broker registration. The cold-boot hook (`c2c-cold-boot-hook`) is gated
-by a per-session marker so it no-ops post-compact. Without #317 the
-post-compact agent had only the conversation summary + role-file
-injection — no structured pointer to in-flight work, recent findings,
-or fresh shared memory.
-
-`c2c-post-compact-hook` is invoked by Claude Code's PostCompact hook
-(via `scripts/c2c-postcompact.sh`) and emits a
-`<c2c-context kind="post-compact">` block via `additionalContext` with
-priority-ordered sections:
-
-1. **Operational reflex reminder** — verbatim. Includes the
-   channel-tag-reply trap (read-only `<c2c>` tags need `mcp__c2c__send`
-   reply), grounding commands, `memory list --shared-with-me` pointer,
-   heartbeat-as-work-trigger.
-2. **Active worktree slices** — `.worktrees/<slice>` directories with
-   their branch + last-commit subject.
-3. **Recent findings** — files at `.collab/findings/*-<alias>-*.md`,
-   first content paragraph each.
-4. **Memory entries** — own entries (description) + `shared_with_me`
-   inbound from peers.
-5. **Most-recent personal-log** — newest by mtime, first content
-   paragraph.
-
-Hard ceiling 4 KB on the emitted context block (post-compact context
-budget is tight).
-
-The hook is hands-off — no marker, no env-var gate. Fires once per
-PostCompact event by Claude Code's hook lifecycle. If the binary or
-required env vars are absent, the bash wrapper sleeps briefly (avoids
-ECHILD on Node) and exits silently.
-
-To opt in: ensure `~/.claude/hooks/c2c-postcompact.sh` matches
-`scripts/c2c-postcompact.sh` and `~/.local/bin/c2c-post-compact-hook`
-is installed (`just install-all` does both as of #317).
 
 ## Key Architecture Notes
 
