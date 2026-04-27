@@ -225,7 +225,7 @@ Symptoms of having done this:
 - Other agents' `c2c worktree gc --help` (or any new subcommand from
   a recently-landed slice) returns "unknown command" — your install
   reverted them.
-- Operator notices `lots of debug logs` from the running broker
+- Operator notices "lots of debug logs" from the running broker
   whose source isn't on master.
 - `c2c doctor` shows the install-stamp diverged from `origin/master`'s
   ancestry.
@@ -240,9 +240,21 @@ against the shared `~/.local/bin/` path** unless you've explicitly:
 2. Confirmed your stamp will be the canonical record (you intend to
    be the latest installer for now).
 
-If you need to test your slice's binary in isolation, set
-`C2C_INSTALL_TARGET` and `C2C_INSTALL_STAMP` to a per-worktree path,
-or just run the binary out of `_build/default/...` directly.
+If you need to test your slice's binary in isolation without
+touching `~/.local/bin/`, run it directly from
+`_build/default/ocaml/cli/c2c.exe` (and the corresponding
+`server/c2c_mcp_server.exe` / `tools/c2c_inbox_hook.exe` paths).
+Note: `C2C_INSTALL_TARGET` and `C2C_INSTALL_STAMP` env vars are
+honored only by `c2c-install-guard.sh` and `c2c-install-stamp.sh`
+(for testing those scripts in isolation); they do NOT redirect the
+`justfile install-all` recipe's `cp` lines, which hardcode
+`~/.local/bin/`. Setting those env vars while running
+`just install-all` is actively harmful — your binary still goes to
+the canonical path while the stamp is redirected, leaving the
+canonical stamp stale and the next install's ancestry check on
+wrong data. A real per-worktree install path is a future-tooling
+opportunity (e.g. `c2c doctor peer-pass-readiness`), not currently
+supported.
 
 Recovery if it already happened: have someone (usually coordinator1)
 run `just install-all` from a clean main tree on current local master

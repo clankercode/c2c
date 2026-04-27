@@ -45,9 +45,15 @@ class, the reviewer does an explicit pass over diff hunks asking
 **(b) Don't-install-from-divergent-worktree discipline.** Add a new
 "Common failure mode" section in `.collab/runbooks/git-workflow.md`
 covering the symptoms, discipline (cherry-pick latest master before
-install, OR set per-worktree `C2C_INSTALL_TARGET`/`C2C_INSTALL_STAMP`,
-OR run from `_build/`), and recovery (coord re-installs from clean
-main tree; #322 drift detection surfaces the stale stamp).
+install, OR run from `_build/default/...` directly), and recovery
+(coord re-installs from clean main tree; #322 drift detection
+surfaces the stale stamp). v1 of this slice incorrectly suggested
+`C2C_INSTALL_TARGET`/`C2C_INSTALL_STAMP` as an isolation alternative;
+self-review caught that those env vars only redirect the guard/stamp
+scripts, not the justfile install-all recipe's hardcoded `cp` paths,
+so setting them is actively harmful (canonical binary clobbered +
+stamp redirected away from canonical path). Removed in v2; per-worktree
+install path is a future-tooling opportunity, not currently supported.
 
 ## Acceptance criteria
 
