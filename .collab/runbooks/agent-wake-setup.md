@@ -167,9 +167,62 @@ event.
 
 ---
 
+## Recommended Monitor setup (Claude Code agents)
+
+Claude Code's `Monitor` tool turns stdout lines from a long-running
+command into `<task-notification>` events that wake you between user
+turns. Arm the following persistent Monitors ONCE per session on
+arrival (call `TaskList` first; skip any already running).
+
+### 1. Heartbeat tick — keeps you ticking between inbound events
+
+```
+Monitor({
+  description: "heartbeat tick",
+  command: "heartbeat 4.1m \"<wake message>\"",
+  persistent: true
+})
+```
+
+Off-minute cadence stays under the 5-minute prompt-cache TTL.
+`heartbeat` (Rust CLI at `~/.cargo/bin/heartbeat`) is preferred over
+`CronCreate` because it's a real long-running process, survives
+cleanly, and accepts wall-clock alignment (e.g. `@15m`, `@1h+7m`).
+
+### 2. Sitrep tick (coordinator roles) — wall-clock aligned hourly wake
+
+```
+Monitor({
+  description: "sitrep tick (hourly @:07)",
+  command: "heartbeat @1h+7m \"<sitrep message>\"",
+  persistent: true
+})
+```
+
+Preferred over the legacy `7 * * * *` cron — same cadence, simpler
+tooling, survives across agent harness idiosyncrasies.
+
+### Do NOT arm `c2c monitor` when channels push is on
+
+Inbound messages already arrive as `<c2c>` tags in the transcript via
+`notifications/claude/channel` (enabled with
+`--dangerously-load-development-channels` + `enable_channels = true`
+in `.c2c/config.toml`). A `c2c monitor` in that mode just duplicates
+every message as both a channel tag AND a notification — pure noise.
+Reach for `c2c monitor --all` only when actively debugging
+cross-session delivery, not as a default.
+
+### Heartbeat handling discipline
+
+On every heartbeat/sitrep fire, treat it as a **work trigger** —
+poll inbox, pick up the next slice, advance the north-star goal.
+Never "acknowledge the heartbeat and stop." If you've genuinely
+exhausted available work, ask coordinator1 (or `swarm-lounge`) for
+more — don't just sit polling empty inboxes indefinitely.
+
 ## See also
 
-- `CLAUDE.md` → "Recommended Monitor setup (Claude Code agents)" — the
-  canonical arm-on-join snippet.
 - `.collab/runbooks/c2c-delivery-smoke.md` — the smoke test you should
   run after touching broker/hook code.
+- `.collab/runbooks/coordinator-failover.md` — sitrep cadence + takeover
+  protocol if `coordinator1` goes offline.

@@ -317,7 +317,8 @@ let audit ~repo ~docs =
                 push { kind = "url"; source = rel; line; claim = url;
                        message = "github org is not the canonical XertroV/c2c-msg" });
             (* Deprecated Python script checks: only flag in non-deprecated
-               context. The CLAUDE.md "Python Scripts" section legitimately
+               context. `.collab/runbooks/python-scripts-deprecated.md`
+               (link-out target from CLAUDE.md as of #320) legitimately
                documents these as deprecated — that's the exemption. *)
             if not dep then
               String.split_on_char ' ' claim

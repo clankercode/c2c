@@ -5,8 +5,9 @@
 
 # `docs/` — agent guide
 
-Quick rules for anything edited under this directory. Companion to the
-root `CLAUDE.md`'s "Documentation hygiene" section; read both.
+Quick rules for anything edited under this directory. Companion to
+`.collab/runbooks/documentation-hygiene.md` (the canonical doc-discipline
+reference, link-out from root `CLAUDE.md`); read both.
 
 ## Scope
 
@@ -32,8 +33,9 @@ root `CLAUDE.md`'s "Documentation hygiene" section; read both.
 - CLI surface: `~/.local/bin/c2c <subcommand> --help` is canonical.
   Don't write commands or flags from memory — run the help and check.
 - MCP tool surface: `ocaml/c2c_mcp.ml` defines tools and schemas.
-- Python scripts: see the root `CLAUDE.md` "Python Scripts" mapping;
-  most are deprecated in favour of OCaml subcommands.
+- Python scripts: see `.collab/runbooks/python-scripts-deprecated.md`
+  for the canonical inventory + OCaml-replacement mapping; most are
+  deprecated in favour of OCaml subcommands.
 
 ## Cross-doc link discipline
 
@@ -89,4 +91,4 @@ on a `docs/*.md` change.
   (mismatched `]()`, unclosed code fences, list breaks).
 - Cross-link to runbook: peer-PASS includes a docs-up-to-date
   criterion. See `.collab/runbooks/git-workflow.md` §3 and the
-  root `CLAUDE.md` "Documentation hygiene" section.
+  canonical `.collab/runbooks/documentation-hygiene.md`.

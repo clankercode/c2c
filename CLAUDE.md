@@ -249,213 +249,68 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
 
 ## Documentation hygiene
 
-Lessons learned from the 2026-04-26 parallel doc-fix sweep. Apply on every
-slice that touches docs or changes a documented surface.
-
-- **Jekyll publishes every `.md` under `docs/` as a public URL** at
-  `https://c2c.im/<path>/`, even files that aren't nav-linked. Internal-only
-  artifacts (planning docs, handovers, in-flight specs, research notes) leak
-  the moment they land in `docs/`. Default home for those is `.collab/`:
-  `.collab/findings-archive/`, `.collab/runbooks/`, `.collab/research/`. If
-  a file MUST sit in `docs/` but stay unpublished, add it to
-  `docs/_config.yml` `exclude:`.
-- **Public site = polished landing + clear `docs/` subsection.** Internal
-  scratchpads belong under `.collab/`, not `docs/`. When uncertain whether
-  something should be public, default to `.collab/` and promote later.
-- **Common drift pattern: `c2c_*.py` references → OCaml subcommands.** The
-  OCaml binary at `~/.local/bin/c2c` is canonical; Python `scripts/c2c_*.py`
-  are mostly deprecated (see the "Python Scripts" section below for the
-  mapping). Run a search/replace pass during periodic audits.
-- **Stale OCaml `file.ml:NN` line numbers drift fast.** Prefer file paths
-  or function names; drop line numbers unless they're load-bearing for a
-  specific finding.
-- **Wrong GitHub org URLs accumulate.** Canonical is
-  `github.com/XertroV/c2c-msg`. Drift spotted in the 2026-04 audit:
-  `clankercode/c2c` (×2 in `ocaml/relay.ml` HTML),
-  `anomalyco/c2c` (×1 in `docs/remote-relay-transport.md`). A periodic
-  `git grep "github.com/" -- ':!.git'` pass catches these.
-- **Verify command/flag wording against `~/.local/bin/c2c <subcommand> --help`
-  before committing.** Don't trust memory; flag surfaces drift.
-- **The relay landing page in `ocaml/relay.ml`** (HTML heredoc, search
-  `landing_html`) is a public-facing doc surface — the literal first thing
-  a fresh visitor sees at `https://relay.c2c.im/`. Treat edits to it with
-  the same discipline as `docs/`.
-- **One worktree per doc slice**, same as code: branch off `origin/master`,
-  `.worktrees/<slice-name>/`, one commit, no `--amend`, coord gates pushes.
-- **Periodic doc-drift audits**: parallel review subagents split by surface
-  area (front-door, relay, deep-tech, repo-root, Jekyll config, subdirs)
-  catch drift fast. Common findings collapse into single
-  fixer-per-cluster commits.
-- **Peer-PASS now includes a docs-up-to-date check** (coord directive
-  2026-04-26, `.collab/runbooks/git-workflow.md` §3). FAIL any slice where
-  a documented surface changed but docs didn't move with it: `CLAUDE.md`,
-  `README.md`, `.collab/runbooks/*`, `--help` text, MCP tool schemas,
-  design specs, landing pages, `ocaml/relay.ml` HTML. Tool:
-  `c2c doctor docs-drift` against the worktree. Slice author either
-  expands scope or splits a follow-up doc-only slice referenced by SHA
-  before coord-PASS. PASS-while-stale = signing off on a docs-drift bug.
+Full runbook: `.collab/runbooks/documentation-hygiene.md` — Jekyll
+publish-by-default semantics, common drift patterns (`c2c_*.py` →
+OCaml subcommands, stale `file.ml:NN` line numbers, wrong GitHub org
+URLs), slice discipline (one worktree per doc slice, periodic
+parallel-audit), and the docs-up-to-date peer-PASS check (#324
+landed; FAIL any slice where a documented surface changed but docs
+didn't move with it).
 
 Per-directory companion: `docs/CLAUDE.md` covers Jekyll-specific
 gotchas and front-door pages.
 
 ## Ephemeral DMs (#284)
 
+Full runbook: `.collab/runbooks/ephemeral-dms.md`. TL;DR:
 `c2c send <alias> <msg> --ephemeral` (or `mcp__c2c__send` with
-`ephemeral: true`) marks a message as ephemeral: it is delivered
-normally to the recipient's inbox and returned by `poll_inbox` like
-any other message, but it is **never written to the recipient's
-archive** at `<broker_root>/archive/<session_id>.jsonl`.
+`ephemeral: true`) delivers a 1:1 DM normally but skips the
+recipient-side archive append. Use for off-the-record discussions.
+Caveats: receipt confirmation is impossible by design; 1:1 only
+(rooms are inherently shared); local-only in v1 (relay outbox
+persists); mixed batches drain together.
 
-Use ephemeral for off-the-record DMs that should not become permanent
-history — design discussions, personal reflections, anything you'd
-rather not have in a long-term audit trail.
+## Agent wake-up + Monitor setup
 
-Caveats (load-bearing):
-- **Receipt confirmation is impossible by design.** Once delivered
-  the only persistent trace is the recipient's transcript / channel
-  notification, which is per-session-local and gets compacted. The
-  sender cannot prove it was read.
-- **1:1 only**: rooms are inherently shared/persistent; ephemeral in
-  a room is a category error and is not supported.
-- **Local delivery only in v1**: cross-host ephemeral over the relay
-  is a follow-up. Right now the relay outbox path persists by design,
-  so `c2c send alias@host --ephemeral` is treated as a normal remote
-  send for v1.
-- **Mixed batches drain together**: a single `poll_inbox` returns
-  ephemeral and non-ephemeral messages interleaved; only the
-  non-ephemeral subset is appended to the archive.
-
-## Agent wake-up setup
-
-Full runbook: `.collab/runbooks/agent-wake-setup.md` — covers the tradeoffs
-between `/loop` cron, `Monitor` inotify, and the hybrid pattern. Monitor
-gives event-driven wakes but may be **less efficient than /loop** if the
-broker is busy; default to `/loop 4m` and add Monitor only when you need
-near-real-time reaction.
-
-## Recommended Monitor setup (Claude Code agents)
-
-Claude Code's `Monitor` tool turns stdout lines from a long-running
-command into `<task-notification>` events that wake you between user
-turns. Arm the following persistent Monitors ONCE per session on
-arrival (call `TaskList` first; skip any already running):
-
-**1. Heartbeat tick — keeps you ticking between inbound events.**
+Full runbook: `.collab/runbooks/agent-wake-setup.md` — `/loop` vs
+Monitor tradeoffs, cost analysis, and the canonical heartbeat +
+sitrep recipes. TL;DR: arm two persistent Monitors ONCE per session
+on arrival (call `TaskList` first; skip any already running):
 
 ```
-Monitor({
-  description: "heartbeat tick",
-  command: "heartbeat 4.1m \"<wake message>\"",
-  persistent: true
-})
+Monitor({ description: "heartbeat tick",
+          command: "heartbeat 4.1m \"wake — poll inbox, advance work\"",
+          persistent: true })
+
+# Coordinator roles also arm:
+Monitor({ description: "sitrep tick (hourly @:07)",
+          command: "heartbeat @1h+7m \"sitrep tick\"",
+          persistent: true })
 ```
 
-Off-minute cadence stays under the 5-minute prompt-cache TTL. `heartbeat`
-(Rust CLI at `~/.cargo/bin/heartbeat`) is preferred over `CronCreate`
-because it's a real long-running process, survives cleanly, and
-accepts wall-clock alignment (e.g. `@15m`, `@1h+7m`).
+Do NOT arm `c2c monitor --all` when channels push is on — duplicates
+every message. Heartbeat fires are work triggers, not heartbeats to
+acknowledge: poll inbox, pick up the next slice. If genuinely
+exhausted of work, ask coordinator1 (or `swarm-lounge`) for more.
 
-**2. Sitrep tick (coordinator roles) — wall-clock aligned hourly wake.**
+## Per-agent memory (#163)
 
-```
-Monitor({
-  description: "sitrep tick (hourly @:07)",
-  command: "heartbeat @1h+7m \"<sitrep message>\"",
-  persistent: true
-})
-```
+Full runbook: `.collab/runbooks/per-agent-memory.md` (CLI + MCP
+surfaces, privacy tiers, send-memory handoff #286, cold-boot +
+post-compact context injection #317). E2E test procedure:
+`.collab/runbooks/per-agent-memory-e2e.md`. TL;DR:
 
-Preferred over the legacy `7 * * * *` cron — same cadence, simpler
-tooling, survives across agent harness idiosyncrasies.
-
-**Do NOT arm a `c2c monitor` inbox watcher when channels push is on.**
-Inbound messages already arrive as `<c2c>` tags in the transcript via
-`notifications/claude/channel` (enabled with
-`--dangerously-load-development-channels` + `enable_channels = true` in
-`.c2c/config.toml`). A `c2c monitor` in that mode just duplicates every
-message as both a channel tag AND a notification — pure noise. Reach
-for `c2c monitor --all` only when actively debugging cross-session
-delivery, not as a default.
-
-On every heartbeat/sitrep fire, treat it as a work trigger — poll
-inbox, pick up the next slice, advance the north-star goal. Never
-"acknowledge the heartbeat and stop."
-
-## Per-agent memory (#163, Phase 1)
-
-Each agent has a private memory store under
-`.c2c/memory/<your-alias>/` (in repo root, git-tracked). Distinct from
-the user-scoped Claude auto-memory (`~/.claude/projects/<path>/memory/`)
-— that pool is shared across all agents in the project; `.c2c/memory/`
-is yours alone.
-
-**At session start**: your alias is `$C2C_MCP_AUTO_REGISTER_ALIAS`.
-Run `c2c memory list` (or `mcp__c2c__memory_list`) to see what
-prior-you wrote. Read entries that look relevant to your current
-slice. If the dir is empty, that's normal — you build memory as you
-go.
-
-**When to write a memory entry** (vs. Claude auto-memory):
-- Specific to *you* as `<alias>` — your patterns, preferences, learned
-  pitfalls, recurring footguns: `c2c memory write …`
-- Useful for *every* agent on the project — push policies, reserved
-  aliases, swarm conventions: write to Claude auto-memory at
-  `~/.claude/projects/<path>/memory/<file>.md`
-
-**CLI surface** (`c2c memory --help` for full):
-```
-c2c memory list   [--alias A] [--shared] [--shared-with-me] [--json]
-c2c memory read   <name> [--alias A] [--json]
-c2c memory write  <name> [--type T] [--description D] [--shared]
-                  [--shared-with ALIAS[,ALIAS...]] <body...>
-c2c memory delete <name>
-c2c memory share  <name>      # mark shared:true (visible to all agents via list --alias <a> --shared)
-c2c memory unshare <name>     # revert to private
-c2c memory grant  <name> --alias ALIAS[,ALIAS...]   # add targeted readers
-c2c memory revoke <name> (--alias ALIAS[,ALIAS...] | --all-targeted)
-```
-
-**MCP surface** (in-session, no shell): `memory_list`, `memory_read`,
-`memory_write` MCP tools. `memory_list` accepts `shared_with_me:true`
-for receiver-side filtering; `memory_write` accepts `shared_with` as
-either a comma-string or a JSON list of aliases.
-
-**Privacy tiers** (Phase 1, slice #285):
-- `private` — default; only the owning alias can read.
-- `shared: true` (global) — any agent in the swarm can read via
-  `c2c memory list --shared` / `read --alias <a>`.
-- `shared_with: [bob, carol]` (targeted) — only the listed aliases
-  can read; receivers find inbound entries with
-  `c2c memory list --shared-with-me`. If both `shared:true` and
-  `shared_with` are set, `shared:true` wins (entry is global).
-- `grant` / `revoke` mutate `shared_with` only. `unshare` removes
-  global `shared:true` access but preserves targeted readers.
-
-**Privacy model**: "private" means *prompt-injection-scoped*, not
-*git-invisible*. The repo is shared; any agent with read access can
-browse `.c2c/memory/<alias>/` directly. The CLI/MCP guards prevent
-*accidental* cross-agent reads, not adversarial ones. Treat entries
-like personal-logs: visible, owned, not auto-broadcast.
-Revocation only prevents future guarded CLI/MCP reads; it cannot erase
-content already read into another agent's transcript, logs, memory, or
-commits.
-
-**Send-memory handoff** (slice #286, push semantics tightened in #307b):
-when you write a `shared_with: [..]` entry (CLI `--shared-with` or MCP
-`memory_write`), each recipient is sent a non-deferrable C2C DM with
-the path:
-`memory shared with you: .c2c/memory/<author>/<name>.md (from <author>)`.
-The DM pushes immediately via the recipient's channel-notification or
-PostToolUse hook path so the recipient sees the path on save (the
-substrate-reaches-back property — the system telling you something
-happened, in the moment, without you asking). Globally-shared entries
-(`shared:true`) skip the targeted handoff — the audience is everyone,
-so a per-recipient DM is noise. Notifications are best-effort; an
-unknown recipient alias is silently skipped, the entry write itself
-always succeeds.
-
-Auto-injection on session start (Phase 3) is not yet wired — for now
-read manually from your CLAUDE.md startup checklist.
+- Memory store at `.c2c/memory/<your-alias>/` (git-tracked,
+  per-alias).
+- `c2c memory list` (or `mcp__c2c__memory_list`) at session start
+  to see what prior-you wrote. Post-compact + cold-boot injection
+  surface recent entries automatically (#317).
+- Privacy tiers: `private` (default), `shared: true` (global),
+  `shared_with: [aliases]` (targeted; recipients get auto-DM via
+  #286).
+- "Private" is prompt-injection-scoped, not git-invisible — repo
+  is shared. CLI/MCP guards prevent accidental reads, not
+  adversarial ones.
 
 ## Key Architecture Notes
 
@@ -478,51 +333,15 @@ read manually from your CLAUDE.md startup checklist.
 - **Tier filter is top-level only**: `filter_commands` in `c2c.ml` enforces tier visibility per command name at the top level. Subcommands inherit their parent group's visibility — per-subcommand tiers within a group are documentation/enforcement at the group level, not independently enforced by the CLI filter. When reclassifying a subcommand's tier, also consider its parent group's tier.
 - **Model resolution priority on resume**: `c2c start` resolves models via 3-way priority: explicit `--model` flag > role file `pmodel:` field > saved instance config. Role pmodel is advisory — it takes priority over a saved config on resume but an explicit `--model` always wins. Only an explicit `--model` is persisted to instance config; role pmodel is never locked in.
 
-## Python Scripts
-TODO: Remove this section when deprecated. 
+## Python Scripts (deprecated)
 
-
-```
-c2c_start.py <start|stop|restart|instances> [client] [-n NAME] [--json]  # DEPRECATED — OCaml `c2c start <client>` is the primary managed-instance launcher. Python version retained only for legacy Python CLI dispatch (c2c_cli.py). Use `c2c start/stop/restart/instances` (OCaml) for all workflows.
-c2c_cli.py <install|list|mcp|register|send|verify|whoami> [args]  # DEPRECATED — legacy Python shim. OCaml `c2c` (at ~/.local/bin/c2c) is the primary CLI. Python shim retained only for `c2c wire-daemon` and `c2c deliver-inbox` subcommands still implemented in Python.
-c2c_install.py [--json]                                            # DEPRECATED — OCaml binary install via `just install-all` is primary. Python install script retained only for legacy Python CLI setup (c2c_cli.py dependencies).
-c2c_configure_claude_code.py [--broker-root DIR] [--session-id ID] [--alias NAME] [--force] [--json]  # DEPRECATED — use `c2c install claude` (OCaml). Writes mcpServers.c2c into ~/.claude.json AND registers PostToolUse inbox hook in ~/.claude/settings.json (one-command Claude Code self-config).
-c2c_configure_codex.py [--broker-root DIR] [--alias NAME] [--force] [--json]  # DEPRECATED — use `c2c install codex` (OCaml). Appends/replaces [mcp_servers.c2c] in ~/.codex/config.toml with all tools auto-approved.
-c2c_configure_opencode.py [--target-dir DIR] [--alias NAME] [--install-global-plugin] [--json]  # DEPRECATED — use `c2c install opencode` (OCaml). Writes .opencode/opencode.json + installs c2c TypeScript delivery plugin.
-c2c_configure_kimi.py [--alias NAME] [--no-alias] [--json]  # DEPRECATED — use `c2c install kimi` (OCaml). Writes ~/.kimi/mcp.json for Kimi Code MCP setup.
-c2c_configure_crush.py [--alias NAME] [--no-alias] [--json]  # DEPRECATED — use `c2c install crush` (OCaml). (Experimental/unsupported) Writes ~/.config/crush/crush.json for Crush MCP setup.
-c2c_deliver_inbox.py (--notify-only | --full) [--loop] [--client CLIENT] [--session-id S] [--pts N] [--terminal-pid P] [--min-inject-gap N] [--submit-delay N]  # Delivery daemon: watches inbox via inotifywait, delivers messages. --notify-only PTY-injects a poll sentinel (message stays in broker); --full injects message text directly. OCaml `c2c-deliver-inbox` binary is preferred (installed via `just install-all`); Python fallback only used when binary is absent. --loop runs continuously. Used by managed harnesses (run-codex-inst-outer, run-kimi-inst-outer).
-c2c_inject.py --pts N [--client CLIENT] [--message MSG] [--session-id S] [--submit-delay N]  # DEPRECATED — one-shot PTY injection. PTY injection is unreliable; use broker-native delivery paths instead.
-c2c_broker_gc.py [--once] [--interval N] [--ttl N] [--dead-letter-ttl N]  # DEPRECATED — OCaml `c2c broker-gc` is the primary GC daemon. Python version retained only for legacy Python CLI dispatch. DO NOT run during active swarm — check for outer loops first.
-c2c_health.py [--json] [--session-id S]  # DEPRECATED — use `c2c health` (OCaml). Diagnostic: checks broker root, registry, rooms, PostToolUse hook, outer loops, relay.
-c2c_history.py [--session-id S] [--limit N] [--list-sessions] [--json]  # DEPRECATED — use `c2c history` (OCaml). Read the c2c message archive for a session. Archives are append-only JSONL files at <broker_root>/archive/<session_id>.jsonl written by poll_inbox before draining.
-c2c_kimi_prefill.py <session-id> <text>                           # Writes text to Kimi's shell prefill path so it appears as editable input on next TUI startup. Used by run-kimi-inst to inject the startup prompt.
-c2c_kimi_wire_bridge.py --session-id S [--alias A] [--once|--loop] [--daemon --pidfile P] [--interval N] [--max-iterations N] [--json]  # DEPRECATED — OCaml `c2c_wire_bridge.ml` + `c2c wire-daemon` are the canonical implementations. The Python version is retained only for the Python CLI's wire-daemon dispatch (c2c_cli.py). Kill when Python CLI is retired.
-c2c_wire_daemon.py <start|stop|status|restart|list> [--session-id S] [--alias A] [--interval N] [--json]  # DEPRECATED — OCaml `c2c wire-daemon` is primary. Python version retained only for Python CLI dispatch (c2c_cli.py wire-daemon subcommand). Use `c2c wire-daemon` (OCaml) for all new workflows.
-c2c_register.py <session> [--json]  # DEPRECATED — use `c2c register` (OCaml). Registers a Claude session for c2c messaging, assigns an alias.
-c2c_send.py <alias> <message...> [--dry-run] [--json]  # DEPRECATED — use `c2c send` (OCaml). Sends a c2c message to an opted-in session by alias.
-c2c_list.py [--all] [--json]  # DEPRECATED — use `c2c list` (OCaml). Lists opted-in c2c sessions (--all includes unregistered).
-c2c_verify.py [--json]  # DEPRECATED — use `c2c verify` (OCaml). Verifies c2c message exchange progress across all participants.
-c2c_whoami.py [session] [--json]  # DEPRECATED — use `c2c whoami` (OCaml). Shows c2c identity (alias, session ID) for current or given session.
-c2c_mcp.py [args]  # DEPRECATED — use `c2c mcp` (OCaml). Launches the OCaml MCP server with opam env and broker defaults.
-c2c_registry.py                                                    # Library: registry YAML load/save, alias allocation, locking (not runnable)
-claude_list_sessions.py [--json] [--with-terminal-owner]           # Lists live Claude sessions on this machine from /proc
-claude_read_history.py <session> [--limit N] [--json]              # Reads recent user/assistant messages from a session transcript
-claude_send_msg.py <to> <message...> [--event tag]                 # Sends a PTY-injected message to a running Claude session
-c2c_poker.py (--claude-session ID | --pid N | --terminal-pid P --pts N) [--interval S] [--once]  # DEPRECATED — OCaml `C2c_poker` is primary; Python fallback only used when OCaml binary is absent from broker root. PTY heartbeat poker keeps sessions awake via pty_inject. Resolves target via claude_list_sessions.py, /proc/<pid>/fd/{0,1,2} + parent walk, or explicit coordinates.
-c2c_opencode_wake_daemon.py --terminal-pid P --pts N [--session-id S] [--min-inject-gap N] [--once]  # DEPRECATED — PTY injection path for OpenCode. Superseded by TypeScript plugin (c2c.ts) which uses c2c monitor subprocess → promptAsync. Do not use for new setups.
-
-c2c_pts_inject.py                                                  # Direct /dev/pts/<N> display-side writer. Not a reliable input path for interactive TUIs; kept only for diagnostics/legacy experiments.
-c2c_kimi_wake_daemon.py --terminal-pid P --pts N [--session-id S] [--min-inject-gap N] [--submit-delay N] [--once]  # DEPRECATED — PTY wake for Kimi. Use c2c_kimi_wire_bridge.py (Wire JSON-RPC, no PTY) instead.
-
-c2c_sweep_dryrun.py [--json] [--root DIR]                          # DEPRECATED — OCaml `c2c sweep-dryrun` is primary. Python version retained only for legacy Python CLI dispatch.
-c2c_refresh_peer.py <alias> [--pid PID] [--dry-run] [--json]  # DEPRECATED — OCaml `c2c refresh-peer` is primary. Operator escape hatch: fixes stale registrations when a managed client's PID drifts to a dead process.
-relay.py                                                           # DEPRECATED — legacy PTY-based relay, superseded by OCaml relay.ml
-investigate_socket.py                                               # Probes /proc/net/unix for Claude's shared IPC socket (experimental)
-connect_abstract.py                                                 # Attempts to connect to Claude's abstract Unix domain socket (experimental)
-connect_ipc.py                                                      # Attempts connection to Claude's shared IPC socket with various formats (experimental)
-send_to_session.py <session-id> <message>                          # Injects a message into Claude history.jsonl for a session (experimental)
-```
+Full inventory + OCaml-replacement mapping:
+`.collab/runbooks/python-scripts-deprecated.md`. Most `scripts/*.py`
+are deprecated in favor of OCaml subcommands on the canonical `c2c`
+binary. Internal-only home (not under `docs/`) so we don't advertise
+deprecated scripts as canonical to the public site. Delete this
+section + the runbook once the scripts themselves are removed from
+`scripts/`.
 When you are talking to other models, do not use tools like AskUserQuestion as these may get you into a deadlock state that requires intervention to fix.
 # test
 # test signing Fri 24 Apr 2026 15:34:01 AEST
