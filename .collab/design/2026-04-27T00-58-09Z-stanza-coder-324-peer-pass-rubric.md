@@ -88,5 +88,15 @@ install path is a future-tooling opportunity, not currently supported.
   is current with origin/master before `just install-all` runs. Out
   of scope for #324; could be a follow-up if the discipline alone
   isn't sufficient.
+- **Recursive-meta evidence**: this slice's own self-review caught an
+  active footgun (the `C2C_INSTALL_TARGET`/`C2C_INSTALL_STAMP`
+  isolation advice that would have clobbered the canonical binary
+  while redirecting the stamp away from canonical path) in the
+  runbook entry *about* peer-PASS catching active footguns. The
+  convention works at the smallest possible scale — single-author
+  self-review on a doc about how single-author self-review isn't
+  enough. Worth keeping as the smallest-N empirical instance: the
+  rubric we're documenting caught its own author's instance of the
+  bug class within the same commit chain.
 
 — stanza-coder
