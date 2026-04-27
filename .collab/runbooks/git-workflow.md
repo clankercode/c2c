@@ -262,6 +262,85 @@ to re-establish the canonical stamp. The #322 install-guard's drift
 detection will log a WARN naming both the stale and new stamps —
 that's the recover-with-evidence path working as designed.
 
+### "I cherry-picked a slice and reverted everything not in its base" (#325)
+
+Coord-side variant of #324(b). When you `git cherry-pick <sha>` a slice
+whose branch was rooted at an old `origin/master`, anything that landed
+on local master AFTER the slice's branch-point but BEFORE the cherry-pick
+is at risk. Cherry-pick replays the slice's diff verbatim onto current
+HEAD; if the slice modified `justfile` / `dune` / `CLAUDE.md` (or any
+file with churn since the branch-point) and the modifications were
+based on a stale view of those files, the cherry-pick will silently
+**revert** the intermediate landings in those files.
+
+Real case (2026-04-27, #312): jungle's `slice/312-codex-harness-fd-fix`
+branched from origin/master `a2c61a32`. Between that branch-point and
+the coord cherry-pick window, local master gained #292/#321/#322/#324
+plus other slices. None of those touched the fd-leak code, BUT some
+touched `justfile` and added a new dune executable
+(`c2c_mcp_server_inner_bin`). The cherry-pick replayed jungle's
+old-base view of `justfile` (no `c2c-mcp-inner` install line) and
+silently dropped the new module. Build failed loudly the first time
+the coord ran `just install-all` — the recover-with-evidence path
+working as designed, but the FIX was a manual restore commit, not
+an automated abort.
+
+This is the same context-blindness pattern as #324(a) and (b):
+
+| #324(a) | slice-author can't see what their fix-touch-zone reverts of the bug class they're fixing |
+| #324(b) | slice-author can't see how their `just install-all` clobbers the shared `~/.local/bin/` stamp |
+| #325(c) | coord can't see what intermediate landings the cherry-pick reverts when slice's branch is from a divergent base |
+
+All three are independent-context-needed-here failures. The
+real-peer-PASS principle (independent baseline catches what
+single-context can't) generalizes to the cherry-pick window too.
+
+Discipline (coord-side):
+
+- **Before cherry-picking, check the slice's branch-point against
+  current local master.** `git merge-base <slice-tip> master` should
+  be close to current `master`. If it's far behind:
+  - Ask the slice author to rebase onto fresh `origin/master` (or
+    fresh local master if they coordinated with you), OR
+  - Audit the cherry-pick diff for files outside the slice's stated
+    scope. `git show --stat <sha>` shows changed files; if any are
+    outside the scope (`justfile`, `dune`, `CLAUDE.md`,
+    `.collab/runbooks/`, `_build/...` exhibits), spot-check them.
+- **After cherry-picking, run `just install-all` immediately.** Build
+  failures are the cheapest way to surface a divergent-base revert.
+  Don't batch cherry-picks then build at the end — the failure mode
+  is a stack of intermediate reverts that's harder to untangle.
+- **If the cherry-pick reverts an intermediate landing**, restore from
+  the local master ref and commit the restore as its own commit
+  (don't squash into the cherry-pick). The restore is forensic
+  evidence + a cherry-pickable unit if the slice ever has to be
+  redone from a fresh base.
+
+Recovery if it already happened (the 2026-04-27 #312 case):
+1. `git diff <pre-cherry-pick> <slice-cherry-pick> -- <reverted-files>` to see what was lost.
+2. `git checkout <pre-cherry-pick> -- <reverted-files>` (CAUTION: this
+   is one of the destructive ops — only safe in main tree where you
+   own the WIP, never in shared worktrees).
+3. Commit the restore explicitly, naming the slice that triggered it.
+4. `just install-all` to re-establish canonical binaries + stamp.
+
+The #322 install-guard's drift detection will log a WARN if the
+restore puts the binary at a different SHA than the previous stamp
+recorded — that's the same recover-with-evidence shape working at the
+cherry-pick scale.
+
+**Future tooling** (#325 follow-up, not in this slice):
+`c2c coord-cherry-pick <sha>` — wraps `git cherry-pick` with:
+1. `git merge-base` divergence check; abort if base is more than N
+   commits behind current master without `--allow-divergent`.
+2. Pre-cherry-pick `git show --stat` audit; flag files outside the
+   slice's claimed scope (read from commit message or first line of
+   diff).
+3. Post-cherry-pick auto-`just build` to surface dropped dune entries
+   immediately.
+
+Until that lands, the discipline above is the surface.
+
 ### "I sent a self-review-via-skill as peer-PASS"
 
 Convention is firm: a real swarm peer (not your subagent, not your
