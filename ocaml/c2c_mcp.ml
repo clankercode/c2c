@@ -3167,10 +3167,10 @@ let base_tool_definitions =
       ~properties:
         [ prop "reason" "Optional short reason logged in the stop report (e.g. 'task complete')." ]
   ; tool_definition ~name:"memory_list"
-      ~description:"List memory entries. Returns a JSON array of {name, description, shared, shared_with} objects. With shared_with_me=true, scans every agent's memory dir for entries that explicitly list the current alias in their shared_with frontmatter."
+      ~description:"List memory entries. Returns a JSON array of {alias, name, description, shared, shared_with} objects. The alias field is the entry's owner (the agent whose memory dir the entry lives in), NOT the caller's alias — use shared_with_me=true to filter for entries shared with the current caller. With shared_with_me=true, scans every agent's memory dir for entries that explicitly list the current alias in their shared_with frontmatter."
       ~required:[]
       ~properties:
-        [ prop "shared_with_me" "When true, return entries (across every alias dir) where the current alias appears in shared_with. Receiver-side filter."
+        [ prop "shared_with_me" "When true, return entries (across every alias dir) where the current alias appears in shared_with. Receiver-side filter. Each returned item's alias field is the entry's owner (not the caller)."
         ]
   ; tool_definition ~name:"memory_read"
       ~description:"Read a memory entry by name. Returns {name, description, shared, shared_with, content} on success. Cross-agent reads require shared:true OR caller's alias in shared_with."
