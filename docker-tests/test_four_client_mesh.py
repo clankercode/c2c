@@ -154,23 +154,17 @@ class TestFourClientMesh:
             )
             assert r.returncode == 0, f"{name} registration failed: {r.stderr} {r.stdout}"
 
-        # Send all 6 ordered-pair DMs
-        send_results = {}
+        # Send all 6 ordered-pair DMs and poll each immediately after sending.
+        # Must interleave send/poll per pair because poll_inbox DRAINS the inbox.
+        failures = []
         for sender, recipient in _PAIRS:
             msg = f"{sender}-to-{recipient}-{ts}"
             r, sender_sid, sender_alias = register_and_send(
                 services[sender], aliases[recipient], msg, ts
             )
-            send_results[(sender, recipient)] = (r, msg, sender_sid, sender_alias)
             assert r.returncode == 0, (
                 f"{sender}->{recipient} send failed: {r.stderr} {r.stdout}"
             )
-
-        # Poll each recipient for their expected message
-        failures = []
-        for sender, recipient in _PAIRS:
-            r, msg, sender_sid, sender_alias = send_results[(sender, recipient)]
-            # The docker_compose_run returns (returncode, stdout, stderr)
             send_stderr = r.stderr if hasattr(r, 'stderr') else ''
             found, inbox_content = poll_for_msg(
                 services[recipient],
