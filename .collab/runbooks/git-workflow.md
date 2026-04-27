@@ -91,6 +91,33 @@ old behavior is a docs-drift bug being signed off. Run
 the slice author either expands scope or splits a follow-up doc-only
 slice with the SHA referenced before coord-PASS.
 
+**Reviewer checklist must include "no new instance of same bug class
+in own touch zone"** (#324, after observing two consecutive
+2026-04-26/27 cases). When a slice claims to fix a bug class —
+fd-leak, install-state corruption, race, ECHILD, etc. — the reviewer
+explicitly checks whether the fix code itself contains a new instance
+of the same class in the same touch zone. Two real cases:
+
+- **#311 slice A** claimed to refactor MCP server inner/outer; the
+  diff silently reverted the entire #302+#322 install-guard
+  infrastructure from `justfile install-all` (cherry-pick base
+  predated the guard). The "fix-this-binary-path" slice reverted the
+  binary-path safety machinery.
+- **#312 fd-leak fix** introduced a double-close of `fd4` on the
+  failure path (close at new line + pre-existing close kept), creating
+  a fd-recycling hazard — the same class of bug the slice was
+  fixing.
+
+These are not author errors of incompetence; they are
+context-blindness: the slice author shares a session-context with the
+slice-base-assumption and can't see what they reverted or duplicated.
+Real-peer-PASS with a fresh master baseline catches them.
+
+For reviewers: when the slice's commit message names a bug class as
+the target, do an explicit pass over the diff hunks asking "does this
+diff itself introduce a new instance of the same class?" — and stop
+reading until you've answered. This is cheap and high-yield.
+
 ### 4. New commit for every fix — never `--amend`
 
 If your peer FAILs your SHA, fix it in a NEW commit. Never `--amend`.
@@ -182,6 +209,46 @@ next commit. Detached HEAD commits are easy to lose.
 
 You amended after the peer reviewed. Don't. Make a new commit for the
 fix, send the new SHA.
+
+### "I ran `just install-all` from a feature worktree and clobbered everyone's stamp" (#324)
+
+`~/.local/bin/c2c*` is a **shared install path**. Every worktree's
+`just install-all` writes the same binaries and the same stamp
+(`~/.local/bin/.c2c-version`). When you install from a feature
+worktree whose HEAD is divergent from current local master, you
+overwrite the canonical binaries (and their recorded sha256s) with
+your slice's build — which may include uncommitted debug-printfs,
+half-applied refactors, or a base predating the latest cherry-picks.
+
+Symptoms of having done this:
+
+- Other agents' `c2c worktree gc --help` (or any new subcommand from
+  a recently-landed slice) returns "unknown command" — your install
+  reverted them.
+- Operator notices `lots of debug logs` from the running broker
+  whose source isn't on master.
+- `c2c doctor` shows the install-stamp diverged from `origin/master`'s
+  ancestry.
+- The next install-all from local master logs a divergent-SHA warn
+  (#322) — your worktree's SHA was clobbering it.
+
+Discipline: **don't `just install-all` from a feature worktree
+against the shared `~/.local/bin/` path** unless you've explicitly:
+
+1. Cherry-picked latest master into your feature branch (so your
+   build doesn't revert anyone), AND
+2. Confirmed your stamp will be the canonical record (you intend to
+   be the latest installer for now).
+
+If you need to test your slice's binary in isolation, set
+`C2C_INSTALL_TARGET` and `C2C_INSTALL_STAMP` to a per-worktree path,
+or just run the binary out of `_build/default/...` directly.
+
+Recovery if it already happened: have someone (usually coordinator1)
+run `just install-all` from a clean main tree on current local master
+to re-establish the canonical stamp. The #322 install-guard's drift
+detection will log a WARN naming both the stale and new stamps —
+that's the recover-with-evidence path working as designed.
 
 ### "I sent a self-review-via-skill as peer-PASS"
 
