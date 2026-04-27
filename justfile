@@ -111,28 +111,48 @@ install-git-hooks:
     done
 
 # Install OCaml CLI binary to ~/.local/bin (build + copy)
+# Routes through the shared flock+guard+stamp path (#322) so partial
+# installs can't bypass the integrity guard.
 install-cli:
     scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/cli/c2c.exe
-    rm -f ~/.local/bin/c2c
-    cp _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c
+    mkdir -p ~/.local/bin
+    flock ~/.local/bin/.c2c-install.lock bash -c '\
+      set -euo pipefail; \
+      scripts/c2c-install-guard.sh; \
+      rm -f ~/.local/bin/c2c; \
+      cp _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c; \
+      scripts/c2c-install-stamp.sh; \
+    '
 
 # Install OCaml MCP server binary to ~/.local/bin (build + copy)
 install-mcp:
     scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/server/c2c_mcp_server.exe
-    rm -f ~/.local/bin/c2c-mcp-server
-    cp _build/default/ocaml/server/c2c_mcp_server.exe ~/.local/bin/c2c-mcp-server
+    mkdir -p ~/.local/bin
+    flock ~/.local/bin/.c2c-install.lock bash -c '\
+      set -euo pipefail; \
+      scripts/c2c-install-guard.sh; \
+      rm -f ~/.local/bin/c2c-mcp-server; \
+      cp _build/default/ocaml/server/c2c_mcp_server.exe ~/.local/bin/c2c-mcp-server; \
+      scripts/c2c-install-stamp.sh; \
+    '
 
 # Install OCaml inbox hook binary to ~/.local/bin (build + copy)
 install-hook:
     scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/tools/c2c_inbox_hook.exe
-    rm -f ~/.local/bin/c2c-inbox-hook-ocaml
-    cp _build/default/ocaml/tools/c2c_inbox_hook.exe ~/.local/bin/c2c-inbox-hook-ocaml
+    mkdir -p ~/.local/bin
+    flock ~/.local/bin/.c2c-install.lock bash -c '\
+      set -euo pipefail; \
+      scripts/c2c-install-guard.sh; \
+      rm -f ~/.local/bin/c2c-inbox-hook-ocaml; \
+      cp _build/default/ocaml/tools/c2c_inbox_hook.exe ~/.local/bin/c2c-inbox-hook-ocaml; \
+      scripts/c2c-install-stamp.sh; \
+    '
 
-# Install all OCaml binaries (CLI + MCP server + inbox hook)
+# Install all OCaml binaries (CLI + MCP server + MCP inner + inbox hook)
 # Build all first, then copy all; avoids half-updated state on build failure.
 # Also installs git hooks (including pre-push coordinator gate).
 install-all: codegen-role-designer install-git-hooks
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/cli/c2c.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
+    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/cli/c2c.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/server/c2c_mcp_server_inner_bin.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
     # Guard + atomic install + stamp under a single flock so concurrent
     # `just bi` runs from different worktrees can't race past the guard
     # then clobber each other. See scripts/c2c-install-guard.sh (#302).
@@ -140,9 +160,10 @@ install-all: codegen-role-designer install-git-hooks
     flock ~/.local/bin/.c2c-install.lock bash -c '\
       set -euo pipefail; \
       scripts/c2c-install-guard.sh; \
-      rm -f ~/.local/bin/c2c ~/.local/bin/c2c-mcp-server ~/.local/bin/c2c-inbox-hook-ocaml ~/.local/bin/c2c-cold-boot-hook ~/.local/bin/cc-quota; \
+      rm -f ~/.local/bin/c2c ~/.local/bin/c2c-mcp-server ~/.local/bin/c2c-mcp-inner ~/.local/bin/c2c-inbox-hook-ocaml ~/.local/bin/c2c-cold-boot-hook ~/.local/bin/cc-quota; \
       cp _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c; \
       cp _build/default/ocaml/server/c2c_mcp_server.exe ~/.local/bin/c2c-mcp-server; \
+      cp _build/default/ocaml/server/c2c_mcp_server_inner_bin.exe ~/.local/bin/c2c-mcp-inner; \
       cp _build/default/ocaml/tools/c2c_inbox_hook.exe ~/.local/bin/c2c-inbox-hook-ocaml; \
       cp _build/default/ocaml/tools/c2c_cold_boot_hook.exe ~/.local/bin/c2c-cold-boot-hook; \
       printf "#!/usr/bin/env bash\nset -euo pipefail\nexec \"%s/scripts/cc-quota\" \"\$@\"\n" "$PWD" > ~/.local/bin/cc-quota; \
