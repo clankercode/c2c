@@ -6878,6 +6878,90 @@ let test_notify_empty_shared_with_is_noop () =
       check int "no notifications for empty shared_with" 0
         (List.length notified))
 
+(* #327: every send-memory-handoff attempt is logged to broker.log
+   so silent failures (handoff didn't reach recipient inbox despite
+   the entry write succeeding) are diagnosable after-the-fact.
+   Pre-#327 there was no broker-side trace; the 2026-04-27 incident
+   had to be confirmed via inbox archive inspection. *)
+let test_notify_logs_each_attempt_to_broker_log () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-log-author" ~alias:"alice-log"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-log-bob" ~alias:"bob-log"
+        ~pid:None ~pid_start_time:None ();
+      let _ =
+        C2c_mcp.notify_shared_with_recipients
+          ~broker ~from_alias:"alice-log" ~name:"logged-note"
+          ~shared:false ~shared_with:["bob-log"] ()
+      in
+      let log_path = Filename.concat dir "broker.log" in
+      check bool "broker.log exists after handoff" true
+        (Sys.file_exists log_path);
+      let log_contents =
+        let ic = open_in log_path in
+        Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+          let buf = Buffer.create 256 in
+          (try while true do
+             Buffer.add_string buf (input_line ic);
+             Buffer.add_char buf '\n'
+           done with End_of_file -> ());
+          Buffer.contents buf)
+      in
+      let contains needle =
+        let nl = String.length needle in
+        let hl = String.length log_contents in
+        let rec scan i = i + nl <= hl
+          && (String.sub log_contents i nl = needle || scan (i+1))
+        in scan 0
+      in
+      check bool "log includes send_memory_handoff event" true
+        (contains "\"event\":\"send_memory_handoff\"");
+      check bool "log includes from alias" true
+        (contains "\"from\":\"alice-log\"");
+      check bool "log includes to alias" true
+        (contains "\"to\":\"bob-log\"");
+      check bool "log includes entry name" true
+        (contains "\"name\":\"logged-note\"");
+      check bool "log marks ok=true on success" true
+        (contains "\"ok\":true"))
+
+let test_notify_logs_failure_with_error_field () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-failog-author"
+        ~alias:"alice-failog" ~pid:None ~pid_start_time:None ();
+      (* Recipient "ghost-failog" not registered → enqueue_message raises →
+         logged with ok:false + error string. *)
+      let notified =
+        C2c_mcp.notify_shared_with_recipients
+          ~broker ~from_alias:"alice-failog" ~name:"failog-note"
+          ~shared:false ~shared_with:["ghost-failog"] ()
+      in
+      check int "unknown recipient is silently dropped" 0 (List.length notified);
+      let log_path = Filename.concat dir "broker.log" in
+      let log_contents =
+        let ic = open_in log_path in
+        Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+          let buf = Buffer.create 256 in
+          (try while true do
+             Buffer.add_string buf (input_line ic);
+             Buffer.add_char buf '\n'
+           done with End_of_file -> ());
+          Buffer.contents buf)
+      in
+      let contains needle =
+        let nl = String.length needle in
+        let hl = String.length log_contents in
+        let rec scan i = i + nl <= hl
+          && (String.sub log_contents i nl = needle || scan (i+1))
+        in scan 0
+      in
+      check bool "log marks ok=false on failure" true
+        (contains "\"ok\":false");
+      check bool "log includes error field" true
+        (contains "\"error\":"))
+
 (* #307b: handoff DM must be visible to drain_inbox_push (the path the
    PostToolUse hook + channel-notification watcher use). With #286's
    original [~deferrable:true], drain_inbox_push filtered the handoff
@@ -7301,6 +7385,10 @@ let () =
                test_notify_silently_skips_unknown_alias
            ; test_case "notify_shared_with empty shared_with is noop" `Quick
                test_notify_empty_shared_with_is_noop
+           ; test_case "notify_shared_with logs each attempt to broker.log (#327)" `Quick
+               test_notify_logs_each_attempt_to_broker_log
+           ; test_case "notify_shared_with logs failures with error field (#327)" `Quick
+               test_notify_logs_failure_with_error_field
            ; test_case "notify_shared_with appears in drain_inbox_push (#307b)" `Quick
                test_notify_shared_with_appears_in_push_drain
            ; test_case "delivery_mode_histogram counts and by-sender (#307a)" `Quick

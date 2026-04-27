@@ -2894,7 +2894,41 @@ end
 
    Notifications are deferrable (no push-spam) and best-effort
    (try/with swallows enqueue failures so the entry write itself never
-   fails because of a notification). *)
+   fails because of a notification).
+
+   #327: every handoff attempt is logged to broker.log as
+   `{"ts", "event": "send_memory_handoff", "from", "to", "name", "ok",
+   "error"?}` so silent failures (handoff didn't reach the recipient
+   inbox despite the entry write succeeding) are diagnosable after-
+   the-fact. The 2026-04-27 #327 case had no broker-side trace until
+   this logging existed. *)
+
+let log_handoff_attempt ~broker_root ~from_alias ~to_alias ~name ~ok ~error =
+  (try
+     let path = Filename.concat broker_root "broker.log" in
+     let ts = Unix.gettimeofday () in
+     let base =
+       [ ("ts", `Float ts)
+       ; ("event", `String "send_memory_handoff")
+       ; ("from", `String from_alias)
+       ; ("to", `String to_alias)
+       ; ("name", `String name)
+       ; ("ok", `Bool ok)
+       ]
+     in
+     let line =
+       (match error with
+        | None -> `Assoc base
+        | Some e -> `Assoc (base @ [ ("error", `String e) ]))
+       |> Yojson.Safe.to_string
+     in
+     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
+     (try
+        output_string oc (line ^ "\n");
+        close_out oc
+      with _ -> close_out_noerr oc)
+   with _ -> ())
+
 let notify_shared_with_recipients
     ~broker ~from_alias ~name ?description ~shared ~shared_with () =
   if shared && shared_with <> [] then []
@@ -2907,6 +2941,7 @@ let notify_shared_with_recipients
       "memory shared with you: .c2c/memory/%s/%s.md (from %s)%s"
       from_alias name from_alias descr_suffix
     in
+    let broker_root = Broker.root broker in
     List.filter_map
       (fun recipient ->
         if recipient = from_alias then None
@@ -2919,8 +2954,14 @@ let notify_shared_with_recipients
             Broker.enqueue_message broker
               ~from_alias ~to_alias:recipient
               ~content:msg ~deferrable:false ();
+            log_handoff_attempt ~broker_root ~from_alias
+              ~to_alias:recipient ~name ~ok:true ~error:None;
             Some recipient
-          with _ -> None)
+          with e ->
+            log_handoff_attempt ~broker_root ~from_alias
+              ~to_alias:recipient ~name ~ok:false
+              ~error:(Some (Printexc.to_string e));
+            None)
       shared_with
 
 let channel_notification ?(role : string option = None) ({ from_alias; to_alias; content; deferrable = _ } : message) =
