@@ -84,11 +84,6 @@ let likes_shell_substitution (s : string) : bool =
   in
   scan 0
 
-(* Canonical [fds_to_close] and [close_unlisted_fds] — see lines 13–40.
-   The deliver daemon also defines these locally before exec; do not move. *)
-let close_unlisted_fds ~(preserve : Unix.file_descr list) =
-  List.iter (fun fd -> try Unix.close fd with _ -> ()) (fds_to_close ~preserve)
-
 (* Terminal title — OSC-0 / tmux pane title.
    Respects NO_COLOR and TERM=dumb. Title format: "<glyph> <alias> (<client>)"
    Called from run_outer_loop so operators can scan tmux panes at a glance. *)
@@ -3543,7 +3538,7 @@ let run_outer_loop ~(name : string) ~(client : string)
       in
 
       (* Spawn the managed client with SIGCHLD reset to SIG_DFL. The outer
-         loop sets SIGCHLD=SIG_IGN at line 488 to auto-reap its own
+         loop sets SIGCHLD=SIG_IGN to auto-reap its own
          sidecar children (deliver daemon, poker). SIG_IGN is inherited
          across execve, so without this reset the managed client (Claude
          Code, Codex, etc.) would inherit it too — the kernel would auto-
@@ -3651,57 +3646,70 @@ let run_outer_loop ~(name : string) ~(client : string)
                  match xml_output_fd with
                  | Some (_, fd) -> [fd]
                  | None -> []
-               in
-               begin
-                 match
-                   start_deliver_daemon
-                     ~name
-                     ~client
-                     ~broker_root
-                     ?child_pid_opt:(Some pid)
-                     ?xml_output_fd:(Option.map fst xml_output_fd)
-                     ?xml_output_path
-                     ?event_fifo_path:request_events_fifo_opt
-                     ?response_fifo_path:request_responses_fifo_opt
-                     ~preserve_fds
-                     ()
-                 with
-                | Some p ->
-                    deliver_pid := Some p;
-                    write_pid (deliver_pid_path name) p
-                | None ->
-                    (* If the daemon failed to start, close the xml fd we duplicated
-                       for it (fd4) and clean up any fifos we passed to it. The outer
-                       process keeps these fds open only for the daemon; if the daemon
-                       is not running we have no use for them. *)
-                    (match xml_output_fd with
-                      | Some (_, fd4) -> (try Unix.close fd4 with _ -> ())
-                      | None -> ());
-                    (* Also close and unlink the event/response fifos we passed to
-                       the failed daemon — they are not needed if the daemon is down. *)
-                    (match request_events_fifo_opt with
-                     | Some p -> (try Unix.unlink p with _ -> ())
-                     | None -> ());
-                    (match request_responses_fifo_opt with
-                     | Some p -> (try Unix.unlink p with _ -> ())
-                     | None -> ());
-                    (match xml_output_fd with
-                      | Some _ ->
-                          (* Fallback: try again without xml fd; the daemon will use
-                             notify-only mode. Still pass response fifo for permission
-                             sideband if it was set up. *)
-                          (match
-                            start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt:(Some pid) ?response_fifo_path:request_responses_fifo_opt ~preserve_fds:[] ()
-                          with
-                          | Some p ->
-                              deliver_pid := Some p;
-                              write_pid (deliver_pid_path name) p
-                          | None -> ())
-                      | None -> ());
-               match xml_output_fd with
-               | Some (_, fd4) -> (try Unix.close fd4 with _ -> ())
-               | None -> ()
-             end);
+                in
+                try
+                  begin
+                    match
+                      start_deliver_daemon
+                        ~name
+                        ~client
+                        ~broker_root
+                        ?child_pid_opt:(Some pid)
+                        ?xml_output_fd:(Option.map fst xml_output_fd)
+                        ?xml_output_path
+                        ?event_fifo_path:request_events_fifo_opt
+                        ?response_fifo_path:request_responses_fifo_opt
+                        ~preserve_fds
+                        ()
+                    with
+                   | Some p ->
+                       deliver_pid := Some p;
+                       write_pid (deliver_pid_path name) p
+                   | None ->
+                       (* If the daemon failed to start, unlink the event fifo (the fallback
+                          daemon does not use it). The response fifo is passed to the fallback
+                          daemon below so do NOT unlink it here — doing so would cause ENOENT
+                          when the fallback daemon tries to open it. fd4 is closed only after
+                          both daemon attempts fail via the outer match below. *)
+                       (match request_events_fifo_opt with
+                        | Some p -> (try Unix.unlink p with _ -> ())
+                        | None -> ());
+                       (match xml_output_fd with
+                         | Some _ ->
+                             (* Fallback: try again without xml fd; the daemon will use
+                                notify-only mode. Still pass response fifo for permission
+                                sideband if it was set up. *)
+                             (match
+                               start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt:(Some pid) ?response_fifo_path:request_responses_fifo_opt ~preserve_fds:[] ()
+                             with
+                             | Some p ->
+                                 deliver_pid := Some p;
+                                 write_pid (deliver_pid_path name) p
+                             | None -> ())
+                         | None -> ());
+                       (* Now clean up the response fifo (fallback is done with it). *)
+                       (match request_responses_fifo_opt with
+                        | Some p -> (try Unix.unlink p with _ -> ())
+                        | None -> ());
+                    match xml_output_fd with
+                    | Some (_, fd4) -> (try Unix.close fd4 with _ -> ())
+                    | None -> ()
+                  end
+                with exn ->
+                  (* On exception, clean up any fd4 and fifos that may have been set up.
+                     This ensures we do not leak resources if start_deliver_daemon raises
+                     (e.g. failure to create the daemon process). *)
+                  (match xml_output_fd with
+                   | Some (_, fd4) -> (try Unix.close fd4 with _ -> ())
+                   | None -> ());
+                  (match request_events_fifo_opt with
+                   | Some p -> (try Unix.unlink p with _ -> ())
+                   | None -> ());
+                  (match request_responses_fifo_opt with
+                   | Some p -> (try Unix.unlink p with _ -> ())
+                   | None -> ());
+                  raise exn
+              );
           (if client = "opencode" then
              let startup_grace_s =
                match Sys.getenv_opt "C2C_OPENCODE_PLUGIN_GRACE_S" with
