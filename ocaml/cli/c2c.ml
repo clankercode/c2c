@@ -2,6 +2,14 @@
    When invoked with no arguments, shows help.
    Otherwise dispatches to CLI subcommands. *)
 
+(* Debug output — gated by C2C_MCP_DEBUG env var *)
+let debug_enabled =
+  match Sys.getenv_opt "C2C_MCP_DEBUG" with
+  | Some v ->
+      let n = String.lowercase_ascii (String.trim v) in
+      not (List.mem n [ "0"; "false"; "no"; "" ])
+  | None -> false
+
 let ( // ) = Filename.concat
 open Cmdliner.Term.Syntax
 open C2c_mcp
@@ -72,7 +80,13 @@ let find_python_script script =
 (* --- session / alias resolution ------------------------------------------- *)
 
 let env_session_id () =
-  C2c_mcp.session_id_from_env ()
+  match C2c_mcp.session_id_from_env () with
+  | Some s ->
+      if debug_enabled then Printf.eprintf "[DEBUG env_session_id] returning Some=%s\n%!" s;
+      Some s
+  | None ->
+      if debug_enabled then Printf.eprintf "[DEBUG env_session_id] returning None\n%!";
+      None
 
 let env_auto_alias () =
   match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
@@ -86,34 +100,45 @@ let env_client_type () =
 
 let resolve_alias ?(override : string option = None) broker =
   match override with
-  | Some a when String.trim a <> "" -> String.trim a
+  | Some a when String.trim a <> "" ->
+      let r = String.trim a in
+      if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] override=%s\n%!" r;
+      r
   | _ ->
-  match env_session_id () with
-  | None -> (
-      match env_auto_alias () with
-      | Some a -> a
-      | None ->
-          Printf.eprintf
-            "error: cannot determine your alias. Set C2C_MCP_AUTO_REGISTER_ALIAS \
-             or C2C_MCP_SESSION_ID.\n\
-             hint: Are you running this from inside the coding agent? Have you run `c2c install <client>` for your client?\n%!";
-          exit 1)
-  | Some sid ->
-      let regs = C2c_mcp.Broker.list_registrations broker in
-      (match
-         List.find_opt
-           (fun (r : C2c_mcp.registration) -> r.session_id = sid)
-           regs
-       with
-      | Some r -> r.alias
+      (* Prefer C2C_MCP_SESSION_ID lookup over C2C_MCP_AUTO_REGISTER_ALIAS.
+         C2C_MCP_SESSION_ID identifies the actual registered session; using it
+         to look up the registered alias handles the case where the caller
+         (e.g. a container with C2C_MCP_AUTO_REGISTER_ALIAS=peer-b-{ts})
+         is not the actual sender alias. *)
+      match env_session_id () with
+      | Some sid ->
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          (match
+             List.find_opt
+               (fun (r : C2c_mcp.registration) -> r.session_id = sid)
+               regs
+           with
+          | Some r ->
+              if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] from_sid=%s -> alias=%s\n%!" sid r.alias;
+              r.alias
+          | None -> (
+              (* Session not registered; fall back to env_auto_alias for
+                 non-MCP callers or dynamically-registered sessions. *)
+              match env_auto_alias () with
+              | Some a ->
+                  if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] sid=%s not registered, fallback=%s\n%!" sid a;
+                  a
+              | None ->
+                  Printf.eprintf "error: session %s is not registered and no alias is set.\n%!" sid;
+                  exit 1))
       | None -> (
           match env_auto_alias () with
-          | Some a -> a
+          | Some a ->
+              if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] from_env_auto_alias=%s\n%!" a;
+              a
           | None ->
-              Printf.eprintf
-                "error: session %s is not registered and no alias is set.\n%!"
-                sid;
-              exit 1))
+              Printf.eprintf "error: cannot determine your alias. Set C2C_MCP_AUTO_REGISTER_ALIAS or C2C_MCP_SESSION_ID.\n%!";
+              exit 1)
 
 let resolve_session_id () =
   match env_session_id () with
@@ -132,6 +157,8 @@ let resolve_session_id_for_inbox broker =
   let sid = resolve_session_id () in
   let regs = C2c_mcp.Broker.list_registrations broker in
   let has_direct = List.exists (fun (r : C2c_mcp.registration) -> r.session_id = sid) regs in
+  if debug_enabled then Printf.eprintf "[DEBUG resolve_sid_for_inbox] sid=%s has_direct=%b regs_count=%d\n%!"
+    sid has_direct (List.length regs);
   if has_direct then sid
   else begin
     (* Fall back: look for a registration whose alias matches C2C_MCP_AUTO_REGISTER_ALIAS *)
@@ -349,7 +376,11 @@ let send_cmd =
     exit 1
   );
   (try
+     if debug_enabled then Printf.eprintf "[DEBUG send_cmd] calling enqueue_message from=%s to=%s\n%!" from_alias to_alias;
+     flush stderr;
      C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content ~ephemeral ();
+     if debug_enabled then Printf.eprintf "[DEBUG send_cmd] enqueue_message returned\n%!";
+     flush stderr;
      let ts = Unix.gettimeofday () in
      let compacting_warning =
        let regs = C2c_mcp.Broker.list_registrations broker in

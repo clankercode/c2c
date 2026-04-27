@@ -99,6 +99,14 @@ let pending_permission_of_json json =
   ; expires_at = json |> member "expires_at" |> to_float
   }
 
+(* Debug output — gated by C2C_MCP_DEBUG env var *)
+let debug_enabled =
+  match Sys.getenv_opt "C2C_MCP_DEBUG" with
+  | Some v ->
+      let n = String.lowercase_ascii (String.trim v) in
+      not (List.mem n [ "0"; "false"; "no"; "" ])
+  | None -> false
+
 let server_version = Version.version
 
 let server_git_hash =
@@ -550,7 +558,10 @@ module Broker = struct
   let load_registrations t =
     ensure_root t;
     match read_json_file (registry_path t) ~default:(`List []) with
-    | `List items -> List.map registration_of_json items
+    | `List items ->
+        let regs = List.map registration_of_json items in
+        if debug_enabled then Printf.eprintf "[DEBUG load_registrations] root=%s count=%d\n%!" t.root (List.length regs);
+        regs
     | _ -> []
 
   let save_registrations t regs =
@@ -1030,17 +1041,17 @@ module Broker = struct
     in
     match matches with
     | [] ->
-        Printf.eprintf "[DEBUG resolve] alias=%s -> Unknown_alias (no matches)\n%!" alias;
+        if debug_enabled then Printf.eprintf "[DEBUG resolve] alias=%s -> Unknown_alias (no matches)\n%!" alias;
         Unknown_alias
     | _ ->
         let alive_reg = List.find_opt registration_is_alive matches in
         (match alive_reg with
          | Some reg ->
-             Printf.eprintf "[DEBUG resolve] alias=%s -> Resolved %s (alive)\n%!" alias reg.session_id;
+             if debug_enabled then Printf.eprintf "[DEBUG resolve] alias=%s -> Resolved %s (alive)\n%!" alias reg.session_id;
              Resolved reg.session_id
          | None ->
-             Printf.eprintf "[DEBUG resolve] alias=%s -> All_recipients_dead (matches=%d, none alive per lease/proc)\n%!"
-               alias (List.length matches);
+              if debug_enabled then Printf.eprintf "[DEBUG resolve] alias=%s -> All_recipients_dead (matches=%d, none alive per lease/proc)\n%!"
+                alias (List.length matches);
              All_recipients_dead)
 
   (* A provisional registration has no confirmed PID-based liveness yet AND
@@ -1078,15 +1089,22 @@ module Broker = struct
 
   let load_inbox t ~session_id =
     ensure_root t;
-    match read_json_file (inbox_path t ~session_id) ~default:(`List []) with
-    | `List items -> List.map message_of_json items
-    | _ -> []
+    let path = inbox_path t ~session_id in
+    let result =
+      match read_json_file path ~default:(`List []) with
+      | `List items -> List.map message_of_json items
+      | _ -> []
+    in
+    if debug_enabled then Printf.eprintf "[DEBUG load_inbox] session_id=%s path=%s msgs=%d\n%!"
+      session_id path (List.length result);
+    result
 
   let save_inbox t ~session_id messages =
     ensure_root t;
-    write_json_file
-      (inbox_path t ~session_id)
-      (`List (List.map message_to_json messages))
+    let path = inbox_path t ~session_id in
+    if debug_enabled then Printf.eprintf "[DEBUG save_inbox] session_id=%s path=%s msgs=%d\n%!"
+      session_id path (List.length messages);
+    write_json_file path (`List (List.map message_to_json messages))
 
   let inbox_lock_path t ~session_id =
     Filename.concat t.root (session_id ^ ".inbox.lock")
@@ -1406,6 +1424,7 @@ module Broker = struct
     String.exists (fun c -> c = '@') alias
 
     let enqueue_message t ~from_alias ~to_alias ~content ?(deferrable = false) ?(ephemeral = false) () =
+    if debug_enabled then Printf.eprintf "[DEBUG enqueue ENTER] from=%s to=%s\n%!" from_alias to_alias;
     (* Reject messages claiming a reserved system from_alias — prevents spoofing. *)
     if List.mem from_alias reserved_system_aliases then
       invalid_arg (Printf.sprintf
@@ -1437,11 +1456,17 @@ module Broker = struct
                  Unix.utimes path 0.0 (Unix.gettimeofday ())
                end
              with Unix.Unix_error _ -> ());
+            if debug_enabled then Printf.eprintf "[DEBUG enqueue] from=%s to=%s session_id=%s\n%!"
+              from_alias to_alias session_id;
+            flush stderr;
             with_inbox_lock t ~session_id (fun () ->
                 let current = load_inbox t ~session_id in
                 let next =
                   current @ [ { from_alias; to_alias; content; deferrable; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral } ]
                 in
+                if debug_enabled then Printf.eprintf "[DEBUG enqueue] inbox_path=%s current_len=%d next_len=%d\n%!"
+                  (inbox_path t ~session_id) (List.length current) (List.length next);
+                flush stderr;
                 save_inbox t ~session_id next))
 
   type send_all_result =
@@ -1456,6 +1481,8 @@ module Broker = struct
      for broadcast. Per-recipient enqueue reuses [with_inbox_lock] so this
      interlocks with concurrent 1:1 sends on the same inbox. *)
   let send_all t ~from_alias ~content ~exclude_aliases =
+    if debug_enabled then Printf.eprintf "[DEBUG send_all] from=%s content=%s exclude=%s\n%!" from_alias content
+      (String.concat "," exclude_aliases);
     with_registry_lock t (fun () ->
         let regs = load_registrations t in
         let seen : (string, unit) Hashtbl.t = Hashtbl.create 16 in
@@ -3266,7 +3293,9 @@ let inferred_client_type_from_env () =
 
 let session_id_from_env ?client_type () =
   match first_nonempty_env [ "C2C_MCP_SESSION_ID" ] with
-  | Some session_id -> Some session_id
+  | Some session_id ->
+      if debug_enabled then Printf.eprintf "[DEBUG session_id_from_env] found C2C_MCP_SESSION_ID=%s\n%!" session_id;
+      Some session_id
   | None ->
       let resolved_client_type =
         match client_type with
