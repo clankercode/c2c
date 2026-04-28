@@ -2,12 +2,38 @@ val server_version : string
 val server_git_hash : string
 val server_info : Yojson.Safe.t
 
+val mkdir_p : ?mode:int -> string -> unit
+(** Re-export of the canonical [C2c_io.mkdir_p]. Kept for source-compat
+    with #400 callers. Default mode 0o755; idempotent on EEXIST. *)
+
+val tag_to_body_prefix : string option -> string
+(** [#392] Map a tag value (or [None]) to a body prefix that surfaces
+    visually in the agent's transcript. The body is the load-bearing
+    channel — agents READ body text on every client surface (Claude,
+    Codex, OpenCode, Kimi), whereas envelope attributes are invisible
+    at the read layer. Currently:
+
+      - [Some "fail"]     → ["🔴 FAIL: "]
+      - [Some "blocking"] → ["⛔ BLOCKING: "]
+      - [Some "urgent"]   → ["⚠️ URGENT: "]
+      - [None] / unknown  → [""]
+
+    Sender CLI ([c2c send --fail|--blocking|--urgent]) and MCP
+    [send] tool both call this, so the prefix is captured once at
+    sender-time and embedded in the broker-stored content. *)
+
+val parse_send_tag : string option -> (string option, string) result
+(** [#392] Validate a user-supplied tag value. [None] → [Ok None]
+    (no tag). [Some "fail"|"blocking"|"urgent"] → [Ok (Some _)].
+    Anything else → [Error msg] with a human-readable rejection. *)
+
 val extract_tag_from_content : string -> string option
-val format_ts_hhmm : float -> string
-(** Format a UNIX timestamp as UTC "HH:MM" (#417). All four envelope-
-    emitting surfaces share this format so [ts="HH:MM"] is consistent
-    across deliver paths. *)
+(** [#392b] Inverse of [tag_to_body_prefix] — recognize a known body
+    prefix and return the abstract tag. *)
+
 val format_c2c_envelope : from_alias:string -> to_alias:string -> ?tag:string -> ?role:string -> ?reply_via:string -> ?ts:float -> content:string -> unit -> string
+(** [#392b] Canonical c2c message envelope formatter. Optional [tag]
+    surfaces FAIL/BLOCKING/URGENT to programmatic consumers. *)
 
 type compacting = { started_at : float; reason : string option }
 type registration =
@@ -69,7 +95,14 @@ type message =
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 type room_visibility = Public | Invite_only
-type room_meta = { visibility : room_visibility; invited_members : string list }
+type room_meta =
+  { visibility : room_visibility
+  ; invited_members : string list
+  ; created_by : string
+    (** Alias of the room creator. Empty string for legacy rooms whose
+        meta.json predates the field. Used to gate [delete_room]
+        (#H3 rooms-acl audit). #394 populates on create. *)
+  }
 
 type pending_kind = | Permission | Question
 val pending_kind_to_string : pending_kind -> string
@@ -187,15 +220,20 @@ module Broker : sig
   (** Replay messages from broker_root/pending-orphan-replay.<session_id>.json
       into the live inbox. Holds the inbox lock across read+save. Deletes the
       pending file after replay. Returns the number of messages replayed. *)
-  val drain_inbox : t -> session_id:string -> message list
-  val drain_inbox_push : t -> session_id:string -> message list
+  val drain_inbox : ?drained_by:string -> t -> session_id:string -> message list
+  val drain_inbox_push : ?drained_by:string -> t -> session_id:string -> message list
+  val is_session_channel_capable : t -> session_id:string -> bool
+  (** Returns [true] iff the registration for [session_id] has its
+      [automated_delivery] flag set to [Some true]. Used by inbox-hook
+      paths to skip drain when the MCP server's channel watcher will own
+      delivery (#387 A2). *)
   val with_inbox_lock : t -> session_id:string -> (unit -> 'a) -> 'a
   type sweep_result = { dropped_regs : registration list; deleted_inboxes : string list; preserved_messages : int }
   val sweep : t -> sweep_result
   val dead_letter_path : t -> string
-  type archive_entry = { ae_drained_at : float; ae_from_alias : string; ae_to_alias : string; ae_content : string; ae_deferrable : bool }
+  type archive_entry = { ae_drained_at : float; ae_from_alias : string; ae_to_alias : string; ae_content : string; ae_deferrable : bool; ae_drained_by : string }
   val archive_path : t -> session_id:string -> string
-  val append_archive : t -> session_id:string -> messages:message list -> unit
+  val append_archive : ?drained_by:string -> t -> session_id:string -> messages:message list -> unit
   val read_archive : t -> session_id:string -> limit:int -> archive_entry list
   type delivery_mode_sender_count =
     { dms_alias : string
@@ -224,9 +262,35 @@ module Broker : sig
   val save_room_meta : t -> room_id:string -> room_meta -> unit
   val send_room_invite : t -> room_id:string -> from_alias:string -> invitee_alias:string -> unit
   val set_room_visibility : t -> room_id:string -> from_alias:string -> visibility:room_visibility -> unit
+  type create_room_result =
+    { cr_room_id : string
+    ; cr_created_by : string
+    ; cr_visibility : room_visibility
+    ; cr_invited_members : string list
+    ; cr_members : string list
+    ; cr_auto_joined : bool
+    }
+  val create_room :
+    t ->
+    room_id:string ->
+    caller_alias:string ->
+    caller_session_id:string ->
+    visibility:room_visibility ->
+    invited_members:string list ->
+    auto_join:bool ->
+    create_room_result
+  (** [create_room] (#394) atomically creates [room_id] with [caller_alias]
+      recorded as [created_by]. Errors with [Invalid_argument] if the room
+      already exists. When [auto_join] is true, [caller_alias]/[caller_session_id]
+      are added to the member list (the only path by which an invite_only
+      room gets a first member without a separate join_room call). *)
   val join_room : t -> room_id:string -> alias:string -> session_id:string -> room_member list
   val leave_room : t -> room_id:string -> alias:string -> room_member list
-  val delete_room : t -> room_id:string -> unit
+  val delete_room : t -> room_id:string -> ?caller_alias:string -> ?force:bool -> unit -> unit
+  (** Delete an empty room. H3 rooms-acl: requires [caller_alias] to match
+      [meta.created_by], OR [~force:true] when the room is legacy (no
+      recorded creator). Raises [Invalid_argument] on members present,
+      auth failure, or missing room. *)
   val room_history_path : t -> room_id:string -> string
   val append_room_history : t -> room_id:string -> from_alias:string -> content:string -> float
   val read_room_history : t -> room_id:string -> limit:int -> ?since:float -> unit -> room_message list

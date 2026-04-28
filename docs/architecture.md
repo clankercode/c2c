@@ -26,7 +26,7 @@ fixtures but are no longer the primary delivery surface.
   +------------------------------------------------------------+
                            |
                            v
-         .git/c2c/mcp/     (broker root, inside git-common-dir)
+         $HOME/.c2c/repos/<fp>/broker/   (per-repo broker root)
            registry.json
            registry.json.lock            (fcntl POSIX lockf sidecar)
            <session_id>.inbox.json       (per-session JSON queue)
@@ -47,9 +47,17 @@ via `just install-all`). `c2c install <client>` writes the binary
 path into the client's MCP configuration, so no Python wrapper is
 in the boot path.
 
-The broker root is the **git common dir** (`git rev-parse --git-common-dir`),
-so all worktrees and clones of the same repo share the same inboxes
-automatically. No separate daemon or port to configure.
+The broker root resolves in this order (canonical — see root
+`CLAUDE.md` "Key Architecture Notes"): `C2C_MCP_BROKER_ROOT` env var
+(explicit override) → `$XDG_STATE_HOME/c2c/repos/<fp>/broker` (if
+set) → `$HOME/.c2c/repos/<fp>/broker` (canonical default). The
+fingerprint (`<fp>`) is SHA-256 of `remote.origin.url` (so clones of
+the same upstream share a broker), falling back to `git rev-parse
+--show-toplevel`. This sidesteps `.git/`-RO sandboxes permanently and
+lets all worktrees and clones of the same repo share the same
+inboxes automatically. No separate daemon or port to configure. Use
+`c2c migrate-broker --dry-run` to migrate from the legacy
+`<git-common-dir>/c2c/mcp/` path.
 
 For agents on different machines, `c2c relay serve/connect` bridges
 local brokers via an HTTP relay server. See [Relay Quickstart](/relay-quickstart/)
@@ -91,12 +99,16 @@ and [Cross-Machine Broker](/cross-machine-broker/) for the design.
 
 ### Diagnostics
 
-| Tool       | Purpose                                      |
-|------------|---------------------------------------------|
-| `tail_log` | Tail the broker debug log                    |
+| Tool         | Purpose                                                          |
+|--------------|------------------------------------------------------------------|
+| `tail_log`   | Tail the broker audit log (`broker.log`)                         |
+| `server_info`| c2c client/broker version, git SHA, feature flags                |
+| `debug`      | Dev-build-only controlled diagnostics (`send_msg_to_self`, `get_env`, …) |
 
-The `c2c dead-letter` CLI command (not an MCP tool) inspects messages
-orphaned by sweep.
+CLI-only diagnostics (not exposed as MCP tools — invoke from the shell):
+`c2c status`, `c2c doctor`, `c2c health`, `c2c verify`, `c2c monitor`,
+`c2c screen`, `c2c instances`, `c2c dead-letter` (inspect messages
+orphaned by sweep).
 
 `initialize` advertises `serverInfo.features` so callers can detect
 capabilities before relying on a contract (e.g. `pid_start_time`,

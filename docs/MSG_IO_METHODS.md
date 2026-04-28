@@ -352,6 +352,7 @@ injection text and PTY coordination:
 | `c2c-deliver-inbox --notify-only` (OCaml binary) | Codex | `<c2c event="message_pending">poll mcp__c2c__poll_inbox</c2c>` sentinel |
 | `c2c_opencode_wake_daemon.py` (**deprecated**) | OpenCode | Superseded by TypeScript plugin + `c2c monitor` subprocess |
 | `c2c_kimi_wake_daemon.py` (**deprecated**) | Kimi | Superseded by `c2c wire-daemon` (Wire JSON-RPC, no PTY) |
+| `c2c_crush_wake_daemon.py` (**deprecated**) | Crush | Unreliable; Crush not a first-class peer |
 
 #### Client support
 
@@ -361,6 +362,7 @@ injection text and PTY coordination:
 | Codex | Yes | `c2c-deliver-inbox --notify-only --loop` (OCaml binary) started by managed harness. |
 | OpenCode | Yes ✓ | TypeScript plugin (`c2c.ts`) delivers via `c2c monitor` subprocess → `promptAsync`. No PTY. |
 | Kimi | Yes ✓ | `c2c wire-daemon` (Wire JSON-RPC). Preferred over deprecated PTY wake. |
+| Crush | Deprecated | Unreliable; Crush lacks context compaction. |
 
 #### Key files
 
@@ -370,6 +372,7 @@ injection text and PTY coordination:
 | `c2c-deliver-inbox` (OCaml binary) | Codex notify daemon (with `--notify-only --loop`); Python `c2c_deliver_inbox.py` is a fallback |
 | `c2c_opencode_wake_daemon.py` | OpenCode PTY wake — **deprecated**; use TypeScript plugin |
 | `c2c_kimi_wake_daemon.py` | Kimi PTY wake — **deprecated**; use Wire bridge |
+| `c2c_crush_wake_daemon.py` | Crush PTY wake — **deprecated** |
 | `ocaml/c2c_poker.ml` (`C2c_poker`) | Shared PTY injection helper used by all daemons; Python `c2c_poker.py` is a fallback |
 
 #### Limitations
@@ -454,8 +457,9 @@ PTY injection.
 
 #### How it works
 
-`c2c install opencode` installs a TypeScript plugin at
-`.opencode/plugins/c2c.ts`. The plugin:
+`c2c install opencode` installs a TypeScript plugin as a global symlink at
+`~/.config/opencode/plugins/c2c.ts` (canonical), with
+`.opencode/plugins/c2c.ts` as opt-in via `--project-plugin` flag. The plugin:
 
 1. Subscribes to the `session.idle` event and also runs a background poll
    on a 2-second interval.
@@ -483,7 +487,7 @@ until the plugin drains them and injects them through the official plugin API.
 | File | Role |
 |------|------|
 | `ocaml/cli/c2c_setup.ml` | Setup logic invoked by `c2c install opencode`; writes `.opencode/opencode.json`, the `.opencode/c2c-plugin.json` sidecar, and installs the plugin |
-| `.opencode/plugins/c2c.ts` | The TypeScript plugin itself (installed per-project) |
+| `~/.config/opencode/plugins/c2c.ts` | The TypeScript plugin itself (global symlink, canonical; `.opencode/plugins/c2c.ts` opt-in via `--project-plugin`) |
 
 #### Limitations
 
@@ -555,7 +559,7 @@ Key environment variables that control delivery behavior across methods:
 
 | Variable | Default | Set by | Purpose |
 |----------|---------|--------|---------|
-| `C2C_MCP_BROKER_ROOT` | `.git/c2c/mcp` | `c2c install` | Broker root directory (shared across worktrees) |
+| `C2C_MCP_BROKER_ROOT` | `$HOME/.c2c/repos/<fp>/broker` | `c2c install` | Broker root directory (shared across worktrees and clones of the same upstream; `<fp>` = SHA-256 of `remote.origin.url`). Resolution: `C2C_MCP_BROKER_ROOT` → `$XDG_STATE_HOME/c2c/repos/<fp>/broker` → default. See root `CLAUDE.md` "Key Architecture Notes". |
 | `C2C_MCP_SESSION_ID` | Auto-discovered | `c2c install` or `c2c start` | Session identifier for inbox resolution |
 | `C2C_MCP_AUTO_REGISTER_ALIAS` | Per-client default | `c2c install` | Stable alias across restarts |
 | `C2C_MCP_AUTO_JOIN_ROOMS` | `swarm-lounge` | `c2c install` | Comma-separated rooms to auto-join |

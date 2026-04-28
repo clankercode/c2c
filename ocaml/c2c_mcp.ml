@@ -59,7 +59,15 @@ type message = { from_alias : string; to_alias : string; content : string; defer
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 type room_visibility = Public | Invite_only
-type room_meta = { visibility : room_visibility; invited_members : string list }
+type room_meta =
+  { visibility : room_visibility
+  ; invited_members : string list
+  ; created_by : string
+    (** Alias of the room creator. Empty string for legacy rooms whose
+        meta.json predates the field; legacy rooms can only be deleted
+        with [~force:true] (#H3 rooms-acl audit). #394 creates rooms
+        with [created_by] populated; legacy continues to read as "". *)
+  }
 
 (** Pending reply tracking for alias-hijack mitigation (M2/M4).
     Ephemeral entries with TTL — entries older than TTL are ignored on access. *)
@@ -73,6 +81,19 @@ type pending_permission =
   ; created_at : float
   ; expires_at : float
   }
+
+(** Recursive idempotent mkdir. Creates [d] and all missing parents.
+    Tolerates EEXIST races (concurrent creators). Canonical filesystem
+    helper reused by [Broker.ensure_root], the MCP [memory_write] handler,
+    and [C2c_memory.ensure_memory_dir] (#396 dedup of #332 peer-PASS note). *)
+let rec mkdir_p d =
+  if d = "" || d = "/" || d = "." then ()
+  else if Sys.file_exists d then ()
+  else begin
+    mkdir_p (Filename.dirname d);
+    try Unix.mkdir d 0o755
+    with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+  end
 
 let pending_kind_to_string = function Permission -> "permission" | Question -> "question"
 let pending_kind_of_string = function "question" -> Question | _ -> Permission
@@ -270,14 +291,50 @@ let tool_definition ~name ~description ~required ~properties =
 
 module Relay = Relay
 
-(* #392 / #392b — body-prefix tag helpers + canonical envelope formatter.
-   Body text is the load-bearing channel (agents READ body text on every
-   client surface; envelope attributes are invisible at the read layer). *)
+(** Re-export of the canonical [mkdir_p] (lives in [C2c_io] so it is
+    reachable from every module in the [c2c_mcp] library — including
+    relay/relay_identity/c2c_start which compile before [c2c_mcp]).
+    Kept here for source-compat with #400 callers. *)
+let mkdir_p ?(mode = 0o755) dir = C2c_io.mkdir_p ~mode dir
+
+(* #392 — body-prefix helpers for tagged DMs. Body text is the
+   load-bearing channel (agents READ body text on every client surface;
+   envelope attributes are invisible at the read layer). Sender CLI +
+   MCP send handler both prepend the prefix at send-time so the broker-
+   stored content carries the marker through every delivery surface
+   without per-client rendering hooks. *)
 let tag_to_body_prefix = function
   | Some "fail"     -> "\xF0\x9F\x94\xB4 FAIL: "       (* 🔴 *)
   | Some "blocking" -> "\xE2\x9B\x94 BLOCKING: "       (* ⛔ *)
   | Some "urgent"   -> "\xE2\x9A\xA0\xEF\xB8\x8F URGENT: "  (* ⚠️ *)
   | _ -> ""
+
+(* Inverse of [tag_to_body_prefix]: detect a #392 body-prefix on an
+   already-stored message and recover the tag name. Used by the
+   envelope-formatter so re-delivery surfaces (PostToolUse hook,
+   inbox-hook tool, wire-bridge) can carry the tag attribute even when
+   the message was archived without it explicitly attached.
+
+   Earlier draft of this function compared [String.sub content 0 5]
+   against multibyte prefixes whose lengths are 11/14/15 bytes — that
+   could never match. Always check against the actual byte length of
+   each prefix (call [tag_to_body_prefix] and compare prefix). *)
+let extract_tag_from_content content =
+  let try_prefix tag =
+    let prefix = tag_to_body_prefix (Some tag) in
+    let plen = String.length prefix in
+    if plen > 0
+       && String.length content >= plen
+       && String.sub content 0 plen = prefix
+    then Some tag
+    else None
+  in
+  match try_prefix "fail" with
+  | Some _ as r -> r
+  | None ->
+    match try_prefix "blocking" with
+    | Some _ as r -> r
+    | None -> try_prefix "urgent"
 
 let parse_send_tag = function
   | None -> Ok None
@@ -288,20 +345,6 @@ let parse_send_tag = function
              "unknown tag '%s' — must be one of: fail, blocking, urgent"
              other)
 
-let extract_tag_from_content content =
-  let try_tag t =
-    let pfx = tag_to_body_prefix (Some t) in
-    if String.length content >= String.length pfx
-       && String.sub content 0 (String.length pfx) = pfx
-    then Some t else None
-  in
-  match try_tag "fail" with
-  | Some _ as r -> r
-  | None ->
-    match try_tag "blocking" with
-    | Some _ as r -> r
-    | None -> try_tag "urgent"
-
 let xml_escape s =
   let buf = Buffer.create (String.length s) in
   String.iter (function
@@ -310,40 +353,35 @@ let xml_escape s =
     | '>' -> Buffer.add_string buf "&gt;"
     | '"' -> Buffer.add_string buf "&quot;"
     | '\'' -> Buffer.add_string buf "&#39;"
-    | c -> Buffer.add_char buf c) s;
+    | c -> Buffer.add_char buf c)
+    s;
   Buffer.contents buf
 
-(* #417: format a UNIX timestamp as UTC "HH:MM" (24-hour, minute precision)
-   for use as the [ts="HH:MM"] envelope attribute. Lives here so all four
-   envelope-emitting surfaces (this module's [format_c2c_envelope],
-   c2c_wire_bridge, cli/c2c.ml's PostToolUse hook, tools/c2c_inbox_hook)
-   share one canonical format. *)
-let format_ts_hhmm (t : float) : string =
-  let tm = Unix.gmtime t in
-  Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min
-
-let format_c2c_envelope ~from_alias ~to_alias ?tag ?role ?reply_via ?ts
-    ~content () =
+let format_c2c_envelope ~from_alias ~to_alias ?tag ?role ?reply_via ?ts ~content () =
   let tag_attr = match tag with
     | Some t -> Printf.sprintf " tag=\"%s\"" (xml_escape t)
-    | None -> "" in
+    | None -> ""
+  in
   let role_attr = match role with
     | Some r -> Printf.sprintf " role=\"%s\"" (xml_escape r)
-    | None -> "" in
-  (* #417: ts="HH:MM" UTC — minute precision so blocked agents can see
-     send time at a glance. Optional: callers that have a real timestamp
-     pass it through; callers that don't get the attribute omitted (vs
-     wall clock at format time, which would have leaked "format time"
-     into archived envelopes). The wire-bridge / inbox-hook callers
-     resolve [ts] from msg.ts (broker enqueue time) so the displayed
-     time reflects the SEND wall clock, not the deliver wall clock. *)
+    | None -> ""
+  in
   let ts_attr = match ts with
-    | Some t when t > 0.0 -> Printf.sprintf " ts=\"%s\"" (format_ts_hhmm t)
-    | _ -> "" in
+    | Some t ->
+        let tm = Unix.gmtime t in
+        Printf.sprintf " ts=\"%02d:%02d\"" tm.tm_hour tm.tm_min
+    | None -> ""
+  in
   let reply_via_str = xml_escape (Option.value reply_via ~default:"c2c_send") in
   Printf.sprintf
     "<c2c event=\"message\" from=\"%s\" alias=\"%s\" source=\"broker\" reply_via=\"%s\" action_after=\"continue\"%s%s%s>\n%s\n</c2c>"
-    (xml_escape from_alias) (xml_escape to_alias) reply_via_str role_attr tag_attr ts_attr content
+    (xml_escape from_alias)
+    (xml_escape to_alias)
+    reply_via_str
+    role_attr
+    tag_attr
+    ts_attr
+    content
 
 (* Parse a YAML-flow list value (e.g. "[alice, bob]" or "[]") into a string
    list. Also accepts a bare comma-separated form ("alice, bob") for
@@ -391,17 +429,7 @@ module Broker = struct
   let registry_path t = Filename.concat t.root "registry.json"
   let inbox_path t ~session_id = Filename.concat t.root (session_id ^ ".inbox.json")
 
-  let ensure_root t =
-    let rec mkdir_p d =
-      if d = "" || d = "/" || d = "." then ()
-      else if Sys.file_exists d then ()
-      else begin
-        mkdir_p (Filename.dirname d);
-        try Unix.mkdir d 0o755
-        with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-      end
-    in
-    mkdir_p t.root
+  let ensure_root t = mkdir_p t.root
 
   let read_json_file path ~default =
     if Sys.file_exists path then
@@ -768,15 +796,7 @@ module Broker = struct
     let priv_path = Filename.concat keys_dir (alias ^ ".ed25519") in
     let signers_path = Filename.concat t.root "allowed_signers" in
     try
-      let mkdir_p d =
-        let rec aux p =
-          if p = "" || p = "/" || p = "." then ()
-          else if Sys.file_exists p then ()
-          else begin aux (Filename.dirname p); try Unix.mkdir p 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> () end
-        in
-        aux d
-      in
-      mkdir_p keys_dir;
+      mkdir_p ~mode:0o700 keys_dir;
       let id = Relay_identity.load_or_create_at ~path:priv_path ~alias_hint:alias in
       let ssh_priv_path = priv_path ^ ".ssh" in
       let ssh_pub_path = ssh_priv_path ^ ".pub" in
@@ -1125,9 +1145,39 @@ module Broker = struct
              if debug_enabled then Printf.eprintf "[DEBUG resolve] alias=%s -> Resolved %s (alive)\n%!" alias reg.session_id;
              Resolved reg.session_id
          | None ->
-              if debug_enabled then Printf.eprintf "[DEBUG resolve] alias=%s -> All_recipients_dead (matches=%d, none alive per lease/proc)\n%!"
-                alias (List.length matches);
-             All_recipients_dead)
+             (* Target-side self-heal: every match looks dead, but the
+                target may have respawned under a new pid without
+                touching the broker yet. Try to refresh each candidate
+                via /proc scan; if any flips to Alive, return that.
+                Without this, a sender to e.g. galaxy-coder hits
+                All_recipients_dead even when galaxy is live under a
+                fresh pid — the bug this slice exists to fix. *)
+             let healed =
+               List.fold_left
+                 (fun acc reg ->
+                   match acc with
+                   | Some _ -> acc
+                   | None ->
+                       if refresh_pid_if_dead t ~session_id:reg.session_id
+                       then begin
+                         (* Re-load to pick up the swapped pid; the in-memory
+                            [reg] is stale after refresh. *)
+                         let regs' = load_registrations t in
+                         List.find_opt
+                           (fun r -> r.session_id = reg.session_id
+                                  && registration_is_alive r)
+                           regs'
+                       end else None)
+                 None matches
+             in
+             (match healed with
+              | Some reg ->
+                  if debug_enabled then Printf.eprintf "[DEBUG resolve] alias=%s -> Resolved %s (healed)\n%!" alias reg.session_id;
+                  Resolved reg.session_id
+              | None ->
+                  if debug_enabled then Printf.eprintf "[DEBUG resolve] alias=%s -> All_recipients_dead (matches=%d, none alive per lease/proc, heal failed)\n%!"
+                    alias (List.length matches);
+                  All_recipients_dead))
 
   (* A provisional registration has no confirmed PID-based liveness yet AND
      has never drained its inbox (confirmed_at = None). Human sessions are
@@ -1161,6 +1211,42 @@ module Broker = struct
       | None -> false  (* legacy rows predate registered_at — never provisional-expired *)
       | Some ra ->
           Unix.gettimeofday () -. ra > provisional_sweep_timeout ()
+
+  (* Sweep-only predicate (#344): stricter than [registration_is_alive] for
+     pidless rows, which the canonical liveness check collapses into Alive
+     for backward-compat with sweep/enqueue. The audit
+     (.collab/findings/2026-04-28T04-25-00Z-stanza-coder-pidless-zombie-systemic-audit.md
+     Finding 1) showed that pidless rows that ever drained, or pre-
+     registered_at legacy rows, are structurally un-reapable. This
+     predicate distinguishes:
+       - PID-tracked: existing alive + provisional logic.
+       - Pidless human: exempt (humans aren't zombies).
+       - Pidless legacy (registered_at=None): no anchor — treat as
+         zombie, drop it.
+       - Pidless unconfirmed (confirmed_at=None): provisional window
+         applies (default 1800s).
+       - Pidless confirmed: only kept for a brief handoff window
+         (pidless_keep_window_s, 1h) — long enough to cover daemon
+         restart transients but bounded so true zombies are reaped.
+     [registration_is_alive] is intentionally unchanged so enqueue
+     and resolve paths keep their lenient semantics. *)
+  let pidless_keep_window_s = 3600.0
+
+  let is_sweep_keepable reg =
+    match reg.pid with
+    | Some _ ->
+        registration_is_alive reg && not (is_provisional_expired reg)
+    | None ->
+        if reg.client_type = Some "human" then true
+        else
+          (match reg.registered_at with
+           | None -> false  (* legacy — no anchor, treat as zombie *)
+           | Some ts ->
+               let age = Unix.gettimeofday () -. ts in
+               if reg.confirmed_at = None then
+                 age < provisional_sweep_timeout ()
+               else
+                 age < pidless_keep_window_s)
 
   let load_inbox t ~session_id =
     ensure_root t;
@@ -1246,6 +1332,23 @@ module Broker = struct
     in
     let rec find p = if is_prime p then p else find (p + 1) in
     find (n + 1)
+
+  (** Returns [true] iff the registration for [session_id] has its
+      [automated_delivery] flag set to [Some true]. Used by the PostToolUse
+      inbox hook to skip its drain when the MCP server's channel watcher
+      will own delivery (#387 A2). Missing registration or [None] flag =>
+      [false] (treat as not channel-capable, fall through to drain). *)
+  let is_session_channel_capable t ~session_id =
+    match
+      List.find_opt
+        (fun r -> r.session_id = session_id)
+        (list_registrations t)
+    with
+    | None -> false
+    | Some r ->
+        (match r.automated_delivery with
+         | Some true -> true
+         | _ -> false)
 
   (** Check whether *session_id* is currently in DND mode (considering auto-expire). *)
   let is_dnd t ~session_id =
@@ -1341,14 +1444,18 @@ module Broker = struct
         List.length cleared
       end)
 
+  (* Lowercase comparison helper: aliases are case-insensitive for collision
+     detection (lyra-quill and Lyra-Quill are the same identity). The stored
+     alias preserves original case; this only affects lookups. *)
+  let alias_casefold s = String.lowercase_ascii s
+
   (* Suggest a free alias by appending the next prime suffix.
-     Runs under the registry lock (regs is already loaded).
-     Returns Some candidate on success, None when all max_tries primes are taken
-     (ALIAS_COLLISION_EXHAUSTED). max_tries defaults to 5 (primes 2,3,5,7,11). *)
+     Case-insensitive: colliding with a case-variant gets a prime suffix. *)
   let suggest_alias_prime ?(max_tries = 5) regs ~base_alias =
     let alive = List.filter_map (fun reg ->
-      if registration_is_alive reg then Some reg.alias else None) regs in
-    if not (List.mem base_alias alive) then Some base_alias
+      if registration_is_alive reg then Some (alias_casefold reg.alias) else None) regs in
+    let base = alias_casefold base_alias in
+    if not (List.mem base alive) then Some base_alias
     else begin
       let n = Array.length small_primes in
       let rec try_idx i =
@@ -1358,7 +1465,7 @@ module Broker = struct
             if i < n then small_primes.(i)
             else next_prime_after small_primes.(n - 1)
           in
-          let candidate = Printf.sprintf "%s-%d" base_alias p in
+          let candidate = Printf.sprintf "%s-%d" base p in
           if not (List.mem candidate alive) then Some candidate
           else try_idx (i + 1)
         end
@@ -1385,11 +1492,19 @@ module Broker = struct
            We do NOT use a single partition with `||` because that wrongly
            evicts our own prior entry when renaming within the same session,
            which causes duplicate registry entries for the same session_id.
-           See: same-session re-registration must update in-place, not evict+add. *)
+           See: same-session re-registration must update in-place, not evict+add.
+           Case-insensitive: "Lyra-Quill" evicts "lyra-quill" (same identity). *)
         let conflicting, rest =
           List.partition
-            (fun reg -> reg.alias = alias && reg.session_id <> session_id)
+            (fun reg -> alias_casefold reg.alias = alias_casefold alias && reg.session_id <> session_id)
             regs
+        in
+        (* #378: additionally filter rest to remove case-folded alias matches
+           with different session — prevents duplicate aliases in kept list. *)
+        let rest =
+          List.filter
+            (fun reg -> not (alias_casefold reg.alias = alias_casefold alias && reg.session_id <> session_id))
+            rest
         in
         (* Same-session re-registration (alias changed or pid/registered_at
            refresh): update in-place by replacing the old entry in [rest]. *)
@@ -1635,7 +1750,20 @@ module Broker = struct
         Unix.lockf fd Unix.F_LOCK 0;
         f ())
 
-  let append_archive t ~session_id ~messages =
+  (* [drained_by]: free-form label for the path that drained these messages.
+     Persisted as a top-level archive field so investigators can tell which
+     code path archived a given record (#387 slice B). Convention:
+       "hook"        — Claude Code PostToolUse inbox hook (c2c_inbox_hook,
+                       and the equivalent c2c.ml [hook] subcommand).
+       "watcher"     — channel-notification watcher in the MCP server.
+       "poll_inbox"  — explicit MCP poll_inbox tool call.
+       "cli_poll"    — `c2c poll-inbox` / `c2c peek-inbox` CLI.
+       "pty"         — codex PTY deliver loop.
+       "tmux"        — tmux paste-and-submit deliver path.
+       "oc_plugin"   — OpenCode plugin spool path.
+       "unknown"     — default when caller didn't specify (legacy / tests).
+     Older archive entries omit the field; readers default to "unknown". *)
+  let append_archive ?(drained_by = "unknown") t ~session_id ~messages =
     match messages with
     | [] -> ()
     | _ ->
@@ -1655,6 +1783,7 @@ module Broker = struct
                   (fun ({ from_alias; to_alias; content; deferrable } : message) ->
                     let base =
                       [ ("drained_at", `Float ts)
+                      ; ("drained_by", `String drained_by)
                       ; ("session_id", `String session_id)
                       ; ("from_alias", `String from_alias)
                       ; ("to_alias", `String to_alias)
@@ -1674,6 +1803,7 @@ module Broker = struct
     ; ae_to_alias : string
     ; ae_content : string
     ; ae_deferrable : bool
+    ; ae_drained_by : string
     }
 
   let archive_entry_of_json json =
@@ -1693,6 +1823,10 @@ module Broker = struct
         (* Older archive records omit the field; default false matches
            the implicit default at write time. *)
         (try json |> member "deferrable" |> to_bool with _ -> false)
+    ; ae_drained_by =
+        (* Older archive records (pre-#387) omit the field; default to
+           "unknown" so legacy entries continue to parse. *)
+        (try json |> member "drained_by" |> to_string with _ -> "unknown")
     }
 
   (* Return up to [limit] most-recent archive entries for [session_id],
@@ -1822,7 +1956,7 @@ module Broker = struct
      remain in the live inbox for retry. This upholds the "drained
      messages are never deleted, only archived" invariant even in the
      failure case. *)
-  let drain_inbox t ~session_id =
+  let drain_inbox ?(drained_by = "unknown") t ~session_id =
     with_inbox_lock t ~session_id (fun () ->
         let messages = load_inbox t ~session_id in
         (match messages with
@@ -1835,7 +1969,7 @@ module Broker = struct
              let to_archive = List.filter (fun m -> not m.ephemeral) messages in
              (match to_archive with
               | [] -> ()
-              | _ -> append_archive t ~session_id ~messages:to_archive);
+              | _ -> append_archive ~drained_by t ~session_id ~messages:to_archive);
              save_inbox t ~session_id []);
         messages)
 
@@ -1843,7 +1977,7 @@ module Broker = struct
      messages stay in the inbox for the next explicit poll or idle-flush.
      Used by push paths (channel notification watcher, PostToolUse hook) to
      suppress low-priority messages that the sender marked as non-urgent. *)
-  let drain_inbox_push t ~session_id =
+  let drain_inbox_push ?(drained_by = "unknown") t ~session_id =
     with_inbox_lock t ~session_id (fun () ->
         let messages = load_inbox t ~session_id in
         let to_push = List.filter (fun m -> not m.deferrable) messages in
@@ -1855,7 +1989,7 @@ module Broker = struct
              let to_archive = List.filter (fun m -> not m.ephemeral) to_push in
              (match to_archive with
               | [] -> ()
-              | _ -> append_archive t ~session_id ~messages:to_archive);
+              | _ -> append_archive ~drained_by t ~session_id ~messages:to_archive);
              save_inbox t ~session_id to_keep);
         to_push)
 
@@ -1940,53 +2074,103 @@ module Broker = struct
     try Unix.unlink path; true
     with Unix.Unix_error _ -> false
 
+  (* #383: classify why a confirmed registration was marked dead.
+     - "timeout": provisional registration (never confirmed) expired
+     - "killed": confirmed session with a PID that is no longer alive
+     - "unknown": confirmed session with no PID (pidless row went dark) *)
+  let peer_offline_reason (reg : registration) : string =
+    match reg.confirmed_at with
+    | None -> "timeout"
+    | Some _ ->
+        match reg.pid with
+        | None -> "unknown"
+        | Some _ -> "killed"
+
+  (* Build the peer_offline message body for a given dead registration.
+     Format matches the proposed envelope in #383. *)
+  let peer_offline_message (reg : registration) : string =
+    let detected_at = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+    let last_seen = match reg.last_activity_ts with
+      | None -> "none"
+      | Some ts -> Printf.sprintf "%.3f" ts
+    in
+    let reason = peer_offline_reason reg in
+    Printf.sprintf
+      "<c2c event=\"peer_offline\" alias=\"%s\" detected_at=\"%s\" reason=\"%s\" last_seen=\"%s\"/>"
+      (match reg.canonical_alias with Some a -> a | None -> reg.alias)
+      detected_at reason last_seen
+
   let sweep t =
-    with_registry_lock t (fun () ->
-        let regs = load_registrations t in
-        (* Dead: PID-based liveness check failed OR provisional registration
-           that has never been confirmed and has timed out. *)
-        let alive, dead =
-          List.partition
-            (fun reg -> registration_is_alive reg && not (is_provisional_expired reg))
-            regs
-        in
-        if dead <> [] then save_registrations t alive;
-        let alive_sids =
-          List.fold_left
-            (fun acc reg -> reg.session_id :: acc)
-            []
-            alive
-        in
-        let all_inbox_sids = list_inbox_session_ids t in
-        let preserved = ref 0 in
-        let deleted =
-          List.filter
-            (fun sid ->
-              if List.mem sid alive_sids then false
-              else
-                (* Hold the inbox lock across read+preserve+delete so a
-                   concurrent enqueue can't race the unlink. Any non-empty
-                   content is appended to dead-letter.jsonl before the
-                   inbox file is removed, so cleanup is non-destructive to
-                   operator signal. We intentionally leave the .inbox.lock
-                   sidecar in place: unlinking the lock file while another
-                   process holds a lockf on a separate fd for the same
-                   path would open a window for a new opener to get a
-                   LOCK immediately against a different inode. Sidecar
-                   files are empty, so keeping them is cheap. *)
-                with_inbox_lock t ~session_id:sid (fun () ->
-                    let msgs = load_inbox t ~session_id:sid in
-                    if msgs <> [] then begin
-                      append_dead_letter t ~session_id:sid ~messages:msgs;
-                      preserved := !preserved + List.length msgs
-                    end;
-                    try_unlink (inbox_path t ~session_id:sid)))
+    (* Partition under lock, but broadcast peer_offline AFTER releasing it
+       to avoid nested lock issues with send_all (which also takes the
+       registry lock and inbox locks). *)
+    let dead_confirmed_regs : registration list ref = ref [] in
+    let do_broadcast () =
+      if !dead_confirmed_regs <> [] then
+        List.iter
+          (fun dead_reg ->
+            let content = peer_offline_message dead_reg in
+            (* Exclude the dead alias from receiving its own notification. *)
+            ignore (send_all t ~from_alias:"broker" ~content ~exclude_aliases:[dead_reg.alias]))
+          !dead_confirmed_regs
+    in
+    let result =
+      with_registry_lock t (fun () ->
+          let regs = load_registrations t in
+          (* Dead: PID-based liveness check failed OR provisional registration
+             that has never been confirmed and has timed out. *)
+          let alive, dead = List.partition is_sweep_keepable regs in
+          (* #383: capture confirmed dead aliases for peer_offline broadcast.
+             Only confirmed registrations (confirmed_at = Some) were fully alive;
+             provisional-only timeouts don't emit peer_offline. *)
+          dead_confirmed_regs :=
+            List.fold_left
+              (fun acc reg ->
+                match reg.confirmed_at with
+                | None -> acc  (* provisional — skip *)
+                | Some _ -> reg :: acc)
+              []
+              dead;
+          if dead <> [] then save_registrations t alive;
+          let alive_sids =
+            List.fold_left
+              (fun acc reg -> reg.session_id :: acc)
+              []
+              alive
+          in
+          let all_inbox_sids = list_inbox_session_ids t in
+          let preserved = ref 0 in
+          let deleted =
+            List.filter
+              (fun sid ->
+                if List.mem sid alive_sids then false
+                else
+                  (* Hold the inbox lock across read+preserve+delete so a
+                     concurrent enqueue can't race the unlink. Any non-empty
+                     content is appended to dead-letter.jsonl before the
+                     inbox file is removed, so cleanup is non-destructive to
+                     operator signal. We intentionally leave the .inbox.lock
+                     sidecar in place: unlinking the lock file while another
+                     process holds a lockf on a separate fd for the same
+                     path would open a window for a new opener to get a
+                     LOCK immediately against a different inode. Sidecar
+                     files are empty, so keeping them is cheap. *)
+                  with_inbox_lock t ~session_id:sid (fun () ->
+                      let msgs = load_inbox t ~session_id:sid in
+                      if msgs <> [] then begin
+                        append_dead_letter t ~session_id:sid ~messages:msgs;
+                        preserved := !preserved + List.length msgs
+                      end;
+                      try_unlink (inbox_path t ~session_id:sid)))
             all_inbox_sids
-        in
-        { dropped_regs = dead
-        ; deleted_inboxes = deleted
-        ; preserved_messages = !preserved
-        })
+          in
+          { dropped_regs = dead
+          ; deleted_inboxes = deleted
+          ; preserved_messages = !preserved
+          })
+    in
+    do_broadcast ();
+    result
 
   (* Scan dead-letter.jsonl for records belonging to this session and return
      them for redelivery, removing matched records from the file.
@@ -2308,10 +2492,11 @@ module Broker = struct
     | `String "invite_only" -> Invite_only
     | _ -> Public
 
-  let room_meta_to_json { visibility; invited_members } =
+  let room_meta_to_json { visibility; invited_members; created_by } =
     `Assoc
       [ ("visibility", room_visibility_to_json visibility)
       ; ("invited_members", `List (List.map (fun s -> `String s) invited_members))
+      ; ("created_by", `String created_by)
       ]
 
   let room_meta_of_json json =
@@ -2327,13 +2512,19 @@ module Broker = struct
                  items
            | _ -> []
          with _ -> [])
+    ; created_by =
+        (try
+           match member "created_by" json with
+           | `String s -> s
+           | _ -> ""
+         with _ -> "")
     }
 
   let load_room_meta t ~room_id =
     ensure_room_dir t ~room_id;
     match read_json_file (room_meta_path t ~room_id) ~default:(`Assoc []) with
     | `Assoc _ as json -> room_meta_of_json json
-    | _ -> { visibility = Public; invited_members = [] }
+    | _ -> { visibility = Public; invited_members = []; created_by = "" }
 
   let save_room_meta t ~room_id meta =
     ensure_room_dir t ~room_id;
@@ -2421,6 +2612,12 @@ module Broker = struct
       if not (List.mem alias meta.invited_members) then
         invalid_arg
           ("join_room rejected: room '" ^ room_id ^ "' is invite-only and '" ^ alias ^ "' is not on the invite list");
+    (* H3 rooms-acl: stamp [created_by] when the joiner is establishing the
+       room (no members yet, no creator recorded). Subsequent joiners do
+       not overwrite. Legacy rooms (members exist, created_by="") stay
+       empty and require [~force:true] to delete. *)
+    (if current_members = [] && meta.created_by = "" then
+       save_room_meta t ~room_id { meta with created_by = alias });
     let updated, should_broadcast =
       with_room_members_lock t ~room_id (fun () ->
         let members = load_room_members t ~room_id in
@@ -2480,13 +2677,28 @@ module Broker = struct
     if should_broadcast then broadcast_room_leave t ~room_id ~alias;
     updated
 
-  (* Delete a room entirely. Fails if the room has any members. *)
-  let delete_room t ~room_id =
+  (* Delete a room entirely. Fails if the room has any members.
+     H3 rooms-acl: also requires caller-auth — only the room creator
+     ([meta.created_by]) may delete. Legacy rooms (created_by="")
+     require [~force:true] from the caller, intended as an operator
+     escape hatch for rooms whose meta predates the field. *)
+  let delete_room t ~room_id ?(caller_alias = "") ?(force = false) () =
     if not (valid_room_id room_id) then
       invalid_arg ("invalid room_id: " ^ room_id);
     let dir = room_dir t ~room_id in
     if not (Sys.file_exists dir) then
       invalid_arg ("room does not exist: " ^ room_id);
+    let meta = load_room_meta t ~room_id in
+    (if meta.created_by = "" then begin
+       if not force then
+         invalid_arg
+           ("delete_room rejected: room '" ^ room_id
+            ^ "' has no recorded creator (legacy room) — pass force=true to delete")
+     end
+     else if caller_alias <> meta.created_by then
+       invalid_arg
+         ("delete_room rejected: only the creator '" ^ meta.created_by
+          ^ "' may delete room '" ^ room_id ^ "'"));
     (* Hold both locks while checking members and deleting the directory. *)
     with_room_members_lock t ~room_id (fun () ->
       with_room_history_lock t ~room_id (fun () ->
@@ -2522,6 +2734,64 @@ module Broker = struct
       invalid_arg ("set_room_visibility rejected: only room members can change visibility");
     let meta = load_room_meta t ~room_id in
     save_room_meta t ~room_id { meta with visibility }
+
+  type create_room_result =
+    { cr_room_id : string
+    ; cr_created_by : string
+    ; cr_visibility : room_visibility
+    ; cr_invited_members : string list
+    ; cr_members : string list
+    ; cr_auto_joined : bool
+    }
+
+  (* #394: explicit room creation with visibility-on-create. Lineage:
+     #385/H3 + #M4 covered the visibility-on-create path through join_room
+     for MCP callers; this surface gives CLI users a create-without-join
+     entry point with the same atomicity guarantee. *)
+  let create_room t ~room_id ~caller_alias ~caller_session_id ~visibility
+        ~invited_members ~auto_join =
+    if not (valid_room_id room_id) then
+      invalid_arg ("invalid room_id: " ^ room_id);
+    let dir = room_dir t ~room_id in
+    (* #403: rely solely on mkdir(2)'s atomic EEXIST. The previous
+       Sys.file_exists pre-check was a real TOCTOU window — two creators
+       could both pass the check and then race on mkdir, with the loser
+       getting "room already exists" only if it happened to lose the
+       mkdir race AS WELL. Worse, the pre-check was misleading: it
+       suggested the create was guarded, but the mkdir below was the
+       only actual atomic guard. Drop the misleading check; let mkdir
+       be the single authority. *)
+    (try Unix.mkdir (rooms_dir t) 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+    (try Unix.mkdir dir 0o700
+     with Unix.Unix_error (Unix.EEXIST, _, _) ->
+       invalid_arg ("room already exists: " ^ room_id));
+    let dedup_invited =
+      List.fold_left
+        (fun acc a -> if List.mem a acc then acc else acc @ [ a ])
+        [] invited_members
+    in
+    save_room_meta t ~room_id
+      { visibility; invited_members = dedup_invited; created_by = caller_alias };
+    let members =
+      if auto_join then begin
+        let member =
+          { rm_alias = caller_alias
+          ; rm_session_id = caller_session_id
+          ; joined_at = Unix.gettimeofday ()
+          }
+        in
+        save_room_members t ~room_id [ member ];
+        [ caller_alias ]
+      end
+      else []
+    in
+    { cr_room_id = room_id
+    ; cr_created_by = caller_alias
+    ; cr_visibility = visibility
+    ; cr_invited_members = dedup_invited
+    ; cr_members = members
+    ; cr_auto_joined = auto_join
+    }
 
   let rename_room_member_alias t ~room_id ~session_id ~new_alias =
     if not (valid_room_id room_id) then
@@ -3004,6 +3274,88 @@ let log_handoff_attempt ~broker_root ~from_alias ~to_alias ~name ~ok ~error =
       with _ -> close_out_noerr oc)
    with _ -> ())
 
+(* #29 H2b: log every peer-pass DM verification attempt that ends in a
+   strict-mode reject. The detailed reason (pin pubkey fingerprints,
+   sha mismatch detail, etc.) is appended here; the user-facing reject
+   message stays generic so attacker-placed artifact contents do not
+   echo back to the sender. *)
+let log_peer_pass_reject ~broker_root ~from_alias ~to_alias ~claim_alias ~claim_sha ~reason =
+  (try
+     let path = Filename.concat broker_root "broker.log" in
+     let ts = Unix.gettimeofday () in
+     let line =
+       `Assoc
+         [ ("ts", `Float ts)
+         ; ("event", `String "peer_pass_reject")
+         ; ("from", `String from_alias)
+         ; ("to", `String to_alias)
+         ; ("claim_alias", `String claim_alias)
+         ; ("claim_sha", `String claim_sha)
+         ; ("reason", `String reason)
+         ]
+       |> Yojson.Safe.to_string
+     in
+     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
+     (try
+        output_string oc (line ^ "\n");
+        close_out oc
+      with _ -> close_out_noerr oc)
+   with _ -> ())
+
+(* #55: every TOFU pubkey-pin rotation gets a structured audit line in
+   broker.log so an attacker who compromises one keypair cannot stealth-
+   rotate the pin out from under the swarm — every rotation leaves a
+   forensic trail. Sibling to [log_peer_pass_reject] above; same file,
+   same shape, different event tag.
+
+   The hook is registered on [Peer_review.set_pin_rotate_logger] at
+   broker startup so any caller of [Peer_review.pin_rotate] (CLI verify
+   --rotate-pin, future MCP rotate-pin tool, anything internal)
+   produces the log line without having to remember to. *)
+let log_peer_pass_pin_rotate ~broker_root ~alias ~old_pubkey ~new_pubkey
+    ~prior_first_seen ~ts =
+  (try
+     let path = Filename.concat broker_root "broker.log" in
+     let prior_field = match prior_first_seen with
+       | None -> ("prior_first_seen", `Null)
+       | Some f -> ("prior_first_seen", `Float f)
+     in
+     let line =
+       `Assoc
+         [ ("ts", `Float ts)
+         ; ("event", `String "peer_pass_pin_rotate")
+         ; ("alias", `String alias)
+         ; ("old_pubkey", `String old_pubkey)
+         ; ("new_pubkey", `String new_pubkey)
+         ; prior_field
+         ]
+       |> Yojson.Safe.to_string
+     in
+     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
+     (try
+        output_string oc (line ^ "\n");
+        close_out oc
+      with _ -> close_out_noerr oc)
+   with _ -> ())
+
+(* Wire the broker.log writer as the default pin-rotate logger. The
+   hook event includes the pin-store [path], from which we recover the
+   broker_root (the pin store lives at <broker_root>/peer-pass-trust.json
+   on the canonical broker; the CLI install resolver sets the same).
+   Any caller that explicitly passes [?path] to [pin_rotate] still
+   produces a log line (the file is alongside the pin-store, which is
+   what an audit trail wants). *)
+let () =
+  Peer_review.set_pin_rotate_logger (fun (event : Peer_review.pin_rotate_log_event) ->
+    let broker_root = Filename.dirname event.path in
+    log_peer_pass_pin_rotate
+      ~broker_root
+      ~alias:event.alias
+      ~old_pubkey:event.old_pubkey
+      ~new_pubkey:event.new_pubkey
+      ~prior_first_seen:event.prior_first_seen
+      ~ts:event.ts)
+
 let notify_shared_with_recipients
     ~broker ~from_alias ~name ?description ~shared ~shared_with () =
   if shared && shared_with <> [] then []
@@ -3163,9 +3515,9 @@ let base_tool_definitions =
       ~required:[]
       ~properties:[]
   ; tool_definition ~name:"send"
-      ~description:"Send a C2C message to a registered peer alias. The sender alias is resolved from the current MCP session when possible; `from_alias` remains a legacy fallback for non-session callers. Optional `deferrable:true` marks the message as low-priority: push paths (channel notification, PostToolUse hook) skip it — recipient reads it on next explicit poll_inbox or idle flush. Optional `ephemeral:true` (local 1:1 only) delivers normally but skips the recipient-side archive append, so post-delivery the only persistent trace is the recipient's transcript / channel notification. For remote recipients (alias@host), the relay outbox persists by design and `ephemeral` is silently ignored on the relay side in v1 — cross-host ephemeral is a follow-up. Receipt confirmation is impossible by design. Returns JSON {queued:true, ts:<epoch-seconds>, from_alias:<string>, to_alias:<string>} on success."
+      ~description:"Send a C2C message to a registered peer alias. The sender alias is resolved from the current MCP session when possible; `from_alias` remains a legacy fallback for non-session callers. Optional `deferrable:true` marks the message as low-priority: push paths (channel notification, PostToolUse hook) skip it — recipient reads it on next explicit poll_inbox or idle flush. Optional `ephemeral:true` (local 1:1 only) delivers normally but skips the recipient-side archive append, so post-delivery the only persistent trace is the recipient's transcript / channel notification. For remote recipients (alias@host), the relay outbox persists by design and `ephemeral` is silently ignored on the relay side in v1 — cross-host ephemeral is a follow-up. Optional `tag:\"fail\"|\"blocking\"|\"urgent\"` (#392) prepends a visual marker to the body (🔴 FAIL: / ⛔ BLOCKING: / ⚠️ URGENT:) so the recipient spots the priority inline in their transcript — useful for peer-PASS FAIL verdicts and similar attention-asks. Receipt confirmation is impossible by design. Returns JSON {queued:true, ts:<epoch-seconds>, from_alias:<string>, to_alias:<string>} on success."
       ~required:["to_alias"; "content"]
-      ~properties:[ prop "to_alias" "Target peer alias."; prop "from_alias" "Legacy fallback sender alias (deprecated)."; prop "content" "Message body."; bool_prop "deferrable" "Optional bool. When true, marks the message as low-priority — push delivery is suppressed; recipient reads it on next poll_inbox or idle flush."; bool_prop "ephemeral" "Optional bool. Local 1:1 only — when true, the message is delivered normally but skipped on the recipient-side archive append. For alias@host recipients the relay outbox persists by design; the flag is silently ignored on the relay side in v1." ]
+      ~properties:[ prop "to_alias" "Target peer alias."; prop "from_alias" "Legacy fallback sender alias (deprecated)."; prop "content" "Message body."; bool_prop "deferrable" "Optional bool. When true, marks the message as low-priority — push delivery is suppressed; recipient reads it on next poll_inbox or idle flush."; bool_prop "ephemeral" "Optional bool. Local 1:1 only — when true, the message is delivered normally but skipped on the recipient-side archive append. For alias@host recipients the relay outbox persists by design; the flag is silently ignored on the relay side in v1."; prop "tag" "Optional visual-marker tag (#392). One of \"fail\" (🔴 FAIL:), \"blocking\" (⛔ BLOCKING:), or \"urgent\" (⚠️ URGENT:). Prepended to the body at send-time so the recipient spots the priority inline in their transcript. Unknown tag values are rejected." ]
   ; tool_definition ~name:"whoami"
       ~description:"Resolve the current C2C session registration."
       ~required:[]
@@ -3222,7 +3574,7 @@ let base_tool_definitions =
       ~required:[]
       ~properties:[ int_prop "limit" "Max messages to return (default 50)." ]
   ; tool_definition ~name:"tail_log"
-      ~description:"Return the last N lines from the broker RPC audit log (broker.log). Each line is a JSON object {ts, tool, ok}. Useful for verifying that your sends and polls actually reached the broker, without needing to read the file directly. Content fields are not logged — only tool names and success/fail status. Optional `limit` (default 50, max 500). Returns a JSON array of log entries, oldest first."
+      ~description:"Return the last N lines from the broker audit log (broker.log). Each line is a JSON object; the shape is a discriminated union — `tool`-keyed entries record RPC events ({ts, tool, ok}), and `event`-keyed entries record subsystem events (e.g. `send_memory_handoff` per #327, `nudge_tick`/`nudge_enqueue` per #335). Useful for verifying that your sends and polls reached the broker and observing nudge/handoff scheduler behavior without exposing message content. Optional `limit` (default 50, max 500). Returns a JSON array of log entries, oldest first."
       ~required:[]
       ~properties:[ int_prop "limit" "Max log entries (default 50, max 500)." ]
   ; tool_definition ~name:"server_info"
@@ -3378,6 +3730,23 @@ let optional_member name json =
     | `Null -> None
     | value -> Some value
   with _ -> None
+
+(* Lenient bool extraction from a Yojson value. JSON-RPC clients vary in
+   coercion behavior — some send `Bool b`, some send `String "true"` /
+   `String "false"` (especially shell-based callers piping CLI args), some
+   send `Int 0`/`Int 1`. Returns [None] for anything else (including the
+   ambiguous `String "yes"`, `Float 1.0`, etc.) so callers can choose to
+   error or apply a documented default. *)
+let bool_of_arg : Yojson.Safe.t -> bool option = function
+  | `Bool b -> Some b
+  | `String s ->
+      (match String.lowercase_ascii (String.trim s) with
+       | "true" -> Some true
+       | "false" -> Some false
+       | _ -> None)
+  | `Int 1 -> Some true
+  | `Int 0 -> Some false
+  | _ -> None
 
 let first_nonempty_env keys =
   let rec loop = function
@@ -3578,9 +3947,13 @@ let auto_register_impl ~broker_root ?session_id_override () =
          with a DIFFERENT alias, skip — prevents session hijack when a child
          process inherits CLAUDE_SESSION_ID but has a different alias. *)
       let hijack_guard =
+        (* #345: exclude pid=None for the reasons documented at Guard 3
+           below — pidless zombie rows cannot prove ownership against a
+           legitimate post-OOM resume. *)
         List.exists
           (fun reg ->
-            reg.session_id = session_id
+            Option.is_some reg.pid
+            && reg.session_id = session_id
             && reg.alias <> alias
             && Broker.registration_is_alive reg)
           existing
@@ -3598,9 +3971,14 @@ let auto_register_impl ~broker_root ?session_id_override () =
         | None -> Some (Unix.getppid ())
       in
       let alias_occupied_guard =
+        (* #345: exclude pid=None for the reasons documented at Guard 3
+           below — this is the highest-impact post-OOM-resume site, where
+           a pidless zombie row from the prior crashed session would
+           otherwise block the legitimate fresh-session resume. *)
         List.exists
           (fun reg ->
-            reg.alias = alias
+            Option.is_some reg.pid
+            && reg.alias = alias
             && reg.session_id <> session_id
             && Broker.registration_is_alive reg
             && reg.pid <> pid)
@@ -3634,9 +4012,16 @@ let auto_register_impl ~broker_root ?session_id_override () =
          from Codex) from inheriting the same C2C_MCP_CLIENT_PID and
          creating a permanent ghost alias that accumulates messages. *)
       let same_pid_alive_different_session =
+        (* #345: exclude pid=None for the reasons documented at Guard 3
+           above — defense-in-depth + intent-locking. Functionally a
+           no-op today since `pid` falls back to Unix.getppid () so the
+           `reg.pid = pid` clause already structurally rejects None,
+           but the explicit filter pins the predicate to its semantic
+           intent ("a row whose pid we know matches ours"). *)
         List.exists
           (fun reg ->
-             reg.session_id <> session_id
+             Option.is_some reg.pid
+             && reg.session_id <> session_id
              && reg.alias <> alias
              && Broker.registration_is_alive reg
              && reg.pid = pid)
@@ -4161,6 +4546,19 @@ let handle_tool_call ~(broker : Broker.t) ?session_id_override ~tool_name ~argum
                      | `Bool b -> b | _ -> false
                    with _ -> false
                  in
+                 (* #392: optional `tag` for fail/blocking/urgent body prefix. *)
+                 let tag_arg =
+                   try match Yojson.Safe.Util.member "tag" arguments with
+                     | `String s -> Some s | _ -> None
+                   with _ -> None
+                 in
+                 (match parse_send_tag tag_arg with
+                  | Error msg ->
+                    Lwt.return (tool_result
+                                  ~content:(Printf.sprintf "send rejected: %s" msg)
+                                  ~is_error:true)
+                  | Ok tag_opt ->
+                 let content = (tag_to_body_prefix tag_opt) ^ content in
 let ts = Unix.gettimeofday () in
                   let effective_content =
                     let recipient_reg =
@@ -4236,19 +4634,62 @@ let ts = Unix.gettimeofday () in
                       | Some msg -> Some (`Warn msg)
                       | None -> None
                     in
+                    let peer_pass_claim = Peer_review.claim_of_content content in
+                    let peer_pass_pin_path =
+                      Filename.concat (Broker.root broker) "peer-pass-trust.json"
+                    in
                     let peer_pass_verification =
-                      match Peer_review.claim_of_content content with
+                      match peer_pass_claim with
                       | None -> None
                       | Some (alias, sha) ->
-                          match Peer_review.verify_claim ~alias ~sha with
+                          (* #29 H2b: pin-aware variant. The plain
+                             [verify_claim] only validates the signature
+                             against the artifact-embedded reviewer_pk, so
+                             a fresh-keypair forgery passed strict-mode H2.
+                             [verify_claim_with_pin] adds TOFU pubkey-pin
+                             enforcement: artifact pubkey must match the
+                             pin for this alias (or be first-seen). *)
+                          match
+                            Peer_review.verify_claim_with_pin
+                              ~path:peer_pass_pin_path ~alias ~sha ()
+                          with
                           | Peer_review.Claim_valid msg -> Some (`Ok msg)
                           | Peer_review.Claim_missing m -> Some (`Missing m)
                           | Peer_review.Claim_invalid m -> Some (`Invalid m)
                     in
-                    match self_pass_warning with
-                    | Some (`Reject msg) ->
+                    let invalid_peer_pass =
+                      match peer_pass_verification with
+                      | Some (`Invalid m) ->
+                          let claim_alias, claim_sha = match peer_pass_claim with
+                            | Some (a, s) -> a, s
+                            | None -> "", ""
+                          in
+                          (* Detailed reason -> stderr + broker.log only.
+                             User-facing message (below) is generic to
+                             avoid echoing attacker-placed artifact contents
+                             back to the sender (I3 from slate's review). *)
+                          Printf.eprintf
+                            "[peer-pass] WARN: rejecting forged peer-pass DM from=%s to=%s alias=%s sha=%s: %s\n%!"
+                            from_alias to_alias claim_alias claim_sha m;
+                          log_peer_pass_reject
+                            ~broker_root:(Broker.root broker)
+                            ~from_alias ~to_alias
+                            ~claim_alias ~claim_sha ~reason:m;
+                          Some m
+                      | _ -> None
+                    in
+                    match invalid_peer_pass, self_pass_warning with
+                    | Some _m, _ ->
+                        Lwt.return
+                          (tool_result
+                             ~content:
+                               "send rejected: peer-pass verification failed \
+                                (H2b: forged or pin-mismatched peer-pass DM not enqueued; \
+                                see broker.log for details)"
+                             ~is_error:true)
+                    | None, Some (`Reject msg) ->
                         Lwt.return (tool_result ~content:("send rejected: " ^ msg) ~is_error:true)
-                    | Some (`Warn _) | None ->
+                    | None, (Some (`Warn _) | None) ->
                         Broker.enqueue_message broker ~from_alias ~to_alias ~content:s ~deferrable ~ephemeral ();
                         (match session_id_override with
                          | Some sid -> Broker.touch_session broker ~session_id:sid
@@ -4310,7 +4751,7 @@ let ts = Unix.gettimeofday () in
                           else receipt_fields
                         in
                         let receipt = `Assoc receipt_fields |> Yojson.Safe.to_string in
-                        Lwt.return (tool_result ~content:receipt ~is_error:false)))
+                        Lwt.return (tool_result ~content:receipt ~is_error:false))))
   | "send_all" ->
       let content = string_member "content" arguments in
       (match alias_for_current_session_or_argument ?session_id_override broker arguments with
@@ -4527,7 +4968,7 @@ let ts = Unix.gettimeofday () in
       let session_id = resolve_session_id ?session_id_override arguments in
       Broker.confirm_registration broker ~session_id;
       Broker.touch_session broker ~session_id;
-      let messages = Broker.drain_inbox broker ~session_id in
+      let messages = Broker.drain_inbox ~drained_by:"poll_inbox" broker ~session_id in
       let sid =
         match session_id_override with
         | Some sid -> sid
@@ -4784,9 +5225,9 @@ let ts = Unix.gettimeofday () in
       let session_id = resolve_session_id ?session_id_override arguments in
       let on =
         try
-          match Yojson.Safe.Util.member "on" arguments with
-          | `Bool b -> b
-          | _ -> false
+          match bool_of_arg (Yojson.Safe.Util.member "on" arguments) with
+          | Some b -> b
+          | None -> false
         with _ -> false
       in
       let until_epoch =
@@ -4899,8 +5340,18 @@ let ts = Unix.gettimeofday () in
            Lwt.return (tool_result ~content ~is_error:false))
   | "delete_room" ->
       let room_id = string_member "room_id" arguments in
+      let force =
+        match Yojson.Safe.Util.member "force" arguments with
+        | `Bool b -> b
+        | _ -> false
+      in
+      let caller_alias =
+        match alias_for_current_session_or_argument ?session_id_override broker arguments with
+        | Some a -> a
+        | None -> ""
+      in
       (try
-         Broker.delete_room broker ~room_id;
+         Broker.delete_room broker ~room_id ~caller_alias ~force ();
          let content =
            `Assoc [ ("room_id", `String room_id); ("deleted", `Bool true) ]
            |> Yojson.Safe.to_string
@@ -4947,9 +5398,58 @@ let ts = Unix.gettimeofday () in
                 Lwt.return (tool_result ~content:result_json ~is_error:false)))
   | "list_rooms" ->
       let rooms = Broker.list_rooms broker in
+      (* H2 rooms-acl: filter invite-only rooms the caller can't see.
+         - Public: include as-is.
+         - Invite_only + caller is a member: include as-is.
+         - Invite_only + caller in invited_members but not yet joined:
+           include but redact members/details/invited_members.
+         - Invite_only + caller unrelated: exclude entirely. *)
+      let caller_session_id =
+        match session_id_override with
+        | Some s -> Some s
+        | None -> current_session_id ()
+      in
+      let caller_alias = current_registered_alias ?session_id_override broker in
+      let filtered =
+        List.filter_map
+          (fun (r : Broker.room_info) ->
+            match r.ri_visibility with
+            | Public -> Some r
+            | Invite_only ->
+                let is_member_by_session =
+                  match caller_session_id with
+                  | None -> false
+                  | Some sid ->
+                      List.exists (fun (d : Broker.room_member_info) -> d.rmi_session_id = sid) r.ri_member_details
+                in
+                let is_member_by_alias =
+                  match caller_alias with
+                  | None -> false
+                  | Some a -> List.mem a r.ri_members
+                in
+                if is_member_by_session || is_member_by_alias then Some r
+                else
+                  let is_invited =
+                    match caller_alias with
+                    | None -> false
+                    | Some a -> List.mem a r.ri_invited_members
+                  in
+                  if is_invited then
+                    Some
+                      { r with
+                        ri_members = []
+                      ; ri_member_details = []
+                      ; ri_invited_members = []
+                      ; ri_alive_member_count = 0
+                      ; ri_dead_member_count = 0
+                      ; ri_unknown_member_count = 0
+                      }
+                  else None)
+          rooms
+      in
       let content =
         `List
-          (List.map room_info_json rooms)
+          (List.map room_info_json filtered)
         |> Yojson.Safe.to_string
       in
       Lwt.return (tool_result ~content ~is_error:false)
@@ -4981,6 +5481,39 @@ let ts = Unix.gettimeofday () in
         | None -> 50
       in
       let since = Broker.float_opt_member "since" arguments |> Option.value ~default:0.0 in
+      (* H1 rooms-acl: invite-only rooms require caller membership.
+         Public rooms have no read gate (public contract). *)
+      let meta = Broker.load_room_meta broker ~room_id in
+      let allow =
+        match meta.visibility with
+        | Public -> true
+        | Invite_only ->
+            let caller_session_id =
+              match session_id_override with
+              | Some s -> Some s
+              | None -> current_session_id ()
+            in
+            let caller_alias = current_registered_alias ?session_id_override broker in
+            let members = Broker.read_room_members broker ~room_id in
+            let by_session =
+              match caller_session_id with
+              | None -> false
+              | Some sid -> List.exists (fun m -> m.rm_session_id = sid) members
+            in
+            let by_alias =
+              match caller_alias with
+              | None -> false
+              | Some a -> List.exists (fun m -> m.rm_alias = a) members
+            in
+            by_session || by_alias
+      in
+      if not allow then
+        let content =
+          `Assoc [ ("error", `String ("not a member of " ^ room_id)) ]
+          |> Yojson.Safe.to_string
+        in
+        Lwt.return (tool_result ~content ~is_error:true)
+      else
       let history = Broker.read_room_history broker ~room_id ~limit ~since () in
       let content =
         `List
@@ -5490,13 +6023,7 @@ let ts = Unix.gettimeofday () in
        | None -> Lwt.return (missing_member_alias_result "memory_write")
        | Some alias ->
            let dir = memory_base_dir alias in
-           let rec mkdir_p d =
-             if not (Sys.file_exists d) then (
-               (try Unix.mkdir d 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
-               mkdir_p (Filename.dirname d))
-           in
-           mkdir_p (Filename.dirname dir);
-           if not (Sys.file_exists dir) then Unix.mkdir dir 0o755;
+           mkdir_p dir;
            let path = entry_path alias name in
            let shared_with_line =
              match shared_with with

@@ -15,6 +15,7 @@ type t = {
      release, qa, gui, …). When unset, resolvers fall back to "default". *)
   role_class : string option;
   pronouns : string option;
+  coordinator : bool option;
   c2c_alias : string option;
   c2c_auto_join_rooms : string list;
   c2c_heartbeat : (string * string) list;
@@ -36,6 +37,7 @@ let empty = {
   pmodel = None;
   role_class = None;
   pronouns = None;
+  coordinator = None;
   c2c_alias = None;
   c2c_auto_join_rooms = [];
   c2c_heartbeat = [];
@@ -66,6 +68,16 @@ let parse_list s =
     let items = String.split_on_char ',' inner in
     List.filter (fun x -> String.trim x <> "") (List.map (fun item -> trim_quotes (String.trim item)) items)
   else [trim_quotes s]
+
+let parse_bool (s : string option) : bool option =
+  match s with
+  | None -> None
+  | Some v ->
+      let v = String.trim v in
+      let v = String.map (fun c -> if 'A' <= c && c <= 'Z' then Char.lowercase_ascii c else c) v in
+      if v = "true" || v = "1" then Some true
+      else if v = "false" || v = "0" then Some false
+      else None
 
 let split_frontmatter content =
   let lines = String.split_on_char '\n' content in
@@ -252,6 +264,7 @@ let parse_string ?(snippets_dir = ".c2c/snippets") ?(filename = "(string)") cont
     pmodel = find "pmodel";
     role_class = find "role_class";
     pronouns = find "pronouns";
+    coordinator = parse_bool (find "coordinator");
     c2c_alias = find "c2c.alias";
     c2c_auto_join_rooms =
       (match find "c2c.auto_join_rooms" with Some v -> parse_list v | None -> []);
@@ -512,24 +525,6 @@ let resolve_agent_path ~(name : string) ~(client : string) : string =
   let canonical = canonical_roles_dir () // (name ^ ".md") in
   if Sys.file_exists canonical then canonical
   else client_agent_dir ~client // (name ^ ".md")
-
-(* #420: locate a role file by `name` for the autoload-on-`-n` path.
-   Priority:
-     1. .c2c/roles/<name>.md       (canonical, user-written)
-     2. .c2c/roles/builtins/<name>.md  (canonical, repo-shipped)
-     3. <client-native>/<name>.md  (e.g. .opencode/agents/<name>.md)
-   Returns Some <path> if any of those exist; None otherwise. Used by
-   `c2c start` to skip the interactive role prompt when `-n NAME` matches
-   an existing role file even without an explicit `--agent NAME`. *)
-let resolve_role_file_for_autoload ~(name : string) ~(client : string)
-  : string option =
-  let canonical = canonical_roles_dir () // (name ^ ".md") in
-  let builtins  = canonical_roles_dir () // "builtins" // (name ^ ".md") in
-  let client_native = client_agent_dir ~client // (name ^ ".md") in
-  if Sys.file_exists canonical then Some canonical
-  else if Sys.file_exists builtins then Some builtins
-  else if Sys.file_exists client_native then Some client_native
-  else None
 
 let role_class_to_room (role_class : string) : string option =
   match String.trim role_class with

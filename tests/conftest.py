@@ -245,7 +245,7 @@ def _pgid_cleanup_guard() -> None:  # type: ignore[return]
 def _cleanup_scenario_agents(sc: Scenario) -> None:
     cleanup_failures: list[str] = []
     for agent in list(sc.agents.values()):
-        if agent.client in {"claude", "codex", "codex-headless", "opencode", "kimi"}:
+        if agent.client in {"claude", "codex", "codex-headless", "opencode", "kimi", "crush"}:
             env = dict(os.environ)
             env["C2C_MCP_BROKER_ROOT"] = str(sc.broker_root())
             result = subprocess.run(

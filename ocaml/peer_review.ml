@@ -172,9 +172,97 @@ let verify (art : t) : (bool, verify_error) result =
 
 (* --- peer-pass claim extraction and auto-verify ----------------------------- *)
 
+(** #57 Defence-in-depth path-traversal validator.
+
+    [artifact_path] composes a filesystem path from caller-supplied [alias] and
+    [sha]. Today the production callers feed these via [claim_of_content], which
+    restricts alias to [a-z0-9_-] and sha to lowercase hex, so traversal is
+    closed *de facto*. But [verify_claim_with_pin] / [verify_claim] /
+    [artifact_path] are public functions; any future caller that passes an
+    unfiltered alias (e.g., from [Broker.list_registrations], which does not
+    enforce these character restrictions at registration time) reopens the
+    traversal vector.
+
+    The validator below independently rejects:
+      - alias: empty, contains '/' '\' '..' NUL, leading '.', or any byte
+        outside printable ASCII (0x20-0x7e) excluding ' '.
+      - sha: not matching ^[0-9a-f]{4,64}$ (lowercase hex, 4..64 chars).
+
+    Rejection short-circuits before any [Filename.concat]. *)
+let validate_artifact_path_components ~alias ~sha : (unit, string) result =
+  let is_alias_byte_ok c =
+    let code = Char.code c in
+    (* Printable ASCII excluding space; explicit allowlist is even tighter
+       below via the structural checks (no '/', '\\', '.', NUL). *)
+    code >= 0x21 && code <= 0x7e
+  in
+  let alias_has_dotdot s =
+    let len = String.length s in
+    let rec loop i =
+      if i + 1 >= len then false
+      else if s.[i] = '.' && s.[i+1] = '.' then true
+      else loop (i + 1)
+    in
+    loop 0
+  in
+  let alias_max_bytes = 128 in
+  let alias_invalid =
+    if alias = "" then Some "alias is empty"
+    else if String.length alias > alias_max_bytes then
+      Some (Printf.sprintf "alias exceeds %d bytes" alias_max_bytes)
+    else if String.contains alias '/' then Some "alias contains '/'"
+    else if String.contains alias '\\' then Some "alias contains '\\'"
+    else if String.contains alias '\x00' then Some "alias contains NUL byte"
+    else if alias.[0] = '.' then Some "alias has leading '.'"
+    else if alias_has_dotdot alias then Some "alias contains '..'"
+    else
+      let bad =
+        let len = String.length alias in
+        let rec scan i =
+          if i >= len then None
+          else if not (is_alias_byte_ok alias.[i]) then Some alias.[i]
+          else scan (i + 1)
+        in
+        scan 0
+      in
+      match bad with
+      | Some c -> Some (Printf.sprintf "alias contains non-printable byte 0x%02x" (Char.code c))
+      | None -> None
+  in
+  let sha_invalid =
+    let len = String.length sha in
+    if len = 0 then Some "sha is empty"
+    else if len < 4 then Some "sha shorter than 4 chars"
+    else if len > 64 then Some "sha longer than 64 chars"
+    else
+      let rec scan i =
+        if i >= len then None
+        else
+          let c = sha.[i] in
+          if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') then scan (i + 1)
+          else Some (Printf.sprintf "sha contains non-hex byte 0x%02x at offset %d" (Char.code c) i)
+      in
+      scan 0
+  in
+  match alias_invalid, sha_invalid with
+  | Some msg, _ -> Error msg
+  | _, Some msg -> Error msg
+  | None, None -> Ok ()
+
 (** Artifact file path for a given sha+alias pair. Uses git common dir parent
-    so peer-passes are shared across all worktrees clones. *)
+    so peer-passes are shared across all worktrees clones.
+
+    #57: raises [Invalid_argument] if alias/sha fail
+    [validate_artifact_path_components]. The high-level entry points
+    ([verify_claim], [verify_claim_with_pin]) translate this into a
+    [Claim_invalid] result so the broker's reject-logging machinery picks
+    it up. Direct callers should pre-validate or be prepared to handle the
+    exception. *)
 let artifact_path ~sha ~alias =
+  (match validate_artifact_path_components ~alias ~sha with
+   | Ok () -> ()
+   | Error msg ->
+       invalid_arg (Printf.sprintf "artifact_path: alias/sha rejected by path-validator: %s" msg));
   let base = match Git_helpers.git_common_dir_parent () with
     | Some parent -> Filename.concat parent ".c2c"
     | None -> ".c2c"
@@ -218,6 +306,7 @@ let claim_of_content content =
   in
   let sha_marker = "sha=" in
   let sha_marker_len = String.length sha_marker in
+  let lc = String.lowercase_ascii content in
   let rec find_sha pos =
     match String.index_from_opt lc pos 's' with
     | None -> None
@@ -245,14 +334,44 @@ let claim_of_content content =
       | Some (sha, _) ->
           if sha <> "" then Some (alias, sha) else None
 
-(** Read a peer-pass artifact from a JSON file. *)
-let read_artifact path =
+(** Maximum allowed size of a peer-pass artifact JSON file on disk.
+    Real artifacts are well under 2KB; the cap exists to refuse a malicious
+    or accidentally-huge file before it OOMs the broker on read. See #56. *)
+let peer_pass_max_artifact_bytes = 64 * 1024
+
+(** Read a file with a hard size cap. Stats the file first; refuses if the
+    on-disk length exceeds [peer_pass_max_artifact_bytes]. Returns the raw
+    bytes on success, or a [`Too_large of int] / [`Read_error of string]
+    on failure. *)
+let read_artifact_capped path
+  : (string, [> `Too_large of int | `Read_error of string ]) result =
   try
-    let content = Yojson.Safe.from_file path in
-    match t_of_json content with
-    | Some art -> Ok art
-    | None -> Error "JSON parse failed"
-  with e -> Error (Printexc.to_string e)
+    let st = Unix.stat path in
+    let sz = st.Unix.st_size in
+    if sz > peer_pass_max_artifact_bytes then Error (`Too_large sz)
+    else
+      let ic = open_in path in
+      Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+        Ok (really_input_string ic sz))
+  with
+  | Unix.Unix_error (e, _, _) -> Error (`Read_error (Unix.error_message e))
+  | Sys_error msg -> Error (`Read_error msg)
+  | e -> Error (`Read_error (Printexc.to_string e))
+
+(** Read a peer-pass artifact from a JSON file. Enforces the artifact size
+    cap before parsing — see [peer_pass_max_artifact_bytes]. *)
+let read_artifact path =
+  match read_artifact_capped path with
+  | Error (`Too_large sz) ->
+    Error (Printf.sprintf "artifact exceeds size cap (%d bytes > %d)"
+             sz peer_pass_max_artifact_bytes)
+  | Error (`Read_error msg) -> Error msg
+  | Ok content ->
+    try
+      match t_of_json (Yojson.Safe.from_string content) with
+      | Some art -> Ok art
+      | None -> Error "JSON parse failed"
+    with e -> Error (Printexc.to_string e)
 
 (** Result of peer-pass claim verification. *)
 type claim_verification =
@@ -261,8 +380,15 @@ type claim_verification =
   | Claim_invalid of string      (* signature/alias/sha mismatch *)
 
 (** Verify a peer-pass claim: load the artifact, check signature, confirm
-    alias and sha match. Returns Claim_valid on success. *)
+    alias and sha match. Returns Claim_valid on success.
+
+    #57: rejects up-front if alias/sha fail the path-validator, so a
+    caller passing unfiltered input never reaches [Filename.concat]. *)
 let verify_claim ~alias ~sha =
+  match validate_artifact_path_components ~alias ~sha with
+  | Error msg ->
+    Claim_invalid (Printf.sprintf "alias/sha rejected by path-validator: %s" msg)
+  | Ok () ->
   let path = artifact_path ~sha ~alias in
   if not (Sys.file_exists path) then
     Claim_missing (Printf.sprintf "no peer-pass artifact at %s" path)
@@ -271,7 +397,7 @@ let verify_claim ~alias ~sha =
     | Error e -> Claim_invalid (Printf.sprintf "artifact read error: %s" e)
     | Ok art ->
         match verify art with
-        | Error e -> Claim_invalid ("signature: " ^ verify_error_to_string e)
+        | Error e -> Claim_invalid (Printf.sprintf "invalid signature: %s" (verify_error_to_string e))
         | Ok false -> Claim_invalid "signature verification failed"
         | Ok true ->
             if art.sha <> sha then
@@ -280,3 +406,358 @@ let verify_claim ~alias ~sha =
               Claim_invalid (Printf.sprintf "reviewer mismatch: artifact is by %s, claim is by %s" art.reviewer alias)
             else
               Claim_valid (Printf.sprintf "peer-pass artifact verified: %s for %s" art.verdict sha)
+
+(* --- TOFU pubkey pin (H1: alias <-> pubkey binding) ----------------------- *)
+
+(* Background: prior to the H1 fix, [verify] above accepted whatever
+   [reviewer_pk] was embedded in the artifact, as long as the signature
+   validated against that key. Any agent could forge a peer-PASS for any
+   alias by minting a fresh ed25519 keypair and signing under their target's
+   alias. The trust anchor was "whoever wrote the file", not cryptographic
+   identity.
+
+   The TOFU pin store closes that gap by binding alias -> pubkey on first
+   verify. Subsequent verifies for the same alias must present the same
+   pubkey or be rejected. Rotation requires explicit operator action via
+   [pin_rotate] (CLI: `c2c peer-pass verify --rotate-pin`).
+
+   Pin store format (JSON, at <broker_root>/peer-pass-trust.json):
+     { "version": 1,
+       "pins": { "<alias>": { "pubkey": "<b64url>",
+                              "first_seen": <unix-ts>,
+                              "last_seen": <unix-ts> } } } *)
+
+module Trust_pin = struct
+  type pin = {
+    pubkey : string;       (* b64url, same encoding as Peer_review.reviewer_pk *)
+    first_seen : float;
+    last_seen : float;
+  }
+
+  type store = {
+    version : int;
+    pins : (string * pin) list;  (* alias -> pin; alias keys lowercased *)
+  }
+
+  let empty = { version = 1; pins = [] }
+
+  let pin_to_json p : Yojson.Safe.t =
+    `Assoc [
+      "pubkey", `String p.pubkey;
+      "first_seen", `Float p.first_seen;
+      "last_seen", `Float p.last_seen;
+    ]
+
+  let pin_of_json (j : Yojson.Safe.t) : pin option =
+    match j with
+    | `Assoc fields ->
+      let get_str f = match List.assoc_opt f fields with Some (`String s) -> s | _ -> "" in
+      let get_float f =
+        match List.assoc_opt f fields with
+        | Some (`Float f) -> f
+        | Some (`Int i) -> float_of_int i
+        | _ -> 0.0
+      in
+      let pubkey = get_str "pubkey" in
+      if pubkey = "" then None
+      else Some { pubkey; first_seen = get_float "first_seen"; last_seen = get_float "last_seen" }
+    | _ -> None
+
+  let store_to_json s : Yojson.Safe.t =
+    let pins_obj = `Assoc (List.map (fun (a, p) -> (a, pin_to_json p)) s.pins) in
+    `Assoc [
+      "version", `Int s.version;
+      "pins", pins_obj;
+    ]
+
+  let store_of_json (j : Yojson.Safe.t) : store option =
+    match j with
+    | `Assoc fields ->
+      let version =
+        match List.assoc_opt "version" fields with
+        | Some (`Int i) -> i
+        | _ -> 1
+      in
+      let pins =
+        match List.assoc_opt "pins" fields with
+        | Some (`Assoc plist) ->
+          List.filter_map (fun (alias, j) ->
+            match pin_of_json j with
+            | Some p -> Some (String.lowercase_ascii alias, p)
+            | None -> None) plist
+        | _ -> []
+      in
+      Some { version; pins }
+    | _ -> None
+
+  (** Default pin-store path: <broker_root>/peer-pass-trust.json. The caller
+      may override via [path] for tests / explicit broker roots. *)
+  let default_path_ref : (unit -> string) ref =
+    ref (fun () ->
+      (* Fallback: under the current dir's .c2c if no broker resolver is
+         wired. The CLI overrides this on startup. *)
+      let base =
+        match Git_helpers.git_common_dir_parent () with
+        | Some p -> Filename.concat p ".c2c"
+        | None -> ".c2c"
+      in
+      Filename.concat base "peer-pass-trust.json")
+
+  let set_default_path_resolver f = default_path_ref := f
+  let default_path () = !default_path_ref ()
+
+  let load ?path () : store =
+    let p = match path with Some p -> p | None -> default_path () in
+    if not (Sys.file_exists p) then empty
+    else
+      try
+        match store_of_json (Yojson.Safe.from_file p) with
+        | Some s -> s
+        | None -> empty
+      with _ -> empty
+
+  let mkdir_p d =
+    let rec aux p =
+      if p = "" || p = "/" || p = "." then ()
+      else if Sys.file_exists p then ()
+      else begin
+        aux (Filename.dirname p);
+        try Unix.mkdir p 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+      end
+    in
+    aux d
+
+  (** #409: serialize concurrent save callers via Unix.lockf on a sidecar
+      lock file. Without this, two upserters both writing simultaneously
+      can race: A's atomic-rename and B's atomic-rename both succeed, but
+      whichever ran rename second wins, silently dropping the loser's pin
+      update. Pattern matches Broker.with_inbox_lock (c2c_mcp.ml:1193).
+      Note: this fixes save-vs-save; the load→upsert→save read-modify-write
+      window is NOT covered (load happens before this lock). Callers that
+      need read-modify-write atomicity should hold this lock around the
+      full sequence — see [with_pin_lock] below. *)
+  let with_pin_lock ?path f =
+    let p = match path with Some p -> p | None -> default_path () in
+    mkdir_p (Filename.dirname p);
+    let lock_path = p ^ ".lock" in
+    let fd =
+      Unix.openfile lock_path [ O_RDWR; O_CREAT ] 0o644
+    in
+    Fun.protect
+      ~finally:(fun () ->
+        (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+        (try Unix.close fd with _ -> ()))
+      (fun () ->
+        Unix.lockf fd Unix.F_LOCK 0;
+        f ())
+
+  let save ?path (s : store) : unit =
+    with_pin_lock ?path (fun () ->
+      let p = match path with Some p -> p | None -> default_path () in
+      let tmp = p ^ ".tmp" in
+      let oc = open_out tmp in
+      Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+        output_string oc (Yojson.Safe.pretty_to_string (store_to_json s));
+        output_string oc "\n");
+      Sys.rename tmp p)
+
+  let find_pin (s : store) ~alias : pin option =
+    List.assoc_opt (String.lowercase_ascii alias) s.pins
+
+  let upsert (s : store) ~alias ~pin : store =
+    let key = String.lowercase_ascii alias in
+    let pins =
+      (key, pin) :: List.filter (fun (a, _) -> a <> key) s.pins
+    in
+    { s with pins }
+end
+
+type pin_check =
+  | Pin_first_seen        (* no prior pin; pin written this call (TOFU) *)
+  | Pin_match             (* artifact pubkey matches existing pin *)
+  | Pin_mismatch of {
+      alias : string;
+      pinned_pubkey : string;
+      artifact_pubkey : string;
+      first_seen : float;
+    }
+
+(** #55: structured audit-log hook for pin rotation. The default no-op
+    keeps the library standalone (no hard dep on c2c_mcp); the broker
+    + CLI register a writer that appends a JSON line to
+    <broker_root>/broker.log. Because the hook lives in [pin_rotate]
+    itself (not at a single CLI call site), every caller — current and
+    future, MCP and CLI alike — produces an audit entry. Any code that
+    silently rotates a pin without going through [pin_rotate] is now
+    the bug, not the missing log line. *)
+type pin_rotate_log_event = {
+  alias : string;
+  old_pubkey : string;        (* "" when no prior pin existed *)
+  new_pubkey : string;
+  prior_first_seen : float option;
+  ts : float;
+  path : string;              (* the pin-store path used for this rotate *)
+}
+
+let pin_rotate_log_hook : (pin_rotate_log_event -> unit) ref =
+  ref (fun _ -> ())
+
+let set_pin_rotate_logger f = pin_rotate_log_hook := f
+
+(** Apply TOFU pin policy on a verified artifact. The artifact's signature
+    MUST already have been verified by [verify] before calling this — the pin
+    policy is only meaningful on cryptographically valid signatures.
+
+    On [Pin_first_seen] and [Pin_match], the pin is updated (last_seen
+    bumped, or new pin written for first-seen). On [Pin_mismatch] nothing
+    is written; caller is expected to surface the mismatch as a hard error.
+
+    Use [pin_rotate] for the explicit rotation path.
+
+    #54b: the entire load→decide→save sequence is wrapped in
+    [Trust_pin.with_pin_lock] so two concurrent callers cannot interleave
+    in the read-modify-write window. Without the wrap, A.load + B.load +
+    A.save + B.save sees B clobber A's update; with the wrap, B blocks
+    on A.save before its own load runs. *)
+let pin_check ?path (art : t) : pin_check =
+  Trust_pin.with_pin_lock ?path (fun () ->
+    let alias = art.reviewer in
+    let store = Trust_pin.load ?path () in
+    let now = Unix.gettimeofday () in
+    match Trust_pin.find_pin store ~alias with
+    | None ->
+      let new_pin =
+        { Trust_pin.pubkey = art.reviewer_pk; first_seen = now; last_seen = now }
+      in
+      let store' = Trust_pin.upsert store ~alias ~pin:new_pin in
+      Trust_pin.save ?path store';
+      Pin_first_seen
+    | Some existing when existing.Trust_pin.pubkey = art.reviewer_pk ->
+      let bumped = { existing with Trust_pin.last_seen = now } in
+      let store' = Trust_pin.upsert store ~alias ~pin:bumped in
+      Trust_pin.save ?path store';
+      Pin_match
+    | Some existing ->
+      Pin_mismatch {
+        alias;
+        pinned_pubkey = existing.Trust_pin.pubkey;
+        artifact_pubkey = art.reviewer_pk;
+        first_seen = existing.Trust_pin.first_seen;
+      })
+
+(** Explicit rotation: replace the existing pin (or create one) regardless
+    of mismatch. Returns the previous pin (if any) for audit logging.
+
+    #54b: load→upsert→save runs under [Trust_pin.with_pin_lock] so a
+    concurrent verify-and-pin (or a parallel rotate) cannot interleave.
+    #55: emits a structured audit-log event via [pin_rotate_log_hook]
+    after the save lands. The hook fires for both first-rotate (no
+    prior) and replacement; loggers can branch on
+    [prior_first_seen = None] for the no-prior case. *)
+let pin_rotate ?path (art : t) : Trust_pin.pin option =
+  let resolved_path = match path with
+    | Some p -> p
+    | None -> Trust_pin.default_path ()
+  in
+  let prior =
+    Trust_pin.with_pin_lock ?path (fun () ->
+      let alias = art.reviewer in
+      let store = Trust_pin.load ?path () in
+      let prior = Trust_pin.find_pin store ~alias in
+      let now = Unix.gettimeofday () in
+      let first_seen = match prior with Some p -> p.Trust_pin.first_seen | None -> now in
+      let new_pin = { Trust_pin.pubkey = art.reviewer_pk; first_seen; last_seen = now } in
+      let store' = Trust_pin.upsert store ~alias ~pin:new_pin in
+      Trust_pin.save ?path store';
+      prior)
+  in
+  (* Best-effort audit log; never fail the rotate on a logger exception. *)
+  (try
+     let event = {
+       alias = art.reviewer;
+       old_pubkey = (match prior with Some p -> p.Trust_pin.pubkey | None -> "");
+       new_pubkey = art.reviewer_pk;
+       prior_first_seen = (match prior with Some p -> Some p.Trust_pin.first_seen | None -> None);
+       ts = Unix.gettimeofday ();
+       path = resolved_path;
+     } in
+     !pin_rotate_log_hook event
+   with _ -> ());
+  prior
+
+(** Convenience wrapper that fuses signature verification with TOFU pin
+    enforcement. Returns:
+    - [Ok Pin_first_seen | Pin_match] on success (pin written/updated).
+    - [Error] for any signature failure (passthrough from [verify]).
+    - [Ok (Pin_mismatch _)] for TOFU mismatch (caller decides hard-fail vs
+      rotation prompt). *)
+let verify_with_pin ?path (art : t) : (pin_check, verify_error) result =
+  match verify art with
+  | Error e -> Error e
+  | Ok false -> Error Invalid_signature
+  | Ok true -> Ok (pin_check ?path art)
+
+(** Pin-aware variant of [verify_claim] for the broker boundary (#29 H2b).
+
+    Behaves like [verify_claim] but additionally enforces the TOFU pubkey
+    pin via [verify_with_pin]. The forgery vector closed by this function:
+    an attacker generates a fresh ed25519 keypair, signs an artifact under
+    a victim alias (embedding the fresh pubkey as [reviewer_pk]), drops
+    the artifact at the well-known path, and DMs a "peer-PASS by <victim>,
+    SHA=<sha>" — without pin enforcement, the signature validates against
+    the attacker-controlled pubkey and [verify_claim] returns
+    [Claim_valid]. With pin enforcement, the artifact's [reviewer_pk]
+    must match the existing pin for that alias (or be the first-seen
+    pubkey for the alias).
+
+    Pin policy:
+    - [Pin_first_seen] -> [Claim_valid] (TOFU; pin written this call).
+    - [Pin_match]      -> [Claim_valid].
+    - [Pin_mismatch]   -> [Claim_invalid] with a structured reason
+                          including pinned + artifact pubkey fingerprints
+                          (full b64url) for audit.
+
+    The optional [path] override targets the pin store JSON; the broker
+    wires this to a path under its broker root so all worktrees of one
+    repo share one pin set, and tests pass an isolated path. *)
+(** [verify_claim_for_artifact] runs the H2 + H2b policy checks against an
+    already-loaded artifact: sha/reviewer field match + signature verify +
+    TOFU pubkey pin. Used by both the broker (which loads the artifact from
+    its canonical path inside [verify_claim_with_pin]) and the CLI (which
+    loads from a user-supplied path and calls this directly).
+
+    Splitting the in-memory checks out of [verify_claim_with_pin] (#62)
+    converges CLI and broker on the same policy without duplicating the
+    sha/reviewer/sig/pin ladder. Future hardening lands once. *)
+let verify_claim_for_artifact ?path ~(art : t) ~alias ~sha () : claim_verification =
+  if art.sha <> sha then
+    Claim_invalid (Printf.sprintf "SHA mismatch: artifact is for %s, claim is for %s" art.sha sha)
+  else if String.lowercase_ascii art.reviewer <> String.lowercase_ascii alias then
+    Claim_invalid (Printf.sprintf "reviewer mismatch: artifact is by %s, claim is by %s" art.reviewer alias)
+  else begin
+    match verify_with_pin ?path art with
+    | Error e ->
+      Claim_invalid (Printf.sprintf "invalid signature: %s" (verify_error_to_string e))
+    | Ok Pin_match ->
+      Claim_valid (Printf.sprintf "peer-pass artifact verified: %s for %s" art.verdict sha)
+    | Ok Pin_first_seen ->
+      Claim_valid (Printf.sprintf "peer-pass artifact verified (pin first-seen): %s for %s" art.verdict sha)
+    | Ok (Pin_mismatch m) ->
+      Claim_invalid
+        (Printf.sprintf
+           "pin mismatch for reviewer %s: pinned pubkey=%s, artifact pubkey=%s, first_seen=%.0f"
+           m.alias m.pinned_pubkey m.artifact_pubkey m.first_seen)
+  end
+
+let verify_claim_with_pin ?path ~alias ~sha () =
+  match validate_artifact_path_components ~alias ~sha with
+  | Error msg ->
+    Claim_invalid (Printf.sprintf "alias/sha rejected by path-validator: %s" msg)
+  | Ok () ->
+  let art_path = artifact_path ~sha ~alias in
+  if not (Sys.file_exists art_path) then
+    Claim_missing (Printf.sprintf "no peer-pass artifact at %s" art_path)
+  else
+    match read_artifact art_path with
+    | Error e -> Claim_invalid (Printf.sprintf "artifact read error: %s" e)
+    | Ok art -> verify_claim_for_artifact ?path ~art ~alias ~sha ()

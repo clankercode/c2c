@@ -265,43 +265,22 @@ let fmt_cost = function
 let sitrep_marker_start = "<!-- c2c-stats:start -->"
 let sitrep_marker_end = "<!-- c2c-stats:end -->"
 
-(** Local-tz label for sitrep stub headings. Returns "UTC", "UTC+10", "UTC-5", … *)
-let local_tz_label now =
-  let local = Unix.localtime now in
-  let utc = Unix.gmtime now in
-  let to_secs (t : Unix.tm) =
-    t.tm_yday * 86400 + t.tm_hour * 3600 + t.tm_min * 60 + t.tm_sec
-  in
-  let raw = to_secs local - to_secs utc in
-  let raw =
-    if raw >  43200 then raw - 86400
-    else if raw < -43200 then raw + 86400
-    else raw
-  in
-  let hours = raw / 3600 in
-  if hours = 0 then "UTC" else Printf.sprintf "UTC%+d" hours
-
-(** Sitrep paths use LOCAL time, matching the existing convention in this
-    repo (sitreps are filed under the local hour the coordinator writes
-    them, e.g. "10:00 UTC+10" lives at .sitreps/.../10.md). *)
+(** Sitrep paths use UTC, matching the swarm convention that sitreps are
+    coordinated in UTC (e.g. .sitreps/2026/04/28/05.md is the 05:00 UTC
+    sitrep regardless of the writer's local timezone). Both the path
+    and the stub heading are UTC. *)
 let sitrep_path ~repo_root ~now =
-  let t = Unix.localtime now in
+  let t = Unix.gmtime now in
   Filename.concat repo_root
     (Printf.sprintf ".sitreps/%04d/%02d/%02d/%02d.md"
        (1900 + t.tm_year) (1 + t.tm_mon) t.tm_mday t.tm_hour)
 
 let sitrep_stub ~now =
-  let t = Unix.localtime now in
-  Printf.sprintf "# Sitrep — %04d-%02d-%02d %02d:00 %s\n\n"
-    (1900 + t.tm_year) (1 + t.tm_mon) t.tm_mday t.tm_hour (local_tz_label now)
+  let t = Unix.gmtime now in
+  Printf.sprintf "# Sitrep — %04d-%02d-%02d %02d:00 UTC\n\n"
+    (1900 + t.tm_year) (1 + t.tm_mon) t.tm_mday t.tm_hour
 
-let rec mkdir_p path =
-  if path = "" || path = Filename.dirname path then ()
-  else if Sys.file_exists path then ()
-  else begin
-    mkdir_p (Filename.dirname path);
-    Unix.mkdir path 0o755
-  end
+let mkdir_p = C2c_mcp.mkdir_p
 
 let read_file path =
   let ic = open_in path in

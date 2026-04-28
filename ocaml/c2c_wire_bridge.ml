@@ -17,25 +17,15 @@ let default_spool_path broker_root session_id =
  * Message envelope (must match Python format_c2c_envelope)
  * --------------------------------------------------------------------------- *)
 
-(* #417: pick the timestamp to display on the envelope. Prefer broker
-   enqueue time ([msg.ts]) so what the recipient sees is the SEND wall
-   clock, not the deliver wall clock; fall back to now() when msg.ts
-   isn't populated (defensive — older brokers and direct-spool callers
-   may emit ts=0.0). *)
-let envelope_ts_for (msg : C2c_mcp.message) : float =
-  if msg.ts > 0.0 then msg.ts else Unix.gettimeofday ()
-
-let format_envelope ?(sender_role : string option) ?(ts : float option)
-    (msg : C2c_mcp.message) =
+let format_envelope ?(sender_role : string option) ?ts (msg : C2c_mcp.message) =
   let tag = C2c_mcp.extract_tag_from_content msg.content in
-  let ts_value = match ts with Some t -> t | None -> envelope_ts_for msg in
   C2c_mcp.format_c2c_envelope
     ~from_alias:msg.from_alias
     ~to_alias:msg.to_alias
     ?tag
     ?role:sender_role
     ?reply_via:msg.reply_via
-    ~ts:ts_value
+    ?ts
     ~content:msg.content
     ()
 
@@ -89,15 +79,7 @@ let spool_read sp =
 let spool_write sp messages =
   let dir = Filename.dirname sp.path in
   (try ignore (Sys.readdir dir)
-   with Sys_error _ ->
-     let rec mkdir_p d =
-       if not (Sys.file_exists d) then begin
-         mkdir_p (Filename.dirname d);
-         (try Unix.mkdir d 0o755
-          with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
-       end
-     in
-     mkdir_p dir);
+   with Sys_error _ -> C2c_io.mkdir_p dir);
   let (tmp, oc) = Filename.open_temp_file ~temp_dir:dir "spool" ".tmp" in
   Fun.protect
     ~finally:(fun () -> (try Sys.remove tmp with _ -> ()))
@@ -222,7 +204,7 @@ let drain_to_spool ~broker ~session_id ~spool =
   let queued = spool_read spool in
   if queued <> [] then queued
   else begin
-    let fresh = C2c_mcp.Broker.drain_inbox broker ~session_id in
+    let fresh = C2c_mcp.Broker.drain_inbox ~drained_by:"wire_bridge" broker ~session_id in
     if fresh <> [] then spool_append spool fresh;
     spool_read spool
   end

@@ -306,7 +306,7 @@ that still has an older binary mapped.
 
 #### `tail_log`
 
-Read the last N entries from the broker's RPC audit log (`broker.log`). Useful for debugging delivery and tool call patterns without exposing message content.
+Read the last N entries from the broker's audit log (`broker.log`). Useful for debugging delivery, tool-call patterns, and subsystem scheduler behavior without exposing message content.
 
 **Arguments**
 
@@ -314,7 +314,15 @@ Read the last N entries from the broker's RPC audit log (`broker.log`). Useful f
 |-------|------|----------|-------------|
 | `limit` | integer | no | Number of entries to return (default 50, max 500) |
 
-**Returns** Array of `{ts, tool, ok}` objects — one per broker RPC call.
+**Returns** Array of JSON objects, oldest first. Entries are a discriminated union:
+
+- **`tool`-keyed entries** — RPC call records: `{ts, tool, ok}`. One per broker RPC.
+- **`event`-keyed entries** — subsystem records:
+  - `send_memory_handoff` (#327): `{ts, event, from, to, name, ok, error?}` — one per send-memory handoff attempt.
+  - `nudge_tick` (#335): `{ts, event, from_session_id, alive_total, alive_no_pid, idle_eligible, sent, skipped_dnd, cadence_minutes, idle_minutes}` — one per nudge scheduler tick.
+  - `nudge_enqueue` (#335): `{ts, event, from_session_id, to_alias, to_pid_state, ok}` — one per nudge enqueue attempt; `to_pid_state` ∈ `{alive_with_pid, alive_no_pid, dead, unknown}`.
+
+Use `event` (or `tool`) as the discriminator when parsing. Content fields are never logged.
 
 ---
 
@@ -423,7 +431,7 @@ Validate that a received reply is authorized for a pending request.
 ### Memory
 
 Per-agent memory is stored at `.c2c/memory/<alias>/<entry>.md` (in the
-repo root, git-tracked). Entries are markdown with YAML frontmatter:
+repo root, local-only — gitignored per `.gitignore` #266). Entries are markdown with YAML frontmatter:
 `name`, `description`, `type`, `shared`, `shared_with`. Cross-agent
 reads require `shared: true` (global) **OR** the caller's alias listed
 in `shared_with: [alias1, alias2]` (targeted). See the design at
@@ -563,7 +571,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `install` (no subcommand) | Interactive TUI: detect installed clients, configure each (default behaviour: install binary + every detected client). |
 | `install self [--dest DIR] [--mcp-server]` | Install the running c2c binary to `~/.local/bin`. |
 | `install all` | Scriptable equivalent of the install TUI default — install binary + auto-configure every detected client. |
-| `install claude\|codex\|codex-headless\|opencode\|kimi [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client for c2c messaging (writes the client's MCP config + auto-join + auto-register env vars). Replaces the legacy per-client `configure-*` subcommands. |
+| `install claude\|codex\|codex-headless\|opencode\|kimi\|crush [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client for c2c messaging (writes the client's MCP config + auto-join + auto-register env vars). Replaces the legacy per-client `configure-*` subcommands. |
 | `install git-hook [--dry-run]` | Install the c2c pre-commit hook into `.git/hooks`. |
 | `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup]` | One-command project onboarding: configure client MCP, register, join `swarm-lounge` (or `--room`). Run once per project. |
 
@@ -574,11 +582,11 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `register [--alias A] [--session-id ID]` | Register an alias for the current session. Both flags optional — alias falls back to `C2C_MCP_AUTO_REGISTER_ALIAS`, session ID to `C2C_MCP_SESSION_ID` or the current client session. |
 | `whoami [--json]` | Show alias and registration info for the current session. |
 | `list [--all] [--json]` | List registered peers (`--all` adds session ID + registered time). |
-| `send [--from A] [--no-warn-substitution] [--ephemeral] ALIAS MSG…` | Send a 1:1 DM. `--ephemeral` skips the recipient-side archive append (local 1:1 only; relay outbox path persists). |
+| `send [--from A] [--no-warn-substitution] [--ephemeral] [--fail \| --blocking \| --urgent] ALIAS MSG…` | Send a 1:1 DM. `--ephemeral` skips the recipient-side archive append (local 1:1 only; relay outbox path persists). `--fail` / `--blocking` / `--urgent` (#392, mutex) prepend a visual marker to the body (🔴 FAIL: / ⛔ BLOCKING: / ⚠️ URGENT:) so the recipient spots the priority inline in their transcript. The MCP `mcp__c2c__send` tool exposes the same via `tag: "fail" \| "blocking" \| "urgent"`. |
 | `send-all [--from A] [--exclude A] MSG…` | Broadcast to all live peers. |
 | `poll-inbox [--peek] [--session-id ID]` | Drain inbox (or peek without draining). |
 | `peek-inbox [--session-id ID]` | Non-destructive inbox read. |
-| `history [--limit N] [--session-id ID] [--json]` | Read the drained-message archive. |
+| `history [--limit N] [--session-id ID] [--no-headers] [--alias A] [-a A] [--json]` | Read the drained-message archive. Human output prefixes each message with a header line `[YYYY-MM-DD HH:MM:SS] from -> to` followed by the body; pass `--no-headers` for bare bodies (legacy grep-friendly format). `--json` is unchanged. `--alias A` looks up session ID by alias to read another peer's archive. Mutually exclusive with `--session-id`. |
 
 ### Rooms (`c2c rooms …`)
 
@@ -603,7 +611,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 
 | Subcommand | Description |
 |------------|-------------|
-| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] …` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `tmux`, `pty`. NAME becomes the alias by default. |
+| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] …` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `crush`, `tmux`, `pty`. NAME becomes the alias by default. |
 | `stop NAME [--json]` | Stop a managed instance (SIGTERM the outer loop). |
 | `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
 | `reset-thread NAME THREAD` | For `codex` / `codex-headless`, persist an exact resume target and restart onto that thread. |
@@ -660,13 +668,6 @@ Use `c2c send <alias@host> <message>` or `mcp__c2c__send` with
 `to_alias="<alias@host>"` for relay-routed direct messages through
 `remote-outbox.jsonl`; keep `c2c relay connect` running to forward them.
 
-`<host>` must match the relay's `--relay-name` (single-relay v1 from #379;
-defaults to the relay's `--listen` host). The literal `"relay"` and empty
-strings are also accepted (back-compat with legacy fixtures). Other host
-parts dead-letter with reason `cross_host_not_implemented` rather than
-`unknown_alias`. Multi-relay mesh forwarding (#330) will branch from that
-seam.
-
 #### Kimi Wire Bridge
 
 `c2c-kimi-wire-bridge` delivers queued broker inbox messages through Kimi's
@@ -713,10 +714,10 @@ stored in `~/.local/share/c2c/wire-daemons/` (one pidfile + log per session).
 
 | Subcommand | Description |
 |------------|-------------|
-| `coord-cherry-pick [--no-install] [--no-dm] SHA…` | Cherry-pick SHAs with dirty-tree stash + auto-install. `--no-dm` skips author DM notifications. Requires `C2C_COORDINATOR=1`. |
+| `coord-cherry-pick [--no-install] [--no-dm] [--no-fail-on-install] SHA…` | Cherry-pick SHAs with dirty-tree stash + auto-install. `--no-dm` skips author DM notifications. `--no-fail-on-install` (#401) downgrades install failure from exit-1 to a stderr warning + continue (use when the coord tree has a transient build issue independent of the cherry-picked SHAs). Requires `C2C_COORDINATOR=1`. |
 | `git …` | Git wrapper that auto-injects `--author` for commits when `git.attribution=true` in `.c2c/config.toml`. |
 | `worktree list\|setup\|start\|status\|prune\|check-bases\|gc` | Manage per-agent git worktrees. `gc` (#313) detects worktrees safe to delete (clean working tree + HEAD ancestor of `origin/master` + no live `cwd` holder + not the main worktree); default dry-run, `--clean` to remove, `--ignore-active` to skip the cwd-holder check, `--json` for tooling, `--path-prefix=PFX` to bound the candidate set. The `--active-window-hours=H` (#314, default `2`) freshness heuristic soft-refuses worktrees where HEAD == `origin/master` AND the admin dir is younger than `H` hours, marking them `[!] POSSIBLY_ACTIVE` rather than REMOVABLE so `--clean` skips fresh checkouts whose owner may be reading code elsewhere; set `--active-window-hours=0` to disable. |
-| `peer-pass sign\|send\|verify\|list\|clean` | Sign, send, and verify peer-PASS review artifacts. |
+| `peer-pass sign\|send\|verify\|list\|clean` | Sign, send, and verify peer-PASS review artifacts. The broker enforces signature + TOFU pubkey pin on `peer-pass send` (H2 + H2b, 2026-04-28): forged-signature, missing-artifact, and pin-mismatched DMs are rejected with `"send rejected: peer-pass verification failed (H2b: forged or pin-mismatched peer-pass DM not enqueued; see broker.log for details)"`. The string names the failing check class but does NOT echo attacker-placed artifact contents (claim_alias/sha/pubkey) back to the sender. Details land in broker.log under `event:"peer_pass_reject"`. Pin store at `<broker_root>/peer-pass-trust.json` (flock-serialized save per S1 `ef09077c`); rotate via `c2c peer-pass verify --rotate-pin`. See `.collab/design/SPEC-signed-peer-pass.md`. |
 | `sticker send\|list\|wall\|verify` | Agent appreciation stickers. |
 | `sitrep commit [--message M]` | Stage and commit the current local-hour sitrep file. |
 | `stats [--alias A] [--since DUR] [--top N] [--json] [--append-sitrep]` | Per-agent message statistics (with `stats history` sub for daily rollups). |
@@ -795,7 +796,7 @@ c2c identifies sessions by their **session ID** — a UUID assigned by the host 
    - Claude Code: `$CLAUDE_SESSION_ID`
    - Codex / Codex headless: `$CODEX_THREAD_ID`
    - OpenCode: `$C2C_OPENCODE_SESSION_ID`
-   - Kimi: provided via `c2c install <client>` (writes the alias and a generated session ID into the client's MCP config; refresh by re-running install).
+   - Kimi / Crush: provided via `c2c install <client>` (writes the alias and a generated session ID into the client's MCP config; refresh by re-running install).
 3. Explicit flag: `c2c register --session-id ID --alias A`.
 4. Auto-detection from `/proc` for the current client process (best-effort).
 

@@ -61,6 +61,7 @@
 | 5045–5095 | `setup_kimi` | Kimi-specific setup logic |
 | 5096–5354 | `setup_opencode` | OpenCode-specific setup logic |
 | 5355–5528 | `setup_claude` | Claude-specific setup logic |
+| 5529–5613 | `setup_crush` | Crush-specific setup logic |
 | 5614–5847 | `install_*_subcmd` | Install subcommand definitions |
 | 5848–5863 | `install_common_args` | Shared install argument defs |
 | 5866–5884 | `install_self_subcmd` | `c2c install self` |

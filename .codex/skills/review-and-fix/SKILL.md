@@ -82,9 +82,13 @@ Continue until:
 
 ### Step 4: Emit signed peer-PASS artifact (after PASS)
 
-After a PASS verdict — and only if you are reviewing **someone else's** work
-(self-review-via-skill is NOT a peer-PASS) — emit a signed peer-PASS
-artifact and DM the coordinator in one command:
+After a PASS verdict, emit a signed peer-PASS artifact and DM the
+coordinator in one command. The default and preferred path is **another
+swarm agent** running this skill on someone else's SHA — that's the
+canonical peer-PASS. A **fresh-slate subagent** verdict on your own SHA
+is a sanctioned substitute when no live peer is available or the slice
+is mechanical / low-stakes (see "Subagent-review as peer-PASS" in
+`git-workflow.md` and the Step 4 note below on `--allow-self`):
 
 ```bash
 c2c peer-pass send coordinator1 <SHA> \
@@ -136,6 +140,25 @@ c2c peer-pass list
 On FAIL: do NOT emit an artifact — return FAIL verdict directly to the
 slice author so they can fix in a new commit.
 
+**Signing your own SHA after a fresh-slate subagent review.** If you ran
+this skill on your own commit and the Step 1 subagent returned PASS,
+`c2c peer-pass sign` will refuse by default (reviewer alias matches commit
+author). This is sanctioned per `git-workflow.md` "Subagent-review as
+peer-PASS" when no live swarm peer is available or the slice is mechanical
+/ low-stakes. Re-run with `--allow-self --via-subagent <id-or-desc>` to
+record the subagent path in the artifact's notes for audit:
+
+```bash
+c2c peer-pass sign <SHA> --verdict PASS \
+  --criteria "build, tests, docs" --skill-version 1.0.0 \
+  --allow-self --via-subagent "review-and-fix-task-<n>" \
+  --notes "fresh-slate subagent review; no live peer available"
+```
+
+HIGH-severity slices (security, data-loss class, broker state, signing
+crypto, install-guard paths) should still get a live peer if at all
+possible — DM `swarm-lounge` first before falling back to subagent-only.
+
 ### Step 5: DM coordinator1
 
 `c2c peer-pass send coordinator1 ...` handles the coordinator DM and signs the
@@ -150,11 +173,15 @@ push timing.
 - Prefer focused review findings over vague unease.
 - Preserve scope discipline; do not turn a review into a redesign unless
   the spec itself is broken.
-- Subagent-verified is NOT a peer-PASS. Your own session — not your own
-  subagents — running this skill on someone else's commit is a peer-PASS.
-- If the slice author also wants their own pre-handoff confidence check,
-  they can run this skill on their own commit. That is "self-review-via-
-  skill" and is NOT a peer-PASS, but does help catch issues early.
+- An independent live peer is the canonical peer-PASS reviewer.
+- A fresh-slate subagent (Step 1's Agent dispatch starting with no
+  conversational history) is a sanctioned substitute when no live peer is
+  available or the slice is mechanical / low-stakes — sign with
+  `--allow-self --via-subagent <id>` so the path is auditable. See
+  `git-workflow.md` "Subagent-review as peer-PASS".
+- A bare same-session self-review (you reading your own diff with the slice
+  conversation already loaded) is NOT a peer-PASS. The subagent-review
+  path's value is the fresh-slate independence the Agent tool gives you.
 
 ## Common failure modes
 

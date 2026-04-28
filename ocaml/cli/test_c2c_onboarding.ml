@@ -197,10 +197,12 @@ let test_full_pipeline_local () =
   (* Step 5: local list (no relay needed) *)
   let rc, _, _ = run_c2c ~home:tmp ~broker:tmp ["list"] in
   check int "list exits 0" 0 rc;
-  (* Step 6: whoami *)
-  let rc, _, _ = run_c2c ~home:tmp ~broker:tmp ["register"; "--alias"; alias] in
+  (* Step 6: whoami — pass --session-id explicitly since the test env clears
+     C2C_MCP_SESSION_ID and there is no inherited client session to fall back on. *)
+  let session_id = Printf.sprintf "test-onboard-session-%d-%06x" (Unix.getpid ()) (Random.bits ()) in
+  let rc, _, _ = run_c2c ~home:tmp ~broker:tmp ["register"; "--alias"; alias; "--session-id"; session_id] in
   check int "register exits 0" 0 rc;
-  let rc, out, _ = run_c2c ~home:tmp ~broker:tmp ["whoami"] in
+  let rc, out, _ = run_c2c ~env:["C2C_MCP_SESSION_ID", session_id] ~home:tmp ~broker:tmp ["whoami"] in
   check int "whoami exits 0" 0 rc;
   check bool "whoami mentions alias" true (string_contains out alias)
 

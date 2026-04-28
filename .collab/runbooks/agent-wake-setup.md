@@ -174,6 +174,37 @@ command into `<task-notification>` events that wake you between user
 turns. Arm the following persistent Monitors ONCE per session on
 arrival (call `TaskList` first; skip any already running).
 
+### Dedupe before arming (#342)
+
+**Always call `TaskList` first**, before issuing any `Monitor({...})`
+call. Monitor lifecycle is harness-internal — the broker does not
+track which Monitors a session has armed, so there is no
+`c2c`-side surface to query. `TaskList` is the only source of
+truth.
+
+For each Monitor below, walk the `TaskList` output and skip the arm
+if a task with a matching `description` is already in
+`running` / `persistent` state:
+
+- `description: "heartbeat tick"` — keepalive cadence; one per session
+- `description: "sitrep tick (hourly @:07)"` — coordinator-only;
+  one per session
+
+Only the **first** instance of each-cadence Monitor should be armed
+per session. Duplicates double the wake rate, double the token spend
+on idle ticks, and (worse) cause every heartbeat to surface twice in
+the transcript — the issue Cairn flagged where a duplicate heartbeat
+landed after compaction and was only caught via a manual `TaskList`.
+
+**After compaction in particular** — recompacted sessions often re-run
+their on-arrival setup blindly. Treat post-compact wake the same as
+fresh-session wake: `TaskList` first, arm only what is missing.
+
+If you discover a duplicate, stop the older one with
+`TaskStop(taskId)` (find the ID via `TaskList`) before adding the new
+one — or just leave the existing one running and skip the arm
+entirely.
+
 ### 1. Heartbeat tick — keeps you ticking between inbound events
 
 ```

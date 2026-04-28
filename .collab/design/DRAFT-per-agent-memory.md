@@ -201,4 +201,4 @@ The CLAUDE.md directive makes the distinction concrete: "If this is swarm-wide c
 - Not a replacement for `.collab/findings/` (those are swarm-public, incident-scoped)
 - Not a replacement for `.sitreps/` (those are time-series coordinator logs)
 - Not a full vector database or semantic search — flat markdown files, simple enumeration
-- Not real-time sync across concurrent sessions (git-tracked, read-at-startup pattern)
+- Not real-time sync across concurrent sessions (git-tracked, read-at-startup pattern) <!-- (superseded by #266 — now gitignored) -->

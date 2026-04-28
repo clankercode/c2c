@@ -2309,6 +2309,97 @@ let test_auto_register_startup_skips_when_alive_same_session_different_pid () =
           let reg = List.hd regs in
           check int "original pid preserved" real_pid (Option.get reg.pid)))
 
+let test_guard1_pidless_zombie_does_not_fire_hijack () =
+  (* #345: a pidless zombie row (e.g. left by post-OOM cleanup) sharing the
+     same session_id but a different alias must NOT block a legitimate
+     resume that re-registers under a new alias. Guard 1 must skip
+     pid=None rows. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Pre-register a pidless zombie row with alias "old-zombie-alias" *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"shared-session" ~alias:"old-zombie-alias"
+        ~pid:None ~pid_start_time:None ();
+      (* Legitimate resume: same session_id, different alias *)
+      Unix.putenv "C2C_MCP_SESSION_ID" "shared-session";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "fresh-alias";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          let open C2c_mcp in
+          check bool "fresh-alias registered (zombie did not block hijack guard)"
+            true (List.exists (fun r -> r.alias = "fresh-alias") regs)))
+
+let test_guard2_pidless_zombie_does_not_block_post_oom_resume () =
+  (* #345 (highest-impact site): post-OOM swarm-dance — the prior session
+     left a pidless zombie row owning alias "kimi-nova". The legitimate
+     fresh session has the same env-configured alias but a new session_id
+     + pid. Guard 2 must skip pid=None rows so the resume registers. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Pre-register a pidless zombie owning alias "kimi-nova" under a stale session_id *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"crashed-session" ~alias:"kimi-nova"
+        ~pid:None ~pid_start_time:None ();
+      (* Legitimate fresh-session resume with same alias *)
+      Unix.putenv "C2C_MCP_SESSION_ID" "fresh-session-after-oom";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "kimi-nova";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          let open C2c_mcp in
+          (* The fresh session must be registered (zombie did not block) *)
+          let fresh =
+            List.find_opt
+              (fun r ->
+                 r.session_id = "fresh-session-after-oom"
+                 && r.alias = "kimi-nova")
+              regs
+          in
+          check bool "fresh post-OOM registration succeeded"
+            true (Option.is_some fresh)))
+
+let test_guard4_pidless_zombie_does_not_trigger_same_pid_alive () =
+  (* #345 defense-in-depth: a pidless zombie row with a different
+     session_id and different alias must NOT match Guard 4's same-pid
+     predicate, even if `pid` were ever to fall back to None in the
+     future. Today this is structurally enforced by the `pid` fallback
+     to Unix.getppid (), but the explicit `Option.is_some reg.pid`
+     filter pins the predicate semantics. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Pre-register a pidless zombie with a different session_id + alias *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"old-session" ~alias:"old-alias"
+        ~pid:None ~pid_start_time:None ();
+      Unix.putenv "C2C_MCP_SESSION_ID" "new-session";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "new-alias";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          let open C2c_mcp in
+          let new_reg =
+            List.find_opt
+              (fun r ->
+                 r.session_id = "new-session"
+                 && r.alias = "new-alias")
+              regs
+          in
+          check bool "new registration succeeded (Guard 4 did not fire on pidless)"
+            true (Option.is_some new_reg)))
+
 let test_auto_join_rooms_startup_joins_listed_rooms () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-social";
@@ -3015,8 +3106,55 @@ let test_register_evicts_prior_reg_with_same_alias () =
         Filename.concat dir "old-session.inbox.json"
       in
       check bool "old session inbox untouched"
+         false
+         (Sys.file_exists old_inbox_path))
+
+let test_register_case_insensitive_collision_evicts_lower () =
+  (* #378: "Lyra-Quill" and "lyra-quill" are the same identity for collision
+     purposes. Registering the upper-case form evicts the lower-case holder. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"lower-session" ~alias:"lyra-quill"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker
+        ~session_id:"upper-session" ~alias:"Lyra-Quill"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      check int "only one reg after case-insensitive collision" 1 (List.length regs);
+      check bool "upper-session survived"
+        true
+        (List.exists (fun r -> r.C2c_mcp.session_id = "upper-session") regs);
+      check bool "lower-session was evicted"
         false
-        (Sys.file_exists old_inbox_path))
+        (List.exists (fun r -> r.C2c_mcp.session_id = "lower-session") regs))
+
+let test_register_stores_original_case () =
+  (* #378: collision is case-insensitive, but the stored alias preserves its original case. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"mixed-session" ~alias:"Lyra-Quill"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      check int "one registration" 1 (List.length regs);
+      check bool "stored alias preserves original case"
+        true
+        (List.exists (fun r -> r.C2c_mcp.alias = "Lyra-Quill") regs))
+
+let test_suggest_alias_prime_case_insensitive_with_suffix () =
+  (* #378: suggest_alias_prime returns lowercased base with prime suffix when
+     colliding with a case-variant. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"lower-session" ~alias:"lyra-quill"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      let suggestion = C2c_mcp.Broker.suggest_alias_for_alias broker ~alias:"Lyra-Quill" in
+      check bool "suggestion returned" true (match suggestion with Some _ -> true | None -> false);
+      let suggestion = Option.get suggestion in
+      check bool "suggestion has prime suffix" true
+        (match suggestion with "lyra-quill" -> false | _ -> true))
 
 let test_register_migrates_undrained_inbox_on_alias_re_register () =
   (* Bug: when a session re-registers under the same alias with a fresh
@@ -3212,19 +3350,22 @@ let test_sweep_preserves_live_reg_and_its_inbox () =
         (List.length
            (C2c_mcp.Broker.read_inbox broker ~session_id:"session-live")))
 
-let test_sweep_preserves_legacy_pidless_reg () =
+(* #344: legacy pidless rows (no registered_at anchor) used to be preserved
+   forever by sweep — the canonical pidless-zombie un-reapability bug. The
+   new sweep predicate ([is_sweep_keepable]) drops them. *)
+let test_sweep_drops_pidless_legacy_row () =
   with_temp_dir (fun dir ->
       write_file (Filename.concat dir "registry.json")
         {|[{"session_id":"legacy-session","alias":"storm-legacy"}]|};
       write_file (Filename.concat dir "legacy-session.inbox.json") "[]";
       let broker = C2c_mcp.Broker.create ~root:dir in
       let result = C2c_mcp.Broker.sweep broker in
-      check int "legacy reg not dropped" 0 (List.length result.dropped_regs);
-      check int "legacy inbox not deleted" 0
+      check int "legacy reg dropped" 1 (List.length result.dropped_regs);
+      check int "legacy inbox deleted" 1
         (List.length result.deleted_inboxes);
-      check int "legacy reg still present" 1
+      check int "registry empty after sweep" 0
         (List.length (C2c_mcp.Broker.list_registrations broker));
-      check bool "legacy inbox file still present" true
+      check bool "legacy inbox file gone" false
         (Sys.file_exists (Filename.concat dir "legacy-session.inbox.json")))
 
 (* ---- Orphan inbox capture and replay (c2c restart Slice 3) ---- *)
@@ -3668,6 +3809,180 @@ let test_sweep_drops_expired_provisional_reg () =
       check int "no regs remain" 0
         (List.length (C2c_mcp.Broker.list_registrations broker)))
 
+(* #383: peer_offline broadcast tests *)
+
+(* Sweep emits peer_offline for every confirmed dead registration. *)
+let test_sweep_emits_peer_offline_for_confirmed_dead_reg () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* alice: alive, will receive the notification *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-alice" ~alias:"storm-alice"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      (* bob: confirmed (poll_inbox called), then PID dies *)
+      let dead = dead_pid () in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-bob" ~alias:"storm-bob"
+        ~pid:(Some dead) ~pid_start_time:None ();
+      (* Promote bob to confirmed *)
+      C2c_mcp.Broker.confirm_registration broker ~session_id:"session-bob";
+      let result = C2c_mcp.Broker.sweep broker in
+      check int "bob dropped" 1 (List.length result.dropped_regs);
+      check string "dropped alias" "storm-bob"
+        (List.hd result.dropped_regs).alias;
+      (* alice's inbox should have the peer_offline message *)
+      let alice_inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-alice" in
+      check int "alice got exactly one notification" 1 (List.length alice_inbox);
+      let msg = List.hd alice_inbox in
+      check string "from is broker" "broker" msg.from_alias;
+      check string "to is alice" "storm-alice" msg.to_alias;
+      (* Verify peer_offline envelope format *)
+      check bool "content has peer_offline event" true
+        (string_contains msg.content "<c2c event=\"peer_offline\"");
+      check bool "content has storm-bob alias" true
+        (string_contains msg.content "alias=\"storm-bob\"");
+      check bool "content has reason=killed" true
+        (string_contains msg.content "reason=\"killed\"");
+      check bool "content has detected_at" true
+        (string_contains msg.content "detected_at=");
+      check bool "content has last_seen=" true
+        (string_contains msg.content "last_seen="))
+
+(* Sweep does NOT emit peer_offline for an expired provisional reg
+   (confirmed_at=None), even though it IS dropped by sweep. *)
+let test_sweep_does_not_emit_peer_offline_for_provisional_expired_reg () =
+  with_temp_dir (fun dir ->
+      (* Write a registry with an expired provisional reg (no confirmed_at). *)
+      let expired_ts = Unix.gettimeofday () -. 3601.0 in
+      let reg_json =
+        Printf.sprintf
+          {|[{"session_id":"prov-dead","alias":"storm-prov","registered_at":%f}]|}
+          expired_ts
+      in
+      write_file (Filename.concat dir "registry.json") reg_json;
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Also register a live peer so sweep would have somewhere to broadcast to. *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-live" ~alias:"storm-live"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      Unix.putenv "C2C_PROVISIONAL_SWEEP_TIMEOUT" "1800";
+      let result = C2c_mcp.Broker.sweep broker in
+      Unix.putenv "C2C_PROVISIONAL_SWEEP_TIMEOUT" "1800";
+      check int "provisional dropped" 1 (List.length result.dropped_regs);
+      check string "dropped alias" "storm-prov"
+        (List.hd result.dropped_regs).alias;
+      (* Live peer's inbox must NOT contain any peer_offline message *)
+      let live_inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-live" in
+      let peer_offline_count =
+        List.fold_left
+          (fun n msg -> if string_contains msg.content "<c2c event=\"peer_offline\"" then n + 1 else n)
+          0 live_inbox
+      in
+      check int "no peer_offline emitted for provisional" 0 peer_offline_count)
+
+(* peer_offline message has correct XML envelope format. *)
+let test_sweep_peer_offline_message_format () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-witness" ~alias:"storm-witness"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      let dead = dead_pid () in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-dead" ~alias:"storm-dead"
+        ~pid:(Some dead) ~pid_start_time:None ();
+      C2c_mcp.Broker.confirm_registration broker ~session_id:"session-dead";
+      let (_ : C2c_mcp.Broker.sweep_result) = C2c_mcp.Broker.sweep broker in
+      let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-witness" in
+      match inbox with
+      | [] -> fail "expected peer_offline in witness inbox"
+      | msg :: _ ->
+          let c = msg.content in
+          (* All 5 attributes must be present *)
+          check bool "event attr" true
+            (string_contains c "<c2c event=\"peer_offline\"");
+          check bool "alias attr" true
+            (string_contains c "alias=\"storm-dead\"");
+          check bool "detected_at attr" true
+            (string_contains c "detected_at=\"");
+          check bool "reason attr" true
+            (string_contains c "reason=\"killed\"");
+          check bool "last_seen attr" true
+            (string_contains c "last_seen=\"");
+          (* Must be self-closing *)
+          check bool "self-closing tag" true
+            (string_contains c "/>"))
+
+(* The dead alias does NOT receive its own peer_offline notification. *)
+let test_sweep_dead_alias_excluded_from_peer_offline_receipt () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Register only the dead peer (no other alive peers). *)
+      let dead = dead_pid () in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-dead" ~alias:"storm-dead"
+        ~pid:(Some dead) ~pid_start_time:None ();
+      C2c_mcp.Broker.confirm_registration broker ~session_id:"session-dead";
+      let (_ : C2c_mcp.Broker.sweep_result) = C2c_mcp.Broker.sweep broker in
+      (* storm-dead's inbox may have been deleted by sweep, but no NEW
+         peer_offline should have been delivered there. *)
+      let inbox_exists = Sys.file_exists (Filename.concat dir "session-dead.inbox.json") in
+      if inbox_exists then
+        let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-dead" in
+        let peer_offline_count =
+          List.fold_left
+            (fun n msg -> if string_contains msg.content "<c2c event=\"peer_offline\"" then n + 1 else n)
+            0 inbox
+        in
+        check int "dead alias got no self-notification" 0 peer_offline_count
+      else
+        (* Inbox was deleted by sweep — also fine, means nothing was delivered. *)
+        check bool "inbox deleted (no self-delivery)" true true)
+
+(* Multiple confirmed dead registrations each emit their own peer_offline. *)
+let test_sweep_multiple_confirmed_dead_regs_each_emit_peer_offline () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* alice: alive witness *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-alice" ~alias:"storm-alice"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      (* bob and carol: both confirmed dead *)
+      let dead1 = dead_pid () in
+      let dead2 = dead_pid () in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-bob" ~alias:"storm-bob"
+        ~pid:(Some dead1) ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-carol" ~alias:"storm-carol"
+        ~pid:(Some dead2) ~pid_start_time:None ();
+      C2c_mcp.Broker.confirm_registration broker ~session_id:"session-bob";
+      C2c_mcp.Broker.confirm_registration broker ~session_id:"session-carol";
+      let result = C2c_mcp.Broker.sweep broker in
+      check int "two dead regs" 2 (List.length result.dropped_regs);
+      (* alice should have TWO peer_offline messages — one per dead peer *)
+      let alice_inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-alice" in
+      let peer_offline_messages =
+        List.filter
+          (fun msg -> string_contains msg.content "<c2c event=\"peer_offline\"")
+          alice_inbox
+      in
+      check int "alice got two peer_offline messages" 2 (List.length peer_offline_messages);
+      let aliases =
+        List.map
+          (fun msg ->
+             let start_idx = try String.index msg.content 'a' + String.length "alias=\"" with Not_found -> -1 in
+             if start_idx < 0 then "" else
+               let rest = String.sub msg.content start_idx (String.length msg.content - start_idx) in
+               try String.sub rest 0 (String.index_from rest 0 '"')
+               with _ -> "")
+          peer_offline_messages
+      in
+      let has_bob = List.exists (fun a -> string_contains a "storm-bob") aliases in
+      let has_carol = List.exists (fun a -> string_contains a "storm-carol") aliases in
+      check bool "has bob's peer_offline" true has_bob;
+      check bool "has carol's peer_offline" true has_carol)
+
 (* confirm_registration: first poll_inbox sets confirmed_at; subsequent calls are no-ops. *)
 let test_confirm_registration_sets_confirmed_at () =
   with_temp_dir (fun dir ->
@@ -3689,11 +4004,17 @@ let test_confirm_registration_sets_confirmed_at () =
       check bool "confirmed_at unchanged on second confirm"
         true ((List.hd after2).confirmed_at = ts1))
 
-(* confirm_registration: confirmed session is NOT swept even after timeout. *)
-let test_confirmed_reg_not_swept_after_timeout () =
+(* #344: a confirmed-but-pidless row that registered more than the
+   pidless-keep window ago (default 1h) IS now swept. Pre-#344, sweep
+   preserved any confirmed reg forever once confirmed_at was set, which
+   left zombies (e.g. respawned daemons whose old row never had its PID
+   updated) un-reapable. PID-tracked confirmed rows are unaffected by
+   this change — only the pidless arm is tightened. *)
+let test_confirmed_pidless_old_reg_swept () =
   with_temp_dir (fun dir ->
-      (* Write a registry JSON: registered_at expired, but confirmed_at is set. *)
-      let expired_ts = Unix.gettimeofday () -. 3601.0 in
+      (* Write a registry JSON: registered_at and confirmed_at both > 1h
+         ago, no pid. *)
+      let expired_ts = Unix.gettimeofday () -. 7200.0 in
       let reg_json =
         Printf.sprintf
           {|[{"session_id":"conf-old","alias":"storm-confirmed-old","registered_at":%f,"confirmed_at":%f}]|}
@@ -3702,8 +4023,57 @@ let test_confirmed_reg_not_swept_after_timeout () =
       write_file (Filename.concat dir "registry.json") reg_json;
       let broker = C2c_mcp.Broker.create ~root:dir in
       let result = C2c_mcp.Broker.sweep broker in
-      (* confirmed_at means it's no longer provisional — sweep should NOT drop it *)
-      check int "confirmed (but old) reg not dropped" 0 (List.length result.dropped_regs))
+      check int "confirmed pidless old reg dropped" 1 (List.length result.dropped_regs))
+
+(* #344: pidless row whose registered_at is older than the pidless-keep
+   window (default 1h) is dropped, even if confirmed_at is set. Mirrors
+   the audit's Finding 1 — a daemon that respawned under a new PID
+   leaves the old row to age into a zombie. *)
+let test_sweep_drops_pidless_old_row () =
+  with_temp_dir (fun dir ->
+      let old_ts = Unix.gettimeofday () -. 7200.0 in
+      let reg_json =
+        Printf.sprintf
+          {|[{"session_id":"old-pidless","alias":"storm-old-pidless","registered_at":%f,"confirmed_at":%f}]|}
+          old_ts old_ts
+      in
+      write_file (Filename.concat dir "registry.json") reg_json;
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let result = C2c_mcp.Broker.sweep broker in
+      check int "old pidless reg dropped" 1 (List.length result.dropped_regs);
+      check int "registry empty" 0
+        (List.length (C2c_mcp.Broker.list_registrations broker)))
+
+(* #344: a freshly-registered pidless row that has drained at least once
+   (confirmed_at = Some _) is preserved — this is the brief plugin-handoff
+   window where a real session momentarily has no pid. *)
+let test_sweep_keeps_pidless_recent_drained_row () =
+  with_temp_dir (fun dir ->
+      let now = Unix.gettimeofday () in
+      let reg_json =
+        Printf.sprintf
+          {|[{"session_id":"recent-pidless","alias":"storm-recent","registered_at":%f,"confirmed_at":%f}]|}
+          now now
+      in
+      write_file (Filename.concat dir "registry.json") reg_json;
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let result = C2c_mcp.Broker.sweep broker in
+      check int "recent pidless drained reg kept" 0 (List.length result.dropped_regs);
+      check int "registry still has reg" 1
+        (List.length (C2c_mcp.Broker.list_registrations broker)))
+
+(* #344 regression: a row tracked by the current process pid is unaffected
+   by the new pidless-zombie predicate. *)
+let test_sweep_keeps_alive_pid_row () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"live-pid" ~alias:"storm-live-pid"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      let result = C2c_mcp.Broker.sweep broker in
+      check int "live-pid reg not dropped" 0 (List.length result.dropped_regs);
+      check int "registry still has reg" 1
+        (List.length (C2c_mcp.Broker.list_registrations broker)))
 
 (* client_type=human: exempted from provisional sweep even with expired registered_at. *)
 let test_human_client_type_exempt_from_provisional_sweep () =
@@ -4299,8 +4669,9 @@ let test_delete_room_succeeds_when_empty () =
       let _ =
         C2c_mcp.Broker.leave_room broker ~room_id:"tmp-room" ~alias:"storm-ember"
       in
-      (* delete_room should succeed on an empty room *)
-      C2c_mcp.Broker.delete_room broker ~room_id:"tmp-room";
+      (* delete_room should succeed on an empty room when called by creator *)
+      C2c_mcp.Broker.delete_room broker ~room_id:"tmp-room"
+        ~caller_alias:"storm-ember" ();
       (* Room should no longer appear in list *)
       let rooms = C2c_mcp.Broker.list_rooms broker in
       check int "room deleted" 0 (List.length rooms))
@@ -4315,7 +4686,9 @@ let test_delete_room_fails_when_has_members () =
       (* delete_room should raise Invalid_argument *)
       check_raises "cannot delete room with members"
         (Invalid_argument "cannot delete room with members: lobby")
-        (fun () -> C2c_mcp.Broker.delete_room broker ~room_id:"lobby"))
+        (fun () ->
+          C2c_mcp.Broker.delete_room broker ~room_id:"lobby"
+            ~caller_alias:"storm-ember" ()))
 
 let test_send_room_appends_history_and_fans_out () =
   with_temp_dir (fun dir ->
@@ -5977,6 +6350,71 @@ let test_set_room_visibility_only_member_can_change () =
            C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret-club"
              ~from_alias:"bob" ~visibility:C2c_mcp.Invite_only))
 
+(* #394: c2c rooms create — explicit room creation. *)
+let test_create_public_room_with_auto_join () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let r =
+        C2c_mcp.Broker.create_room broker ~room_id:"design-syndicate"
+          ~caller_alias:"stanza-coder" ~caller_session_id:"session-stanza"
+          ~visibility:C2c_mcp.Public ~invited_members:[] ~auto_join:true
+      in
+      check string "room_id" "design-syndicate" r.cr_room_id;
+      check string "created_by" "stanza-coder" r.cr_created_by;
+      check bool "auto_joined" true r.cr_auto_joined;
+      check (list string) "members has creator" ["stanza-coder"] r.cr_members;
+      check bool "visibility public" true
+        (match r.cr_visibility with Public -> true | Invite_only -> false);
+      let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"design-syndicate" in
+      check string "meta created_by persisted" "stanza-coder" meta.created_by;
+      let members = C2c_mcp.Broker.read_room_members broker ~room_id:"design-syndicate" in
+      check int "one member persisted" 1 (List.length members))
+
+let test_create_invite_only_with_invited_members () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let r =
+        C2c_mcp.Broker.create_room broker ~room_id:"design-syndicate"
+          ~caller_alias:"stanza-coder" ~caller_session_id:"session-stanza"
+          ~visibility:C2c_mcp.Invite_only
+          ~invited_members:["galaxy-coder"; "lyra-quill"; "galaxy-coder"]
+          ~auto_join:true
+      in
+      check bool "visibility invite_only" true
+        (match r.cr_visibility with Invite_only -> true | Public -> false);
+      check (list string) "invited dedup" ["galaxy-coder"; "lyra-quill"] r.cr_invited_members;
+      let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"design-syndicate" in
+      check (list string) "invited_members persisted" ["galaxy-coder"; "lyra-quill"]
+        meta.invited_members)
+
+let test_create_no_join () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let r =
+        C2c_mcp.Broker.create_room broker ~room_id:"design-syndicate"
+          ~caller_alias:"stanza-coder" ~caller_session_id:"session-stanza"
+          ~visibility:C2c_mcp.Public ~invited_members:[] ~auto_join:false
+      in
+      check bool "not auto_joined" false r.cr_auto_joined;
+      check (list string) "members empty" [] r.cr_members;
+      let members = C2c_mcp.Broker.read_room_members broker ~room_id:"design-syndicate" in
+      check int "no members persisted" 0 (List.length members);
+      let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"design-syndicate" in
+      check string "created_by still recorded" "stanza-coder" meta.created_by)
+
+let test_create_existing_room_errors () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      ignore (C2c_mcp.Broker.create_room broker ~room_id:"design-syndicate"
+                ~caller_alias:"stanza-coder" ~caller_session_id:"session-stanza"
+                ~visibility:C2c_mcp.Public ~invited_members:[] ~auto_join:true);
+      check_raises "second create errors"
+        (Invalid_argument "room already exists: design-syndicate")
+        (fun () ->
+           ignore (C2c_mcp.Broker.create_room broker ~room_id:"design-syndicate"
+                     ~caller_alias:"galaxy-coder" ~caller_session_id:"session-galaxy"
+                     ~visibility:C2c_mcp.Public ~invited_members:[] ~auto_join:true)))
+
 let test_list_rooms_includes_visibility_and_invited_members () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -6157,6 +6595,109 @@ let test_tools_call_set_dnd_on_string_false_disables_dnd () =
                let dnd_val = result |> member "dnd" |> to_bool in
                check bool "set_dnd on:\"false\" ok" true ok;
                check bool "set_dnd on:\"false\" disables dnd" false dnd_val))
+
+let run_set_dnd_with_on_arg ~session_id ~req_id ~on_arg =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id
+        ~alias:("dnd-test-" ^ session_id) ~pid:None ~pid_start_time:None ();
+      Unix.putenv "C2C_MCP_SESSION_ID" session_id;
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let request =
+             `Assoc
+               [ ("jsonrpc", `String "2.0")
+               ; ("id", `Int req_id)
+               ; ("method", `String "tools/call")
+               ; ( "params",
+                   `Assoc
+                     [ ("name", `String "set_dnd")
+                     ; ("arguments", `Assoc [ ("on", on_arg) ])
+                     ] )
+               ]
+           in
+           let response =
+             Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+           in
+           match response with
+           | None -> failwith "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               Yojson.Safe.from_string text))
+
+let test_tools_call_set_dnd_on_int_one_enables_dnd () =
+  let result =
+    run_set_dnd_with_on_arg ~session_id:"session-dnd-int1" ~req_id:9503
+      ~on_arg:(`Int 1)
+  in
+  let open Yojson.Safe.Util in
+  let ok = result |> member "ok" |> to_bool in
+  let dnd_val = result |> member "dnd" |> to_bool in
+  check bool "set_dnd on:1 ok" true ok;
+  check bool "set_dnd on:1 enables dnd" true dnd_val
+
+let test_tools_call_set_dnd_on_int_zero_disables_dnd () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-dnd-int0"
+        ~alias:"dnd-test-int0" ~pid:None ~pid_start_time:None ();
+      ignore (C2c_mcp.Broker.set_dnd broker ~session_id:"session-dnd-int0" ~dnd:true ());
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-dnd-int0";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let request =
+             `Assoc
+               [ ("jsonrpc", `String "2.0")
+               ; ("id", `Int 9504)
+               ; ("method", `String "tools/call")
+               ; ( "params",
+                   `Assoc
+                     [ ("name", `String "set_dnd")
+                     ; ("arguments", `Assoc [ ("on", `Int 0) ])
+                     ] )
+               ]
+           in
+           let response =
+             Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+           in
+           match response with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               let result = Yojson.Safe.from_string text in
+               let ok = result |> member "ok" |> to_bool in
+               let dnd_val = result |> member "dnd" |> to_bool in
+               check bool "set_dnd on:0 ok" true ok;
+               check bool "set_dnd on:0 disables dnd" false dnd_val))
+
+(* Regression: ambiguous bool inputs default to [false] (do-not-enable-DND).
+   The handler does not raise — silent-fail-closed is the documented behavior
+   for set_dnd. The point of the test is to lock in that "yes"/floats do not
+   accidentally COERCE to true. *)
+let test_tools_call_set_dnd_on_invalid_input_defaults_false () =
+  let result_yes =
+    run_set_dnd_with_on_arg ~session_id:"session-dnd-yes" ~req_id:9505
+      ~on_arg:(`String "yes")
+  in
+  let result_float =
+    run_set_dnd_with_on_arg ~session_id:"session-dnd-float" ~req_id:9506
+      ~on_arg:(`Float 1.0)
+  in
+  let open Yojson.Safe.Util in
+  check bool "set_dnd on:\"yes\" does not enable" false
+    (result_yes |> member "dnd" |> to_bool);
+  check bool "set_dnd on:1.0 does not enable" false
+    (result_float |> member "dnd" |> to_bool)
 
 (* --- prompts/list and prompts/get tests (run via subprocess to isolate Sys.chdir) --- *)
 
@@ -6985,6 +7526,850 @@ let test_notify_shared_with_appears_in_push_drain () =
       check string "pushed DM is from the author" "alice-push" msg.from_alias;
       check bool "pushed DM is non-deferrable" false msg.deferrable)
 
+(* ─── Rooms ACL slice (H1/H2/H3) ─────────────────────────────────────── *)
+
+let rooms_acl_call_tool ~broker_root ~session_id ~tool_name ~arguments =
+  Unix.putenv "C2C_MCP_SESSION_ID" session_id;
+  Fun.protect
+    ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+    (fun () ->
+      let request =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 1)
+          ; ("method", `String "tools/call")
+          ; ( "params"
+            , `Assoc
+                [ ("name", `String tool_name)
+                ; ("arguments", arguments)
+                ] )
+          ]
+      in
+      Lwt_main.run (C2c_mcp.handle_request ~broker_root request))
+
+let rooms_acl_extract_result_text json =
+  let open Yojson.Safe.Util in
+  json |> member "result" |> member "content" |> index 0
+  |> member "text" |> to_string
+
+let rooms_acl_is_error json =
+  let open Yojson.Safe.Util in
+  match json |> member "result" |> member "isError" with
+  | `Bool b -> b
+  | _ -> false
+
+(* H1 — room_history membership gate *)
+
+let test_room_history_invite_only_blocks_non_member () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"sess-creator"
+        ~alias:"creator" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"sess-outsider"
+        ~alias:"outsider" ~pid:None ~pid_start_time:None ();
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"secret"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret"
+        ~from_alias:"creator" ~visibility:Invite_only;
+      let _ =
+        C2c_mcp.Broker.send_room broker ~from_alias:"creator"
+          ~room_id:"secret" ~content:"private chatter"
+      in
+      let response =
+        rooms_acl_call_tool ~broker_root:dir ~session_id:"sess-outsider"
+          ~tool_name:"room_history"
+          ~arguments:(`Assoc [ ("room_id", `String "secret") ])
+      in
+      match response with
+      | None -> fail "expected room_history response"
+      | Some json ->
+          check bool "isError set on non-member read" true (rooms_acl_is_error json);
+          let text = rooms_acl_extract_result_text json in
+          check bool "error text mentions not a member" true
+            (string_contains text "not a member of secret"))
+
+let test_room_history_invite_only_allows_member () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"sess-creator"
+        ~alias:"creator" ~pid:None ~pid_start_time:None ();
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"secret"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret"
+        ~from_alias:"creator" ~visibility:Invite_only;
+      let _ =
+        C2c_mcp.Broker.send_room broker ~from_alias:"creator"
+          ~room_id:"secret" ~content:"insider chatter"
+      in
+      let response =
+        rooms_acl_call_tool ~broker_root:dir ~session_id:"sess-creator"
+          ~tool_name:"room_history"
+          ~arguments:(`Assoc [ ("room_id", `String "secret") ])
+      in
+      match response with
+      | None -> fail "expected room_history response"
+      | Some json ->
+          check bool "no isError for member read" false (rooms_acl_is_error json);
+          let text = rooms_acl_extract_result_text json in
+          let arr = Yojson.Safe.from_string text |> Yojson.Safe.Util.to_list in
+          check bool "history non-empty for member" true (List.length arr >= 1))
+
+let test_room_history_public_allows_anyone () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"sess-creator"
+        ~alias:"creator" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"sess-rando"
+        ~alias:"rando" ~pid:None ~pid_start_time:None ();
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"plaza"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      let _ =
+        C2c_mcp.Broker.send_room broker ~from_alias:"creator"
+          ~room_id:"plaza" ~content:"public chatter"
+      in
+      let response =
+        rooms_acl_call_tool ~broker_root:dir ~session_id:"sess-rando"
+          ~tool_name:"room_history"
+          ~arguments:(`Assoc [ ("room_id", `String "plaza") ])
+      in
+      match response with
+      | None -> fail "expected room_history response"
+      | Some json ->
+          check bool "no isError on public history read" false (rooms_acl_is_error json);
+          let text = rooms_acl_extract_result_text json in
+          let arr = Yojson.Safe.from_string text |> Yojson.Safe.Util.to_list in
+          check bool "history visible to non-member of public room" true
+            (List.length arr >= 1))
+
+(* H2 — list_rooms invite-only filter *)
+
+let test_list_rooms_filters_invite_only_for_non_members () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"sess-creator"
+        ~alias:"creator" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"sess-outsider"
+        ~alias:"outsider" ~pid:None ~pid_start_time:None ();
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"plaza"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"backroom"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"backroom"
+        ~from_alias:"creator" ~visibility:Invite_only;
+      let response =
+        rooms_acl_call_tool ~broker_root:dir ~session_id:"sess-outsider"
+          ~tool_name:"list_rooms" ~arguments:(`Assoc [])
+      in
+      match response with
+      | None -> fail "expected list_rooms response"
+      | Some json ->
+          let text = rooms_acl_extract_result_text json in
+          let arr = Yojson.Safe.from_string text |> Yojson.Safe.Util.to_list in
+          let ids =
+            List.map
+              (fun r ->
+                Yojson.Safe.Util.(r |> member "room_id" |> to_string))
+              arr
+          in
+          check bool "plaza visible to non-member" true (List.mem "plaza" ids);
+          check bool "backroom hidden from non-member" false
+            (List.mem "backroom" ids))
+
+let test_list_rooms_redacts_invited_pre_join () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"sess-creator"
+        ~alias:"creator" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"sess-invitee"
+        ~alias:"invitee" ~pid:None ~pid_start_time:None ();
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"club"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"club"
+        ~from_alias:"creator" ~visibility:Invite_only;
+      C2c_mcp.Broker.send_room_invite broker ~room_id:"club"
+        ~from_alias:"creator" ~invitee_alias:"invitee";
+      let response =
+        rooms_acl_call_tool ~broker_root:dir ~session_id:"sess-invitee"
+          ~tool_name:"list_rooms" ~arguments:(`Assoc [])
+      in
+      match response with
+      | None -> fail "expected list_rooms response"
+      | Some json ->
+          let text = rooms_acl_extract_result_text json in
+          let arr = Yojson.Safe.from_string text |> Yojson.Safe.Util.to_list in
+          let club =
+            List.find_opt
+              (fun r ->
+                Yojson.Safe.Util.(r |> member "room_id" |> to_string) = "club")
+              arr
+          in
+          (match club with
+           | None -> fail "invited-pre-join: club should be visible"
+           | Some r ->
+               let open Yojson.Safe.Util in
+               let members = r |> member "members" |> to_list in
+               check int "members redacted to empty for invited-pre-join" 0
+                 (List.length members);
+               let invited = r |> member "invited_members" |> to_list in
+               check int "invited_members redacted for invited-pre-join" 0
+                 (List.length invited)))
+
+(* H3 — delete_room creator-auth *)
+
+let test_delete_room_requires_creator () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"workshop"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      let _ =
+        C2c_mcp.Broker.leave_room broker ~room_id:"workshop"
+          ~alias:"creator"
+      in
+      check_raises "non-creator delete rejected"
+        (Invalid_argument
+           "delete_room rejected: only the creator 'creator' may delete room 'workshop'")
+        (fun () ->
+          C2c_mcp.Broker.delete_room broker ~room_id:"workshop"
+            ~caller_alias:"intruder" ()))
+
+let test_delete_room_creator_succeeds () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"workshop"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      let _ =
+        C2c_mcp.Broker.leave_room broker ~room_id:"workshop"
+          ~alias:"creator"
+      in
+      C2c_mcp.Broker.delete_room broker ~room_id:"workshop"
+        ~caller_alias:"creator" ();
+      let rooms = C2c_mcp.Broker.list_rooms broker in
+      check bool "room deleted by creator" true
+        (not (List.exists
+                (fun (r : C2c_mcp.Broker.room_info) -> r.ri_room_id = "workshop")
+                rooms)))
+
+let test_delete_room_legacy_requires_force () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"legacy"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      (* Simulate a legacy room: clear created_by from meta. *)
+      let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"legacy" in
+      C2c_mcp.Broker.save_room_meta broker ~room_id:"legacy"
+        { meta with created_by = "" };
+      let _ =
+        C2c_mcp.Broker.leave_room broker ~room_id:"legacy"
+          ~alias:"creator"
+      in
+      (* Without force: rejected even for what looks like the creator. *)
+      check_raises "legacy room delete refused without force"
+        (Invalid_argument
+           "delete_room rejected: room 'legacy' has no recorded creator (legacy room) — pass force=true to delete")
+        (fun () ->
+          C2c_mcp.Broker.delete_room broker ~room_id:"legacy"
+            ~caller_alias:"creator" ());
+      (* With force: deletes. *)
+      C2c_mcp.Broker.delete_room broker ~room_id:"legacy"
+        ~caller_alias:"creator" ~force:true ();
+      let rooms = C2c_mcp.Broker.list_rooms broker in
+      check bool "legacy room deleted with force" true
+        (not (List.exists
+                (fun (r : C2c_mcp.Broker.room_info) -> r.ri_room_id = "legacy")
+                rooms)))
+(* #387 slice B: drained_by archive field --------------------------------- *)
+
+(* Read raw archive JSONL lines and return parsed top-level objects.
+   Used by the drained_by tests to inspect a field that the typed
+   archive_entry now exposes (ae_drained_by) but pre-#387 entries did
+   not carry. *)
+let read_raw_archive_records dir session_id =
+  let path = Filename.concat dir ("archive/" ^ session_id ^ ".jsonl") in
+  if not (Sys.file_exists path) then []
+  else
+    let ic = open_in path in
+    let rec loop acc =
+      match input_line ic with
+      | exception End_of_file -> close_in ic; List.rev acc
+      | line ->
+          let line = String.trim line in
+          if line = "" then loop acc
+          else
+            (match Yojson.Safe.from_string line with
+             | exception _ -> loop acc
+             | j -> loop (j :: acc))
+    in
+    loop []
+
+let test_drained_by_recorded_on_poll_inbox () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-sender"
+        ~alias:"sender-poll" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-recv"
+        ~alias:"recv-poll" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender-poll"
+        ~to_alias:"recv-poll" ~content:"hi-poll" ();
+      let drained =
+        C2c_mcp.Broker.drain_inbox ~drained_by:"poll_inbox" broker
+          ~session_id:"s-recv"
+      in
+      check int "drained one" 1 (List.length drained);
+      let entries =
+        C2c_mcp.Broker.read_archive broker ~session_id:"s-recv" ~limit:10
+      in
+      check int "archive has one entry" 1 (List.length entries);
+      check string "drained_by recorded" "poll_inbox"
+        (List.hd entries).C2c_mcp.Broker.ae_drained_by)
+
+let test_drained_by_recorded_on_watcher () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-w-sender"
+        ~alias:"sender-w" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-w-recv"
+        ~alias:"recv-w" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender-w"
+        ~to_alias:"recv-w" ~content:"hi-watcher" ();
+      (* Simulate the channel-watcher call site which uses drain_inbox_push
+         with drained_by:"watcher". *)
+      let drained =
+        C2c_mcp.Broker.drain_inbox_push ~drained_by:"watcher" broker
+          ~session_id:"s-w-recv"
+      in
+      check int "watcher drained one" 1 (List.length drained);
+      let entries =
+        C2c_mcp.Broker.read_archive broker ~session_id:"s-w-recv" ~limit:10
+      in
+      check int "archive has one entry" 1 (List.length entries);
+      check string "drained_by recorded as watcher" "watcher"
+        (List.hd entries).C2c_mcp.Broker.ae_drained_by)
+
+let test_drained_by_default_for_legacy_entries () =
+  with_temp_dir (fun dir ->
+      (* Hand-write a legacy archive line that omits drained_by, mirroring
+         the pre-#387 schema. read_archive must parse it cleanly with
+         ae_drained_by defaulted to "unknown". *)
+      let archive_dir = Filename.concat dir "archive" in
+      Unix.mkdir archive_dir 0o700;
+      let path = Filename.concat archive_dir "s-legacy.jsonl" in
+      let oc = open_out path in
+      output_string oc
+        "{\"drained_at\":1.0,\"session_id\":\"s-legacy\",\
+         \"from_alias\":\"old-alice\",\"to_alias\":\"old-bob\",\
+         \"content\":\"legacy ping\"}\n";
+      close_out oc;
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let entries =
+        C2c_mcp.Broker.read_archive broker ~session_id:"s-legacy" ~limit:10
+      in
+      check int "legacy entry parsed" 1 (List.length entries);
+      let e = List.hd entries in
+      check string "from_alias preserved" "old-alice"
+        e.C2c_mcp.Broker.ae_from_alias;
+      check string "drained_by defaults to unknown" "unknown"
+        e.C2c_mcp.Broker.ae_drained_by)
+
+(* Confirm the freshly-written archive line really carries the
+   top-level [drained_by] field on disk (not just decoded by us). *)
+let test_drained_by_persisted_as_top_level_field () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-p-sender"
+        ~alias:"sender-p" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-p-recv"
+        ~alias:"recv-p" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender-p"
+        ~to_alias:"recv-p" ~content:"persist-me" ();
+      let _ =
+        C2c_mcp.Broker.drain_inbox ~drained_by:"hook" broker
+          ~session_id:"s-p-recv"
+      in
+      let raw = read_raw_archive_records dir "s-p-recv" in
+      check int "one raw line" 1 (List.length raw);
+      match List.hd raw with
+      | `Assoc fields ->
+          (match List.assoc_opt "drained_by" fields with
+           | Some (`String s) ->
+               check string "top-level drained_by field" "hook" s
+           | _ -> fail "drained_by missing or wrong type")
+      | _ -> fail "archive line is not a JSON object")
+
+(* #387 slice A2: hook skips drain when session is channel-capable -------- *)
+
+(* The hook executable wraps a small bit of logic around two Broker calls:
+   [is_session_channel_capable] and [drain_inbox_push]. We exercise that
+   exact pair here instead of forking the binary, since the executable
+   reads C2C_MCP_SESSION_ID / C2C_MCP_BROKER_ROOT env vars at startup. *)
+let hook_drain_simulating_a2 broker ~session_id =
+  if C2c_mcp.Broker.is_session_channel_capable broker ~session_id then
+    [] (* skipped — watcher owns delivery *)
+  else
+    C2c_mcp.Broker.drain_inbox_push ~drained_by:"hook" broker ~session_id
+
+let test_hook_skips_drain_for_channel_capable () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-snd-cc"
+        ~alias:"sender-cc" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-rcv-cc"
+        ~alias:"recv-cc" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.set_automated_delivery broker
+        ~session_id:"s-rcv-cc" ~automated_delivery:true;
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender-cc"
+        ~to_alias:"recv-cc" ~content:"channel-test" ();
+      let drained = hook_drain_simulating_a2 broker ~session_id:"s-rcv-cc" in
+      check int "hook drains nothing on channel-capable" 0 (List.length drained);
+      (* Inbox must still hold the message for the watcher. *)
+      let remaining =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"s-rcv-cc"
+      in
+      check int "inbox unchanged" 1 (List.length remaining);
+      check string "remaining content" "channel-test"
+        (List.hd remaining).content)
+
+let test_hook_drains_for_non_channel_capable () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-snd-nc"
+        ~alias:"sender-nc" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-rcv-nc"
+        ~alias:"recv-nc" ~pid:None ~pid_start_time:None ();
+      (* NOT setting automated_delivery — defaults to None / false. *)
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender-nc"
+        ~to_alias:"recv-nc" ~content:"non-channel" ();
+      let drained = hook_drain_simulating_a2 broker ~session_id:"s-rcv-nc" in
+      check int "hook drains the message" 1 (List.length drained);
+      let remaining =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"s-rcv-nc"
+      in
+      check int "inbox empty after hook drain" 0 (List.length remaining);
+      let entries =
+        C2c_mcp.Broker.read_archive broker ~session_id:"s-rcv-nc" ~limit:10
+      in
+      check int "archive has the entry" 1 (List.length entries);
+      check string "drained_by recorded as hook" "hook"
+        (List.hd entries).C2c_mcp.Broker.ae_drained_by)
+(* --- H2: peer-pass DM signature verification at broker boundary ----------- *)
+
+(* Build a peer-pass artifact path the way Peer_review does (must match
+   ocaml/peer_review.ml:artifact_path). *)
+let h2_artifact_path ~sha ~alias =
+  let base = match Git_helpers.git_common_dir_parent () with
+    | Some parent -> Filename.concat parent ".c2c"
+    | None -> ".c2c"
+  in
+  let dir = Filename.concat base "peer-passes" in
+  (try Unix.mkdir base 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  Filename.concat dir (Printf.sprintf "%s-%s.json" sha alias)
+
+(* SHA-like hex string (40 chars) unique per call so tests don't collide
+   with each other or with real peer-pass artifacts on disk. Must be all
+   hex because Peer_review.claim_of_content requires hex digits in SHA=. *)
+let h2_unique_sha () =
+  Printf.sprintf "%08x%08x%08x%08x%08x"
+    (Random.bits ()) (Random.bits ()) (Random.bits ())
+    (Random.bits ()) (Random.bits ())
+
+let h2_with_artifact ~sha ~alias ~json f =
+  let path = h2_artifact_path ~sha ~alias in
+  Fun.protect
+    ~finally:(fun () -> try Sys.remove path with _ -> ())
+    (fun () ->
+       let oc = open_out path in
+       output_string oc json;
+       close_out oc;
+       f ())
+
+let h2_send_request ~from_alias ~to_alias ~content =
+  `Assoc
+    [ ("jsonrpc", `String "2.0")
+    ; ("id", `Int 9001)
+    ; ("method", `String "tools/call")
+    ; ( "params",
+        `Assoc
+          [ ("name", `String "send")
+          ; ( "arguments",
+              `Assoc
+                [ ("from_alias", `String from_alias)
+                ; ("to_alias", `String to_alias)
+                ; ("content", `String content)
+                ] )
+          ] )
+    ]
+
+let h2_response_is_error response =
+  match response with
+  | None -> failwith "expected tools/call response"
+  | Some json ->
+      let open Yojson.Safe.Util in
+      let result = json |> member "result" in
+      let is_error = try result |> member "isError" |> to_bool with _ -> false in
+      let text =
+        try result |> member "content" |> index 0 |> member "text" |> to_string
+        with _ -> ""
+      in
+      (is_error, text)
+
+let test_peer_pass_dm_with_invalid_signature_rejected () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"h2-sender" ~alias:"h2-sender-alias"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"h2-recv" ~alias:"h2-recv-alias"
+        ~pid:None ~pid_start_time:None ();
+      (* Forge an artifact: sign with one identity, then tamper the body so
+         the signature no longer verifies. verify_claim should return
+         Claim_invalid. *)
+      let id = Relay_identity.generate ~alias_hint:"h2-forger" () in
+      let sha = h2_unique_sha () in
+      let art : Peer_review.t = {
+        version = 1;
+        reviewer = "h2-sender-alias";
+        reviewer_pk = "";
+        sha;
+        verdict = "PASS";
+        criteria_checked = [];
+        skill_version = "1.0.0";
+        commit_range = "0000000.." ^ sha;
+        targets_built = { c2c = true; c2c_mcp_server = true; c2c_inbox_hook = false };
+        notes = "test forgery";
+        signature = "";
+        ts = 1234567890.0;
+      } in
+      let signed = Peer_review.sign ~identity:id art in
+      (* Tamper: change verdict but keep the old signature. *)
+      let tampered = { signed with Peer_review.verdict = "FAIL" } in
+      let json = Peer_review.t_to_string tampered in
+      h2_with_artifact ~sha ~alias:"h2-sender-alias" ~json (fun () ->
+        let content =
+          Printf.sprintf "peer-PASS by h2-sender-alias for SHA=%s — looks good" sha
+        in
+        let request =
+          h2_send_request ~from_alias:"h2-sender-alias"
+            ~to_alias:"h2-recv-alias" ~content
+        in
+        let response =
+          Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+        in
+        let is_error, text = h2_response_is_error response in
+        check bool "send returns isError=true on forged peer-pass" true is_error;
+        check bool "error mentions peer-pass verification"
+          true (string_contains text "peer-pass");
+        (* And the recipient inbox must remain empty. *)
+        let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"h2-recv" in
+        check int "forged peer-pass DM is NOT enqueued" 0 (List.length inbox)))
+
+let test_peer_pass_dm_with_valid_signature_accepted () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"h2v-sender" ~alias:"h2v-sender-alias"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"h2v-recv" ~alias:"h2v-recv-alias"
+        ~pid:None ~pid_start_time:None ();
+      let id = Relay_identity.generate ~alias_hint:"h2v-reviewer" () in
+      let sha = h2_unique_sha () in
+      let art : Peer_review.t = {
+        version = 1;
+        reviewer = "h2v-sender-alias";
+        reviewer_pk = "";
+        sha;
+        verdict = "PASS";
+        criteria_checked = ["builds"];
+        skill_version = "1.0.0";
+        commit_range = "0000000.." ^ sha;
+        targets_built = { c2c = true; c2c_mcp_server = true; c2c_inbox_hook = false };
+        notes = "regression test artifact";
+        signature = "";
+        ts = 1234567890.0;
+      } in
+      let signed = Peer_review.sign ~identity:id art in
+      let json = Peer_review.t_to_string signed in
+      h2_with_artifact ~sha ~alias:"h2v-sender-alias" ~json (fun () ->
+        let content =
+          Printf.sprintf "peer-PASS by h2v-sender-alias for SHA=%s" sha
+        in
+        let request =
+          h2_send_request ~from_alias:"h2v-sender-alias"
+            ~to_alias:"h2v-recv-alias" ~content
+        in
+        let response =
+          Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+        in
+        let is_error, _text = h2_response_is_error response in
+        check bool "valid peer-pass DM is not flagged as error" false is_error;
+        let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"h2v-recv" in
+        check int "valid peer-pass DM is enqueued" 1 (List.length inbox)))
+
+(* ---------------------------------------------------------------------- *)
+(* #29 H2b — TOFU pin enforcement at the broker boundary.                  *)
+(* ---------------------------------------------------------------------- *)
+
+(* Build, sign, and write an artifact for a given (sha, alias) using the
+   provided identity. Returns the b64url-encoded reviewer_pk so the caller
+   can pre-seed pin store entries that match (or deliberately diverge from)
+   it. The artifact file is left on disk; caller wraps with
+   [h2_with_artifact_pre_existing] to clean up. *)
+let h2b_make_artifact ~sha ~alias ~identity ~verdict =
+  let art : Peer_review.t = {
+    version = 1;
+    reviewer = alias;
+    reviewer_pk = "";
+    sha;
+    verdict;
+    criteria_checked = [];
+    skill_version = "1.0.0";
+    commit_range = "0000000.." ^ sha;
+    targets_built = { c2c = true; c2c_mcp_server = true; c2c_inbox_hook = false };
+    notes = "h2b-test";
+    signature = "";
+    ts = 1234567890.0;
+  } in
+  let signed = Peer_review.sign ~identity art in
+  let json = Peer_review.t_to_string signed in
+  let path = h2_artifact_path ~sha ~alias in
+  let oc = open_out path in
+  output_string oc json;
+  close_out oc;
+  signed
+
+let h2b_remove_artifact ~sha ~alias =
+  let path = h2_artifact_path ~sha ~alias in
+  try Sys.remove path with _ -> ()
+
+(* Pre-seed the broker pin store at <root>/peer-pass-trust.json with a
+   single (alias, pubkey) entry, so subsequent verifies hit Pin_match or
+   Pin_mismatch instead of Pin_first_seen. *)
+let h2b_seed_pin ~broker_root ~alias ~pubkey =
+  let store : Peer_review.Trust_pin.store = {
+    version = 1;
+    pins = [
+      String.lowercase_ascii alias,
+      { Peer_review.Trust_pin.pubkey;
+        first_seen = 1.0;
+        last_seen = 1.0 };
+    ];
+  } in
+  let path = Filename.concat broker_root "peer-pass-trust.json" in
+  Peer_review.Trust_pin.save ~path store
+
+(* Forgery vector slate flagged: attacker generates a fresh keypair and
+   signs an artifact under the victim alias. Without H2b the broker
+   accepted this. With H2b, after a legit pin exists for the alias, the
+   forged artifact's pubkey fails to match the pin and the DM is
+   rejected. *)
+let test_peer_pass_dm_h2b_fresh_key_forgery_rejected () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"h2b-fk-s" ~alias:"h2b-fk-sender"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"h2b-fk-r" ~alias:"h2b-fk-recv"
+        ~pid:None ~pid_start_time:None ();
+      (* Seed the pin with the LEGIT reviewer's pubkey for h2b-fk-sender. *)
+      let legit_id = Relay_identity.generate ~alias_hint:"h2b-fk-legit" () in
+      let legit_pk = Peer_review.b64url_encode legit_id.Relay_identity.public_key in
+      h2b_seed_pin ~broker_root:dir ~alias:"h2b-fk-sender" ~pubkey:legit_pk;
+      (* Attacker mints a fresh keypair and signs the forgery under the
+         victim alias. *)
+      let attacker_id = Relay_identity.generate ~alias_hint:"h2b-fk-attacker" () in
+      let sha = h2_unique_sha () in
+      Fun.protect
+        ~finally:(fun () -> h2b_remove_artifact ~sha ~alias:"h2b-fk-sender")
+        (fun () ->
+          let _ = h2b_make_artifact ~sha ~alias:"h2b-fk-sender"
+                    ~identity:attacker_id ~verdict:"PASS" in
+          let content =
+            Printf.sprintf "peer-PASS by h2b-fk-sender for SHA=%s — forged" sha
+          in
+          let request =
+            h2_send_request ~from_alias:"h2b-fk-sender"
+              ~to_alias:"h2b-fk-recv" ~content
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          let is_error, text = h2_response_is_error response in
+          check bool "fresh-key forgery rejected (isError=true)" true is_error;
+          check bool "user-facing reject text is generic (no pubkey leak)"
+            false (string_contains text legit_pk);
+          check bool "user-facing reject text is generic (no pin-mismatch leak)"
+            false (string_contains text "pin mismatch");
+          let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"h2b-fk-r" in
+          check int "forged peer-pass DM is NOT enqueued" 0 (List.length inbox)))
+
+(* Same shape as the fresh-key case but framed as "the legitimate signer's
+   key changed and they forgot to --rotate-pin first". Still rejected;
+   rotation is a separate operator action. *)
+let test_peer_pass_dm_h2b_rotated_key_rejected () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"h2b-rk-s" ~alias:"h2b-rk-sender"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"h2b-rk-r" ~alias:"h2b-rk-recv"
+        ~pid:None ~pid_start_time:None ();
+      let old_id = Relay_identity.generate ~alias_hint:"h2b-rk-old" () in
+      let old_pk = Peer_review.b64url_encode old_id.Relay_identity.public_key in
+      h2b_seed_pin ~broker_root:dir ~alias:"h2b-rk-sender" ~pubkey:old_pk;
+      (* New key, same alias, no explicit rotation. *)
+      let new_id = Relay_identity.generate ~alias_hint:"h2b-rk-new" () in
+      let sha = h2_unique_sha () in
+      Fun.protect
+        ~finally:(fun () -> h2b_remove_artifact ~sha ~alias:"h2b-rk-sender")
+        (fun () ->
+          let _ = h2b_make_artifact ~sha ~alias:"h2b-rk-sender"
+                    ~identity:new_id ~verdict:"PASS" in
+          let content =
+            Printf.sprintf "peer-PASS by h2b-rk-sender for SHA=%s" sha
+          in
+          let request =
+            h2_send_request ~from_alias:"h2b-rk-sender"
+              ~to_alias:"h2b-rk-recv" ~content
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          let is_error, _text = h2_response_is_error response in
+          check bool "silent key rotation is rejected" true is_error;
+          let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"h2b-rk-r" in
+          check int "rotated-key peer-pass DM is NOT enqueued" 0 (List.length inbox)))
+
+(* TOFU policy: the FIRST verify for an alias pins the pubkey and accepts
+   the DM. Regression that we did not flip first-seen into a hard reject. *)
+let test_peer_pass_dm_h2b_first_seen_allowed () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"h2b-fs-s" ~alias:"h2b-fs-sender"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"h2b-fs-r" ~alias:"h2b-fs-recv"
+        ~pid:None ~pid_start_time:None ();
+      let id = Relay_identity.generate ~alias_hint:"h2b-fs-r1" () in
+      let sha = h2_unique_sha () in
+      Fun.protect
+        ~finally:(fun () -> h2b_remove_artifact ~sha ~alias:"h2b-fs-sender")
+        (fun () ->
+          let _ = h2b_make_artifact ~sha ~alias:"h2b-fs-sender"
+                    ~identity:id ~verdict:"PASS" in
+          let content =
+            Printf.sprintf "peer-PASS by h2b-fs-sender for SHA=%s" sha
+          in
+          let request =
+            h2_send_request ~from_alias:"h2b-fs-sender"
+              ~to_alias:"h2b-fs-recv" ~content
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          let is_error, _ = h2_response_is_error response in
+          check bool "first-seen pin allows DM" false is_error;
+          let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"h2b-fs-r" in
+          check int "first-seen peer-pass DM is enqueued" 1 (List.length inbox);
+          (* And the pin file now exists with the artifact's pubkey. *)
+          let pin_path = Filename.concat dir "peer-pass-trust.json" in
+          check bool "pin file written after first-seen verify"
+            true (Sys.file_exists pin_path)))
+
+(* Replay/cross-SHA: an attacker takes a legitimate artifact and DMs a
+   peer-PASS naming a DIFFERENT SHA than the one the artifact was signed
+   for. The signature still validates (artifact is unmodified) but
+   verify_claim_with_pin's sha-equality check rejects. Independent of
+   the pin. *)
+let test_peer_pass_dm_h2b_sha_mismatch_rejected () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"h2b-sm-s" ~alias:"h2b-sm-sender"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"h2b-sm-r" ~alias:"h2b-sm-recv"
+        ~pid:None ~pid_start_time:None ();
+      let id = Relay_identity.generate ~alias_hint:"h2b-sm" () in
+      let real_sha = h2_unique_sha () in
+      let claimed_sha = h2_unique_sha () in
+      Fun.protect
+        ~finally:(fun () -> h2b_remove_artifact ~sha:claimed_sha ~alias:"h2b-sm-sender")
+        (fun () ->
+          (* The artifact at the path-for claimed_sha actually has
+             art.sha = real_sha, so the inner sha check fires. *)
+          let art : Peer_review.t = {
+            version = 1;
+            reviewer = "h2b-sm-sender";
+            reviewer_pk = "";
+            sha = real_sha;
+            verdict = "PASS";
+            criteria_checked = [];
+            skill_version = "1.0.0";
+            commit_range = "0000000.." ^ real_sha;
+            targets_built = { c2c = true; c2c_mcp_server = true; c2c_inbox_hook = false };
+            notes = "sha-replay";
+            signature = "";
+            ts = 1234567890.0;
+          } in
+          let signed = Peer_review.sign ~identity:id art in
+          let json = Peer_review.t_to_string signed in
+          let path = h2_artifact_path ~sha:claimed_sha ~alias:"h2b-sm-sender" in
+          let oc = open_out path in
+          output_string oc json;
+          close_out oc;
+          let content =
+            Printf.sprintf "peer-PASS by h2b-sm-sender for SHA=%s" claimed_sha
+          in
+          let request =
+            h2_send_request ~from_alias:"h2b-sm-sender"
+              ~to_alias:"h2b-sm-recv" ~content
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          let is_error, _ = h2_response_is_error response in
+          check bool "sha-mismatch DM rejected" true is_error;
+          let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"h2b-sm-r" in
+          check int "sha-mismatch peer-pass DM is NOT enqueued" 0 (List.length inbox)))
+
+(* Claim_missing path: a peer-PASS DM whose artifact does not exist at
+   the well-known path is informational, not a hard reject — the DM still
+   flows. (The recipient sees the receipt note "peer_pass_verification:
+   missing: ..." but the message is delivered.) *)
+let test_peer_pass_dm_h2b_missing_artifact_allows_dm () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"h2b-ms-s" ~alias:"h2b-ms-sender"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"h2b-ms-r" ~alias:"h2b-ms-recv"
+        ~pid:None ~pid_start_time:None ();
+      let sha = h2_unique_sha () in
+      (* No artifact written. *)
+      let content =
+        Printf.sprintf "peer-PASS by h2b-ms-sender for SHA=%s" sha
+      in
+      let request =
+        h2_send_request ~from_alias:"h2b-ms-sender"
+          ~to_alias:"h2b-ms-recv" ~content
+      in
+      let response =
+        Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+      in
+      let is_error, _ = h2_response_is_error response in
+      check bool "missing-artifact DM is not rejected" false is_error;
+      let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"h2b-ms-r" in
+      check int "missing-artifact peer-pass DM is enqueued" 1 (List.length inbox))
+
 let () =
   run "c2c_mcp"
     [ ( "broker",
@@ -7111,6 +8496,12 @@ let () =
              test_auto_register_startup_skips_when_alive_session_owns_alias
          ; test_case "auto_register_startup skips when alive same session has different pid" `Quick
              test_auto_register_startup_skips_when_alive_same_session_different_pid
+         ; test_case "guard1 pidless zombie does not fire hijack (#345)" `Quick
+             test_guard1_pidless_zombie_does_not_fire_hijack
+         ; test_case "guard2 pidless zombie does not block post-OOM resume (#345)" `Quick
+             test_guard2_pidless_zombie_does_not_block_post_oom_resume
+         ; test_case "guard4 pidless zombie does not trigger same-pid alive (#345)" `Quick
+             test_guard4_pidless_zombie_does_not_trigger_same_pid_alive
          ; test_case "auto_join_rooms_startup joins listed rooms" `Quick
              test_auto_join_rooms_startup_joins_listed_rooms
          ; test_case "auto_join_rooms_startup prefers current registered alias" `Quick
@@ -7151,6 +8542,12 @@ let () =
              test_concurrent_register_does_not_lose_entries
          ; test_case "register evicts prior reg with same alias" `Quick
              test_register_evicts_prior_reg_with_same_alias
+         ; test_case "register case-insensitive collision evicts lower (#378)" `Quick
+             test_register_case_insensitive_collision_evicts_lower
+         ; test_case "register stores original case (#378)" `Quick
+             test_register_stores_original_case
+         ; test_case "suggest_alias_prime case-insensitive with suffix (#378)" `Quick
+             test_suggest_alias_prime_case_insensitive_with_suffix
          ; test_case "register migrates undrained inbox on alias re-register"
              `Quick test_register_migrates_undrained_inbox_on_alias_re_register
          ; test_case "register serializes with concurrent enqueue" `Quick
@@ -7163,8 +8560,14 @@ let () =
              test_sweep_deletes_orphan_inbox_file
          ; test_case "sweep preserves live reg and its inbox" `Quick
              test_sweep_preserves_live_reg_and_its_inbox
-         ; test_case "sweep preserves legacy pidless reg" `Quick
-             test_sweep_preserves_legacy_pidless_reg
+         ; test_case "#344 sweep drops pidless legacy row" `Quick
+             test_sweep_drops_pidless_legacy_row
+         ; test_case "#344 sweep drops pidless old row" `Quick
+             test_sweep_drops_pidless_old_row
+         ; test_case "#344 sweep keeps pidless recent drained row" `Quick
+             test_sweep_keeps_pidless_recent_drained_row
+         ; test_case "#344 sweep keeps alive pid row" `Quick
+             test_sweep_keeps_alive_pid_row
          ; test_case "sweep preserves non-empty orphan to dead-letter" `Quick
              test_sweep_preserves_nonempty_orphan_to_dead_letter
          ; test_case "sweep empty orphan writes no dead-letter" `Quick
@@ -7172,11 +8575,23 @@ let () =
          ; test_case "sweep preserves fresh provisional reg" `Quick
              test_sweep_preserves_fresh_provisional_reg
          ; test_case "sweep drops expired provisional reg" `Quick
+          ; test_case "sweep emits peer_offline for confirmed dead reg" `Quick
+              test_sweep_emits_peer_offline_for_confirmed_dead_reg
+          ; test_case "sweep does not emit peer_offline for provisional expired" `Quick
+              test_sweep_does_not_emit_peer_offline_for_provisional_expired_reg
+          ; test_case "sweep peer_offline message format" `Quick
+              test_sweep_peer_offline_message_format
+          ; test_case "sweep dead alias excluded from self-notification" `Quick
+              test_sweep_dead_alias_excluded_from_peer_offline_receipt
+          ; test_case "sweep multiple confirmed dead regs each emit peer_offline" `Quick
+              test_sweep_multiple_confirmed_dead_regs_each_emit_peer_offline
+          ; test_case "confirm_registration sets confirmed_at" `Quick
+              test_confirm_registration_sets_confirmed_at
+          ; test_case "#344 confirmed pidless old reg swept" `Quick
+              test_confirmed_pidless_old_reg_swept
+          ; test_case "confirmed reg not swept after timeout" `Quick
+              test_confirmed_reg_not_swept_after_timeout
              test_sweep_drops_expired_provisional_reg
-         ; test_case "confirm_registration sets confirmed_at" `Quick
-             test_confirm_registration_sets_confirmed_at
-         ; test_case "confirmed reg not swept after timeout" `Quick
-             test_confirmed_reg_not_swept_after_timeout
          ; test_case "human client_type exempt from provisional sweep" `Quick
              test_human_client_type_exempt_from_provisional_sweep
          ; test_case "sweep evicts dead members from rooms" `Quick
@@ -7319,6 +8734,14 @@ let () =
              test_set_room_visibility_changes_mode
          ; test_case "set_room_visibility only member can change" `Quick
              test_set_room_visibility_only_member_can_change
+         ; test_case "create public room with auto-join (#394)" `Quick
+             test_create_public_room_with_auto_join
+         ; test_case "create invite_only with invited members (#394)" `Quick
+             test_create_invite_only_with_invited_members
+         ; test_case "create with --no-join (#394)" `Quick
+             test_create_no_join
+         ; test_case "create existing room errors (#394)" `Quick
+             test_create_existing_room_errors
          ; test_case "list_rooms includes visibility and invited_members" `Quick
              test_list_rooms_includes_visibility_and_invited_members
          ; test_case "tools/call send_room_invite via MCP" `Quick
@@ -7339,6 +8762,12 @@ let () =
                 test_tools_call_set_dnd_on_string_true_enables_dnd
            ; test_case "tools/call set_dnd on:\"false\" string disables DND" `Quick
                 test_tools_call_set_dnd_on_string_false_disables_dnd
+           ; test_case "tools/call set_dnd on:1 int enables DND" `Quick
+                test_tools_call_set_dnd_on_int_one_enables_dnd
+           ; test_case "tools/call set_dnd on:0 int disables DND" `Quick
+                test_tools_call_set_dnd_on_int_zero_disables_dnd
+           ; test_case "tools/call set_dnd on invalid input defaults false" `Quick
+                test_tools_call_set_dnd_on_invalid_input_defaults_false
            ; test_case "prompts/list returns skills as prompts" `Quick
                test_prompts_list_via_subprocess
            ; test_case "prompts/get returns skill content" `Quick
@@ -7397,4 +8826,46 @@ let () =
                test_delivery_mode_histogram_last_n_filter
            ; test_case "delivery_mode_histogram empty archive (#307a)" `Quick
                test_delivery_mode_histogram_empty_archive_is_zero
+           ; test_case "H1 room_history invite-only blocks non-member" `Quick
+               test_room_history_invite_only_blocks_non_member
+           ; test_case "H1 room_history invite-only allows member" `Quick
+               test_room_history_invite_only_allows_member
+           ; test_case "H1 room_history public allows anyone" `Quick
+               test_room_history_public_allows_anyone
+           ; test_case "H2 list_rooms filters invite-only for non-members" `Quick
+               test_list_rooms_filters_invite_only_for_non_members
+           ; test_case "H2 list_rooms redacts members for invited-pre-join" `Quick
+               test_list_rooms_redacts_invited_pre_join
+           ; test_case "H3 delete_room requires creator" `Quick
+               test_delete_room_requires_creator
+           ; test_case "H3 delete_room creator succeeds" `Quick
+               test_delete_room_creator_succeeds
+           ; test_case "H3 delete_room legacy requires force" `Quick
+               test_delete_room_legacy_requires_force
+           ; test_case "drained_by recorded on poll_inbox (#387 B)" `Quick
+               test_drained_by_recorded_on_poll_inbox
+           ; test_case "drained_by recorded on watcher (#387 B)" `Quick
+               test_drained_by_recorded_on_watcher
+           ; test_case "drained_by default for legacy entries (#387 B)" `Quick
+               test_drained_by_default_for_legacy_entries
+           ; test_case "drained_by persisted as top-level field (#387 B)" `Quick
+               test_drained_by_persisted_as_top_level_field
+           ; test_case "hook skips drain for channel-capable session (#387 A2)" `Quick
+               test_hook_skips_drain_for_channel_capable
+           ; test_case "hook drains for non-channel-capable session (#387 A2)" `Quick
+               test_hook_drains_for_non_channel_capable
+           ; test_case "H2: peer-pass DM with invalid signature is rejected" `Quick
+               test_peer_pass_dm_with_invalid_signature_rejected
+           ; test_case "H2: peer-pass DM with valid signature is accepted" `Quick
+               test_peer_pass_dm_with_valid_signature_accepted
+           ; test_case "H2b: fresh-key forgery after legit pin is rejected" `Quick
+               test_peer_pass_dm_h2b_fresh_key_forgery_rejected
+           ; test_case "H2b: rotated-key DM (no rotate-pin op) is rejected" `Quick
+               test_peer_pass_dm_h2b_rotated_key_rejected
+           ; test_case "H2b: first-seen pin allows the DM" `Quick
+               test_peer_pass_dm_h2b_first_seen_allowed
+           ; test_case "H2b: artifact sha != claim sha is rejected" `Quick
+               test_peer_pass_dm_h2b_sha_mismatch_rejected
+           ; test_case "H2b: missing artifact still allows the DM" `Quick
+               test_peer_pass_dm_h2b_missing_artifact_allows_dm
            ] ) ]

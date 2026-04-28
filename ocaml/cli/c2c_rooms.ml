@@ -199,12 +199,17 @@ let rooms_delete_cmd =
   let room_id =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOM" ~doc:"Room ID to delete (must have zero members).")
   in
+  let force_flag =
+    Cmdliner.Arg.(value & flag & info [ "force" ] ~doc:"Bypass legacy-room creator check (only honored when meta has no recorded creator).")
+  in
   let+ json = json_flag
-  and+ room_id = room_id in
+  and+ room_id = room_id
+  and+ force = force_flag in
   let broker = Broker.create ~root:(resolve_broker_root ()) in
   let output_mode = if json then Json else Human in
+  let caller_alias = resolve_alias_with_broker broker in
   (try
-     Broker.delete_room broker ~room_id;
+     Broker.delete_room broker ~room_id ~caller_alias ~force ();
      match output_mode with
      | Json ->
          print_json
@@ -525,6 +530,101 @@ let rooms_tail_cmd =
     done
   end
 
+(* #394: explicit room creation. Lineage: #385/H3 + #M4 covered
+   visibility-on-create through the MCP join_room path; this gives CLI
+   users a create-without-join surface with the same atomicity. *)
+let rooms_create_cmd =
+  let room_id =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOM"
+      ~doc:"Room ID to create.")
+  in
+  let visibility =
+    Cmdliner.Arg.(value & opt string "public" & info [ "visibility" ] ~docv:"VIS"
+      ~doc:"Visibility: 'public' (default) or 'invite_only'.")
+  in
+  let invite =
+    Cmdliner.Arg.(value & opt_all string [] & info [ "invite" ] ~docv:"ALIAS"
+      ~doc:"For invite_only rooms, pre-populate invited_members. Repeatable.")
+  in
+  let no_join =
+    Cmdliner.Arg.(value & flag & info [ "no-join" ]
+      ~doc:"Create the room without auto-joining as a member.")
+  in
+  let alias_flag =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS"
+      ~doc:"Your alias (overrides registry lookup).")
+  in
+  let+ json = json_flag
+  and+ room_id = room_id
+  and+ vis_str = visibility
+  and+ invited_members = invite
+  and+ no_join = no_join
+  and+ alias_opt = alias_flag in
+  let broker = Broker.create ~root:(resolve_broker_root ()) in
+  let alias = Option.value alias_opt ~default:(resolve_alias_with_broker broker) in
+  let visibility =
+    match String.lowercase_ascii vis_str with
+    | "public" -> Public
+    | "invite_only" | "invite-only" -> Invite_only
+    | _ ->
+        Printf.eprintf "error: unknown visibility '%s'. Use 'public' or 'invite_only'.\n%!" vis_str;
+        exit 1
+  in
+  let auto_join = not no_join in
+  let session_id =
+    if auto_join then resolve_session_id_for_inbox broker
+    else
+      (* When --no-join, we don't need a session_id (no member row written),
+         but pass through the env value if present so audit trails are
+         consistent. Otherwise reuse the alias as a placeholder; it is not
+         persisted because auto_join=false. *)
+      match C2c_mcp.session_id_from_env () with
+      | Some s -> s
+      | None -> alias
+  in
+  let output_mode = if json then Json else Human in
+  (try
+     let r =
+       Broker.create_room broker ~room_id ~caller_alias:alias
+         ~caller_session_id:session_id ~visibility ~invited_members ~auto_join
+     in
+     match output_mode with
+     | Json ->
+         print_json
+           (`Assoc
+             [ ("room_id", `String r.cr_room_id)
+             ; ("created_by", `String r.cr_created_by)
+             ; ( "visibility"
+               , `String
+                   (match r.cr_visibility with
+                    | Public -> "public"
+                    | Invite_only -> "invite_only") )
+             ; ( "invited_members"
+               , `List (List.map (fun a -> `String a) r.cr_invited_members) )
+             ; ("members", `List (List.map (fun a -> `String a) r.cr_members))
+             ; ("auto_joined", `Bool r.cr_auto_joined)
+             ])
+     | Human ->
+         let vis_label =
+           match r.cr_visibility with
+           | Public -> "public"
+           | Invite_only -> "invite_only"
+         in
+         Printf.printf "Created room: %s\n" r.cr_room_id;
+         Printf.printf "  visibility: %s\n" vis_label;
+         Printf.printf "  created_by: %s\n" r.cr_created_by;
+         if r.cr_invited_members <> [] then
+           Printf.printf "  invited_members: %s\n"
+             (String.concat ", " r.cr_invited_members);
+         if r.cr_auto_joined then
+           Printf.printf "  members: %s (auto-joined; --no-join to skip)\n"
+             (String.concat ", " r.cr_members)
+         else
+           Printf.printf "  members: (none; --no-join)\n"
+   with Invalid_argument msg ->
+     Printf.eprintf "error: %s\n%!" msg;
+     exit 1)
+
 let rooms_list = Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List all rooms.") rooms_list_cmd
 let rooms_join = Cmdliner.Cmd.v (Cmdliner.Cmd.info "join" ~doc:"Join a room.") rooms_join_cmd
 let rooms_leave = Cmdliner.Cmd.v (Cmdliner.Cmd.info "leave" ~doc:"Leave a room.") rooms_leave_cmd
@@ -535,15 +635,16 @@ let rooms_tail = Cmdliner.Cmd.v (Cmdliner.Cmd.info "tail" ~doc:"Tail room histor
 let rooms_invite = Cmdliner.Cmd.v (Cmdliner.Cmd.info "invite" ~doc:"Invite an alias to a room.") rooms_invite_cmd
 let rooms_members = Cmdliner.Cmd.v (Cmdliner.Cmd.info "members" ~doc:"List room members.") rooms_members_cmd
 let rooms_visibility = Cmdliner.Cmd.v (Cmdliner.Cmd.info "visibility" ~doc:"Get or set room visibility (public or invite_only).") rooms_visibility_cmd
+let rooms_create = Cmdliner.Cmd.v (Cmdliner.Cmd.info "create" ~doc:"Create a room with explicit visibility (#394).") rooms_create_cmd
 
 let rooms_group =
   Cmdliner.Cmd.group
     ~default:rooms_list_cmd
     (Cmdliner.Cmd.info "rooms" ~doc:"Manage persistent N:N rooms.")
-    [ rooms_list; rooms_join; rooms_leave; rooms_delete; rooms_send; rooms_history; rooms_tail; rooms_invite; rooms_members; rooms_visibility ]
+    [ rooms_list; rooms_create; rooms_join; rooms_leave; rooms_delete; rooms_send; rooms_history; rooms_tail; rooms_invite; rooms_members; rooms_visibility ]
 
 let room_group =
   Cmdliner.Cmd.group
     ~default:rooms_list_cmd
     (Cmdliner.Cmd.info "room" ~doc:"Alias for rooms.")
-    [ rooms_list; rooms_join; rooms_leave; rooms_send; rooms_history; rooms_tail; rooms_invite; rooms_members; rooms_visibility ]
+    [ rooms_list; rooms_create; rooms_join; rooms_leave; rooms_send; rooms_history; rooms_tail; rooms_invite; rooms_members; rooms_visibility ]

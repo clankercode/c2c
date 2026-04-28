@@ -30,15 +30,7 @@ let iso8601_now () =
     (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday
     tm.tm_hour tm.tm_min tm.tm_sec ms
 
-let mkdir_p dir =
-  let parts = String.split_on_char '/' dir in
-  ignore (List.fold_left (fun acc part ->
-    if part = "" then acc
-    else
-      let p = if acc = "" then "/" ^ part else acc ^ "/" ^ part in
-      (try Unix.mkdir p 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
-      p
-  ) "" parts)
+let mkdir_p dir = C2c_io.mkdir_p ~mode:0o700 dir
 
 let statefile_path () =
   let home = Sys.getenv_opt "HOME" |> Option.value ~default:"/tmp" in
@@ -223,9 +215,26 @@ let () =
 
   try
     let broker = C2c_mcp.Broker.create ~root:broker_root in
-    (* Push path: drain only non-deferrable messages; deferrable stay in inbox
-       for the agent to read on next explicit poll_inbox or idle flush. *)
-    let messages = C2c_mcp.Broker.drain_inbox_push broker ~session_id in
+    (* #387 A2: when the session is channel-capable (registry's
+       [automated_delivery=true]), the MCP server's channel watcher owns
+       delivery. The hook MUST NOT drain — otherwise it races the watcher
+       and the message renders as a plain hook-stdout `<c2c event=...>`
+       envelope instead of the styled `<channel>` notification. We still
+       run the statefile write below so PostToolUse remains observable. *)
+    let messages =
+      if C2c_mcp.Broker.is_session_channel_capable broker ~session_id then begin
+        prerr_endline
+          (Printf.sprintf
+             "[hook] skipping drain — session %s is channel-capable; \
+              watcher owns delivery"
+             session_id);
+        []
+      end else
+        (* Push path: drain only non-deferrable messages; deferrable stay
+           in inbox for the agent to read on next explicit poll_inbox or
+           idle flush. *)
+        C2c_mcp.Broker.drain_inbox_push ~drained_by:"hook" broker ~session_id
+    in
 
     (* Look up alias from registry for the statefile *)
     let alias =
@@ -246,22 +255,26 @@ let () =
       | None     -> None
     in
 
-    (* Output messages in c2c event envelope format *)
+    (* Output messages in c2c event envelope format. Centralized via
+       C2c_mcp.format_c2c_envelope (#392b convergence) so #392 tag
+       attrs and xml-escaping are consistent across all surfaces
+       (c2c_wire_bridge.ml, cli/c2c.ml monitor path, this hook). *)
     List.iter
       (fun (m : C2c_mcp.message) ->
         let tag = C2c_mcp.extract_tag_from_content m.content in
         let role = lookup_role m.from_alias in
-        (* #417: pass broker enqueue time so receiver sees send wall clock,
-           not deliver wall clock. Fall back to now() defensively. *)
-        let ts = if m.ts > 0.0 then m.ts else Unix.gettimeofday () in
-        print_endline (C2c_mcp.format_c2c_envelope
-          ~from_alias:m.from_alias
-          ~to_alias:m.to_alias
-          ?tag
-          ?role
-          ~ts
-          ~content:m.content
-          ()))
+        let envelope =
+          C2c_mcp.format_c2c_envelope
+            ~from_alias:m.from_alias
+            ~to_alias:m.to_alias
+            ?tag
+            ?role
+            ?reply_via:m.reply_via
+            ~ts:m.ts
+            ~content:m.content
+            ()
+        in
+        Printf.printf "%s\n" envelope)
       messages;
 
     (* Self-regulating runtime: sleep if we finished too quickly *)

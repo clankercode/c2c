@@ -99,10 +99,8 @@ let do_install_self ~output_mode ~dest_opt ~with_mcp_server =
   else
     let result =
       try
-        if not (Sys.file_exists dest_dir && Sys.is_directory dest_dir) then (
-          let parent = Filename.dirname dest_dir in
-          if not (Sys.file_exists parent && Sys.is_directory parent) then Unix.mkdir parent 0o755;
-          Unix.mkdir dest_dir 0o755);
+        if not (Sys.file_exists dest_dir && Sys.is_directory dest_dir) then
+          C2c_mcp.mkdir_p dest_dir;
         let dest_path = dest_dir // "c2c" in
         let ic = open_in_bin exe_path in
         let oc = open_out_bin (dest_path ^ ".tmp") in
@@ -171,9 +169,12 @@ let alias_words = [| "aalto"; "aimu"; "aivi"; "alder"; "alm"; "alto"; "anvi"; "a
 
 let generate_alias () =
   let n = Array.length alias_words in
-  let w1 = alias_words.(Random.int n) in
-  let w2 = alias_words.(Random.int n) in
-  Printf.sprintf "%s-%s" w1 w2
+  let rec loop () =
+    let w1 = alias_words.(Random.int n) in
+    let w2 = alias_words.(Random.int n) in
+    if w1 = w2 then loop () else Printf.sprintf "%s-%s" w1 w2
+  in
+  loop ()
 
 let generate_session_id () =
   let buf = Buffer.create 36 in
@@ -216,20 +217,7 @@ let mkdir_p dry_run dir =
   if dry_run then
     Printf.printf "[DRY-RUN] would create directory tree %s\n%!" dir
   else
-    let rec loop remaining =
-      if remaining = "/" || remaining = "" || remaining = "." then ()
-      else
-        let st =
-          try Some (Unix.stat remaining) with Unix.Unix_error _ -> None
-        in
-        match st with
-        | Some s when s.Unix.st_kind = Unix.S_DIR -> ()
-        | Some _ -> ()
-        | None ->
-            loop (Filename.dirname remaining);
-            (try Unix.mkdir remaining 0o755 with Unix.Unix_error _ -> ())
-    in
-    loop dir
+    C2c_mcp.mkdir_p dir
 
 let default_alias_for_client client =
   let client = match String.lowercase_ascii client with
@@ -241,11 +229,39 @@ let default_alias_for_client client =
 
 (* --- setup: Codex (TOML) --- *)
 
+(* Codex MCP tool allow-list. Codex's TOML config requires every MCP tool to
+   be enumerated explicitly (no wildcard), so this list must enumerate every
+   tool registered by the c2c MCP server.
+
+   IMPORTANT: this list must stay in sync with `C2c_mcp.base_tool_definitions`.
+   When you add a new tool to the broker, append its name here too — otherwise
+   Codex sessions will silently lose access to it.
+
+   A future #412-followup will generate this list from a single source of
+   truth (the broker's own tool registry) so the two cannot drift; for now
+   it is hand-maintained. *)
 let c2c_tools_list = [
+  (* identity / discovery *)
   "register"; "whoami"; "list";
+  (* 1:1 + broadcast send *)
   "send"; "send_all";
+  (* inbox / archive *)
   "poll_inbox"; "peek_inbox"; "history";
-  "join_room"; "leave_room"; "send_room"; "list_rooms"; "my_rooms"; "room_history";
+  (* rooms (N:N) *)
+  "join_room"; "leave_room"; "delete_room";
+  "send_room"; "list_rooms"; "my_rooms"; "room_history";
+  "send_room_invite"; "set_room_visibility"; "prune_rooms";
+  (* presence / DND *)
+  "set_dnd"; "dnd_status";
+  (* permission / pending-reply tracking *)
+  "open_pending_reply"; "check_pending_reply";
+  (* compaction lifecycle *)
+  "set_compact"; "clear_compact";
+  (* managed-session lifecycle *)
+  "stop_self";
+  (* per-agent memory *)
+  "memory_list"; "memory_read"; "memory_write";
+  (* admin / diagnostics *)
   "sweep"; "tail_log"; "server_info";
 ]
 
@@ -376,6 +392,76 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path =
       Printf.printf "  config:      %s\n" config_path;
       Printf.printf "  server:      %s\n" server_path;
       Printf.printf "\nRestart Kimi to pick up the new MCP server.\n"
+
+(* --- setup: Gemini CLI (JSON, user-scope) --- *)
+
+(* Gemini CLI keeps its config at ~/.gemini/settings.json (user scope) and
+   exposes MCP servers via the same `mcpServers` shape as Claude Code, plus
+   a `trust: true` flag that bypasses tool-call confirmation prompts.
+
+   We write user-scope (not project-scope) so the c2c MCP server is
+   available across every gemini session — matches kimi's precedent, and
+   the swarm-wide alias model. Use `gemini mcp remove c2c` to undo. *)
+let setup_gemini ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command =
+  let config_path =
+    Filename.concat (Sys.getenv "HOME") (".gemini" // "settings.json")
+  in
+  let existing =
+    if Sys.file_exists config_path then json_read_file config_path
+    else `Assoc []
+  in
+  (* When `c2c-mcp-server` is on PATH, use it directly. Otherwise fall
+     back to `opam exec -- <absolute-server-path>` — same shape as
+     setup_claude/setup_codex. resolve_mcp_server_paths picks the right
+     pair upstream. *)
+  let args_list =
+    if mcp_command = "c2c-mcp-server" then []
+    else [ `String "exec"; `String "--"; `String server_path ]
+  in
+  let c2c_entry =
+    `Assoc
+      [ ("command", `String mcp_command)
+      ; ("args", `List args_list)
+      ; ("env", `Assoc
+          [ ("C2C_MCP_BROKER_ROOT", `String root)
+          ; ("C2C_MCP_SESSION_ID", `String alias_val)
+          ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
+          ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+          ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
+          ])
+      ; ("trust", `Bool true)
+      ]
+  in
+  let config = match existing with
+    | `Assoc fields ->
+        let existing_mcp = match List.assoc_opt "mcpServers" fields with
+          | Some (`Assoc m) -> List.filter (fun (k, _) -> k <> "c2c") m
+          | _ -> []
+        in
+        `Assoc (List.filter (fun (k, _) -> k <> "mcpServers") fields
+                @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", c2c_entry) ])) ])
+    | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", c2c_entry) ]) ]
+  in
+  mkdir_or_dryrun dry_run (Filename.dirname config_path);
+  json_write_file_or_dryrun dry_run config_path config;
+  match output_mode with
+  | Json ->
+      print_json (`Assoc
+        [ ("ok", `Bool true)
+        ; ("client", `String "gemini")
+        ; ("alias", `String alias_val)
+        ; ("broker_root", `String root)
+        ; ("config", `String config_path)
+        ; ("trust", `Bool true)
+        ])
+  | Human ->
+      Printf.printf "Configured Gemini CLI for c2c.\n";
+      Printf.printf "  alias:       %s\n" alias_val;
+      Printf.printf "  broker root: %s\n" root;
+      Printf.printf "  config:      %s\n" config_path;
+      Printf.printf "  trust:       true (skips per-tool confirmation prompts)\n";
+      Printf.printf "\nRun 'gemini mcp list' to verify.\n";
+      Printf.printf "If you haven't authenticated yet, run 'gemini' once interactively to seed ~/.gemini/oauth_creds.json before launching managed sessions.\n"
 
 (* --- setup: OpenCode (JSON + plugin) --- *)
 
@@ -590,7 +676,7 @@ let configure_claude_hook () =
   let hooks_dir = home // ".claude" // "hooks" in
   let script_path = hooks_dir // "c2c-inbox-check.sh" in
   let settings_path = home // ".claude" // "settings.json" in
-  (try Unix.mkdir hooks_dir 0o755 with Unix.Unix_error _ -> ());
+  C2c_mcp.mkdir_p hooks_dir;
   let oc = open_out script_path in
   Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
     output_string oc claude_hook_script);
@@ -872,6 +958,64 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
        Printf.printf "\nTo use a custom profile directory:\n";
        Printf.printf "  CLAUDE_CONFIG_DIR=/path/to/profile c2c install claude%s%s\n" alias_str force_str)
 
+(* --- install: crush (JSON) --- *)
+
+let setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path =
+  let config_path = Filename.concat (Sys.getenv "HOME") (".config" // "crush" // "crush.json") in
+  let existing =
+    if Sys.file_exists config_path then json_read_file config_path
+    else `Assoc []
+  in
+  let c2c_entry =
+    `Assoc
+      [ ("type", `String "stdio")
+      ; ("command", `String "opam")
+      ; ("args", `List [ `String "exec"; `String "--"; `String server_path ])
+      ; ("env", `Assoc
+          [ ("C2C_MCP_BROKER_ROOT", `String root)
+          ; ("C2C_MCP_SESSION_ID", `String alias_val)
+          ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
+          ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+          ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
+          ])
+      ]
+  in
+  let config = match existing with
+    | `Assoc fields ->
+        let existing_mcp = match List.assoc_opt "mcpServers" fields with
+          | Some (`Assoc m) -> List.filter (fun (k, _) -> k <> "c2c") m
+          | _ -> []
+        in
+        `Assoc (List.filter (fun (k, _) -> k <> "mcpServers") fields
+                @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", c2c_entry) ])) ])
+    | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", c2c_entry) ]) ]
+  in
+  (try
+     let rec mkdir_p d =
+       if Sys.file_exists d then () else begin
+         mkdir_p (Filename.dirname d);
+         mkdir_or_dryrun dry_run d
+       end
+     in
+     mkdir_p (Filename.dirname config_path)
+   with Unix.Unix_error _ -> ());
+  json_write_file_or_dryrun dry_run config_path config;
+  match output_mode with
+  | Json ->
+      print_json (`Assoc
+        [ ("ok", `Bool true)
+        ; ("client", `String "crush")
+        ; ("alias", `String alias_val)
+        ; ("broker_root", `String root)
+        ; ("config", `String config_path)
+        ])
+  | Human ->
+      Printf.printf "Configured Crush for c2c (experimental).\n";
+      Printf.printf "  alias:       %s\n" alias_val;
+      Printf.printf "  broker root: %s\n" root;
+      Printf.printf "  config:      %s\n" config_path;
+      Printf.printf "  server:      %s\n" server_path
+
 (* --- install: shared dispatcher (used by `c2c install <client>` and TUI) --- *)
 
 let resolve_mcp_server_paths ~output_mode =
@@ -899,14 +1043,14 @@ let canonical_install_client client =
   | "codex-headless" -> "codex"
   | other -> other
 
-let known_clients = [ "claude"; "codex"; "opencode"; "kimi" ]
-let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi" ]
+let known_clients = [ "claude"; "codex"; "opencode"; "kimi"; "crush"; "gemini" ]
+let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "crush"; "gemini" ]
 let install_client_error_list = String.concat ", " install_subcommand_clients
 let install_client_pipe_list = String.concat "|" install_subcommand_clients
-let init_configurable_clients = [ "claude"; "opencode"; "codex"; "codex-headless"; "kimi" ]
+let init_configurable_clients = [ "claude"; "opencode"; "codex"; "codex-headless"; "kimi"; "gemini" ]
 let init_configurable_client_list = String.concat ", " init_configurable_clients
-let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi" ]
-let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "tmux"; "pty"; "relay-connect" ]
+let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "gemini"; "crush" ]
+let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "gemini"; "opencode"; "crush"; "tmux"; "pty"; "relay-connect" ]
 let start_client_list = String.concat ", " start_clients
 
 let do_install_client ?(channel_delivery=false) ?(global=false) ~output_mode ~dry_run ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force () =
@@ -929,7 +1073,9 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ~output_mode ~dr
   | "claude" -> setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir:target_dir_opt
   | "codex" -> setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client
   | "kimi" -> setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path
+  | "gemini" -> setup_gemini ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
   | "opencode" -> setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~force ()
+  | "crush" -> setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path
   | _ ->
       let msg = Printf.sprintf "unknown client '%s'. Use: %s" client install_client_error_list in
       (match output_mode with
@@ -945,21 +1091,33 @@ let self_installed_path () =
   let p = home // ".local" // "bin" // "c2c" in
   if Sys.file_exists p then Some p else None
 
+(* #411: shared check for `mcpServers.c2c` membership in a JSON config. *)
+let json_file_has_c2c_mcp_entry path =
+  if not (Sys.file_exists path) then false
+  else
+    try
+      match json_read_file path with
+      | `Assoc fields ->
+          (match List.assoc_opt "mcpServers" fields with
+           | Some (`Assoc m) -> List.mem_assoc "c2c" m
+           | _ -> false)
+      | _ -> false
+    with _ -> false
+
 let client_configured client =
   let home = try Sys.getenv "HOME" with Not_found -> "" in
   match String.lowercase_ascii client with
   | "claude" ->
-      let p = home // ".claude.json" in
-      if not (Sys.file_exists p) then false
-      else
-        (try
-           match json_read_file p with
-           | `Assoc fields ->
-               (match List.assoc_opt "mcpServers" fields with
-                | Some (`Assoc m) -> List.mem_assoc "c2c" m
-                | _ -> false)
-           | _ -> false
-         with _ -> false)
+      (* Claude has TWO valid install scopes (#334):
+         - global / user-scope: ~/.claude.json
+         - project-scope (the install default since #334): <cwd>/.mcp.json
+         The verifier must accept either, else `c2c install all` re-prompts a
+         working project-scope install and the TUI mis-reports state.
+         Surfaced by the cross-client install audit (#411). *)
+      let user_scope = home // ".claude.json" in
+      let project_scope = Sys.getcwd () // ".mcp.json" in
+      json_file_has_c2c_mcp_entry user_scope
+      || json_file_has_c2c_mcp_entry project_scope
    | "codex" | "codex-headless" ->
        let p = home // ".codex" // "config.toml" in
        if not (Sys.file_exists p) then false
@@ -990,6 +1148,18 @@ let client_configured client =
                 | _ -> false)
            | _ -> false
          with _ -> false)
+   | "gemini" ->
+      let p = home // ".gemini" // "settings.json" in
+      if not (Sys.file_exists p) then false
+      else
+        (try
+           match json_read_file p with
+           | `Assoc fields ->
+               (match List.assoc_opt "mcpServers" fields with
+                | Some (`Assoc m) -> List.mem_assoc "c2c" m
+                | _ -> false)
+           | _ -> false
+         with _ -> false)
   | "opencode" ->
       let p = Sys.getcwd () // ".opencode" // "opencode.json" in
       if not (Sys.file_exists p) then false
@@ -998,6 +1168,18 @@ let client_configured client =
            match json_read_file p with
            | `Assoc fields ->
                (match List.assoc_opt "mcp" fields with
+                | Some (`Assoc m) -> List.mem_assoc "c2c" m
+                | _ -> false)
+           | _ -> false
+         with _ -> false)
+  | "crush" ->
+      let p = home // ".config" // "crush" // "crush.json" in
+      if not (Sys.file_exists p) then false
+      else
+        (try
+           match json_read_file p with
+           | `Assoc fields ->
+               (match List.assoc_opt "mcpServers" fields with
                 | Some (`Assoc m) -> List.mem_assoc "c2c" m
                 | _ -> false)
            | _ -> false

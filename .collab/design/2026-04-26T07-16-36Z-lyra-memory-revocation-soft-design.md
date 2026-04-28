@@ -67,7 +67,7 @@ Cons: no revocation audit and no guarantee about prior copies.
 Keep immutable grant/revoke events in sidecar files and compute effective access from the latest event.
 
 Pros: audit trail, easier to answer "when did bob lose access?"  
-Cons: much more code, conflict handling, and docs surface for little v1 value. The current memory files are already git-tracked, so file diffs provide a coarse audit trail.
+Cons: much more code, conflict handling, and docs surface for little v1 value. The current memory files are already git-tracked, so file diffs provide a coarse audit trail. <!-- (superseded by #266 — now gitignored) -->
 
 ### C. Encrypted per-recipient memory
 

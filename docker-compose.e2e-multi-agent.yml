@@ -77,7 +77,6 @@ services:
         condition: service_healthy
     volumes:
       - broker-a:/var/lib/c2c
-      - s5-artifact:/var/lib/c2c/shared
     networks:
       - c2c-e2e-net
     deploy:
@@ -138,7 +137,6 @@ services:
         condition: service_healthy
     volumes:
       - broker-b:/var/lib/c2c
-      - s5-artifact:/var/lib/c2c/shared
     networks:
       - c2c-e2e-net
     deploy:
@@ -196,7 +194,3 @@ volumes:
   # Two independent brokers — cross-host delivery must traverse relay.
   broker-a:
   broker-b:
-  # Shared volume for S5 artifact transfer (agent-a1 writes, agent-b1 reads).
-  # Mounted at /var/lib/c2c/shared on both agents' broker broker mount path
-  # so peer-pass verify inside the container can reach it at a stable path.
-  s5-artifact:

@@ -53,7 +53,9 @@ description: <one sentence — what this agent is for>
 role: primary | subagent
 c2c:
   alias: <desired-alias>
-  auto_join_rooms: [<room-id>, ...]  # omit if none
+  auto_join_rooms: [swarm-lounge, onboarding]  # convention (#390): default to both;
+                                               # swarm-lounge for ops chatter,
+                                               # onboarding for quieter new-agent space
 opencode:
   theme: <theme-name>  # omit if not opencode-focused
 claude:
@@ -67,6 +69,56 @@ The body should be:
 - 5-10 crisp bullet-point responsibilities under "Responsibilities:"
 - 3-5 crisp bullet points under "Do not:" — explicit boundaries
 - No padding, no filler, no hedging. Write for an agent that needs to act.
+
+**Standard onboarding boilerplate (#413).** Every new role file should
+include the following three items inline in its body — surfaced from
+jungle-coder's #378 onboarding feedback. They shorten startup by making
+canonical recipes copy-paste-able instead of "go read the runbook":
+
+1. **`just --list` as the canonical first command after any OCaml change.**
+   Include near the build/install guidance:
+   > After any code edit run `just --list` to see available recipes;
+   > `just install-all` (or `just bi`) is the atomic build+install. Reach
+   > for raw `opam exec -- dune build` only when a recipe is missing.
+
+2. **Explicit "self-review ≠ peer-PASS" rule** echoed verbatim from
+   `.collab/runbooks/git-workflow.md` rule 3. Include near the
+   review-and-fix paragraph:
+   > **Self-review-via-skill is NOT a peer-PASS.** A subagent of yours
+   > doesn't count either. After your own review-and-fix loop returns
+   > PASS, ping a real swarm peer (DM stanza-coder / jungle-coder /
+   > etc.) to run the skill against your SHA. Only their signed
+   > artifact satisfies the peer-PASS gate before coordinator
+   > cherry-pick.
+
+3. **Verbatim Monitor heartbeat recipe + `TaskList`-dedupe note** as
+   the on-arrival setup. Include this exact block:
+   ````
+   On session start (or after compaction), run `TaskList` first; if a
+   Monitor with `description: "heartbeat tick"` is already running,
+   SKIP arming. Otherwise:
+
+   Monitor({ description: "heartbeat tick",
+             command: "heartbeat 4.1m \"wake — poll inbox, advance work\"",
+             persistent: true })
+
+   Coordinator roles also arm a sitrep cadence:
+
+   Monitor({ description: "sitrep tick (hourly @:07)",
+             command: "heartbeat @1h+7m \"sitrep tick\"",
+             persistent: true })
+
+   Heartbeat fires are work triggers — poll inbox, pick up the next
+   slice. NOT acknowledgements. "Tick — no action" is wrong;
+   "tick — picking up X" is right.
+   ````
+   The `TaskList`-first dedupe is load-bearing — re-arming after
+   compaction without it produces duplicate heartbeats (caught
+   manually by Cairn 2026-04-28; see #342).
+
+Include these three items as standard body content unless the user
+explicitly opts out. Don't paraphrase — copy verbatim so the recipes
+stay copy-paste-runnable.
 
 **When to stop**: Once the user says "looks good" or equivalent, commit the file
 and confirm the path. Do not add features not requested. Do not elaborate beyond

@@ -5,15 +5,11 @@ let ( // ) = Filename.concat
 let likes_shell_substitution = C2c_start.likes_shell_substitution
 
 (** [mkdir_p dir] creates dir and all parents, like Unix mkdir -p.
-    Idempotent: succeeds if dir already exists.
-    Uses 0o755 permissions. *)
-let rec mkdir_p dir =
-  if dir = "/" || dir = "." || dir = "" then ()
-  else if Sys.file_exists dir then ()
-  else begin
-    mkdir_p (Filename.dirname dir);
-    try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-  end
+    Idempotent; uses 0o755 permissions.
+    Delegates to [C2c_mcp.mkdir_p] — the single canonical helper
+    (#400b, which itself delegates to [C2c_io.mkdir_p]). For
+    non-default permission bits, call [C2c_mcp.mkdir_p ~mode] directly. *)
+let mkdir_p = C2c_mcp.mkdir_p
 
 (** XDG_STATE_HOME per XDG spec, with HOME fallback. *)
 let xdg_state_home () =
@@ -27,6 +23,12 @@ let xdg_state_home () =
 (** Delegates to the authoritative implementation in C2c_repo_fp (library module).
     C2c_repo_fp.resolve_broker_root uses Digestif.SHA256 for repo fingerprint. *)
 let resolve_broker_root () = C2c_repo_fp.resolve_broker_root ()
+
+(** Re-exports of the pure legacy-broker-root detection helpers from
+    C2c_broker_root_check (#352). Kept here for call-site convenience;
+    the underlying module is dependency-free for unit-testability. *)
+let is_legacy_broker_root = C2c_broker_root_check.is_legacy_broker_root
+let legacy_broker_warning_text = C2c_broker_root_check.legacy_broker_warning_text
 
 (** [atomic_write_json path json] writes json to a temp file then atomically
     renames to [path], ensuring readers never see a partial write.

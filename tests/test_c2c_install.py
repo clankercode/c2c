@@ -77,8 +77,10 @@ class C2CInstallTests(unittest.TestCase):
                 "c2c-claude-wake",
                 "c2c-configure-claude-code",
                 "c2c-configure-codex",
+                "c2c-configure-crush",
                 "c2c-configure-kimi",
                 "c2c-configure-opencode",
+                "c2c-crush-wake",
                 "c2c-deliver-inbox",
                 "c2c-health",
                 "c2c-init",
@@ -107,8 +109,12 @@ class C2CInstallTests(unittest.TestCase):
                 "c2c-whoami",
                 "cc-quota",
                 "restart-codex-self",
+                "restart-crush-self",
                 "restart-kimi-self",
                 "restart-opencode-self",
+                "run-crush-inst",
+                "run-crush-inst-outer",
+                "run-crush-inst-rearm",
                 "run-kimi-inst",
                 "run-kimi-inst-outer",
                 "run-kimi-inst-rearm",
@@ -142,6 +148,7 @@ class C2CInstallTests(unittest.TestCase):
         self.assertTrue((install_dir / "c2c-kimi-wire-bridge").exists())
         self.assertTrue((install_dir / "restart-opencode-self").exists())
         self.assertTrue((install_dir / "run-kimi-inst").exists())
+        self.assertTrue((install_dir / "run-crush-inst").exists())
         self.assertTrue((install_dir / "c2c-watch").exists())
         self.assertTrue((install_dir / "c2c-whoami").exists())
 
@@ -224,8 +231,8 @@ class C2CInstallDryRunTests(unittest.TestCase):
 
     def test_install_dry_run_crushing_produces_dry_run_lines(self):
         result = self.invoke_cli("install", "crush", "--dry-run", "--alias", "test-dry-run")
-        self.assertNotEqual(result.returncode, 0, "crush is no longer a valid install target")
-        self.assertIn("unknown", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("[DRY-RUN]", result.stdout)
 
     def test_install_dry_run_claude_produces_dry_run_lines(self):
         merged_env = {**os.environ}
@@ -249,11 +256,12 @@ class C2CInstallDryRunTests(unittest.TestCase):
                 Path.home() / ".codex" / "config.toml",
                 Path.home() / ".kimi" / "mcp.json",
                 Path.home() / ".claude" / ".claude.json",
+                Path.home() / ".config" / "crush" / "crush.json",
             ]
             return {str(p): p.stat().st_mtime for p in paths if p.exists()}
 
         before = mtimes()
-        for client in ["codex", "kimi"]:
+        for client in ["codex", "kimi", "crush"]:
             result = self.invoke_cli("install", client, "--dry-run", "--alias", "test-dry-run")
             self.assertEqual(result.returncode, 0, f"{client} failed: {result.stderr}")
         after = mtimes()

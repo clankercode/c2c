@@ -10,7 +10,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$REPO_ROOT/_build/default/ocaml/tools/c2c_post_compact_hook.exe"
+BIN="$REPO_ROOT/_build/default/ocaml/tools/c2c_post_compact_hook_bin.exe"
 
 if [ ! -x "$BIN" ]; then
   echo "skip: binary not built ($BIN). Run 'just build' first." >&2

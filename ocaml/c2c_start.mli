@@ -66,8 +66,7 @@ val tmux_deliver_once :
 (** {1 Client Configurations} *)
 
 val clients : (string, client_config) Stdlib.Hashtbl.t
-(** Map from client name (claude, codex, opencode, kimi) to config. Crush is
-    deprecated but still registered for backward compat with the start banner. *)
+(** Map from client name (claude, codex, opencode, kimi, crush) to config. *)
 
 val supported_clients : string list
 (** List of supported client names. *)
@@ -241,6 +240,27 @@ val repo_config_git_sign : unit -> bool
     Returns [true] if absent (default on). When true and argv[0]="commit",
     `c2c git` injects SSH signing flags (-c gpg.format=ssh, etc.) for
     git commit signing. *)
+
+val builtin_swarm_restart_intro : string
+(** Default restart/kickoff intro template emitted into the agent's
+    transcript when [c2c start <client>] launches a fresh session.
+    Contains {name}, {alias}, {role} placeholders. #341. *)
+
+val swarm_config_restart_intro : unit -> string
+(** [swarm_config_restart_intro ()] reads the [swarm] [restart_intro] key
+    from .c2c/config.toml and returns the override (with \n / \t escapes
+    decoded), or [builtin_swarm_restart_intro] when the section/key is
+    absent or empty. Mirrors the #318 v3 thunk pattern
+    (swarm_config_coordinator_alias / swarm_config_social_room). #341. *)
+
+val read_toml_sections_with_prefix :
+  string -> (string * (string * string) list) list
+(** [read_toml_sections_with_prefix prefix] reads .c2c/config.toml and
+    returns [(subsection, key-value pairs)] for every section matching
+    [\[prefix\]] (returned with subsection ["default"]) or
+    [\[prefix.X\]] (returned with subsection ["X"]). #414 exposed for
+    [c2c_coord]'s `[author_aliases]` reader; older callers used the
+    private `*_from_path` form. *)
 
 val normalize_model_override_for_client :
   client:string -> string -> (string, string) result
@@ -499,19 +519,6 @@ val resolve_model_override :
   role_pmodel_override:string option ->
   saved_model_override:string option ->
   string option
-
-val resolve_broker_root_with_env :
-  ?warn:(string -> string -> unit) ->
-  env:string option ->
-  persisted:string ->
-  unit ->
-  string
-(** [resolve_broker_root_with_env ~env ~persisted ()] returns the
-    broker_root that {!cmd_start} should use on resume. When [env] is
-    [Some s] with [String.trim s <> ""], the trimmed env value wins
-    over the persisted instance config; if it also differs from
-    [persisted], [warn env_root persisted] is invoked (default: stderr
-    log). Otherwise [persisted] is returned. (#424) *)
 
 val cmd_start :
   client:string ->

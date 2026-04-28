@@ -16,9 +16,9 @@ Project Folder: `.collab/agent-files/` (design doc v7 lives here)
 
 Goal: single canonical role file (`.c2c/roles/<name>.md`) compiles on-the-fly into each client's native agent format (OpenCode, Claude, Codex, Kimi) at launch. c2c becomes the hub for multi-client persona parity.
 
-Status: **active** — v1.0 shipped, v1.1 mostly complete; all four renderers live (opencode/claude/codex/kimi). Roles: coordinator1/ceo/galaxy-coder/jungel-coder/security-review/qa/dogfood-hunter/release-manager/gui-tester. Parser, `c2c agent new|list|delete|rename`, `c2c roles [--dry-run] [--client all]`, `c2c start --agent`, Banner.ml with 11 themes, `include:` snippets, `compatible_clients`+`required_capabilities`, body injection lint, `c2c roles validate` all live.
+Status: **done (v1.1)** — all four renderers + 13 builtin roles live. Codex/Kimi native-spec follow-up deferred (renderers emit generic shape; revisit when hooking up live Codex/Kimi sessions end-to-end).
 
-Next: live Stage 4-7 testing by Max (end-to-end launch on OpenCode / Claude / Codex, visual polish). Codex/Kimi native agent-file spec research deferred — renderers emit a generic shape; revisit when hooking up live Codex/Kimi sessions end-to-end.
+Next: close the project entry once Codex/Kimi native compatibility is decided.
 
 ### Codex-headless integration
 
@@ -36,9 +36,9 @@ Project Folder: **todo**
 
 Goal: deprecate all Python in the c2c runtime. Every `c2c` feature should be pure OCaml. Python only for test scaffolding / one-shot scripts.
 
-Status: **active** — CLI surface, broker, MCP server, relay, agent-file parser/renderer, Banner all OCaml. Deprecated scripts (wake_daemon, inject) moved to `deprecated/`. Core runtime (c2c_mcp, c2c_broker_gc, all c2c_relay*.py) fully ported. Poker wrapper (c2c_poker.ml) done; delivers via Python backend. Wire daemon OCaml-native (galaxy-coder 3c6e5b7). Remote relay transport v1 done: GET /remote_inbox/<session_id> endpoint + --remote-broker-* flags wired.
+Status: **active** — CLI surface, broker, MCP server, relay, agent-file parser/renderer, Banner all OCaml. Deprecated scripts moved to `deprecated/`. Core runtime fully ported. Recent landings: #310 multi-container Docker E2E (closed); #311 mcp-inner/mcp-outer proxy (slice A landed `5d49b94`); #312 codex harness fd leaks + hang fix (closed); #313/#314 worktree gc + freshness heuristic (closed); #322 install-stamp drift (closed). c2c-mcp-inner binary live; install-guard at `~/.local/bin/.c2c-install.lock` prevents cross-worktree races.
 
-Next: smoke test remote relay with live SSH target; persistent relay.toml config for remote broker settings.
+Next: persistent relay.toml config; multi-broker support (v2); remaining script-deprecation pass.
 
 ### Sitrep discipline
 
@@ -46,9 +46,9 @@ Project Folder: `.sitreps/PROTOCOL.md`
 
 Goal: coordinator1 produces an hourly UTC snapshot of swarm state so new session starts have zero ramp-up and Max can check in without polling.
 
-Status: **active** — protocol drafted, `c2c_sitrep.py` scaffolder live, first two sitreps produced (`08.md`, `09.md`), hourly cron armed (with 15min max jitter). Per-agent personal-logs convention at `.c2c/personal-logs/<alias>/` established.
+Status: **active/mature** — `Monitor` + `heartbeat` replaced legacy `CronCreate`; sitreps hourly with empty-hour markers; ~70+ filed; protocol now covers post-compact + post-OOM resume phenomenology. Paired-compaction case (Cairn ↔ stanza synchronized 2026-04-28) validated re-meeting at sub-minute granularity. Per-agent personal-logs convention at `.c2c/personal-logs/<alias>/` established and used.
 
-Next: swap `CronCreate` for `Monitor` + `heartbeat` once Max lands the scheduling syntax.
+Next: #342 (active-Monitor visibility — coord can't list its own running heartbeats; bit us with duplicate timer-fires today).
 
 ### Security: permission/question alias-hijack
 
@@ -86,6 +86,46 @@ Project Folder: **todo**
 
 Goal: enable a remote node to receive c2c messages through a relay server without requiring the local broker's file system.
 
-Status: **v1 shipped** — Full e2e verified (25dc1b1): fake broker → SSH poll (5s) → relay cache → GET /remote_inbox/<session_id> → message delivered. Bugs fixed: off-by-one path length (14 not 13), SSH ls color codes (--color=never). CLI: c2c relay serve --remote-broker-ssh-target/--root/--id and c2c relay poll-inbox --relay-url --session-id. Regression tests in test_relay_remote_broker.ml.
+Status: **v1 shipped** — Full e2e verified (25dc1b1): fake broker → SSH poll (5s) → relay cache → GET /remote_inbox/<session_id> → message delivered. Regression tests in `test_relay_remote_broker.ml`.
 
-Next: relay.toml persistent config for remote broker settings; multi-broker support (v2).
+Next: relay.toml persistent config; multi-broker support (v2). #330 (cross-host relay-mesh validation) currently paused (OOM-risk during multi-container runs).
+
+### Post-restart UX hardening
+
+Project Folder: **todo** (cluster spans #335/#336/#337/#340/#341/#342)
+
+Goal: every restart path (compact, OOM, resume, fresh boot, install-then-restart) must be safe and predictable. The 2026-04-28 OOM exposed a class of restart-only bugs invisible during steady-state operation.
+
+Status: **active** — surfaced through the OOM-recovery pass on 2026-04-28. #336 (just build silent exit-0) closed `aaffb39c→18e1d695`. #335 v1a (nudge instrumentation) cherry-picked `b6ce5348→253d4eac` + fix `3bf645cb→fce11a0b`; v2a (pidless-skip implementation) ready at `43695999..8ff19204` awaiting peer-PASS. #340 (OpenCode dual-plugin paths doubling helper spawns) diagnosed at OC source level — fix shape filed as #340a (`c2c_setup.ml:534-546`). Stopgap rm of `.opencode/plugins/c2c.ts` applied. #337/#341/#342 still pending. #344 sweep-predicate hardening + #345 auto_register_startup-guards both queued; impl in flight.
+
+Next: galaxy ships #318 v3 (heartbeat-config thunk refactor, post-stanza-FAIL); land #335 v2a + #340a; close #337/#341/#342.
+
+### Coord workflow + peer-PASS process
+
+Project Folder: **todo** (cross-cuts #323/#324/#325/#334/#360)
+
+Goal: coordinator surface (cherry-pick, peer-PASS rubric, push-gate, install-path policy) is mature enough that swarm-cycles don't need Max-direct intervention. Two recent landings sharpened the discipline: peer-PASS bug-class-recurs check (#324) + coord-cherry-pick from divergent base (#325).
+
+Status: **active** — #323 auto-DM-on-cherry-pick landed today (`5951194a + 15afd38f`); first sustained auto-fire run validated post-#334 push. #324 peer-PASS rubric bug-class-recurs check landed earlier and is already catching things (used in 2026-04-28 stanza self-review on #335 v2a). #325 divergent-base runbook landed. #334 (`c2c install claude` repo-scoped) PUSHED to origin/master at `817dbf33` (Max's PC-pull trigger satisfied). 🚨 **#360 (`c2c migrate-broker` silent data loss)** — URGENT hotfix queued; stanza's finding doc ready as near-spec; routing: galaxy after #318 v3 (plan A), coord-direct fallback (plan C, Max-sanctioned 2026-04-28).
+
+Next: ship #360 hotfix → unblock #352 doctor migration-prompt → broker-by-broker rollout. #328 coord-cherry-pick scope-audit + auto-build deferred.
+
+### MCP surface reliability
+
+Project Folder: **todo** (cluster spans #326/#327/#331/#332/#346)
+
+Goal: MCP tool surface should be testable, observable, and free of silent-mismatch hazards. Two MCP-only regressions in one hour on 2026-04-27 (#326/#327) showed CLI-only verification is insufficient.
+
+Status: **active** — #326 (memory_list shared_with_me=true semantics) closed `e9c39714→a70b32df`. #327 (send-memory handoff DM did not fire on memory_write with shared_with) closed `b7b4997a` with broker.log diagnostic. #331 MCP regression test suite landed `a49480d0`. #332 (mkdir_p ENOENT for missing parent dirs) in progress (test-agent). #346 (`C2C_MCP_AUTO_DRAIN_CHANNEL` default-flip) queued — Max approved straight default-flip 2026-04-28; ~5 LoC code change + 1 test.
+
+Next: ship #346 default-flip; close #332; track for next regression class.
+
+### Public-docs accuracy
+
+Project Folder: **todo** (cluster spans #350/#356/#357/#358/#359)
+
+Goal: c2c.im (Jekyll-published docs/) front-door pages match shipped behavior. Discovered via 2026-04-28 audit subagent.
+
+Status: **active** — #350 broker-root drift (7 files +30/-18) shipped `9e15b6e1`, awaiting peer-PASS (test-agent queued). Closes audit's #1 user-trust item (broker-root accuracy headline). #356 (MCP Tools cards advertise nonexistent tools, miss shipped surface) HIGH severity, queued. #357 (Crush parity inconsistency) MED. #358 (relay-quickstart Python-centric) MED. #359 (Setup table Kimi/Codex misleading) LOW. Bundleable as one public-docs-accuracy pass slice.
+
+Next: peer-PASS #350; bundle #356-#359 for galaxy after #318 v3 lands (or whoever's free).

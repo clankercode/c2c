@@ -131,6 +131,25 @@ will complain. Branches can only be checked out in one location at a time.
 Run `c2c worktree prune` to clean up stale entries. Then `c2c start --worktree`
 on your next slice to get a fresh one.
 
+### "My subagent ran `git stash` and disrupted the main tree" (#373)
+
+`git stash` is **shared across worktrees** in the shared-tree layout — there is
+one stash list per repository, not per worktree. A subagent that `cd`s out of
+its assigned worktree (e.g. into the main tree to "check something") and runs
+`git stash` will mutate state visible to every other agent in the swarm. This
+hit stanza's #360 impl subagent: a stray `git stash` in the shared tree
+disrupted main repo state (recovered cleanly, but the footgun is real).
+
+**Rule for subagents**: stay inside `.worktrees/<slice>/`. All reads, writes,
+and git operations confined to that path. For builds, use
+`dune --root <worktree-path>` instead of `cd`. If a subagent needs to operate
+in the main tree or another worktree, STOP and surface to coord — it
+indicates a slice-design problem, not a thing to silently route around.
+
+Same discipline class as #340 (raw `git cherry-pick` bypassing the auto-DM):
+the shared-tree layout turns several "obvious" git invocations into
+cross-agent footguns.
+
 ### "I accidentally committed on the wrong branch / in the wrong tree"
 
 This happened during the session that shipped this convention (2026-04-25) —
@@ -248,8 +267,42 @@ c2c worktree prune
 
 ---
 
+## Pattern — parallel-dune softlock
+
+**Symptom**: `just build` (or a raw `opam exec -- dune build`) hangs
+forever inside a worktree where a sibling subagent is also building. Two
+dune processes contend on dune's internal locks; neither completes. Filed
+2026-04-28 as
+`.collab/findings/2026-04-28T05-20-00Z-stanza-coder-parallel-dune-softlock.md`,
+recurring 3-4× per swarm session with multi-subagent fanouts (notably the
+14-minute A2+B subagent runtime that motivated the fix).
+
+**Cause**: same-worktree concurrent dune invocations share a `_build/`
+directory and contend on dune's per-build locks. Cross-worktree builds
+have independent `_build/` dirs and do not contend.
+
+**Mitigation**: use `just build` / `just build-cli` / `just build-server`
+/ `just test-ocaml`, which now hold an exclusive `flock` on
+`_build/.c2c-build.lock` for the duration of the dune invocation.
+Same-worktree concurrent builds serialise (the second one waits for the
+first to finish — almost always a no-op rebuild after that). Cross-
+worktree builds remain fully parallel.
+
+The standalone `scripts/dune-build-locked.sh` wraps the same flock for
+ad-hoc invocations (e.g. subagent prompts that can't easily reach the
+justfile). Prefer `just build` in subagent prompts; never write
+`opam exec -- dune build` in a prompt — it bypasses the lock.
+
+**Recovery**: if a build is already softlocked from before this fix
+landed, `pkill -f "dune build"` (scoped to your worktree's dune
+processes) clears it; subsequent `just build` calls will serialise
+cleanly.
+
+---
+
 ## See Also
 
 - `.collab/runbooks/branch-per-slice.md` — slice naming, commit discipline, peer-PASS flow
 - `c2c start --help` — full flag reference for `--worktree` and `--branch`
 - `.collab/findings/2026-04-25T04-00-00Z-test-agent-env-var-drift-same-bug-twice.md` — example of shared-tree contamination this convention prevents
+- `.collab/findings/2026-04-28T05-20-00Z-stanza-coder-parallel-dune-softlock.md` — finding that motivated the per-worktree dune flock

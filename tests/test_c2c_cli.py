@@ -92,7 +92,10 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c-claude-wake",
         "c2c-configure-claude-code",
         "c2c-configure-codex",
+        "c2c-configure-crush",
         "c2c-configure-kimi",
+        "c2c-configure-opencode",
+        "c2c-crush-wake",
         "c2c-deliver-inbox",
         "c2c-health",
         "c2c-init",
@@ -114,8 +117,12 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c-watch",
         "c2c-whoami",
         "restart-codex-self",
+        "restart-crush-self",
         "restart-kimi-self",
         "restart-opencode-self",
+        "run-crush-inst",
+        "run-crush-inst-outer",
+        "run-crush-inst-rearm",
         "run-kimi-inst",
         "run-kimi-inst-outer",
         "run-kimi-inst-rearm",
@@ -127,6 +134,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_room.py",
         "c2c_configure_claude_code.py",
         "c2c_configure_codex.py",
+        "c2c_configure_crush.py",
         "c2c_configure_kimi.py",
         "c2c_configure_opencode.py",
         "c2c_init.py",
@@ -151,6 +159,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_kimi_wake_daemon.py",
         "c2c_kimi_wire_bridge.py",
         "c2c_opencode_wake_daemon.py",
+        "c2c_crush_wake_daemon.py",
         "c2c_cli.py",
         "c2c_history.py",
         "c2c_pty_inject.py",
@@ -393,6 +402,7 @@ class C2CCLITests(unittest.TestCase):
         for client, extra_args in [
             ("kimi", []),
             ("opencode", ["--target-dir", str(opencode_target), "--force"]),
+            ("crush", []),
         ]:
             result = run_native_cli(
                 "install",
@@ -412,6 +422,10 @@ class C2CCLITests(unittest.TestCase):
         opencode = json.loads((opencode_target / ".opencode" / "opencode.json").read_text(encoding="utf-8"))
         opencode_command = opencode["mcp"]["c2c"]["command"]
         self.assertEqual(opencode_command, ["opam", "exec", "--", str(mcp_server)])
+
+        crush = json.loads((home_dir / ".config" / "crush" / "crush.json").read_text(encoding="utf-8"))
+        crush_args = crush["mcpServers"]["c2c"]["args"]
+        self.assertEqual(crush_args, ["exec", "--", str(mcp_server)])
 
     def test_start_help_mentions_codex_headless(self):
         self.assertTrue(NATIVE_C2C.exists(), NATIVE_C2C)

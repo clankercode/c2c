@@ -52,7 +52,7 @@ def find_native_c2c() -> str | None:
 
 # Subcommands handled by the Python CLI
 PYTHON_SUBCOMMANDS = {
-    "broker-gc", "configure-claude-code", "configure-codex",
+    "broker-gc", "configure-claude-code", "configure-codex", "configure-crush",
     "configure-kimi", "configure-opencode", "dead-letter", "deliver-inbox",
     "health", "history", "inject", "list", "mcp",
     "peek-inbox", "poker-sweep", "poll-inbox", "prune", "refresh-peer",

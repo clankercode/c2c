@@ -492,7 +492,7 @@ let run_ephemeral_agent
     role client name caller timeout mode_str;
   let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
   let kickoff_dir = Filename.concat home ".local/share/c2c/kickoff" in
-  (try Unix.mkdir kickoff_dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> () | _ -> ());
+  C2c_utils.mkdir_p kickoff_dir;
   let kickoff_path = Filename.concat kickoff_dir (name ^ ".md") in
   let oc = open_out kickoff_path in
   output_string oc kickoff;

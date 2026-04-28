@@ -41,7 +41,8 @@
 (test
  (name test_c2c_start)
  (modules test_c2c_start)
- (libraries c2c_mcp alcotest unix))
+ (libraries c2c_mcp alcotest yojson unix)
+ (deps %{exe:../cli/c2c.exe}))
 
 (test
  (name test_relay_enc)
@@ -116,3 +117,18 @@
  (name test_peer_review)
  (modules test_peer_review)
  (libraries c2c_mcp alcotest base64 unix))
+
+(test
+ (name test_relay_nudge)
+ (modules test_relay_nudge)
+ (libraries c2c_mcp alcotest unix))
+
+(test
+ (name test_post_compact_hook)
+ (modules test_post_compact_hook)
+ (libraries c2c_post_compact_hook_lib alcotest yojson unix))
+
+(test
+ (name test_c2c_relay_connector)
+ (modules test_c2c_relay_connector)
+ (libraries c2c_mcp alcotest yojson unix))

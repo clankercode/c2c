@@ -16,7 +16,6 @@ TOKEN=$(openssl rand -hex 24)
 # 2. Start relay (see §2)
 c2c relay serve \
   --listen 0.0.0.0:7331 \
-  --relay-name relay.example.com \
   --token "$TOKEN" \
   --remote-broker-ssh-target operator@remote-broker-host \
   --remote-broker-root /home/operator/.local/share/c2c \
@@ -99,20 +98,11 @@ chmod 600 ~/.config/c2c/relay.token
 ```bash
 c2c relay serve \
   --listen 0.0.0.0:7331 \
-  --relay-name relay.example.com \
   --token "$TOKEN" \
   --remote-broker-ssh-target operator@remote-broker-host \
   --remote-broker-root /home/operator/.local/share/c2c \
   --remote-broker-id my-broker
 ```
-
-`--relay-name` (#379) is this relay's well-known host name for cross-host
-alias resolution. When senders use `<alias>@<host>` form, the relay strips
-and resolves the bare alias only when `<host>` matches this name (or the
-literal `"relay"` back-compat or empty). Other `<host>` parts dead-letter
-with reason `cross_host_not_implemented`. Defaults to the `--listen` host
-if omitted; in production you almost always want to set it explicitly to
-the public DNS name peers will address.
 
 **Expected output** (first ~10 lines):
 ```
@@ -123,7 +113,6 @@ the public DNS name peers will address.
 ╚██████╗███████╗╚██████╗
  ╚═════╝╚══════╝ ╚═════╝  relay-server v0.8.0  build=dev
 listen=0.0.0.0:7331
-relay-name=relay.example.com
 storage: memory
 remote-broker: polling operator@remote-broker-host:/home/operator/.local/share/c2c
 auth: enabled (Bearer token)
@@ -369,7 +358,6 @@ TOKEN=$(openssl rand -hex 24)
 # Start relay
 c2c relay serve \
   --listen 0.0.0.0:7331 \
-  --relay-name relay.example.com \
   --token "$TOKEN" \
   --remote-broker-ssh-target user@host \
   --remote-broker-root ~/.local/share/c2c \

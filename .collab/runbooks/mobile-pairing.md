@@ -453,7 +453,18 @@ All observer WS frames are JSON text messages. The `type` field discriminates:
 
 ---
 
-## §10 — S5b: Device-Login OAuth Fallback
+## §10 — S5b: Device-Login OAuth Fallback (NOT YET IMPLEMENTED)
+
+> **Status (2026-04-28, #369 audit):** the S5b device-login flow described
+> below is a design sketch. The shipped `c2c relay mobile-pair` subcommand
+> only exposes `prepare | confirm | revoke` (the §S5a QR token flow above).
+> The `init` and `claim` subcommands referenced in §10.2 / §10.4 do **not**
+> exist on the CLI today — invoking them errors with
+> `unknown command init|claim`. If you need headless / remote pairing,
+> use the §S5a flow with the QR token transferred over a side channel
+> (paste, secure copy) instead. A follow-up issue should track wiring
+> this RFC 8628-style flow into the `relay mobile-pair` subcommand
+> tree (likely as `mobile-pair init` + `mobile-pair claim`).
 
 When QR scanning isn't viable (headless server, remote pairing), use the RFC 8628-style device-login flow.
 
@@ -477,9 +488,10 @@ Desktop                          Relay                        Phone
    |  [binding_id received]       |                             |
 ```
 
-### 10.2 Desktop: init
+### 10.2 Desktop: init (planned — not implemented)
 
 ```bash
+# NOTE: this subcommand does not exist yet. See §10 banner.
 c2c relay mobile-pair init --relay-url https://your-relay.example.com
 ```
 
@@ -507,9 +519,10 @@ On success the page shows "Device registered successfully! You can close this pa
 
 > **Note**: The keys are generated entirely client-side. No private key ever leaves the phone. The relay only receives the public keys.
 
-### 10.4 Desktop: claim
+### 10.4 Desktop: claim (planned — not implemented)
 
 ```bash
+# NOTE: this subcommand does not exist yet. See §10 banner.
 c2c relay mobile-pair claim --relay-url https://your-relay.example.com --user-code abcd1234
 ```
 

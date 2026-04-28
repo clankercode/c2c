@@ -158,64 +158,6 @@ let test_resolve_model_override_saved_used_when_neither_explicit_nor_role () =
   | Some v -> check string "saved config used when no explicit or role" "openai:gpt-4o" v
   | None -> fail "expected Some, got None"
 
-(* #424: env-var precedence over persisted broker_root. *)
-let test_resolve_broker_root_env_overrides_persisted () =
-  let warned = ref None in
-  let result =
-    C2c_start.resolve_broker_root_with_env
-      ~warn:(fun e p -> warned := Some (e, p))
-      ~env:(Some "/tmp/env-broker")
-      ~persisted:"/tmp/persisted-broker" ()
-  in
-  check string "env wins over persisted" "/tmp/env-broker" result;
-  (match !warned with
-   | Some (e, p) ->
-       check string "warn got env" "/tmp/env-broker" e;
-       check string "warn got persisted" "/tmp/persisted-broker" p
-   | None -> fail "expected warn callback to fire on mismatch")
-
-let test_resolve_broker_root_env_no_warn_when_match () =
-  let warned = ref false in
-  let result =
-    C2c_start.resolve_broker_root_with_env
-      ~warn:(fun _ _ -> warned := true)
-      ~env:(Some "/tmp/same")
-      ~persisted:"/tmp/same" ()
-  in
-  check string "match returns env value" "/tmp/same" result;
-  check bool "warn does not fire when env == persisted" false !warned
-
-let test_resolve_broker_root_env_unset_uses_persisted () =
-  let warned = ref false in
-  let result =
-    C2c_start.resolve_broker_root_with_env
-      ~warn:(fun _ _ -> warned := true)
-      ~env:None
-      ~persisted:"/tmp/persisted-broker" ()
-  in
-  check string "no env -> persisted wins" "/tmp/persisted-broker" result;
-  check bool "warn does not fire when env unset" false !warned
-
-let test_resolve_broker_root_env_empty_string_uses_persisted () =
-  let warned = ref false in
-  let result =
-    C2c_start.resolve_broker_root_with_env
-      ~warn:(fun _ _ -> warned := true)
-      ~env:(Some "   ")
-      ~persisted:"/tmp/persisted-broker" ()
-  in
-  check string "whitespace env -> persisted wins" "/tmp/persisted-broker" result;
-  check bool "warn does not fire when env is whitespace" false !warned
-
-let test_resolve_broker_root_env_trims_whitespace () =
-  let result =
-    C2c_start.resolve_broker_root_with_env
-      ~warn:(fun _ _ -> ())
-      ~env:(Some "  /tmp/env-broker  ")
-      ~persisted:"/tmp/persisted" ()
-  in
-  check string "env value is trimmed" "/tmp/env-broker" result
-
 let test_prepare_launch_args_adds_model_flag_for_claude () =
   let args =
     C2c_start.prepare_launch_args ~name:"claude-proof" ~client:"claude"
@@ -247,6 +189,38 @@ let test_prepare_launch_args_opencode_agent_flag_uses_instance_name () =
     (has_adjacent_pair "--agent" "test-agent-oc" args);
   check bool "--agent does NOT pass role name" false
     (has_adjacent_pair "--agent" "test-agent" args)
+
+(* Regression #372: `c2c start <client> -- <args...>` must forward
+   <args...> verbatim to the spawned client. The man-page documents this
+   but the CLI dispatch previously refused with
+   "extra argv after CLIENT is only supported for `c2c start tmux`".
+   prepare_launch_args is the one place where the final argv is assembled,
+   so assert that extra_args land on the tail for each managed client. *)
+let test_prepare_launch_args_forwards_extra_args_for_claude () =
+  let args =
+    C2c_start.prepare_launch_args ~name:"claude-372" ~client:"claude"
+      ~extra_args:[ "--print"; "hello world" ] ~broker_root:"/tmp/broker" ()
+  in
+  check bool "forwards --print" true (List.mem "--print" args);
+  check bool "forwards 'hello world'" true (List.mem "hello world" args);
+  check bool "forwarded args are adjacent and at tail" true
+    (has_adjacent_pair "--print" "hello world" args)
+
+let test_prepare_launch_args_forwards_extra_args_for_opencode () =
+  let args =
+    C2c_start.prepare_launch_args ~name:"oc-372" ~client:"opencode"
+      ~extra_args:[ "--debug"; "--foo=bar" ] ~broker_root:"/tmp/broker" ()
+  in
+  check bool "forwards --debug" true (List.mem "--debug" args);
+  check bool "forwards --foo=bar" true (List.mem "--foo=bar" args)
+
+let test_prepare_launch_args_forwards_extra_args_for_codex () =
+  let args =
+    C2c_start.prepare_launch_args ~name:"cx-372" ~client:"codex"
+      ~extra_args:[ "--profile"; "myprofile" ] ~broker_root:"/tmp/broker" ()
+  in
+  check bool "forwards --profile" true
+    (has_adjacent_pair "--profile" "myprofile" args)
 
 let test_prepare_launch_args_adds_model_flag_for_opencode () =
   let args =
@@ -319,11 +293,11 @@ let test_finalize_outer_loop_exit_cleans_before_print () =
   in
   let rc =
     C2c_start.finalize_outer_loop_exit ~cleanup_and_exit ~print_resume
-      ~resume_cmd:"c2c start codex -n demo" ~exit_code:17
+      ~resume_cmd:"c2c start codex -n demo --session-id demo" ~exit_code:17
   in
   check int "finalize returns cleanup code" 17 rc;
   check (list string) "cleanup happens before print"
-    [ "cleanup:17"; "print:c2c start codex -n demo" ]
+    [ "cleanup:17"; "print:c2c start codex -n demo --session-id demo" ]
     !events
 
 let test_build_env_does_not_seed_codex_thread_id () =
@@ -338,6 +312,63 @@ let test_build_env_does_not_seed_codex_thread_id () =
     (env_has_key env "CODEX_SESSION_ID");
   check bool "does not export force capabilities for non-claude" false
     (env_has_key env "C2C_MCP_FORCE_CAPABILITIES")
+
+let with_env key value f =
+  let prev = Sys.getenv_opt key in
+  Unix.putenv key value;
+  Fun.protect
+    ~finally:(fun () ->
+      match prev with
+      | Some v -> Unix.putenv key v
+      | None ->
+        (* Best-effort unset: empty string mimics "absent" for our env_has_key
+           prefix check (entry would be "KEY="; key is still present in array
+           but with empty value — so we use a sentinel and check explicitly). *)
+        (try Unix.putenv key "" with _ -> ()))
+    f
+
+let test_build_env_strips_ambient_force_capabilities_for_codex () =
+  with_env "C2C_MCP_FORCE_CAPABILITIES" "claude_channel" @@ fun () ->
+  let env =
+    C2c_start.build_env ~broker_root_override:(Some "/tmp/c2c-test-broker")
+      ~client:(Some "codex")
+      "codex-proof" (Some "codex-proof")
+  in
+  check bool "strips ambient C2C_MCP_FORCE_CAPABILITIES for codex" false
+    (env_contains env "C2C_MCP_FORCE_CAPABILITIES=claude_channel");
+  check bool "does not export force capabilities for codex" false
+    (env_has_key env "C2C_MCP_FORCE_CAPABILITIES")
+
+let test_build_env_strips_ambient_force_capabilities_for_opencode () =
+  with_env "C2C_MCP_FORCE_CAPABILITIES" "claude_channel" @@ fun () ->
+  let env =
+    C2c_start.build_env ~broker_root_override:(Some "/tmp/c2c-test-broker")
+      ~client:(Some "opencode")
+      "opencode-proof" (Some "opencode-proof")
+  in
+  check bool "does not export force capabilities for opencode" false
+    (env_has_key env "C2C_MCP_FORCE_CAPABILITIES")
+
+let test_build_env_claude_keeps_force_capabilities_under_ambient () =
+  with_env "C2C_MCP_FORCE_CAPABILITIES" "claude_channel" @@ fun () ->
+  let env =
+    C2c_start.build_env ~broker_root_override:(Some "/tmp/c2c-test-broker")
+      ~client:(Some "claude")
+      "claude-proof" (Some "claude-proof")
+  in
+  check bool "claude keeps force capabilities even with ambient set" true
+    (env_contains env "C2C_MCP_FORCE_CAPABILITIES=claude_channel");
+  (* And ensure no duplicate: only one entry with that key. *)
+  let count =
+    Array.fold_left
+      (fun acc e ->
+        if String.length e >= 27
+           && String.sub e 0 27 = "C2C_MCP_FORCE_CAPABILITIES="
+        then acc + 1
+        else acc)
+      0 env
+  in
+  check int "exactly one C2C_MCP_FORCE_CAPABILITIES entry" 1 count
 
 let test_codex_heartbeat_interval_is_four_minutes () =
   check (float 0.001) "interval seconds" 240.0
@@ -858,7 +889,7 @@ let test_resolve_managed_heartbeats_builtin_baseline () =
         hb.message;
       check (float 0.001) "builtin interval" 240.0 hb.interval_s;
       check (list string) "builtin clients"
-        [ "claude"; "codex"; "opencode"; "kimi" ]
+        [ "claude"; "codex"; "opencode"; "kimi"; "crush" ]
         hb.clients;
       check bool "builtin enabled" true hb.enabled
   | _ -> fail "expected one resolved default heartbeat"
@@ -935,6 +966,19 @@ let test_render_heartbeat_content_appends_command_output () =
   check bool "skips disallowed command" true
     (try ignore (Str.search_forward (Str.regexp_string "skipped disallowed heartbeat command") content 0); true
      with Not_found -> false)
+
+(* #381: coordinator: boolean field in role frontmatter *)
+let test_role_parse_coordinator_field () =
+  let role_true = C2c_role.parse_string "---\ncoordinator: true\n---\nbody\n" in
+  check bool "coordinator true parsed" true (role_true.C2c_role.coordinator = Some true);
+  let role_false = C2c_role.parse_string "---\ncoordinator: false\n---\nbody\n" in
+  check bool "coordinator false parsed" true (role_false.C2c_role.coordinator = Some false);
+  let role_none = C2c_role.parse_string "---\nrole: subagent\n---\nbody\n" in
+  check bool "coordinator absent → None" true (role_none.C2c_role.coordinator = None);
+  let role_1 = C2c_role.parse_string "---\ncoordinator: 1\n---\nbody\n" in
+  check bool "coordinator 1 parsed as true" true (role_1.C2c_role.coordinator = Some true);
+  let role_0 = C2c_role.parse_string "---\ncoordinator: 0\n---\nbody\n" in
+  check bool "coordinator 0 parsed as false" true (role_0.C2c_role.coordinator = Some false)
 
 let test_per_agent_managed_heartbeats_reads_instance_file () =
   let name = Printf.sprintf "heartbeat-agent-%d" (Random.bits ()) in
@@ -1767,10 +1811,584 @@ let test_repo_config_default_binary_preflight_uses_config () =
   check string "preflight resolves from [default_binary]"
     "/usr/local/bin/codex-bridge" resolved
 
+(* #341: with no config or no [swarm] section, the restart-intro thunk
+   returns the built-in default. Sanity-check a known substring so a future
+   reword of the default is caught here. *)
+let test_restart_intro_builtin_default () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let intro = C2c_start.swarm_config_restart_intro () in
+  check bool "default contains canonical opener"
+    true
+    (string_contains intro "You have been started as a c2c swarm agent.");
+  check bool "default contains placeholder {name}"
+    true
+    (string_contains intro "{name}");
+  check bool "default contains placeholder {alias}"
+    true
+    (string_contains intro "{alias}")
+
+(* #341: an override under [swarm] restart_intro replaces the built-in
+   string entirely; \n escapes are decoded so single-line TOML can carry
+   multi-line content. *)
+let test_restart_intro_override () =
+  with_temp_dir @@ fun dir ->
+  let c2c_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let config_path = Filename.concat c2c_dir "config.toml" in
+  let oc = open_out config_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc
+      "[swarm]\n\
+       restart_intro = \"test custom intro\\nline two for {alias}\"\n");
+  with_cwd dir @@ fun () ->
+  let intro = C2c_start.swarm_config_restart_intro () in
+  check string "override replaces built-in"
+    "test custom intro\nline two for {alias}" intro;
+  check bool "override does not contain default opener"
+    false
+    (string_contains intro "You have been started as a c2c swarm agent.")
+
+(* --- #351: c2c instances --- alive-only default + --all archive view ---- *)
+
+(* Resolve the built CLI binary relative to this test executable.
+   dune places this at _build/default/ocaml/test/test_c2c_start.exe and
+   the CLI at _build/default/ocaml/cli/c2c.exe. We derive the latter
+   from the former so the test runs against the freshly-built binary
+   rather than whatever happens to be on PATH. *)
+let built_c2c_binary () =
+  let exe = Sys.executable_name in
+  let test_dir = Filename.dirname exe in            (* .../ocaml/test *)
+  let ocaml_dir = Filename.dirname test_dir in      (* .../ocaml *)
+  Filename.concat ocaml_dir (Filename.concat "cli" "c2c.exe")
+
+let write_file path contents =
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc contents)
+
+(* Build a fixture instances_dir holding [alive_count] running instances
+   (with PIDs that point at our own process — guaranteed alive) and
+   [zombie_count] stopped instances (PID files reference a process that
+   does not exist). Returns the directory path; caller is responsible for
+   passing it via C2C_INSTANCES_DIR. *)
+let build_instances_fixture ~alive ~zombies dir =
+  let live_pid = Unix.getpid () in
+  (* Find a PID guaranteed not to exist. PID 0x7fff_fffe is well above
+     typical kernel pid_max but we still verify with kill 0. *)
+  let dead_pid =
+    let rec find_dead p =
+      if p <= 1 then 1 (* shouldn't happen but bail *)
+      else
+        match Unix.kill p 0 with
+        | () -> find_dead (p - 1)
+        | exception Unix.Unix_error _ -> p
+    in
+    find_dead 999_999
+  in
+  for i = 1 to alive do
+    let name = Printf.sprintf "alive-%d" i in
+    let inst_dir = Filename.concat dir name in
+    Unix.mkdir inst_dir 0o755;
+    write_file (Filename.concat inst_dir "config.json")
+      (Printf.sprintf {|{"client":"claude","name":"%s"}|} name);
+    write_file (Filename.concat inst_dir "outer.pid")
+      (string_of_int live_pid)
+  done;
+  for i = 1 to zombies do
+    let name = Printf.sprintf "zombie-%d" i in
+    let inst_dir = Filename.concat dir name in
+    Unix.mkdir inst_dir 0o755;
+    write_file (Filename.concat inst_dir "config.json")
+      (Printf.sprintf {|{"client":"codex","name":"%s"}|} name);
+    write_file (Filename.concat inst_dir "outer.pid")
+      (string_of_int dead_pid)
+  done
+
+let read_all_file path =
+  let ic = open_in path in
+  Fun.protect ~finally:(fun () -> close_in ic)
+    (fun () ->
+      let b = Buffer.create 256 in
+      try
+        while true do
+          Buffer.add_channel b ic 4096
+        done;
+        assert false
+      with End_of_file -> Buffer.contents b)
+
+let run_instances_and_capture_json ~instances_dir ~extra_args =
+  let bin = built_c2c_binary () in
+  if not (Sys.file_exists bin) then
+    Alcotest.failf "expected built CLI at %s — run `dune build` first" bin;
+  let stdout_path = Filename.temp_file "c2c-instances-stdout" ".json" in
+  let cmd =
+    Printf.sprintf "C2C_INSTANCES_DIR=%s %s instances --json %s > %s 2>/dev/null"
+      (Filename.quote instances_dir)
+      (Filename.quote bin)
+      extra_args
+      (Filename.quote stdout_path)
+  in
+  let rc = Sys.command cmd in
+  if rc <> 0 then
+    Alcotest.failf "c2c instances exited %d (cmd: %s)" rc cmd;
+  let raw = read_all_file stdout_path in
+  Sys.remove stdout_path;
+  Yojson.Safe.from_string raw
+
+let count_in_envelope j =
+  match j with
+  | `Assoc fields ->
+      let alive = match List.assoc_opt "alive" fields with Some (`Int n) -> n | _ -> -1 in
+      let total = match List.assoc_opt "total" fields with Some (`Int n) -> n | _ -> -1 in
+      let filtered = match List.assoc_opt "filtered" fields with Some (`Bool b) -> b | _ -> false in
+      let n_listed =
+        match List.assoc_opt "instances" fields with
+        | Some (`List xs) -> List.length xs
+        | _ -> -1
+      in
+      (alive, total, filtered, n_listed)
+  | _ -> Alcotest.failf "expected JSON object envelope, got %s" (Yojson.Safe.to_string j)
+
+let test_instances_default_filters_to_alive () =
+  with_temp_dir (fun dir ->
+    build_instances_fixture ~alive:1 ~zombies:2 dir;
+    let j = run_instances_and_capture_json ~instances_dir:dir ~extra_args:"" in
+    let (alive, total, filtered, n_listed) = count_in_envelope j in
+    check int "alive count = 1" 1 alive;
+    check int "total count = 3" 3 total;
+    check bool "filtered = true (default)" true filtered;
+    check int "listed = alive only (1)" 1 n_listed)
+
+let test_instances_all_shows_archive () =
+  with_temp_dir (fun dir ->
+    build_instances_fixture ~alive:1 ~zombies:2 dir;
+    let j = run_instances_and_capture_json ~instances_dir:dir ~extra_args:"--all" in
+    let (alive, total, filtered, n_listed) = count_in_envelope j in
+    check int "alive count = 1" 1 alive;
+    check int "total count = 3" 3 total;
+    check bool "filtered = false under --all" false filtered;
+    check int "listed = full archive (3)" 3 n_listed)
+
+let test_instances_json_default_filters () =
+  with_temp_dir (fun dir ->
+    build_instances_fixture ~alive:2 ~zombies:5 dir;
+    let j = run_instances_and_capture_json ~instances_dir:dir ~extra_args:"" in
+    let (alive, total, filtered, n_listed) = count_in_envelope j in
+    check int "alive count = 2" 2 alive;
+    check int "total count = 7" 7 total;
+    check bool "default JSON also filters" true filtered;
+    check int "listed = alive only (2)" 2 n_listed;
+    (* All listed entries should have status=running. *)
+    match j with
+    | `Assoc fields ->
+        (match List.assoc_opt "instances" fields with
+         | Some (`List xs) ->
+             List.iter (fun item ->
+               match item with
+               | `Assoc f ->
+                   (match List.assoc_opt "status" f with
+                    | Some (`String s) ->
+                        check string "every listed entry is running" "running" s
+                    | _ -> Alcotest.fail "status field missing")
+               | _ -> Alcotest.fail "expected object")
+               xs
+         | _ -> Alcotest.fail "instances field missing")
+    | _ -> Alcotest.fail "expected envelope")
+
+(* --- #333: c2c instances clean-stale --- removes zombies + protects named --- *)
+
+(* Build a fixture with custom-named instances. Each entry is
+   (name, alive). Mirrors build_instances_fixture but lets tests choose
+   names to exercise the test-pattern + protected-alias logic. *)
+let build_named_instances_fixture entries dir =
+  let live_pid = Unix.getpid () in
+  let dead_pid =
+    let rec find_dead p =
+      if p <= 1 then 1
+      else
+        match Unix.kill p 0 with
+        | () -> find_dead (p - 1)
+        | exception Unix.Unix_error _ -> p
+    in
+    find_dead 999_999
+  in
+  List.iter (fun (name, alive) ->
+    let inst_dir = Filename.concat dir name in
+    Unix.mkdir inst_dir 0o755;
+    write_file (Filename.concat inst_dir "config.json")
+      (Printf.sprintf {|{"client":"claude","name":"%s"}|} name);
+    write_file (Filename.concat inst_dir "outer.pid")
+      (string_of_int (if alive then live_pid else dead_pid))
+  ) entries
+
+let run_clean_stale_and_capture_json ~instances_dir ~extra_args =
+  let bin = built_c2c_binary () in
+  if not (Sys.file_exists bin) then
+    Alcotest.failf "expected built CLI at %s — run `dune build` first" bin;
+  let stdout_path = Filename.temp_file "c2c-clean-stale-stdout" ".json" in
+  let cmd =
+    Printf.sprintf
+      "C2C_INSTANCES_DIR=%s %s instances clean-stale --json %s > %s 2>/dev/null"
+      (Filename.quote instances_dir)
+      (Filename.quote bin)
+      extra_args
+      (Filename.quote stdout_path)
+  in
+  let rc = Sys.command cmd in
+  if rc <> 0 then
+    Alcotest.failf "c2c instances clean-stale exited %d (cmd: %s)" rc cmd;
+  let raw = read_all_file stdout_path in
+  Sys.remove stdout_path;
+  Yojson.Safe.from_string raw
+
+let dir_entries dir =
+  if Sys.file_exists dir && Sys.is_directory dir
+  then Array.to_list (Sys.readdir dir) |> List.sort String.compare
+  else []
+
+let int_field fields name =
+  match List.assoc_opt name fields with Some (`Int n) -> n | _ -> -1
+
+let bool_field fields name =
+  match List.assoc_opt name fields with Some (`Bool b) -> b | _ -> false
+
+let string_list_field fields name =
+  match List.assoc_opt name fields with
+  | Some (`List xs) ->
+      List.filter_map (fun j -> match j with `String s -> Some s | _ -> None) xs
+  | _ -> []
+
+(* Stamp an instance dir's mtimes back >24h ago so the no-activity-24h
+   criterion fires deterministically (without needing to actually wait). *)
+let age_instance_dir ~instances_dir ~name ~age_seconds =
+  let target = Unix.gettimeofday () -. age_seconds in
+  let inst = Filename.concat instances_dir name in
+  let touch path =
+    if Sys.file_exists path then
+      try Unix.utimes path target target with _ -> ()
+  in
+  touch inst;
+  List.iter (fun f -> touch (Filename.concat inst f))
+    [ "config.json"; "outer.pid"; "stderr.log"; "stdout.log"; "tmux.json" ]
+
+let test_clean_stale_dry_run_reports_candidates () =
+  with_temp_dir (fun dir ->
+    build_named_instances_fixture
+      [ ("alive-keeper", true)
+      ; ("codex-reset-1234567890", false)
+      ; ("oc-bootstrap-test-foo", false)
+      ] dir;
+    let j = run_clean_stale_and_capture_json
+      ~instances_dir:dir ~extra_args:"--dry-run"
+    in
+    let fields = match j with
+      | `Assoc f -> f
+      | _ -> Alcotest.fail "expected envelope"
+    in
+    check int "removed = 0 under --dry-run" 0 (int_field fields "removed");
+    check int "candidates_total = 2 (alive excluded)" 2
+      (int_field fields "candidates_total");
+    check bool "dry_run = true" true (bool_field fields "dry_run");
+    (* All 3 instance dirs still on disk *)
+    check int "all 3 instances still present"
+      3 (List.length (dir_entries dir)))
+
+let test_clean_stale_removes_zombies_only () =
+  with_temp_dir (fun dir ->
+    build_named_instances_fixture
+      [ ("alive-keeper", true)
+      ; ("codex-reset-9876543210", false)
+      ; ("kimi-wire-ocaml-smoke-x", false)
+      ] dir;
+    let j = run_clean_stale_and_capture_json
+      ~instances_dir:dir ~extra_args:""
+    in
+    let fields = match j with
+      | `Assoc f -> f
+      | _ -> Alcotest.fail "expected envelope"
+    in
+    check int "removed = 2" 2 (int_field fields "removed");
+    check int "candidates_total = 2" 2 (int_field fields "candidates_total");
+    check bool "dry_run = false" false (bool_field fields "dry_run");
+    let removed = string_list_field fields "removed_aliases" in
+    check bool "alive-keeper not in removed_aliases"
+      false (List.mem "alive-keeper" removed);
+    (* On-disk: only alive-keeper remains *)
+    let entries = dir_entries dir in
+    check int "exactly 1 instance dir remains" 1 (List.length entries);
+    check bool "alive-keeper preserved" true (List.mem "alive-keeper" entries))
+
+let test_clean_stale_protected_named_aliases () =
+  with_temp_dir (fun dir ->
+    build_named_instances_fixture
+      [ ("coordinator1", false)
+      ; ("random-zombie", false)
+      ] dir;
+    (* Both stale-by-PID; coordinator1 is also matched but protected. *)
+    age_instance_dir ~instances_dir:dir ~name:"random-zombie"
+      ~age_seconds:(2.0 *. 86400.0);
+    age_instance_dir ~instances_dir:dir ~name:"coordinator1"
+      ~age_seconds:(2.0 *. 86400.0);
+    let j = run_clean_stale_and_capture_json
+      ~instances_dir:dir ~extra_args:""
+    in
+    let fields = match j with
+      | `Assoc f -> f
+      | _ -> Alcotest.fail "expected envelope"
+    in
+    check int "removed = 1 (random-zombie only)" 1 (int_field fields "removed");
+    check int "candidates_total = 2 (both stale)" 2
+      (int_field fields "candidates_total");
+    check int "protected = 1 (coordinator1)" 1 (int_field fields "protected");
+    let removed = string_list_field fields "removed_aliases" in
+    check bool "random-zombie removed" true (List.mem "random-zombie" removed);
+    check bool "coordinator1 not removed"
+      false (List.mem "coordinator1" removed);
+    let protected_aliases = string_list_field fields "protected_aliases" in
+    check bool "coordinator1 reported as protected"
+      true (List.mem "coordinator1" protected_aliases);
+    let entries = dir_entries dir in
+    check bool "coordinator1 preserved on disk"
+      true (List.mem "coordinator1" entries);
+    check bool "random-zombie removed on disk"
+      false (List.mem "random-zombie" entries))
+
+(* #406b: Gemini adapter — build_start_args resume + model behavior. *)
+
+let test_prepare_launch_args_gemini_fresh_session () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"gemini-fresh" ~client:"gemini"
+      ~extra_args:[] ~broker_root:"/tmp/broker" ()
+  in
+  check bool "fresh session: no --resume flag" false
+    (List.mem "--resume" args);
+  check bool "no dev-channels (gemini has no equivalent)" false
+    (List.mem "--dangerously-load-development-channels" args)
+
+let test_prepare_launch_args_gemini_resume_default_to_latest () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"gemini-resume" ~client:"gemini"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~resume_session_id:"gemini-resume" ()
+  in
+  check bool "non-numeric session_id resumes to 'latest'" true
+    (has_adjacent_pair "--resume" "latest" args)
+
+let test_prepare_launch_args_gemini_resume_numeric_index_preserved () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"gemini-idx" ~client:"gemini"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~resume_session_id:"3" ()
+  in
+  check bool "numeric session_id passed through as resume index" true
+    (has_adjacent_pair "--resume" "3" args);
+  check bool "does NOT also set --resume latest" false
+    (has_adjacent_pair "--resume" "latest" args)
+
+let test_prepare_launch_args_gemini_model_flag () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"gemini-m" ~client:"gemini"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~model_override:"gemini-2.5-flash" ()
+  in
+  check bool "model flag present" true
+    (has_adjacent_pair "--model" "gemini-2.5-flash" args)
+
+let test_prepare_launch_args_gemini_empty_resume_treated_as_fresh () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"gemini-empty" ~client:"gemini"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~resume_session_id:"" ()
+  in
+  check bool "empty session_id: no --resume flag" false
+    (List.mem "--resume" args)
+
+(* #392: pure helpers for c2c_mcp's event-tag body-prefix shape.
+   Hosted here since test_c2c_mcp.ml has a pre-existing build issue
+   that doesn't reproduce in this executable. *)
+
+let test_tag_to_body_prefix_known_values () =
+  check string "fail emoji + uppercase + colon"
+    "\xF0\x9F\x94\xB4 FAIL: "
+    (C2c_mcp.tag_to_body_prefix (Some "fail"));
+  check string "blocking emoji + uppercase + colon"
+    "\xE2\x9B\x94 BLOCKING: "
+    (C2c_mcp.tag_to_body_prefix (Some "blocking"));
+  check string "urgent emoji + uppercase + colon"
+    "\xE2\x9A\xA0\xEF\xB8\x8F URGENT: "
+    (C2c_mcp.tag_to_body_prefix (Some "urgent"))
+
+let test_tag_to_body_prefix_none_and_unknown () =
+  check string "None → empty prefix" ""
+    (C2c_mcp.tag_to_body_prefix None);
+  check string "unknown tag → empty prefix (defensive default)" ""
+    (C2c_mcp.tag_to_body_prefix (Some "informational"));
+  check string "empty string tag → empty prefix" ""
+    (C2c_mcp.tag_to_body_prefix (Some ""))
+
+let test_parse_send_tag_accepts_known () =
+  (match C2c_mcp.parse_send_tag (Some "fail") with
+   | Ok (Some "fail") -> ()
+   | _ -> fail "parse_send_tag (Some \"fail\") should accept");
+  (match C2c_mcp.parse_send_tag (Some "blocking") with
+   | Ok (Some "blocking") -> ()
+   | _ -> fail "parse_send_tag (Some \"blocking\") should accept");
+  (match C2c_mcp.parse_send_tag (Some "urgent") with
+   | Ok (Some "urgent") -> ()
+   | _ -> fail "parse_send_tag (Some \"urgent\") should accept")
+
+let test_parse_send_tag_normalizes_none () =
+  (match C2c_mcp.parse_send_tag None with
+   | Ok None -> ()
+   | _ -> fail "parse_send_tag None should accept as Ok None");
+  (match C2c_mcp.parse_send_tag (Some "") with
+   | Ok None -> ()
+   | _ -> fail "parse_send_tag (Some \"\") should normalize to Ok None")
+
+let test_parse_send_tag_rejects_unknown () =
+  (match C2c_mcp.parse_send_tag (Some "informational") with
+   | Error msg ->
+     check bool "rejection message names the offending value" true
+       (string_contains msg "informational");
+     check bool "rejection message lists allowed values" true
+       (string_contains msg "fail" && string_contains msg "blocking"
+        && string_contains msg "urgent")
+   | Ok _ -> fail "parse_send_tag (Some \"informational\") should reject");
+  (match C2c_mcp.parse_send_tag (Some "FAIL") with
+   | Error _ -> ()  (* case-sensitive — reject uppercase *)
+   | Ok _ -> fail "parse_send_tag (Some \"FAIL\") should reject (case-sensitive)")
+
+(* #392b convergence: verify that the body-prefix shape produced by
+   parse_send_tag + tag_to_body_prefix round-trips cleanly through
+   extract_tag_from_content, and that format_c2c_envelope emits the
+   expected envelope shape and copies the tag attribute. The three
+   in-tree callers (c2c_wire_bridge, c2c_inbox_hook, cli/c2c.ml's
+   PostToolUse hook) all rely on this round-trip; if it ever drifts,
+   tagged DMs will lose their visual indicator on one surface but
+   not another. *)
+
+let test_extract_tag_from_content_recognizes_known_prefixes () =
+  check (option string) "fail prefix" (Some "fail")
+    (C2c_mcp.extract_tag_from_content
+       (C2c_mcp.tag_to_body_prefix (Some "fail") ^ "build broken"));
+  check (option string) "blocking prefix" (Some "blocking")
+    (C2c_mcp.extract_tag_from_content
+       (C2c_mcp.tag_to_body_prefix (Some "blocking") ^ "stop here"));
+  check (option string) "urgent prefix" (Some "urgent")
+    (C2c_mcp.extract_tag_from_content
+       (C2c_mcp.tag_to_body_prefix (Some "urgent") ^ "wake everyone"))
+
+let test_extract_tag_from_content_returns_none_for_plain () =
+  check (option string) "plain body → None" None
+    (C2c_mcp.extract_tag_from_content "ordinary message");
+  check (option string) "empty body → None" None
+    (C2c_mcp.extract_tag_from_content "")
+
+let test_format_c2c_envelope_basic_shape () =
+  let env =
+    C2c_mcp.format_c2c_envelope
+      ~from_alias:"alice" ~to_alias:"bob"
+      ~content:"hi" ()
+  in
+  check bool "starts with <c2c event=\"message\"" true
+    (string_contains env "<c2c event=\"message\"");
+  check bool "from=alice attribute" true
+    (string_contains env "from=\"alice\"");
+  check bool "alias=bob attribute" true
+    (string_contains env "alias=\"bob\"");
+  check bool "default reply_via=c2c_send" true
+    (string_contains env "reply_via=\"c2c_send\"");
+  check bool "body content present" true
+    (string_contains env "hi");
+  check bool "envelope closes with </c2c>" true
+    (string_contains env "</c2c>");
+  check bool "no tag attribute when tag absent" false
+    (string_contains env "tag=");
+  check bool "no role attribute when role absent" false
+    (string_contains env "role=")
+
+let test_format_c2c_envelope_passes_through_tag_and_role () =
+  let env =
+    C2c_mcp.format_c2c_envelope
+      ~from_alias:"alice" ~to_alias:"bob"
+      ~tag:"urgent" ~role:"coder"
+      ~reply_via:"c2c_send_room"
+      ~content:"see logs" ()
+  in
+  check bool "tag attribute present" true
+    (string_contains env "tag=\"urgent\"");
+  check bool "role attribute present" true
+    (string_contains env "role=\"coder\"");
+  check bool "explicit reply_via overrides default" true
+    (string_contains env "reply_via=\"c2c_send_room\"")
+
+let test_format_c2c_envelope_xml_escapes_attributes () =
+  let env =
+    C2c_mcp.format_c2c_envelope
+      ~from_alias:"a&b" ~to_alias:"c<d>"
+      ~content:"plain body" ()
+  in
+  check bool "ampersand in from_alias is &amp;" true
+    (string_contains env "from=\"a&amp;b\"");
+  check bool "lt/gt in to_alias are escaped" true
+    (string_contains env "alias=\"c&lt;d&gt;\"");
+  (* Body content is NOT escaped — agents read it verbatim, including
+     literal tags they may have authored. Document this invariant so a
+     future change doesn't silently break round-trip. *)
+  check bool "body content NOT escaped (verbatim pass-through)" true
+    (string_contains env "plain body")
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_start"
-    [ ( "launch_args",
+    [ ( "event_tag_392",
+        [ ( "tag_to_body_prefix_known_values",
+            `Quick, test_tag_to_body_prefix_known_values )
+        ; ( "tag_to_body_prefix_none_and_unknown",
+            `Quick, test_tag_to_body_prefix_none_and_unknown )
+        ; ( "parse_send_tag_accepts_known",
+            `Quick, test_parse_send_tag_accepts_known )
+        ; ( "parse_send_tag_normalizes_none",
+            `Quick, test_parse_send_tag_normalizes_none )
+        ; ( "parse_send_tag_rejects_unknown",
+            `Quick, test_parse_send_tag_rejects_unknown )
+        ] )
+    ; ( "envelope_392b",
+        [ ( "extract_tag_from_content_recognizes_known_prefixes",
+            `Quick, test_extract_tag_from_content_recognizes_known_prefixes )
+        ; ( "extract_tag_from_content_returns_none_for_plain",
+            `Quick, test_extract_tag_from_content_returns_none_for_plain )
+        ; ( "format_c2c_envelope_basic_shape",
+            `Quick, test_format_c2c_envelope_basic_shape )
+        ; ( "format_c2c_envelope_passes_through_tag_and_role",
+            `Quick, test_format_c2c_envelope_passes_through_tag_and_role )
+        ; ( "format_c2c_envelope_xml_escapes_attributes",
+            `Quick, test_format_c2c_envelope_xml_escapes_attributes )
+        ] )
+    ; ( "gemini_adapter",
+        [ ( "fresh_session_no_resume_flag",
+            `Quick, test_prepare_launch_args_gemini_fresh_session )
+        ; ( "resume_default_to_latest",
+            `Quick, test_prepare_launch_args_gemini_resume_default_to_latest )
+        ; ( "resume_numeric_index_preserved",
+            `Quick, test_prepare_launch_args_gemini_resume_numeric_index_preserved )
+        ; ( "model_flag",
+            `Quick, test_prepare_launch_args_gemini_model_flag )
+        ; ( "empty_resume_treated_as_fresh",
+            `Quick, test_prepare_launch_args_gemini_empty_resume_treated_as_fresh )
+        ] )
+    ; ( "launch_args",
         [ ( "prepare_launch_args_claude_uses_development_channel_flag",
             `Quick, test_prepare_launch_args_claude_uses_development_channel_flag )
         ; ( "prepare_launch_args_claude_ignores_enable_channels_config",
@@ -1789,22 +2407,18 @@ let () =
             `Quick, test_resolve_model_override_role_wins_over_saved )
         ; ( "resolve_model_override_saved_used_when_neither_explicit_nor_role",
             `Quick, test_resolve_model_override_saved_used_when_neither_explicit_nor_role )
-        ; ( "424_resolve_broker_root_env_overrides_persisted",
-            `Quick, test_resolve_broker_root_env_overrides_persisted )
-        ; ( "424_resolve_broker_root_env_no_warn_when_match",
-            `Quick, test_resolve_broker_root_env_no_warn_when_match )
-        ; ( "424_resolve_broker_root_env_unset_uses_persisted",
-            `Quick, test_resolve_broker_root_env_unset_uses_persisted )
-        ; ( "424_resolve_broker_root_env_empty_string_uses_persisted",
-            `Quick, test_resolve_broker_root_env_empty_string_uses_persisted )
-        ; ( "424_resolve_broker_root_env_trims_whitespace",
-            `Quick, test_resolve_broker_root_env_trims_whitespace )
         ; ( "prepare_launch_args_adds_model_flag_for_claude",
             `Quick, test_prepare_launch_args_adds_model_flag_for_claude )
         ; ( "prepare_launch_args_adds_agent_flag_for_claude",
             `Quick, test_prepare_launch_args_adds_agent_flag_for_claude )
         ; ( "prepare_launch_args_opencode_agent_flag_uses_instance_name",
             `Quick, test_prepare_launch_args_opencode_agent_flag_uses_instance_name )
+        ; ( "prepare_launch_args_forwards_extra_args_for_claude",
+            `Quick, test_prepare_launch_args_forwards_extra_args_for_claude )
+        ; ( "prepare_launch_args_forwards_extra_args_for_opencode",
+            `Quick, test_prepare_launch_args_forwards_extra_args_for_opencode )
+        ; ( "prepare_launch_args_forwards_extra_args_for_codex",
+            `Quick, test_prepare_launch_args_forwards_extra_args_for_codex )
         ; ( "prepare_launch_args_adds_model_flag_for_opencode",
             `Quick, test_prepare_launch_args_adds_model_flag_for_opencode )
         ; ( "tmux_shell_command_quotes_argv",
@@ -1817,6 +2431,12 @@ let () =
             `Quick, test_build_env_keeps_channel_delivery_without_force_flag )
         ; ( "build_env_does_not_seed_codex_thread_id",
             `Quick, test_build_env_does_not_seed_codex_thread_id )
+        ; ( "build_env_strips_ambient_force_capabilities_for_codex",
+            `Quick, test_build_env_strips_ambient_force_capabilities_for_codex )
+        ; ( "build_env_strips_ambient_force_capabilities_for_opencode",
+            `Quick, test_build_env_strips_ambient_force_capabilities_for_opencode )
+        ; ( "build_env_claude_keeps_force_capabilities_under_ambient",
+            `Quick, test_build_env_claude_keeps_force_capabilities_under_ambient )
         ; ( "codex_heartbeat_interval_is_four_minutes",
             `Quick, test_codex_heartbeat_interval_is_four_minutes )
         ; ( "codex_heartbeat_enabled_for_codex_family_only",
@@ -1841,6 +2461,8 @@ let () =
             `Quick, test_heartbeat_body_no_swap_when_unknown )
         ; ( "heartbeat_body_passes_custom_message_through",
             `Quick, test_heartbeat_body_passes_custom_message_through )
+        ; ( "role_parse_coordinator_field",
+            `Quick, test_role_parse_coordinator_field )
         ; ( "heartbeat_aligned_schedule_next_delay",
             `Quick, test_heartbeat_aligned_schedule_next_delay )
         ; ( "agent_is_idle_no_activity_treated_as_idle",
@@ -1963,6 +2585,12 @@ let () =
         ; ("repo_config_default_binary_preflight_uses_config", `Quick,
            test_repo_config_default_binary_preflight_uses_config)
         ] )
+    ; ( "swarm_config",
+        [ ("restart_intro_builtin_default", `Quick,
+           test_restart_intro_builtin_default)
+        ; ("restart_intro_override", `Quick,
+           test_restart_intro_override)
+        ] )
     ; ( "get_tmux_location",
         [ ( "get_tmux_location_exits_nonzero_when_not_in_tmux",
             `Quick,
@@ -2015,6 +2643,44 @@ let () =
                     (let count = ref 0 in
                      String.iter (fun c -> if c = '-' then incr count) n;
                      !count = 1))
-                [ "claude"; "codex"; "opencode"; "kimi" ]) )
+                [ "claude"; "codex"; "opencode"; "kimi"; "crush" ]) )
+        ] )
+    ; ( "generate_alias_378",
+        [ ( "generate_alias_no_same_word_doubled",
+            `Quick,
+            (fun () ->
+              (* #378: generate_alias must not return same-word-doubled aliases
+                 like "lumi-lumi". Reroll when w1 = w2. *)
+              let n = 1000 in
+              let bad : string list ref = ref [] in
+              let rec loop i =
+                if i >= n then ()
+                else begin
+                  let a = C2c_start.generate_alias () in
+                  let parts = String.split_on_char '-' a in
+                  match parts with
+                  | [w1; w2] when w1 = w2 -> bad := a :: !bad; loop (i + 1)
+                  | _ -> loop (i + 1)
+                end
+              in
+              loop 0;
+              check int
+                (Printf.sprintf "no same-word-doubled aliases in %d samples" n)
+                0 (List.length !bad) ) ) ] )
+    ; ( "instances_filter_351",
+        [ ( "test_instances_default_filters_to_alive",
+            `Quick, test_instances_default_filters_to_alive )
+        ; ( "test_instances_all_shows_archive",
+            `Quick, test_instances_all_shows_archive )
+        ; ( "test_instances_json_default_filters",
+            `Quick, test_instances_json_default_filters )
+        ] )
+    ; ( "instances_clean_stale_333",
+        [ ( "test_clean_stale_dry_run_reports_candidates",
+            `Quick, test_clean_stale_dry_run_reports_candidates )
+        ; ( "test_clean_stale_removes_zombies_only",
+            `Quick, test_clean_stale_removes_zombies_only )
+        ; ( "test_clean_stale_protected_named_aliases",
+            `Quick, test_clean_stale_protected_named_aliases )
         ] )
     ]

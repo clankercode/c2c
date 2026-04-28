@@ -352,7 +352,7 @@ class C2CCLIDispatchTests(unittest.TestCase):
         them from cmdliner when C2C_MCP_SESSION_ID was set — causing every
         managed OC session to fail inbox delivery silently.
 
-        See: .collab/findings/2026-04-23T14-12-00Z-coordinator1-oc-plugin-tier4-blocked-delivery.md
+        See: .collab/findings-archive/2026-04-23T14-12-00Z-coordinator1-oc-plugin-tier4-blocked-delivery.md
         """
         c2c_bin = shutil.which("c2c")
         if not c2c_bin:

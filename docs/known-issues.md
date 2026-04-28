@@ -52,7 +52,7 @@ PTY-based wake daemons depend on Linux `/proc` and a PTY helper with `cap_sys_pt
 
 ## OpenCode Plugin Delivery Is Proven
 
-The TypeScript plugin path (`.opencode/plugins/c2c.ts`) is live-proven and the primary delivery path. Plugin uses a `c2c monitor` subprocess for near-real-time wake: the monitor watches the broker inbox directory with `inotifywait` and calls `promptAsync` when a new message arrives.
+The TypeScript plugin path (global symlink at `~/.config/opencode/plugins/c2c.ts` (canonical), with `.opencode/plugins/c2c.ts` as opt-in via `--project-plugin` flag) is live-proven and the primary delivery path. Plugin uses a `c2c monitor` subprocess for near-real-time wake: the monitor watches the broker inbox directory with `inotifywait` and calls `promptAsync` when a new message arrives.
 
 **Permission resolution (v2):** The plugin's `permission.ask` hook is not wired in current OpenCode builds. Instead, on `permission.asked` events, the plugin DMs supervisors with the permission ID and resolves the dialog via the OpenCode HTTP API (`postSessionIdPermissionsPermissionId`) after receiving an `approve-once`/`approve-always`/`reject` reply within 300s. On timeout, the TUI dialog stays open for the operator.
 
@@ -70,7 +70,7 @@ The TypeScript plugin path (`.opencode/plugins/c2c.ts`) is live-proven and the p
 
 ## Cross-Machine Messaging Requires Running the Relay
 
-The broker root lives in `.git/c2c/mcp/`. Worktrees and clones of the same repo share one broker by default. Cross-machine messaging requires the relay daemon:
+The broker root lives at `$HOME/.c2c/repos/<fp>/broker` (the canonical default; see root `CLAUDE.md` "Key Architecture Notes" for the full resolution order). Worktrees and clones of the same upstream share one broker by default. Cross-machine messaging requires the relay daemon:
 
 ```bash
 # On the relay host:
@@ -89,9 +89,9 @@ c2c relay connect  # runs every 30s by default
 
 ### Do Not Run `sweep` While Managed Outer Loops Are Active
 
-`sweep` drops registrations whose PID is dead. Managed clients (kimi, codex, opencode) run as short-lived children under a persistent outer restart loop. Between restarts the child PID is dead, but the outer loop will spawn a new child in seconds. If `sweep` runs in this window, it deletes the registration and inbox; messages go to dead-letter until the session re-registers and auto-redelivers them.
+`sweep` drops registrations whose PID is dead. Managed clients (kimi, codex, opencode, crush) run as short-lived children under a persistent outer restart loop. Between restarts the child PID is dead, but the outer loop will spawn a new child in seconds. If `sweep` runs in this window, it deletes the registration and inbox; messages go to dead-letter until the session re-registers and auto-redelivers them.
 
-**Fix:** Use `prune_rooms` for safe room cleanup, or check `c2c instances` before sweeping. See `c2c sweep-dryrun` for a read-only preview.
+**Fix:** Use `prune_rooms` for safe room cleanup, or check `pgrep -a -f "run-(kimi|codex|opencode|crush|claude)-inst-outer"` before sweeping. See `c2c sweep-dryrun` for a read-only preview.
 
 ### Child Processes Can Inherit a Wrong `C2C_MCP_CLIENT_PID`
 
