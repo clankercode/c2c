@@ -386,7 +386,7 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path =
    We write user-scope (not project-scope) so the c2c MCP server is
    available across every gemini session — matches kimi's precedent, and
    the swarm-wide alias model. Use `gemini mcp remove c2c` to undo. *)
-let setup_gemini ~output_mode ~dry_run ~root ~alias_val ~server_path:_ =
+let setup_gemini ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command =
   let config_path =
     Filename.concat (Sys.getenv "HOME") (".gemini" // "settings.json")
   in
@@ -394,10 +394,18 @@ let setup_gemini ~output_mode ~dry_run ~root ~alias_val ~server_path:_ =
     if Sys.file_exists config_path then json_read_file config_path
     else `Assoc []
   in
+  (* When `c2c-mcp-server` is on PATH, use it directly. Otherwise fall
+     back to `opam exec -- <absolute-server-path>` — same shape as
+     setup_claude/setup_codex. resolve_mcp_server_paths picks the right
+     pair upstream. *)
+  let args_list =
+    if mcp_command = "c2c-mcp-server" then []
+    else [ `String "exec"; `String "--"; `String server_path ]
+  in
   let c2c_entry =
     `Assoc
-      [ ("command", `String "c2c-mcp-server")
-      ; ("args", `List [])
+      [ ("command", `String mcp_command)
+      ; ("args", `List args_list)
       ; ("env", `Assoc
           [ ("C2C_MCP_BROKER_ROOT", `String root)
           ; ("C2C_MCP_SESSION_ID", `String alias_val)
@@ -1049,7 +1057,7 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ~output_mode ~dr
   | "claude" -> setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir:target_dir_opt
   | "codex" -> setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client
   | "kimi" -> setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path
-  | "gemini" -> setup_gemini ~output_mode ~dry_run ~root ~alias_val ~server_path
+  | "gemini" -> setup_gemini ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
   | "opencode" -> setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~force ()
   | "crush" -> setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path
   | _ ->
