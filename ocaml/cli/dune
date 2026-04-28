@@ -37,3 +37,8 @@
  (name test_c2c_migrate)
  (modules test_c2c_migrate c2c_migrate)
  (libraries alcotest unix))
+
+(test
+ (name test_c2c_coord)
+ (modules test_c2c_coord c2c_coord)
+ (libraries c2c_mcp alcotest cmdliner yojson str unix))

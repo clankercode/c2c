@@ -69,8 +69,20 @@ let email_to_alias email =
 
 (** DM an author after their SHA lands on master.
     Sends via `c2c send` CLI so it works in any session context.
-    Silently skips on any error (best-effort notification). *)
+    Silently skips on any error (best-effort notification).
+
+    Test fixture: when [C2C_COORD_DM_FIXTURE=capture-args] is set and
+    [C2C_COORD_DM_CAPTURE_FILE] points to a path, instead of invoking
+    `c2c send` the function appends a line "<original_sha> <new_sha>"
+    to that file. Lets tests assert per-cherry-pick HEAD pairing
+    without needing a live broker. *)
 let dm_author ~repo ~original_sha ~new_sha =
+  match Sys.getenv_opt "C2C_COORD_DM_FIXTURE", Sys.getenv_opt "C2C_COORD_DM_CAPTURE_FILE" with
+  | Some "capture-args", Some path ->
+      let oc = open_out_gen [Open_append; Open_creat; Open_wronly] 0o644 path in
+      Fun.protect ~finally:(fun () -> close_out_noerr oc)
+        (fun () -> Printf.fprintf oc "%s %s\n" original_sha new_sha)
+  | _ ->
   match git_author_email ~repo original_sha with
   | None ->
       Printf.printf "[coord-cherry-pick] dm_author: could not extract email from %s\n%!" original_sha
@@ -192,11 +204,19 @@ let run_coord_cherry_pick ~no_install ~no_dm ~shas =
         end;
 
         let blocked_sha = ref None in
+        (* #382: capture HEAD per-cherry-pick (not at end-of-loop), so the
+           DM cites the SHA that was actually produced for THAT original. *)
+        let landed_pairs = ref [] in
         let success = List.for_all (fun sha ->
           Printf.printf "[coord-cherry-pick] cherry-picking %s...\n%!" sha;
           match git_cherry_pick repo sha with
           | `Ok ->
-              Printf.printf "[coord-cherry-pick] %s applied ✓\n%!" sha;
+              let new_sha = run_capture (Printf.sprintf "git -C %s rev-parse HEAD"
+                                           (Filename.quote repo))
+                            |> String.trim
+              in
+              landed_pairs := (sha, new_sha) :: !landed_pairs;
+              Printf.printf "[coord-cherry-pick] %s applied ✓ (as %s)\n%!" sha new_sha;
               true
           | `Conflict ->
               Printf.eprintf "[coord-cherry-pick] FAILED on %s: conflict\n%!" sha;
@@ -213,6 +233,7 @@ let run_coord_cherry_pick ~no_install ~no_dm ~shas =
               blocked_sha := Some sha;
               false
         ) shas in
+        let landed_pairs = List.rev !landed_pairs in
 
         if not success then begin
           if !stashed then begin
@@ -246,15 +267,14 @@ let run_coord_cherry_pick ~no_install ~no_dm ~shas =
               Printf.printf "[coord-cherry-pick] just install-all succeeded ✓\n%!"
           end;
 
-          (* DM each author after install succeeds. *)
-          if not no_dm then begin
-            let new_sha = run_capture (Printf.sprintf "git -C %s rev-parse HEAD" (Filename.quote repo))
-                            |> String.trim
-            in
-            List.iter (fun original_sha ->
+          (* DM each author after install succeeds. #382: each DM cites the
+             HEAD captured immediately after that specific cherry-pick, not
+             the final HEAD, so multi-SHA batches no longer claim every
+             author's commit landed at the same new_sha. *)
+          if not no_dm then
+            List.iter (fun (original_sha, new_sha) ->
               dm_author ~repo ~original_sha ~new_sha
-            ) shas
-          end;
+            ) landed_pairs;
 
           Printf.printf "[coord-cherry-pick] done\n%!"
         end
