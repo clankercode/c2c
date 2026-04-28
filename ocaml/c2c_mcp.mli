@@ -35,23 +35,11 @@ val extract_tag_from_content : string -> string option
     Used by inbox-hook and wire-bridge formatters to surface the tag
     to consumers without re-parsing the body. *)
 
-val format_c2c_envelope :
-  from_alias:string ->
-  to_alias:string ->
-  ?tag:string ->
-  ?role:string ->
-  ?reply_via:string ->
-  content:string ->
-  unit ->
-  string
+val format_c2c_envelope : from_alias:string -> to_alias:string -> ?tag:string -> ?role:string -> ?reply_via:string -> content:string -> unit -> string
 (** [#392] Canonical c2c message envelope formatter — emits the
     `<c2c event="message" ...>BODY</c2c>` XML wrapper with consistent
     attribute order across all surfaces (MCP, CLI, inbox-hook,
-    wire-bridge). Optional [tag] surfaces FAIL/BLOCKING/URGENT to
-    programmatic consumers (body-prefix is the load-bearing channel
-    per #392 research). [reply_via] defaults to "c2c_send". Replaces
-    three near-duplicate inline formatters per the #392b convergence
-    plan. *)
+    wire-bridge). *)
 
 type compacting = { started_at : float; reason : string option }
 type registration =
