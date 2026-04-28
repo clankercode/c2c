@@ -3126,6 +3126,34 @@ let log_handoff_attempt ~broker_root ~from_alias ~to_alias ~name ~ok ~error =
       with _ -> close_out_noerr oc)
    with _ -> ())
 
+(* #29 H2b: log every peer-pass DM verification attempt that ends in a
+   strict-mode reject. The detailed reason (pin pubkey fingerprints,
+   sha mismatch detail, etc.) is appended here; the user-facing reject
+   message stays generic so attacker-placed artifact contents do not
+   echo back to the sender. *)
+let log_peer_pass_reject ~broker_root ~from_alias ~to_alias ~claim_alias ~claim_sha ~reason =
+  (try
+     let path = Filename.concat broker_root "broker.log" in
+     let ts = Unix.gettimeofday () in
+     let line =
+       `Assoc
+         [ ("ts", `Float ts)
+         ; ("event", `String "peer_pass_reject")
+         ; ("from", `String from_alias)
+         ; ("to", `String to_alias)
+         ; ("claim_alias", `String claim_alias)
+         ; ("claim_sha", `String claim_sha)
+         ; ("reason", `String reason)
+         ]
+       |> Yojson.Safe.to_string
+     in
+     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
+     (try
+        output_string oc (line ^ "\n");
+        close_out oc
+      with _ -> close_out_noerr oc)
+   with _ -> ())
+
 let notify_shared_with_recipients
     ~broker ~from_alias ~name ?description ~shared ~shared_with () =
   if shared && shared_with <> [] then []
@@ -4391,11 +4419,25 @@ let ts = Unix.gettimeofday () in
                       | Some msg -> Some (`Warn msg)
                       | None -> None
                     in
+                    let peer_pass_claim = Peer_review.claim_of_content content in
+                    let peer_pass_pin_path =
+                      Filename.concat (Broker.root broker) "peer-pass-trust.json"
+                    in
                     let peer_pass_verification =
-                      match Peer_review.claim_of_content content with
+                      match peer_pass_claim with
                       | None -> None
                       | Some (alias, sha) ->
-                          match Peer_review.verify_claim ~alias ~sha with
+                          (* #29 H2b: pin-aware variant. The plain
+                             [verify_claim] only validates the signature
+                             against the artifact-embedded reviewer_pk, so
+                             a fresh-keypair forgery passed strict-mode H2.
+                             [verify_claim_with_pin] adds TOFU pubkey-pin
+                             enforcement: artifact pubkey must match the
+                             pin for this alias (or be first-seen). *)
+                          match
+                            Peer_review.verify_claim_with_pin
+                              ~path:peer_pass_pin_path ~alias ~sha ()
+                          with
                           | Peer_review.Claim_valid msg -> Some (`Ok msg)
                           | Peer_review.Claim_missing m -> Some (`Missing m)
                           | Peer_review.Claim_invalid m -> Some (`Invalid m)
@@ -4403,19 +4445,32 @@ let ts = Unix.gettimeofday () in
                     let invalid_peer_pass =
                       match peer_pass_verification with
                       | Some (`Invalid m) ->
+                          let claim_alias, claim_sha = match peer_pass_claim with
+                            | Some (a, s) -> a, s
+                            | None -> "", ""
+                          in
+                          (* Detailed reason -> stderr + broker.log only.
+                             User-facing message (below) is generic to
+                             avoid echoing attacker-placed artifact contents
+                             back to the sender (I3 from slate's review). *)
                           Printf.eprintf
-                            "[peer-pass] WARN: rejecting forged peer-pass DM from=%s to=%s: %s\n%!"
-                            from_alias to_alias m;
+                            "[peer-pass] WARN: rejecting forged peer-pass DM from=%s to=%s alias=%s sha=%s: %s\n%!"
+                            from_alias to_alias claim_alias claim_sha m;
+                          log_peer_pass_reject
+                            ~broker_root:(Broker.root broker)
+                            ~from_alias ~to_alias
+                            ~claim_alias ~claim_sha ~reason:m;
                           Some m
                       | _ -> None
                     in
                     match invalid_peer_pass, self_pass_warning with
-                    | Some m, _ ->
+                    | Some _m, _ ->
                         Lwt.return
                           (tool_result
                              ~content:
-                               ("send rejected: peer-pass verification failed — " ^ m
-                                ^ " (H2: forged peer-pass DM not enqueued)")
+                               "send rejected: peer-pass verification failed \
+                                (H2b: forged or pin-mismatched peer-pass DM not enqueued; \
+                                see broker.log for details)"
                              ~is_error:true)
                     | None, Some (`Reject msg) ->
                         Lwt.return (tool_result ~content:("send rejected: " ^ msg) ~is_error:true)

@@ -491,3 +491,53 @@ let verify_with_pin ?path (art : t) : (pin_check, verify_error) result =
   | Error e -> Error e
   | Ok false -> Error Invalid_signature
   | Ok true -> Ok (pin_check ?path art)
+
+(** Pin-aware variant of [verify_claim] for the broker boundary (#29 H2b).
+
+    Behaves like [verify_claim] but additionally enforces the TOFU pubkey
+    pin via [verify_with_pin]. The forgery vector closed by this function:
+    an attacker generates a fresh ed25519 keypair, signs an artifact under
+    a victim alias (embedding the fresh pubkey as [reviewer_pk]), drops
+    the artifact at the well-known path, and DMs a "peer-PASS by <victim>,
+    SHA=<sha>" — without pin enforcement, the signature validates against
+    the attacker-controlled pubkey and [verify_claim] returns
+    [Claim_valid]. With pin enforcement, the artifact's [reviewer_pk]
+    must match the existing pin for that alias (or be the first-seen
+    pubkey for the alias).
+
+    Pin policy:
+    - [Pin_first_seen] -> [Claim_valid] (TOFU; pin written this call).
+    - [Pin_match]      -> [Claim_valid].
+    - [Pin_mismatch]   -> [Claim_invalid] with a structured reason
+                          including pinned + artifact pubkey fingerprints
+                          (full b64url) for audit.
+
+    The optional [path] override targets the pin store JSON; the broker
+    wires this to a path under its broker root so all worktrees of one
+    repo share one pin set, and tests pass an isolated path. *)
+let verify_claim_with_pin ?path ~alias ~sha () =
+  let art_path = artifact_path ~sha ~alias in
+  if not (Sys.file_exists art_path) then
+    Claim_missing (Printf.sprintf "no peer-pass artifact at %s" art_path)
+  else
+    match read_artifact art_path with
+    | Error e -> Claim_invalid (Printf.sprintf "artifact read error: %s" e)
+    | Ok art ->
+      if art.sha <> sha then
+        Claim_invalid (Printf.sprintf "SHA mismatch: artifact is for %s, claim is for %s" art.sha sha)
+      else if String.lowercase_ascii art.reviewer <> String.lowercase_ascii alias then
+        Claim_invalid (Printf.sprintf "reviewer mismatch: artifact is by %s, claim is by %s" art.reviewer alias)
+      else begin
+        match verify_with_pin ?path art with
+        | Error e ->
+          Claim_invalid (Printf.sprintf "invalid signature: %s" (verify_error_to_string e))
+        | Ok Pin_match ->
+          Claim_valid (Printf.sprintf "peer-pass artifact verified: %s for %s" art.verdict sha)
+        | Ok Pin_first_seen ->
+          Claim_valid (Printf.sprintf "peer-pass artifact verified (pin first-seen): %s for %s" art.verdict sha)
+        | Ok (Pin_mismatch m) ->
+          Claim_invalid
+            (Printf.sprintf
+               "pin mismatch for reviewer %s: pinned pubkey=%s, artifact pubkey=%s, first_seen=%.0f"
+               m.alias m.pinned_pubkey m.artifact_pubkey m.first_seen)
+      end

@@ -7899,6 +7899,256 @@ let test_peer_pass_dm_with_valid_signature_accepted () =
         let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"h2v-recv" in
         check int "valid peer-pass DM is enqueued" 1 (List.length inbox)))
 
+(* ---------------------------------------------------------------------- *)
+(* #29 H2b — TOFU pin enforcement at the broker boundary.                  *)
+(* ---------------------------------------------------------------------- *)
+
+(* Build, sign, and write an artifact for a given (sha, alias) using the
+   provided identity. Returns the b64url-encoded reviewer_pk so the caller
+   can pre-seed pin store entries that match (or deliberately diverge from)
+   it. The artifact file is left on disk; caller wraps with
+   [h2_with_artifact_pre_existing] to clean up. *)
+let h2b_make_artifact ~sha ~alias ~identity ~verdict =
+  let art : Peer_review.t = {
+    version = 1;
+    reviewer = alias;
+    reviewer_pk = "";
+    sha;
+    verdict;
+    criteria_checked = [];
+    skill_version = "1.0.0";
+    commit_range = "0000000.." ^ sha;
+    targets_built = { c2c = true; c2c_mcp_server = true; c2c_inbox_hook = false };
+    notes = "h2b-test";
+    signature = "";
+    ts = 1234567890.0;
+  } in
+  let signed = Peer_review.sign ~identity art in
+  let json = Peer_review.t_to_string signed in
+  let path = h2_artifact_path ~sha ~alias in
+  let oc = open_out path in
+  output_string oc json;
+  close_out oc;
+  signed
+
+let h2b_remove_artifact ~sha ~alias =
+  let path = h2_artifact_path ~sha ~alias in
+  try Sys.remove path with _ -> ()
+
+(* Pre-seed the broker pin store at <root>/peer-pass-trust.json with a
+   single (alias, pubkey) entry, so subsequent verifies hit Pin_match or
+   Pin_mismatch instead of Pin_first_seen. *)
+let h2b_seed_pin ~broker_root ~alias ~pubkey =
+  let store : Peer_review.Trust_pin.store = {
+    version = 1;
+    pins = [
+      String.lowercase_ascii alias,
+      { Peer_review.Trust_pin.pubkey;
+        first_seen = 1.0;
+        last_seen = 1.0 };
+    ];
+  } in
+  let path = Filename.concat broker_root "peer-pass-trust.json" in
+  Peer_review.Trust_pin.save ~path store
+
+(* Forgery vector slate flagged: attacker generates a fresh keypair and
+   signs an artifact under the victim alias. Without H2b the broker
+   accepted this. With H2b, after a legit pin exists for the alias, the
+   forged artifact's pubkey fails to match the pin and the DM is
+   rejected. *)
+let test_peer_pass_dm_h2b_fresh_key_forgery_rejected () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"h2b-fk-s" ~alias:"h2b-fk-sender"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"h2b-fk-r" ~alias:"h2b-fk-recv"
+        ~pid:None ~pid_start_time:None ();
+      (* Seed the pin with the LEGIT reviewer's pubkey for h2b-fk-sender. *)
+      let legit_id = Relay_identity.generate ~alias_hint:"h2b-fk-legit" () in
+      let legit_pk = Peer_review.b64url_encode legit_id.Relay_identity.public_key in
+      h2b_seed_pin ~broker_root:dir ~alias:"h2b-fk-sender" ~pubkey:legit_pk;
+      (* Attacker mints a fresh keypair and signs the forgery under the
+         victim alias. *)
+      let attacker_id = Relay_identity.generate ~alias_hint:"h2b-fk-attacker" () in
+      let sha = h2_unique_sha () in
+      Fun.protect
+        ~finally:(fun () -> h2b_remove_artifact ~sha ~alias:"h2b-fk-sender")
+        (fun () ->
+          let _ = h2b_make_artifact ~sha ~alias:"h2b-fk-sender"
+                    ~identity:attacker_id ~verdict:"PASS" in
+          let content =
+            Printf.sprintf "peer-PASS by h2b-fk-sender for SHA=%s — forged" sha
+          in
+          let request =
+            h2_send_request ~from_alias:"h2b-fk-sender"
+              ~to_alias:"h2b-fk-recv" ~content
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          let is_error, text = h2_response_is_error response in
+          check bool "fresh-key forgery rejected (isError=true)" true is_error;
+          check bool "user-facing reject text is generic (no pubkey leak)"
+            false (string_contains text legit_pk);
+          check bool "user-facing reject text is generic (no pin-mismatch leak)"
+            false (string_contains text "pin mismatch");
+          let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"h2b-fk-r" in
+          check int "forged peer-pass DM is NOT enqueued" 0 (List.length inbox)))
+
+(* Same shape as the fresh-key case but framed as "the legitimate signer's
+   key changed and they forgot to --rotate-pin first". Still rejected;
+   rotation is a separate operator action. *)
+let test_peer_pass_dm_h2b_rotated_key_rejected () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"h2b-rk-s" ~alias:"h2b-rk-sender"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"h2b-rk-r" ~alias:"h2b-rk-recv"
+        ~pid:None ~pid_start_time:None ();
+      let old_id = Relay_identity.generate ~alias_hint:"h2b-rk-old" () in
+      let old_pk = Peer_review.b64url_encode old_id.Relay_identity.public_key in
+      h2b_seed_pin ~broker_root:dir ~alias:"h2b-rk-sender" ~pubkey:old_pk;
+      (* New key, same alias, no explicit rotation. *)
+      let new_id = Relay_identity.generate ~alias_hint:"h2b-rk-new" () in
+      let sha = h2_unique_sha () in
+      Fun.protect
+        ~finally:(fun () -> h2b_remove_artifact ~sha ~alias:"h2b-rk-sender")
+        (fun () ->
+          let _ = h2b_make_artifact ~sha ~alias:"h2b-rk-sender"
+                    ~identity:new_id ~verdict:"PASS" in
+          let content =
+            Printf.sprintf "peer-PASS by h2b-rk-sender for SHA=%s" sha
+          in
+          let request =
+            h2_send_request ~from_alias:"h2b-rk-sender"
+              ~to_alias:"h2b-rk-recv" ~content
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          let is_error, _text = h2_response_is_error response in
+          check bool "silent key rotation is rejected" true is_error;
+          let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"h2b-rk-r" in
+          check int "rotated-key peer-pass DM is NOT enqueued" 0 (List.length inbox)))
+
+(* TOFU policy: the FIRST verify for an alias pins the pubkey and accepts
+   the DM. Regression that we did not flip first-seen into a hard reject. *)
+let test_peer_pass_dm_h2b_first_seen_allowed () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"h2b-fs-s" ~alias:"h2b-fs-sender"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"h2b-fs-r" ~alias:"h2b-fs-recv"
+        ~pid:None ~pid_start_time:None ();
+      let id = Relay_identity.generate ~alias_hint:"h2b-fs-r1" () in
+      let sha = h2_unique_sha () in
+      Fun.protect
+        ~finally:(fun () -> h2b_remove_artifact ~sha ~alias:"h2b-fs-sender")
+        (fun () ->
+          let _ = h2b_make_artifact ~sha ~alias:"h2b-fs-sender"
+                    ~identity:id ~verdict:"PASS" in
+          let content =
+            Printf.sprintf "peer-PASS by h2b-fs-sender for SHA=%s" sha
+          in
+          let request =
+            h2_send_request ~from_alias:"h2b-fs-sender"
+              ~to_alias:"h2b-fs-recv" ~content
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          let is_error, _ = h2_response_is_error response in
+          check bool "first-seen pin allows DM" false is_error;
+          let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"h2b-fs-r" in
+          check int "first-seen peer-pass DM is enqueued" 1 (List.length inbox);
+          (* And the pin file now exists with the artifact's pubkey. *)
+          let pin_path = Filename.concat dir "peer-pass-trust.json" in
+          check bool "pin file written after first-seen verify"
+            true (Sys.file_exists pin_path)))
+
+(* Replay/cross-SHA: an attacker takes a legitimate artifact and DMs a
+   peer-PASS naming a DIFFERENT SHA than the one the artifact was signed
+   for. The signature still validates (artifact is unmodified) but
+   verify_claim_with_pin's sha-equality check rejects. Independent of
+   the pin. *)
+let test_peer_pass_dm_h2b_sha_mismatch_rejected () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"h2b-sm-s" ~alias:"h2b-sm-sender"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"h2b-sm-r" ~alias:"h2b-sm-recv"
+        ~pid:None ~pid_start_time:None ();
+      let id = Relay_identity.generate ~alias_hint:"h2b-sm" () in
+      let real_sha = h2_unique_sha () in
+      let claimed_sha = h2_unique_sha () in
+      Fun.protect
+        ~finally:(fun () -> h2b_remove_artifact ~sha:claimed_sha ~alias:"h2b-sm-sender")
+        (fun () ->
+          (* The artifact at the path-for claimed_sha actually has
+             art.sha = real_sha, so the inner sha check fires. *)
+          let art : Peer_review.t = {
+            version = 1;
+            reviewer = "h2b-sm-sender";
+            reviewer_pk = "";
+            sha = real_sha;
+            verdict = "PASS";
+            criteria_checked = [];
+            skill_version = "1.0.0";
+            commit_range = "0000000.." ^ real_sha;
+            targets_built = { c2c = true; c2c_mcp_server = true; c2c_inbox_hook = false };
+            notes = "sha-replay";
+            signature = "";
+            ts = 1234567890.0;
+          } in
+          let signed = Peer_review.sign ~identity:id art in
+          let json = Peer_review.t_to_string signed in
+          let path = h2_artifact_path ~sha:claimed_sha ~alias:"h2b-sm-sender" in
+          let oc = open_out path in
+          output_string oc json;
+          close_out oc;
+          let content =
+            Printf.sprintf "peer-PASS by h2b-sm-sender for SHA=%s" claimed_sha
+          in
+          let request =
+            h2_send_request ~from_alias:"h2b-sm-sender"
+              ~to_alias:"h2b-sm-recv" ~content
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          let is_error, _ = h2_response_is_error response in
+          check bool "sha-mismatch DM rejected" true is_error;
+          let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"h2b-sm-r" in
+          check int "sha-mismatch peer-pass DM is NOT enqueued" 0 (List.length inbox)))
+
+(* Claim_missing path: a peer-PASS DM whose artifact does not exist at
+   the well-known path is informational, not a hard reject — the DM still
+   flows. (The recipient sees the receipt note "peer_pass_verification:
+   missing: ..." but the message is delivered.) *)
+let test_peer_pass_dm_h2b_missing_artifact_allows_dm () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"h2b-ms-s" ~alias:"h2b-ms-sender"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"h2b-ms-r" ~alias:"h2b-ms-recv"
+        ~pid:None ~pid_start_time:None ();
+      let sha = h2_unique_sha () in
+      (* No artifact written. *)
+      let content =
+        Printf.sprintf "peer-PASS by h2b-ms-sender for SHA=%s" sha
+      in
+      let request =
+        h2_send_request ~from_alias:"h2b-ms-sender"
+          ~to_alias:"h2b-ms-recv" ~content
+      in
+      let response =
+        Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+      in
+      let is_error, _ = h2_response_is_error response in
+      check bool "missing-artifact DM is not rejected" false is_error;
+      let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"h2b-ms-r" in
+      check int "missing-artifact peer-pass DM is enqueued" 1 (List.length inbox))
+
 let () =
   run "c2c_mcp"
     [ ( "broker",
@@ -8369,4 +8619,14 @@ let () =
                test_peer_pass_dm_with_invalid_signature_rejected
            ; test_case "H2: peer-pass DM with valid signature is accepted" `Quick
                test_peer_pass_dm_with_valid_signature_accepted
+           ; test_case "H2b: fresh-key forgery after legit pin is rejected" `Quick
+               test_peer_pass_dm_h2b_fresh_key_forgery_rejected
+           ; test_case "H2b: rotated-key DM (no rotate-pin op) is rejected" `Quick
+               test_peer_pass_dm_h2b_rotated_key_rejected
+           ; test_case "H2b: first-seen pin allows the DM" `Quick
+               test_peer_pass_dm_h2b_first_seen_allowed
+           ; test_case "H2b: artifact sha != claim sha is rejected" `Quick
+               test_peer_pass_dm_h2b_sha_mismatch_rejected
+           ; test_case "H2b: missing artifact still allows the DM" `Quick
+               test_peer_pass_dm_h2b_missing_artifact_allows_dm
            ] ) ]
