@@ -3304,6 +3304,23 @@ let optional_member name json =
     | value -> Some value
   with _ -> None
 
+(* Lenient bool extraction from a Yojson value. JSON-RPC clients vary in
+   coercion behavior — some send `Bool b`, some send `String "true"` /
+   `String "false"` (especially shell-based callers piping CLI args), some
+   send `Int 0`/`Int 1`. Returns [None] for anything else (including the
+   ambiguous `String "yes"`, `Float 1.0`, etc.) so callers can choose to
+   error or apply a documented default. *)
+let bool_of_arg : Yojson.Safe.t -> bool option = function
+  | `Bool b -> Some b
+  | `String s ->
+      (match String.lowercase_ascii (String.trim s) with
+       | "true" -> Some true
+       | "false" -> Some false
+       | _ -> None)
+  | `Int 1 -> Some true
+  | `Int 0 -> Some false
+  | _ -> None
+
 let first_nonempty_env keys =
   let rec loop = function
     | [] -> None
@@ -4709,9 +4726,9 @@ let ts = Unix.gettimeofday () in
       let session_id = resolve_session_id ?session_id_override arguments in
       let on =
         try
-          match Yojson.Safe.Util.member "on" arguments with
-          | `Bool b -> b
-          | _ -> false
+          match bool_of_arg (Yojson.Safe.Util.member "on" arguments) with
+          | Some b -> b
+          | None -> false
         with _ -> false
       in
       let until_epoch =

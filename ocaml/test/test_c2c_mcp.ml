@@ -6158,6 +6158,109 @@ let test_tools_call_set_dnd_on_string_false_disables_dnd () =
                check bool "set_dnd on:\"false\" ok" true ok;
                check bool "set_dnd on:\"false\" disables dnd" false dnd_val))
 
+let run_set_dnd_with_on_arg ~session_id ~req_id ~on_arg =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id
+        ~alias:("dnd-test-" ^ session_id) ~pid:None ~pid_start_time:None ();
+      Unix.putenv "C2C_MCP_SESSION_ID" session_id;
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let request =
+             `Assoc
+               [ ("jsonrpc", `String "2.0")
+               ; ("id", `Int req_id)
+               ; ("method", `String "tools/call")
+               ; ( "params",
+                   `Assoc
+                     [ ("name", `String "set_dnd")
+                     ; ("arguments", `Assoc [ ("on", on_arg) ])
+                     ] )
+               ]
+           in
+           let response =
+             Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+           in
+           match response with
+           | None -> failwith "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               Yojson.Safe.from_string text))
+
+let test_tools_call_set_dnd_on_int_one_enables_dnd () =
+  let result =
+    run_set_dnd_with_on_arg ~session_id:"session-dnd-int1" ~req_id:9503
+      ~on_arg:(`Int 1)
+  in
+  let open Yojson.Safe.Util in
+  let ok = result |> member "ok" |> to_bool in
+  let dnd_val = result |> member "dnd" |> to_bool in
+  check bool "set_dnd on:1 ok" true ok;
+  check bool "set_dnd on:1 enables dnd" true dnd_val
+
+let test_tools_call_set_dnd_on_int_zero_disables_dnd () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-dnd-int0"
+        ~alias:"dnd-test-int0" ~pid:None ~pid_start_time:None ();
+      ignore (C2c_mcp.Broker.set_dnd broker ~session_id:"session-dnd-int0" ~dnd:true ());
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-dnd-int0";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let request =
+             `Assoc
+               [ ("jsonrpc", `String "2.0")
+               ; ("id", `Int 9504)
+               ; ("method", `String "tools/call")
+               ; ( "params",
+                   `Assoc
+                     [ ("name", `String "set_dnd")
+                     ; ("arguments", `Assoc [ ("on", `Int 0) ])
+                     ] )
+               ]
+           in
+           let response =
+             Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+           in
+           match response with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               let result = Yojson.Safe.from_string text in
+               let ok = result |> member "ok" |> to_bool in
+               let dnd_val = result |> member "dnd" |> to_bool in
+               check bool "set_dnd on:0 ok" true ok;
+               check bool "set_dnd on:0 disables dnd" false dnd_val))
+
+(* Regression: ambiguous bool inputs default to [false] (do-not-enable-DND).
+   The handler does not raise — silent-fail-closed is the documented behavior
+   for set_dnd. The point of the test is to lock in that "yes"/floats do not
+   accidentally COERCE to true. *)
+let test_tools_call_set_dnd_on_invalid_input_defaults_false () =
+  let result_yes =
+    run_set_dnd_with_on_arg ~session_id:"session-dnd-yes" ~req_id:9505
+      ~on_arg:(`String "yes")
+  in
+  let result_float =
+    run_set_dnd_with_on_arg ~session_id:"session-dnd-float" ~req_id:9506
+      ~on_arg:(`Float 1.0)
+  in
+  let open Yojson.Safe.Util in
+  check bool "set_dnd on:\"yes\" does not enable" false
+    (result_yes |> member "dnd" |> to_bool);
+  check bool "set_dnd on:1.0 does not enable" false
+    (result_float |> member "dnd" |> to_bool)
+
 (* --- prompts/list and prompts/get tests (run via subprocess to isolate Sys.chdir) --- *)
 
 let run_prompts_test_skeleton ~dir ~skill_name ~test_code =
@@ -7339,6 +7442,12 @@ let () =
                 test_tools_call_set_dnd_on_string_true_enables_dnd
            ; test_case "tools/call set_dnd on:\"false\" string disables DND" `Quick
                 test_tools_call_set_dnd_on_string_false_disables_dnd
+           ; test_case "tools/call set_dnd on:1 int enables DND" `Quick
+                test_tools_call_set_dnd_on_int_one_enables_dnd
+           ; test_case "tools/call set_dnd on:0 int disables DND" `Quick
+                test_tools_call_set_dnd_on_int_zero_disables_dnd
+           ; test_case "tools/call set_dnd on invalid input defaults false" `Quick
+                test_tools_call_set_dnd_on_invalid_input_defaults_false
            ; test_case "prompts/list returns skills as prompts" `Quick
                test_prompts_list_via_subprocess
            ; test_case "prompts/get returns skill content" `Quick
