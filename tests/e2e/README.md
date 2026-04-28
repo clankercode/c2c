@@ -116,6 +116,22 @@ push/channel delivery. Those are follow-ups in S3+.
 - **No signing keys provisioned.** Cross-broker delivery in this smoke
   uses unsigned envelopes. Signed-message verification is #407 S5.
 
+## S5 — signing keys provisioning E2E
+
+The `tests/e2e/test_peer_pass_signing_e2e.py` pytest harness and
+`tests/e2e/05-peer-pass-signing.sh` bash script cover S5:
+`c2c relay identity init` provisions an ed25519 key inside each
+agent container; `c2c peer-pass sign` creates a signed artifact for a
+test commit; `c2c peer-pass verify` validates it on a peer agent across
+the relay. A shared Docker volume (`s5-artifact`) is used to transfer
+the artifact from agent-a1's broker volume to agent-b1's view.
+
+AC:
+1. `c2c relay identity show --json` returns `alg: ed25519` + fingerprint
+   on every agent container.
+2. A peer-PASS artifact signed by agent-a1 verifies successfully on
+   agent-b1 across the two-broker topology.
+
 ## See also
 
 - `.collab/design/2026-04-28T10-22-00Z-coordinator1-407-e2e-docker-scope.md`
