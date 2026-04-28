@@ -403,11 +403,30 @@ let find_pairing_token_db db ~binding_id =
   let rc = Sqlite3.step stmt in
   rc = Rc.ROW
 
+(* #379: split "alias@host" into (alias, Some host) or (s, None) if no @. *)
+let split_alias_host s =
+  match String.index_opt s '@' with
+  | None -> (s, None)
+  | Some i ->
+    (String.sub s 0 i,
+     Some (String.sub s (i + 1) (String.length s - i - 1)))
+
+(* #379: is the host part acceptable?
+   None = no host in to_alias → always ok
+   Some "" | Some "relay" → always ok (back-compat with test fixtures)
+   Some h → ok only if h = self_host *)
+let host_acceptable ~self_host = function
+  | None -> true
+  | Some "" | Some "relay" -> true
+  | Some h -> (match self_host with Some sh -> h = sh | None -> false)
+
 (* --- RELAY signature — satisfied by both InMemoryRelay and SqliteRelay --- *)
 
 module type RELAY = sig
   type t
-  val create : ?dedup_window:int -> ?persist_dir:string -> unit -> t
+  val create : ?dedup_window:int -> ?persist_dir:string -> ?self_host:string option -> unit -> t
+  (* #379: the relay's own host identity, used to validate alias@host targets. *)
+  val self_host : t -> string option
   val register : t -> node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> ?enc_pubkey:string -> ?signed_at:float -> ?sig_b64:string -> unit -> (string * RegistrationLease.t)
   val identity_pk_of : t -> alias:string -> string option
   val alias_of_identity_pk : t -> identity_pk:string -> string option
@@ -492,6 +511,8 @@ module InMemoryRelay : RELAY = struct
     observer_bindings_mem : (string, (string * string)) Hashtbl.t;
     (* S5b: Device-pair pending table (RFC 8628 OAuth, ephemeral) *)
     device_pair_pending_mem : (string, device_pair_pending) Hashtbl.t;
+    (* #379: this relay's own host identity for alias@host validation *)
+    self_host : string option;
   }
 
   let room_history_jsonl_path persist_dir room_id =
@@ -530,7 +551,7 @@ module InMemoryRelay : RELAY = struct
        close_out oc
      with _ -> ())
 
-  let create ?(dedup_window = 10000) ?persist_dir () =
+  let create ?(dedup_window = 10000) ?persist_dir ?(self_host=None) () =
     let room_history = Hashtbl.create 16 in
     (* Load persisted room history on startup *)
     Option.iter (fun d -> load_room_history_from_disk d room_history) persist_dir;
@@ -553,11 +574,14 @@ module InMemoryRelay : RELAY = struct
       pairing_tokens = Hashtbl.create 64;
       observer_bindings_mem = Hashtbl.create 64;
       device_pair_pending_mem = Hashtbl.create 64;
+      self_host;
     }
 
   let with_lock t f =
     Mutex.lock t.mutex;
     Fun.protect ~finally:(fun () -> Mutex.unlock t.mutex) f
+
+  let self_host t = t.self_host
 
   let generate_uuid () =
     let random_hex n =
@@ -1245,19 +1269,22 @@ module SqliteRelay : RELAY = struct
     dedup_window : int;
     mutex : Mutex.t;
     observer_bindings : ObserverBindings.t;
+    self_host : string option;
   }
 
-let create ?(dedup_window=10000) ?(persist_dir="") () =
+let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) () =
     let db_path = Filename.concat persist_dir "c2c_relay.db" in
     let mutex = Mutex.create () in
     let conn = Sqlite3.db_open db_path in
     Sqlite3.exec conn "PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;" |> ignore;
     Sqlite3.exec conn sqlite_ddl |> ignore;
-    { db_path; dedup_window; mutex; observer_bindings = ObserverBindings.create () }
+    { db_path; dedup_window; mutex; observer_bindings = ObserverBindings.create (); self_host }
 
   let with_lock t f =
     Mutex.lock t.mutex;
     Fun.protect ~finally:(fun () -> Mutex.unlock t.mutex) f
+
+  let self_host t = t.self_host
 
   let get_lease_row_fields row =
     match row with
@@ -3117,11 +3144,19 @@ generateKeys();
     if from_alias = "" || to_alias = "" || content = "" then
       respond_bad_request (json_error_str err_bad_request "from_alias, to_alias, and content are required")
     else
+      (* #379: split alias@host, validate host is acceptable, strip to bare alias *)
+      let stripped_to_alias, host_opt = split_alias_host to_alias in
+      let self_host = R.self_host relay in
+      if not (host_acceptable ~self_host host_opt) then
+        respond_not_found
+          (json_error_str "cross_host_not_implemented"
+             (Printf.sprintf "cross-host send to %S not supported (relay does not forward to other hosts)" to_alias))
+      else
       match verified_alias with
       | Some v when v <> from_alias -> reject_alias_mismatch ~verified:v ~claimed:from_alias
       | _ ->
         let message_id = get_opt_string body "message_id" in
-        let result = R.send relay ~from_alias ~to_alias ~content ~message_id in
+        let result = R.send relay ~from_alias ~to_alias:stripped_to_alias ~content ~message_id in
         (match result with
          | `Ok ts | `Duplicate ts ->
            (match R.identity_pk_of relay ~alias:stripped_to_alias with
