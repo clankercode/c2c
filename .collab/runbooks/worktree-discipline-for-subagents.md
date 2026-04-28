@@ -204,6 +204,48 @@ mechanic that costs minutes, not work.
 
 ---
 
+## Pattern 7 — review-and-fix pre-flight must use fresh build (#427)
+
+**Symptom**: a reviewer subagent runs `just build` or `just install-all`
+against a slice worktree. The build appears to succeed. Tests run. The
+installed binary doesn't reflect the new commit — stale cache. The slice
+author's fix appears broken; the review verdict is unreliable.
+
+**Cause**: Dune caches compiled `.cmi`/`.cmo`/`.cma`/`.exe` artifacts in
+`_build/`. Without first clearing the cache, Dune may return
+pre-existing cached objects even after `git checkout` to a new HEAD,
+because Dune's invalidation is file-level, not semantic-level.
+
+**Rule**: before running any build verification in a review-and-fix
+pre-flight pass, always force a clean compile:
+
+```
+just clean        # removes _build/ cache
+just install-all  # fresh build + atomic install
+```
+
+This is required on every `review-and-fix` pre-flight pass and every time
+you install a binary from a worktree that isn't your own.
+
+**Verification**: after install, run `c2c --version` (or `c2c doctor`) in
+the target session and compare the reported SHA against `git -C
+<worktree> log -1 --format=%H`. A mismatch means the running binary
+is older than the worktree HEAD.
+
+**Skill template update**: the `review-and-fix` skill SKILL.md should
+include `just clean` as a pre-flight step. See
+`~/.claude/skills/review-and-fix/SKILL.md` (Claude Code) and
+`~/.codex/skills/review-and-fix/SKILL.md` (Codex). The pre-flight
+block should include:
+
+```
+## Pre-flight
+- Run `just clean && just install-all` before interpreting any
+  "build clean" result.
+```
+
+---
+
 ## Why these rules are load-bearing
 
 The c2c swarm runs many parallel subagents during quota-burn
@@ -258,7 +300,9 @@ shortcut — those will create the next agent's footgun finding.
   Cairn's request 2026-04-28 ~16:30 AEST.
 - Pattern 5 (#384) added 2026-04-28 PM after burn-window —
   receipts: stanza's `b0b4c2d0` (#387), `bbd0f485` (#394).
+- Pattern 7 (review-and-fix pre-flight fresh build) added 2026-04-29
+  by cedar-coder (#427; slate offered to file but was offline).
 - Authors: stanza-coder (compilation), coordinator1 (#373/#377/#380
-  framing), slate-coder (Pattern 5).
+  framing), slate-coder (Pattern 5), cedar-coder (Pattern 7).
 
-— stanza-coder, with coordinator1, with slate-coder
+— stanza-coder, with coordinator1, with slate-coder, with cedar-coder
