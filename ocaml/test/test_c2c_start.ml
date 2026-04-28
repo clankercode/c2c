@@ -2154,10 +2154,82 @@ let test_clean_stale_protected_named_aliases () =
     check bool "random-zombie removed on disk"
       false (List.mem "random-zombie" entries))
 
+(* #406b: Gemini adapter — build_start_args resume + model behavior. *)
+
+let test_prepare_launch_args_gemini_fresh_session () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"gemini-fresh" ~client:"gemini"
+      ~extra_args:[] ~broker_root:"/tmp/broker" ()
+  in
+  check bool "fresh session: no --resume flag" false
+    (List.mem "--resume" args);
+  check bool "no dev-channels (gemini has no equivalent)" false
+    (List.mem "--dangerously-load-development-channels" args)
+
+let test_prepare_launch_args_gemini_resume_default_to_latest () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"gemini-resume" ~client:"gemini"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~resume_session_id:"gemini-resume" ()
+  in
+  check bool "non-numeric session_id resumes to 'latest'" true
+    (has_adjacent_pair "--resume" "latest" args)
+
+let test_prepare_launch_args_gemini_resume_numeric_index_preserved () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"gemini-idx" ~client:"gemini"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~resume_session_id:"3" ()
+  in
+  check bool "numeric session_id passed through as resume index" true
+    (has_adjacent_pair "--resume" "3" args);
+  check bool "does NOT also set --resume latest" false
+    (has_adjacent_pair "--resume" "latest" args)
+
+let test_prepare_launch_args_gemini_model_flag () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"gemini-m" ~client:"gemini"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~model_override:"gemini-2.5-flash" ()
+  in
+  check bool "model flag present" true
+    (has_adjacent_pair "--model" "gemini-2.5-flash" args)
+
+let test_prepare_launch_args_gemini_empty_resume_treated_as_fresh () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"gemini-empty" ~client:"gemini"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~resume_session_id:"" ()
+  in
+  check bool "empty session_id: no --resume flag" false
+    (List.mem "--resume" args)
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_start"
-    [ ( "launch_args",
+    [ ( "gemini_adapter",
+        [ ( "fresh_session_no_resume_flag",
+            `Quick, test_prepare_launch_args_gemini_fresh_session )
+        ; ( "resume_default_to_latest",
+            `Quick, test_prepare_launch_args_gemini_resume_default_to_latest )
+        ; ( "resume_numeric_index_preserved",
+            `Quick, test_prepare_launch_args_gemini_resume_numeric_index_preserved )
+        ; ( "model_flag",
+            `Quick, test_prepare_launch_args_gemini_model_flag )
+        ; ( "empty_resume_treated_as_fresh",
+            `Quick, test_prepare_launch_args_gemini_empty_resume_treated_as_fresh )
+        ] )
+    ; ( "launch_args",
         [ ( "prepare_launch_args_claude_uses_development_channel_flag",
             `Quick, test_prepare_launch_args_claude_uses_development_channel_flag )
         ; ( "prepare_launch_args_claude_ignores_enable_channels_config",

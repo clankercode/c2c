@@ -1142,6 +1142,16 @@ let () =
     { binary = "crush"; deliver_client = "crush";
       needs_deliver = true; needs_wire_daemon = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] };
+  (* gemini (#406b): Google's Gemini CLI. MCP-server-based delivery via
+     `gemini mcp` config (written by `c2c install gemini` — slice #406a),
+     no separate deliver daemon, no wire bridge, no poker. The `trust:
+     true` flag on the c2c MCP server entry bypasses tool-call confirmation
+     prompts, so automated `c2c restart gemini` works without TTY
+     auto-answer (unlike Claude's #399b dance). *)
+  Stdlib.Hashtbl.add clients "gemini"
+    { binary = "gemini"; deliver_client = "gemini";
+      needs_deliver = false; needs_wire_daemon = false; needs_poker = false;
+      poker_event = None; poker_from = None; extra_env = [] };
   (* codex-headless: minimal unblocker for broker-driven XML delivery.
      We wire the bridge behind a c2c-owned stdin pipe and use the deliver daemon
      to feed that pipe. Richer operator steering / queue management remains future work. *)
@@ -2391,6 +2401,12 @@ let prepare_launch_args ~(name : string) ~(client : string)
         let module A = (val (Stdlib.Hashtbl.find client_adapters "kimi") : CLIENT_ADAPTER) in
         A.build_start_args ~name ?alias_override ?model_override ?resume_session_id
           ~extra_args:extra_args ()
+    | "gemini" ->
+        (* #406b: GeminiAdapter handles --resume <idx>|latest, --model. No
+           dev-channels or PTY auto-answer (Gemini uses settings.json
+           `trust: true` instead of an interactive consent prompt). *)
+        let module A = (val (Stdlib.Hashtbl.find client_adapters "gemini") : CLIENT_ADAPTER) in
+        A.build_start_args ~name ?alias_override ?model_override ?resume_session_id ()
     | "codex-headless" ->
         [ "--stdin-format"; "xml";
           "--codex-bin"; "codex";
@@ -2747,9 +2763,88 @@ module KimiAdapter : CLIENT_ADAPTER = struct
     [ "kimi_wire", true ]
 end
 
+module GeminiAdapter : CLIENT_ADAPTER = struct
+  (* #406b: Google's Gemini CLI adapter.
+
+     Delivery shape: Gemini exposes first-class MCP server support
+     (`gemini mcp add` / `mcp list` / `mcp remove`); `c2c install gemini`
+     (#406a) writes ~/.gemini/settings.json with the c2c MCP server entry
+     and `trust: true` so tool-call confirmation prompts are pre-approved.
+     No deliver daemon, no wire bridge, no poker, no PTY auto-answer
+     (Gemini has no equivalent of Claude's #399b dev-channel consent
+     prompt — the trust gate is settings-based, not interactive).
+
+     Resume semantics: Gemini uses a numeric session index (per-project)
+     with `gemini --resume <idx>` / `--resume latest` / `--list-sessions`.
+     c2c's instance config stores a session-id string; for v1 we map that
+     to `--resume latest` on resume. Operators wanting a specific index
+     can pass it via `c2c start gemini -- --resume 3` (extra_args
+     forwarded by prepare_launch_args). A future slice could persist the
+     latest-index per-instance for round-tripping.
+
+     OAuth seeding caveat: ~/.gemini/oauth_creds.json must exist before
+     the first managed launch. `c2c install gemini` surfaces a one-line
+     reminder; we don't pre-seed creds here. *)
+
+  let name = "gemini"
+  let config_dir = ".gemini"
+  let agent_dir = ""   (* gemini has no agent-dir concept *)
+  let instances_subdir = "gemini"
+
+  let binary = "gemini"
+  let needs_deliver = false
+  let needs_wire_daemon = false
+  let needs_poker = false
+  let poker_event = None
+  let poker_from = None
+  let extra_env = []
+  let session_id_env = None
+    (* Gemini does not consume a session-id env var; resume is via
+       --resume <idx>|latest, threaded through build_start_args. *)
+
+  let build_start_args ~name:_ ?alias_override:_ ?model_override
+      ?resume_session_id ?(extra_args = []) () =
+    ignore extra_args;
+    let resume_args =
+      match resume_session_id with
+      | None -> []
+      | Some sid ->
+        let s = String.trim sid in
+        if s = "" then []
+        else
+          (* If the operator already passed --resume in extra_args,
+             prepare_launch_args appends them after our base; let theirs
+             win by emitting nothing here. Otherwise default to "latest"
+             unless the stored session_id parses as a numeric index. *)
+          let is_numeric =
+            String.length s > 0
+            && String.for_all (fun c -> c >= '0' && c <= '9') s
+          in
+          let target = if is_numeric then s else "latest" in
+          [ "--resume"; target ]
+    in
+    let base = resume_args in
+    match model_override with
+    | Some m when String.trim m <> "" -> base @ [ "--model"; m ]
+    | _ -> base
+
+  let refresh_identity ~name:_ ~alias:_ ~broker_root:_ ~project_dir:_
+      ~instances_dir:_ =
+    (* Gemini's c2c MCP server is configured via ~/.gemini/settings.json
+       (written by `c2c install gemini`); env vars in that entry carry the
+       broker root + alias. No per-launch config-file refresh needed. *)
+    ()
+
+  let probe_capabilities ~binary_path:_ =
+    (* gemini_mcp: always available for managed gemini sessions.
+       The MCP delivery channel is configured by `c2c install gemini`. *)
+    [ "gemini_mcp", true ]
+end
+
 let () = Stdlib.Hashtbl.add client_adapters "claude" (module ClaudeAdapter)
 let () = Stdlib.Hashtbl.add client_adapters "codex" (module CodexAdapter)
 let () = Stdlib.Hashtbl.add client_adapters "kimi" (module KimiAdapter)
+let () = Stdlib.Hashtbl.add client_adapters "gemini" (module GeminiAdapter)
 
 let parse_rfc3339_utc s =
   match Ptime.of_rfc3339 s with
