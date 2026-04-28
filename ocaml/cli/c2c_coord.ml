@@ -32,6 +32,74 @@ let run_capture cmd =
        in
        loop [])
 
+(** ISO8601 UTC timestamp for stash messages. *)
+let ts () =
+  let t = Unix.gmtime (Unix.gettimeofday ()) in
+  Printf.sprintf "%04d%02d%02dT%02d%02d%02d"
+    (t.Unix.tm_year + 1900) (t.Unix.tm_mon + 1) t.Unix.tm_mday
+    t.Unix.tm_hour t.Unix.tm_min t.Unix.tm_sec
+
+(** Extract author email from a git SHA in a repo. *)
+let git_author_email ~repo sha =
+  let cmd = Printf.sprintf "git -C %s log -1 --format=%%ae %s"
+    (Filename.quote repo) (Filename.quote sha)
+  in
+  let email = run_capture cmd |> String.trim in
+  if email = "" then None else Some email
+
+(** Known alias pool — populated from git config user.email for the
+    local coordinator and extended with explicit overrides.  The
+    coordinator's user.email is the base identity; add more entries
+    as the swarm grows. *)
+let email_to_alias email =
+  let table = [
+    (* (email_lower, alias) *)
+    "stanza-coder@c2c.im",         "stanza-coder";
+    "jungle-coder@c2c.im",         "jungle-coder";
+    "galaxy-coder@c2c.im",         "galaxy-coder";
+    "test-agent@c2c.im",           "test-agent";
+    "test-agent-oc@c2c.im",        "test-agent-oc";
+    "tundra-coder@c2c.im",         "tundra-coder";
+    "storm-beacon@c2c.im",         "storm-beacon";
+    "storm-ember@c2c.im",          "storm-ember";
+    "lyra-quill@c2c.im",           "lyra-quill";
+  ]
+  in
+  let lo = String.lowercase_ascii email in
+  match List.assoc_opt lo table with
+  | Some a -> Some a
+  | None ->
+      (* Unknown email — fall back to self-DM so nothing is silently lost. *)
+      None
+
+(** DM an author after their SHA lands on master.
+    Sends via `c2c send` CLI so it works in any session context.
+    Silently skips on any error (best-effort notification). *)
+let dm_author ~repo ~original_sha ~new_sha =
+  match git_author_email ~repo original_sha with
+  | None ->
+      Printf.printf "[coord-cherry-pick] dm_author: could not extract email from %s\n%!" original_sha
+  | Some email ->
+      let alias = email_to_alias email in
+      let msg =
+        Printf.sprintf
+          "[coord] your commit %s was landed on master (as %s) — installed and live"
+          original_sha new_sha
+      in
+      (match alias with
+       | Some a ->
+           let cmd = Printf.sprintf "c2c send %s %s" a (Filename.quote msg) in
+           let rc = run cmd in
+           if rc = 0 then
+             Printf.printf "[coord-cherry-pick] notified %s (%s) ✓\n%!" a email
+           else
+             Printf.printf "[coord-cherry-pick] notify %s (%s) failed (exit %d)\n%!" a email rc
+       | None ->
+           (* Unknown author — self-DM so coordinator can manually route. *)
+           let cmd = Printf.sprintf "c2c send coordinator1 %s" (Filename.quote msg) in
+           let rc = run cmd in
+           Printf.printf "[coord-cherry-pick] unknown author %s — self-DM'd (exit %d)\n%!" email rc)
+
 (** Check git status --porcelain in a repo.
     Returns (is_clean, is_working_dirty, lines). *)
 let git_status repo =
@@ -92,7 +160,7 @@ let git_abort repo =
   ignore (run (Printf.sprintf "git -C %s cherry-pick --abort" (Filename.quote repo)))
 
 (** The main run logic. Calls exit() directly on error. *)
-let run_coord_cherry_pick ~no_install ~shas =
+let run_coord_cherry_pick ~no_install ~no_dm ~shas =
   match Sys.getenv_opt "C2C_COORDINATOR" with
   | None | Some "" ->
       Printf.eprintf "error: C2C_COORDINATOR=1 required\n%!";
@@ -183,6 +251,16 @@ let run_coord_cherry_pick ~no_install ~shas =
               Printf.printf "[coord-cherry-pick] just install-all succeeded ✓\n%!"
           end;
 
+          (* DM each author after install succeeds. *)
+          if not no_dm then begin
+            let new_sha = run_capture (Printf.sprintf "git -C %s rev-parse HEAD" (Filename.quote repo))
+                            |> String.trim
+            in
+            List.iter (fun original_sha ->
+              dm_author ~repo ~original_sha ~new_sha
+            ) shas
+          end;
+
           Printf.printf "[coord-cherry-pick] done\n%!"
         end
       end
@@ -191,21 +269,30 @@ let no_install_flag =
   Cmdliner.Arg.(value & flag & info [ "no-install" ]
     ~doc:"Skip just install-all after cherry-pick")
 
+let no_dm_flag =
+  Cmdliner.Arg.(value & flag & info [ "no-dm" ]
+    ~doc:"Skip author DM notifications (use when cherry-picking multiple commits where coordinator DMs manually)")
+
 let sha_term =
   Cmdliner.Arg.(non_empty & pos_all string [] & info [] ~docv:"SHA" ~doc:"SHA(s) to cherry-pick")
 
 let coord_cherry_pick_term =
   let+ no_install = no_install_flag
+  and+ no_dm = no_dm_flag
   and+ shas = sha_term in
-  run_coord_cherry_pick ~no_install ~shas
+  run_coord_cherry_pick ~no_install ~no_dm ~shas
 
-let doc = "Coordinator helper: cherry-pick SHAs with dirty-tree safety + install."
+let doc = "Coordinator helper: cherry-pick SHAs with dirty-tree safety + install + author DM."
 
 let man = [
   `S "DESCRIPTION";
   `P "Cherry-pick one or more SHAs with automatic stash of dirty working tree.";
   `P "On conflict, aborts the cherry-pick sequence and restores the stash.";
+  `P "On success, runs just install-all and sends a C2C DM to each commit author";
+  `P "via their known email-to-alias mapping, notifying them their SHA landed.";
   `P "Requires C2C_COORDINATOR=1 environment variable.";
+  `P "Use --no-dm to skip author notifications (e.g. multi-commit cherry-picks";
+  `P "where the coordinator DMs manually).";
 ]
 
 let coord_cherry_pick_cmd =
