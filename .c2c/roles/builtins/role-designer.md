@@ -53,7 +53,9 @@ description: <one sentence — what this agent is for>
 role: primary | subagent
 c2c:
   alias: <desired-alias>
-  auto_join_rooms: [<room-id>, ...]  # omit if none
+  auto_join_rooms: [swarm-lounge, onboarding]  # convention (#390): default to both;
+                                               # swarm-lounge for ops chatter,
+                                               # onboarding for quieter new-agent space
 opencode:
   theme: <theme-name>  # omit if not opencode-focused
 claude:
