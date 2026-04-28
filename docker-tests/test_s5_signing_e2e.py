@@ -95,6 +95,8 @@ def compose_down():
 
 def test_identity_show_returns_valid_ed25519(agent_a1):
     """S5 AC part 1: `c2c relay identity show --json` returns alg=ed25519 + fingerprint."""
+    # Ensure identity is provisioned before reading it
+    init_identity(agent_a1, ALIAS_A1, relay_url=RELAY_URL)
     data = get_identity_show(agent_a1)
     assert data.get("alg") == "ed25519", "Expected alg=ed25519, got: {}".format(data)
     assert "fingerprint" in data, "Expected fingerprint field, got: {}".format(data)
@@ -103,12 +105,16 @@ def test_identity_show_returns_valid_ed25519(agent_a1):
 
 def test_fingerprint_is_sha256_format(agent_a1):
     """Fingerprint should be in SHA256:... format."""
+    # Ensure identity is provisioned before reading it
+    init_identity(agent_a1, ALIAS_A1, relay_url=RELAY_URL)
     fp = get_fingerprint(agent_a1)
     assert fp.startswith("SHA256:"), "Fingerprint should start with SHA256:, got: {}".format(fp)
 
 
 def test_pubkey_is_returned(agent_a1):
     """Public key should be a non-empty base64url string."""
+    # Ensure identity is provisioned before reading it
+    init_identity(agent_a1, ALIAS_A1, relay_url=RELAY_URL)
     pk = get_pubkey(agent_a1)
     assert pk, "Public key should be non-empty"
     assert len(pk) > 10, "Public key seems too short: {}".format(pk)
@@ -167,7 +173,7 @@ def test_peer_pass_sign_and_verify_cross_broker(agent_a1, agent_b1):
     print("[s5] artifact copied to agent-b1 at: {}".format(dst_path))
 
     # Step 5: agent-b1 initializes its identity and verifies the artifact
-    init_identity(agent_b1, ALIAS_B1, force=True)
+    init_identity(agent_b1, ALIAS_B1, relay_url=RELAY_URL)
     ok, out = verify_peer_pass(agent_b1, dst_path)
     assert ok, "verify_peer_pass failed: {}".format(out)
     assert "VERIFIED" in out.upper(), "Expected 'VERIFIED' in output, got: {}".format(out)
