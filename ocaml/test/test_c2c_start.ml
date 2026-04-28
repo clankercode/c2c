@@ -158,6 +158,64 @@ let test_resolve_model_override_saved_used_when_neither_explicit_nor_role () =
   | Some v -> check string "saved config used when no explicit or role" "openai:gpt-4o" v
   | None -> fail "expected Some, got None"
 
+(* #424: env-var precedence over persisted broker_root. *)
+let test_resolve_broker_root_env_overrides_persisted () =
+  let warned = ref None in
+  let result =
+    C2c_start.resolve_broker_root_with_env
+      ~warn:(fun e p -> warned := Some (e, p))
+      ~env:(Some "/tmp/env-broker")
+      ~persisted:"/tmp/persisted-broker" ()
+  in
+  check string "env wins over persisted" "/tmp/env-broker" result;
+  (match !warned with
+   | Some (e, p) ->
+       check string "warn got env" "/tmp/env-broker" e;
+       check string "warn got persisted" "/tmp/persisted-broker" p
+   | None -> fail "expected warn callback to fire on mismatch")
+
+let test_resolve_broker_root_env_no_warn_when_match () =
+  let warned = ref false in
+  let result =
+    C2c_start.resolve_broker_root_with_env
+      ~warn:(fun _ _ -> warned := true)
+      ~env:(Some "/tmp/same")
+      ~persisted:"/tmp/same" ()
+  in
+  check string "match returns env value" "/tmp/same" result;
+  check bool "warn does not fire when env == persisted" false !warned
+
+let test_resolve_broker_root_env_unset_uses_persisted () =
+  let warned = ref false in
+  let result =
+    C2c_start.resolve_broker_root_with_env
+      ~warn:(fun _ _ -> warned := true)
+      ~env:None
+      ~persisted:"/tmp/persisted-broker" ()
+  in
+  check string "no env -> persisted wins" "/tmp/persisted-broker" result;
+  check bool "warn does not fire when env unset" false !warned
+
+let test_resolve_broker_root_env_empty_string_uses_persisted () =
+  let warned = ref false in
+  let result =
+    C2c_start.resolve_broker_root_with_env
+      ~warn:(fun _ _ -> warned := true)
+      ~env:(Some "   ")
+      ~persisted:"/tmp/persisted-broker" ()
+  in
+  check string "whitespace env -> persisted wins" "/tmp/persisted-broker" result;
+  check bool "warn does not fire when env is whitespace" false !warned
+
+let test_resolve_broker_root_env_trims_whitespace () =
+  let result =
+    C2c_start.resolve_broker_root_with_env
+      ~warn:(fun _ _ -> ())
+      ~env:(Some "  /tmp/env-broker  ")
+      ~persisted:"/tmp/persisted" ()
+  in
+  check string "env value is trimmed" "/tmp/env-broker" result
+
 let test_prepare_launch_args_adds_model_flag_for_claude () =
   let args =
     C2c_start.prepare_launch_args ~name:"claude-proof" ~client:"claude"
@@ -1731,6 +1789,16 @@ let () =
             `Quick, test_resolve_model_override_role_wins_over_saved )
         ; ( "resolve_model_override_saved_used_when_neither_explicit_nor_role",
             `Quick, test_resolve_model_override_saved_used_when_neither_explicit_nor_role )
+        ; ( "424_resolve_broker_root_env_overrides_persisted",
+            `Quick, test_resolve_broker_root_env_overrides_persisted )
+        ; ( "424_resolve_broker_root_env_no_warn_when_match",
+            `Quick, test_resolve_broker_root_env_no_warn_when_match )
+        ; ( "424_resolve_broker_root_env_unset_uses_persisted",
+            `Quick, test_resolve_broker_root_env_unset_uses_persisted )
+        ; ( "424_resolve_broker_root_env_empty_string_uses_persisted",
+            `Quick, test_resolve_broker_root_env_empty_string_uses_persisted )
+        ; ( "424_resolve_broker_root_env_trims_whitespace",
+            `Quick, test_resolve_broker_root_env_trims_whitespace )
         ; ( "prepare_launch_args_adds_model_flag_for_claude",
             `Quick, test_prepare_launch_args_adds_model_flag_for_claude )
         ; ( "prepare_launch_args_adds_agent_flag_for_claude",

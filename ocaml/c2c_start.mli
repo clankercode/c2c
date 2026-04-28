@@ -499,6 +499,19 @@ val resolve_model_override :
   saved_model_override:string option ->
   string option
 
+val resolve_broker_root_with_env :
+  ?warn:(string -> string -> unit) ->
+  env:string option ->
+  persisted:string ->
+  unit ->
+  string
+(** [resolve_broker_root_with_env ~env ~persisted ()] returns the
+    broker_root that {!cmd_start} should use on resume. When [env] is
+    [Some s] with [String.trim s <> ""], the trimmed env value wins
+    over the persisted instance config; if it also differs from
+    [persisted], [warn env_root persisted] is invoked (default: stderr
+    log). Otherwise [persisted] is returned. (#424) *)
+
 val cmd_start :
   client:string ->
   name:string ->

@@ -3942,6 +3942,26 @@ let resolve_model_override
        | Some _ -> role_pmodel_override
        | None -> saved_model_override)
 
+(* #424: explicit C2C_MCP_BROKER_ROOT env var wins over the persisted
+   instance config broker_root. If [env] is None or empty/whitespace,
+   the saved [persisted] value is returned unchanged. If [env] is set
+   and differs from [persisted], a stderr warning is emitted via
+   [warn] (so callers can stub it in tests). *)
+let resolve_broker_root_with_env
+    ?(warn = fun (env_root : string) (persisted : string) ->
+      Printf.eprintf
+        "c2c start: C2C_MCP_BROKER_ROOT=%s overrides persisted instance broker_root=%s (#424)\n%!"
+        env_root persisted)
+    ~(env : string option)
+    ~(persisted : string)
+    () : string =
+  match env with
+  | Some s when String.trim s <> "" ->
+      let env_root = String.trim s in
+      if env_root <> persisted then warn env_root persisted;
+      env_root
+  | _ -> persisted
+
 let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?(binary_override : string option) ?(alias_override : string option)
     ?(session_id_override : string option) ?(model_override : string option)
@@ -4153,7 +4173,12 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
           | "codex", None -> ex.codex_resume_target
           | _, _ -> ex.codex_resume_target
         in
-        (bo, ao, ea, rs, codex_target, ex.broker_root, model_override, mo)
+        let resolved_broker_root =
+          resolve_broker_root_with_env
+            ~env:(Sys.getenv_opt "C2C_MCP_BROKER_ROOT")
+            ~persisted:ex.broker_root ()
+        in
+        (bo, ao, ea, rs, codex_target, resolved_broker_root, model_override, mo)
     | None ->
         let rs =
           match client, session_id_override with
