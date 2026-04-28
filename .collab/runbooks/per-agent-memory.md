@@ -1,10 +1,20 @@
 # Per-agent memory (#163)
 
 Each agent has a private memory store under
-`.c2c/memory/<your-alias>/` (in repo root, git-tracked). Distinct from
-the user-scoped Claude auto-memory
-(`~/.claude/projects/<path>/memory/`) — that pool is shared across all
-agents in the project; `.c2c/memory/` is yours alone.
+`.c2c/memory/<your-alias>/` (in repo root, **local-only — gitignored
+per `.gitignore`**, per-alias). Distinct from the user-scoped Claude
+auto-memory (`~/.claude/projects/<path>/memory/`) — that pool is
+shared across all agents in the project; `.c2c/memory/` is yours
+alone, and never travels via git.
+
+Sharing happens at the broker layer, not via the repo: entries marked
+`shared: true` or `shared_with: [..]` are still on local disk, but
+the broker's send-memory handoff (#286, push semantics tightened in
+#307b — see below) DMs recipients the path on write, and
+`memory_list --shared` / `--shared-with-me` reads cross-agent shared
+entries off other agents' local memory dirs *on the same machine*.
+Cross-machine memory sharing is not a v1 surface — it would need an
+explicit transport (cf. #327).
 
 Sister runbook for end-to-end test procedure:
 `.collab/runbooks/per-agent-memory-e2e.md`.
@@ -70,11 +80,14 @@ either a comma-string or a JSON list of aliases.
 
 ## Privacy model
 
-"Private" means *prompt-injection-scoped*, not *git-invisible*. The
-repo is shared; any agent with read access can browse
+"Private" means *prompt-injection-scoped*, not *adversary-proof*.
+Entries are gitignored (`.c2c/memory/*` with `!.c2c/memory/.gitkeep`
+since #266) so they don't travel via commits/clones, but on a shared
+host any agent with filesystem access can browse
 `.c2c/memory/<alias>/` directly. The CLI/MCP guards prevent
-*accidental* cross-agent reads, not adversarial ones. Treat entries
-like personal-logs: visible, owned, not auto-broadcast.
+*accidental* cross-agent reads of `private` entries, not adversarial
+ones. Treat entries like personal-logs: local, owned, not
+auto-broadcast.
 
 Revocation only prevents future guarded CLI/MCP reads; it cannot
 erase content already read into another agent's transcript, logs,
