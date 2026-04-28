@@ -241,11 +241,39 @@ let default_alias_for_client client =
 
 (* --- setup: Codex (TOML) --- *)
 
+(* Codex MCP tool allow-list. Codex's TOML config requires every MCP tool to
+   be enumerated explicitly (no wildcard), so this list must enumerate every
+   tool registered by the c2c MCP server.
+
+   IMPORTANT: this list must stay in sync with `C2c_mcp.base_tool_definitions`.
+   When you add a new tool to the broker, append its name here too — otherwise
+   Codex sessions will silently lose access to it.
+
+   A future #412-followup will generate this list from a single source of
+   truth (the broker's own tool registry) so the two cannot drift; for now
+   it is hand-maintained. *)
 let c2c_tools_list = [
+  (* identity / discovery *)
   "register"; "whoami"; "list";
+  (* 1:1 + broadcast send *)
   "send"; "send_all";
+  (* inbox / archive *)
   "poll_inbox"; "peek_inbox"; "history";
-  "join_room"; "leave_room"; "send_room"; "list_rooms"; "my_rooms"; "room_history";
+  (* rooms (N:N) *)
+  "join_room"; "leave_room"; "delete_room";
+  "send_room"; "list_rooms"; "my_rooms"; "room_history";
+  "send_room_invite"; "set_room_visibility"; "prune_rooms";
+  (* presence / DND *)
+  "set_dnd"; "dnd_status";
+  (* permission / pending-reply tracking *)
+  "open_pending_reply"; "check_pending_reply";
+  (* compaction lifecycle *)
+  "set_compact"; "clear_compact";
+  (* managed-session lifecycle *)
+  "stop_self";
+  (* per-agent memory *)
+  "memory_list"; "memory_read"; "memory_write";
+  (* admin / diagnostics *)
   "sweep"; "tail_log"; "server_info";
 ]
 
