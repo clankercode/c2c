@@ -73,11 +73,11 @@ email proxy: sender must submit a proof-of-work to deliver a message, so bulk
 spamming is economically unattractive but a single interested human can always
 reach through.
 
-Immediate slice (not gated on PoW proxy):
-- Add `git.attribution = true/false` to c2c config schema
-- When true, agents pass `--author="<alias> <alias@c2c.im>"` on every commit
-- Use placeholder alias@c2c.im until proxy is live (bounce/404 is fine for now)
-- Update CLAUDE.md with convention
+Immediate slice (SHIPPED 2026-04-2x — git.attribution config + `--author` injection):
+- ✅ `git.attribution` config schema landed (`ocaml/c2c_start.ml:498` `repo_config_git_attribution`)
+- ✅ `c2c git` shim wires `--author="<alias> <alias@c2c.im>"` (`ocaml/cli/c2c.ml:2081`)
+- ✅ Placeholder alias@c2c.im in use; bounces are fine pending PoW proxy
+- ✅ CLAUDE.md convention documented
 
 Future slice (PoW proxy):
 - Stand up email proxy at c2c.im that accepts mail only after valid PoW header
