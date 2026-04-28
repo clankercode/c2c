@@ -205,8 +205,11 @@ let validate_artifact_path_components ~alias ~sha : (unit, string) result =
     in
     loop 0
   in
+  let alias_max_bytes = 128 in
   let alias_invalid =
     if alias = "" then Some "alias is empty"
+    else if String.length alias > alias_max_bytes then
+      Some (Printf.sprintf "alias exceeds %d bytes" alias_max_bytes)
     else if String.contains alias '/' then Some "alias contains '/'"
     else if String.contains alias '\\' then Some "alias contains '\\'"
     else if String.contains alias '\x00' then Some "alias contains NUL byte"

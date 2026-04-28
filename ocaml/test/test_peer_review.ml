@@ -542,10 +542,7 @@ let assert_artifact_path_raises ~alias ~sha label =
 let assert_verify_claim_rejects ~alias ~sha label =
   match Peer_review.verify_claim ~alias ~sha with
   | Peer_review.Claim_invalid msg ->
-    if not (String.length msg > 0
-            && (String.length msg >= 9
-                && String.sub msg 0 9 = "alias/sha"))
-    then
+    if not (String.starts_with ~prefix:"alias/sha" msg) then
       failwith (Printf.sprintf "%s: Claim_invalid had unexpected reason: %s" label msg)
   | Peer_review.Claim_valid _ -> failwith (Printf.sprintf "%s: verify_claim unexpectedly returned Claim_valid" label)
   | Peer_review.Claim_missing m ->
@@ -590,6 +587,19 @@ let test_alias_empty_rejected () =
   assert_validator_rejects ~alias:"" ~sha:valid_sha "alias empty";
   assert_artifact_path_raises ~alias:"" ~sha:valid_sha "alias empty";
   assert_verify_claim_rejects ~alias:"" ~sha:valid_sha "alias empty verify_claim"
+
+let test_alias_too_long_rejected () =
+  (* #57b: 128-byte alias cap — DoS comfort (linear-scan upper bound).
+     129 bytes of valid alphanumeric should fail length check before
+     per-byte scan. *)
+  let bad = String.make 129 'a' in
+  assert_validator_rejects ~alias:bad ~sha:valid_sha "alias 129 bytes";
+  assert_artifact_path_raises ~alias:bad ~sha:valid_sha "alias 129 bytes path";
+  (* Boundary: exactly 128 bytes accepted. *)
+  let ok = String.make 128 'a' in
+  match Peer_review.validate_artifact_path_components ~alias:ok ~sha:valid_sha with
+  | Ok () -> ()
+  | Error m -> failwith (Printf.sprintf "128-byte alias unexpectedly rejected: %s" m)
 
 let test_alias_with_nonprintable_rejected () =
   let bad = "foo\x07bar" in
@@ -684,6 +694,7 @@ let () = Alcotest.run "Peer_review" [
     Alcotest.test_case "alias containing NUL rejected" `Quick test_alias_with_nul_rejected;
     Alcotest.test_case "alias with leading '.' rejected" `Quick test_alias_with_leading_dot_rejected;
     Alcotest.test_case "alias empty rejected" `Quick test_alias_empty_rejected;
+    Alcotest.test_case "alias too long (>128 bytes) rejected (#57b)" `Quick test_alias_too_long_rejected;
     Alcotest.test_case "alias with non-printable byte rejected" `Quick test_alias_with_nonprintable_rejected;
     Alcotest.test_case "sha non-hex rejected" `Quick test_sha_non_hex_rejected;
     Alcotest.test_case "sha too short rejected" `Quick test_sha_too_short_rejected;
