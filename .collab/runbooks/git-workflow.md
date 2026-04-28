@@ -348,17 +348,43 @@ restore puts the binary at a different SHA than the previous stamp
 recorded — that's the same recover-with-evidence shape working at the
 cherry-pick scale.
 
-**Future tooling** (#325 follow-up, not in this slice):
-`c2c coord-cherry-pick <sha>` — wraps `git cherry-pick` with:
-1. `git merge-base` divergence check; abort if base is more than N
-   commits behind current master without `--allow-divergent`.
-2. Pre-cherry-pick `git show --stat` audit; flag files outside the
-   slice's claimed scope (read from commit message or first line of
-   diff).
-3. Post-cherry-pick auto-`just build` to surface dropped dune entries
-   immediately.
+**Tooling — `c2c coord-cherry-pick`** (shipped #328, OCaml port #368;
+auto-install added in #328's tip, install-failure handling tightened
+in #401):
 
-Until that lands, the discipline above is the surface.
+`c2c coord-cherry-pick <sha>` (or `c2c coord cherry-pick <sha>`) wraps
+`git cherry-pick` with the discipline above baked in:
+- Auto-stash dirty working tree before the pick; auto-pop after.
+- Detects UU/AA/DD markers post-pop (silent-conflict guard).
+- **Runs `just install-all` automatically after a successful pick**
+  to surface dropped dune entries / divergent-base reverts at the
+  cheapest possible moment.
+- **Strict-by-default on install failure**: if `just install-all`
+  fails post-cherry-pick, exits 1. The dogfood lesson is that masked
+  install failures cause downstream build/restart confusion.
+- **Escape hatch — `--no-fail-on-install`** (#401): when the coord
+  tree has a transient build issue independent of the cherry-picked
+  SHA (e.g. an unrelated peer's mid-rebase WIP), use this flag to
+  downgrade install failure to a stderr warning, still run author
+  DMs, and exit 0. The cherry-pick is committed either way; the flag
+  separates the install concern from the landing concern.
+- DMs each commit author after install succeeds (or after stderr
+  warning under `--no-fail-on-install`). Use `--no-dm` for
+  multi-commit batches where coord DMs manually.
+- Use `--no-install` to skip install entirely (e.g. for a doc-only
+  cherry-pick).
+
+Plain `git cherry-pick` BYPASSES the auto-DM gate; coord uses the
+`c2c coord-cherry-pick` form. Originally tracked under #325's
+"future tooling" list — those AC items are now (a) shipped via
+the auto-install path, (c) shipped via the auto-`just install-all`
+post-step. AC (b) (pre-cherry-pick scope audit) remains a future
+follow-up.
+
+The recover-with-evidence discipline above still applies for
+divergent-base reverts that the auto-install surfaces — the tool
+catches the failure faster, but the manual restore commit is still
+the right shape when one slips through.
 
 ### "I sent a self-review-via-skill as peer-PASS"
 
