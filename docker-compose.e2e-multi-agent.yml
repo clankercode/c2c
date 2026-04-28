@@ -1,19 +1,30 @@
-# DRAFT — #407 e2e multi-agent topology.
+# #407 e2e multi-agent topology.
 #
 # Target: two "hosts" (independent broker volumes) + relay + 4 agent
 # containers. Cross-host messaging exercises the real relay path,
 # unlike docker-compose.two-container.yml which shares one broker.
 #
-# Usage (after promoting to .yml):
+# Self-contained — does NOT require `docker-compose.test.yml` as a
+# base overlay.
+#
+# Usage:
 #   DOCKER_BUILDKIT=1 docker compose \
-#     -f docker-compose.test.yml \
 #     -f docker-compose.e2e-multi-agent.yml \
 #     up -d --build
 #   bash tests/e2e/00-smoke-cross-container.sh
-#   docker compose ... down -v
+#   docker compose -f docker-compose.e2e-multi-agent.yml down -v
 #
 # Two broker volumes (broker-a, broker-b) — agents on host-A only see
 # host-A peers in `c2c list`. Cross-host delivery MUST go via the relay.
+#
+# Resource budget (per #330 probe scope): thin shell-driven agents,
+# NO MCP, NO LLM, total RAM ≤600MB. Relay 128MB + 4 agents @ 96MB
+# = 512MB cap; reservations sized for idle-sleep workloads.
+#
+# Healthcheck note: the relay runtime image (Dockerfile, debian:12-slim)
+# does NOT include curl or wget. We reuse the c2c binary for the probe
+# instead — `c2c relay status` performs an authenticated GET against
+# /health, exits 0 on healthy, non-zero otherwise.
 
 services:
   relay:
@@ -27,8 +38,17 @@ services:
       PORT: "7331"
     networks:
       - c2c-e2e-net
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          pids: 64
+        reservations:
+          memory: 32m
     healthcheck:
-      test: ["CMD", "sh", "-c", "wget -qO- http://127.0.0.1:7331/health | grep -q ok"]
+      # c2c relay status hits /health on the given URL and exits non-zero
+      # on failure. Avoids needing wget/curl in the slim runtime image.
+      test: ["CMD", "c2c", "relay", "status", "--relay-url", "http://127.0.0.1:7331"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -38,6 +58,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.test
+    image: c2c-e2e-agent:latest
     container_name: c2c-e2e-agent-a1
     depends_on:
       relay:
@@ -46,6 +67,13 @@ services:
       - broker-a:/var/lib/c2c
     networks:
       - c2c-e2e-net
+    deploy:
+      resources:
+        limits:
+          memory: 96m
+          pids: 64
+        reservations:
+          memory: 32m
     environment:
       C2C_MCP_BROKER_ROOT: /var/lib/c2c
       C2C_RELAY_URL: http://relay:7331
@@ -53,9 +81,11 @@ services:
       C2C_IN_DOCKER: "1"
       C2C_MCP_AUTO_REGISTER_ALIAS: agent-a1
       C2C_MCP_SESSION_ID: agent-a1-session
+      C2C_CLI_FORCE: "1"
     command: ["sleep", "3600"]
 
   agent-a2:
+    image: c2c-e2e-agent:latest
     build:
       context: .
       dockerfile: Dockerfile.test
@@ -67,6 +97,13 @@ services:
       - broker-a:/var/lib/c2c
     networks:
       - c2c-e2e-net
+    deploy:
+      resources:
+        limits:
+          memory: 96m
+          pids: 64
+        reservations:
+          memory: 32m
     environment:
       C2C_MCP_BROKER_ROOT: /var/lib/c2c
       C2C_RELAY_URL: http://relay:7331
@@ -74,9 +111,11 @@ services:
       C2C_IN_DOCKER: "1"
       C2C_MCP_AUTO_REGISTER_ALIAS: agent-a2
       C2C_MCP_SESSION_ID: agent-a2-session
+      C2C_CLI_FORCE: "1"
     command: ["sleep", "3600"]
 
   agent-b1:
+    image: c2c-e2e-agent:latest
     build:
       context: .
       dockerfile: Dockerfile.test
@@ -88,6 +127,13 @@ services:
       - broker-b:/var/lib/c2c
     networks:
       - c2c-e2e-net
+    deploy:
+      resources:
+        limits:
+          memory: 96m
+          pids: 64
+        reservations:
+          memory: 32m
     environment:
       C2C_MCP_BROKER_ROOT: /var/lib/c2c
       C2C_RELAY_URL: http://relay:7331
@@ -95,9 +141,11 @@ services:
       C2C_IN_DOCKER: "1"
       C2C_MCP_AUTO_REGISTER_ALIAS: agent-b1
       C2C_MCP_SESSION_ID: agent-b1-session
+      C2C_CLI_FORCE: "1"
     command: ["sleep", "3600"]
 
   agent-b2:
+    image: c2c-e2e-agent:latest
     build:
       context: .
       dockerfile: Dockerfile.test
@@ -109,6 +157,13 @@ services:
       - broker-b:/var/lib/c2c
     networks:
       - c2c-e2e-net
+    deploy:
+      resources:
+        limits:
+          memory: 96m
+          pids: 64
+        reservations:
+          memory: 32m
     environment:
       C2C_MCP_BROKER_ROOT: /var/lib/c2c
       C2C_RELAY_URL: http://relay:7331
@@ -116,6 +171,7 @@ services:
       C2C_IN_DOCKER: "1"
       C2C_MCP_AUTO_REGISTER_ALIAS: agent-b2
       C2C_MCP_SESSION_ID: agent-b2-session
+      C2C_CLI_FORCE: "1"
     command: ["sleep", "3600"]
 
 networks:
