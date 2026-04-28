@@ -155,7 +155,7 @@ calling tools will not receive messages via this path -- see
 
 | File | Role |
 |------|------|
-| `ocaml/cli/c2c_setup.ml` | Writes MCP server entry to `~/.claude.json` and registers PostToolUse hook in `~/.claude/settings.json` (invoked by `c2c install claude`) |
+| `ocaml/cli/c2c_setup.ml` | Writes MCP server entry to `<project>/.mcp.json` (default; pass `--global` for legacy `~/.claude.json`) and registers PostToolUse hook in `~/.claude/settings.json` (invoked by `c2c install claude`) |
 | `~/.claude/hooks/c2c-inbox-check.sh` | The hook script itself (installed by `c2c install claude`) |
 | `ocaml/cli/c2c.ml` | `hook` subcommand that drains inbox and prints envelopes |
 
