@@ -94,24 +94,52 @@ import json, os, sys
 from pathlib import Path
 
 def find_broker_root():
+    """Resolve broker root via canonical priority:
+    1. C2C_MCP_BROKER_ROOT env override
+    2. Ask `c2c health --json` (authoritative — implements env →
+       XDG_STATE_HOME/c2c/repos/<fp>/broker → HOME/.c2c/repos/<fp>/broker)
+    3. Python fallback replicating the same priority if `c2c` is missing.
+    """
+    import subprocess, hashlib
     root = os.environ.get("C2C_MCP_BROKER_ROOT")
     if root:
         p = Path(root)
         if p.exists(): return p
-    # Try git common dir fallback
+    # Authoritative: ask the OCaml binary
     try:
-        import subprocess
-        git_dir = subprocess.run(
-            ["git", "rev-parse", "--git-common-dir"],
+        result = subprocess.run(
+            ["c2c", "health", "--json"],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            data = json.loads(result.stdout)
+            br = data.get("broker_root")
+            if br:
+                p = Path(br)
+                if p.exists(): return p
+    except Exception:
+        pass
+    # Fallback: replicate canonical priority in Python
+    try:
+        remote = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
             capture_output=True, text=True
         ).stdout.strip()
-        if git_dir and git_dir != ".git":
-            p = Path(git_dir).parent / "c2c"
+        if not remote:
+            remote = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True
+            ).stdout.strip()
+        if remote:
+            fp = hashlib.sha256(remote.encode()).hexdigest()
+            xdg = os.environ.get("XDG_STATE_HOME")
+            if xdg:
+                p = Path(xdg) / "c2c" / "repos" / fp / "broker"
+                if p.exists(): return p
+            p = Path.home() / ".c2c" / "repos" / fp / "broker"
             if p.exists(): return p
-    except: pass
-    # Try home config
-    p = Path.home() / ".config" / "c2c"
-    if p.exists(): return p
+    except Exception:
+        pass
     return None
 
 broker_root = find_broker_root()
