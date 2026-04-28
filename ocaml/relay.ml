@@ -3124,7 +3124,7 @@ generateKeys();
         let result = R.send relay ~from_alias ~to_alias ~content ~message_id in
         (match result with
          | `Ok ts | `Duplicate ts ->
-           (match R.identity_pk_of relay ~alias:to_alias with
+           (match R.identity_pk_of relay ~alias:stripped_to_alias with
             | Some identity_pk ->
               (match binding_id_of_phone_pk ~phone_ed25519_pubkey:identity_pk with
                | Some binding_id ->

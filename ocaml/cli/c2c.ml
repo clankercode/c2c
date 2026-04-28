@@ -3490,7 +3490,7 @@ match storage with
     (match db_path with
      | Some p -> Printf.eprintf "  db-path=%s\n%!" p
      | None -> ());
-    let relay = Relay.SqliteRelay.create ?persist_dir () in
+    let relay = Relay.SqliteRelay.create ?persist_dir ~self_host:(Some host) () in
     let remote_polling_stop = match remote_broker_ssh_target, remote_broker_root with
       | Some ssh_target, Some broker_root ->
           let broker_id = Option.value remote_broker_id ~default:"default" in
@@ -3508,7 +3508,7 @@ match storage with
     (match persist_dir with
      | Some d -> Printf.eprintf "  persist-dir=%s\n%!" d
      | None -> Printf.eprintf "  persist-dir=none (in-memory only)\n%!");
-    let relay = Relay.InMemoryRelay.create ?persist_dir () in
+    let relay = Relay.InMemoryRelay.create ?persist_dir ~self_host:(Some host) () in
     let remote_polling_stop = match remote_broker_ssh_target, remote_broker_root with
       | Some ssh_target, Some broker_root ->
           let broker_id = Option.value remote_broker_id ~default:"default" in
