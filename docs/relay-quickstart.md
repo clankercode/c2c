@@ -534,3 +534,5 @@ c2c relay gc --once
 | `alias_conflict` on register | Two different nodes using same alias | Each node needs a unique alias or the other session has a live lease |
 | Duplicate messages | Retry without stable `message_id` | Use a stable `message_id` per send; relay deduplicates within a 10,000-entry window |
 | State lost after relay restart | Using default memory backend | Add `--storage sqlite --db-path relay.db` to persist state across restarts |
+| `unknown scheme` on `relay status` against HTTP relay | Stale Docker image built from an older commit | Rebuild from current master: `docker build -f Dockerfile -t c2c-relay:e2e .`. The `c2c relay status` HTTP client requires the same conduit resolver setup as other relay subcommands; if an older image had a linking or initialization issue, rebuilding picks up the current source. |
+| `ECONNREFUSED` on `relay status` | Relay server not running or wrong port | Check the relay is up and the URL port matches `PORT` in the relay container |
