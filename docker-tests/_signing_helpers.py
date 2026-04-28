@@ -15,11 +15,27 @@ so that identity and artifact paths resolve correctly inside the container.
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 from typing import Any
 
 
 C2C_CLI = "/usr/local/bin/c2c"
+
+
+def _run_shell_in(container: str, script: str, timeout: int = 30) -> subprocess.CompletedProcess:
+    """Run an arbitrary shell script inside a container as testagent (uid 999)."""
+    env = {
+        "C2C_CLI_FORCE": "1",
+        "C2C_IN_DOCKER": "1",
+        "HOME": "/home/testagent",
+        "C2C_MCP_BROKER_ROOT": "/home/testagent/.c2c/broker",
+    }
+    cmd = ["docker", "exec"]
+    for k, v in env.items():
+        cmd += ["-e", f"{k}={v}"]
+    cmd += ["-u", "999", container, "bash", "-c", script]
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
 def _run_c2c_in(
@@ -39,12 +55,15 @@ def _run_c2c_in(
     env = {
         "C2C_CLI_FORCE": "1",
         "C2C_IN_DOCKER": "1",
+        "HOME": "/home/testagent",
+        # Use a testagent-writable broker root so write_allowed_signers_entry succeeds
+        "C2C_MCP_BROKER_ROOT": "/home/testagent/.c2c/broker",
     }
     cmd = ["docker", "exec"]
-    if as_testagent:
-        cmd += ["sudo", "-u", "testagent"]
     for k, v in env.items():
         cmd += ["-e", f"{k}={v}"]
+    if as_testagent:
+        cmd += ["-u", "999"]
     cmd += [container, C2C_CLI] + argv
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
@@ -65,6 +84,16 @@ def register_on_relay(
     ])
 
 
+def ensure_testagent_dirs(container: str) -> None:
+    """Create testagent-writable broker root and home directory structure."""
+    subprocess.run(
+        ["docker", "exec", container,
+         "bash", "-c",
+         "mkdir -p /home/testagent/.c2c/broker /home/testagent/.config/c2c /home/testagent/.cache/c2c/peer-passes && chown -R 999:999 /home/testagent"],
+        capture_output=True, timeout=10,
+    )
+
+
 def init_identity(
     container: str,
     alias: str,
@@ -72,20 +101,32 @@ def init_identity(
 ) -> subprocess.CompletedProcess:
     """Register alias locally AND on relay, creating the broker key path.
 
-    `c2c register` creates the per-alias signing key at
-    <broker_root>/keys/<alias>.ed25519 (via write_allowed_signers_entry).
-    `c2c relay register` registers the alias on the relay for cross-broker
-    routing. Both are needed for peer-pass sign to work.
+    Flow:
+      1. relay identity init — creates ~/.config/c2c/identity.json with Ed25519 keypair
+      2. c2c register — creates <broker_root>/keys/<alias>.ed25519 (write_allowed_signers_entry)
+      3. c2c relay register — registers alias on relay for cross-broker routing
 
-    Runs: c2c register --alias <alias>
+    All three are needed for peer-pass sign to work.
+
+    Runs: c2c relay identity init
+          c2c register --alias <alias> --session-id <alias>-session
           c2c relay register --alias <alias> --relay-url <relay_url>
     """
-    # c2c register — creates broker key path at <broker_root>/keys/<alias>.ed25519
-    r1 = _run_c2c_in(container, ["register", "--alias", alias])
-    # relay registration — for cross-broker routing
+    # Ensure directories exist with correct ownership
+    ensure_testagent_dirs(container)
+
+    # Step 1: Create identity.json with Ed25519 keypair (--force if already exists)
+    r0 = _run_c2c_in(container, ["relay", "identity", "init", "--force"])
+    if r0.returncode != 0:
+        return r0
+    # Step 2: c2c register — creates broker key path at <broker_root>/keys/<alias>.ed25519
+    session_id = f"{alias}-session"
+    r1 = _run_c2c_in(container, ["register", "--alias", alias, "--session-id", session_id])
+    if r1.returncode != 0:
+        return r1
+    # Step 3: relay registration — for cross-broker routing
     r2 = register_on_relay(container, alias, relay_url)
-    # Return first failure, or success
-    return r1 if r1.returncode != 0 else r2
+    return r2
 
 
 def get_identity_show(container: str) -> dict[str, Any]:
@@ -154,35 +195,51 @@ def docker_cp(
     dst_container: str,
     dst_path: str,
 ) -> subprocess.CompletedProcess:
-    """Copy a file between two containers using `docker cp`.
+    """Copy a file between two containers using `docker cp` via host filesystem.
 
-    Works across independent containers (different broker volumes) because
-    docker cp copies via the Docker host filesystem, not through container
-    networking.
+    Docker cp cannot copy directly between containers. We copy src -> host temp
+    -> dst in two steps.
     """
-    return subprocess.run(
-        ["docker", "cp", f"{src_container}:{src_path}", f"{dst_container}:{dst_path}"],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
+    import tempfile
+    import os
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".artifact") as f:
+        host_path = f.name
+    try:
+        # Step 1: src container -> host
+        r1 = subprocess.run(
+            ["docker", "cp", f"{src_container}:{src_path}", host_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r1.returncode != 0:
+            return r1
+        # Step 2: host -> dst container
+        # Ensure destination directory exists
+        dst_dir = os.path.dirname(dst_path)
+        subprocess.run(
+            ["docker", "exec", dst_container, "mkdir", "-p", dst_dir],
+            capture_output=True, text=True, timeout=10,
+        )
+        return subprocess.run(
+            ["docker", "cp", host_path, f"{dst_container}:{dst_path}"],
+            capture_output=True, text=True, timeout=30,
+        )
+    finally:
+        if os.path.exists(host_path):
+            os.unlink(host_path)
 
 
 def artifact_path_in_container(container: str, sha: str, alias: str) -> str:
     """Return the on-disk path for a peer-pass artifact given sha + alias.
 
     Matches the path computed by peer_review.ml artifact_path():
-      ~/.cache/c2c/peer-passes/<sha>-<alias>.json
+      <git_common_dir_parent>/.c2c/peer-passes/<sha>-<alias>.json
 
-    In the E2E containers the testagent user's home is /home/testagent,
-    so this resolves to:
-      /home/testagent/.cache/c2c/peer-passes/<sha>-<alias>.json
+    For the E2E test: the git clone is at /tmp/s5-test-repo-clone, so the
+    artifact path is /tmp/s5-test-repo-clone/.c2c/peer-passes/<sha>-<alias>.json
 
-    This is independent of C2C_MCP_BROKER_ROOT (/var/lib/c2c) — the
-    identity keys live in ~/.config/c2c/ and the artifact cache in
-    ~/.cache/c2c/ per the relay-identity layer-3 spec.
+    The peer-pass sign command must run from within the git clone directory.
     """
-    return f"/home/testagent/.cache/c2c/peer-passes/{sha}-{alias}.json"
+    return f"/tmp/s5-test-repo-clone/.c2c/peer-passes/{sha}-{alias}.json"
 
 
 def artifact_copy_across_broker(
@@ -220,25 +277,21 @@ def make_test_commit_in_container(
 
     Returns the commit SHA (hex string).
     """
-    r = _run_c2c_in(container, [
-        "bash", "-c",
-        f"""
+    script = f"""
         set -e
-        rm -rf {repo_path}
-        git init --bare {repo_path}
-        clone={repo_path}-clone
-        rm -rf $clone
-        git clone {repo_path} $clone
-        cd $clone
+        rm -rf {repo_path} {repo_path}-clone
+        git init --bare {repo_path} >/dev/null 2>&1
+        git clone {repo_path} {repo_path}-clone >/dev/null 2>&1
+        cd {repo_path}-clone
         git config user.email "s5@c2c"
         git config user.name "S5 Test"
         echo "s5-$(date +%s)" > {file_name}
         git add {file_name}
-        git commit -m "{commit_msg}"
-        git push {repo_path} HEAD:refs/heads/s5-test
+        git commit -m "{commit_msg}" >/dev/null 2>&1
+        git push {repo_path} HEAD:refs/heads/s5-test >/dev/null 2>&1 || true
         git rev-parse HEAD
         """
-    ])
+    r = _run_shell_in(container, script)
     assert r.returncode == 0, f"make_test_commit failed in {container}: {r.stderr}"
     sha = r.stdout.strip()
     assert sha, f"empty SHA from commit in {container}"
@@ -272,22 +325,18 @@ def sign_artifact_in_container(
     ]
     if allow_self:
         argv.append("--allow-self")
-    # Run from the git clone directory so git_commit_exists finds the SHA
-    r = _run_c2c_in(container, [
-        "bash", "-c",
-        f"cd {repo_path} && " + " ".join([C2C_CLI] + argv)
-    ])
+    # Ensure .c2c/peer-passes dir exists, then run peer-pass sign from git clone
+    mkdir_cmd = f"mkdir -p {repo_path}/.c2c/peer-passes"
+    cmd = f"{mkdir_cmd} && cd {repo_path} && " + " ".join([C2C_CLI] + [shlex.quote(a) for a in argv])
+    r = _run_shell_in(container, cmd)
     assert r.returncode == 0, f"peer-pass sign failed in {container}: {r.stderr}"
 
     # Verify the artifact exists at the expected path
     artifact_rel = artifact_path_in_container(container, sha, reviewer_alias)
-    r2 = _run_c2c_in(container, ["test", "-f", artifact_rel])
+    r2 = _run_shell_in(container, f"test -f {artifact_rel}")
     if r2.returncode != 0:
         # Fallback: glob for most recent matching file
-        glob_r = _run_c2c_in(container, [
-            "bash", "-c",
-            f"ls -t /home/testagent/.cache/c2c/peer-passes/*{sha}*.json 2>/dev/null | head -1"
-        ])
+        glob_r = _run_shell_in(container, f"ls -t /home/testagent/.cache/c2c/peer-passes/*{sha}*.json 2>/dev/null | head -1")
         artifact_rel = glob_r.stdout.strip()
 
     assert artifact_rel, f"no artifact found for SHA {sha} in {container}"
