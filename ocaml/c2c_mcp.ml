@@ -1988,51 +1988,103 @@ module Broker = struct
     try Unix.unlink path; true
     with Unix.Unix_error _ -> false
 
+  (* #383: classify why a confirmed registration was marked dead.
+     - "timeout": provisional registration (never confirmed) expired
+     - "killed": confirmed session with a PID that is no longer alive
+     - "unknown": confirmed session with no PID (pidless row went dark) *)
+  let peer_offline_reason (reg : registration) : string =
+    match reg.confirmed_at with
+    | None -> "timeout"
+    | Some _ ->
+        match reg.pid with
+        | None -> "unknown"
+        | Some _ -> "killed"
+
+  (* Build the peer_offline message body for a given dead registration.
+     Format matches the proposed envelope in #383. *)
+  let peer_offline_message (reg : registration) : string =
+    let detected_at = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+    let last_seen = match reg.last_activity_ts with
+      | None -> "none"
+      | Some ts -> Printf.sprintf "%.3f" ts
+    in
+    let reason = peer_offline_reason reg in
+    Printf.sprintf
+      "<c2c event=\"peer_offline\" alias=\"%s\" detected_at=\"%s\" reason=\"%s\" last_seen=\"%s\"/>"
+      (match reg.canonical_alias with Some a -> a | None -> reg.alias)
+      detected_at reason last_seen
+
   let sweep t =
-    with_registry_lock t (fun () ->
-        let regs = load_registrations t in
-        (* Dead: PID-based liveness check failed OR provisional registration
-           that has never been confirmed and has timed out. *)
-        let alive, dead =
-          List.partition is_sweep_keepable regs
-        in
-        if dead <> [] then save_registrations t alive;
-        let alive_sids =
-          List.fold_left
-            (fun acc reg -> reg.session_id :: acc)
-            []
-            alive
-        in
-        let all_inbox_sids = list_inbox_session_ids t in
-        let preserved = ref 0 in
-        let deleted =
-          List.filter
-            (fun sid ->
-              if List.mem sid alive_sids then false
-              else
-                (* Hold the inbox lock across read+preserve+delete so a
-                   concurrent enqueue can't race the unlink. Any non-empty
-                   content is appended to dead-letter.jsonl before the
-                   inbox file is removed, so cleanup is non-destructive to
-                   operator signal. We intentionally leave the .inbox.lock
-                   sidecar in place: unlinking the lock file while another
-                   process holds a lockf on a separate fd for the same
-                   path would open a window for a new opener to get a
-                   LOCK immediately against a different inode. Sidecar
-                   files are empty, so keeping them is cheap. *)
-                with_inbox_lock t ~session_id:sid (fun () ->
-                    let msgs = load_inbox t ~session_id:sid in
-                    if msgs <> [] then begin
-                      append_dead_letter t ~session_id:sid ~messages:msgs;
-                      preserved := !preserved + List.length msgs
-                    end;
-                    try_unlink (inbox_path t ~session_id:sid)))
+    (* Partition under lock, but broadcast peer_offline AFTER releasing it
+       to avoid nested lock issues with send_all (which also takes the
+       registry lock and inbox locks). *)
+    let dead_confirmed_regs : registration list ref = ref [] in
+    let do_broadcast () =
+      if !dead_confirmed_regs <> [] then
+        List.iter
+          (fun dead_reg ->
+            let content = peer_offline_message dead_reg in
+            (* Exclude the dead alias from receiving its own notification. *)
+            ignore (send_all t ~from_alias:"broker" ~content ~exclude_aliases:[dead_reg.alias]))
+          !dead_confirmed_regs
+    in
+    let result =
+      with_registry_lock t (fun () ->
+          let regs = load_registrations t in
+          (* Dead: PID-based liveness check failed OR provisional registration
+             that has never been confirmed and has timed out. *)
+          let alive, dead = List.partition is_sweep_keepable regs in
+          (* #383: capture confirmed dead aliases for peer_offline broadcast.
+             Only confirmed registrations (confirmed_at = Some) were fully alive;
+             provisional-only timeouts don't emit peer_offline. *)
+          dead_confirmed_regs :=
+            List.fold_left
+              (fun acc reg ->
+                match reg.confirmed_at with
+                | None -> acc  (* provisional — skip *)
+                | Some _ -> reg :: acc)
+              []
+              dead;
+          if dead <> [] then save_registrations t alive;
+          let alive_sids =
+            List.fold_left
+              (fun acc reg -> reg.session_id :: acc)
+              []
+              alive
+          in
+          let all_inbox_sids = list_inbox_session_ids t in
+          let preserved = ref 0 in
+          let deleted =
+            List.filter
+              (fun sid ->
+                if List.mem sid alive_sids then false
+                else
+                  (* Hold the inbox lock across read+preserve+delete so a
+                     concurrent enqueue can't race the unlink. Any non-empty
+                     content is appended to dead-letter.jsonl before the
+                     inbox file is removed, so cleanup is non-destructive to
+                     operator signal. We intentionally leave the .inbox.lock
+                     sidecar in place: unlinking the lock file while another
+                     process holds a lockf on a separate fd for the same
+                     path would open a window for a new opener to get a
+                     LOCK immediately against a different inode. Sidecar
+                     files are empty, so keeping them is cheap. *)
+                  with_inbox_lock t ~session_id:sid (fun () ->
+                      let msgs = load_inbox t ~session_id:sid in
+                      if msgs <> [] then begin
+                        append_dead_letter t ~session_id:sid ~messages:msgs;
+                        preserved := !preserved + List.length msgs
+                      end;
+                      try_unlink (inbox_path t ~session_id:sid)))
             all_inbox_sids
-        in
-        { dropped_regs = dead
-        ; deleted_inboxes = deleted
-        ; preserved_messages = !preserved
-        })
+          in
+          { dropped_regs = dead
+          ; deleted_inboxes = deleted
+          ; preserved_messages = !preserved
+          })
+    in
+    do_broadcast ();
+    result
 
   (* Scan dead-letter.jsonl for records belonging to this session and return
      them for redelivery, removing matched records from the file.

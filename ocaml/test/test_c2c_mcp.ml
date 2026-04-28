@@ -3809,6 +3809,180 @@ let test_sweep_drops_expired_provisional_reg () =
       check int "no regs remain" 0
         (List.length (C2c_mcp.Broker.list_registrations broker)))
 
+(* #383: peer_offline broadcast tests *)
+
+(* Sweep emits peer_offline for every confirmed dead registration. *)
+let test_sweep_emits_peer_offline_for_confirmed_dead_reg () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* alice: alive, will receive the notification *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-alice" ~alias:"storm-alice"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      (* bob: confirmed (poll_inbox called), then PID dies *)
+      let dead = dead_pid () in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-bob" ~alias:"storm-bob"
+        ~pid:(Some dead) ~pid_start_time:None ();
+      (* Promote bob to confirmed *)
+      C2c_mcp.Broker.confirm_registration broker ~session_id:"session-bob";
+      let result = C2c_mcp.Broker.sweep broker in
+      check int "bob dropped" 1 (List.length result.dropped_regs);
+      check string "dropped alias" "storm-bob"
+        (List.hd result.dropped_regs).alias;
+      (* alice's inbox should have the peer_offline message *)
+      let alice_inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-alice" in
+      check int "alice got exactly one notification" 1 (List.length alice_inbox);
+      let msg = List.hd alice_inbox in
+      check string "from is broker" "broker" msg.from_alias;
+      check string "to is alice" "storm-alice" msg.to_alias;
+      (* Verify peer_offline envelope format *)
+      check bool "content has peer_offline event" true
+        (string_contains msg.content "<c2c event=\"peer_offline\"");
+      check bool "content has storm-bob alias" true
+        (string_contains msg.content "alias=\"storm-bob\"");
+      check bool "content has reason=killed" true
+        (string_contains msg.content "reason=\"killed\"");
+      check bool "content has detected_at" true
+        (string_contains msg.content "detected_at=");
+      check bool "content has last_seen=" true
+        (string_contains msg.content "last_seen="))
+
+(* Sweep does NOT emit peer_offline for an expired provisional reg
+   (confirmed_at=None), even though it IS dropped by sweep. *)
+let test_sweep_does_not_emit_peer_offline_for_provisional_expired_reg () =
+  with_temp_dir (fun dir ->
+      (* Write a registry with an expired provisional reg (no confirmed_at). *)
+      let expired_ts = Unix.gettimeofday () -. 3601.0 in
+      let reg_json =
+        Printf.sprintf
+          {|[{"session_id":"prov-dead","alias":"storm-prov","registered_at":%f}]|}
+          expired_ts
+      in
+      write_file (Filename.concat dir "registry.json") reg_json;
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Also register a live peer so sweep would have somewhere to broadcast to. *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-live" ~alias:"storm-live"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      Unix.putenv "C2C_PROVISIONAL_SWEEP_TIMEOUT" "1800";
+      let result = C2c_mcp.Broker.sweep broker in
+      Unix.putenv "C2C_PROVISIONAL_SWEEP_TIMEOUT" "1800";
+      check int "provisional dropped" 1 (List.length result.dropped_regs);
+      check string "dropped alias" "storm-prov"
+        (List.hd result.dropped_regs).alias;
+      (* Live peer's inbox must NOT contain any peer_offline message *)
+      let live_inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-live" in
+      let peer_offline_count =
+        List.fold_left
+          (fun n msg -> if string_contains msg.content "<c2c event=\"peer_offline\"" then n + 1 else n)
+          0 live_inbox
+      in
+      check int "no peer_offline emitted for provisional" 0 peer_offline_count)
+
+(* peer_offline message has correct XML envelope format. *)
+let test_sweep_peer_offline_message_format () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-witness" ~alias:"storm-witness"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      let dead = dead_pid () in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-dead" ~alias:"storm-dead"
+        ~pid:(Some dead) ~pid_start_time:None ();
+      C2c_mcp.Broker.confirm_registration broker ~session_id:"session-dead";
+      let (_ : C2c_mcp.Broker.sweep_result) = C2c_mcp.Broker.sweep broker in
+      let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-witness" in
+      match inbox with
+      | [] -> fail "expected peer_offline in witness inbox"
+      | msg :: _ ->
+          let c = msg.content in
+          (* All 5 attributes must be present *)
+          check bool "event attr" true
+            (string_contains c "<c2c event=\"peer_offline\"");
+          check bool "alias attr" true
+            (string_contains c "alias=\"storm-dead\"");
+          check bool "detected_at attr" true
+            (string_contains c "detected_at=\"");
+          check bool "reason attr" true
+            (string_contains c "reason=\"killed\"");
+          check bool "last_seen attr" true
+            (string_contains c "last_seen=\"");
+          (* Must be self-closing *)
+          check bool "self-closing tag" true
+            (string_contains c "/>"))
+
+(* The dead alias does NOT receive its own peer_offline notification. *)
+let test_sweep_dead_alias_excluded_from_peer_offline_receipt () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Register only the dead peer (no other alive peers). *)
+      let dead = dead_pid () in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-dead" ~alias:"storm-dead"
+        ~pid:(Some dead) ~pid_start_time:None ();
+      C2c_mcp.Broker.confirm_registration broker ~session_id:"session-dead";
+      let (_ : C2c_mcp.Broker.sweep_result) = C2c_mcp.Broker.sweep broker in
+      (* storm-dead's inbox may have been deleted by sweep, but no NEW
+         peer_offline should have been delivered there. *)
+      let inbox_exists = Sys.file_exists (Filename.concat dir "session-dead.inbox.json") in
+      if inbox_exists then
+        let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-dead" in
+        let peer_offline_count =
+          List.fold_left
+            (fun n msg -> if string_contains msg.content "<c2c event=\"peer_offline\"" then n + 1 else n)
+            0 inbox
+        in
+        check int "dead alias got no self-notification" 0 peer_offline_count
+      else
+        (* Inbox was deleted by sweep — also fine, means nothing was delivered. *)
+        check bool "inbox deleted (no self-delivery)" true true)
+
+(* Multiple confirmed dead registrations each emit their own peer_offline. *)
+let test_sweep_multiple_confirmed_dead_regs_each_emit_peer_offline () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* alice: alive witness *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-alice" ~alias:"storm-alice"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      (* bob and carol: both confirmed dead *)
+      let dead1 = dead_pid () in
+      let dead2 = dead_pid () in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-bob" ~alias:"storm-bob"
+        ~pid:(Some dead1) ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-carol" ~alias:"storm-carol"
+        ~pid:(Some dead2) ~pid_start_time:None ();
+      C2c_mcp.Broker.confirm_registration broker ~session_id:"session-bob";
+      C2c_mcp.Broker.confirm_registration broker ~session_id:"session-carol";
+      let result = C2c_mcp.Broker.sweep broker in
+      check int "two dead regs" 2 (List.length result.dropped_regs);
+      (* alice should have TWO peer_offline messages — one per dead peer *)
+      let alice_inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-alice" in
+      let peer_offline_messages =
+        List.filter
+          (fun msg -> string_contains msg.content "<c2c event=\"peer_offline\"")
+          alice_inbox
+      in
+      check int "alice got two peer_offline messages" 2 (List.length peer_offline_messages);
+      let aliases =
+        List.map
+          (fun msg ->
+             let start_idx = try String.index msg.content 'a' + String.length "alias=\"" with Not_found -> -1 in
+             if start_idx < 0 then "" else
+               let rest = String.sub msg.content start_idx (String.length msg.content - start_idx) in
+               try String.sub rest 0 (String.index_from rest 0 '"')
+               with _ -> "")
+          peer_offline_messages
+      in
+      let has_bob = List.exists (fun a -> string_contains a "storm-bob") aliases in
+      let has_carol = List.exists (fun a -> string_contains a "storm-carol") aliases in
+      check bool "has bob's peer_offline" true has_bob;
+      check bool "has carol's peer_offline" true has_carol)
+
 (* confirm_registration: first poll_inbox sets confirmed_at; subsequent calls are no-ops. *)
 let test_confirm_registration_sets_confirmed_at () =
   with_temp_dir (fun dir ->
@@ -8401,11 +8575,23 @@ let () =
          ; test_case "sweep preserves fresh provisional reg" `Quick
              test_sweep_preserves_fresh_provisional_reg
          ; test_case "sweep drops expired provisional reg" `Quick
+          ; test_case "sweep emits peer_offline for confirmed dead reg" `Quick
+              test_sweep_emits_peer_offline_for_confirmed_dead_reg
+          ; test_case "sweep does not emit peer_offline for provisional expired" `Quick
+              test_sweep_does_not_emit_peer_offline_for_provisional_expired_reg
+          ; test_case "sweep peer_offline message format" `Quick
+              test_sweep_peer_offline_message_format
+          ; test_case "sweep dead alias excluded from self-notification" `Quick
+              test_sweep_dead_alias_excluded_from_peer_offline_receipt
+          ; test_case "sweep multiple confirmed dead regs each emit peer_offline" `Quick
+              test_sweep_multiple_confirmed_dead_regs_each_emit_peer_offline
+          ; test_case "confirm_registration sets confirmed_at" `Quick
+              test_confirm_registration_sets_confirmed_at
+          ; test_case "#344 confirmed pidless old reg swept" `Quick
+              test_confirmed_pidless_old_reg_swept
+          ; test_case "confirmed reg not swept after timeout" `Quick
+              test_confirmed_reg_not_swept_after_timeout
              test_sweep_drops_expired_provisional_reg
-         ; test_case "confirm_registration sets confirmed_at" `Quick
-             test_confirm_registration_sets_confirmed_at
-         ; test_case "#344 confirmed pidless old reg swept" `Quick
-             test_confirmed_pidless_old_reg_swept
          ; test_case "human client_type exempt from provisional sweep" `Quick
              test_human_client_type_exempt_from_provisional_sweep
          ; test_case "sweep evicts dead members from rooms" `Quick
