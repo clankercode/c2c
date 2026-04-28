@@ -47,3 +47,8 @@
  (name test_c2c_health)
  (modules test_c2c_health c2c_broker_root_check)
  (libraries alcotest))
+
+(test
+ (name test_c2c_opencode_plugin_drift)
+ (modules test_c2c_opencode_plugin_drift c2c_opencode_plugin_drift)
+ (libraries c2c_mcp alcotest cmdliner str unix))
