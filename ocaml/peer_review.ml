@@ -172,9 +172,94 @@ let verify (art : t) : (bool, verify_error) result =
 
 (* --- peer-pass claim extraction and auto-verify ----------------------------- *)
 
+(** #57 Defence-in-depth path-traversal validator.
+
+    [artifact_path] composes a filesystem path from caller-supplied [alias] and
+    [sha]. Today the production callers feed these via [claim_of_content], which
+    restricts alias to [a-z0-9_-] and sha to lowercase hex, so traversal is
+    closed *de facto*. But [verify_claim_with_pin] / [verify_claim] /
+    [artifact_path] are public functions; any future caller that passes an
+    unfiltered alias (e.g., from [Broker.list_registrations], which does not
+    enforce these character restrictions at registration time) reopens the
+    traversal vector.
+
+    The validator below independently rejects:
+      - alias: empty, contains '/' '\' '..' NUL, leading '.', or any byte
+        outside printable ASCII (0x20-0x7e) excluding ' '.
+      - sha: not matching ^[0-9a-f]{4,64}$ (lowercase hex, 4..64 chars).
+
+    Rejection short-circuits before any [Filename.concat]. *)
+let validate_artifact_path_components ~alias ~sha : (unit, string) result =
+  let is_alias_byte_ok c =
+    let code = Char.code c in
+    (* Printable ASCII excluding space; explicit allowlist is even tighter
+       below via the structural checks (no '/', '\\', '.', NUL). *)
+    code >= 0x21 && code <= 0x7e
+  in
+  let alias_has_dotdot s =
+    let len = String.length s in
+    let rec loop i =
+      if i + 1 >= len then false
+      else if s.[i] = '.' && s.[i+1] = '.' then true
+      else loop (i + 1)
+    in
+    loop 0
+  in
+  let alias_invalid =
+    if alias = "" then Some "alias is empty"
+    else if String.contains alias '/' then Some "alias contains '/'"
+    else if String.contains alias '\\' then Some "alias contains '\\'"
+    else if String.contains alias '\x00' then Some "alias contains NUL byte"
+    else if alias.[0] = '.' then Some "alias has leading '.'"
+    else if alias_has_dotdot alias then Some "alias contains '..'"
+    else
+      let bad =
+        let len = String.length alias in
+        let rec scan i =
+          if i >= len then None
+          else if not (is_alias_byte_ok alias.[i]) then Some alias.[i]
+          else scan (i + 1)
+        in
+        scan 0
+      in
+      match bad with
+      | Some c -> Some (Printf.sprintf "alias contains non-printable byte 0x%02x" (Char.code c))
+      | None -> None
+  in
+  let sha_invalid =
+    let len = String.length sha in
+    if len = 0 then Some "sha is empty"
+    else if len < 4 then Some "sha shorter than 4 chars"
+    else if len > 64 then Some "sha longer than 64 chars"
+    else
+      let rec scan i =
+        if i >= len then None
+        else
+          let c = sha.[i] in
+          if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') then scan (i + 1)
+          else Some (Printf.sprintf "sha contains non-hex byte 0x%02x at offset %d" (Char.code c) i)
+      in
+      scan 0
+  in
+  match alias_invalid, sha_invalid with
+  | Some msg, _ -> Error msg
+  | _, Some msg -> Error msg
+  | None, None -> Ok ()
+
 (** Artifact file path for a given sha+alias pair. Uses git common dir parent
-    so peer-passes are shared across all worktrees clones. *)
+    so peer-passes are shared across all worktrees clones.
+
+    #57: raises [Invalid_argument] if alias/sha fail
+    [validate_artifact_path_components]. The high-level entry points
+    ([verify_claim], [verify_claim_with_pin]) translate this into a
+    [Claim_invalid] result so the broker's reject-logging machinery picks
+    it up. Direct callers should pre-validate or be prepared to handle the
+    exception. *)
 let artifact_path ~sha ~alias =
+  (match validate_artifact_path_components ~alias ~sha with
+   | Ok () -> ()
+   | Error msg ->
+       invalid_arg (Printf.sprintf "artifact_path: alias/sha rejected by path-validator: %s" msg));
   let base = match Git_helpers.git_common_dir_parent () with
     | Some parent -> Filename.concat parent ".c2c"
     | None -> ".c2c"
@@ -292,8 +377,15 @@ type claim_verification =
   | Claim_invalid of string      (* signature/alias/sha mismatch *)
 
 (** Verify a peer-pass claim: load the artifact, check signature, confirm
-    alias and sha match. Returns Claim_valid on success. *)
+    alias and sha match. Returns Claim_valid on success.
+
+    #57: rejects up-front if alias/sha fail the path-validator, so a
+    caller passing unfiltered input never reaches [Filename.concat]. *)
 let verify_claim ~alias ~sha =
+  match validate_artifact_path_components ~alias ~sha with
+  | Error msg ->
+    Claim_invalid (Printf.sprintf "alias/sha rejected by path-validator: %s" msg)
+  | Ok () ->
   let path = artifact_path ~sha ~alias in
   if not (Sys.file_exists path) then
     Claim_missing (Printf.sprintf "no peer-pass artifact at %s" path)
@@ -626,6 +718,10 @@ let verify_with_pin ?path (art : t) : (pin_check, verify_error) result =
     wires this to a path under its broker root so all worktrees of one
     repo share one pin set, and tests pass an isolated path. *)
 let verify_claim_with_pin ?path ~alias ~sha () =
+  match validate_artifact_path_components ~alias ~sha with
+  | Error msg ->
+    Claim_invalid (Printf.sprintf "alias/sha rejected by path-validator: %s" msg)
+  | Ok () ->
   let art_path = artifact_path ~sha ~alias in
   if not (Sys.file_exists art_path) then
     Claim_missing (Printf.sprintf "no peer-pass artifact at %s" art_path)

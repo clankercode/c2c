@@ -143,6 +143,48 @@ machinery. On the CLI verify path, oversize prints to stderr and exits 1.
 If a future legitimate artifact ever needs more than 64 KiB, bump the
 constant in `ocaml/peer_review.ml` and update this section.
 
+## Path-traversal defence (#57)
+
+The artifact path is composed as `<base>/peer-passes/<sha>-<alias>.json`
+from caller-supplied `alias` and `sha`. Today the production callers
+feed these via `claim_of_content`, which already restricts alias to
+`[a-z0-9_-]` and sha to lowercase hex — so traversal is closed *de
+facto* — but `verify_claim`, `verify_claim_with_pin`, and `artifact_path`
+are public functions; any future caller (e.g., one that reads alias
+straight from `Broker.list_registrations`, which does not enforce these
+character restrictions at registration time) would reopen the traversal
+vector.
+
+`Peer_review.validate_artifact_path_components ~alias ~sha` is the
+defence-in-depth choke point. It rejects (returning `Error reason`):
+
+- **alias**: empty; contains `/`, `\`, `..`, NUL, leading `.`; or any
+  byte outside printable ASCII excluding space (i.e. only `0x21..0x7e`
+  allowed).
+- **sha**: empty; not matching `^[0-9a-f]{4,64}$` (lowercase hex,
+  4..64 chars). Uppercase hex is rejected because the production write
+  path always emits lowercase, so a request for an upper-cased SHA
+  cannot match a legitimate artifact and is more likely a smuggle
+  attempt.
+
+Integration points:
+
+- `Peer_review.artifact_path` raises `Invalid_argument` on a validator
+  failure — fail-fast for direct callers.
+- `Peer_review.verify_claim` and `Peer_review.verify_claim_with_pin`
+  short-circuit to `Claim_invalid "alias/sha rejected by
+  path-validator: <reason>"` so the broker's
+  `log_peer_pass_reject` machinery captures the rejection in
+  `broker.log` exactly like other invalid-claim paths.
+- `c2c peer-pass`'s CLI artifact-path builder (`cli/c2c_peer_pass.ml`)
+  re-runs the same validator before composing the path; the CLI
+  exits with a clear error rather than relying on the lib check
+  downstream.
+
+The validator lives in `peer_review.ml` so it is testable in isolation
+(`test_peer_review.ml` group `path_traversal_57`) and is reused
+identically by all callers.
+
 ## Git Hook Integration (#171)
 
 A pre-merge hook at `githooks/pre-commit` (installed by `c2c install`) verifies that for

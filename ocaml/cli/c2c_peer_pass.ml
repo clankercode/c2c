@@ -14,7 +14,19 @@ let peer_passes_dir () =
   | Some parent -> parent // ".c2c" // "peer-passes"
   | None -> failwith "not in a git repository"
 
+(* #57 defence-in-depth: validate alias/sha before composing the artifact
+   path. Same validator as [Peer_review.validate_artifact_path_components];
+   the CLI builds its own path under a different base so we re-check here
+   rather than relying on the lib check downstream. *)
 let artifact_path ~sha ~alias =
+  (match Peer_review.validate_artifact_path_components ~alias ~sha with
+   | Ok () -> ()
+   | Error msg ->
+       Printf.eprintf
+         "error: cannot build peer-pass artifact path — alias/sha rejected by \
+          path-validator: %s\n%!"
+         msg;
+       exit 1);
   peer_passes_dir () // Printf.sprintf "%s-%s.json" sha alias
 
 (* --- identity helpers ---------------------------------------------------- *)

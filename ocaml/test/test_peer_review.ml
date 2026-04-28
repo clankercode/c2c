@@ -524,6 +524,127 @@ let test_size_cap_normal_passes () =
       check string "verdict survives roundtrip" "PASS" art.Peer_review.verdict
     | Error msg -> failwith ("normal artifact rejected: " ^ msg))
 
+(* --- #57 path-traversal validator tests ---------------------------------- *)
+
+let valid_sha = "abc123def456abc123def456abc123def4567890"
+let valid_alias = "alice_bot-1"
+
+let assert_validator_rejects ~alias ~sha label =
+  match Peer_review.validate_artifact_path_components ~alias ~sha with
+  | Ok () -> failwith (Printf.sprintf "%s: validator unexpectedly accepted alias=%S sha=%S" label alias sha)
+  | Error _ -> ()
+
+let assert_artifact_path_raises ~alias ~sha label =
+  match Peer_review.artifact_path ~sha ~alias with
+  | exception Invalid_argument _ -> ()
+  | _ -> failwith (Printf.sprintf "%s: artifact_path unexpectedly returned for alias=%S sha=%S" label alias sha)
+
+let assert_verify_claim_rejects ~alias ~sha label =
+  match Peer_review.verify_claim ~alias ~sha with
+  | Peer_review.Claim_invalid msg ->
+    if not (String.length msg > 0
+            && (String.length msg >= 9
+                && String.sub msg 0 9 = "alias/sha"))
+    then
+      failwith (Printf.sprintf "%s: Claim_invalid had unexpected reason: %s" label msg)
+  | Peer_review.Claim_valid _ -> failwith (Printf.sprintf "%s: verify_claim unexpectedly returned Claim_valid" label)
+  | Peer_review.Claim_missing m ->
+    failwith (Printf.sprintf "%s: verify_claim returned Claim_missing (should be Claim_invalid pre-FS-check): %s" label m)
+
+let assert_verify_claim_with_pin_rejects ~alias ~sha label =
+  match Peer_review.verify_claim_with_pin ~alias ~sha () with
+  | Peer_review.Claim_invalid msg ->
+    if String.length msg < 9 || String.sub msg 0 9 <> "alias/sha" then
+      failwith (Printf.sprintf "%s: Claim_invalid had unexpected reason: %s" label msg)
+  | Peer_review.Claim_valid _ -> failwith (Printf.sprintf "%s: verify_claim_with_pin unexpectedly returned Claim_valid" label)
+  | Peer_review.Claim_missing m ->
+    failwith (Printf.sprintf "%s: verify_claim_with_pin returned Claim_missing (should be Claim_invalid pre-FS-check): %s" label m)
+
+let test_alias_with_slash_rejected () =
+  assert_validator_rejects ~alias:"foo/bar" ~sha:valid_sha "alias /";
+  assert_artifact_path_raises ~alias:"foo/bar" ~sha:valid_sha "alias /";
+  assert_verify_claim_rejects ~alias:"foo/bar" ~sha:valid_sha "alias / verify_claim";
+  assert_verify_claim_with_pin_rejects ~alias:"foo/bar" ~sha:valid_sha "alias / verify_claim_with_pin"
+
+let test_alias_with_backslash_rejected () =
+  assert_validator_rejects ~alias:"foo\\bar" ~sha:valid_sha "alias \\";
+  assert_artifact_path_raises ~alias:"foo\\bar" ~sha:valid_sha "alias \\";
+  assert_verify_claim_rejects ~alias:"foo\\bar" ~sha:valid_sha "alias \\ verify_claim"
+
+let test_alias_with_dotdot_rejected () =
+  assert_validator_rejects ~alias:"foo..bar" ~sha:valid_sha "alias ..";
+  assert_artifact_path_raises ~alias:"..etc" ~sha:valid_sha "alias .. (raises)";
+  assert_verify_claim_rejects ~alias:"a..b" ~sha:valid_sha "alias .. verify_claim"
+
+let test_alias_with_nul_rejected () =
+  let bad = "foo\x00bar" in
+  assert_validator_rejects ~alias:bad ~sha:valid_sha "alias NUL";
+  assert_artifact_path_raises ~alias:bad ~sha:valid_sha "alias NUL"
+
+let test_alias_with_leading_dot_rejected () =
+  assert_validator_rejects ~alias:".secret" ~sha:valid_sha "alias leading .";
+  assert_artifact_path_raises ~alias:".hidden" ~sha:valid_sha "alias leading .";
+  assert_verify_claim_rejects ~alias:".oops" ~sha:valid_sha "alias leading . verify_claim"
+
+let test_alias_empty_rejected () =
+  assert_validator_rejects ~alias:"" ~sha:valid_sha "alias empty";
+  assert_artifact_path_raises ~alias:"" ~sha:valid_sha "alias empty";
+  assert_verify_claim_rejects ~alias:"" ~sha:valid_sha "alias empty verify_claim"
+
+let test_alias_with_nonprintable_rejected () =
+  let bad = "foo\x07bar" in
+  assert_validator_rejects ~alias:bad ~sha:valid_sha "alias non-printable BEL";
+  let bad2 = "foo bar" in (* space — fails is_alias_byte_ok (>= 0x21) *)
+  assert_validator_rejects ~alias:bad2 ~sha:valid_sha "alias contains space";
+  let bad3 = "foo\x7f" in
+  assert_validator_rejects ~alias:bad3 ~sha:valid_sha "alias DEL"
+
+let test_sha_non_hex_rejected () =
+  assert_validator_rejects ~alias:valid_alias ~sha:"deadbeefXX" "sha non-hex X";
+  assert_validator_rejects ~alias:valid_alias ~sha:"DEADBEEF" "sha uppercase hex (rejected — lowercase only)";
+  assert_validator_rejects ~alias:valid_alias ~sha:"abc!def0" "sha contains !";
+  assert_artifact_path_raises ~alias:valid_alias ~sha:"abc/def0" "sha containing / (also non-hex)"
+
+let test_sha_too_short_rejected () =
+  assert_validator_rejects ~alias:valid_alias ~sha:"abc" "sha 3 chars";
+  assert_validator_rejects ~alias:valid_alias ~sha:"a" "sha 1 char"
+
+let test_sha_too_long_rejected () =
+  let too_long = String.make 65 'a' in
+  assert_validator_rejects ~alias:valid_alias ~sha:too_long "sha 65 chars";
+  let way_too_long = String.make 200 '0' in
+  assert_validator_rejects ~alias:valid_alias ~sha:way_too_long "sha 200 chars"
+
+let test_sha_empty_rejected () =
+  assert_validator_rejects ~alias:valid_alias ~sha:"" "sha empty";
+  assert_artifact_path_raises ~alias:valid_alias ~sha:"" "sha empty"
+
+let test_legitimate_alias_and_sha_accepted () =
+  (* Regression: the validator must NOT reject legitimate inputs. *)
+  (match Peer_review.validate_artifact_path_components ~alias:valid_alias ~sha:valid_sha with
+   | Ok () -> ()
+   | Error msg -> failwith ("legitimate alias/sha rejected: " ^ msg));
+  (* artifact_path must compose without raising. *)
+  let _ = Peer_review.artifact_path ~sha:valid_sha ~alias:valid_alias in
+  (* verify_claim returns Claim_missing (file does not exist), not
+     Claim_invalid — proves we're past the validator. *)
+  (match Peer_review.verify_claim ~alias:valid_alias ~sha:valid_sha with
+   | Peer_review.Claim_missing _ -> ()
+   | Peer_review.Claim_valid _ -> failwith "verify_claim returned valid for non-existent artifact"
+   | Peer_review.Claim_invalid msg ->
+     failwith ("verify_claim rejected legitimate inputs: " ^ msg));
+  (* Range-of-valid sha lengths and alias-classes. *)
+  List.iter (fun sha ->
+    match Peer_review.validate_artifact_path_components ~alias:valid_alias ~sha with
+    | Ok () -> ()
+    | Error msg -> failwith (Printf.sprintf "valid sha %S rejected: %s" sha msg))
+    [ "abcd"; "abcdef01"; String.make 40 '0'; String.make 64 'f' ];
+  List.iter (fun alias ->
+    match Peer_review.validate_artifact_path_components ~alias ~sha:valid_sha with
+    | Ok () -> ()
+    | Error msg -> failwith (Printf.sprintf "valid alias %S rejected: %s" alias msg))
+    [ "a"; "alpha"; "alpha-bot"; "x_y_z"; "agent-7"; "lyra-quill" ]
+
 let () = Alcotest.run "Peer_review" [
   "signed_peer_pass", [
     Alcotest.test_case "sign and verify roundtrip" `Quick test_sign_and_verify;
@@ -555,5 +676,20 @@ let () = Alcotest.run "Peer_review" [
     Alcotest.test_case "oversized artifact rejected by capped reader" `Quick test_size_cap_rejects_oversized;
     Alcotest.test_case "oversized artifact rejected by read_artifact" `Quick test_size_cap_read_artifact_error;
     Alcotest.test_case "normal-sized artifact still passes" `Quick test_size_cap_normal_passes;
+  ];
+  "path_traversal_57", [
+    Alcotest.test_case "alias containing '/' rejected" `Quick test_alias_with_slash_rejected;
+    Alcotest.test_case "alias containing '\\' rejected" `Quick test_alias_with_backslash_rejected;
+    Alcotest.test_case "alias containing '..' rejected" `Quick test_alias_with_dotdot_rejected;
+    Alcotest.test_case "alias containing NUL rejected" `Quick test_alias_with_nul_rejected;
+    Alcotest.test_case "alias with leading '.' rejected" `Quick test_alias_with_leading_dot_rejected;
+    Alcotest.test_case "alias empty rejected" `Quick test_alias_empty_rejected;
+    Alcotest.test_case "alias with non-printable byte rejected" `Quick test_alias_with_nonprintable_rejected;
+    Alcotest.test_case "sha non-hex rejected" `Quick test_sha_non_hex_rejected;
+    Alcotest.test_case "sha too short rejected" `Quick test_sha_too_short_rejected;
+    Alcotest.test_case "sha too long rejected" `Quick test_sha_too_long_rejected;
+    Alcotest.test_case "sha empty rejected" `Quick test_sha_empty_rejected;
+    Alcotest.test_case "legitimate alias [a-z0-9_-] and sha [0-9a-f]{40} accepted" `Quick
+      test_legitimate_alias_and_sha_accepted;
   ];
 ]
