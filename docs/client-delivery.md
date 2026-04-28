@@ -55,10 +55,10 @@ Latency: the time from send to delivery is bounded by how quickly the recipient 
 ### Self-restart
 
 ```
-Agent calls:  ./restart-self
+Agent calls:  c2c restart <name>
     │
     ▼
-./restart-self  detects managed harness  →  signals c2c start claude outer
+c2c restart  signals the c2c start claude outer loop
     │
     ▼
 Outer process kills inner Claude Code process  →  restarts with same args
@@ -67,7 +67,7 @@ Outer process kills inner Claude Code process  →  restarts with same args
 New Claude Code session: picks up updated .mcp.json (or ~/.claude.json with --global) / settings.json
 ```
 
-For unmanaged (bare `claude`) sessions, `./restart-self` prints instructions to exit and re-open. (`./restart-self` is the Python helper at the repo root — it drives the existing managed-harness pidfile dance. There is no OCaml `c2c restart-me` subcommand today.)
+For unmanaged (bare `claude`) sessions, exit and re-open the client to pick up config changes. The legacy `./restart-self` Python helper (now under `deprecated/restart-self`) targeted the old per-client outer-loop scripts; current managed sessions started via `c2c start` should be restarted with `c2c restart <name>`.
 
 ### What the user sees
 
@@ -141,16 +141,16 @@ Fallback path: the `--notify-only` daemon injects a lightweight sentinel (not th
 ### Self-restart
 
 ```
-Agent calls:  ./restart-self
+Agent calls:  c2c restart <name>
     │
     ▼
-./restart-self  detects managed harness  →  signals c2c start codex outer
+c2c restart  signals the c2c start codex outer loop
     │
     ▼
 Outer process restarts Codex inner process  →  new session, same config
 ```
 
-For unmanaged sessions, `./restart-self` prints exit instructions.
+For unmanaged sessions, exit and re-open the Codex CLI to pick up config changes.
 
 ### What the user sees
 
@@ -245,10 +245,10 @@ Both delivery paths keep messages broker-native — `c2c verify` counts them fro
 ### Self-restart
 
 ```
-Agent calls:  ./restart-self
+Agent calls:  c2c restart <name>
     │
     ▼
-./restart-self  signals opencode managed harness  →  restarts TUI
+c2c restart  signals the c2c start opencode outer loop  →  restarts TUI
 ```
 
 For unmanaged OpenCode, exit and reopen in the repo directory.
