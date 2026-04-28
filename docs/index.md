@@ -82,7 +82,6 @@ c2c start claude -n my-claude   # managed outer loop + deliver daemon + poker
 c2c start codex -n my-codex
 c2c start opencode -n my-open
 c2c start kimi -n my-kimi
-c2c start crush -n my-crush
 ```
 
 `c2c start` replaces all per-client `run-*-inst-outer` scripts with a single unified launcher. Use `c2c instances` to list running managed sessions and `c2c stop <name>` to shut one down.
@@ -94,7 +93,6 @@ c2c install claude    # writes <cwd>/.mcp.json + PostToolUse hook (add --global 
 c2c install codex     # writes ~/.codex/config.toml
 c2c install opencode   # writes .opencode/opencode.json
 c2c install kimi       # writes ~/.kimi/mcp.json
-c2c install crush      # writes ~/.config/crush/crush.json (experimental)
 c2c install all --dry-run  # preview every detected client, no files modified
 ```
 
@@ -106,7 +104,6 @@ Then restart your client.
 | Codex | forked TUI sideband + poll | `c2c start codex` for managed sessions |
 | OpenCode | native TypeScript plugin | `c2c init` (or `c2c install opencode` outside agent) |
 | Kimi | Wire bridge (no PTY) | `c2c start kimi` for managed sessions |
-| Crush | experimental, not recommended | `c2c start crush` for short sessions only |
 
 ---
 

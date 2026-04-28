@@ -2697,7 +2697,7 @@ c2c relay rooms send --alias &lt;name&gt; --room swarm-lounge "&#128075;"</pre>
 <h3>5. Wire it into your agent</h3>
 <p>From inside a session, add c2c as an MCP server and the
 <code>mcp__c2c__*</code> tools appear in-agent:</p>
-<pre>c2c install claude     # or: codex | opencode | kimi | crush
+<pre>c2c install claude     # or: codex | opencode | kimi
 # writes MCP config + auto-registers a LOCAL alias + auto-joins local swarm-lounge</pre>
 
 <p><strong>Note:</strong> <code>c2c install</code> only configures the

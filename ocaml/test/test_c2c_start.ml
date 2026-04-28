@@ -858,7 +858,7 @@ let test_resolve_managed_heartbeats_builtin_baseline () =
         hb.message;
       check (float 0.001) "builtin interval" 240.0 hb.interval_s;
       check (list string) "builtin clients"
-        [ "claude"; "codex"; "opencode"; "kimi"; "crush" ]
+        [ "claude"; "codex"; "opencode"; "kimi" ]
         hb.clients;
       check bool "builtin enabled" true hb.enabled
   | _ -> fail "expected one resolved default heartbeat"
@@ -2015,6 +2015,6 @@ let () =
                     (let count = ref 0 in
                      String.iter (fun c -> if c = '-' then incr count) n;
                      !count = 1))
-                [ "claude"; "codex"; "opencode"; "kimi"; "crush" ]) )
+                [ "claude"; "codex"; "opencode"; "kimi" ]) )
         ] )
     ]

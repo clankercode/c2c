@@ -3975,6 +3975,17 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
        client (String.concat ", " (List.sort String.compare supported_clients));
      exit 1);
 
+  (* Deprecation banner for crush *)
+  (if client = "crush" then
+     let use_color = Unix.isatty Unix.stderr in
+     let yellow = if use_color then "\027[1;33m" else "" in
+     let reset = if use_color then "\027[0m" else "" in
+     Printf.eprintf
+       "%s[DEPRECATED]%s crush is no longer a first-class c2c client.\n\
+        \  `c2c start crush` still works but will be removed in a future release.\n\
+        \  For new agents use: claude | codex | opencode | kimi\n\n%!"
+       yellow reset);
+
   if not (C2c_name.is_valid name) then begin
     Printf.eprintf "error: %s\n%!" (C2c_name.error_message "instance name" name);
     exit 1

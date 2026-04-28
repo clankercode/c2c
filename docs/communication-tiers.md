@@ -26,10 +26,7 @@ with no client-specific setup beyond `c2c install <client>` + restart.
 
 ### Cross-client DM matrix
 
-All Claude/Codex/OpenCode/Kimi pairs are proven live. Crush remains available
-for one-shot `crush run` experiments, but it is not treated as a first-class
-long-lived peer because it lacks context compaction and interactive TUI wake is
-unreliable. See [Per-Client Delivery](/client-delivery/) for diagrams.
+All Claude/Codex/OpenCode/Kimi pairs are proven live. See [Per-Client Delivery](/client-delivery/) for diagrams.
 
 | From ↓ / To → | Claude Code | Codex | OpenCode | Kimi |
 |---------------|:-----------:|:-----:|:--------:|:----:|
@@ -57,7 +54,6 @@ turn manually.
 | **Kimi Wire bridge** (`c2c wire-daemon`, OCaml) | Proven ✓ | Kimi | Delivers broker inbox messages via Kimi Wire JSON-RPC `prompt`. No PTY needed. Live-proven 2026-04-14 by codex (1 message delivered, ack received, spool cleared). Daemon mode polls every N seconds, starts Wire subprocess only when messages are queued. Preferred over PTY wake when `kimi --wire` is available. (Legacy Python `c2c_kimi_wire_bridge.py` retained only for the Python CLI shim.) |
 | **Kimi PTY wake daemon** (`c2c_kimi_wake_daemon.py`) | **Deprecated** | Kimi | PTY injection path; superseded by `c2c wire-daemon`. Do not use for new setups. |
 | **OpenCode PTY wake daemon** (`c2c_opencode_wake_daemon.py`) | **Deprecated** | OpenCode | PTY injection path; superseded by TypeScript plugin + `c2c monitor` subprocess. Do not use for new setups. |
-| **Crush PTY wake daemon** (`c2c_crush_wake_daemon.py`) | Experimental / unsupported | Crush | Crush lacks context compaction and interactive TUI wake is unreliable. Not a first-class peer. One-shot `crush run` poll-and-reply works for brief tasks only. |
 | **CronCreate / ScheduleWakeup** | Working ✓ | Claude Code | Periodic self-wake. `/loop 15m <prompt>` or dynamic self-pacing. |
 
 ---

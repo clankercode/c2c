@@ -872,64 +872,6 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
        Printf.printf "\nTo use a custom profile directory:\n";
        Printf.printf "  CLAUDE_CONFIG_DIR=/path/to/profile c2c install claude%s%s\n" alias_str force_str)
 
-(* --- install: crush (JSON) --- *)
-
-let setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path =
-  let config_path = Filename.concat (Sys.getenv "HOME") (".config" // "crush" // "crush.json") in
-  let existing =
-    if Sys.file_exists config_path then json_read_file config_path
-    else `Assoc []
-  in
-  let c2c_entry =
-    `Assoc
-      [ ("type", `String "stdio")
-      ; ("command", `String "opam")
-      ; ("args", `List [ `String "exec"; `String "--"; `String server_path ])
-      ; ("env", `Assoc
-          [ ("C2C_MCP_BROKER_ROOT", `String root)
-          ; ("C2C_MCP_SESSION_ID", `String alias_val)
-          ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
-          ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
-          ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
-          ])
-      ]
-  in
-  let config = match existing with
-    | `Assoc fields ->
-        let existing_mcp = match List.assoc_opt "mcpServers" fields with
-          | Some (`Assoc m) -> List.filter (fun (k, _) -> k <> "c2c") m
-          | _ -> []
-        in
-        `Assoc (List.filter (fun (k, _) -> k <> "mcpServers") fields
-                @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", c2c_entry) ])) ])
-    | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", c2c_entry) ]) ]
-  in
-  (try
-     let rec mkdir_p d =
-       if Sys.file_exists d then () else begin
-         mkdir_p (Filename.dirname d);
-         mkdir_or_dryrun dry_run d
-       end
-     in
-     mkdir_p (Filename.dirname config_path)
-   with Unix.Unix_error _ -> ());
-  json_write_file_or_dryrun dry_run config_path config;
-  match output_mode with
-  | Json ->
-      print_json (`Assoc
-        [ ("ok", `Bool true)
-        ; ("client", `String "crush")
-        ; ("alias", `String alias_val)
-        ; ("broker_root", `String root)
-        ; ("config", `String config_path)
-        ])
-  | Human ->
-      Printf.printf "Configured Crush for c2c (experimental).\n";
-      Printf.printf "  alias:       %s\n" alias_val;
-      Printf.printf "  broker root: %s\n" root;
-      Printf.printf "  config:      %s\n" config_path;
-      Printf.printf "  server:      %s\n" server_path
-
 (* --- install: shared dispatcher (used by `c2c install <client>` and TUI) --- *)
 
 let resolve_mcp_server_paths ~output_mode =
@@ -957,14 +899,14 @@ let canonical_install_client client =
   | "codex-headless" -> "codex"
   | other -> other
 
-let known_clients = [ "claude"; "codex"; "opencode"; "kimi"; "crush" ]
-let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "crush" ]
+let known_clients = [ "claude"; "codex"; "opencode"; "kimi" ]
+let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi" ]
 let install_client_error_list = String.concat ", " install_subcommand_clients
 let install_client_pipe_list = String.concat "|" install_subcommand_clients
 let init_configurable_clients = [ "claude"; "opencode"; "codex"; "codex-headless"; "kimi" ]
 let init_configurable_client_list = String.concat ", " init_configurable_clients
-let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "crush" ]
-let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "crush"; "tmux"; "pty"; "relay-connect" ]
+let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi" ]
+let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "tmux"; "pty"; "relay-connect" ]
 let start_client_list = String.concat ", " start_clients
 
 let do_install_client ?(channel_delivery=false) ?(global=false) ~output_mode ~dry_run ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force () =
@@ -988,7 +930,6 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ~output_mode ~dr
   | "codex" -> setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client
   | "kimi" -> setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path
   | "opencode" -> setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~force ()
-  | "crush" -> setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path
   | _ ->
       let msg = Printf.sprintf "unknown client '%s'. Use: %s" client install_client_error_list in
       (match output_mode with
@@ -1057,18 +998,6 @@ let client_configured client =
            match json_read_file p with
            | `Assoc fields ->
                (match List.assoc_opt "mcp" fields with
-                | Some (`Assoc m) -> List.mem_assoc "c2c" m
-                | _ -> false)
-           | _ -> false
-         with _ -> false)
-  | "crush" ->
-      let p = home // ".config" // "crush" // "crush.json" in
-      if not (Sys.file_exists p) then false
-      else
-        (try
-           match json_read_file p with
-           | `Assoc fields ->
-               (match List.assoc_opt "mcpServers" fields with
                 | Some (`Assoc m) -> List.mem_assoc "c2c" m
                 | _ -> false)
            | _ -> false
