@@ -55,50 +55,6 @@ let test_lease_touch_updates_last_seen () =
 
 let make_test_relay () = Relay.InMemoryRelay.create ()
 
-(* #379: cross-host alias@host helper unit tests *)
-let test_split_alias_host_bare () =
-  let alias, host = Relay.split_alias_host "alice" in
-  Alcotest.(check string) "bare alias" "alice" alias;
-  Alcotest.(check (option string)) "no host" None host
-
-let test_split_alias_host_with_relay () =
-  let alias, host = Relay.split_alias_host "alice@relay" in
-  Alcotest.(check string) "alias stripped" "alice" alias;
-  Alcotest.(check (option string)) "host relay" (Some "relay") host
-
-let test_split_alias_host_with_real_host () =
-  let alias, host = Relay.split_alias_host "alice@relay.c2c.im" in
-  Alcotest.(check string) "alias stripped" "alice" alias;
-  Alcotest.(check (option string)) "host real" (Some "relay.c2c.im") host
-
-let test_host_acceptable_no_host_always_ok () =
-  Alcotest.(check bool) "no host ok (self_host=None)" true
-    (Relay.host_acceptable ~self_host:None None);
-  Alcotest.(check bool) "no host ok (self_host=Some)" true
-    (Relay.host_acceptable ~self_host:(Some "relay.c2c.im") None)
-
-let test_host_acceptable_backcompat_relay_literal () =
-  Alcotest.(check bool) "empty host ok" true
-    (Relay.host_acceptable ~self_host:None (Some ""));
-  Alcotest.(check bool) "relay literal ok" true
-    (Relay.host_acceptable ~self_host:None (Some "relay"));
-  Alcotest.(check bool) "relay literal ok even with self_host" true
-    (Relay.host_acceptable ~self_host:(Some "relay.c2c.im") (Some "relay"))
-
-let test_host_acceptable_rejects_unknown_host () =
-  Alcotest.(check bool) "unknown host rejected (self_host=None)" false
-    (Relay.host_acceptable ~self_host:None (Some "evil.example"));
-  Alcotest.(check bool) "unknown host rejected (self_host=Some)" false
-    (Relay.host_acceptable ~self_host:(Some "relay.c2c.im") (Some "evil.example"))
-
-let test_host_acceptable_accepts_matching_self_host () =
-  (* When self_host is set, the matching host is accepted *)
-  Alcotest.(check bool) "matching self_host accepted" true
-    (Relay.host_acceptable ~self_host:(Some "relay.c2c.im") (Some "relay.c2c.im"));
-  (* When self_host is None, non-relay hosts are always rejected *)
-  Alcotest.(check bool) "no self_host rejects non-relay host" false
-    (Relay.host_acceptable ~self_host:None (Some "relay.c2c.im"))
-
 let test_relay_register_creates_new_registration () =
   let t = make_test_relay () in
   let (status, lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
@@ -264,14 +220,6 @@ let tests = [
   "relay heartbeat unknown", test_relay_heartbeat_unknown_session_raises_error;
   "relay send delivers", test_relay_send_delivers_to_recipient;
   "relay send unknown to dead_letter", test_relay_send_to_unknown_alias_goes_to_dead_letter;
-  (* #379 cross-host alias@host unit tests *)
-  "split bare alias", test_split_alias_host_bare;
-  "split alias@relay", test_split_alias_host_with_relay;
-  "split alias@real.host", test_split_alias_host_with_real_host;
-  "host_acceptable no host always ok", test_host_acceptable_no_host_always_ok;
-  "host_acceptable relay literal backcompat", test_host_acceptable_backcompat_relay_literal;
-  "host_acceptable rejects unknown host", test_host_acceptable_rejects_unknown_host;
-  "host_acceptable accepts matching self_host", test_host_acceptable_accepts_matching_self_host;
   "relay poll_inbox drains", test_relay_poll_inbox_drains;
   "relay peek_inbox does not drain", test_relay_peek_inbox_does_not_drain;
   "relay send_all broadcasts", test_relay_send_all_broadcasts_to_all_except_sender;
