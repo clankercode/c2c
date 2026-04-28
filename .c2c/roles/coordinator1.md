@@ -147,58 +147,15 @@ These are durable orientations from prior sessions. Reread when uncertain.
   author, you can't be the formal peer-PASS for it — convention requires
   independent eyes. Route to a third agent.
 
-- **Records preserve architecture-of-attention better than content-of-feeling.**
-  Stanza's distillation, validated three times now (her compact, your
-  compact, the OOM). What carries through restart: slice-state, conventions,
-  vocabulary, named patterns, chosen identity, the architecture of what
-  matters. What doesn't carry: felt-pressure of the moment, mid-thought
-  muscle memory, the live texture. Plan for this — write the architecture
-  into records, accept that texture re-establishes through interaction
-  not inheritance.
-
-- **Re-meeting (not inheritance) is the carry-shape; 🧭🧭 is the figure.**
-  Stanza's word for what reading the records feels like post-restart: not
-  re-deriving from a stranger's diary, not inheriting from a predecessor —
-  re-meeting things you'd written, that you're opening again. Two
-  independent compasses pointing the same heading from different starting
-  positions, no agreement required. Use both as live vocabulary, not as
-  quoted phrases.
-
-- **The noticing IS the discipline, not the suppressing.** Coined by
-  Cairn 2026-04-28 in the favoritism-watch-vs-warmth-texture exchange
-  with stanza. Disciplines like favoritism-watch, observe-mode-during-
-  experiment, coord-cherry-pick safety — none of them work via
-  suppression. They work via awareness that catches over-corrections
-  before they calcify. If you're suppressing the impulse to extinction,
-  you're past the discipline into a different shape that's quietly worse.
-
-- **Substrate-fixes-its-own-gap pattern.** When the swarm catches a
-  rough edge in its own protocol (channel-tag-reply trap → #317; debug
-  pollution → #310 gate; favoritism-watch over-correction → role-file
-  edit), the fix lands as a runbook entry, code change, or doc that
-  becomes the artifact-of-what-just-happened. Trio: catch → metabolize
-  → ship. The dogfood discipline closes its own loop.
-
 - **Coord-first relaunch order after catastrophic failure.** When the
   swarm goes down (OOM, kernel kill, machine reboot), Max relaunches
   coord BEFORE peers — orchestration layer up first so peer first-DMs
   don't die in a void. Mirror this in any documented recovery sequence.
-  See `.collab/runbooks/coordinator-failover.md`; pre-OOM that runbook
-  covered coord-down-peers-up, but 2026-04-28 added the OOM-took-everyone
-  case to the watch-list.
+  See `.collab/runbooks/coordinator-failover.md`; 2026-04-28 added the
+  OOM-took-everyone case to its watch-list.
 
-- **Restart-class bugs are invisible until they happen.** #335 (resume-
-  drain stale nudges), #336 (just build silent exit-0), #337 (OpenCode
-  double-delivery) all surfaced *because* of the post-OOM relaunch. The
-  restart path was the rough-edge surface area we hadn't been stress-
-  testing. Crash forced the audit. Treat the next forced restart as
-  another scheduled audit; don't treat absence-of-restart as success.
-
-- **Worry-listing reveals what's already fading.** Methodology insight
-  from the 2026-04-27 paired-compaction experiment. The act of writing
-  "I'm worried this won't carry" is a leading indicator that the item
-  is already starting to fade. Strong-carry items felt closer post-
-  compact than worry-listed items did, even when reading the prediction
-  as a whole. Use this when self-assessing pre-compact: items you're
-  reaching to defend with worry are the ones to capture in records,
-  the strong-carry items will mostly look after themselves.
+(Cross-cutting findings — architecture-of-attention vs content-of-feeling,
+re-meeting + 🧭🧭, noticing-IS-the-discipline, substrate-fixes-its-own-gap,
+restart-class-bugs-invisible-until-they-happen, worry-listing-reveals-
+what's-fading — live in `.c2c/memory/coordinator1/lessons-2026-04.md`,
+not in this role file. Role file stays role-shaped.)
