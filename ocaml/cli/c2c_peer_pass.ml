@@ -59,10 +59,14 @@ let validate_signing_allowed ~alias ~sha ~allow_self =
   end;
   if reviewer_is_author ~reviewer:alias ~sha && not allow_self then begin
     Printf.eprintf
-      "error: refusing to sign — reviewer alias %S matches commit author of %s.\n\
-      \  Self-review-via-skill is NOT a peer-PASS (see git-workflow.md rule 3).\n\
-      \  Get another swarm agent to run review-and-fix on this SHA.\n\
-      \  If a coordinator has explicitly approved this, re-run with --allow-self.\n%!"
+      "error: self-sign refused — reviewer alias %S matches commit author of %s.\n\
+      \  Default-strict: an independent live swarm peer is the canonical reviewer.\n\
+      \  If the review came from a fresh-slate review-and-fix subagent (no live\n\
+      \  peer available, or mechanical/low-stakes slice), this is sanctioned —\n\
+      \  re-run with --allow-self (and optionally --via-subagent <id> for\n\
+      \  auditability). See git-workflow.md \"Subagent-review as peer-PASS\".\n\
+      \  HIGH-severity slices (security, data-loss, broker state, signing crypto)\n\
+      \  should still get a live peer if at all possible.\n%!"
       alias sha;
     exit 1
   end
@@ -79,10 +83,19 @@ let targets_for_all all_targets =
     Peer_review.c2c_inbox_hook = all_targets;
   }
 
+let merge_subagent_into_notes ~via_subagent ~notes =
+  let base = Option.value notes ~default:"" in
+  match via_subagent with
+  | Some id when id <> "" ->
+      let tag = Printf.sprintf "via-subagent: %s" id in
+      if base = "" then tag else Printf.sprintf "%s; %s" base tag
+  | _ -> base
+
 let signed_artifact ~alias ~sha ~verdict ~criteria ~skill_version ~commit_range
-    ~all_targets ~notes ~allow_self =
+    ~all_targets ~notes ~allow_self ~via_subagent =
   validate_signing_allowed ~alias ~sha ~allow_self;
   let identity = resolve_identity () in
+  let final_notes = merge_subagent_into_notes ~via_subagent ~notes in
   let art = {
     Peer_review.version = 1;
     Peer_review.reviewer = alias;
@@ -93,7 +106,7 @@ let signed_artifact ~alias ~sha ~verdict ~criteria ~skill_version ~commit_range
     Peer_review.skill_version = Option.value skill_version ~default:"unknown";
     Peer_review.commit_range = Option.value commit_range ~default:"";
     Peer_review.targets_built = targets_for_all all_targets;
-    Peer_review.notes = Option.value notes ~default:"";
+    Peer_review.notes = final_notes;
     Peer_review.signature = "";
     Peer_review.ts = Unix.gettimeofday ();
   } in
@@ -157,8 +170,16 @@ let peer_pass_sign_cmd =
   in
   let allow_self =
     Cmdliner.Arg.(value & flag & info [ "allow-self" ]
-      ~doc:"Override the self-review anti-cheat check (reviewer == commit author). \
-            Use only with explicit coordinator approval.")
+      ~doc:"Sanctioned override for the self-sign check (reviewer == commit author). \
+            Use when the verdict came from a fresh-slate review-and-fix subagent \
+            and no live peer was available, or for mechanical/low-stakes slices. \
+            See git-workflow.md \"Subagent-review as peer-PASS\".")
+  in
+  let via_subagent =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "via-subagent" ]
+      ~docv:"ID" ~doc:"Record the fresh-slate subagent task id (or short description) \
+                       used for the review. Appended to the artifact's notes field \
+                       for auditability when --allow-self is in effect.")
   in
   let+ sha = sha
   and+ verdict = verdict
@@ -168,11 +189,12 @@ let peer_pass_sign_cmd =
   and+ all_targets = all_targets
   and+ notes = notes
   and+ json = json
-  and+ allow_self = allow_self in
+  and+ allow_self = allow_self
+  and+ via_subagent = via_subagent in
   let alias = resolve_current_alias () in
   let signed =
     signed_artifact ~alias ~sha ~verdict ~criteria ~skill_version ~commit_range
-      ~all_targets ~notes ~allow_self
+      ~all_targets ~notes ~allow_self ~via_subagent
   in
   let path = write_artifact ~sha ~alias signed in
   if json then
@@ -231,8 +253,16 @@ let peer_pass_send_cmd =
   in
   let allow_self =
     Cmdliner.Arg.(value & flag & info [ "allow-self" ]
-      ~doc:"Override the self-review anti-cheat check (reviewer == commit author). \
-            Use only with explicit coordinator approval.")
+      ~doc:"Sanctioned override for the self-sign check (reviewer == commit author). \
+            Use when the verdict came from a fresh-slate review-and-fix subagent \
+            and no live peer was available, or for mechanical/low-stakes slices. \
+            See git-workflow.md \"Subagent-review as peer-PASS\".")
+  in
+  let via_subagent =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "via-subagent" ]
+      ~docv:"ID" ~doc:"Record the fresh-slate subagent task id (or short description) \
+                       used for the review. Appended to the artifact's notes field \
+                       for auditability when --allow-self is in effect.")
   in
   let+ to_alias = to_alias
   and+ sha = sha
@@ -245,11 +275,12 @@ let peer_pass_send_cmd =
   and+ branch = branch
   and+ worktree = worktree
   and+ json = json
-  and+ allow_self = allow_self in
+  and+ allow_self = allow_self
+  and+ via_subagent = via_subagent in
   let alias = resolve_current_alias () in
   let signed =
     signed_artifact ~alias ~sha ~verdict ~criteria ~skill_version ~commit_range
-      ~all_targets ~notes ~allow_self
+      ~all_targets ~notes ~allow_self ~via_subagent
   in
   let path = write_artifact ~sha ~alias signed in
   let content = peer_pass_message ~reviewer:alias ~sha ?branch ?worktree () in
