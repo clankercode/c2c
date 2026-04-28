@@ -402,15 +402,39 @@ module Trust_pin = struct
     in
     aux d
 
-  let save ?path (s : store) : unit =
+  (** #409: serialize concurrent save callers via Unix.lockf on a sidecar
+      lock file. Without this, two upserters both writing simultaneously
+      can race: A's atomic-rename and B's atomic-rename both succeed, but
+      whichever ran rename second wins, silently dropping the loser's pin
+      update. Pattern matches Broker.with_inbox_lock (c2c_mcp.ml:1193).
+      Note: this fixes save-vs-save; the load→upsert→save read-modify-write
+      window is NOT covered (load happens before this lock). Callers that
+      need read-modify-write atomicity should hold this lock around the
+      full sequence — see [with_pin_lock] below. *)
+  let with_pin_lock ?path f =
     let p = match path with Some p -> p | None -> default_path () in
     mkdir_p (Filename.dirname p);
-    let tmp = p ^ ".tmp" in
-    let oc = open_out tmp in
-    Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
-      output_string oc (Yojson.Safe.pretty_to_string (store_to_json s));
-      output_string oc "\n");
-    Sys.rename tmp p
+    let lock_path = p ^ ".lock" in
+    let fd =
+      Unix.openfile lock_path [ O_RDWR; O_CREAT ] 0o644
+    in
+    Fun.protect
+      ~finally:(fun () ->
+        (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+        (try Unix.close fd with _ -> ()))
+      (fun () ->
+        Unix.lockf fd Unix.F_LOCK 0;
+        f ())
+
+  let save ?path (s : store) : unit =
+    with_pin_lock ?path (fun () ->
+      let p = match path with Some p -> p | None -> default_path () in
+      let tmp = p ^ ".tmp" in
+      let oc = open_out tmp in
+      Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+        output_string oc (Yojson.Safe.pretty_to_string (store_to_json s));
+        output_string oc "\n");
+      Sys.rename tmp p)
 
   let find_pin (s : store) ~alias : pin option =
     List.assoc_opt (String.lowercase_ascii alias) s.pins
