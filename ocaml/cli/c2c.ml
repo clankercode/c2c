@@ -2145,11 +2145,16 @@ let git_cmd =
   let subcmd = List.hd args in
   let rest = List.tl args in
   let argv = Array.of_list (git_path :: sign_config_args @ [subcmd] @ sign_flag @ rest) in
+  let parent_env = Unix.environment () in
+  (* #367: only inject GIT_AUTHOR_{NAME,EMAIL} defaults when the parent env
+     hasn't already set them — operators must be able to override the alias
+     attribution from inside a managed session without bypassing the shim. *)
   let env_array = match env with
     | None -> [||]
-    | Some (name, email) -> [| "GIT_AUTHOR_NAME=" ^ name; "GIT_AUTHOR_EMAIL=" ^ email |]
+    | Some (name, email) ->
+        C2c_git_shim.build_author_overlay ~parent_env ~name ~email
   in
-  Unix.execve git_path argv (Array.append env_array (Unix.environment ()))
+  Unix.execve git_path argv (Array.append env_array parent_env)
 
 let git =
   Cmdliner.Cmd.v
@@ -2596,7 +2601,16 @@ let monitor_cmd =
            ~doc:"Include messages sent by you. Off by default — your own broadcasts \
                  and DMs echo back through archive/inbox events and are noise.")
   in
-  const (fun broker_root_arg alias_arg all drains sweeps full_body from_filter json archive include_self ->
+  let force_flag =
+    Arg.(value & flag & info ["force"]
+           ~doc:"Override the per-alias monitor lockfile guard (#354). By default \
+                 a second $(b,c2c monitor --alias ALIAS) refuses to start if a live \
+                 monitor for the same alias is already running, to prevent fork-bomb \
+                 accumulation. Stale locks (holder pid dead) are taken over \
+                 automatically; $(b,--force) is only needed to displace a \
+                 still-alive holder.")
+  in
+  const (fun broker_root_arg alias_arg all drains sweeps full_body from_filter json archive include_self force ->
     let broker_root =
       match broker_root_arg with
       | Some r -> r
@@ -2612,6 +2626,113 @@ let monitor_cmd =
       match alias_arg with
       | Some a -> Some a
       | None -> Sys.getenv_opt "C2C_MCP_SESSION_ID"
+    in
+    (* #354: per-alias monitor lockfile guard.
+       Prevents fork-bomb accumulation when `c2c monitor --alias <a>` is launched
+       in a loop (e.g. by a buggy supervisor). Lockfile location matches the
+       `doctor monitor-leak` scanner: <broker_root>/.monitor-locks/<alias>.lock.
+       Behaviour:
+         - Try non-blocking POSIX advisory lock (Unix.lockf F_TLOCK).
+         - If acquired: write our PID, install at_exit cleanup, proceed.
+         - If conflict: read holder PID. If /proc/<pid> is gone (stale), take over
+           by truncating + rewriting the lockfile and retrying. If holder is alive,
+           refuse with a clear error unless --force is set; with --force we kill
+           the holder (SIGTERM) and take over.
+       Skip the guard when no alias is set (e.g. unscoped `c2c monitor --all`). *)
+    let _monitor_lock_fd : Unix.file_descr option =
+      match my_alias with
+      | None -> None
+      | Some alias ->
+          let lock_dir = Filename.concat broker_root ".monitor-locks" in
+          (try Unix.mkdir lock_dir 0o700
+           with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+              | _ -> ());
+          let lock_path = Filename.concat lock_dir (alias ^ ".lock") in
+          let pid_alive p =
+            try Sys.is_directory (Printf.sprintf "/proc/%d" p)
+            with _ -> false
+          in
+          let read_holder_pid fd =
+            try
+              ignore (Unix.lseek fd 0 Unix.SEEK_SET);
+              let buf = Bytes.create 32 in
+              let n = Unix.read fd buf 0 32 in
+              if n <= 0 then None
+              else int_of_string_opt (String.trim (Bytes.sub_string buf 0 n))
+            with _ -> None
+          in
+          let write_pid fd =
+            (try Unix.ftruncate fd 0 with _ -> ());
+            ignore (Unix.lseek fd 0 Unix.SEEK_SET);
+            let s = string_of_int (Unix.getpid ()) ^ "\n" in
+            ignore (Unix.write_substring fd s 0 (String.length s))
+          in
+          let rec acquire ~retry =
+            let fd =
+              Unix.openfile lock_path [Unix.O_RDWR; Unix.O_CREAT] 0o644
+            in
+            match Unix.lockf fd Unix.F_TLOCK 0 with
+            | () ->
+                write_pid fd;
+                (* Cleanup on exit: release lock + remove lockfile.
+                   Closing fd releases the lock automatically. *)
+                at_exit (fun () ->
+                  (try Unix.ftruncate fd 0 with _ -> ());
+                  (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+                  (try Unix.close fd with _ -> ());
+                  (try Unix.unlink lock_path with _ -> ()));
+                Some fd
+            | exception Unix.Unix_error
+                ((Unix.EAGAIN | Unix.EACCES | Unix.EWOULDBLOCK), _, _) ->
+                let holder = read_holder_pid fd in
+                Unix.close fd;
+                (match holder with
+                 | Some p when pid_alive p && not force ->
+                     Printf.eprintf
+                       "c2c monitor: alias '%s' already has a live monitor \
+                        (pid %d). Refusing to start (#354 fork-bomb guard).\n\
+                        \  Stop it first:  kill %d\n\
+                        \  Or override:    c2c monitor --alias %s --force\n%!"
+                       alias p p alias;
+                     exit 1
+                 | Some p when pid_alive p (* && force *) ->
+                     Printf.eprintf
+                       "c2c monitor: --force given; sending SIGTERM to existing \
+                        monitor (alias=%s pid=%d) and taking over.\n%!" alias p;
+                     (try Unix.kill p Sys.sigterm with _ -> ());
+                     (* Brief grace period to let the holder release the lock. *)
+                     let deadline = Unix.gettimeofday () +. 2.0 in
+                     while pid_alive p && Unix.gettimeofday () < deadline do
+                       Unix.sleepf 0.05
+                     done;
+                     if retry > 0 then acquire ~retry:(retry - 1)
+                     else begin
+                       Printf.eprintf
+                         "c2c monitor: failed to displace holder pid %d after \
+                          --force; giving up.\n%!" p;
+                       exit 1
+                     end
+                 | _ ->
+                     (* Stale lock (holder dead or unreadable PID). Take over. *)
+                     if retry > 0 then acquire ~retry:(retry - 1)
+                     else begin
+                       Printf.eprintf
+                         "c2c monitor: stale lock for alias '%s'; takeover \
+                          retries exhausted.\n%!" alias;
+                       exit 1
+                     end)
+            | exception e ->
+                Unix.close fd;
+                Printf.eprintf
+                  "c2c monitor: unexpected error acquiring lockfile %s: %s\n%!"
+                  lock_path (Printexc.to_string e);
+                exit 1
+          in
+          (* On the stale-lock path the F_TLOCK retry must actually succeed —
+             since the dead holder's fd is gone the kernel will grant us the
+             lock on the next attempt. Cap retries at 3 to avoid any pathological
+             loop (e.g. another concurrent monitor racing us). *)
+          acquire ~retry:3
     in
     let registry_path = Filename.concat broker_root "registry.json" in
     (* Read aliases from registry.json — returns (alias, session_id) pairs. *)
@@ -2994,6 +3115,7 @@ let monitor_cmd =
       done with End_of_file -> ())
   ) $ broker_root_opt $ alias_opt $ all_flag $ drains_flag $ sweeps_flag
     $ full_body_flag $ from_opt $ json_flag $ archive_flag $ include_self_flag
+    $ force_flag
 
 let monitor =
   Cmdliner.Cmd.v
