@@ -2269,6 +2269,86 @@ let test_parse_send_tag_rejects_unknown () =
    | Error _ -> ()  (* case-sensitive — reject uppercase *)
    | Ok _ -> fail "parse_send_tag (Some \"FAIL\") should reject (case-sensitive)")
 
+(* #392b convergence: verify that the body-prefix shape produced by
+   parse_send_tag + tag_to_body_prefix round-trips cleanly through
+   extract_tag_from_content, and that format_c2c_envelope emits the
+   expected envelope shape and copies the tag attribute. The three
+   in-tree callers (c2c_wire_bridge, c2c_inbox_hook, cli/c2c.ml's
+   PostToolUse hook) all rely on this round-trip; if it ever drifts,
+   tagged DMs will lose their visual indicator on one surface but
+   not another. *)
+
+let test_extract_tag_from_content_recognizes_known_prefixes () =
+  check (option string) "fail prefix" (Some "fail")
+    (C2c_mcp.extract_tag_from_content
+       (C2c_mcp.tag_to_body_prefix (Some "fail") ^ "build broken"));
+  check (option string) "blocking prefix" (Some "blocking")
+    (C2c_mcp.extract_tag_from_content
+       (C2c_mcp.tag_to_body_prefix (Some "blocking") ^ "stop here"));
+  check (option string) "urgent prefix" (Some "urgent")
+    (C2c_mcp.extract_tag_from_content
+       (C2c_mcp.tag_to_body_prefix (Some "urgent") ^ "wake everyone"))
+
+let test_extract_tag_from_content_returns_none_for_plain () =
+  check (option string) "plain body → None" None
+    (C2c_mcp.extract_tag_from_content "ordinary message");
+  check (option string) "empty body → None" None
+    (C2c_mcp.extract_tag_from_content "")
+
+let test_format_c2c_envelope_basic_shape () =
+  let env =
+    C2c_mcp.format_c2c_envelope
+      ~from_alias:"alice" ~to_alias:"bob"
+      ~content:"hi" ()
+  in
+  check bool "starts with <c2c event=\"message\"" true
+    (string_contains env "<c2c event=\"message\"");
+  check bool "from=alice attribute" true
+    (string_contains env "from=\"alice\"");
+  check bool "alias=bob attribute" true
+    (string_contains env "alias=\"bob\"");
+  check bool "default reply_via=c2c_send" true
+    (string_contains env "reply_via=\"c2c_send\"");
+  check bool "body content present" true
+    (string_contains env "hi");
+  check bool "envelope closes with </c2c>" true
+    (string_contains env "</c2c>");
+  check bool "no tag attribute when tag absent" false
+    (string_contains env "tag=");
+  check bool "no role attribute when role absent" false
+    (string_contains env "role=")
+
+let test_format_c2c_envelope_passes_through_tag_and_role () =
+  let env =
+    C2c_mcp.format_c2c_envelope
+      ~from_alias:"alice" ~to_alias:"bob"
+      ~tag:"urgent" ~role:"coder"
+      ~reply_via:"c2c_send_room"
+      ~content:"see logs" ()
+  in
+  check bool "tag attribute present" true
+    (string_contains env "tag=\"urgent\"");
+  check bool "role attribute present" true
+    (string_contains env "role=\"coder\"");
+  check bool "explicit reply_via overrides default" true
+    (string_contains env "reply_via=\"c2c_send_room\"")
+
+let test_format_c2c_envelope_xml_escapes_attributes () =
+  let env =
+    C2c_mcp.format_c2c_envelope
+      ~from_alias:"a&b" ~to_alias:"c<d>"
+      ~content:"plain body" ()
+  in
+  check bool "ampersand in from_alias is &amp;" true
+    (string_contains env "from=\"a&amp;b\"");
+  check bool "lt/gt in to_alias are escaped" true
+    (string_contains env "alias=\"c&lt;d&gt;\"");
+  (* Body content is NOT escaped — agents read it verbatim, including
+     literal tags they may have authored. Document this invariant so a
+     future change doesn't silently break round-trip. *)
+  check bool "body content NOT escaped (verbatim pass-through)" true
+    (string_contains env "plain body")
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_start"
@@ -2283,6 +2363,18 @@ let () =
             `Quick, test_parse_send_tag_normalizes_none )
         ; ( "parse_send_tag_rejects_unknown",
             `Quick, test_parse_send_tag_rejects_unknown )
+        ] )
+    ; ( "envelope_392b",
+        [ ( "extract_tag_from_content_recognizes_known_prefixes",
+            `Quick, test_extract_tag_from_content_recognizes_known_prefixes )
+        ; ( "extract_tag_from_content_returns_none_for_plain",
+            `Quick, test_extract_tag_from_content_returns_none_for_plain )
+        ; ( "format_c2c_envelope_basic_shape",
+            `Quick, test_format_c2c_envelope_basic_shape )
+        ; ( "format_c2c_envelope_passes_through_tag_and_role",
+            `Quick, test_format_c2c_envelope_passes_through_tag_and_role )
+        ; ( "format_c2c_envelope_xml_escapes_attributes",
+            `Quick, test_format_c2c_envelope_xml_escapes_attributes )
         ] )
     ; ( "gemini_adapter",
         [ ( "fresh_session_no_resume_flag",

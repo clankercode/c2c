@@ -309,14 +309,32 @@ let tag_to_body_prefix = function
   | Some "urgent"   -> "\xE2\x9A\xA0\xEF\xB8\x8F URGENT: "  (* ⚠️ *)
   | _ -> ""
 
+(* Inverse of [tag_to_body_prefix]: detect a #392 body-prefix on an
+   already-stored message and recover the tag name. Used by the
+   envelope-formatter so re-delivery surfaces (PostToolUse hook,
+   inbox-hook tool, wire-bridge) can carry the tag attribute even when
+   the message was archived without it explicitly attached.
+
+   Earlier draft of this function compared [String.sub content 0 5]
+   against multibyte prefixes whose lengths are 11/14/15 bytes — that
+   could never match. Always check against the actual byte length of
+   each prefix (call [tag_to_body_prefix] and compare prefix). *)
 let extract_tag_from_content content =
-  if String.length content >= 5 && String.sub content 0 5 = "\xF0\x9F\x94\xB4 FAIL: "
-  then Some "fail"
-  else if String.length content >= 11 && String.sub content 0 11 = "\xE2\x9B\x94 BLOCKING: "
-  then Some "blocking"
-  else if String.length content >= 5 && String.sub content 0 5 = "\xE2\x9A\xA0\xEF\xB8\x8F URGENT: "
-  then Some "urgent"
-  else None
+  let try_prefix tag =
+    let prefix = tag_to_body_prefix (Some tag) in
+    let plen = String.length prefix in
+    if plen > 0
+       && String.length content >= plen
+       && String.sub content 0 plen = prefix
+    then Some tag
+    else None
+  in
+  match try_prefix "fail" with
+  | Some _ as r -> r
+  | None ->
+    match try_prefix "blocking" with
+    | Some _ as r -> r
+    | None -> try_prefix "urgent"
 
 let parse_send_tag = function
   | None -> Ok None

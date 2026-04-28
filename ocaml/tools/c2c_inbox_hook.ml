@@ -255,16 +255,25 @@ let () =
       | None     -> None
     in
 
-    (* Output messages in c2c event envelope format *)
+    (* Output messages in c2c event envelope format. Centralized via
+       C2c_mcp.format_c2c_envelope (#392b convergence) so #392 tag
+       attrs and xml-escaping are consistent across all surfaces
+       (c2c_wire_bridge.ml, cli/c2c.ml monitor path, this hook). *)
     List.iter
       (fun (m : C2c_mcp.message) ->
-        let reply_via = Option.value m.reply_via ~default:"c2c_send" in
-        let role_attr = match lookup_role m.from_alias with
-          | Some r -> Printf.sprintf " role=\"%s\"" r
-          | None   -> ""
+        let tag = C2c_mcp.extract_tag_from_content m.content in
+        let role = lookup_role m.from_alias in
+        let envelope =
+          C2c_mcp.format_c2c_envelope
+            ~from_alias:m.from_alias
+            ~to_alias:m.to_alias
+            ?tag
+            ?role
+            ?reply_via:m.reply_via
+            ~content:m.content
+            ()
         in
-        Printf.printf "<c2c event=\"message\" from=\"%s\" alias=\"%s\" source=\"broker\" reply_via=\"%s\" action_after=\"continue\"%s>%s</c2c>\n"
-          m.from_alias m.to_alias reply_via role_attr m.content)
+        Printf.printf "%s\n" envelope)
       messages;
 
     (* Self-regulating runtime: sleep if we finished too quickly *)
