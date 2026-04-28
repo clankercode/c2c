@@ -25,6 +25,47 @@ Before invoking the skill:
 - `just install-all` has succeeded against the worktree (reviewer can `c2c`
   the new binary if needed).
 
+### Build the slice IN ITS OWN WORKTREE — not yours, not master (#427)
+
+**Mandatory.** When reviewing SHA `<X>` on `slice/<topic>`, the reviewer's
+build verdict MUST come from a build run against THAT slice's worktree, not
+from the reviewer's main tree or any other dirty checkout. Master being
+green on its own is not evidence the slice builds — the slice may introduce
+references that don't exist on master, or signature mismatches that only
+surface after the cherry-pick.
+
+Procedure:
+
+1. `cd .worktrees/<slice>/` (or use `dune build --root <worktree-path>`).
+2. `rm -rf _build` IF the worktree's `_build/` may have been populated by
+   the slice author with an interactive cycle — Dune caches build artifacts,
+   and a stale `_build/` can mask a real compile error. (For a fresh
+   worktree just created via `git worktree add`, the cache is empty already
+   and `rm -rf _build` is a no-op.)
+3. `just build` from the slice worktree (or `opam exec -- dune build --root
+   <slice-path>`). Capture the exit code.
+4. Report the build verdict in the peer-PASS artifact's `criteria_checked`
+   list with a verbatim entry like `build-clean-IN-slice-worktree-rc=0` so
+   the reader can confirm the build was actually performed against the
+   slice, not an adjacent tree.
+
+**Background**: 2026-04-29T02:28Z `812cce1e` (#379 S1) was peer-PASSed by
+three independent reviewers all reporting "build clean" against code that
+fails to compile after cherry-pick (missing `stripped_to_alias` in scope,
+constructor-signature mismatch on `~self_host`). The reviewers' builds
+returned `rc=0` because they were running against master without the
+slice applied, OR against a stale `_build/` cache. The rubric below now
+requires: in-worktree build, fresh `_build/` (or proven not stale), and
+explicit `rc=N` capture in the artifact.
+
+Full receipt:
+`.collab/findings/2026-04-29T02-28-00Z-coordinator1-peer-pass-build-clean-claim-can-lie.md`.
+
+Pattern 8 in `.collab/runbooks/worktree-discipline-for-subagents.md`
+covers this rule from the discipline-runbook angle (cedar's
+Pattern 7 is the complementary clean-cache rule — both must hold
+for the reviewer's build verdict to be trustworthy).
+
 ## Workflow
 
 ### Step 1: Review
@@ -119,7 +160,14 @@ c2c peer-pass sign <SHA> \
 Required:
 - `SHA` — git SHA of the reviewed commit
 - `--verdict PASS` (or `FAIL`)
-- `--criteria` — comma-separated criteria checked
+- `--criteria` — comma-separated criteria checked. **Per #427, the list MUST
+  include a verbatim build-rc entry like `build-clean-IN-slice-worktree-rc=0`
+  so the reader can confirm the reviewer actually built the slice in its own
+  worktree.** A future schema extension may promote this to a structured
+  `build_exit_code` field; until then, the criteria-list entry is the
+  canonical capture point. PASS without a build-rc criterion is itself a
+  rubric violation — coord cherry-pick should reject the artifact and
+  bounce back for a real build.
 
 Optional:
 - `--skill-version` — version of the review skill used

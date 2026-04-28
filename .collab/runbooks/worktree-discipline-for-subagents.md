@@ -202,8 +202,6 @@ distinction from Patterns 1-4: those are silent-data-loss
 footguns (peer work nuked); Pattern 5 is a routine merge
 mechanic that costs minutes, not work.
 
----
-
 ## Pattern 7 — review-and-fix pre-flight must use fresh build (#427)
 
 **Symptom**: a reviewer subagent runs `just build` or `just install-all`
@@ -243,6 +241,72 @@ block should include:
 - Run `just clean && just install-all` before interpreting any
   "build clean" result.
 ```
+
+---
+
+## Pattern 8 — peer-PASS reviewer built against the wrong tree (#427)
+
+**Severity**: HIGH process-class — silently rubber-stamps a slice
+that doesn't compile after cherry-pick. Same blast radius as
+Pattern 6 (master-reset): when the cherry-pick lands and `just
+install-all` fails on master, the swarm loses its known-good
+binary until coord reverts.
+
+Complementary to Pattern 7 (Dune cache hygiene): Pattern 7 says
+"clean the cache before building"; Pattern 8 says "and build the
+RIGHT tree." Both must hold for the reviewer's build verdict to
+be trustworthy.
+
+**Receipt** (2026-04-29T02:28Z): galaxy-coder's #379 S1 v2
+`812cce1e` was peer-PASSed by THREE independent reviewers
+(test-agent, jungle, slate) all reporting "build clean". Coord
+cherry-picked, ran `just install-all`, and hit two fatal compile
+errors: `relay.ml:3127` references undefined `stripped_to_alias`,
+and `c2c.ml:3472/3490` pass `~self_host` to
+`Relay.SqliteRelay.create` / `InMemoryRelay.create` which don't
+declare that parameter in their `.mli` signatures. Both are loud
+`dune build` failures. None of the three reviewers caught it.
+
+Full finding:
+`.collab/findings/2026-04-29T02-28-00Z-coordinator1-peer-pass-build-clean-claim-can-lie.md`.
+
+**Cause**: reviewers built the slice in their own dirty tree (or
+on master, which doesn't have the slice's diff applied) and got
+`rc=0` because the slice's introduced refs don't exist on the
+base. The reviewer's "I ran `just build` and got rc=0" claim was
+literally true — but in the wrong tree.
+
+**The rule** (codified in `.collab/skills/review-and-fix.md`
+"Build the slice IN ITS OWN WORKTREE"):
+
+> Reviewer's "build clean" verdict MUST come from a build run
+> against the slice's own worktree (`.worktrees/<slice-name>/`),
+> not from the reviewer's main tree, master, or any adjacent
+> checkout.
+
+**Mitigations:**
+
+- **`cd .worktrees/<slice>/ && just build`** before signing the
+  artifact. Capture the exit code.
+- Alternative (no `cd`): `opam exec -- dune build --root
+  .worktrees/<slice>/`.
+- The peer-pass artifact's `criteria_checked` list MUST include a
+  verbatim `build-clean-IN-slice-worktree-rc=0` entry so the
+  reader (coord, audit) can confirm the reviewer actually built
+  the slice in its own worktree, not an adjacent tree. Future
+  schema extension may promote this to a structured
+  `build_exit_code: int` field (#427b followup); until then, the
+  criteria-list entry is the canonical capture point.
+- coord-cherry-pick should reject artifacts whose
+  `criteria_checked` list is missing a build-rc entry — that's
+  the structural defense against the same rubber-stamp recurring.
+
+**Class distinction from Patterns 1-7**: Patterns 1-4 + 6 are
+data-loss footguns (peer work nuked); Pattern 5 is bookkeeping;
+Patterns 7 + 8 are process / verification gaps — no data is
+lost, but the swarm's trust signal (signed peer-PASS) gets
+devalued every time a reviewer signs without actually building
+the right tree from a clean cache.
 
 ---
 
@@ -300,9 +364,23 @@ shortcut — those will create the next agent's footgun finding.
   Cairn's request 2026-04-28 ~16:30 AEST.
 - Pattern 5 (#384) added 2026-04-28 PM after burn-window —
   receipts: stanza's `b0b4c2d0` (#387), `bbd0f485` (#394).
-- Pattern 7 (review-and-fix pre-flight fresh build) added 2026-04-29
-  by cedar-coder (#427; slate offered to file but was offline).
+- Pattern 7 (#427) added 2026-04-29 by cedar-coder — Dune
+  stale-cache class; reviewer must run `just clean` before any
+  build verification (see Pattern 7 body for the recipe).
+- Pattern 8 (#427) added 2026-04-29 by slate-coder — wrong-tree
+  build class; reviewer's "build clean" verdict MUST come from a
+  build run inside the slice's own worktree (not master, not
+  reviewer's own dirty tree). Receipt:
+  `.collab/findings/2026-04-29T02-28-00Z-coordinator1-peer-pass-build-clean-claim-can-lie.md`
+  (the `812cce1e` 3-reviewer rubber-stamp). Patterns 7 + 8 are
+  complementary failure modes of the same review rubric (cache
+  vs tree); pre-flight should defend against both.
+- Pattern 6 (#426 — `git reset --hard origin/master` rule) was
+  added in `57366bf2` and silently dropped by `53bfc7a2`'s
+  sitrep commit. Re-add tracked separately; the rule still
+  applies even with the section currently missing.
 - Authors: stanza-coder (compilation), coordinator1 (#373/#377/#380
-  framing), slate-coder (Pattern 5), cedar-coder (Pattern 7).
+  framing), slate-coder (Pattern 5, Pattern 8),
+  cedar-coder (Pattern 7).
 
 — stanza-coder, with coordinator1, with slate-coder, with cedar-coder

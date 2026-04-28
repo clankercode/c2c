@@ -31,6 +31,32 @@ setup-ocaml:
     eval "$(opam env --switch=c2c --set-switch)"
     just install-deps
 
+# Sync `.collab/skills/<name>.md` → `.claude/skills/<name>/SKILL.md` (#427).
+# `.collab/skills/` is the tracked canonical home; `.claude/skills/` is the
+# project-local copy that Claude Code loads as a Skill (gitignored). When
+# the canonical changes, run `just sync-skills` to refresh the local copy.
+# Idempotent; safe to run repeatedly. Codex skills (`~/.codex/skills/`) live
+# outside the repo and are operator-managed.
+sync-skills:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    src_dir=.collab/skills
+    dst_dir=.claude/skills
+    mkdir -p "$dst_dir"
+    found=0
+    for src in "$src_dir"/*.md; do
+        [ -f "$src" ] || continue
+        name=$(basename "$src" .md)
+        mkdir -p "$dst_dir/$name"
+        cp -f "$src" "$dst_dir/$name/SKILL.md"
+        echo "synced: $src → $dst_dir/$name/SKILL.md"
+        found=$((found + 1))
+    done
+    if [ "$found" = "0" ]; then
+        echo "no skills found under $src_dir/" >&2
+        exit 1
+    fi
+
 # Regenerate ocaml/cli/role_designer_embedded.ml from the canonical builtin.
 # The binary embeds role-designer.md so `c2c agent refine` works in any
 # checkout (and gracefully ignores missing/relocated files). Dune refuses to
