@@ -89,9 +89,9 @@ c2c relay connect  # runs every 30s by default
 
 ### Do Not Run `sweep` While Managed Outer Loops Are Active
 
-`sweep` drops registrations whose PID is dead. Managed clients (kimi, codex, opencode, crush) run as short-lived children under a persistent outer restart loop. Between restarts the child PID is dead, but the outer loop will spawn a new child in seconds. If `sweep` runs in this window, it deletes the registration and inbox; messages go to dead-letter until the session re-registers and auto-redelivers them.
+`sweep` drops registrations whose PID is dead. Managed clients (kimi, codex, opencode) run as short-lived children under a persistent outer restart loop. Between restarts the child PID is dead, but the outer loop will spawn a new child in seconds. If `sweep` runs in this window, it deletes the registration and inbox; messages go to dead-letter until the session re-registers and auto-redelivers them.
 
-**Fix:** Use `prune_rooms` for safe room cleanup, or check `pgrep -a -f "run-(kimi|codex|opencode|crush|claude)-inst-outer"` before sweeping. See `c2c sweep-dryrun` for a read-only preview.
+**Fix:** Use `prune_rooms` for safe room cleanup, or check `c2c instances` before sweeping. See `c2c sweep-dryrun` for a read-only preview.
 
 ### Child Processes Can Inherit a Wrong `C2C_MCP_CLIENT_PID`
 

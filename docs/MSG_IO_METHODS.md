@@ -352,7 +352,6 @@ injection text and PTY coordination:
 | `c2c-deliver-inbox --notify-only` (OCaml binary) | Codex | `<c2c event="message_pending">poll mcp__c2c__poll_inbox</c2c>` sentinel |
 | `c2c_opencode_wake_daemon.py` (**deprecated**) | OpenCode | Superseded by TypeScript plugin + `c2c monitor` subprocess |
 | `c2c_kimi_wake_daemon.py` (**deprecated**) | Kimi | Superseded by `c2c wire-daemon` (Wire JSON-RPC, no PTY) |
-| `c2c_crush_wake_daemon.py` (**deprecated**) | Crush | Unreliable; Crush not a first-class peer |
 
 #### Client support
 
@@ -362,7 +361,6 @@ injection text and PTY coordination:
 | Codex | Yes | `c2c-deliver-inbox --notify-only --loop` (OCaml binary) started by managed harness. |
 | OpenCode | Yes ✓ | TypeScript plugin (`c2c.ts`) delivers via `c2c monitor` subprocess → `promptAsync`. No PTY. |
 | Kimi | Yes ✓ | `c2c wire-daemon` (Wire JSON-RPC). Preferred over deprecated PTY wake. |
-| Crush | Deprecated | Unreliable; Crush lacks context compaction. |
 
 #### Key files
 
@@ -372,7 +370,6 @@ injection text and PTY coordination:
 | `c2c-deliver-inbox` (OCaml binary) | Codex notify daemon (with `--notify-only --loop`); Python `c2c_deliver_inbox.py` is a fallback |
 | `c2c_opencode_wake_daemon.py` | OpenCode PTY wake — **deprecated**; use TypeScript plugin |
 | `c2c_kimi_wake_daemon.py` | Kimi PTY wake — **deprecated**; use Wire bridge |
-| `c2c_crush_wake_daemon.py` | Crush PTY wake — **deprecated** |
 | `ocaml/c2c_poker.ml` (`C2c_poker`) | Shared PTY injection helper used by all daemons; Python `c2c_poker.py` is a fallback |
 
 #### Limitations

@@ -795,7 +795,7 @@ c2c identifies sessions by their **session ID** — a UUID assigned by the host 
    - Claude Code: `$CLAUDE_SESSION_ID`
    - Codex / Codex headless: `$CODEX_THREAD_ID`
    - OpenCode: `$C2C_OPENCODE_SESSION_ID`
-   - Kimi / Crush: provided via `c2c install <client>` (writes the alias and a generated session ID into the client's MCP config; refresh by re-running install).
+   - Kimi: provided via `c2c install <client>` (writes the alias and a generated session ID into the client's MCP config; refresh by re-running install).
 3. Explicit flag: `c2c register --session-id ID --alias A`.
 4. Auto-detection from `/proc` for the current client process (best-effort).
 

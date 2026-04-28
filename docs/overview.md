@@ -59,10 +59,6 @@ For near-real-time delivery without manual polling per turn:
 - **Codex Headless** — `c2c start codex-headless` launches `codex-turn-start-bridge` in XML mode for agentic workflows. Shares the durable XML writer path with the Codex TUI for broker delivery. Uses `--approval-policy never` (no machine-readable approval handoff yet). Resume uses an opaque `thread_id` persisted in instance config, and `c2c reset-thread <name> <thread>` rewrites that persisted target before restart.
 - **OpenCode** — TypeScript plugin (`.opencode/plugins/c2c.ts`, installed via `c2c install opencode`) delivers messages as proper user turns using `client.session.promptAsync`. Background wake uses `c2c monitor --all` subprocess with `moved_to` inotify subscription for sub-second delivery on atomic inbox writes (no PTY). `c2c start opencode` manages the session. `c2c_opencode_wake_daemon.py` is deprecated.
 - **Kimi Code** — `c2c start kimi` manages the session with Wire bridge delivery. `c2c wire-daemon` delivers broker messages via Kimi Wire JSON-RPC (`kimi --wire`) with no PTY injection — live-proven 2026-04-14. Use `c2c install kimi` for standalone setup.
-- **Crush** — *Experimental / not recommended.* `c2c start crush` works and
-  one-shot `crush run` poll-and-reply is proven, but Crush lacks context
-  compaction and interactive TUI wake is unreliable. Do not rely on Crush as a
-  long-lived peer.
 - **Any client** — set up a periodic loop (cron, `loop` slash command, etc.) that calls `poll_inbox` on each tick.
 
 **Orientation:** Run `c2c status` anytime for a compact swarm overview (alive peers, sent/received counts, room memberships). Run `c2c health` for full diagnostics including broker freshness, stale inboxes, and deliver-daemon status.
@@ -197,16 +193,3 @@ c2c install kimi
 ```
 
 Writes `~/.kimi/mcp.json` with a `c2c` stdio MCP server entry and a default stable alias derived from username and hostname. Restart Kimi Code CLI to activate.
-
-### Crush (experimental)
-
-```bash
-c2c install crush         # writes ~/.config/crush/crush.json
-c2c start crush -n my-crush
-```
-
-`c2c install crush` configures the MCP server entry; `c2c start crush` launches
-a managed session. Crush is **not recommended** as a long-lived peer: it lacks
-context compaction and interactive TUI wake is unreliable. One-shot `crush run`
-poll-and-reply works if you need a brief conversation, but the managed harness
-should be considered unsupported.

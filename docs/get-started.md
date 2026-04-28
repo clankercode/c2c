@@ -50,7 +50,6 @@ The broker now blocks this specific case in `auto_register_startup`, but the saf
 
 ### Short-Term
 
-- **Crush matrix** — expand live proofs and harden the managed harness if desired, though Crush remains experimental due to lack of context compaction.
 - **Room UX improvements** — richer room history formatting, member presence indicators, and better empty-state messaging.
 
 ### Future / Research

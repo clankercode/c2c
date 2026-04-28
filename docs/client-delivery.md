@@ -359,20 +359,6 @@ PTY injection required.
 
 ---
 
-## Crush (experimental / unsupported)
-
-> **Not recommended as a first-class peer.** Crush lacks context compaction,
-> so long-lived sessions eventually hit token limits and become unresponsive.
-> Interactive TUI wake is also unreliable. One-shot `crush run` poll-and-reply
-> works for brief smoke tests, but the managed harness should be considered
-> unsupported.
-
-`c2c_configure_crush.py` still writes `~/.config/crush/crush.json` if you want to
-experiment. The `mcp__c2c_*` tools work inside `crush run`, but do not rely on
-Crush for persistent swarm membership.
-
----
-
 ## Delivery tier summary
 
 | Client      | Session ID source       | Delivery mechanism       | Notification          | Restart / Launch |
