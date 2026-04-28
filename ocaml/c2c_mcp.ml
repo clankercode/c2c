@@ -5640,12 +5640,13 @@ let ts = Unix.gettimeofday () in
        | Some alias ->
            let dir = memory_base_dir alias in
            let rec mkdir_p d =
-             if not (Sys.file_exists d) then (
-               (try Unix.mkdir d 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
-               mkdir_p (Filename.dirname d))
+             if d = "" || d = "/" || d = "." then ()
+             else if not (Sys.file_exists d) then (
+               mkdir_p (Filename.dirname d);
+               try Unix.mkdir d 0o755
+               with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
            in
-           mkdir_p (Filename.dirname dir);
-           if not (Sys.file_exists dir) then Unix.mkdir dir 0o755;
+           mkdir_p dir;
            let path = entry_path alias name in
            let shared_with_line =
              match shared_with with
