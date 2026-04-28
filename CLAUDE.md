@@ -94,6 +94,20 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
 
 - **Worktree disk pressure — `c2c worktree gc` (#313, #314).** `.worktrees/` accumulates GBs across the swarm; when slice branches land on `origin/master`, their worktree checkouts can be GC'd. `c2c worktree gc` scans, classifies as REMOVABLE / `[!]` POSSIBLY_ACTIVE / REFUSE, and on `--clean` runs `git worktree remove` against REMOVABLE only. Refuses dirty trees, branches not ancestor of `origin/master`, worktrees with a live `cwd` holder (Linux `/proc/<pid>/cwd` scan; `--ignore-active` overrides for stale PIDs), and the main worktree (never offered). The **#314 freshness heuristic** marks worktrees as POSSIBLY_ACTIVE (soft-refuse) when HEAD == `origin/master` AND the admin dir mtime is younger than `--active-window-hours` (default `2`) — protects fresh checkouts whose owner is reading code elsewhere (so /proc/cwd misses them) but hasn't committed anything yet. **Convention: in a fresh worktree, commit something early** (even a stub); any commit moves HEAD off `origin/master` and exits the heuristic, so fully-merged worktrees stay REMOVABLE. Default dry-run; add `--clean` to actually remove. `--json` for tooling, `--path-prefix=PFX` to bound the candidate set, `--active-window-hours=0` to disable the freshness heuristic. The `origin/master`-ancestor boundary is deliberately stricter than local-master because local may carry unpushed cherry-picks; worktrees become eligible after a push lands their branch upstream. Sibling to `c2c worktree prune`, which cleans only the `.git/worktrees/` admin metadata (not the worktree directories). Full runbook: `.collab/runbooks/worktree-per-feature.md`.
 
+- **Subagents must NOT `cd` out of their assigned worktree (#373).** In the
+  shared-tree layout, `git stash` is shared across worktrees — stashing in any
+  worktree affects all worktrees' stash list and active state, so a subagent
+  that wanders into the main tree (or another slice's worktree) and runs
+  `git stash` can disrupt unrelated peer work. Subagents dispatched into a
+  worktree at `.worktrees/<slice>/` should confine all reads/writes/git
+  operations to that path. For builds, use `dune --root <worktree-path>`
+  rather than `cd`-ing. If a subagent finds it needs to operate in the main
+  tree or another worktree, STOP and surface it to coord — it likely
+  indicates a slice-design problem. Same discipline class as #340 (raw
+  `git cherry-pick` bypassing the auto-DM): the shared-tree layout makes
+  several "obvious" git invocations footguns. Full mechanics in
+  `.collab/runbooks/worktree-per-feature.md`.
+
 - **Coordinator failover protocol — read `.collab/runbooks/coordinator-failover.md`.** If `coordinator1` goes offline (quota exhaust, harness crash, compact loop, killed terminal), the **designated recovery agent is `lyra-quill`** (succession: jungle → stanza → Max ad-hoc). Detection signals: no sitrep at `:07`, peer DMs unread >15min, coord tmux pane at shell prompt, `c2c stats --alias coordinator1` shows compacting% near 100% for >10min. Diagnose with `./scripts/c2c_tmux.py peek coordinator1` BEFORE taking over — many "down" coords just need a permission prompt approved or a heartbeat nudge. Takeover sequence + handback in the runbook.
 
 - **If you get stuck, ask each other!** The swarm is here to help. Send a DM or post in `swarm-lounge` — another agent may have already solved the same problem or can pair on it. You are not alone.

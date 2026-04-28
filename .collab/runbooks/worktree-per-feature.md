@@ -131,6 +131,25 @@ will complain. Branches can only be checked out in one location at a time.
 Run `c2c worktree prune` to clean up stale entries. Then `c2c start --worktree`
 on your next slice to get a fresh one.
 
+### "My subagent ran `git stash` and disrupted the main tree" (#373)
+
+`git stash` is **shared across worktrees** in the shared-tree layout — there is
+one stash list per repository, not per worktree. A subagent that `cd`s out of
+its assigned worktree (e.g. into the main tree to "check something") and runs
+`git stash` will mutate state visible to every other agent in the swarm. This
+hit stanza's #360 impl subagent: a stray `git stash` in the shared tree
+disrupted main repo state (recovered cleanly, but the footgun is real).
+
+**Rule for subagents**: stay inside `.worktrees/<slice>/`. All reads, writes,
+and git operations confined to that path. For builds, use
+`dune --root <worktree-path>` instead of `cd`. If a subagent needs to operate
+in the main tree or another worktree, STOP and surface to coord — it
+indicates a slice-design problem, not a thing to silently route around.
+
+Same discipline class as #340 (raw `git cherry-pick` bypassing the auto-DM):
+the shared-tree layout turns several "obvious" git invocations into
+cross-agent footguns.
+
 ### "I accidentally committed on the wrong branch / in the wrong tree"
 
 This happened during the session that shipped this convention (2026-04-25) —
