@@ -309,7 +309,7 @@ let xml_escape s =
     | '<' -> Buffer.add_string buf "&lt;"
     | '>' -> Buffer.add_string buf "&gt;"
     | '"' -> Buffer.add_string buf "&quot;"
-    | '\'' -> Buffer.add_string buf "&apos;"
+    | '\'' -> Buffer.add_string buf "&#39;"
     | c -> Buffer.add_char buf c) s;
   Buffer.contents buf
 

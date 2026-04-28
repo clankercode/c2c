@@ -3029,17 +3029,19 @@ let hook_cmd =
            | Some reg -> reg.C2c_mcp.role
            | None     -> None
          in
-         List.iter
-           (fun (m : C2c_mcp.message) ->
-              Buffer.add_string buf
-                (let reply_via = Option.value m.reply_via ~default:"c2c_send" in
-                 let role_attr = match lookup_role m.from_alias with
-                   | Some r -> Printf.sprintf " role=\"%s\"" r
-                   | None   -> ""
-                 in
-                 Printf.sprintf "<c2c event=\"message\" from=\"%s\" alias=\"%s\" source=\"broker\" reply_via=\"%s\" action_after=\"continue\"%s>%s</c2c>\n"
-                   m.from_alias m.to_alias reply_via role_attr m.content))
-           messages;
+          List.iter
+            (fun (m : C2c_mcp.message) ->
+               let tag = C2c_mcp.extract_tag_from_content m.content in
+               let role = lookup_role m.from_alias in
+               Buffer.add_string buf
+                 (C2c_mcp.format_c2c_envelope
+                    ~from_alias:m.from_alias
+                    ~to_alias:m.to_alias
+                    ?tag
+                    ?role
+                    ~content:m.content
+                    ()))
+            messages;
          let json : Yojson.Safe.t =
            `Assoc [
              ("hookSpecificOutput", `Assoc [
