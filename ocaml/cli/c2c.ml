@@ -66,9 +66,13 @@ let version_string () =
   let base = Version.version in
   let t = Unix.gmtime (Unix.gettimeofday ()) in
   let ts = Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ" (t.Unix.tm_year + 1900) (t.Unix.tm_mon + 1) t.Unix.tm_mday t.Unix.tm_hour t.Unix.tm_min t.Unix.tm_sec in
-  match git_shorthash () with
-  | Some h -> Printf.sprintf "%s %s %s" base h ts
-  | None -> Printf.sprintf "%s %s" base ts
+  (* #420: use the SHA embedded at compile time rather than shelling
+     out to `git rev-parse` on every invocation. The shell-out cost
+     was ~1s wall-clock and fired even on slate's #418 fast-path,
+     undercutting that slice's startup-latency win. *)
+  match Version.git_sha with
+  | "unknown" | "" -> Printf.sprintf "%s %s" base ts
+  | h -> Printf.sprintf "%s %s %s" base h ts
 
 let find_python_script script =
   match git_repo_toplevel () with
