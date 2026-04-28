@@ -81,6 +81,19 @@ type pending_permission =
   ; expires_at : float
   }
 
+(** Recursive idempotent mkdir. Creates [d] and all missing parents.
+    Tolerates EEXIST races (concurrent creators). Canonical filesystem
+    helper reused by [Broker.ensure_root], the MCP [memory_write] handler,
+    and [C2c_memory.ensure_memory_dir] (#396 dedup of #332 peer-PASS note). *)
+let rec mkdir_p d =
+  if d = "" || d = "/" || d = "." then ()
+  else if Sys.file_exists d then ()
+  else begin
+    mkdir_p (Filename.dirname d);
+    try Unix.mkdir d 0o755
+    with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+  end
+
 let pending_kind_to_string = function Permission -> "permission" | Question -> "question"
 let pending_kind_of_string = function "question" -> Question | _ -> Permission
 
@@ -323,17 +336,7 @@ module Broker = struct
   let registry_path t = Filename.concat t.root "registry.json"
   let inbox_path t ~session_id = Filename.concat t.root (session_id ^ ".inbox.json")
 
-  let ensure_root t =
-    let rec mkdir_p d =
-      if d = "" || d = "/" || d = "." then ()
-      else if Sys.file_exists d then ()
-      else begin
-        mkdir_p (Filename.dirname d);
-        try Unix.mkdir d 0o755
-        with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-      end
-    in
-    mkdir_p t.root
+  let ensure_root t = mkdir_p t.root
 
   let read_json_file path ~default =
     if Sys.file_exists path then
@@ -5639,13 +5642,6 @@ let ts = Unix.gettimeofday () in
        | None -> Lwt.return (missing_member_alias_result "memory_write")
        | Some alias ->
            let dir = memory_base_dir alias in
-           let rec mkdir_p d =
-             if d = "" || d = "/" || d = "." then ()
-             else if not (Sys.file_exists d) then (
-               mkdir_p (Filename.dirname d);
-               try Unix.mkdir d 0o755
-               with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
-           in
            mkdir_p dir;
            let path = entry_path alias name in
            let shared_with_line =

@@ -84,6 +84,13 @@ type pending_permission =
   ; expires_at : float
   }
 
+val mkdir_p : string -> unit
+(** Recursive idempotent mkdir. Creates the path and all missing parents
+    with mode 0o755. Tolerates EEXIST races (concurrent creators). Canonical
+    filesystem helper reused by [Broker.ensure_root], the MCP [memory_write]
+    handler, and [C2c_memory.ensure_memory_dir] (#396 dedup of #332
+    peer-PASS note). *)
+
 val parse_alias_list : string -> string list
 (** Parse a YAML-flow list value (e.g. ["[alice, bob]"] or ["[]"]) into a
     string list. Also accepts a bare comma-separated form (["alice, bob"])
