@@ -11,6 +11,16 @@
 ; as opaque (don't rely on hex shape). Override at build time by
 ; exporting C2C_BUILD_GIT_SHA in the build env.
 (rule
+ ; #420 fix(jungle FAIL): mark this rule as always-rerun so dune
+ ; regenerates the SHA on every build invocation. Without this,
+ ; dune caches the SHA across checkouts and the binary reports a
+ ; stale build identifier — exactly the regression jungle
+ ; reproduced. We can't `(deps (file ../.git/HEAD))` because
+ ; `.git/HEAD` is outside the dune source tree (dune rejects with
+ ; "No rule found"). `(deps (universe))` is the canonical idiom
+ ; for "always run". The underlying `git rev-parse` is fast (<10ms)
+ ; so the per-build cost is negligible vs. the correctness win.
+ (deps (universe))
  (targets version_git_sha.ml)
  (action
   (with-stdout-to %{targets}
