@@ -30,6 +30,15 @@ let resolve_broker_root () = C2c_repo_fp.resolve_broker_root ()
 let is_legacy_broker_root = C2c_broker_root_check.is_legacy_broker_root
 let legacy_broker_warning_text = C2c_broker_root_check.legacy_broker_warning_text
 
+(** [alias_from_env_only ()] returns the alias from [C2C_MCP_AUTO_REGISTER_ALIAS]
+    env var, or [None] if unset/empty. Pure env read — no broker IO.
+    Use as the fast-path in commands that can resolve from env alone,
+    falling back to broker lookup only when this returns [None]. *)
+let alias_from_env_only () =
+  match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
+  | Some v when String.trim v <> "" -> Some (String.trim v)
+  | _ -> None
+
 (** [atomic_write_json path json] writes json to a temp file then atomically
     renames to [path], ensuring readers never see a partial write.
     The payload is followed by a newline. *)

@@ -15,21 +15,18 @@ let print_json json =
 
 let resolve_broker_root () = C2c_utils.resolve_broker_root ()
 
-let env_auto_alias_rooms () =
-  match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
-  | Some v when String.trim v <> "" -> Some (String.trim v)
-  | _ -> None
-
 let resolve_alias_with_broker ?(override : string option) broker =
   let open C2c_mcp in
   match override with
   | Some a when String.trim a <> "" -> String.trim a
   | _ ->
-      match Broker.list_registrations broker |> List.find_opt (fun r -> r.session_id = Option.value (C2c_mcp.session_id_from_env ()) ~default:"") with
-      | Some r -> r.alias
+      (* Fast-path: try env before broker IO. *)
+      match C2c_utils.alias_from_env_only () with
+      | Some a -> a
       | None ->
-          match env_auto_alias_rooms () with
-          | Some a -> a
+          (* Env absent — hit the broker. *)
+          match Broker.list_registrations broker |> List.find_opt (fun r -> r.session_id = Option.value (C2c_mcp.session_id_from_env ()) ~default:"") with
+          | Some r -> r.alias
           | None ->
               Printf.eprintf "error: cannot determine alias. Set C2C_MCP_AUTO_REGISTER_ALIAS or C2C_MCP_SESSION_ID.\n%!";
               exit 1
