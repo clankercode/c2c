@@ -2309,6 +2309,97 @@ let test_auto_register_startup_skips_when_alive_same_session_different_pid () =
           let reg = List.hd regs in
           check int "original pid preserved" real_pid (Option.get reg.pid)))
 
+let test_guard1_pidless_zombie_does_not_fire_hijack () =
+  (* #345: a pidless zombie row (e.g. left by post-OOM cleanup) sharing the
+     same session_id but a different alias must NOT block a legitimate
+     resume that re-registers under a new alias. Guard 1 must skip
+     pid=None rows. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Pre-register a pidless zombie row with alias "old-zombie-alias" *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"shared-session" ~alias:"old-zombie-alias"
+        ~pid:None ~pid_start_time:None ();
+      (* Legitimate resume: same session_id, different alias *)
+      Unix.putenv "C2C_MCP_SESSION_ID" "shared-session";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "fresh-alias";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          let open C2c_mcp in
+          check bool "fresh-alias registered (zombie did not block hijack guard)"
+            true (List.exists (fun r -> r.alias = "fresh-alias") regs)))
+
+let test_guard2_pidless_zombie_does_not_block_post_oom_resume () =
+  (* #345 (highest-impact site): post-OOM swarm-dance — the prior session
+     left a pidless zombie row owning alias "kimi-nova". The legitimate
+     fresh session has the same env-configured alias but a new session_id
+     + pid. Guard 2 must skip pid=None rows so the resume registers. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Pre-register a pidless zombie owning alias "kimi-nova" under a stale session_id *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"crashed-session" ~alias:"kimi-nova"
+        ~pid:None ~pid_start_time:None ();
+      (* Legitimate fresh-session resume with same alias *)
+      Unix.putenv "C2C_MCP_SESSION_ID" "fresh-session-after-oom";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "kimi-nova";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          let open C2c_mcp in
+          (* The fresh session must be registered (zombie did not block) *)
+          let fresh =
+            List.find_opt
+              (fun r ->
+                 r.session_id = "fresh-session-after-oom"
+                 && r.alias = "kimi-nova")
+              regs
+          in
+          check bool "fresh post-OOM registration succeeded"
+            true (Option.is_some fresh)))
+
+let test_guard4_pidless_zombie_does_not_trigger_same_pid_alive () =
+  (* #345 defense-in-depth: a pidless zombie row with a different
+     session_id and different alias must NOT match Guard 4's same-pid
+     predicate, even if `pid` were ever to fall back to None in the
+     future. Today this is structurally enforced by the `pid` fallback
+     to Unix.getppid (), but the explicit `Option.is_some reg.pid`
+     filter pins the predicate semantics. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Pre-register a pidless zombie with a different session_id + alias *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"old-session" ~alias:"old-alias"
+        ~pid:None ~pid_start_time:None ();
+      Unix.putenv "C2C_MCP_SESSION_ID" "new-session";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "new-alias";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          let open C2c_mcp in
+          let new_reg =
+            List.find_opt
+              (fun r ->
+                 r.session_id = "new-session"
+                 && r.alias = "new-alias")
+              regs
+          in
+          check bool "new registration succeeded (Guard 4 did not fire on pidless)"
+            true (Option.is_some new_reg)))
+
 let test_auto_join_rooms_startup_joins_listed_rooms () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-social";
@@ -7272,6 +7363,12 @@ let () =
              test_auto_register_startup_skips_when_alive_session_owns_alias
          ; test_case "auto_register_startup skips when alive same session has different pid" `Quick
              test_auto_register_startup_skips_when_alive_same_session_different_pid
+         ; test_case "guard1 pidless zombie does not fire hijack (#345)" `Quick
+             test_guard1_pidless_zombie_does_not_fire_hijack
+         ; test_case "guard2 pidless zombie does not block post-OOM resume (#345)" `Quick
+             test_guard2_pidless_zombie_does_not_block_post_oom_resume
+         ; test_case "guard4 pidless zombie does not trigger same-pid alive (#345)" `Quick
+             test_guard4_pidless_zombie_does_not_trigger_same_pid_alive
          ; test_case "auto_join_rooms_startup joins listed rooms" `Quick
              test_auto_join_rooms_startup_joins_listed_rooms
          ; test_case "auto_join_rooms_startup prefers current registered alias" `Quick

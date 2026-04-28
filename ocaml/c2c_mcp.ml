@@ -3584,9 +3584,13 @@ let auto_register_impl ~broker_root ?session_id_override () =
          with a DIFFERENT alias, skip — prevents session hijack when a child
          process inherits CLAUDE_SESSION_ID but has a different alias. *)
       let hijack_guard =
+        (* #345: exclude pid=None for the reasons documented at Guard 3
+           below — pidless zombie rows cannot prove ownership against a
+           legitimate post-OOM resume. *)
         List.exists
           (fun reg ->
-            reg.session_id = session_id
+            Option.is_some reg.pid
+            && reg.session_id = session_id
             && reg.alias <> alias
             && Broker.registration_is_alive reg)
           existing
@@ -3604,9 +3608,14 @@ let auto_register_impl ~broker_root ?session_id_override () =
         | None -> Some (Unix.getppid ())
       in
       let alias_occupied_guard =
+        (* #345: exclude pid=None for the reasons documented at Guard 3
+           below — this is the highest-impact post-OOM-resume site, where
+           a pidless zombie row from the prior crashed session would
+           otherwise block the legitimate fresh-session resume. *)
         List.exists
           (fun reg ->
-            reg.alias = alias
+            Option.is_some reg.pid
+            && reg.alias = alias
             && reg.session_id <> session_id
             && Broker.registration_is_alive reg
             && reg.pid <> pid)
@@ -3640,9 +3649,16 @@ let auto_register_impl ~broker_root ?session_id_override () =
          from Codex) from inheriting the same C2C_MCP_CLIENT_PID and
          creating a permanent ghost alias that accumulates messages. *)
       let same_pid_alive_different_session =
+        (* #345: exclude pid=None for the reasons documented at Guard 3
+           above — defense-in-depth + intent-locking. Functionally a
+           no-op today since `pid` falls back to Unix.getppid () so the
+           `reg.pid = pid` clause already structurally rejects None,
+           but the explicit filter pins the predicate to its semantic
+           intent ("a row whose pid we know matches ours"). *)
         List.exists
           (fun reg ->
-             reg.session_id <> session_id
+             Option.is_some reg.pid
+             && reg.session_id <> session_id
              && reg.alias <> alias
              && Broker.registration_is_alive reg
              && reg.pid = pid)
