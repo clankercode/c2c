@@ -2853,9 +2853,8 @@ let monitor_cmd =
     let watch_dir =
       if archive then Filename.concat broker_root "archive" else broker_root
     in
-    if archive && not (Sys.file_exists watch_dir) then begin
-      (try Unix.mkdir watch_dir 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
-    end;
+    if archive && not (Sys.file_exists watch_dir) then
+      C2c_mcp.mkdir_p ~mode:0o700 watch_dir;
     (* Per-file read offsets for archive mode. Init to current size so we
        don't re-emit historical entries on startup. *)
     let archive_offsets : (string, int) Hashtbl.t = Hashtbl.create 16 in
@@ -4804,7 +4803,7 @@ let load_repo_config () =
 let save_repo_config json =
   let path = repo_config_path () in
   let dir = Filename.dirname path in
-  (try Unix.mkdir dir 0o755 with Unix.Unix_error _ -> ());
+  C2c_utils.mkdir_p dir;
   C2c_setup.json_write_file path json
 
 let valid_strategies = [ "first-alive"; "round-robin"; "broadcast" ]
@@ -6232,7 +6231,7 @@ let yaml_scalar s =
 
 let write_role ~alias ~(role : C2c_role.t) =
   let dir = roles_dir () in
-  (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  C2c_utils.mkdir_p dir;
   let path = role_file_path ~alias in
   let fm =
     Printf.sprintf
@@ -7434,7 +7433,7 @@ let config_read () : (string * string) list =
 let config_write (entries : (string * string) list) : unit =
   let path = c2c_config_path () in
   let dir = Filename.dirname path in
-  (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  C2c_utils.mkdir_p dir;
   let tmp = path ^ ".tmp" in
   let oc = open_out tmp in
   Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () ->
@@ -8519,16 +8518,7 @@ let oc_plugin_stream_write_statefile_cmd =
        - else                    → ~/.local/share/c2c/oc-plugin-state.json          *)
     let home = Sys.getenv_opt "HOME" |> Option.value ~default:"/tmp" in
     let base_dir = Filename.concat home ".local/share/c2c" in
-    let mkdir_p dir =
-      let parts = String.split_on_char '/' dir in
-      let _ = List.fold_left (fun acc part ->
-        if part = "" then acc
-        else
-          let p = if acc = "" then "/" ^ part else acc ^ "/" ^ part in
-          (try Unix.mkdir p 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
-          p
-      ) "" parts in ()
-    in
+    let mkdir_p dir = C2c_mcp.mkdir_p ~mode:0o700 dir in
     let statefile =
       match Sys.getenv_opt "C2C_INSTANCE_NAME" with
       | Some name when String.trim name <> "" ->
@@ -8730,16 +8720,7 @@ let cc_plugin_write_statefile_cmd =
     (* Same path logic as oc-plugin: prefer $C2C_INSTANCE_NAME, else base dir. *)
     let home = Sys.getenv_opt "HOME" |> Option.value ~default:"/tmp" in
     let base_dir = Filename.concat home ".local/share/c2c" in
-    let mkdir_p dir =
-      let parts = String.split_on_char '/' dir in
-      ignore (List.fold_left (fun acc part ->
-        if part = "" then acc
-        else
-          let p = if acc = "" then "/" ^ part else acc ^ "/" ^ part in
-          (try Unix.mkdir p 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
-          p
-      ) "" parts)
-    in
+    let mkdir_p dir = C2c_mcp.mkdir_p ~mode:0o700 dir in
     let statefile =
       match Sys.getenv_opt "C2C_INSTANCE_NAME" with
       | Some name when String.trim name <> "" ->

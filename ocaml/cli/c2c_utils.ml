@@ -5,9 +5,10 @@ let ( // ) = Filename.concat
 let likes_shell_substitution = C2c_start.likes_shell_substitution
 
 (** [mkdir_p dir] creates dir and all parents, like Unix mkdir -p.
-    Idempotent: succeeds if dir already exists. Uses 0o755 permissions.
-    Delegates to [C2c_mcp.mkdir_p] — the single canonical helper after
-    #396 (peer-PASS follow-up: converge parallel canonicals). *)
+    Idempotent; uses 0o755 permissions.
+    Delegates to [C2c_mcp.mkdir_p] — the single canonical helper
+    (#400b, which itself delegates to [C2c_io.mkdir_p]). For
+    non-default permission bits, call [C2c_mcp.mkdir_p ~mode] directly. *)
 let mkdir_p = C2c_mcp.mkdir_p
 
 (** XDG_STATE_HOME per XDG spec, with HOME fallback. *)

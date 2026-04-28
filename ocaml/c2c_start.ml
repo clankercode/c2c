@@ -1313,13 +1313,7 @@ let instances_dir =
   | Some d when String.trim d <> "" -> String.trim d
   | _ -> Filename.concat (home_dir ()) ".local" // "share" // "c2c" // "instances"
 
-let rec mkdir_p dir =
-  if Sys.file_exists dir then ()
-  else begin
-    mkdir_p (Filename.dirname dir);
-    try Unix.mkdir dir 0o755
-    with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-  end
+let mkdir_p dir = C2c_io.mkdir_p dir
 
 let write_git_shim ~shim_bin_path ~c2c_bin_path ~real_git_path =
   let oc = open_out shim_bin_path in
@@ -3655,8 +3649,7 @@ let run_outer_loop ~(name : string) ~(client : string)
           let plugin_dir = project_dir // ".opencode" // "plugins" in
           let plugin_dst = plugin_dir // "c2c.ts" in
           (if Sys.file_exists plugin_src then begin
-            (try ignore (Unix.mkdir plugin_dir 0o755)
-             with Unix.Unix_error _ -> ());
+            C2c_io.mkdir_p plugin_dir;
             (try
               let ic = open_in plugin_src in
               let n = in_channel_length ic in

@@ -173,16 +173,7 @@ let of_json (j : Yojson.Safe.t) =
       }
   | _ -> Error "identity json: expected object"
 
-let mkdir_p_mode path mode =
-  let rec aux p =
-    if Sys.file_exists p then ()
-    else begin
-      aux (Filename.dirname p);
-      try Unix.mkdir p mode
-      with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-    end
-  in
-  aux path
+let mkdir_p_mode path mode = C2c_io.mkdir_p ~mode path
 
 let save ?path t =
   let path = match path with Some p -> p | None -> default_path () in
@@ -245,7 +236,7 @@ let write_openssh_key (id : t) ~(priv_path : string) =
     if Sys.file_exists priv_path then Ok ()
     else
       let dir = Filename.dirname priv_path in
-      (try ignore (Unix.stat dir) with Unix.Unix_error _ -> Unix.mkdir dir 0o700);
+      C2c_io.mkdir_p ~mode:0o700 dir;
       match generate_ssh_key ~priv_path ~alias:id.alias_hint with
       | Ok () -> Ok ()
       | Error e -> Error e

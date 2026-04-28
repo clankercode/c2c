@@ -37,7 +37,7 @@ let debug_log_path () =
     | _ -> "no-session"
   in
   let dir = Filename.concat base "mcp-debug" in
-  (try ignore (Unix.mkdir dir 0o700) with Unix.Unix_error _ -> ());
+  C2c_io.mkdir_p ~mode:0o700 dir;
   Filename.concat dir (sid ^ ".log")
 
 let debug_log msg =

@@ -291,6 +291,12 @@ let tool_definition ~name ~description ~required ~properties =
 
 module Relay = Relay
 
+(** Re-export of the canonical [mkdir_p] (lives in [C2c_io] so it is
+    reachable from every module in the [c2c_mcp] library — including
+    relay/relay_identity/c2c_start which compile before [c2c_mcp]).
+    Kept here for source-compat with #400 callers. *)
+let mkdir_p ?(mode = 0o755) dir = C2c_io.mkdir_p ~mode dir
+
 (* Parse a YAML-flow list value (e.g. "[alice, bob]" or "[]") into a string
    list. Also accepts a bare comma-separated form ("alice, bob") for
    resilience. Whitespace and surrounding quotes are stripped, empties
@@ -704,15 +710,7 @@ module Broker = struct
     let priv_path = Filename.concat keys_dir (alias ^ ".ed25519") in
     let signers_path = Filename.concat t.root "allowed_signers" in
     try
-      let mkdir_p d =
-        let rec aux p =
-          if p = "" || p = "/" || p = "." then ()
-          else if Sys.file_exists p then ()
-          else begin aux (Filename.dirname p); try Unix.mkdir p 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> () end
-        in
-        aux d
-      in
-      mkdir_p keys_dir;
+      mkdir_p ~mode:0o700 keys_dir;
       let id = Relay_identity.load_or_create_at ~path:priv_path ~alias_hint:alias in
       let ssh_priv_path = priv_path ^ ".ssh" in
       let ssh_pub_path = ssh_priv_path ^ ".pub" in

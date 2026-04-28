@@ -524,11 +524,7 @@ module InMemoryRelay : RELAY = struct
     let path = room_history_jsonl_path persist_dir room_id in
     let dir = Filename.dirname path in
     (try
-       let rec mkdir_p d =
-         if Sys.file_exists d then ()
-         else begin mkdir_p (Filename.dirname d); Unix.mkdir d 0o755 end
-       in
-       mkdir_p dir;
+       C2c_io.mkdir_p dir;
        let oc = open_out_gen [Open_creat; Open_append; Open_wronly] 0o644 path in
        output_string oc (Yojson.Safe.to_string hist_msg ^ "\n");
        close_out oc

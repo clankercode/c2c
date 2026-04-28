@@ -30,7 +30,7 @@ let default_messages_json = {|
 let ensure_default_messages path =
   let dir = Filename.dirname path in
   try
-    (try ignore (Unix.mkdir dir 0o755) with Unix.Unix_error _ -> ());
+    C2c_io.mkdir_p dir;
     if not (Sys.file_exists path) then
       let ch = open_out path in
       output_string ch default_messages_json;

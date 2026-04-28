@@ -15,15 +15,7 @@ let iso8601_now () =
     (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday
     tm.tm_hour tm.tm_min tm.tm_sec
 
-let mkdir_p dir =
-  let parts = String.split_on_char '/' dir in
-  ignore (List.fold_left (fun acc part ->
-    if part = "" then acc
-    else
-      let p = if acc = "" then "/" ^ part else acc ^ "/" ^ part in
-      (try Unix.mkdir p 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
-      p
-  ) "" parts)
+let mkdir_p dir = C2c_io.mkdir_p ~mode:0o700 dir
 
 let cold_boot_marker_path broker_root session_id =
   Filename.concat (Filename.concat broker_root ".cold_boot_done") session_id

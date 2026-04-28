@@ -93,15 +93,7 @@ let spool_read sp =
 let spool_write sp messages =
   let dir = Filename.dirname sp.path in
   (try ignore (Sys.readdir dir)
-   with Sys_error _ ->
-     let rec mkdir_p d =
-       if not (Sys.file_exists d) then begin
-         mkdir_p (Filename.dirname d);
-         (try Unix.mkdir d 0o755
-          with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
-       end
-     in
-     mkdir_p dir);
+   with Sys_error _ -> C2c_io.mkdir_p dir);
   let (tmp, oc) = Filename.open_temp_file ~temp_dir:dir "spool" ".tmp" in
   Fun.protect
     ~finally:(fun () -> (try Sys.remove tmp with _ -> ()))

@@ -68,16 +68,7 @@ let list_daemons () =
   end
 
 (** Ensure state directory exists. *)
-let ensure_state_dir () =
-  let dir = state_dir () in
-  let rec mkdir_p d =
-    if not (Sys.file_exists d) then begin
-      mkdir_p (Filename.dirname d);
-      (try Unix.mkdir d 0o755
-       with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
-    end
-  in
-  mkdir_p dir
+let ensure_state_dir () = C2c_io.mkdir_p (state_dir ())
 
 (** Start a wire bridge daemon for the given session.
     Forks a detached child that runs the wire bridge loop.

@@ -2,6 +2,10 @@ val server_version : string
 val server_git_hash : string
 val server_info : Yojson.Safe.t
 
+val mkdir_p : ?mode:int -> string -> unit
+(** Re-export of the canonical [C2c_io.mkdir_p]. Kept for source-compat
+    with #400 callers. Default mode 0o755; idempotent on EEXIST. *)
+
 type compacting = { started_at : float; reason : string option }
 type registration =
   { session_id : string

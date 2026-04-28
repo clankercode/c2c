@@ -99,10 +99,8 @@ let do_install_self ~output_mode ~dest_opt ~with_mcp_server =
   else
     let result =
       try
-        if not (Sys.file_exists dest_dir && Sys.is_directory dest_dir) then (
-          let parent = Filename.dirname dest_dir in
-          if not (Sys.file_exists parent && Sys.is_directory parent) then Unix.mkdir parent 0o755;
-          Unix.mkdir dest_dir 0o755);
+        if not (Sys.file_exists dest_dir && Sys.is_directory dest_dir) then
+          C2c_mcp.mkdir_p dest_dir;
         let dest_path = dest_dir // "c2c" in
         let ic = open_in_bin exe_path in
         let oc = open_out_bin (dest_path ^ ".tmp") in
@@ -216,20 +214,7 @@ let mkdir_p dry_run dir =
   if dry_run then
     Printf.printf "[DRY-RUN] would create directory tree %s\n%!" dir
   else
-    let rec loop remaining =
-      if remaining = "/" || remaining = "" || remaining = "." then ()
-      else
-        let st =
-          try Some (Unix.stat remaining) with Unix.Unix_error _ -> None
-        in
-        match st with
-        | Some s when s.Unix.st_kind = Unix.S_DIR -> ()
-        | Some _ -> ()
-        | None ->
-            loop (Filename.dirname remaining);
-            (try Unix.mkdir remaining 0o755 with Unix.Unix_error _ -> ())
-    in
-    loop dir
+    C2c_mcp.mkdir_p dir
 
 let default_alias_for_client client =
   let client = match String.lowercase_ascii client with
@@ -688,7 +673,7 @@ let configure_claude_hook () =
   let hooks_dir = home // ".claude" // "hooks" in
   let script_path = hooks_dir // "c2c-inbox-check.sh" in
   let settings_path = home // ".claude" // "settings.json" in
-  (try Unix.mkdir hooks_dir 0o755 with Unix.Unix_error _ -> ());
+  C2c_mcp.mkdir_p hooks_dir;
   let oc = open_out script_path in
   Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
     output_string oc claude_hook_script);

@@ -280,13 +280,7 @@ let sitrep_stub ~now =
   Printf.sprintf "# Sitrep — %04d-%02d-%02d %02d:00 UTC\n\n"
     (1900 + t.tm_year) (1 + t.tm_mon) t.tm_mday t.tm_hour
 
-let rec mkdir_p path =
-  if path = "" || path = Filename.dirname path then ()
-  else if Sys.file_exists path then ()
-  else begin
-    mkdir_p (Filename.dirname path);
-    Unix.mkdir path 0o755
-  end
+let mkdir_p = C2c_mcp.mkdir_p
 
 let read_file path =
   let ic = open_in path in
