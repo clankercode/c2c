@@ -303,10 +303,73 @@ literally true — but in the wrong tree.
 
 **Class distinction from Patterns 1-7**: Patterns 1-4 + 6 are
 data-loss footguns (peer work nuked); Pattern 5 is bookkeeping;
-Patterns 7 + 8 are process / verification gaps — no data is
+Patterns 7 + 8 + 9 are process / verification gaps — no data is
 lost, but the swarm's trust signal (signed peer-PASS) gets
 devalued every time a reviewer signs without actually building
-the right tree from a clean cache.
+the right tree from a clean cache, or a coord cherry-picks on a
+co-author PASS before the author's fresh-eye gate clears.
+
+---
+
+## Pattern 9 — co-author PASS satisfies artifact gate but not cherry-pick gate (#427 follow-up)
+
+**Severity**: MEDIUM process-class — premature cherry-pick based on a
+formally valid but conflict-of-interest PASS. Unlike Patterns 7/8
+(which are reviewer failures), this is a **coord-side** failure mode:
+the rubric says "1 PASS = ready" but a co-author's PASS has a
+conflict of interest, and the slice author may be explicitly waiting
+for a non-co-author (fresh-eye) PASS before declaring the slice ready.
+
+**The rub**: the peer-PASS artifact is **formally valid** regardless
+of whether the reviewer is a co-author. The `c2c peer-pass sign`
+tool does not block co-author sign-offs. A coord who reads only the
+artifact sees a valid PASS and has no programmatic signal that the
+reviewer was a co-author. But the slice author may have declared
+"waiting for fresh-eye PASS" as the actual gate — and the co-author
+PASS was not that gate.
+
+**Receipt** (2026-04-29T04:20Z): stanza-coder (surge-coord)
+cherry-picked 8 commits of birch's #407 S5 after cedar signed a
+peer-PASS artifact for SHA `82361f71`. Cedar was a **co-author** of
+#407 S5. birch had explicitly broadcast "waiting for slate's fresh-eye
+PASS" — slate was the non-co-author reviewer. Stanza's cherry-pick
+landed 8 commits before birch's broadcast became visible, requiring
+a `git reset --hard` rollback to pre-S5 state. Full finding:
+`.collab/findings/2026-04-29T04-20-00Z-stanza-coder-surge-coord-premature-cherry-pick.md`.
+
+**The distinction**:
+
+| Reviewer | Artifact validity | Cherry-pick readiness |
+|---|---|---|
+| Non-co-author PASS | ✅ Valid | ✅ Ready |
+| Co-author PASS | ✅ Valid | ⚠️ Wait for author's explicit "ready" OR fresh-eye PASS |
+| Fresh-eye PASS (non-co-author) | ✅ Valid | ✅ Ready |
+
+**The rule for coords**:
+
+1. A co-author PASS **satisfies the formal artifact gate** — the
+   artifact is not invalid.
+2. But a co-author PASS is **not a cherry-pick gate** by itself.
+3. The actual cherry-pick gate requires one of:
+   - **(a)** the slice author's explicit "ready for cherry-pick" DM,
+     OR
+   - **(b)** a PASS from a **non-co-author** reviewer.
+4. In ambiguous cases, **wait**. The cost of waiting is one
+   tick-cycle; the cost of a premature cherry-pick is a revert +
+   rebuild.
+
+**For slice authors**: if you are waiting for a specific fresh-eye
+reviewer, broadcast that expectation explicitly ("waiting on
+\<alias\> for fresh-eye PASS") so coords know not to act on a
+co-author's earlier PASS.
+
+**For reviewers**: if you are a co-author of the slice you are
+reviewing, note that in the `--notes` field. The artifact is still
+valid, but coords will treat it as a "waiting on fresh-eye" signal.
+
+**For coords**: before cherry-picking, check the reviewer relationship.
+If the only PASS is from a co-author, wait for the slice author's
+explicit "ready" or a non-co-author PASS.
 
 ---
 
