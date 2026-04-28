@@ -250,7 +250,7 @@ let run_coord_cherry_pick ?(no_fail_on_install = false) ~no_install ~no_dm ~shas
             Printf.printf "[coord-cherry-pick] restoring stash...\n%!";
             match git_stash_pop repo with
             | `Conflict ->
-                Printf.eprintf "[coord-cherry-pick] WARNING: stash pop conflicted — stash left on stack\n%!"
+                Printf.eprintf "[coord-cherry-pick] WARNING: stash apply conflicted — stash kept at refs/c2c-stashes/%s (recover with: git stash apply $(git rev-parse refs/c2c-stashes/%s))\n%!" stash_msg stash_msg
             | `Success ->
                 Printf.printf "[coord-cherry-pick] stash restored\n%!"
           end;
@@ -262,7 +262,7 @@ let run_coord_cherry_pick ?(no_fail_on_install = false) ~no_install ~no_dm ~shas
             Printf.printf "[coord-cherry-pick] cherry-picks succeeded — popping stash...\n%!";
             match git_stash_pop repo with
             | `Conflict ->
-                Printf.eprintf "[coord-cherry-pick] WARNING: stash pop conflicted — stash left on stack\n%!"
+                Printf.eprintf "[coord-cherry-pick] WARNING: stash apply conflicted — stash kept at refs/c2c-stashes/%s (recover with: git stash apply $(git rev-parse refs/c2c-stashes/%s))\n%!" stash_msg stash_msg
             | `Success ->
                 Printf.printf "[coord-cherry-pick] stash restored ✓\n%!"
           end;
