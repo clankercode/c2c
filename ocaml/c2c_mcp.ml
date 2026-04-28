@@ -65,7 +65,8 @@ type room_meta =
   ; created_by : string
     (** Alias of the room creator. Empty string for legacy rooms whose
         meta.json predates the field; legacy rooms can only be deleted
-        with [~force:true] (#H3 rooms-acl audit). *)
+        with [~force:true] (#H3 rooms-acl audit). #394 creates rooms
+        with [created_by] populated; legacy continues to read as "". *)
   }
 
 (** Pending reply tracking for alias-hijack mitigation (M2/M4).
@@ -2549,6 +2550,63 @@ module Broker = struct
       invalid_arg ("set_room_visibility rejected: only room members can change visibility");
     let meta = load_room_meta t ~room_id in
     save_room_meta t ~room_id { meta with visibility }
+
+  type create_room_result =
+    { cr_room_id : string
+    ; cr_created_by : string
+    ; cr_visibility : room_visibility
+    ; cr_invited_members : string list
+    ; cr_members : string list
+    ; cr_auto_joined : bool
+    }
+
+  (* #394: explicit room creation with visibility-on-create. Lineage:
+     #385/H3 + #M4 covered the visibility-on-create path through join_room
+     for MCP callers; this surface gives CLI users a create-without-join
+     entry point with the same atomicity guarantee. *)
+  let create_room t ~room_id ~caller_alias ~caller_session_id ~visibility
+        ~invited_members ~auto_join =
+    if not (valid_room_id room_id) then
+      invalid_arg ("invalid room_id: " ^ room_id);
+    let dir = room_dir t ~room_id in
+    if Sys.file_exists dir then
+      invalid_arg ("room already exists: " ^ room_id);
+    (* ensure_room_dir creates the dir; do this only after the existence
+       check so we don't race two creators silently. The check + mkdir is
+       not atomic across processes, but mkdir(2) below would still fail
+       with EEXIST if a peer slips in. We use Unix.mkdir directly to make
+       that race observable. *)
+    (try Unix.mkdir (rooms_dir t) 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+    (try Unix.mkdir dir 0o700
+     with Unix.Unix_error (Unix.EEXIST, _, _) ->
+       invalid_arg ("room already exists: " ^ room_id));
+    let dedup_invited =
+      List.fold_left
+        (fun acc a -> if List.mem a acc then acc else acc @ [ a ])
+        [] invited_members
+    in
+    save_room_meta t ~room_id
+      { visibility; invited_members = dedup_invited; created_by = caller_alias };
+    let members =
+      if auto_join then begin
+        let member =
+          { rm_alias = caller_alias
+          ; rm_session_id = caller_session_id
+          ; joined_at = Unix.gettimeofday ()
+          }
+        in
+        save_room_members t ~room_id [ member ];
+        [ caller_alias ]
+      end
+      else []
+    in
+    { cr_room_id = room_id
+    ; cr_created_by = caller_alias
+    ; cr_visibility = visibility
+    ; cr_invited_members = dedup_invited
+    ; cr_members = members
+    ; cr_auto_joined = auto_join
+    }
 
   let rename_room_member_alias t ~room_id ~session_id ~new_alias =
     if not (valid_room_id room_id) then

@@ -68,7 +68,7 @@ type room_meta =
   ; created_by : string
     (** Alias of the room creator. Empty string for legacy rooms whose
         meta.json predates the field. Used to gate [delete_room]
-        (#H3 rooms-acl audit). *)
+        (#H3 rooms-acl audit). #394 populates on create. *)
   }
 
 type pending_kind = | Permission | Question
@@ -231,6 +231,28 @@ module Broker : sig
   val save_room_meta : t -> room_id:string -> room_meta -> unit
   val send_room_invite : t -> room_id:string -> from_alias:string -> invitee_alias:string -> unit
   val set_room_visibility : t -> room_id:string -> from_alias:string -> visibility:room_visibility -> unit
+  type create_room_result =
+    { cr_room_id : string
+    ; cr_created_by : string
+    ; cr_visibility : room_visibility
+    ; cr_invited_members : string list
+    ; cr_members : string list
+    ; cr_auto_joined : bool
+    }
+  val create_room :
+    t ->
+    room_id:string ->
+    caller_alias:string ->
+    caller_session_id:string ->
+    visibility:room_visibility ->
+    invited_members:string list ->
+    auto_join:bool ->
+    create_room_result
+  (** [create_room] (#394) atomically creates [room_id] with [caller_alias]
+      recorded as [created_by]. Errors with [Invalid_argument] if the room
+      already exists. When [auto_join] is true, [caller_alias]/[caller_session_id]
+      are added to the member list (the only path by which an invite_only
+      room gets a first member without a separate join_room call). *)
   val join_room : t -> room_id:string -> alias:string -> session_id:string -> room_member list
   val leave_room : t -> room_id:string -> alias:string -> room_member list
   val delete_room : t -> room_id:string -> ?caller_alias:string -> ?force:bool -> unit -> unit

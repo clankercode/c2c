@@ -6129,6 +6129,71 @@ let test_set_room_visibility_only_member_can_change () =
            C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret-club"
              ~from_alias:"bob" ~visibility:C2c_mcp.Invite_only))
 
+(* #394: c2c rooms create — explicit room creation. *)
+let test_create_public_room_with_auto_join () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let r =
+        C2c_mcp.Broker.create_room broker ~room_id:"design-syndicate"
+          ~caller_alias:"stanza-coder" ~caller_session_id:"session-stanza"
+          ~visibility:C2c_mcp.Public ~invited_members:[] ~auto_join:true
+      in
+      check string "room_id" "design-syndicate" r.cr_room_id;
+      check string "created_by" "stanza-coder" r.cr_created_by;
+      check bool "auto_joined" true r.cr_auto_joined;
+      check (list string) "members has creator" ["stanza-coder"] r.cr_members;
+      check bool "visibility public" true
+        (match r.cr_visibility with Public -> true | Invite_only -> false);
+      let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"design-syndicate" in
+      check string "meta created_by persisted" "stanza-coder" meta.created_by;
+      let members = C2c_mcp.Broker.read_room_members broker ~room_id:"design-syndicate" in
+      check int "one member persisted" 1 (List.length members))
+
+let test_create_invite_only_with_invited_members () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let r =
+        C2c_mcp.Broker.create_room broker ~room_id:"design-syndicate"
+          ~caller_alias:"stanza-coder" ~caller_session_id:"session-stanza"
+          ~visibility:C2c_mcp.Invite_only
+          ~invited_members:["galaxy-coder"; "lyra-quill"; "galaxy-coder"]
+          ~auto_join:true
+      in
+      check bool "visibility invite_only" true
+        (match r.cr_visibility with Invite_only -> true | Public -> false);
+      check (list string) "invited dedup" ["galaxy-coder"; "lyra-quill"] r.cr_invited_members;
+      let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"design-syndicate" in
+      check (list string) "invited_members persisted" ["galaxy-coder"; "lyra-quill"]
+        meta.invited_members)
+
+let test_create_no_join () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let r =
+        C2c_mcp.Broker.create_room broker ~room_id:"design-syndicate"
+          ~caller_alias:"stanza-coder" ~caller_session_id:"session-stanza"
+          ~visibility:C2c_mcp.Public ~invited_members:[] ~auto_join:false
+      in
+      check bool "not auto_joined" false r.cr_auto_joined;
+      check (list string) "members empty" [] r.cr_members;
+      let members = C2c_mcp.Broker.read_room_members broker ~room_id:"design-syndicate" in
+      check int "no members persisted" 0 (List.length members);
+      let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"design-syndicate" in
+      check string "created_by still recorded" "stanza-coder" meta.created_by)
+
+let test_create_existing_room_errors () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      ignore (C2c_mcp.Broker.create_room broker ~room_id:"design-syndicate"
+                ~caller_alias:"stanza-coder" ~caller_session_id:"session-stanza"
+                ~visibility:C2c_mcp.Public ~invited_members:[] ~auto_join:true);
+      check_raises "second create errors"
+        (Invalid_argument "room already exists: design-syndicate")
+        (fun () ->
+           ignore (C2c_mcp.Broker.create_room broker ~room_id:"design-syndicate"
+                     ~caller_alias:"galaxy-coder" ~caller_session_id:"session-galaxy"
+                     ~visibility:C2c_mcp.Public ~invited_members:[] ~auto_join:true)))
+
 let test_list_rooms_includes_visibility_and_invited_members () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -7856,6 +7921,14 @@ let () =
              test_set_room_visibility_changes_mode
          ; test_case "set_room_visibility only member can change" `Quick
              test_set_room_visibility_only_member_can_change
+         ; test_case "create public room with auto-join (#394)" `Quick
+             test_create_public_room_with_auto_join
+         ; test_case "create invite_only with invited members (#394)" `Quick
+             test_create_invite_only_with_invited_members
+         ; test_case "create with --no-join (#394)" `Quick
+             test_create_no_join
+         ; test_case "create existing room errors (#394)" `Quick
+             test_create_existing_room_errors
          ; test_case "list_rooms includes visibility and invited_members" `Quick
              test_list_rooms_includes_visibility_and_invited_members
          ; test_case "tools/call send_room_invite via MCP" `Quick
