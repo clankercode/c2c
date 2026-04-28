@@ -1175,7 +1175,43 @@ let migrate_broker_cmd =
 let migrate_broker =
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "migrate-broker"
-       ~doc:"Migrate broker data from the legacy .git/c2c/mcp path to the new per-repo path. Use --dry-run first.")
+       ~doc:"Migrate broker data from the legacy .git/c2c/mcp path to the new per-repo path."
+       ~man:[ `S "DESCRIPTION"
+            ; `P "Migrates broker state from the legacy $(b,.git/c2c/mcp) path to the \
+                  canonical per-repo path ($(b,\\$XDG_STATE_HOME/c2c/repos/<fp>/broker) \
+                  or $(b,\\$HOME/.c2c/repos/<fp>/broker))."
+            ; `P "Run $(b,--dry-run) first to preview the action plan."
+            ; `S "TWO-PHASE COMMIT"
+            ; `P "The migration is a two-phase commit: (1) COPY every eligible entry to \
+                  the destination and verify the copy succeeded, then (2) REMOVE the \
+                  legacy tree only after every copy is confirmed. If any step aborts or \
+                  fails, the legacy tree is preserved untouched and the command exits \
+                  with status 1 — re-running after a fix is safe."
+            ; `S "COPY-SET SEMANTICS"
+            ; `P "Default policy is COPY-by-default: every entry under the legacy root \
+                  is copied unless it matches the deny-list."
+            ; `P "Deny-list (NOT copied): $(b,*.pid) files (live-PID-bound state, \
+                  meaningless across migrations) and top-level $(b,*.lock) files \
+                  (fcntl/flock sidecars; recreated on demand)."
+            ; `S "FAIL-LOUD ON UNKNOWN"
+            ; `P "Unknown filesystem entries (FIFOs, sockets, character devices, block \
+                  devices, or any non-regular/non-directory/non-symlink type) abort the \
+                  migration BEFORE any copy is performed. The legacy tree is left \
+                  intact; resolve or remove the offending entry, then re-run."
+            ; `S "DRY-RUN OUTPUT LEGEND"
+            ; `P "$(b,[WILL COPY])             — entry is in the copy-set and will be \
+                  written to the destination."
+            ; `P "$(b,[WILL DENY])             — entry matches the deny-list and will \
+                  be skipped (e.g. $(b,*.pid), top-level $(b,*.lock))."
+            ; `P "$(b,[ALREADY AT CANONICAL]) — entry already exists at the destination \
+                  with matching content; no-op."
+            ; `P "$(b,[UNKNOWN])               — entry has an unrecognized file type; \
+                  migration will abort with exit 1 if run without $(b,--dry-run)."
+            ; `S "EXIT STATUS"
+            ; `P "0 on successful migration (or clean dry-run). 1 on abort/failure — \
+                  the legacy tree is preserved so the operator can investigate and \
+                  retry."
+            ])
     migrate_broker_cmd
 
 (* --- subcommand: history -------------------------------------------------- *)
