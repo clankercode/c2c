@@ -116,3 +116,8 @@
  (name test_peer_review)
  (modules test_peer_review)
  (libraries c2c_mcp alcotest base64 unix))
+
+(test
+ (name test_relay_nudge)
+ (modules test_relay_nudge)
+ (libraries c2c_mcp alcotest unix))
