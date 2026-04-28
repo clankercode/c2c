@@ -27,20 +27,6 @@ val parse_send_tag : string option -> (string option, string) result
     (no tag). [Some "fail"|"blocking"|"urgent"] → [Ok (Some _)].
     Anything else → [Error msg] with a human-readable rejection. *)
 
-val extract_tag_from_content : string -> string option
-(** [#392] Inverse of the body-prefix encoding done by
-    [tag_to_body_prefix]: scan the leading bytes of [content] for one
-    of the known tag prefixes and return the abstract tag (e.g. [Some
-    "fail"]). Returns [None] if no recognized prefix is present.
-    Used by inbox-hook and wire-bridge formatters to surface the tag
-    to consumers without re-parsing the body. *)
-
-val format_c2c_envelope : from_alias:string -> to_alias:string -> ?tag:string -> ?role:string -> ?reply_via:string -> content:string -> unit -> string
-(** [#392] Canonical c2c message envelope formatter — emits the
-    `<c2c event="message" ...>BODY</c2c>` XML wrapper with consistent
-    attribute order across all surfaces (MCP, CLI, inbox-hook,
-    wire-bridge). *)
-
 type compacting = { started_at : float; reason : string option }
 type registration =
   { session_id : string
