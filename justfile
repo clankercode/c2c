@@ -54,16 +54,23 @@ codegen-role-designer:
     } > "$out.tmp"
     mv -f "$out.tmp" "$out"
 
-# Build the OCaml MCP server
+# Build the OCaml CLI binary and MCP server (full project)
+# Note: this recipe intentionally builds ALL primary targets (c2c.exe + server + hooks)
+# so that any compilation error causes a non-zero exit.
+# For server-only fast builds use build-server; for CLI-only use build-cli.
 build: codegen-role-designer
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
+    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
 
-# Build the OCaml CLI binary
+# Build the OCaml CLI binary only (fast, for iterative CLI work)
 build-cli: codegen-role-designer
     scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
 
-# Build both MCP server and CLI
-build-all: build build-cli
+# Build MCP server + hooks only (fast, for server/hook work)
+build-server: codegen-role-designer
+    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
+
+# Alias for build-all (back-compat)
+build-all: build
 
 # Run Python tests only
 # --force-test-env bypasses the pre-flight process-count guard (needed when
