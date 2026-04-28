@@ -297,6 +297,27 @@ module Relay = Relay
     Kept here for source-compat with #400 callers. *)
 let mkdir_p ?(mode = 0o755) dir = C2c_io.mkdir_p ~mode dir
 
+(* #392 — body-prefix helpers for tagged DMs. Body text is the
+   load-bearing channel (agents READ body text on every client surface;
+   envelope attributes are invisible at the read layer). Sender CLI +
+   MCP send handler both prepend the prefix at send-time so the broker-
+   stored content carries the marker through every delivery surface
+   without per-client rendering hooks. *)
+let tag_to_body_prefix = function
+  | Some "fail"     -> "\xF0\x9F\x94\xB4 FAIL: "       (* 🔴 *)
+  | Some "blocking" -> "\xE2\x9B\x94 BLOCKING: "       (* ⛔ *)
+  | Some "urgent"   -> "\xE2\x9A\xA0\xEF\xB8\x8F URGENT: "  (* ⚠️ *)
+  | _ -> ""
+
+let parse_send_tag = function
+  | None -> Ok None
+  | Some "" -> Ok None
+  | Some ("fail" | "blocking" | "urgent" as t) -> Ok (Some t)
+  | Some other ->
+    Error (Printf.sprintf
+             "unknown tag '%s' — must be one of: fail, blocking, urgent"
+             other)
+
 (* Parse a YAML-flow list value (e.g. "[alice, bob]" or "[]") into a string
    list. Also accepts a bare comma-separated form ("alice, bob") for
    resilience. Whitespace and surrounding quotes are stripped, empties
@@ -3429,9 +3450,9 @@ let base_tool_definitions =
       ~required:[]
       ~properties:[]
   ; tool_definition ~name:"send"
-      ~description:"Send a C2C message to a registered peer alias. The sender alias is resolved from the current MCP session when possible; `from_alias` remains a legacy fallback for non-session callers. Optional `deferrable:true` marks the message as low-priority: push paths (channel notification, PostToolUse hook) skip it — recipient reads it on next explicit poll_inbox or idle flush. Optional `ephemeral:true` (local 1:1 only) delivers normally but skips the recipient-side archive append, so post-delivery the only persistent trace is the recipient's transcript / channel notification. For remote recipients (alias@host), the relay outbox persists by design and `ephemeral` is silently ignored on the relay side in v1 — cross-host ephemeral is a follow-up. Receipt confirmation is impossible by design. Returns JSON {queued:true, ts:<epoch-seconds>, from_alias:<string>, to_alias:<string>} on success."
+      ~description:"Send a C2C message to a registered peer alias. The sender alias is resolved from the current MCP session when possible; `from_alias` remains a legacy fallback for non-session callers. Optional `deferrable:true` marks the message as low-priority: push paths (channel notification, PostToolUse hook) skip it — recipient reads it on next explicit poll_inbox or idle flush. Optional `ephemeral:true` (local 1:1 only) delivers normally but skips the recipient-side archive append, so post-delivery the only persistent trace is the recipient's transcript / channel notification. For remote recipients (alias@host), the relay outbox persists by design and `ephemeral` is silently ignored on the relay side in v1 — cross-host ephemeral is a follow-up. Optional `tag:\"fail\"|\"blocking\"|\"urgent\"` (#392) prepends a visual marker to the body (🔴 FAIL: / ⛔ BLOCKING: / ⚠️ URGENT:) so the recipient spots the priority inline in their transcript — useful for peer-PASS FAIL verdicts and similar attention-asks. Receipt confirmation is impossible by design. Returns JSON {queued:true, ts:<epoch-seconds>, from_alias:<string>, to_alias:<string>} on success."
       ~required:["to_alias"; "content"]
-      ~properties:[ prop "to_alias" "Target peer alias."; prop "from_alias" "Legacy fallback sender alias (deprecated)."; prop "content" "Message body."; bool_prop "deferrable" "Optional bool. When true, marks the message as low-priority — push delivery is suppressed; recipient reads it on next poll_inbox or idle flush."; bool_prop "ephemeral" "Optional bool. Local 1:1 only — when true, the message is delivered normally but skipped on the recipient-side archive append. For alias@host recipients the relay outbox persists by design; the flag is silently ignored on the relay side in v1." ]
+      ~properties:[ prop "to_alias" "Target peer alias."; prop "from_alias" "Legacy fallback sender alias (deprecated)."; prop "content" "Message body."; bool_prop "deferrable" "Optional bool. When true, marks the message as low-priority — push delivery is suppressed; recipient reads it on next poll_inbox or idle flush."; bool_prop "ephemeral" "Optional bool. Local 1:1 only — when true, the message is delivered normally but skipped on the recipient-side archive append. For alias@host recipients the relay outbox persists by design; the flag is silently ignored on the relay side in v1."; prop "tag" "Optional visual-marker tag (#392). One of \"fail\" (🔴 FAIL:), \"blocking\" (⛔ BLOCKING:), or \"urgent\" (⚠️ URGENT:). Prepended to the body at send-time so the recipient spots the priority inline in their transcript. Unknown tag values are rejected." ]
   ; tool_definition ~name:"whoami"
       ~description:"Resolve the current C2C session registration."
       ~required:[]
@@ -4460,6 +4481,19 @@ let handle_tool_call ~(broker : Broker.t) ?session_id_override ~tool_name ~argum
                      | `Bool b -> b | _ -> false
                    with _ -> false
                  in
+                 (* #392: optional `tag` for fail/blocking/urgent body prefix. *)
+                 let tag_arg =
+                   try match Yojson.Safe.Util.member "tag" arguments with
+                     | `String s -> Some s | _ -> None
+                   with _ -> None
+                 in
+                 (match parse_send_tag tag_arg with
+                  | Error msg ->
+                    Lwt.return (tool_result
+                                  ~content:(Printf.sprintf "send rejected: %s" msg)
+                                  ~is_error:true)
+                  | Ok tag_opt ->
+                 let content = (tag_to_body_prefix tag_opt) ^ content in
 let ts = Unix.gettimeofday () in
                   let effective_content =
                     let recipient_reg =
@@ -4652,7 +4686,7 @@ let ts = Unix.gettimeofday () in
                           else receipt_fields
                         in
                         let receipt = `Assoc receipt_fields |> Yojson.Safe.to_string in
-                        Lwt.return (tool_result ~content:receipt ~is_error:false)))
+                        Lwt.return (tool_result ~content:receipt ~is_error:false))))
   | "send_all" ->
       let content = string_member "content" arguments in
       (match alias_for_current_session_or_argument ?session_id_override broker arguments with

@@ -349,16 +349,51 @@ let send_cmd =
     Cmdliner.Arg.(value & flag & info [ "ephemeral" ]
       ~doc:"Mark the message as ephemeral. Local 1:1 only: the recipient's broker delivers normally but skips the archive append, so post-delivery the only persistent trace is the recipient's transcript / channel notification (per-session-local, gets compacted). For remote recipients ($(b,alias@host)), the relay outbox path persists by design and this flag is silently ignored on the relay side in v1; cross-host ephemeral is a follow-up. Receipt confirmation is impossible by design.")
   in
+  (* #392: visual-marker tags. Mutually exclusive flags that prepend a
+     body prefix (🔴 FAIL: / ⛔ BLOCKING: / ⚠️ URGENT:) so the recipient
+     spots the tag inline in the agent's transcript. *)
+  let fail_flag =
+    Cmdliner.Arg.(value & flag & info [ "fail" ]
+      ~doc:"Mark as a FAIL message. Prepends '🔴 FAIL: ' to the body so the recipient spots the verdict inline in their transcript. Mutex with --blocking and --urgent.")
+  in
+  let blocking_flag =
+    Cmdliner.Arg.(value & flag & info [ "blocking" ]
+      ~doc:"Mark as a BLOCKING message. Prepends '⛔ BLOCKING: ' to the body. Use when downstream work cannot proceed until this is resolved. Mutex with --fail and --urgent.")
+  in
+  let urgent_flag =
+    Cmdliner.Arg.(value & flag & info [ "urgent" ]
+      ~doc:"Mark as an URGENT message. Prepends '⚠️ URGENT: ' to the body. Use for time-sensitive but not-fully-blocking attention asks. Mutex with --fail and --blocking.")
+  in
   let+ json = json_flag
   and+ to_alias = to_alias
   and+ message = message
   and+ from_override = from_override
   and+ no_warn_substitution = no_warn_substitution
-  and+ ephemeral = ephemeral_flag in
+  and+ ephemeral = ephemeral_flag
+  and+ fail = fail_flag
+  and+ blocking = blocking_flag
+  and+ urgent = urgent_flag in
   mcp_nudge_if_needed ~cmd:"send";
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let from_alias = resolve_alias ~override:from_override broker in
   let content = String.concat " " message in
+  (* #392: enforce mutual exclusion + apply body prefix. *)
+  let tag_count =
+    (if fail then 1 else 0) + (if blocking then 1 else 0) + (if urgent then 1 else 0)
+  in
+  if tag_count > 1 then begin
+    Printf.eprintf
+      "error: --fail, --blocking, and --urgent are mutually exclusive (got %d).\n%!"
+      tag_count;
+    exit 2
+  end;
+  let tag_str =
+    if fail then Some "fail"
+    else if blocking then Some "blocking"
+    else if urgent then Some "urgent"
+    else None
+  in
+  let content = (C2c_mcp.tag_to_body_prefix tag_str) ^ content in
   (* Class E: warn when message body looks like an un-expanded shell
      substitution pattern that the shell failed to expand. *)
   let _ =

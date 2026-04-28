@@ -2214,10 +2214,77 @@ let test_prepare_launch_args_gemini_empty_resume_treated_as_fresh () =
   check bool "empty session_id: no --resume flag" false
     (List.mem "--resume" args)
 
+(* #392: pure helpers for c2c_mcp's event-tag body-prefix shape.
+   Hosted here since test_c2c_mcp.ml has a pre-existing build issue
+   that doesn't reproduce in this executable. *)
+
+let test_tag_to_body_prefix_known_values () =
+  check string "fail emoji + uppercase + colon"
+    "\xF0\x9F\x94\xB4 FAIL: "
+    (C2c_mcp.tag_to_body_prefix (Some "fail"));
+  check string "blocking emoji + uppercase + colon"
+    "\xE2\x9B\x94 BLOCKING: "
+    (C2c_mcp.tag_to_body_prefix (Some "blocking"));
+  check string "urgent emoji + uppercase + colon"
+    "\xE2\x9A\xA0\xEF\xB8\x8F URGENT: "
+    (C2c_mcp.tag_to_body_prefix (Some "urgent"))
+
+let test_tag_to_body_prefix_none_and_unknown () =
+  check string "None → empty prefix" ""
+    (C2c_mcp.tag_to_body_prefix None);
+  check string "unknown tag → empty prefix (defensive default)" ""
+    (C2c_mcp.tag_to_body_prefix (Some "informational"));
+  check string "empty string tag → empty prefix" ""
+    (C2c_mcp.tag_to_body_prefix (Some ""))
+
+let test_parse_send_tag_accepts_known () =
+  (match C2c_mcp.parse_send_tag (Some "fail") with
+   | Ok (Some "fail") -> ()
+   | _ -> fail "parse_send_tag (Some \"fail\") should accept");
+  (match C2c_mcp.parse_send_tag (Some "blocking") with
+   | Ok (Some "blocking") -> ()
+   | _ -> fail "parse_send_tag (Some \"blocking\") should accept");
+  (match C2c_mcp.parse_send_tag (Some "urgent") with
+   | Ok (Some "urgent") -> ()
+   | _ -> fail "parse_send_tag (Some \"urgent\") should accept")
+
+let test_parse_send_tag_normalizes_none () =
+  (match C2c_mcp.parse_send_tag None with
+   | Ok None -> ()
+   | _ -> fail "parse_send_tag None should accept as Ok None");
+  (match C2c_mcp.parse_send_tag (Some "") with
+   | Ok None -> ()
+   | _ -> fail "parse_send_tag (Some \"\") should normalize to Ok None")
+
+let test_parse_send_tag_rejects_unknown () =
+  (match C2c_mcp.parse_send_tag (Some "informational") with
+   | Error msg ->
+     check bool "rejection message names the offending value" true
+       (string_contains msg "informational");
+     check bool "rejection message lists allowed values" true
+       (string_contains msg "fail" && string_contains msg "blocking"
+        && string_contains msg "urgent")
+   | Ok _ -> fail "parse_send_tag (Some \"informational\") should reject");
+  (match C2c_mcp.parse_send_tag (Some "FAIL") with
+   | Error _ -> ()  (* case-sensitive — reject uppercase *)
+   | Ok _ -> fail "parse_send_tag (Some \"FAIL\") should reject (case-sensitive)")
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_start"
-    [ ( "gemini_adapter",
+    [ ( "event_tag_392",
+        [ ( "tag_to_body_prefix_known_values",
+            `Quick, test_tag_to_body_prefix_known_values )
+        ; ( "tag_to_body_prefix_none_and_unknown",
+            `Quick, test_tag_to_body_prefix_none_and_unknown )
+        ; ( "parse_send_tag_accepts_known",
+            `Quick, test_parse_send_tag_accepts_known )
+        ; ( "parse_send_tag_normalizes_none",
+            `Quick, test_parse_send_tag_normalizes_none )
+        ; ( "parse_send_tag_rejects_unknown",
+            `Quick, test_parse_send_tag_rejects_unknown )
+        ] )
+    ; ( "gemini_adapter",
         [ ( "fresh_session_no_resume_flag",
             `Quick, test_prepare_launch_args_gemini_fresh_session )
         ; ( "resume_default_to_latest",

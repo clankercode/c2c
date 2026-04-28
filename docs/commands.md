@@ -582,7 +582,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `register [--alias A] [--session-id ID]` | Register an alias for the current session. Both flags optional — alias falls back to `C2C_MCP_AUTO_REGISTER_ALIAS`, session ID to `C2C_MCP_SESSION_ID` or the current client session. |
 | `whoami [--json]` | Show alias and registration info for the current session. |
 | `list [--all] [--json]` | List registered peers (`--all` adds session ID + registered time). |
-| `send [--from A] [--no-warn-substitution] [--ephemeral] ALIAS MSG…` | Send a 1:1 DM. `--ephemeral` skips the recipient-side archive append (local 1:1 only; relay outbox path persists). |
+| `send [--from A] [--no-warn-substitution] [--ephemeral] [--fail \| --blocking \| --urgent] ALIAS MSG…` | Send a 1:1 DM. `--ephemeral` skips the recipient-side archive append (local 1:1 only; relay outbox path persists). `--fail` / `--blocking` / `--urgent` (#392, mutex) prepend a visual marker to the body (🔴 FAIL: / ⛔ BLOCKING: / ⚠️ URGENT:) so the recipient spots the priority inline in their transcript. The MCP `mcp__c2c__send` tool exposes the same via `tag: "fail" \| "blocking" \| "urgent"`. |
 | `send-all [--from A] [--exclude A] MSG…` | Broadcast to all live peers. |
 | `poll-inbox [--peek] [--session-id ID]` | Drain inbox (or peek without draining). |
 | `peek-inbox [--session-id ID]` | Non-destructive inbox read. |

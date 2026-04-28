@@ -6,6 +6,27 @@ val mkdir_p : ?mode:int -> string -> unit
 (** Re-export of the canonical [C2c_io.mkdir_p]. Kept for source-compat
     with #400 callers. Default mode 0o755; idempotent on EEXIST. *)
 
+val tag_to_body_prefix : string option -> string
+(** [#392] Map a tag value (or [None]) to a body prefix that surfaces
+    visually in the agent's transcript. The body is the load-bearing
+    channel — agents READ body text on every client surface (Claude,
+    Codex, OpenCode, Kimi), whereas envelope attributes are invisible
+    at the read layer. Currently:
+
+      - [Some "fail"]     → ["🔴 FAIL: "]
+      - [Some "blocking"] → ["⛔ BLOCKING: "]
+      - [Some "urgent"]   → ["⚠️ URGENT: "]
+      - [None] / unknown  → [""]
+
+    Sender CLI ([c2c send --fail|--blocking|--urgent]) and MCP
+    [send] tool both call this, so the prefix is captured once at
+    sender-time and embedded in the broker-stored content. *)
+
+val parse_send_tag : string option -> (string option, string) result
+(** [#392] Validate a user-supplied tag value. [None] → [Ok None]
+    (no tag). [Some "fail"|"blocking"|"urgent"] → [Ok (Some _)].
+    Anything else → [Error msg] with a human-readable rejection. *)
+
 type compacting = { started_at : float; reason : string option }
 type registration =
   { session_id : string
