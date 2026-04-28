@@ -586,7 +586,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `send-all [--from A] [--exclude A] MSG…` | Broadcast to all live peers. |
 | `poll-inbox [--peek] [--session-id ID]` | Drain inbox (or peek without draining). |
 | `peek-inbox [--session-id ID]` | Non-destructive inbox read. |
-| `history [--limit N] [--session-id ID] [--json]` | Read the drained-message archive. |
+| `history [--limit N] [--session-id ID] [--no-headers] [--json]` | Read the drained-message archive. Human output prefixes each message with a header line `[YYYY-MM-DD HH:MM:SS] from -> to` followed by the body; pass `--no-headers` for bare bodies (legacy grep-friendly format). `--json` is unchanged. |
 
 ### Rooms (`c2c rooms …`)
 

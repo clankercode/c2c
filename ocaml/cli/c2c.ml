@@ -1224,9 +1224,17 @@ let history_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "session-id"; "s" ] ~docv:"ID"
       ~doc:"Session ID to read archive for. Overrides C2C_MCP_SESSION_ID.")
   in
+  let no_headers_flag =
+    Cmdliner.Arg.(value & flag & info [ "no-headers" ]
+      ~doc:"Suppress per-message header lines (timestamp + from -> to). \
+            Default emits a header before each body so messages are \
+            distinguishable; pass this to restore the legacy bare-body \
+            output for grep-friendly scripts. Has no effect with --json.")
+  in
   let+ json = json_flag
   and+ limit = limit
-  and+ session_id_opt = session_id_flag in
+  and+ session_id_opt = session_id_flag
+  and+ no_headers = no_headers_flag in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let session_id = match session_id_opt with
     | Some sid -> sid
@@ -1248,18 +1256,8 @@ let history_cmd =
                  ])
              entries))
   | Human ->
-      if entries = [] then
-        Printf.printf "(no history)\n"
-      else
-        List.iter
-          (fun (e : C2c_mcp.Broker.archive_entry) ->
-            let time =
-              let t = Unix.gmtime e.ae_drained_at in
-              Printf.sprintf "%04d-%02d-%02d %02d:%02d"
-                (1900 + t.tm_year) (1 + t.tm_mon) t.tm_mday t.tm_hour t.tm_min
-            in
-            Printf.printf "[%s] <%s> %s\n" time e.ae_from_alias e.ae_content)
-          entries
+      let headers = not no_headers in
+      List.iter print_endline (C2c_history.format_human ~headers entries)
 
 (* --- subcommand: health --------------------------------------------------- *)
 
