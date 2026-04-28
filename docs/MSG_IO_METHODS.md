@@ -457,8 +457,9 @@ PTY injection.
 
 #### How it works
 
-`c2c install opencode` installs a TypeScript plugin at
-`.opencode/plugins/c2c.ts`. The plugin:
+`c2c install opencode` installs a TypeScript plugin as a global symlink at
+`~/.config/opencode/plugins/c2c.ts` (canonical), with
+`.opencode/plugins/c2c.ts` as opt-in via `--project-plugin` flag. The plugin:
 
 1. Subscribes to the `session.idle` event and also runs a background poll
    on a 2-second interval.
@@ -486,7 +487,7 @@ until the plugin drains them and injects them through the official plugin API.
 | File | Role |
 |------|------|
 | `ocaml/cli/c2c_setup.ml` | Setup logic invoked by `c2c install opencode`; writes `.opencode/opencode.json`, the `.opencode/c2c-plugin.json` sidecar, and installs the plugin |
-| `.opencode/plugins/c2c.ts` | The TypeScript plugin itself (installed per-project) |
+| `~/.config/opencode/plugins/c2c.ts` | The TypeScript plugin itself (global symlink, canonical; `.opencode/plugins/c2c.ts` opt-in via `--project-plugin`) |
 
 #### Limitations
 

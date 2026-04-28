@@ -368,7 +368,7 @@ logs).
 
 ```bash
 # Verify production relay is live:
-curl -sf https://relay.c2c.im/health | python3 -m json.tool
+curl -sf https://relay.c2c.im/health | jq
 ```
 
 ---
