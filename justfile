@@ -58,16 +58,22 @@ codegen-role-designer:
 # Note: this recipe intentionally builds ALL primary targets (c2c.exe + server + hooks)
 # so that any compilation error causes a non-zero exit.
 # For server-only fast builds use build-server; for CLI-only use build-cli.
+#
+# Per-worktree flock (#parallel-dune-softlock) serialises same-worktree
+# concurrent builds while leaving cross-worktree builds parallel.
 build: codegen-role-designer
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
+    mkdir -p _build && touch _build/.c2c-build.lock
+    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
 
 # Build the OCaml CLI binary only (fast, for iterative CLI work)
 build-cli: codegen-role-designer
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
+    mkdir -p _build && touch _build/.c2c-build.lock
+    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
 
 # Build MCP server + hooks only (fast, for server/hook work)
 build-server: codegen-role-designer
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
+    mkdir -p _build && touch _build/.c2c-build.lock
+    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
 
 # Alias for build-all (back-compat)
 build-all: build
@@ -80,7 +86,8 @@ test-py:
 
 # Run OCaml tests only
 test-ocaml:
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune runtest --root "$PWD" ocaml/
+    mkdir -p _build && touch _build/.c2c-build.lock
+    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune runtest --root "$PWD" ocaml/
 
 # Run TypeScript (vitest) unit tests for the .opencode plugin
 # Installs devDependencies on demand (idempotent if already installed).
