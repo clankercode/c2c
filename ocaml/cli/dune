@@ -52,3 +52,8 @@
  (name test_c2c_opencode_plugin_drift)
  (modules test_c2c_opencode_plugin_drift c2c_opencode_plugin_drift)
  (libraries c2c_mcp alcotest cmdliner str unix))
+
+(test
+ (name test_c2c_peer_pass)
+ (modules test_c2c_peer_pass c2c_peer_pass c2c_signing_helpers c2c_utils)
+ (libraries c2c_mcp alcotest cmdliner yojson unix))

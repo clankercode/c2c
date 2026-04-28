@@ -38,11 +38,19 @@ let resolve_identity () =
 
 (* --- anti-cheat helpers -------------------------------------------------- *)
 
-(** Compare reviewer alias against commit author. The repo convention records
-    authors as "<alias>@c2c.im" / name "<alias>". Match either. *)
+(** Compare reviewer alias against commit authorship. The repo convention
+    records authors as "<alias>@c2c.im" / name "<alias>"; match the primary
+    [%ae]/[%an] either way.
+
+    M1 (audit 2026-04-28): also check [Co-authored-by:] trailers — a
+    reviewer who co-authored the commit can still self-PASS otherwise.
+    Each trailer value is in [Name <email>] form; we extract the email
+    and compare its local-part to [reviewer]. If any author surface
+    matches, treat as author and block self-PASS. *)
 let reviewer_is_author ~reviewer ~sha =
   let email = Git_helpers.git_commit_author_email sha in
   let name = Git_helpers.git_commit_author_name sha in
+  let co_author_emails = Git_helpers.git_commit_co_author_emails sha in
   let local_part_eq e =
     match String.index_opt e '@' with
     | Some i -> String.equal (String.sub e 0 i) reviewer
@@ -50,6 +58,7 @@ let reviewer_is_author ~reviewer ~sha =
   in
   (match email with Some e -> local_part_eq e | None -> false)
   || (match name with Some n -> String.equal n reviewer | None -> false)
+  || List.exists local_part_eq co_author_emails
 
 let validate_signing_allowed ~alias ~sha ~allow_self =
   if not (Git_helpers.git_commit_exists sha) then begin
