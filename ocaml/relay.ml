@@ -455,6 +455,7 @@ module type RELAY = sig
   val room_history : t -> room_id:string -> ?limit:int -> Yojson.Safe.t list
   val gc : t -> [> `Ok of string list * int]
   val dead_letter : t -> Yojson.Safe.t list
+  val add_dead_letter : t -> Yojson.Safe.t -> unit
   val list_rooms : t -> Yojson.Safe.t list
   val room_visibility_of : t -> room_id:string -> string
   val room_invites_of : t -> room_id:string -> string list
@@ -926,6 +927,9 @@ module InMemoryRelay : RELAY = struct
       List.rev (Queue.fold (fun acc x -> x :: acc) [] t.dead_letter)
     )
 
+  let add_dead_letter t msg =
+    with_lock t (fun () -> Queue.add msg t.dead_letter)
+
   let join_room t ~alias ~room_id =
     with_lock t (fun () ->
       if not (Hashtbl.mem t.leases alias) then
@@ -941,7 +945,7 @@ module InMemoryRelay : RELAY = struct
           Hashtbl.replace t.room_history room_id [];
         if not already_member then begin
           let ts = Unix.gettimeofday () in
-          let msg_id = generate_uuid () in
+        let msg_id = Uuidm.to_string (Uuidm.v `V4) in
           let content = room_join_content alias room_id in
           let hist_msg = `Assoc [
             ("message_id", `String msg_id); ("from_alias", `String room_system_alias);
@@ -2020,6 +2024,25 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) () =
       in
       loop ();
       List.rev !msgs
+    )
+
+  let add_dead_letter t msg =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let message_id = Yojson.Safe.Util.to_string (Yojson.Safe.Util.member "message_id" msg) in
+      let from_alias = Yojson.Safe.Util.to_string (Yojson.Safe.Util.member "from_alias" msg) in
+      let to_alias = Yojson.Safe.Util.to_string (Yojson.Safe.Util.member "to_alias" msg) in
+      let content = Yojson.Safe.Util.to_string (Yojson.Safe.Util.member "content" msg) in
+      let ts = Yojson.Safe.Util.to_number (Yojson.Safe.Util.member "ts" msg) in
+      let reason = Yojson.Safe.Util.to_string (Yojson.Safe.Util.member "reason" msg) in
+      let stmt = Sqlite3.prepare conn "INSERT INTO dead_letter (message_id, from_alias, to_alias, content, ts, reason) VALUES (?, ?, ?, ?, ?, ?)" in
+      Sqlite3.bind_text stmt 1 message_id |> ignore;
+      Sqlite3.bind_text stmt 2 from_alias |> ignore;
+      Sqlite3.bind_text stmt 3 to_alias |> ignore;
+      Sqlite3.bind_text stmt 4 content |> ignore;
+      Sqlite3.bind_double stmt 5 ts |> ignore;
+      Sqlite3.bind_text stmt 6 reason |> ignore;
+      ignore (Sqlite3.step stmt)
     )
 
   let list_rooms t =
@@ -3148,6 +3171,20 @@ generateKeys();
       let stripped_to_alias, host_opt = split_alias_host to_alias in
       let self_host = R.self_host relay in
       if not (host_acceptable ~self_host host_opt) then
+        (* #379: write to dead_letter so the rejection is observable and
+           retry-on-recovery is possible, matching the pattern used by other
+           relay-layer rejections (unknown_alias, recipient_dead). *)
+        let msg_id = Uuidm.to_string (Uuidm.v `V4) in
+        let ts = Unix.gettimeofday () in
+        let dl = `Assoc [
+          ("ts", `Float ts);
+          ("message_id", `String msg_id);
+          ("from_alias", `String from_alias);
+          ("to_alias", `String to_alias);
+          ("content", `String content);
+          ("reason", `String "cross_host_not_implemented");
+        ] in
+        R.add_dead_letter relay dl;
         respond_not_found
           (json_error_str "cross_host_not_implemented"
              (Printf.sprintf "cross-host send to %S not supported (relay does not forward to other hosts)" to_alias))
