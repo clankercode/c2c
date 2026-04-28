@@ -1075,21 +1075,33 @@ let self_installed_path () =
   let p = home // ".local" // "bin" // "c2c" in
   if Sys.file_exists p then Some p else None
 
+(* #411: shared check for `mcpServers.c2c` membership in a JSON config. *)
+let json_file_has_c2c_mcp_entry path =
+  if not (Sys.file_exists path) then false
+  else
+    try
+      match json_read_file path with
+      | `Assoc fields ->
+          (match List.assoc_opt "mcpServers" fields with
+           | Some (`Assoc m) -> List.mem_assoc "c2c" m
+           | _ -> false)
+      | _ -> false
+    with _ -> false
+
 let client_configured client =
   let home = try Sys.getenv "HOME" with Not_found -> "" in
   match String.lowercase_ascii client with
   | "claude" ->
-      let p = home // ".claude.json" in
-      if not (Sys.file_exists p) then false
-      else
-        (try
-           match json_read_file p with
-           | `Assoc fields ->
-               (match List.assoc_opt "mcpServers" fields with
-                | Some (`Assoc m) -> List.mem_assoc "c2c" m
-                | _ -> false)
-           | _ -> false
-         with _ -> false)
+      (* Claude has TWO valid install scopes (#334):
+         - global / user-scope: ~/.claude.json
+         - project-scope (the install default since #334): <cwd>/.mcp.json
+         The verifier must accept either, else `c2c install all` re-prompts a
+         working project-scope install and the TUI mis-reports state.
+         Surfaced by the cross-client install audit (#411). *)
+      let user_scope = home // ".claude.json" in
+      let project_scope = Sys.getcwd () // ".mcp.json" in
+      json_file_has_c2c_mcp_entry user_scope
+      || json_file_has_c2c_mcp_entry project_scope
    | "codex" | "codex-headless" ->
        let p = home // ".codex" // "config.toml" in
        if not (Sys.file_exists p) then false
