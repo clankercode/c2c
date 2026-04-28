@@ -1983,6 +1983,164 @@ let test_instances_json_default_filters () =
          | _ -> Alcotest.fail "instances field missing")
     | _ -> Alcotest.fail "expected envelope")
 
+(* --- #333: c2c instances clean-stale --- removes zombies + protects named --- *)
+
+(* Build a fixture with custom-named instances. Each entry is
+   (name, alive). Mirrors build_instances_fixture but lets tests choose
+   names to exercise the test-pattern + protected-alias logic. *)
+let build_named_instances_fixture entries dir =
+  let live_pid = Unix.getpid () in
+  let dead_pid =
+    let rec find_dead p =
+      if p <= 1 then 1
+      else
+        match Unix.kill p 0 with
+        | () -> find_dead (p - 1)
+        | exception Unix.Unix_error _ -> p
+    in
+    find_dead 999_999
+  in
+  List.iter (fun (name, alive) ->
+    let inst_dir = Filename.concat dir name in
+    Unix.mkdir inst_dir 0o755;
+    write_file (Filename.concat inst_dir "config.json")
+      (Printf.sprintf {|{"client":"claude","name":"%s"}|} name);
+    write_file (Filename.concat inst_dir "outer.pid")
+      (string_of_int (if alive then live_pid else dead_pid))
+  ) entries
+
+let run_clean_stale_and_capture_json ~instances_dir ~extra_args =
+  let bin = built_c2c_binary () in
+  if not (Sys.file_exists bin) then
+    Alcotest.failf "expected built CLI at %s — run `dune build` first" bin;
+  let stdout_path = Filename.temp_file "c2c-clean-stale-stdout" ".json" in
+  let cmd =
+    Printf.sprintf
+      "C2C_INSTANCES_DIR=%s %s instances clean-stale --json %s > %s 2>/dev/null"
+      (Filename.quote instances_dir)
+      (Filename.quote bin)
+      extra_args
+      (Filename.quote stdout_path)
+  in
+  let rc = Sys.command cmd in
+  if rc <> 0 then
+    Alcotest.failf "c2c instances clean-stale exited %d (cmd: %s)" rc cmd;
+  let raw = read_all_file stdout_path in
+  Sys.remove stdout_path;
+  Yojson.Safe.from_string raw
+
+let dir_entries dir =
+  if Sys.file_exists dir && Sys.is_directory dir
+  then Array.to_list (Sys.readdir dir) |> List.sort String.compare
+  else []
+
+let int_field fields name =
+  match List.assoc_opt name fields with Some (`Int n) -> n | _ -> -1
+
+let bool_field fields name =
+  match List.assoc_opt name fields with Some (`Bool b) -> b | _ -> false
+
+let string_list_field fields name =
+  match List.assoc_opt name fields with
+  | Some (`List xs) ->
+      List.filter_map (fun j -> match j with `String s -> Some s | _ -> None) xs
+  | _ -> []
+
+(* Stamp an instance dir's mtimes back >24h ago so the no-activity-24h
+   criterion fires deterministically (without needing to actually wait). *)
+let age_instance_dir ~instances_dir ~name ~age_seconds =
+  let target = Unix.gettimeofday () -. age_seconds in
+  let inst = Filename.concat instances_dir name in
+  let touch path =
+    if Sys.file_exists path then
+      try Unix.utimes path target target with _ -> ()
+  in
+  touch inst;
+  List.iter (fun f -> touch (Filename.concat inst f))
+    [ "config.json"; "outer.pid"; "stderr.log"; "stdout.log"; "tmux.json" ]
+
+let test_clean_stale_dry_run_reports_candidates () =
+  with_temp_dir (fun dir ->
+    build_named_instances_fixture
+      [ ("alive-keeper", true)
+      ; ("codex-reset-1234567890", false)
+      ; ("oc-bootstrap-test-foo", false)
+      ] dir;
+    let j = run_clean_stale_and_capture_json
+      ~instances_dir:dir ~extra_args:"--dry-run"
+    in
+    let fields = match j with
+      | `Assoc f -> f
+      | _ -> Alcotest.fail "expected envelope"
+    in
+    check int "removed = 0 under --dry-run" 0 (int_field fields "removed");
+    check int "candidates_total = 2 (alive excluded)" 2
+      (int_field fields "candidates_total");
+    check bool "dry_run = true" true (bool_field fields "dry_run");
+    (* All 3 instance dirs still on disk *)
+    check int "all 3 instances still present"
+      3 (List.length (dir_entries dir)))
+
+let test_clean_stale_removes_zombies_only () =
+  with_temp_dir (fun dir ->
+    build_named_instances_fixture
+      [ ("alive-keeper", true)
+      ; ("codex-reset-9876543210", false)
+      ; ("kimi-wire-ocaml-smoke-x", false)
+      ] dir;
+    let j = run_clean_stale_and_capture_json
+      ~instances_dir:dir ~extra_args:""
+    in
+    let fields = match j with
+      | `Assoc f -> f
+      | _ -> Alcotest.fail "expected envelope"
+    in
+    check int "removed = 2" 2 (int_field fields "removed");
+    check int "candidates_total = 2" 2 (int_field fields "candidates_total");
+    check bool "dry_run = false" false (bool_field fields "dry_run");
+    let removed = string_list_field fields "removed_aliases" in
+    check bool "alive-keeper not in removed_aliases"
+      false (List.mem "alive-keeper" removed);
+    (* On-disk: only alive-keeper remains *)
+    let entries = dir_entries dir in
+    check int "exactly 1 instance dir remains" 1 (List.length entries);
+    check bool "alive-keeper preserved" true (List.mem "alive-keeper" entries))
+
+let test_clean_stale_protected_named_aliases () =
+  with_temp_dir (fun dir ->
+    build_named_instances_fixture
+      [ ("coordinator1", false)
+      ; ("random-zombie", false)
+      ] dir;
+    (* Both stale-by-PID; coordinator1 is also matched but protected. *)
+    age_instance_dir ~instances_dir:dir ~name:"random-zombie"
+      ~age_seconds:(2.0 *. 86400.0);
+    age_instance_dir ~instances_dir:dir ~name:"coordinator1"
+      ~age_seconds:(2.0 *. 86400.0);
+    let j = run_clean_stale_and_capture_json
+      ~instances_dir:dir ~extra_args:""
+    in
+    let fields = match j with
+      | `Assoc f -> f
+      | _ -> Alcotest.fail "expected envelope"
+    in
+    check int "removed = 1 (random-zombie only)" 1 (int_field fields "removed");
+    check int "candidates_total = 2 (both stale)" 2
+      (int_field fields "candidates_total");
+    check int "protected = 1 (coordinator1)" 1 (int_field fields "protected");
+    let removed = string_list_field fields "removed_aliases" in
+    check bool "random-zombie removed" true (List.mem "random-zombie" removed);
+    check bool "coordinator1 not removed"
+      false (List.mem "coordinator1" removed);
+    let protected_aliases = string_list_field fields "protected_aliases" in
+    check bool "coordinator1 reported as protected"
+      true (List.mem "coordinator1" protected_aliases);
+    let entries = dir_entries dir in
+    check bool "coordinator1 preserved on disk"
+      true (List.mem "coordinator1" entries);
+    check bool "random-zombie removed on disk"
+      false (List.mem "random-zombie" entries))
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_start"
@@ -2248,5 +2406,13 @@ let () =
             `Quick, test_instances_all_shows_archive )
         ; ( "test_instances_json_default_filters",
             `Quick, test_instances_json_default_filters )
+        ] )
+    ; ( "instances_clean_stale_333",
+        [ ( "test_clean_stale_dry_run_reports_candidates",
+            `Quick, test_clean_stale_dry_run_reports_candidates )
+        ; ( "test_clean_stale_removes_zombies_only",
+            `Quick, test_clean_stale_removes_zombies_only )
+        ; ( "test_clean_stale_protected_named_aliases",
+            `Quick, test_clean_stale_protected_named_aliases )
         ] )
     ]

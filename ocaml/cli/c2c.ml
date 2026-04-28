@@ -5429,10 +5429,204 @@ let instances_cmd =
           ) displayed
       end
 
-let instances = Cmdliner.Cmd.v
+(* --- subcommand: instances clean-stale (#333) -------------------------- *)
+
+(* Protected aliases — the named swarm peers + coordinator + the default
+   social room. Operators must opt in to clean these (not exposed in v1). *)
+let clean_stale_protected_aliases =
+  [ "coordinator1"
+  ; "swarm-lounge"
+  ; "stanza-coder"
+  ; "jungle-coder"
+  ; "galaxy-coder"
+  ; "lyra-quill"
+  ; "test-agent"
+  ; "dogfood-hunter"
+  ]
+
+(* String matching helpers for ephemeral-test-alias name patterns. *)
+let str_starts_with ~prefix s =
+  let lp = String.length prefix and ls = String.length s in
+  ls >= lp && String.sub s 0 lp = prefix
+
+let str_contains_sub ~needle s =
+  let ln = String.length needle and ls = String.length s in
+  if ln = 0 then true
+  else if ln > ls then false
+  else
+    let max_i = ls - ln in
+    let rec loop i =
+      if i > max_i then false
+      else if String.sub s i ln = needle then true
+      else loop (i + 1)
+    in
+    loop 0
+
+(* Anything that looks like an ephemeral test alias.
+   Mirrors the patterns called out in the #333 spec. *)
+let clean_stale_matches_test_pattern name =
+  str_starts_with ~prefix:"codex-reset-" name
+  || str_starts_with ~prefix:"oc-bootstrap-test" name
+  || str_starts_with ~prefix:"eph-review-bot-" name
+  || str_starts_with ~prefix:"kimi-wire-ocaml-smoke" name
+  || str_starts_with ~prefix:"dogfood-" name
+  || str_contains_sub ~needle:"-smoke-" name
+
+(* Most recent mtime among the instance dir's tracked files. We use this as
+   a proxy for "last activity" since there is no first-class
+   last_activity_ts field on the instance config. *)
+let instance_last_activity_ts ~instances_dir name =
+  let inst_path = instances_dir // name in
+  let candidates =
+    [ "config.json"; "outer.pid"; "stderr.log"; "stdout.log"; "tmux.json" ]
+    |> List.map (fun f -> inst_path // f)
+    |> List.filter Sys.file_exists
+  in
+  let candidates =
+    if candidates = [] && Sys.file_exists inst_path then [inst_path]
+    else candidates
+  in
+  List.fold_left
+    (fun acc path ->
+       try
+         let st = Unix.stat path in
+         max acc st.Unix.st_mtime
+       with _ -> acc)
+    0.0 candidates
+
+(* Determine why an instance is removable, if at all. Returns the list of
+   matched criteria (empty = not removable). *)
+let clean_stale_classify ~instances_dir ~now (inst : managed_instance_view) =
+  let reasons = ref [] in
+  (* Criterion 1: dead PID — status reflects Unix.kill(pid, 0) result. *)
+  (match inst.mi_pid with
+   | Some _ when inst.mi_status <> "running" -> reasons := "dead-pid" :: !reasons
+   | _ -> ());
+  (* Criterion 2: no recent activity > 24h. Skip for "running" instances —
+     a live PID overrides activity heuristics. *)
+  if inst.mi_status <> "running" then begin
+    let mtime = instance_last_activity_ts ~instances_dir inst.mi_name in
+    if mtime > 0.0 && (now -. mtime) > 86400.0 then
+      reasons := "no-activity-24h" :: !reasons
+  end;
+  (* Criterion 3: name matches a known test-alias pattern. *)
+  if clean_stale_matches_test_pattern inst.mi_name then
+    reasons := "matches-test-pattern" :: !reasons;
+  List.rev !reasons
+
+let clean_stale_is_protected name =
+  List.mem name clean_stale_protected_aliases
+
+let clean_stale_cmd =
+  let dry_run =
+    Cmdliner.Arg.(value & flag & info [ "dry-run"; "n" ]
+      ~doc:"List candidates and the criterion each matched; remove nothing.")
+  in
+  let include_named =
+    Cmdliner.Arg.(value & flag & info [ "include-named" ]
+      ~doc:"Also consider the named swarm aliases (coordinator1, stanza-coder, …). Off by default.")
+  in
+  let+ json = json_flag
+  and+ dry_run = dry_run
+  and+ include_named = include_named in
+  let output_mode = if json then Json else Human in
+  let instances_dir = instances_dir () in
+  let now = Unix.gettimeofday () in
+  let all_instances = read_managed_instances () in
+  (* Candidate = anything with a non-empty reason list AND status != running.
+     status="running" is the strongest live signal; never touch it. *)
+  let candidates =
+    List.filter_map (fun (inst : managed_instance_view) ->
+      if inst.mi_status = "running" then None
+      else
+        let reasons = clean_stale_classify ~instances_dir ~now inst in
+        if reasons = [] then None
+        else Some (inst, reasons)
+    ) all_instances
+  in
+  let total_candidates = List.length candidates in
+  let removable, protected_kept =
+    List.partition (fun (inst, _reasons) ->
+      include_named || not (clean_stale_is_protected inst.mi_name)
+    ) candidates
+  in
+  let protected_count = List.length protected_kept in
+  let removed_aliases =
+    if dry_run then []
+    else
+      List.filter_map (fun ((inst : managed_instance_view), _reasons) ->
+        let path = instances_dir // inst.mi_name in
+        if Sys.file_exists path then begin
+          (try rm_rf path with _ -> ());
+          if not (Sys.file_exists path) then Some inst.mi_name
+          else None
+        end else Some inst.mi_name
+      ) removable
+  in
+  let removed_count = List.length removed_aliases in
+  let _removable_aliases = List.map (fun ((i : managed_instance_view), _) -> i.mi_name) removable in
+  let protected_aliases = List.map (fun ((i : managed_instance_view), _) -> i.mi_name) protected_kept in
+  match output_mode with
+  | Json ->
+      let candidate_objs =
+        List.map (fun ((inst : managed_instance_view), reasons) ->
+          `Assoc
+            [ ("alias", `String inst.mi_name)
+            ; ("status", `String inst.mi_status)
+            ; ("pid", match inst.mi_pid with Some p -> `Int p | None -> `Null)
+            ; ("reasons", `List (List.map (fun r -> `String r) reasons))
+            ; ("protected", `Bool (clean_stale_is_protected inst.mi_name && not include_named))
+            ])
+          candidates
+      in
+      print_json
+        (`Assoc
+           [ ("removed", `Int removed_count)
+           ; ("candidates_total", `Int total_candidates)
+           ; ("protected", `Int protected_count)
+           ; ("dry_run", `Bool dry_run)
+           ; ("removed_aliases", `List (List.map (fun a -> `String a) removed_aliases))
+           ; ("protected_aliases", `List (List.map (fun a -> `String a) protected_aliases))
+           ; ("candidates", `List candidate_objs)
+           ])
+  | Human ->
+      if total_candidates = 0 then
+        Printf.printf "No stale instances found.\n"
+      else begin
+        if dry_run then
+          Printf.printf "Stale instance candidates (dry-run, no changes):\n"
+        else begin
+          Printf.printf "Cleaning stale instances:\n";
+          Printf.printf "  (use --dry-run first to preview)\n"
+        end;
+        List.iter (fun ((inst : managed_instance_view), reasons) ->
+          let reason_str = String.concat " + " reasons in
+          let protected_tag =
+            if clean_stale_is_protected inst.mi_name && not include_named
+            then "  [PROTECTED: --include-named to override]"
+            else ""
+          in
+          Printf.printf "  %-30s %s%s\n" inst.mi_name reason_str protected_tag
+        ) candidates;
+        if dry_run then
+          Printf.printf "\nWould remove %d of %d candidates (%d protected).\n"
+            (List.length removable) total_candidates protected_count
+        else
+          Printf.printf "\nRemoved %d of %d candidates (%d protected).\n"
+            removed_count total_candidates protected_count
+      end
+
+let clean_stale_subcmd = Cmdliner.Cmd.v
+  (Cmdliner.Cmd.info "clean-stale"
+     ~doc:"Remove stale managed-instance directories (dead PIDs, idle >24h, \
+           or matching ephemeral test-name patterns). Use --dry-run to preview.")
+  clean_stale_cmd
+
+let instances = Cmdliner.Cmd.group
   (Cmdliner.Cmd.info "instances"
      ~doc:"List managed c2c instances (alive-only by default; --all for full archive).")
-  instances_cmd
+  ~default:instances_cmd
+  [ clean_stale_subcmd ]
 
 (* --- subcommand: diag ----------------------------------------------------- *)
 
