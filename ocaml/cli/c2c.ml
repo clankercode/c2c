@@ -9161,15 +9161,363 @@ let fast_path_get_tmux_location ?(json = false) () =
            else Printf.printf "%s\n" addr;
            exit 0)
 
+(* --- fast-path helpers for IO-free subcommands --------------------------- *)
+
+let fast_path_help () =
+  (* c2c help [subcommand-path...] → execvp self [self, args..., --help] *)
+  let self = if Array.length Sys.argv > 0 then Sys.argv.(0) else "c2c" in
+  (* Collect positional args only (skip subcommand name itself at argv.(1)) *)
+  let args =
+    let n = Array.length Sys.argv in
+    let rec go i acc =
+      if i >= n then List.rev acc
+      else go (i + 1) (Sys.argv.(i) :: acc)
+    in
+    go 2 []  (* skip argv[0]="c2c" and argv[1]="help" *)
+  in
+  let new_argv = Array.of_list (self :: args @ [ "--help" ]) in
+  try Unix.execvp self new_argv
+  with Unix.Unix_error (err, _, _) ->
+    prerr_endline ("c2c help: " ^ Unix.error_message err);
+    exit 125
+
+let fast_path_commands () =
+  (* Replicates commands_by_safety_cmd without cmdliner overhead.
+     Tier3 section is suppressed in agent sessions. *)
+  let is_all = ref false in
+  let n = Array.length Sys.argv in
+  for i = 2 to n - 1 do
+    if Sys.argv.(i) = "--all" then is_all := true
+  done;
+  let is_agent = is_agent_session () in
+  let tier1 = [
+    ("list", "List registered c2c peers");
+    ("whoami", "Show current c2c identity");
+    ("poll-inbox", "Drain (or peek at) your inbox");
+    ("peek-inbox", "Peek at your inbox without draining");
+    ("send", "Send a message to a registered peer alias");
+    ("send-all", "Broadcast a message to all peers");
+    ("rooms", "Manage persistent N:N rooms (list/join/leave/send/history/tail/invite/members/visibility)");
+    ("my-rooms", "List rooms you are a member of");
+    ("history", "Show archived inbox messages");
+    ("dead-letter", "Show dead-letter entries");
+    ("tail-log", "Show recent broker RPC log entries");
+    ("health", "Show broker health diagnostics");
+    ("status", "Show compact swarm overview");
+    ("verify", "Verify c2c message exchange progress");
+    ("prune-rooms", "Evict dead members from all rooms");
+    ("instances", "List managed c2c instances");
+    ("doctor", "Health snapshot + push-pending analysis");
+    ("stats", "Show per-agent message statistics across the swarm");
+    ("set-compact", "Mark this session as compacting");
+    ("clear-compact", "Clear the compacting flag");
+    ("open-pending-reply", "Open a pending permission reply slot");
+    ("check-pending-reply", "Check if a permission reply is valid");
+  ] in
+  let tier2 = [
+    ("start", "Start a managed c2c instance");
+    ("stop", "Stop a managed c2c instance");
+    ("restart", "Restart a managed c2c instance");
+    ("reset-thread", "Restart a managed codex or codex-headless instance onto a specific thread");
+    ("register", "Register an alias for the current session");
+    ("rooms send", "Send a message to a room");
+    ("rooms invite", "Invite an alias to a room");
+    ("rooms visibility", "Get or set room visibility");
+    ("agent list", "List all canonical role files");
+    ("agent new", "Create a new canonical role file");
+    ("agent delete", "Delete a canonical role file");
+    ("agent rename", "Rename a canonical role file");
+    ("agent run", "Launch an ephemeral one-shot agent from a role");
+    ("agent refine", "Interactively refine an existing role file");
+    ("roles compile", "Compile canonical role(s) to client agent files");
+    ("roles validate", "Validate canonical role files for completeness");
+    ("config show", "Show current c2c config values");
+    ("config generation-client", "Show generation-client config");
+    ("wire-daemon list", "List all wire-daemon state files");
+    ("wire-daemon status", "Show status of a wire-daemon");
+    ("get-tmux-location", "Print the current tmux pane address (session:window.pane)");
+  ] in
+  let tier3 = [
+    ("relay serve", "Start relay server (background, requires operator)");
+    ("relay gc", "Run relay garbage collection");
+    ("relay setup", "Configure relay connection");
+    ("relay connect", "Run the relay connector");
+    ("relay register", "Register Ed25519 identity on relay");
+    ("relay dm", "Send/receive cross-host direct messages");
+    ("relay status", "Show relay health");
+    ("relay rooms", "Manage relay rooms");
+    ("relay list", "List relay peers");
+    ("setcap", "Grant PTY injection capability (requires sudo)");
+    ("inject", "Inject messages or keycodes into a live session (deprecated)");
+    ("smoke-test", "Run an end-to-end broker smoke test");
+    ("diag", "Show diagnostic info for a managed instance");
+    ("gui", "Launch the c2c TUI");
+    ("install", "Install c2c + client integrations");
+    ("init", "Generate a new Ed25519 identity keypair");
+    ("hook", "PostToolUse hook: drain inbox and emit messages");
+    ("wire-daemon start", "Start a wire-daemon for a session");
+    ("wire-daemon stop", "Stop a running wire-daemon");
+  ] in
+  let tier4 = [
+    ("serve", "Run the MCP server (JSON-RPC over stdio)");
+    ("mcp", "Alias for serve");
+    ("oc-plugin stream-write-statefile", "[internal] Stream statefile writes");
+    ("oc-plugin drain-inbox-to-spool", "[internal] Drain inbox to spool");
+    ("cc-plugin write-statefile", "[internal] Write Claude Code statefile");
+    ("wire-daemon format-prompt", "[diagnostic] Format broker messages as Wire prompt text");
+    ("wire-daemon spool-write", "[diagnostic] Write messages to a spool file");
+    ("wire-daemon spool-read", "[diagnostic] Read messages from a spool file");
+    ("statefile", "Read/write broker statefile");
+    ("supervisor", "Supervisor subcommands");
+    ("refresh-peer", "Refresh a stale broker registration");
+    ("repo", "Per-repo config management");
+  ] in
+  let print_section title cmds =
+    Printf.printf "\n== %s ==\n\n" title;
+    List.iter (fun (name, desc) -> Printf.printf "  %-30s %s\n" name desc) cmds
+  in
+  let safety_to_label t =
+    match t with
+    | Tier1 -> "TIER 1 — SAFE FOR AGENTS (messaging, queries)"
+    | Tier2 -> "TIER 2 — SAFE WITH CARE (lifecycle, side effects)"
+    | Tier3 -> "TIER 3 — UNSAFE FOR AGENTS (systemic, requires operator)"
+    | Tier4 -> "TIER 4 — INTERNAL (hidden without --all)"
+  in
+  Printf.printf "c2c commands by safety tier\n";
+  print_section (safety_to_label Tier1) tier1;
+  print_section (safety_to_label Tier2) tier2;
+  if not is_agent then print_section (safety_to_label Tier3) tier3;
+  if !is_all then print_section (safety_to_label Tier4) tier4
+
+let fast_path_server_info ~json () =
+  let info = C2c_mcp.server_info in
+  if json then
+    print_json info
+  else
+    match info with
+    | `Assoc fields ->
+        List.iter (fun (k, v) ->
+          match v with
+          | `String s -> Printf.printf "%s: %s\n" k s
+          | `List l -> Printf.printf "%s:\n" k; List.iter (fun item -> Printf.printf "  - %s\n" (Yojson.Safe.to_string item)) l
+          | _ -> Printf.printf "%s: %s\n" k (Yojson.Safe.to_string v))
+          fields
+    | _ -> print_json info
+
+let fast_path_completion () =
+  let n = Array.length Sys.argv in
+  let shell = ref None in
+  for i = 2 to n - 1 do
+    if Sys.argv.(i) = "--shell" && i + 1 < n then
+      shell := Some (String.lowercase_ascii (String.trim Sys.argv.(i + 1)))
+    else if String.length Sys.argv.(i) >= 7 && String.sub Sys.argv.(i) 0 7 = "--shell=" then
+      shell := Some (String.lowercase_ascii (String.sub Sys.argv.(i) 7 (String.length Sys.argv.(i) - 7)))
+  done;
+  let shell = !shell in
+  let shell = match shell with
+    | Some s -> Some s
+    | None ->
+        (try
+          let sh = Sys.getenv "SHELL" in
+          if Filename.check_suffix sh "bash" then Some "bash"
+          else if Filename.check_suffix sh "zsh" then Some "zsh"
+          else if Filename.check_suffix sh "pwsh" || Filename.check_suffix sh "powershell" then Some "pwsh"
+          else None
+        with Not_found -> None)
+  in
+  match shell with
+  | Some s when List.mem s ["bash"; "zsh"; "pwsh"] ->
+      let cmdliner_bin () =
+        try
+          let opam_prefix = Sys.getenv "OPAM_SWITCH_PREFIX" in
+          Filename.concat opam_prefix "bin" // "cmdliner"
+        with Not_found ->
+          let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+          Filename.concat home ".opam/c2c/bin/cmdliner"
+      in
+      let cmd = Printf.sprintf "%s tool-completion --standalone-completion %s c2c"
+        (cmdliner_bin ()) s
+      in
+      let ic = Unix.open_process_in cmd in
+      let rec copy_all () =
+        try print_endline (input_line ic); copy_all ()
+        with End_of_file -> ()
+      in
+      copy_all ();
+      (match Unix.close_process_in ic with
+       | Unix.WEXITED 0 -> exit 0
+       | Unix.WEXITED n ->
+           Printf.eprintf "error: cmdliner exited with code %d\n%!" n;
+           exit 1
+       | _ ->
+           Printf.eprintf "error: cmdliner terminated unexpectedly\n%!";
+           exit 1)
+  | Some s ->
+      Printf.eprintf "error: unknown shell '%s'. Supported: bash, zsh, pwsh\n%!" s;
+      exit 1
+  | None ->
+      Printf.eprintf "error: could not detect shell. Please specify --shell explicitly\n%!";
+      exit 1
+
+let fast_path_skills_list ~json () =
+  let dir = Sys.getcwd () // ".opencode" // "skills" in
+  let names =
+    try
+      Array.to_list (Sys.readdir dir)
+      |> List.filter (fun name ->
+        let path = dir // name in
+        try Sys.is_directory path with _ -> false)
+    with _ -> []
+  in
+  if json then
+    let skills = List.map (fun name ->
+      let skill_md = dir // name // "SKILL.md" in
+      let lines =
+        (try
+          let ic = open_in skill_md in
+          Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+            let rec go acc n =
+              if n <= 0 then List.rev acc
+              else
+                match input_line ic with
+                | line -> go (line :: acc) (n - 1)
+                | exception End_of_file -> List.rev acc
+            in
+            go [] 10)
+        with _ -> [])
+      in
+      let name_ref = ref None in
+      let desc_ref = ref None in
+      let strip_quotes s =
+        let len = String.length s in
+        if len >= 2 && s.[0] = '"' && s.[len - 1] = '"'
+        then String.sub s 1 (len - 2)
+        else s
+      in
+      let in_frontmatter = ref false in
+      List.iter (fun line ->
+        let line = String.trim line in
+        if line = "---" then in_frontmatter := not !in_frontmatter
+        else if !in_frontmatter then
+          if Str.string_match (Str.regexp "^name:[ ]*\\([^ ].*\\)$") line 0
+          then name_ref := Some (Str.matched_group 1 line)
+          else if Str.string_match (Str.regexp "^description:[ ]*\\(\".*\"\\)$") line 0
+          then desc_ref := Some (strip_quotes (Str.matched_group 1 line))
+          else if Str.string_match (Str.regexp "^description:[ ]*\\([^ ].*\\)$") line 0
+          then desc_ref := Some (Str.matched_group 1 line)
+      ) lines;
+      `Assoc ([ ("id", `String name) ]
+        @ (match !name_ref with Some n -> [ ("name", `String n) ] | None -> [])
+        @ (match !desc_ref with Some d -> [ ("description", `String d) ] | None -> []))
+    ) names in
+    print_json (`List skills)
+  else
+    List.iter (fun name ->
+      let skill_md = dir // name // "SKILL.md" in
+      let lines =
+        (try
+          let ic = open_in skill_md in
+          Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+            let rec go acc n =
+              if n <= 0 then List.rev acc
+              else
+                match input_line ic with
+                | line -> go (line :: acc) (n - 1)
+                | exception End_of_file -> List.rev acc
+            in
+            go [] 10)
+        with _ -> [])
+      in
+      let name_ref = ref None in
+      let desc_ref = ref None in
+      let strip_quotes s =
+        let len = String.length s in
+        if len >= 2 && s.[0] = '"' && s.[len - 1] = '"'
+        then String.sub s 1 (len - 2)
+        else s
+      in
+      let in_frontmatter = ref false in
+      List.iter (fun line ->
+        let line = String.trim line in
+        if line = "---" then in_frontmatter := not !in_frontmatter
+        else if !in_frontmatter then
+          if Str.string_match (Str.regexp "^name:[ ]*\\([^ ].*\\)$") line 0
+          then name_ref := Some (Str.matched_group 1 line)
+          else if Str.string_match (Str.regexp "^description:[ ]*\\(\".*\"\\)$") line 0
+          then desc_ref := Some (strip_quotes (Str.matched_group 1 line))
+          else if Str.string_match (Str.regexp "^description:[ ]*\\([^ ].*\\)$") line 0
+          then desc_ref := Some (Str.matched_group 1 line)
+      ) lines;
+      Printf.printf "%s\n" name;
+      (match !name_ref with Some n -> Printf.printf "  name: %s\n" n | None -> ());
+      (match !desc_ref with Some d -> Printf.printf "  description: %s\n" d | None -> ());
+      print_newline ()
+    ) names
+
+let fast_path_skills_serve name =
+  let dir = Sys.getcwd () // ".opencode" // "skills" in
+  let skill_md = dir // name // "SKILL.md" in
+  try
+    let ic = open_in skill_md in
+    Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+      let rec copy_all () =
+        try
+          print_endline (input_line ic);
+          copy_all ()
+        with End_of_file -> ()
+      in
+      copy_all ())
+  with _ ->
+    Printf.eprintf "error: skill '%s' not found in %s\n%!" name dir;
+    exit 1
+
 let try_fast_path () =
   (* Skip fast-path if any flag we don't recognize appears, so cmdliner
      can produce its standard error. We only handle the trivial shape:
+       c2c help [args...]
+       c2c commands [--all]
+       c2c server-info [--json]
+       c2c completion [--shell SHELL]
+       c2c skills list [--json]
+       c2c skills serve <name>
        c2c get-tmux-location [--json]
-     and bare `c2c --version`. *)
+      and bare `c2c --version`. *)
+
   let argv = Sys.argv in
   let n = Array.length argv in
   if n >= 2 then begin
     match argv.(1) with
+    | "help" ->
+        (* Accept only positional args (no flags we don't handle).
+           `c2c help` alone → top-level help. `c2c help rooms` → `c2c rooms --help`. *)
+        fast_path_help ()
+    | "commands" ->
+        fast_path_commands ()
+    | "server-info" ->
+        let json = ref false in
+        let unknown = ref false in
+        for i = 2 to n - 1 do
+          match argv.(i) with
+          | "--json" | "-j" -> json := true
+          | _ -> unknown := true
+        done;
+        if not !unknown then fast_path_server_info ~json:!json ()
+    | "completion" ->
+        fast_path_completion ()
+    | "skills" when n >= 3 ->
+        (match argv.(2) with
+         | "list" ->
+             let json = ref false in
+             let unknown = ref false in
+             for i = 3 to n - 1 do
+               match argv.(i) with
+               | "--json" | "-j" -> json := true
+               | _ -> unknown := true
+             done;
+             if not !unknown then fast_path_skills_list ~json:!json ()
+         | "serve" when n >= 4 ->
+             fast_path_skills_serve argv.(3)
+         | _ -> ())
     | "get-tmux-location" ->
         let json = ref false in
         let unknown = ref false in
