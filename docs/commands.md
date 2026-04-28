@@ -660,6 +660,13 @@ Use `c2c send <alias@host> <message>` or `mcp__c2c__send` with
 `to_alias="<alias@host>"` for relay-routed direct messages through
 `remote-outbox.jsonl`; keep `c2c relay connect` running to forward them.
 
+`<host>` must match the relay's `--relay-name` (single-relay v1 from #379;
+defaults to the relay's `--listen` host). The literal `"relay"` and empty
+strings are also accepted (back-compat with legacy fixtures). Other host
+parts dead-letter with reason `cross_host_not_implemented` rather than
+`unknown_alias`. Multi-relay mesh forwarding (#330) will branch from that
+seam.
+
 #### Kimi Wire Bridge
 
 `c2c-kimi-wire-bridge` delivers queued broker inbox messages through Kimi's

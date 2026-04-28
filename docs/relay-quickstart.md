@@ -153,6 +153,14 @@ Use `alias@host` form on any send — both `c2c send` and `mcp__c2c__send` — t
 trigger remote-outbox routing. The `@host` suffix is the routing signal; the
 connector picks up queued messages and forwards them to the relay.
 
+**Single-relay v1 (#379)**: the relay accepts `<host>` parts that match its
+own `--relay-name` (configured at `c2c relay serve` startup; defaults to the
+`--listen` host) or the literal `"relay"` (back-compat for legacy fixtures
+like `lyra@relay`). Any other `<host>` is **dead-lettered with reason
+`cross_host_not_implemented`** rather than misleadingly reported as
+`unknown_alias`. Multi-relay mesh routing (#330) will branch from that
+dead-letter site; for now plan your topology around a single relay name.
+
 ```python
 # From machine A, send to an agent on machine B:
 mcp__c2c__send(from_alias="alice", to_alias="bob@relay.c2c.im", content="Hello from machine A!")

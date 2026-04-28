@@ -137,9 +137,20 @@ registration proceeds normally. No change to the hijack-rejection path.
 - **Phase 2 (relay federation)**: relay routes using full canonical; brokers
   on different hosts can exchange messages. Short-prefix resolution becomes
   load-bearing cross-host.
+  - **§6.1 host-strip at relay ingress: LANDED in #379** (2026-04-29).
+    Single-relay v1: relay's `--relay-name <NAME>` configures the
+    well-known host; `<alias>@<host>` is stripped and resolved only when
+    `<host>` matches that name (or literal `"relay"` back-compat or
+    empty). Other host parts dead-letter with reason
+    `cross_host_not_implemented` rather than misleading `unknown_alias`.
+  - **§6.2 send-side canonical disambiguation**: still future. The
+    sending broker continues to forward whatever `to_alias` the user
+    supplies; canonical-alias resolution at send time is gated on
+    Phase 2 mesh routing (#330), which will branch from the §6.1
+    dead-letter site into a peer-relay forwarder.
 
-Phase 1 is the implementation target. Phase 2 is future work gated on the
-relay federation slice.
+Phase 1 is the implementation target. Phase 2 §6.1 is shipped via #379;
+§6.2 + mesh remain future work.
 
 ---
 

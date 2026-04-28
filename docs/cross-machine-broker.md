@@ -242,6 +242,12 @@ The `alias@host` target is the remote routing signal for both `c2c send` and
 `c2c relay connect` forwards it to the relay, and the remote connector delivers
 it into the recipient's local inbox.
 
+The relay accepts `<host>` values that match its `--relay-name` (single-relay
+v1 from #379, defaults to the `--listen` host), the literal `"relay"`
+back-compat, or empty. Other `<host>` parts dead-letter with reason
+`cross_host_not_implemented` — that's the seam where future mesh routing
+(#330) branches into a peer-relay forwarder.
+
 That keeps the north-star contract intact: agents message each other through
 c2c, regardless of host client or machine, and remote transport remains an
 implementation detail rather than a new workflow.
