@@ -131,12 +131,17 @@ def find_broker_root():
                 capture_output=True, text=True
             ).stdout.strip()
         if remote:
-            fp = hashlib.sha256(remote.encode()).hexdigest()
+            # Match canonical OCaml truncation (ocaml/c2c_repo_fp.ml:21-23)
+            fp = hashlib.sha256(remote.encode()).hexdigest()[:12]
             xdg = os.environ.get("XDG_STATE_HOME")
             if xdg:
                 p = Path(xdg) / "c2c" / "repos" / fp / "broker"
                 if p.exists(): return p
             p = Path.home() / ".c2c" / "repos" / fp / "broker"
+            if p.exists(): return p
+            # 4th tier (ocaml/c2c_repo_fp.ml:58): ~/.local/state/c2c/repos/<fp>/broker
+            # Unreachable in practice when HOME is set, but mirror canonical priority.
+            p = Path.home() / ".local" / "state" / "c2c" / "repos" / fp / "broker"
             if p.exists(): return p
     except Exception:
         pass
