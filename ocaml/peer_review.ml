@@ -720,6 +720,35 @@ let verify_with_pin ?path (art : t) : (pin_check, verify_error) result =
     The optional [path] override targets the pin store JSON; the broker
     wires this to a path under its broker root so all worktrees of one
     repo share one pin set, and tests pass an isolated path. *)
+(** [verify_claim_for_artifact] runs the H2 + H2b policy checks against an
+    already-loaded artifact: sha/reviewer field match + signature verify +
+    TOFU pubkey pin. Used by both the broker (which loads the artifact from
+    its canonical path inside [verify_claim_with_pin]) and the CLI (which
+    loads from a user-supplied path and calls this directly).
+
+    Splitting the in-memory checks out of [verify_claim_with_pin] (#62)
+    converges CLI and broker on the same policy without duplicating the
+    sha/reviewer/sig/pin ladder. Future hardening lands once. *)
+let verify_claim_for_artifact ?path ~(art : t) ~alias ~sha () : claim_verification =
+  if art.sha <> sha then
+    Claim_invalid (Printf.sprintf "SHA mismatch: artifact is for %s, claim is for %s" art.sha sha)
+  else if String.lowercase_ascii art.reviewer <> String.lowercase_ascii alias then
+    Claim_invalid (Printf.sprintf "reviewer mismatch: artifact is by %s, claim is by %s" art.reviewer alias)
+  else begin
+    match verify_with_pin ?path art with
+    | Error e ->
+      Claim_invalid (Printf.sprintf "invalid signature: %s" (verify_error_to_string e))
+    | Ok Pin_match ->
+      Claim_valid (Printf.sprintf "peer-pass artifact verified: %s for %s" art.verdict sha)
+    | Ok Pin_first_seen ->
+      Claim_valid (Printf.sprintf "peer-pass artifact verified (pin first-seen): %s for %s" art.verdict sha)
+    | Ok (Pin_mismatch m) ->
+      Claim_invalid
+        (Printf.sprintf
+           "pin mismatch for reviewer %s: pinned pubkey=%s, artifact pubkey=%s, first_seen=%.0f"
+           m.alias m.pinned_pubkey m.artifact_pubkey m.first_seen)
+  end
+
 let verify_claim_with_pin ?path ~alias ~sha () =
   match validate_artifact_path_components ~alias ~sha with
   | Error msg ->
@@ -731,22 +760,4 @@ let verify_claim_with_pin ?path ~alias ~sha () =
   else
     match read_artifact art_path with
     | Error e -> Claim_invalid (Printf.sprintf "artifact read error: %s" e)
-    | Ok art ->
-      if art.sha <> sha then
-        Claim_invalid (Printf.sprintf "SHA mismatch: artifact is for %s, claim is for %s" art.sha sha)
-      else if String.lowercase_ascii art.reviewer <> String.lowercase_ascii alias then
-        Claim_invalid (Printf.sprintf "reviewer mismatch: artifact is by %s, claim is by %s" art.reviewer alias)
-      else begin
-        match verify_with_pin ?path art with
-        | Error e ->
-          Claim_invalid (Printf.sprintf "invalid signature: %s" (verify_error_to_string e))
-        | Ok Pin_match ->
-          Claim_valid (Printf.sprintf "peer-pass artifact verified: %s for %s" art.verdict sha)
-        | Ok Pin_first_seen ->
-          Claim_valid (Printf.sprintf "peer-pass artifact verified (pin first-seen): %s for %s" art.verdict sha)
-        | Ok (Pin_mismatch m) ->
-          Claim_invalid
-            (Printf.sprintf
-               "pin mismatch for reviewer %s: pinned pubkey=%s, artifact pubkey=%s, first_seen=%.0f"
-               m.alias m.pinned_pubkey m.artifact_pubkey m.first_seen)
-      end
+    | Ok art -> verify_claim_for_artifact ?path ~art ~alias ~sha ()
