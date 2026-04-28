@@ -313,10 +313,21 @@ let peer_pass_send_cmd =
 
 (* --- verify command ------------------------------------------------------ *)
 
+(* Read a peer-pass artifact file with the size cap from Peer_review.
+   On too-large or read error, prints to stderr and exits 1.
+   See #56: refuse > [Peer_review.peer_pass_max_artifact_bytes] (64KB)
+   to prevent OOM/DoS via a malicious artifact. *)
 let read_json_file path =
-  let ic = open_in path in
-  Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
-    really_input_string ic (in_channel_length ic))
+  match Peer_review.read_artifact_capped path with
+  | Ok content -> content
+  | Error (`Too_large sz) ->
+    Printf.eprintf
+      "error: artifact %s exceeds size cap (%d bytes > %d)\n%!"
+      path sz Peer_review.peer_pass_max_artifact_bytes;
+    exit 1
+  | Error (`Read_error msg) ->
+    Printf.eprintf "error: cannot read artifact %s: %s\n%!" path msg;
+    exit 1
 
 (* H1: TOFU pin store lives under the broker root so all worktrees of a
    given repo share one alias <-> pubkey binding. Override the default

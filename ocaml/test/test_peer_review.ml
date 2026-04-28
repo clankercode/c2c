@@ -449,6 +449,80 @@ let test_concurrent_pin_check_and_rotate_no_lost_update () =
        true (p.pubkey = pk1 || p.pubkey = pk2);
      check bool "first_seen preserved positive" true (p.first_seen > 0.0);
      check bool "last_seen >= first_seen" true (p.last_seen >= p.first_seen))
+(* --- #56 size cap tests -------------------------------------------------- *)
+
+let write_file path content =
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () ->
+    output_string oc content)
+
+let with_tempfile f =
+  let path = Filename.temp_file "test_peer_review_" ".json" in
+  Fun.protect ~finally:(fun () -> try Sys.remove path with _ -> ()) (fun () ->
+    f path)
+
+let make_signed_artifact ?(notes = "") () =
+  let id = make_identity () in
+  let art : Peer_review.t = {
+    version = 1;
+    reviewer = "test-agent";
+    reviewer_pk = "";
+    sha = "abc123def456";
+    verdict = "PASS";
+    criteria_checked = ["builds_cleanly"];
+    skill_version = "1.0.0";
+    commit_range = "0000000..abc123def456";
+    targets_built = { c2c = true; c2c_mcp_server = true; c2c_inbox_hook = false };
+    notes;
+    signature = "";
+    ts = 1234567890.0;
+  } in
+  Peer_review.sign ~identity:id art
+
+let test_size_cap_rejects_oversized () =
+  with_tempfile (fun path ->
+    let signed = make_signed_artifact
+      ~notes:(String.make (Peer_review.peer_pass_max_artifact_bytes + 1024) 'A')
+      ()
+    in
+    write_file path (Peer_review.t_to_string signed);
+    match Peer_review.read_artifact_capped path with
+    | Ok _ -> failwith "read_artifact_capped should have rejected oversized file"
+    | Error (`Read_error msg) -> failwith ("unexpected read error: " ^ msg)
+    | Error (`Too_large sz) ->
+      check bool "size exceeds cap" (sz > Peer_review.peer_pass_max_artifact_bytes) true)
+
+let test_size_cap_read_artifact_error () =
+  with_tempfile (fun path ->
+    let signed = make_signed_artifact
+      ~notes:(String.make (Peer_review.peer_pass_max_artifact_bytes + 1024) 'B')
+      ()
+    in
+    write_file path (Peer_review.t_to_string signed);
+    match Peer_review.read_artifact path with
+    | Ok _ -> failwith "read_artifact should have rejected oversized file"
+    | Error msg ->
+      let needle = "exceeds size cap" in
+      let contains s sub =
+        let ls = String.length s and lsub = String.length sub in
+        let rec loop i =
+          if i + lsub > ls then false
+          else if String.sub s i lsub = sub then true
+          else loop (i + 1)
+        in
+        loop 0
+      in
+      check bool ("error mentions cap: " ^ msg) (contains msg needle) true)
+
+let test_size_cap_normal_passes () =
+  with_tempfile (fun path ->
+    let signed = make_signed_artifact ~notes:"normal review notes" () in
+    write_file path (Peer_review.t_to_string signed);
+    match Peer_review.read_artifact path with
+    | Ok art ->
+      check string "reviewer survives roundtrip" "test-agent" art.Peer_review.reviewer;
+      check string "verdict survives roundtrip" "PASS" art.Peer_review.verdict
+    | Error msg -> failwith ("normal artifact rejected: " ^ msg))
 
 let () = Alcotest.run "Peer_review" [
   "signed_peer_pass", [
@@ -476,5 +550,9 @@ let () = Alcotest.run "Peer_review" [
   "pin_lock_concurrency_54b", [
     Alcotest.test_case "concurrent pin_check and pin_rotate: no lost-update" `Quick
       test_concurrent_pin_check_and_rotate_no_lost_update;
+  "size_cap_56", [
+    Alcotest.test_case "oversized artifact rejected by capped reader" `Quick test_size_cap_rejects_oversized;
+    Alcotest.test_case "oversized artifact rejected by read_artifact" `Quick test_size_cap_read_artifact_error;
+    Alcotest.test_case "normal-sized artifact still passes" `Quick test_size_cap_normal_passes;
   ];
 ]

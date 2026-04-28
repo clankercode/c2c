@@ -75,6 +75,26 @@ artifacts.
 4. Call `Relay_identity.verify ~pk:pk_bytes ~msg:canonical ~sig_:sig_bytes`
 5. Check `ts` is not too old (e.g., not older than 30 days) — NOT YET IMPLEMENTED
 
+## Artifact Size Cap (#56)
+
+Peer-pass artifacts on disk MUST NOT exceed `peer_pass_max_artifact_bytes`
+(64 KiB = 65536 bytes). Real artifacts are well under 2 KB; the cap is
+purely a defense against an OOM/DoS where a malicious or accidentally
+huge file lives at `<repo>/.c2c/peer-passes/<sha>-<alias>.json` and a
+reader (broker `verify_claim` or CLI `c2c peer-pass verify`) tries to
+slurp it whole.
+
+Both code paths funnel through `Peer_review.read_artifact_capped : path ->
+(string, [> \`Too_large of int | \`Read_error of string]) result`, which
+stats the file first and refuses if `st_size >
+peer_pass_max_artifact_bytes`. On the broker path, an oversized artifact
+surfaces as `Claim_invalid` with reason text `"artifact exceeds size cap
+(<sz> bytes > <cap>)"` so it flows through the existing peer-pass reject
+machinery. On the CLI verify path, oversize prints to stderr and exits 1.
+
+If a future legitimate artifact ever needs more than 64 KiB, bump the
+constant in `ocaml/peer_review.ml` and update this section.
+
 ## Git Hook Integration (#171)
 
 A pre-merge hook at `githooks/pre-commit` (installed by `c2c install`) verifies that for

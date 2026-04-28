@@ -246,14 +246,44 @@ let claim_of_content content =
       | Some (sha, _) ->
           if sha <> "" then Some (alias, sha) else None
 
-(** Read a peer-pass artifact from a JSON file. *)
-let read_artifact path =
+(** Maximum allowed size of a peer-pass artifact JSON file on disk.
+    Real artifacts are well under 2KB; the cap exists to refuse a malicious
+    or accidentally-huge file before it OOMs the broker on read. See #56. *)
+let peer_pass_max_artifact_bytes = 64 * 1024
+
+(** Read a file with a hard size cap. Stats the file first; refuses if the
+    on-disk length exceeds [peer_pass_max_artifact_bytes]. Returns the raw
+    bytes on success, or a [`Too_large of int] / [`Read_error of string]
+    on failure. *)
+let read_artifact_capped path
+  : (string, [> `Too_large of int | `Read_error of string ]) result =
   try
-    let content = Yojson.Safe.from_file path in
-    match t_of_json content with
-    | Some art -> Ok art
-    | None -> Error "JSON parse failed"
-  with e -> Error (Printexc.to_string e)
+    let st = Unix.stat path in
+    let sz = st.Unix.st_size in
+    if sz > peer_pass_max_artifact_bytes then Error (`Too_large sz)
+    else
+      let ic = open_in path in
+      Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+        Ok (really_input_string ic sz))
+  with
+  | Unix.Unix_error (e, _, _) -> Error (`Read_error (Unix.error_message e))
+  | Sys_error msg -> Error (`Read_error msg)
+  | e -> Error (`Read_error (Printexc.to_string e))
+
+(** Read a peer-pass artifact from a JSON file. Enforces the artifact size
+    cap before parsing — see [peer_pass_max_artifact_bytes]. *)
+let read_artifact path =
+  match read_artifact_capped path with
+  | Error (`Too_large sz) ->
+    Error (Printf.sprintf "artifact exceeds size cap (%d bytes > %d)"
+             sz peer_pass_max_artifact_bytes)
+  | Error (`Read_error msg) -> Error msg
+  | Ok content ->
+    try
+      match t_of_json (Yojson.Safe.from_string content) with
+      | Some art -> Ok art
+      | None -> Error "JSON parse failed"
+    with e -> Error (Printexc.to_string e)
 
 (** Result of peer-pass claim verification. *)
 type claim_verification =
