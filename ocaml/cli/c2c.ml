@@ -4826,7 +4826,7 @@ let detect_client () =
             List.exists (fun d -> Sys.file_exists (d // name))
               (String.split_on_char ':' path)
           in
-          List.find_opt has_bin [ "opencode"; "claude"; "codex"; "kimi" ])
+          List.find_opt has_bin [ "opencode"; "claude"; "codex"; "kimi"; "gemini" ])
 
 let init_cmd =
   let open Cmdliner in
