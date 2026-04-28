@@ -132,3 +132,8 @@
  (name test_c2c_relay_connector)
  (modules test_c2c_relay_connector)
  (libraries c2c_mcp alcotest yojson unix))
+
+(test
+ (name test_cross_host_e2e)
+ (modules test_cross_host_e2e)
+ (libraries c2c_mcp alcotest yojson unix))
