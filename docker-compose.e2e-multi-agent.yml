@@ -11,7 +11,7 @@
 #   DOCKER_BUILDKIT=1 docker compose \
 #     -f docker-compose.e2e-multi-agent.yml \
 #     up -d --build
-#   bash tests/e2e/00-smoke-cross-container.sh
+#   pytest docker-tests/
 #   docker compose -f docker-compose.e2e-multi-agent.yml down -v
 #
 # Two broker volumes (broker-a, broker-b) — agents on host-A only see
@@ -70,7 +70,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.test
-    image: c2c-e2e-agent:latest
     container_name: c2c-e2e-agent-a1
     depends_on:
       relay:
@@ -97,7 +96,6 @@ services:
     command: ["sleep", "3600"]
 
   agent-a2:
-    image: c2c-e2e-agent:latest
     build:
       context: .
       dockerfile: Dockerfile.test
@@ -127,7 +125,6 @@ services:
     command: ["sleep", "3600"]
 
   agent-b1:
-    image: c2c-e2e-agent:latest
     build:
       context: .
       dockerfile: Dockerfile.test
@@ -157,7 +154,6 @@ services:
     command: ["sleep", "3600"]
 
   agent-b2:
-    image: c2c-e2e-agent:latest
     build:
       context: .
       dockerfile: Dockerfile.test

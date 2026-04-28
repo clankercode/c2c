@@ -43,10 +43,10 @@ RUN opam exec -- dune build --release ocaml/cli/c2c.exe
 FROM python:3.12-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates libgmp10 libssl3 libev4 libsqlite3-0 tini curl openssh-client inotify-tools \
+        ca-certificates libgmp10 libssl3 libev4 libsqlite3-0 tini curl openssh-client inotify-tools sudo \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --home /var/lib/c2c --shell /usr/sbin/nologin testagent \
-    && mkdir -p /var/lib/c2c /home/testagent \
+    && useradd --system --home /home/testagent --shell /usr/sbin/nologin testagent \
+    && mkdir -p /home/testagent /var/lib/c2c \
     && pip install --no-cache-dir pytest pytest-timeout \
     && rm -rf /var/cache/pip
 
