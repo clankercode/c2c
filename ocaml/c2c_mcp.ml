@@ -4400,10 +4400,26 @@ let ts = Unix.gettimeofday () in
                           | Peer_review.Claim_missing m -> Some (`Missing m)
                           | Peer_review.Claim_invalid m -> Some (`Invalid m)
                     in
-                    match self_pass_warning with
-                    | Some (`Reject msg) ->
+                    let invalid_peer_pass =
+                      match peer_pass_verification with
+                      | Some (`Invalid m) ->
+                          Printf.eprintf
+                            "[peer-pass] WARN: rejecting forged peer-pass DM from=%s to=%s: %s\n%!"
+                            from_alias to_alias m;
+                          Some m
+                      | _ -> None
+                    in
+                    match invalid_peer_pass, self_pass_warning with
+                    | Some m, _ ->
+                        Lwt.return
+                          (tool_result
+                             ~content:
+                               ("send rejected: peer-pass verification failed — " ^ m
+                                ^ " (H2: forged peer-pass DM not enqueued)")
+                             ~is_error:true)
+                    | None, Some (`Reject msg) ->
                         Lwt.return (tool_result ~content:("send rejected: " ^ msg) ~is_error:true)
-                    | Some (`Warn _) | None ->
+                    | None, (Some (`Warn _) | None) ->
                         Broker.enqueue_message broker ~from_alias ~to_alias ~content:s ~deferrable ~ephemeral ();
                         (match session_id_override with
                          | Some sid -> Broker.touch_session broker ~session_id:sid

@@ -7747,6 +7747,157 @@ let test_hook_drains_for_non_channel_capable () =
       check int "archive has the entry" 1 (List.length entries);
       check string "drained_by recorded as hook" "hook"
         (List.hd entries).C2c_mcp.Broker.ae_drained_by)
+(* --- H2: peer-pass DM signature verification at broker boundary ----------- *)
+
+(* Build a peer-pass artifact path the way Peer_review does (must match
+   ocaml/peer_review.ml:artifact_path). *)
+let h2_artifact_path ~sha ~alias =
+  let base = match Git_helpers.git_common_dir_parent () with
+    | Some parent -> Filename.concat parent ".c2c"
+    | None -> ".c2c"
+  in
+  let dir = Filename.concat base "peer-passes" in
+  (try Unix.mkdir base 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  Filename.concat dir (Printf.sprintf "%s-%s.json" sha alias)
+
+(* SHA-like hex string (40 chars) unique per call so tests don't collide
+   with each other or with real peer-pass artifacts on disk. Must be all
+   hex because Peer_review.claim_of_content requires hex digits in SHA=. *)
+let h2_unique_sha () =
+  Printf.sprintf "%08x%08x%08x%08x%08x"
+    (Random.bits ()) (Random.bits ()) (Random.bits ())
+    (Random.bits ()) (Random.bits ())
+
+let h2_with_artifact ~sha ~alias ~json f =
+  let path = h2_artifact_path ~sha ~alias in
+  Fun.protect
+    ~finally:(fun () -> try Sys.remove path with _ -> ())
+    (fun () ->
+       let oc = open_out path in
+       output_string oc json;
+       close_out oc;
+       f ())
+
+let h2_send_request ~from_alias ~to_alias ~content =
+  `Assoc
+    [ ("jsonrpc", `String "2.0")
+    ; ("id", `Int 9001)
+    ; ("method", `String "tools/call")
+    ; ( "params",
+        `Assoc
+          [ ("name", `String "send")
+          ; ( "arguments",
+              `Assoc
+                [ ("from_alias", `String from_alias)
+                ; ("to_alias", `String to_alias)
+                ; ("content", `String content)
+                ] )
+          ] )
+    ]
+
+let h2_response_is_error response =
+  match response with
+  | None -> failwith "expected tools/call response"
+  | Some json ->
+      let open Yojson.Safe.Util in
+      let result = json |> member "result" in
+      let is_error = try result |> member "isError" |> to_bool with _ -> false in
+      let text =
+        try result |> member "content" |> index 0 |> member "text" |> to_string
+        with _ -> ""
+      in
+      (is_error, text)
+
+let test_peer_pass_dm_with_invalid_signature_rejected () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"h2-sender" ~alias:"h2-sender-alias"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"h2-recv" ~alias:"h2-recv-alias"
+        ~pid:None ~pid_start_time:None ();
+      (* Forge an artifact: sign with one identity, then tamper the body so
+         the signature no longer verifies. verify_claim should return
+         Claim_invalid. *)
+      let id = Relay_identity.generate ~alias_hint:"h2-forger" () in
+      let sha = h2_unique_sha () in
+      let art : Peer_review.t = {
+        version = 1;
+        reviewer = "h2-sender-alias";
+        reviewer_pk = "";
+        sha;
+        verdict = "PASS";
+        criteria_checked = [];
+        skill_version = "1.0.0";
+        commit_range = "0000000.." ^ sha;
+        targets_built = { c2c = true; c2c_mcp_server = true; c2c_inbox_hook = false };
+        notes = "test forgery";
+        signature = "";
+        ts = 1234567890.0;
+      } in
+      let signed = Peer_review.sign ~identity:id art in
+      (* Tamper: change verdict but keep the old signature. *)
+      let tampered = { signed with Peer_review.verdict = "FAIL" } in
+      let json = Peer_review.t_to_string tampered in
+      h2_with_artifact ~sha ~alias:"h2-sender-alias" ~json (fun () ->
+        let content =
+          Printf.sprintf "peer-PASS by h2-sender-alias for SHA=%s — looks good" sha
+        in
+        let request =
+          h2_send_request ~from_alias:"h2-sender-alias"
+            ~to_alias:"h2-recv-alias" ~content
+        in
+        let response =
+          Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+        in
+        let is_error, text = h2_response_is_error response in
+        check bool "send returns isError=true on forged peer-pass" true is_error;
+        check bool "error mentions peer-pass verification"
+          true (string_contains text "peer-pass");
+        (* And the recipient inbox must remain empty. *)
+        let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"h2-recv" in
+        check int "forged peer-pass DM is NOT enqueued" 0 (List.length inbox)))
+
+let test_peer_pass_dm_with_valid_signature_accepted () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"h2v-sender" ~alias:"h2v-sender-alias"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"h2v-recv" ~alias:"h2v-recv-alias"
+        ~pid:None ~pid_start_time:None ();
+      let id = Relay_identity.generate ~alias_hint:"h2v-reviewer" () in
+      let sha = h2_unique_sha () in
+      let art : Peer_review.t = {
+        version = 1;
+        reviewer = "h2v-sender-alias";
+        reviewer_pk = "";
+        sha;
+        verdict = "PASS";
+        criteria_checked = ["builds"];
+        skill_version = "1.0.0";
+        commit_range = "0000000.." ^ sha;
+        targets_built = { c2c = true; c2c_mcp_server = true; c2c_inbox_hook = false };
+        notes = "regression test artifact";
+        signature = "";
+        ts = 1234567890.0;
+      } in
+      let signed = Peer_review.sign ~identity:id art in
+      let json = Peer_review.t_to_string signed in
+      h2_with_artifact ~sha ~alias:"h2v-sender-alias" ~json (fun () ->
+        let content =
+          Printf.sprintf "peer-PASS by h2v-sender-alias for SHA=%s" sha
+        in
+        let request =
+          h2_send_request ~from_alias:"h2v-sender-alias"
+            ~to_alias:"h2v-recv-alias" ~content
+        in
+        let response =
+          Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+        in
+        let is_error, _text = h2_response_is_error response in
+        check bool "valid peer-pass DM is not flagged as error" false is_error;
+        let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"h2v-recv" in
+        check int "valid peer-pass DM is enqueued" 1 (List.length inbox)))
 
 let () =
   run "c2c_mcp"
@@ -8214,4 +8365,8 @@ let () =
                test_hook_skips_drain_for_channel_capable
            ; test_case "hook drains for non-channel-capable session (#387 A2)" `Quick
                test_hook_drains_for_non_channel_capable
+           ; test_case "H2: peer-pass DM with invalid signature is rejected" `Quick
+               test_peer_pass_dm_with_invalid_signature_rejected
+           ; test_case "H2: peer-pass DM with valid signature is accepted" `Quick
+               test_peer_pass_dm_with_valid_signature_accepted
            ] ) ]
