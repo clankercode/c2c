@@ -2095,9 +2095,12 @@ module Broker = struct
       | Some ts -> Printf.sprintf "%.3f" ts
     in
     let reason = peer_offline_reason reg in
+    (* Use bare alias for agent-friendliness: canonical aliases contain
+       host/slug qualifiers that make pattern-matching harder for recipients.
+       Bare alias is what agents naturally expect to match against. *)
     Printf.sprintf
       "<c2c event=\"peer_offline\" alias=\"%s\" detected_at=\"%s\" reason=\"%s\" last_seen=\"%s\"/>"
-      (match reg.canonical_alias with Some a -> a | None -> reg.alias)
+      reg.alias
       detected_at reason last_seen
 
   let sweep t =
