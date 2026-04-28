@@ -13,6 +13,7 @@ let mk_entry ~ts ~from_a ~to_a ~content : C2c_mcp.Broker.archive_entry =
   ; ae_to_alias = to_a
   ; ae_content = content
   ; ae_deferrable = false
+  ; ae_drained_by = ""
   }
 
 let entries_fixture =
