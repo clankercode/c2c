@@ -2605,13 +2605,14 @@ module Broker = struct
     if not (valid_room_id room_id) then
       invalid_arg ("invalid room_id: " ^ room_id);
     let dir = room_dir t ~room_id in
-    if Sys.file_exists dir then
-      invalid_arg ("room already exists: " ^ room_id);
-    (* ensure_room_dir creates the dir; do this only after the existence
-       check so we don't race two creators silently. The check + mkdir is
-       not atomic across processes, but mkdir(2) below would still fail
-       with EEXIST if a peer slips in. We use Unix.mkdir directly to make
-       that race observable. *)
+    (* #403: rely solely on mkdir(2)'s atomic EEXIST. The previous
+       Sys.file_exists pre-check was a real TOCTOU window — two creators
+       could both pass the check and then race on mkdir, with the loser
+       getting "room already exists" only if it happened to lose the
+       mkdir race AS WELL. Worse, the pre-check was misleading: it
+       suggested the create was guarded, but the mkdir below was the
+       only actual atomic guard. Drop the misleading check; let mkdir
+       be the single authority. *)
     (try Unix.mkdir (rooms_dir t) 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
     (try Unix.mkdir dir 0o700
      with Unix.Unix_error (Unix.EEXIST, _, _) ->
