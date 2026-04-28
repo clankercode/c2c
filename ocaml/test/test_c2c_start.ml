@@ -281,6 +281,63 @@ let test_build_env_does_not_seed_codex_thread_id () =
   check bool "does not export force capabilities for non-claude" false
     (env_has_key env "C2C_MCP_FORCE_CAPABILITIES")
 
+let with_env key value f =
+  let prev = Sys.getenv_opt key in
+  Unix.putenv key value;
+  Fun.protect
+    ~finally:(fun () ->
+      match prev with
+      | Some v -> Unix.putenv key v
+      | None ->
+        (* Best-effort unset: empty string mimics "absent" for our env_has_key
+           prefix check (entry would be "KEY="; key is still present in array
+           but with empty value — so we use a sentinel and check explicitly). *)
+        (try Unix.putenv key "" with _ -> ()))
+    f
+
+let test_build_env_strips_ambient_force_capabilities_for_codex () =
+  with_env "C2C_MCP_FORCE_CAPABILITIES" "claude_channel" @@ fun () ->
+  let env =
+    C2c_start.build_env ~broker_root_override:(Some "/tmp/c2c-test-broker")
+      ~client:(Some "codex")
+      "codex-proof" (Some "codex-proof")
+  in
+  check bool "strips ambient C2C_MCP_FORCE_CAPABILITIES for codex" false
+    (env_contains env "C2C_MCP_FORCE_CAPABILITIES=claude_channel");
+  check bool "does not export force capabilities for codex" false
+    (env_has_key env "C2C_MCP_FORCE_CAPABILITIES")
+
+let test_build_env_strips_ambient_force_capabilities_for_opencode () =
+  with_env "C2C_MCP_FORCE_CAPABILITIES" "claude_channel" @@ fun () ->
+  let env =
+    C2c_start.build_env ~broker_root_override:(Some "/tmp/c2c-test-broker")
+      ~client:(Some "opencode")
+      "opencode-proof" (Some "opencode-proof")
+  in
+  check bool "does not export force capabilities for opencode" false
+    (env_has_key env "C2C_MCP_FORCE_CAPABILITIES")
+
+let test_build_env_claude_keeps_force_capabilities_under_ambient () =
+  with_env "C2C_MCP_FORCE_CAPABILITIES" "claude_channel" @@ fun () ->
+  let env =
+    C2c_start.build_env ~broker_root_override:(Some "/tmp/c2c-test-broker")
+      ~client:(Some "claude")
+      "claude-proof" (Some "claude-proof")
+  in
+  check bool "claude keeps force capabilities even with ambient set" true
+    (env_contains env "C2C_MCP_FORCE_CAPABILITIES=claude_channel");
+  (* And ensure no duplicate: only one entry with that key. *)
+  let count =
+    Array.fold_left
+      (fun acc e ->
+        if String.length e >= 27
+           && String.sub e 0 27 = "C2C_MCP_FORCE_CAPABILITIES="
+        then acc + 1
+        else acc)
+      0 env
+  in
+  check int "exactly one C2C_MCP_FORCE_CAPABILITIES entry" 1 count
+
 let test_codex_heartbeat_interval_is_four_minutes () =
   check (float 0.001) "interval seconds" 240.0
     C2c_start.codex_heartbeat_interval_s
@@ -1749,6 +1806,12 @@ let () =
             `Quick, test_build_env_keeps_channel_delivery_without_force_flag )
         ; ( "build_env_does_not_seed_codex_thread_id",
             `Quick, test_build_env_does_not_seed_codex_thread_id )
+        ; ( "build_env_strips_ambient_force_capabilities_for_codex",
+            `Quick, test_build_env_strips_ambient_force_capabilities_for_codex )
+        ; ( "build_env_strips_ambient_force_capabilities_for_opencode",
+            `Quick, test_build_env_strips_ambient_force_capabilities_for_opencode )
+        ; ( "build_env_claude_keeps_force_capabilities_under_ambient",
+            `Quick, test_build_env_claude_keeps_force_capabilities_under_ambient )
         ; ( "codex_heartbeat_interval_is_four_minutes",
             `Quick, test_codex_heartbeat_interval_is_four_minutes )
         ; ( "codex_heartbeat_enabled_for_codex_family_only",

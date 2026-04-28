@@ -2135,8 +2135,13 @@ let build_env ?(broker_root_override : string option = None)
     [ "CLAUDE_SESSION_ID"; "CODEX_SESSION_ID"; "CODEX_THREAD_ID"; "OPENCODE_SESSION_ID";
       "KIMI_SESSION_ID"; "CRUSH_SESSION_ID" ]
   in
+  (* Always strip C2C_MCP_FORCE_CAPABILITIES from inherited env. For
+     client="claude" we re-add it via `additions` above; for any other client
+     we want it gone so claude-only capabilities don't leak from the parent
+     shell into Codex/OpenCode/Kimi/Crush managed sessions. *)
   let override_keys =
-    legacy_native_session_keys @ "C2C_GIT_SHIM_ACTIVE" :: List.map fst additions
+    ("C2C_MCP_FORCE_CAPABILITIES" :: legacy_native_session_keys)
+    @ ("C2C_GIT_SHIM_ACTIVE" :: List.map fst additions)
   in
   let env_key e =
     try String.sub e 0 (String.index e '=') with Not_found -> e
