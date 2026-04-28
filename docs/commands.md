@@ -714,7 +714,7 @@ stored in `~/.local/share/c2c/wire-daemons/` (one pidfile + log per session).
 
 | Subcommand | Description |
 |------------|-------------|
-| `coord-cherry-pick [--no-install] [--no-dm] SHA…` | Cherry-pick SHAs with dirty-tree stash + auto-install. `--no-dm` skips author DM notifications. Requires `C2C_COORDINATOR=1`. |
+| `coord-cherry-pick [--no-install] [--no-dm] [--no-fail-on-install] SHA…` | Cherry-pick SHAs with dirty-tree stash + auto-install. `--no-dm` skips author DM notifications. `--no-fail-on-install` (#401) downgrades install failure from exit-1 to a stderr warning + continue (use when the coord tree has a transient build issue independent of the cherry-picked SHAs). Requires `C2C_COORDINATOR=1`. |
 | `git …` | Git wrapper that auto-injects `--author` for commits when `git.attribution=true` in `.c2c/config.toml`. |
 | `worktree list\|setup\|start\|status\|prune\|check-bases\|gc` | Manage per-agent git worktrees. `gc` (#313) detects worktrees safe to delete (clean working tree + HEAD ancestor of `origin/master` + no live `cwd` holder + not the main worktree); default dry-run, `--clean` to remove, `--ignore-active` to skip the cwd-holder check, `--json` for tooling, `--path-prefix=PFX` to bound the candidate set. The `--active-window-hours=H` (#314, default `2`) freshness heuristic soft-refuses worktrees where HEAD == `origin/master` AND the admin dir is younger than `H` hours, marking them `[!] POSSIBLY_ACTIVE` rather than REMOVABLE so `--clean` skips fresh checkouts whose owner may be reading code elsewhere; set `--active-window-hours=0` to disable. |
 | `peer-pass sign\|send\|verify\|list\|clean` | Sign, send, and verify peer-PASS review artifacts. |
