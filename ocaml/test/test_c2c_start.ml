@@ -1836,6 +1836,153 @@ let test_restart_intro_override () =
     false
     (string_contains intro "You have been started as a c2c swarm agent.")
 
+(* --- #351: c2c instances --- alive-only default + --all archive view ---- *)
+
+(* Resolve the built CLI binary relative to this test executable.
+   dune places this at _build/default/ocaml/test/test_c2c_start.exe and
+   the CLI at _build/default/ocaml/cli/c2c.exe. We derive the latter
+   from the former so the test runs against the freshly-built binary
+   rather than whatever happens to be on PATH. *)
+let built_c2c_binary () =
+  let exe = Sys.executable_name in
+  let test_dir = Filename.dirname exe in            (* .../ocaml/test *)
+  let ocaml_dir = Filename.dirname test_dir in      (* .../ocaml *)
+  Filename.concat ocaml_dir (Filename.concat "cli" "c2c.exe")
+
+let write_file path contents =
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc contents)
+
+(* Build a fixture instances_dir holding [alive_count] running instances
+   (with PIDs that point at our own process — guaranteed alive) and
+   [zombie_count] stopped instances (PID files reference a process that
+   does not exist). Returns the directory path; caller is responsible for
+   passing it via C2C_INSTANCES_DIR. *)
+let build_instances_fixture ~alive ~zombies dir =
+  let live_pid = Unix.getpid () in
+  (* Find a PID guaranteed not to exist. PID 0x7fff_fffe is well above
+     typical kernel pid_max but we still verify with kill 0. *)
+  let dead_pid =
+    let rec find_dead p =
+      if p <= 1 then 1 (* shouldn't happen but bail *)
+      else
+        match Unix.kill p 0 with
+        | () -> find_dead (p - 1)
+        | exception Unix.Unix_error _ -> p
+    in
+    find_dead 999_999
+  in
+  for i = 1 to alive do
+    let name = Printf.sprintf "alive-%d" i in
+    let inst_dir = Filename.concat dir name in
+    Unix.mkdir inst_dir 0o755;
+    write_file (Filename.concat inst_dir "config.json")
+      (Printf.sprintf {|{"client":"claude","name":"%s"}|} name);
+    write_file (Filename.concat inst_dir "outer.pid")
+      (string_of_int live_pid)
+  done;
+  for i = 1 to zombies do
+    let name = Printf.sprintf "zombie-%d" i in
+    let inst_dir = Filename.concat dir name in
+    Unix.mkdir inst_dir 0o755;
+    write_file (Filename.concat inst_dir "config.json")
+      (Printf.sprintf {|{"client":"codex","name":"%s"}|} name);
+    write_file (Filename.concat inst_dir "outer.pid")
+      (string_of_int dead_pid)
+  done
+
+let read_all_file path =
+  let ic = open_in path in
+  Fun.protect ~finally:(fun () -> close_in ic)
+    (fun () ->
+      let b = Buffer.create 256 in
+      try
+        while true do
+          Buffer.add_channel b ic 4096
+        done;
+        assert false
+      with End_of_file -> Buffer.contents b)
+
+let run_instances_and_capture_json ~instances_dir ~extra_args =
+  let bin = built_c2c_binary () in
+  if not (Sys.file_exists bin) then
+    Alcotest.failf "expected built CLI at %s — run `dune build` first" bin;
+  let stdout_path = Filename.temp_file "c2c-instances-stdout" ".json" in
+  let cmd =
+    Printf.sprintf "C2C_INSTANCES_DIR=%s %s instances --json %s > %s 2>/dev/null"
+      (Filename.quote instances_dir)
+      (Filename.quote bin)
+      extra_args
+      (Filename.quote stdout_path)
+  in
+  let rc = Sys.command cmd in
+  if rc <> 0 then
+    Alcotest.failf "c2c instances exited %d (cmd: %s)" rc cmd;
+  let raw = read_all_file stdout_path in
+  Sys.remove stdout_path;
+  Yojson.Safe.from_string raw
+
+let count_in_envelope j =
+  match j with
+  | `Assoc fields ->
+      let alive = match List.assoc_opt "alive" fields with Some (`Int n) -> n | _ -> -1 in
+      let total = match List.assoc_opt "total" fields with Some (`Int n) -> n | _ -> -1 in
+      let filtered = match List.assoc_opt "filtered" fields with Some (`Bool b) -> b | _ -> false in
+      let n_listed =
+        match List.assoc_opt "instances" fields with
+        | Some (`List xs) -> List.length xs
+        | _ -> -1
+      in
+      (alive, total, filtered, n_listed)
+  | _ -> Alcotest.failf "expected JSON object envelope, got %s" (Yojson.Safe.to_string j)
+
+let test_instances_default_filters_to_alive () =
+  with_temp_dir (fun dir ->
+    build_instances_fixture ~alive:1 ~zombies:2 dir;
+    let j = run_instances_and_capture_json ~instances_dir:dir ~extra_args:"" in
+    let (alive, total, filtered, n_listed) = count_in_envelope j in
+    check int "alive count = 1" 1 alive;
+    check int "total count = 3" 3 total;
+    check bool "filtered = true (default)" true filtered;
+    check int "listed = alive only (1)" 1 n_listed)
+
+let test_instances_all_shows_archive () =
+  with_temp_dir (fun dir ->
+    build_instances_fixture ~alive:1 ~zombies:2 dir;
+    let j = run_instances_and_capture_json ~instances_dir:dir ~extra_args:"--all" in
+    let (alive, total, filtered, n_listed) = count_in_envelope j in
+    check int "alive count = 1" 1 alive;
+    check int "total count = 3" 3 total;
+    check bool "filtered = false under --all" false filtered;
+    check int "listed = full archive (3)" 3 n_listed)
+
+let test_instances_json_default_filters () =
+  with_temp_dir (fun dir ->
+    build_instances_fixture ~alive:2 ~zombies:5 dir;
+    let j = run_instances_and_capture_json ~instances_dir:dir ~extra_args:"" in
+    let (alive, total, filtered, n_listed) = count_in_envelope j in
+    check int "alive count = 2" 2 alive;
+    check int "total count = 7" 7 total;
+    check bool "default JSON also filters" true filtered;
+    check int "listed = alive only (2)" 2 n_listed;
+    (* All listed entries should have status=running. *)
+    match j with
+    | `Assoc fields ->
+        (match List.assoc_opt "instances" fields with
+         | Some (`List xs) ->
+             List.iter (fun item ->
+               match item with
+               | `Assoc f ->
+                   (match List.assoc_opt "status" f with
+                    | Some (`String s) ->
+                        check string "every listed entry is running" "running" s
+                    | _ -> Alcotest.fail "status field missing")
+               | _ -> Alcotest.fail "expected object")
+               xs
+         | _ -> Alcotest.fail "instances field missing")
+    | _ -> Alcotest.fail "expected envelope")
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_start"
@@ -2093,5 +2240,13 @@ let () =
                      String.iter (fun c -> if c = '-' then incr count) n;
                      !count = 1))
                 [ "claude"; "codex"; "opencode"; "kimi"; "crush" ]) )
+        ] )
+    ; ( "instances_filter_351",
+        [ ( "test_instances_default_filters_to_alive",
+            `Quick, test_instances_default_filters_to_alive )
+        ; ( "test_instances_all_shows_archive",
+            `Quick, test_instances_all_shows_archive )
+        ; ( "test_instances_json_default_filters",
+            `Quick, test_instances_json_default_filters )
         ] )
     ]

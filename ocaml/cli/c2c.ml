@@ -1560,9 +1560,7 @@ type managed_instance_view =
   }
 
 let read_managed_instances () =
-  let base =
-    Filename.concat (Sys.getenv "HOME") (".local" // "share" // "c2c" // "instances")
-  in
+  let base = C2c_start.instances_dir in
   let dirs =
     if not (Sys.file_exists base) then []
     else
@@ -5311,8 +5309,7 @@ let refresh_peer =
 
 (* --- subcommand: instances ------------------------------------------------ *)
 
-let instances_dir () =
-  Filename.concat (Sys.getenv "HOME") (".local" // "share" // "c2c" // "instances")
+let instances_dir () = C2c_start.instances_dir
 
 let list_instance_dirs () =
   let base = instances_dir () in
@@ -5335,67 +5332,99 @@ let instances_cmd =
       & info [ "prune-older-than" ] ~docv:"DAYS"
           ~doc:"Prune stopped instances older than DAYS before listing." )
   in
+  let all_flag =
+    Cmdliner.Arg.(
+      value
+      & flag
+      & info [ "all"; "a" ]
+          ~doc:"Show full archive (zombies + recently-stopped). Default: alive-only.")
+  in
+  let alive_flag =
+    Cmdliner.Arg.(
+      value
+      & flag
+      & info [ "alive" ]
+          ~doc:"Explicitly request alive-only view (the default). Useful in scripts that want to assert the filter is on.")
+  in
   let+ json = json_flag
-  and+ prune_older_than = prune_older_than in
+  and+ prune_older_than = prune_older_than
+  and+ show_all = all_flag
+  and+ alive_only = alive_flag in
+  let _ = alive_only in (* default already filters; flag is a script-readable assertion *)
   let output_mode = if json then Json else Human in
   let instances_dir = instances_dir () in
-  let managed_instances = read_managed_instances () in
-  let managed_instances =
+  let all_instances = read_managed_instances () in
+  let all_instances =
     match prune_older_than with
-    | None -> managed_instances
+    | None -> all_instances
     | Some days ->
         if days < 0 then (
           Printf.eprintf "error: --prune-older-than must be >= 0\n%!";
           exit 1);
-        let stale = prune_stopped_instances_older_than ~days ~instances_dir managed_instances in
+        let stale = prune_stopped_instances_older_than ~days ~instances_dir all_instances in
         if stale <> [] && output_mode = Human then
           Printf.eprintf
             "pruned %d stopped instance(s) older than %d day(s)\n%!"
             (List.length stale) days;
         read_managed_instances ()
   in
-  if managed_instances = [] then begin
-    match output_mode with
-    | Json -> print_json (`List [])
-    | Human -> Printf.printf "No managed instances.\n"
-  end else begin
-    let instances =
-      List.map (fun inst ->
-        let fields : (string * Yojson.Safe.t) list =
-          [ ("name", `String inst.mi_name)
-          ; ("client", `String inst.mi_client)
-          ; ("status", `String inst.mi_status)
-          ; ("delivery_mode", `String inst.mi_delivery_mode)
-          ; ("outer_alive", `Bool (inst.mi_status = "running"))
-          ; ("outer_pid", match inst.mi_pid with Some p -> `Int p | None -> `Null)
-          ; ("tmux_location", match inst.mi_tmux_location with Some s -> `String s | None -> `Null)
-          ]
-        in
-        let fields = match inst.mi_pid with
-          | Some p -> fields @ [ ("pid", `Int p) ]
-          | None -> fields
-        in
-        `Assoc fields)
-        managed_instances
+  let total = List.length all_instances in
+  let alive_instances =
+    List.filter (fun (inst : managed_instance_view) -> inst.mi_status = "running") all_instances
+  in
+  let alive_count = List.length alive_instances in
+  let displayed = if show_all then all_instances else alive_instances in
+  let instance_to_json (inst : managed_instance_view) : Yojson.Safe.t =
+    let fields : (string * Yojson.Safe.t) list =
+      [ ("name", `String inst.mi_name)
+      ; ("client", `String inst.mi_client)
+      ; ("status", `String inst.mi_status)
+      ; ("delivery_mode", `String inst.mi_delivery_mode)
+      ; ("outer_alive", `Bool (inst.mi_status = "running"))
+      ; ("outer_pid", match inst.mi_pid with Some p -> `Int p | None -> `Null)
+      ; ("tmux_location", match inst.mi_tmux_location with Some s -> `String s | None -> `Null)
+      ]
     in
-    match output_mode with
-    | Json -> print_json (`List instances)
-    | Human ->
-        List.iter (fun (inst : Yojson.Safe.t) ->
-          match inst with
-          | `Assoc fields ->
-              let name = match List.assoc_opt "name" fields with Some (`String s) -> s | _ -> "?" in
-              let client = match List.assoc_opt "client" fields with Some (`String s) -> s | _ -> "?" in
-              let status = match List.assoc_opt "status" fields with Some (`String s) -> s | _ -> "?" in
-              let delivery_mode = match List.assoc_opt "delivery_mode" fields with Some (`String s) -> s | _ -> "?" in
-              let pid_str = match List.assoc_opt "pid" fields with Some (`Int n) -> Printf.sprintf " (pid %d)" n | _ -> "" in
-              let tmux_str = match List.assoc_opt "tmux_location" fields with Some (`String s) -> " [" ^ s ^ "]" | _ -> "" in
-              Printf.printf "  %-20s %-10s %-12s %s%s%s\n" name client status delivery_mode pid_str tmux_str
-          | _ -> ()
-        ) instances
-  end
+    let fields = match inst.mi_pid with
+      | Some p -> fields @ [ ("pid", `Int p) ]
+      | None -> fields
+    in
+    `Assoc fields
+  in
+  let instances_json = List.map instance_to_json displayed in
+  match output_mode with
+  | Json ->
+      print_json
+        (`Assoc
+           [ ("alive", `Int alive_count)
+           ; ("total", `Int total)
+           ; ("filtered", `Bool (not show_all))
+           ; ("instances", `List instances_json)
+           ])
+  | Human ->
+      if total = 0 then
+        Printf.printf "No managed instances.\n"
+      else begin
+        if show_all then
+          Printf.printf "Managed instances (%d alive / %d total):\n" alive_count total
+        else
+          Printf.printf "Managed instances (%d alive / %d total; --all for archive):\n"
+            alive_count total;
+        if displayed = [] then
+          Printf.printf "  (none alive — try --all to see the archive)\n"
+        else
+          List.iter (fun (inst : managed_instance_view) ->
+            let pid_str = match inst.mi_pid with Some n -> Printf.sprintf " (pid %d)" n | None -> "" in
+            let tmux_str = match inst.mi_tmux_location with Some s -> " [" ^ s ^ "]" | _ -> "" in
+            Printf.printf "  %-20s %-10s %-12s %s%s%s\n"
+              inst.mi_name inst.mi_client inst.mi_status inst.mi_delivery_mode pid_str tmux_str
+          ) displayed
+      end
 
-let instances = Cmdliner.Cmd.v (Cmdliner.Cmd.info "instances" ~doc:"List managed c2c instances.") instances_cmd
+let instances = Cmdliner.Cmd.v
+  (Cmdliner.Cmd.info "instances"
+     ~doc:"List managed c2c instances (alive-only by default; --all for full archive).")
+  instances_cmd
 
 (* --- subcommand: diag ----------------------------------------------------- *)
 
