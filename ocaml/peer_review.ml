@@ -457,6 +457,28 @@ type pin_check =
       first_seen : float;
     }
 
+(** #55: structured audit-log hook for pin rotation. The default no-op
+    keeps the library standalone (no hard dep on c2c_mcp); the broker
+    + CLI register a writer that appends a JSON line to
+    <broker_root>/broker.log. Because the hook lives in [pin_rotate]
+    itself (not at a single CLI call site), every caller — current and
+    future, MCP and CLI alike — produces an audit entry. Any code that
+    silently rotates a pin without going through [pin_rotate] is now
+    the bug, not the missing log line. *)
+type pin_rotate_log_event = {
+  alias : string;
+  old_pubkey : string;        (* "" when no prior pin existed *)
+  new_pubkey : string;
+  prior_first_seen : float option;
+  ts : float;
+  path : string;              (* the pin-store path used for this rotate *)
+}
+
+let pin_rotate_log_hook : (pin_rotate_log_event -> unit) ref =
+  ref (fun _ -> ())
+
+let set_pin_rotate_logger f = pin_rotate_log_hook := f
+
 (** Apply TOFU pin policy on a verified artifact. The artifact's signature
     MUST already have been verified by [verify] before calling this — the pin
     policy is only meaningful on cryptographically valid signatures.
@@ -465,43 +487,77 @@ type pin_check =
     bumped, or new pin written for first-seen). On [Pin_mismatch] nothing
     is written; caller is expected to surface the mismatch as a hard error.
 
-    Use [pin_rotate] for the explicit rotation path. *)
+    Use [pin_rotate] for the explicit rotation path.
+
+    #54b: the entire load→decide→save sequence is wrapped in
+    [Trust_pin.with_pin_lock] so two concurrent callers cannot interleave
+    in the read-modify-write window. Without the wrap, A.load + B.load +
+    A.save + B.save sees B clobber A's update; with the wrap, B blocks
+    on A.save before its own load runs. *)
 let pin_check ?path (art : t) : pin_check =
-  let alias = art.reviewer in
-  let store = Trust_pin.load ?path () in
-  let now = Unix.gettimeofday () in
-  match Trust_pin.find_pin store ~alias with
-  | None ->
-    let new_pin =
-      { Trust_pin.pubkey = art.reviewer_pk; first_seen = now; last_seen = now }
-    in
-    let store' = Trust_pin.upsert store ~alias ~pin:new_pin in
-    Trust_pin.save ?path store';
-    Pin_first_seen
-  | Some existing when existing.Trust_pin.pubkey = art.reviewer_pk ->
-    let bumped = { existing with Trust_pin.last_seen = now } in
-    let store' = Trust_pin.upsert store ~alias ~pin:bumped in
-    Trust_pin.save ?path store';
-    Pin_match
-  | Some existing ->
-    Pin_mismatch {
-      alias;
-      pinned_pubkey = existing.Trust_pin.pubkey;
-      artifact_pubkey = art.reviewer_pk;
-      first_seen = existing.Trust_pin.first_seen;
-    }
+  Trust_pin.with_pin_lock ?path (fun () ->
+    let alias = art.reviewer in
+    let store = Trust_pin.load ?path () in
+    let now = Unix.gettimeofday () in
+    match Trust_pin.find_pin store ~alias with
+    | None ->
+      let new_pin =
+        { Trust_pin.pubkey = art.reviewer_pk; first_seen = now; last_seen = now }
+      in
+      let store' = Trust_pin.upsert store ~alias ~pin:new_pin in
+      Trust_pin.save ?path store';
+      Pin_first_seen
+    | Some existing when existing.Trust_pin.pubkey = art.reviewer_pk ->
+      let bumped = { existing with Trust_pin.last_seen = now } in
+      let store' = Trust_pin.upsert store ~alias ~pin:bumped in
+      Trust_pin.save ?path store';
+      Pin_match
+    | Some existing ->
+      Pin_mismatch {
+        alias;
+        pinned_pubkey = existing.Trust_pin.pubkey;
+        artifact_pubkey = art.reviewer_pk;
+        first_seen = existing.Trust_pin.first_seen;
+      })
 
 (** Explicit rotation: replace the existing pin (or create one) regardless
-    of mismatch. Returns the previous pin (if any) for audit logging. *)
+    of mismatch. Returns the previous pin (if any) for audit logging.
+
+    #54b: load→upsert→save runs under [Trust_pin.with_pin_lock] so a
+    concurrent verify-and-pin (or a parallel rotate) cannot interleave.
+    #55: emits a structured audit-log event via [pin_rotate_log_hook]
+    after the save lands. The hook fires for both first-rotate (no
+    prior) and replacement; loggers can branch on
+    [prior_first_seen = None] for the no-prior case. *)
 let pin_rotate ?path (art : t) : Trust_pin.pin option =
-  let alias = art.reviewer in
-  let store = Trust_pin.load ?path () in
-  let prior = Trust_pin.find_pin store ~alias in
-  let now = Unix.gettimeofday () in
-  let first_seen = match prior with Some p -> p.Trust_pin.first_seen | None -> now in
-  let new_pin = { Trust_pin.pubkey = art.reviewer_pk; first_seen; last_seen = now } in
-  let store' = Trust_pin.upsert store ~alias ~pin:new_pin in
-  Trust_pin.save ?path store';
+  let resolved_path = match path with
+    | Some p -> p
+    | None -> Trust_pin.default_path ()
+  in
+  let prior =
+    Trust_pin.with_pin_lock ?path (fun () ->
+      let alias = art.reviewer in
+      let store = Trust_pin.load ?path () in
+      let prior = Trust_pin.find_pin store ~alias in
+      let now = Unix.gettimeofday () in
+      let first_seen = match prior with Some p -> p.Trust_pin.first_seen | None -> now in
+      let new_pin = { Trust_pin.pubkey = art.reviewer_pk; first_seen; last_seen = now } in
+      let store' = Trust_pin.upsert store ~alias ~pin:new_pin in
+      Trust_pin.save ?path store';
+      prior)
+  in
+  (* Best-effort audit log; never fail the rotate on a logger exception. *)
+  (try
+     let event = {
+       alias = art.reviewer;
+       old_pubkey = (match prior with Some p -> p.Trust_pin.pubkey | None -> "");
+       new_pubkey = art.reviewer_pk;
+       prior_first_seen = (match prior with Some p -> Some p.Trust_pin.first_seen | None -> None);
+       ts = Unix.gettimeofday ();
+       path = resolved_path;
+     } in
+     !pin_rotate_log_hook event
+   with _ -> ());
   prior
 
 (** Convenience wrapper that fuses signature verification with TOFU pin

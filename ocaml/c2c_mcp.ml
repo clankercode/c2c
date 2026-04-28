@@ -3154,6 +3154,60 @@ let log_peer_pass_reject ~broker_root ~from_alias ~to_alias ~claim_alias ~claim_
       with _ -> close_out_noerr oc)
    with _ -> ())
 
+(* #55: every TOFU pubkey-pin rotation gets a structured audit line in
+   broker.log so an attacker who compromises one keypair cannot stealth-
+   rotate the pin out from under the swarm — every rotation leaves a
+   forensic trail. Sibling to [log_peer_pass_reject] above; same file,
+   same shape, different event tag.
+
+   The hook is registered on [Peer_review.set_pin_rotate_logger] at
+   broker startup so any caller of [Peer_review.pin_rotate] (CLI verify
+   --rotate-pin, future MCP rotate-pin tool, anything internal)
+   produces the log line without having to remember to. *)
+let log_peer_pass_pin_rotate ~broker_root ~alias ~old_pubkey ~new_pubkey
+    ~prior_first_seen ~ts =
+  (try
+     let path = Filename.concat broker_root "broker.log" in
+     let prior_field = match prior_first_seen with
+       | None -> ("prior_first_seen", `Null)
+       | Some f -> ("prior_first_seen", `Float f)
+     in
+     let line =
+       `Assoc
+         [ ("ts", `Float ts)
+         ; ("event", `String "peer_pass_pin_rotate")
+         ; ("alias", `String alias)
+         ; ("old_pubkey", `String old_pubkey)
+         ; ("new_pubkey", `String new_pubkey)
+         ; prior_field
+         ]
+       |> Yojson.Safe.to_string
+     in
+     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
+     (try
+        output_string oc (line ^ "\n");
+        close_out oc
+      with _ -> close_out_noerr oc)
+   with _ -> ())
+
+(* Wire the broker.log writer as the default pin-rotate logger. The
+   hook event includes the pin-store [path], from which we recover the
+   broker_root (the pin store lives at <broker_root>/peer-pass-trust.json
+   on the canonical broker; the CLI install resolver sets the same).
+   Any caller that explicitly passes [?path] to [pin_rotate] still
+   produces a log line (the file is alongside the pin-store, which is
+   what an audit trail wants). *)
+let () =
+  Peer_review.set_pin_rotate_logger (fun (event : Peer_review.pin_rotate_log_event) ->
+    let broker_root = Filename.dirname event.path in
+    log_peer_pass_pin_rotate
+      ~broker_root
+      ~alias:event.alias
+      ~old_pubkey:event.old_pubkey
+      ~new_pubkey:event.new_pubkey
+      ~prior_first_seen:event.prior_first_seen
+      ~ts:event.ts)
+
 let notify_shared_with_recipients
     ~broker ~from_alias ~name ?description ~shared ~shared_with () =
   if shared && shared_with <> [] then []
