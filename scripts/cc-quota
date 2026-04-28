@@ -86,6 +86,6 @@ if [ -n "$seven_day_pct" ]; then
   echo "7d: ${seven_day_pct}% (resets at ${reset_str})"
 fi
 
-if [ -n "$cost" ]; then
-  printf "cost: \$%.2f\n" "$cost"
-fi
+#if [ -n "$cost" ]; then
+#  printf "cost: \$%.2f\n" "$cost"
+#fi
