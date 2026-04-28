@@ -11,13 +11,6 @@ open Cmdliner.Term.Syntax
     6. Tier-2 utility, coordinator-only (check C2C_COORDINATOR env or require explicit flag)
 *)
 
-(** ISO8601 UTC timestamp for stash messages. *)
-let ts () =
-  let t = Unix.gmtime (Unix.gettimeofday ()) in
-  Printf.sprintf "%04d%02d%02dT%02d%02d%02d"
-    (t.Unix.tm_year + 1900) (t.Unix.tm_mon + 1) t.Unix.tm_mday
-    t.Unix.tm_hour t.Unix.tm_min t.Unix.tm_sec
-
 (** Run a shell command, return int exit code. *)
 let run cmd = Sys.command cmd
 
@@ -56,6 +49,8 @@ let email_to_alias email =
     (* (email_lower, alias) *)
     "stanza-coder@c2c.im",         "stanza-coder";
     "jungle-coder@c2c.im",         "jungle-coder";
+    "coordinator1@c2c.im",          "coordinator1";
+    "m@xk.io",                     "Max";
     "galaxy-coder@c2c.im",         "galaxy-coder";
     "test-agent@c2c.im",           "test-agent";
     "test-agent-oc@c2c.im",        "test-agent-oc";
