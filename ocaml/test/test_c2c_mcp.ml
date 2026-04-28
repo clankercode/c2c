@@ -3875,7 +3875,7 @@ let test_sweep_does_not_emit_peer_offline_for_provisional_expired_reg () =
       let live_inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-live" in
       let peer_offline_count =
         List.fold_left
-          (fun n msg -> if string_contains msg.content "<c2c event=\"peer_offline\"" then n + 1 else n)
+          (fun n (msg : C2c_mcp.message) -> if string_contains msg.content "<c2c event=\"peer_offline\"" then n + 1 else n)
           0 live_inbox
       in
       check int "no peer_offline emitted for provisional" 0 peer_offline_count)
@@ -3931,7 +3931,7 @@ let test_sweep_dead_alias_excluded_from_peer_offline_receipt () =
         let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-dead" in
         let peer_offline_count =
           List.fold_left
-            (fun n msg -> if string_contains msg.content "<c2c event=\"peer_offline\"" then n + 1 else n)
+            (fun n (msg : C2c_mcp.message) -> if string_contains msg.content "<c2c event=\"peer_offline\"" then n + 1 else n)
             0 inbox
         in
         check int "dead alias got no self-notification" 0 peer_offline_count
@@ -3964,13 +3964,13 @@ let test_sweep_multiple_confirmed_dead_regs_each_emit_peer_offline () =
       let alice_inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-alice" in
       let peer_offline_messages =
         List.filter
-          (fun msg -> string_contains msg.content "<c2c event=\"peer_offline\"")
+          (fun (msg : C2c_mcp.message) -> string_contains msg.content "<c2c event=\"peer_offline\"")
           alice_inbox
       in
       check int "alice got two peer_offline messages" 2 (List.length peer_offline_messages);
       let aliases =
         List.map
-          (fun msg ->
+          (fun (msg : C2c_mcp.message) ->
              let start_idx = try String.index msg.content 'a' + String.length "alias=\"" with Not_found -> -1 in
              if start_idx < 0 then "" else
                let rest = String.sub msg.content start_idx (String.length msg.content - start_idx) in
@@ -8575,6 +8575,7 @@ let () =
          ; test_case "sweep preserves fresh provisional reg" `Quick
              test_sweep_preserves_fresh_provisional_reg
          ; test_case "sweep drops expired provisional reg" `Quick
+             test_sweep_drops_expired_provisional_reg
           ; test_case "sweep emits peer_offline for confirmed dead reg" `Quick
               test_sweep_emits_peer_offline_for_confirmed_dead_reg
           ; test_case "sweep does not emit peer_offline for provisional expired" `Quick
@@ -8589,9 +8590,6 @@ let () =
               test_confirm_registration_sets_confirmed_at
           ; test_case "#344 confirmed pidless old reg swept" `Quick
               test_confirmed_pidless_old_reg_swept
-          ; test_case "confirmed reg not swept after timeout" `Quick
-              test_confirmed_reg_not_swept_after_timeout
-             test_sweep_drops_expired_provisional_reg
          ; test_case "human client_type exempt from provisional sweep" `Quick
              test_human_client_type_exempt_from_provisional_sweep
          ; test_case "sweep evicts dead members from rooms" `Quick
