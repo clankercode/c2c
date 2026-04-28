@@ -33,6 +33,7 @@ binaries=(
   "$bin_dir/c2c-mcp-inner"
   "$bin_dir/c2c-inbox-hook-ocaml"
   "$bin_dir/c2c-cold-boot-hook"
+  "$bin_dir/c2c-post-compact-hook"
 )
 
 # Resolve each binary to its inode + dev so we can compare /proc/*/exe
