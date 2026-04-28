@@ -124,6 +124,7 @@ let log_nudge_enqueue ~broker_root ~from_session_id ~to_alias ~to_pid_state ~ok 
    alive MCP server per cadence period). Total / never raises. *)
 let log_nudge_tick ~broker_root ~from_session_id ~alive_total
     ~idle_eligible ~sent ~skipped_dnd ~alive_no_pid
+    ~unknown_with_pid ~dead
     ~cadence_minutes ~idle_minutes =
   (try
      let path = Filename.concat broker_root "broker.log" in
@@ -138,6 +139,8 @@ let log_nudge_tick ~broker_root ~from_session_id ~alive_total
          ; ("sent", `Int sent)
          ; ("skipped_dnd", `Int skipped_dnd)
          ; ("alive_no_pid", `Int alive_no_pid)
+         ; ("unknown_with_pid", `Int unknown_with_pid)
+         ; ("dead", `Int dead)
          ; ("cadence_minutes", `Float cadence_minutes)
          ; ("idle_minutes", `Float idle_minutes)
          ]
@@ -183,20 +186,25 @@ let nudge_tick ?(from_session_id="broker") ~broker ~cadence_minutes ~idle_minute
   let sent = ref 0 in
   let skipped_dnd = ref 0 in
   let alive_no_pid = ref 0 in
+  let unknown_with_pid = ref 0 in
+  let dead = ref 0 in
   List.iter
     (fun (reg : registration) ->
       (* #335 v2a: nudges require strict Alive state.
          Diverges from Broker.registration_is_alive (which collapses
          Unknown→Alive for sweep/enqueue backward-compat per
-         c2c_mcp.ml:947-953). See
+         c2c_mcp.ml:861-872). See
          .collab/design/2026-04-28T04-16-00Z-stanza-coder-335-v2a-pidless-nudge-skip.md *)
       match Broker.registration_liveness_state reg with
-      | Broker.Dead -> ()
+      | Broker.Dead -> incr dead
       | Broker.Unknown ->
-          (* Pidless or pid-mismatch row — count, don't send.
-             Replaces the v1a alive_no_pid site (which lived inside
-             the alive-true branch under the old predicate). *)
-          if reg.pid = None then incr alive_no_pid
+          (* Pidless row, or pid set without recorded start_time —
+             count, don't send. The Unknown arm is reached only when
+             pid=None OR (pid=Some _ ∧ pid_start_time=None); a pid
+             with a start-time mismatch is Dead, not Unknown. *)
+          (match reg.pid with
+           | None -> incr alive_no_pid
+           | Some _ -> incr unknown_with_pid)
       | Broker.Alive ->
           incr alive_total;
           if is_dnd_active reg then incr skipped_dnd
@@ -222,6 +230,8 @@ let nudge_tick ?(from_session_id="broker") ~broker ~cadence_minutes ~idle_minute
     ~sent:!sent
     ~skipped_dnd:!skipped_dnd
     ~alive_no_pid:!alive_no_pid
+    ~unknown_with_pid:!unknown_with_pid
+    ~dead:!dead
     ~cadence_minutes
     ~idle_minutes
 

@@ -199,9 +199,10 @@ let test_dead_pid_registration_skipped () =
 
 (* AC2b — pid set to current process pid, but pid_start_time deliberately
    wrong (0). Liveness check reads /proc/<pid>/stat, finds a real starttime,
-   compares to stored 0, returns Dead (mismatch). The row should be skipped
-   and not increment alive_no_pid (it has a pid). *)
-let test_unknown_pid_registration_skipped () =
+   compares to stored 0, returns Dead (mismatch — NOT Unknown). The row
+   should be skipped, not increment alive_no_pid (it has a pid), and the
+   tick log should record dead=1. *)
+let test_dead_pid_mismatch_skipped () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       let my_pid = Unix.getpid () in
@@ -220,7 +221,41 @@ let test_unknown_pid_registration_skipped () =
       check bool "no nudge_enqueue line for mismatched-start row" false
         (contains body "\"to_alias\":\"mismatch-row\"");
       check bool "tick log records alive_no_pid=0 (pid was set)" true
-        (contains body "\"alive_no_pid\":0"))
+        (contains body "\"alive_no_pid\":0");
+      check bool "tick log records dead=1 (mismatch is Dead, not Unknown)" true
+        (contains body "\"dead\":1");
+      check bool "tick log records unknown_with_pid=0" true
+        (contains body "\"unknown_with_pid\":0"))
+
+(* AC2b' — genuine Unknown-with-pid path: pid set, but pid_start_time=None
+   (no recorded start-time). registration_liveness_state returns Unknown
+   for this case (c2c_mcp.ml:889-890). The row should be skipped, no
+   enqueue, and tick log records unknown_with_pid=1 (NOT alive_no_pid,
+   which is for pid=None rows). *)
+let test_unknown_pidless_with_pid_set_skipped () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let my_pid = Unix.getpid () in
+      C2c_mcp.Broker.register broker ~session_id:"s-unknown" ~alias:"unknown-with-pid-row"
+        ~pid:(Some my_pid) ~pid_start_time:None ();
+      C2c_mcp.Broker.touch_session broker ~session_id:"s-unknown";
+      Relay_nudge.nudge_tick
+        ~from_session_id:"test-v2a-ac2b-prime"
+        ~broker
+        ~cadence_minutes:0.05
+        ~idle_minutes:0.0
+        ~messages:[ test_message ]
+        ();
+      let log_path = Filename.concat dir "broker.log" in
+      let body = read_file log_path in
+      check bool "no nudge_enqueue line for unknown-with-pid alias" false
+        (contains body "\"to_alias\":\"unknown-with-pid-row\"");
+      check bool "tick log records unknown_with_pid=1" true
+        (contains body "\"unknown_with_pid\":1");
+      check bool "tick log records alive_no_pid=0 (pid was set)" true
+        (contains body "\"alive_no_pid\":0");
+      check bool "tick log records sent=0" true
+        (contains body "\"sent\":0"))
 
 (* AC3 — alive registration with current pid + matching start time, idle, not
    DND, fires exactly one nudge_enqueue line with to_pid_state=alive_with_pid. *)
@@ -270,8 +305,10 @@ let () =
             test_pidless_registration_skipped
         ; test_case "dead-pid registration is skipped, alive_total=0" `Quick
             test_dead_pid_registration_skipped
-        ; test_case "unknown-state registration (pid set, start mismatch) is skipped" `Quick
-            test_unknown_pid_registration_skipped
+        ; test_case "dead-pid (start-time mismatch) is skipped, dead=1" `Quick
+            test_dead_pid_mismatch_skipped
+        ; test_case "unknown-with-pid (pid set, start_time=None) is skipped, unknown_with_pid=1" `Quick
+            test_unknown_pidless_with_pid_set_skipped
         ; test_case "alive_with_pid + idle + non-DND fires exactly one nudge" `Quick
             test_alive_with_pid_eligible
         ] )
