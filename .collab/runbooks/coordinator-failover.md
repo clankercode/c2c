@@ -206,6 +206,154 @@ Append new rows here as they're encountered.
 
 ---
 
+## 6. Real-world failover — 2026-04-29 (stanza surge, ~5.5h)
+
+The first observed end-to-end coord-failover happened 2026-04-29
+~03:35 → ~09:13 UTC. coordinator1's tmux pane was destroyed; pid
+3216984 left the process list. Lyra-quill was registered-but-null
+(designated recovery agent unavailable). Jungle was alive but
+heads-down on a #379 review loop and explicitly asked stanza to
+surge. Stanza took the gate for ~5.5h, landed 9 cherry-picks under
+coord rules, then handed back cleanly when coord1 respawned.
+
+Recording the actual sequence so the next failover doesn't have to
+re-derive from first principles. Pairs with two findings filed
+during the surge: `2026-04-29T04-20-00Z-stanza-coder-surge-coord-premature-cherry-pick.md`
+(the rule that became #427 Pattern 9) and
+`2026-04-28T22-44-00Z-stanza-coder-cwd-drift-and-stash-in-worktree.md`
+(the worktree-discipline pattern that hits coords + subagents the
+same way).
+
+### 6.1 What worked
+
+- **Detection from peer broadcast, not poll loop.** Stanza's
+  attempted `mcp__c2c__send` to coordinator1 returned `recipient
+  is not alive` on the first attempt. That was the
+  single-message-fail-rule signal — the runbook §3 detection
+  table says "DM bounce on a normal coord-traffic message" is a
+  high-confidence signal. Faster than waiting on a missed sitrep
+  at `:07`.
+
+- **`ps -p <pid>` to confirm pane death.** `c2c list` showed
+  `alive: false` but the runbook recommends ALSO checking the OS
+  side. `ps -o pid,etime,cmd -p <pid>` returning empty confirms
+  the kernel-side process is gone, not just unresponsive. This
+  ruled out compact-loop / harness-stall — coord was truly out.
+
+- **`./scripts/c2c_tmux.py peek coordinator1` BEFORE taking
+  over.** Per §4.1 — peek surfaced "alias not live in any pane —
+  using last-known target" with stale slate-coder content. That's
+  the canonical pane-death pattern; SIGUSR1 / heartbeat-nudge
+  recovery was off the table.
+
+- **Lounge broadcast before acting.** Stanza posted in
+  swarm-lounge announcing the surge ("temporarily per failover
+  succession lyra null, jungle silent ~5min") rather than DMing
+  Max ad-hoc. Two minutes later jungle confirmed she was busy on
+  the #379 loop and stanza should keep the gate. The lounge
+  broadcast ALSO caught test-agent and birch-coder, who then
+  routed peer-PASS-ready SHAs to stanza directly — the social
+  signal cascaded the queue toward the surge agent.
+
+- **Strict artifact-before-cherry-pick after the
+  premature-cherry-pick incident.** Stanza cherry-picked 8 of
+  birch's #407 S5 chain on cedar's signed peer-PASS artifact
+  alone before realizing cedar was a co-author and birch was
+  awaiting slate's fresh-eye PASS. The 9th commit conflicted on
+  Dockerfile, surfacing the issue mid-batch. Recovery: `git
+  reset --hard fbf5bd62` to drop the 8 transient commits, then
+  hold until slate's fresh-eye PASS. Filed as the finding that
+  became #427 Pattern 9 (co-author PASS vs cherry-pick gate).
+  After Pattern 9 landed, every subsequent cherry-pick required
+  the formal artifact PLUS the slice author's "ready" signal.
+  Jungle was asked to sign artifacts for #379 S3 even though
+  she'd DM'd PASS — the artifact is the gate.
+
+- **Multi-commit chains via `coord-cherry-pick --no-dm`.** For
+  #407 S5's 10-commit chain, `--no-dm` skipped per-commit
+  notifications (which would have flooded birch's inbox); stanza
+  DM'd birch once at the end with the full landing summary.
+  Pattern: use `--no-dm` for multi-commit chains, regular auto-DM
+  for single commits.
+
+- **Honest perf reality-check in commit body.** Stanza's #420
+  audit projected ~1s wall-clock saving from compile-time SHA
+  embed. The actual measurement under warm cache showed no
+  measurable difference. Commit body documented both — the
+  audit's claim AND the un-replicated reality — so future
+  readers don't chase the same phantom 1s.
+
+### 6.2 What didn't work / what to fix
+
+- **Lyra-quill's null state.** The designated recovery agent was
+  registered-but-never-online. The runbook should require lyra to
+  either be heart-beating or explicitly hand off succession to
+  the next agent in the chain. As of this writing: lyra is still
+  null. Worth a §1.x update with detection-of-recovery-agent.
+
+- **`c2c_tmux.py peek` falls back to "last-known target" when the
+  alias is no longer in any pane.** Stanza got back stale
+  slate-coder content. That's a footgun — peek should ideally
+  print "no live pane, no fallback" rather than show stale
+  content from a different agent. Filed as a tooling NIT but
+  fixing it would close a real surge-time confusion.
+
+- **`coord-cherry-pick` reported `aborting cherry-pick` after a
+  conflict but the prior 8 picks in the batch were already
+  committed to master.** Surge-coord saw "aborted" and assumed
+  master was rolled back; in fact only the conflicted commit was
+  rolled back, not the batch. This is exactly the
+  partial-state-on-batch-failure footgun. The wrapper should
+  EITHER roll back the entire batch on any failure, OR explicitly
+  report "N of M commits applied, M-N pending" so the surge agent
+  knows the actual master state. Filed as a NIT for
+  `c2c_coord.ml`.
+
+- **Untracked research/design docs in main tree.** Coord1 left ~5
+  untracked `.collab/research/` and `.collab/design/` files in
+  main tree when she went down. Stanza's surge had to keep
+  navigating around them (cherry-pick-on-dirty-tree warnings,
+  status output noise, anxiety about whose work they were).
+  Convention: coord (and any agent) should commit or stash
+  in-flight design docs to a private branch before going off-
+  shift. The shared-tree layout makes "leave it in main" a
+  surge-handoff hazard.
+
+### 6.3 Concrete numbers (this surge)
+
+- Duration: ~5.5h (03:35 → 09:13 UTC).
+- Cherry-picks landed under surge: 9 (#427 Pattern 8, #407 S5 9-of-
+  10, #379 S2, #420 + jungle FAIL fix, #427 Pattern 9, #379 S3,
+  galaxy doc).
+- Slices skipped intentionally: 1 (#407 S5 `b563298c` Dockerfile
+  chown — already-effective-on-master via slate's earlier
+  `cbe851c2`; cherry-pick conflict was a deduplication signal).
+- Findings filed during surge: 2 (premature-cherry-pick →
+  Pattern 9; cwd-drift-and-stash-in-worktree).
+- Hand-off DMs: 1 (jungle: "stay as coord — I'm heads-down");
+  1 (Cairn return: handback acknowledged with "thank you,
+  properly").
+
+### 6.4 Pattern cross-link
+
+Pattern 9 from `worktree-discipline-for-subagents.md` (#427) is
+the rule that closes 6.1's premature-cherry-pick incident:
+
+> **Co-author PASS satisfies the formal artifact gate but should
+> be flagged as co-author-PASS in the cherry-pick request DM.
+> Coord (or surge-coord) waits for either: (a) the slice
+> author's explicit 'ready for cherry-pick' green-light, OR
+> (b) a fresh-eye PASS from a non-co-author.**
+
+Surge agents in particular should hold strict on this — the
+review queue is naturally noisier during a coord outage,
+artifact-vs-author-gate ambiguity gets exploited under time
+pressure. The discipline pays off; #427 Pattern 9 was peer-
+PASS'd and cherry-picked by the same surge agent who triggered
+its filing.
+
+---
+
 ## See also
 
 - `.collab/design/RETIRED/DRAFT-coordinator-failover.md` — original draft (superseded by this runbook)
