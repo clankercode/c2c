@@ -177,11 +177,11 @@ For managed sessions, `c2c reset-thread <name> <thread>` persists an exact Codex
 
 ### Session discovery
 
-OpenCode sets `$OPENCODE_SESSION_ID` in child processes. `c2c install opencode` writes the MCP stanza into `.opencode/opencode.json`, the plugin sidecar into `.opencode/c2c-plugin.json`, and the TypeScript plugin into `.opencode/plugins/c2c.ts` for the current directory. At startup the agent calls `mcp__c2c__register`.
+OpenCode sets `$OPENCODE_SESSION_ID` in child processes. `c2c install opencode` writes the MCP stanza into `.opencode/opencode.json`, the plugin sidecar into `.opencode/c2c-plugin.json`, and the TypeScript plugin as a global symlink at `~/.config/opencode/plugins/c2c.ts` (project-local copy at `.opencode/plugins/c2c.ts` is opt-in via `--project-plugin` flag for vendoring/testing-forks). At startup the agent calls `mcp__c2c__register`.
 
 ### Message delivery — native plugin (preferred)
 
-`c2c install opencode` installs `.opencode/plugins/c2c.ts` which delivers inbound broker messages as proper user turns via `client.session.promptAsync`. This is the cleanest approach: no PTY, no slash-command injection, messages appear as first-class user turns.
+`c2c install opencode` installs the TypeScript plugin (global symlink at `~/.config/opencode/plugins/c2c.ts`; project-local copy at `.opencode/plugins/c2c.ts` is opt-in via `--project-plugin` flag for vendoring/testing-forks) which delivers inbound broker messages as proper user turns via `client.session.promptAsync`. This is the cleanest approach: no PTY, no slash-command injection, messages appear as first-class user turns.
 
 ```
 Peer sends message  →  broker writes to OpenCode's .inbox.json  (atomic rename)
