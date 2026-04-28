@@ -253,6 +253,15 @@ val swarm_config_restart_intro : unit -> string
     absent or empty. Mirrors the #318 v3 thunk pattern
     (swarm_config_coordinator_alias / swarm_config_social_room). #341. *)
 
+val read_toml_sections_with_prefix :
+  string -> (string * (string * string) list) list
+(** [read_toml_sections_with_prefix prefix] reads .c2c/config.toml and
+    returns [(subsection, key-value pairs)] for every section matching
+    [\[prefix\]] (returned with subsection ["default"]) or
+    [\[prefix.X\]] (returned with subsection ["X"]). #414 exposed for
+    [c2c_coord]'s `[author_aliases]` reader; older callers used the
+    private `*_from_path` form. *)
+
 val normalize_model_override_for_client :
   client:string -> string -> (string, string) result
 (** Normalize a user-supplied [--model] override for the target client.

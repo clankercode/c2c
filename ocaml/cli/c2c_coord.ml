@@ -40,10 +40,29 @@ let git_author_email ~repo sha =
   let email = run_capture cmd |> String.trim in
   if email = "" then None else Some email
 
+(** Read `[author_aliases]` from `.c2c/config.toml` if present.
+    Returns `[(email_lower, alias); ...]` so a swarm can self-register
+    new agents without a per-agent CLI patch (#414). *)
+let config_author_aliases () : (string * string) list =
+  match
+    C2c_start.read_toml_sections_with_prefix "author_aliases"
+    |> List.assoc_opt "default"
+  with
+  | None -> []
+  | Some kvs ->
+      List.map (fun (email, alias) -> (String.lowercase_ascii email, alias)) kvs
+
 (** Known alias pool — populated from git config user.email for the
-    local coordinator and extended with explicit overrides.  The
+    local coordinator and extended with explicit overrides. The
     coordinator's user.email is the base identity; add more entries
-    as the swarm grows. *)
+    as the swarm grows.
+
+    Resolution order (#414):
+      1. `[author_aliases]` in `.c2c/config.toml` (operator-extensible
+         without code change — every new agent self-registers via
+         `email = "alias"` in that section).
+      2. Built-in fallback table below (current swarm members).
+      3. None → caller falls back to self-DM. *)
 let email_to_alias email =
   let table = [
     (* (email_lower, alias) *)
@@ -52,6 +71,7 @@ let email_to_alias email =
     "coordinator1@c2c.im",          "coordinator1";
     "m@xk.io",                     "Max";
     "galaxy-coder@c2c.im",         "galaxy-coder";
+    "slate-coder@c2c.im",          "slate-coder";
     "test-agent@c2c.im",           "test-agent";
     "test-agent-oc@c2c.im",        "test-agent-oc";
     "tundra-coder@c2c.im",         "tundra-coder";
@@ -61,11 +81,16 @@ let email_to_alias email =
   ]
   in
   let lo = String.lowercase_ascii email in
-  match List.assoc_opt lo table with
+  (* Config table wins (operator-extensible); fall through to built-in. *)
+  match List.assoc_opt lo (config_author_aliases ()) with
   | Some a -> Some a
   | None ->
-      (* Unknown email — fall back to self-DM so nothing is silently lost. *)
-      None
+    (match List.assoc_opt lo table with
+     | Some a -> Some a
+     | None ->
+         (* Unknown email — caller falls back to self-DM so nothing is
+            silently lost. *)
+         None)
 
 (** DM an author after their SHA lands on master.
     Sends via `c2c send` CLI so it works in any session context.

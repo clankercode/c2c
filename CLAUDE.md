@@ -156,6 +156,17 @@ parallel-audit), and the docs-up-to-date peer-PASS check (#324
 landed; FAIL any slice where a documented surface changed but docs
 didn't move with it).
 
+**Verbatim-not-paraphrase for operational recipes (#414).** When
+echoing operationally-load-bearing recipes (Monitor invocations,
+env-var blocks, signing commands, git incantations, JSON config
+shapes) in role files / runbooks / tutorials / template bodies,
+**copy verbatim**. Paraphrasing risks silent operator drift —
+e.g. a Monitor recipe with `4.1m` paraphrased to "every 4 minutes"
+loses the off-minute cadence that keeps the prompt cache warm
+(see CLAUDE.md "Agent wake-up + Monitor setup"). Copy-paste
+preserves correctness; describe the *why* in prose around the
+verbatim block, never inside it.
+
 Per-directory companion: `docs/CLAUDE.md` covers Jekyll-specific
 gotchas and front-door pages.
 
