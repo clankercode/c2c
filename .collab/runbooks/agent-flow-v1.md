@@ -131,14 +131,15 @@ c2c roles validate 2>&1
 
 ### tmux helper (recommended)
 
-Use `scripts/c2c_tmux.py` to launch in an isolated tmux pane:
+Use `./scripts/c2c_tmux.py` to launch in an isolated tmux pane (or
+`c2c start <client>` directly — see "Direct CLI" below):
 
 ```bash
 # OpenCode — uses compiled .opencode/agents/<name>.md
-python3 scripts/c2c_tmux.py launch opencode -n my-instance --new-window --extra "-a my-role"
+./scripts/c2c_tmux.py launch opencode -n my-instance --new-window --extra "-a my-role"
 
 # Wait for it to register
-python3 scripts/c2c_tmux.py wait-alive my-instance 2>/dev/null
+./scripts/c2c_tmux.py wait-alive my-instance 2>/dev/null
 
 # Verify it's up
 c2c list | grep my-instance
@@ -196,7 +197,7 @@ Send a DM to verify bidirectional messaging works:
 c2c send my-instance "hello from $(c2c whoami | grep alias | cut -d: -f2)"
 
 # Or use tmux:
-python3 scripts/c2c_tmux.py send my-instance "ping"
+./scripts/c2c_tmux.py send my-instance "ping"
 ```
 
 ---
@@ -205,7 +206,7 @@ python3 scripts/c2c_tmux.py send my-instance "ping"
 
 ```bash
 # Clean stop (SIGTERM the outer loop, not the broker)
-python3 scripts/c2c_tmux.py stop my-instance
+./scripts/c2c_tmux.py stop my-instance
 # or
 c2c stop my-instance
 
