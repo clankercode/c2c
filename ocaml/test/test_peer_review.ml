@@ -550,6 +550,7 @@ let () = Alcotest.run "Peer_review" [
   "pin_lock_concurrency_54b", [
     Alcotest.test_case "concurrent pin_check and pin_rotate: no lost-update" `Quick
       test_concurrent_pin_check_and_rotate_no_lost_update;
+  ];
   "size_cap_56", [
     Alcotest.test_case "oversized artifact rejected by capped reader" `Quick test_size_cap_rejects_oversized;
     Alcotest.test_case "oversized artifact rejected by read_artifact" `Quick test_size_cap_read_artifact_error;
