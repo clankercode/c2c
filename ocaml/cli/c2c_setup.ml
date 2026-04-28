@@ -50,36 +50,9 @@ let print_json json =
   Yojson.Safe.pretty_to_channel stdout json;
   print_newline ()
 
-let resolve_claude_dir () =
-  match Sys.getenv_opt "CLAUDE_CONFIG_DIR" with
-  | Some d when String.trim d <> "" -> String.trim d
-  | _ ->
-      let dot_claude = Filename.concat (Sys.getenv "HOME") ".claude" in
-      (try
-         let rec resolve_link p max_depth =
-           if max_depth <= 0 then p
-           else
-             let stat = Unix.lstat p in
-             if stat.Unix.st_kind = Unix.S_LNK then
-               let target = Unix.readlink p in
-               let resolved = if Filename.is_relative target then
-                               Filename.concat (Filename.dirname p) target
-                             else target in
-               resolve_link resolved (max_depth - 1)
-             else p
-         in
-         resolve_link dot_claude 10
-       with _ -> dot_claude)
-
-let current_c2c_command () =
-  let fallback =
-    if Array.length Sys.argv > 0 then Sys.argv.(0) else "c2c"
-  in
-  let resolved =
-    try Unix.readlink "/proc/self/exe"
-    with Unix.Unix_error _ -> fallback
-  in
-  if Filename.is_relative resolved then Sys.getcwd () // resolved else resolved
+(* Note: resolve_claude_dir and current_c2c_command are defined above. The
+   duplicates that previously appeared here were dead code (shadowed by the
+   identical earlier definitions); removed by #334. *)
 
 (* References to c2c.ml definitions needed here are accessed directly.
    C2c_start module is from the c2c_mcp library. *)
@@ -692,11 +665,26 @@ let which_binary name =
 
 (* --- install: claude (MCP server + PostToolUse hook) ---------------------- *)
 
-let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery =
+(* #334: by default the MCP server entry goes into the project-scoped
+   `<project>/.mcp.json`, NOT the user-global `~/.claude.json`. Onboarding a
+   fresh clone with `c2c install claude` wires this repo for c2c without
+   touching global Claude config. The `--global` flag preserves the legacy
+   behavior (write `mcpServers.c2c` into `~/.claude.json`) for users who
+   want one MCP entry across every project.
+
+   The PostToolUse hook script + settings.json registration always go to
+   `~/.claude/` — those are user-global Claude features, not project-scoped. *)
+let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir =
   let claude_dir = resolve_claude_dir () in
-  let claude_json = Filename.concat claude_dir ".claude.json" in
+  let project_dir =
+    match project_dir with Some d -> d | None -> Sys.getcwd ()
+  in
+  let mcp_config_path =
+    if global then Filename.concat claude_dir ".claude.json"
+    else Filename.concat project_dir ".mcp.json"
+  in
   let config =
-    if Sys.file_exists claude_json then json_read_file claude_json
+    if Sys.file_exists mcp_config_path then json_read_file mcp_config_path
     else `Assoc []
   in
   let env_pairs =
@@ -706,13 +694,17 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
     ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
     ] @ (if channel_delivery then [ ("C2C_MCP_CHANNEL_DELIVERY", `String "1") ] else [])
   in
-  let mcp_entry =
-    `Assoc
-      [ ("command", `String mcp_command)
+  (* Project `.mcp.json` entries conventionally include `"type": "stdio"`;
+     `~/.claude.json` mcpServers entries omit it (legacy shape). Match the
+     convention of the file we're writing. *)
+  let mcp_entry_fields =
+    (if global then [] else [ ("type", `String "stdio") ])
+    @ [ ("command", `String mcp_command)
       ; ("args", `List (if mcp_command = "c2c-mcp-server" then [] else [ `String "exec"; `String "--"; `String server_path ]))
       ; ("env", `Assoc env_pairs)
       ]
   in
+  let mcp_entry = `Assoc mcp_entry_fields in
   let config = match config with
     | `Assoc fields ->
         let filtered = List.filter (fun (k, _) -> k <> "mcpServers") fields in
@@ -723,7 +715,19 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
         `Assoc (filtered @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", mcp_entry) ])) ])
     | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", mcp_entry) ]) ]
   in
-  json_write_file_or_dryrun dry_run claude_json config;
+  (* mkdir -p the parent (only matters in --global=false when project_dir
+     might not exist; existing-repo case is a no-op). *)
+  (try
+     let parent = Filename.dirname mcp_config_path in
+     let rec mkdir_p d =
+       if Sys.file_exists d then () else begin
+         mkdir_p (Filename.dirname d);
+         mkdir_or_dryrun dry_run d
+       end
+     in
+     mkdir_p parent
+   with Unix.Unix_error _ -> ());
+  json_write_file_or_dryrun dry_run mcp_config_path config;
   let settings_path = Filename.concat claude_dir "settings.json" in
   let hook_script = Filename.concat claude_dir "hooks" // "c2c-inbox-check.sh" in
   let script_changed = ref false in
@@ -838,15 +842,17 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
          ; ("client", `String "claude")
          ; ("alias", `String alias_val)
          ; ("broker_root", `String root)
-         ; ("config", `String claude_json)
+         ; ("config", `String mcp_config_path)
+         ; ("scope", `String (if global then "global" else "project"))
          ; ("hook_status", `String hook_status)
          ])
    | Human ->
        let hook_dir = Filename.concat claude_dir "hooks" in
        let hook_script = Filename.concat hook_dir "c2c-inbox-check.sh" in
        let mark = "x" in
-       Printf.printf "Configured Claude Code for c2c:\n";
-       Printf.printf "  - [%s] MCP server:     %s/.claude.json\n" mark claude_dir;
+       let scope_label = if global then "global" else "project" in
+       Printf.printf "Configured Claude Code for c2c (%s scope):\n" scope_label;
+       Printf.printf "  - [%s] MCP server:     %s\n" mark mcp_config_path;
        Printf.printf "  - [%s] PostToolUse hook: %s/settings.json\n" mark claude_dir;
        Printf.printf "  - [%s] Inbox hook script: %s\n" mark hook_script;
        Printf.printf "\n  alias:       %s\n" alias_val;
@@ -859,6 +865,8 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
          Printf.printf "\n  (hook already registered; upgraded matcher to %s)\n" target_matcher
        else
          Printf.printf "\nRestart Claude Code to pick up the new MCP server.\n";
+       if not global then
+         Printf.printf "\n  (project scope: MCP entry written to %s/.mcp.json. Pass --global to write to ~/.claude.json instead.)\n" project_dir;
        let alias_str = match alias_opt with Some a -> " -a " ^ a | None -> "" in
        let force_str = if force then " --force" else "" in
        Printf.printf "\nTo use a custom profile directory:\n";
@@ -959,7 +967,7 @@ let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; 
 let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "crush"; "tmux"; "pty"; "relay-connect" ]
 let start_client_list = String.concat ", " start_clients
 
-let do_install_client ?(channel_delivery=false) ~output_mode ~dry_run ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force () =
+let do_install_client ?(channel_delivery=false) ?(global=false) ~output_mode ~dry_run ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force () =
   let client = canonical_install_client client in
   let root =
     match broker_root_opt with
@@ -976,7 +984,7 @@ let do_install_client ?(channel_delivery=false) ~output_mode ~dry_run ~client ~a
   in
   let (server_path, mcp_command) = resolve_mcp_server_paths ~output_mode in
   match client with
-  | "claude" -> setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery
+  | "claude" -> setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir:target_dir_opt
   | "codex" -> setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client
   | "kimi" -> setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path
   | "opencode" -> setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~force ()
@@ -1192,7 +1200,7 @@ let install_common_args () =
     Cmdliner.Arg.(value & opt (some string) None & info [ "broker-root"; "b" ] ~docv:"DIR" ~doc:"Broker root directory (default: auto-detected).")
   in
   let target_dir =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "target-dir"; "t" ] ~docv:"DIR" ~doc:"Target directory for opencode config (default: cwd).")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "target-dir"; "t" ] ~docv:"DIR" ~doc:"Target directory for opencode/claude project config (default: cwd).")
   in
   let force =
     Cmdliner.Arg.(value & flag & info [ "force"; "f" ] ~doc:"Overwrite existing configuration.")
@@ -1200,7 +1208,10 @@ let install_common_args () =
   let dry_run =
     Cmdliner.Arg.(value & flag & info [ "dry-run"; "n" ] ~doc:"Show what would be written without writing anything.")
   in
-  (alias, broker_root, target_dir, force, dry_run)
+  let global =
+    Cmdliner.Arg.(value & flag & info [ "global" ] ~doc:"(claude only) Write the MCP server entry to user-global ~/.claude.json instead of project-scoped <cwd>/.mcp.json. Defaults to project scope so a fresh clone wires c2c on first install.")
+  in
+  (alias, broker_root, target_dir, force, dry_run, global)
 
 let install_self_subcmd =
   let dest =
@@ -1222,30 +1233,32 @@ let install_self_subcmd =
     term
 
 let install_client_subcmd client =
-  let (alias, broker_root, target_dir, force, dry_run) = install_common_args () in
+  let (alias, broker_root, target_dir, force, dry_run, global) = install_common_args () in
   let term =
     let+ json = json_flag
     and+ alias_opt = alias
     and+ broker_root_opt = broker_root
     and+ target_dir_opt = target_dir
     and+ force = force
-    and+ dry_run = dry_run in
+    and+ dry_run = dry_run
+    and+ global = global in
     let output_mode = if json then Json else Human in
     let channel_delivery =
       if client = "claude" && output_mode = Human then prompt_channel_delivery () else false
     in
-    do_install_client ~channel_delivery ~output_mode ~dry_run ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force ()
+    do_install_client ~channel_delivery ~global ~output_mode ~dry_run ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force ()
   in
   let doc = Printf.sprintf "Configure %s for c2c messaging." client in
   Cmdliner.Cmd.v (Cmdliner.Cmd.info client ~doc) term
 
 let install_all_subcmd =
-  let (alias, broker_root, _, _, dry_run) = install_common_args () in
+  let (alias, broker_root, _, _, dry_run, global) = install_common_args () in
   let term =
     let+ json = json_flag
     and+ alias_opt = alias
     and+ broker_root_opt = broker_root
-    and+ dry_run = dry_run in
+    and+ dry_run = dry_run
+    and+ global = global in
     let output_mode = if json then Json else Human in
     let (self, clients) = detect_installation () in
     if not self then begin
@@ -1255,7 +1268,7 @@ let install_all_subcmd =
     List.iter (fun (c, on_path, configured) ->
       if on_path && not configured then begin
         if output_mode = Human then Printf.printf "\n→ Configuring %s...\n" c;
-        do_install_client ~output_mode ~dry_run ~client:c ~alias_opt ~broker_root_opt
+        do_install_client ~global ~output_mode ~dry_run ~client:c ~alias_opt ~broker_root_opt
           ~target_dir_opt:None ~force:false ()
       end
     ) clients;
@@ -1338,7 +1351,7 @@ let install_git_hook_subcmd =
     term
 
 let install_default_term =
-  let (alias, broker_root, _, _, dry_run) = install_common_args () in
+  let (alias, broker_root, _, _, dry_run, _) = install_common_args () in
   let+ alias_opt = alias
   and+ broker_root_opt = broker_root
   and+ dry_run = dry_run in

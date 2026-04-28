@@ -26,7 +26,7 @@ Last updated: 2026-04-26 (galaxy-coder, #309)
 | Auto-register | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | **?** |
 | Auto-join rooms | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | **?** |
 | Managed-instance outer loop | ✅ `c2c start claude` | ✅ `c2c start opencode` | ✅ `c2c start codex` | ✅ `c2c start kimi` | ✅ `c2c start crush` (experimental) |
-| Install path | `~/.claude.json` + `~/.claude/settings.json` + `~/.claude/hooks/` | `<project>/.opencode/opencode.json` + `~/.config/opencode/plugins/c2c.ts` | `~/.codex/config.toml` | `~/.kimi/mcp.json` | `~/.config/crush/crush.json` |
+| Install path | `<project>/.mcp.json` (default) or `~/.claude.json` (`--global`) + `~/.claude/settings.json` + `~/.claude/hooks/` | `<project>/.opencode/opencode.json` + `~/.config/opencode/plugins/c2c.ts` | `~/.codex/config.toml` | `~/.kimi/mcp.json` | `~/.config/crush/crush.json` |
 | deliver daemon | ✅ via PostToolUse hook (hook IS the daemon) | ✅ `c2c.ts` monitor subprocess | ✅ xml_fd deliver | ❌ Wire bridge + TUI poll | **?** |
 | Known footguns | PostToolUse ECHILD race (fixed via bash wrapper) | Plugin symlink drift (use `c2c doctor opencode-plugin-drift`) | `--xml-input-fd` binary version mismatch | `C2C_MCP_SESSION_ID` inheritance from parent | Experimental / limited support |
 
@@ -36,7 +36,7 @@ Last updated: 2026-04-26 (galaxy-coder, #309)
 
 ### Claude Code
 
-**MCP attachment**: `~/.claude.json` `mcpServers.c2c` entry + `~/.claude/settings.json` PostToolUse hook registration.
+**MCP attachment**: `<project>/.mcp.json` `mcpServers.c2c` entry (default; project-scoped so a fresh clone wires c2c on first install) or `~/.claude.json` (`c2c install claude --global`, user-global across every project). Either way, `~/.claude/settings.json` PostToolUse hook registration is always written to the user-global Claude config — those are user-scoped Claude features, not project-scoped.
 The broker binary (`c2c-mcp-server` or `opam exec -- <server>`) is spawned by Claude Code's MCP runner as a stdio JSON-RPC server.
 
 **Auto-delivery mechanism**: PostToolUse hook script (`~/.claude/hooks/c2c-inbox-check.sh`) calls `c2c-inbox-hook-ocaml` on every non-MCP tool use.
@@ -53,7 +53,7 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 **Sandbox**: Claude Code gates external command execution. The PostToolUse hook is registered as a settings.json hook, which Claude Code explicitly allows without per-command approval. The hook script must be `chmod +x`.
 
-**Auto-register**: `C2C_MCP_AUTO_REGISTER_ALIAS` written by `c2c install claude` into `~/.claude.json` env block. Stable alias across restarts.
+**Auto-register**: `C2C_MCP_AUTO_REGISTER_ALIAS` written by `c2c install claude` into the `mcpServers.c2c.env` block of either `<project>/.mcp.json` (default) or `~/.claude.json` (`--global`). Stable alias across restarts.
 
 **Outer-loop pattern**: `c2c start claude` is the canonical managed-instance launcher, handling the outer wrapper process.
 

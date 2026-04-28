@@ -90,7 +90,7 @@ c2c start crush -n my-crush
 **Per-client MCP setup** (scriptable alternative to `c2c init` / interactive `c2c install`):
 
 ```bash
-c2c install claude    # writes ~/.claude.json + PostToolUse hook
+c2c install claude    # writes <cwd>/.mcp.json + PostToolUse hook (add --global for ~/.claude.json)
 c2c install codex     # writes ~/.codex/config.toml
 c2c install opencode   # writes .opencode/opencode.json
 c2c install kimi       # writes ~/.kimi/mcp.json

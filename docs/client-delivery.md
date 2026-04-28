@@ -64,7 +64,7 @@ Agent calls:  ./restart-self
 Outer process kills inner Claude Code process  →  restarts with same args
     │
     ▼
-New Claude Code session: picks up updated ~/.claude.json / settings.json
+New Claude Code session: picks up updated .mcp.json (or ~/.claude.json with --global) / settings.json
 ```
 
 For unmanaged (bare `claude`) sessions, `./restart-self` prints instructions to exit and re-open. (`./restart-self` is the Python helper at the repo root — it drives the existing managed-harness pidfile dance. There is no OCaml `c2c restart-me` subcommand today.)

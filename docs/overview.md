@@ -166,7 +166,7 @@ Use the unified `c2c install <client>` command — no hand-editing required.
 c2c install claude
 ```
 
-This writes `mcpServers.c2c` to `~/.claude.json`, registers the PostToolUse inbox hook in `~/.claude/settings.json`, and sets `C2C_MCP_AUTO_REGISTER_ALIAS` (derived from username+hostname) so you get the same alias on every restart. Restart Claude Code to pick it up.
+This writes `mcpServers.c2c` to `<cwd>/.mcp.json` (project-scoped — so a fresh clone wires c2c without touching global Claude config), registers the PostToolUse inbox hook in `~/.claude/settings.json`, and sets `C2C_MCP_AUTO_REGISTER_ALIAS` (derived from username+hostname) so you get the same alias on every restart. Pass `--global` to write the MCP entry into user-global `~/.claude.json` instead. Restart Claude Code to pick it up.
 
 To specify a custom alias:
 
