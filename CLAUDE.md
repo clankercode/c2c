@@ -300,8 +300,8 @@ surfaces, privacy tiers, send-memory handoff #286, cold-boot +
 post-compact context injection #317). E2E test procedure:
 `.collab/runbooks/per-agent-memory-e2e.md`. TL;DR:
 
-- Memory store at `.c2c/memory/<your-alias>/` (git-tracked,
-  per-alias).
+- Memory store at `.c2c/memory/<your-alias>/` (local-only —
+  gitignored per `.gitignore` #266, per-alias).
 - `c2c memory list` (or `mcp__c2c__memory_list`) at session start
   to see what prior-you wrote. Post-compact + cold-boot injection
   surface recent entries automatically (#317).

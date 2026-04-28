@@ -431,7 +431,7 @@ Validate that a received reply is authorized for a pending request.
 ### Memory
 
 Per-agent memory is stored at `.c2c/memory/<alias>/<entry>.md` (in the
-repo root, git-tracked). Entries are markdown with YAML frontmatter:
+repo root, local-only — gitignored per `.gitignore` #266). Entries are markdown with YAML frontmatter:
 `name`, `description`, `type`, `shared`, `shared_with`. Cross-agent
 reads require `shared: true` (global) **OR** the caller's alias listed
 in `shared_with: [alias1, alias2]` (targeted). See the design at
