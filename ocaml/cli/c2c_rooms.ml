@@ -199,12 +199,17 @@ let rooms_delete_cmd =
   let room_id =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOM" ~doc:"Room ID to delete (must have zero members).")
   in
+  let force_flag =
+    Cmdliner.Arg.(value & flag & info [ "force" ] ~doc:"Bypass legacy-room creator check (only honored when meta has no recorded creator).")
+  in
   let+ json = json_flag
-  and+ room_id = room_id in
+  and+ room_id = room_id
+  and+ force = force_flag in
   let broker = Broker.create ~root:(resolve_broker_root ()) in
   let output_mode = if json then Json else Human in
+  let caller_alias = resolve_alias_with_broker broker in
   (try
-     Broker.delete_room broker ~room_id;
+     Broker.delete_room broker ~room_id ~caller_alias ~force ();
      match output_mode with
      | Json ->
          print_json

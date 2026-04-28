@@ -59,7 +59,14 @@ type message = { from_alias : string; to_alias : string; content : string; defer
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 type room_visibility = Public | Invite_only
-type room_meta = { visibility : room_visibility; invited_members : string list }
+type room_meta =
+  { visibility : room_visibility
+  ; invited_members : string list
+  ; created_by : string
+    (** Alias of the room creator. Empty string for legacy rooms whose
+        meta.json predates the field; legacy rooms can only be deleted
+        with [~force:true] (#H3 rooms-acl audit). *)
+  }
 
 (** Pending reply tracking for alias-hijack mitigation (M2/M4).
     Ephemeral entries with TTL — entries older than TTL are ignored on access. *)
@@ -2297,10 +2304,11 @@ module Broker = struct
     | `String "invite_only" -> Invite_only
     | _ -> Public
 
-  let room_meta_to_json { visibility; invited_members } =
+  let room_meta_to_json { visibility; invited_members; created_by } =
     `Assoc
       [ ("visibility", room_visibility_to_json visibility)
       ; ("invited_members", `List (List.map (fun s -> `String s) invited_members))
+      ; ("created_by", `String created_by)
       ]
 
   let room_meta_of_json json =
@@ -2316,13 +2324,19 @@ module Broker = struct
                  items
            | _ -> []
          with _ -> [])
+    ; created_by =
+        (try
+           match member "created_by" json with
+           | `String s -> s
+           | _ -> ""
+         with _ -> "")
     }
 
   let load_room_meta t ~room_id =
     ensure_room_dir t ~room_id;
     match read_json_file (room_meta_path t ~room_id) ~default:(`Assoc []) with
     | `Assoc _ as json -> room_meta_of_json json
-    | _ -> { visibility = Public; invited_members = [] }
+    | _ -> { visibility = Public; invited_members = []; created_by = "" }
 
   let save_room_meta t ~room_id meta =
     ensure_room_dir t ~room_id;
@@ -2410,6 +2424,12 @@ module Broker = struct
       if not (List.mem alias meta.invited_members) then
         invalid_arg
           ("join_room rejected: room '" ^ room_id ^ "' is invite-only and '" ^ alias ^ "' is not on the invite list");
+    (* H3 rooms-acl: stamp [created_by] when the joiner is establishing the
+       room (no members yet, no creator recorded). Subsequent joiners do
+       not overwrite. Legacy rooms (members exist, created_by="") stay
+       empty and require [~force:true] to delete. *)
+    (if current_members = [] && meta.created_by = "" then
+       save_room_meta t ~room_id { meta with created_by = alias });
     let updated, should_broadcast =
       with_room_members_lock t ~room_id (fun () ->
         let members = load_room_members t ~room_id in
@@ -2469,13 +2489,28 @@ module Broker = struct
     if should_broadcast then broadcast_room_leave t ~room_id ~alias;
     updated
 
-  (* Delete a room entirely. Fails if the room has any members. *)
-  let delete_room t ~room_id =
+  (* Delete a room entirely. Fails if the room has any members.
+     H3 rooms-acl: also requires caller-auth — only the room creator
+     ([meta.created_by]) may delete. Legacy rooms (created_by="")
+     require [~force:true] from the caller, intended as an operator
+     escape hatch for rooms whose meta predates the field. *)
+  let delete_room t ~room_id ?(caller_alias = "") ?(force = false) () =
     if not (valid_room_id room_id) then
       invalid_arg ("invalid room_id: " ^ room_id);
     let dir = room_dir t ~room_id in
     if not (Sys.file_exists dir) then
       invalid_arg ("room does not exist: " ^ room_id);
+    let meta = load_room_meta t ~room_id in
+    (if meta.created_by = "" then begin
+       if not force then
+         invalid_arg
+           ("delete_room rejected: room '" ^ room_id
+            ^ "' has no recorded creator (legacy room) — pass force=true to delete")
+     end
+     else if caller_alias <> meta.created_by then
+       invalid_arg
+         ("delete_room rejected: only the creator '" ^ meta.created_by
+          ^ "' may delete room '" ^ room_id ^ "'"));
     (* Hold both locks while checking members and deleting the directory. *)
     with_room_members_lock t ~room_id (fun () ->
       with_room_history_lock t ~room_id (fun () ->
@@ -4921,8 +4956,18 @@ let ts = Unix.gettimeofday () in
            Lwt.return (tool_result ~content ~is_error:false))
   | "delete_room" ->
       let room_id = string_member "room_id" arguments in
+      let force =
+        match Yojson.Safe.Util.member "force" arguments with
+        | `Bool b -> b
+        | _ -> false
+      in
+      let caller_alias =
+        match alias_for_current_session_or_argument ?session_id_override broker arguments with
+        | Some a -> a
+        | None -> ""
+      in
       (try
-         Broker.delete_room broker ~room_id;
+         Broker.delete_room broker ~room_id ~caller_alias ~force ();
          let content =
            `Assoc [ ("room_id", `String room_id); ("deleted", `Bool true) ]
            |> Yojson.Safe.to_string
@@ -4969,9 +5014,58 @@ let ts = Unix.gettimeofday () in
                 Lwt.return (tool_result ~content:result_json ~is_error:false)))
   | "list_rooms" ->
       let rooms = Broker.list_rooms broker in
+      (* H2 rooms-acl: filter invite-only rooms the caller can't see.
+         - Public: include as-is.
+         - Invite_only + caller is a member: include as-is.
+         - Invite_only + caller in invited_members but not yet joined:
+           include but redact members/details/invited_members.
+         - Invite_only + caller unrelated: exclude entirely. *)
+      let caller_session_id =
+        match session_id_override with
+        | Some s -> Some s
+        | None -> current_session_id ()
+      in
+      let caller_alias = current_registered_alias ?session_id_override broker in
+      let filtered =
+        List.filter_map
+          (fun (r : Broker.room_info) ->
+            match r.ri_visibility with
+            | Public -> Some r
+            | Invite_only ->
+                let is_member_by_session =
+                  match caller_session_id with
+                  | None -> false
+                  | Some sid ->
+                      List.exists (fun (d : Broker.room_member_info) -> d.rmi_session_id = sid) r.ri_member_details
+                in
+                let is_member_by_alias =
+                  match caller_alias with
+                  | None -> false
+                  | Some a -> List.mem a r.ri_members
+                in
+                if is_member_by_session || is_member_by_alias then Some r
+                else
+                  let is_invited =
+                    match caller_alias with
+                    | None -> false
+                    | Some a -> List.mem a r.ri_invited_members
+                  in
+                  if is_invited then
+                    Some
+                      { r with
+                        ri_members = []
+                      ; ri_member_details = []
+                      ; ri_invited_members = []
+                      ; ri_alive_member_count = 0
+                      ; ri_dead_member_count = 0
+                      ; ri_unknown_member_count = 0
+                      }
+                  else None)
+          rooms
+      in
       let content =
         `List
-          (List.map room_info_json rooms)
+          (List.map room_info_json filtered)
         |> Yojson.Safe.to_string
       in
       Lwt.return (tool_result ~content ~is_error:false)
@@ -5003,6 +5097,39 @@ let ts = Unix.gettimeofday () in
         | None -> 50
       in
       let since = Broker.float_opt_member "since" arguments |> Option.value ~default:0.0 in
+      (* H1 rooms-acl: invite-only rooms require caller membership.
+         Public rooms have no read gate (public contract). *)
+      let meta = Broker.load_room_meta broker ~room_id in
+      let allow =
+        match meta.visibility with
+        | Public -> true
+        | Invite_only ->
+            let caller_session_id =
+              match session_id_override with
+              | Some s -> Some s
+              | None -> current_session_id ()
+            in
+            let caller_alias = current_registered_alias ?session_id_override broker in
+            let members = Broker.read_room_members broker ~room_id in
+            let by_session =
+              match caller_session_id with
+              | None -> false
+              | Some sid -> List.exists (fun m -> m.rm_session_id = sid) members
+            in
+            let by_alias =
+              match caller_alias with
+              | None -> false
+              | Some a -> List.exists (fun m -> m.rm_alias = a) members
+            in
+            by_session || by_alias
+      in
+      if not allow then
+        let content =
+          `Assoc [ ("error", `String ("not a member of " ^ room_id)) ]
+          |> Yojson.Safe.to_string
+        in
+        Lwt.return (tool_result ~content ~is_error:true)
+      else
       let history = Broker.read_room_history broker ~room_id ~limit ~since () in
       let content =
         `List

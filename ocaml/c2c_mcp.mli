@@ -62,7 +62,14 @@ type message =
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
 type room_visibility = Public | Invite_only
-type room_meta = { visibility : room_visibility; invited_members : string list }
+type room_meta =
+  { visibility : room_visibility
+  ; invited_members : string list
+  ; created_by : string
+    (** Alias of the room creator. Empty string for legacy rooms whose
+        meta.json predates the field. Used to gate [delete_room]
+        (#H3 rooms-acl audit). *)
+  }
 
 type pending_kind = | Permission | Question
 val pending_kind_to_string : pending_kind -> string
@@ -219,7 +226,11 @@ module Broker : sig
   val set_room_visibility : t -> room_id:string -> from_alias:string -> visibility:room_visibility -> unit
   val join_room : t -> room_id:string -> alias:string -> session_id:string -> room_member list
   val leave_room : t -> room_id:string -> alias:string -> room_member list
-  val delete_room : t -> room_id:string -> unit
+  val delete_room : t -> room_id:string -> ?caller_alias:string -> ?force:bool -> unit -> unit
+  (** Delete an empty room. H3 rooms-acl: requires [caller_alias] to match
+      [meta.created_by], OR [~force:true] when the room is legacy (no
+      recorded creator). Raises [Invalid_argument] on members present,
+      auth failure, or missing room. *)
   val room_history_path : t -> room_id:string -> string
   val append_room_history : t -> room_id:string -> from_alias:string -> content:string -> float
   val read_room_history : t -> room_id:string -> limit:int -> ?since:float -> unit -> room_message list

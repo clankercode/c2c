@@ -4448,8 +4448,9 @@ let test_delete_room_succeeds_when_empty () =
       let _ =
         C2c_mcp.Broker.leave_room broker ~room_id:"tmp-room" ~alias:"storm-ember"
       in
-      (* delete_room should succeed on an empty room *)
-      C2c_mcp.Broker.delete_room broker ~room_id:"tmp-room";
+      (* delete_room should succeed on an empty room when called by creator *)
+      C2c_mcp.Broker.delete_room broker ~room_id:"tmp-room"
+        ~caller_alias:"storm-ember" ();
       (* Room should no longer appear in list *)
       let rooms = C2c_mcp.Broker.list_rooms broker in
       check int "room deleted" 0 (List.length rooms))
@@ -4464,7 +4465,9 @@ let test_delete_room_fails_when_has_members () =
       (* delete_room should raise Invalid_argument *)
       check_raises "cannot delete room with members"
         (Invalid_argument "cannot delete room with members: lobby")
-        (fun () -> C2c_mcp.Broker.delete_room broker ~room_id:"lobby"))
+        (fun () ->
+          C2c_mcp.Broker.delete_room broker ~room_id:"lobby"
+            ~caller_alias:"storm-ember" ()))
 
 let test_send_room_appends_history_and_fans_out () =
   with_temp_dir (fun dir ->
@@ -7237,6 +7240,276 @@ let test_notify_shared_with_appears_in_push_drain () =
       check string "pushed DM is from the author" "alice-push" msg.from_alias;
       check bool "pushed DM is non-deferrable" false msg.deferrable)
 
+(* ─── Rooms ACL slice (H1/H2/H3) ─────────────────────────────────────── *)
+
+let rooms_acl_call_tool ~broker_root ~session_id ~tool_name ~arguments =
+  Unix.putenv "C2C_MCP_SESSION_ID" session_id;
+  Fun.protect
+    ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+    (fun () ->
+      let request =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 1)
+          ; ("method", `String "tools/call")
+          ; ( "params"
+            , `Assoc
+                [ ("name", `String tool_name)
+                ; ("arguments", arguments)
+                ] )
+          ]
+      in
+      Lwt_main.run (C2c_mcp.handle_request ~broker_root request))
+
+let rooms_acl_extract_result_text json =
+  let open Yojson.Safe.Util in
+  json |> member "result" |> member "content" |> index 0
+  |> member "text" |> to_string
+
+let rooms_acl_is_error json =
+  let open Yojson.Safe.Util in
+  match json |> member "result" |> member "isError" with
+  | `Bool b -> b
+  | _ -> false
+
+(* H1 — room_history membership gate *)
+
+let test_room_history_invite_only_blocks_non_member () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"sess-creator"
+        ~alias:"creator" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"sess-outsider"
+        ~alias:"outsider" ~pid:None ~pid_start_time:None ();
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"secret"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret"
+        ~from_alias:"creator" ~visibility:Invite_only;
+      let _ =
+        C2c_mcp.Broker.send_room broker ~from_alias:"creator"
+          ~room_id:"secret" ~content:"private chatter"
+      in
+      let response =
+        rooms_acl_call_tool ~broker_root:dir ~session_id:"sess-outsider"
+          ~tool_name:"room_history"
+          ~arguments:(`Assoc [ ("room_id", `String "secret") ])
+      in
+      match response with
+      | None -> fail "expected room_history response"
+      | Some json ->
+          check bool "isError set on non-member read" true (rooms_acl_is_error json);
+          let text = rooms_acl_extract_result_text json in
+          check bool "error text mentions not a member" true
+            (string_contains text "not a member of secret"))
+
+let test_room_history_invite_only_allows_member () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"sess-creator"
+        ~alias:"creator" ~pid:None ~pid_start_time:None ();
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"secret"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret"
+        ~from_alias:"creator" ~visibility:Invite_only;
+      let _ =
+        C2c_mcp.Broker.send_room broker ~from_alias:"creator"
+          ~room_id:"secret" ~content:"insider chatter"
+      in
+      let response =
+        rooms_acl_call_tool ~broker_root:dir ~session_id:"sess-creator"
+          ~tool_name:"room_history"
+          ~arguments:(`Assoc [ ("room_id", `String "secret") ])
+      in
+      match response with
+      | None -> fail "expected room_history response"
+      | Some json ->
+          check bool "no isError for member read" false (rooms_acl_is_error json);
+          let text = rooms_acl_extract_result_text json in
+          let arr = Yojson.Safe.from_string text |> Yojson.Safe.Util.to_list in
+          check bool "history non-empty for member" true (List.length arr >= 1))
+
+let test_room_history_public_allows_anyone () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"sess-creator"
+        ~alias:"creator" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"sess-rando"
+        ~alias:"rando" ~pid:None ~pid_start_time:None ();
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"plaza"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      let _ =
+        C2c_mcp.Broker.send_room broker ~from_alias:"creator"
+          ~room_id:"plaza" ~content:"public chatter"
+      in
+      let response =
+        rooms_acl_call_tool ~broker_root:dir ~session_id:"sess-rando"
+          ~tool_name:"room_history"
+          ~arguments:(`Assoc [ ("room_id", `String "plaza") ])
+      in
+      match response with
+      | None -> fail "expected room_history response"
+      | Some json ->
+          check bool "no isError on public history read" false (rooms_acl_is_error json);
+          let text = rooms_acl_extract_result_text json in
+          let arr = Yojson.Safe.from_string text |> Yojson.Safe.Util.to_list in
+          check bool "history visible to non-member of public room" true
+            (List.length arr >= 1))
+
+(* H2 — list_rooms invite-only filter *)
+
+let test_list_rooms_filters_invite_only_for_non_members () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"sess-creator"
+        ~alias:"creator" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"sess-outsider"
+        ~alias:"outsider" ~pid:None ~pid_start_time:None ();
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"plaza"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"backroom"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"backroom"
+        ~from_alias:"creator" ~visibility:Invite_only;
+      let response =
+        rooms_acl_call_tool ~broker_root:dir ~session_id:"sess-outsider"
+          ~tool_name:"list_rooms" ~arguments:(`Assoc [])
+      in
+      match response with
+      | None -> fail "expected list_rooms response"
+      | Some json ->
+          let text = rooms_acl_extract_result_text json in
+          let arr = Yojson.Safe.from_string text |> Yojson.Safe.Util.to_list in
+          let ids =
+            List.map
+              (fun r ->
+                Yojson.Safe.Util.(r |> member "room_id" |> to_string))
+              arr
+          in
+          check bool "plaza visible to non-member" true (List.mem "plaza" ids);
+          check bool "backroom hidden from non-member" false
+            (List.mem "backroom" ids))
+
+let test_list_rooms_redacts_invited_pre_join () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"sess-creator"
+        ~alias:"creator" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"sess-invitee"
+        ~alias:"invitee" ~pid:None ~pid_start_time:None ();
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"club"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"club"
+        ~from_alias:"creator" ~visibility:Invite_only;
+      C2c_mcp.Broker.send_room_invite broker ~room_id:"club"
+        ~from_alias:"creator" ~invitee_alias:"invitee";
+      let response =
+        rooms_acl_call_tool ~broker_root:dir ~session_id:"sess-invitee"
+          ~tool_name:"list_rooms" ~arguments:(`Assoc [])
+      in
+      match response with
+      | None -> fail "expected list_rooms response"
+      | Some json ->
+          let text = rooms_acl_extract_result_text json in
+          let arr = Yojson.Safe.from_string text |> Yojson.Safe.Util.to_list in
+          let club =
+            List.find_opt
+              (fun r ->
+                Yojson.Safe.Util.(r |> member "room_id" |> to_string) = "club")
+              arr
+          in
+          (match club with
+           | None -> fail "invited-pre-join: club should be visible"
+           | Some r ->
+               let open Yojson.Safe.Util in
+               let members = r |> member "members" |> to_list in
+               check int "members redacted to empty for invited-pre-join" 0
+                 (List.length members);
+               let invited = r |> member "invited_members" |> to_list in
+               check int "invited_members redacted for invited-pre-join" 0
+                 (List.length invited)))
+
+(* H3 — delete_room creator-auth *)
+
+let test_delete_room_requires_creator () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"workshop"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      let _ =
+        C2c_mcp.Broker.leave_room broker ~room_id:"workshop"
+          ~alias:"creator"
+      in
+      check_raises "non-creator delete rejected"
+        (Invalid_argument
+           "delete_room rejected: only the creator 'creator' may delete room 'workshop'")
+        (fun () ->
+          C2c_mcp.Broker.delete_room broker ~room_id:"workshop"
+            ~caller_alias:"intruder" ()))
+
+let test_delete_room_creator_succeeds () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"workshop"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      let _ =
+        C2c_mcp.Broker.leave_room broker ~room_id:"workshop"
+          ~alias:"creator"
+      in
+      C2c_mcp.Broker.delete_room broker ~room_id:"workshop"
+        ~caller_alias:"creator" ();
+      let rooms = C2c_mcp.Broker.list_rooms broker in
+      check bool "room deleted by creator" true
+        (not (List.exists
+                (fun (r : C2c_mcp.Broker.room_info) -> r.ri_room_id = "workshop")
+                rooms)))
+
+let test_delete_room_legacy_requires_force () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"legacy"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      (* Simulate a legacy room: clear created_by from meta. *)
+      let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"legacy" in
+      C2c_mcp.Broker.save_room_meta broker ~room_id:"legacy"
+        { meta with created_by = "" };
+      let _ =
+        C2c_mcp.Broker.leave_room broker ~room_id:"legacy"
+          ~alias:"creator"
+      in
+      (* Without force: rejected even for what looks like the creator. *)
+      check_raises "legacy room delete refused without force"
+        (Invalid_argument
+           "delete_room rejected: room 'legacy' has no recorded creator (legacy room) — pass force=true to delete")
+        (fun () ->
+          C2c_mcp.Broker.delete_room broker ~room_id:"legacy"
+            ~caller_alias:"creator" ());
+      (* With force: deletes. *)
+      C2c_mcp.Broker.delete_room broker ~room_id:"legacy"
+        ~caller_alias:"creator" ~force:true ();
+      let rooms = C2c_mcp.Broker.list_rooms broker in
+      check bool "legacy room deleted with force" true
+        (not (List.exists
+                (fun (r : C2c_mcp.Broker.room_info) -> r.ri_room_id = "legacy")
+                rooms)))
+
 let () =
   run "c2c_mcp"
     [ ( "broker",
@@ -7667,4 +7940,20 @@ let () =
                test_delivery_mode_histogram_last_n_filter
            ; test_case "delivery_mode_histogram empty archive (#307a)" `Quick
                test_delivery_mode_histogram_empty_archive_is_zero
+           ; test_case "H1 room_history invite-only blocks non-member" `Quick
+               test_room_history_invite_only_blocks_non_member
+           ; test_case "H1 room_history invite-only allows member" `Quick
+               test_room_history_invite_only_allows_member
+           ; test_case "H1 room_history public allows anyone" `Quick
+               test_room_history_public_allows_anyone
+           ; test_case "H2 list_rooms filters invite-only for non-members" `Quick
+               test_list_rooms_filters_invite_only_for_non_members
+           ; test_case "H2 list_rooms redacts members for invited-pre-join" `Quick
+               test_list_rooms_redacts_invited_pre_join
+           ; test_case "H3 delete_room requires creator" `Quick
+               test_delete_room_requires_creator
+           ; test_case "H3 delete_room creator succeeds" `Quick
+               test_delete_room_creator_succeeds
+           ; test_case "H3 delete_room legacy requires force" `Quick
+               test_delete_room_legacy_requires_force
            ] ) ]
