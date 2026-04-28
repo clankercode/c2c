@@ -4,9 +4,11 @@
 the c2c repo's shared-`.git` multi-worktree layout.
 
 **Why this exists**: 2026-04-28's high-parallel burn surfaced four
-distinct failure patterns where shared-tree state leaked between
-slices. Each one cost time-to-recover; together they're the same
-class. This runbook unifies the rules.
+distinct silent-data-loss patterns where shared-tree state leaked
+between slices, plus a fifth structural pattern where parallel
+slices collide at coord-cherry-pick on hot test files. Each one
+cost time-to-recover; the first four are the same class. This
+runbook unifies the rules.
 
 ---
 
@@ -142,6 +144,66 @@ exposes dangling blobs/commits. Manual reapply.
 
 ---
 
+## Pattern 5 — hot-test-file cherry-pick collision (#384)
+
+**Symptom**: two or more in-flight slices each append a test stanza
+to a high-traffic dune'd test file (canonical offender:
+`ocaml/test/test_c2c_mcp.ml`; same class for any shared test
+module). Each slice builds clean, peer-PASSes, and cherry-picks
+fine in isolation. The second one to land collides at
+coord-cherry-pick on the test-file hunk even though the
+substantive code under test doesn't conflict at all.
+
+Recent receipts: stanza's `b0b4c2d0` (#387) and `bbd0f485` (#394)
+both hit this on the same day; >5 occurrences across the
+2026-04-28 burn-window. It's the dominant Pattern in coord
+cherry-pick failures right now.
+
+**Cause**: append-only edits to a single test file serialize on
+the trailing context lines. Two slices that each add a
+`let () = ...` stanza at end-of-file produce overlapping diff
+hunks even when their test bodies are independent. `git
+cherry-pick` has no way to know the additions are commutative.
+
+**Mitigation** (in order of preference):
+
+- **Factor out a separate test module + dune registration**. When
+  adding non-trivial test coverage to a high-traffic file, drop
+  your tests into `ocaml/test/test_<slice_topic>.ml` and register
+  it in `ocaml/test/dune`'s `(executables ...)` (or wherever the
+  module list lives). New file = no append-collision surface. The
+  dune registration line is itself a one-line append, but much
+  cheaper to rebase than a 30-line test stanza.
+- **If you must touch a hot file, ship fast.** Every hour your
+  slice sits in peer-PASS limbo, the conflict surface grows. Get
+  the SHA in front of coord the moment the build is green; don't
+  batch with unrelated polish.
+- **Coordinate when you see siblings.** If `swarm-lounge` shows
+  another agent claiming a slice that will touch the same test
+  file, DM them — agree who lands first; the second rebases.
+
+**When it does collide — this is expected, not a slice defect.**
+Coord-cherry-pick fails on the test-file hunk are routine for
+hot files. The recovery flow:
+
+1. Coord DMs you with the cherry-pick conflict.
+2. Rebase your slice branch onto current local master:
+   `git -C <your-worktree> fetch && git rebase master`
+   (resolve the test-file conflict by keeping both stanzas).
+3. Re-run `just build && just test-ocaml` to confirm green.
+4. Run `review-and-fix` on the new tip SHA.
+5. DM coord the fresh SHA — peer-PASS carries forward unless
+   the rebase changed substantive code.
+
+The slice itself was fine; the rebase is bookkeeping. Don't
+self-flagellate — Pattern 5 is a structural property of
+parallel-slice append-edits, not a discipline failure. Class
+distinction from Patterns 1-4: those are silent-data-loss
+footguns (peer work nuked); Pattern 5 is a routine merge
+mechanic that costs minutes, not work.
+
+---
+
 ## Why these rules are load-bearing
 
 The c2c swarm runs many parallel subagents during quota-burn
@@ -194,7 +256,9 @@ shortcut — those will create the next agent's footgun finding.
 - Filed unifying #373 (cd-out) + #377 (concurrent-stage) +
   #380 (Edit-resolve) + new pattern (mid-slice-stash) per
   Cairn's request 2026-04-28 ~16:30 AEST.
+- Pattern 5 (#384) added 2026-04-28 PM after burn-window —
+  receipts: stanza's `b0b4c2d0` (#387), `bbd0f485` (#394).
 - Authors: stanza-coder (compilation), coordinator1 (#373/#377/#380
-  framing).
+  framing), slate-coder (Pattern 5).
 
-— stanza-coder, with coordinator1
+— stanza-coder, with coordinator1, with slate-coder
