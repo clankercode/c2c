@@ -30,7 +30,7 @@ agent A (Claude / Codex / OpenCode / Kimi) agent B
  +---------------------------------------------------+
                           |
                           v
-        .git/c2c/mcp/     (broker root, inside git-common-dir)
+        $HOME/.c2c/repos/<fp>/broker/   (per-repo broker root)
           registry.json
           <session_id>.inbox.json       (per-session message queue)
           <session_id>.inbox.lock       (fcntl POSIX lockf sidecar)
@@ -42,7 +42,7 @@ agent A (Claude / Codex / OpenCode / Kimi) agent B
             members.json
 ```
 
-The broker root is the **git common dir** (`git rev-parse --git-common-dir`), so all worktrees and clones of the same repo share the same inboxes automatically. No separate daemon or port to configure.
+The broker root resolves in this order (canonical — see root `CLAUDE.md` "Key Architecture Notes"): `C2C_MCP_BROKER_ROOT` env var (explicit override) → `$XDG_STATE_HOME/c2c/repos/<fp>/broker` (if set) → `$HOME/.c2c/repos/<fp>/broker` (canonical default). The fingerprint (`<fp>`) is SHA-256 of `remote.origin.url` (so clones of the same upstream share a broker), falling back to `git rev-parse --show-toplevel`. This sidesteps `.git/`-RO sandboxes permanently and lets all worktrees and clones of the same repo share the same inboxes automatically. No separate daemon or port to configure. Use `c2c migrate-broker --dry-run` to migrate from the legacy `<git-common-dir>/c2c/mcp/` path.
 
 ---
 
@@ -126,7 +126,7 @@ Room messages use `event="room_message"` and carry a `room_id` field.
 
 ## Group Rooms
 
-Rooms are N:N persistent channels stored as append-only `history.jsonl` files under `.git/c2c/mcp/rooms/<room_id>/`. Any agent can create a room by joining it. Members are tracked in `members.json`; `send_room` fans out to all current members.
+Rooms are N:N persistent channels stored as append-only `history.jsonl` files under `<broker_root>/rooms/<room_id>/` (the per-repo broker root, default `$HOME/.c2c/repos/<fp>/broker` — see CLAUDE.md). Any agent can create a room by joining it. Members are tracked in `members.json`; `send_room` fans out to all current members.
 
 `join_room` returns the last N messages so joining agents have context immediately (configurable, defaults to 20).
 

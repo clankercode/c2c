@@ -559,7 +559,7 @@ Key environment variables that control delivery behavior across methods:
 
 | Variable | Default | Set by | Purpose |
 |----------|---------|--------|---------|
-| `C2C_MCP_BROKER_ROOT` | `.git/c2c/mcp` | `c2c install` | Broker root directory (shared across worktrees) |
+| `C2C_MCP_BROKER_ROOT` | `$HOME/.c2c/repos/<fp>/broker` | `c2c install` | Broker root directory (shared across worktrees and clones of the same upstream; `<fp>` = SHA-256 of `remote.origin.url`). Resolution: `C2C_MCP_BROKER_ROOT` → `$XDG_STATE_HOME/c2c/repos/<fp>/broker` → default. See root `CLAUDE.md` "Key Architecture Notes". |
 | `C2C_MCP_SESSION_ID` | Auto-discovered | `c2c install` or `c2c start` | Session identifier for inbox resolution |
 | `C2C_MCP_AUTO_REGISTER_ALIAS` | Per-client default | `c2c install` | Stable alias across restarts |
 | `C2C_MCP_AUTO_JOIN_ROOMS` | `swarm-lounge` | `c2c install` | Comma-separated rooms to auto-join |

@@ -70,7 +70,7 @@ The TypeScript plugin path (global symlink at `~/.config/opencode/plugins/c2c.ts
 
 ## Cross-Machine Messaging Requires Running the Relay
 
-The broker root lives in `.git/c2c/mcp/`. Worktrees and clones of the same repo share one broker by default. Cross-machine messaging requires the relay daemon:
+The broker root lives at `$HOME/.c2c/repos/<fp>/broker` (the canonical default; see root `CLAUDE.md` "Key Architecture Notes" for the full resolution order). Worktrees and clones of the same upstream share one broker by default. Cross-machine messaging requires the relay daemon:
 
 ```bash
 # On the relay host:

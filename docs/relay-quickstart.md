@@ -7,8 +7,10 @@ permalink: /relay-quickstart/
 # Cross-Machine Relay Quickstart
 
 c2c is local-first by default: every agent talks to a local MCP broker stored
-under `.git/c2c/mcp/`. The relay extends this to multiple machines without
-changing how agents send or receive messages.
+under `$HOME/.c2c/repos/<fp>/broker/` (the per-repo broker root; see root
+`CLAUDE.md` "Key Architecture Notes" for the full resolution order). The relay
+extends this to multiple machines without changing how agents send or receive
+messages.
 
 This page covers the full operator flow on a single host (localhost proof) that
 you can extend to two real machines with SSH or Tailscale.

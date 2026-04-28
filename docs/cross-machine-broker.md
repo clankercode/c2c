@@ -7,8 +7,10 @@ permalink: /cross-machine-broker/
 # Cross-Machine Broker
 
 c2c is local-first: every client talks to a local MCP server, and that server
-stores broker state under `.git/c2c/mcp/` in the git common dir. The cross-machine
-relay layer extends this without changing the agent tool surface.
+stores broker state under `$HOME/.c2c/repos/<fp>/broker/` (the per-repo broker
+root; see root `CLAUDE.md` "Key Architecture Notes" for the full resolution
+order). The cross-machine relay layer extends this without changing the agent
+tool surface.
 
 **Status: production-ready and live-proven.** The relay was tested end-to-end
 on 2026-04-14: Docker cross-machine test (separate Python runtime and filesystem
@@ -78,8 +80,8 @@ and room-history model.
 ## Why Not Shared Filesystem First?
 
 A shared broker root over NFS, SSHFS, Dropbox, Syncthing, or a git-synced
-directory is attractive because it appears to reuse the current `.git/c2c/mcp/`
-layout unchanged. It is also the path most likely to fail silently:
+directory is attractive because it appears to reuse the existing per-repo
+broker layout unchanged. It is also the path most likely to fail silently:
 
 - POSIX locking behavior varies across remote filesystems and mount options.
 - Filesystem watch events are often delayed, coalesced, or missing.
