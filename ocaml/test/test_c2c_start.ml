@@ -967,6 +967,19 @@ let test_render_heartbeat_content_appends_command_output () =
     (try ignore (Str.search_forward (Str.regexp_string "skipped disallowed heartbeat command") content 0); true
      with Not_found -> false)
 
+(* #381: coordinator: boolean field in role frontmatter *)
+let test_role_parse_coordinator_field () =
+  let role_true = C2c_role.parse_string "---\ncoordinator: true\n---\nbody\n" in
+  check bool "coordinator true parsed" true (role_true.C2c_role.coordinator = Some true);
+  let role_false = C2c_role.parse_string "---\ncoordinator: false\n---\nbody\n" in
+  check bool "coordinator false parsed" true (role_false.C2c_role.coordinator = Some false);
+  let role_none = C2c_role.parse_string "---\nrole: subagent\n---\nbody\n" in
+  check bool "coordinator absent → None" true (role_none.C2c_role.coordinator = None);
+  let role_1 = C2c_role.parse_string "---\ncoordinator: 1\n---\nbody\n" in
+  check bool "coordinator 1 parsed as true" true (role_1.C2c_role.coordinator = Some true);
+  let role_0 = C2c_role.parse_string "---\ncoordinator: 0\n---\nbody\n" in
+  check bool "coordinator 0 parsed as false" true (role_0.C2c_role.coordinator = Some false)
+
 let test_per_agent_managed_heartbeats_reads_instance_file () =
   let name = Printf.sprintf "heartbeat-agent-%d" (Random.bits ()) in
   with_instance_dir name @@ fun dir ->
@@ -2217,6 +2230,8 @@ let () =
             `Quick, test_heartbeat_body_no_swap_when_unknown )
         ; ( "heartbeat_body_passes_custom_message_through",
             `Quick, test_heartbeat_body_passes_custom_message_through )
+        ; ( "role_parse_coordinator_field",
+            `Quick, test_role_parse_coordinator_field )
         ; ( "heartbeat_aligned_schedule_next_delay",
             `Quick, test_heartbeat_aligned_schedule_next_delay )
         ; ( "agent_is_idle_no_activity_treated_as_idle",

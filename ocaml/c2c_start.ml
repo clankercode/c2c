@@ -3192,6 +3192,16 @@ let run_outer_loop ~(name : string) ~(client : string)
     with Not_found ->
       Printf.eprintf "error: unknown client '%s'\n%!" client; exit 1
   in
+  (* Load the role file early so we can derive C2C_COORDINATOR=1 for #381. *)
+  let agent_role =
+    match agent_name with
+    | None -> None
+    | Some n ->
+        (try
+          let path = C2c_role.resolve_agent_path ~name:n ~client in
+          if Sys.file_exists path then Some (C2c_role.parse_file path) else None
+        with _ -> None)
+  in
   (* Binary resolution order:
      1. explicit --binary flag (binary_override)
      2. [default_binary] table in .c2c/config.toml
@@ -3341,6 +3351,14 @@ let run_outer_loop ~(name : string) ~(client : string)
         if one_hr_cache then
           Array.append env [| "ENABLE_PROMPT_CACHING_1H=1" |]
         else env
+      in
+      (* #381: if the role has coordinator: true, propagate C2C_COORDINATOR=1
+         so the managed client knows it was launched with coordinator privileges. *)
+      let env =
+        match agent_role with
+        | Some r when r.C2c_role.coordinator = Some true ->
+            Array.append env [| "C2C_COORDINATOR=1" |]
+        | _ -> env
       in
       (* When launching opencode with a kickoff prompt, signal the c2c plugin
          to proactively create a session and deliver the prompt if the TUI

@@ -5,6 +5,7 @@ type t = {
   pmodel : string option;
   role_class : string option;
   pronouns : string option;
+  coordinator : bool option;
   c2c_alias : string option;
   c2c_auto_join_rooms : string list;
   c2c_heartbeat : (string * string) list;

@@ -6154,6 +6154,7 @@ let prompt_for_role ~alias =
         pmodel = None;
         role_class = None;
         pronouns = None;
+        coordinator = None;
         c2c_alias = None;
         c2c_auto_join_rooms = [];
         c2c_heartbeat = [];

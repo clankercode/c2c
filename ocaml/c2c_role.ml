@@ -15,6 +15,7 @@ type t = {
      release, qa, gui, …). When unset, resolvers fall back to "default". *)
   role_class : string option;
   pronouns : string option;
+  coordinator : bool option;
   c2c_alias : string option;
   c2c_auto_join_rooms : string list;
   c2c_heartbeat : (string * string) list;
@@ -36,6 +37,7 @@ let empty = {
   pmodel = None;
   role_class = None;
   pronouns = None;
+  coordinator = None;
   c2c_alias = None;
   c2c_auto_join_rooms = [];
   c2c_heartbeat = [];
@@ -66,6 +68,16 @@ let parse_list s =
     let items = String.split_on_char ',' inner in
     List.filter (fun x -> String.trim x <> "") (List.map (fun item -> trim_quotes (String.trim item)) items)
   else [trim_quotes s]
+
+let parse_bool (s : string option) : bool option =
+  match s with
+  | None -> None
+  | Some v ->
+      let v = String.trim v in
+      let v = String.map (fun c -> if 'A' <= c && c <= 'Z' then Char.lowercase_ascii c else c) v in
+      if v = "true" || v = "1" then Some true
+      else if v = "false" || v = "0" then Some false
+      else None
 
 let split_frontmatter content =
   let lines = String.split_on_char '\n' content in
@@ -252,6 +264,7 @@ let parse_string ?(snippets_dir = ".c2c/snippets") ?(filename = "(string)") cont
     pmodel = find "pmodel";
     role_class = find "role_class";
     pronouns = find "pronouns";
+    coordinator = parse_bool (find "coordinator");
     c2c_alias = find "c2c.alias";
     c2c_auto_join_rooms =
       (match find "c2c.auto_join_rooms" with Some v -> parse_list v | None -> []);
