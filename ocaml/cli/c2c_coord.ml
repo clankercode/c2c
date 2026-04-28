@@ -292,3 +292,14 @@ let man = [
 
 let coord_cherry_pick_cmd =
   Cmdliner.Cmd.v (Cmdliner.Cmd.info "coord-cherry-pick" ~doc ~man) coord_cherry_pick_term
+
+(* #368: also expose as `c2c coord cherry-pick` (group + subcommand).
+   Both forms share the same term + impl, so flag set, behaviour, and
+   --help text are identical by construction. *)
+let coord_cherry_pick_sub =
+  Cmdliner.Cmd.v (Cmdliner.Cmd.info "cherry-pick" ~doc ~man) coord_cherry_pick_term
+
+let coord_group =
+  Cmdliner.Cmd.group
+    (Cmdliner.Cmd.info "coord" ~doc:"Coordinator helpers (cherry-pick, …).")
+    [ coord_cherry_pick_sub ]
