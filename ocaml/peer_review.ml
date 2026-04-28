@@ -281,3 +281,213 @@ let verify_claim ~alias ~sha =
               Claim_invalid (Printf.sprintf "reviewer mismatch: artifact is by %s, claim is by %s" art.reviewer alias)
             else
               Claim_valid (Printf.sprintf "peer-pass artifact verified: %s for %s" art.verdict sha)
+
+(* --- TOFU pubkey pin (H1: alias <-> pubkey binding) ----------------------- *)
+
+(* Background: prior to the H1 fix, [verify] above accepted whatever
+   [reviewer_pk] was embedded in the artifact, as long as the signature
+   validated against that key. Any agent could forge a peer-PASS for any
+   alias by minting a fresh ed25519 keypair and signing under their target's
+   alias. The trust anchor was "whoever wrote the file", not cryptographic
+   identity.
+
+   The TOFU pin store closes that gap by binding alias -> pubkey on first
+   verify. Subsequent verifies for the same alias must present the same
+   pubkey or be rejected. Rotation requires explicit operator action via
+   [pin_rotate] (CLI: `c2c peer-pass verify --rotate-pin`).
+
+   Pin store format (JSON, at <broker_root>/peer-pass-trust.json):
+     { "version": 1,
+       "pins": { "<alias>": { "pubkey": "<b64url>",
+                              "first_seen": <unix-ts>,
+                              "last_seen": <unix-ts> } } } *)
+
+module Trust_pin = struct
+  type pin = {
+    pubkey : string;       (* b64url, same encoding as Peer_review.reviewer_pk *)
+    first_seen : float;
+    last_seen : float;
+  }
+
+  type store = {
+    version : int;
+    pins : (string * pin) list;  (* alias -> pin; alias keys lowercased *)
+  }
+
+  let empty = { version = 1; pins = [] }
+
+  let pin_to_json p : Yojson.Safe.t =
+    `Assoc [
+      "pubkey", `String p.pubkey;
+      "first_seen", `Float p.first_seen;
+      "last_seen", `Float p.last_seen;
+    ]
+
+  let pin_of_json (j : Yojson.Safe.t) : pin option =
+    match j with
+    | `Assoc fields ->
+      let get_str f = match List.assoc_opt f fields with Some (`String s) -> s | _ -> "" in
+      let get_float f =
+        match List.assoc_opt f fields with
+        | Some (`Float f) -> f
+        | Some (`Int i) -> float_of_int i
+        | _ -> 0.0
+      in
+      let pubkey = get_str "pubkey" in
+      if pubkey = "" then None
+      else Some { pubkey; first_seen = get_float "first_seen"; last_seen = get_float "last_seen" }
+    | _ -> None
+
+  let store_to_json s : Yojson.Safe.t =
+    let pins_obj = `Assoc (List.map (fun (a, p) -> (a, pin_to_json p)) s.pins) in
+    `Assoc [
+      "version", `Int s.version;
+      "pins", pins_obj;
+    ]
+
+  let store_of_json (j : Yojson.Safe.t) : store option =
+    match j with
+    | `Assoc fields ->
+      let version =
+        match List.assoc_opt "version" fields with
+        | Some (`Int i) -> i
+        | _ -> 1
+      in
+      let pins =
+        match List.assoc_opt "pins" fields with
+        | Some (`Assoc plist) ->
+          List.filter_map (fun (alias, j) ->
+            match pin_of_json j with
+            | Some p -> Some (String.lowercase_ascii alias, p)
+            | None -> None) plist
+        | _ -> []
+      in
+      Some { version; pins }
+    | _ -> None
+
+  (** Default pin-store path: <broker_root>/peer-pass-trust.json. The caller
+      may override via [path] for tests / explicit broker roots. *)
+  let default_path_ref : (unit -> string) ref =
+    ref (fun () ->
+      (* Fallback: under the current dir's .c2c if no broker resolver is
+         wired. The CLI overrides this on startup. *)
+      let base =
+        match Git_helpers.git_common_dir_parent () with
+        | Some p -> Filename.concat p ".c2c"
+        | None -> ".c2c"
+      in
+      Filename.concat base "peer-pass-trust.json")
+
+  let set_default_path_resolver f = default_path_ref := f
+  let default_path () = !default_path_ref ()
+
+  let load ?path () : store =
+    let p = match path with Some p -> p | None -> default_path () in
+    if not (Sys.file_exists p) then empty
+    else
+      try
+        match store_of_json (Yojson.Safe.from_file p) with
+        | Some s -> s
+        | None -> empty
+      with _ -> empty
+
+  let mkdir_p d =
+    let rec aux p =
+      if p = "" || p = "/" || p = "." then ()
+      else if Sys.file_exists p then ()
+      else begin
+        aux (Filename.dirname p);
+        try Unix.mkdir p 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+      end
+    in
+    aux d
+
+  let save ?path (s : store) : unit =
+    let p = match path with Some p -> p | None -> default_path () in
+    mkdir_p (Filename.dirname p);
+    let tmp = p ^ ".tmp" in
+    let oc = open_out tmp in
+    Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+      output_string oc (Yojson.Safe.pretty_to_string (store_to_json s));
+      output_string oc "\n");
+    Sys.rename tmp p
+
+  let find_pin (s : store) ~alias : pin option =
+    List.assoc_opt (String.lowercase_ascii alias) s.pins
+
+  let upsert (s : store) ~alias ~pin : store =
+    let key = String.lowercase_ascii alias in
+    let pins =
+      (key, pin) :: List.filter (fun (a, _) -> a <> key) s.pins
+    in
+    { s with pins }
+end
+
+type pin_check =
+  | Pin_first_seen        (* no prior pin; pin written this call (TOFU) *)
+  | Pin_match             (* artifact pubkey matches existing pin *)
+  | Pin_mismatch of {
+      alias : string;
+      pinned_pubkey : string;
+      artifact_pubkey : string;
+      first_seen : float;
+    }
+
+(** Apply TOFU pin policy on a verified artifact. The artifact's signature
+    MUST already have been verified by [verify] before calling this — the pin
+    policy is only meaningful on cryptographically valid signatures.
+
+    On [Pin_first_seen] and [Pin_match], the pin is updated (last_seen
+    bumped, or new pin written for first-seen). On [Pin_mismatch] nothing
+    is written; caller is expected to surface the mismatch as a hard error.
+
+    Use [pin_rotate] for the explicit rotation path. *)
+let pin_check ?path (art : t) : pin_check =
+  let alias = art.reviewer in
+  let store = Trust_pin.load ?path () in
+  let now = Unix.gettimeofday () in
+  match Trust_pin.find_pin store ~alias with
+  | None ->
+    let new_pin =
+      { Trust_pin.pubkey = art.reviewer_pk; first_seen = now; last_seen = now }
+    in
+    let store' = Trust_pin.upsert store ~alias ~pin:new_pin in
+    Trust_pin.save ?path store';
+    Pin_first_seen
+  | Some existing when existing.Trust_pin.pubkey = art.reviewer_pk ->
+    let bumped = { existing with Trust_pin.last_seen = now } in
+    let store' = Trust_pin.upsert store ~alias ~pin:bumped in
+    Trust_pin.save ?path store';
+    Pin_match
+  | Some existing ->
+    Pin_mismatch {
+      alias;
+      pinned_pubkey = existing.Trust_pin.pubkey;
+      artifact_pubkey = art.reviewer_pk;
+      first_seen = existing.Trust_pin.first_seen;
+    }
+
+(** Explicit rotation: replace the existing pin (or create one) regardless
+    of mismatch. Returns the previous pin (if any) for audit logging. *)
+let pin_rotate ?path (art : t) : Trust_pin.pin option =
+  let alias = art.reviewer in
+  let store = Trust_pin.load ?path () in
+  let prior = Trust_pin.find_pin store ~alias in
+  let now = Unix.gettimeofday () in
+  let first_seen = match prior with Some p -> p.Trust_pin.first_seen | None -> now in
+  let new_pin = { Trust_pin.pubkey = art.reviewer_pk; first_seen; last_seen = now } in
+  let store' = Trust_pin.upsert store ~alias ~pin:new_pin in
+  Trust_pin.save ?path store';
+  prior
+
+(** Convenience wrapper that fuses signature verification with TOFU pin
+    enforcement. Returns:
+    - [Ok Pin_first_seen | Pin_match] on success (pin written/updated).
+    - [Error] for any signature failure (passthrough from [verify]).
+    - [Ok (Pin_mismatch _)] for TOFU mismatch (caller decides hard-fail vs
+      rotation prompt). *)
+let verify_with_pin ?path (art : t) : (pin_check, verify_error) result =
+  match verify art with
+  | Error e -> Error e
+  | Ok false -> Error Invalid_signature
+  | Ok true -> Ok (pin_check ?path art)

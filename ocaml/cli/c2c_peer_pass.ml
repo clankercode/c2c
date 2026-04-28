@@ -309,6 +309,15 @@ let read_json_file path =
   Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
     really_input_string ic (in_channel_length ic))
 
+(* H1: TOFU pin store lives under the broker root so all worktrees of a
+   given repo share one alias <-> pubkey binding. Override the default
+   resolver before any verify call. *)
+let trust_pin_path () =
+  Filename.concat (C2c_utils.resolve_broker_root ()) "peer-pass-trust.json"
+
+let () =
+  Peer_review.Trust_pin.set_default_path_resolver trust_pin_path
+
 let peer_pass_verify_cmd =
   let file =
     Cmdliner.Arg.(required & pos 0 (some string) None & info []
@@ -318,8 +327,15 @@ let peer_pass_verify_cmd =
     Cmdliner.Arg.(value & flag & info [ "strict" ]
       ~doc:"Exit non-zero on anti-cheat WARN (e.g. self-review). Useful for CI/scripted gates.")
   in
+  let rotate_pin =
+    Cmdliner.Arg.(value & flag & info [ "rotate-pin" ]
+      ~doc:"Replace the existing TOFU pubkey pin for this reviewer alias. \
+            Use ONLY for legitimate key rotation; pin replacement is logged \
+            and printed as a clear audit warning.")
+  in
   let+ file = file
-  and+ strict = strict in
+  and+ strict = strict
+  and+ rotate_pin = rotate_pin in
   let path =
     if Sys.file_exists file then file
     else
@@ -341,6 +357,48 @@ let peer_pass_verify_cmd =
            art.Peer_review.reviewer
            art.Peer_review.ts
            (String.concat ", " art.Peer_review.criteria_checked);
+         (* H1: TOFU pubkey pin enforcement. A valid signature proves only
+            "whoever holds key K signed this", not "the agent named <alias>
+            signed this". The pin store binds alias -> first-seen pubkey;
+            mismatches are hard rejected. *)
+         if rotate_pin then begin
+           let prior = Peer_review.pin_rotate art in
+           (match prior with
+            | None ->
+              Printf.printf "  PIN-ROTATE: no prior pin for %s; recorded new pubkey.\n%!"
+                art.Peer_review.reviewer
+            | Some p ->
+              Printf.printf
+                "  PIN-ROTATE WARNING: replaced pin for %s.\n    \
+                old pubkey: %s\n    \
+                new pubkey: %s\n    \
+                old first_seen: %.0f\n%!"
+                art.Peer_review.reviewer
+                p.Peer_review.Trust_pin.pubkey
+                art.Peer_review.reviewer_pk
+                p.Peer_review.Trust_pin.first_seen)
+         end else begin
+           match Peer_review.pin_check art with
+           | Peer_review.Pin_first_seen ->
+             Printf.printf "  TOFU: first verify for %s; pubkey pinned.\n%!"
+               art.Peer_review.reviewer
+           | Peer_review.Pin_match ->
+             Printf.printf "  TOFU: pubkey matches pin for %s.\n%!"
+               art.Peer_review.reviewer
+           | Peer_review.Pin_mismatch { alias; pinned_pubkey; artifact_pubkey; first_seen } ->
+             Printf.eprintf
+               "VERIFY FAILED: TOFU pin mismatch for alias %s.\n  \
+               pinned pubkey:    %s\n  \
+               artifact pubkey:  %s\n  \
+               pin first_seen:   %.0f\n  \
+               This artifact was signed by a DIFFERENT key than the one \
+               previously seen for this alias.\n  \
+               If this is a legitimate key rotation (e.g. lost device, \
+               key rollover), re-run with --rotate-pin AFTER \
+               out-of-band confirmation with the alias holder.\n%!"
+               alias pinned_pubkey artifact_pubkey first_seen;
+             exit 1
+         end;
          (* Anti-cheat surface: warn if reviewer == commit author. *)
          let self_review =
            Git_helpers.git_commit_exists art.Peer_review.sha
