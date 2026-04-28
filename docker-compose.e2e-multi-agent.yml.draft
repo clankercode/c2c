@@ -1,0 +1,128 @@
+# DRAFT — #407 e2e multi-agent topology.
+#
+# Target: two "hosts" (independent broker volumes) + relay + 4 agent
+# containers. Cross-host messaging exercises the real relay path,
+# unlike docker-compose.two-container.yml which shares one broker.
+#
+# Usage (after promoting to .yml):
+#   DOCKER_BUILDKIT=1 docker compose \
+#     -f docker-compose.test.yml \
+#     -f docker-compose.e2e-multi-agent.yml \
+#     up -d --build
+#   bash tests/e2e/00-smoke-cross-container.sh
+#   docker compose ... down -v
+#
+# Two broker volumes (broker-a, broker-b) — agents on host-A only see
+# host-A peers in `c2c list`. Cross-host delivery MUST go via the relay.
+
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: c2c-relay:e2e
+    container_name: c2c-e2e-relay
+    environment:
+      C2C_RELAY_PERSIST_DIR: /var/lib/c2c
+      PORT: "7331"
+    networks:
+      - c2c-e2e-net
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -qO- http://127.0.0.1:7331/health | grep -q ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  agent-a1:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: c2c-e2e-agent-a1
+    depends_on:
+      relay:
+        condition: service_healthy
+    volumes:
+      - broker-a:/var/lib/c2c
+    networks:
+      - c2c-e2e-net
+    environment:
+      C2C_MCP_BROKER_ROOT: /var/lib/c2c
+      C2C_RELAY_URL: http://relay:7331
+      C2C_RELAY_CONNECTOR_BACKEND: http
+      C2C_IN_DOCKER: "1"
+      C2C_MCP_AUTO_REGISTER_ALIAS: agent-a1
+      C2C_MCP_SESSION_ID: agent-a1-session
+    command: ["sleep", "3600"]
+
+  agent-a2:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: c2c-e2e-agent-a2
+    depends_on:
+      relay:
+        condition: service_healthy
+    volumes:
+      - broker-a:/var/lib/c2c
+    networks:
+      - c2c-e2e-net
+    environment:
+      C2C_MCP_BROKER_ROOT: /var/lib/c2c
+      C2C_RELAY_URL: http://relay:7331
+      C2C_RELAY_CONNECTOR_BACKEND: http
+      C2C_IN_DOCKER: "1"
+      C2C_MCP_AUTO_REGISTER_ALIAS: agent-a2
+      C2C_MCP_SESSION_ID: agent-a2-session
+    command: ["sleep", "3600"]
+
+  agent-b1:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: c2c-e2e-agent-b1
+    depends_on:
+      relay:
+        condition: service_healthy
+    volumes:
+      - broker-b:/var/lib/c2c
+    networks:
+      - c2c-e2e-net
+    environment:
+      C2C_MCP_BROKER_ROOT: /var/lib/c2c
+      C2C_RELAY_URL: http://relay:7331
+      C2C_RELAY_CONNECTOR_BACKEND: http
+      C2C_IN_DOCKER: "1"
+      C2C_MCP_AUTO_REGISTER_ALIAS: agent-b1
+      C2C_MCP_SESSION_ID: agent-b1-session
+    command: ["sleep", "3600"]
+
+  agent-b2:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: c2c-e2e-agent-b2
+    depends_on:
+      relay:
+        condition: service_healthy
+    volumes:
+      - broker-b:/var/lib/c2c
+    networks:
+      - c2c-e2e-net
+    environment:
+      C2C_MCP_BROKER_ROOT: /var/lib/c2c
+      C2C_RELAY_URL: http://relay:7331
+      C2C_RELAY_CONNECTOR_BACKEND: http
+      C2C_IN_DOCKER: "1"
+      C2C_MCP_AUTO_REGISTER_ALIAS: agent-b2
+      C2C_MCP_SESSION_ID: agent-b2-session
+    command: ["sleep", "3600"]
+
+networks:
+  c2c-e2e-net:
+    driver: bridge
+
+volumes:
+  # Two independent brokers — cross-host delivery must traverse relay.
+  broker-a:
+  broker-b:
