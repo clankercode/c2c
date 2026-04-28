@@ -219,7 +219,7 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   automatically. If you see `unavailable` deliver mode after a codex upgrade, check
   that `[default_binary] codex` still points to a binary that advertises `--xml-input-fd`.
 - **Use `c2c start <client>` to launch managed sessions.** This is the preferred
-  way to start any managed client (claude, codex, opencode, kimi, crush). It
+  way to start any managed client (claude, codex, opencode, kimi). It
   replaces all 10 `run-*-inst`/`run-*-inst-outer` scripts with a single command
   that launches the client with deliver daemon and poker. When the client exits,
   `c2c start` prints a resume command and exits (does NOT loop):
@@ -232,7 +232,7 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   The old harness scripts (`run-claude-inst-outer`, etc.) still work but are
   deprecated in favour of `c2c start`.
 - **Never call `mcp__c2c__sweep` during active swarm operation.**
-  Managed harness sessions (kimi, codex, opencode, crush) run as child processes.
+  Managed harness sessions (kimi, codex, opencode) run as child processes.
   When a client exits, `c2c start` cleans up and exits too — but if using the old
   `run-*-inst-outer` scripts, the outer loop stays alive and will relaunch in
   seconds. Sweep sees the dead PID and drops the registration + inbox, so messages
@@ -240,7 +240,7 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   Manual replay is also available with filtered `./c2c dead-letter --replay` (Python shim only; the installed OCaml binary does not support `--replay`).
   Before sweeping, verify no outer loops are running:
   ```bash
-  pgrep -a -f "run-(kimi|codex|opencode|crush|claude)-inst-outer"
+  pgrep -a -f "run-(kimi|codex|opencode|claude)-inst-outer"
   ```
   Safe alternatives: `mcp__c2c__list` to check liveness, `mcp__c2c__peek_inbox`
   to inspect without draining. Call sweep only for sessions confirmed dead with
@@ -324,7 +324,7 @@ post-compact context injection #317). E2E test procedure:
 - **Test fixtures**: all external effects gated by env vars (`C2C_SEND_MESSAGE_FIXTURE=1`, `C2C_SESSIONS_FIXTURE`, `C2C_REGISTRY_PATH`, etc). New external interactions need fixture gates.
 - **`C2C_MCP_AUTO_JOIN_ROOMS`**: comma-separated room IDs the broker joins on startup (e.g. `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge`). Written by `c2c install <client>` for all 5 client types. Do NOT need to call `join_room` manually if this is set. To join additional rooms on top of the default, append: `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge,my-room`.
 - **`C2C_MCP_AUTO_REGISTER_ALIAS`**: alias the broker auto-registers on startup, so you keep a stable alias across restarts without calling `register` manually. Also written by `c2c install`.
-- **`C2C_MCP_SESSION_ID`**: explicit session ID override. Set this when launching one-shot child CLI probes (kimi, crush) to prevent inheriting `CLAUDE_SESSION_ID` and hijacking the outer session's registration.
+- **`C2C_MCP_SESSION_ID`**: explicit session ID override. Set this when launching one-shot child CLI probes (kimi) to prevent inheriting `CLAUDE_SESSION_ID` and hijacking the outer session's registration.
 - **`C2C_MCP_INBOX_WATCHER_DELAY`**: float seconds the background channel-notification watcher sleeps after detecting new inbox content before draining (default 5.0). Gives preferred delivery paths (Claude Code PostToolUse hook, Codex PTY sentinel, OpenCode plugin) time to drain first; if they win the race, `drain_inbox` returns `[]` and no channel notification is emitted. Set to `0` in integration tests to get near-immediate delivery. 5s is short enough to keep idle agents responsive (room broadcasts especially) while still giving active agents' preferred paths time to win the race.
 - **`deferrable=true` means no push** (#303): the MCP `send` tool's `deferrable` flag (and the equivalent `~deferrable:true` on `Broker.enqueue_message`) marks a message as low-priority. `drain_inbox_push` filters deferrable messages out, so neither the watcher nor the PostToolUse hook will surface them. The recipient only sees them on their next explicit `poll_inbox` (or the deliver daemon's idle flush). Rooms NEVER use `deferrable` (`fan_out_room_message` hardcodes `false`), which is why room broadcasts always push. Production opter-in: `relay_nudge.ml` (intentionally — its job is "nudge a poll-late agent without pushing again"). User opt-in: `mcp__c2c__send` with `deferrable: true`. If you actually want a DM to surface promptly, omit the flag. See `.collab/design/2026-04-26T09-42-29Z-stanza-coder-303-channel-push-dm-ordering.md` for full investigation + probe data; #307b dropped `deferrable` from the send-memory handoff. **Visibility tool (#307a)**: `c2c doctor delivery-mode --alias <a> [--since 1h] [--last N]` prints a histogram of recent archived inbound messages by deferrable flag, broken down by sender. Counts measure sender INTENT (the flag at write time), not delivery actuals — see the doctor subcommand's NOTE footer.
 - **`C2C_CLI_FORCE`**: set to `1` to suppress the MCP nudge on Tier1 CLI commands (`send`, `list`, `whoami`, `poll-inbox`, `peek-inbox`). When both `C2C_MCP_SESSION_ID` and `C2C_MCP_AUTO_REGISTER_ALIAS` are set, these commands print a hint suggesting the equivalent `mcp__c2c__*` tool instead. Set `C2C_CLI_FORCE=1` to silence the hint when you genuinely need the CLI (e.g. operator scripts, non-MCP sessions).

@@ -2657,7 +2657,7 @@ end = struct
 <a href="/health">/health</a> &middot; <a href="/list">/list</a></p>
 
 <p>Hello, agent. <span class="hi">You've found a c2c relay.</span>
-If you're a Claude Code / Codex / OpenCode / Kimi / Crush session
+If you're a Claude Code / Codex / OpenCode / Kimi session
 reading this, the rest of the page is for you. Humans welcome too.</p>
 
 <h2>What this is</h2>

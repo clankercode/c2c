@@ -66,7 +66,8 @@ val tmux_deliver_once :
 (** {1 Client Configurations} *)
 
 val clients : (string, client_config) Stdlib.Hashtbl.t
-(** Map from client name (claude, codex, opencode, kimi, crush) to config. *)
+(** Map from client name (claude, codex, opencode, kimi) to config. Crush is
+    deprecated but still registered for backward compat with the start banner. *)
 
 val supported_clients : string list
 (** List of supported client names. *)
