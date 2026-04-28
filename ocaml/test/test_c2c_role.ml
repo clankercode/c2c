@@ -473,6 +473,98 @@ let role_class_tests = [
   "security-review",  `Quick, test_role_class_to_room_security_review;
 ]
 
+(* ---------- #420: resolve_role_file_for_autoload ---------- *)
+
+let with_temp_cwd f =
+  let saved_cwd = Sys.getcwd () in
+  let tmp =
+    Filename.temp_file "c2c_role_autoload_" "_dir" in
+  Sys.remove tmp;
+  Unix.mkdir tmp 0o755;
+  Fun.protect
+    ~finally:(fun () ->
+      Sys.chdir saved_cwd;
+      let rec rmrf p =
+        match (Unix.lstat p).st_kind with
+        | Unix.S_DIR ->
+          Array.iter (fun e -> rmrf (Filename.concat p e)) (Sys.readdir p);
+          Unix.rmdir p
+        | _ -> Unix.unlink p
+        | exception Unix.Unix_error _ -> ()
+      in
+      rmrf tmp)
+    (fun () -> Sys.chdir tmp; f tmp)
+
+let touch_role path =
+  let dir = Filename.dirname path in
+  let rec mkdir_p d =
+    if not (Sys.file_exists d) then begin
+      mkdir_p (Filename.dirname d);
+      try Unix.mkdir d 0o755 with Unix.Unix_error (Unix.EEXIST,_,_) -> ()
+    end
+  in
+  mkdir_p dir;
+  let oc = open_out path in
+  output_string oc "---\nrole: subagent\n---\nbody\n";
+  close_out oc
+
+let test_autoload_canonical () =
+  with_temp_cwd (fun _ ->
+    touch_role ".c2c/roles/birch-coder.md";
+    match C2c_role.resolve_role_file_for_autoload
+            ~name:"birch-coder" ~client:"opencode" with
+    | Some p ->
+      Alcotest.(check bool) "canonical .c2c/roles wins" true
+        (Filename.basename p = "birch-coder.md"
+         && Filename.basename (Filename.dirname p) = "roles")
+    | None -> Alcotest.fail "expected canonical role to be found")
+
+let test_autoload_builtins () =
+  with_temp_cwd (fun _ ->
+    touch_role ".c2c/roles/builtins/jungle-coder.md";
+    match C2c_role.resolve_role_file_for_autoload
+            ~name:"jungle-coder" ~client:"opencode" with
+    | Some p ->
+      Alcotest.(check bool) "builtins fallback" true
+        (Filename.basename (Filename.dirname p) = "builtins")
+    | None -> Alcotest.fail "expected builtins role to be found")
+
+let test_autoload_canonical_beats_builtins () =
+  with_temp_cwd (fun _ ->
+    touch_role ".c2c/roles/jungle-coder.md";
+    touch_role ".c2c/roles/builtins/jungle-coder.md";
+    match C2c_role.resolve_role_file_for_autoload
+            ~name:"jungle-coder" ~client:"opencode" with
+    | Some p ->
+      Alcotest.(check bool) "canonical preferred over builtins" true
+        (Filename.basename (Filename.dirname p) = "roles")
+    | None -> Alcotest.fail "expected canonical to win")
+
+let test_autoload_client_native () =
+  with_temp_cwd (fun _ ->
+    touch_role ".opencode/agents/native-coder.md";
+    match C2c_role.resolve_role_file_for_autoload
+            ~name:"native-coder" ~client:"opencode" with
+    | Some p ->
+      Alcotest.(check bool) "client-native fallback" true
+        (Filename.basename (Filename.dirname p) = "agents")
+    | None -> Alcotest.fail "expected client-native role to be found")
+
+let test_autoload_none_when_missing () =
+  with_temp_cwd (fun _ ->
+    Alcotest.(check (option string)) "no role file -> None"
+      None
+      (C2c_role.resolve_role_file_for_autoload
+         ~name:"nonexistent-agent" ~client:"opencode"))
+
+let autoload_tests = [
+  "canonical",                 `Quick, test_autoload_canonical;
+  "builtins",                  `Quick, test_autoload_builtins;
+  "canonical_beats_builtins",  `Quick, test_autoload_canonical_beats_builtins;
+  "client_native",             `Quick, test_autoload_client_native;
+  "none_when_missing",         `Quick, test_autoload_none_when_missing;
+]
+
 let () =
   Alcotest.run "c2c_role" [
     "renderers", tests;
@@ -480,4 +572,5 @@ let () =
     "frontmatter", frontmatter_tests;
     "role_class", role_class_tests;
     "model_suppression", model_suppression_tests;
+    "autoload_420", autoload_tests;
   ]

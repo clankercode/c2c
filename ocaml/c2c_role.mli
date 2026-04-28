@@ -56,6 +56,12 @@ val client_agent_dir : client:string -> string
 val resolve_agent_path : name:string -> client:string -> string
 val role_class_to_room : string -> string option
 
+(* #420: locate a role file by name for `c2c start -n NAME` autoload.
+   Priority: .c2c/roles/<name>.md, .c2c/roles/builtins/<name>.md,
+   <client-native>/<name>.md. Returns None if none exist. *)
+val resolve_role_file_for_autoload :
+  name:string -> client:string -> string option
+
 val canonical_roles_dir : unit -> string
 val client_agent_dir : client:string -> string
 val resolve_agent_path : name:string -> client:string -> string

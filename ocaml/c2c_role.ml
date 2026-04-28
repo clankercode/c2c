@@ -513,6 +513,24 @@ let resolve_agent_path ~(name : string) ~(client : string) : string =
   if Sys.file_exists canonical then canonical
   else client_agent_dir ~client // (name ^ ".md")
 
+(* #420: locate a role file by `name` for the autoload-on-`-n` path.
+   Priority:
+     1. .c2c/roles/<name>.md       (canonical, user-written)
+     2. .c2c/roles/builtins/<name>.md  (canonical, repo-shipped)
+     3. <client-native>/<name>.md  (e.g. .opencode/agents/<name>.md)
+   Returns Some <path> if any of those exist; None otherwise. Used by
+   `c2c start` to skip the interactive role prompt when `-n NAME` matches
+   an existing role file even without an explicit `--agent NAME`. *)
+let resolve_role_file_for_autoload ~(name : string) ~(client : string)
+  : string option =
+  let canonical = canonical_roles_dir () // (name ^ ".md") in
+  let builtins  = canonical_roles_dir () // "builtins" // (name ^ ".md") in
+  let client_native = client_agent_dir ~client // (name ^ ".md") in
+  if Sys.file_exists canonical then Some canonical
+  else if Sys.file_exists builtins then Some builtins
+  else if Sys.file_exists client_native then Some client_native
+  else None
+
 let role_class_to_room (role_class : string) : string option =
   match String.trim role_class with
   | "" -> None
