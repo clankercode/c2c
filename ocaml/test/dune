@@ -126,3 +126,8 @@
  (name test_post_compact_hook)
  (modules test_post_compact_hook)
  (libraries c2c_post_compact_hook_lib alcotest yojson unix))
+
+(test
+ (name test_c2c_relay_connector)
+ (modules test_c2c_relay_connector)
+ (libraries c2c_mcp alcotest yojson unix))
