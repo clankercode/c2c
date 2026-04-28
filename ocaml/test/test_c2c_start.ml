@@ -190,6 +190,38 @@ let test_prepare_launch_args_opencode_agent_flag_uses_instance_name () =
   check bool "--agent does NOT pass role name" false
     (has_adjacent_pair "--agent" "test-agent" args)
 
+(* Regression #372: `c2c start <client> -- <args...>` must forward
+   <args...> verbatim to the spawned client. The man-page documents this
+   but the CLI dispatch previously refused with
+   "extra argv after CLIENT is only supported for `c2c start tmux`".
+   prepare_launch_args is the one place where the final argv is assembled,
+   so assert that extra_args land on the tail for each managed client. *)
+let test_prepare_launch_args_forwards_extra_args_for_claude () =
+  let args =
+    C2c_start.prepare_launch_args ~name:"claude-372" ~client:"claude"
+      ~extra_args:[ "--print"; "hello world" ] ~broker_root:"/tmp/broker" ()
+  in
+  check bool "forwards --print" true (List.mem "--print" args);
+  check bool "forwards 'hello world'" true (List.mem "hello world" args);
+  check bool "forwarded args are adjacent and at tail" true
+    (has_adjacent_pair "--print" "hello world" args)
+
+let test_prepare_launch_args_forwards_extra_args_for_opencode () =
+  let args =
+    C2c_start.prepare_launch_args ~name:"oc-372" ~client:"opencode"
+      ~extra_args:[ "--debug"; "--foo=bar" ] ~broker_root:"/tmp/broker" ()
+  in
+  check bool "forwards --debug" true (List.mem "--debug" args);
+  check bool "forwards --foo=bar" true (List.mem "--foo=bar" args)
+
+let test_prepare_launch_args_forwards_extra_args_for_codex () =
+  let args =
+    C2c_start.prepare_launch_args ~name:"cx-372" ~client:"codex"
+      ~extra_args:[ "--profile"; "myprofile" ] ~broker_root:"/tmp/broker" ()
+  in
+  check bool "forwards --profile" true
+    (has_adjacent_pair "--profile" "myprofile" args)
+
 let test_prepare_launch_args_adds_model_flag_for_opencode () =
   let args =
     C2c_start.prepare_launch_args ~name:"oc-proof" ~client:"opencode"
@@ -1794,6 +1826,12 @@ let () =
             `Quick, test_prepare_launch_args_adds_agent_flag_for_claude )
         ; ( "prepare_launch_args_opencode_agent_flag_uses_instance_name",
             `Quick, test_prepare_launch_args_opencode_agent_flag_uses_instance_name )
+        ; ( "prepare_launch_args_forwards_extra_args_for_claude",
+            `Quick, test_prepare_launch_args_forwards_extra_args_for_claude )
+        ; ( "prepare_launch_args_forwards_extra_args_for_opencode",
+            `Quick, test_prepare_launch_args_forwards_extra_args_for_opencode )
+        ; ( "prepare_launch_args_forwards_extra_args_for_codex",
+            `Quick, test_prepare_launch_args_forwards_extra_args_for_codex )
         ; ( "prepare_launch_args_adds_model_flag_for_opencode",
             `Quick, test_prepare_launch_args_adds_model_flag_for_opencode )
         ; ( "tmux_shell_command_quotes_argv",

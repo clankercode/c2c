@@ -6067,7 +6067,11 @@ let start_cmd =
      `c2c start pty -- bash -i` runs bash with `-i`. *)
   let extra_argv =
     Cmdliner.Arg.(value & pos_right 1 (list string) [] & info [] ~docv:"ARG"
-      ~doc:"Extra arguments passed to the client after `--`. Anything after `--` is appended verbatim to the client's argv.")
+      ~doc:"Extra arguments forwarded to the spawned client's argv (e.g. \
+            `c2c start claude -- --print hello` runs claude with `--print hello`). \
+            For CLIENT=tmux, the tail is typed into the target pane instead of \
+            appended to argv. For CLIENT=pty, the first tail arg is the command \
+            to spawn under the PTY (e.g. `c2c start pty -- bash -i`).")
   in
   let name =
     Cmdliner.Arg.(value & opt (some string) None & info [ "name"; "n" ] ~docv:"NAME" ~doc:"Instance name (default: auto-generated).")
@@ -6220,10 +6224,11 @@ let start_cmd =
     Printf.eprintf "error: --loc is only valid with `c2c start tmux`.\n%!";
     exit 1
   end;
-  if client <> "tmux" && tmux_tail <> [] then begin
-    Printf.eprintf "error: extra argv after CLIENT is only supported for `c2c start tmux` in this slice.\n%!";
-    exit 1
-  end;
+  (* Args after `--` are forwarded to the spawned client's argv (per
+     `c2c start --help`). For CLIENT=tmux, the tail is the command typed
+     into the target pane (handled separately via tmux_command). For all
+     other clients, the tail flows through extra_argv → prepare_launch_args,
+     which appends it verbatim to the client's argv. No reject here. *)
   let name = match name_opt with
     | Some n -> n
     | None ->
