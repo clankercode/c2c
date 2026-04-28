@@ -124,15 +124,12 @@ def test_peer_pass_sign_and_verify_cross_broker(agent_a1, agent_b1):
       4. Artifact is copied to agent-b1's container via docker cp
       5. agent-b1 verifies the artifact — signature must be valid
     """
-    # Step 1: Register both agents on the relay
+    # Step 1: Register both agents locally + on relay (c2c register creates broker key path)
     for agent, alias in [(agent_a1, ALIAS_A1), (agent_b1, ALIAS_B1)]:
-        init_identity(agent, alias)
-        r = subprocess.run(
-            ["docker", "exec", "-e", "C2C_CLI_FORCE=1", agent,
-             "c2c", "relay", "register", "--alias", alias, "--relay-url", RELAY_URL],
-            capture_output=True, text=True, timeout=30,
-        )
-        # Registration may succeed or fail if already registered — that's fine for the test
+        r = init_identity(agent, alias, relay_url=RELAY_URL)
+        # init_identity returns first failure; allow registration conflicts
+        if r.returncode not in (0, 2):  # 2 = already registered
+            print("[s5] init_identity warning for {}: {}".format(alias, r.stderr))
 
     # Step 2: agent-a1 creates a test git commit
     test_sha = make_test_commit_in_container(
@@ -144,8 +141,8 @@ def test_peer_pass_sign_and_verify_cross_broker(agent_a1, agent_b1):
     assert test_sha, "make_test_commit_in_container returned empty SHA"
     print("[s5] test commit SHA: {}".format(test_sha))
 
-    # Step 3: agent-a1 initializes identity and signs the peer-PASS artifact
-    init_identity(agent_a1, ALIAS_A1, force=True)
+    # Step 3: agent-a1 re-registers (idempotent) and signs the peer-PASS artifact
+    init_identity(agent_a1, ALIAS_A1, relay_url=RELAY_URL)
     artifact_a1 = sign_artifact_in_container(
         agent_a1,
         sha=test_sha,

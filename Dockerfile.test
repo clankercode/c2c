@@ -30,12 +30,11 @@ RUN opam update -y \
         tls-lwt ca-certs conduit-lwt-unix x509 ptime hacl-star
 
 # Copy source — --chown changes ownership of the copied tree to opam:opam.
-# The _build dir (created by dune) will be owned by opam.
 COPY dune-project ./
 COPY ocaml ./ocaml
-# Legacy builder silently ignores --chown; switch to root to fix ownership
+# Remove any stale _build dir from the host (wrong uid causes Permission denied)
 USER root
-RUN chown -R opam:opam /home/opam/c2c
+RUN rm -rf /home/opam/c2c/_build && chown -R opam:opam /home/opam/c2c
 USER opam
 RUN opam exec -- dune build --release ocaml/cli/c2c.exe
 

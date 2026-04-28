@@ -49,19 +49,43 @@ def _run_c2c_in(
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
+def register_on_relay(
+    container: str,
+    alias: str,
+    relay_url: str = "http://relay:7331",
+) -> subprocess.CompletedProcess:
+    """Register alias on the relay for cross-broker routing.
+
+    Runs: c2c relay register --alias <alias> --relay-url <relay_url>
+    """
+    return _run_c2c_in(container, [
+        "relay", "register",
+        "--alias", alias,
+        "--relay-url", relay_url,
+    ])
+
+
 def init_identity(
     container: str,
     alias: str,
-    force: bool = False,
+    relay_url: str = "http://relay:7331",
 ) -> subprocess.CompletedProcess:
-    """Generate (or regenerate) an Ed25519 identity inside container.
+    """Register alias locally AND on relay, creating the broker key path.
 
-    Runs: c2c relay identity init [--force]
+    `c2c register` creates the per-alias signing key at
+    <broker_root>/keys/<alias>.ed25519 (via write_allowed_signers_entry).
+    `c2c relay register` registers the alias on the relay for cross-broker
+    routing. Both are needed for peer-pass sign to work.
+
+    Runs: c2c register --alias <alias>
+          c2c relay register --alias <alias> --relay-url <relay_url>
     """
-    argv = ["relay", "identity", "init"]
-    if force:
-        argv.append("--force")
-    return _run_c2c_in(container, argv)
+    # c2c register — creates broker key path at <broker_root>/keys/<alias>.ed25519
+    r1 = _run_c2c_in(container, ["register", "--alias", alias])
+    # relay registration — for cross-broker routing
+    r2 = register_on_relay(container, alias, relay_url)
+    # Return first failure, or success
+    return r1 if r1.returncode != 0 else r2
 
 
 def get_identity_show(container: str) -> dict[str, Any]:
@@ -229,12 +253,14 @@ def sign_artifact_in_container(
     criteria: str = "s5-e2e",
     notes: str = "S5 E2E test artifact",
     allow_self: bool = True,
+    repo_path: str = "/tmp/s5-test-repo-clone",
 ) -> str:
     """Sign a peer-PASS artifact inside container and return the artifact path.
 
-    The container must have the git commit sha accessible (e.g. via a shared
-    volume or local bare repo at /tmp). Uses --allow-self because in the test
-    context the signer's alias matches the "reviewer alias" in the artifact.
+    Runs `c2c peer-pass sign` from within the git clone so that
+    `git_commit_exists sha` (used by validate_signing_allowed) resolves
+    the test commit. Uses --allow-self because in the test context the
+    signer's alias matches the "reviewer alias" in the artifact.
 
     Returns the absolute artifact path inside the container.
     """
@@ -246,7 +272,11 @@ def sign_artifact_in_container(
     ]
     if allow_self:
         argv.append("--allow-self")
-    r = _run_c2c_in(container, argv)
+    # Run from the git clone directory so git_commit_exists finds the SHA
+    r = _run_c2c_in(container, [
+        "bash", "-c",
+        f"cd {repo_path} && " + " ".join([C2C_CLI] + argv)
+    ])
     assert r.returncode == 0, f"peer-pass sign failed in {container}: {r.stderr}"
 
     # Verify the artifact exists at the expected path
