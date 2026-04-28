@@ -1,0 +1,403 @@
+#!/usr/bin/env python3
+"""Outer restart loop for run-crush-inst.
+
+Usage: ./run-crush-inst-outer [--create] <instance-name> [extra crush args...]
+
+Mirrors run-codex-inst-outer: relaunches the inner script forever,
+backs off on fast exits, calls maybe_rearm after each launch to start
+the deliver_inbox notify daemon, and exits cleanly on a double SIGINT.
+
+Use --create to auto-generate a run-crush-inst.d/<name>.json config if it
+doesn't already exist.
+"""
+from __future__ import annotations
+
+import json
+import os
+import signal
+import subprocess
+import sys
+
+print(f"DEPRECATED: {__file__} is deprecated — use 'c2c start crush' instead. See CLAUDE.md.", file=__import__('sys').stderr)
+
+import threading
+import time
+from pathlib import Path
+
+MIN_RUN_SECONDS = 10.0
+RESTART_PAUSE_SECONDS = 1.5
+INITIAL_BACKOFF_SECONDS = 2.0
+MAX_BACKOFF_SECONDS = 60.0
+DOUBLE_SIGINT_WINDOW_SECONDS = 2.0
+HELP_FLAGS = {"-h", "--help"}
+CREATE_FLAGS = {"--create", "-c"}
+
+HERE = Path(__file__).resolve().parent
+INNER = HERE / "run-crush-inst"
+REARM = HERE / "run-crush-inst-rearm"
+
+
+def dry_run_enabled() -> bool:
+    return os.environ.get("RUN_CRUSH_INST_OUTER_DRY_RUN", "").strip().lower() not in {
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def inner_command(name: str, extra: list[str]) -> list[str]:
+    return [sys.executable, str(INNER), name, *extra]
+
+
+def rearm_command(name: str) -> list[str]:
+    return [sys.executable, str(REARM), name]
+
+
+def rearm_enabled() -> bool:
+    return os.environ.get("RUN_CRUSH_INST_REARM", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _load_instance_config(name: str) -> dict:
+    cfg_path = HERE / "run-crush-inst.d" / f"{name}.json"
+    if not cfg_path.exists():
+        return {}
+    try:
+        return json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _load_instance_alias(name: str) -> str | None:
+    cfg = _load_instance_config(name)
+    return cfg.get("c2c_alias") or cfg.get("c2c_session_id") or None
+
+
+def _load_instance_session_id(name: str) -> str | None:
+    cfg = _load_instance_config(name)
+    return (
+        cfg.get("c2c_session_id")
+        or cfg.get("env", {}).get("C2C_MCP_SESSION_ID")
+        or None
+    )
+
+
+def maybe_refresh_peer(name: str, pid: int) -> None:
+    """Update the broker registry to point <name>'s alias at the new child PID."""
+    alias = _load_instance_alias(name)
+    if not alias:
+        return
+    refresh = HERE / "c2c_refresh_peer.py"
+    if not refresh.exists():
+        return
+    cmd = [sys.executable, str(refresh), alias, "--pid", str(pid)]
+    session_id = _load_instance_session_id(name)
+    if session_id:
+        cmd += ["--session-id", session_id]
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=HERE,
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            if "No registration found" not in stderr:
+                print(
+                    f"[run-crush-inst-outer] refresh-peer warning: {stderr}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+    except Exception as exc:
+        print(
+            f"[run-crush-inst-outer] refresh-peer error: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def _capture_crush_session_id(name: str) -> None:
+    """Poll crush session last and store the session id/uuid in the instance config."""
+    cfg_path = HERE / "run-crush-inst.d" / f"{name}.json"
+    if not cfg_path.exists():
+        return
+    try:
+        time.sleep(2.5)
+        result = subprocess.run(
+            ["crush", "session", "last", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+        if result.returncode != 0:
+            return
+        data = json.loads(result.stdout)
+        session_id = data.get("id")
+        session_uuid = data.get("uuid")
+        if not session_id:
+            return
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        updated = False
+        if cfg.get("crush_session_id") != session_id:
+            cfg["crush_session_id"] = session_id
+            updated = True
+        if session_uuid and cfg.get("crush_session_uuid") != session_uuid:
+            cfg["crush_session_uuid"] = session_uuid
+            updated = True
+        if updated:
+            cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+            print(
+                f"[run-crush-inst-outer] captured crush session: {session_id} / {session_uuid}",
+                flush=True,
+            )
+    except Exception as exc:
+        print(
+            f"[run-crush-inst-outer] session capture error: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def kill_orphan_mcp_brokers(session_id: str) -> int:
+    """Kill c2c_mcp_server processes for *session_id* that are orphaned (ppid=1).
+
+    When Crush exits its MCP broker subprocess is reparented to init rather
+    than receiving EOF on stdin (the write-end of its stdin pipe is held open
+    by some other process or file-descriptor inheritance).  This function
+    scans /proc for processes whose cmdline contains 'c2c_mcp_server' and
+    whose environment contains C2C_MCP_SESSION_ID=<session_id>, then sends
+    SIGTERM to each one.
+
+    Returns the number of processes killed (for logging).
+    """
+    killed = 0
+    try:
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            pid = int(entry)
+            try:
+                cmdline_path = f"/proc/{pid}/cmdline"
+                with open(cmdline_path, "rb") as fh:
+                    cmdline = fh.read().decode("utf-8", errors="replace")
+                if "c2c_mcp_server" not in cmdline and "c2c mcp" not in cmdline:
+                    continue
+                environ_path = f"/proc/{pid}/environ"
+                with open(environ_path, "rb") as fh:
+                    environ = fh.read().decode("utf-8", errors="replace")
+                needle = f"C2C_MCP_SESSION_ID={session_id}\0"
+                if needle not in environ:
+                    continue
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    killed += 1
+                except ProcessLookupError:
+                    pass
+            except (PermissionError, FileNotFoundError, OSError):
+                continue
+    except Exception:
+        pass
+    return killed
+
+
+def _broker_session_id_for_pid(pid: int) -> str | None:
+    """Look up session_id for a PID from the broker registry (same logic as rearm)."""
+    try:
+        import json as _json
+        common_dir_result = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True, timeout=5, cwd=HERE,
+        )
+        if common_dir_result.returncode != 0:
+            return None
+        common_dir = Path(common_dir_result.stdout.strip())
+        if not common_dir.is_absolute():
+            common_dir = (HERE / common_dir).resolve()
+        reg_path = common_dir / "c2c" / "mcp" / "registry.json"
+        if not reg_path.exists():
+            return None
+        regs = _json.loads(reg_path.read_text(encoding="utf-8"))
+        if not isinstance(regs, list):
+            return None
+        for reg in regs:
+            if reg.get("pid") == pid:
+                return reg.get("session_id") or None
+    except Exception:
+        pass
+    return None
+
+
+def maybe_rearm(name: str, crush_pid: int | None = None) -> None:
+    if not rearm_enabled() or not REARM.exists():
+        return
+    cmd = rearm_command(name)
+    # If the crush PID is known, poll the broker briefly to get the actual registered
+    # session_id (crush clients often ignore C2C_MCP_SESSION_ID and use their own
+    # internal session identifier). This avoids the deliver daemon watching the wrong inbox.
+    if crush_pid is not None:
+        sid = None
+        for _attempt in range(8):  # poll up to ~4s for crush to register
+            sid = _broker_session_id_for_pid(crush_pid)
+            if sid:
+                break
+            time.sleep(0.5)
+        if sid:
+            cmd = cmd + ["--pid", str(crush_pid), "--session-id", sid]
+            print(
+                f"[run-crush-inst-outer] rearm: detected session_id={sid} for pid={crush_pid}",
+                flush=True,
+            )
+        else:
+            cmd = cmd + ["--pid", str(crush_pid)]
+    completed = subprocess.run(cmd, cwd=HERE, check=False)
+    if completed.returncode != 0:
+        print(
+            f"[run-crush-inst-outer] warning: rearm exited code={completed.returncode}",
+            flush=True,
+        )
+
+
+def _create_config(name: str) -> Path:
+    cfg_path = HERE / "run-crush-inst.d" / f"{name}.json"
+    if cfg_path.exists():
+        return cfg_path
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    template = {
+        "command": "crush",
+        "cwd": str(HERE),
+        "c2c_session_id": name,
+        "c2c_alias": name,
+        "title": name,
+        "flags": ["-y"],
+    }
+    cfg_path.write_text(json.dumps(template, indent=2) + "\n", encoding="utf-8")
+    print(f"[run-crush-inst-outer] created config: {cfg_path}", flush=True)
+    return cfg_path
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) == 2 and argv[1] in HELP_FLAGS:
+        print(__doc__.strip())
+        return 0
+
+    create = False
+    filtered = [a for a in argv[1:] if a not in CREATE_FLAGS]
+    create = len(filtered) != len(argv[1:])
+
+    if len(filtered) < 1:
+        print(f"usage: {argv[0]} [--create] <instance-name> [extra crush args...]", file=sys.stderr)
+        return 2
+
+    name = filtered[0]
+    extra = filtered[1:]
+
+    if create:
+        _create_config(name)
+
+    if not INNER.exists():
+        print(f"inner script not found: {INNER}", file=sys.stderr)
+        return 2
+
+    command = inner_command(name, extra)
+    if dry_run_enabled():
+        print(json.dumps({"inner": command, "rearm": rearm_command(name)}, indent=2))
+        return 0
+
+    # Resolve the stable c2c session ID for this instance (used to kill
+    # orphaned MCP broker processes after each Crush exit).
+    session_id = _load_instance_session_id(name)
+
+    backoff = INITIAL_BACKOFF_SECONDS
+    last_sigint = 0.0
+    iteration = 0
+
+    while True:
+        iteration += 1
+        try:
+            import c2c_mcp as _c2c_mcp
+            _n = _c2c_mcp.cleanup_stale_tmp_fea_so()
+            if _n:
+                print(f"[run-crush-inst-outer] cleaned {_n} stale /tmp/.fea*.so file(s)", flush=True)
+        except Exception:
+            pass
+        print(f"[run-crush-inst-outer] iter {iteration}: launching {name}", flush=True)
+        started = time.monotonic()
+        proc = None
+        try:
+            proc = subprocess.Popen(command, cwd=HERE, start_new_session=True)
+            maybe_refresh_peer(name, proc.pid)
+            maybe_rearm(name, crush_pid=proc.pid)
+            threading.Thread(
+                target=_capture_crush_session_id,
+                args=(name,),
+                daemon=True,
+            ).start()
+            proc.wait()
+            exit_code = proc.returncode
+        except KeyboardInterrupt:
+            now = time.monotonic()
+            # Terminate child if still alive — prevents orphaned crush processes
+            # when the child runs in a new session and didn't receive the SIGINT.
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+            if now - last_sigint < DOUBLE_SIGINT_WINDOW_SECONDS:
+                print("[run-crush-inst-outer] double SIGINT - exiting.", flush=True)
+                return 130
+            last_sigint = now
+            print(
+                "[run-crush-inst-outer] SIGINT received. Send again within "
+                f"{DOUBLE_SIGINT_WINDOW_SECONDS:.1f}s to exit the loop.",
+                flush=True,
+            )
+            exit_code = 130
+        except FileNotFoundError as exc:
+            print(f"[run-crush-inst-outer] failed to launch: {exc}", file=sys.stderr)
+            return 2
+
+        # Kill any orphaned MCP broker processes from this Crush session.
+        # When Crush exits its broker subprocess is sometimes reparented to
+        # init rather than receiving EOF, accumulating leaked processes.
+        if session_id:
+            n = kill_orphan_mcp_brokers(session_id)
+            if n:
+                print(
+                    f"[run-crush-inst-outer] killed {n} orphaned broker(s) for {session_id}",
+                    flush=True,
+                )
+
+        elapsed = time.monotonic() - started
+        print(
+            f"[run-crush-inst-outer] inner exited code={exit_code} after {elapsed:.1f}s",
+            flush=True,
+        )
+
+        if elapsed < MIN_RUN_SECONDS:
+            print(
+                f"[run-crush-inst-outer] fast exit - backing off {backoff:.1f}s",
+                flush=True,
+            )
+            time.sleep(backoff)
+            backoff = min(backoff * 2.0, MAX_BACKOFF_SECONDS)
+        else:
+            backoff = INITIAL_BACKOFF_SECONDS
+            time.sleep(RESTART_PAUSE_SECONDS)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv))
+    except KeyboardInterrupt:
+        raise SystemExit(130)
