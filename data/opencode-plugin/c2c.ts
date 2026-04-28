@@ -177,14 +177,19 @@ function extractQuestionReply(content: string): { qId: string; answer: string | 
 }
 
 const C2CDelivery: Plugin = async (ctx) => {
-  // If running as the global plugin and a project-level plugin exists in the
-  // current directory, defer to it — avoids double-loading when both are active.
-  const projectPluginPath = path.join(process.cwd(), ".opencode", "plugins", "c2c.ts");
-  const thisPluginPath = new URL(import.meta.url).pathname;
-  const isGlobalPlugin = thisPluginPath.includes("/.config/opencode/plugins/");
-  if (isGlobalPlugin && fs.existsSync(projectPluginPath)) {
-    return {}; // project-level plugin will handle delivery
+  // #337: process-scoped flag prevents double-loading when both global and
+  // project-level plugins resolve to the same .ts file. The previous guard
+  // checked `thisPluginPath.includes("/.config/opencode/plugins/")` but Bun
+  // resolves symlinks in `import.meta.url` to realpath, so the substring
+  // match never triggered for either instance. globalThis lives one process
+  // up from the module loader, so a second loadExternal() in the same
+  // process sees the flag and returns immediately.
+  const g = globalThis as { __c2c_loaded?: boolean };
+  if (g.__c2c_loaded) {
+    return {}; // already loaded in this process — second instance is a no-op
   }
+  g.__c2c_loaded = true;
+  const thisPluginPath = new URL(import.meta.url).pathname;
 
   // Boot banner — log pid + sha256 prefix of this file so stale bun compile
   // cache issues are instantly visible: if sha doesn't match `sha256sum c2c.ts`
