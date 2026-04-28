@@ -1050,9 +1050,39 @@ module Broker = struct
              if debug_enabled then Printf.eprintf "[DEBUG resolve] alias=%s -> Resolved %s (alive)\n%!" alias reg.session_id;
              Resolved reg.session_id
          | None ->
-              if debug_enabled then Printf.eprintf "[DEBUG resolve] alias=%s -> All_recipients_dead (matches=%d, none alive per lease/proc)\n%!"
-                alias (List.length matches);
-             All_recipients_dead)
+             (* Target-side self-heal: every match looks dead, but the
+                target may have respawned under a new pid without
+                touching the broker yet. Try to refresh each candidate
+                via /proc scan; if any flips to Alive, return that.
+                Without this, a sender to e.g. galaxy-coder hits
+                All_recipients_dead even when galaxy is live under a
+                fresh pid — the bug this slice exists to fix. *)
+             let healed =
+               List.fold_left
+                 (fun acc reg ->
+                   match acc with
+                   | Some _ -> acc
+                   | None ->
+                       if refresh_pid_if_dead t ~session_id:reg.session_id
+                       then begin
+                         (* Re-load to pick up the swapped pid; the in-memory
+                            [reg] is stale after refresh. *)
+                         let regs' = load_registrations t in
+                         List.find_opt
+                           (fun r -> r.session_id = reg.session_id
+                                  && registration_is_alive r)
+                           regs'
+                       end else None)
+                 None matches
+             in
+             (match healed with
+              | Some reg ->
+                  if debug_enabled then Printf.eprintf "[DEBUG resolve] alias=%s -> Resolved %s (healed)\n%!" alias reg.session_id;
+                  Resolved reg.session_id
+              | None ->
+                  if debug_enabled then Printf.eprintf "[DEBUG resolve] alias=%s -> All_recipients_dead (matches=%d, none alive per lease/proc, heal failed)\n%!"
+                    alias (List.length matches);
+                  All_recipients_dead))
 
   (* A provisional registration has no confirmed PID-based liveness yet AND
      has never drained its inbox (confirmed_at = None). Human sessions are
