@@ -426,12 +426,51 @@ let send_cmd =
 
 (* --- subcommand: list ----------------------------------------------------- *)
 
+(* lookup_role_info: best-effort load of .c2c/roles/<alias>.md for enriched listing.
+   Returns (role_class, description) defaulting to ("","") when the role file is absent
+   or unparseable. Tolerant to malformed files — discoverability is informational, not
+   load-bearing. *)
+let lookup_role_info (alias : string) : string * string =
+  let path = C2c_role.canonical_roles_dir () // (alias ^ ".md") in
+  if not (Sys.file_exists path) then ("", "")
+  else
+    try
+      let r = C2c_role.parse_file path in
+      let role_class = Option.value r.C2c_role.role_class ~default:"" in
+      (role_class, r.C2c_role.description)
+    with _ -> ("", "")
+
+(* truncate a string to n graphemes (approximate via bytes, safe for ASCII descriptions). *)
+let truncate_str (s : string) (n : int) : string =
+  let s = String.trim s in
+  if String.length s <= n then s
+  else if n <= 1 then String.sub s 0 (max 0 n)
+  else String.sub s 0 (n - 1) ^ "…"
+
+(* relative-time: render a registered_at timestamp as "active now" / "5m ago" / "2h ago" / etc. *)
+let format_last_seen (registered_at : float option) : string =
+  match registered_at with
+  | None -> "—"
+  | Some ts ->
+      let now = Unix.gettimeofday () in
+      let delta = now -. ts in
+      if delta < 0.0 then "future?"
+      else if delta < 120.0 then "active now"
+      else if delta < 3600.0 then Printf.sprintf "%dm ago" (int_of_float (delta /. 60.0))
+      else if delta < 86400.0 then Printf.sprintf "%dh ago" (int_of_float (delta /. 3600.0))
+      else Printf.sprintf "%dd ago" (int_of_float (delta /. 86400.0))
+
 let list_cmd =
   let all =
     Cmdliner.Arg.(value & flag & info [ "all"; "a" ] ~doc:"Show extended info (session ID, registered time).")
   in
+  let enriched =
+    Cmdliner.Arg.(value & flag & info [ "enriched"; "e" ]
+      ~doc:"Show role-class + description + last-seen for each peer (looked up from .c2c/roles/<alias>.md). Useful for new agents orienting on who's who in the swarm.")
+  in
   let+ json = json_flag
-  and+ all = all in
+  and+ all = all
+  and+ enriched = enriched in
   mcp_nudge_if_needed ~cmd:"list";
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let regs = C2c_mcp.Broker.list_registrations broker in
@@ -475,11 +514,48 @@ let list_cmd =
                     fields @ [ ("compacting", `Assoc [ ("started_at", `Float c.started_at); ("reason", reason_json) ]) ]
                 | None -> fields
               in
+              let fields =
+                if enriched then
+                  let (role_class, description) = lookup_role_info r.alias in
+                  fields @ [
+                    ("role_class", `String role_class);
+                    ("description", `String description);
+                    ("last_seen", `String (format_last_seen r.registered_at));
+                  ]
+                else fields
+              in
               `Assoc fields)
             regs
         in
         print_json (`List json_regs)
     | Human ->
+        if enriched then begin
+          (* Header for enriched view. *)
+          Printf.printf "  %-20s %-13s %-40s %-12s %s\n"
+            "ALIAS" "ROLE" "DESCRIPTION" "LAST-SEEN" "STATE";
+          Printf.printf "  %-20s %-13s %-40s %-12s %s\n"
+            (String.make 20 '-') (String.make 13 '-') (String.make 40 '-')
+            (String.make 12 '-') (String.make 5 '-');
+          List.iter
+            (fun (r : C2c_mcp.registration) ->
+              let alive_str =
+                match C2c_mcp.Broker.registration_liveness_state r with
+                | C2c_mcp.Broker.Alive -> "alive"
+                | C2c_mcp.Broker.Dead -> "dead"
+                | C2c_mcp.Broker.Unknown -> "?"
+              in
+              let (role_class, description) = lookup_role_info r.alias in
+              let role_class = if role_class = "" then "—" else role_class in
+              let description = if description = "" then "—" else description in
+              let last_seen = format_last_seen r.registered_at in
+              Printf.printf "  %-20s %-13s %-40s %-12s %s\n"
+                (truncate_str r.alias 20)
+                (truncate_str role_class 13)
+                (truncate_str description 40)
+                last_seen
+                alive_str)
+            regs
+        end else
         List.iter
           (fun (r : C2c_mcp.registration) ->
             let alive_str =

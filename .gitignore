@@ -17,6 +17,7 @@ _build/
 .kimi/
 .c2c/worktrees/
 .c2c/*.md
+!.c2c/peers.md
 .opencode/agent.bak/
 *.db
 .artifacts/
