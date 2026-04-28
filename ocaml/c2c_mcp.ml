@@ -309,6 +309,15 @@ let tag_to_body_prefix = function
   | Some "urgent"   -> "\xE2\x9A\xA0\xEF\xB8\x8F URGENT: "  (* ⚠️ *)
   | _ -> ""
 
+let extract_tag_from_content content =
+  if String.length content >= 5 && String.sub content 0 5 = "\xF0\x9F\x94\xB4 FAIL: "
+  then Some "fail"
+  else if String.length content >= 11 && String.sub content 0 11 = "\xE2\x9B\x94 BLOCKING: "
+  then Some "blocking"
+  else if String.length content >= 5 && String.sub content 0 5 = "\xE2\x9A\xA0\xEF\xB8\x8F URGENT: "
+  then Some "urgent"
+  else None
+
 let parse_send_tag = function
   | None -> Ok None
   | Some "" -> Ok None
@@ -317,6 +326,37 @@ let parse_send_tag = function
     Error (Printf.sprintf
              "unknown tag '%s' — must be one of: fail, blocking, urgent"
              other)
+
+let xml_escape s =
+  let buf = Buffer.create (String.length s) in
+  String.iter (function
+    | '&' -> Buffer.add_string buf "&amp;"
+    | '<' -> Buffer.add_string buf "&lt;"
+    | '>' -> Buffer.add_string buf "&gt;"
+    | '"' -> Buffer.add_string buf "&quot;"
+    | '\'' -> Buffer.add_string buf "&#39;"
+    | c -> Buffer.add_char buf c)
+    s;
+  Buffer.contents buf
+
+let format_c2c_envelope ~from_alias ~to_alias ?tag ?role ?reply_via ~content () =
+  let tag_attr = match tag with
+    | Some t -> Printf.sprintf " tag=\"%s\"" (xml_escape t)
+    | None -> ""
+  in
+  let role_attr = match role with
+    | Some r -> Printf.sprintf " role=\"%s\"" (xml_escape r)
+    | None -> ""
+  in
+  let reply_via_str = xml_escape (Option.value reply_via ~default:"c2c_send") in
+  Printf.sprintf
+    "<c2c event=\"message\" from=\"%s\" alias=\"%s\" source=\"broker\" reply_via=\"%s\" action_after=\"continue\"%s%s>\n%s\n</c2c>"
+    (xml_escape from_alias)
+    (xml_escape to_alias)
+    reply_via_str
+    role_attr
+    tag_attr
+    content
 
 (* Parse a YAML-flow list value (e.g. "[alice, bob]" or "[]") into a string
    list. Also accepts a bare comma-separated form ("alice, bob") for

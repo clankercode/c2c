@@ -17,31 +17,16 @@ let default_spool_path broker_root session_id =
  * Message envelope (must match Python format_c2c_envelope)
  * --------------------------------------------------------------------------- *)
 
-let xml_escape s =
-  let buf = Buffer.create (String.length s) in
-  String.iter (function
-    | '&' -> Buffer.add_string buf "&amp;"
-    | '<' -> Buffer.add_string buf "&lt;"
-    | '>' -> Buffer.add_string buf "&gt;"
-    | '"' -> Buffer.add_string buf "&quot;"
-    | '\'' -> Buffer.add_string buf "&#39;"
-    | c -> Buffer.add_char buf c)
-    s;
-  Buffer.contents buf
-
 let format_envelope ?(sender_role : string option) (msg : C2c_mcp.message) =
-  let reply_via = xml_escape (Option.value msg.reply_via ~default:"c2c_send") in
-  let role_attr = match sender_role with
-    | Some r -> Printf.sprintf " role=\"%s\"" (xml_escape r)
-    | None -> ""
-  in
-  Printf.sprintf
-    "<c2c event=\"message\" from=\"%s\" alias=\"%s\" source=\"broker\" reply_via=\"%s\" action_after=\"continue\"%s>\n%s\n</c2c>"
-    (xml_escape msg.from_alias)
-    (xml_escape msg.to_alias)
-    reply_via
-    role_attr
-    msg.content
+  let tag = C2c_mcp.extract_tag_from_content msg.content in
+  C2c_mcp.format_c2c_envelope
+    ~from_alias:msg.from_alias
+    ~to_alias:msg.to_alias
+    ?tag
+    ?role:sender_role
+    ?reply_via:msg.reply_via
+    ~content:msg.content
+    ()
 
 let format_prompt
     ?(role_lookup : string -> string option = fun _ -> None)

@@ -27,6 +27,14 @@ val parse_send_tag : string option -> (string option, string) result
     (no tag). [Some "fail"|"blocking"|"urgent"] → [Ok (Some _)].
     Anything else → [Error msg] with a human-readable rejection. *)
 
+val extract_tag_from_content : string -> string option
+(** [#392b] Inverse of [tag_to_body_prefix] — recognize a known body
+    prefix and return the abstract tag. *)
+
+val format_c2c_envelope : from_alias:string -> to_alias:string -> ?tag:string -> ?role:string -> ?reply_via:string -> content:string -> unit -> string
+(** [#392b] Canonical c2c message envelope formatter. Optional [tag]
+    surfaces FAIL/BLOCKING/URGENT to programmatic consumers. *)
+
 type compacting = { started_at : float; reason : string option }
 type registration =
   { session_id : string
