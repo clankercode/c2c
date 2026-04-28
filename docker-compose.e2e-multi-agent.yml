@@ -22,9 +22,14 @@
 # = 512MB cap; reservations sized for idle-sleep workloads.
 #
 # Healthcheck note: the relay runtime image (Dockerfile, debian:12-slim)
-# does NOT include curl or wget. We reuse the c2c binary for the probe
-# instead — `c2c relay status` performs an authenticated GET against
-# /health, exits 0 on healthy, non-zero otherwise.
+# does NOT include curl or wget. `c2c relay status --relay-url http://...`
+# was tried but currently fails with "resolution failed: unknown scheme"
+# even against a known-healthy local relay (the binary's HTTP-scheme
+# resolver is not registered along the c2c-relay-status path; tracked
+# separately — flag a finding if not already filed). Fall back to a
+# bash `/dev/tcp` probe that the image already supports without bloating
+# production layers; it validates the `/health` payload semantically by
+# grepping `"ok":true` from the HTTP response.
 
 services:
   relay:
@@ -46,9 +51,16 @@ services:
         reservations:
           memory: 32m
     healthcheck:
-      # c2c relay status hits /health on the given URL and exits non-zero
-      # on failure. Avoids needing wget/curl in the slim runtime image.
-      test: ["CMD", "c2c", "relay", "status", "--relay-url", "http://127.0.0.1:7331"]
+      # bash /dev/tcp builtin — present in debian:12-slim by default.
+      # Sends a literal HTTP GET on /health and asserts the response
+      # body contains `"ok":true`. Validates payload semantics, not
+      # just TCP liveness. See compose-file header for why we do not
+      # use `c2c relay status` here.
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/7331 && printf "GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && timeout 2 cat <&3 | grep -q "\"ok\":true"'
       interval: 5s
       timeout: 3s
       retries: 5

@@ -161,8 +161,8 @@ plus a relay container in the middle. This is the missing piece.
 
 | Slice | Owner | Status |
 |-------|-------|--------|
-| S1 | (open) | drafts landed, promote after smoke |
-| S2 | (open) | |
+| S1 | coordinator1 (subagent) | shipped — drafts promoted (a44db752) |
+| S2 | slate-coder + coord-subagent | shipped — subagent's structural slice (cb7c89b5) + slate's verified-working delta on top |
 | S3 | (open) | |
 | S4 | (open) | |
 | S5 | (open) | |

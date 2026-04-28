@@ -95,21 +95,33 @@ fi
 TS=$(date +%s)
 MSG="smoke-cross-host-${TS}"
 
-# `c2c register` is the explicit form. The compose env vars
-# (C2C_MCP_AUTO_REGISTER_ALIAS, C2C_MCP_SESSION_ID) are how the broker
-# knows the alias on subsequent calls; the explicit register here makes
-# the smoke deterministic regardless of broker auto-register timing.
-echo "[smoke] registering agent-a1 + agent-b1..."
-docker exec -e C2C_CLI_FORCE=1 c2c-e2e-agent-a1 c2c register --alias agent-a1 >/dev/null
-docker exec -e C2C_CLI_FORCE=1 c2c-e2e-agent-b1 c2c register --alias agent-b1 >/dev/null
+RELAY_URL="http://relay:7331"
 
-echo "[smoke] agent-a1 -> agent-b1: ${MSG}"
-docker exec -e C2C_CLI_FORCE=1 c2c-e2e-agent-a1 c2c send agent-b1 "${MSG}"
+# Cross-broker delivery uses the relay-aware path
+# (`c2c relay register / dm send / dm poll`), NOT bare `c2c send`.
+# Bare `c2c send <alias>` looks the alias up in the LOCAL broker
+# only — agent-b1 lives on broker-b, so from agent-a1's broker
+# (broker-a) it is unknown ("error: unknown alias: agent-b1"). The
+# relay is the cross-broker bridge by design; the relay-aware
+# subcommands are the explicit way to use it.
+echo "[smoke] initializing identities + registering on relay..."
+for c in c2c-e2e-agent-a1 c2c-e2e-agent-b1; do
+  docker exec -e C2C_CLI_FORCE=1 "${c}" c2c relay identity init >/dev/null
+done
+docker exec -e C2C_CLI_FORCE=1 c2c-e2e-agent-a1 \
+  c2c relay register --alias agent-a1 --relay-url "${RELAY_URL}" >/dev/null
+docker exec -e C2C_CLI_FORCE=1 c2c-e2e-agent-b1 \
+  c2c relay register --alias agent-b1 --relay-url "${RELAY_URL}" >/dev/null
 
-echo "[smoke] polling agent-b1 inbox (up to 10s)..."
-out="[]"
+echo "[smoke] agent-a1 -> agent-b1 (via relay): ${MSG}"
+docker exec -e C2C_CLI_FORCE=1 c2c-e2e-agent-a1 \
+  c2c relay dm send agent-b1 "${MSG}" --alias agent-a1 --relay-url "${RELAY_URL}"
+
+echo "[smoke] polling agent-b1 relay inbox (up to 10s)..."
+out=""
 for _ in $(seq 1 10); do
-  out=$(docker exec -e C2C_CLI_FORCE=1 c2c-e2e-agent-b1 c2c poll-inbox --json 2>/dev/null || echo "[]")
+  out=$(docker exec -e C2C_CLI_FORCE=1 c2c-e2e-agent-b1 \
+        c2c relay dm poll --alias agent-b1 --relay-url "${RELAY_URL}" 2>/dev/null || echo "")
   if printf '%s' "${out}" | grep -q "${MSG}"; then
     echo "[smoke] PASS — agent-b1 received '${MSG}' via relay"
     exit 0
