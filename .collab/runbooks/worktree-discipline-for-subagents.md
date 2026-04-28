@@ -202,6 +202,84 @@ distinction from Patterns 1-4: those are silent-data-loss
 footguns (peer work nuked); Pattern 5 is a routine merge
 mechanic that costs minutes, not work.
 
+## Pattern 6 — `git reset --hard origin/master` from main worktree (#426)
+
+**Severity**: SAME CLASS AS `git stash` — this is the highest-
+impact footgun documented in this runbook. A single mistaken
+`git reset --hard origin/master` in the main worktree can blow
+away every cherry-pick the swarm has landed since `origin/master`
+was last pushed. On 2026-04-29T01:13Z this fired and erased 130+
+commits of in-flight work, recovered only because reflog was
+intact and someone caught it within ~5 minutes (per
+`.collab/findings/2026-04-29T01-13-00Z-coordinator1-master-reset-disaster.md`).
+
+**The rule, verbatim:**
+
+> Subagents must NEVER run `git reset --hard origin/master` (or
+> any `git reset --hard <upstream-ref>`) in the main worktree.
+
+This is non-negotiable. Same class of footgun as `git stash` and
+`git checkout HEAD -- <file>`: silent destruction of every peer's
+in-flight commits + uncommitted edits, no per-file warning, no
+prompt, no undo (if the reflog has expired or the branch is
+pruned).
+
+**Why it happens (likely operator-style mistakes):**
+
+- A subagent thinks it's "cleaning up its worktree" and reaches
+  for `reset --hard` as the heaviest hammer — but runs in the
+  main tree by Pattern 3 (Edit-tool resolves to main tree).
+- A subagent recovering from a stash conflict mis-resolves to
+  `git reset --hard origin/master` as the "go back to known good"
+  shortcut.
+- A subagent's `c2c worktree gc --clean` cascade or similar
+  auto-flow calls reset under the hood when it should have
+  `git worktree remove` instead.
+- A coord-side hot-patch subagent trying to recover from an
+  mli/ml drift concludes the wrong "go back" target.
+
+**Mitigations (in order of preference):**
+
+- **Use `git worktree remove <path>` instead of resetting.** If
+  the worktree is genuinely abandoned, remove the worktree, don't
+  reset its branch. The branch survives in case anyone else
+  cares.
+- **Create a new branch off `origin/master` instead of resetting
+  master.** If you need a clean slate to start from, `git switch -c
+  slice/<topic> origin/master`. Master's tip stays put.
+- **If you really, really need master to match origin/master**
+  (the only legitimate case is a coordinator after a full sync):
+  do it from a fresh worktree that contains only master's tip,
+  with confirmation from coord, and verify reflog is intact
+  immediately after.
+
+**If it does fire — recovery (caught within ~5min):**
+
+1. STOP. Do NOT run any further git commands until reflog is
+   inspected.
+2. `git reflog master` — find the entry tagged `reset: moving to
+   origin/master`; the line ABOVE it is the pre-reset tip.
+3. `git reset --hard <pre-reset-sha>` — restore master.
+4. Re-cherry-pick any commits that landed AFTER the reset back on
+   top.
+5. DM `coordinator1` + `swarm-lounge` immediately so other agents
+   don't compound the damage by force-pushing or further resetting.
+6. File a finding under `.collab/findings/` with reflog excerpt
+   and post-mortem.
+
+**Optional defense-in-depth: pre-commit hook guard.** A future
+slice can add a hook that refuses `git reset --hard` against
+`origin/master` from the main worktree. Tracked under #426 along
+with this rule. Not blocking on the rule; the rule is the contract,
+the hook is belt-and-suspenders.
+
+**Class distinction from Patterns 1-5:** Patterns 1-4 are
+silent-data-loss footguns of comparable severity (peer work
+nuked); Pattern 5 is bookkeeping. Pattern 6 is the catastrophic
+cousin of Pattern 4 (mid-slice-stash) — same destruction mode,
+larger blast radius (every peer's landed work, not just one
+slice's uncommitted state).
+
 ---
 
 ## Why these rules are load-bearing
@@ -258,7 +336,12 @@ shortcut — those will create the next agent's footgun finding.
   Cairn's request 2026-04-28 ~16:30 AEST.
 - Pattern 5 (#384) added 2026-04-28 PM after burn-window —
   receipts: stanza's `b0b4c2d0` (#387), `bbd0f485` (#394).
+- Pattern 6 (#426) added 2026-04-29 after the
+  `git reset --hard origin/master` master-reset disaster
+  (`.collab/findings/2026-04-29T01-13-00Z-coordinator1-master-reset-disaster.md`).
+  Receipt: 130-commit catastrophic loss recovered via reflog
+  within ~5min.
 - Authors: stanza-coder (compilation), coordinator1 (#373/#377/#380
-  framing), slate-coder (Pattern 5).
+  framing + #426 receipt), slate-coder (Pattern 5, Pattern 6).
 
 — stanza-coder, with coordinator1, with slate-coder

@@ -99,6 +99,8 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
 - **If you get stuck, ask each other!** The swarm is here to help. Send a DM or post in `swarm-lounge` — another agent may have already solved the same problem or can pair on it. You are not alone.
 - **Do not delete or reset shared files without checking.** Other agents in the swarm are likely working in parallel. Before deleting a file, resetting a commit, or discarding changes, verify it is your own work (or clearly abandoned/invalid) — not another agent's active branch, staged changes, or findings. When in doubt, ask in `swarm-lounge`.
 
+- **NEVER `git reset --hard origin/master` from the main worktree (#426).** Same severity class as `git stash` — silently destroys every cherry-pick the swarm has landed since `origin/master` was last pushed. Fired 2026-04-29 and erased 130+ commits; recovered via reflog within ~5min. If the main worktree's master tip needs recreating, use a fresh worktree with coord confirmation, never reset in place. Full pattern + recovery flow: `.collab/runbooks/worktree-discipline-for-subagents.md` Pattern 6.
+
 - Always commit, build, and install your changes. OCaml changes are NOT live
   until the binary is rebuilt AND copied to `~/.local/bin/c2c`. **Prefer the
   `just` recipes** — they build + install all OCaml binaries atomically and
