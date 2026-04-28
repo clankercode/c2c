@@ -4,11 +4,11 @@
     - Positive: relay with self_host="hostA" accepts to_alias:"b@hostA",
       strips to bare alias "b", delivers to "b"
     - Negative: relay with self_host="hostA" rejects to_alias:"b@hostZ"
-      (hostZ != hostA) with cross_host_not_implemented
+      (hostZ != hostA) with cross_host_not_implemented, writing to dead_letter
 
     Note: The relay's handle_send (HTTP handler) does the host validation
-    and alias stripping before calling R.send. This test simulates that
-    behavior by calling the relay internals directly.
+    and alias stripping before calling R.send, and writes to dead_letter
+    when rejecting cross-host targets. This test simulates that behavior.
 *)
 
 module R = Relay
@@ -39,11 +39,25 @@ let json_get_list json key =
        | _ -> fail_fmt "json_get_list: key %S not found or not list" key)
   | _ -> fail_fmt "json_get_list: expected Assoc for key %S" key
 
-(* Simulate what handle_send does: validate host, strip alias, call R.send *)
+(* Simulate what handle_send does: validate host, strip alias, call R.send,
+   and write to dead_letter when rejecting cross-host targets (matching the
+   fix in #379 where handle_send calls R.add_dead_letter on rejection). *)
 let handle_send_sim relay ~from_alias ~to_alias ~content =
   let stripped_to_alias, host_opt = R.split_alias_host to_alias in
   let self_host = R.InMemoryRelay.self_host relay in
   if not (R.host_acceptable ~self_host host_opt) then
+    (* #379 fix: write to dead_letter so rejection is observable *)
+    let msg_id = Uuidm.to_string (Uuidm.v `V4) in
+    let ts = Unix.gettimeofday () in
+    let dl = `Assoc [
+      ("ts", `Float ts);
+      ("message_id", `String msg_id);
+      ("from_alias", `String from_alias);
+      ("to_alias", `String to_alias);
+      ("content", `String content);
+      ("reason", `String "cross_host_not_implemented");
+    ] in
+    R.InMemoryRelay.add_dead_letter relay dl;
     `Cross_host_rejected
       (Printf.sprintf "cross-host send to %S not supported (relay does not forward to other hosts)" to_alias)
   else
@@ -94,11 +108,8 @@ let test_cross_host_alias_finish_positive () =
 (* #379 S3: test_cross_host_alias_finish — negative path
 
    Relay with self_host="hostA" rejects to_alias:"b@hostZ" (different host)
-   with cross_host_not_implemented reason.
-
-   Note: when handle_send rejects a cross-host message, it does NOT call R.send,
-   so the message does NOT go to dead_letter. The connector keeps it in outbox.
-   This test verifies the rejection happens correctly.
+   with cross_host_not_implemented, and writes the rejection to dead_letter
+   so it is observable for debugging and retry-on-recovery.
 *)
 let test_cross_host_alias_finish_negative () =
   (* Create relay with self_host="hostA" *)
@@ -114,14 +125,22 @@ let test_cross_host_alias_finish_negative () =
   match handle_send_sim relay
     ~from_alias:"alice" ~to_alias:"b@hostZ" ~content:"hello b via hostZ" with
    | `Cross_host_rejected reason ->
-       (* Message was correctly rejected — verify the reason contains cross_host_not_implemented *)
+       (* Message was correctly rejected — verify the reason is non-empty *)
        if not (String.length reason > 0) then
          fail_fmt "expected non-empty rejection reason";
-       (* Verify dead_letter is NOT populated (handle_send didn't call R.send) *)
+       (* #379 fix: handle_send now writes to dead_letter on cross-host rejection *)
        let dl = R.InMemoryRelay.dead_letter relay in
-       if List.length dl <> 0 then
-         fail_fmt "expected dead_letter to be empty after cross-host rejection, got %d entries" (List.length dl);
-       Alcotest.(check bool) "cross_host_rejected reason is non-empty" true (String.length reason > 0)
+       if List.length dl <> 1 then
+         fail_fmt "expected 1 dead_letter entry after cross-host rejection, got %d" (List.length dl);
+       let entry = List.hd dl in
+       let dl_reason = json_get_string entry "reason" in
+       if dl_reason <> "cross_host_not_implemented" then
+         fail_fmt "expected dead_letter reason=cross_host_not_implemented, got %s" dl_reason;
+       let dl_to = json_get_string entry "to_alias" in
+       if dl_to <> "b@hostZ" then
+         fail_fmt "expected dead_letter to_alias=b@hostZ, got %s" dl_to;
+       Alcotest.(check bool) "cross_host_rejected reason is non-empty" true (String.length reason > 0);
+       Alcotest.(check string) "dead_letter reason" "cross_host_not_implemented" dl_reason
    | `Ok _ts ->
        fail_fmt "send to b@hostZ should have been rejected but got Ok"
    | `Duplicate _ts ->
@@ -135,7 +154,7 @@ let () =
     "cross_host_alias_finish", [
       Alcotest.test_case "positive: b@hostA delivers to bare b" `Quick
         test_cross_host_alias_finish_positive;
-      Alcotest.test_case "negative: b@hostZ rejected cross_host_not_implemented" `Quick
+      Alcotest.test_case "negative: b@hostZ rejected with cross_host_not_implemented in dead_letter" `Quick
         test_cross_host_alias_finish_negative;
     ];
   ]
