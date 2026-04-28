@@ -5985,21 +5985,44 @@ let prompt_for_role ~alias =
     end else None
   end else None
 
+(* Render the kickoff prompt (#341): take the [swarm] restart_intro
+   template (or the built-in fallback) and substitute {name}, {alias},
+   {role} placeholders. The default template is in
+   [C2c_start.builtin_swarm_restart_intro]; user override goes in
+   .c2c/config.toml under [swarm] restart_intro. *)
 let default_kickoff_prompt ~name ~alias ?role () =
   let role_section = match role with
     | None -> ""
     | Some r -> Printf.sprintf "\nYour assigned role: %s\n" r
   in
-  Printf.sprintf
-    "You have been started as a c2c swarm agent.\n\
-     Instance: %s  Alias: %s%s\n\
-     Getting started:\n\
-     1. Poll your inbox:  use the MCP poll_inbox tool (or: c2c poll-inbox)\n\
-     2. See active peers: c2c list\n\
-     3. Post in the lounge: send_room swarm-lounge with a hello message\n\
-     4. Read CLAUDE.md for the mission brief and open tasks\n\n\
-     The swarm coordinates via c2c instant messaging. You are now part of it."
-    name alias role_section
+  let template = C2c_start.swarm_config_restart_intro () in
+  let subst =
+    [ "{name}", name; "{alias}", alias; "{role}", role_section ]
+  in
+  List.fold_left
+    (fun acc (k, v) ->
+      (* Naive substitute-all: walk acc, replace each occurrence of k with v.
+         Placeholders are short, count is tiny — perf is irrelevant here. *)
+      let rec replace s =
+        match String.index_opt s '{' with
+        | None -> s
+        | Some _ ->
+            let klen = String.length k in
+            let slen = String.length s in
+            let rec find i =
+              if i + klen > slen then None
+              else if String.sub s i klen = k then Some i
+              else find (i + 1)
+            in
+            (match find 0 with
+             | None -> s
+             | Some i ->
+                 let before = String.sub s 0 i in
+                 let after = String.sub s (i + klen) (slen - i - klen) in
+                 before ^ v ^ replace after)
+      in
+      replace acc)
+    template subst
 
 let agent_file_path ~client ~name =
   C2c_role.client_agent_dir ~client // (name ^ ".md")

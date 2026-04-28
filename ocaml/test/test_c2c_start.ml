@@ -1798,6 +1798,44 @@ let test_repo_config_default_binary_preflight_uses_config () =
   check string "preflight resolves from [default_binary]"
     "/usr/local/bin/codex-bridge" resolved
 
+(* #341: with no config or no [swarm] section, the restart-intro thunk
+   returns the built-in default. Sanity-check a known substring so a future
+   reword of the default is caught here. *)
+let test_restart_intro_builtin_default () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let intro = C2c_start.swarm_config_restart_intro () in
+  check bool "default contains canonical opener"
+    true
+    (string_contains intro "You have been started as a c2c swarm agent.");
+  check bool "default contains placeholder {name}"
+    true
+    (string_contains intro "{name}");
+  check bool "default contains placeholder {alias}"
+    true
+    (string_contains intro "{alias}")
+
+(* #341: an override under [swarm] restart_intro replaces the built-in
+   string entirely; \n escapes are decoded so single-line TOML can carry
+   multi-line content. *)
+let test_restart_intro_override () =
+  with_temp_dir @@ fun dir ->
+  let c2c_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let config_path = Filename.concat c2c_dir "config.toml" in
+  let oc = open_out config_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc
+      "[swarm]\n\
+       restart_intro = \"test custom intro\\nline two for {alias}\"\n");
+  with_cwd dir @@ fun () ->
+  let intro = C2c_start.swarm_config_restart_intro () in
+  check string "override replaces built-in"
+    "test custom intro\nline two for {alias}" intro;
+  check bool "override does not contain default opener"
+    false
+    (string_contains intro "You have been started as a c2c swarm agent.")
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_start"
@@ -1995,6 +2033,12 @@ let () =
            test_repo_config_default_binary_no_config_file)
         ; ("repo_config_default_binary_preflight_uses_config", `Quick,
            test_repo_config_default_binary_preflight_uses_config)
+        ] )
+    ; ( "swarm_config",
+        [ ("restart_intro_builtin_default", `Quick,
+           test_restart_intro_builtin_default)
+        ; ("restart_intro_override", `Quick,
+           test_restart_intro_override)
         ] )
     ; ( "get_tmux_location",
         [ ( "get_tmux_location_exits_nonzero_when_not_in_tmux",

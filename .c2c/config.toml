@@ -39,3 +39,14 @@ gui          = "anthropic:claude-sonnet-4-6"
 # Priority: --binary flag > [default_binary] > client config default.
 [default_binary]
 codex = "/home/xertrov/.local/bin/codex"
+
+# Swarm-wide rendered strings (#341). Per-repo overrides for prompts
+# auto-emitted by `c2c start <client>`.
+#
+#   restart_intro  Template for the kickoff/restart intro prepended to a
+#                  fresh agent transcript. Placeholders {name}, {alias},
+#                  {role} are substituted at render time. Use \n / \t for
+#                  multi-line content. When unset, the built-in default
+#                  (see C2c_start.builtin_swarm_restart_intro) is used.
+[swarm]
+# restart_intro = "You have been started as a c2c swarm agent.\nInstance: {name}  Alias: {alias}{role}\nPoll your inbox first."

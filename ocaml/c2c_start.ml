@@ -605,6 +605,70 @@ let read_toml_sections_with_prefix (prefix : string) :
     (string * (string * string) list) list =
   read_toml_sections_with_prefix_from_path (repo_config_path ()) prefix
 
+(* --------------------------------------------------------------------------- *
+ * [swarm] section (#341)
+ *
+ * Per-repo overrides for swarm-wide rendered strings. Today this is just
+ * [restart_intro], the kickoff prompt template emitted into the agent's
+ * transcript when [c2c start <client>] launches a fresh session. The
+ * thunk pattern (function-of-unit) mirrors the planned #318 v3 helpers
+ * (swarm_config_coordinator_alias / swarm_config_social_room) so all
+ * three converge on the same lookup once #318 lands.
+ * --------------------------------------------------------------------------- *)
+
+(* Default restart/kickoff intro template. Placeholders {name}, {alias},
+   {role} are substituted at render time by [default_kickoff_prompt] in
+   cli/c2c.ml. Override via [swarm] restart_intro in .c2c/config.toml. *)
+let builtin_swarm_restart_intro : string =
+  "You have been started as a c2c swarm agent.\n\
+   Instance: {name}  Alias: {alias}{role}\n\
+   Getting started:\n\
+   1. Poll your inbox:  use the MCP poll_inbox tool (or: c2c poll-inbox)\n\
+   2. See active peers: c2c list\n\
+   3. Post in the lounge: send_room swarm-lounge with a hello message\n\
+   4. Read CLAUDE.md for the mission brief and open tasks\n\n\
+   The swarm coordinates via c2c instant messaging. You are now part of it."
+
+(* Decode common backslash escapes in a TOML basic-string value
+   (newline, tab, backslash, quote). Lets operators encode multi-line
+   restart_intro overrides on a single TOML line. Conservative: unknown
+   escapes pass through unchanged. *)
+let decode_toml_basic_escapes (s : string) : string =
+  let buf = Buffer.create (String.length s) in
+  let len = String.length s in
+  let i = ref 0 in
+  while !i < len do
+    let c = s.[!i] in
+    if c = '\\' && !i + 1 < len then begin
+      (match s.[!i + 1] with
+       | 'n' -> Buffer.add_char buf '\n'
+       | 't' -> Buffer.add_char buf '\t'
+       | 'r' -> Buffer.add_char buf '\r'
+       | '\\' -> Buffer.add_char buf '\\'
+       | '"' -> Buffer.add_char buf '"'
+       | '\'' -> Buffer.add_char buf '\''
+       | other -> Buffer.add_char buf '\\'; Buffer.add_char buf other);
+      i := !i + 2
+    end else begin
+      Buffer.add_char buf c;
+      incr i
+    end
+  done;
+  Buffer.contents buf
+
+(* Read [swarm] restart_intro from .c2c/config.toml (#341). Returns the
+   user override (with \n etc decoded) or [builtin_swarm_restart_intro]
+   when the section/key is absent. *)
+let swarm_config_restart_intro () : string =
+  let sections = read_toml_sections_with_prefix "swarm" in
+  match List.assoc_opt "default" sections with
+  | None -> builtin_swarm_restart_intro
+  | Some entries ->
+      (match List.assoc_opt "restart_intro" entries with
+       | None -> builtin_swarm_restart_intro
+       | Some "" -> builtin_swarm_restart_intro
+       | Some v -> decode_toml_basic_escapes v)
+
 let assoc_bool key entries default =
   match List.assoc_opt key entries with
   | None -> default

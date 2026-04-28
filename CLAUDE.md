@@ -346,6 +346,7 @@ post-compact context injection #317). E2E test procedure:
 - **`C2C_NUDGE_IDLE_MINUTES`**: how long a session must be idle before receiving a nudge (default 25). Must be less than `C2C_NUDGE_CADENCE_MINUTES`.
 - **Tier filter is top-level only**: `filter_commands` in `c2c.ml` enforces tier visibility per command name at the top level. Subcommands inherit their parent group's visibility — per-subcommand tiers within a group are documentation/enforcement at the group level, not independently enforced by the CLI filter. When reclassifying a subcommand's tier, also consider its parent group's tier.
 - **Model resolution priority on resume**: `c2c start` resolves models via 3-way priority: explicit `--model` flag > role file `pmodel:` field > saved instance config. Role pmodel is advisory — it takes priority over a saved config on resume but an explicit `--model` always wins. Only an explicit `--model` is persisted to instance config; role pmodel is never locked in.
+- **`[swarm] restart_intro`** (#341): per-repo override for the kickoff/restart intro string `c2c start <client>` prepends to a fresh agent transcript. Set in `.c2c/config.toml` under `[swarm]`. Placeholders `{name}`, `{alias}`, `{role}` are substituted at render time; use `\n`/`\t` escapes for multi-line content. When unset, the built-in default in `C2c_start.builtin_swarm_restart_intro` is used. Read via the `swarm_config_restart_intro ()` thunk — same shape as the planned `swarm_config_coordinator_alias` / `swarm_config_social_room` helpers from #318.
 
 ## Python Scripts (deprecated)
 
