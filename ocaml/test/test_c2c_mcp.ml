@@ -3212,19 +3212,22 @@ let test_sweep_preserves_live_reg_and_its_inbox () =
         (List.length
            (C2c_mcp.Broker.read_inbox broker ~session_id:"session-live")))
 
-let test_sweep_preserves_legacy_pidless_reg () =
+(* #344: legacy pidless rows (no registered_at anchor) used to be preserved
+   forever by sweep — the canonical pidless-zombie un-reapability bug. The
+   new sweep predicate ([is_sweep_keepable]) drops them. *)
+let test_sweep_drops_pidless_legacy_row () =
   with_temp_dir (fun dir ->
       write_file (Filename.concat dir "registry.json")
         {|[{"session_id":"legacy-session","alias":"storm-legacy"}]|};
       write_file (Filename.concat dir "legacy-session.inbox.json") "[]";
       let broker = C2c_mcp.Broker.create ~root:dir in
       let result = C2c_mcp.Broker.sweep broker in
-      check int "legacy reg not dropped" 0 (List.length result.dropped_regs);
-      check int "legacy inbox not deleted" 0
+      check int "legacy reg dropped" 1 (List.length result.dropped_regs);
+      check int "legacy inbox deleted" 1
         (List.length result.deleted_inboxes);
-      check int "legacy reg still present" 1
+      check int "registry empty after sweep" 0
         (List.length (C2c_mcp.Broker.list_registrations broker));
-      check bool "legacy inbox file still present" true
+      check bool "legacy inbox file gone" false
         (Sys.file_exists (Filename.concat dir "legacy-session.inbox.json")))
 
 (* ---- Orphan inbox capture and replay (c2c restart Slice 3) ---- *)
@@ -3689,11 +3692,17 @@ let test_confirm_registration_sets_confirmed_at () =
       check bool "confirmed_at unchanged on second confirm"
         true ((List.hd after2).confirmed_at = ts1))
 
-(* confirm_registration: confirmed session is NOT swept even after timeout. *)
-let test_confirmed_reg_not_swept_after_timeout () =
+(* #344: a confirmed-but-pidless row that registered more than the
+   pidless-keep window ago (default 1h) IS now swept. Pre-#344, sweep
+   preserved any confirmed reg forever once confirmed_at was set, which
+   left zombies (e.g. respawned daemons whose old row never had its PID
+   updated) un-reapable. PID-tracked confirmed rows are unaffected by
+   this change — only the pidless arm is tightened. *)
+let test_confirmed_pidless_old_reg_swept () =
   with_temp_dir (fun dir ->
-      (* Write a registry JSON: registered_at expired, but confirmed_at is set. *)
-      let expired_ts = Unix.gettimeofday () -. 3601.0 in
+      (* Write a registry JSON: registered_at and confirmed_at both > 1h
+         ago, no pid. *)
+      let expired_ts = Unix.gettimeofday () -. 7200.0 in
       let reg_json =
         Printf.sprintf
           {|[{"session_id":"conf-old","alias":"storm-confirmed-old","registered_at":%f,"confirmed_at":%f}]|}
@@ -3702,8 +3711,57 @@ let test_confirmed_reg_not_swept_after_timeout () =
       write_file (Filename.concat dir "registry.json") reg_json;
       let broker = C2c_mcp.Broker.create ~root:dir in
       let result = C2c_mcp.Broker.sweep broker in
-      (* confirmed_at means it's no longer provisional — sweep should NOT drop it *)
-      check int "confirmed (but old) reg not dropped" 0 (List.length result.dropped_regs))
+      check int "confirmed pidless old reg dropped" 1 (List.length result.dropped_regs))
+
+(* #344: pidless row whose registered_at is older than the pidless-keep
+   window (default 1h) is dropped, even if confirmed_at is set. Mirrors
+   the audit's Finding 1 — a daemon that respawned under a new PID
+   leaves the old row to age into a zombie. *)
+let test_sweep_drops_pidless_old_row () =
+  with_temp_dir (fun dir ->
+      let old_ts = Unix.gettimeofday () -. 7200.0 in
+      let reg_json =
+        Printf.sprintf
+          {|[{"session_id":"old-pidless","alias":"storm-old-pidless","registered_at":%f,"confirmed_at":%f}]|}
+          old_ts old_ts
+      in
+      write_file (Filename.concat dir "registry.json") reg_json;
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let result = C2c_mcp.Broker.sweep broker in
+      check int "old pidless reg dropped" 1 (List.length result.dropped_regs);
+      check int "registry empty" 0
+        (List.length (C2c_mcp.Broker.list_registrations broker)))
+
+(* #344: a freshly-registered pidless row that has drained at least once
+   (confirmed_at = Some _) is preserved — this is the brief plugin-handoff
+   window where a real session momentarily has no pid. *)
+let test_sweep_keeps_pidless_recent_drained_row () =
+  with_temp_dir (fun dir ->
+      let now = Unix.gettimeofday () in
+      let reg_json =
+        Printf.sprintf
+          {|[{"session_id":"recent-pidless","alias":"storm-recent","registered_at":%f,"confirmed_at":%f}]|}
+          now now
+      in
+      write_file (Filename.concat dir "registry.json") reg_json;
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let result = C2c_mcp.Broker.sweep broker in
+      check int "recent pidless drained reg kept" 0 (List.length result.dropped_regs);
+      check int "registry still has reg" 1
+        (List.length (C2c_mcp.Broker.list_registrations broker)))
+
+(* #344 regression: a row tracked by the current process pid is unaffected
+   by the new pidless-zombie predicate. *)
+let test_sweep_keeps_alive_pid_row () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"live-pid" ~alias:"storm-live-pid"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      let result = C2c_mcp.Broker.sweep broker in
+      check int "live-pid reg not dropped" 0 (List.length result.dropped_regs);
+      check int "registry still has reg" 1
+        (List.length (C2c_mcp.Broker.list_registrations broker)))
 
 (* client_type=human: exempted from provisional sweep even with expired registered_at. *)
 let test_human_client_type_exempt_from_provisional_sweep () =
@@ -7266,8 +7324,14 @@ let () =
              test_sweep_deletes_orphan_inbox_file
          ; test_case "sweep preserves live reg and its inbox" `Quick
              test_sweep_preserves_live_reg_and_its_inbox
-         ; test_case "sweep preserves legacy pidless reg" `Quick
-             test_sweep_preserves_legacy_pidless_reg
+         ; test_case "#344 sweep drops pidless legacy row" `Quick
+             test_sweep_drops_pidless_legacy_row
+         ; test_case "#344 sweep drops pidless old row" `Quick
+             test_sweep_drops_pidless_old_row
+         ; test_case "#344 sweep keeps pidless recent drained row" `Quick
+             test_sweep_keeps_pidless_recent_drained_row
+         ; test_case "#344 sweep keeps alive pid row" `Quick
+             test_sweep_keeps_alive_pid_row
          ; test_case "sweep preserves non-empty orphan to dead-letter" `Quick
              test_sweep_preserves_nonempty_orphan_to_dead_letter
          ; test_case "sweep empty orphan writes no dead-letter" `Quick
@@ -7278,8 +7342,8 @@ let () =
              test_sweep_drops_expired_provisional_reg
          ; test_case "confirm_registration sets confirmed_at" `Quick
              test_confirm_registration_sets_confirmed_at
-         ; test_case "confirmed reg not swept after timeout" `Quick
-             test_confirmed_reg_not_swept_after_timeout
+         ; test_case "#344 confirmed pidless old reg swept" `Quick
+             test_confirmed_pidless_old_reg_swept
          ; test_case "human client_type exempt from provisional sweep" `Quick
              test_human_client_type_exempt_from_provisional_sweep
          ; test_case "sweep evicts dead members from rooms" `Quick

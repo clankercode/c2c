@@ -1117,6 +1117,42 @@ module Broker = struct
       | Some ra ->
           Unix.gettimeofday () -. ra > provisional_sweep_timeout ()
 
+  (* Sweep-only predicate (#344): stricter than [registration_is_alive] for
+     pidless rows, which the canonical liveness check collapses into Alive
+     for backward-compat with sweep/enqueue. The audit
+     (.collab/findings/2026-04-28T04-25-00Z-stanza-coder-pidless-zombie-systemic-audit.md
+     Finding 1) showed that pidless rows that ever drained, or pre-
+     registered_at legacy rows, are structurally un-reapable. This
+     predicate distinguishes:
+       - PID-tracked: existing alive + provisional logic.
+       - Pidless human: exempt (humans aren't zombies).
+       - Pidless legacy (registered_at=None): no anchor — treat as
+         zombie, drop it.
+       - Pidless unconfirmed (confirmed_at=None): provisional window
+         applies (default 1800s).
+       - Pidless confirmed: only kept for a brief handoff window
+         (pidless_keep_window_s, 1h) — long enough to cover daemon
+         restart transients but bounded so true zombies are reaped.
+     [registration_is_alive] is intentionally unchanged so enqueue
+     and resolve paths keep their lenient semantics. *)
+  let pidless_keep_window_s = 3600.0
+
+  let is_sweep_keepable reg =
+    match reg.pid with
+    | Some _ ->
+        registration_is_alive reg && not (is_provisional_expired reg)
+    | None ->
+        if reg.client_type = Some "human" then true
+        else
+          (match reg.registered_at with
+           | None -> false  (* legacy — no anchor, treat as zombie *)
+           | Some ts ->
+               let age = Unix.gettimeofday () -. ts in
+               if reg.confirmed_at = None then
+                 age < provisional_sweep_timeout ()
+               else
+                 age < pidless_keep_window_s)
+
   let load_inbox t ~session_id =
     ensure_root t;
     let path = inbox_path t ~session_id in
@@ -1901,9 +1937,7 @@ module Broker = struct
         (* Dead: PID-based liveness check failed OR provisional registration
            that has never been confirmed and has timed out. *)
         let alive, dead =
-          List.partition
-            (fun reg -> registration_is_alive reg && not (is_provisional_expired reg))
-            regs
+          List.partition is_sweep_keepable regs
         in
         if dead <> [] then save_registrations t alive;
         let alive_sids =
