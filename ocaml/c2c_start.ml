@@ -3117,7 +3117,10 @@ let run_outer_loop ~(name : string) ~(client : string)
     ?(one_hr_cache = false) ?(kickoff_prompt : string option)
     ?(auto_join_rooms : string option)
     ?(agent_name : string option) ?(reply_to : string option) () : int =
-  let session_id = Option.value session_id ~default:name in
+  (* The [session_id] parameter is kept for API stability; current call sites
+     pass [name] directly downstream (~session_id:name), so the local rebind
+     was dead. Removed to silence warning 26. See #421. *)
+  ignore session_id;
   let cfg =
     try Stdlib.Hashtbl.find clients client
     with Not_found ->
@@ -4426,8 +4429,10 @@ let cmd_restart ?(session_id_override : string option) (name : string) ~(timeout
        Printf.printf "[c2c restart] waiting for outer pid %d to exit (timeout %.0fs)...\n%!" pid timeout_s;
        if not (wait_for_exit ~pid ~timeout_s) then begin
          Printf.eprintf "error: outer pid %d did not exit within %.0fs.\n%!" pid timeout_s;
-         Printf.eprintf "  Try 'c2c stop %s' first, then 'c2c start %s -n %s --session-id %s'.\n%!"
-           name name name (match load_config_opt name with Some c -> c.resume_session_id | None -> name);
+         (* Resume-by-name re-loads persisted instance config (#421); avoid
+            emitting a stale --session-id <uuid> tail. *)
+         Printf.eprintf "  Try 'c2c stop %s' first, then 'c2c start %s -n %s'.\n%!"
+           name name name;
          exit 1
        end
         else Printf.printf "[c2c restart] outer exited cleanly.\n%!"
