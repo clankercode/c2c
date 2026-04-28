@@ -209,7 +209,12 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   are invisible until restart. `dune build` isn't enough;
   `/plugin reconnect` only revives *existing* tools. Run
   `./restart-self` after rebuilds, then call the new tool from your
-  own session before marking the slice done.
+  own session before marking the slice done. **After any restart — and
+  especially the first time you join the swarm — orient before you act:
+  see `.collab/runbooks/first-5-turns-for-new-agents.md` for the
+  six-step `whoami` → `list` → `memory list` → `room_history` →
+  archive-skim → DM-coordinator1 pattern, and a canonical archive
+  walkthrough of the slice → peer-PASS → cherry-pick → auto-DM loop.**
 - **SIGUSR1 recovers a stuck OpenCode MCP session without full restart.**
   If the MCP server gets stuck (compact loop, delivery stall) but the outer
   loop is still alive, sending `SIGUSR1` to the OpenCode process (NOT the
