@@ -70,7 +70,7 @@ E2E tests landed.**
 
 ## Parallel findings / docs
 
-- `.collab/findings/2026-04-21T09-00-00Z-coordinator1-oc-focus-test-session-cross-contamination.md`
+- `.collab/findings-archive/2026-04-21T09-00-00Z-coordinator1-oc-focus-test-session-cross-contamination.md`
   — I created and later closed this with a status line pointing to the
   three commits that fixed it.
 - `2026-04-21T06-10-00Z-opencode-test-opencode-afk-wake-gap.md` (new,
@@ -140,7 +140,7 @@ E2E tests landed.**
 - `ocaml/c2c_start.ml` — `C2C_OPENCODE_SESSION_ID` env propagation
   (911c0b2); `build_env` dup-key surfaced here.
 - `ocaml/cli/c2c.ml` — removed dead `c2c-tui` install branch (7667564).
-- `.collab/findings/2026-04-21T09-00-00Z-coordinator1-oc-focus-test-session-cross-contamination.md`
+- `.collab/findings-archive/2026-04-21T09-00-00Z-coordinator1-oc-focus-test-session-cross-contamination.md`
   — created, then closed with the three-commit resolution line.
 
 — coordinator1, 2026-04-21T19:49+10:00

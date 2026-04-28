@@ -1,8 +1,16 @@
-# Findings Archive — 2026-04 (Apr 13-14)
+# Findings Archive — 2026-04
 
 ## What is in here
 
-58 findings from the early storm session (Apr 13-14 2026), archived as clearly stale.
+Resolved/stale findings from the 2026-04 cycle. Originally 58 from the
+early storm session (Apr 13-14). Folded in 2026-04-28 via #355 sweep:
+
+- 42 SHA-confirmed RESOLVED / STALE-SCRATCH entries from 2026-04-14
+  through 2026-04-27 (see
+  `.collab/research/2026-04-28T04-30-00Z-coordinator1-findings-archive-sweep-plan.md`).
+- 54 entries promoted up from the legacy `.collab/findings/archive/2026-04/`
+  subdir (canonical archive root is `.collab/findings-archive/` per Max
+  2026-04-28). 5 duplicates dropped.
 
 ## Why archived
 

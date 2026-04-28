@@ -735,7 +735,7 @@ const C2CDelivery: Plugin = async (ctx) => {
    * c2c-managed OpenCode process (same broker) is alive and would compete
    * for the same session pool — preventing the cross-contamination bug where
    * bootstrapRootSession() adopts a peer's session.
-   * See finding: 2026-04-21T09-00-00Z-coordinator1-oc-focus-test-session-cross-contamination.md
+   * See finding: .collab/findings-archive/2026-04-21T09-00-00Z-coordinator1-oc-focus-test-session-cross-contamination.md
    */
   async function checkConflictingInstances(): Promise<void> {
     const home = process.env.HOME || "";
@@ -793,7 +793,7 @@ const C2CDelivery: Plugin = async (ctx) => {
         if (roots.length > 0) {
           const skipped = roots.map((s: any) => s.id).join(", ");
           const reason = realConfiguredOpenCodeSessionId ? "configured-id-mismatch" : "auto-kickoff";
-          await log(`SKIP-ADOPT: would have adopted [${skipped}]; reason=${reason}; see finding 2026-04-21T09-00-00Z-coordinator1-oc-focus-test-session-cross-contamination.md`);
+          await log(`SKIP-ADOPT: would have adopted [${skipped}]; reason=${reason}; see finding .collab/findings-archive/2026-04-21T09-00-00Z-coordinator1-oc-focus-test-session-cross-contamination.md`);
         }
         return;
       }

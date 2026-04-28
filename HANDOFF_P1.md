@@ -104,7 +104,7 @@ if echo "$files" | grep -qE "ocaml/relay\.ml|c2c_relay_server\.py|ocaml/relay_si
 ```
 
 **Commit**: c849031  
-**Finding**: `.collab/findings/2026-04-21T19-53-00Z-fresh-oc-c2c-doctor-relay-classifier-bug.md`
+**Finding**: `.collab/findings-archive/2026-04-21T19-53-00Z-fresh-oc-c2c-doctor-relay-classifier-bug.md`
 
 ---
 
@@ -114,12 +114,12 @@ if echo "$files" | grep -qE "ocaml/relay\.ml|c2c_relay_server\.py|ocaml/relay_si
   — comprehensive doc covering startup flow, env vars, conflict detection, state machine,
   delivery flow, TUI navigation, gotcha table. Key for onboarding future agents.
 
-- **Doctor classifier bug**: `.collab/findings/2026-04-21T19-53-00Z-fresh-oc-c2c-doctor-relay-classifier-bug.md`
+- **Doctor classifier bug**: `.collab/findings-archive/2026-04-21T19-53-00Z-fresh-oc-c2c-doctor-relay-classifier-bug.md`
   — documents the false-positive, root cause, proposed fix (now implemented in c849031).
 
-- **Build_env bug**: `.collab/findings/2026-04-21T19-39-00Z-fresh-oc-build-env-duplicate-key-bug.md`
+- **Build_env bug**: `.collab/findings-archive/2026-04-21T19-39-00Z-fresh-oc-build-env-duplicate-key-bug.md`
 
-- **Relay smoke retest**: `.collab/findings/2026-04-21T19-45-00Z-fresh-oc-relay-smoke-retest.md`
+- **Relay smoke retest**: `.collab/findings-archive/2026-04-21T19-45-00Z-fresh-oc-relay-smoke-retest.md`
   — 11/11 pass (earlier 10/11 room-send fail was transient)
 
 ---
@@ -152,7 +152,7 @@ ddb81ba  fix(plugin): use ctx.client.tui.publish() instead of fetch(ctx.serverUr
 Safe approach: `python3 c2c_sweep_dryrun.py` to preview, then decide.
 
 **Finding to update**: The doctor classifier finding at
-`.collab/findings/2026-04-21T19-53-00Z-fresh-oc-c2c-doctor-relay-classifier-bug.md`
+`.collab/findings-archive/2026-04-21T19-53-00Z-fresh-oc-c2c-doctor-relay-classifier-bug.md`
 still shows `status: open`. Should be updated to `status: fixed — c849031`.
 
 ---
@@ -167,7 +167,7 @@ still shows `status: open`. Should be updated to `status: fixed — c849031`.
 ### Recommended next slices (in priority order)
 
 1. **Update doctor finding status** — 2-line edit:
-   `.collab/findings/2026-04-21T19-53-00Z-fresh-oc-c2c-doctor-relay-classifier-bug.md`
+   `.collab/findings-archive/2026-04-21T19-53-00Z-fresh-oc-c2c-doctor-relay-classifier-bug.md`
    Change `status: open` → `status: fixed — c849031`
 
 2. **Provisional_expired GC** — investigate the 4 stale registrations:
