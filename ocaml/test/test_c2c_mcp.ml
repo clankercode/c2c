@@ -3106,8 +3106,55 @@ let test_register_evicts_prior_reg_with_same_alias () =
         Filename.concat dir "old-session.inbox.json"
       in
       check bool "old session inbox untouched"
+         false
+         (Sys.file_exists old_inbox_path))
+
+let test_register_case_insensitive_collision_evicts_lower () =
+  (* #378: "Lyra-Quill" and "lyra-quill" are the same identity for collision
+     purposes. Registering the upper-case form evicts the lower-case holder. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"lower-session" ~alias:"lyra-quill"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker
+        ~session_id:"upper-session" ~alias:"Lyra-Quill"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      check int "only one reg after case-insensitive collision" 1 (List.length regs);
+      check bool "upper-session survived"
+        true
+        (List.exists (fun r -> r.C2c_mcp.session_id = "upper-session") regs);
+      check bool "lower-session was evicted"
         false
-        (Sys.file_exists old_inbox_path))
+        (List.exists (fun r -> r.C2c_mcp.session_id = "lower-session") regs))
+
+let test_register_stores_original_case () =
+  (* #378: collision is case-insensitive, but the stored alias preserves its original case. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"mixed-session" ~alias:"Lyra-Quill"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      check int "one registration" 1 (List.length regs);
+      check bool "stored alias preserves original case"
+        true
+        (List.exists (fun r -> r.C2c_mcp.alias = "Lyra-Quill") regs))
+
+let test_suggest_alias_prime_case_insensitive_with_suffix () =
+  (* #378: suggest_alias_prime returns lowercased base with prime suffix when
+     colliding with a case-variant. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"lower-session" ~alias:"lyra-quill"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      let suggestion = C2c_mcp.Broker.suggest_alias_for_alias broker ~alias:"Lyra-Quill" in
+      check bool "suggestion returned" true (match suggestion with Some _ -> true | None -> false);
+      let suggestion = Option.get suggestion in
+      check bool "suggestion has prime suffix" true
+        (match suggestion with "lyra-quill" -> false | _ -> true))
 
 let test_register_migrates_undrained_inbox_on_alias_re_register () =
   (* Bug: when a session re-registers under the same alias with a fresh
@@ -8321,6 +8368,12 @@ let () =
              test_concurrent_register_does_not_lose_entries
          ; test_case "register evicts prior reg with same alias" `Quick
              test_register_evicts_prior_reg_with_same_alias
+         ; test_case "register case-insensitive collision evicts lower (#378)" `Quick
+             test_register_case_insensitive_collision_evicts_lower
+         ; test_case "register stores original case (#378)" `Quick
+             test_register_stores_original_case
+         ; test_case "suggest_alias_prime case-insensitive with suffix (#378)" `Quick
+             test_suggest_alias_prime_case_insensitive_with_suffix
          ; test_case "register migrates undrained inbox on alias re-register"
              `Quick test_register_migrates_undrained_inbox_on_alias_re_register
          ; test_case "register serializes with concurrent enqueue" `Quick

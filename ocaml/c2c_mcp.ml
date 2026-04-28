@@ -1358,14 +1358,18 @@ module Broker = struct
         List.length cleared
       end)
 
+  (* Lowercase comparison helper: aliases are case-insensitive for collision
+     detection (lyra-quill and Lyra-Quill are the same identity). The stored
+     alias preserves original case; this only affects lookups. *)
+  let alias_casefold s = String.lowercase_ascii s
+
   (* Suggest a free alias by appending the next prime suffix.
-     Runs under the registry lock (regs is already loaded).
-     Returns Some candidate on success, None when all max_tries primes are taken
-     (ALIAS_COLLISION_EXHAUSTED). max_tries defaults to 5 (primes 2,3,5,7,11). *)
+     Case-insensitive: colliding with a case-variant gets a prime suffix. *)
   let suggest_alias_prime ?(max_tries = 5) regs ~base_alias =
     let alive = List.filter_map (fun reg ->
-      if registration_is_alive reg then Some reg.alias else None) regs in
-    if not (List.mem base_alias alive) then Some base_alias
+      if registration_is_alive reg then Some (alias_casefold reg.alias) else None) regs in
+    let base = alias_casefold base_alias in
+    if not (List.mem base alive) then Some base_alias
     else begin
       let n = Array.length small_primes in
       let rec try_idx i =
@@ -1375,7 +1379,7 @@ module Broker = struct
             if i < n then small_primes.(i)
             else next_prime_after small_primes.(n - 1)
           in
-          let candidate = Printf.sprintf "%s-%d" base_alias p in
+          let candidate = Printf.sprintf "%s-%d" base p in
           if not (List.mem candidate alive) then Some candidate
           else try_idx (i + 1)
         end
@@ -1402,11 +1406,19 @@ module Broker = struct
            We do NOT use a single partition with `||` because that wrongly
            evicts our own prior entry when renaming within the same session,
            which causes duplicate registry entries for the same session_id.
-           See: same-session re-registration must update in-place, not evict+add. *)
+           See: same-session re-registration must update in-place, not evict+add.
+           Case-insensitive: "Lyra-Quill" evicts "lyra-quill" (same identity). *)
         let conflicting, rest =
           List.partition
-            (fun reg -> reg.alias = alias && reg.session_id <> session_id)
+            (fun reg -> alias_casefold reg.alias = alias_casefold alias && reg.session_id <> session_id)
             regs
+        in
+        (* #378: additionally filter rest to remove case-folded alias matches
+           with different session — prevents duplicate aliases in kept list. *)
+        let rest =
+          List.filter
+            (fun reg -> not (alias_casefold reg.alias = alias_casefold alias && reg.session_id <> session_id))
+            rest
         in
         (* Same-session re-registration (alias changed or pid/registered_at
            refresh): update in-place by replacing the old entry in [rest]. *)

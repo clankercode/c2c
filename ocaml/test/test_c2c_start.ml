@@ -2486,6 +2486,28 @@ let () =
                      !count = 1))
                 [ "claude"; "codex"; "opencode"; "kimi"; "crush" ]) )
         ] )
+    ; ( "generate_alias_378",
+        [ ( "generate_alias_no_same_word_doubled",
+            `Quick,
+            (fun () ->
+              (* #378: generate_alias must not return same-word-doubled aliases
+                 like "lumi-lumi". Reroll when w1 = w2. *)
+              let n = 1000 in
+              let bad : string list ref = ref [] in
+              let rec loop i =
+                if i >= n then ()
+                else begin
+                  let a = C2c_start.generate_alias () in
+                  let parts = String.split_on_char '-' a in
+                  match parts with
+                  | [w1; w2] when w1 = w2 -> bad := a :: !bad; loop (i + 1)
+                  | _ -> loop (i + 1)
+                end
+              in
+              loop 0;
+              check int
+                (Printf.sprintf "no same-word-doubled aliases in %d samples" n)
+                0 (List.length !bad) ) ) ] )
     ; ( "instances_filter_351",
         [ ( "test_instances_default_filters_to_alive",
             `Quick, test_instances_default_filters_to_alive )

@@ -169,9 +169,12 @@ let alias_words = [| "aalto"; "aimu"; "aivi"; "alder"; "alm"; "alto"; "anvi"; "a
 
 let generate_alias () =
   let n = Array.length alias_words in
-  let w1 = alias_words.(Random.int n) in
-  let w2 = alias_words.(Random.int n) in
-  Printf.sprintf "%s-%s" w1 w2
+  let rec loop () =
+    let w1 = alias_words.(Random.int n) in
+    let w2 = alias_words.(Random.int n) in
+    if w1 = w2 then loop () else Printf.sprintf "%s-%s" w1 w2
+  in
+  loop ()
 
 let generate_session_id () =
   let buf = Buffer.create 36 in
