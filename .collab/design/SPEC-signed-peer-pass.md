@@ -2,7 +2,37 @@
 
 ## Status
 implemented
-**Shipped:** SHAs a4eb88b (broker verify), 9983943 (anti-cheat), dacc2b7 (--warn-only), a5c05ad (self-pass detector)
+**Shipped:** SHAs a4eb88b (broker verify), 9983943 (anti-cheat), dacc2b7 (--warn-only), a5c05ad (self-pass detector), 2a6ad11a (H1 TOFU pubkey pin), d2c8ec38 (H2 broker invalid-sig reject), 0c57b839 (H2b broker TOFU pin enforcement), 2af9def4 (M1 co-author trailer in reviewer_is_author).
+
+## Broker-side enforcement (H2 + H2b, 2026-04-28)
+
+The broker verifies peer-pass DMs at the boundary, not just the CLI:
+
+- **Pre-H2 (legacy)**: `verify_claim` was advisory — `Claim_invalid` set
+  the `peer_pass_verification` field on the receipt but the DM still
+  enqueued. A forged peer-pass DM reached the recipient.
+- **H2 (`d2c8ec38`)**: strict-mode rejects on `Claim_invalid` —
+  signature failure, sha mismatch, or reviewer-field mismatch all
+  cause the broker to reject the DM with a generic error.
+- **H2b (`0c57b839`)**: `verify_claim_with_pin` consulted at the broker.
+  `Pin_mismatch` → `Claim_invalid` (rejected). `Pin_first_seen` and
+  `Pin_match` → `Claim_valid` (accepted, TOFU preserved). Closes the
+  fresh-keypair forgery vector that walked through H2 alone.
+
+**User-visible reject text is intentionally generic** —
+`"send rejected: peer-pass verification failed (...)"` — so an attacker
+who drops a malicious artifact on disk does not learn from the response
+which specific check failed. Detailed reason (claim_alias, claim_sha,
+underlying error) is logged to broker.log under `event:"peer_pass_reject"`
+for forensics. See `c2c_mcp.ml:log_peer_pass_reject`.
+
+**Pin store**: `<broker_root>/peer-pass-trust.json` (broker-side) and
+`<repo>/.c2c/peer-pass-trust.json` (CLI-side); same schema. The broker
+loads it via `verify_claim_with_pin ?path` so all worktrees share one
+TOFU view.
+
+**Rotation**: only the operator-driven `c2c peer-pass verify --rotate-pin`
+path can replace an existing pin; the broker never auto-rotates.
 
 ## Background
 Peer review currently produces an unsigned verdict (PASS/FAIL) with no cryptographic
