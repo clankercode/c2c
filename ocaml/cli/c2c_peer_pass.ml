@@ -381,42 +381,90 @@ let peer_pass_verify_cmd =
     let content = String.trim (read_json_file path) in
     match Peer_review.t_of_string content with
     | Some art ->
-      (match Peer_review.verify art with
-       | Ok true ->
-         Printf.printf "VERIFIED: valid signature by %s for commit %s (verdict: %s)\n%!"
-           art.Peer_review.reviewer art.Peer_review.sha art.Peer_review.verdict;
-         Printf.printf "  reviewer: %s\n  ts: %.0f\n  criteria: [%s]\n%!"
-           art.Peer_review.reviewer
-           art.Peer_review.ts
-           (String.concat ", " art.Peer_review.criteria_checked);
-         (* H1: TOFU pubkey pin enforcement. A valid signature proves only
-            "whoever holds key K signed this", not "the agent named <alias>
-            signed this". The pin store binds alias -> first-seen pubkey;
-            mismatches are hard rejected. *)
-         if rotate_pin then begin
-           let prior = Peer_review.pin_rotate art in
-           (match prior with
-            | None ->
-              Printf.printf "  PIN-ROTATE: no prior pin for %s; recorded new pubkey.\n%!"
-                art.Peer_review.reviewer
-            | Some p ->
-              Printf.printf
-                "  PIN-ROTATE WARNING: replaced pin for %s.\n    \
-                old pubkey: %s\n    \
-                new pubkey: %s\n    \
-                old first_seen: %.0f\n%!"
-                art.Peer_review.reviewer
-                p.Peer_review.Trust_pin.pubkey
-                art.Peer_review.reviewer_pk
-                p.Peer_review.Trust_pin.first_seen)
-         end else begin
-           match Peer_review.pin_check art with
+      let do_anti_cheat () =
+        (* Anti-cheat surface: warn if reviewer == commit author. *)
+        let self_review =
+          Git_helpers.git_commit_exists art.Peer_review.sha
+          && reviewer_is_author ~reviewer:art.Peer_review.reviewer ~sha:art.Peer_review.sha
+        in
+        if self_review then
+          Printf.printf "  WARN: reviewer %S matches commit author — self-review (not a true peer-PASS).\n%!"
+            art.Peer_review.reviewer;
+        if strict && self_review then begin
+          Printf.eprintf "STRICT: failing on self-review WARN.\n%!";
+          exit 1
+        end
+      in
+      let print_verified () =
+        Printf.printf "VERIFIED: valid signature by %s for commit %s (verdict: %s)\n%!"
+          art.Peer_review.reviewer art.Peer_review.sha art.Peer_review.verdict;
+        Printf.printf "  reviewer: %s\n  ts: %.0f\n  criteria: [%s]\n%!"
+          art.Peer_review.reviewer
+          art.Peer_review.ts
+          (String.concat ", " art.Peer_review.criteria_checked)
+      in
+      if rotate_pin then begin
+        (* Rotate path explicitly replaces the existing pin, so it cannot
+           go through verify_claim_for_artifact (which enforces the pin).
+           Keep the existing rotate ladder: signature must verify, then
+           rotate, then optional anti-cheat warn. *)
+        match Peer_review.verify art with
+        | Ok true ->
+          print_verified ();
+          let prior = Peer_review.pin_rotate art in
+          (match prior with
+           | None ->
+             Printf.printf "  PIN-ROTATE: no prior pin for %s; recorded new pubkey.\n%!"
+               art.Peer_review.reviewer
+           | Some p ->
+             Printf.printf
+               "  PIN-ROTATE WARNING: replaced pin for %s.\n    \
+               old pubkey: %s\n    \
+               new pubkey: %s\n    \
+               old first_seen: %.0f\n%!"
+               art.Peer_review.reviewer
+               p.Peer_review.Trust_pin.pubkey
+               art.Peer_review.reviewer_pk
+               p.Peer_review.Trust_pin.first_seen);
+          do_anti_cheat ()
+        | Ok false ->
+          Printf.eprintf "VERIFY FAILED: invalid signature\n%!"; exit 1
+        | Error e ->
+          Printf.eprintf "VERIFY ERROR: %s\n%!" (Peer_review.verify_error_to_string e); exit 1
+      end else begin
+        (* #62: route the non-rotate path through verify_claim_for_artifact
+           so CLI and broker share one signature+TOFU policy ladder. The
+           sha/reviewer match check inside is vacuous here (we pass the
+           artifact's own values), but signature verify and pin enforcement
+           are the load-bearing pieces; future hardening on those lands
+           once and applies to both surfaces. *)
+        match
+          Peer_review.verify_claim_for_artifact
+            ~art
+            ~alias:art.Peer_review.reviewer
+            ~sha:art.Peer_review.sha
+            ()
+        with
+        | Peer_review.Claim_valid _msg ->
+          print_verified ();
+          (* The valid path covers Pin_first_seen and Pin_match; differentiate
+             for the operator-facing TOFU message by re-reading the pin store. *)
+          (match Peer_review.pin_check art with
            | Peer_review.Pin_first_seen ->
              Printf.printf "  TOFU: first verify for %s; pubkey pinned.\n%!"
                art.Peer_review.reviewer
            | Peer_review.Pin_match ->
              Printf.printf "  TOFU: pubkey matches pin for %s.\n%!"
                art.Peer_review.reviewer
+           | Peer_review.Pin_mismatch _ ->
+             (* Should be unreachable: verify_claim_for_artifact returns
+                Claim_invalid on Pin_mismatch. Guard for safety. *)
+             Printf.eprintf "VERIFY FAILED: pin state changed during verify\n%!"; exit 1);
+          do_anti_cheat ()
+        | Peer_review.Claim_invalid msg ->
+          (* Surface pin-mismatch with the same operator-friendly hint as
+             pre-#62, since the claim message is broker-shaped. *)
+          (match Peer_review.pin_check art with
            | Peer_review.Pin_mismatch { alias; pinned_pubkey; artifact_pubkey; first_seen } ->
              Printf.eprintf
                "VERIFY FAILED: TOFU pin mismatch for alias %s.\n  \
@@ -430,23 +478,11 @@ let peer_pass_verify_cmd =
                out-of-band confirmation with the alias holder.\n%!"
                alias pinned_pubkey artifact_pubkey first_seen;
              exit 1
-         end;
-         (* Anti-cheat surface: warn if reviewer == commit author. *)
-         let self_review =
-           Git_helpers.git_commit_exists art.Peer_review.sha
-           && reviewer_is_author ~reviewer:art.Peer_review.reviewer ~sha:art.Peer_review.sha
-         in
-         if self_review then
-           Printf.printf "  WARN: reviewer %S matches commit author — self-review (not a true peer-PASS).\n%!"
-             art.Peer_review.reviewer;
-         if strict && self_review then begin
-           Printf.eprintf "STRICT: failing on self-review WARN.\n%!";
-           exit 1
-         end
-       | Ok false ->
-         Printf.eprintf "VERIFY FAILED: invalid signature\n%!"; exit 1
-       | Error e ->
-         Printf.eprintf "VERIFY ERROR: %s\n%!" (Peer_review.verify_error_to_string e); exit 1)
+           | _ ->
+             Printf.eprintf "VERIFY FAILED: %s\n%!" msg; exit 1)
+        | Peer_review.Claim_missing msg ->
+          Printf.eprintf "VERIFY FAILED: %s\n%!" msg; exit 1
+      end
     | None ->
       Printf.eprintf "error: could not parse artifact JSON from %s\n%!" path; exit 1
   with e ->
