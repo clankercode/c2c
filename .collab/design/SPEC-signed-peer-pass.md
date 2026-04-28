@@ -69,7 +69,7 @@ artifacts.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "reviewer": "<alias>",
   "reviewer_pk": "<base64url-ed25519-public-key>",
   "sha": "<git-sha-of-reviewed-commit>",
@@ -86,6 +86,7 @@ artifacts.
     "c2c_inbox_hook": false
   },
   "notes": "<free-text>",
+  "build_exit_code": 0,
   "signature": "<base64url-ed25519-signature>",
   "ts": "<unix-epoch-float>"
 }
@@ -95,7 +96,7 @@ artifacts.
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `version` | yes | Schema version; currently 1 |
+| `version` | yes | Schema version. `1` = pre-#427b (no `build_exit_code`). `2` = #427b — adds `build_exit_code` to the canonical-signed payload. |
 | `reviewer` | yes | Alias of reviewing agent |
 | `reviewer_pk` | yes | base64url-encoded 32-byte Ed25519 public key (self-contained, no registry lookup needed) |
 | `sha` | yes | The specific commit SHA under review |
@@ -105,8 +106,27 @@ artifacts.
 | `commit_range` | yes | `base..head` range the review covered |
 | `targets_built` | yes | Which of the 3 binaries were compiled successfully |
 | `notes` | no | Free-text summary (may be empty string) |
+| `build_exit_code` | v2 only | #427b: integer exit code from the reviewer's build of the slice IN ITS OWN WORKTREE (Pattern 8). `0` = clean; non-zero = the reviewer ran the build and it failed. Field is OMITTED on v1 artifacts (legacy / no `--build-rc` flag passed) so v1 canonical bytes stay unchanged. When emitted, the field IS in scope of the Ed25519 signature — tampering invalidates verification. |
 | `signature` | yes | base64url-encoded 64-byte Ed25519 signature over canonical JSON |
 | `ts` | yes | Unix epoch timestamp at time of signing |
+
+### Schema versioning + back-compat
+
+- **v1 → v2 transition is purely additive.** v1 artifacts sign over the
+  same field set as before; v2 artifacts add `build_exit_code` to the
+  canonical payload. A reader sees `version` and reproduces the
+  matching canonical (with or without the field) before verifying
+  the signature.
+- **CLI emits v1 by default.** `c2c peer-pass sign <SHA>` (no
+  `--build-rc`) emits a v1 artifact, byte-equivalent to pre-#427b
+  output. Reviewers who follow Pattern 8 add `--build-rc N` and the
+  artifact becomes v2.
+- **Coordinator policy** (separate slice, optional): a future hook
+  can refuse cherry-pick of artifacts where `verdict=PASS` but
+  `build_exit_code` is missing or non-zero. Until then, the v2
+  field is informational evidence only; the textual
+  `build-clean-IN-slice-worktree-rc=N` entry in `criteria_checked`
+  remains the human-readable receipt.
 
 ## Signature Computation
 

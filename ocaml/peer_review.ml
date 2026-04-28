@@ -26,6 +26,15 @@ type t = {
   notes : string;
   signature : string;     (* base64url-encoded 64-byte Ed25519 signature *)
   ts : float;
+  build_exit_code : int option;
+  (** #427b: structured capture of the reviewer's slice-worktree build verdict.
+      [Some 0] = clean build in slice's own worktree; [Some n] = non-zero
+      exit; [None] = unsignaled (legacy v1 artifacts, or callers that didn't
+      pass [--build-rc]). When this field is [Some _], [version] is bumped
+      to 2 and the field is included in the canonical-JSON sign target.
+      Reviewers passing [--build-rc] should also retain the textual
+      [build-clean-IN-slice-worktree-rc=N] entry in [criteria_checked] for
+      backward-readable evidence. *)
 }
 
 (* --- JSON serialization --------------------------------------------------- *)
@@ -71,7 +80,7 @@ let targets_built_of_json (j : Yojson.Safe.t) : targets_built option =
   | _ -> None
 
 let t_to_json (art : t) : Yojson.Safe.t =
-  `Assoc (sort_assoc [
+  let base = [
     "version", `Int art.version;
     "reviewer", `String art.reviewer;
     "reviewer_pk", `String art.reviewer_pk;
@@ -84,7 +93,15 @@ let t_to_json (art : t) : Yojson.Safe.t =
     "notes", `String art.notes;
     "ts", `Float art.ts;
     "signature", `String art.signature;
-  ])
+  ] in
+  (* #427b: include build_exit_code only when set. Omitting it on legacy
+     artifacts keeps v1 canonical bytes unchanged; including it on v2
+     artifacts puts it in scope of the Ed25519 signature. *)
+  let with_build = match art.build_exit_code with
+    | Some n -> ("build_exit_code", `Int n) :: base
+    | None -> base
+  in
+  `Assoc (sort_assoc with_build)
 
 (* Canonical JSON for signing: same as to_json but without the signature field.
    Field order: version, reviewer, reviewer_pk, sha, verdict, criteria_checked,
@@ -103,6 +120,11 @@ let t_of_json (j : Yojson.Safe.t) : t option =
     let targets = match List.assoc_opt "targets_built" fields with Some j -> targets_built_of_json j | _ -> None in
     if targets = None then None
     else
+      let build_exit_code =
+        match List.assoc_opt "build_exit_code" fields with
+        | Some (`Int n) -> Some n
+        | _ -> None
+      in
       Some {
         version = (match List.assoc_opt "version" fields with Some (`Int i) -> i | _ -> 1);
         reviewer = get_str "reviewer";
@@ -116,6 +138,7 @@ let t_of_json (j : Yojson.Safe.t) : t option =
         notes = get_str "notes";
         signature = get_str "signature";
         ts = get_float "ts";
+        build_exit_code;
       }
   | _ -> None
 

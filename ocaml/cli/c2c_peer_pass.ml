@@ -113,12 +113,15 @@ let merge_subagent_into_notes ~via_subagent ~notes =
   | _ -> base
 
 let signed_artifact ~alias ~sha ~verdict ~criteria ~skill_version ~commit_range
-    ~all_targets ~notes ~allow_self ~via_subagent =
+    ~all_targets ~notes ~allow_self ~via_subagent ~build_rc =
   validate_signing_allowed ~alias ~sha ~allow_self;
   let identity = resolve_identity () in
   let final_notes = merge_subagent_into_notes ~via_subagent ~notes in
+  (* #427b: schema-version bump from 1 → 2 only when build_rc is set, so
+     legacy v1 artifacts continue signing/verifying byte-identically. *)
+  let version = match build_rc with Some _ -> 2 | None -> 1 in
   let art = {
-    Peer_review.version = 1;
+    Peer_review.version;
     Peer_review.reviewer = alias;
     Peer_review.reviewer_pk = "";
     Peer_review.sha;
@@ -130,6 +133,7 @@ let signed_artifact ~alias ~sha ~verdict ~criteria ~skill_version ~commit_range
     Peer_review.notes = final_notes;
     Peer_review.signature = "";
     Peer_review.ts = Unix.gettimeofday ();
+    Peer_review.build_exit_code = build_rc;
   } in
   Peer_review.sign ~identity art
 
@@ -202,6 +206,17 @@ let peer_pass_sign_cmd =
                        used for the review. Appended to the artifact's notes field \
                        for auditability when --allow-self is in effect.")
   in
+  let build_rc =
+    Cmdliner.Arg.(value & opt (some int) None & info [ "build-rc" ]
+      ~docv:"N" ~doc:"#427b: capture the slice-worktree build exit code as a \
+                      structured field on the artifact. 0 = clean build in the \
+                      slice's own worktree (the only value that should accompany \
+                      a PASS verdict per Pattern 8); non-zero = the reviewer ran \
+                      the build but it failed. Bumps the artifact schema to v2. \
+                      Reviewers should also retain a textual \
+                      'build-clean-IN-slice-worktree-rc=N' entry in --criteria \
+                      for backward-readable evidence.")
+  in
   let+ sha = sha
   and+ verdict = verdict
   and+ criteria = criteria
@@ -211,11 +226,12 @@ let peer_pass_sign_cmd =
   and+ notes = notes
   and+ json = json
   and+ allow_self = allow_self
-  and+ via_subagent = via_subagent in
+  and+ via_subagent = via_subagent
+  and+ build_rc = build_rc in
   let alias = resolve_current_alias () in
   let signed =
     signed_artifact ~alias ~sha ~verdict ~criteria ~skill_version ~commit_range
-      ~all_targets ~notes ~allow_self ~via_subagent
+      ~all_targets ~notes ~allow_self ~via_subagent ~build_rc
   in
   let path = write_artifact ~sha ~alias signed in
   if json then
@@ -285,6 +301,12 @@ let peer_pass_send_cmd =
                        used for the review. Appended to the artifact's notes field \
                        for auditability when --allow-self is in effect.")
   in
+  let build_rc =
+    Cmdliner.Arg.(value & opt (some int) None & info [ "build-rc" ]
+      ~docv:"N" ~doc:"#427b: capture the slice-worktree build exit code on the \
+                      signed artifact. 0 = clean build in the slice's own \
+                      worktree; non-zero = build failed. Bumps schema to v2.")
+  in
   let+ to_alias = to_alias
   and+ sha = sha
   and+ verdict = verdict
@@ -297,11 +319,12 @@ let peer_pass_send_cmd =
   and+ worktree = worktree
   and+ json = json
   and+ allow_self = allow_self
-  and+ via_subagent = via_subagent in
+  and+ via_subagent = via_subagent
+  and+ build_rc = build_rc in
   let alias = resolve_current_alias () in
   let signed =
     signed_artifact ~alias ~sha ~verdict ~criteria ~skill_version ~commit_range
-      ~all_targets ~notes ~allow_self ~via_subagent
+      ~all_targets ~notes ~allow_self ~via_subagent ~build_rc
   in
   let path = write_artifact ~sha ~alias signed in
   let content = peer_pass_message ~reviewer:alias ~sha ?branch ?worktree () in
@@ -401,7 +424,10 @@ let peer_pass_verify_cmd =
         Printf.printf "  reviewer: %s\n  ts: %.0f\n  criteria: [%s]\n%!"
           art.Peer_review.reviewer
           art.Peer_review.ts
-          (String.concat ", " art.Peer_review.criteria_checked)
+          (String.concat ", " art.Peer_review.criteria_checked);
+        (match art.Peer_review.build_exit_code with
+         | Some n -> Printf.printf "  build_exit_code: %d (#427b verified-build)\n%!" n
+         | None -> ())
       in
       if rotate_pin then begin
         (* Rotate path explicitly replaces the existing pin, so it cannot

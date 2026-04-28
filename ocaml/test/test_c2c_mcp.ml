@@ -8054,6 +8054,7 @@ let test_peer_pass_dm_with_invalid_signature_rejected () =
         targets_built = { c2c = true; c2c_mcp_server = true; c2c_inbox_hook = false };
         notes = "test forgery";
         signature = "";
+        build_exit_code = None;
         ts = 1234567890.0;
       } in
       let signed = Peer_review.sign ~identity:id art in
@@ -8100,6 +8101,7 @@ let test_peer_pass_dm_with_valid_signature_accepted () =
         targets_built = { c2c = true; c2c_mcp_server = true; c2c_inbox_hook = false };
         notes = "regression test artifact";
         signature = "";
+        build_exit_code = None;
         ts = 1234567890.0;
       } in
       let signed = Peer_review.sign ~identity:id art in
@@ -8142,6 +8144,7 @@ let h2b_make_artifact ~sha ~alias ~identity ~verdict =
     targets_built = { c2c = true; c2c_mcp_server = true; c2c_inbox_hook = false };
     notes = "h2b-test";
     signature = "";
+    build_exit_code = None;
     ts = 1234567890.0;
   } in
   let signed = Peer_review.sign ~identity art in
@@ -8319,6 +8322,7 @@ let test_peer_pass_dm_h2b_sha_mismatch_rejected () =
             targets_built = { c2c = true; c2c_mcp_server = true; c2c_inbox_hook = false };
             notes = "sha-replay";
             signature = "";
+            build_exit_code = None;
             ts = 1234567890.0;
           } in
           let signed = Peer_review.sign ~identity:id art in

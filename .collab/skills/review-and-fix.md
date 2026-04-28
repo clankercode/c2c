@@ -139,6 +139,7 @@ c2c peer-pass send coordinator1 <SHA> \
   --commit-range <from>..<to> \
   --branch <branch> \
   --worktree .worktrees/<slice-name> \
+  --build-rc 0 \
   [--all-targets] \
   [--notes "<free text>"] \
   [--json]
@@ -152,6 +153,7 @@ c2c peer-pass sign <SHA> \
   --criteria "<criterion1>, <criterion2>, ..." \
   --skill-version <version> \
   --commit-range <from>..<to> \
+  --build-rc 0 \
   [--all-targets] \
   [--notes "<free text>"] \
   [--json]
@@ -163,16 +165,21 @@ Required:
 - `--criteria` — comma-separated criteria checked. **Per #427, the list MUST
   include a verbatim build-rc entry like `build-clean-IN-slice-worktree-rc=0`
   so the reader can confirm the reviewer actually built the slice in its own
-  worktree.** A future schema extension may promote this to a structured
-  `build_exit_code` field; until then, the criteria-list entry is the
-  canonical capture point. PASS without a build-rc criterion is itself a
-  rubric violation — coord cherry-pick should reject the artifact and
-  bounce back for a real build.
+  worktree.** Pair this with the `--build-rc N` structured field below
+  (#427b) for v2 artifacts.
 
 Optional:
 - `--skill-version` — version of the review skill used
 - `--commit-range` — e.g. `abc123..def456`
 - `--branch` / `--worktree` — included in the notification by `peer-pass send`
+- `--build-rc N` — **#427b structured capture of the slice-worktree build
+  exit code.** `0` is the only value that should accompany a `--verdict
+  PASS` per Pattern 8. Bumps the artifact schema from v1 to v2; the field
+  is in scope of the Ed25519 signature so tampering invalidates
+  verification. Reviewers should also retain the textual
+  `build-clean-IN-slice-worktree-rc=0` entry in `--criteria` for
+  backward-readable evidence. Without `--build-rc`, the artifact stays v1
+  (back-compat with all pre-#427b tooling).
 - `--all-targets` — mark all binaries (c2c, c2c_mcp_server, c2c_inbox_hook)
   as built and verified
 - `--notes` — free-text notes

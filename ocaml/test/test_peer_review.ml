@@ -22,6 +22,7 @@ let test_sign_and_verify () =
     targets_built = { c2c = true; c2c_mcp_server = true; c2c_inbox_hook = false };
     notes = "test review notes";
     signature = "";
+    build_exit_code = None;
     ts = 1234567890.0;
   } in
   let signed = Peer_review.sign ~identity:id art in
@@ -47,6 +48,7 @@ let test_verify_unknown_fails () =
     targets_built = { c2c = false; c2c_mcp_server = false; c2c_inbox_hook = false };
     notes = "";
     signature = "";
+    build_exit_code = None;
     ts = 1234567890.0;
   } in
   let signed = Peer_review.sign ~identity:id1 art in
@@ -71,6 +73,7 @@ let test_missing_signature () =
     targets_built = { c2c = false; c2c_mcp_server = false; c2c_inbox_hook = false };
     notes = "";
     signature = "";
+    build_exit_code = None;
     ts = 0.0;
   } in
   match Peer_review.verify art with
@@ -91,6 +94,7 @@ let test_roundtrip_json () =
     notes = "hello world";
     signature = b64_encode (String.make 64 's');
     ts = 1234567890.5;
+    build_exit_code = None;
   } in
   let json = Peer_review.t_to_string art in
   match Peer_review.t_of_string json with
@@ -121,6 +125,7 @@ let make_signed_artifact ~identity ~reviewer =
     targets_built = { c2c = false; c2c_mcp_server = false; c2c_inbox_hook = false };
     notes = "";
     signature = "";
+    build_exit_code = None;
     ts = 1234567890.0;
   } in
   Peer_review.sign ~identity art
@@ -475,6 +480,7 @@ let make_signed_artifact ?(notes = "") () =
     targets_built = { c2c = true; c2c_mcp_server = true; c2c_inbox_hook = false };
     notes;
     signature = "";
+    build_exit_code = None;
     ts = 1234567890.0;
   } in
   Peer_review.sign ~identity:id art
@@ -655,6 +661,109 @@ let test_legitimate_alias_and_sha_accepted () =
     | Error msg -> failwith (Printf.sprintf "valid alias %S rejected: %s" alias msg))
     [ "a"; "alpha"; "alpha-bot"; "x_y_z"; "agent-7"; "lyra-quill" ]
 
+(* --- #427b: build_exit_code (verified-build) field ---------------------- *)
+
+let make_v2_artifact ~build_rc ~identity =
+  let art : Peer_review.t = {
+    version = 2;
+    reviewer = "test-agent";
+    reviewer_pk = "";
+    sha = "abc123def456";
+    verdict = "PASS";
+    criteria_checked = ["build-clean-IN-slice-worktree-rc=0"; "tests"];
+    skill_version = "1.0.0";
+    commit_range = "0000000..abc123def456";
+    targets_built = { c2c = true; c2c_mcp_server = true; c2c_inbox_hook = false };
+    notes = "v2 schema artifact";
+    signature = "";
+    ts = 1234567890.0;
+    build_exit_code = Some build_rc;
+  } in
+  Peer_review.sign ~identity art
+
+let test_v2_build_rc_roundtrip () =
+  let id_path = Filename.temp_file "peer_review_test_" ".json" in
+  Fun.protect ~finally:(fun () -> try Sys.remove id_path with _ -> ()) (fun () ->
+    let id = Relay_identity.generate ~alias_hint:"test-427b" () in
+    let signed = make_v2_artifact ~build_rc:0 ~identity:id in
+    check int "build_exit_code preserved" 0
+      (match signed.Peer_review.build_exit_code with
+       | Some n -> n
+       | None -> failwith "build_exit_code lost on sign");
+    check int "version bumped to 2" 2 signed.Peer_review.version;
+    (* JSON roundtrip + verify *)
+    let json = Peer_review.t_to_string signed in
+    (match Peer_review.t_of_string json with
+     | Some art2 ->
+       check int "build_exit_code roundtrips through JSON" 0
+         (Option.value art2.Peer_review.build_exit_code ~default:(-1));
+       check int "version roundtrips through JSON" 2 art2.Peer_review.version;
+       (match Peer_review.verify art2 with
+        | Ok true -> ()
+        | _ -> failwith "v2 artifact failed signature verification after JSON roundtrip")
+     | None -> failwith "v2 artifact failed to parse from JSON"))
+
+let test_v2_build_rc_in_signature_scope () =
+  (* Tampering the build_exit_code post-sign must invalidate the signature. *)
+  let id_path = Filename.temp_file "peer_review_test_" ".json" in
+  Fun.protect ~finally:(fun () -> try Sys.remove id_path with _ -> ()) (fun () ->
+    let id = Relay_identity.generate ~alias_hint:"test-427b" () in
+    let signed = make_v2_artifact ~build_rc:0 ~identity:id in
+    let tampered = { signed with Peer_review.build_exit_code = Some 1 } in
+    match Peer_review.verify tampered with
+    | Error Peer_review.Invalid_signature -> ()
+    | Ok true -> failwith "tampered build_exit_code passed verification (signature not over field)"
+    | Ok false | Error _ -> failwith "expected Invalid_signature on tampered build_exit_code")
+
+let test_v1_artifact_omits_build_exit_code () =
+  (* v1 artifacts (build_exit_code = None) emit JSON without the field —
+     keeps canonical bytes byte-identical to pre-#427b artifacts so old
+     stored signatures continue to verify. *)
+  let id_path = Filename.temp_file "peer_review_test_" ".json" in
+  Fun.protect ~finally:(fun () -> try Sys.remove id_path with _ -> ()) (fun () ->
+    let id = Relay_identity.generate ~alias_hint:"test-427b" () in
+    let art : Peer_review.t = {
+      version = 1;
+      reviewer = "legacy";
+      reviewer_pk = "";
+      sha = "deadbeefcafe";
+      verdict = "PASS";
+      criteria_checked = ["legacy"];
+      skill_version = "1.0.0";
+      commit_range = "";
+      targets_built = { c2c = true; c2c_mcp_server = false; c2c_inbox_hook = false };
+      notes = "";
+      signature = "";
+      ts = 1234567890.0;
+      build_exit_code = None;
+    } in
+    let signed = Peer_review.sign ~identity:id art in
+    let json = Peer_review.t_to_string signed in
+    check bool "v1 JSON does NOT contain build_exit_code field"
+      false
+      (let needle = "build_exit_code" in
+       let nl = String.length needle and ll = String.length json in
+       let rec f i = i + nl <= ll && (String.sub json i nl = needle || f (i+1)) in
+       f 0);
+    (* And the v1 signature still verifies *)
+    match Peer_review.verify signed with
+    | Ok true -> ()
+    | _ -> failwith "v1 artifact (build_exit_code=None) failed verification")
+
+let test_v2_build_rc_nonzero_signs () =
+  (* A FAIL-class verdict with non-zero rc should still produce a valid
+     artifact — we don't gate sign on rc==0; that's a reviewer-discipline
+     check at the verdict layer, not a schema constraint. *)
+  let id_path = Filename.temp_file "peer_review_test_" ".json" in
+  Fun.protect ~finally:(fun () -> try Sys.remove id_path with _ -> ()) (fun () ->
+    let id = Relay_identity.generate ~alias_hint:"test-427b" () in
+    let signed = make_v2_artifact ~build_rc:1 ~identity:id in
+    check int "non-zero build_exit_code preserved" 1
+      (Option.value signed.Peer_review.build_exit_code ~default:(-1));
+    match Peer_review.verify signed with
+    | Ok true -> ()
+    | _ -> failwith "non-zero build_rc artifact failed verification")
+
 let () = Alcotest.run "Peer_review" [
   "signed_peer_pass", [
     Alcotest.test_case "sign and verify roundtrip" `Quick test_sign_and_verify;
@@ -702,5 +811,11 @@ let () = Alcotest.run "Peer_review" [
     Alcotest.test_case "sha empty rejected" `Quick test_sha_empty_rejected;
     Alcotest.test_case "legitimate alias [a-z0-9_-] and sha [0-9a-f]{40} accepted" `Quick
       test_legitimate_alias_and_sha_accepted;
+  ];
+  "verified_build_427b", [
+    Alcotest.test_case "v2 build_rc roundtrip + verify" `Quick test_v2_build_rc_roundtrip;
+    Alcotest.test_case "v2 build_rc is in signature scope (tamper detected)" `Quick test_v2_build_rc_in_signature_scope;
+    Alcotest.test_case "v1 artifact omits build_exit_code field (back-compat)" `Quick test_v1_artifact_omits_build_exit_code;
+    Alcotest.test_case "v2 non-zero build_rc still produces valid artifact" `Quick test_v2_build_rc_nonzero_signs;
   ];
 ]
