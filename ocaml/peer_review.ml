@@ -272,7 +272,7 @@ let verify_claim ~alias ~sha =
     | Error e -> Claim_invalid (Printf.sprintf "artifact read error: %s" e)
     | Ok art ->
         match verify art with
-        | Error e -> Claim_invalid (Printf.sprintf "invalid signature: %s" (verify_error_to_string e))
+        | Error e -> Claim_invalid ("signature: " ^ verify_error_to_string e)
         | Ok false -> Claim_invalid "signature verification failed"
         | Ok true ->
             if art.sha <> sha then
