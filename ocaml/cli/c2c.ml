@@ -2320,11 +2320,20 @@ let register_cmd =
 
 let get_tmux_location_cmd =
   let+ json = json_flag in
-  match Sys.getenv_opt "TMUX" with
-  | None ->
+  (* #418: prefer $TMUX_PANE (pane-bound, race-free) over server-active pane. *)
+  let pane_id = Sys.getenv_opt "TMUX_PANE" in
+  let tmux_set = Sys.getenv_opt "TMUX" in
+  match pane_id, tmux_set with
+  | None, None ->
       Printf.eprintf "error: not running inside a tmux session (TMUX is not set).\n%!";
       exit 1
-  | Some _ ->
+  | _ ->
+      let cmd = match pane_id with
+        | Some p when String.trim p <> "" ->
+            Printf.sprintf "tmux display-message -t %s -p '#S:#I.#P'"
+              (Filename.quote p)
+        | _ -> "tmux display-message -p '#S:#I.#P'"
+      in
       let capture cmd =
         try
           let ic = Unix.open_process_in cmd in
@@ -2332,7 +2341,7 @@ let get_tmux_location_cmd =
             (fun () -> Some (input_line ic))
         with _ -> None
       in
-      match capture "tmux display-message -p '#S:#I.#P'" with
+      match capture cmd with
       | None ->
           Printf.eprintf "error: tmux display-message failed. Is tmux running?\n%!";
           exit 1
@@ -9069,7 +9078,78 @@ let commands_man is_agent =
          $(b,wire-daemon-spool-read), $(b,supervisor)"
     ]
 
+(* Fast-path dispatch (#418): handle a small set of subcommands BEFORE
+   the heavy Cmdliner setup (~1.5s) that builds the manpage for ~50 cmds.
+   These commands have no broker/registry dependency, so we short-circuit
+   them with a direct argv scan + lean handler.
+
+   Race fix (#418): get-tmux-location used to call `tmux display-message -p`
+   without `-t "$TMUX_PANE"`, which returns the tmux *server's* active pane
+   — racy under concurrent invocation across panes. Reading $TMUX_PANE
+   directly (set per-pane by tmux at fork) is the canonical zero-cost
+   pane-bound answer; we normalize via `tmux display-message -t "$TMUX_PANE"`
+   only when callers want the human-readable session:window.pane form. *)
+let fast_path_get_tmux_location ?(json = false) () =
+  let pane_id = Sys.getenv_opt "TMUX_PANE" in
+  let tmux_set = Sys.getenv_opt "TMUX" in
+  match pane_id, tmux_set with
+  | None, None ->
+      Printf.eprintf "error: not running inside a tmux session (TMUX is not set).\n%!";
+      exit 1
+  | _ ->
+      (* Always pin to the caller's own pane via -t "$TMUX_PANE" when set,
+         so concurrent invocations across panes don't cross-talk. *)
+      let cmd = match pane_id with
+        | Some p when String.trim p <> "" ->
+            (* shell-quote the pane id (tmux pane ids look like %42 — safe but be defensive) *)
+            Printf.sprintf "tmux display-message -t %s -p '#S:#I.#P'"
+              (Filename.quote p)
+        | _ ->
+            (* No $TMUX_PANE but $TMUX is set — last-resort active-pane fallback. *)
+            "tmux display-message -p '#S:#I.#P'"
+      in
+      let capture cmd =
+        try
+          let ic = Unix.open_process_in cmd in
+          Fun.protect ~finally:(fun () -> ignore (Unix.close_process_in ic))
+            (fun () -> Some (input_line ic))
+        with _ -> None
+      in
+      (match capture cmd with
+       | None ->
+           Printf.eprintf "error: tmux display-message failed. Is tmux running?\n%!";
+           exit 1
+       | Some addr ->
+           if json then Printf.printf "%s\n" (Printf.sprintf "%S" addr)
+           else Printf.printf "%s\n" addr;
+           exit 0)
+
+let try_fast_path () =
+  (* Skip fast-path if any flag we don't recognize appears, so cmdliner
+     can produce its standard error. We only handle the trivial shape:
+       c2c get-tmux-location [--json]
+     and bare `c2c --version`. *)
+  let argv = Sys.argv in
+  let n = Array.length argv in
+  if n >= 2 then begin
+    match argv.(1) with
+    | "get-tmux-location" ->
+        let json = ref false in
+        let unknown = ref false in
+        for i = 2 to n - 1 do
+          match argv.(i) with
+          | "--json" -> json := true
+          | _ -> unknown := true
+        done;
+        if not !unknown then fast_path_get_tmux_location ~json:!json ()
+    | "--version" when n = 2 ->
+        Printf.printf "%s\n" (version_string ());
+        exit 0
+    | _ -> ()
+  end
+
 let () =
+  try_fast_path ();
   sanitize_help_env ();
   for i = 0 to Array.length Sys.argv - 1 do
     if Sys.argv.(i) = "-h" then Sys.argv.(i) <- "--help"
