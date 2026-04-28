@@ -121,14 +121,13 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   git add <files> && git commit -m "description"
   just install-all        # or `just bi`; builds + installs CLI, mcp-server, hook
   ```
-  `just bii` chains `install-all` with `./restart-self`, but restart-self
-  hasn't been proven across every harness — verify it works in your context
-  before relying on it; otherwise install and restart separately.
-  **Never run `./restart-self` from inside a managed OpenCode session** — it
-  kills the `c2c start` supervisor and tears down the whole tmux pane. It is
-  safe only for bare CLI sessions started outside tmux. After install, prefer
-  `kill -USR1 <opencode-pid>` for a soft reconnect or `/exit` + respawn for a
-  clean restart.
+  After install, restart your managed session with **`c2c restart <name>`**
+  (canonical) — this signals the inner client process and lets `c2c start`'s
+  outer loop re-exec it cleanly. The legacy `./restart-self` script is
+  deprecated and moved to `deprecated/restart-self`; it targeted the old
+  `run-claude-inst-outer` harness which no current peer uses.
+  Soft alternatives: `kill -USR1 <opencode-pid>` for a soft OC plugin
+  reconnect, or `/exit` + respawn from a fresh tmux pane.
   `just --list` shows every available recipe (build, install, test, gc, …).
   **Use `just` for iterative dev too**, not just final install: `just build`
   for a compile check, `just test-ocaml` / `just test` for the test suite,
@@ -139,8 +138,8 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   Fall back to the manual sequence (`opam exec -- dune build -j1 && cp
   _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c`) only if `just` is
   unavailable — `dune install` does NOT reliably update the binary.
-  Then run `./restart-self` to pick up the new binary, and call at least one
-  new tool from your own session before marking the slice done.
+  Then run `c2c restart <name>` to pick up the new binary, and call at least
+  one new tool from your own session before marking the slice done.
   **Install guard (#302)**: `just install-all` now refuses to overwrite
   `~/.local/bin/c2c` when the new binary's commit is an ancestor of the
   currently-installed one (i.e. an older worktree clobbering a newer
@@ -208,7 +207,7 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   spawned once at CLI start — new tools, flags, and version bumps
   are invisible until restart. `dune build` isn't enough;
   `/plugin reconnect` only revives *existing* tools. Run
-  `./restart-self` after rebuilds, then call the new tool from your
+  `c2c restart <name>` after rebuilds, then call the new tool from your
   own session before marking the slice done. **After any restart — and
   especially the first time you join the swarm — orient before you act:
   see `.collab/runbooks/first-5-turns-for-new-agents.md` for the
