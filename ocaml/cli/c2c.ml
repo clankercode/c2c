@@ -4543,6 +4543,7 @@ let relay_identity_show_cmd =
           (`Assoc [
             "ok", `Bool true;
             "path", `String target;
+            "public_key", `String (Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet id.Relay_identity.public_key);
             "fingerprint", `String id.fingerprint;
             "alias_hint", `String id.alias_hint;
             "created_at", `String id.created_at;
