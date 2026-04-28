@@ -18,7 +18,6 @@ you can extend to two real machines with SSH or Tailscale.
 ## Prerequisites
 
 - c2c installed (`c2c install self` run on each machine)
-- Python 3.10+, no extra packages required
 - The relay server runs on one trusted host; all machines connect to it
 
 ---
@@ -28,8 +27,8 @@ you can extend to two real machines with SSH or Tailscale.
 Pick one machine (or a shared dev box) to run the relay. Choose a token:
 
 ```bash
-# Generate a token
-TOKEN=$(python3 -c "import secrets; print(secrets.token_hex(16))")
+# Generate a token (any 16-byte hex string works; choose your favourite source of randomness)
+TOKEN=$(head -c 16 /dev/urandom | xxd -p)
 echo "$TOKEN"
 
 # Start the relay (background it with nohup / systemd for production)
@@ -210,50 +209,47 @@ c2c relay serve --listen 0.0.0.0:7333 --token dev-token-docker
 
 # 2. Seed host broker registry
 mkdir -p /tmp/broker-host
-python3 -c "
-import json
-json.dump([{'session_id':'ses-host','alias':'relay-test-host','pid':1,'pid_start_time':1}],
-          open('/tmp/broker-host/registry.json','w'))
-"
+cat > /tmp/broker-host/registry.json <<'JSON'
+[{"session_id":"ses-host","alias":"relay-test-host","pid":1,"pid_start_time":1}]
+JSON
 
 # 3. Seed docker broker registry
 mkdir -p /tmp/broker-docker
-python3 -c "
-import json
-json.dump([{'session_id':'ses-docker','alias':'relay-test-docker','pid':1,'pid_start_time':1}],
-          open('/tmp/broker-docker/registry.json','w'))
-"
+cat > /tmp/broker-docker/registry.json <<'JSON'
+[{"session_id":"ses-docker","alias":"relay-test-docker","pid":1,"pid_start_time":1}]
+JSON
 
 # 4. Sync host connector
 c2c relay connect --broker-root /tmp/broker-host \
     --relay-url http://127.0.0.1:7333 --token dev-token-docker \
     --node-id host-machine --once --verbose
 
-# 5. Sync Docker connector (separate runtime, mounts repo + broker dir)
+# 5. Sync Docker connector (separate runtime, mounts the c2c binary + broker dir)
 docker run --rm --network host \
-    -v "$(pwd):/repo" \
+    -v "$(command -v c2c):/usr/local/bin/c2c:ro" \
     -v /tmp/broker-docker:/broker-docker \
-    -w /repo python:3.11-slim \
-    python3 c2c_cli.py relay connect \
+    debian:stable-slim \
+    c2c relay connect \
         --broker-root /broker-docker \
         --relay-url http://127.0.0.1:7333 --token dev-token-docker \
         --node-id docker-machine --once
 
-# 6. Send host → docker
-python3 -c "
-import json
-msg = {'message_id':'test-1','from_alias':'relay-test-host','to_alias':'relay-test-docker','content':'hello from host'}
-with open('/tmp/broker-host/remote-outbox.jsonl','a') as f: f.write(json.dumps(msg)+'\n')
-"
+# 6. Send host → docker via the host broker, then sync both connectors
+C2C_MCP_BROKER_ROOT=/tmp/broker-host \
+    c2c send relay-test-docker@host-machine "hello from host"
 c2c relay connect --broker-root /tmp/broker-host \
     --relay-url http://127.0.0.1:7333 --token dev-token-docker \
     --node-id host-machine --once
-docker run --rm --network host -v "$(pwd):/repo" -v /tmp/broker-docker:/broker-docker -w /repo python:3.11-slim \
-    python3 c2c_cli.py relay connect --broker-root /broker-docker \
+docker run --rm --network host \
+    -v "$(command -v c2c):/usr/local/bin/c2c:ro" \
+    -v /tmp/broker-docker:/broker-docker \
+    debian:stable-slim \
+    c2c relay connect --broker-root /broker-docker \
     --relay-url http://127.0.0.1:7333 --token dev-token-docker --node-id docker-machine --once
 
-# 7. Verify delivery
-python3 -c "import json; msgs=json.load(open('/tmp/broker-docker/ses-docker.inbox.json')); print(f'docker inbox: {len(msgs)} message(s)')"
+# 7. Verify delivery (peek inbox without draining)
+C2C_MCP_BROKER_ROOT=/tmp/broker-docker \
+    c2c peek-inbox --session-id ses-docker
 ```
 
 The `--network host` flag lets the Docker container reach the relay at
@@ -314,34 +310,31 @@ c2c relay serve --listen 100.95.180.95:7334 --token "$TOKEN" --gc-interval 60
 
 # Machine A — seed a local broker and connect:
 mkdir -p /tmp/broker-a
-python3 -c "
-import json
-json.dump([{'session_id':'ses-a','alias':'relay-peer-a','pid':1,'pid_start_time':1}],
-          open('/tmp/broker-a/registry.json','w'))"
+cat > /tmp/broker-a/registry.json <<'JSON'
+[{"session_id":"ses-a","alias":"relay-peer-a","pid":1,"pid_start_time":1}]
+JSON
 c2c relay connect --broker-root /tmp/broker-a \
     --relay-url http://100.95.180.95:7334 --token "$TOKEN" --node-id machine-a --once
 
 # Machine B (remote peer, Tailscale IP 100.104.132.48):
 mkdir -p /tmp/broker-b
-python3 -c "
-import json
-json.dump([{'session_id':'ses-b','alias':'relay-peer-b','pid':1,'pid_start_time':1}],
-          open('/tmp/broker-b/registry.json','w'))"
+cat > /tmp/broker-b/registry.json <<'JSON'
+[{"session_id":"ses-b","alias":"relay-peer-b","pid":1,"pid_start_time":1}]
+JSON
 c2c relay connect --broker-root /tmp/broker-b \
     --relay-url http://100.95.180.95:7334 --token "$TOKEN" --node-id machine-b --once
 
-# Send A → B:
-python3 -c "
-import json
-msg = {'message_id':'ts-1','from_alias':'relay-peer-a','to_alias':'relay-peer-b','content':'hello from A'}
-with open('/tmp/broker-a/remote-outbox.jsonl','a') as f: f.write(json.dumps(msg)+'\n')"
+# Send A → B (uses the local broker; alias@node routes via remote-outbox):
+C2C_MCP_BROKER_ROOT=/tmp/broker-a \
+    c2c send relay-peer-b@machine-b "hello from A"
 c2c relay connect --broker-root /tmp/broker-a \
     --relay-url http://100.95.180.95:7334 --token "$TOKEN" --node-id machine-a --once
 c2c relay connect --broker-root /tmp/broker-b \
     --relay-url http://100.95.180.95:7334 --token "$TOKEN" --node-id machine-b --once
 
 # Verify delivery on machine B:
-python3 -c "import json; msgs=json.load(open('/tmp/broker-b/ses-b.inbox.json')); print(f'{len(msgs)} message(s) delivered')"
+C2C_MCP_BROKER_ROOT=/tmp/broker-b \
+    c2c peek-inbox --session-id ses-b
 ```
 
 ### Token file

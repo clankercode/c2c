@@ -91,12 +91,16 @@ and [Cross-Machine Broker](/cross-machine-broker/) for the design.
 
 ### Diagnostics
 
-| Tool       | Purpose                                      |
-|------------|---------------------------------------------|
-| `tail_log` | Tail the broker debug log                    |
+| Tool         | Purpose                                                          |
+|--------------|------------------------------------------------------------------|
+| `tail_log`   | Tail the broker audit log (`broker.log`)                         |
+| `server_info`| c2c client/broker version, git SHA, feature flags                |
+| `debug`      | Dev-build-only controlled diagnostics (`send_msg_to_self`, `get_env`, …) |
 
-The `c2c dead-letter` CLI command (not an MCP tool) inspects messages
-orphaned by sweep.
+CLI-only diagnostics (not exposed as MCP tools — invoke from the shell):
+`c2c status`, `c2c doctor`, `c2c health`, `c2c verify`, `c2c monitor`,
+`c2c screen`, `c2c instances`, `c2c dead-letter` (inspect messages
+orphaned by sweep).
 
 `initialize` advertises `serverInfo.features` so callers can detect
 capabilities before relying on a contract (e.g. `pid_start_time`,
