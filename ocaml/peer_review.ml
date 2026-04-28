@@ -218,7 +218,6 @@ let claim_of_content content =
   in
   let sha_marker = "sha=" in
   let sha_marker_len = String.length sha_marker in
-  let lc = String.lowercase_ascii content in
   let rec find_sha pos =
     match String.index_from_opt lc pos 's' with
     | None -> None
