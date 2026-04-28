@@ -166,8 +166,18 @@ let git_cherry_pick repo sha =
 let git_abort repo =
   ignore (run (Printf.sprintf "git -C %s cherry-pick --abort" (Filename.quote repo)))
 
+(** Pure: classify how to react to install-all's exit code.
+    [`Ok] = install succeeded; [`Soft_fail] = install failed but
+    --no-fail-on-install means we keep going; [`Hard_fail] = install
+    failed and we should `exit 1`. Exposed for testing. *)
+let classify_install_outcome ~rc ~no_fail_on_install =
+  if rc = 0 then `Ok
+  else if no_fail_on_install then `Soft_fail
+  else `Hard_fail
+
 (** The main run logic. Calls exit() directly on error. *)
-let run_coord_cherry_pick ~no_install ~no_dm ~shas =
+let run_coord_cherry_pick ?(no_fail_on_install = false) ~no_install ~no_dm ~shas
+    () =
   match Sys.getenv_opt "C2C_COORDINATOR" with
   | None | Some "" ->
       Printf.eprintf "error: C2C_COORDINATOR=1 required\n%!";
@@ -260,11 +270,19 @@ let run_coord_cherry_pick ~no_install ~no_dm ~shas =
           if not no_install then begin
             Printf.printf "[coord-cherry-pick] running just install-all...\n%!";
             let rc = run (Printf.sprintf "cd %s && just install-all" (Filename.quote repo)) in
-            if rc <> 0 then begin
-              Printf.eprintf "[coord-cherry-pick] just install-all FAILED (exit %d)\n%!" rc;
-              exit 1
-            end else
-              Printf.printf "[coord-cherry-pick] just install-all succeeded ✓\n%!"
+            (match classify_install_outcome ~rc ~no_fail_on_install with
+             | `Ok ->
+                 Printf.printf "[coord-cherry-pick] just install-all succeeded ✓\n%!"
+             | `Soft_fail ->
+                 Printf.eprintf
+                   "[coord-cherry-pick] just install-all FAILED (exit %d) — \
+                    cherry-pick is committed; re-run install manually \
+                    (--no-fail-on-install)\n%!"
+                   rc
+             | `Hard_fail ->
+                 Printf.eprintf
+                   "[coord-cherry-pick] just install-all FAILED (exit %d)\n%!" rc;
+                 exit 1)
           end;
 
           (* DM each author after install succeeds. #382: each DM cites the
@@ -288,14 +306,22 @@ let no_dm_flag =
   Cmdliner.Arg.(value & flag & info [ "no-dm" ]
     ~doc:"Skip author DM notifications (use when cherry-picking multiple commits where coordinator DMs manually)")
 
+let no_fail_on_install_flag =
+  Cmdliner.Arg.(value & flag & info [ "no-fail-on-install" ]
+    ~doc:"Do not exit non-zero when 'just install-all' fails after a successful cherry-pick. \
+          The cherry-pick is already committed, so install failure is a separable concern: \
+          this flag prints the install failure to stderr and continues (still runs DMs, \
+          still exits 0). Default behaviour exits 1 on install failure.")
+
 let sha_term =
   Cmdliner.Arg.(non_empty & pos_all string [] & info [] ~docv:"SHA" ~doc:"SHA(s) to cherry-pick")
 
 let coord_cherry_pick_term =
   let+ no_install = no_install_flag
   and+ no_dm = no_dm_flag
+  and+ no_fail_on_install = no_fail_on_install_flag
   and+ shas = sha_term in
-  run_coord_cherry_pick ~no_install ~no_dm ~shas
+  run_coord_cherry_pick ~no_fail_on_install ~no_install ~no_dm ~shas ()
 
 let doc = "Coordinator helper: cherry-pick SHAs with dirty-tree safety + install + author DM."
 
@@ -308,6 +334,12 @@ let man = [
   `P "Requires C2C_COORDINATOR=1 environment variable.";
   `P "Use --no-dm to skip author notifications (e.g. multi-commit cherry-picks";
   `P "where the coordinator DMs manually).";
+  `P "By default, install failure exits 1 — the strict-by-default behaviour";
+  `P "matches the dogfood lesson that masked install failures cause downstream";
+  `P "build/restart confusion. Use --no-fail-on-install when you knowingly";
+  `P "want to land the cherry-pick + DM authors and re-run install manually,";
+  `P "e.g. when the coord tree has a transient build issue independent of the";
+  `P "cherry-picked SHAs.";
 ]
 
 let coord_cherry_pick_cmd =

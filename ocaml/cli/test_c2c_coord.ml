@@ -1,7 +1,12 @@
-(** Tests for c2c_coord — primarily the #382 regression: when
-    `coord-cherry-pick` is given multiple SHAs, the auto-DM to each
-    original author must cite the HEAD captured for THAT cherry-pick,
-    not the final HEAD after the whole batch. *)
+(** Tests for c2c_coord.
+
+    Two groups:
+    - [382-per-pick-head]: regression for #382 — per-cherry-pick HEAD
+      capture for auto-DM (a multi-SHA batch must NOT cite the final
+      HEAD as new_sha for every author).
+    - [classify_install_outcome] (#401): pure decision helper for
+      `--no-fail-on-install` (rc<>0 with the flag → soft-fail; without
+      → hard-fail; rc=0 always → ok). *)
 
 open Alcotest
 
@@ -82,7 +87,7 @@ let test_dm_author_captures_per_cherry_pick_HEAD () =
           HEAD capture + DM call site we changed for #382. *)
        (try
           C2c_coord.run_coord_cherry_pick
-            ~no_install:true ~no_dm:false ~shas:[sha_a; sha_b]
+            ~no_install:true ~no_dm:false ~shas:[sha_a; sha_b] ()
         with Stdlib.Exit -> ());
        let lines = read_file capture_path in
        check int "two DM calls captured" 2 (List.length lines);
@@ -113,10 +118,53 @@ let test_dm_author_captures_per_cherry_pick_HEAD () =
        check bool "first DM does NOT cite final HEAD (the #382 bug)"
          true (new0 <> final_head))
 
+(* #401: classify_install_outcome — pure decision helper. *)
+
+let outcome_eq a b =
+  match a, b with
+  | `Ok, `Ok | `Soft_fail, `Soft_fail | `Hard_fail, `Hard_fail -> true
+  | _ -> false
+
+let outcome_pp ppf = function
+  | `Ok -> Format.fprintf ppf "Ok"
+  | `Soft_fail -> Format.fprintf ppf "Soft_fail"
+  | `Hard_fail -> Format.fprintf ppf "Hard_fail"
+
+let outcome = testable outcome_pp outcome_eq
+
+let test_install_ok_strict () =
+  check outcome "rc=0, strict-default -> Ok" `Ok
+    (C2c_coord.classify_install_outcome ~rc:0 ~no_fail_on_install:false)
+
+let test_install_ok_lenient () =
+  check outcome "rc=0, --no-fail-on-install -> Ok" `Ok
+    (C2c_coord.classify_install_outcome ~rc:0 ~no_fail_on_install:true)
+
+let test_install_fail_strict_default () =
+  check outcome "rc=1, strict-default -> Hard_fail" `Hard_fail
+    (C2c_coord.classify_install_outcome ~rc:1 ~no_fail_on_install:false);
+  check outcome "rc=127 (cmd-not-found), strict-default -> Hard_fail" `Hard_fail
+    (C2c_coord.classify_install_outcome ~rc:127 ~no_fail_on_install:false)
+
+let test_install_fail_with_no_fail_flag () =
+  check outcome "rc=1, --no-fail-on-install -> Soft_fail" `Soft_fail
+    (C2c_coord.classify_install_outcome ~rc:1 ~no_fail_on_install:true);
+  check outcome "rc=137 (SIGKILL), --no-fail-on-install -> Soft_fail" `Soft_fail
+    (C2c_coord.classify_install_outcome ~rc:137 ~no_fail_on_install:true)
+
 let () =
-  run "c2c_coord" [
-    "382-per-pick-head", [
-      test_case "dm_author captures per-cherry-pick HEAD"
-        `Quick test_dm_author_captures_per_cherry_pick_HEAD;
-    ];
-  ]
+  Alcotest.run "c2c_coord"
+    [ "382-per-pick-head",
+      [ test_case "dm_author captures per-cherry-pick HEAD"
+          `Quick test_dm_author_captures_per_cherry_pick_HEAD ]
+    ; ( "classify_install_outcome",
+        [ ( "rc_zero_strict_returns_ok",
+            `Quick, test_install_ok_strict )
+        ; ( "rc_zero_lenient_returns_ok",
+            `Quick, test_install_ok_lenient )
+        ; ( "rc_nonzero_strict_returns_hard_fail",
+            `Quick, test_install_fail_strict_default )
+        ; ( "rc_nonzero_with_no_fail_flag_returns_soft_fail",
+            `Quick, test_install_fail_with_no_fail_flag )
+        ] )
+    ]
