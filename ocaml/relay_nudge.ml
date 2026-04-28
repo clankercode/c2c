@@ -123,7 +123,7 @@ let log_nudge_enqueue ~broker_root ~from_session_id ~to_alias ~to_pid_state ~ok 
    whether the multi-broker amplification hypothesis holds (one tick per
    alive MCP server per cadence period). Total / never raises. *)
 let log_nudge_tick ~broker_root ~from_session_id ~alive_total
-    ~idle_eligible ~sent ~skipped_dnd ~skipped_pid_none
+    ~idle_eligible ~sent ~skipped_dnd ~alive_no_pid
     ~cadence_minutes ~idle_minutes =
   (try
      let path = Filename.concat broker_root "broker.log" in
@@ -137,7 +137,7 @@ let log_nudge_tick ~broker_root ~from_session_id ~alive_total
          ; ("idle_eligible", `Int idle_eligible)
          ; ("sent", `Int sent)
          ; ("skipped_dnd", `Int skipped_dnd)
-         ; ("skipped_pid_none", `Int skipped_pid_none)
+         ; ("alive_no_pid", `Int alive_no_pid)
          ; ("cadence_minutes", `Float cadence_minutes)
          ; ("idle_minutes", `Float idle_minutes)
          ]
@@ -182,16 +182,19 @@ let nudge_tick ?(from_session_id="broker") ~broker ~cadence_minutes ~idle_minute
   let idle_eligible = ref 0 in
   let sent = ref 0 in
   let skipped_dnd = ref 0 in
-  let skipped_pid_none = ref 0 in
+  let alive_no_pid = ref 0 in
   List.iter
     (fun (reg : registration) ->
       (* Skip non-alive sessions *)
       if not (Broker.registration_is_alive reg) then ()
       else begin
         incr alive_total;
-        (* #335: count pid=None separately — these are the legacy
-           zombie-row pattern that accumulates nudges indefinitely. *)
-        (if reg.pid = None then incr skipped_pid_none);
+        (* #335: count pid=None as a sub-category of alive_total. These are
+           the zombie-row pattern that accumulates nudges indefinitely.
+           NOTE: this is a *count*, not a skip — pidless rows still pass
+           through to the DND/idle/nudge_session path under v1a (observe-
+           only). v2a is where they become actually skipped. *)
+        (if reg.pid = None then incr alive_no_pid);
         if is_dnd_active reg then incr skipped_dnd
         else
           match reg.last_activity_ts with
@@ -215,7 +218,7 @@ let nudge_tick ?(from_session_id="broker") ~broker ~cadence_minutes ~idle_minute
     ~idle_eligible:!idle_eligible
     ~sent:!sent
     ~skipped_dnd:!skipped_dnd
-    ~skipped_pid_none:!skipped_pid_none
+    ~alive_no_pid:!alive_no_pid
     ~cadence_minutes
     ~idle_minutes
 

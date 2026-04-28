@@ -306,7 +306,7 @@ that still has an older binary mapped.
 
 #### `tail_log`
 
-Read the last N entries from the broker's RPC audit log (`broker.log`). Useful for debugging delivery and tool call patterns without exposing message content.
+Read the last N entries from the broker's audit log (`broker.log`). Useful for debugging delivery, tool-call patterns, and subsystem scheduler behavior without exposing message content.
 
 **Arguments**
 
@@ -314,7 +314,15 @@ Read the last N entries from the broker's RPC audit log (`broker.log`). Useful f
 |-------|------|----------|-------------|
 | `limit` | integer | no | Number of entries to return (default 50, max 500) |
 
-**Returns** Array of `{ts, tool, ok}` objects — one per broker RPC call.
+**Returns** Array of JSON objects, oldest first. Entries are a discriminated union:
+
+- **`tool`-keyed entries** — RPC call records: `{ts, tool, ok}`. One per broker RPC.
+- **`event`-keyed entries** — subsystem records:
+  - `send_memory_handoff` (#327): `{ts, event, from, to, name, ok, error?}` — one per send-memory handoff attempt.
+  - `nudge_tick` (#335): `{ts, event, from_session_id, alive_total, alive_no_pid, idle_eligible, sent, skipped_dnd, cadence_minutes, idle_minutes}` — one per nudge scheduler tick.
+  - `nudge_enqueue` (#335): `{ts, event, from_session_id, to_alias, to_pid_state, ok}` — one per nudge enqueue attempt; `to_pid_state` ∈ `{alive_with_pid, alive_no_pid, dead, unknown}`.
+
+Use `event` (or `tool`) as the discriminator when parsing. Content fields are never logged.
 
 ---
 

@@ -3147,7 +3147,7 @@ let base_tool_definitions =
       ~required:[]
       ~properties:[ int_prop "limit" "Max messages to return (default 50)." ]
   ; tool_definition ~name:"tail_log"
-      ~description:"Return the last N lines from the broker RPC audit log (broker.log). Each line is a JSON object {ts, tool, ok}. Useful for verifying that your sends and polls actually reached the broker, without needing to read the file directly. Content fields are not logged — only tool names and success/fail status. Optional `limit` (default 50, max 500). Returns a JSON array of log entries, oldest first."
+      ~description:"Return the last N lines from the broker audit log (broker.log). Each line is a JSON object; the shape is a discriminated union — `tool`-keyed entries record RPC events ({ts, tool, ok}), and `event`-keyed entries record subsystem events (e.g. `send_memory_handoff` per #327, `nudge_tick`/`nudge_enqueue` per #335). Useful for verifying that your sends and polls reached the broker and observing nudge/handoff scheduler behavior without exposing message content. Optional `limit` (default 50, max 500). Returns a JSON array of log entries, oldest first."
       ~required:[]
       ~properties:[ int_prop "limit" "Max log entries (default 50, max 500)." ]
   ; tool_definition ~name:"server_info"
