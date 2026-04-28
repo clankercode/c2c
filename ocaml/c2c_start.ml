@@ -3906,14 +3906,14 @@ let run_outer_loop ~(name : string) ~(client : string)
       if exit_code <> 0 then
         record_death ~broker_root ~name ~client ~exit_code ~duration_s:elapsed ~inst_dir;
 
+      (* Resume-by-name is the canonical recovery form: cmd_start re-loads the
+         persisted instance config (including resume_session_id, and for
+         opencode the ses_* id captured in opencode-session.txt) when no
+         explicit --session-id is passed. The previous hint emitted a
+         --session-id <uuid> tail that was wrong for opencode (uses ses_* IDs)
+         and redundant for the other clients. See #421. *)
       let resume_cmd =
-        let sid =
-          match client, codex_resume_target, resume_session_id with
-          | "codex", Some target, _ when String.trim target <> "" -> target
-          | _, _, Some sid -> sid
-          | _ -> session_id
-        in
-        Printf.sprintf "c2c start %s -n %s --session-id %s" client name sid
+        Printf.sprintf "c2c start %s -n %s" client name
         ^ (match binary_override with None -> "" | Some b -> Printf.sprintf " --bin %s" b)
       in
       ignore

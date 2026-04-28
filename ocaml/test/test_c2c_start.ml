@@ -319,11 +319,11 @@ let test_finalize_outer_loop_exit_cleans_before_print () =
   in
   let rc =
     C2c_start.finalize_outer_loop_exit ~cleanup_and_exit ~print_resume
-      ~resume_cmd:"c2c start codex -n demo --session-id demo" ~exit_code:17
+      ~resume_cmd:"c2c start codex -n demo" ~exit_code:17
   in
   check int "finalize returns cleanup code" 17 rc;
   check (list string) "cleanup happens before print"
-    [ "cleanup:17"; "print:c2c start codex -n demo --session-id demo" ]
+    [ "cleanup:17"; "print:c2c start codex -n demo" ]
     !events
 
 let test_build_env_does_not_seed_codex_thread_id () =
