@@ -251,11 +251,15 @@ let () =
       (fun (m : C2c_mcp.message) ->
         let tag = C2c_mcp.extract_tag_from_content m.content in
         let role = lookup_role m.from_alias in
+        (* #417: pass broker enqueue time so receiver sees send wall clock,
+           not deliver wall clock. Fall back to now() defensively. *)
+        let ts = if m.ts > 0.0 then m.ts else Unix.gettimeofday () in
         print_endline (C2c_mcp.format_c2c_envelope
           ~from_alias:m.from_alias
           ~to_alias:m.to_alias
           ?tag
           ?role
+          ~ts
           ~content:m.content
           ()))
       messages;

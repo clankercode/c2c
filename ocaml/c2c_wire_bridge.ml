@@ -17,14 +17,25 @@ let default_spool_path broker_root session_id =
  * Message envelope (must match Python format_c2c_envelope)
  * --------------------------------------------------------------------------- *)
 
-let format_envelope ?(sender_role : string option) (msg : C2c_mcp.message) =
+(* #417: pick the timestamp to display on the envelope. Prefer broker
+   enqueue time ([msg.ts]) so what the recipient sees is the SEND wall
+   clock, not the deliver wall clock; fall back to now() when msg.ts
+   isn't populated (defensive — older brokers and direct-spool callers
+   may emit ts=0.0). *)
+let envelope_ts_for (msg : C2c_mcp.message) : float =
+  if msg.ts > 0.0 then msg.ts else Unix.gettimeofday ()
+
+let format_envelope ?(sender_role : string option) ?(ts : float option)
+    (msg : C2c_mcp.message) =
   let tag = C2c_mcp.extract_tag_from_content msg.content in
+  let ts_value = match ts with Some t -> t | None -> envelope_ts_for msg in
   C2c_mcp.format_c2c_envelope
     ~from_alias:msg.from_alias
     ~to_alias:msg.to_alias
     ?tag
     ?role:sender_role
     ?reply_via:msg.reply_via
+    ~ts:ts_value
     ~content:msg.content
     ()
 

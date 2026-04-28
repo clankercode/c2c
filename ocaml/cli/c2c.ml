@@ -3033,12 +3033,15 @@ let hook_cmd =
             (fun (m : C2c_mcp.message) ->
                let tag = C2c_mcp.extract_tag_from_content m.content in
                let role = lookup_role m.from_alias in
+               (* #417: emit ts="HH:MM" UTC so receivers see SEND time. *)
+               let ts = if m.ts > 0.0 then m.ts else Unix.gettimeofday () in
                Buffer.add_string buf
                  (C2c_mcp.format_c2c_envelope
                     ~from_alias:m.from_alias
                     ~to_alias:m.to_alias
                     ?tag
                     ?role
+                    ~ts
                     ~content:m.content
                     ()))
             messages;

@@ -313,17 +313,37 @@ let xml_escape s =
     | c -> Buffer.add_char buf c) s;
   Buffer.contents buf
 
-let format_c2c_envelope ~from_alias ~to_alias ?tag ?role ?reply_via ~content () =
+(* #417: format a UNIX timestamp as UTC "HH:MM" (24-hour, minute precision)
+   for use as the [ts="HH:MM"] envelope attribute. Lives here so all four
+   envelope-emitting surfaces (this module's [format_c2c_envelope],
+   c2c_wire_bridge, cli/c2c.ml's PostToolUse hook, tools/c2c_inbox_hook)
+   share one canonical format. *)
+let format_ts_hhmm (t : float) : string =
+  let tm = Unix.gmtime t in
+  Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min
+
+let format_c2c_envelope ~from_alias ~to_alias ?tag ?role ?reply_via ?ts
+    ~content () =
   let tag_attr = match tag with
     | Some t -> Printf.sprintf " tag=\"%s\"" (xml_escape t)
     | None -> "" in
   let role_attr = match role with
     | Some r -> Printf.sprintf " role=\"%s\"" (xml_escape r)
     | None -> "" in
+  (* #417: ts="HH:MM" UTC — minute precision so blocked agents can see
+     send time at a glance. Optional: callers that have a real timestamp
+     pass it through; callers that don't get the attribute omitted (vs
+     wall clock at format time, which would have leaked "format time"
+     into archived envelopes). The wire-bridge / inbox-hook callers
+     resolve [ts] from msg.ts (broker enqueue time) so the displayed
+     time reflects the SEND wall clock, not the deliver wall clock. *)
+  let ts_attr = match ts with
+    | Some t when t > 0.0 -> Printf.sprintf " ts=\"%s\"" (format_ts_hhmm t)
+    | _ -> "" in
   let reply_via_str = xml_escape (Option.value reply_via ~default:"c2c_send") in
   Printf.sprintf
-    "<c2c event=\"message\" from=\"%s\" alias=\"%s\" source=\"broker\" reply_via=\"%s\" action_after=\"continue\"%s%s>\n%s\n</c2c>"
-    (xml_escape from_alias) (xml_escape to_alias) reply_via_str role_attr tag_attr content
+    "<c2c event=\"message\" from=\"%s\" alias=\"%s\" source=\"broker\" reply_via=\"%s\" action_after=\"continue\"%s%s%s>\n%s\n</c2c>"
+    (xml_escape from_alias) (xml_escape to_alias) reply_via_str role_attr tag_attr ts_attr content
 
 (* Parse a YAML-flow list value (e.g. "[alice, bob]" or "[]") into a string
    list. Also accepts a bare comma-separated form ("alice, bob") for

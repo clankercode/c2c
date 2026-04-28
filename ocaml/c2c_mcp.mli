@@ -3,7 +3,11 @@ val server_git_hash : string
 val server_info : Yojson.Safe.t
 
 val extract_tag_from_content : string -> string option
-val format_c2c_envelope : from_alias:string -> to_alias:string -> ?tag:string -> ?role:string -> ?reply_via:string -> content:string -> unit -> string
+val format_ts_hhmm : float -> string
+(** Format a UNIX timestamp as UTC "HH:MM" (#417). All four envelope-
+    emitting surfaces share this format so [ts="HH:MM"] is consistent
+    across deliver paths. *)
+val format_c2c_envelope : from_alias:string -> to_alias:string -> ?tag:string -> ?role:string -> ?reply_via:string -> ?ts:float -> content:string -> unit -> string
 
 type compacting = { started_at : float; reason : string option }
 type registration =

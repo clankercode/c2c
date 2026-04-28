@@ -3,20 +3,71 @@
     These tests verify that the OCaml envelope formatting produces output
     identical to the Python reference implementation. *)
 
-let msg ?(from_alias="") ?(to_alias="") ?(reply_via=None) ?(enc_status=None) content =
-  C2c_mcp.{ from_alias; to_alias; content; deferrable = false; reply_via; enc_status; ts = 0.0; ephemeral = false }
+let msg ?(from_alias="") ?(to_alias="") ?(reply_via=None) ?(enc_status=None)
+    ?(ts=0.0) content =
+  C2c_mcp.{ from_alias; to_alias; content; deferrable = false; reply_via; enc_status; ts; ephemeral = false }
+
+(* #417: fixed ts for tests that need exact-string equality.
+   1700000000.0 = 2023-11-14 22:13:20 UTC → "HH:MM" = "22:13". *)
+let fixed_ts = 1700000000.0
+let fixed_ts_hhmm = "22:13"
 
 (* ---------------------------------------------------------------------------
  * format_envelope parity (vs Python format_c2c_envelope)
  * --------------------------------------------------------------------------- *)
 
 let test_envelope_basic () =
-  let m = msg ~from_alias:"alice" ~to_alias:"bob" "hello world" in
+  let m = msg ~from_alias:"alice" ~to_alias:"bob" ~ts:fixed_ts "hello world" in
   let got = C2c_wire_bridge.format_envelope m in
   let expected =
-    "<c2c event=\"message\" from=\"alice\" alias=\"bob\" source=\"broker\" reply_via=\"c2c_send\" action_after=\"continue\">\nhello world\n</c2c>"
+    Printf.sprintf
+      "<c2c event=\"message\" from=\"alice\" alias=\"bob\" source=\"broker\" reply_via=\"c2c_send\" action_after=\"continue\" ts=\"%s\">\nhello world\n</c2c>"
+      fixed_ts_hhmm
   in
   Alcotest.(check string) "basic envelope" expected got
+
+(* #417: ts attribute always emitted by wire-bridge (msg.ts then wall clock). *)
+let str_contains s n =
+  let nl = String.length n and ll = String.length s in
+  let rec f i = i + nl <= ll && (String.sub s i nl = n || f (i + 1)) in
+  f 0
+
+let test_envelope_ts_default_emitted () =
+  let m = msg ~from_alias:"alice" ~to_alias:"bob" "hi" in
+  let got = C2c_wire_bridge.format_envelope m in
+  Alcotest.(check bool) "ts attr present even when msg.ts=0.0"
+    true (str_contains got " ts=\"")
+
+let test_envelope_ts_uses_msg_ts () =
+  let m = msg ~from_alias:"a" ~to_alias:"b" ~ts:fixed_ts "x" in
+  let got = C2c_wire_bridge.format_envelope m in
+  Alcotest.(check bool) "ts uses msg.ts when set"
+    true (str_contains got (Printf.sprintf "ts=\"%s\"" fixed_ts_hhmm))
+
+let test_envelope_ts_explicit_override () =
+  let m = msg ~from_alias:"a" ~to_alias:"b" ~ts:1.0 "x" in
+  let got = C2c_wire_bridge.format_envelope ~ts:fixed_ts m in
+  Alcotest.(check bool) "explicit ts overrides msg.ts"
+    true (str_contains got (Printf.sprintf "ts=\"%s\"" fixed_ts_hhmm))
+
+let test_format_ts_hhmm_known_values () =
+  Alcotest.(check string) "epoch is 00:00 UTC"
+    "00:00" (C2c_mcp.format_ts_hhmm 0.0);
+  Alcotest.(check string) "1700000000 is 22:13 UTC"
+    "22:13" (C2c_mcp.format_ts_hhmm 1700000000.0);
+  Alcotest.(check string) "leading zero on minute"
+    "00:01" (C2c_mcp.format_ts_hhmm 60.0)
+
+let test_envelope_does_not_break_parse () =
+  let m = msg ~from_alias:"alice" ~to_alias:"bob" ~ts:fixed_ts "body" in
+  let got = C2c_wire_bridge.format_envelope m in
+  Alcotest.(check bool) "envelope still starts with canonical open tag"
+    true (String.length got >= 19
+          && String.sub got 0 19 = "<c2c event=\"message");
+  Alcotest.(check bool) "envelope still ends with close tag"
+    true (let suf = "</c2c>" in
+          let n = String.length got and m' = String.length suf in
+          n >= m' && String.sub got (n - m') m' = suf)
 
 let test_envelope_xml_escaping () =
   (* ampersand, angle brackets, and quotes in sender/alias/content must be escaped *)
@@ -118,14 +169,14 @@ let test_prompt_role_omitted_when_lookup_returns_none () =
  * --------------------------------------------------------------------------- *)
 
 let test_prompt_single () =
-  let m = msg ~from_alias:"a" ~to_alias:"b" "hello" in
+  let m = msg ~from_alias:"a" ~to_alias:"b" ~ts:fixed_ts "hello" in
   let got = C2c_wire_bridge.format_prompt [m] in
   let expected = C2c_wire_bridge.format_envelope m in
   Alcotest.(check string) "single-message prompt equals envelope" expected got
 
 let test_prompt_multiple () =
-  let m1 = msg ~from_alias:"a" ~to_alias:"b" "first" in
-  let m2 = msg ~from_alias:"c" ~to_alias:"b" "second" in
+  let m1 = msg ~from_alias:"a" ~to_alias:"b" ~ts:fixed_ts "first" in
+  let m2 = msg ~from_alias:"c" ~to_alias:"b" ~ts:fixed_ts "second" in
   let got = C2c_wire_bridge.format_prompt [m1; m2] in
   (* Python: "\n\n".join([envelope1, envelope2]) *)
   let e1 = C2c_wire_bridge.format_envelope m1 in
@@ -209,6 +260,11 @@ let () =
         ; Alcotest.test_case "with_role"       `Quick test_envelope_with_role
         ; Alcotest.test_case "role_xml_escaped" `Quick test_envelope_role_xml_escaped
         ; Alcotest.test_case "role_absent_when_none" `Quick test_envelope_role_absent_when_none
+        ; Alcotest.test_case "ts_default_emitted"    `Quick test_envelope_ts_default_emitted
+        ; Alcotest.test_case "ts_uses_msg_ts"        `Quick test_envelope_ts_uses_msg_ts
+        ; Alcotest.test_case "ts_explicit_override"  `Quick test_envelope_ts_explicit_override
+        ; Alcotest.test_case "ts_format_hhmm"        `Quick test_format_ts_hhmm_known_values
+        ; Alcotest.test_case "no_break_parse"        `Quick test_envelope_does_not_break_parse
         ] )
     ; ( "prompt"
       , [ Alcotest.test_case "single"          `Quick test_prompt_single
