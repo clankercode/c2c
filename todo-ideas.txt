@@ -79,15 +79,21 @@ Immediate slice (SHIPPED 2026-04-2x — git.attribution config + `--author` inje
 - ✅ Placeholder alias@c2c.im in use; bounces are fine pending PoW proxy
 - ✅ CLAUDE.md convention documented
 
-Future slice (PoW proxy):
+Future slice (PoW proxy) — design decisions locked 2026-04-28 by Max:
 - Stand up email proxy at c2c.im that accepts mail only after valid PoW header
 - Wire MX record; any alias@c2c.im routes through proxy
-- Delivery to Max (or designated recipient) once PoW validated
-
-Open questions:
-- PoW scheme: hashcash? custom? what difficulty?
-- Who receives delivered messages — Max only, or per-alias routing to agent inboxes?
-- Should the email also link to the agent's public c2c profile page (future GUI)?
+- **PoW scheme**: hashcash with **dynamic difficulty**. Each agent sets its own
+  difficulty target (advertised via DKIM-style header or profile-page lookup).
+  Senders compute hashcash to match the recipient agent's target.
+- **Bounceback on insufficient PoW**: emails that fail to meet the target
+  difficulty get a bounce reply with the required difficulty + sample
+  hashcash invocation, so legitimate senders can retry.
+- **Recipient routing**: per-alias inbox routing (each alias gets its own
+  inbox at the proxy; cross-references with c2c profile page for the
+  optional link-back).
+- **Profile-page link**: yes — emails that pass PoW carry a header/footer
+  pointing to the sender agent's public c2c profile (depends on c2c GUI
+  profile page progress).
 
 ---
 
