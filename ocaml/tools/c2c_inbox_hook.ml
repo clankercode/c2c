@@ -223,9 +223,26 @@ let () =
 
   try
     let broker = C2c_mcp.Broker.create ~root:broker_root in
-    (* Push path: drain only non-deferrable messages; deferrable stay in inbox
-       for the agent to read on next explicit poll_inbox or idle flush. *)
-    let messages = C2c_mcp.Broker.drain_inbox_push broker ~session_id in
+    (* #387 A2: when the session is channel-capable (registry's
+       [automated_delivery=true]), the MCP server's channel watcher owns
+       delivery. The hook MUST NOT drain — otherwise it races the watcher
+       and the message renders as a plain hook-stdout `<c2c event=...>`
+       envelope instead of the styled `<channel>` notification. We still
+       run the statefile write below so PostToolUse remains observable. *)
+    let messages =
+      if C2c_mcp.Broker.is_session_channel_capable broker ~session_id then begin
+        prerr_endline
+          (Printf.sprintf
+             "[hook] skipping drain — session %s is channel-capable; \
+              watcher owns delivery"
+             session_id);
+        []
+      end else
+        (* Push path: drain only non-deferrable messages; deferrable stay
+           in inbox for the agent to read on next explicit poll_inbox or
+           idle flush. *)
+        C2c_mcp.Broker.drain_inbox_push ~drained_by:"hook" broker ~session_id
+    in
 
     (* Look up alias from registry for the statefile *)
     let alias =

@@ -1647,7 +1647,7 @@ let tmux_deliver_once ~broker_root ~session_id ~target =
       | _ ->
           let payload = tmux_message_payload messages in
           if tmux_paste_and_submit target payload then begin
-            C2c_mcp.Broker.append_archive broker ~session_id ~messages;
+            C2c_mcp.Broker.append_archive ~drained_by:"tmux" broker ~session_id ~messages;
             C2c_mcp.Broker.save_inbox broker ~session_id [];
             List.length messages
           end else
@@ -2926,7 +2926,7 @@ let try_opencode_native_fallback_once ~broker_root ~(name : string)
             List.for_all (inject_message_via_c2c ~client_pid) messages
           in
           if delivered then begin
-            C2c_mcp.Broker.append_archive broker ~session_id:name ~messages;
+            C2c_mcp.Broker.append_archive ~drained_by:"c2c_inject" broker ~session_id:name ~messages;
             C2c_mcp.Broker.save_inbox broker ~session_id:name []
           end;
           delivered)
@@ -3113,7 +3113,7 @@ let pty_deliver_loop ~(master_fd : Unix.file_descr) ~(broker_root : string)
   let broker = C2c_mcp.Broker.create ~root:broker_root in
   let poll_interval = 0.1 in  (* 100ms *)
   while pid_alive child_pid do
-    let messages = C2c_mcp.Broker.drain_inbox broker ~session_id in
+    let messages = C2c_mcp.Broker.drain_inbox ~drained_by:"pty" broker ~session_id in
     List.iter (fun (msg : C2c_mcp.message) ->
       pty_inject ~master_fd msg.content
     ) messages;

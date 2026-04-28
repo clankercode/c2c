@@ -226,7 +226,7 @@ let drain_to_spool ~broker ~session_id ~spool =
   let queued = spool_read spool in
   if queued <> [] then queued
   else begin
-    let fresh = C2c_mcp.Broker.drain_inbox broker ~session_id in
+    let fresh = C2c_mcp.Broker.drain_inbox ~drained_by:"wire_bridge" broker ~session_id in
     if fresh <> [] then spool_append spool fresh;
     spool_read spool
   end

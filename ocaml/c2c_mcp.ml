@@ -1249,6 +1249,23 @@ module Broker = struct
     let rec find p = if is_prime p then p else find (p + 1) in
     find (n + 1)
 
+  (** Returns [true] iff the registration for [session_id] has its
+      [automated_delivery] flag set to [Some true]. Used by the PostToolUse
+      inbox hook to skip its drain when the MCP server's channel watcher
+      will own delivery (#387 A2). Missing registration or [None] flag =>
+      [false] (treat as not channel-capable, fall through to drain). *)
+  let is_session_channel_capable t ~session_id =
+    match
+      List.find_opt
+        (fun r -> r.session_id = session_id)
+        (list_registrations t)
+    with
+    | None -> false
+    | Some r ->
+        (match r.automated_delivery with
+         | Some true -> true
+         | _ -> false)
+
   (** Check whether *session_id* is currently in DND mode (considering auto-expire). *)
   let is_dnd t ~session_id =
     let now = Unix.gettimeofday () in
@@ -1637,7 +1654,20 @@ module Broker = struct
         Unix.lockf fd Unix.F_LOCK 0;
         f ())
 
-  let append_archive t ~session_id ~messages =
+  (* [drained_by]: free-form label for the path that drained these messages.
+     Persisted as a top-level archive field so investigators can tell which
+     code path archived a given record (#387 slice B). Convention:
+       "hook"        — Claude Code PostToolUse inbox hook (c2c_inbox_hook,
+                       and the equivalent c2c.ml [hook] subcommand).
+       "watcher"     — channel-notification watcher in the MCP server.
+       "poll_inbox"  — explicit MCP poll_inbox tool call.
+       "cli_poll"    — `c2c poll-inbox` / `c2c peek-inbox` CLI.
+       "pty"         — codex PTY deliver loop.
+       "tmux"        — tmux paste-and-submit deliver path.
+       "oc_plugin"   — OpenCode plugin spool path.
+       "unknown"     — default when caller didn't specify (legacy / tests).
+     Older archive entries omit the field; readers default to "unknown". *)
+  let append_archive ?(drained_by = "unknown") t ~session_id ~messages =
     match messages with
     | [] -> ()
     | _ ->
@@ -1657,6 +1687,7 @@ module Broker = struct
                   (fun ({ from_alias; to_alias; content; deferrable } : message) ->
                     let base =
                       [ ("drained_at", `Float ts)
+                      ; ("drained_by", `String drained_by)
                       ; ("session_id", `String session_id)
                       ; ("from_alias", `String from_alias)
                       ; ("to_alias", `String to_alias)
@@ -1676,6 +1707,7 @@ module Broker = struct
     ; ae_to_alias : string
     ; ae_content : string
     ; ae_deferrable : bool
+    ; ae_drained_by : string
     }
 
   let archive_entry_of_json json =
@@ -1695,6 +1727,10 @@ module Broker = struct
         (* Older archive records omit the field; default false matches
            the implicit default at write time. *)
         (try json |> member "deferrable" |> to_bool with _ -> false)
+    ; ae_drained_by =
+        (* Older archive records (pre-#387) omit the field; default to
+           "unknown" so legacy entries continue to parse. *)
+        (try json |> member "drained_by" |> to_string with _ -> "unknown")
     }
 
   (* Return up to [limit] most-recent archive entries for [session_id],
@@ -1824,7 +1860,7 @@ module Broker = struct
      remain in the live inbox for retry. This upholds the "drained
      messages are never deleted, only archived" invariant even in the
      failure case. *)
-  let drain_inbox t ~session_id =
+  let drain_inbox ?(drained_by = "unknown") t ~session_id =
     with_inbox_lock t ~session_id (fun () ->
         let messages = load_inbox t ~session_id in
         (match messages with
@@ -1837,7 +1873,7 @@ module Broker = struct
              let to_archive = List.filter (fun m -> not m.ephemeral) messages in
              (match to_archive with
               | [] -> ()
-              | _ -> append_archive t ~session_id ~messages:to_archive);
+              | _ -> append_archive ~drained_by t ~session_id ~messages:to_archive);
              save_inbox t ~session_id []);
         messages)
 
@@ -1845,7 +1881,7 @@ module Broker = struct
      messages stay in the inbox for the next explicit poll or idle-flush.
      Used by push paths (channel notification watcher, PostToolUse hook) to
      suppress low-priority messages that the sender marked as non-urgent. *)
-  let drain_inbox_push t ~session_id =
+  let drain_inbox_push ?(drained_by = "unknown") t ~session_id =
     with_inbox_lock t ~session_id (fun () ->
         let messages = load_inbox t ~session_id in
         let to_push = List.filter (fun m -> not m.deferrable) messages in
@@ -1857,7 +1893,7 @@ module Broker = struct
              let to_archive = List.filter (fun m -> not m.ephemeral) to_push in
              (match to_archive with
               | [] -> ()
-              | _ -> append_archive t ~session_id ~messages:to_archive);
+              | _ -> append_archive ~drained_by t ~session_id ~messages:to_archive);
              save_inbox t ~session_id to_keep);
         to_push)
 
@@ -4645,7 +4681,7 @@ let ts = Unix.gettimeofday () in
       let session_id = resolve_session_id ?session_id_override arguments in
       Broker.confirm_registration broker ~session_id;
       Broker.touch_session broker ~session_id;
-      let messages = Broker.drain_inbox broker ~session_id in
+      let messages = Broker.drain_inbox ~drained_by:"poll_inbox" broker ~session_id in
       let sid =
         match session_id_override with
         | Some sid -> sid

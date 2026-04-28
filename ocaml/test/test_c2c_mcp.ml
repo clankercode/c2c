@@ -7574,6 +7574,179 @@ let test_delete_room_legacy_requires_force () =
         (not (List.exists
                 (fun (r : C2c_mcp.Broker.room_info) -> r.ri_room_id = "legacy")
                 rooms)))
+(* #387 slice B: drained_by archive field --------------------------------- *)
+
+(* Read raw archive JSONL lines and return parsed top-level objects.
+   Used by the drained_by tests to inspect a field that the typed
+   archive_entry now exposes (ae_drained_by) but pre-#387 entries did
+   not carry. *)
+let read_raw_archive_records dir session_id =
+  let path = Filename.concat dir ("archive/" ^ session_id ^ ".jsonl") in
+  if not (Sys.file_exists path) then []
+  else
+    let ic = open_in path in
+    let rec loop acc =
+      match input_line ic with
+      | exception End_of_file -> close_in ic; List.rev acc
+      | line ->
+          let line = String.trim line in
+          if line = "" then loop acc
+          else
+            (match Yojson.Safe.from_string line with
+             | exception _ -> loop acc
+             | j -> loop (j :: acc))
+    in
+    loop []
+
+let test_drained_by_recorded_on_poll_inbox () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-sender"
+        ~alias:"sender-poll" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-recv"
+        ~alias:"recv-poll" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender-poll"
+        ~to_alias:"recv-poll" ~content:"hi-poll" ();
+      let drained =
+        C2c_mcp.Broker.drain_inbox ~drained_by:"poll_inbox" broker
+          ~session_id:"s-recv"
+      in
+      check int "drained one" 1 (List.length drained);
+      let entries =
+        C2c_mcp.Broker.read_archive broker ~session_id:"s-recv" ~limit:10
+      in
+      check int "archive has one entry" 1 (List.length entries);
+      check string "drained_by recorded" "poll_inbox"
+        (List.hd entries).C2c_mcp.Broker.ae_drained_by)
+
+let test_drained_by_recorded_on_watcher () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-w-sender"
+        ~alias:"sender-w" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-w-recv"
+        ~alias:"recv-w" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender-w"
+        ~to_alias:"recv-w" ~content:"hi-watcher" ();
+      (* Simulate the channel-watcher call site which uses drain_inbox_push
+         with drained_by:"watcher". *)
+      let drained =
+        C2c_mcp.Broker.drain_inbox_push ~drained_by:"watcher" broker
+          ~session_id:"s-w-recv"
+      in
+      check int "watcher drained one" 1 (List.length drained);
+      let entries =
+        C2c_mcp.Broker.read_archive broker ~session_id:"s-w-recv" ~limit:10
+      in
+      check int "archive has one entry" 1 (List.length entries);
+      check string "drained_by recorded as watcher" "watcher"
+        (List.hd entries).C2c_mcp.Broker.ae_drained_by)
+
+let test_drained_by_default_for_legacy_entries () =
+  with_temp_dir (fun dir ->
+      (* Hand-write a legacy archive line that omits drained_by, mirroring
+         the pre-#387 schema. read_archive must parse it cleanly with
+         ae_drained_by defaulted to "unknown". *)
+      let archive_dir = Filename.concat dir "archive" in
+      Unix.mkdir archive_dir 0o700;
+      let path = Filename.concat archive_dir "s-legacy.jsonl" in
+      let oc = open_out path in
+      output_string oc
+        "{\"drained_at\":1.0,\"session_id\":\"s-legacy\",\
+         \"from_alias\":\"old-alice\",\"to_alias\":\"old-bob\",\
+         \"content\":\"legacy ping\"}\n";
+      close_out oc;
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let entries =
+        C2c_mcp.Broker.read_archive broker ~session_id:"s-legacy" ~limit:10
+      in
+      check int "legacy entry parsed" 1 (List.length entries);
+      let e = List.hd entries in
+      check string "from_alias preserved" "old-alice"
+        e.C2c_mcp.Broker.ae_from_alias;
+      check string "drained_by defaults to unknown" "unknown"
+        e.C2c_mcp.Broker.ae_drained_by)
+
+(* Confirm the freshly-written archive line really carries the
+   top-level [drained_by] field on disk (not just decoded by us). *)
+let test_drained_by_persisted_as_top_level_field () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-p-sender"
+        ~alias:"sender-p" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-p-recv"
+        ~alias:"recv-p" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender-p"
+        ~to_alias:"recv-p" ~content:"persist-me" ();
+      let _ =
+        C2c_mcp.Broker.drain_inbox ~drained_by:"hook" broker
+          ~session_id:"s-p-recv"
+      in
+      let raw = read_raw_archive_records dir "s-p-recv" in
+      check int "one raw line" 1 (List.length raw);
+      match List.hd raw with
+      | `Assoc fields ->
+          (match List.assoc_opt "drained_by" fields with
+           | Some (`String s) ->
+               check string "top-level drained_by field" "hook" s
+           | _ -> fail "drained_by missing or wrong type")
+      | _ -> fail "archive line is not a JSON object")
+
+(* #387 slice A2: hook skips drain when session is channel-capable -------- *)
+
+(* The hook executable wraps a small bit of logic around two Broker calls:
+   [is_session_channel_capable] and [drain_inbox_push]. We exercise that
+   exact pair here instead of forking the binary, since the executable
+   reads C2C_MCP_SESSION_ID / C2C_MCP_BROKER_ROOT env vars at startup. *)
+let hook_drain_simulating_a2 broker ~session_id =
+  if C2c_mcp.Broker.is_session_channel_capable broker ~session_id then
+    [] (* skipped — watcher owns delivery *)
+  else
+    C2c_mcp.Broker.drain_inbox_push ~drained_by:"hook" broker ~session_id
+
+let test_hook_skips_drain_for_channel_capable () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-snd-cc"
+        ~alias:"sender-cc" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-rcv-cc"
+        ~alias:"recv-cc" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.set_automated_delivery broker
+        ~session_id:"s-rcv-cc" ~automated_delivery:true;
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender-cc"
+        ~to_alias:"recv-cc" ~content:"channel-test" ();
+      let drained = hook_drain_simulating_a2 broker ~session_id:"s-rcv-cc" in
+      check int "hook drains nothing on channel-capable" 0 (List.length drained);
+      (* Inbox must still hold the message for the watcher. *)
+      let remaining =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"s-rcv-cc"
+      in
+      check int "inbox unchanged" 1 (List.length remaining);
+      check string "remaining content" "channel-test"
+        (List.hd remaining).content)
+
+let test_hook_drains_for_non_channel_capable () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-snd-nc"
+        ~alias:"sender-nc" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-rcv-nc"
+        ~alias:"recv-nc" ~pid:None ~pid_start_time:None ();
+      (* NOT setting automated_delivery — defaults to None / false. *)
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"sender-nc"
+        ~to_alias:"recv-nc" ~content:"non-channel" ();
+      let drained = hook_drain_simulating_a2 broker ~session_id:"s-rcv-nc" in
+      check int "hook drains the message" 1 (List.length drained);
+      let remaining =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"s-rcv-nc"
+      in
+      check int "inbox empty after hook drain" 0 (List.length remaining);
+      let entries =
+        C2c_mcp.Broker.read_archive broker ~session_id:"s-rcv-nc" ~limit:10
+      in
+      check int "archive has the entry" 1 (List.length entries);
+      check string "drained_by recorded as hook" "hook"
+        (List.hd entries).C2c_mcp.Broker.ae_drained_by)
 
 let () =
   run "c2c_mcp"
@@ -8029,4 +8202,16 @@ let () =
                test_delete_room_creator_succeeds
            ; test_case "H3 delete_room legacy requires force" `Quick
                test_delete_room_legacy_requires_force
+           ; test_case "drained_by recorded on poll_inbox (#387 B)" `Quick
+               test_drained_by_recorded_on_poll_inbox
+           ; test_case "drained_by recorded on watcher (#387 B)" `Quick
+               test_drained_by_recorded_on_watcher
+           ; test_case "drained_by default for legacy entries (#387 B)" `Quick
+               test_drained_by_default_for_legacy_entries
+           ; test_case "drained_by persisted as top-level field (#387 B)" `Quick
+               test_drained_by_persisted_as_top_level_field
+           ; test_case "hook skips drain for channel-capable session (#387 A2)" `Quick
+               test_hook_skips_drain_for_channel_capable
+           ; test_case "hook drains for non-channel-capable session (#387 A2)" `Quick
+               test_hook_drains_for_non_channel_capable
            ] ) ]

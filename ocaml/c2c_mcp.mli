@@ -194,15 +194,20 @@ module Broker : sig
   (** Replay messages from broker_root/pending-orphan-replay.<session_id>.json
       into the live inbox. Holds the inbox lock across read+save. Deletes the
       pending file after replay. Returns the number of messages replayed. *)
-  val drain_inbox : t -> session_id:string -> message list
-  val drain_inbox_push : t -> session_id:string -> message list
+  val drain_inbox : ?drained_by:string -> t -> session_id:string -> message list
+  val drain_inbox_push : ?drained_by:string -> t -> session_id:string -> message list
+  val is_session_channel_capable : t -> session_id:string -> bool
+  (** Returns [true] iff the registration for [session_id] has its
+      [automated_delivery] flag set to [Some true]. Used by inbox-hook
+      paths to skip drain when the MCP server's channel watcher will own
+      delivery (#387 A2). *)
   val with_inbox_lock : t -> session_id:string -> (unit -> 'a) -> 'a
   type sweep_result = { dropped_regs : registration list; deleted_inboxes : string list; preserved_messages : int }
   val sweep : t -> sweep_result
   val dead_letter_path : t -> string
-  type archive_entry = { ae_drained_at : float; ae_from_alias : string; ae_to_alias : string; ae_content : string; ae_deferrable : bool }
+  type archive_entry = { ae_drained_at : float; ae_from_alias : string; ae_to_alias : string; ae_content : string; ae_deferrable : bool; ae_drained_by : string }
   val archive_path : t -> session_id:string -> string
-  val append_archive : t -> session_id:string -> messages:message list -> unit
+  val append_archive : ?drained_by:string -> t -> session_id:string -> messages:message list -> unit
   val read_archive : t -> session_id:string -> limit:int -> archive_entry list
   type delivery_mode_sender_count =
     { dms_alias : string

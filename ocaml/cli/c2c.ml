@@ -816,7 +816,7 @@ let poll_inbox_cmd =
     if peek then
       C2c_mcp.Broker.read_inbox broker ~session_id
     else
-      C2c_mcp.Broker.drain_inbox broker ~session_id
+      C2c_mcp.Broker.drain_inbox ~drained_by:"cli_poll" broker ~session_id
   in
   let output_mode = if json then Json else Human in
   match output_mode with
@@ -3213,7 +3213,20 @@ let hook_cmd =
     end;
     try
       let broker = C2c_mcp.Broker.create ~root:broker_root in
-      let messages = C2c_mcp.Broker.drain_inbox broker ~session_id in
+      (* #387 A2: skip drain for channel-capable sessions so the MCP
+         server's watcher can own delivery (avoids the dual-drainer race
+         where hook stdout displaces the `<channel>` notification). *)
+      let messages =
+        if C2c_mcp.Broker.is_session_channel_capable broker ~session_id then begin
+          prerr_endline
+            (Printf.sprintf
+               "[hook] skipping drain — session %s is channel-capable; \
+                watcher owns delivery"
+               session_id);
+          []
+        end else
+          C2c_mcp.Broker.drain_inbox ~drained_by:"hook" broker ~session_id
+      in
       (match messages with
        | [] -> ()
        | _ ->
@@ -5265,7 +5278,7 @@ let serve_cmd =
               | true, true, None -> Lwt.return_unit
               | true, true, Some sid ->
                   let broker = C2c_mcp.Broker.create ~root in
-                  let queued = C2c_mcp.Broker.drain_inbox_push broker ~session_id:sid in
+                  let queued = C2c_mcp.Broker.drain_inbox_push ~drained_by:"watcher" broker ~session_id:sid in
                   let rec emit = function
                     | [] -> Lwt.return_unit
                     | m :: rest ->
@@ -8650,7 +8663,7 @@ let oc_plugin_drain_inbox_to_spool_cmd =
         | _ ->
             let combined = queued @ fresh in
             C2c_wire_bridge.spool_write spool combined;
-            C2c_mcp.Broker.append_archive broker ~session_id ~messages:fresh;
+            C2c_mcp.Broker.append_archive ~drained_by:"oc_plugin" broker ~session_id ~messages:fresh;
             C2c_setup.json_write_file inbox_path (`List []);
             combined)
     in

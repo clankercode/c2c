@@ -189,7 +189,7 @@ let start_inbox_watcher ~broker_root ~session_id ~emit_notification_fn
              let broker = C2c_mcp.Broker.create ~root:broker_root in
             let messages =
               if C2c_mcp.Broker.is_dnd broker ~session_id then []
-              else C2c_mcp.Broker.drain_inbox_push broker ~session_id
+              else C2c_mcp.Broker.drain_inbox_push ~drained_by:"watcher" broker ~session_id
             in
             let rec emit_all = function
               | [] -> Lwt.return_unit
@@ -293,7 +293,7 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
                 let broker = C2c_mcp.Broker.create ~root:broker_root in
                 let queued =
                   if C2c_mcp.Broker.is_dnd broker ~session_id:sid then []
-                  else C2c_mcp.Broker.drain_inbox_push broker ~session_id:sid
+                  else C2c_mcp.Broker.drain_inbox_push ~drained_by:"watcher" broker ~session_id:sid
                 in
                 let* () = emit_notifications ~broker_root ~session_id:sid queued in
                 (* Emit channel test notification if code exists *)
@@ -314,7 +314,7 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
             | true, true, None -> Lwt.return_unit
             | true, true, Some sid ->
                 let broker = C2c_mcp.Broker.create ~root:broker_root in
-                let queued = C2c_mcp.Broker.drain_inbox_push broker ~session_id:sid in
+                let queued = C2c_mcp.Broker.drain_inbox_push ~drained_by:"watcher" broker ~session_id:sid in
                 emit_notifications ~broker_root ~session_id:sid queued
           in
           loop ~broker_root ~negotiated_capabilities_ref)
