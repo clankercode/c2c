@@ -4128,6 +4128,17 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?(kickoff_prompt : string option) ?(auto_join_rooms : string option)
     ?(agent_name : string option) ?(reply_to : string option)
     ?(tmux_location : string option) ?(tmux_command : string list option) () : int =
+  (* Deprecation guard: reject crush early with banner, before unknown-client path *)
+  (if client = "crush" then
+     let use_color = Unix.isatty Unix.stderr in
+     let yellow = if use_color then "\027[1;33m" else "" in
+     let reset = if use_color then "\027[0m" else "" in
+     Printf.eprintf
+       "%s[DEPRECATED]%s crush is no longer a first-class c2c client.\n\
+        \  `c2c start crush` is no longer available.\n\
+        \  For new agents use: claude | codex | opencode | kimi\n\n%!"
+       yellow reset;
+     exit 1);
   if not (Stdlib.Hashtbl.mem clients client) then
     (Printf.eprintf "error: unknown client: '%s'. Choose from: %s\n%!"
        client (String.concat ", " (List.sort String.compare supported_clients));
