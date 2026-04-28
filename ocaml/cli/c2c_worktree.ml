@@ -4,7 +4,13 @@ open Cmdliner.Term.Syntax
 
 let ( // ) = Filename.concat
 
-let mkdir_p = C2c_mcp.mkdir_p
+let rec mkdir_p dir =
+  if dir = "/" || dir = "." || dir = "" then ()
+  else if Sys.file_exists dir then ()
+  else begin
+    mkdir_p (Filename.dirname dir);
+    try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+  end
 
 (** [git_command ?cwd ?(quiet=false) args] runs `git <args>` in [cwd] (default: current dir)
     and returns (exit_code, stdout, stderr).

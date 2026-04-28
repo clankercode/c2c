@@ -26,20 +26,6 @@ CLEAR_CHAR="–"
 # Capture health output once for both full and summary modes
 HEALTH_OUTPUT=$(c2c health 2>&1 || true)
 
-# Detect legacy-broker-root state via health --json (#352).
-# When `legacy_broker_warning: true`, surface migration prompt prominently in
-# both summary and full doctor output. Falls back to grepping the human
-# health text if --json fails or jq is unavailable.
-LEGACY_BROKER=0
-HEALTH_JSON=$(c2c health --json 2>/dev/null || true)
-if [[ -n "$HEALTH_JSON" ]] && command -v jq >/dev/null 2>&1; then
-  if [[ "$(echo "$HEALTH_JSON" | jq -r '.legacy_broker_warning' 2>/dev/null)" == "true" ]]; then
-    LEGACY_BROKER=1
-  fi
-elif echo "$HEALTH_OUTPUT" | grep -q "LEGACY"; then
-  LEGACY_BROKER=1
-fi
-
 # Detect if main working tree is on a non-master/main branch (agents sharing main tree)
 # Format: /path/to/main  <sha>  [<branch>]  — or [HEAD detached at <sha>]
 _wt_raw=$(git worktree list 2>/dev/null | sed -n '1p')
@@ -94,17 +80,6 @@ else
   echo "$HEALTH_OUTPUT"
   echo ""
 
-  if [[ $LEGACY_BROKER -eq 1 ]]; then
-    bold "=== broker migration ==="
-    echo ""
-    yellow "  ⚠ broker root is on the legacy .git/c2c/mcp layout"
-    echo ""
-    echo "  Run: c2c migrate-broker --dry-run     # audit what will move"
-    echo "  Then: c2c migrate-broker               # perform migration"
-    echo "  Migration is now safe (#360 landed 99d7b6cf)."
-    echo ""
-  fi
-
   bold "=== managed instances ==="
   echo ""
   c2c instances 2>&1 || true
@@ -119,57 +94,24 @@ import json, os, sys
 from pathlib import Path
 
 def find_broker_root():
-    """Resolve broker root via canonical priority:
-    1. C2C_MCP_BROKER_ROOT env override
-    2. Ask `c2c health --json` (authoritative — implements env →
-       XDG_STATE_HOME/c2c/repos/<fp>/broker → HOME/.c2c/repos/<fp>/broker)
-    3. Python fallback replicating the same priority if `c2c` is missing.
-    """
-    import subprocess, hashlib
     root = os.environ.get("C2C_MCP_BROKER_ROOT")
     if root:
         p = Path(root)
         if p.exists(): return p
-    # Authoritative: ask the OCaml binary
+    # Try git common dir fallback
     try:
-        result = subprocess.run(
-            ["c2c", "health", "--json"],
-            capture_output=True, text=True, timeout=10
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            data = json.loads(result.stdout)
-            br = data.get("broker_root")
-            if br:
-                p = Path(br)
-                if p.exists(): return p
-    except Exception:
-        pass
-    # Fallback: replicate canonical priority in Python
-    try:
-        remote = subprocess.run(
-            ["git", "config", "--get", "remote.origin.url"],
+        import subprocess
+        git_dir = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
             capture_output=True, text=True
         ).stdout.strip()
-        if not remote:
-            remote = subprocess.run(
-                ["git", "rev-parse", "--show-toplevel"],
-                capture_output=True, text=True
-            ).stdout.strip()
-        if remote:
-            # Match canonical OCaml truncation (ocaml/c2c_repo_fp.ml:21-23)
-            fp = hashlib.sha256(remote.encode()).hexdigest()[:12]
-            xdg = os.environ.get("XDG_STATE_HOME")
-            if xdg:
-                p = Path(xdg) / "c2c" / "repos" / fp / "broker"
-                if p.exists(): return p
-            p = Path.home() / ".c2c" / "repos" / fp / "broker"
+        if git_dir and git_dir != ".git":
+            p = Path(git_dir).parent / "c2c"
             if p.exists(): return p
-            # 4th tier (ocaml/c2c_repo_fp.ml:58): ~/.local/state/c2c/repos/<fp>/broker
-            # Unreachable in practice when HOME is set, but mirror canonical priority.
-            p = Path.home() / ".local" / "state" / "c2c" / "repos" / fp / "broker"
-            if p.exists(): return p
-    except Exception:
-        pass
+    except: pass
+    # Try home config
+    p = Path.home() / ".config" / "c2c"
+    if p.exists(): return p
     return None
 
 broker_root = find_broker_root()

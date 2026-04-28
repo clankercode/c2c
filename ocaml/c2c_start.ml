@@ -605,70 +605,6 @@ let read_toml_sections_with_prefix (prefix : string) :
     (string * (string * string) list) list =
   read_toml_sections_with_prefix_from_path (repo_config_path ()) prefix
 
-(* --------------------------------------------------------------------------- *
- * [swarm] section (#341)
- *
- * Per-repo overrides for swarm-wide rendered strings. Today this is just
- * [restart_intro], the kickoff prompt template emitted into the agent's
- * transcript when [c2c start <client>] launches a fresh session. The
- * thunk pattern (function-of-unit) mirrors the planned #318 v3 helpers
- * (swarm_config_coordinator_alias / swarm_config_social_room) so all
- * three converge on the same lookup once #318 lands.
- * --------------------------------------------------------------------------- *)
-
-(* Default restart/kickoff intro template. Placeholders {name}, {alias},
-   {role} are substituted at render time by [default_kickoff_prompt] in
-   cli/c2c.ml. Override via [swarm] restart_intro in .c2c/config.toml. *)
-let builtin_swarm_restart_intro : string =
-  "You have been started as a c2c swarm agent.\n\
-   Instance: {name}  Alias: {alias}{role}\n\
-   Getting started:\n\
-   1. Poll your inbox:  use the MCP poll_inbox tool (or: c2c poll-inbox)\n\
-   2. See active peers: c2c list\n\
-   3. Post in the lounge: send_room swarm-lounge with a hello message\n\
-   4. Read CLAUDE.md for the mission brief and open tasks\n\n\
-   The swarm coordinates via c2c instant messaging. You are now part of it."
-
-(* Decode common backslash escapes in a TOML basic-string value
-   (newline, tab, backslash, quote). Lets operators encode multi-line
-   restart_intro overrides on a single TOML line. Conservative: unknown
-   escapes pass through unchanged. *)
-let decode_toml_basic_escapes (s : string) : string =
-  let buf = Buffer.create (String.length s) in
-  let len = String.length s in
-  let i = ref 0 in
-  while !i < len do
-    let c = s.[!i] in
-    if c = '\\' && !i + 1 < len then begin
-      (match s.[!i + 1] with
-       | 'n' -> Buffer.add_char buf '\n'
-       | 't' -> Buffer.add_char buf '\t'
-       | 'r' -> Buffer.add_char buf '\r'
-       | '\\' -> Buffer.add_char buf '\\'
-       | '"' -> Buffer.add_char buf '"'
-       | '\'' -> Buffer.add_char buf '\''
-       | other -> Buffer.add_char buf '\\'; Buffer.add_char buf other);
-      i := !i + 2
-    end else begin
-      Buffer.add_char buf c;
-      incr i
-    end
-  done;
-  Buffer.contents buf
-
-(* Read [swarm] restart_intro from .c2c/config.toml (#341). Returns the
-   user override (with \n etc decoded) or [builtin_swarm_restart_intro]
-   when the section/key is absent. *)
-let swarm_config_restart_intro () : string =
-  let sections = read_toml_sections_with_prefix "swarm" in
-  match List.assoc_opt "default" sections with
-  | None -> builtin_swarm_restart_intro
-  | Some entries ->
-      (match List.assoc_opt "restart_intro" entries with
-       | None -> builtin_swarm_restart_intro
-       | Some "" -> builtin_swarm_restart_intro
-       | Some v -> decode_toml_basic_escapes v)
-
 let assoc_bool key entries default =
   match List.assoc_opt key entries with
   | None -> default
@@ -1142,16 +1078,6 @@ let () =
     { binary = "crush"; deliver_client = "crush";
       needs_deliver = true; needs_wire_daemon = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] };
-  (* gemini (#406b): Google's Gemini CLI. MCP-server-based delivery via
-     `gemini mcp` config (written by `c2c install gemini` — slice #406a),
-     no separate deliver daemon, no wire bridge, no poker. The `trust:
-     true` flag on the c2c MCP server entry bypasses tool-call confirmation
-     prompts, so automated `c2c restart gemini` works without TTY
-     auto-answer (unlike Claude's #399b dance). *)
-  Stdlib.Hashtbl.add clients "gemini"
-    { binary = "gemini"; deliver_client = "gemini";
-      needs_deliver = false; needs_wire_daemon = false; needs_poker = false;
-      poker_event = None; poker_from = None; extra_env = [] };
   (* codex-headless: minimal unblocker for broker-driven XML delivery.
      We wire the bridge behind a c2c-owned stdin pipe and use the deliver daemon
      to feed that pipe. Richer operator steering / queue management remains future work. *)
@@ -1313,7 +1239,13 @@ let instances_dir =
   | Some d when String.trim d <> "" -> String.trim d
   | _ -> Filename.concat (home_dir ()) ".local" // "share" // "c2c" // "instances"
 
-let mkdir_p dir = C2c_io.mkdir_p dir
+let rec mkdir_p dir =
+  if Sys.file_exists dir then ()
+  else begin
+    mkdir_p (Filename.dirname dir);
+    try Unix.mkdir dir 0o755
+    with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+  end
 
 let write_git_shim ~shim_bin_path ~c2c_bin_path ~real_git_path =
   let oc = open_out shim_bin_path in
@@ -1651,7 +1583,7 @@ let tmux_deliver_once ~broker_root ~session_id ~target =
       | _ ->
           let payload = tmux_message_payload messages in
           if tmux_paste_and_submit target payload then begin
-            C2c_mcp.Broker.append_archive ~drained_by:"tmux" broker ~session_id ~messages;
+            C2c_mcp.Broker.append_archive broker ~session_id ~messages;
             C2c_mcp.Broker.save_inbox broker ~session_id [];
             List.length messages
           end else
@@ -1793,12 +1725,9 @@ let alias_words = [| "aalto"; "aimu"; "aivi"; "alder"; "alm"; "alto"; "anvi"; "a
 let generate_alias () =
   let () = Random.self_init () in
   let n = Array.length alias_words in
-  let rec loop () =
-    let w1 = alias_words.(Random.int n) in
-    let w2 = alias_words.(Random.int n) in
-    if w1 = w2 then loop () else Printf.sprintf "%s-%s" w1 w2
-  in
-  loop ()
+  let w1 = alias_words.(Random.int n) in
+  let w2 = alias_words.(Random.int n) in
+  Printf.sprintf "%s-%s" w1 w2
 
 let default_name _client =
   (* #277: drop the "<client>-" prefix; the random word pair is already
@@ -2206,13 +2135,8 @@ let build_env ?(broker_root_override : string option = None)
     [ "CLAUDE_SESSION_ID"; "CODEX_SESSION_ID"; "CODEX_THREAD_ID"; "OPENCODE_SESSION_ID";
       "KIMI_SESSION_ID"; "CRUSH_SESSION_ID" ]
   in
-  (* Always strip C2C_MCP_FORCE_CAPABILITIES from inherited env. For
-     client="claude" we re-add it via `additions` above; for any other client
-     we want it gone so claude-only capabilities don't leak from the parent
-     shell into Codex/OpenCode/Kimi/Crush managed sessions. *)
   let override_keys =
-    ("C2C_MCP_FORCE_CAPABILITIES" :: legacy_native_session_keys)
-    @ ("C2C_GIT_SHIM_ACTIVE" :: List.map fst additions)
+    legacy_native_session_keys @ "C2C_GIT_SHIM_ACTIVE" :: List.map fst additions
   in
   let env_key e =
     try String.sub e 0 (String.index e '=') with Not_found -> e
@@ -2398,12 +2322,6 @@ let prepare_launch_args ~(name : string) ~(client : string)
         let module A = (val (Stdlib.Hashtbl.find client_adapters "kimi") : CLIENT_ADAPTER) in
         A.build_start_args ~name ?alias_override ?model_override ?resume_session_id
           ~extra_args:extra_args ()
-    | "gemini" ->
-        (* #406b: GeminiAdapter handles --resume <idx>|latest, --model. No
-           dev-channels or PTY auto-answer (Gemini uses settings.json
-           `trust: true` instead of an interactive consent prompt). *)
-        let module A = (val (Stdlib.Hashtbl.find client_adapters "gemini") : CLIENT_ADAPTER) in
-        A.build_start_args ~name ?alias_override ?model_override ?resume_session_id ()
     | "codex-headless" ->
         [ "--stdin-format"; "xml";
           "--codex-bin"; "codex";
@@ -2760,88 +2678,9 @@ module KimiAdapter : CLIENT_ADAPTER = struct
     [ "kimi_wire", true ]
 end
 
-module GeminiAdapter : CLIENT_ADAPTER = struct
-  (* #406b: Google's Gemini CLI adapter.
-
-     Delivery shape: Gemini exposes first-class MCP server support
-     (`gemini mcp add` / `mcp list` / `mcp remove`); `c2c install gemini`
-     (#406a) writes ~/.gemini/settings.json with the c2c MCP server entry
-     and `trust: true` so tool-call confirmation prompts are pre-approved.
-     No deliver daemon, no wire bridge, no poker, no PTY auto-answer
-     (Gemini has no equivalent of Claude's #399b dev-channel consent
-     prompt — the trust gate is settings-based, not interactive).
-
-     Resume semantics: Gemini uses a numeric session index (per-project)
-     with `gemini --resume <idx>` / `--resume latest` / `--list-sessions`.
-     c2c's instance config stores a session-id string; for v1 we map that
-     to `--resume latest` on resume. Operators wanting a specific index
-     can pass it via `c2c start gemini -- --resume 3` (extra_args
-     forwarded by prepare_launch_args). A future slice could persist the
-     latest-index per-instance for round-tripping.
-
-     OAuth seeding caveat: ~/.gemini/oauth_creds.json must exist before
-     the first managed launch. `c2c install gemini` surfaces a one-line
-     reminder; we don't pre-seed creds here. *)
-
-  let name = "gemini"
-  let config_dir = ".gemini"
-  let agent_dir = ""   (* gemini has no agent-dir concept *)
-  let instances_subdir = "gemini"
-
-  let binary = "gemini"
-  let needs_deliver = false
-  let needs_wire_daemon = false
-  let needs_poker = false
-  let poker_event = None
-  let poker_from = None
-  let extra_env = []
-  let session_id_env = None
-    (* Gemini does not consume a session-id env var; resume is via
-       --resume <idx>|latest, threaded through build_start_args. *)
-
-  let build_start_args ~name:_ ?alias_override:_ ?model_override
-      ?resume_session_id ?(extra_args = []) () =
-    ignore extra_args;
-    let resume_args =
-      match resume_session_id with
-      | None -> []
-      | Some sid ->
-        let s = String.trim sid in
-        if s = "" then []
-        else
-          (* If the operator already passed --resume in extra_args,
-             prepare_launch_args appends them after our base; let theirs
-             win by emitting nothing here. Otherwise default to "latest"
-             unless the stored session_id parses as a numeric index. *)
-          let is_numeric =
-            String.length s > 0
-            && String.for_all (fun c -> c >= '0' && c <= '9') s
-          in
-          let target = if is_numeric then s else "latest" in
-          [ "--resume"; target ]
-    in
-    let base = resume_args in
-    match model_override with
-    | Some m when String.trim m <> "" -> base @ [ "--model"; m ]
-    | _ -> base
-
-  let refresh_identity ~name:_ ~alias:_ ~broker_root:_ ~project_dir:_
-      ~instances_dir:_ =
-    (* Gemini's c2c MCP server is configured via ~/.gemini/settings.json
-       (written by `c2c install gemini`); env vars in that entry carry the
-       broker root + alias. No per-launch config-file refresh needed. *)
-    ()
-
-  let probe_capabilities ~binary_path:_ =
-    (* gemini_mcp: always available for managed gemini sessions.
-       The MCP delivery channel is configured by `c2c install gemini`. *)
-    [ "gemini_mcp", true ]
-end
-
 let () = Stdlib.Hashtbl.add client_adapters "claude" (module ClaudeAdapter)
 let () = Stdlib.Hashtbl.add client_adapters "codex" (module CodexAdapter)
 let () = Stdlib.Hashtbl.add client_adapters "kimi" (module KimiAdapter)
-let () = Stdlib.Hashtbl.add client_adapters "gemini" (module GeminiAdapter)
 
 let parse_rfc3339_utc s =
   match Ptime.of_rfc3339 s with
@@ -3018,7 +2857,7 @@ let try_opencode_native_fallback_once ~broker_root ~(name : string)
             List.for_all (inject_message_via_c2c ~client_pid) messages
           in
           if delivered then begin
-            C2c_mcp.Broker.append_archive ~drained_by:"c2c_inject" broker ~session_id:name ~messages;
+            C2c_mcp.Broker.append_archive broker ~session_id:name ~messages;
             C2c_mcp.Broker.save_inbox broker ~session_id:name []
           end;
           delivered)
@@ -3205,7 +3044,7 @@ let pty_deliver_loop ~(master_fd : Unix.file_descr) ~(broker_root : string)
   let broker = C2c_mcp.Broker.create ~root:broker_root in
   let poll_interval = 0.1 in  (* 100ms *)
   while pid_alive child_pid do
-    let messages = C2c_mcp.Broker.drain_inbox ~drained_by:"pty" broker ~session_id in
+    let messages = C2c_mcp.Broker.drain_inbox broker ~session_id in
     List.iter (fun (msg : C2c_mcp.message) ->
       pty_inject ~master_fd msg.content
     ) messages;
@@ -3283,16 +3122,6 @@ let run_outer_loop ~(name : string) ~(client : string)
     try Stdlib.Hashtbl.find clients client
     with Not_found ->
       Printf.eprintf "error: unknown client '%s'\n%!" client; exit 1
-  in
-  (* Load the role file early so we can derive C2C_COORDINATOR=1 for #381. *)
-  let agent_role =
-    match agent_name with
-    | None -> None
-    | Some n ->
-        (try
-          let path = C2c_role.resolve_agent_path ~name:n ~client in
-          if Sys.file_exists path then Some (C2c_role.parse_file path) else None
-        with _ -> None)
   in
   (* Binary resolution order:
      1. explicit --binary flag (binary_override)
@@ -3443,14 +3272,6 @@ let run_outer_loop ~(name : string) ~(client : string)
         if one_hr_cache then
           Array.append env [| "ENABLE_PROMPT_CACHING_1H=1" |]
         else env
-      in
-      (* #381: if the role has coordinator: true, propagate C2C_COORDINATOR=1
-         so the managed client knows it was launched with coordinator privileges. *)
-      let env =
-        match agent_role with
-        | Some r when r.C2c_role.coordinator = Some true ->
-            Array.append env [| "C2C_COORDINATOR=1" |]
-        | _ -> env
       in
       (* When launching opencode with a kickoff prompt, signal the c2c plugin
          to proactively create a session and deliver the prompt if the TUI
@@ -3652,7 +3473,8 @@ let run_outer_loop ~(name : string) ~(client : string)
           let plugin_dir = project_dir // ".opencode" // "plugins" in
           let plugin_dst = plugin_dir // "c2c.ts" in
           (if Sys.file_exists plugin_src then begin
-            C2c_io.mkdir_p plugin_dir;
+            (try ignore (Unix.mkdir plugin_dir 0o755)
+             with Unix.Unix_error _ -> ());
             (try
               let ic = open_in plugin_src in
               let n = in_channel_length ic in

@@ -92,30 +92,76 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
 
 - **Git workflow — read `.collab/runbooks/git-workflow.md`.** That doc is the canonical reference. Five rules in short: (1) **one slice = one worktree** under `.worktrees/<slice-name>/` — never mutate the main tree for slice work; (2) **branch from `origin/master`** (NOT local master, which may contain unmerged peer work); (3) **real peer-PASS before coord-PASS** — another swarm agent runs `review-and-fix` on your SHA; **self-review-via-skill is NOT a peer-PASS**, and a subagent of yours doesn't count either; (4) **new commit for every fix, never `--amend`** — peer-PASS DMs reference the SHA, amend breaks the trail; (5) **coordinator gates all pushes** to origin/master. After cherry-picks verify HEAD is on a named branch (`git branch --show-current`); if blank, `git switch <branch>` before your next commit. Companion runbooks: `.collab/runbooks/worktree-per-feature.md` (worktree mechanics + `--worktree` flag), `.collab/runbooks/branch-per-slice.md` (slice sizing, drive-by discipline). Slicing handoff example: `.collab/updates/2026-04-25T09-58-27Z-lyra-coordinator-handoff.md`.
 
-- **Worktree disk pressure — `c2c worktree gc` (#313, #314).** `.worktrees/` accumulates GBs; once a slice branch lands on `origin/master`, its checkout is GC-eligible. `c2c worktree gc` (dry-run by default; `--clean` to remove) classifies as REMOVABLE / POSSIBLY_ACTIVE / REFUSE based on dirtyness, ancestry vs `origin/master`, and live `/proc/<pid>/cwd` holders. Convention: commit something early in a fresh worktree (any commit moves HEAD off `origin/master` and exits the freshness heuristic). Full runbook: `.collab/runbooks/worktree-per-feature.md`.
-
-- **Subagents must NOT `cd` out of their assigned worktree (#373).** Shared-tree layout means `git stash` and other "obvious" git ops cross worktree boundaries. Subagents stay in their `.worktrees/<slice>/` path; for builds, use `dune --root <worktree-path>`. If a subagent thinks it needs to operate in another tree, STOP — that's a slice-design problem. Full mechanics: `.collab/runbooks/worktree-per-feature.md`.
+- **Worktree disk pressure — `c2c worktree gc` (#313, #314).** `.worktrees/` accumulates GBs across the swarm; when slice branches land on `origin/master`, their worktree checkouts can be GC'd. `c2c worktree gc` scans, classifies as REMOVABLE / `[!]` POSSIBLY_ACTIVE / REFUSE, and on `--clean` runs `git worktree remove` against REMOVABLE only. Refuses dirty trees, branches not ancestor of `origin/master`, worktrees with a live `cwd` holder (Linux `/proc/<pid>/cwd` scan; `--ignore-active` overrides for stale PIDs), and the main worktree (never offered). The **#314 freshness heuristic** marks worktrees as POSSIBLY_ACTIVE (soft-refuse) when HEAD == `origin/master` AND the admin dir mtime is younger than `--active-window-hours` (default `2`) — protects fresh checkouts whose owner is reading code elsewhere (so /proc/cwd misses them) but hasn't committed anything yet. **Convention: in a fresh worktree, commit something early** (even a stub); any commit moves HEAD off `origin/master` and exits the heuristic, so fully-merged worktrees stay REMOVABLE. Default dry-run; add `--clean` to actually remove. `--json` for tooling, `--path-prefix=PFX` to bound the candidate set, `--active-window-hours=0` to disable the freshness heuristic. The `origin/master`-ancestor boundary is deliberately stricter than local-master because local may carry unpushed cherry-picks; worktrees become eligible after a push lands their branch upstream. Sibling to `c2c worktree prune`, which cleans only the `.git/worktrees/` admin metadata (not the worktree directories). Full runbook: `.collab/runbooks/worktree-per-feature.md`.
 
 - **Coordinator failover protocol — read `.collab/runbooks/coordinator-failover.md`.** If `coordinator1` goes offline (quota exhaust, harness crash, compact loop, killed terminal), the **designated recovery agent is `lyra-quill`** (succession: jungle → stanza → Max ad-hoc). Detection signals: no sitrep at `:07`, peer DMs unread >15min, coord tmux pane at shell prompt, `c2c stats --alias coordinator1` shows compacting% near 100% for >10min. Diagnose with `./scripts/c2c_tmux.py peek coordinator1` BEFORE taking over — many "down" coords just need a permission prompt approved or a heartbeat nudge. Takeover sequence + handback in the runbook.
 
 - **If you get stuck, ask each other!** The swarm is here to help. Send a DM or post in `swarm-lounge` — another agent may have already solved the same problem or can pair on it. You are not alone.
 - **Do not delete or reset shared files without checking.** Other agents in the swarm are likely working in parallel. Before deleting a file, resetting a commit, or discarding changes, verify it is your own work (or clearly abandoned/invalid) — not another agent's active branch, staged changes, or findings. When in doubt, ask in `swarm-lounge`.
 
-- **Build + install via `just`.** OCaml changes are NOT live until the binary is rebuilt AND copied to `~/.local/bin/c2c`. Use the `just` recipes — atomic, handle "Text file busy", install all binaries together:
+- Always commit, build, and install your changes. OCaml changes are NOT live
+  until the binary is rebuilt AND copied to `~/.local/bin/c2c`. **Prefer the
+  `just` recipes** — they build + install all OCaml binaries atomically and
+  handle the "Text file busy" case on a live binary:
   ```bash
   git add <files> && git commit -m "description"
-  just install-all        # or `just bi`
-  c2c restart <name>      # pick up new binary in your managed session
+  just install-all        # or `just bi`; builds + installs CLI, mcp-server, hook
   ```
-  Iterative dev: `just build` (compile check), `just test` (full suite), `just test-one -k "pattern"`. `just --list` for everything. Reach for raw `opam exec -- dune build` only if a recipe is missing — if you do, add a recipe.
-  **Install guard (#302)** refuses to clobber a newer install with an older commit (override `C2C_INSTALL_FORCE=1`); cross-worktree races serialized via flock at `~/.local/bin/.c2c-install.lock`. Stamp at `~/.local/bin/.c2c-version` records SHA + per-binary SHA-256.
-  Restart soft alternatives: `kill -USR1 <opencode-pid>` (OC plugin reconnect) or `/exit` + respawn from tmux. Legacy `./restart-self` is deprecated → `deprecated/restart-self`.
-- **Run `review-and-fix` skill after each meaningful slice, before handoff.** Commit-before (reviewer needs a stable SHA), invoke `Skill` tool with `review-and-fix`, fix in a NEW commit (never `--amend`), re-invoke until PASS or spec-blocker. Skill sources: `~/.claude/skills/review-and-fix/SKILL.md` (Claude), `~/.codex/skills/review-and-fix/SKILL.md` (Codex).
+  `just bii` chains `install-all` with `./restart-self`, but restart-self
+  hasn't been proven across every harness — verify it works in your context
+  before relying on it; otherwise install and restart separately.
+  **Never run `./restart-self` from inside a managed OpenCode session** — it
+  kills the `c2c start` supervisor and tears down the whole tmux pane. It is
+  safe only for bare CLI sessions started outside tmux. After install, prefer
+  `kill -USR1 <opencode-pid>` for a soft reconnect or `/exit` + respawn for a
+  clean restart.
+  `just --list` shows every available recipe (build, install, test, gc, …).
+  **Use `just` for iterative dev too**, not just final install: `just build`
+  for a compile check, `just test-ocaml` / `just test` for the test suite,
+  `just test-one -k "test_foo"` to run a single case. Reach for `opam exec
+  -- dune build` directly only when a recipe is missing — if you find
+  yourself typing the raw dune/opam invocation, consider adding a recipe
+  to the justfile so the next agent doesn't have to.
+  Fall back to the manual sequence (`opam exec -- dune build -j1 && cp
+  _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c`) only if `just` is
+  unavailable — `dune install` does NOT reliably update the binary.
+  Then run `./restart-self` to pick up the new binary, and call at least one
+  new tool from your own session before marking the slice done.
+  **Install guard (#302)**: `just install-all` now refuses to overwrite
+  `~/.local/bin/c2c` when the new binary's commit is an ancestor of the
+  currently-installed one (i.e. an older worktree clobbering a newer
+  install). Override with `C2C_INSTALL_FORCE=1` if you really mean it.
+  Cross-worktree concurrent installs are also serialized via flock on
+  `~/.local/bin/.c2c-install.lock`. Stamp at `~/.local/bin/.c2c-version`;
+  it preserves the top-level `sha` for ancestry checks and records per-binary
+  SHA-256 values under `binaries` for stale-MCP diagnostics.
+- **Run the `review-and-fix` skill after finishing a meaningful work unit,
+  before handing off or marking done.** The loop is only meaningful as a
+  git-visible sequence, so commit your work first (so the reviewer targets
+  a stable SHA), invoke the skill, and commit the fixes as a NEW commit
+  (never `--amend`). If the review returns FAIL, fix in a new commit then
+  re-invoke until PASS or a spec-level blocker surfaces. Skill sources:
+  `~/.claude/skills/review-and-fix/SKILL.md` (Claude Code),
+  `~/.codex/skills/review-and-fix/SKILL.md` (Codex — same format).
+  - When: after a meaningful slice, before returning/handing off
+  - Commit-before: reviewer needs a stable SHA to target
+  - Invoke: `Skill` tool, skill name `review-and-fix`
+  - On FAIL: new commit for the fix, then rereview
+  - Commit-after: the fix must be git-visible before the work is "done"
 - Always use subagent-driven development over inline execution.
 - Always populate the todo list with blockers for each task.
 - Do all available unblocked tasks in parallel at each step.
 - Ensure research is saved and conclusions logged.
-- **Document problems as you hit them.** Real issues (routing bugs, stale binaries, cross-process races, tooling footguns, silent failures) → file immediately to `.collab/findings/<UTC-ts>-<alias>-<topic>.md`. Capture symptom + discovery + root cause + fix status + severity. Don't wait until end of session; the goal is *the next agent doesn't hit the same pothole*.
+- **Document problems as you hit them.** Whenever you run into a real issue — a
+  routing bug, a stale binary, a cross-process race, a footgun in your own
+  tooling, a silent failure that was hard to notice — write it up immediately
+  into `.collab/findings/<UTC-timestamp>-<alias>-problems-log.md` (or append to
+  an existing log). Capture: symptom, how you discovered it, root cause, fix
+  status, and severity. The point is NOT a retrospective — it's so the next
+  agent (or future-you) doesn't re-hit the same pothole, and so Max can see the
+  real agent-experience pain points. Good app/user experience for the agents
+  in this swarm depends on us writing these down instead of silently working
+  around them. Don't wait until the end of a session; document in the moment.
 - Broaden any agent-visibility Monitor to the whole broker dir
   (`.git/c2c/mcp/*.inbox.json`) rather than your own alias. Cross-agent
   visibility is the entire point of c2c; watching only your own inbox means
@@ -125,17 +171,46 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   hit that's wrong/missing/annoying is a bug report nobody else will
   file. Log it in `.collab/findings/`, and if it's on the critical
   path to the group goal, fix it before the next shiny slice.
-- **Protocol friction is a defect, not someone else's problem.** Missing DMs, clunky commands, missed wakes, silent failures — file + iron out. The swarm only succeeds when the wrinkles are gone.
-- **Keepalive ticks are work triggers, not heartbeats to acknowledge.** Each tick → poll inbox + pick up the next slice. "Tick — no action" is wrong; "tick — picking up X" is right.
+- **Treat protocol friction as a crinkle to iron out.** If a c2c
+  message doesn't arrive, a command feels clunky, a daemon misses a
+  wake, or a cross-client send silently fails, that rough edge is not
+  "someone else's problem" — it is a defect in the system you are
+  building. Every crinkle you smooth makes the swarm more alive. c2c
+  will only succeed when these wrinkles are gone, so notice them,
+  document them, and iron them out.
+- **Keepalive ticks are work triggers, not heartbeats to acknowledge.**
+  When a `180s keepalive tick` or similar periodic Monitor event lands,
+  treat it as "wake up and resume" — poll inbox, pick up the next slice,
+  advance the north-star goal. Maximize work-per-tick. "Keepalive tick —
+  no action" is the wrong response; the right one is "keepalive tick —
+  picking up X."
 - **Do not set `C2C_MCP_AUTO_DRAIN_CHANNEL=1`.** The server now
   defaults to `0` (safe). Even if set to `1`, auto-drain only fires
   when the client declares `experimental.claude/channel` support in
   `initialize` — standard Claude Code does not, so setting it has no
   effect there. The old footgun (silent inbox drain, messages lost) is
   fixed. See `.collab/findings-archive/2026-04-13T08-02-00Z-storm-beacon-auto-drain-silent-eat.md`.
-- **Restart yourself after MCP broker updates.** New broker tools/flags are invisible until restart (`dune build` alone isn't enough; `/plugin reconnect` only revives existing tools). Run `c2c restart <name>`, then call the new tool from your session before marking done. After any restart (esp. first time joining), orient via `.collab/runbooks/first-5-turns-for-new-agents.md` (whoami → list → memory list → room_history → archive-skim → DM coordinator1).
-- **SIGUSR1 to inner OpenCode pid** (NOT the outer-loop wrapper) recovers a stuck MCP session without full restart — OCPlugin reconnects to broker. Sibling outer-loop SIGUSR1 can cascade a failure. See `.collab/findings/2026-04-26T01-08-00Z-test-agent-mcp-outage.md`.
-- **`kimi -p` (or any child CLI) inside Claude Code inherits `CLAUDE_SESSION_ID`.** Broker guards against this, but for one-shot probes use explicit `C2C_MCP_SESSION_ID=kimi-probe-$(date +%s)` + `--mcp-config-file`. See `.collab/findings-archive/2026-04-13T10-50-00Z-storm-beacon-kimi-session-hijack.md`.
+- **Restart yourself after MCP broker updates.** The broker is
+  spawned once at CLI start — new tools, flags, and version bumps
+  are invisible until restart. `dune build` isn't enough;
+  `/plugin reconnect` only revives *existing* tools. Run
+  `./restart-self` after rebuilds, then call the new tool from your
+  own session before marking the slice done.
+- **SIGUSR1 recovers a stuck OpenCode MCP session without full restart.**
+  If the MCP server gets stuck (compact loop, delivery stall) but the outer
+  loop is still alive, sending `SIGUSR1` to the OpenCode process (NOT the
+  outer loop wrapper) causes the OCPlugin to reconnect to the broker,
+  refreshing registration and restoring delivery without killing the session.
+  Outer loop PID recovery (via SIGUSR1 to the wrapper) can cause a secondary
+  failure — target the inner OpenCode process directly. See
+  `.collab/findings/2026-04-26T01-08-00Z-test-agent-mcp-outage.md`.
+- **Running `kimi -p` (or any child CLI) from inside a Claude Code session**
+  will inherit `CLAUDE_SESSION_ID`. The broker guards against this
+  (`auto_register_startup` now skips if the session already has a live
+  alias), but to be safe always use an explicit temp config with
+  `C2C_MCP_SESSION_ID=kimi-smoke-$(date +%s)` and `--mcp-config-file`
+  when launching one-shot Kimi probes. See
+  `.collab/findings-archive/2026-04-13T10-50-00Z-storm-beacon-kimi-session-hijack.md`.
 - **Two codex binaries on this machine — PATH default lacks `--xml-input-fd`.**
   `/home/xertrov/.bun/bin/codex` (v0.125.0, stable, missing `--xml-input-fd`) is
   first in PATH. `/home/xertrov/.local/bin/codex` (v0.125.0-alpha.2) has it and
@@ -143,8 +218,34 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   entry pointing `codex` at the alpha binary so `c2c start codex` picks it up
   automatically. If you see `unavailable` deliver mode after a codex upgrade, check
   that `[default_binary] codex` still points to a binary that advertises `--xml-input-fd`.
-- **Launch managed sessions via `c2c start <client>`** (claude / codex / opencode / kimi / crush). Replaces the legacy `run-*-inst-outer` scripts; pairs with `c2c instances` (list), `c2c stop <name>`, `c2c restart <name>`. Exits when client exits (does NOT loop).
-- **Never call `mcp__c2c__sweep` during active swarm operation.** Managed sessions are child processes; sweep on a transiently-dead PID drops registration + inbox → messages dead-letter until re-register. Verify no outer loops first: `pgrep -a -f "run-(kimi|codex|opencode|crush|claude)-inst-outer"`. Safe alternatives: `mcp__c2c__list` (liveness), `mcp__c2c__peek_inbox` (no drain). Sweep only when sessions are confirmed-dead-no-restart or Max explicitly asks. See `.collab/findings/2026-04-13T22-00-00Z-storm-ember-sweep-drops-managed-sessions.md`.
+- **Use `c2c start <client>` to launch managed sessions.** This is the preferred
+  way to start any managed client (claude, codex, opencode, kimi, crush). It
+  replaces all 10 `run-*-inst`/`run-*-inst-outer` scripts with a single command
+  that launches the client with deliver daemon and poker. When the client exits,
+  `c2c start` prints a resume command and exits (does NOT loop):
+  ```bash
+  c2c start claude          # start Claude Code managed session
+  c2c start kimi -n my-kimi # start Kimi with custom name
+  c2c instances             # list running instances + status
+  c2c stop my-kimi          # stop a managed instance
+  ```
+  The old harness scripts (`run-claude-inst-outer`, etc.) still work but are
+  deprecated in favour of `c2c start`.
+- **Never call `mcp__c2c__sweep` during active swarm operation.**
+  Managed harness sessions (kimi, codex, opencode, crush) run as child processes.
+  When a client exits, `c2c start` cleans up and exits too — but if using the old
+  `run-*-inst-outer` scripts, the outer loop stays alive and will relaunch in
+  seconds. Sweep sees the dead PID and drops the registration + inbox, so messages
+  go to dead-letter until the managed session re-registers and auto-redelivers them.
+  Manual replay is also available with filtered `./c2c dead-letter --replay` (Python shim only; the installed OCaml binary does not support `--replay`).
+  Before sweeping, verify no outer loops are running:
+  ```bash
+  pgrep -a -f "run-(kimi|codex|opencode|crush|claude)-inst-outer"
+  ```
+  Safe alternatives: `mcp__c2c__list` to check liveness, `mcp__c2c__peek_inbox`
+  to inspect without draining. Call sweep only for sessions confirmed dead with
+  no restart expected, or when Max explicitly asks. See
+  `.collab/findings/2026-04-13T22-00-00Z-storm-ember-sweep-drops-managed-sessions.md`.
 
 ## Documentation hygiene
 
@@ -155,17 +256,6 @@ URLs), slice discipline (one worktree per doc slice, periodic
 parallel-audit), and the docs-up-to-date peer-PASS check (#324
 landed; FAIL any slice where a documented surface changed but docs
 didn't move with it).
-
-**Verbatim-not-paraphrase for operational recipes (#414).** When
-echoing operationally-load-bearing recipes (Monitor invocations,
-env-var blocks, signing commands, git incantations, JSON config
-shapes) in role files / runbooks / tutorials / template bodies,
-**copy verbatim**. Paraphrasing risks silent operator drift —
-e.g. a Monitor recipe with `4.1m` paraphrased to "every 4 minutes"
-loses the off-minute cadence that keeps the prompt cache warm
-(see CLAUDE.md "Agent wake-up + Monitor setup"). Copy-paste
-preserves correctness; describe the *why* in prose around the
-verbatim block, never inside it.
 
 Per-directory companion: `docs/CLAUDE.md` covers Jekyll-specific
 gotchas and front-door pages.
@@ -198,15 +288,6 @@ Monitor({ description: "sitrep tick (hourly @:07)",
           persistent: true })
 ```
 
-**Dedupe before arming (#342).** `TaskList` is the only way to see
-your own running Monitors — Monitor lifecycle is harness-internal,
-the broker does not track it. Walk `TaskList` first; if a Monitor
-with `description: "heartbeat tick"` (or `"sitrep tick (hourly
-@:07)"`) is already running/persistent, **skip the arm entirely**.
-This applies especially after compaction, where re-running the
-on-arrival setup blindly produces duplicate heartbeats (Cairn caught
-this manually 2026-04-28). One Monitor per cadence per session.
-
 Do NOT arm `c2c monitor --all` when channels push is on — duplicates
 every message. Heartbeat fires are work triggers, not heartbeats to
 acknowledge: poll inbox, pick up the next slice. If genuinely
@@ -219,8 +300,8 @@ surfaces, privacy tiers, send-memory handoff #286, cold-boot +
 post-compact context injection #317). E2E test procedure:
 `.collab/runbooks/per-agent-memory-e2e.md`. TL;DR:
 
-- Memory store at `.c2c/memory/<your-alias>/` (local-only —
-  gitignored per `.gitignore` #266, per-alias).
+- Memory store at `.c2c/memory/<your-alias>/` (git-tracked,
+  per-alias).
 - `c2c memory list` (or `mcp__c2c__memory_list`) at session start
   to see what prior-you wrote. Post-compact + cold-boot injection
   surface recent entries automatically (#317).
@@ -239,19 +320,18 @@ post-compact context injection #317). E2E test procedure:
 - **PTY injection** (deprecated but still useful): `claude_send_msg.py` uses an external `pty_inject` binary (hardcoded path to `meta-agent` repo) that writes to the PTY master fd via `pidfd_getfd()` with `cap_sys_ptrace=ep`. Bracketed paste + delay + Enter as two writes. **Kimi note**: do NOT use direct `/dev/pts/<N>` slave writes for input; they can display text without submitting it. Kimi routes through the master-side `pty_inject` backend with a longer default submit delay (1.5s).
 - **MCP server** (`ocaml/`) is stdio JSON-RPC. Inbox drain is synchronous after each RPC response, not async push.
 - **Message envelope**: `<c2c event="message" from="name" alias="alias">body</c2c>`. `c2c_verify.py` counts these markers in transcripts.
-- **Alias pool** is 128 words (hardcoded in `c2c_start.ml` and `c2c_setup.ml`; the 1,455-word `data/c2c_alias_words.txt` is unused). Cartesian product → 16,384 ordered pairs. Alias comparisons are case-insensitive (so `Lyra-Quill` and `lyra-quill` are the same identity for collision purposes). Clean up in tests — avoid real word combos to dodge alias collisions with live peers.
+- **Alias pool** is 131 words in `data/c2c_alias_words.txt` (cartesian product, ~17,161 max). Clean up in tests — avoid real word combos to dodge alias collisions with live peers.
 - **Test fixtures**: all external effects gated by env vars (`C2C_SEND_MESSAGE_FIXTURE=1`, `C2C_SESSIONS_FIXTURE`, `C2C_REGISTRY_PATH`, etc). New external interactions need fixture gates.
 - **`C2C_MCP_AUTO_JOIN_ROOMS`**: comma-separated room IDs the broker joins on startup (e.g. `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge`). Written by `c2c install <client>` for all 5 client types. Do NOT need to call `join_room` manually if this is set. To join additional rooms on top of the default, append: `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge,my-room`.
 - **`C2C_MCP_AUTO_REGISTER_ALIAS`**: alias the broker auto-registers on startup, so you keep a stable alias across restarts without calling `register` manually. Also written by `c2c install`.
 - **`C2C_MCP_SESSION_ID`**: explicit session ID override. Set this when launching one-shot child CLI probes (kimi, crush) to prevent inheriting `CLAUDE_SESSION_ID` and hijacking the outer session's registration.
-- **`C2C_MCP_INBOX_WATCHER_DELAY`**: float seconds the background channel-notification watcher sleeps after detecting new inbox content before draining (default 2.0, per SPEC-delivery-latency). Gives preferred delivery paths (Claude Code PostToolUse hook, Codex PTY sentinel, OpenCode plugin) time to drain first; if they win the race, `drain_inbox` returns `[]` and no channel notification is emitted. Set to `0` in integration tests to get near-immediate delivery. 2s is short enough to keep idle agents responsive (room broadcasts especially) while still giving active agents' preferred paths time to win the race.
+- **`C2C_MCP_INBOX_WATCHER_DELAY`**: float seconds the background channel-notification watcher sleeps after detecting new inbox content before draining (default 5.0). Gives preferred delivery paths (Claude Code PostToolUse hook, Codex PTY sentinel, OpenCode plugin) time to drain first; if they win the race, `drain_inbox` returns `[]` and no channel notification is emitted. Set to `0` in integration tests to get near-immediate delivery. 5s is short enough to keep idle agents responsive (room broadcasts especially) while still giving active agents' preferred paths time to win the race.
 - **`deferrable=true` means no push** (#303): the MCP `send` tool's `deferrable` flag (and the equivalent `~deferrable:true` on `Broker.enqueue_message`) marks a message as low-priority. `drain_inbox_push` filters deferrable messages out, so neither the watcher nor the PostToolUse hook will surface them. The recipient only sees them on their next explicit `poll_inbox` (or the deliver daemon's idle flush). Rooms NEVER use `deferrable` (`fan_out_room_message` hardcodes `false`), which is why room broadcasts always push. Production opter-in: `relay_nudge.ml` (intentionally — its job is "nudge a poll-late agent without pushing again"). User opt-in: `mcp__c2c__send` with `deferrable: true`. If you actually want a DM to surface promptly, omit the flag. See `.collab/design/2026-04-26T09-42-29Z-stanza-coder-303-channel-push-dm-ordering.md` for full investigation + probe data; #307b dropped `deferrable` from the send-memory handoff. **Visibility tool (#307a)**: `c2c doctor delivery-mode --alias <a> [--since 1h] [--last N]` prints a histogram of recent archived inbound messages by deferrable flag, broken down by sender. Counts measure sender INTENT (the flag at write time), not delivery actuals — see the doctor subcommand's NOTE footer.
 - **`C2C_CLI_FORCE`**: set to `1` to suppress the MCP nudge on Tier1 CLI commands (`send`, `list`, `whoami`, `poll-inbox`, `peek-inbox`). When both `C2C_MCP_SESSION_ID` and `C2C_MCP_AUTO_REGISTER_ALIAS` are set, these commands print a hint suggesting the equivalent `mcp__c2c__*` tool instead. Set `C2C_CLI_FORCE=1` to silence the hint when you genuinely need the CLI (e.g. operator scripts, non-MCP sessions).
 - **`C2C_NUDGE_CADENCE_MINUTES`**: how often the broker nudge scheduler wakes to check for idle sessions (default 30). Must be greater than `C2C_NUDGE_IDLE_MINUTES`.
 - **`C2C_NUDGE_IDLE_MINUTES`**: how long a session must be idle before receiving a nudge (default 25). Must be less than `C2C_NUDGE_CADENCE_MINUTES`.
 - **Tier filter is top-level only**: `filter_commands` in `c2c.ml` enforces tier visibility per command name at the top level. Subcommands inherit their parent group's visibility — per-subcommand tiers within a group are documentation/enforcement at the group level, not independently enforced by the CLI filter. When reclassifying a subcommand's tier, also consider its parent group's tier.
 - **Model resolution priority on resume**: `c2c start` resolves models via 3-way priority: explicit `--model` flag > role file `pmodel:` field > saved instance config. Role pmodel is advisory — it takes priority over a saved config on resume but an explicit `--model` always wins. Only an explicit `--model` is persisted to instance config; role pmodel is never locked in.
-- **`[swarm] restart_intro`** (#341): per-repo override for the kickoff/restart intro string `c2c start <client>` prepends to a fresh agent transcript. Set in `.c2c/config.toml` under `[swarm]`. Placeholders `{name}`, `{alias}`, `{role}` are substituted at render time; use `\n`/`\t` escapes for multi-line content. When unset, the built-in default in `C2c_start.builtin_swarm_restart_intro` is used. Read via the `swarm_config_restart_intro ()` thunk — same shape as the planned `swarm_config_coordinator_alias` / `swarm_config_social_room` helpers from #318.
 
 ## Python Scripts (deprecated)
 

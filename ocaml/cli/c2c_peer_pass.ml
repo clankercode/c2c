@@ -14,19 +14,7 @@ let peer_passes_dir () =
   | Some parent -> parent // ".c2c" // "peer-passes"
   | None -> failwith "not in a git repository"
 
-(* #57 defence-in-depth: validate alias/sha before composing the artifact
-   path. Same validator as [Peer_review.validate_artifact_path_components];
-   the CLI builds its own path under a different base so we re-check here
-   rather than relying on the lib check downstream. *)
 let artifact_path ~sha ~alias =
-  (match Peer_review.validate_artifact_path_components ~alias ~sha with
-   | Ok () -> ()
-   | Error msg ->
-       Printf.eprintf
-         "error: cannot build peer-pass artifact path — alias/sha rejected by \
-          path-validator: %s\n%!"
-         msg;
-       exit 1);
   peer_passes_dir () // Printf.sprintf "%s-%s.json" sha alias
 
 (* --- identity helpers ---------------------------------------------------- *)
@@ -50,19 +38,11 @@ let resolve_identity () =
 
 (* --- anti-cheat helpers -------------------------------------------------- *)
 
-(** Compare reviewer alias against commit authorship. The repo convention
-    records authors as "<alias>@c2c.im" / name "<alias>"; match the primary
-    [%ae]/[%an] either way.
-
-    M1 (audit 2026-04-28): also check [Co-authored-by:] trailers — a
-    reviewer who co-authored the commit can still self-PASS otherwise.
-    Each trailer value is in [Name <email>] form; we extract the email
-    and compare its local-part to [reviewer]. If any author surface
-    matches, treat as author and block self-PASS. *)
+(** Compare reviewer alias against commit author. The repo convention records
+    authors as "<alias>@c2c.im" / name "<alias>". Match either. *)
 let reviewer_is_author ~reviewer ~sha =
   let email = Git_helpers.git_commit_author_email sha in
   let name = Git_helpers.git_commit_author_name sha in
-  let co_author_emails = Git_helpers.git_commit_co_author_emails sha in
   let local_part_eq e =
     match String.index_opt e '@' with
     | Some i -> String.equal (String.sub e 0 i) reviewer
@@ -70,7 +50,6 @@ let reviewer_is_author ~reviewer ~sha =
   in
   (match email with Some e -> local_part_eq e | None -> false)
   || (match name with Some n -> String.equal n reviewer | None -> false)
-  || List.exists local_part_eq co_author_emails
 
 let validate_signing_allowed ~alias ~sha ~allow_self =
   if not (Git_helpers.git_commit_exists sha) then begin
@@ -80,14 +59,10 @@ let validate_signing_allowed ~alias ~sha ~allow_self =
   end;
   if reviewer_is_author ~reviewer:alias ~sha && not allow_self then begin
     Printf.eprintf
-      "error: self-sign refused — reviewer alias %S matches commit author of %s.\n\
-      \  Default-strict: an independent live swarm peer is the canonical reviewer.\n\
-      \  If the review came from a fresh-slate review-and-fix subagent (no live\n\
-      \  peer available, or mechanical/low-stakes slice), this is sanctioned —\n\
-      \  re-run with --allow-self (and optionally --via-subagent <id> for\n\
-      \  auditability). See git-workflow.md \"Subagent-review as peer-PASS\".\n\
-      \  HIGH-severity slices (security, data-loss, broker state, signing crypto)\n\
-      \  should still get a live peer if at all possible.\n%!"
+      "error: refusing to sign — reviewer alias %S matches commit author of %s.\n\
+      \  Self-review-via-skill is NOT a peer-PASS (see git-workflow.md rule 3).\n\
+      \  Get another swarm agent to run review-and-fix on this SHA.\n\
+      \  If a coordinator has explicitly approved this, re-run with --allow-self.\n%!"
       alias sha;
     exit 1
   end
@@ -104,19 +79,10 @@ let targets_for_all all_targets =
     Peer_review.c2c_inbox_hook = all_targets;
   }
 
-let merge_subagent_into_notes ~via_subagent ~notes =
-  let base = Option.value notes ~default:"" in
-  match via_subagent with
-  | Some id when id <> "" ->
-      let tag = Printf.sprintf "via-subagent: %s" id in
-      if base = "" then tag else Printf.sprintf "%s; %s" base tag
-  | _ -> base
-
 let signed_artifact ~alias ~sha ~verdict ~criteria ~skill_version ~commit_range
-    ~all_targets ~notes ~allow_self ~via_subagent =
+    ~all_targets ~notes ~allow_self =
   validate_signing_allowed ~alias ~sha ~allow_self;
   let identity = resolve_identity () in
-  let final_notes = merge_subagent_into_notes ~via_subagent ~notes in
   let art = {
     Peer_review.version = 1;
     Peer_review.reviewer = alias;
@@ -127,7 +93,7 @@ let signed_artifact ~alias ~sha ~verdict ~criteria ~skill_version ~commit_range
     Peer_review.skill_version = Option.value skill_version ~default:"unknown";
     Peer_review.commit_range = Option.value commit_range ~default:"";
     Peer_review.targets_built = targets_for_all all_targets;
-    Peer_review.notes = final_notes;
+    Peer_review.notes = Option.value notes ~default:"";
     Peer_review.signature = "";
     Peer_review.ts = Unix.gettimeofday ();
   } in
@@ -191,16 +157,8 @@ let peer_pass_sign_cmd =
   in
   let allow_self =
     Cmdliner.Arg.(value & flag & info [ "allow-self" ]
-      ~doc:"Sanctioned override for the self-sign check (reviewer == commit author). \
-            Use when the verdict came from a fresh-slate review-and-fix subagent \
-            and no live peer was available, or for mechanical/low-stakes slices. \
-            See git-workflow.md \"Subagent-review as peer-PASS\".")
-  in
-  let via_subagent =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "via-subagent" ]
-      ~docv:"ID" ~doc:"Record the fresh-slate subagent task id (or short description) \
-                       used for the review. Appended to the artifact's notes field \
-                       for auditability when --allow-self is in effect.")
+      ~doc:"Override the self-review anti-cheat check (reviewer == commit author). \
+            Use only with explicit coordinator approval.")
   in
   let+ sha = sha
   and+ verdict = verdict
@@ -210,12 +168,11 @@ let peer_pass_sign_cmd =
   and+ all_targets = all_targets
   and+ notes = notes
   and+ json = json
-  and+ allow_self = allow_self
-  and+ via_subagent = via_subagent in
+  and+ allow_self = allow_self in
   let alias = resolve_current_alias () in
   let signed =
     signed_artifact ~alias ~sha ~verdict ~criteria ~skill_version ~commit_range
-      ~all_targets ~notes ~allow_self ~via_subagent
+      ~all_targets ~notes ~allow_self
   in
   let path = write_artifact ~sha ~alias signed in
   if json then
@@ -274,16 +231,8 @@ let peer_pass_send_cmd =
   in
   let allow_self =
     Cmdliner.Arg.(value & flag & info [ "allow-self" ]
-      ~doc:"Sanctioned override for the self-sign check (reviewer == commit author). \
-            Use when the verdict came from a fresh-slate review-and-fix subagent \
-            and no live peer was available, or for mechanical/low-stakes slices. \
-            See git-workflow.md \"Subagent-review as peer-PASS\".")
-  in
-  let via_subagent =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "via-subagent" ]
-      ~docv:"ID" ~doc:"Record the fresh-slate subagent task id (or short description) \
-                       used for the review. Appended to the artifact's notes field \
-                       for auditability when --allow-self is in effect.")
+      ~doc:"Override the self-review anti-cheat check (reviewer == commit author). \
+            Use only with explicit coordinator approval.")
   in
   let+ to_alias = to_alias
   and+ sha = sha
@@ -296,12 +245,11 @@ let peer_pass_send_cmd =
   and+ branch = branch
   and+ worktree = worktree
   and+ json = json
-  and+ allow_self = allow_self
-  and+ via_subagent = via_subagent in
+  and+ allow_self = allow_self in
   let alias = resolve_current_alias () in
   let signed =
     signed_artifact ~alias ~sha ~verdict ~criteria ~skill_version ~commit_range
-      ~all_targets ~notes ~allow_self ~via_subagent
+      ~all_targets ~notes ~allow_self
   in
   let path = write_artifact ~sha ~alias signed in
   let content = peer_pass_message ~reviewer:alias ~sha ?branch ?worktree () in
@@ -325,30 +273,10 @@ let peer_pass_send_cmd =
 
 (* --- verify command ------------------------------------------------------ *)
 
-(* Read a peer-pass artifact file with the size cap from Peer_review.
-   On too-large or read error, prints to stderr and exits 1.
-   See #56: refuse > [Peer_review.peer_pass_max_artifact_bytes] (64KB)
-   to prevent OOM/DoS via a malicious artifact. *)
 let read_json_file path =
-  match Peer_review.read_artifact_capped path with
-  | Ok content -> content
-  | Error (`Too_large sz) ->
-    Printf.eprintf
-      "error: artifact %s exceeds size cap (%d bytes > %d)\n%!"
-      path sz Peer_review.peer_pass_max_artifact_bytes;
-    exit 1
-  | Error (`Read_error msg) ->
-    Printf.eprintf "error: cannot read artifact %s: %s\n%!" path msg;
-    exit 1
-
-(* H1: TOFU pin store lives under the broker root so all worktrees of a
-   given repo share one alias <-> pubkey binding. Override the default
-   resolver before any verify call. *)
-let trust_pin_path () =
-  Filename.concat (C2c_utils.resolve_broker_root ()) "peer-pass-trust.json"
-
-let () =
-  Peer_review.Trust_pin.set_default_path_resolver trust_pin_path
+  let ic = open_in path in
+  Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+    really_input_string ic (in_channel_length ic))
 
 let peer_pass_verify_cmd =
   let file =
@@ -359,15 +287,8 @@ let peer_pass_verify_cmd =
     Cmdliner.Arg.(value & flag & info [ "strict" ]
       ~doc:"Exit non-zero on anti-cheat WARN (e.g. self-review). Useful for CI/scripted gates.")
   in
-  let rotate_pin =
-    Cmdliner.Arg.(value & flag & info [ "rotate-pin" ]
-      ~doc:"Replace the existing TOFU pubkey pin for this reviewer alias. \
-            Use ONLY for legitimate key rotation; pin replacement is logged \
-            and printed as a clear audit warning.")
-  in
   let+ file = file
-  and+ strict = strict
-  and+ rotate_pin = rotate_pin in
+  and+ strict = strict in
   let path =
     if Sys.file_exists file then file
     else
@@ -381,108 +302,30 @@ let peer_pass_verify_cmd =
     let content = String.trim (read_json_file path) in
     match Peer_review.t_of_string content with
     | Some art ->
-      let do_anti_cheat () =
-        (* Anti-cheat surface: warn if reviewer == commit author. *)
-        let self_review =
-          Git_helpers.git_commit_exists art.Peer_review.sha
-          && reviewer_is_author ~reviewer:art.Peer_review.reviewer ~sha:art.Peer_review.sha
-        in
-        if self_review then
-          Printf.printf "  WARN: reviewer %S matches commit author — self-review (not a true peer-PASS).\n%!"
-            art.Peer_review.reviewer;
-        if strict && self_review then begin
-          Printf.eprintf "STRICT: failing on self-review WARN.\n%!";
-          exit 1
-        end
-      in
-      let print_verified () =
-        Printf.printf "VERIFIED: valid signature by %s for commit %s (verdict: %s)\n%!"
-          art.Peer_review.reviewer art.Peer_review.sha art.Peer_review.verdict;
-        Printf.printf "  reviewer: %s\n  ts: %.0f\n  criteria: [%s]\n%!"
-          art.Peer_review.reviewer
-          art.Peer_review.ts
-          (String.concat ", " art.Peer_review.criteria_checked)
-      in
-      if rotate_pin then begin
-        (* Rotate path explicitly replaces the existing pin, so it cannot
-           go through verify_claim_for_artifact (which enforces the pin).
-           Keep the existing rotate ladder: signature must verify, then
-           rotate, then optional anti-cheat warn. *)
-        match Peer_review.verify art with
-        | Ok true ->
-          print_verified ();
-          let prior = Peer_review.pin_rotate art in
-          (match prior with
-           | None ->
-             Printf.printf "  PIN-ROTATE: no prior pin for %s; recorded new pubkey.\n%!"
-               art.Peer_review.reviewer
-           | Some p ->
-             Printf.printf
-               "  PIN-ROTATE WARNING: replaced pin for %s.\n    \
-               old pubkey: %s\n    \
-               new pubkey: %s\n    \
-               old first_seen: %.0f\n%!"
-               art.Peer_review.reviewer
-               p.Peer_review.Trust_pin.pubkey
-               art.Peer_review.reviewer_pk
-               p.Peer_review.Trust_pin.first_seen);
-          do_anti_cheat ()
-        | Ok false ->
-          Printf.eprintf "VERIFY FAILED: invalid signature\n%!"; exit 1
-        | Error e ->
-          Printf.eprintf "VERIFY ERROR: %s\n%!" (Peer_review.verify_error_to_string e); exit 1
-      end else begin
-        (* #62: route the non-rotate path through verify_claim_for_artifact
-           so CLI and broker share one signature+TOFU policy ladder. The
-           sha/reviewer match check inside is vacuous here (we pass the
-           artifact's own values), but signature verify and pin enforcement
-           are the load-bearing pieces; future hardening on those lands
-           once and applies to both surfaces. *)
-        match
-          Peer_review.verify_claim_for_artifact
-            ~art
-            ~alias:art.Peer_review.reviewer
-            ~sha:art.Peer_review.sha
-            ()
-        with
-        | Peer_review.Claim_valid _msg ->
-          print_verified ();
-          (* The valid path covers Pin_first_seen and Pin_match; differentiate
-             for the operator-facing TOFU message by re-reading the pin store. *)
-          (match Peer_review.pin_check art with
-           | Peer_review.Pin_first_seen ->
-             Printf.printf "  TOFU: first verify for %s; pubkey pinned.\n%!"
-               art.Peer_review.reviewer
-           | Peer_review.Pin_match ->
-             Printf.printf "  TOFU: pubkey matches pin for %s.\n%!"
-               art.Peer_review.reviewer
-           | Peer_review.Pin_mismatch _ ->
-             (* Should be unreachable: verify_claim_for_artifact returns
-                Claim_invalid on Pin_mismatch. Guard for safety. *)
-             Printf.eprintf "VERIFY FAILED: pin state changed during verify\n%!"; exit 1);
-          do_anti_cheat ()
-        | Peer_review.Claim_invalid msg ->
-          (* Surface pin-mismatch with the same operator-friendly hint as
-             pre-#62, since the claim message is broker-shaped. *)
-          (match Peer_review.pin_check art with
-           | Peer_review.Pin_mismatch { alias; pinned_pubkey; artifact_pubkey; first_seen } ->
-             Printf.eprintf
-               "VERIFY FAILED: TOFU pin mismatch for alias %s.\n  \
-               pinned pubkey:    %s\n  \
-               artifact pubkey:  %s\n  \
-               pin first_seen:   %.0f\n  \
-               This artifact was signed by a DIFFERENT key than the one \
-               previously seen for this alias.\n  \
-               If this is a legitimate key rotation (e.g. lost device, \
-               key rollover), re-run with --rotate-pin AFTER \
-               out-of-band confirmation with the alias holder.\n%!"
-               alias pinned_pubkey artifact_pubkey first_seen;
-             exit 1
-           | _ ->
-             Printf.eprintf "VERIFY FAILED: %s\n%!" msg; exit 1)
-        | Peer_review.Claim_missing msg ->
-          Printf.eprintf "VERIFY FAILED: %s\n%!" msg; exit 1
-      end
+      (match Peer_review.verify art with
+       | Ok true ->
+         Printf.printf "VERIFIED: valid signature by %s for commit %s (verdict: %s)\n%!"
+           art.Peer_review.reviewer art.Peer_review.sha art.Peer_review.verdict;
+         Printf.printf "  reviewer: %s\n  ts: %.0f\n  criteria: [%s]\n%!"
+           art.Peer_review.reviewer
+           art.Peer_review.ts
+           (String.concat ", " art.Peer_review.criteria_checked);
+         (* Anti-cheat surface: warn if reviewer == commit author. *)
+         let self_review =
+           Git_helpers.git_commit_exists art.Peer_review.sha
+           && reviewer_is_author ~reviewer:art.Peer_review.reviewer ~sha:art.Peer_review.sha
+         in
+         if self_review then
+           Printf.printf "  WARN: reviewer %S matches commit author — self-review (not a true peer-PASS).\n%!"
+             art.Peer_review.reviewer;
+         if strict && self_review then begin
+           Printf.eprintf "STRICT: failing on self-review WARN.\n%!";
+           exit 1
+         end
+       | Ok false ->
+         Printf.eprintf "VERIFY FAILED: invalid signature\n%!"; exit 1
+       | Error e ->
+         Printf.eprintf "VERIFY ERROR: %s\n%!" (Peer_review.verify_error_to_string e); exit 1)
     | None ->
       Printf.eprintf "error: could not parse artifact JSON from %s\n%!" path; exit 1
   with e ->

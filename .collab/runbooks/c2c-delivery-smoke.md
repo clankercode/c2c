@@ -72,41 +72,18 @@ sessions (see `scripts/c2c-swarm.sh restart <alias>`).
 
 ---
 
-## §1. Self-contained broker round-trip
+## §1. Self-contained broker round-trip (`c2c smoke-test`)
 
-> **Status (2026-04-28, #369 audit):** the all-in-one `c2c smoke-test`
-> subcommand referenced in earlier drafts of this runbook never landed
-> — invoking it errors with `unknown command smoke-test`. Until a
-> dedicated smoke harness exists, drive the broker round-trip manually
-> with the steps below (register + send + poll on a throwaway broker
-> dir).
-
-No live peers needed. Registers two fake sessions in a throwaway
-broker dir, enqueues a marker, drains it.
+Built-in, no live peers needed. Registers two fake sessions in a
+throwaway broker dir, enqueues a marker, drains it.
 
 ```bash
-# Use a scratch broker root so we don't mutate the live one.
-export C2C_MCP_BROKER_ROOT="$(mktemp -d -t c2c-smoke-XXXXXX)"
-
-# Register two fake sessions.
-SID_A="smoke-a-$$" SID_B="smoke-b-$$"
-C2C_MCP_SESSION_ID="$SID_A" c2c register --alias smoke-a >/dev/null
-C2C_MCP_SESSION_ID="$SID_B" c2c register --alias smoke-b >/dev/null
-
-# Enqueue a marker A → B and drain it on B.
-MARKER="smoke-$(date +%s)"
-C2C_MCP_SESSION_ID="$SID_A" c2c send smoke-b "$MARKER"
-C2C_MCP_SESSION_ID="$SID_B" c2c poll-inbox --json \
-  | jq -e --arg m "$MARKER" '. | map(select(.content==$m)) | length == 1' \
-  && echo "ok" || echo "FAIL"
-
-# Cleanup the scratch broker dir.
-rm -rf "$C2C_MCP_BROKER_ROOT"
-unset C2C_MCP_BROKER_ROOT
+c2c smoke-test                          # human-readable
+c2c smoke-test --json | jq '.ok'        # machine, expect `true`
 ```
 
-**Pass gate:** the `jq -e` check prints `ok` (exit 0). If this fails,
-the broker core is broken — no point running later layers.
+**Pass gate:** exit 0 and `ok:true`. If this fails, the broker core is
+broken — no point running later layers.
 
 ---
 
@@ -131,12 +108,8 @@ c2c poll-inbox --json | jq '.[].content'
 **Pass gates:**
 1. `c2c send` returns `{"queued":true,...}`.
 2. The peer's `poll-inbox` returns the marker content.
-3. The peer's inbox file is `[]` after draining (no leaked copy). The
-   path resolves via the broker-root priority documented in CLAUDE.md
-   (`C2C_MCP_BROKER_ROOT` env > `$XDG_STATE_HOME/c2c/repos/<fp>/broker`
-   > `$HOME/.c2c/repos/<fp>/broker`); look it up at runtime with
-   `c2c health --json | jq -r .broker_root` and check
-   `<broker_root>/<session>.inbox.json`.
+3. The peer's inbox file `.git/c2c/mcp/<session>.inbox.json` is `[]`
+   after draining (no leaked copy).
 
 **Failure hints:**
 - "Queued, never delivered" → check the peer's PID is really alive
@@ -567,7 +540,7 @@ python3 -m pytest tests/test_c2c_cross_client_e2e.py -q --force-test-env
 - Status:
   blocked by Claude startup trust/development-channel prompts
 - Reference:
-  [2026-04-23T04-53-00Z-lyra-quill-claude-e2e-blocked-startup-prompts.md](/home/xertrov/src/c2c/.collab/findings-archive/2026-04-23T04-53-00Z-lyra-quill-claude-e2e-blocked-startup-prompts.md)
+  [2026-04-23T04-53-00Z-lyra-quill-claude-e2e-blocked-startup-prompts.md](/home/xertrov/src/c2c/.collab/findings/2026-04-23T04-53-00Z-lyra-quill-claude-e2e-blocked-startup-prompts.md)
 
 ---
 
@@ -588,8 +561,7 @@ c2c sweep-dryrun --json | jq '.would_drop'
 ```bash
 set -euo pipefail
 echo "§0"; c2c health --json | jq -e '.issues | length == 0'
-echo "§1"; # see §1 above for the manual register+send+poll sequence;
-           # no all-in-one `c2c smoke-test` subcommand exists yet (#369).
+echo "§1"; c2c smoke-test --json | jq -e '.ok'
 # §2–§6 need human coordination / live peers — run manually.
 echo "pre-flight + core OK"
 ```

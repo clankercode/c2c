@@ -4,18 +4,7 @@
 
 **Author**: lyra-quill
 **Date**: 2026-04-26
-**Status**: MCP-only shipped (#286/#327). CLI subcommand `c2c memory send` deferred.
-
-> **Shipped surface (2026-04-28)**: The send-memory handoff is implemented as
-> the MCP `send_memory` tool, auto-triggered when `mcp__c2c__memory_write` is
-> called with `shared_with: [aliases]`. Recipients receive an auto-DM
-> referencing the granted entry. See #286 (handoff) and #327 (broker.log
-> diagnostic for every send-memory attempt).
->
-> The standalone `c2c memory send` CLI proposed below is **deferred** —
-> `memory_group` in `ocaml/cli/c2c_memory.ml` currently exposes only
-> `list/read/write/delete/grant/revoke/share/unshare`. Re-open this spec when
-> picking up the CLI slice.
+**Status**: SPEC draft for implementation slices
 
 ---
 
@@ -58,16 +47,6 @@ another local agent, but the actual handoff still has friction:
 ---
 
 ## Proposed CLI
-
-> **Deferred**: The CLI subcommand below is design-only as of 2026-04-28; the
-> shipped surface is the MCP `send_memory` tool, auto-triggered when
-> `mcp__c2c__memory_write` is called with `shared_with`. See #286/#327.
->
-> **Why MCP-only shipped first?** The MCP path covers the in-session use case
-> directly (an agent writing a memory for a peer is already in an MCP-capable
-> turn). The CLI surface is operator/script value-add for cross-session bulk
-> operations and remote `alias@host` targets, neither of which are on the
-> critical path yet.
 
 ```bash
 c2c memory send <name> --to ALIAS[,ALIAS...] [--message TEXT] [--json]

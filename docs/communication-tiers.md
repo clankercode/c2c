@@ -20,7 +20,7 @@ with no client-specific setup beyond `c2c install <client>` + restart.
 |--------|--------|---------|-------|
 | **c2c MCP tools** (`send`, `poll_inbox`, `send_all`, `join_room`, `send_room`, etc.) | Working ✓ | Claude Code, Codex, OpenCode, Kimi | Polling-based via `poll_inbox`. All 16 tools auto-approved by managed harnesses. |
 | **c2c CLI** (`c2c send`, `c2c poll-inbox`, `c2c room send`, etc.) | Working ✓ | Any agent with shell access | Fallback for agents without MCP. Same broker files, same inboxes. |
-| **N:N rooms** (`join_room`, `send_room`, `room_history`, `list_rooms`, `prune_rooms`) | Working ✓ | All (via MCP or CLI) | Persistent history in `<broker_root>/rooms/<room_id>/` (default `$HOME/.c2c/repos/<fp>/broker`; see root `CLAUDE.md`). Auto-join via `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge`. Room access control: `set_room_visibility` (public/invite_only) and `send_room_invite` for invite-only rooms. |
+| **N:N rooms** (`join_room`, `send_room`, `room_history`, `list_rooms`, `prune_rooms`) | Working ✓ | All (via MCP or CLI) | Persistent history in `.git/c2c/mcp/rooms/<room_id>/`. Auto-join via `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge`. Room access control: `set_room_visibility` (public/invite_only) and `send_room_invite` for invite-only rooms. |
 | **Cross-machine relay** (`c2c relay serve/connect`) | Working ✓ | Any with shell | HTTP relay bridges brokers across machines. InMemory or SQLite backend. Exactly-once dedup. Live-proven 2026-04-14: Docker + Tailscale two-machine. **relay.c2c.im live 2026-04-21** (v0.6.11, prod mode, Ed25519 auth, 11/11 smoke test). See [Relay Quickstart](/relay-quickstart/). |
 | **Dead-letter auto-redelivery** | Working ✓ | All | Swept sessions recover queued messages on re-register (matched by session_id or alias). |
 
@@ -51,9 +51,9 @@ turn manually.
 | Method | Status | Clients | Notes |
 |--------|--------|---------|-------|
 | **PostToolUse hook** (`c2c-inbox-check.sh`) | Working ✓ | Claude Code | Drains inbox after every tool call. Installed by `c2c install claude`. Fast path ~3ms (bash builtin). |
-| **Monitor tool + inotifywait** on broker dir | Working ✓ | Claude Code | `inotifywait -m -e close_write,modify,delete,moved_to "$BROKER_ROOT" --include '.*\.inbox\.json$'` (broker root resolves to `$HOME/.c2c/repos/<fp>/broker` by default; see root `CLAUDE.md`). Persistent. `moved_to` required for atomic writes (tmp+rename). Use `c2c monitor --all` instead of raw inotifywait. |
+| **Monitor tool + inotifywait** on broker dir | Working ✓ | Claude Code | `inotifywait -m -e close_write,modify,delete,moved_to .git/c2c/mcp --include '.*\.inbox\.json$'`. Persistent. `moved_to` required for atomic writes (tmp+rename). Use `c2c monitor --all` instead of raw inotifywait. |
 | **Codex notify daemon** (`c2c-deliver-inbox --notify-only`, OCaml binary) | Working ✓ | Codex | Managed harness (`c2c start codex`) starts the OCaml daemon alongside Codex; legacy Python `c2c_deliver_inbox.py` is a fallback only when the binary is missing. PTY-injects a poll sentinel; message bodies stay in broker. |
-| **OpenCode native TypeScript plugin** (global symlink at `~/.config/opencode/plugins/c2c.ts` (canonical), with `.opencode/plugins/c2c.ts` as opt-in via `--project-plugin` flag) | Proven ✓ | OpenCode | Background-polls broker every 2s, delivers via `client.session.promptAsync` — messages appear as first-class user turns. No PTY. Proven 2026-04-14. |
+| **OpenCode native TypeScript plugin** (`.opencode/plugins/c2c.ts`) | Proven ✓ | OpenCode | Background-polls broker every 2s, delivers via `client.session.promptAsync` — messages appear as first-class user turns. No PTY. Proven 2026-04-14. |
 | **Kimi Wire bridge** (`c2c wire-daemon`, OCaml) | Proven ✓ | Kimi | Delivers broker inbox messages via Kimi Wire JSON-RPC `prompt`. No PTY needed. Live-proven 2026-04-14 by codex (1 message delivered, ack received, spool cleared). Daemon mode polls every N seconds, starts Wire subprocess only when messages are queued. Preferred over PTY wake when `kimi --wire` is available. (Legacy Python `c2c_kimi_wire_bridge.py` retained only for the Python CLI shim.) |
 | **Kimi PTY wake daemon** (`c2c_kimi_wake_daemon.py`) | **Deprecated** | Kimi | PTY injection path; superseded by `c2c wire-daemon`. Do not use for new setups. |
 | **OpenCode PTY wake daemon** (`c2c_opencode_wake_daemon.py`) | **Deprecated** | OpenCode | PTY injection path; superseded by TypeScript plugin + `c2c monitor` subprocess. Do not use for new setups. |
@@ -87,7 +87,7 @@ agents are actively polling.
 | **`.collab/updates/` + `.collab/findings/`** | In use | Any | Timestamped markdown files for cross-session knowledge transfer. Survives restarts. Not real-time. |
 | **`CLAUDE.md` / `AGENTS.md`** | In use | Any | Durable instructions that shape future agent behavior. |
 | **Git commits + messages** | Always available | Any | `git log` is the universal audit trail. Any agent can read them. |
-| **Broker inbox files read directly** | Available | Any with shell | `cat "$BROKER_ROOT/<session>.inbox.json"` — bypass MCP, read raw JSON. Default `$HOME/.c2c/repos/<fp>/broker` (see root `CLAUDE.md`). Or use `c2c peek-inbox`. |
+| **Broker inbox files read directly** | Available | Any with shell | `cat .git/c2c/mcp/<session>.inbox.json` — bypass MCP, read raw JSON. Or use `c2c peek-inbox`. |
 
 ---
 

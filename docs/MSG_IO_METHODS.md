@@ -457,9 +457,8 @@ PTY injection.
 
 #### How it works
 
-`c2c install opencode` installs a TypeScript plugin as a global symlink at
-`~/.config/opencode/plugins/c2c.ts` (canonical), with
-`.opencode/plugins/c2c.ts` as opt-in via `--project-plugin` flag. The plugin:
+`c2c install opencode` installs a TypeScript plugin at
+`.opencode/plugins/c2c.ts`. The plugin:
 
 1. Subscribes to the `session.idle` event and also runs a background poll
    on a 2-second interval.
@@ -487,7 +486,7 @@ until the plugin drains them and injects them through the official plugin API.
 | File | Role |
 |------|------|
 | `ocaml/cli/c2c_setup.ml` | Setup logic invoked by `c2c install opencode`; writes `.opencode/opencode.json`, the `.opencode/c2c-plugin.json` sidecar, and installs the plugin |
-| `~/.config/opencode/plugins/c2c.ts` | The TypeScript plugin itself (global symlink, canonical; `.opencode/plugins/c2c.ts` opt-in via `--project-plugin`) |
+| `.opencode/plugins/c2c.ts` | The TypeScript plugin itself (installed per-project) |
 
 #### Limitations
 
@@ -559,7 +558,7 @@ Key environment variables that control delivery behavior across methods:
 
 | Variable | Default | Set by | Purpose |
 |----------|---------|--------|---------|
-| `C2C_MCP_BROKER_ROOT` | `$HOME/.c2c/repos/<fp>/broker` | `c2c install` | Broker root directory (shared across worktrees and clones of the same upstream; `<fp>` = SHA-256 of `remote.origin.url`). Resolution: `C2C_MCP_BROKER_ROOT` → `$XDG_STATE_HOME/c2c/repos/<fp>/broker` → default. See root `CLAUDE.md` "Key Architecture Notes". |
+| `C2C_MCP_BROKER_ROOT` | `.git/c2c/mcp` | `c2c install` | Broker root directory (shared across worktrees) |
 | `C2C_MCP_SESSION_ID` | Auto-discovered | `c2c install` or `c2c start` | Session identifier for inbox resolution |
 | `C2C_MCP_AUTO_REGISTER_ALIAS` | Per-client default | `c2c install` | Stable alias across restarts |
 | `C2C_MCP_AUTO_JOIN_ROOMS` | `swarm-lounge` | `c2c install` | Comma-separated rooms to auto-join |

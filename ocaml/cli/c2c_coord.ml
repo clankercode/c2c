@@ -40,29 +40,10 @@ let git_author_email ~repo sha =
   let email = run_capture cmd |> String.trim in
   if email = "" then None else Some email
 
-(** Read `[author_aliases]` from `.c2c/config.toml` if present.
-    Returns `[(email_lower, alias); ...]` so a swarm can self-register
-    new agents without a per-agent CLI patch (#414). *)
-let config_author_aliases () : (string * string) list =
-  match
-    C2c_start.read_toml_sections_with_prefix "author_aliases"
-    |> List.assoc_opt "default"
-  with
-  | None -> []
-  | Some kvs ->
-      List.map (fun (email, alias) -> (String.lowercase_ascii email, alias)) kvs
-
 (** Known alias pool — populated from git config user.email for the
-    local coordinator and extended with explicit overrides. The
+    local coordinator and extended with explicit overrides.  The
     coordinator's user.email is the base identity; add more entries
-    as the swarm grows.
-
-    Resolution order (#414):
-      1. `[author_aliases]` in `.c2c/config.toml` (operator-extensible
-         without code change — every new agent self-registers via
-         `email = "alias"` in that section).
-      2. Built-in fallback table below (current swarm members).
-      3. None → caller falls back to self-DM. *)
+    as the swarm grows. *)
 let email_to_alias email =
   let table = [
     (* (email_lower, alias) *)
@@ -71,7 +52,6 @@ let email_to_alias email =
     "coordinator1@c2c.im",          "coordinator1";
     "m@xk.io",                     "Max";
     "galaxy-coder@c2c.im",         "galaxy-coder";
-    "slate-coder@c2c.im",          "slate-coder";
     "test-agent@c2c.im",           "test-agent";
     "test-agent-oc@c2c.im",        "test-agent-oc";
     "tundra-coder@c2c.im",         "tundra-coder";
@@ -81,33 +61,16 @@ let email_to_alias email =
   ]
   in
   let lo = String.lowercase_ascii email in
-  (* Config table wins (operator-extensible); fall through to built-in. *)
-  match List.assoc_opt lo (config_author_aliases ()) with
+  match List.assoc_opt lo table with
   | Some a -> Some a
   | None ->
-    (match List.assoc_opt lo table with
-     | Some a -> Some a
-     | None ->
-         (* Unknown email — caller falls back to self-DM so nothing is
-            silently lost. *)
-         None)
+      (* Unknown email — fall back to self-DM so nothing is silently lost. *)
+      None
 
 (** DM an author after their SHA lands on master.
     Sends via `c2c send` CLI so it works in any session context.
-    Silently skips on any error (best-effort notification).
-
-    Test fixture: when [C2C_COORD_DM_FIXTURE=capture-args] is set and
-    [C2C_COORD_DM_CAPTURE_FILE] points to a path, instead of invoking
-    `c2c send` the function appends a line "<original_sha> <new_sha>"
-    to that file. Lets tests assert per-cherry-pick HEAD pairing
-    without needing a live broker. *)
+    Silently skips on any error (best-effort notification). *)
 let dm_author ~repo ~original_sha ~new_sha =
-  match Sys.getenv_opt "C2C_COORD_DM_FIXTURE", Sys.getenv_opt "C2C_COORD_DM_CAPTURE_FILE" with
-  | Some "capture-args", Some path ->
-      let oc = open_out_gen [Open_append; Open_creat; Open_wronly] 0o644 path in
-      Fun.protect ~finally:(fun () -> close_out_noerr oc)
-        (fun () -> Printf.fprintf oc "%s %s\n" original_sha new_sha)
-  | _ ->
   match git_author_email ~repo original_sha with
   | None ->
       Printf.printf "[coord-cherry-pick] dm_author: could not extract email from %s\n%!" original_sha
@@ -191,18 +154,8 @@ let git_cherry_pick repo sha =
 let git_abort repo =
   ignore (run (Printf.sprintf "git -C %s cherry-pick --abort" (Filename.quote repo)))
 
-(** Pure: classify how to react to install-all's exit code.
-    [`Ok] = install succeeded; [`Soft_fail] = install failed but
-    --no-fail-on-install means we keep going; [`Hard_fail] = install
-    failed and we should `exit 1`. Exposed for testing. *)
-let classify_install_outcome ~rc ~no_fail_on_install =
-  if rc = 0 then `Ok
-  else if no_fail_on_install then `Soft_fail
-  else `Hard_fail
-
 (** The main run logic. Calls exit() directly on error. *)
-let run_coord_cherry_pick ?(no_fail_on_install = false) ~no_install ~no_dm ~shas
-    () =
+let run_coord_cherry_pick ~no_install ~no_dm ~shas =
   match Sys.getenv_opt "C2C_COORDINATOR" with
   | None | Some "" ->
       Printf.eprintf "error: C2C_COORDINATOR=1 required\n%!";
@@ -239,19 +192,11 @@ let run_coord_cherry_pick ?(no_fail_on_install = false) ~no_install ~no_dm ~shas
         end;
 
         let blocked_sha = ref None in
-        (* #382: capture HEAD per-cherry-pick (not at end-of-loop), so the
-           DM cites the SHA that was actually produced for THAT original. *)
-        let landed_pairs = ref [] in
         let success = List.for_all (fun sha ->
           Printf.printf "[coord-cherry-pick] cherry-picking %s...\n%!" sha;
           match git_cherry_pick repo sha with
           | `Ok ->
-              let new_sha = run_capture (Printf.sprintf "git -C %s rev-parse HEAD"
-                                           (Filename.quote repo))
-                            |> String.trim
-              in
-              landed_pairs := (sha, new_sha) :: !landed_pairs;
-              Printf.printf "[coord-cherry-pick] %s applied ✓ (as %s)\n%!" sha new_sha;
+              Printf.printf "[coord-cherry-pick] %s applied ✓\n%!" sha;
               true
           | `Conflict ->
               Printf.eprintf "[coord-cherry-pick] FAILED on %s: conflict\n%!" sha;
@@ -268,14 +213,13 @@ let run_coord_cherry_pick ?(no_fail_on_install = false) ~no_install ~no_dm ~shas
               blocked_sha := Some sha;
               false
         ) shas in
-        let landed_pairs = List.rev !landed_pairs in
 
         if not success then begin
           if !stashed then begin
             Printf.printf "[coord-cherry-pick] restoring stash...\n%!";
             match git_stash_pop repo with
             | `Conflict ->
-                Printf.eprintf "[coord-cherry-pick] WARNING: stash apply conflicted — stash kept at refs/c2c-stashes/%s (recover with: git stash apply $(git rev-parse refs/c2c-stashes/%s))\n%!" stash_msg stash_msg
+                Printf.eprintf "[coord-cherry-pick] WARNING: stash pop conflicted — stash left on stack\n%!"
             | `Success ->
                 Printf.printf "[coord-cherry-pick] stash restored\n%!"
           end;
@@ -287,7 +231,7 @@ let run_coord_cherry_pick ?(no_fail_on_install = false) ~no_install ~no_dm ~shas
             Printf.printf "[coord-cherry-pick] cherry-picks succeeded — popping stash...\n%!";
             match git_stash_pop repo with
             | `Conflict ->
-                Printf.eprintf "[coord-cherry-pick] WARNING: stash apply conflicted — stash kept at refs/c2c-stashes/%s (recover with: git stash apply $(git rev-parse refs/c2c-stashes/%s))\n%!" stash_msg stash_msg
+                Printf.eprintf "[coord-cherry-pick] WARNING: stash pop conflicted — stash left on stack\n%!"
             | `Success ->
                 Printf.printf "[coord-cherry-pick] stash restored ✓\n%!"
           end;
@@ -295,29 +239,22 @@ let run_coord_cherry_pick ?(no_fail_on_install = false) ~no_install ~no_dm ~shas
           if not no_install then begin
             Printf.printf "[coord-cherry-pick] running just install-all...\n%!";
             let rc = run (Printf.sprintf "cd %s && just install-all" (Filename.quote repo)) in
-            (match classify_install_outcome ~rc ~no_fail_on_install with
-             | `Ok ->
-                 Printf.printf "[coord-cherry-pick] just install-all succeeded ✓\n%!"
-             | `Soft_fail ->
-                 Printf.eprintf
-                   "[coord-cherry-pick] just install-all FAILED (exit %d) — \
-                    cherry-pick is committed; re-run install manually \
-                    (--no-fail-on-install)\n%!"
-                   rc
-             | `Hard_fail ->
-                 Printf.eprintf
-                   "[coord-cherry-pick] just install-all FAILED (exit %d)\n%!" rc;
-                 exit 1)
+            if rc <> 0 then begin
+              Printf.eprintf "[coord-cherry-pick] just install-all FAILED (exit %d)\n%!" rc;
+              exit 1
+            end else
+              Printf.printf "[coord-cherry-pick] just install-all succeeded ✓\n%!"
           end;
 
-          (* DM each author after install succeeds. #382: each DM cites the
-             HEAD captured immediately after that specific cherry-pick, not
-             the final HEAD, so multi-SHA batches no longer claim every
-             author's commit landed at the same new_sha. *)
-          if not no_dm then
-            List.iter (fun (original_sha, new_sha) ->
+          (* DM each author after install succeeds. *)
+          if not no_dm then begin
+            let new_sha = run_capture (Printf.sprintf "git -C %s rev-parse HEAD" (Filename.quote repo))
+                            |> String.trim
+            in
+            List.iter (fun original_sha ->
               dm_author ~repo ~original_sha ~new_sha
-            ) landed_pairs;
+            ) shas
+          end;
 
           Printf.printf "[coord-cherry-pick] done\n%!"
         end
@@ -331,22 +268,14 @@ let no_dm_flag =
   Cmdliner.Arg.(value & flag & info [ "no-dm" ]
     ~doc:"Skip author DM notifications (use when cherry-picking multiple commits where coordinator DMs manually)")
 
-let no_fail_on_install_flag =
-  Cmdliner.Arg.(value & flag & info [ "no-fail-on-install" ]
-    ~doc:"Do not exit non-zero when 'just install-all' fails after a successful cherry-pick. \
-          The cherry-pick is already committed, so install failure is a separable concern: \
-          this flag prints the install failure to stderr and continues (still runs DMs, \
-          still exits 0). Default behaviour exits 1 on install failure.")
-
 let sha_term =
   Cmdliner.Arg.(non_empty & pos_all string [] & info [] ~docv:"SHA" ~doc:"SHA(s) to cherry-pick")
 
 let coord_cherry_pick_term =
   let+ no_install = no_install_flag
   and+ no_dm = no_dm_flag
-  and+ no_fail_on_install = no_fail_on_install_flag
   and+ shas = sha_term in
-  run_coord_cherry_pick ~no_fail_on_install ~no_install ~no_dm ~shas ()
+  run_coord_cherry_pick ~no_install ~no_dm ~shas
 
 let doc = "Coordinator helper: cherry-pick SHAs with dirty-tree safety + install + author DM."
 
@@ -359,24 +288,7 @@ let man = [
   `P "Requires C2C_COORDINATOR=1 environment variable.";
   `P "Use --no-dm to skip author notifications (e.g. multi-commit cherry-picks";
   `P "where the coordinator DMs manually).";
-  `P "By default, install failure exits 1 — the strict-by-default behaviour";
-  `P "matches the dogfood lesson that masked install failures cause downstream";
-  `P "build/restart confusion. Use --no-fail-on-install when you knowingly";
-  `P "want to land the cherry-pick + DM authors and re-run install manually,";
-  `P "e.g. when the coord tree has a transient build issue independent of the";
-  `P "cherry-picked SHAs.";
 ]
 
 let coord_cherry_pick_cmd =
   Cmdliner.Cmd.v (Cmdliner.Cmd.info "coord-cherry-pick" ~doc ~man) coord_cherry_pick_term
-
-(* #368: also expose as `c2c coord cherry-pick` (group + subcommand).
-   Both forms share the same term + impl, so flag set, behaviour, and
-   --help text are identical by construction. *)
-let coord_cherry_pick_sub =
-  Cmdliner.Cmd.v (Cmdliner.Cmd.info "cherry-pick" ~doc ~man) coord_cherry_pick_term
-
-let coord_group =
-  Cmdliner.Cmd.group
-    (Cmdliner.Cmd.info "coord" ~doc:"Coordinator helpers (cherry-pick, …).")
-    [ coord_cherry_pick_sub ]

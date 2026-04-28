@@ -51,7 +51,12 @@ let memory_base_dir alias =
 
 let ensure_memory_dir alias =
   let dir = memory_base_dir alias in
-  C2c_mcp.mkdir_p dir;
+  let rec mkdir_p d =
+    if not (Sys.file_exists d) then (
+      mkdir_p (Filename.dirname d);
+      try Unix.mkdir d 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
+  in
+  mkdir_p dir;
   dir
 
 (* --- entry file helpers ---------------------------------------------------- *)

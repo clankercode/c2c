@@ -349,51 +349,16 @@ let send_cmd =
     Cmdliner.Arg.(value & flag & info [ "ephemeral" ]
       ~doc:"Mark the message as ephemeral. Local 1:1 only: the recipient's broker delivers normally but skips the archive append, so post-delivery the only persistent trace is the recipient's transcript / channel notification (per-session-local, gets compacted). For remote recipients ($(b,alias@host)), the relay outbox path persists by design and this flag is silently ignored on the relay side in v1; cross-host ephemeral is a follow-up. Receipt confirmation is impossible by design.")
   in
-  (* #392: visual-marker tags. Mutually exclusive flags that prepend a
-     body prefix (🔴 FAIL: / ⛔ BLOCKING: / ⚠️ URGENT:) so the recipient
-     spots the tag inline in the agent's transcript. *)
-  let fail_flag =
-    Cmdliner.Arg.(value & flag & info [ "fail" ]
-      ~doc:"Mark as a FAIL message. Prepends '🔴 FAIL: ' to the body so the recipient spots the verdict inline in their transcript. Mutex with --blocking and --urgent.")
-  in
-  let blocking_flag =
-    Cmdliner.Arg.(value & flag & info [ "blocking" ]
-      ~doc:"Mark as a BLOCKING message. Prepends '⛔ BLOCKING: ' to the body. Use when downstream work cannot proceed until this is resolved. Mutex with --fail and --urgent.")
-  in
-  let urgent_flag =
-    Cmdliner.Arg.(value & flag & info [ "urgent" ]
-      ~doc:"Mark as an URGENT message. Prepends '⚠️ URGENT: ' to the body. Use for time-sensitive but not-fully-blocking attention asks. Mutex with --fail and --blocking.")
-  in
   let+ json = json_flag
   and+ to_alias = to_alias
   and+ message = message
   and+ from_override = from_override
   and+ no_warn_substitution = no_warn_substitution
-  and+ ephemeral = ephemeral_flag
-  and+ fail = fail_flag
-  and+ blocking = blocking_flag
-  and+ urgent = urgent_flag in
+  and+ ephemeral = ephemeral_flag in
   mcp_nudge_if_needed ~cmd:"send";
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let from_alias = resolve_alias ~override:from_override broker in
   let content = String.concat " " message in
-  (* #392: enforce mutual exclusion + apply body prefix. *)
-  let tag_count =
-    (if fail then 1 else 0) + (if blocking then 1 else 0) + (if urgent then 1 else 0)
-  in
-  if tag_count > 1 then begin
-    Printf.eprintf
-      "error: --fail, --blocking, and --urgent are mutually exclusive (got %d).\n%!"
-      tag_count;
-    exit 2
-  end;
-  let tag_str =
-    if fail then Some "fail"
-    else if blocking then Some "blocking"
-    else if urgent then Some "urgent"
-    else None
-  in
-  let content = (C2c_mcp.tag_to_body_prefix tag_str) ^ content in
   (* Class E: warn when message body looks like an un-expanded shell
      substitution pattern that the shell failed to expand. *)
   let _ =
@@ -461,51 +426,12 @@ let send_cmd =
 
 (* --- subcommand: list ----------------------------------------------------- *)
 
-(* lookup_role_info: best-effort load of .c2c/roles/<alias>.md for enriched listing.
-   Returns (role_class, description) defaulting to ("","") when the role file is absent
-   or unparseable. Tolerant to malformed files — discoverability is informational, not
-   load-bearing. *)
-let lookup_role_info (alias : string) : string * string =
-  let path = C2c_role.canonical_roles_dir () // (alias ^ ".md") in
-  if not (Sys.file_exists path) then ("", "")
-  else
-    try
-      let r = C2c_role.parse_file path in
-      let role_class = Option.value r.C2c_role.role_class ~default:"" in
-      (role_class, r.C2c_role.description)
-    with _ -> ("", "")
-
-(* truncate a string to n graphemes (approximate via bytes, safe for ASCII descriptions). *)
-let truncate_str (s : string) (n : int) : string =
-  let s = String.trim s in
-  if String.length s <= n then s
-  else if n <= 1 then String.sub s 0 (max 0 n)
-  else String.sub s 0 (n - 1) ^ "…"
-
-(* relative-time: render a registered_at timestamp as "active now" / "5m ago" / "2h ago" / etc. *)
-let format_last_seen (registered_at : float option) : string =
-  match registered_at with
-  | None -> "—"
-  | Some ts ->
-      let now = Unix.gettimeofday () in
-      let delta = now -. ts in
-      if delta < 0.0 then "future?"
-      else if delta < 120.0 then "active now"
-      else if delta < 3600.0 then Printf.sprintf "%dm ago" (int_of_float (delta /. 60.0))
-      else if delta < 86400.0 then Printf.sprintf "%dh ago" (int_of_float (delta /. 3600.0))
-      else Printf.sprintf "%dd ago" (int_of_float (delta /. 86400.0))
-
 let list_cmd =
   let all =
     Cmdliner.Arg.(value & flag & info [ "all"; "a" ] ~doc:"Show extended info (session ID, registered time).")
   in
-  let enriched =
-    Cmdliner.Arg.(value & flag & info [ "enriched"; "e" ]
-      ~doc:"Show role-class + description + last-seen for each peer (looked up from .c2c/roles/<alias>.md). Useful for new agents orienting on who's who in the swarm.")
-  in
   let+ json = json_flag
-  and+ all = all
-  and+ enriched = enriched in
+  and+ all = all in
   mcp_nudge_if_needed ~cmd:"list";
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let regs = C2c_mcp.Broker.list_registrations broker in
@@ -549,48 +475,11 @@ let list_cmd =
                     fields @ [ ("compacting", `Assoc [ ("started_at", `Float c.started_at); ("reason", reason_json) ]) ]
                 | None -> fields
               in
-              let fields =
-                if enriched then
-                  let (role_class, description) = lookup_role_info r.alias in
-                  fields @ [
-                    ("role_class", `String role_class);
-                    ("description", `String description);
-                    ("last_seen", `String (format_last_seen r.registered_at));
-                  ]
-                else fields
-              in
               `Assoc fields)
             regs
         in
         print_json (`List json_regs)
     | Human ->
-        if enriched then begin
-          (* Header for enriched view. *)
-          Printf.printf "  %-20s %-13s %-40s %-12s %s\n"
-            "ALIAS" "ROLE" "DESCRIPTION" "LAST-SEEN" "STATE";
-          Printf.printf "  %-20s %-13s %-40s %-12s %s\n"
-            (String.make 20 '-') (String.make 13 '-') (String.make 40 '-')
-            (String.make 12 '-') (String.make 5 '-');
-          List.iter
-            (fun (r : C2c_mcp.registration) ->
-              let alive_str =
-                match C2c_mcp.Broker.registration_liveness_state r with
-                | C2c_mcp.Broker.Alive -> "alive"
-                | C2c_mcp.Broker.Dead -> "dead"
-                | C2c_mcp.Broker.Unknown -> "?"
-              in
-              let (role_class, description) = lookup_role_info r.alias in
-              let role_class = if role_class = "" then "—" else role_class in
-              let description = if description = "" then "—" else description in
-              let last_seen = format_last_seen r.registered_at in
-              Printf.printf "  %-20s %-13s %-40s %-12s %s\n"
-                (truncate_str r.alias 20)
-                (truncate_str role_class 13)
-                (truncate_str description 40)
-                last_seen
-                alive_str)
-            regs
-        end else
         List.iter
           (fun (r : C2c_mcp.registration) ->
             let alive_str =
@@ -851,7 +740,7 @@ let poll_inbox_cmd =
     if peek then
       C2c_mcp.Broker.read_inbox broker ~session_id
     else
-      C2c_mcp.Broker.drain_inbox ~drained_by:"cli_poll" broker ~session_id
+      C2c_mcp.Broker.drain_inbox broker ~session_id
   in
   let output_mode = if json then Json else Human in
   match output_mode with
@@ -1167,6 +1056,59 @@ let legacy_broker_root () =
   | None -> ""
 
 let migrate_broker_run ~from_path ~to_path ~dry_run ~json =
+  let mkdir_p dir =
+    let rec loop d =
+      if d = "/" || d = "." || d = "" then ()
+      else if Sys.file_exists d then ()
+      else begin
+        loop (Filename.dirname d);
+        try Unix.mkdir d 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+      end
+    in
+    loop dir
+  in
+  let copy_file src dst =
+    if dry_run then Printf.printf "[DRY-RUN] would copy: %s -> %s\n" src dst
+    else begin
+      mkdir_p (Filename.dirname dst);
+      try
+        let buf_size = 65536 in
+        let buf = Bytes.create buf_size in
+        let src_ic = open_in src in
+        Fun.protect ~finally:(fun () -> close_in src_ic) @@ fun () ->
+        let dst_oc = open_out dst in
+        Fun.protect ~finally:(fun () -> close_out dst_oc) @@ fun () ->
+        let rec loop () =
+          let n = input src_ic buf 0 buf_size in
+          if n = 0 then () else begin
+            output dst_oc buf 0 n;
+            loop ()
+          end
+        in
+        loop ()
+      with e ->
+        if json then print_json (`Assoc [ "ok", `Bool false; "error", `String (Printexc.to_string e) ])
+        else Printf.eprintf "error copying %s: %s\n" src (Printexc.to_string e)
+    end
+  in
+  let rec copy_dir src dst acc =
+    if not (Sys.file_exists src) then acc
+    else
+      try
+        mkdir_p dst;
+        let entries = Array.to_list (Sys.readdir src) |> List.filter (fun f -> not (f = "." || f = "..")) in
+        List.fold_right (fun f acc' ->
+          let s = src // f in
+          let d = dst // f in
+          if Sys.is_directory s then
+            copy_dir s d acc'  (* recurse into subdirectory *)
+          else begin
+            copy_file s d;
+            d :: acc'
+          end
+        ) entries acc
+      with _ -> acc
+  in
   let from = Option.value from_path ~default:(legacy_broker_root ()) in
   let to_ = Option.value to_path ~default:(resolve_broker_root ()) in
   if not (Sys.file_exists from) then begin
@@ -1179,11 +1121,6 @@ let migrate_broker_run ~from_path ~to_path ~dry_run ~json =
     else Printf.eprintf "error: from and to paths are the same\n";
     exit 1
   end;
-  let buf = Buffer.create 4096 in
-  let print_line s =
-    if json then begin Buffer.add_string buf s; Buffer.add_char buf '\n' end
-    else print_endline s
-  in
   if not json then begin
     Printf.printf "Migrating broker data:\n";
     Printf.printf "  from: %s\n" from;
@@ -1191,34 +1128,29 @@ let migrate_broker_run ~from_path ~to_path ~dry_run ~json =
     if dry_run then Printf.printf "  mode: DRY RUN (no files will be written)\n"
     else Printf.printf "  mode: LIVE (files will be written)\n"
   end;
-  let outcome =
-    C2c_migrate.run ~src_root:from ~dest_root:to_ ~dry_run ~print_line
-  in
-  if json then begin
-    let assoc =
-      [ "ok", `Bool outcome.ok
-      ; "from", `String from
-      ; "to", `String to_
-      ; "dry_run", `Bool dry_run
-      ; "copied", `List (List.map (fun s -> `String s) outcome.copied)
-      ; "skipped_already_at_canonical",
-          `List (List.map (fun s -> `String s) outcome.skipped_already)
-      ; "denied_process_local",
-          `List (List.map (fun (p, r) ->
-            `Assoc ["path", `String p; "reason", `String r]) outcome.denied)
-      ; "unknown",
-          `List (List.map (fun (p, r) ->
-            `Assoc ["path", `String p; "reason", `String r]) outcome.unknown)
-      ; "log", `String (Buffer.contents buf)
-      ]
-    in
-    let assoc = match outcome.error with
-      | Some e -> ("error", `String e) :: assoc
-      | None -> assoc
-    in
-    print_json (`Assoc assoc)
-  end;
-  if not outcome.ok then exit 1
+  (* Copy individual files *)
+  List.iter (fun f ->
+    let src = from // f in
+    if Sys.file_exists src then copy_file src (to_ // f)
+  ) ["registry.json"; "registry.json.lock"; "deaths.jsonl"];
+  (* Copy subdirs: inboxes, memory, archive *)
+  let _ = copy_dir (from // "inbox.json.d") (to_ // "inbox.json.d") [] in
+  let _ = copy_dir (from // "memory") (to_ // "memory") [] in
+  let _ = copy_dir (from // "archive") (to_ // "archive") [] in
+  if not dry_run then begin
+    mkdir_p to_;
+    (* Verify by checking for key files at destination *)
+    let verified = Sys.file_exists (to_ // "registry.json") in
+    if json then
+      if verified then print_json (`Assoc ["ok", `Bool true; "from", `String from; "to", `String to_; "dry_run", `Bool false])
+      else print_json (`Assoc ["ok", `Bool false; "error", `String "migration completed but registry.json not found at destination"; "from", `String from; "to", `String to_])
+    else
+      if verified then Printf.printf "\nMigration complete. Verify: ls %s\n" to_
+      else Printf.eprintf "\nMigration completed but registry.json not found at destination.\n"
+  end else begin
+    if json then print_json (`Assoc ["ok", `Bool true; "from", `String from; "to", `String to_; "dry_run", `Bool dry_run])
+    else Printf.printf "\nDRY RUN complete. Run without --dry-run to execute.\n"
+  end
 
 let migrate_broker_cmd =
   let open Cmdliner in
@@ -1243,43 +1175,7 @@ let migrate_broker_cmd =
 let migrate_broker =
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "migrate-broker"
-       ~doc:"Migrate broker data from the legacy .git/c2c/mcp path to the new per-repo path."
-       ~man:[ `S "DESCRIPTION"
-            ; `P "Migrates broker state from the legacy $(b,.git/c2c/mcp) path to the \
-                  canonical per-repo path ($(b,\\$XDG_STATE_HOME/c2c/repos/<fp>/broker) \
-                  or $(b,\\$HOME/.c2c/repos/<fp>/broker))."
-            ; `P "Run $(b,--dry-run) first to preview the action plan."
-            ; `S "TWO-PHASE COMMIT"
-            ; `P "The migration is a two-phase commit: (1) COPY every eligible entry to \
-                  the destination and verify the copy succeeded, then (2) REMOVE the \
-                  legacy tree only after every copy is confirmed. If any step aborts or \
-                  fails, the legacy tree is preserved untouched and the command exits \
-                  with status 1 — re-running after a fix is safe."
-            ; `S "COPY-SET SEMANTICS"
-            ; `P "Default policy is COPY-by-default: every entry under the legacy root \
-                  is copied unless it matches the deny-list."
-            ; `P "Deny-list (NOT copied): $(b,*.pid) files (live-PID-bound state, \
-                  meaningless across migrations) and top-level $(b,*.lock) files \
-                  (fcntl/flock sidecars; recreated on demand)."
-            ; `S "FAIL-LOUD ON UNKNOWN"
-            ; `P "Unknown filesystem entries (FIFOs, sockets, character devices, block \
-                  devices, or any non-regular/non-directory/non-symlink type) abort the \
-                  migration BEFORE any copy is performed. The legacy tree is left \
-                  intact; resolve or remove the offending entry, then re-run."
-            ; `S "DRY-RUN OUTPUT LEGEND"
-            ; `P "$(b,[WILL COPY])             — entry is in the copy-set and will be \
-                  written to the destination."
-            ; `P "$(b,[WILL DENY])             — entry matches the deny-list and will \
-                  be skipped (e.g. $(b,*.pid), top-level $(b,*.lock))."
-            ; `P "$(b,[ALREADY AT CANONICAL]) — entry already exists at the destination \
-                  with matching content; no-op."
-            ; `P "$(b,[UNKNOWN])               — entry has an unrecognized file type; \
-                  migration will abort with exit 1 if run without $(b,--dry-run)."
-            ; `S "EXIT STATUS"
-            ; `P "0 on successful migration (or clean dry-run). 1 on abort/failure — \
-                  the legacy tree is preserved so the operator can investigate and \
-                  retry."
-            ])
+       ~doc:"Migrate broker data from the legacy .git/c2c/mcp path to the new per-repo path. Use --dry-run first.")
     migrate_broker_cmd
 
 (* --- subcommand: history -------------------------------------------------- *)
@@ -1292,42 +1188,13 @@ let history_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "session-id"; "s" ] ~docv:"ID"
       ~doc:"Session ID to read archive for. Overrides C2C_MCP_SESSION_ID.")
   in
-  let no_headers_flag =
-    Cmdliner.Arg.(value & flag & info [ "no-headers" ]
-      ~doc:"Suppress per-message header lines (timestamp + from -> to). \
-            Default emits a header before each body so messages are \
-            distinguishable; pass this to restore the legacy bare-body \
-            output for grep-friendly scripts. Has no effect with --json.")
-  in
-  let alias_flag =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS"
-      ~doc:"Look up session ID by alias and read that session's archive. \
-Mutually exclusive with --session-id.")
-  in
   let+ json = json_flag
   and+ limit = limit
-  and+ session_id_opt = session_id_flag
-  and+ no_headers = no_headers_flag
-  and+ alias_opt = alias_flag in
+  and+ session_id_opt = session_id_flag in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let session_id =
-    match session_id_opt, alias_opt with
-    | Some _, Some _ ->
-        Printf.eprintf "error: --session-id and --alias are mutually exclusive.\n%!";
-        exit 1
-    | Some sid, None -> sid
-    | None, Some alias ->
-        let regs = C2c_mcp.Broker.list_registrations broker in
-        let matches = List.filter (fun (r : C2c_mcp.registration) -> r.alias = alias) regs in
-        (match matches with
-         | [] ->
-             Printf.eprintf "error: alias '%s' not found in registry.\n%!" alias;
-             exit 1
-         | [ r ] -> r.session_id
-         | _ ->
-             Printf.eprintf "error: alias '%s' matches multiple sessions.\n%!" alias;
-             exit 1)
-    | None, None -> resolve_session_id_for_inbox broker
+  let session_id = match session_id_opt with
+    | Some sid -> sid
+    | None -> resolve_session_id_for_inbox broker
   in
   let entries = C2c_mcp.Broker.read_archive broker ~session_id ~limit in
   let output_mode = if json then Json else Human in
@@ -1345,8 +1212,18 @@ Mutually exclusive with --session-id.")
                  ])
              entries))
   | Human ->
-      let headers = not no_headers in
-      List.iter print_endline (C2c_history.format_human ~headers entries)
+      if entries = [] then
+        Printf.printf "(no history)\n"
+      else
+        List.iter
+          (fun (e : C2c_mcp.Broker.archive_entry) ->
+            let time =
+              let t = Unix.gmtime e.ae_drained_at in
+              Printf.sprintf "%04d-%02d-%02d %02d:%02d"
+                (1900 + t.tm_year) (1 + t.tm_mon) t.tm_mday t.tm_hour t.tm_min
+            in
+            Printf.printf "[%s] <%s> %s\n" time e.ae_from_alias e.ae_content)
+          entries
 
 (* --- subcommand: health --------------------------------------------------- *)
 
@@ -1613,7 +1490,6 @@ let health_cmd =
   let supervisor_check = check_supervisor_config () in
   let relay_check = check_relay_http () in
   let plugin_checks = check_plugin_installs () in
-  let legacy_broker = C2c_broker_root_check.is_legacy_broker_root root in
   let output_mode = if json then Json else Human in
   match output_mode with
   | Json ->
@@ -1635,10 +1511,6 @@ let health_cmd =
       print_json
         (`Assoc
           [ ("broker_root", `String root)
-          ; ("legacy_broker_warning", `Bool legacy_broker)
-          ; ("migrate_hint",
-             if legacy_broker then `String "c2c migrate-broker --dry-run"
-             else `Null)
           ; ("root_exists", `Bool root_exists)
           ; ("registry_exists", `Bool registry_exists)
           ; ("dead_letter_exists", `Bool dead_letter_exists)
@@ -1655,10 +1527,7 @@ let health_cmd =
           ])
   | Human ->
       let icon = function `Green -> "✓" | `Yellow -> "⚠" | `Red -> "✗" | `Gray -> "–" in
-      if legacy_broker then
-        print_string (C2c_broker_root_check.legacy_broker_warning_text root)
-      else
-        Printf.printf "broker root:    %s\n" root;
+      Printf.printf "broker root:    %s\n" root;
       Printf.printf "root exists:    %s\n" (string_of_bool root_exists);
       Printf.printf "registry:       %s\n" (string_of_bool registry_exists);
       Printf.printf "dead-letter:    %s\n" (string_of_bool dead_letter_exists);
@@ -1700,7 +1569,9 @@ type managed_instance_view =
   }
 
 let read_managed_instances () =
-  let base = C2c_start.instances_dir in
+  let base =
+    Filename.concat (Sys.getenv "HOME") (".local" // "share" // "c2c" // "instances")
+  in
   let dirs =
     if not (Sys.file_exists base) then []
     else
@@ -2238,16 +2109,11 @@ let git_cmd =
   let subcmd = List.hd args in
   let rest = List.tl args in
   let argv = Array.of_list (git_path :: sign_config_args @ [subcmd] @ sign_flag @ rest) in
-  let parent_env = Unix.environment () in
-  (* #367: only inject GIT_AUTHOR_{NAME,EMAIL} defaults when the parent env
-     hasn't already set them — operators must be able to override the alias
-     attribution from inside a managed session without bypassing the shim. *)
   let env_array = match env with
     | None -> [||]
-    | Some (name, email) ->
-        C2c_git_shim.build_author_overlay ~parent_env ~name ~email
+    | Some (name, email) -> [| "GIT_AUTHOR_NAME=" ^ name; "GIT_AUTHOR_EMAIL=" ^ email |]
   in
-  Unix.execve git_path argv (Array.append env_array parent_env)
+  Unix.execve git_path argv (Array.append env_array (Unix.environment ()))
 
 let git =
   Cmdliner.Cmd.v
@@ -2320,20 +2186,11 @@ let register_cmd =
 
 let get_tmux_location_cmd =
   let+ json = json_flag in
-  (* #418: prefer $TMUX_PANE (pane-bound, race-free) over server-active pane. *)
-  let pane_id = Sys.getenv_opt "TMUX_PANE" in
-  let tmux_set = Sys.getenv_opt "TMUX" in
-  match pane_id, tmux_set with
-  | None, None ->
+  match Sys.getenv_opt "TMUX" with
+  | None ->
       Printf.eprintf "error: not running inside a tmux session (TMUX is not set).\n%!";
       exit 1
-  | _ ->
-      let cmd = match pane_id with
-        | Some p when String.trim p <> "" ->
-            Printf.sprintf "tmux display-message -t %s -p '#S:#I.#P'"
-              (Filename.quote p)
-        | _ -> "tmux display-message -p '#S:#I.#P'"
-      in
+  | Some _ ->
       let capture cmd =
         try
           let ic = Unix.open_process_in cmd in
@@ -2341,7 +2198,7 @@ let get_tmux_location_cmd =
             (fun () -> Some (input_line ic))
         with _ -> None
       in
-      match capture cmd with
+      match capture "tmux display-message -p '#S:#I.#P'" with
       | None ->
           Printf.eprintf "error: tmux display-message failed. Is tmux running?\n%!";
           exit 1
@@ -2703,16 +2560,7 @@ let monitor_cmd =
            ~doc:"Include messages sent by you. Off by default — your own broadcasts \
                  and DMs echo back through archive/inbox events and are noise.")
   in
-  let force_flag =
-    Arg.(value & flag & info ["force"]
-           ~doc:"Override the per-alias monitor lockfile guard (#354). By default \
-                 a second $(b,c2c monitor --alias ALIAS) refuses to start if a live \
-                 monitor for the same alias is already running, to prevent fork-bomb \
-                 accumulation. Stale locks (holder pid dead) are taken over \
-                 automatically; $(b,--force) is only needed to displace a \
-                 still-alive holder.")
-  in
-  const (fun broker_root_arg alias_arg all drains sweeps full_body from_filter json archive include_self force ->
+  const (fun broker_root_arg alias_arg all drains sweeps full_body from_filter json archive include_self ->
     let broker_root =
       match broker_root_arg with
       | Some r -> r
@@ -2728,113 +2576,6 @@ let monitor_cmd =
       match alias_arg with
       | Some a -> Some a
       | None -> Sys.getenv_opt "C2C_MCP_SESSION_ID"
-    in
-    (* #354: per-alias monitor lockfile guard.
-       Prevents fork-bomb accumulation when `c2c monitor --alias <a>` is launched
-       in a loop (e.g. by a buggy supervisor). Lockfile location matches the
-       `doctor monitor-leak` scanner: <broker_root>/.monitor-locks/<alias>.lock.
-       Behaviour:
-         - Try non-blocking POSIX advisory lock (Unix.lockf F_TLOCK).
-         - If acquired: write our PID, install at_exit cleanup, proceed.
-         - If conflict: read holder PID. If /proc/<pid> is gone (stale), take over
-           by truncating + rewriting the lockfile and retrying. If holder is alive,
-           refuse with a clear error unless --force is set; with --force we kill
-           the holder (SIGTERM) and take over.
-       Skip the guard when no alias is set (e.g. unscoped `c2c monitor --all`). *)
-    let _monitor_lock_fd : Unix.file_descr option =
-      match my_alias with
-      | None -> None
-      | Some alias ->
-          let lock_dir = Filename.concat broker_root ".monitor-locks" in
-          (try Unix.mkdir lock_dir 0o700
-           with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-              | _ -> ());
-          let lock_path = Filename.concat lock_dir (alias ^ ".lock") in
-          let pid_alive p =
-            try Sys.is_directory (Printf.sprintf "/proc/%d" p)
-            with _ -> false
-          in
-          let read_holder_pid fd =
-            try
-              ignore (Unix.lseek fd 0 Unix.SEEK_SET);
-              let buf = Bytes.create 32 in
-              let n = Unix.read fd buf 0 32 in
-              if n <= 0 then None
-              else int_of_string_opt (String.trim (Bytes.sub_string buf 0 n))
-            with _ -> None
-          in
-          let write_pid fd =
-            (try Unix.ftruncate fd 0 with _ -> ());
-            ignore (Unix.lseek fd 0 Unix.SEEK_SET);
-            let s = string_of_int (Unix.getpid ()) ^ "\n" in
-            ignore (Unix.write_substring fd s 0 (String.length s))
-          in
-          let rec acquire ~retry =
-            let fd =
-              Unix.openfile lock_path [Unix.O_RDWR; Unix.O_CREAT] 0o644
-            in
-            match Unix.lockf fd Unix.F_TLOCK 0 with
-            | () ->
-                write_pid fd;
-                (* Cleanup on exit: release lock + remove lockfile.
-                   Closing fd releases the lock automatically. *)
-                at_exit (fun () ->
-                  (try Unix.ftruncate fd 0 with _ -> ());
-                  (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
-                  (try Unix.close fd with _ -> ());
-                  (try Unix.unlink lock_path with _ -> ()));
-                Some fd
-            | exception Unix.Unix_error
-                ((Unix.EAGAIN | Unix.EACCES | Unix.EWOULDBLOCK), _, _) ->
-                let holder = read_holder_pid fd in
-                Unix.close fd;
-                (match holder with
-                 | Some p when pid_alive p && not force ->
-                     Printf.eprintf
-                       "c2c monitor: alias '%s' already has a live monitor \
-                        (pid %d). Refusing to start (#354 fork-bomb guard).\n\
-                        \  Stop it first:  kill %d\n\
-                        \  Or override:    c2c monitor --alias %s --force\n%!"
-                       alias p p alias;
-                     exit 1
-                 | Some p when pid_alive p (* && force *) ->
-                     Printf.eprintf
-                       "c2c monitor: --force given; sending SIGTERM to existing \
-                        monitor (alias=%s pid=%d) and taking over.\n%!" alias p;
-                     (try Unix.kill p Sys.sigterm with _ -> ());
-                     (* Brief grace period to let the holder release the lock. *)
-                     let deadline = Unix.gettimeofday () +. 2.0 in
-                     while pid_alive p && Unix.gettimeofday () < deadline do
-                       Unix.sleepf 0.05
-                     done;
-                     if retry > 0 then acquire ~retry:(retry - 1)
-                     else begin
-                       Printf.eprintf
-                         "c2c monitor: failed to displace holder pid %d after \
-                          --force; giving up.\n%!" p;
-                       exit 1
-                     end
-                 | _ ->
-                     (* Stale lock (holder dead or unreadable PID). Take over. *)
-                     if retry > 0 then acquire ~retry:(retry - 1)
-                     else begin
-                       Printf.eprintf
-                         "c2c monitor: stale lock for alias '%s'; takeover \
-                          retries exhausted.\n%!" alias;
-                       exit 1
-                     end)
-            | exception e ->
-                Unix.close fd;
-                Printf.eprintf
-                  "c2c monitor: unexpected error acquiring lockfile %s: %s\n%!"
-                  lock_path (Printexc.to_string e);
-                exit 1
-          in
-          (* On the stale-lock path the F_TLOCK retry must actually succeed —
-             since the dead holder's fd is gone the kernel will grant us the
-             lock on the next attempt. Cap retries at 3 to avoid any pathological
-             loop (e.g. another concurrent monitor racing us). *)
-          acquire ~retry:3
     in
     let registry_path = Filename.concat broker_root "registry.json" in
     (* Read aliases from registry.json — returns (alias, session_id) pairs. *)
@@ -2897,8 +2638,9 @@ let monitor_cmd =
     let watch_dir =
       if archive then Filename.concat broker_root "archive" else broker_root
     in
-    if archive && not (Sys.file_exists watch_dir) then
-      C2c_mcp.mkdir_p ~mode:0o700 watch_dir;
+    if archive && not (Sys.file_exists watch_dir) then begin
+      (try Unix.mkdir watch_dir 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
+    end;
     (* Per-file read offsets for archive mode. Init to current size so we
        don't re-emit historical entries on startup. *)
     let archive_offsets : (string, int) Hashtbl.t = Hashtbl.create 16 in
@@ -3216,7 +2958,6 @@ let monitor_cmd =
       done with End_of_file -> ())
   ) $ broker_root_opt $ alias_opt $ all_flag $ drains_flag $ sweeps_flag
     $ full_body_flag $ from_opt $ json_flag $ archive_flag $ include_self_flag
-    $ force_flag
 
 let monitor =
   Cmdliner.Cmd.v
@@ -3277,20 +3018,7 @@ let hook_cmd =
     end;
     try
       let broker = C2c_mcp.Broker.create ~root:broker_root in
-      (* #387 A2: skip drain for channel-capable sessions so the MCP
-         server's watcher can own delivery (avoids the dual-drainer race
-         where hook stdout displaces the `<channel>` notification). *)
-      let messages =
-        if C2c_mcp.Broker.is_session_channel_capable broker ~session_id then begin
-          prerr_endline
-            (Printf.sprintf
-               "[hook] skipping drain — session %s is channel-capable; \
-                watcher owns delivery"
-               session_id);
-          []
-        end else
-          C2c_mcp.Broker.drain_inbox ~drained_by:"hook" broker ~session_id
-      in
+      let messages = C2c_mcp.Broker.drain_inbox broker ~session_id in
       (match messages with
        | [] -> ()
        | _ ->
@@ -3303,25 +3031,14 @@ let hook_cmd =
          in
          List.iter
            (fun (m : C2c_mcp.message) ->
-              (* Centralized via C2c_mcp.format_c2c_envelope (#392b
-                 convergence) so #392 tag attrs and xml-escaping stay
-                 consistent across all envelope-emitting surfaces
-                 (c2c_wire_bridge.ml, this PostToolUse hook,
-                 tools/c2c_inbox_hook.ml). *)
-              let tag = C2c_mcp.extract_tag_from_content m.content in
-              let role = lookup_role m.from_alias in
-              let envelope =
-                C2c_mcp.format_c2c_envelope
-                  ~from_alias:m.from_alias
-                  ~to_alias:m.to_alias
-                  ?tag
-                  ?role
-                  ?reply_via:m.reply_via
-                  ~content:m.content
-                  ()
-              in
-              Buffer.add_string buf envelope;
-              Buffer.add_char buf '\n')
+              Buffer.add_string buf
+                (let reply_via = Option.value m.reply_via ~default:"c2c_send" in
+                 let role_attr = match lookup_role m.from_alias with
+                   | Some r -> Printf.sprintf " role=\"%s\"" r
+                   | None   -> ""
+                 in
+                 Printf.sprintf "<c2c event=\"message\" from=\"%s\" alias=\"%s\" source=\"broker\" reply_via=\"%s\" action_after=\"continue\"%s>%s</c2c>\n"
+                   m.from_alias m.to_alias reply_via role_attr m.content))
            messages;
          let json : Yojson.Safe.t =
            `Assoc [
@@ -4858,7 +4575,7 @@ let load_repo_config () =
 let save_repo_config json =
   let path = repo_config_path () in
   let dir = Filename.dirname path in
-  C2c_utils.mkdir_p dir;
+  (try Unix.mkdir dir 0o755 with Unix.Unix_error _ -> ());
   C2c_setup.json_write_file path json
 
 let valid_strategies = [ "first-alive"; "round-robin"; "broadcast" ]
@@ -4880,7 +4597,7 @@ let detect_client () =
             List.exists (fun d -> Sys.file_exists (d // name))
               (String.split_on_char ':' path)
           in
-          List.find_opt has_bin [ "opencode"; "claude"; "codex"; "kimi"; "gemini" ])
+          List.find_opt has_bin [ "opencode"; "claude"; "codex"; "kimi" ])
 
 let init_cmd =
   let open Cmdliner in
@@ -5353,7 +5070,7 @@ let serve_cmd =
               | true, true, None -> Lwt.return_unit
               | true, true, Some sid ->
                   let broker = C2c_mcp.Broker.create ~root in
-                  let queued = C2c_mcp.Broker.drain_inbox_push ~drained_by:"watcher" broker ~session_id:sid in
+                  let queued = C2c_mcp.Broker.drain_inbox_push broker ~session_id:sid in
                   let rec emit = function
                     | [] -> Lwt.return_unit
                     | m :: rest ->
@@ -5481,7 +5198,8 @@ let refresh_peer =
 
 (* --- subcommand: instances ------------------------------------------------ *)
 
-let instances_dir () = C2c_start.instances_dir
+let instances_dir () =
+  Filename.concat (Sys.getenv "HOME") (".local" // "share" // "c2c" // "instances")
 
 let list_instance_dirs () =
   let base = instances_dir () in
@@ -5504,293 +5222,67 @@ let instances_cmd =
       & info [ "prune-older-than" ] ~docv:"DAYS"
           ~doc:"Prune stopped instances older than DAYS before listing." )
   in
-  let all_flag =
-    Cmdliner.Arg.(
-      value
-      & flag
-      & info [ "all"; "a" ]
-          ~doc:"Show full archive (zombies + recently-stopped). Default: alive-only.")
-  in
-  let alive_flag =
-    Cmdliner.Arg.(
-      value
-      & flag
-      & info [ "alive" ]
-          ~doc:"Explicitly request alive-only view (the default). Useful in scripts that want to assert the filter is on.")
-  in
   let+ json = json_flag
-  and+ prune_older_than = prune_older_than
-  and+ show_all = all_flag
-  and+ alive_only = alive_flag in
-  let _ = alive_only in (* default already filters; flag is a script-readable assertion *)
+  and+ prune_older_than = prune_older_than in
   let output_mode = if json then Json else Human in
   let instances_dir = instances_dir () in
-  let all_instances = read_managed_instances () in
-  let all_instances =
+  let managed_instances = read_managed_instances () in
+  let managed_instances =
     match prune_older_than with
-    | None -> all_instances
+    | None -> managed_instances
     | Some days ->
         if days < 0 then (
           Printf.eprintf "error: --prune-older-than must be >= 0\n%!";
           exit 1);
-        let stale = prune_stopped_instances_older_than ~days ~instances_dir all_instances in
+        let stale = prune_stopped_instances_older_than ~days ~instances_dir managed_instances in
         if stale <> [] && output_mode = Human then
           Printf.eprintf
             "pruned %d stopped instance(s) older than %d day(s)\n%!"
             (List.length stale) days;
         read_managed_instances ()
   in
-  let total = List.length all_instances in
-  let alive_instances =
-    List.filter (fun (inst : managed_instance_view) -> inst.mi_status = "running") all_instances
-  in
-  let alive_count = List.length alive_instances in
-  let displayed = if show_all then all_instances else alive_instances in
-  let instance_to_json (inst : managed_instance_view) : Yojson.Safe.t =
-    let fields : (string * Yojson.Safe.t) list =
-      [ ("name", `String inst.mi_name)
-      ; ("client", `String inst.mi_client)
-      ; ("status", `String inst.mi_status)
-      ; ("delivery_mode", `String inst.mi_delivery_mode)
-      ; ("outer_alive", `Bool (inst.mi_status = "running"))
-      ; ("outer_pid", match inst.mi_pid with Some p -> `Int p | None -> `Null)
-      ; ("tmux_location", match inst.mi_tmux_location with Some s -> `String s | None -> `Null)
-      ]
+  if managed_instances = [] then begin
+    match output_mode with
+    | Json -> print_json (`List [])
+    | Human -> Printf.printf "No managed instances.\n"
+  end else begin
+    let instances =
+      List.map (fun inst ->
+        let fields : (string * Yojson.Safe.t) list =
+          [ ("name", `String inst.mi_name)
+          ; ("client", `String inst.mi_client)
+          ; ("status", `String inst.mi_status)
+          ; ("delivery_mode", `String inst.mi_delivery_mode)
+          ; ("outer_alive", `Bool (inst.mi_status = "running"))
+          ; ("outer_pid", match inst.mi_pid with Some p -> `Int p | None -> `Null)
+          ; ("tmux_location", match inst.mi_tmux_location with Some s -> `String s | None -> `Null)
+          ]
+        in
+        let fields = match inst.mi_pid with
+          | Some p -> fields @ [ ("pid", `Int p) ]
+          | None -> fields
+        in
+        `Assoc fields)
+        managed_instances
     in
-    let fields = match inst.mi_pid with
-      | Some p -> fields @ [ ("pid", `Int p) ]
-      | None -> fields
-    in
-    `Assoc fields
-  in
-  let instances_json = List.map instance_to_json displayed in
-  match output_mode with
-  | Json ->
-      print_json
-        (`Assoc
-           [ ("alive", `Int alive_count)
-           ; ("total", `Int total)
-           ; ("filtered", `Bool (not show_all))
-           ; ("instances", `List instances_json)
-           ])
-  | Human ->
-      if total = 0 then
-        Printf.printf "No managed instances.\n"
-      else begin
-        if show_all then
-          Printf.printf "Managed instances (%d alive / %d total):\n" alive_count total
-        else
-          Printf.printf "Managed instances (%d alive / %d total; --all for archive):\n"
-            alive_count total;
-        if displayed = [] then
-          Printf.printf "  (none alive — try --all to see the archive)\n"
-        else
-          List.iter (fun (inst : managed_instance_view) ->
-            let pid_str = match inst.mi_pid with Some n -> Printf.sprintf " (pid %d)" n | None -> "" in
-            let tmux_str = match inst.mi_tmux_location with Some s -> " [" ^ s ^ "]" | _ -> "" in
-            Printf.printf "  %-20s %-10s %-12s %s%s%s\n"
-              inst.mi_name inst.mi_client inst.mi_status inst.mi_delivery_mode pid_str tmux_str
-          ) displayed
-      end
+    match output_mode with
+    | Json -> print_json (`List instances)
+    | Human ->
+        List.iter (fun (inst : Yojson.Safe.t) ->
+          match inst with
+          | `Assoc fields ->
+              let name = match List.assoc_opt "name" fields with Some (`String s) -> s | _ -> "?" in
+              let client = match List.assoc_opt "client" fields with Some (`String s) -> s | _ -> "?" in
+              let status = match List.assoc_opt "status" fields with Some (`String s) -> s | _ -> "?" in
+              let delivery_mode = match List.assoc_opt "delivery_mode" fields with Some (`String s) -> s | _ -> "?" in
+              let pid_str = match List.assoc_opt "pid" fields with Some (`Int n) -> Printf.sprintf " (pid %d)" n | _ -> "" in
+              let tmux_str = match List.assoc_opt "tmux_location" fields with Some (`String s) -> " [" ^ s ^ "]" | _ -> "" in
+              Printf.printf "  %-20s %-10s %-12s %s%s%s\n" name client status delivery_mode pid_str tmux_str
+          | _ -> ()
+        ) instances
+  end
 
-(* --- subcommand: instances clean-stale (#333) -------------------------- *)
-
-(* Protected aliases — the named swarm peers + coordinator + the default
-   social room. Operators must opt in to clean these (not exposed in v1). *)
-let clean_stale_protected_aliases =
-  [ "coordinator1"
-  ; "swarm-lounge"
-  ; "stanza-coder"
-  ; "jungle-coder"
-  ; "galaxy-coder"
-  ; "lyra-quill"
-  ; "test-agent"
-  ; "dogfood-hunter"
-  ]
-
-(* String matching helpers for ephemeral-test-alias name patterns. *)
-let str_starts_with ~prefix s =
-  let lp = String.length prefix and ls = String.length s in
-  ls >= lp && String.sub s 0 lp = prefix
-
-let str_contains_sub ~needle s =
-  let ln = String.length needle and ls = String.length s in
-  if ln = 0 then true
-  else if ln > ls then false
-  else
-    let max_i = ls - ln in
-    let rec loop i =
-      if i > max_i then false
-      else if String.sub s i ln = needle then true
-      else loop (i + 1)
-    in
-    loop 0
-
-(* Anything that looks like an ephemeral test alias.
-   Mirrors the patterns called out in the #333 spec. *)
-let clean_stale_matches_test_pattern name =
-  str_starts_with ~prefix:"codex-reset-" name
-  || str_starts_with ~prefix:"oc-bootstrap-test" name
-  || str_starts_with ~prefix:"eph-review-bot-" name
-  || str_starts_with ~prefix:"kimi-wire-ocaml-smoke" name
-  || str_starts_with ~prefix:"dogfood-" name
-  || str_contains_sub ~needle:"-smoke-" name
-
-(* Most recent mtime among the instance dir's tracked files. We use this as
-   a proxy for "last activity" since there is no first-class
-   last_activity_ts field on the instance config. *)
-let instance_last_activity_ts ~instances_dir name =
-  let inst_path = instances_dir // name in
-  let candidates =
-    [ "config.json"; "outer.pid"; "stderr.log"; "stdout.log"; "tmux.json" ]
-    |> List.map (fun f -> inst_path // f)
-    |> List.filter Sys.file_exists
-  in
-  let candidates =
-    if candidates = [] && Sys.file_exists inst_path then [inst_path]
-    else candidates
-  in
-  List.fold_left
-    (fun acc path ->
-       try
-         let st = Unix.stat path in
-         max acc st.Unix.st_mtime
-       with _ -> acc)
-    0.0 candidates
-
-(* Determine why an instance is removable, if at all. Returns the list of
-   matched criteria (empty = not removable). *)
-let clean_stale_classify ~instances_dir ~now (inst : managed_instance_view) =
-  let reasons = ref [] in
-  (* Criterion 1: dead PID — status reflects Unix.kill(pid, 0) result. *)
-  (match inst.mi_pid with
-   | Some _ when inst.mi_status <> "running" -> reasons := "dead-pid" :: !reasons
-   | _ -> ());
-  (* Criterion 2: no recent activity > 24h. Skip for "running" instances —
-     a live PID overrides activity heuristics. *)
-  if inst.mi_status <> "running" then begin
-    let mtime = instance_last_activity_ts ~instances_dir inst.mi_name in
-    if mtime > 0.0 && (now -. mtime) > 86400.0 then
-      reasons := "no-activity-24h" :: !reasons
-  end;
-  (* Criterion 3: name matches a known test-alias pattern. *)
-  if clean_stale_matches_test_pattern inst.mi_name then
-    reasons := "matches-test-pattern" :: !reasons;
-  List.rev !reasons
-
-let clean_stale_is_protected name =
-  List.mem name clean_stale_protected_aliases
-
-let clean_stale_cmd =
-  let dry_run =
-    Cmdliner.Arg.(value & flag & info [ "dry-run"; "n" ]
-      ~doc:"List candidates and the criterion each matched; remove nothing.")
-  in
-  let include_named =
-    Cmdliner.Arg.(value & flag & info [ "include-named" ]
-      ~doc:"Also consider the named swarm aliases (coordinator1, stanza-coder, …). Off by default.")
-  in
-  let+ json = json_flag
-  and+ dry_run = dry_run
-  and+ include_named = include_named in
-  let output_mode = if json then Json else Human in
-  let instances_dir = instances_dir () in
-  let now = Unix.gettimeofday () in
-  let all_instances = read_managed_instances () in
-  (* Candidate = anything with a non-empty reason list AND status != running.
-     status="running" is the strongest live signal; never touch it. *)
-  let candidates =
-    List.filter_map (fun (inst : managed_instance_view) ->
-      if inst.mi_status = "running" then None
-      else
-        let reasons = clean_stale_classify ~instances_dir ~now inst in
-        if reasons = [] then None
-        else Some (inst, reasons)
-    ) all_instances
-  in
-  let total_candidates = List.length candidates in
-  let removable, protected_kept =
-    List.partition (fun (inst, _reasons) ->
-      include_named || not (clean_stale_is_protected inst.mi_name)
-    ) candidates
-  in
-  let protected_count = List.length protected_kept in
-  let removed_aliases =
-    if dry_run then []
-    else
-      List.filter_map (fun ((inst : managed_instance_view), _reasons) ->
-        let path = instances_dir // inst.mi_name in
-        if Sys.file_exists path then begin
-          (try rm_rf path with _ -> ());
-          if not (Sys.file_exists path) then Some inst.mi_name
-          else None
-        end else Some inst.mi_name
-      ) removable
-  in
-  let removed_count = List.length removed_aliases in
-  let _removable_aliases = List.map (fun ((i : managed_instance_view), _) -> i.mi_name) removable in
-  let protected_aliases = List.map (fun ((i : managed_instance_view), _) -> i.mi_name) protected_kept in
-  match output_mode with
-  | Json ->
-      let candidate_objs =
-        List.map (fun ((inst : managed_instance_view), reasons) ->
-          `Assoc
-            [ ("alias", `String inst.mi_name)
-            ; ("status", `String inst.mi_status)
-            ; ("pid", match inst.mi_pid with Some p -> `Int p | None -> `Null)
-            ; ("reasons", `List (List.map (fun r -> `String r) reasons))
-            ; ("protected", `Bool (clean_stale_is_protected inst.mi_name && not include_named))
-            ])
-          candidates
-      in
-      print_json
-        (`Assoc
-           [ ("removed", `Int removed_count)
-           ; ("candidates_total", `Int total_candidates)
-           ; ("protected", `Int protected_count)
-           ; ("dry_run", `Bool dry_run)
-           ; ("removed_aliases", `List (List.map (fun a -> `String a) removed_aliases))
-           ; ("protected_aliases", `List (List.map (fun a -> `String a) protected_aliases))
-           ; ("candidates", `List candidate_objs)
-           ])
-  | Human ->
-      if total_candidates = 0 then
-        Printf.printf "No stale instances found.\n"
-      else begin
-        if dry_run then
-          Printf.printf "Stale instance candidates (dry-run, no changes):\n"
-        else begin
-          Printf.printf "Cleaning stale instances:\n";
-          Printf.printf "  (use --dry-run first to preview)\n"
-        end;
-        List.iter (fun ((inst : managed_instance_view), reasons) ->
-          let reason_str = String.concat " + " reasons in
-          let protected_tag =
-            if clean_stale_is_protected inst.mi_name && not include_named
-            then "  [PROTECTED: --include-named to override]"
-            else ""
-          in
-          Printf.printf "  %-30s %s%s\n" inst.mi_name reason_str protected_tag
-        ) candidates;
-        if dry_run then
-          Printf.printf "\nWould remove %d of %d candidates (%d protected).\n"
-            (List.length removable) total_candidates protected_count
-        else
-          Printf.printf "\nRemoved %d of %d candidates (%d protected).\n"
-            removed_count total_candidates protected_count
-      end
-
-let clean_stale_subcmd = Cmdliner.Cmd.v
-  (Cmdliner.Cmd.info "clean-stale"
-     ~doc:"Remove stale managed-instance directories (dead PIDs, idle >24h, \
-           or matching ephemeral test-name patterns). Use --dry-run to preview.")
-  clean_stale_cmd
-
-let instances = Cmdliner.Cmd.group
-  (Cmdliner.Cmd.info "instances"
-     ~doc:"List managed c2c instances (alive-only by default; --all for full archive).")
-  ~default:instances_cmd
-  [ clean_stale_subcmd ]
+let instances = Cmdliner.Cmd.v (Cmdliner.Cmd.info "instances" ~doc:"List managed c2c instances.") instances_cmd
 
 (* --- subcommand: diag ----------------------------------------------------- *)
 
@@ -6286,7 +5778,7 @@ let yaml_scalar s =
 
 let write_role ~alias ~(role : C2c_role.t) =
   let dir = roles_dir () in
-  C2c_utils.mkdir_p dir;
+  (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
   let path = role_file_path ~alias in
   let fm =
     Printf.sprintf
@@ -6318,7 +5810,6 @@ let prompt_for_role ~alias =
         pmodel = None;
         role_class = None;
         pronouns = None;
-        coordinator = None;
         c2c_alias = None;
         c2c_auto_join_rooms = [];
         c2c_heartbeat = [];
@@ -6338,44 +5829,21 @@ let prompt_for_role ~alias =
     end else None
   end else None
 
-(* Render the kickoff prompt (#341): take the [swarm] restart_intro
-   template (or the built-in fallback) and substitute {name}, {alias},
-   {role} placeholders. The default template is in
-   [C2c_start.builtin_swarm_restart_intro]; user override goes in
-   .c2c/config.toml under [swarm] restart_intro. *)
 let default_kickoff_prompt ~name ~alias ?role () =
   let role_section = match role with
     | None -> ""
     | Some r -> Printf.sprintf "\nYour assigned role: %s\n" r
   in
-  let template = C2c_start.swarm_config_restart_intro () in
-  let subst =
-    [ "{name}", name; "{alias}", alias; "{role}", role_section ]
-  in
-  List.fold_left
-    (fun acc (k, v) ->
-      (* Naive substitute-all: walk acc, replace each occurrence of k with v.
-         Placeholders are short, count is tiny — perf is irrelevant here. *)
-      let rec replace s =
-        match String.index_opt s '{' with
-        | None -> s
-        | Some _ ->
-            let klen = String.length k in
-            let slen = String.length s in
-            let rec find i =
-              if i + klen > slen then None
-              else if String.sub s i klen = k then Some i
-              else find (i + 1)
-            in
-            (match find 0 with
-             | None -> s
-             | Some i ->
-                 let before = String.sub s 0 i in
-                 let after = String.sub s (i + klen) (slen - i - klen) in
-                 before ^ v ^ replace after)
-      in
-      replace acc)
-    template subst
+  Printf.sprintf
+    "You have been started as a c2c swarm agent.\n\
+     Instance: %s  Alias: %s%s\n\
+     Getting started:\n\
+     1. Poll your inbox:  use the MCP poll_inbox tool (or: c2c poll-inbox)\n\
+     2. See active peers: c2c list\n\
+     3. Post in the lounge: send_room swarm-lounge with a hello message\n\
+     4. Read CLAUDE.md for the mission brief and open tasks\n\n\
+     The swarm coordinates via c2c instant messaging. You are now part of it."
+    name alias role_section
 
 let agent_file_path ~client ~name =
   C2c_role.client_agent_dir ~client // (name ^ ".md")
@@ -6441,11 +5909,7 @@ let start_cmd =
      `c2c start pty -- bash -i` runs bash with `-i`. *)
   let extra_argv =
     Cmdliner.Arg.(value & pos_right 1 (list string) [] & info [] ~docv:"ARG"
-      ~doc:"Extra arguments forwarded to the spawned client's argv (e.g. \
-            `c2c start claude -- --print hello` runs claude with `--print hello`). \
-            For CLIENT=tmux, the tail is typed into the target pane instead of \
-            appended to argv. For CLIENT=pty, the first tail arg is the command \
-            to spawn under the PTY (e.g. `c2c start pty -- bash -i`).")
+      ~doc:"Extra arguments passed to the client after `--`. Anything after `--` is appended verbatim to the client's argv.")
   in
   let name =
     Cmdliner.Arg.(value & opt (some string) None & info [ "name"; "n" ] ~docv:"NAME" ~doc:"Instance name (default: auto-generated).")
@@ -6598,11 +6062,10 @@ let start_cmd =
     Printf.eprintf "error: --loc is only valid with `c2c start tmux`.\n%!";
     exit 1
   end;
-  (* Args after `--` are forwarded to the spawned client's argv (per
-     `c2c start --help`). For CLIENT=tmux, the tail is the command typed
-     into the target pane (handled separately via tmux_command). For all
-     other clients, the tail flows through extra_argv → prepare_launch_args,
-     which appends it verbatim to the client's argv. No reject here. *)
+  if client <> "tmux" && tmux_tail <> [] then begin
+    Printf.eprintf "error: extra argv after CLIENT is only supported for `c2c start tmux` in this slice.\n%!";
+    exit 1
+  end;
   let name = match name_opt with
     | Some n -> n
     | None ->
@@ -7488,7 +6951,7 @@ let config_read () : (string * string) list =
 let config_write (entries : (string * string) list) : unit =
   let path = c2c_config_path () in
   let dir = Filename.dirname path in
-  C2c_utils.mkdir_p dir;
+  (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
   let tmp = path ^ ".tmp" in
   let oc = open_out tmp in
   Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () ->
@@ -8573,7 +8036,16 @@ let oc_plugin_stream_write_statefile_cmd =
        - else                    → ~/.local/share/c2c/oc-plugin-state.json          *)
     let home = Sys.getenv_opt "HOME" |> Option.value ~default:"/tmp" in
     let base_dir = Filename.concat home ".local/share/c2c" in
-    let mkdir_p dir = C2c_mcp.mkdir_p ~mode:0o700 dir in
+    let mkdir_p dir =
+      let parts = String.split_on_char '/' dir in
+      let _ = List.fold_left (fun acc part ->
+        if part = "" then acc
+        else
+          let p = if acc = "" then "/" ^ part else acc ^ "/" ^ part in
+          (try Unix.mkdir p 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+          p
+      ) "" parts in ()
+    in
     let statefile =
       match Sys.getenv_opt "C2C_INSTANCE_NAME" with
       | Some name when String.trim name <> "" ->
@@ -8729,7 +8201,7 @@ let oc_plugin_drain_inbox_to_spool_cmd =
         | _ ->
             let combined = queued @ fresh in
             C2c_wire_bridge.spool_write spool combined;
-            C2c_mcp.Broker.append_archive ~drained_by:"oc_plugin" broker ~session_id ~messages:fresh;
+            C2c_mcp.Broker.append_archive broker ~session_id ~messages:fresh;
             C2c_setup.json_write_file inbox_path (`List []);
             combined)
     in
@@ -8775,7 +8247,16 @@ let cc_plugin_write_statefile_cmd =
     (* Same path logic as oc-plugin: prefer $C2C_INSTANCE_NAME, else base dir. *)
     let home = Sys.getenv_opt "HOME" |> Option.value ~default:"/tmp" in
     let base_dir = Filename.concat home ".local/share/c2c" in
-    let mkdir_p dir = C2c_mcp.mkdir_p ~mode:0o700 dir in
+    let mkdir_p dir =
+      let parts = String.split_on_char '/' dir in
+      ignore (List.fold_left (fun acc part ->
+        if part = "" then acc
+        else
+          let p = if acc = "" then "/" ^ part else acc ^ "/" ^ part in
+          (try Unix.mkdir p 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+          p
+      ) "" parts)
+    in
     let statefile =
       match Sys.getenv_opt "C2C_INSTANCE_NAME" with
       | Some name when String.trim name <> "" ->
@@ -9089,78 +8570,7 @@ let commands_man is_agent =
          $(b,wire-daemon-spool-read), $(b,supervisor)"
     ]
 
-(* Fast-path dispatch (#418): handle a small set of subcommands BEFORE
-   the heavy Cmdliner setup (~1.5s) that builds the manpage for ~50 cmds.
-   These commands have no broker/registry dependency, so we short-circuit
-   them with a direct argv scan + lean handler.
-
-   Race fix (#418): get-tmux-location used to call `tmux display-message -p`
-   without `-t "$TMUX_PANE"`, which returns the tmux *server's* active pane
-   — racy under concurrent invocation across panes. Reading $TMUX_PANE
-   directly (set per-pane by tmux at fork) is the canonical zero-cost
-   pane-bound answer; we normalize via `tmux display-message -t "$TMUX_PANE"`
-   only when callers want the human-readable session:window.pane form. *)
-let fast_path_get_tmux_location ?(json = false) () =
-  let pane_id = Sys.getenv_opt "TMUX_PANE" in
-  let tmux_set = Sys.getenv_opt "TMUX" in
-  match pane_id, tmux_set with
-  | None, None ->
-      Printf.eprintf "error: not running inside a tmux session (TMUX is not set).\n%!";
-      exit 1
-  | _ ->
-      (* Always pin to the caller's own pane via -t "$TMUX_PANE" when set,
-         so concurrent invocations across panes don't cross-talk. *)
-      let cmd = match pane_id with
-        | Some p when String.trim p <> "" ->
-            (* shell-quote the pane id (tmux pane ids look like %42 — safe but be defensive) *)
-            Printf.sprintf "tmux display-message -t %s -p '#S:#I.#P'"
-              (Filename.quote p)
-        | _ ->
-            (* No $TMUX_PANE but $TMUX is set — last-resort active-pane fallback. *)
-            "tmux display-message -p '#S:#I.#P'"
-      in
-      let capture cmd =
-        try
-          let ic = Unix.open_process_in cmd in
-          Fun.protect ~finally:(fun () -> ignore (Unix.close_process_in ic))
-            (fun () -> Some (input_line ic))
-        with _ -> None
-      in
-      (match capture cmd with
-       | None ->
-           Printf.eprintf "error: tmux display-message failed. Is tmux running?\n%!";
-           exit 1
-       | Some addr ->
-           if json then Printf.printf "%s\n" (Printf.sprintf "%S" addr)
-           else Printf.printf "%s\n" addr;
-           exit 0)
-
-let try_fast_path () =
-  (* Skip fast-path if any flag we don't recognize appears, so cmdliner
-     can produce its standard error. We only handle the trivial shape:
-       c2c get-tmux-location [--json]
-     and bare `c2c --version`. *)
-  let argv = Sys.argv in
-  let n = Array.length argv in
-  if n >= 2 then begin
-    match argv.(1) with
-    | "get-tmux-location" ->
-        let json = ref false in
-        let unknown = ref false in
-        for i = 2 to n - 1 do
-          match argv.(i) with
-          | "--json" -> json := true
-          | _ -> unknown := true
-        done;
-        if not !unknown then fast_path_get_tmux_location ~json:!json ()
-    | "--version" when n = 2 ->
-        Printf.printf "%s\n" (version_string ());
-        exit 0
-    | _ -> ()
-  end
-
 let () =
-  try_fast_path ();
   sanitize_help_env ();
   for i = 0 to Array.length Sys.argv - 1 do
     if Sys.argv.(i) = "-h" then Sys.argv.(i) <- "--help"
@@ -9169,7 +8579,7 @@ let () =
   let tier_grouped_man = commands_man is_agent in
   let all_cmds =
     [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; send_all; sweep
-    ; sweep_dryrun; migrate_broker; history; health; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
+    ; sweep_dryrun; migrate_broker; history; health; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test; init; install; completion_cmd
     ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; stats; C2c_sitrep.sitrep_group; C2c_rooms.rooms_group; C2c_rooms.room_group; relay_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
   in

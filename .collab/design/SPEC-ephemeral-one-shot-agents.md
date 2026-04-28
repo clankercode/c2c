@@ -8,7 +8,7 @@ Key commits:
 - `c835c2d` — feat(agent refine): add --agent-mode for peer invocation
 - `ef91d58` — design: add ephemeral agents implementation notes from galaxy review
 
-CLI commands: `c2c agent run`, `c2c agent refine`. MCP tool: `mcp__c2c__stop_self`.
+CLI commands: `c2c agent run`, `c2c agent refine`. MCP tool: `c2c stop_self`.
 
 **Authors**: coordinator1 (Cairn-Vigil), responding to Max's 2026-04-23 prompt; resolutions folded in from Max's inline comments same day.
 
@@ -25,7 +25,7 @@ There is a real gap between these: a **short-lived, purpose-built agent that par
 
 - Launch a c2c-registered peer tied to a specific role file + bootstrap prompt
 - Participate in c2c like any other peer (DMs, rooms)
-- Clean termination via `mcp__c2c__stop_self` tool + idle-timeout backup
+- Clean termination via `c2c_stop_self` tool + idle-timeout backup
 - Registration + run + cleanup is one command, not an orchestration sequence
 
 v1 does **not** need:
@@ -45,8 +45,8 @@ Under the hood this is `c2c start` composed with new `--ephemeral` + `--kickoff-
 
 ### R2. Self-termination — dedicated tool + confirm-with-caller + idle-timeout
 
-- Primary: a dedicated tool `mcp__c2c__stop_self` with a short description (keep prompt tokens low). Implementation may just be `c2c_stop` aliased to the caller's own session — decide during implementation based on which is simpler.
-- Contract baked into the prompt template: "Once you have confirmed your job is complete with the caller, call `mcp__c2c__stop_self`." Agent MUST correspond with caller to confirm done before stopping.
+- Primary: a dedicated tool `c2c_stop_self` with a short description (keep prompt tokens low). Implementation may just be `c2c_stop` aliased to the caller's own session — decide during implementation based on which is simpler.
+- Contract baked into the prompt template: "Once you have confirmed your job is complete with the caller, call `c2c_stop_self`." Agent MUST correspond with caller to confirm done before stopping.
 - Idle timeout: supported via `--timeout` (default TBD). Supervisor kills session if nothing flows in/out for the window.
 
 ### R3. Prompt — always present, template-wrapped
@@ -55,7 +55,7 @@ Under the hood this is `c2c start` composed with new `--ephemeral` + `--kickoff-
 
 Caller's `--prompt` (or empty) gets appended into a general **prompt template** that always includes:
 - who called this session
-- how to signal completion (`mcp__c2c__stop_self`)
+- how to signal completion (`c2c_stop_self`)
 - the confirm-with-caller rule
 - idle-timeout reminder
 

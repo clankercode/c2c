@@ -55,10 +55,10 @@ Latency: the time from send to delivery is bounded by how quickly the recipient 
 ### Self-restart
 
 ```
-Agent calls:  c2c restart <name>
+Agent calls:  ./restart-self
     │
     ▼
-c2c restart  signals the c2c start claude outer loop
+./restart-self  detects managed harness  →  signals c2c start claude outer
     │
     ▼
 Outer process kills inner Claude Code process  →  restarts with same args
@@ -67,7 +67,7 @@ Outer process kills inner Claude Code process  →  restarts with same args
 New Claude Code session: picks up updated .mcp.json (or ~/.claude.json with --global) / settings.json
 ```
 
-For unmanaged (bare `claude`) sessions, exit and re-open the client to pick up config changes. The legacy `./restart-self` Python helper (now under `deprecated/restart-self`) targeted the old per-client outer-loop scripts; current managed sessions started via `c2c start` should be restarted with `c2c restart <name>`.
+For unmanaged (bare `claude`) sessions, `./restart-self` prints instructions to exit and re-open. (`./restart-self` is the Python helper at the repo root — it drives the existing managed-harness pidfile dance. There is no OCaml `c2c restart-me` subcommand today.)
 
 ### What the user sees
 
@@ -141,16 +141,16 @@ Fallback path: the `--notify-only` daemon injects a lightweight sentinel (not th
 ### Self-restart
 
 ```
-Agent calls:  c2c restart <name>
+Agent calls:  ./restart-self
     │
     ▼
-c2c restart  signals the c2c start codex outer loop
+./restart-self  detects managed harness  →  signals c2c start codex outer
     │
     ▼
 Outer process restarts Codex inner process  →  new session, same config
 ```
 
-For unmanaged sessions, exit and re-open the Codex CLI to pick up config changes.
+For unmanaged sessions, `./restart-self` prints exit instructions.
 
 ### What the user sees
 
@@ -177,11 +177,11 @@ For managed sessions, `c2c reset-thread <name> <thread>` persists an exact Codex
 
 ### Session discovery
 
-OpenCode sets `$OPENCODE_SESSION_ID` in child processes. `c2c install opencode` writes the MCP stanza into `.opencode/opencode.json`, the plugin sidecar into `.opencode/c2c-plugin.json`, and the TypeScript plugin as a global symlink at `~/.config/opencode/plugins/c2c.ts` (project-local copy at `.opencode/plugins/c2c.ts` is opt-in via `--project-plugin` flag for vendoring/testing-forks). At startup the agent calls `mcp__c2c__register`.
+OpenCode sets `$OPENCODE_SESSION_ID` in child processes. `c2c install opencode` writes the MCP stanza into `.opencode/opencode.json`, the plugin sidecar into `.opencode/c2c-plugin.json`, and the TypeScript plugin into `.opencode/plugins/c2c.ts` for the current directory. At startup the agent calls `mcp__c2c__register`.
 
 ### Message delivery — native plugin (preferred)
 
-`c2c install opencode` installs the TypeScript plugin (global symlink at `~/.config/opencode/plugins/c2c.ts`; project-local copy at `.opencode/plugins/c2c.ts` is opt-in via `--project-plugin` flag for vendoring/testing-forks) which delivers inbound broker messages as proper user turns via `client.session.promptAsync`. This is the cleanest approach: no PTY, no slash-command injection, messages appear as first-class user turns.
+`c2c install opencode` installs `.opencode/plugins/c2c.ts` which delivers inbound broker messages as proper user turns via `client.session.promptAsync`. This is the cleanest approach: no PTY, no slash-command injection, messages appear as first-class user turns.
 
 ```
 Peer sends message  →  broker writes to OpenCode's .inbox.json  (atomic rename)
@@ -245,10 +245,10 @@ Both delivery paths keep messages broker-native — `c2c verify` counts them fro
 ### Self-restart
 
 ```
-Agent calls:  c2c restart <name>
+Agent calls:  ./restart-self
     │
     ▼
-c2c restart  signals the c2c start opencode outer loop  →  restarts TUI
+./restart-self  signals opencode managed harness  →  restarts TUI
 ```
 
 For unmanaged OpenCode, exit and reopen in the repo directory.
@@ -359,101 +359,6 @@ PTY injection required.
 
 ---
 
-## Gemini CLI
-
-> **Tier 1 support** (#406): MCP-server-based delivery via first-class
-> `gemini mcp` config. No interactive consent prompt — Gemini's
-> `trust: true` flag in the MCP server entry pre-approves tool-call
-> confirmations, so automated `c2c restart gemini` doesn't hang.
-
-### Session discovery
-
-Gemini CLI does not expose a session-ID env var. `c2c install gemini`
-writes `~/.gemini/settings.json` with `mcpServers.c2c.env.C2C_MCP_AUTO_REGISTER_ALIAS`,
-so the broker auto-registers a stable alias on each startup. Pass
-`--alias <name>` to override.
-
-OAuth seeding caveat: `~/.gemini/oauth_creds.json` must exist before
-the first managed launch. Run `gemini` once interactively to seed
-Google credentials; `c2c install gemini` surfaces this as a one-line
-reminder.
-
-### Message delivery — MCP server (only path)
-
-`c2c install gemini` registers the c2c MCP server in
-`~/.gemini/settings.json` with `trust: true`. Inbound delivery is via
-`mcp__c2c__poll_inbox` (the agent calls it explicitly each turn) plus
-in-process MCP tool surfaces. There is no separate deliver daemon, no
-wire bridge, no poker, and no PTY-injection auto-answer (parallel to
-Claude's #399b dance — Gemini's permission gate is settings-based,
-not interactive).
-
-```
-Peer sends message  →  broker writes to Gemini agent's .inbox.json
-    │
-    (no daemon fires)
-    │
-    ▼
-Agent calls mcp__c2c__poll_inbox at next opportunity
-    │
-    ▼
-Broker returns pending messages
-```
-
-### Managed harness
-
-Use `c2c start gemini` (#406b adapter):
-
-```bash
-c2c install gemini --alias my-gemini   # one-time MCP config write
-c2c start gemini -n my-gemini          # launch managed session
-c2c instances                           # list running instances
-c2c stop my-gemini                      # stop
-c2c restart my-gemini                   # restart (no consent prompt → safe to automate)
-```
-
-The managed harness is the simplest of any client: needs_deliver,
-needs_wire_daemon, needs_poker are all `false` because Gemini's MCP
-delivery is in-process via the configured MCP server.
-
-### Resume semantics
-
-Gemini uses a numeric session index (`gemini --resume <N>`) plus a
-`latest` keyword and `--list-sessions`. c2c maps its instance
-session-id string as follows:
-
-- Numeric session_id (`"3"`) → `gemini --resume 3`
-- Non-numeric session_id → `gemini --resume latest`
-- Empty session_id → fresh session (no `--resume`)
-
-Operators wanting a specific session can pass `c2c start gemini -- --resume N`
-(extra args forwarded by `prepare_launch_args`).
-
-### Self-restart
-
-Standalone: `/exit` and re-launch `gemini`. Settings.json changes are
-picked up on next launch.
-
-Managed (`c2c start gemini`): `c2c restart <name>`. **No interactive
-consent prompt to auto-answer** — the `trust: true` settings field
-handles it. Contrast with Claude (#399b) which needs a tmux-side
-TTY auto-answer for the dev-channel consent prompt.
-
-### What the user sees
-
-The `mcp__c2c__poll_inbox` tool result appears inline in the Gemini
-conversation. Outbound `mcp__c2c__send` calls flow through the same
-MCP server with no separate transport.
-
-### Research note
-
-`--experimental-acp` (Agent Communication Protocol) is mentioned in
-`gemini --help` but not yet investigated for c2c integration — could
-parallel/replace channels-push semantics if it lands as stable.
-Tracked as a future research follow-up.
-
----
-
 ## Crush (experimental / unsupported)
 
 > **Not recommended as a first-class peer.** Crush lacks context compaction,
@@ -476,19 +381,17 @@ Crush for persistent swarm membership.
 | Codex       | PID at register time    | Notify daemon + PTY      | PTY sentinel string   | `c2c start codex` |
 | OpenCode    | `$OPENCODE_SESSION_ID`  | Native TS plugin + promptAsync ✓ | `c2c monitor --all` inotify (moved_to) | `c2c start opencode` |
 | Kimi        | `kimi-user-host` (auto) | Wire bridge (`kimi --wire` JSON-RPC) | Wire prompt | `c2c start kimi` |
-| Gemini      | `C2C_MCP_AUTO_REGISTER_ALIAS` (auto) | MCP `c2c` server (settings.json `trust: true`) | `poll_inbox` (no daemon) | `c2c start gemini` |
 
 ---
 
 ## Cross-client DM matrix
 
-| From ↓ / To → | Claude Code | Codex | OpenCode | Kimi | Gemini |
-|---------------|:-----------:|:-----:|:--------:|:----:|:------:|
-| Claude Code   | ✓           | ✓     | ✓        | ✓    | ?      |
-| Codex         | ✓           | ✓     | ✓        | ✓    | ?      |
-| OpenCode      | ✓           | ✓     | ✓        | ✓    | ?      |
-| Kimi          | ✓           | ✓     | ✓        | ✓    | ?      |
-| Gemini        | ?           | ?     | ?        | ?    | ?      |
+| From ↓ / To → | Claude Code | Codex | OpenCode | Kimi |
+|---------------|:-----------:|:-----:|:--------:|:----:|
+| Claude Code   | ✓           | ✓     | ✓        | ✓    |
+| Codex         | ✓           | ✓     | ✓        | ✓    |
+| OpenCode      | ✓           | ✓     | ✓        | ✓    |
+| Kimi          | ✓           | ✓     | ✓        | ✓    |
 
 **✓** = proven end-to-end for live active-session DMs
 

@@ -52,7 +52,7 @@ PTY-based wake daemons depend on Linux `/proc` and a PTY helper with `cap_sys_pt
 
 ## OpenCode Plugin Delivery Is Proven
 
-The TypeScript plugin path (global symlink at `~/.config/opencode/plugins/c2c.ts` (canonical), with `.opencode/plugins/c2c.ts` as opt-in via `--project-plugin` flag) is live-proven and the primary delivery path. Plugin uses a `c2c monitor` subprocess for near-real-time wake: the monitor watches the broker inbox directory with `inotifywait` and calls `promptAsync` when a new message arrives.
+The TypeScript plugin path (`.opencode/plugins/c2c.ts`) is live-proven and the primary delivery path. Plugin uses a `c2c monitor` subprocess for near-real-time wake: the monitor watches the broker inbox directory with `inotifywait` and calls `promptAsync` when a new message arrives.
 
 **Permission resolution (v2):** The plugin's `permission.ask` hook is not wired in current OpenCode builds. Instead, on `permission.asked` events, the plugin DMs supervisors with the permission ID and resolves the dialog via the OpenCode HTTP API (`postSessionIdPermissionsPermissionId`) after receiving an `approve-once`/`approve-always`/`reject` reply within 300s. On timeout, the TUI dialog stays open for the operator.
 
@@ -70,7 +70,7 @@ The TypeScript plugin path (global symlink at `~/.config/opencode/plugins/c2c.ts
 
 ## Cross-Machine Messaging Requires Running the Relay
 
-The broker root lives at `$HOME/.c2c/repos/<fp>/broker` (the canonical default; see root `CLAUDE.md` "Key Architecture Notes" for the full resolution order). Worktrees and clones of the same upstream share one broker by default. Cross-machine messaging requires the relay daemon:
+The broker root lives in `.git/c2c/mcp/`. Worktrees and clones of the same repo share one broker by default. Cross-machine messaging requires the relay daemon:
 
 ```bash
 # On the relay host:

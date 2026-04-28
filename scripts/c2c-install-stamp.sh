@@ -29,17 +29,13 @@ hash_file() {
 
 c2c_path="$bin_dir/c2c"
 mcp_path="$bin_dir/c2c-mcp-server"
-mcp_inner_path="$bin_dir/c2c-mcp-inner"
 hook_path="$bin_dir/c2c-inbox-hook-ocaml"
 cold_boot_path="$bin_dir/c2c-cold-boot-hook"
-post_compact_path="$bin_dir/c2c-post-compact-hook"
 
 c2c_hash=$(hash_file "$c2c_path")
 mcp_hash=$(hash_file "$mcp_path")
-mcp_inner_hash=$(hash_file "$mcp_inner_path")
 hook_hash=$(hash_file "$hook_path")
 cold_boot_hash=$(hash_file "$cold_boot_path")
-post_compact_hash=$(hash_file "$post_compact_path")
 
 # Skip if not in a git repo (e.g. tarball install) — no useful sha to record.
 if [ -z "$sha" ]; then
@@ -64,10 +60,6 @@ cat >"$tmp" <<EOF
       "path": "$mcp_path",
       "sha256": "$mcp_hash"
     },
-    "c2c-mcp-inner": {
-      "path": "$mcp_inner_path",
-      "sha256": "$mcp_inner_hash"
-    },
     "c2c-inbox-hook-ocaml": {
       "path": "$hook_path",
       "sha256": "$hook_hash"
@@ -75,10 +67,6 @@ cat >"$tmp" <<EOF
     "c2c-cold-boot-hook": {
       "path": "$cold_boot_path",
       "sha256": "$cold_boot_hash"
-    },
-    "c2c-post-compact-hook": {
-      "path": "$post_compact_path",
-      "sha256": "$post_compact_hash"
     }
   }
 }

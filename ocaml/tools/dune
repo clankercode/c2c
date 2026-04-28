@@ -7,17 +7,3 @@
  (name c2c_cold_boot_hook)
  (modules c2c_cold_boot_hook)
  (libraries c2c_mcp unix))
-
-; #349b: post-compact hook split into library + thin executable so the
-; payload-formatting logic can be unit-tested. The library is wrapped:false
-; so test code can reference C2c_post_compact_hook directly.
-(library
- (name c2c_post_compact_hook_lib)
- (wrapped false)
- (modules c2c_post_compact_hook)
- (libraries unix yojson))
-
-(executable
- (name c2c_post_compact_hook_bin)
- (modules c2c_post_compact_hook_bin)
- (libraries c2c_mcp c2c_post_compact_hook_lib unix yojson))

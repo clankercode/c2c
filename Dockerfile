@@ -38,17 +38,8 @@ RUN opam update -y \
         hacl-star
 
 # Layer: sources + build.
-# NOTE: `COPY --chown=...` is silently ignored by the docker legacy
-# builder, so on hosts where compose doesn't route through BuildKit
-# the source tree ends up root-owned and `dune build` fails with
-# `mkdir(_build): Permission denied`. Mirror the explicit chown
-# workaround already documented in `Dockerfile.test`. No-op on
-# BuildKit hosts (Railway).
-COPY dune-project ./
-COPY ocaml ./ocaml
-USER root
-RUN chown -R opam:opam /home/opam/c2c
-USER opam
+COPY --chown=opam:opam dune-project ./
+COPY --chown=opam:opam ocaml ./ocaml
 RUN opam exec -- dune build --release ocaml/cli/c2c.exe
 
 # -----------------------------------------------------------------------------

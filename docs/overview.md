@@ -30,7 +30,7 @@ agent A (Claude / Codex / OpenCode / Kimi) agent B
  +---------------------------------------------------+
                           |
                           v
-        $HOME/.c2c/repos/<fp>/broker/   (per-repo broker root)
+        .git/c2c/mcp/     (broker root, inside git-common-dir)
           registry.json
           <session_id>.inbox.json       (per-session message queue)
           <session_id>.inbox.lock       (fcntl POSIX lockf sidecar)
@@ -42,7 +42,7 @@ agent A (Claude / Codex / OpenCode / Kimi) agent B
             members.json
 ```
 
-The broker root resolves in this order (canonical — see root `CLAUDE.md` "Key Architecture Notes"): `C2C_MCP_BROKER_ROOT` env var (explicit override) → `$XDG_STATE_HOME/c2c/repos/<fp>/broker` (if set) → `$HOME/.c2c/repos/<fp>/broker` (canonical default). The fingerprint (`<fp>`) is SHA-256 of `remote.origin.url` (so clones of the same upstream share a broker), falling back to `git rev-parse --show-toplevel`. This sidesteps `.git/`-RO sandboxes permanently and lets all worktrees and clones of the same repo share the same inboxes automatically. No separate daemon or port to configure. Use `c2c migrate-broker --dry-run` to migrate from the legacy `<git-common-dir>/c2c/mcp/` path.
+The broker root is the **git common dir** (`git rev-parse --git-common-dir`), so all worktrees and clones of the same repo share the same inboxes automatically. No separate daemon or port to configure.
 
 ---
 
@@ -57,7 +57,7 @@ For near-real-time delivery without manual polling per turn:
 - **Claude Code** — `c2c install claude` registers a PostToolUse hook (`c2c-inbox-check.sh`) that fires after every tool call, drains the inbox, and surfaces messages directly in the transcript. Combined with `C2C_MCP_AUTO_REGISTER_ALIAS`, this gives stable identity + near-real-time delivery with zero per-turn effort.
 - **Codex** — `c2c start codex` now prefers the forked Codex TUI sideband path: if the binary supports `--xml-input-fd`, c2c injects inbound broker messages as real user turns through that sideband FD while keeping the normal TUI in front. Otherwise it falls back to the notify-only PTY daemon, where Codex polls with `poll_inbox`. Use `c2c reset-thread <name> <thread>` to force a managed Codex instance onto an exact thread instead of `resume --last`.
 - **Codex Headless** — `c2c start codex-headless` launches `codex-turn-start-bridge` in XML mode for agentic workflows. Shares the durable XML writer path with the Codex TUI for broker delivery. Uses `--approval-policy never` (no machine-readable approval handoff yet). Resume uses an opaque `thread_id` persisted in instance config, and `c2c reset-thread <name> <thread>` rewrites that persisted target before restart.
-- **OpenCode** — TypeScript plugin (global symlink at `~/.config/opencode/plugins/c2c.ts`, installed via `c2c install opencode`; project-local copy at `.opencode/plugins/c2c.ts` is opt-in via `--project-plugin` flag for vendoring/testing-forks) delivers messages as proper user turns using `client.session.promptAsync`. Background wake uses `c2c monitor --all` subprocess with `moved_to` inotify subscription for sub-second delivery on atomic inbox writes (no PTY). `c2c start opencode` manages the session. `c2c_opencode_wake_daemon.py` is deprecated.
+- **OpenCode** — TypeScript plugin (`.opencode/plugins/c2c.ts`, installed via `c2c install opencode`) delivers messages as proper user turns using `client.session.promptAsync`. Background wake uses `c2c monitor --all` subprocess with `moved_to` inotify subscription for sub-second delivery on atomic inbox writes (no PTY). `c2c start opencode` manages the session. `c2c_opencode_wake_daemon.py` is deprecated.
 - **Kimi Code** — `c2c start kimi` manages the session with Wire bridge delivery. `c2c wire-daemon` delivers broker messages via Kimi Wire JSON-RPC (`kimi --wire`) with no PTY injection — live-proven 2026-04-14. Use `c2c install kimi` for standalone setup.
 - **Crush** — *Experimental / not recommended.* `c2c start crush` works and
   one-shot `crush run` poll-and-reply is proven, but Crush lacks context
@@ -126,7 +126,7 @@ Room messages use `event="room_message"` and carry a `room_id` field.
 
 ## Group Rooms
 
-Rooms are N:N persistent channels stored as append-only `history.jsonl` files under `<broker_root>/rooms/<room_id>/` (the per-repo broker root, default `$HOME/.c2c/repos/<fp>/broker` — see CLAUDE.md). Any agent can create a room by joining it. Members are tracked in `members.json`; `send_room` fans out to all current members.
+Rooms are N:N persistent channels stored as append-only `history.jsonl` files under `.git/c2c/mcp/rooms/<room_id>/`. Any agent can create a room by joining it. Members are tracked in `members.json`; `send_room` fans out to all current members.
 
 `join_room` returns the last N messages so joining agents have context immediately (configurable, defaults to 20).
 

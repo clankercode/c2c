@@ -39,20 +39,10 @@ cat .c2c/roles/qa.md
 **Option B — create a new role interactively:**
 
 ```bash
-# Run with no arguments to launch the interactive wizard:
-c2c agent new
-# Prompts for role name, description, role type (primary/subagent/system),
+c2c agent new my-role -i
+# Answers the role name, description, role type (primary/subagent/system),
 # compatible clients, required capabilities, and snippet selection.
-# Writes .c2c/roles/<name>.md with YAML frontmatter.
-
-# Or pass the name positionally and let prompts fill the rest:
-c2c agent new my-role
-```
-
-Non-interactive shortcut (provide all required fields as flags):
-
-```bash
-c2c agent new my-role -d "One-line description" -r subagent
+# Writes .c2c/roles/my-role.md with YAML frontmatter.
 ```
 
 **Option C — create from scratch (non-interactive):**
@@ -139,24 +129,16 @@ c2c roles validate 2>&1
 
 ## §3. Launch the agent
 
-### Managed launch (recommended)
+### tmux helper (recommended)
 
-Use `c2c start <client>` to launch a managed instance (it handles the
-deliver daemon, poker, and registration). Run inside a tmux pane if
-you want isolation — `c2c start` should not be invoked directly from
-agent bash tools (see CLAUDE.md "Development Rules"); from inside an
-existing tmux session you can drive it via
-`./scripts/c2c_tmux.py exec` / `enter`.
+Use `scripts/c2c_tmux.py` to launch in an isolated tmux pane:
 
 ```bash
 # OpenCode — uses compiled .opencode/agents/<name>.md
-c2c start opencode -n my-instance -a my-role
+python3 scripts/c2c_tmux.py launch opencode -n my-instance --new-window --extra "-a my-role"
 
-# Poll until the instance is registered + alive (replaces the old
-# `c2c_tmux.py wait-alive` helper, which no longer exists):
-until c2c list --json | jq -e '.[] | select(.name=="my-instance" and .alive)' >/dev/null 2>&1; do
-  sleep 1
-done
+# Wait for it to register
+python3 scripts/c2c_tmux.py wait-alive my-instance 2>/dev/null
 
 # Verify it's up
 c2c list | grep my-instance
@@ -213,8 +195,8 @@ Send a DM to verify bidirectional messaging works:
 # From another agent's session:
 c2c send my-instance "hello from $(c2c whoami | grep alias | cut -d: -f2)"
 
-# Or use tmux (drives keystrokes into the pane running the instance):
-./scripts/c2c_tmux.py send my-instance "ping"
+# Or use tmux:
+python3 scripts/c2c_tmux.py send my-instance "ping"
 ```
 
 ---
@@ -222,8 +204,9 @@ c2c send my-instance "hello from $(c2c whoami | grep alias | cut -d: -f2)"
 ## §5. Stop the instance
 
 ```bash
-# Clean stop (managed instances are stopped via `c2c stop`; the old
-# `c2c_tmux.py stop` subcommand no longer exists):
+# Clean stop (SIGTERM the outer loop, not the broker)
+python3 scripts/c2c_tmux.py stop my-instance
+# or
 c2c stop my-instance
 
 # Verify it's gone

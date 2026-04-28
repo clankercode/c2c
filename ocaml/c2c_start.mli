@@ -241,27 +241,6 @@ val repo_config_git_sign : unit -> bool
     `c2c git` injects SSH signing flags (-c gpg.format=ssh, etc.) for
     git commit signing. *)
 
-val builtin_swarm_restart_intro : string
-(** Default restart/kickoff intro template emitted into the agent's
-    transcript when [c2c start <client>] launches a fresh session.
-    Contains {name}, {alias}, {role} placeholders. #341. *)
-
-val swarm_config_restart_intro : unit -> string
-(** [swarm_config_restart_intro ()] reads the [swarm] [restart_intro] key
-    from .c2c/config.toml and returns the override (with \n / \t escapes
-    decoded), or [builtin_swarm_restart_intro] when the section/key is
-    absent or empty. Mirrors the #318 v3 thunk pattern
-    (swarm_config_coordinator_alias / swarm_config_social_room). #341. *)
-
-val read_toml_sections_with_prefix :
-  string -> (string * (string * string) list) list
-(** [read_toml_sections_with_prefix prefix] reads .c2c/config.toml and
-    returns [(subsection, key-value pairs)] for every section matching
-    [\[prefix\]] (returned with subsection ["default"]) or
-    [\[prefix.X\]] (returned with subsection ["X"]). #414 exposed for
-    [c2c_coord]'s `[author_aliases]` reader; older callers used the
-    private `*_from_path` form. *)
-
 val normalize_model_override_for_client :
   client:string -> string -> (string, string) result
 (** Normalize a user-supplied [--model] override for the target client.

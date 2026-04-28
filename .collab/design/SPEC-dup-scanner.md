@@ -4,7 +4,7 @@
 **Shipped:** SHAs 29e5232 (--min-cluster-size), 46e07d9 (--ignore flag)
 
 ## Goal
-Detect copy-pasted-with-tweaks code blocks across Python (.py) and OCaml (.ml/.mli) files in the c2c repo, wired into `scripts/c2c-doctor.sh`.
+Detect copy-pasted-with-tweaks code blocks across Python (.py) and OCaml (.ml/.mli) files in the c2c repo, wired into `c2c doctor`.
 
 ## Approach
 **Token-based rolling hash** (Rabin-Karp). Tokenize files (strip whitespace/comments), use sliding window over tokens, hash each window. Blocks with identical hashes across files = copy-paste relationship.
@@ -37,7 +37,7 @@ Detect copy-pasted-with-tweaks code blocks across Python (.py) and OCaml (.ml/.m
 - `--warn-only`: exit 0 always; warnings to stderr
 
 ### Integration with `c2c doctor`
-Add to `scripts/c2c-doctor.sh` (like `c2c-command-test-audit.py`):
+Add to `c2c-doctor.sh` (like `c2c-command-test-audit.py`):
 ```bash
 if [[ -x "$SCRIPT_DIR/c2c-dup-scanner.py" ]]; then
   "$SCRIPT_DIR/c2c-dup-scanner.py" --repo "$PWD" --summary --warn-only || true

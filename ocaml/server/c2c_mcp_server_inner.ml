@@ -37,7 +37,7 @@ let debug_log_path () =
     | _ -> "no-session"
   in
   let dir = Filename.concat base "mcp-debug" in
-  C2c_io.mkdir_p ~mode:0o700 dir;
+  (try ignore (Unix.mkdir dir 0o700) with Unix.Unix_error _ -> ());
   Filename.concat dir (sid ^ ".log")
 
 let debug_log msg =
@@ -79,18 +79,11 @@ let force_capabilities_from_env () =
       |> List.map C2c_capability.to_string
 
 let auto_drain_channel_enabled () =
-  (* Default is OFF (safe). #346: prior default was [channel_delivery_enabled ()] which
-     defaulted to ON, contradicting CLAUDE.md and the silent-eat hazard documented at
-     [.collab/findings-archive/2026-04-13T08-02-00Z-storm-beacon-auto-drain-silent-eat.md].
-     `c2c install` writes "0" explicitly for all clients; this default only matters for
-     fresh installs that skip the install step or for direct broker invocations. Auto-drain
-     remains gated by client capability declaration ([experimental.claude/channel]) even
-     when the env var is set to 1, so this default-flip is a true fail-safe. *)
   match Sys.getenv_opt "C2C_MCP_AUTO_DRAIN_CHANNEL" with
   | Some value ->
       let normalized = String.lowercase_ascii (String.trim value) in
       not (List.mem normalized [ "0"; "false"; "no"; "off" ])
-  | None -> false
+  | None -> channel_delivery_enabled ()
 
 let inbox_watcher_delay_seconds () =
   match Sys.getenv_opt "C2C_MCP_INBOX_WATCHER_DELAY" with
@@ -189,7 +182,7 @@ let start_inbox_watcher ~broker_root ~session_id ~emit_notification_fn
              let broker = C2c_mcp.Broker.create ~root:broker_root in
             let messages =
               if C2c_mcp.Broker.is_dnd broker ~session_id then []
-              else C2c_mcp.Broker.drain_inbox_push ~drained_by:"watcher" broker ~session_id
+              else C2c_mcp.Broker.drain_inbox_push broker ~session_id
             in
             let rec emit_all = function
               | [] -> Lwt.return_unit
@@ -293,7 +286,7 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
                 let broker = C2c_mcp.Broker.create ~root:broker_root in
                 let queued =
                   if C2c_mcp.Broker.is_dnd broker ~session_id:sid then []
-                  else C2c_mcp.Broker.drain_inbox_push ~drained_by:"watcher" broker ~session_id:sid
+                  else C2c_mcp.Broker.drain_inbox_push broker ~session_id:sid
                 in
                 let* () = emit_notifications ~broker_root ~session_id:sid queued in
                 (* Emit channel test notification if code exists *)
@@ -314,7 +307,7 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
             | true, true, None -> Lwt.return_unit
             | true, true, Some sid ->
                 let broker = C2c_mcp.Broker.create ~root:broker_root in
-                let queued = C2c_mcp.Broker.drain_inbox_push ~drained_by:"watcher" broker ~session_id:sid in
+                let queued = C2c_mcp.Broker.drain_inbox_push broker ~session_id:sid in
                 emit_notifications ~broker_root ~session_id:sid queued
           in
           loop ~broker_root ~negotiated_capabilities_ref)

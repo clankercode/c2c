@@ -29,7 +29,15 @@ let ( // ) = Filename.concat
 let instances_dir () =
   Filename.concat (Sys.getenv "HOME") (".local" // "share" // "c2c" // "instances")
 
-let mkdir_p path = C2c_utils.mkdir_p path
+let mkdir_p path =
+  let rec go p =
+    if Sys.file_exists p then ()
+    else begin
+      go (Filename.dirname p);
+      try Unix.mkdir p 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+    end
+  in
+  go path
 
 let json_to_file path json =
   let oc = open_out path in

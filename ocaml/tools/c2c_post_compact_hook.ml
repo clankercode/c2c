@@ -7,9 +7,8 @@
  * summary + role-file injection, no structured pointer to in-flight
  * work / recent findings / fresh shared memory / personal-log state.
  *
- * #317 fixes that gap. This module is invoked by Claude Code's
- * PostCompact hook (via scripts/c2c-postcompact.sh, through the
- * c2c-post-compact-hook binary). It emits a
+ * #317 fixes that gap. This binary is invoked by Claude Code's
+ * PostCompact hook (via scripts/c2c-postcompact.sh). It emits a
  * <c2c-context kind="post-compact"> block via additionalContext, with
  * priority-ordered content:
  *
@@ -26,10 +25,16 @@
  * compaction. We DO NOT use the cold-boot marker; that would conflate
  * the two lifecycle events.
  *
- * #349b: this file is the *library* form — pure-ish functions only,
- * no top-level effects. The companion `c2c_post_compact_hook_bin.ml`
- * holds the original `let () = ...` entry that resolves env vars +
- * broker registration, calls into here, and writes to stdout.
+ * Env vars (set by c2c start / MCP server entry):
+ *   C2C_MCP_SESSION_ID   — broker session id
+ *   C2C_MCP_BROKER_ROOT  — absolute path to broker root dir
+ *   C2C_REPO_ROOT        — repo root for findings/logs/memory lookup
+ *                          (set by wrapper script; falls back to git).
+ *
+ * Hard charcount ceiling (4 KB) on the emitted block — post-compact
+ * context budget is tight; keep small. Each section is allotted a
+ * sub-budget; the operational reflex reminder is verbatim, the rest
+ * is truncated to fit.
  *)
 
 let context_budget_chars = 4096
@@ -345,6 +350,15 @@ let memory_descriptions ~alias ~repo ~max_entries =
               else scan (i + 1)
             in scan 0
           in
+          let contains_substr s needle =
+            let nlen = String.length needle in
+            let slen = String.length s in
+            let rec scan i =
+              if i + nlen > slen then false
+              else if String.sub s i nlen = needle then true
+              else scan (i + 1)
+            in scan 0
+          in
           (* Scope the alias check to the line that starts with
              `shared_with` to avoid false positives where the alias
              appears in a `description:` or other field that mentions
@@ -389,24 +403,7 @@ let memory_descriptions ~alias ~repo ~max_entries =
     (String.concat "\n" (own_rows @ shared_with_me))
     memory_budget_chars
 
-(* Args bundles the inputs to the pure-ish payload builder so callers
-   (the binary, tests, future callers) can assemble inputs without
-   sharing global env state. *)
-module Args = struct
-  type t = {
-    alias : string;
-    repo : string;
-    ts : string;
-  }
-
-  let make ~alias ~repo ~ts = { alias; repo; ts }
-end
-
-(* Build the inner <c2c-context> block for the given Args. Pure-ish:
-   reads the filesystem under repo, but no env / no stdout / no exit.
-   Returns the same string the binary emits as additionalContext. *)
-let format_context_block (args : Args.t) =
-  let { Args.alias; repo; ts } = args in
+let emit_context_json ~alias ~ts ~repo =
   let reminder =
     truncate_to (operational_reflex_reminder ()) reminder_budget_chars
   in
@@ -425,22 +422,39 @@ let format_context_block (args : Args.t) =
        </c2c-context>\n"
       alias ts reminder slices findings memory logs
   in
-  truncate_to context_block context_budget_chars
-
-(* Wrap the context block in the PostCompact hookSpecificOutput
-   envelope and return the JSON string the binary writes to stdout. *)
-let format_post_compact_payload (args : Args.t) =
-  let context_block = format_context_block args in
-  Yojson.Safe.to_string (`Assoc [
+  let context_block = truncate_to context_block context_budget_chars in
+  let json = Yojson.Safe.to_string (`Assoc [
     ("hookSpecificOutput", `Assoc [
       ("hookEventName", `String "PostCompact");
       ("additionalContext", `String context_block)
     ])
   ])
-
-let emit_context_json ~alias ~ts ~repo =
-  let payload =
-    format_post_compact_payload (Args.make ~alias ~repo ~ts)
   in
-  print_string payload;
+  print_string json;
   print_newline ()
+
+let () =
+  let session_id =
+    try Sys.getenv "C2C_MCP_SESSION_ID" with Not_found -> ""
+  in
+  let broker_root =
+    try Sys.getenv "C2C_MCP_BROKER_ROOT" with Not_found -> ""
+  in
+  if session_id = "" || broker_root = "" then exit 0;
+
+  let alias =
+    try
+      let broker = C2c_mcp.Broker.create ~root:broker_root in
+      match C2c_mcp.Broker.list_registrations broker
+            |> List.find_opt (fun r -> r.C2c_mcp.session_id = session_id) with
+      | Some reg -> reg.C2c_mcp.alias
+      | None -> ""
+    with _ -> ""
+  in
+  if alias = "" then exit 0;
+
+  let repo = match repo_root () with Some r -> r | None -> exit 0 in
+  let ts = iso8601_now () in
+  (try emit_context_json ~alias ~ts ~repo with e ->
+    prerr_endline ("c2c_post_compact_hook: " ^ Printexc.to_string e));
+  exit 0
