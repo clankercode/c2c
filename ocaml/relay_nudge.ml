@@ -185,31 +185,34 @@ let nudge_tick ?(from_session_id="broker") ~broker ~cadence_minutes ~idle_minute
   let alive_no_pid = ref 0 in
   List.iter
     (fun (reg : registration) ->
-      (* Skip non-alive sessions *)
-      if not (Broker.registration_is_alive reg) then ()
-      else begin
-        incr alive_total;
-        (* #335: count pid=None as a sub-category of alive_total. These are
-           the zombie-row pattern that accumulates nudges indefinitely.
-           NOTE: this is a *count*, not a skip — pidless rows still pass
-           through to the DND/idle/nudge_session path under v1a (observe-
-           only). v2a is where they become actually skipped. *)
-        (if reg.pid = None then incr alive_no_pid);
-        if is_dnd_active reg then incr skipped_dnd
-        else
-          match reg.last_activity_ts with
-          | None -> ()  (* no activity data yet *)
-          | Some ts ->
-              let idle_s = now -. ts in
-              if idle_s >= idle_threshold_s then begin
-                incr idle_eligible;
-                match random_message messages with
-                | None -> ()
-                | Some msg ->
-                    if nudge_session ~broker ~from_session_id ~reg ~message:msg
-                    then incr sent
-              end else ()
-      end)
+      (* #335 v2a: nudges require strict Alive state.
+         Diverges from Broker.registration_is_alive (which collapses
+         Unknown→Alive for sweep/enqueue backward-compat per
+         c2c_mcp.ml:947-953). See
+         .collab/design/2026-04-28T04-16-00Z-stanza-coder-335-v2a-pidless-nudge-skip.md *)
+      match Broker.registration_liveness_state reg with
+      | Broker.Dead -> ()
+      | Broker.Unknown ->
+          (* Pidless or pid-mismatch row — count, don't send.
+             Replaces the v1a alive_no_pid site (which lived inside
+             the alive-true branch under the old predicate). *)
+          if reg.pid = None then incr alive_no_pid
+      | Broker.Alive ->
+          incr alive_total;
+          if is_dnd_active reg then incr skipped_dnd
+          else
+            match reg.last_activity_ts with
+            | None -> ()  (* no activity data yet *)
+            | Some ts ->
+                let idle_s = now -. ts in
+                if idle_s >= idle_threshold_s then begin
+                  incr idle_eligible;
+                  match random_message messages with
+                  | None -> ()
+                  | Some msg ->
+                      if nudge_session ~broker ~from_session_id ~reg ~message:msg
+                      then incr sent
+                end else ())
     regs;
   log_nudge_tick
     ~broker_root:(Broker.root broker)
