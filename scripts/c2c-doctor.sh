@@ -26,6 +26,20 @@ CLEAR_CHAR="–"
 # Capture health output once for both full and summary modes
 HEALTH_OUTPUT=$(c2c health 2>&1 || true)
 
+# Detect legacy-broker-root state via health --json (#352).
+# When `legacy_broker_warning: true`, surface migration prompt prominently in
+# both summary and full doctor output. Falls back to grepping the human
+# health text if --json fails or jq is unavailable.
+LEGACY_BROKER=0
+HEALTH_JSON=$(c2c health --json 2>/dev/null || true)
+if [[ -n "$HEALTH_JSON" ]] && command -v jq >/dev/null 2>&1; then
+  if [[ "$(echo "$HEALTH_JSON" | jq -r '.legacy_broker_warning' 2>/dev/null)" == "true" ]]; then
+    LEGACY_BROKER=1
+  fi
+elif echo "$HEALTH_OUTPUT" | grep -q "LEGACY"; then
+  LEGACY_BROKER=1
+fi
+
 # Detect if main working tree is on a non-master/main branch (agents sharing main tree)
 # Format: /path/to/main  <sha>  [<branch>]  — or [HEAD detached at <sha>]
 _wt_raw=$(git worktree list 2>/dev/null | sed -n '1p')
@@ -79,6 +93,17 @@ else
   echo ""
   echo "$HEALTH_OUTPUT"
   echo ""
+
+  if [[ $LEGACY_BROKER -eq 1 ]]; then
+    bold "=== broker migration ==="
+    echo ""
+    yellow "  ⚠ broker root is on the legacy .git/c2c/mcp layout"
+    echo ""
+    echo "  Run: c2c migrate-broker --dry-run     # audit what will move"
+    echo "  Then: c2c migrate-broker               # perform migration"
+    echo "  Migration is now safe (#360 landed 99d7b6cf)."
+    echo ""
+  fi
 
   bold "=== managed instances ==="
   echo ""

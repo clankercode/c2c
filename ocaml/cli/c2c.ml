@@ -1481,6 +1481,7 @@ let health_cmd =
   let supervisor_check = check_supervisor_config () in
   let relay_check = check_relay_http () in
   let plugin_checks = check_plugin_installs () in
+  let legacy_broker = C2c_broker_root_check.is_legacy_broker_root root in
   let output_mode = if json then Json else Human in
   match output_mode with
   | Json ->
@@ -1502,6 +1503,10 @@ let health_cmd =
       print_json
         (`Assoc
           [ ("broker_root", `String root)
+          ; ("legacy_broker_warning", `Bool legacy_broker)
+          ; ("migrate_hint",
+             if legacy_broker then `String "c2c migrate-broker --dry-run"
+             else `Null)
           ; ("root_exists", `Bool root_exists)
           ; ("registry_exists", `Bool registry_exists)
           ; ("dead_letter_exists", `Bool dead_letter_exists)
@@ -1518,7 +1523,10 @@ let health_cmd =
           ])
   | Human ->
       let icon = function `Green -> "✓" | `Yellow -> "⚠" | `Red -> "✗" | `Gray -> "–" in
-      Printf.printf "broker root:    %s\n" root;
+      if legacy_broker then
+        print_string (C2c_broker_root_check.legacy_broker_warning_text root)
+      else
+        Printf.printf "broker root:    %s\n" root;
       Printf.printf "root exists:    %s\n" (string_of_bool root_exists);
       Printf.printf "registry:       %s\n" (string_of_bool registry_exists);
       Printf.printf "dead-letter:    %s\n" (string_of_bool dead_letter_exists);

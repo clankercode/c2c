@@ -28,6 +28,12 @@ let xdg_state_home () =
     C2c_repo_fp.resolve_broker_root uses Digestif.SHA256 for repo fingerprint. *)
 let resolve_broker_root () = C2c_repo_fp.resolve_broker_root ()
 
+(** Re-exports of the pure legacy-broker-root detection helpers from
+    C2c_broker_root_check (#352). Kept here for call-site convenience;
+    the underlying module is dependency-free for unit-testability. *)
+let is_legacy_broker_root = C2c_broker_root_check.is_legacy_broker_root
+let legacy_broker_warning_text = C2c_broker_root_check.legacy_broker_warning_text
+
 (** [atomic_write_json path json] writes json to a temp file then atomically
     renames to [path], ensuring readers never see a partial write.
     The payload is followed by a newline. *)
