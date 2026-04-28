@@ -1056,59 +1056,6 @@ let legacy_broker_root () =
   | None -> ""
 
 let migrate_broker_run ~from_path ~to_path ~dry_run ~json =
-  let mkdir_p dir =
-    let rec loop d =
-      if d = "/" || d = "." || d = "" then ()
-      else if Sys.file_exists d then ()
-      else begin
-        loop (Filename.dirname d);
-        try Unix.mkdir d 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-      end
-    in
-    loop dir
-  in
-  let copy_file src dst =
-    if dry_run then Printf.printf "[DRY-RUN] would copy: %s -> %s\n" src dst
-    else begin
-      mkdir_p (Filename.dirname dst);
-      try
-        let buf_size = 65536 in
-        let buf = Bytes.create buf_size in
-        let src_ic = open_in src in
-        Fun.protect ~finally:(fun () -> close_in src_ic) @@ fun () ->
-        let dst_oc = open_out dst in
-        Fun.protect ~finally:(fun () -> close_out dst_oc) @@ fun () ->
-        let rec loop () =
-          let n = input src_ic buf 0 buf_size in
-          if n = 0 then () else begin
-            output dst_oc buf 0 n;
-            loop ()
-          end
-        in
-        loop ()
-      with e ->
-        if json then print_json (`Assoc [ "ok", `Bool false; "error", `String (Printexc.to_string e) ])
-        else Printf.eprintf "error copying %s: %s\n" src (Printexc.to_string e)
-    end
-  in
-  let rec copy_dir src dst acc =
-    if not (Sys.file_exists src) then acc
-    else
-      try
-        mkdir_p dst;
-        let entries = Array.to_list (Sys.readdir src) |> List.filter (fun f -> not (f = "." || f = "..")) in
-        List.fold_right (fun f acc' ->
-          let s = src // f in
-          let d = dst // f in
-          if Sys.is_directory s then
-            copy_dir s d acc'  (* recurse into subdirectory *)
-          else begin
-            copy_file s d;
-            d :: acc'
-          end
-        ) entries acc
-      with _ -> acc
-  in
   let from = Option.value from_path ~default:(legacy_broker_root ()) in
   let to_ = Option.value to_path ~default:(resolve_broker_root ()) in
   if not (Sys.file_exists from) then begin
@@ -1121,6 +1068,11 @@ let migrate_broker_run ~from_path ~to_path ~dry_run ~json =
     else Printf.eprintf "error: from and to paths are the same\n";
     exit 1
   end;
+  let buf = Buffer.create 4096 in
+  let print_line s =
+    if json then begin Buffer.add_string buf s; Buffer.add_char buf '\n' end
+    else print_endline s
+  in
   if not json then begin
     Printf.printf "Migrating broker data:\n";
     Printf.printf "  from: %s\n" from;
@@ -1128,29 +1080,34 @@ let migrate_broker_run ~from_path ~to_path ~dry_run ~json =
     if dry_run then Printf.printf "  mode: DRY RUN (no files will be written)\n"
     else Printf.printf "  mode: LIVE (files will be written)\n"
   end;
-  (* Copy individual files *)
-  List.iter (fun f ->
-    let src = from // f in
-    if Sys.file_exists src then copy_file src (to_ // f)
-  ) ["registry.json"; "registry.json.lock"; "deaths.jsonl"];
-  (* Copy subdirs: inboxes, memory, archive *)
-  let _ = copy_dir (from // "inbox.json.d") (to_ // "inbox.json.d") [] in
-  let _ = copy_dir (from // "memory") (to_ // "memory") [] in
-  let _ = copy_dir (from // "archive") (to_ // "archive") [] in
-  if not dry_run then begin
-    mkdir_p to_;
-    (* Verify by checking for key files at destination *)
-    let verified = Sys.file_exists (to_ // "registry.json") in
-    if json then
-      if verified then print_json (`Assoc ["ok", `Bool true; "from", `String from; "to", `String to_; "dry_run", `Bool false])
-      else print_json (`Assoc ["ok", `Bool false; "error", `String "migration completed but registry.json not found at destination"; "from", `String from; "to", `String to_])
-    else
-      if verified then Printf.printf "\nMigration complete. Verify: ls %s\n" to_
-      else Printf.eprintf "\nMigration completed but registry.json not found at destination.\n"
-  end else begin
-    if json then print_json (`Assoc ["ok", `Bool true; "from", `String from; "to", `String to_; "dry_run", `Bool dry_run])
-    else Printf.printf "\nDRY RUN complete. Run without --dry-run to execute.\n"
-  end
+  let outcome =
+    C2c_migrate.run ~src_root:from ~dest_root:to_ ~dry_run ~print_line
+  in
+  if json then begin
+    let assoc =
+      [ "ok", `Bool outcome.ok
+      ; "from", `String from
+      ; "to", `String to_
+      ; "dry_run", `Bool dry_run
+      ; "copied", `List (List.map (fun s -> `String s) outcome.copied)
+      ; "skipped_already_at_canonical",
+          `List (List.map (fun s -> `String s) outcome.skipped_already)
+      ; "denied_process_local",
+          `List (List.map (fun (p, r) ->
+            `Assoc ["path", `String p; "reason", `String r]) outcome.denied)
+      ; "unknown",
+          `List (List.map (fun (p, r) ->
+            `Assoc ["path", `String p; "reason", `String r]) outcome.unknown)
+      ; "log", `String (Buffer.contents buf)
+      ]
+    in
+    let assoc = match outcome.error with
+      | Some e -> ("error", `String e) :: assoc
+      | None -> assoc
+    in
+    print_json (`Assoc assoc)
+  end;
+  if not outcome.ok then exit 1
 
 let migrate_broker_cmd =
   let open Cmdliner in
