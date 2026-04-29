@@ -1629,6 +1629,56 @@ let tmux_paste_and_submit loc payload =
     (try Sys.remove tmp with _ -> ());
     raise e
 
+(* #399: Auto-answer the Claude Code development-channel consent prompt.
+   After spawning Claude Code with --dangerously-load-development-channels server:c2c,
+   the Claude Code binary shows an interactive consent prompt:
+     "I am using this for local development [1]"
+   We detect this via tmux capture-pane and auto-press 1 to proceed,
+   so `c2c restart claude` can run unattended without a human keypress.
+   Timeout after 10s so we don't wedge on non-channel prompts (e.g. rate limits). *)
+
+let tmux_capture_pane (loc : string) : string option =
+  (* Capture the visible scrollback buffer of a tmux pane as a single string.
+     tmux capture-pane -t <loc> -p  dumps raw pane content (including ANSI
+     escape sequences from the Claude startup banner). We only care about
+     whether the consent needle is present, so exact formatting doesn't matter. *)
+  capture_process "tmux" [ "capture-pane"; "-t"; loc; "-p" ]
+
+let auto_answer_dev_channel_prompt ~(tmux_location : string) : bool =
+  (* Returns true if the prompt was detected and answered, false if not found within timeout.
+     The caller logs appropriately; this function only returns the detection outcome. *)
+  let needle = "I am using this for local development" in
+  let timeout_s = 10.0 in
+  let start = Unix.gettimeofday () in
+  let rec poll () =
+    let elapsed = Unix.gettimeofday () -. start in
+    if elapsed >= timeout_s then (
+      (* Timeout — consent prompt never appeared. Leave it visible for the user. *)
+      false
+    ) else (
+      match tmux_capture_pane tmux_location with
+      | Some content ->
+          if (try ignore (Str.search_forward (Str.regexp_string needle) content 0); true with Not_found -> false) then (
+            (* Prompt detected — send "1" to select the first option (confirm). *)
+            let ok = run_process "tmux" [ "send-keys"; "-t"; tmux_location; "1" ] in
+            if ok then begin
+              (* Send Enter to confirm the selection. *)
+              ignore (tmux_send_enter tmux_location);
+              true
+            end else
+              false
+          ) else (
+            (* Not yet present — short sleep and retry. *)
+            Unix.sleepf 0.2;
+            poll ()
+          )
+      | None ->
+          (* tmux capture failed — bail and let the user handle it manually. *)
+          false
+    )
+  in
+  poll ()
+
 let write_tmux_target_info name (info : tmux_target_info) =
   let path = tmux_info_path name in
   let oc = open_out path in
@@ -2075,7 +2125,16 @@ let run_tmux_loop ~(name : string) ~(tmux_location : string)
       Printf.eprintf "error: failed to send startup command to tmux target %s\n%!"
         target_info.tmux_location;
       exit (cleanup_and_exit 1)
-    end
+    end;
+    (* #399: after launching, poll for the Claude dev-channel consent prompt
+       and auto-answer it so `c2c start tmux` / `c2c restart claude` work
+       unattended. The prompt appears after the MCP handshake begins.
+       Give Claude a moment to start up before polling. *)
+    Unix.sleepf 1.0;
+    if auto_answer_dev_channel_prompt ~tmux_location:target_info.tmux_location then
+      Printf.printf "[c2c-start/%s] dev-channel consent auto-answered\n%!" name
+    else
+      Printf.printf "[c2c-start/%s] dev-channel consent not detected (normal if not first launch)\n%!" name
   end;
   let rec loop () =
     match validate_tmux_target target_info.tmux_location with
