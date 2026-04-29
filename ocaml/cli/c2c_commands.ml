@@ -25,6 +25,9 @@ let command_tier_map () : (string * safety) list =
   ; "peek-inbox", Tier1
   ; "await-reply", Tier1
   ; "approval-reply", Tier1
+  ; "approval-pending-write", Tier1
+  ; "approval-list", Tier1
+  ; "approval-show", Tier1
   ; "send-all", Tier1
   ; "sweep", Tier1
   ; "sweep-dryrun", Tier1

@@ -151,6 +151,66 @@ let test_atomic_write_perms () =
       let st = Unix.stat path in
       Alcotest.(check int) "0600 file mode" 0o600 (st.st_perm land 0o777))
 
+(* slice 5b additions *)
+
+let test_list_pending_tokens () =
+  with_tmp_dir (fun root ->
+      C2c_approval_paths.ensure_dirs ~override_root:root ();
+      Alcotest.(check (list string))
+        "empty start" []
+        (C2c_approval_paths.list_pending_tokens ~override_root:root ());
+      let mk t =
+        let pl =
+          C2c_approval_paths.make_pending_payload
+            ~token:t ~agent_alias:"a" ~tool_name:"Shell"
+            ~tool_input:"{}" ~timeout_at:0 ~reviewer_alias:"r"
+        in
+        ignore
+          (C2c_approval_paths.write_pending ~override_root:root
+             ~token:t ~payload:pl ())
+      in
+      mk "ka_a";
+      mk "ka_b";
+      mk "ka_c";
+      Alcotest.(check (list string))
+        "three sorted"
+        [ "ka_a"; "ka_b"; "ka_c" ]
+        (C2c_approval_paths.list_pending_tokens ~override_root:root ()))
+
+let test_has_verdict () =
+  with_tmp_dir (fun root ->
+      C2c_approval_paths.ensure_dirs ~override_root:root ();
+      Alcotest.(check bool) "no verdict initially" false
+        (C2c_approval_paths.has_verdict ~override_root:root ~token:"ka_x" ());
+      let _ =
+        C2c_approval_paths.write_verdict ~override_root:root ~token:"ka_x"
+          ~payload:"{\"verdict\":\"allow\"}" ()
+      in
+      Alcotest.(check bool) "verdict present after write" true
+        (C2c_approval_paths.has_verdict ~override_root:root ~token:"ka_x" ()))
+
+let test_read_pending () =
+  with_tmp_dir (fun root ->
+      C2c_approval_paths.ensure_dirs ~override_root:root ();
+      Alcotest.(check (option string))
+        "missing file -> None" None
+        (C2c_approval_paths.read_pending ~override_root:root
+           ~token:"ka_unknown" ());
+      let pl =
+        C2c_approval_paths.make_pending_payload
+          ~token:"ka_y" ~agent_alias:"k" ~tool_name:"Shell"
+          ~tool_input:"{\"x\":1}" ~timeout_at:42 ~reviewer_alias:"r"
+      in
+      let _ =
+        C2c_approval_paths.write_pending ~override_root:root
+          ~token:"ka_y" ~payload:pl ()
+      in
+      match
+        C2c_approval_paths.read_pending ~override_root:root ~token:"ka_y" ()
+      with
+      | None -> Alcotest.fail "read_pending None after write"
+      | Some s -> Alcotest.(check string) "round-trip" pl s)
+
 let () =
   Alcotest.run "c2c_approval_paths"
     [
@@ -168,5 +228,9 @@ let () =
           Alcotest.test_case "cleanup" `Quick test_cleanup;
           Alcotest.test_case "atomic write perms" `Quick
             test_atomic_write_perms;
+          Alcotest.test_case "list_pending_tokens" `Quick
+            test_list_pending_tokens;
+          Alcotest.test_case "has_verdict" `Quick test_has_verdict;
+          Alcotest.test_case "read_pending" `Quick test_read_pending;
         ] );
     ]

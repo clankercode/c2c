@@ -88,6 +88,18 @@ else
   TOKEN="ka_${payload_hash}_$(date +%s%N)"
 fi
 
+# [#490 slice 5b] Record pending-approval state to the file-based
+# side-channel BEFORE sending the awareness DM. Reviewers can then
+# `c2c approval-list` / `c2c approval-show <token>` even before reading
+# the DM. Failure here is non-fatal — the DM still carries the token,
+# and reviewers can issue `c2c approval-reply` from that.
+"$C2C_BIN" approval-pending-write \
+  --token "$TOKEN" \
+  --tool-name "$tool_name" \
+  --tool-input "$tool_input" \
+  --reviewer "$REVIEWER" \
+  --timeout "$TIMEOUT" >/dev/null 2>&1 || true
+
 # Build the DM body the reviewer sees. Slice-5a preferred reply path is
 # `c2c approval-reply <token> {allow|deny [because <reason>]}`. The
 # legacy raw-DM path (c2c send <kimi-alias> "<TOKEN> allow") still works

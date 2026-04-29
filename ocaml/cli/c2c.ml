@@ -5199,6 +5199,152 @@ let approval_reply_cmd =
       verdict_lc token path reviewer_alias;
   exit 0
 
+(* --- subcommand: approval-pending-write ------------------------------------ *)
+
+(* [#490 slice 5b] Bash-callable companion to approval-reply: lets the
+   embedded kimi PreToolUse hook record what's pending before the
+   awareness DM goes out. Reviewers can then run `c2c approval-list`
+   independently of receiving the DM. Failure here is non-fatal in the
+   hook — the legacy DM path still delivers the awareness body. *)
+let approval_pending_write_cmd =
+  let token =
+    Cmdliner.Arg.(required & opt (some string) None
+                  & info [ "token"; "t" ] ~docv:"TOKEN" ~doc:"Approval token (e.g. ka_abc123).")
+  in
+  let tool_name =
+    Cmdliner.Arg.(value & opt string ""
+                  & info [ "tool-name" ] ~docv:"NAME" ~doc:"Tool kimi was about to call (e.g. Shell).")
+  in
+  let tool_input =
+    Cmdliner.Arg.(value & opt string "{}"
+                  & info [ "tool-input" ] ~docv:"JSON"
+                      ~doc:"Tool-input JSON (verbatim; pass `jq -c .` output).")
+  in
+  let reviewer =
+    Cmdliner.Arg.(value & opt string "coordinator1"
+                  & info [ "reviewer" ] ~docv:"ALIAS" ~doc:"Reviewer alias.")
+  in
+  let timeout =
+    Cmdliner.Arg.(value & opt int 120
+                  & info [ "timeout" ] ~docv:"SECONDS" ~doc:"Hook fall-closed timeout.")
+  in
+  let agent_alias_flag =
+    Cmdliner.Arg.(value & opt (some string) None
+                  & info [ "agent-alias" ] ~docv:"ALIAS"
+                      ~doc:"Agent (kimi) alias whose hook fired. Defaults to current session alias.")
+  in
+  let json =
+    Cmdliner.Arg.(value & flag & info [ "json" ] ~doc:"Machine-readable output.")
+  in
+  let+ token = token
+  and+ tool_name = tool_name
+  and+ tool_input = tool_input
+  and+ reviewer = reviewer
+  and+ timeout = timeout
+  and+ agent_alias_flag = agent_alias_flag
+  and+ json = json in
+  let agent_alias =
+    match agent_alias_flag with
+    | Some a -> a
+    | None ->
+        (try
+           let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+           let session_id = resolve_session_id_for_inbox broker in
+           let regs = C2c_mcp.Broker.list_registrations broker in
+           match
+             List.find_opt
+               (fun (r : C2c_mcp.registration) -> r.session_id = session_id)
+               regs
+           with
+           | Some r -> r.alias
+           | None -> "unknown"
+         with _ -> "unknown")
+  in
+  C2c_approval_paths.ensure_dirs ();
+  let timeout_at = int_of_float (Unix.gettimeofday ()) + timeout in
+  let payload =
+    C2c_approval_paths.make_pending_payload
+      ~token ~agent_alias ~tool_name ~tool_input ~timeout_at
+      ~reviewer_alias:reviewer
+  in
+  let path =
+    try C2c_approval_paths.write_pending ~token ~payload () with
+    | exn ->
+        Printf.eprintf "approval-pending-write: %s\n%!" (Printexc.to_string exn);
+        exit 2
+  in
+  if json then
+    Printf.printf
+      "{\"ok\":true,\"token\":\"%s\",\"path\":\"%s\",\"agent_alias\":\"%s\",\"reviewer\":\"%s\",\"timeout_at\":%d}\n%!"
+      token path agent_alias reviewer timeout_at
+  else
+    Printf.printf
+      "approval-pending-write: %s recorded (file=%s, agent=%s, reviewer=%s, timeout_at=%d)\n%!"
+      token path agent_alias reviewer timeout_at;
+  exit 0
+
+(* --- subcommand: approval-list -------------------------------------------- *)
+
+(* [#490 slice 5b] List currently-pending approval requests. Reviewers
+   can run this to see what's waiting on them across all hooks in this
+   repo, even before reading the awareness DM. *)
+let approval_list_cmd =
+  let json =
+    Cmdliner.Arg.(value & flag & info [ "json" ] ~doc:"Machine-readable JSON array.")
+  in
+  let+ json = json in
+  let tokens = C2c_approval_paths.list_pending_tokens () in
+  if json then begin
+    let items =
+      List.map (fun tok ->
+        let payload =
+          match C2c_approval_paths.read_pending ~token:tok () with
+          | Some s -> s
+          | None -> "null"
+        in
+        let has_verdict = C2c_approval_paths.has_verdict ~token:tok () in
+        Printf.sprintf
+          "{\"token\":\"%s\",\"has_verdict\":%b,\"pending\":%s}"
+          tok has_verdict
+          (if payload = "" then "null" else String.trim payload)
+      ) tokens
+    in
+    Printf.printf "[%s]\n%!" (String.concat "," items);
+    exit 0
+  end else begin
+    if tokens = [] then
+      print_endline "(no pending approvals)"
+    else begin
+      Printf.printf "%-40s  %-7s\n" "TOKEN" "VERDICT";
+      List.iter (fun tok ->
+        let v = if C2c_approval_paths.has_verdict ~token:tok () then "ready" else "wait" in
+        Printf.printf "%-40s  %-7s\n" tok v
+      ) tokens
+    end;
+    exit 0
+  end
+
+(* --- subcommand: approval-show -------------------------------------------- *)
+
+(* [#490 slice 5b] Show the full pending-record JSON for one token.
+   Useful when the reviewer wants to inspect tool-input details before
+   issuing approval-reply. Exit 1 if not found. *)
+let approval_show_cmd =
+  let token =
+    Cmdliner.Arg.(required & pos 0 (some string) None
+                  & info [] ~docv:"TOKEN" ~doc:"Approval token.")
+  in
+  let+ token = token in
+  match C2c_approval_paths.read_pending ~token () with
+  | None ->
+      Printf.eprintf "approval-show: no pending record for %s\n%!" token;
+      exit 1
+  | Some s ->
+      print_string s;
+      if String.length s = 0 || s.[String.length s - 1] <> '\n' then
+        print_newline ();
+      exit 0
+
 (* --- subcommand: setcap --------------------------------------------------- *)
 
 let setcap_cmd =
@@ -5228,6 +5374,9 @@ let setcap = Cmdliner.Cmd.v (Cmdliner.Cmd.info "setcap"
 let peek_inbox = Cmdliner.Cmd.v (Cmdliner.Cmd.info "peek-inbox" ~doc:"Peek at your inbox without draining.") peek_inbox_cmd
 let await_reply = Cmdliner.Cmd.v (Cmdliner.Cmd.info "await-reply" ~doc:"Block until a token-tagged verdict (allow/deny) arrives in the inbox; print verdict on stdout and exit 0, exit 1 on timeout.") await_reply_cmd
 let approval_reply = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approval-reply" ~doc:"Reply to a pending PreToolUse approval request (#142/#490). Writes a verdict file the kimi hook is watching, avoiding the broker-DM drain race.") approval_reply_cmd
+let approval_pending_write = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approval-pending-write" ~doc:"Bash-callable helper used by the kimi PreToolUse hook to record pending-approval state.") approval_pending_write_cmd
+let approval_list = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approval-list" ~doc:"List currently-pending PreToolUse approvals (token + verdict-ready flag).") approval_list_cmd
+let approval_show = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approval-show" ~doc:"Print the full pending-record JSON for one approval token.") approval_show_cmd
 let send_all = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send-all" ~doc:"Broadcast a message to all peers.") send_all_cmd
 let sweep = Cmdliner.Cmd.v (Cmdliner.Cmd.info "sweep" ~doc:"Remove dead registrations and orphan inboxes.") sweep_cmd
 let history = Cmdliner.Cmd.v (Cmdliner.Cmd.info "history" ~doc:"Show archived inbox messages.") history_cmd
@@ -10650,7 +10799,7 @@ let () =
   let is_agent = is_agent_session () in
   let tier_grouped_man = commands_man is_agent in
   let all_cmds =
-    [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; send_all; sweep
+    [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; approval_pending_write; approval_list; approval_show; send_all; sweep
     ; sweep_dryrun; migrate_broker; history; health; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test; init; install; completion_cmd
     ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; stats; C2c_sitrep.sitrep_group; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]

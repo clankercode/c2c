@@ -95,10 +95,8 @@ let write_verdict ?override_root ~token ~payload () =
   atomic_write_string path payload;
   path
 
-(** [read_verdict ~token] returns Some contents if the verdict file
-    exists, None otherwise. The hook polls this in await-reply. *)
-let read_verdict ?override_root ~token () =
-  let path = verdict_file ?override_root ~token () in
+(** Generic file-read helper used by both verdict and pending readers. *)
+let read_file_opt path =
   if not (Sys.file_exists path) then None
   else
     try
@@ -109,6 +107,37 @@ let read_verdict ?override_root ~token () =
           let len = in_channel_length ic in
           Some (really_input_string ic len))
     with _ -> None
+
+(** [read_verdict ~token] returns Some contents if the verdict file
+    exists, None otherwise. The hook polls this in await-reply. *)
+let read_verdict ?override_root ~token () =
+  read_file_opt (verdict_file ?override_root ~token ())
+
+(** [read_pending ~token] returns Some contents if the pending file
+    exists, None otherwise. *)
+let read_pending ?override_root ~token () =
+  read_file_opt (pending_file ?override_root ~token ())
+
+(** List the tokens currently in the approval-pending dir. Tokens are
+    derived from filenames by stripping the `.json` suffix. Returns
+    an empty list if the dir is missing or unreadable. *)
+let list_pending_tokens ?override_root () =
+  let dir = pending_dir ?override_root () in
+  if not (Sys.file_exists dir) then []
+  else
+    try
+      Sys.readdir dir
+      |> Array.to_list
+      |> List.filter_map (fun name ->
+          if Filename.check_suffix name ".json"
+          then Some (Filename.chop_suffix name ".json")
+          else None)
+      |> List.sort compare
+    with _ -> []
+
+(** True iff a verdict file exists for [token] (sibling of pending). *)
+let has_verdict ?override_root ~token () =
+  Sys.file_exists (verdict_file ?override_root ~token ())
 
 (** Best-effort cleanup of the pending+verdict files for a token. Used
     after await-reply has consumed the verdict. *)
