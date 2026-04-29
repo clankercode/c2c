@@ -2333,17 +2333,32 @@ let build_env ?(broker_root_override : string option = None)
     | _ -> []
   in
   let additions =
+    let alias = Option.value alias_override ~default:name in
     let base = [
     "C2C_WRAPPER_SELF", "1";  (* marks the wrapper process itself; bash subshells of the managed client don't inherit this *)
     "C2C_MCP_SESSION_ID", name;
     "C2C_INSTANCE_NAME", name;
-    "C2C_MCP_AUTO_REGISTER_ALIAS", Option.value alias_override ~default:name;
+    "C2C_MCP_AUTO_REGISTER_ALIAS", alias;
     "C2C_MCP_BROKER_ROOT", br;
     "C2C_MCP_AUTO_DRAIN_CHANNEL", "0";
     (* Managed sessions opt in to experimental channel-delivery. No-op on
        clients that don't declare experimental.claude/channel in initialize,
        so harmless where unsupported. *)
     "C2C_MCP_CHANNEL_DELIVERY", "1";
+    (* Per-instance git author identity (#467). Sets the standard git
+       env-var overrides so any git invocation from inside the managed
+       session attributes commits to <alias>, regardless of whether the
+       c2c-git shim is reachable on PATH. Belt-and-suspenders alongside
+       the shim (#462): the shim handles `git commit` via PATH lookup,
+       these env vars handle the case where the shim is bypassed (e.g.
+       /usr/bin/git, kimi's bash tool with stripped PATH, sandboxed
+       subprocess). Closes the slate-coder author misattribution that
+       affected every kimi self-authored commit before the notifier
+       slice (`b6455d8e`, `cb740ecf`, `664c2281`). *)
+    "GIT_AUTHOR_NAME", alias;
+    "GIT_AUTHOR_EMAIL", alias ^ "@c2c.im";
+    "GIT_COMMITTER_NAME", alias;
+    "GIT_COMMITTER_EMAIL", alias ^ "@c2c.im";
     ] in
     let base = base @ auto_join_base in
     let base = base @ match reply_to_override with
