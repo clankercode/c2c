@@ -65,6 +65,8 @@ they don't regress silently.
 | `coord_fallthrough_fired` | MED | coord-backup escalation | #437 / coord-backup-fallthrough |
 | `nudge_enqueue` | LOW | nudge diagnostic | #335 |
 | `nudge_tick` | LOW | nudge diagnostic | #335 |
+| `relay_pin_delete` | MED | operator pin management | #432 Slice D |
+| `relay_pin_rotate` | MED | operator pin management | #432 Slice D |
 
 ---
 
@@ -667,11 +669,70 @@ entries here.
   if rates spike.
 - **MED** — flow audit: `dead_letter_write`, `relay_e2e_pin_first_seen`,
   `send_memory_handoff`, `pending_open`, `pending_check`,
-  `coord_fallthrough_fired`. Forensic
-  use; correlate by `perm_id_hash` / `from_alias` / `msg_ts`.
+  `coord_fallthrough_fired`, `relay_pin_delete`, `relay_pin_rotate`.
+  Forensic use; correlate by `perm_id_hash` / `from_alias` / `msg_ts`.
 - **LOW** — diagnostic counters: `alias_resolve_multi_match`,
   `nudge_enqueue`, `nudge_tick`. Inspect for capacity planning,
   anomaly baseline.
+
+### `relay_pin_delete`
+
+**Severity**: MED
+
+**Shape**:
+
+```json
+{
+  "ts": <float>,
+  "event": "relay_pin_delete",
+  "alias": "<target-alias>",
+  "axes": ["ed25519", "x25519", "min_observed_envelope_version"]
+}
+```
+
+**Fires when**: operator explicitly deletes one or more TOFU pins for an
+alias via `c2c relay-pins delete --alias <a> [--ed25519] [--x25519] [--min-version] [--all]`.
+
+**File**: `ocaml/c2c_mcp.ml` (module `Broker`).
+
+**Operational meaning**: operator-initiated pin clear. Use `c2c doctor relay-pin-status`
+to verify the pins were actually removed. The next first-contact from that alias
+will be treated as a fresh TOFU event (new pin accepted and logged).
+
+**Cross-link**: `relay_pin_rotate` (clears all axes at once + bumps epoch).
+
+---
+
+### `relay_pin_rotate`
+
+**Severity**: MED
+
+**Shape**:
+
+```json
+{
+  "ts": <float>,
+  "event": "relay_pin_rotate",
+  "alias": "<target-alias>",
+  "rotation_epoch": <int>
+}
+```
+
+**Fires when**: operator rotates all TOFU pins for an alias via
+`c2c relay-pins rotate --alias <a>`. Clears ed25519, x25519, and
+min-observed-envelope-version pins; increments the per-alias rotation-epoch
+counter (in-memory only, not persisted).
+
+**File**: `ocaml/c2c_mcp.ml` (module `Broker`).
+
+**Operational meaning**: operator-initiated full pin reset. Unlike a targeted
+delete, rotate also bumps the epoch so the broker can distinguish
+"intentional post-rotate first-contact" from an unexpected first-contact
+(MITM) within a broker lifetime. The epoch is reset to 0 on broker restart.
+
+**Cross-link**: `relay_pin_delete` (targeted single-axis deletion).
+
+---
 
 ## Operator queries
 

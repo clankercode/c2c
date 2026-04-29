@@ -1122,6 +1122,12 @@ module Broker = struct
       top-level key. Default 1 on first contact (open); monotonic-increase
       via [bump_min_observed_version] after every successful verify. *)
   let min_observed_envelope_versions : (string, int) Hashtbl.t = Hashtbl.create 64
+  (** Per-alias rotation-epoch counter. Not persisted — reset on broker
+      restart. Operator can re-emit rotate after restart if needed.
+      Epoch is incremented on each rotate, allowing the broker to
+      distinguish "first contact after intentional rotate" from an
+      unexpected first contact (MITM) within a broker lifetime. *)
+  let rotation_epochs : (string, int) Hashtbl.t = Hashtbl.create 64
 
   (** Rehydrate both Hashtbls from disk. Caller MUST hold
       [with_relay_pins_lock].
@@ -1221,6 +1227,81 @@ module Broker = struct
           ]
       in
       write_json_file (relay_pins_path ()) json
+
+  (** Best-effort broker.log audit helpers. Always succeed —
+     audit failures never block the mutation path. *)
+  let log_relay_pin_delete ~broker_root ~alias ~axes =
+    (try
+       let path = Filename.concat broker_root "broker.log" in
+       let axes_json = `List (List.map (fun a -> `String a) axes) in
+       let line =
+         `Assoc
+           [ ("ts", `Float (Unix.gettimeofday ()))
+           ; ("event", `String "relay_pin_delete")
+           ; ("alias", `String alias)
+           ; ("axes", axes_json)
+           ]
+         |> Yojson.Safe.to_string
+       in
+        let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
+        (try output_string oc (line ^ "\n"); close_out oc
+         with _ -> close_out_noerr oc)
+      with _ -> ())
+
+  let log_relay_pin_rotate ~broker_root ~alias ~epoch =
+    (try
+       let path = Filename.concat broker_root "broker.log" in
+       let line =
+         `Assoc
+           [ ("ts", `Float (Unix.gettimeofday ()))
+           ; ("event", `String "relay_pin_rotate")
+           ; ("alias", `String alias)
+           ; ("rotation_epoch", `Int epoch)
+           ]
+         |> Yojson.Safe.to_string
+       in
+        let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
+        (try output_string oc (line ^ "\n"); close_out oc
+         with _ -> close_out_noerr oc)
+      with _ -> ())
+
+  (** [relay_pin_delete ~broker_root ~alias ~axes] removes the specified
+      pin axes for [alias] from the in-memory Hashtbls and persists the
+      change to [relay_pins.json]. [axes] is a list containing any subset
+      of ["ed25519"; "x25519"; "min_observed_envelope_version"]; an empty
+      list is a no-op. Thread-safe via [with_relay_pins_lock]. *)
+  let relay_pin_delete ~broker_root ~(alias : string) ~(axes : string list) =
+    if axes = [] then () else
+    with_relay_pins_lock (fun () ->
+      load_relay_pins_from_disk ();
+      (if List.mem "ed25519" axes then
+         Hashtbl.remove known_keys_ed25519 alias);
+      (if List.mem "x25519" axes then
+         Hashtbl.remove known_keys_x25519 alias);
+      (if List.mem "min_observed_envelope_version" axes then
+         Hashtbl.remove min_observed_envelope_versions alias);
+      save_relay_pins_to_disk ();
+      log_relay_pin_delete ~broker_root ~alias ~axes)
+
+  (** [relay_pin_rotate ~broker_root ~alias] clears all three pin types
+      for [alias] and increments the per-alias rotation-epoch counter.
+      The epoch is in-memory only (not persisted) — reset on broker restart.
+      Emits [relay_pin_rotate] audit event to broker.log. Thread-safe via
+      [with_relay_pins_lock]. *)
+  let relay_pin_rotate ~broker_root ~(alias : string) =
+    let epoch =
+      with_relay_pins_lock (fun () ->
+        load_relay_pins_from_disk ();
+        Hashtbl.remove known_keys_ed25519 alias;
+        Hashtbl.remove known_keys_x25519 alias;
+        Hashtbl.remove min_observed_envelope_versions alias;
+        let new_epoch = 1 + (try Hashtbl.find rotation_epochs alias with Not_found -> 0) in
+        Hashtbl.replace rotation_epochs alias new_epoch;
+        save_relay_pins_to_disk ();
+        new_epoch)
+    in
+    log_relay_pin_rotate ~broker_root ~alias ~epoch;
+    epoch
 
   let create ~root =
     let t = { root } in

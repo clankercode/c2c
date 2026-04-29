@@ -202,6 +202,19 @@ module Broker : sig
   val get_min_observed_version : string -> int option
   val get_relay_pins_root : unit -> string option
 
+  (** [relay_pin_delete ~broker_root ~alias ~axes] removes the specified pin
+      axes for [alias] from the in-memory Hashtbls and persists the change
+      to [relay_pins.json]. [axes] is a list containing any subset of
+      ["ed25519"; "x25519"; "min_observed_envelope_version"].
+      Thread-safe via [with_relay_pins_lock]. *)
+  val relay_pin_delete : broker_root:string -> alias:string -> axes:string list -> unit
+
+  (** [relay_pin_rotate ~broker_root ~alias] clears all three pin types
+      for [alias] and increments the per-alias rotation-epoch counter.
+      The epoch is in-memory only (not persisted) — reset on broker restart.
+      Thread-safe via [with_relay_pins_lock]. Returns the new epoch. *)
+  val relay_pin_rotate : broker_root:string -> alias:string -> int
+
   val compute_canonical_alias : alias:string -> broker_root:string -> string
   (** [compute_canonical_alias ~alias ~broker_root] returns "<alias>#<repo>@<host>"
       where repo is derived from broker_root path and host is the short hostname. *)
