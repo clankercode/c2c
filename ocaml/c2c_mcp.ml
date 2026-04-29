@@ -710,6 +710,32 @@ module Broker = struct
 
   let pending_permissions_path t = Filename.concat t.root "pending_permissions.json"
 
+  let pending_permissions_lock_path t =
+    Filename.concat t.root "pending_permissions.json.lock"
+
+  (** [#432] Cross-process lock guarding pending_permissions.json. Separate
+      from [registry.json.lock] so callers holding the registry lock (e.g.
+      the M4 alias-reuse guard called from inside [Broker.register]) can
+      acquire this without nested-lock release semantics. POSIX advisory
+      locks (Unix.lockf F_LOCK / F_ULOCK on a fresh fd per call) — same
+      mechanism as [with_registry_lock]. *)
+  let with_pending_lock t f =
+    ensure_root t;
+    let fd =
+      Unix.openfile (pending_permissions_lock_path t)
+        [ O_RDWR; O_CREAT ] 0o644
+    in
+    Fun.protect
+      ~finally:(fun () ->
+        (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+        (try Unix.close fd with _ -> ()))
+      (fun () ->
+        Unix.lockf fd Unix.F_LOCK 0;
+        f ())
+
+  (* Primitives below — load/save/get_active. NOT individually locked.
+     The four public API entry points (open/find/remove/exists_for_alias)
+     wrap their bodies in [with_pending_lock]. *)
   let load_pending_permissions t =
     ensure_root t;
     match read_json_file (pending_permissions_path t) ~default:(`List []) with
@@ -721,34 +747,44 @@ module Broker = struct
     write_json_file (pending_permissions_path t)
       (`List (List.map pending_permission_to_json entries))
 
-  (** Remove expired entries on every access (lazy eviction). Callers get a clean list. *)
+  (** Remove expired entries on every access (lazy eviction). Callers get a
+      clean list. Primitive — assumes caller holds [with_pending_lock] if
+      atomicity matters (the four public API functions below all wrap). *)
   let get_active_pending_permissions t =
     let now = Unix.gettimeofday () in
     List.filter (fun p -> p.expires_at > now) (load_pending_permissions t)
 
-  (** Persist a new pending permission entry. Callers must hold registry lock. *)
+  (** Persist a new pending permission entry. Cross-process safe via
+      [with_pending_lock] (#432). *)
   let open_pending_permission t p =
-    let entries = get_active_pending_permissions t in
-    save_pending_permissions t (p :: entries)
+    with_pending_lock t (fun () ->
+      let entries = get_active_pending_permissions t in
+      save_pending_permissions t (p :: entries))
 
-  (** Find a pending permission by perm_id. Returns None if not found or expired. *)
+  (** Find a pending permission by perm_id. Returns None if not found or
+      expired. Cross-process safe via [with_pending_lock] (#432). *)
   let find_pending_permission t perm_id =
-    let now = Unix.gettimeofday () in
-    List.find_opt (fun p -> p.perm_id = perm_id && p.expires_at > now)
-      (load_pending_permissions t)
+    with_pending_lock t (fun () ->
+      let now = Unix.gettimeofday () in
+      List.find_opt (fun p -> p.perm_id = perm_id && p.expires_at > now)
+        (load_pending_permissions t))
 
-  (** Remove a pending permission by perm_id. No-op if not found. *)
+  (** Remove a pending permission by perm_id. No-op if not found.
+      Cross-process safe via [with_pending_lock] (#432). *)
   let remove_pending_permission t perm_id =
-    let entries = List.filter (fun p -> p.perm_id <> perm_id)
-      (get_active_pending_permissions t) in
-    save_pending_permissions t entries
+    with_pending_lock t (fun () ->
+      let entries = List.filter (fun p -> p.perm_id <> perm_id)
+        (get_active_pending_permissions t) in
+      save_pending_permissions t entries)
 
   (** Check if any active pending permission exists for a given alias.
-      Used by M4 alias-reuse guard. *)
+      Used by M4 alias-reuse guard. Cross-process safe via
+      [with_pending_lock] (#432). *)
   let pending_permission_exists_for_alias t alias =
-    let now = Unix.gettimeofday () in
-    List.exists (fun p -> p.requester_alias = alias && p.expires_at > now)
-      (load_pending_permissions t)
+    with_pending_lock t (fun () ->
+      let now = Unix.gettimeofday () in
+      List.exists (fun p -> p.requester_alias = alias && p.expires_at > now)
+        (load_pending_permissions t))
 
   let create ~root = { root }
   let root t = t.root

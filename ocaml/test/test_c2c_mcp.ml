@@ -7118,6 +7118,65 @@ let test_register_rejects_alias_with_pending_permission_from_alive_owner () =
                in
                check bool "thief not registered" true (thief = None))))
 
+(* [#432] Concurrent open_pending_permission across N forked children must
+   not lose entries. Without with_pending_lock, two interleaved
+   load→cons→save sequences would silently drop one of the entries (the
+   classic POSIX-file-locking lost-update scenario). With the per-file
+   advisory lock, all N entries persist. *)
+let test_concurrent_open_pending_permission () =
+  with_temp_dir (fun dir ->
+      let n_children = 8 in
+      let now = Unix.gettimeofday () in
+      let children =
+        List.init n_children (fun i ->
+            match Unix.fork () with
+            | 0 ->
+                (* Child: each instantiates its OWN broker handle so the
+                   lockf state is per-process (not shared via a parent fd).
+                   Open a unique pending entry, then exit cleanly. *)
+                let child_broker = C2c_mcp.Broker.create ~root:dir in
+                let entry : C2c_mcp.pending_permission =
+                  { perm_id = Printf.sprintf "perm-concurrent-%d" i
+                  ; kind = C2c_mcp.Permission
+                  ; requester_session_id = Printf.sprintf "session-%d" i
+                  ; requester_alias = Printf.sprintf "alias-%d" i
+                  ; supervisors = [ "coordinator1" ]
+                  ; created_at = now
+                  ; expires_at = now +. 600.0
+                  }
+                in
+                C2c_mcp.Broker.open_pending_permission child_broker entry;
+                exit 0
+            | pid -> pid)
+      in
+      List.iter
+        (fun pid ->
+          let _, status = Unix.waitpid [] pid in
+          (match status with
+           | Unix.WEXITED 0 -> ()
+           | Unix.WEXITED rc ->
+               Alcotest.fail (Printf.sprintf "child pid=%d exited rc=%d" pid rc)
+           | Unix.WSIGNALED s ->
+               Alcotest.fail (Printf.sprintf "child pid=%d signaled %d" pid s)
+           | Unix.WSTOPPED s ->
+               Alcotest.fail (Printf.sprintf "child pid=%d stopped %d" pid s)))
+        children;
+      (* Parent: probe each expected entry via the public API. With the
+         lock in place, every child's open_pending_permission must have
+         been serialized — all N perm_ids resolvable. Without the lock,
+         interleaved load/save would drop some. *)
+      let parent_broker = C2c_mcp.Broker.create ~root:dir in
+      List.iter
+        (fun i ->
+          let expected = Printf.sprintf "perm-concurrent-%d" i in
+          let found =
+            C2c_mcp.Broker.find_pending_permission parent_broker expected
+          in
+          check bool
+            (Printf.sprintf "entry for child %d preserved (no lost-update)" i)
+            true (found <> None))
+        (List.init n_children (fun i -> i)))
+
 (* --- liveness self-heal: respawn-under-new-pid (slice/liveness-respawn-pid) --- *)
 
 (* Pick a pid value that's almost certainly not in the process table.
@@ -8503,6 +8562,8 @@ let () =
               test_tools_call_register_rejects_alias_hijack
           ; test_case "M4: register rejects alias with pending permission from prior owner" `Quick
               test_register_rejects_alias_with_pending_permission_from_alive_owner
+          ; test_case "[#432] open_pending_permission concurrent across forks: no lost-update" `Quick
+              test_concurrent_open_pending_permission
           ; test_case "tools/call register allows takeover of pidless stale alias (Bug #7)" `Quick
               test_tools_call_register_allows_takeover_of_pidless_stale_alias
          ; test_case "tools/call register returns collision_exhausted when all primes taken" `Quick
