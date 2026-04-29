@@ -371,6 +371,10 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path =
     if Sys.file_exists config_path then json_read_file config_path
     else `Assoc []
   in
+  (* #478: enumerate all c2c MCP tools so kimi auto-approves them without
+     prompting. Reuses c2c_tools_list which must stay in sync with
+     C2c_mcp.base_tool_definitions (see comment there). *)
+  let c2c_allowed_tools_json = `List (List.map (fun t -> `String t) c2c_tools_list) in
   let c2c_entry =
     `Assoc
       [ ("type", `String "stdio")
@@ -383,6 +387,7 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path =
           ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
           ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
           ])
+      ; ("allowedTools", c2c_allowed_tools_json)
       ]
   in
   let config = match existing with
