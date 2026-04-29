@@ -32,6 +32,8 @@ venv/
 !c2c_deliver_inbox.py
 !c2c_poll_inbox.py
 !c2c_poker.py
+!c2c_mcp.py
+!c2c_registry.py
 
 # Local state
 .git/c2c/
