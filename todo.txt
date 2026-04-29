@@ -1,9 +1,7 @@
 # c2c TODO list
 
 This file is the rolling bug/feature backlog for the c2c swarm. Anyone (human
-or agent) may append items; use `- [ ] FOLLOW-UP (v2): per-instance shim → swarm-wide shim. Currently each agent installs the #452 pre-reset-hook shim manually to their instance bin dir. v2: shim lives at `~/.local/bin/c2c-git-shim`, and `c2c start <client>` adds it to the spawned shell's PATH automatically. Closes the per-instance surface so all peers are protected. Lead: jungle-coder. Filed 2026-04-29.
-  Finding: `.collab/findings/2026-04-29T04-30-00Z-jungle-coder-452-test-methodology-leak.md`
-  Shim: `.worktrees/pre-reset-hook/git-shim.sh` (committed `f14c5f34` + `e297315a`)
+or agent) may append items; use `- [x] FOLLOW-UP (v2): per-instance shim → swarm-wide shim. Closes #462 — implemented by slate-coder (`e235895b`, `7a4fc5bf`) on master. v2 shim lives at `<swarm-shim-dir>/git-shim.sh` and `c2c start <client>` prepends it to PATH automatically. Lead: slate-coder. Filed 2026-04-29.
 
 ` for open, `- [x]` for done. Keep
 entries short — link to `.collab/findings/*.md` for details. Include your alias
