@@ -393,6 +393,18 @@ let head_ancestor_of_origin_master path =
   in
   code = 0
 
+(** [head_ancestor_of_master path] returns true if the worktree
+    HEAD is an ancestor of the local master branch. Works for both
+    attached branches and detached HEADs. False if master does not
+    exist or HEAD is not an ancestor. This is the "slice landed on
+    local master" signal in the coord-only-pushes workflow. *)
+let head_ancestor_of_master path =
+  let (code, _, _) =
+    git_command ~cwd:path ~quiet:true
+      [ "merge-base"; "--is-ancestor"; "HEAD"; "master" ]
+  in
+  code = 0
+
 (** [main_worktree_path ()] returns the absolute path of the repo's main
     worktree (the first entry in `git worktree list --porcelain`). *)
 let main_worktree_path () =
@@ -621,8 +633,8 @@ let classify_worktree ~main_path ~ignore_active ~active_window_hours
     mk (GcRefused { reason = "main worktree (never offered)" })
   else if is_dirty path then
     mk (GcRefused { reason = "dirty working tree" })
-  else if not (head_ancestor_of_origin_master path) then
-    mk (GcRefused { reason = "HEAD not ancestor of origin/master" })
+   else if not (head_ancestor_of_origin_master path || head_ancestor_of_master path) then
+     mk (GcRefused { reason = "HEAD not ancestor of origin/master or master" })
   else
     let holders = if ignore_active then [] else cwd_holders path in
     match holders with
@@ -655,7 +667,7 @@ let classify_worktree ~main_path ~ignore_active ~active_window_hours
                      window); owner may be working in another cwd"
                     age_h active_window_hours })
         else
-          mk (GcRemovable { reason = "ancestor of origin/master, clean" })
+          mk (GcRemovable { reason = "ancestor of origin/master or master, clean" })
 
 (** [scan_worktrees_for_gc ~ignore_active ()] enumerates worktrees under
     .worktrees/ and classifies each. The main worktree is filtered out
