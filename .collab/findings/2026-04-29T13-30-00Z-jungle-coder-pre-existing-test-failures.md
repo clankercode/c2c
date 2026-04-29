@@ -91,32 +91,31 @@ $ echo $?
 ```
 
 ### Root Cause Hypothesis
-**Confirmed root cause**: the tmux shim (`git-shim.sh`) wraps `c2c` when invoked as a git subcommand. When `env -u TMUX c2c get-tmux-location` is run:
+**Confirmed root cause**: `fast_path_get_tmux_location` in `c2c.ml` uses an overly broad match:
 
+```ocaml
+let pane_id = Sys.getenv_opt "TMUX_PANE" in
+let tmux_set = Sys.getenv_opt "TMUX" in
+match pane_id, tmux_set with
+| None, None -> exit 1  (* correct: not in tmux *)
+| _ -> (* BROAD MATCH: runs even when TMUX unset but TMUX_PANE set *)
+```
+
+When `env -u TMUX c2c get-tmux-location` is run:
 1. `env -u TMUX` unsets `$TMUX` but **not** `$TMUX_PANE`
 2. `TMUX_PANE` remains set from the parent shell session
-3. The shim detects `get-tmux-location` as a non-git subcommand and passes it through to the real binary
-4. The real `c2c get-tmux-location` checks `TMUX_PANE` and `TMUX`:
-   ```ocaml
-   let pane_id = Sys.getenv_opt "TMUX_PANE" in
-   let tmux_set = Sys.getenv_opt "TMUX" in
-   match pane_id, tmux_set with
-   | None, None -> exit 1  (* this branch not reached *)
-   | _ -> (* exits 0 with pane info *) ...
-   ```
-5. Since `TMUX_PANE` is still set (but `TMUX` is unset), the match is `(Some _, None)` → exits 0
+3. The match is `(Some pane_id, None)` → falls into `_` → runs `tmux display-message` and exits 0
 
-**The shim passes through the subcommand even when `TMUX` is unset**, because `TMUX_PANE` survives in the environment.
+The git-shim.sh is **not involved** — it only intercepts `git reset` commands and passes everything else through directly.
 
 ### Hypothesis: where to look
-- `git-shim.sh` — the subcommand passthrough condition. It should also check `TMUX_PANE` or pass through only when both `TMUX` and `TMUX_PANE` are set.
-- Alternatively: `c2c get-tmux-location` could be fixed to also unset `TMUX_PANE` in its own environment check (defense in depth)
+- `c2c.ml:fast_path_get_tmux_location` (line ~9936): change the match to require both `TMUX` and `TMUX_PANE`, or add an explicit `(None, Some _) | (Some _, None)` case that exits 1.
 
 ### Severity
-**LOW** — affects only the CLI test in tmux sessions; the subcommand works correctly when invoked directly (not through the shim). The shim's passthrough is overly permissive.
+**LOW** — cosmetic: the function still returns the correct pane address; only the exit code is wrong when `TMUX` is unset.
 
 ### Fix scope
-~3-5 lines in `git-shim.sh`. Change the passthrough condition from checking only the binary name to also verifying `TMUX` is set (not just `TMUX_PANE`).
+~3-5 lines in `c2c.ml`. Change `_` to an explicit guard that requires both variables, or add `(None, Some _) | (Some _, None) -> exit 1` before the broad `_`.
 
 ---
 
