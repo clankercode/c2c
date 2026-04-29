@@ -76,9 +76,9 @@ let resolve_self_binary () =
 
 (** [start ~name ~daemon ~relay_url ~interval ~extra_args ()] is the entry
     point for `c2c start relay-connect`. Sets up the instance dir, then
-    either forks a daemon or execs in-place. Returns the exit code (in
-    foreground mode the daemon's exec replaces us, so this only returns
-    on error). *)
+    either forks a daemon or execs in-place. Never returns — all paths
+    terminate the process: foreground mode replaces us via execvp, daemon
+    mode terminates the parent via exit 0 and the child via execvp. *)
 let[@noreturn] start ~name ~daemon ~relay_url ~interval ~extra_args () =
   let inst_dir = instances_dir () // name in
   let outer_pid_path = inst_dir // "outer.pid" in

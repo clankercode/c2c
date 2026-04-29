@@ -87,7 +87,7 @@ let policy_of_endpoint path =
 (* Structured log emitter for S4b pair/handshake events.
    All identifiers are 8-char prefixes to correlate without leaking full IDs. *)
 let structured_log ~event ?(binding_id_prefix="") ?(phone_pubkey_prefix="")
-    ?(user_code_prefix="") ~source_ip_prefix ~result ?(reason="") () =
+    ?(user_code_prefix="") ?(source_ip_prefix="") ~result ?(reason="") () =
   let ts = Unix.gettimeofday () in
   let reason = if String.length reason > 120 then String.sub reason 0 120 else reason in
   let fields = [
