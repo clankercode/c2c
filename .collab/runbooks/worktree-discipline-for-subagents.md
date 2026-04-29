@@ -373,6 +373,68 @@ explicit "ready" or a non-co-author PASS.
 
 ---
 
+## Pattern 10 — cherry-pick paren-arithmetic landmine on overlapping rewraps (#432)
+
+**Severity**: MEDIUM coord-class — silent build break introduced
+during cherry-pick when two slices both wrap the same logical body
+in different conditional blocks (`(try ...)`, `(match ...)`,
+`(if ... then ... else)`). Each slice in isolation has balanced
+parens; the cherry-picked combination doesn't.
+
+**Receipt** (2026-04-29): Cairn cherry-picked stanza's #432 Slice B
+(auth-binding, `09bf2d44` post-pick) and Slice C (capacity caps,
+`55b69fae` post-pick) in sequence. Both slices wrap the same
+`open_pending_reply` handler body — Slice B added a
+`(match registration with None -> ... | Some reg -> <body>)` outer
+guard, Slice C added a `(try <body> with Pending_capacity_exceeded
+...)` inner guard. Neither slice in isolation broke parens; the
+combination was off by one. Cairn caught it post-commit, shipped a
+follow-up syntax-fix commit `1ac366f9`. Five SHAs landed cleanly
+via the recovery sequence.
+
+**The rule**:
+
+```
+cherry-pick → dune build → git commit
+```
+
+NOT the default git-cherry-pick auto-commit flow. When you know two
+slices touch overlapping regions, use:
+
+```bash
+git cherry-pick -n <SHA>     # apply changes, DON'T commit yet
+opam exec -- dune build      # must rc=0
+# if rc=0:
+git commit                    # auto-uses the original commit message
+# if rc != 0:
+git cherry-pick --abort       # roll back the staged changes cleanly
+```
+
+**Why "before commit" is load-bearing**: the moment a broken
+cherry-pick is committed (the default behavior), undoing it becomes
+either (a) `git reset --hard HEAD~1` (destructive in shared trees —
+peer worktrees inherit the move) or (b) a follow-up syntax-fix
+commit (history pollution + visible "oops" in the log). Neither is
+as clean as `cherry-pick --abort` on uncommitted state.
+
+**Diagnosis hint**: paren-arithmetic landmines surface as
+"Syntax error: ')' expected" or "This expression has type X but an
+expression was expected of type Y" — usually with line numbers in
+the SAME function both slices touched. If two adjacent SHAs in your
+cherry-pick batch touched the same function, that's the smell.
+
+**For slice authors**: when you commit a slice that wraps an
+existing code block in a new conditional, mention the overlap risk
+in the cherry-pick request DM. ("This slice wraps lines N-M in a
+`(try)` block. If sibling slices on the same function also rewrap,
+coord may need `cherry-pick -n` ordering.")
+
+**For coords**: when two queued artifacts touch the same
+function/region, batch them with `-n` and a single build-verify
+between, then commit each individually after green.
+
+---
+
 ## Why these rules are load-bearing
 
 The c2c swarm runs many parallel subagents during quota-burn
