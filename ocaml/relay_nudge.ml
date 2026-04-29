@@ -112,11 +112,7 @@ let log_nudge_enqueue ~broker_root ~from_session_id ~to_alias ~to_pid_state ~ok 
          ]
        |> Yojson.Safe.to_string
      in
-     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
-     (try
-        output_string oc (line ^ "\n");
-        close_out oc
-      with _ -> close_out_noerr oc)
+     C2c_io.append_jsonl path line
    with _ -> ())
 
 (* #335: structured log for each nudge-tick fire. Counts let us verify
@@ -146,11 +142,7 @@ let log_nudge_tick ~broker_root ~from_session_id ~alive_total
          ]
        |> Yojson.Safe.to_string
      in
-     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
-     (try
-        output_string oc (line ^ "\n");
-        close_out oc
-      with _ -> close_out_noerr oc)
+     C2c_io.append_jsonl path line
    with _ -> ())
 
 (* #335: nudge_session — sends one nudge and logs the enqueue. Threads

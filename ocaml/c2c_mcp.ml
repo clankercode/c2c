@@ -847,11 +847,7 @@ module Broker = struct
                 ]
               |> Yojson.Safe.to_string
             in
-            (try
-               let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
-               output_string oc (line ^ "\n");
-               close_out oc
-             with _ -> ());
+            C2c_io.append_jsonl path line;
             Printf.eprintf
               "[Broker.save_registrations] WARN: case-fold alias collision among alive rows: \
                alias_casefold=%S (alias_a=%S session_a=%S, alias_b=%S session_b=%S)\n%!"
@@ -1726,9 +1722,7 @@ module Broker = struct
             ]
           |> Yojson.Safe.to_string
         in
-        let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
-        (try output_string oc (line ^ "\n"); close_out oc
-         with _ -> close_out_noerr oc)
+        C2c_io.append_jsonl path line
       with _ -> ()
     end;
     match matches with
@@ -2775,11 +2769,7 @@ module Broker = struct
            ]
          |> Yojson.Safe.to_string
        in
-       let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
-       (try
-          output_string oc (line ^ "\n");
-          close_out oc
-        with _ -> close_out_noerr oc)
+       C2c_io.append_jsonl path line
      with _ -> ())
 
   let append_dead_letter ?(reason = "inbox_sweep") t ~session_id ~messages =
@@ -4093,11 +4083,7 @@ let log_handoff_attempt ~broker_root ~from_alias ~to_alias ~name ~ok ~error =
         | Some e -> `Assoc (base @ [ ("error", `String e) ]))
        |> Yojson.Safe.to_string
      in
-     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
-     (try
-        output_string oc (line ^ "\n");
-        close_out oc
-      with _ -> close_out_noerr oc)
+     C2c_io.append_jsonl path line
    with _ -> ())
 
 (* #29 H2b: log every peer-pass DM verification attempt that ends in a
@@ -4121,11 +4107,7 @@ let log_peer_pass_reject ~broker_root ~from_alias ~to_alias ~claim_alias ~claim_
          ]
        |> Yojson.Safe.to_string
      in
-     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
-     (try
-        output_string oc (line ^ "\n");
-        close_out oc
-      with _ -> close_out_noerr oc)
+     C2c_io.append_jsonl path line
    with _ -> ())
 
 (* #55: every TOFU pubkey-pin rotation gets a structured audit line in
@@ -4157,11 +4139,7 @@ let log_peer_pass_pin_rotate ~broker_root ~alias ~old_pubkey ~new_pubkey
          ]
        |> Yojson.Safe.to_string
      in
-     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
-     (try
-        output_string oc (line ^ "\n");
-        close_out oc
-      with _ -> close_out_noerr oc)
+     C2c_io.append_jsonl path line
    with _ -> ())
 
 (* Wire the broker.log writer as the default pin-rotate logger. The
@@ -4255,11 +4233,7 @@ let log_peer_pass_pin_rotate_unauth ~broker_root ~alias ~reason ~ts =
          ]
        |> Yojson.Safe.to_string
      in
-     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
-     (try
-        output_string oc (line ^ "\n");
-        close_out oc
-      with _ -> close_out_noerr oc)
+     C2c_io.append_jsonl path line
    with _ -> ())
 
 let () =
@@ -4316,11 +4290,7 @@ let log_pending_open
          ]
        |> Yojson.Safe.to_string
      in
-     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
-     (try
-        output_string oc (line ^ "\n");
-        close_out oc
-      with _ -> close_out_noerr oc)
+     C2c_io.append_jsonl path line
    with _ -> ())
 
 let log_pending_check
@@ -4355,11 +4325,7 @@ let log_pending_check
        | None -> with_session
      in
      let line = `Assoc with_sup |> Yojson.Safe.to_string in
-     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
-     (try
-        output_string oc (line ^ "\n");
-        close_out oc
-      with _ -> close_out_noerr oc)
+     C2c_io.append_jsonl path line
    with _ -> ())
 
 (* Coord-backup fallthrough audit log
@@ -4397,11 +4363,7 @@ let log_coord_fallthrough_fired
          ]
        |> Yojson.Safe.to_string
      in
-     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
-     (try
-        output_string oc (line ^ "\n");
-        close_out oc
-      with _ -> close_out_noerr oc)
+     C2c_io.append_jsonl path line
    with _ -> ())
 
 let notify_shared_with_recipients
@@ -6887,25 +6849,19 @@ let ts = Unix.gettimeofday () in
                Printf.sprintf "global pending-permissions cap reached",
                "[pending-cap] reject open_pending_reply: global cap reached"
          in
-         (try
-            let path = Filename.concat (Broker.root broker) "broker.log" in
-            let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
-            (try
-               let line =
-                 `Assoc
-                   [ ("ts", `Float (Unix.gettimeofday ()))
-                   ; ("event", `String "pending_cap_reject")
-                   ; ("note", `String log_msg)
-                   ]
-                 |> Yojson.Safe.to_string
-               in
-               output_string oc (line ^ "\n");
-               close_out oc
-             with _ -> close_out_noerr oc)
-           with _ -> ());
-          Lwt.return (tool_err (Printf.sprintf
-            "open_pending_reply rejected: %s. Wait for in-flight entries to expire (default TTL 600s) or coordinate with the holder."
-            kind_str)))))
+         let path = Filename.concat (Broker.root broker) "broker.log" in
+         let line =
+           `Assoc
+             [ ("ts", `Float (Unix.gettimeofday ()))
+             ; ("event", `String "pending_cap_reject")
+             ; ("note", `String log_msg)
+             ]
+           |> Yojson.Safe.to_string
+         in
+         C2c_io.append_jsonl path line;
+         Lwt.return (tool_err (Printf.sprintf
+           "open_pending_reply rejected: %s. Wait for in-flight entries to expire (default TTL 600s) or coordinate with the holder."
+           kind_str)))))
   | "check_pending_reply" ->
       let perm_id = string_member "perm_id" arguments in
       (* [#432 Slice B / Finding 4-B2] derive reply_from_alias from the
@@ -7355,11 +7311,7 @@ let log_rpc ~broker_root ~tool_name ~is_error =
          ]
        |> Yojson.Safe.to_string
      in
-     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
-     (try
-        output_string oc (line ^ "\n");
-        close_out oc
-      with _ -> close_out_noerr oc)
+     C2c_io.append_jsonl path line
    with _ -> ())
 
 (* --- prompts/list and prompts/get helpers ---------------------------------
