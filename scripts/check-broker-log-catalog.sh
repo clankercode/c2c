@@ -14,8 +14,8 @@
 #   ./scripts/check-broker-log-catalog.sh --json # machine-readable
 #
 # Exit:
-#   0  catalog complete (no missing emitters)
-#   1  missing emitters (CI gate)
+#   0  catalog complete (no missing emitters, no stale entries)
+#   1  missing emitters OR stale entries (CI gate)
 #   2  internal error (catalog file not found, etc.)
 #
 # Wired into `just check` via dune rule (see ocaml/dune).
@@ -60,10 +60,10 @@ mapfile -t cataloged < <(
     | sort -u
 )
 
-# ── Step 3: diff ────────────────────────────────────────────────────────────
+# ── Step 3: diff ───────────────────────────────────────────────────────────
 missing=()       # in source, not in catalog (FAIL unless allow-listed)
 oos_seen=()      # in source, allow-listed (info)
-stale=()         # in catalog, not in source (WARN)
+stale=()          # in catalog, not in source (FAIL)
 
 for e in "${emitters[@]}"; do
   if [[ -n "${OUT_OF_SCOPE[$e]:-}" ]]; then
@@ -85,7 +85,7 @@ done
 if [[ $OUTPUT_JSON -eq 1 ]]; then
   # JSON output for CI / programmatic consumers.
   printf '{\n'
-  printf '  "ok": %s,\n' "$([[ ${#missing[@]} -eq 0 ]] && echo true || echo false)"
+  printf '  "ok": %s,\n' "$([[ ${#missing[@]} -eq 0 && ${#stale[@]} -eq 0 ]] && echo true || echo false)"
   printf '  "emitter_count": %d,\n' "${#emitters[@]}"
   printf '  "cataloged_count": %d,\n' "${#cataloged[@]}"
   printf '  "missing": ['

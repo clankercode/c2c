@@ -37,7 +37,8 @@ entry here in the same commit. The `check-broker-log-catalog.sh` script
 - **FAIL**: any `"event", `String "<name>"` emitter in `ocaml/` (production
   code) is missing a catalog entry.
 - **FAIL**: any catalog entry has no corresponding emitter in `ocaml/`
-  (reverse check catches stale entries from unimplemented features).
+  (catalog drift; reverse check catches stale entries from unimplemented
+  features — was WARN pre-2026-04-29).
 
 WARN is no longer emitted for stale entries — they are a CI gate so
 they don't regress silently.
