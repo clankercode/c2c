@@ -165,13 +165,18 @@ let do_install_self ~output_mode ~dest_opt ~with_mcp_server =
 
 (* --- subcommand: setup --------------------------------------------------- *)
 
-let alias_words = [| "aalto"; "aimu"; "aivi"; "alder"; "alm"; "alto"; "anvi"; "arvu"; "aska"; "aster"; "auru"; "briar"; "brio"; "cedar"; "clover"; "corin"; "drift"; "eira"; "elmi"; "ember"; "fenna"; "fennel"; "ferni"; "fjord"; "glade"; "harbor"; "havu"; "hearth"; "helio"; "heron"; "hilla"; "hovi"; "ilma"; "ilmi"; "isvi"; "jara"; "jori"; "junna"; "kaari"; "kajo"; "kalla"; "karu"; "keiju"; "kelo"; "kesa"; "ketu"; "kielo"; "kiru"; "kiva"; "kivi"; "koru"; "kuura"; "laine"; "laku"; "lehto"; "leimu"; "lemu"; "linna"; "lintu"; "lumi"; "lumo"; "lyra"; "marli"; "meadow"; "meru"; "miru"; "mire"; "moro"; "muoto"; "naava"; "nallo"; "niva"; "nori"; "nova"; "nuppu"; "nyra"; "oak"; "oiva"; "olmu"; "ondu"; "orvi"; "otava"; "paju"; "palo"; "pebble"; "pihla"; "pilvi"; "puro"; "quill"; "rain"; "reed"; "revna"; "rilla"; "river"; "roan"; "roihu"; "rook"; "rowan"; "runna"; "sage"; "saima"; "sarka"; "selka"; "silo"; "sirra"; "sola"; "solmu"; "sora"; "sprig"; "starling"; "sula"; "suvi"; "taika"; "tala"; "tavi"; "tilia"; "tovi"; "tuuli"; "tyyni"; "ulma"; "usva"; "valo"; "veru"; "velu"; "vesi"; "viima"; "vireo"; "vuono"; "willow"; "yarrow"; "yola" |]
+(* alias word pool lives in [C2c_alias_words] (#388 — converged from
+   the duplicated 128-entry literal previously inlined here and in
+   c2c_start.ml). Note: this local [generate_alias] does NOT call
+   [Random.self_init ()] — the caller is expected to seed Random
+   (see [setup_register]). *)
 
 let generate_alias () =
-  let n = Array.length alias_words in
+  let words = C2c_alias_words.words in
+  let n = Array.length words in
   let rec loop () =
-    let w1 = alias_words.(Random.int n) in
-    let w2 = alias_words.(Random.int n) in
+    let w1 = words.(Random.int n) in
+    let w2 = words.(Random.int n) in
     if w1 = w2 then loop () else Printf.sprintf "%s-%s" w1 w2
   in
   loop ()
