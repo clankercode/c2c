@@ -7494,6 +7494,11 @@ let start_cmd =
             match render_role_for_client ?model_override role ~client ~name:agent_name with
             | Some rendered ->
                 let effective_alias = Option.value role.C2c_role.c2c_alias ~default:agent_name in
+                (* write_agent_file: opencode/claude only. These clients natively
+                   read .md agent files with YAML frontmatter. Kimi uses YAML
+                   AgentSpec (agent.yaml); codex has no user agent file surface.
+                   Ref: .collab/design/2026-04-29-kuura-viima-143b-write-agent-file-parity.md
+                   TODO(#146-prime): design KimiAgentSpec_renderer. *)
                 if client = "opencode" || client = "claude" then
                   write_agent_file ~client ~name ~content:rendered;
                 let onboarding_preamble =
@@ -7568,6 +7573,9 @@ let start_cmd =
                (match render_role_for_client ?model_override role ~client ~name with
                 | Some rendered ->
                     let effective_alias = Option.value role.C2c_role.c2c_alias ~default:name in
+                    (* write_agent_file: opencode/claude only — same rationale
+                       as gate at line ~7488. See design doc for per-client
+                       divergence details. *)
                     if client = "opencode" || client = "claude" then
                       write_agent_file ~client ~name ~content:rendered;
                     let onboarding_preamble =
