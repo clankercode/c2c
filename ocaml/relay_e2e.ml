@@ -8,6 +8,13 @@ type enc_status =
   | Not_for_me
   | Downgrade_warning
   | Key_changed
+  | Version_downgrade
+    (** Slice B-min-version: receive-side defense against MITM
+        envelope_version 2→1 stripping. Surfaced when the on-wire
+        [envelope_version] is lower than the per-alias
+        [min_observed_envelope_version] pin in [relay_pins.json].
+        Rejected before sig verify so the audit trail clearly
+        attributes to downgrade-policy, not sig-mismatch. *)
 
 let enc_status_to_string = function
   | Ok -> "ok"
@@ -16,6 +23,7 @@ let enc_status_to_string = function
   | Not_for_me -> "not-for-me"
   | Downgrade_warning -> "downgrade-warning"
   | Key_changed -> "key-changed"
+  | Version_downgrade -> "version-downgrade-rejected"
 
 type recipient = {
   alias : string;

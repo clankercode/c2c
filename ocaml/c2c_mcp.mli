@@ -167,6 +167,28 @@ module Broker : sig
   val pin_x25519_sync : alias:string -> pk:string -> [ `Already_pinned | `Mismatch | `New_pin ]
   val pin_ed25519_sync : alias:string -> pk:string -> [ `Already_pinned | `Mismatch | `New_pin ]
 
+  (** Slice B-min-version: per-alias minimum-observed-envelope-version
+      pin. Defense-in-depth against MITM envelope_version 2→1 stripping.
+      Persisted alongside the pubkey pins in [relay_pins.json] under a
+      [min_observed_envelope_versions] top-level key. Default-open: a
+      peer with no pin has no min-version floor (treated as 1).
+
+      [check_version_downgrade] returns [Some pinned_min] when [observed
+      < pinned_min] (caller MUST reject + emit audit-log line) and
+      [None] when verify should proceed normally.
+
+      [bump_min_observed_version] performs a monotonic max-update — it
+      NEVER lowers the floor. Persists immediately when the value
+      changes. Returns the value AFTER the bump.
+
+      [get_relay_pins_root] exposes the broker_root bound by [create]
+      so audit-log emitters that don't carry a [t] handle can find the
+      [broker.log] path. *)
+  val check_version_downgrade : alias:string -> observed:int -> int option
+  val bump_min_observed_version : alias:string -> observed:int -> int
+  val get_min_observed_version : string -> int option
+  val get_relay_pins_root : unit -> string option
+
   val compute_canonical_alias : alias:string -> broker_root:string -> string
   (** [compute_canonical_alias ~alias ~broker_root] returns "<alias>#<repo>@<host>"
       where repo is derived from broker_root path and host is the short hostname. *)

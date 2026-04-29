@@ -1095,6 +1095,12 @@ module Broker = struct
   let known_keys_ed25519 : (string, string) Hashtbl.t = Hashtbl.create 64
   let known_keys_x25519 : (string, string) Hashtbl.t = Hashtbl.create 64
   let downgrade_states : (string, Relay_e2e.downgrade_state) Hashtbl.t = Hashtbl.create 64
+  (** Slice B-min-version: per-alias minimum-observed-envelope-version
+      pin. Defense-in-depth against MITM envelope_version 2→1 stripping.
+      Persisted in [relay_pins.json] under [min_observed_envelope_versions]
+      top-level key. Default 1 on first contact (open); monotonic-increase
+      via [bump_min_observed_version] after every successful verify. *)
+  let min_observed_envelope_versions : (string, int) Hashtbl.t = Hashtbl.create 64
 
   (** Rehydrate both Hashtbls from disk. Caller MUST hold
       [with_relay_pins_lock].
@@ -1145,12 +1151,27 @@ module Broker = struct
             Hashtbl.clear tbl
         in
         load_section "x25519" known_keys_x25519;
-        load_section "ed25519" known_keys_ed25519
+        load_section "ed25519" known_keys_ed25519;
+        (* Slice B-min-version: int-valued section. Same load-or-clear
+           semantics as the string sections above. *)
+        (match json with
+         | `Assoc fields ->
+           (match List.assoc_opt "min_observed_envelope_versions" fields with
+            | Some (`Assoc entries) ->
+              Hashtbl.clear min_observed_envelope_versions;
+              List.iter (fun (alias, v) ->
+                match v with
+                | `Int n -> Hashtbl.replace min_observed_envelope_versions alias n
+                | `Intlit s -> (try Hashtbl.replace min_observed_envelope_versions alias (int_of_string s) with _ -> ())
+                | _ -> ()) entries
+            | _ -> Hashtbl.clear min_observed_envelope_versions)
+         | _ -> Hashtbl.clear min_observed_envelope_versions)
       end else begin
-        (* File missing entirely → operator-clear path. Wipe both
+        (* File missing entirely → operator-clear path. Wipe all
            in-memory tables to match the on-disk truth. *)
         Hashtbl.clear known_keys_x25519;
-        Hashtbl.clear known_keys_ed25519
+        Hashtbl.clear known_keys_ed25519;
+        Hashtbl.clear min_observed_envelope_versions
       end
 
   (** Serialize both Hashtbls to disk atomically. Caller MUST hold
@@ -1165,10 +1186,17 @@ module Broker = struct
         in
         `Assoc entries
       in
+      let dump_int tbl =
+        let entries =
+          Hashtbl.fold (fun k v acc -> (k, `Int v) :: acc) tbl []
+        in
+        `Assoc entries
+      in
       let json =
         `Assoc
           [ ("x25519", dump known_keys_x25519)
           ; ("ed25519", dump known_keys_ed25519)
+          ; ("min_observed_envelope_versions", dump_int min_observed_envelope_versions)
           ]
       in
       write_json_file (relay_pins_path ()) json
@@ -1272,6 +1300,53 @@ module Broker = struct
         Hashtbl.replace known_keys_ed25519 alias pk;
         save_relay_pins_to_disk ();
         `New_pin)
+
+  (** Slice B-min-version: expose the broker_root for audit-log emitters
+      that don't have a [t] handle. The root is bound by [create] and
+      shared with [relay_pins.json] / [broker.log] / etc. *)
+  let get_relay_pins_root () = !relay_pins_root
+
+  (** Slice B-min-version read-side accessor. Returns the pinned
+      [min_observed_envelope_version] for [alias], or [None] if no pin
+      yet (treated as default 1 = open by callers). *)
+  let get_min_observed_version alias =
+    with_relay_pins_lock (fun () ->
+      load_relay_pins_from_disk ();
+      Hashtbl.find_opt min_observed_envelope_versions alias)
+
+  (** Slice B-min-version max-update on every successful verify.
+      Monotonic-increase: [pin <- max(pin, observed)]. Persists via the
+      same [save_relay_pins_to_disk] path as the pubkey pins. Returns
+      the value AFTER the bump so callers can log the new pin. *)
+  let bump_min_observed_version ~alias ~observed =
+    with_relay_pins_lock (fun () ->
+      load_relay_pins_from_disk ();
+      let prev_opt = Hashtbl.find_opt min_observed_envelope_versions alias in
+      let prev = match prev_opt with Some n -> n | None -> 1 in
+      let next = if observed > prev then observed else prev in
+      let needs_write =
+        match prev_opt with
+        | None -> true        (* first-contact pin write, even if observed == default 1 *)
+        | Some _ -> next <> prev
+      in
+      if needs_write then begin
+        Hashtbl.replace min_observed_envelope_versions alias next;
+        save_relay_pins_to_disk ()
+      end;
+      next)
+
+  (** Slice B-min-version policy check. [Some pinned_min] when the
+      observed [envelope_version] is strictly less than the pinned
+      [min_observed_envelope_version] for [alias] (so caller MUST reject
+      and emit the audit-log line); [None] otherwise (verify proceeds).
+      Default policy when no pin exists for [alias] is "open" (no pin
+      → no downgrade defense yet, first-contact records the floor). *)
+  let check_version_downgrade ~alias ~observed =
+    with_relay_pins_lock (fun () ->
+      load_relay_pins_from_disk ();
+      match Hashtbl.find_opt min_observed_envelope_versions alias with
+      | Some pinned_min when observed < pinned_min -> Some pinned_min
+      | _ -> None)
 
   let load_or_create_ed25519_identity () =
     match Relay_identity.load () with
@@ -4114,6 +4189,31 @@ let () =
       ~prior_first_seen:event.prior_first_seen
       ~ts:event.ts)
 
+(* Slice B-min-version: forensic audit-log line on every receive
+   rejected by the per-alias min-observed-version pin. Same shape as
+   [log_peer_pass_pin_rotate_unauth] below so log readers can grep
+   [event] consistently. Best-effort, swallows all errors (audit-log
+   emission must never block the broker's primary verify path). *)
+let log_version_downgrade_rejected ~broker_root ~alias ~observed ~pinned_min ~ts =
+  (try
+     let path = Filename.concat broker_root "broker.log" in
+     let line =
+       `Assoc
+         [ ("ts", `Float ts)
+         ; ("event", `String "version_downgrade_rejected")
+         ; ("alias", `String alias)
+         ; ("observed_envelope_version", `Int observed)
+         ; ("pinned_min_envelope_version", `Int pinned_min)
+         ]
+       |> Yojson.Safe.to_string
+     in
+     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
+     (try
+        output_string oc (line ^ "\n");
+        close_out oc
+      with _ -> close_out_noerr oc)
+   with _ -> ())
+
 (* #432 TOFU 5 observability follow-up: sibling logger for
    pin_rotate REJECT path. Same broker.log file, same shape as
    pending_cap_reject — best-effort, swallows all errors, distinct
@@ -4369,6 +4469,28 @@ let decrypt_envelope ~(our_x25519 : Relay_enc.t option) ~our_ed25519
     match Relay_e2e.envelope_of_json env_json with
     | exception _ -> content, None
     | env ->
+      (* Slice B-min-version: per-alias minimum-observed-envelope-version
+         policy check. Fires BEFORE sig-verify dispatch so a downgraded
+         envelope (attacker rewriting envelope_version=2 → 1 to bypass
+         CRIT-1+B canonical-blob coverage) is rejected with a forensic
+         audit-log line attributable to the policy, not silent
+         sig-mismatch. Default-open: peers we've never received a v2
+         envelope from carry no min-version pin and proceed normally;
+         the pin floor is set by [bump_min_observed_version] AFTER
+         every successful verify in the box-x25519-v1 path below. *)
+      (match Broker.check_version_downgrade ~alias:env.from_ ~observed:env.envelope_version with
+       | Some pinned_min ->
+         (match Broker.get_relay_pins_root () with
+          | Some broker_root ->
+            log_version_downgrade_rejected
+              ~broker_root
+              ~alias:env.from_
+              ~observed:env.envelope_version
+              ~pinned_min
+              ~ts:(Unix.gettimeofday ())
+          | None -> ());
+         content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Version_downgrade)
+       | None ->
       let ds = Broker.get_downgrade_state env.from_ in
       let (status, ds) = Relay_e2e.decide_enc_status ds env in
       Broker.set_downgrade_state env.from_ ds;
@@ -4453,9 +4575,18 @@ let decrypt_envelope ~(our_x25519 : Relay_enc.t option) ~our_ed25519
                              (match sender_x25519_pk with
                               | Some pk -> Broker.pin_x25519_sync ~alias:env.from_ ~pk |> ignore
                               | None -> ());
+                             (* Slice B-min-version: bump per-alias min
+                                pin after every successful verify. Sets
+                                the floor for subsequent receives to
+                                close the downgrade window from THIS
+                                envelope's [envelope_version] forward. *)
+                             let _ = Broker.bump_min_observed_version
+                               ~alias:env.from_
+                               ~observed:env.envelope_version
+                             in
                              pt, Some (Relay_e2e.enc_status_to_string status))))))
          | _ -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
-      | _ -> content, None
+      | _ -> content, None)
 
 let decrypt_message_for_push (msg : message) ~alias =
   let our_x25519 = match Relay_enc.load_or_generate ~alias () with Ok k -> Some k | Error _ -> None in

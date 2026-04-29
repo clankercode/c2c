@@ -8905,6 +8905,187 @@ let test_slice_b_tofu_legacy_v1_no_field_accepts_no_tofu_update () =
         (Some ed_pk_b64)
         (C2c_mcp.Broker.get_pinned_ed25519 sender_alias)))
 
+(* --- Slice B-min-version tests (per-peer min-observed-version pin) --- *)
+
+(* Slice B-min-version test 1: first-contact at v2 sets min=2 via the
+   bump after successful verify. Drives the full receive path and
+   asserts the pin store records min_observed=2 afterward. *)
+let test_slice_bmv_first_contact_v2_sets_min_2 () =
+  with_temp_dir (fun dir ->
+    (
+      let _broker = C2c_mcp.Broker.create ~root:dir in
+      let sender_alias = "sender-bmv-fc" and recipient_alias = "recipient-bmv-fc" in
+      let (ed_seed, ed_pk_raw) = slice_b_gen_ed25519 () in
+      let ed_pk_b64 = Relay_e2e.b64_encode ed_pk_raw in
+      let sender_x = Relay_enc.generate ~alias:sender_alias () in
+      let recipient_x = Relay_enc.generate ~alias:recipient_alias () in
+      let recipient_x_pk_b64 = Relay_enc.public_key_b64 recipient_x in
+      let plaintext = "slice-bmv-first-contact-v2-marker" in
+      let wire =
+        slice_b_make_signed_envelope
+          ~sender_alias ~sender_ed_seed:ed_seed ~sender_ed_b64:ed_pk_b64
+          ~sender_x_keys:sender_x ~recipient_alias
+          ~recipient_x_pk_b64 ~plaintext ~envelope_version:2
+      in
+      check (option int) "pre: no min_observed_version pin"
+        None (C2c_mcp.Broker.get_min_observed_version sender_alias);
+      let our_x25519 = Some recipient_x in
+      let our_ed25519 = Some (Relay_identity.generate ()) in
+      let (_decrypted, enc_status) =
+        C2c_mcp.decrypt_envelope ~our_x25519 ~our_ed25519
+          ~to_alias:recipient_alias ~content:wire
+      in
+      check (option string) "v2 first-contact enc_status = ok"
+        (Some "ok") enc_status;
+      check (option int) "post: min_observed_version pinned to 2"
+        (Some 2) (C2c_mcp.Broker.get_min_observed_version sender_alias)))
+
+(* Slice B-min-version test 2: subsequent v1 envelope from same peer
+   rejected with version-downgrade-rejected enc_status. Pre-pin
+   min=2 directly via the broker API, then drive a v1 envelope through
+   and assert reject. Pin must remain at 2 (NOT lowered). *)
+let test_slice_bmv_v1_rejected_after_v2_pin () =
+  with_temp_dir (fun dir ->
+    (
+      let _broker = C2c_mcp.Broker.create ~root:dir in
+      let sender_alias = "sender-bmv-rej" and recipient_alias = "recipient-bmv-rej" in
+      let (ed_seed, ed_pk_raw) = slice_b_gen_ed25519 () in
+      let ed_pk_b64 = Relay_e2e.b64_encode ed_pk_raw in
+      (* Pre-pin both Ed25519 (so legacy v1 verify path can find a key)
+         AND the min-version pin (so the downgrade check fires). *)
+      (match C2c_mcp.Broker.pin_ed25519_sync ~alias:sender_alias ~pk:ed_pk_b64 with
+       | `New_pin -> ()
+       | _ -> Alcotest.fail "expected New_pin on initial ed pin");
+      let _ = C2c_mcp.Broker.bump_min_observed_version
+        ~alias:sender_alias ~observed:2 in
+      let sender_x = Relay_enc.generate ~alias:sender_alias () in
+      let recipient_x = Relay_enc.generate ~alias:recipient_alias () in
+      let recipient_x_pk_b64 = Relay_enc.public_key_b64 recipient_x in
+      let plaintext = "slice-bmv-downgrade-attempt-marker" in
+      (* Build a v1 envelope from the same sender. *)
+      let wire =
+        slice_b_make_signed_envelope
+          ~sender_alias ~sender_ed_seed:ed_seed ~sender_ed_b64:ed_pk_b64
+          ~sender_x_keys:sender_x ~recipient_alias
+          ~recipient_x_pk_b64 ~plaintext ~envelope_version:1
+      in
+      let our_x25519 = Some recipient_x in
+      let our_ed25519 = Some (Relay_identity.generate ()) in
+      let (decrypted, enc_status) =
+        C2c_mcp.decrypt_envelope ~our_x25519 ~our_ed25519
+          ~to_alias:recipient_alias ~content:wire
+      in
+      check (option string) "v1 after v2 pin → version-downgrade-rejected"
+        (Some "version-downgrade-rejected") enc_status;
+      check bool "v1 reject does NOT decrypt to plaintext" false
+        (decrypted = plaintext);
+      check (option int) "min-version pin NOT lowered by reject"
+        (Some 2) (C2c_mcp.Broker.get_min_observed_version sender_alias)))
+
+(* Slice B-min-version test 3: v1→v2→v1 sequence. v1 first sets min=1
+   (no defense yet); v2 bumps min to 2; subsequent v1 rejected. *)
+let test_slice_bmv_v1_then_v2_then_v1_rejects () =
+  with_temp_dir (fun dir ->
+    (
+      let _broker = C2c_mcp.Broker.create ~root:dir in
+      let sender_alias = "sender-bmv-seq" and recipient_alias = "recipient-bmv-seq" in
+      let (ed_seed, ed_pk_raw) = slice_b_gen_ed25519 () in
+      let ed_pk_b64 = Relay_e2e.b64_encode ed_pk_raw in
+      (match C2c_mcp.Broker.pin_ed25519_sync ~alias:sender_alias ~pk:ed_pk_b64 with
+       | `New_pin -> ()
+       | _ -> Alcotest.fail "expected New_pin on initial ed pin");
+      let sender_x = Relay_enc.generate ~alias:sender_alias () in
+      let recipient_x = Relay_enc.generate ~alias:recipient_alias () in
+      let recipient_x_pk_b64 = Relay_enc.public_key_b64 recipient_x in
+      let our_x25519 = Some recipient_x in
+      let our_ed25519 = Some (Relay_identity.generate ()) in
+      let mk v =
+        slice_b_make_signed_envelope
+          ~sender_alias ~sender_ed_seed:ed_seed ~sender_ed_b64:ed_pk_b64
+          ~sender_x_keys:sender_x ~recipient_alias
+          ~recipient_x_pk_b64 ~plaintext:"seq-marker" ~envelope_version:v
+      in
+      (* (1) First envelope is v1: verify succeeds, min bumped to 1. *)
+      let (_, status1) =
+        C2c_mcp.decrypt_envelope ~our_x25519 ~our_ed25519
+          ~to_alias:recipient_alias ~content:(mk 1)
+      in
+      check (option string) "v1 first accepted" (Some "ok") status1;
+      check (option int) "min after v1 first = 1"
+        (Some 1) (C2c_mcp.Broker.get_min_observed_version sender_alias);
+      (* (2) v2 envelope: verify succeeds, min bumped to 2. *)
+      let (_, status2) =
+        C2c_mcp.decrypt_envelope ~our_x25519 ~our_ed25519
+          ~to_alias:recipient_alias ~content:(mk 2)
+      in
+      check (option string) "v2 second accepted" (Some "ok") status2;
+      check (option int) "min after v2 second = 2"
+        (Some 2) (C2c_mcp.Broker.get_min_observed_version sender_alias);
+      (* (3) Subsequent v1 from same peer rejected. *)
+      let (_, status3) =
+        C2c_mcp.decrypt_envelope ~our_x25519 ~our_ed25519
+          ~to_alias:recipient_alias ~content:(mk 1)
+      in
+      check (option string) "v1 after v2 → version-downgrade-rejected"
+        (Some "version-downgrade-rejected") status3;
+      check (option int) "min still pinned to 2 after reject"
+        (Some 2) (C2c_mcp.Broker.get_min_observed_version sender_alias)))
+
+(* Slice B-min-version test 4: audit-log line is emitted on reject.
+   Asserts a JSON line in broker.log carrying event=version_downgrade_rejected
+   with the alias + observed + pinned_min fields. *)
+let test_slice_bmv_audit_log_emitted_on_reject () =
+  with_temp_dir (fun dir ->
+    (
+      let _broker = C2c_mcp.Broker.create ~root:dir in
+      let sender_alias = "sender-bmv-aud" and recipient_alias = "recipient-bmv-aud" in
+      let (ed_seed, ed_pk_raw) = slice_b_gen_ed25519 () in
+      let ed_pk_b64 = Relay_e2e.b64_encode ed_pk_raw in
+      (match C2c_mcp.Broker.pin_ed25519_sync ~alias:sender_alias ~pk:ed_pk_b64 with
+       | `New_pin -> () | _ -> Alcotest.fail "pin");
+      let _ = C2c_mcp.Broker.bump_min_observed_version
+        ~alias:sender_alias ~observed:2 in
+      let sender_x = Relay_enc.generate ~alias:sender_alias () in
+      let recipient_x = Relay_enc.generate ~alias:recipient_alias () in
+      let recipient_x_pk_b64 = Relay_enc.public_key_b64 recipient_x in
+      let wire =
+        slice_b_make_signed_envelope
+          ~sender_alias ~sender_ed_seed:ed_seed ~sender_ed_b64:ed_pk_b64
+          ~sender_x_keys:sender_x ~recipient_alias
+          ~recipient_x_pk_b64 ~plaintext:"x" ~envelope_version:1
+      in
+      let our_x25519 = Some recipient_x in
+      let our_ed25519 = Some (Relay_identity.generate ()) in
+      let (_, _) =
+        C2c_mcp.decrypt_envelope ~our_x25519 ~our_ed25519
+          ~to_alias:recipient_alias ~content:wire
+      in
+      let log_path = Filename.concat dir "broker.log" in
+      check bool "broker.log written" true (Sys.file_exists log_path);
+      let ic = open_in log_path in
+      let log_content =
+        try
+          let buf = Buffer.create 1024 in
+          (try while true do
+             Buffer.add_channel buf ic 1024
+           done with End_of_file -> ());
+          close_in ic;
+          Buffer.contents buf
+        with e -> close_in ic; raise e
+      in
+      let contains s sub =
+        try ignore (Str.search_forward (Str.regexp_string sub) s 0); true
+        with Not_found -> false
+      in
+      check bool "audit-log has version_downgrade_rejected event" true
+        (contains log_content "\"event\":\"version_downgrade_rejected\"");
+      check bool "audit-log has alias" true
+        (contains log_content (Printf.sprintf "\"alias\":\"%s\"" sender_alias));
+      check bool "audit-log has observed_envelope_version=1" true
+        (contains log_content "\"observed_envelope_version\":1");
+      check bool "audit-log has pinned_min_envelope_version=2" true
+        (contains log_content "\"pinned_min_envelope_version\":2")))
+
 (* --- liveness self-heal: respawn-under-new-pid (slice/liveness-respawn-pid) --- *)
 
 (* Pick a pid value that's almost certainly not in the process table.
@@ -10578,6 +10759,14 @@ let () =
               test_slice_b_tofu_mismatch_rejects
           ; test_case "[CRIT-1 Slice B] TOFU legacy v1 (no from_ed25519) preserves existing path" `Quick
               test_slice_b_tofu_legacy_v1_no_field_accepts_no_tofu_update
+          ; test_case "[CRIT-1 Slice B-min-version] v2 first-contact bumps min to 2" `Quick
+              test_slice_bmv_first_contact_v2_sets_min_2
+          ; test_case "[CRIT-1 Slice B-min-version] v1 after pinned min=2 rejected" `Quick
+              test_slice_bmv_v1_rejected_after_v2_pin
+          ; test_case "[CRIT-1 Slice B-min-version] v1→v2→v1 sequence: third v1 rejects" `Quick
+              test_slice_bmv_v1_then_v2_then_v1_rejects
+          ; test_case "[CRIT-1 Slice B-min-version] reject emits broker.log audit line" `Quick
+              test_slice_bmv_audit_log_emitted_on_reject
           ; test_case "tools/call register allows takeover of pidless stale alias (Bug #7)" `Quick
               test_tools_call_register_allows_takeover_of_pidless_stale_alias
          ; test_case "tools/call register returns collision_exhausted when all primes taken" `Quick
