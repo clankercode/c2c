@@ -568,6 +568,18 @@ prefix ensures the recipient knows who actually authored the work.
 Coord then routes follow-up DMs based on the body, not just the
 `from_alias` field.
 
+**Caveat (Pattern 12.1) — `c2c whoami` does not refute Pattern 12.**
+A subagent calling `c2c whoami` (or `mcp__c2c__whoami`) will see the
+**parent's** alias because the subagent inherited the parent's MCP
+session — that's exactly the symptom Pattern 12 documents, not a
+refutation of it. Reasoning "whoami says X, therefore I AM X, so the
+prefix is unnecessary" misreads the symptom as authoritative. The
+subagent's *work attribution* does not change with the broker's
+session resolution: the broker is reporting *whose session this is*,
+not *who authored the work*. Use the prefix anyway — it's the only
+signal the recipient has that authorship and session-identity have
+diverged.
+
 ### Author-side counterpart
 
 When YOUR subagent reports back about a DM it sent, double-check
@@ -588,6 +600,16 @@ caught the misattribution itself and sent a correction follow-up.
 Cairn flagged the leak in real-time and asked for a runbook entry.
 Full finding (with M2/M3 deferred mitigation ladder):
 `.collab/findings/2026-04-29T15-21-00Z-slate-coder-subagent-mcp-session-inherit-author-attribution.md`.
+
+**Amendment receipt (Pattern 12.1, 2026-04-29 ~15:30Z)**: the
+doc-slice that introduced Pattern 12 (`971fa66d`, cherry-picked to
+master at `6568344f`) was itself shipped by a subagent that declined
+the prefix convention on the rationale "`c2c whoami` says
+slate-coder so I AM slate-coder." That's exactly the
+symptom-as-authoritative misread the original Pattern 12 prose
+didn't make load-bearing-explicit; slate-coder (parent) sent a
+follow-up correction DM, and Cairn greenlit this amendment to close
+the gap.
 
 ---
 
