@@ -141,7 +141,7 @@ def render_payload(
         return message
     attrs = [f"event={quoteattr(event)}", f"from={quoteattr(sender)}"]
     if alias:
-        attrs.append(f"alias={quoteattr(alias)}")
+        attrs.append(f"to={quoteattr(alias)}")
     if source:
         attrs.append(f"source={quoteattr(source)}")
     if source_tool:
