@@ -1127,7 +1127,7 @@ let test_probed_capabilities_for_opencode_include_plugin () =
   check (list string) "opencode capability set"
     [ "opencode_plugin" ] caps
 
-let test_probed_capabilities_for_kimi_include_wire () =
+let test_probed_capabilities_for_kimi () =
   let caps =
     C2c_start.probed_capabilities ~client:"kimi" ~binary_path:"/bin/true"
   in
@@ -2736,8 +2736,8 @@ let () =
             `Quick, test_probed_capabilities_for_claude_include_channel )
         ; ( "probed_capabilities_for_opencode_include_plugin",
             `Quick, test_probed_capabilities_for_opencode_include_plugin )
-        ; ( "probed_capabilities_for_kimi_include_wire",
-            `Quick, test_probed_capabilities_for_kimi_include_wire )
+        ; ( "probed_capabilities_for_kimi",
+            `Quick, test_probed_capabilities_for_kimi )
         ; ( "check_pty_inject_capability_ok_when_yama_zero",
             `Quick, test_check_pty_inject_capability_ok_when_yama_zero )
         ; ( "check_pty_inject_capability_ok_when_getcap_has_ptrace",

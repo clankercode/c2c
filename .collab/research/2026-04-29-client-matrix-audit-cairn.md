@@ -85,14 +85,14 @@ The two are kept in sync by hand. **Drift risk** — see Gap 1 below.
 
 | Aspect | Value |
 | --- | --- |
-| Delivery | Wire bridge — kimi spawned with `--mcp-config-file` pointing at a per-instance JSON; OCaml wire daemon polls broker and pushes via JSON-RPC over the wire |
+| Delivery | File-based notification store — `C2c_kimi_notifier` writes inbound c2c messages into kimi's on-disk notification store; kimi reads them on its own cadence. No wire bridge, no PTY injection. Replaces the deprecated wire-bridge path (post-Slice-4, 2026-04-29). |
 | `needs_deliver` | false |
-| `needs_wire_daemon` | true |
+| `needs_wire_daemon` | false (notification-store path; the legacy `needs_wire_daemon=true` claim was retired with Slice 4) |
 | `needs_poker` | true (`poker_event = "heartbeat"`, `poker_from = "kimi-poker"`) |
-| Inbox drain | wire daemon prompt-injection; poker keeps the agent active when idle |
+| Inbox drain | notification-store reader on kimi's own cadence; poker keeps the agent active when idle |
 | Restart | `c2c restart kimi`; legacy PTY deliver path is deprecated (CLAUDE.md). Per-instance MCP config is rewritten on every launch by `build_start_args` (2803). |
 | Install scope | user-global `~/.kimi/mcp.json` (written by `c2c install kimi`). At `start` time, `KimiAdapter.build_start_args` writes a *second* per-instance config to `instance_dir/<name>/...` and prepends `--mcp-config-file <path>` unless extra_args already has one. |
-| Footguns | (a) **Resume not supported** — `?resume_session_id:_` is ignored (2791); kimi has no CLI session-resume flag. Restart effectively starts a fresh agent each time (relies on memory + room history). (b) **No PTY input** — direct `/dev/pts/<N>` slave writes display text without submitting (CLAUDE.md). Wire bridge sidesteps this; if wire daemon dies, no fallback. (c) `KIMI_SESSION_ID` (`session_id_env`) collides with parent `CLAUDE_SESSION_ID` if launched from inside Claude Code without explicit override. CLAUDE.md documents this (kimi-probe pattern). (d) Two install configs (~/.kimi/mcp.json AND per-instance) means drift if one is updated without the other. (e) Long history of idle-delivery gaps (multiple 2026-04-13/14 findings); kimi-wire-bridge marked "live-proof" 2026-04-14 but fragile. |
+| Footguns | (a) **Resume not supported** — `?resume_session_id:_` is ignored (2791). Restart effectively starts a fresh agent each time (relies on memory + room history). (b) **No PTY input** — direct `/dev/pts/<N>` slave writes display text without submitting (CLAUDE.md). The notification-store path sidesteps this entirely. (c) `KIMI_SESSION_ID` (`session_id_env`) collides with parent `CLAUDE_SESSION_ID` if launched from inside Claude Code without explicit override. CLAUDE.md documents this (kimi-probe pattern). (d) Two install configs (~/.kimi/mcp.json AND per-instance) means drift if one is updated without the other. (e) Long history of idle-delivery gaps (multiple 2026-04-13/14 findings) preceded the migration off the wire bridge; the notification-store path (live 2026-04-29) is the current canonical mitigation. |
 | Test coverage | weak: kimi appears in test_clean_stale fixtures (2102) only — **no direct adapter unit test** for KimiAdapter.build_start_args or refresh_identity. |
 
 ### gemini (GeminiAdapter @ 2825)
@@ -174,7 +174,7 @@ where load-bearing flags (`--xml-input-fd`, three server-request fds)
 bypass the adapter contract entirely. Even its `refresh_identity` is a
 no-op while config-toml drift is a recurring complaint.
 
-Runner-up: kimi — fragile wire-bridge with no adapter test coverage.
+Runner-up: kimi — historical wire-bridge fragility (now migrated to the notification-store path post-Slice-4) with no adapter test coverage.
 
 ---
 

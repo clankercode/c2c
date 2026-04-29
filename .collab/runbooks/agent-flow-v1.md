@@ -75,7 +75,7 @@ Role frontmatter fields (all optional except `description`):
 | `description` | string | One-line role summary |
 | `role` | `primary` \| `subagent` \| `system` | Agent classification |
 | `compatible_clients` | string[] | e.g. `["opencode", "claude"]` — launch pre-flight check |
-| `required_capabilities` | string[] | e.g. `["mcp", "wire-bridge"]` — enforced at launch |
+| `required_capabilities` | string[] | e.g. `["mcp", "pty_inject"]` — enforced at launch |
 | `include` | string[] | Snippet names from `.c2c/snippets/<name>.md` to prepend to body |
 | `c2c.alias` | string | Auto-register alias |
 | `c2c.auto_join_rooms` | string[] | Rooms to join on startup |
