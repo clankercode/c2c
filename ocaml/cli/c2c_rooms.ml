@@ -55,11 +55,42 @@ let rooms_send_cmd =
     Cmdliner.Arg.(value & flag & info [ "no-warn-substitution" ]
       ~doc:"Suppress the shell-substitution warning.")
   in
+  (* #392 slice 4: visual-indicator tags. Mutually exclusive — fail/blocking/urgent.
+     CLI exits 124 (bad-arg) if multiple are passed. *)
+  let fail_flag =
+    Cmdliner.Arg.(value & flag & info [ "fail" ]
+      ~doc:"Tag the room broadcast as #392 'fail' — recipients see '🔴 FAIL: ' prefix in their transcript. Mutually exclusive with --blocking / --urgent.")
+  in
+  let blocking_flag =
+    Cmdliner.Arg.(value & flag & info [ "blocking" ]
+      ~doc:"Tag the room broadcast as #392 'blocking' — recipients see '⛔ BLOCKING: ' prefix in their transcript. Mutually exclusive with --fail / --urgent.")
+  in
+  let urgent_flag =
+    Cmdliner.Arg.(value & flag & info [ "urgent" ]
+      ~doc:"Tag the room broadcast as #392 'urgent' — recipients see '⚠️ URGENT: ' prefix in their transcript. Mutually exclusive with --fail / --blocking.")
+  in
   let+ json = json_flag
   and+ room_id = room_id
   and+ message = message
   and+ from_override = from_override
-  and+ no_warn_substitution = no_warn_substitution in
+  and+ no_warn_substitution = no_warn_substitution
+  and+ fail_flag = fail_flag
+  and+ blocking_flag = blocking_flag
+  and+ urgent_flag = urgent_flag in
+  (* Mutex check: at most one of --fail/--blocking/--urgent. *)
+  let tag =
+    let flags = List.filter_map (fun (set, name) -> if set then Some name else None)
+      [ (fail_flag, "fail"); (blocking_flag, "blocking"); (urgent_flag, "urgent") ]
+    in
+    match flags with
+    | [] -> None
+    | [ t ] -> Some t
+    | _ ->
+        Printf.eprintf
+          "error: --fail / --blocking / --urgent are mutually exclusive (got: %s)\n%!"
+          (String.concat ", " flags);
+        exit 124
+  in
   let broker = Broker.create ~root:(resolve_broker_root ()) in
   let from_alias = resolve_alias_with_broker ?override:from_override broker in
   let content = String.concat " " message in
@@ -77,7 +108,7 @@ let rooms_send_cmd =
   let output_mode = if json then Json else Human in
   (try
      let result =
-       Broker.send_room broker ~from_alias ~room_id ~content
+       Broker.send_room ?tag broker ~from_alias ~room_id ~content
      in
      match output_mode with
      | Json ->

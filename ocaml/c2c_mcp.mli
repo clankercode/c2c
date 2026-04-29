@@ -254,6 +254,31 @@ module Broker : sig
       for [session_id] by `deferrable` flag, grouped by sender alias.
       [min_ts] filters by drained_at >= ts; [last_n] caps to most-recent
       N entries. Measures sender intent, not delivery actuals. *)
+  type tag_sender_count =
+    { ts_alias : string
+    ; ts_total : int
+    ; ts_fail : int
+    ; ts_blocking : int
+    ; ts_urgent : int
+    ; ts_untagged : int
+    }
+  type tag_histogram_result =
+    { th_total : int
+    ; th_fail : int
+    ; th_blocking : int
+    ; th_urgent : int
+    ; th_untagged : int
+    ; th_by_sender : tag_sender_count list
+    }
+  val tag_histogram :
+    t -> session_id:string -> ?min_ts:float -> ?last_n:int -> unit ->
+    tag_histogram_result
+  (** [tag_histogram] (#392 slice 5) counts archived inbound messages
+      for [session_id] by recovered #392 tag (fail / blocking / urgent /
+      untagged), grouped by sender alias. Same window args + same
+      sender-intent caveat as [delivery_mode_histogram]: tag is detected
+      from the body prefix at archive-write time. Useful for "is anyone
+      DOSing me with FAIL?" audits. *)
   type liveness_state = Alive | Dead | Unknown
   val registration_liveness_state : registration -> liveness_state
   val int_opt_member : string -> Yojson.Safe.t -> int option
@@ -295,7 +320,14 @@ module Broker : sig
   val append_room_history : t -> room_id:string -> from_alias:string -> content:string -> float
   val read_room_history : t -> room_id:string -> limit:int -> ?since:float -> unit -> room_message list
   type send_room_result = { sr_delivered_to : string list; sr_skipped : string list; sr_ts : float }
-  val send_room : t -> from_alias:string -> room_id:string -> content:string -> send_room_result
+  val send_room : ?tag:string -> t -> from_alias:string -> room_id:string -> content:string -> send_room_result
+  (** [send_room ?tag t ~from_alias ~room_id ~content] enqueues [content]
+      to every member of [room_id] except [from_alias]. When [?tag] is
+      supplied (one of "fail", "blocking", "urgent" — see
+      [parse_send_tag]), each recipient's inbox row content is prefixed
+      with [tag_to_body_prefix] so the visual indicator surfaces in the
+      transcript. History stores BARE content (no prefix) for stable
+      dedup + replay semantics. (#392 slice 4) *)
   type room_info = { ri_room_id : string; ri_member_count : int; ri_members : string list; ri_alive_member_count : int; ri_dead_member_count : int; ri_unknown_member_count : int; ri_member_details : room_member_info list; ri_visibility : room_visibility; ri_invited_members : string list }
   and room_member_info = { rmi_alias : string; rmi_session_id : string; rmi_alive : bool option }
   val list_rooms : t -> room_info list

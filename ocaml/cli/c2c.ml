@@ -6388,11 +6388,168 @@ let delivery_mode = Cmdliner.Cmd.v
              Counts measure sender intent, not delivery actuals.")
     delivery_mode_cmd
 
+(* --- subcommand: doctor tags (#392 slice 5) ----------------------------- *)
+
+let tags_doctor_cmd =
+  let open Cmdliner in
+  let alias_flag =
+    Arg.(value & opt (some string) None & info ["alias"; "a"] ~docv:"ALIAS"
+           ~doc:"Recipient alias whose archive to histogram. Defaults to the \
+                 caller's MCP-session alias (C2C_MCP_AUTO_REGISTER_ALIAS).")
+  in
+  let since_flag =
+    Arg.(value & opt (some string) None & info ["since"] ~docv:"DUR"
+           ~doc:"Window of time, e.g. 1h, 30m, 7d. Default: 24h when --last \
+                 is also unset.")
+  in
+  let last_flag =
+    Arg.(value & opt (some int) None & info ["last"] ~docv:"N"
+           ~doc:"Window of last N most-recent messages. Combines with --since \
+                 (--since wins when both bound the result).")
+  in
+  let json_flag = Arg.(value & flag & info ["json"]
+                         ~doc:"Output machine-readable JSON.") in
+  let+ alias_opt = alias_flag
+  and+ since_opt = since_flag
+  and+ last_opt = last_flag
+  and+ json_out = json_flag in
+  let alias =
+    match alias_opt with
+    | Some a -> a
+    | None ->
+        match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
+        | Some a when String.trim a <> "" -> String.trim a
+        | _ ->
+            Printf.eprintf "error: --alias is required (no \
+                            C2C_MCP_AUTO_REGISTER_ALIAS in env)\n%!";
+            exit 1
+  in
+  let since_str_default =
+    match since_opt, last_opt with
+    | Some _, _ | None, Some _ -> since_opt
+    | None, None -> Some "24h"
+  in
+  let min_ts =
+    match since_str_default with
+    | None -> None
+    | Some s ->
+        match C2c_stats.parse_duration s with
+        | Some secs -> Some (Unix.gettimeofday () -. secs)
+        | None ->
+            Printf.eprintf "error: --since must be Nm|Nh|Nd (got %S)\n%!" s;
+            exit 1
+  in
+  let root = resolve_broker_root () in
+  let broker = C2c_mcp.Broker.create ~root in
+  let session_id =
+    match C2c_mcp.Broker.list_registrations broker
+          |> List.find_opt (fun r -> r.C2c_mcp.alias = alias) with
+    | Some reg -> reg.C2c_mcp.session_id
+    | None ->
+        Printf.eprintf "error: alias %S not registered\n%!" alias;
+        exit 1
+  in
+  let result =
+    C2c_mcp.Broker.tag_histogram broker ~session_id
+      ?min_ts ?last_n:last_opt ()
+  in
+  let total = result.C2c_mcp.Broker.th_total in
+  let fail = result.C2c_mcp.Broker.th_fail in
+  let blocking = result.C2c_mcp.Broker.th_blocking in
+  let urgent = result.C2c_mcp.Broker.th_urgent in
+  let untagged = result.C2c_mcp.Broker.th_untagged in
+  let pct n =
+    if total = 0 then 0.0
+    else 100.0 *. float_of_int n /. float_of_int total
+  in
+  if json_out then begin
+    let window =
+      let base = [("messages", `Int total)] in
+      let with_since = match since_str_default with
+        | Some s -> ("since", `String s) :: base
+        | None -> base
+      in
+      let with_last = match last_opt with
+        | Some n -> ("last", `Int n) :: with_since
+        | None -> with_since
+      in
+      `Assoc with_last
+    in
+    let by_sender =
+      `List (List.map (fun s ->
+          `Assoc
+            [ ("alias", `String s.C2c_mcp.Broker.ts_alias)
+            ; ("total", `Int s.ts_total)
+            ; ("fail", `Int s.ts_fail)
+            ; ("blocking", `Int s.ts_blocking)
+            ; ("urgent", `Int s.ts_urgent)
+            ; ("untagged", `Int s.ts_untagged)
+            ])
+          result.th_by_sender)
+    in
+    let obj = `Assoc
+      [ ("alias", `String alias)
+      ; ("window", window)
+      ; ("counts", `Assoc
+            [ ("fail", `Int fail)
+            ; ("blocking", `Int blocking)
+            ; ("urgent", `Int urgent)
+            ; ("untagged", `Int untagged)
+            ])
+      ; ("by_sender", by_sender)
+      ; ("caveats", `List
+            [ `String "sender_intent_not_actuals"
+            ; `String "tag_recovered_from_body_prefix"
+            ; `String "ephemeral_excluded"
+            ])
+      ]
+    in
+    print_endline (Yojson.Safe.to_string obj)
+  end else begin
+    let window_label =
+      match since_str_default, last_opt with
+      | Some s, Some n -> Printf.sprintf "last %s, capped to %d" s n
+      | Some s, None -> Printf.sprintf "last %s" s
+      | None, Some n -> Printf.sprintf "last %d messages" n
+      | None, None -> "all archived"
+    in
+    Printf.printf "Tag histogram for %s (%s, %d archived messages)\n\n"
+      alias window_label total;
+    Printf.printf "🔴 FAIL:      %5d  (%5.1f%%)\n" fail (pct fail);
+    Printf.printf "⛔ BLOCKING:  %5d  (%5.1f%%)\n" blocking (pct blocking);
+    Printf.printf "⚠️  URGENT:    %5d  (%5.1f%%)\n" urgent (pct urgent);
+    Printf.printf "untagged:    %5d  (%5.1f%%)\n\n" untagged (pct untagged);
+    if result.th_by_sender = [] then
+      Printf.printf "(no senders in window)\n"
+    else begin
+      Printf.printf "By sender:\n";
+      Printf.printf "  %-22s %6s  %5s  %8s  %6s  %6s\n"
+        "ALIAS" "TOTAL" "FAIL" "BLOCKING" "URGENT" "(none)";
+      List.iter (fun s ->
+          Printf.printf "  %-22s %6d  %5d  %8d  %6d  %6d\n"
+            s.C2c_mcp.Broker.ts_alias s.ts_total s.ts_fail s.ts_blocking
+            s.ts_urgent s.ts_untagged)
+        result.th_by_sender
+    end;
+    Printf.printf "\nNOTE: counts measure sender intent (#392 body-prefix \
+                   at archive-write time), not delivery actuals or \
+                   recipient acknowledgement. Ephemeral messages (#284) \
+                   are not archived and not counted. See #392 design doc \
+                   for the tag contract.\n"
+  end
+
+let tags_doctor = Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "tags"
+       ~doc:"Histogram of an alias's recent inbox by #392 tag (fail / \
+             blocking / urgent / untagged). Counts measure sender intent, \
+             not delivery actuals. Mirror of `c2c doctor delivery-mode`.")
+    tags_doctor_cmd
+
 let doctor = Cmdliner.Cmd.group
     ~default:doctor_cmd
     (Cmdliner.Cmd.info "doctor"
        ~doc:"Health snapshot + push-pending analysis (for Max / human operators).")
-    [ doctor_docs_drift; monitor_leak; delivery_mode; relay_mesh;
+    [ doctor_docs_drift; monitor_leak; delivery_mode; relay_mesh; tags_doctor;
       C2c_opencode_plugin_drift.opencode_plugin_drift_cmd ]
 
 (* --- subcommand: stats ---------------------------------------------------- *)

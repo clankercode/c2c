@@ -1942,6 +1942,93 @@ module Broker = struct
     in
     { dmh_total = total; dmh_push = push; dmh_poll = poll; dmh_by_sender = by_sender }
 
+  (* #392 slice 5: tag histogram. Mirror of delivery_mode_histogram but
+     buckets archived inbound messages by recovered #392 tag (fail /
+     blocking / urgent / none) instead of by deferrable flag. Like the
+     delivery-mode counterpart this measures sender INTENT (the prefix
+     present at archive-write time), not delivery actuals. *)
+  type tag_sender_count =
+    { ts_alias : string
+    ; ts_total : int
+    ; ts_fail : int
+    ; ts_blocking : int
+    ; ts_urgent : int
+    ; ts_untagged : int
+    }
+
+  type tag_histogram_result =
+    { th_total : int
+    ; th_fail : int
+    ; th_blocking : int
+    ; th_urgent : int
+    ; th_untagged : int
+    ; th_by_sender : tag_sender_count list
+    }
+
+  let tag_histogram t ~session_id ?min_ts ?last_n () =
+    let limit = match last_n with
+      | Some n when n > 0 -> n
+      | Some _ -> 0
+      | None -> max_int / 2
+    in
+    let entries = read_archive t ~session_id ~limit in
+    let entries = match min_ts with
+      | Some ts -> List.filter (fun e -> e.ae_drained_at >= ts) entries
+      | None -> entries
+    in
+    let bucket_of_content c =
+      match extract_tag_from_content c with
+      | Some "fail" -> `Fail
+      | Some "blocking" -> `Blocking
+      | Some "urgent" -> `Urgent
+      | _ -> `None
+    in
+    let total = List.length entries in
+    let count_bucket pred =
+      List.length (List.filter (fun e -> pred (bucket_of_content e.ae_content)) entries)
+    in
+    let fail = count_bucket (function `Fail -> true | _ -> false) in
+    let blocking = count_bucket (function `Blocking -> true | _ -> false) in
+    let urgent = count_bucket (function `Urgent -> true | _ -> false) in
+    let untagged = count_bucket (function `None -> true | _ -> false) in
+    (* By-sender breakdown: tuple = (fail, blocking, urgent, untagged). *)
+    let counts : (string, int * int * int * int) Hashtbl.t = Hashtbl.create 16 in
+    let order = ref [] in
+    List.iter
+      (fun e ->
+        let a = e.ae_from_alias in
+        let (f, b, u, n) =
+          match Hashtbl.find_opt counts a with
+          | Some quad -> quad
+          | None -> order := a :: !order; (0, 0, 0, 0)
+        in
+        let updated =
+          match bucket_of_content e.ae_content with
+          | `Fail -> (f + 1, b, u, n)
+          | `Blocking -> (f, b + 1, u, n)
+          | `Urgent -> (f, b, u + 1, n)
+          | `None -> (f, b, u, n + 1)
+        in
+        Hashtbl.replace counts a updated)
+      entries;
+    let by_sender =
+      List.rev_map
+        (fun a ->
+          let (f, b, u, n) = Hashtbl.find counts a in
+          { ts_alias = a; ts_total = f + b + u + n; ts_fail = f
+          ; ts_blocking = b; ts_urgent = u; ts_untagged = n })
+        !order
+    in
+    let by_sender =
+      List.sort
+        (fun a b ->
+          let c = compare b.ts_total a.ts_total in
+          if c <> 0 then c else compare a.ts_alias b.ts_alias)
+        by_sender
+    in
+    { th_total = total; th_fail = fail; th_blocking = blocking
+    ; th_urgent = urgent; th_untagged = untagged; th_by_sender = by_sender }
+
   (* Skip the file write when the inbox is already empty. This keeps
      close_write events out of inotify streams — every tool call that
      auto-drains would otherwise fire a noisy event on an idle inbox,
@@ -2560,7 +2647,17 @@ module Broker = struct
             output_char oc '\n'));
     ts
 
-  let fan_out_room_message t ~room_id ~from_alias ~content =
+  let fan_out_room_message ?(tag : string option) t ~room_id ~from_alias ~content =
+    (* #392 slice 4: optional tag → per-recipient body prefix. The prefix
+       lands in the inbox row only, NOT in [content] passed to history
+       dedup at the [send_room] caller. This keeps "same body, different
+       tag" from bypassing dedup (sender re-tagging an already-sent
+       message should still be dropped) while letting each recipient
+       transcript surface the visual indicator. *)
+    let prefixed_content = match tag with
+      | Some t when t <> "" -> tag_to_body_prefix (Some t) ^ content
+      | _ -> content
+    in
     let members =
       with_room_members_lock t ~room_id (fun () ->
           load_room_members t ~room_id)
@@ -2579,7 +2676,7 @@ module Broker = struct
                     with_inbox_lock t ~session_id (fun () ->
                         let current = load_inbox t ~session_id in
                         let next =
-                          current @ [ { from_alias; to_alias = tagged_to; content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false } ]
+                          current @ [ { from_alias; to_alias = tagged_to; content = prefixed_content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false } ]
                         in
                         save_inbox t ~session_id next);
                     delivered := m.rm_alias :: !delivered
@@ -2975,10 +3072,15 @@ module Broker = struct
   (* Suppress byte-identical repeat messages from the same sender within this window. *)
   let room_send_dedup_window_s = 60.0
 
-  let send_room t ~from_alias ~room_id ~content =
+  let send_room ?(tag : string option) t ~from_alias ~room_id ~content =
     if not (valid_room_id room_id) then
       invalid_arg ("invalid room_id: " ^ room_id);
-    (* Dedup: skip if the same sender just sent the same content within the window. *)
+    (* Dedup: skip if the same sender just sent the same content within the window.
+       #392 slice 4 note: we dedup on BARE content (pre-prefix) so that
+       sender re-tagging an already-sent message ("BLOCKING:" instead of
+       no tag, or "URGENT:" instead of "BLOCKING:") still counts as a
+       duplicate. Tag is purely a presentation concern; the message body
+       is what defines "same message." *)
     let now = Unix.gettimeofday () in
     let recent = read_room_history t ~room_id ~limit:20 () in
     let is_dup =
@@ -2992,14 +3094,20 @@ module Broker = struct
     if is_dup then
       { sr_delivered_to = []; sr_skipped = []; sr_ts = now }
     else begin
-    (* Step 1: append to history (under history lock, released before fan-out) *)
+    (* Step 1: append to history (under history lock, released before fan-out).
+       History stores BARE content; the per-recipient prefix lives only in
+       inbox rows so it's surfaced in the recipient's transcript without
+       double-prefixing on a future history-replay. *)
     let ts = append_room_history_unchecked t ~room_id ~from_alias ~content in
     (* Step 2: fan out to each member except sender. For each recipient,
        take registry_lock -> inbox_lock (existing lock order) and enqueue
        with to_alias tagged as "<alias>#<room_id>" so the recipient can
-       distinguish room messages from direct messages. *)
+       distinguish room messages from direct messages. The optional [tag]
+       prefixes the per-recipient content with [tag_to_body_prefix] so the
+       receiving agent sees "🔴 FAIL: ...", "⛔ BLOCKING: ...", or
+       "⚠️ URGENT: ..." at the head of the transcript line. *)
     let delivered, skipped =
-      fan_out_room_message t ~room_id ~from_alias ~content
+      fan_out_room_message ?tag t ~room_id ~from_alias ~content
     in
     { sr_delivered_to = delivered
     ; sr_skipped = skipped
@@ -3557,9 +3665,9 @@ let base_tool_definitions =
       ~required:["room_id"]
       ~properties:[ prop "room_id" "Room to delete." ]
   ; tool_definition ~name:"send_room"
-      ~description:"Send a message to a persistent N:N room. Appends to room history and fans out to every member's inbox except the sender, with to_alias tagged as '<alias>#<room_id>'. The sender alias is resolved from the current MCP session when possible; `from_alias` remains a legacy fallback. Returns JSON {delivered_to, skipped, ts}."
+      ~description:"Send a message to a persistent N:N room. Appends to room history and fans out to every member's inbox except the sender, with to_alias tagged as '<alias>#<room_id>'. The sender alias is resolved from the current MCP session when possible; `from_alias` remains a legacy fallback. Optional `tag` (one of \"fail\", \"blocking\", \"urgent\") prepends a #392 visual indicator (🔴 FAIL: / ⛔ BLOCKING: / ⚠️ URGENT:) to each recipient's inbox row body so the salience surfaces in the transcript. Tag is presentation-only — history stores bare content for stable dedup. Returns JSON {delivered_to, skipped, ts}."
       ~required:["room_id"; "content"]
-      ~properties:[ prop "room_id" "Target room."; prop "content" "Message body."; prop "alias" "Legacy fallback sender alias (deprecated)." ]
+      ~properties:[ prop "room_id" "Target room."; prop "content" "Message body."; prop "alias" "Legacy fallback sender alias (deprecated)."; prop "tag" "Optional #392 visual indicator: \"fail\", \"blocking\", or \"urgent\". Recipients see the corresponding emoji+keyword prefix in their transcript. Unknown values rejected." ]
   ; tool_definition ~name:"list_rooms"
       ~description:"List all persistent rooms with member counts and member aliases. Returns a JSON array of {room_id, member_count, members}."
       ~required:[]
@@ -5366,6 +5474,17 @@ let ts = Unix.gettimeofday () in
   | "send_room" ->
       let room_id = string_member "room_id" arguments in
       let content = string_member "content" arguments in
+      (* #392 slice 4: optional tag arg. parse_send_tag normalizes
+         None / "" → Ok None and validates known values. *)
+      let raw_tag =
+        match Yojson.Safe.Util.member "tag" arguments with
+        | `String s -> Some s
+        | _ -> None
+      in
+      (match parse_send_tag raw_tag with
+       | Error msg ->
+           Lwt.return (tool_result ~content:msg ~is_error:true)
+       | Ok parsed_tag ->
       (match alias_for_current_session_or_argument ?session_id_override broker arguments with
        | None -> Lwt.return (missing_sender_alias_result "send_room")
        | Some from_alias ->
@@ -5386,7 +5505,7 @@ let ts = Unix.gettimeofday () in
                 let session_id = resolve_session_id ?session_id_override arguments in
                 Broker.touch_session broker ~session_id;
                 let { Broker.sr_delivered_to; sr_skipped; sr_ts } =
-                  Broker.send_room broker ~from_alias ~room_id ~content
+                  Broker.send_room ?tag:parsed_tag broker ~from_alias ~room_id ~content
                 in
                 let result_json =
                   `Assoc
@@ -5398,7 +5517,7 @@ let ts = Unix.gettimeofday () in
                     ]
                   |> Yojson.Safe.to_string
                 in
-                Lwt.return (tool_result ~content:result_json ~is_error:false)))
+                Lwt.return (tool_result ~content:result_json ~is_error:false))))
   | "list_rooms" ->
       let rooms = Broker.list_rooms broker in
       (* H2 rooms-acl: filter invite-only rooms the caller can't see.
