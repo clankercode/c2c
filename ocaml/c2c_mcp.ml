@@ -293,6 +293,47 @@ let tool_result ~content ~is_error =
     ; ("isError", `Bool is_error)
     ]
 
+(* Smart constructors for the common tool_result shapes (audit 2026-04-29 §4).
+   Cuts ~50 raw [tool_result ~content:... ~is_error:...] sites down to
+   one-arg helpers; messages stay readable, the boilerplate goes. *)
+let tool_ok content = tool_result ~content ~is_error:false
+let tool_err content = tool_result ~content ~is_error:true
+
+(* Default TTL (seconds) for a pending permission request when
+   C2C_PERMISSION_TTL is unset or unparseable. Used by the
+   open_pending_reply handler. Audit 2026-04-29 §5. *)
+let default_permission_ttl_s = 600.0
+
+(* Shared memory-helpers used by memory_list / memory_read / memory_write
+   (audit 2026-04-29 §2). Previously duplicated three times inside
+   handle_tool_call (~75 LOC). The first dup also tripped warning 26 on an
+   unused [entry_path]. Lifted here so all three handlers share one source. *)
+let memory_base_dir alias =
+  let git_dir =
+    let ic = Unix.open_process_in "git rev-parse --git-common-dir 2>/dev/null" in
+    try
+      let line = input_line ic in
+      ignore (Unix.close_process_in ic);
+      Some line
+    with _ -> ignore (Unix.close_process_in ic); None
+  in
+  let base = match git_dir with
+    | Some d -> Filename.dirname d
+    | None -> Sys.getcwd ()
+  in
+  Filename.concat (Filename.concat base ".c2c") "memory" |> fun d -> Filename.concat d alias
+
+let memory_entry_path alias name =
+  let safe = Stdlib.String.map (fun c ->
+    match c with
+    | ' ' | '/' | '\\' | ':' | '"' | '\'' -> '_'
+    | _ -> let code = Char.code c in
+           if (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code = 95 || code = 45
+           then c else '_')
+    name
+  in
+  Filename.concat (memory_base_dir alias) (safe ^ ".md")
+
 (* Property schema helpers for tool inputSchema declarations *)
 let prop name description =
   (name, `Assoc [("type", `String "string"); ("description", `String description)])
@@ -894,7 +935,10 @@ module Broker = struct
     let signers_path = Filename.concat t.root "allowed_signers" in
     try
       mkdir_p ~mode:0o700 keys_dir;
-      let id = Relay_identity.load_or_create_at ~path:priv_path ~alias_hint:alias in
+      (* Relay_identity.load_or_create_at is called for its side effect (creating
+         SSH key files on disk); the returned id is intentionally discarded.
+         Audit 2026-04-29 §6 (warning 26 cleanup). *)
+      let _id = Relay_identity.load_or_create_at ~path:priv_path ~alias_hint:alias in
       let ssh_priv_path = priv_path ^ ".ssh" in
       let ssh_pub_path = ssh_priv_path ^ ".pub" in
       if not (Sys.file_exists ssh_pub_path) then
@@ -4738,7 +4782,7 @@ let handle_tool_call ~(broker : Broker.t) ?session_id_override ~tool_name ~argum
                 else
                   "registered " ^ alias
               in
-              Lwt.return (tool_result ~content:response_content ~is_error:false)
+              Lwt.return (tool_ok response_content)
             end)
   | "list" ->
       let registrations = Broker.list_registrations broker in
@@ -4802,7 +4846,7 @@ let handle_tool_call ~(broker : Broker.t) ?session_id_override ~tool_name ~argum
                      ~is_error:true)
               | None ->
                  if from_alias = to_alias then
-                   Lwt.return (tool_result ~content:"error: cannot send a message to yourself" ~is_error:true)
+                   Lwt.return (tool_err "error: cannot send a message to yourself")
                  else
                  let deferrable =
                    try match Yojson.Safe.Util.member "deferrable" arguments with
@@ -4894,7 +4938,7 @@ let ts = Unix.gettimeofday () in
                  match effective_content with
                  | `Key_changed alias ->
                    let err = Printf.sprintf "send rejected: enc_status:key-changed — %s's x25519 key differs from known pin (possible relay tamper). Re-send after trust --repin %s." alias alias in
-                   Lwt.return (tool_result ~content:err ~is_error:true)
+                   Lwt.return (tool_err err)
                   | `Plain s | `Encrypted s ->
                     let self_pass_warning =
                       match check_self_pass_content ~from_alias content with
@@ -4956,7 +5000,7 @@ let ts = Unix.gettimeofday () in
                                 see broker.log for details)"
                              ~is_error:true)
                     | None, Some (`Reject msg) ->
-                        Lwt.return (tool_result ~content:("send rejected: " ^ msg) ~is_error:true)
+                        Lwt.return (tool_err ("send rejected: " ^ msg))
                     | None, (Some (`Warn _) | None) ->
                         Broker.enqueue_message broker ~from_alias ~to_alias ~content:s ~deferrable ~ephemeral ();
                         (match session_id_override with
@@ -5019,7 +5063,7 @@ let ts = Unix.gettimeofday () in
                           else receipt_fields
                         in
                         let receipt = `Assoc receipt_fields |> Yojson.Safe.to_string in
-                        Lwt.return (tool_result ~content:receipt ~is_error:false))))
+                        Lwt.return (tool_ok receipt))))
   | "send_all" ->
       let content = string_member "content" arguments in
       (match alias_for_current_session_or_argument ?session_id_override broker arguments with
@@ -5071,7 +5115,7 @@ let ts = Unix.gettimeofday () in
                     ]
                   |> Yojson.Safe.to_string
                 in
-                Lwt.return (tool_result ~content:result_json ~is_error:false)))
+                Lwt.return (tool_ok result_json)))
   | "whoami" ->
       let session_id = resolve_session_id ?session_id_override arguments in
       let reg_opt =
@@ -5092,7 +5136,7 @@ let ts = Unix.gettimeofday () in
   | "debug" ->
       let action = string_member "action" arguments in
       if not Build_flags.mcp_debug_tool_enabled then
-        Lwt.return (tool_result ~content:"unknown tool" ~is_error:true)
+        Lwt.return (tool_err "unknown tool")
       else
         (match action with
          | "send_msg_to_self" ->
@@ -5135,7 +5179,7 @@ let ts = Unix.gettimeofday () in
                  ]
                |> Yojson.Safe.to_string
              in
-             Lwt.return (tool_result ~content:result_json ~is_error:false)
+             Lwt.return (tool_ok result_json)
          | "send_raw_to_self" ->
              (* Like send_msg_to_self, but content is the payload string verbatim
                 — no JSON wrapping, no c2c_debug envelope. The body that arrives in
@@ -5184,7 +5228,7 @@ let ts = Unix.gettimeofday () in
                  ]
                |> Yojson.Safe.to_string
              in
-             Lwt.return (tool_result ~content:result_json ~is_error:false)
+             Lwt.return (tool_ok result_json)
           | "get_env" ->
               let prefix =
                 match optional_string_member "prefix" arguments with
@@ -5215,7 +5259,7 @@ let ts = Unix.gettimeofday () in
                 )
                 |> Yojson.Safe.to_string
               in
-              Lwt.return (tool_result ~content:result_json ~is_error:false)
+              Lwt.return (tool_ok result_json)
           | _ ->
               Lwt.return
                 (tool_result
@@ -5708,7 +5752,7 @@ let ts = Unix.gettimeofday () in
                     ]
                   |> Yojson.Safe.to_string
                 in
-                Lwt.return (tool_result ~content:result_json ~is_error:false))))
+                Lwt.return (tool_ok result_json))))
   | "list_rooms" ->
       let rooms = Broker.list_rooms broker in
       (* H2 rooms-acl: filter invite-only rooms the caller can't see.
@@ -5940,8 +5984,8 @@ let ts = Unix.gettimeofday () in
       let ttl_seconds =
         match Sys.getenv_opt "C2C_PERMISSION_TTL" with
         | Some v ->
-            (try float_of_string v with _ -> 600.0)
-        | None -> 600.0
+            (try float_of_string v with _ -> default_permission_ttl_s)
+        | None -> default_permission_ttl_s
       in
       let now = Unix.gettimeofday () in
       let pending : pending_permission =
@@ -6163,32 +6207,9 @@ let ts = Unix.gettimeofday () in
            in
             Lwt.return (tool_result ~content ~is_error:(not ok))))
   | "memory_list" ->
-      let memory_base_dir alias =
-        let git_dir =
-          let ic = Unix.open_process_in "git rev-parse --git-common-dir 2>/dev/null" in
-          try
-            let line = input_line ic in
-            ignore (Unix.close_process_in ic);
-            Some line
-          with _ -> ignore (Unix.close_process_in ic); None
-        in
-        let base = match git_dir with
-          | Some d -> Filename.dirname d
-          | None -> Sys.getcwd ()
-        in
-        Filename.concat (Filename.concat base ".c2c") "memory" |> fun d -> Filename.concat d alias
-      in
-      let entry_path alias name =
-        let safe = Stdlib.String.map (fun c ->
-          match c with
-          | ' ' | '/' | '\\' | ':' | '"' | '\'' -> '_'
-          | _ -> let code = Char.code c in
-                 if (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code = 95 || code = 45
-                 then c else '_')
-          name
-        in
-        Filename.concat (memory_base_dir alias) (safe ^ ".md")
-      in
+      (* memory_base_dir / memory_entry_path now lifted top-level (audit §2);
+         memory_list never used entry_path locally — that was the warning-26
+         source. *)
       (* parse_alias_list lifted to top-level (#296). *)
       let parse_frontmatter content =
         let lines = String.split_on_char '\n' content in
@@ -6283,32 +6304,8 @@ let ts = Unix.gettimeofday () in
            in
            Lwt.return (tool_result ~content:(`List items |> Yojson.Safe.to_string) ~is_error:false))
   | "memory_read" ->
-      let memory_base_dir alias =
-        let git_dir =
-          let ic = Unix.open_process_in "git rev-parse --git-common-dir 2>/dev/null" in
-          try
-            let line = input_line ic in
-            ignore (Unix.close_process_in ic);
-            Some line
-          with _ -> ignore (Unix.close_process_in ic); None
-        in
-        let base = match git_dir with
-          | Some d -> Filename.dirname d
-          | None -> Sys.getcwd ()
-        in
-        Filename.concat (Filename.concat base ".c2c") "memory" |> fun d -> Filename.concat d alias
-      in
-      let entry_path alias name =
-        let safe = Stdlib.String.map (fun c ->
-          match c with
-          | ' ' | '/' | '\\' | ':' | '"' | '\'' -> '_'
-          | _ -> let code = Char.code c in
-                 if (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code = 95 || code = 45
-                 then c else '_')
-          name
-        in
-        Filename.concat (memory_base_dir alias) (safe ^ ".md")
-      in
+      (* memory_base_dir / memory_entry_path lifted top-level (audit §2). *)
+      let entry_path = memory_entry_path in
       (* parse_alias_list lifted to top-level (#296). *)
       let parse_frontmatter content =
         let lines = String.split_on_char '\n' content in
@@ -6393,32 +6390,8 @@ let ts = Unix.gettimeofday () in
                  ] |> Yojson.Safe.to_string in
                  Lwt.return (tool_result ~content:result ~is_error:false))
   | "memory_write" ->
-      let memory_base_dir alias =
-        let git_dir =
-          let ic = Unix.open_process_in "git rev-parse --git-common-dir 2>/dev/null" in
-          try
-            let line = input_line ic in
-            ignore (Unix.close_process_in ic);
-            Some line
-          with _ -> ignore (Unix.close_process_in ic); None
-        in
-        let base = match git_dir with
-          | Some d -> Filename.dirname d
-          | None -> Sys.getcwd ()
-        in
-        Filename.concat (Filename.concat base ".c2c") "memory" |> fun d -> Filename.concat d alias
-      in
-      let entry_path alias name =
-        let safe = Stdlib.String.map (fun c ->
-          match c with
-          | ' ' | '/' | '\\' | ':' | '"' | '\'' -> '_'
-          | _ -> let code = Char.code c in
-                 if (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code = 95 || code = 45
-                 then c else '_')
-          name
-        in
-        Filename.concat (memory_base_dir alias) (safe ^ ".md")
-      in
+      (* memory_base_dir / memory_entry_path lifted top-level (audit §2). *)
+      let entry_path = memory_entry_path in
       let name = string_member "name" arguments in
       let desc = optional_string_member "description" arguments in
       let shared =
