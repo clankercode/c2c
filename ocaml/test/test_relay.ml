@@ -251,6 +251,111 @@ let test_relay_list_rooms_shows_all_with_counts () =
   let room2 = List.find (fun r -> json_get_string r "room_id" = "room-2") rooms in
   if json_get_int room2 "member_count" <> 1 then fail_fmt "room-2 should have 1 member"
 
+(* ---- #330 V1: cross_host_not_implemented error-path seam tests ---- *)
+
+(* Simulate the handle_send cross-host validation seam at InMemoryRelay level.
+   Matches relay.ml:3170-3191: split alias@host, check host_acceptable,
+   write dead_letter on rejection. This is the seam the forwarder (V2) will
+   replace with a relay-to-relay POST. *)
+let send_with_cross_host_check relay ~from_alias ~to_alias ~content =
+  let stripped, host_opt = Relay.split_alias_host to_alias in
+  let self_host = Relay.InMemoryRelay.self_host relay in
+  if not (Relay.host_acceptable ~self_host host_opt) then begin
+    (* Mirror relay.ml:3177-3187: generate dead_letter entry with reason
+       cross_host_not_implemented before returning the error. *)
+    let msg_id = Uuidm.to_string (Uuidm.v `V4) in
+    let ts = Unix.gettimeofday () in
+    let dl = `Assoc [
+      ("ts", `Float ts);
+      ("message_id", `String msg_id);
+      ("from_alias", `String from_alias);
+      ("to_alias", `String to_alias);
+      ("content", `String content);
+      ("reason", `String "cross_host_not_implemented");
+    ] in
+    Relay.InMemoryRelay.add_dead_letter relay dl;
+    `Cross_host_rejected
+      (Printf.sprintf "cross-host send to %S not supported (relay does not forward to other hosts)" to_alias)
+  end else
+    match Relay.InMemoryRelay.send relay ~from_alias ~to_alias:stripped ~content ~message_id:None with
+    | `Ok ts -> `Ok ts
+    | `Duplicate ts -> `Duplicate ts
+    | `Error (err, msg) -> `Error (err, msg)
+
+(* #330 V1 S6: back-compat bare alias send still works when self_host is set.
+   Regression test: setting self_host must NOT break bare-alias sends (the
+   host_acceptable check passes when host_opt=None, so bare alias → normal delivery). *)
+let test_cross_host_bare_alias_works_when_self_host_is_set () =
+  let relay = Relay.InMemoryRelay.create ~self_host:(Some "hostA") () in
+  let (_status_a, _lease_a) = Relay.InMemoryRelay.register relay
+    ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (_status_b, _lease_b) = Relay.InMemoryRelay.register relay
+    ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
+  (* bare alias send — host_opt=None, host_acceptable returns true regardless
+     of self_host, so this goes through as a normal local delivery *)
+  match send_with_cross_host_check relay
+    ~from_alias:"alice" ~to_alias:"bob" ~content:"hello bob" with
+  | `Cross_host_rejected reason ->
+      fail_fmt "bare alias 'bob' should NOT be rejected when self_host is set, got: %s" reason
+  | `Ok _ts ->
+      let inbox = Relay.InMemoryRelay.poll_inbox relay ~node_id:"n2" ~session_id:"s2" in
+      if List.length inbox <> 1 then fail_fmt "expected 1 message in bob's inbox, got %d" (List.length inbox);
+      Alcotest.(check string) "content" "hello bob" (json_get_string (List.hd inbox) "content");
+      Alcotest.(check string) "from_alias" "alice" (json_get_string (List.hd inbox) "from_alias")
+  | `Duplicate _ts -> fail_fmt "unexpected Duplicate for fresh bare-alias send"
+  | `Error (err, msg) -> fail_fmt "bare alias send failed: %s %s" err msg
+
+(* #330 V1 S2: alias@matching_self_host accepted, alias@unknown_host rejected.
+   When self_host=Some "hostA", bob@hostA is accepted (matching) and delivered
+   to bare alias "bob"; bob@hostZ is rejected with cross_host_not_implemented
+   and the rejection is written to dead_letter. *)
+let test_cross_host_alias_matching_self_host_accepted () =
+  let relay = Relay.InMemoryRelay.create ~self_host:(Some "hostA") () in
+  let (_status_a, _lease_a) = Relay.InMemoryRelay.register relay
+    ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (_status_b, _lease_b) = Relay.InMemoryRelay.register relay
+    ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
+  (* bob@hostA matches self_host=Some "hostA" — host_acceptable returns true,
+     send goes through to bare alias "bob" *)
+  match send_with_cross_host_check relay
+    ~from_alias:"alice" ~to_alias:"bob@hostA" ~content:"hello bob via hostA" with
+  | `Cross_host_rejected reason ->
+      fail_fmt "bob@hostA should be accepted (matches self_host), got: %s" reason
+  | `Ok _ts ->
+      let inbox = Relay.InMemoryRelay.poll_inbox relay ~node_id:"n2" ~session_id:"s2" in
+      if List.length inbox <> 1 then fail_fmt "expected 1 message, got %d" (List.length inbox);
+      Alcotest.(check string) "content" "hello bob via hostA"
+        (json_get_string (List.hd inbox) "content")
+  | `Duplicate _ts -> fail_fmt "unexpected Duplicate"
+  | `Error (err, msg) -> fail_fmt "bob@hostA send failed: %s %s" err msg
+
+let test_cross_host_alias_unknown_host_rejected () =
+  let relay = Relay.InMemoryRelay.create ~self_host:(Some "hostA") () in
+  let (_status_a, _lease_a) = Relay.InMemoryRelay.register relay
+    ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (_status_b, _lease_b) = Relay.InMemoryRelay.register relay
+    ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
+  (* bob@hostZ is unknown (hostZ != self_host="hostA") — host_acceptable
+     returns false, dead_letter is written, error is returned *)
+  match send_with_cross_host_check relay
+    ~from_alias:"alice" ~to_alias:"bob@hostZ" ~content:"hello bob via hostZ" with
+  | `Cross_host_rejected reason ->
+      if not (String.length reason > 0) then fail_fmt "expected non-empty rejection reason";
+      let dl = Relay.InMemoryRelay.dead_letter relay in
+      if List.length dl <> 1 then
+        fail_fmt "expected 1 dead_letter entry after cross-host rejection, got %d" (List.length dl);
+      let entry = List.hd dl in
+      Alcotest.(check string) "dead_letter reason" "cross_host_not_implemented"
+        (json_get_string entry "reason");
+      Alcotest.(check string) "dead_letter to_alias" "bob@hostZ"
+        (json_get_string entry "to_alias");
+      Alcotest.(check string) "dead_letter from_alias" "alice"
+        (json_get_string entry "from_alias");
+      Alcotest.(check bool) "rejection reason non-empty" true (String.length reason > 0)
+  | `Ok _ts -> fail_fmt "bob@hostZ should be rejected but got Ok"
+  | `Duplicate _ts -> fail_fmt "bob@hostZ should be rejected but got Duplicate"
+  | `Error (err, msg) -> fail_fmt "bob@hostZ should be rejected with Cross_host_rejected, got Error: %s %s" err msg
+
 (* ---- Run tests ---- *)
 
 let tests = [
@@ -280,6 +385,10 @@ let tests = [
   "relay send_room delivers", test_relay_send_room_delivers_to_all_except_sender;
   "relay gc removes expired", test_relay_gc_removes_expired_leases;
   "relay list_rooms with counts", test_relay_list_rooms_shows_all_with_counts;
+  (* #330 V1 cross_host_not_implemented error-path seam tests *)
+  "cross_host bare alias works when self_host is set", test_cross_host_bare_alias_works_when_self_host_is_set;
+  "cross_host alias@matching self_host accepted", test_cross_host_alias_matching_self_host_accepted;
+  "cross_host alias@unknown host rejected to dead_letter", test_cross_host_alias_unknown_host_rejected;
 ]
 
 let () =
