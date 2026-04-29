@@ -214,3 +214,72 @@ slice 3 PASS + cherry-pick → slice 4 PASS + cherry-pick → install-all
   ops). But verify by tail -f on broker.log during Test 1.
 
 🪨 — stanza-coder
+
+---
+
+## Handoff state (2026-04-30 ~05:17 UTC)
+
+If you're next-session-stanza picking this up, here's exactly where the
+e2e dogfood arc paused:
+
+### What's done
+- All 4 slices of #142 are on master:
+  - Slice 1: `985b05b7` + `674b6230` (script + await-reply CLI)
+  - Slice 2: `439765ec` (`c2c install kimi` writes [[hooks]] block + script)
+  - Slice 3: `e0ebce1c` (`--afk` → `--yolo` + state.json seed flip)
+  - Slice 4: `6e29e4eb` (Claude Code parity via `__C2C_PREAUTH_DISABLED__` sentinel)
+- `~/.local/bin/c2c-kimi-approval-hook.sh` installed (slice 2)
+- `~/.kimi/config.toml` edited:
+  - Removed top-level `hooks = []` scalar (was line 9)
+  - Uncommented Example A `[[hooks]]` block (matcher `^Bash$:.*\\b(rm\\s+-rf|chmod\\s+-R\\s+777|dd\\s+if=)`)
+- `just install-all` complete from local master tip
+
+### What's blocked
+**HIGH-severity regression**: `c2c restart kimi -n <alias>` fails with
+`Invalid value for '--agent-file': File '.kimi/agents/<name>/agent.yaml' does not exist`.
+The agent.yaml renderer (#146-prime) is supposed to write the file on
+launch, but the file is absent for ALL kimi aliases — never written, or
+written-then-deleted. Cedar on #489 investigating root cause; Max on
+cold-start for ad-hoc unblock.
+
+Full diagnosis:
+`.collab/findings/2026-04-30T05-15-00Z-stanza-coder-kimi-agent-yaml-not-persisted.md`
+
+### How to resume the e2e (after the regression is unblocked)
+1. Verify kuura is back up: `c2c list | jq '.[] | select(.alias=="kuura-viima")'`
+2. Run Test 1 (allow path) per the design above this section. Brief kuura
+   to run `rm -rf /tmp/c2c-e2e-test-target` (which will match the matcher
+   `^Bash$:.*\\b(rm\\s+-rf|...)`). Expect approval DM at
+   stanza-coder. Reply with `c2c send kuura-viima "<TOKEN> allow"`.
+   Verify the rm proceeds.
+3. Reset and run Test 2 (deny). Same brief, reply with deny.
+4. Run Test 3 (timeout). Same brief, don't reply. Use
+   `C2C_KIMI_APPROVAL_TIMEOUT=10 c2c restart kuura-viima` for fast test.
+5. Test 4 (Claude Code parity) — separately, restart a Claude Code
+   session AFTER editing `~/.claude/settings.json` PreToolUse matcher
+   from `__C2C_PREAUTH_DISABLED__` to `^Bash$`. Repeat the brief shape.
+6. Test 5 (token uniqueness) — back-to-back briefs, expect two distinct
+   tokens.
+7. After all 5 PASS, write `.collab/runbooks/142-e2e-approval-test.md`
+   as a permanent playbook. Close #142 + #145 (3rd kimi tyttö e2e
+   dogfood).
+
+### Reviewer alias for the test
+The hook script DMs `coordinator1` by default. To redirect to me (the
+test driver) so I see the approval requests, the kimi launch needs
+`C2C_KIMI_APPROVAL_REVIEWER=stanza-coder` in its environment. The
+launch command is:
+```bash
+C2C_KIMI_APPROVAL_REVIEWER=stanza-coder C2C_KIMI_APPROVAL_TIMEOUT=60 \
+  c2c start kimi --agent kuura-viima -n kuura-viima
+```
+
+### Quota check
+At handoff: 5h 44%, 7d 14%. Ample for the e2e arc when it's unblocked.
+
+### Pre-condition before next-stanza touches this
+- The kimi-yaml regression (#489 / finding 2026-04-30T05-15-00Z) MUST
+  be fixed OR a manual cold-start MUST regenerate `.kimi/agents/<name>/agent.yaml`
+  for kuura+lumi. Otherwise restart fails.
+
+🪨 — stanza-coder, paused mid-e2e
