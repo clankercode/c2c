@@ -3467,13 +3467,13 @@ let relay_serve_cmd =
   in
   (* #330 S1: peer relay table — accumulate name=url and name=pk pairs *)
   let peer_relay_urls =
-    Cmdliner.Arg.(value & opt_all (some string) [] & info [ "peer-relay" ] ~docv:"NAME=URL"
+    Cmdliner.Arg.(value & opt_all string [] & info [ "peer-relay" ] ~docv:"NAME=URL"
       ~doc:"A peer relay's well-known name and its base URL (repeatable). \
             Example: --peer-relay relay-b=http://relay-b:9001. \
             Configure symmetric entries on both relays.")
   in
   let peer_relay_pks =
-    Cmdliner.Arg.(value & opt_all (some string) [] & info [ "peer-relay-pubkey" ] ~docv:"NAME=PK"
+    Cmdliner.Arg.(value & opt_all string [] & info [ "peer-relay-pubkey" ] ~docv:"NAME=PK"
       ~doc:"A peer relay's Ed25519 public key (repeatable). \
             Example: --peer-relay-pubkey relay-b=<base64-pk>. \
             Configure symmetric entries on both relays.")
@@ -3579,7 +3579,8 @@ let resolved_relay_name = match relay_name with
 in
 Printf.eprintf "  relay-name=%s\n%!" resolved_relay_name;
 (* #330 S1: parse --peer-relay and --peer-relay-pubkey into a peer_relays table *)
-let peer_relays =
+(* Build peer_relays_tbl as a single expression so it ends with 'in' *)
+let peer_relays_tbl = begin
   let urls = List.fold_left (fun acc s ->
     match String.index_opt s '=' with
     | None -> (Printf.eprintf "error: --peer-relay %S must be NAME=URL\n%!" s; exit 1)
@@ -3590,36 +3591,39 @@ let peer_relays =
         if url = "" then (Printf.eprintf "error: --peer-relay NAME=URL: URL must not be empty\n%!"; exit 1);
         (name, url) :: acc
   ) [] peer_relay_urls in
-let pks = List.fold_left (fun acc s ->
-  match String.index_opt s '=' with
-  | None -> (Printf.eprintf "error: --peer-relay-pubkey %S must be NAME=PK\n%!" s; exit 1)
-  | Some i ->
-      let name = String.sub s 0 i in
-      let pk = String.sub s (i + 1) (String.length s - i - 1) in
-      if name = "" then (Printf.eprintf "error: --peer-relay-pubkey NAME=PK: NAME must not be empty\n%!"; exit 1);
-      if pk = "" then (Printf.eprintf "error: --peer-relay-pubkey NAME=PK: PK must not be empty\n%!"; exit 1);
-      (name, pk) :: acc
-) [] peer_relay_pks in
-(* Validate: every pk name must have a corresponding url name *)
-let () = List.iter (fun (name, _) ->
-  if not (List.mem_assoc name urls) then (
-    Printf.eprintf "error: --peer-relay-pubkey %s=PK has no matching --peer-relay %s=URL\n%!" name name;
-    exit 1
-  )
-) pks in
-let peer_relays_tbl = Hashtbl.create (List.length urls) in
-List.iter2 (fun (name, url) (name', pk) =
-  (* urls and pks are keyed by same name; pair them up *)
-  assert (name = name');
-  Hashtbl.add peer_relays_tbl name { Relay.peer_relay_name = name; url; identity_pk = pk }
-) urls pks;
-List.iter (fun (name, url) ->
-  if not (List.mem_assoc name pks) then (
-    Printf.eprintf "error: --peer-relay %s=URL has no matching --peer-relay-pubkey %s=PK\n%!" name name;
-    exit 1
-  )
-) urls;
-Printf.eprintf "  peer-relays: %d configured\n%!" (Hashtbl.length peer_relays_tbl);
+  let pks = List.fold_left (fun acc s ->
+    match String.index_opt s '=' with
+    | None -> (Printf.eprintf "error: --peer-relay-pubkey %S must be NAME=PK\n%!" s; exit 1)
+    | Some i ->
+        let name = String.sub s 0 i in
+        let pk = String.sub s (i + 1) (String.length s - i - 1) in
+        if name = "" then (Printf.eprintf "error: --peer-relay-pubkey NAME=PK: NAME must not be empty\n%!"; exit 1);
+        if pk = "" then (Printf.eprintf "error: --peer-relay-pubkey NAME=PK: PK must not be empty\n%!"; exit 1);
+        (name, pk) :: acc
+  ) [] peer_relay_pks in
+  (* Validate: every pk name must have a corresponding url name *)
+  List.iter (fun (name, _) ->
+    if not (List.mem_assoc name urls) then (
+      Printf.eprintf "error: --peer-relay-pubkey %s=PK has no matching --peer-relay %s=URL\n%!" name name;
+      exit 1
+    )
+  ) pks;
+  (* Validate: every url name must have a corresponding pk *)
+  List.iter (fun (name, _url) ->
+    if not (List.mem_assoc name pks) then (
+      Printf.eprintf "error: --peer-relay %s=URL has no matching --peer-relay-pubkey %s=PK\n%!" name name;
+      exit 1
+    )
+  ) urls;
+  (* Build and return peer_relays_tbl *)
+  let tbl = Hashtbl.create (List.length urls) in
+  List.iter (fun (name, url) ->
+    let pk = List.assoc name pks in
+    Hashtbl.add tbl name { Relay.name; url; identity_pk = pk }
+  ) urls;
+  Printf.eprintf "  peer-relays: %d configured\n%!" (Hashtbl.length tbl);
+  tbl
+end in
 match storage with
 | Some "sqlite" ->
     Printf.printf "storage: sqlite\n%!";

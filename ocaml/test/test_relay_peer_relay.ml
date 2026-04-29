@@ -4,6 +4,11 @@ open Relay
 
 let fail_fmt fmt = Printf.ksprintf (fun s -> failwith s) fmt
 
+(* ---- helper: run a test inside a temp-dir sandbox ---- *)
+let with_sqliteRelay_tempdir name f =
+  let dir = Filename.temp_dir "c2c_test" name in
+  Fun.protect ~finally:(fun () -> ignore (Sys.command ("rm -rf " ^ dir))) (fun () -> f dir)
+
 (* ---- InMemoryRelay peer_relay table ---- *)
 
 let test_inmemory_empty_on_create () =
@@ -68,37 +73,34 @@ let test_inmemory_multiple_relays () =
 (* ---- SqliteRelay peer_relay table ---- *)
 
 let test_sqlite_empty_on_create () =
-  let dir = Filename.temp_dir "c2c_test" "sqlite_peer" in
-  Fun.protect ~finally:(fun () -> ignore (Sys.command ("rm -rf " ^ dir)));
-  let t = Relay.SqliteRelay.create ~persist_dir:dir () in
-  match Relay.SqliteRelay.peer_relay_of t ~name:"relay-b" with
-  | None -> ()
-  | Some _ -> fail_fmt "expected empty peer_relays on sqlite create"
+  with_sqliteRelay_tempdir "sqlite_peer" (fun dir ->
+    let t = Relay.SqliteRelay.create ~persist_dir:dir () in
+    match Relay.SqliteRelay.peer_relay_of t ~name:"relay-b" with
+    | None -> ()
+    | Some _ -> fail_fmt "expected empty peer_relays on sqlite create")
 
 let test_sqlite_add_and_lookup () =
-  let dir = Filename.temp_dir "c2c_test" "sqlite_peer2" in
-  Fun.protect ~finally:(fun () -> ignore (Sys.command ("rm -rf " ^ dir)));
-  let t = Relay.SqliteRelay.create ~persist_dir:dir () in
-  let pr = { name = "relay-b"; url = "http://relay-b:9001"; identity_pk = "abc123" } in
-  Relay.SqliteRelay.add_peer_relay t pr;
-  match Relay.SqliteRelay.peer_relay_of t ~name:"relay-b" with
-  | Some pr2 ->
-      if pr2.name <> "relay-b" then fail_fmt "name mismatch";
-      if pr2.url <> "http://relay-b:9001" then fail_fmt "url mismatch";
-      if pr2.identity_pk <> "abc123" then fail_fmt "pk mismatch"
-  | None -> fail_fmt "add_peer_relay should be findable in sqlite relay"
+  with_sqliteRelay_tempdir "sqlite_peer2" (fun dir ->
+    let t = Relay.SqliteRelay.create ~persist_dir:dir () in
+    let pr = { name = "relay-b"; url = "http://relay-b:9001"; identity_pk = "abc123" } in
+    Relay.SqliteRelay.add_peer_relay t pr;
+    match Relay.SqliteRelay.peer_relay_of t ~name:"relay-b" with
+    | Some pr2 ->
+        if pr2.name <> "relay-b" then fail_fmt "name mismatch";
+        if pr2.url <> "http://relay-b:9001" then fail_fmt "url mismatch";
+        if pr2.identity_pk <> "abc123" then fail_fmt "pk mismatch"
+    | None -> fail_fmt "add_peer_relay should be findable in sqlite relay")
 
 let test_sqlite_list () =
-  let dir = Filename.temp_dir "c2c_test" "sqlite_peer3" in
-  Fun.protect ~finally:(fun () -> ignore (Sys.command ("rm -rf " ^ dir)));
-  let t = Relay.SqliteRelay.create ~persist_dir:dir () in
-  let relays = [
-    { name = "relay-x"; url = "http://x:9001"; identity_pk = "pk_x" };
-    { name = "relay-y"; url = "http://y:9001"; identity_pk = "pk_y" };
-  ] in
-  List.iter (Relay.SqliteRelay.add_peer_relay t) relays;
-  let list = Relay.SqliteRelay.peer_relays_list t in
-  if List.length list <> 2 then fail_fmt "expected 2 entries, got %d" (List.length list)
+  with_sqliteRelay_tempdir "sqlite_peer3" (fun dir ->
+    let t = Relay.SqliteRelay.create ~persist_dir:dir () in
+    let relays = [
+      { name = "relay-x"; url = "http://x:9001"; identity_pk = "pk_x" };
+      { name = "relay-y"; url = "http://y:9001"; identity_pk = "pk_y" };
+    ] in
+    List.iter (Relay.SqliteRelay.add_peer_relay t) relays;
+    let list = Relay.SqliteRelay.peer_relays_list t in
+    if List.length list <> 2 then fail_fmt "expected 2 entries, got %d" (List.length list))
 
 (* ---- InMemoryRelay.create accepts ?peer_relays ---- *)
 
@@ -113,14 +115,13 @@ let test_inmemory_create_with_peer_relays () =
 (* ---- SqliteRelay.create accepts ?peer_relays ---- *)
 
 let test_sqlite_create_with_peer_relays () =
-  let dir = Filename.temp_dir "c2c_test" "sqlite_peer4" in
-  Fun.protect ~finally:(fun () -> ignore (Sys.command ("rm -rf " ^ dir)));
-  let init = Hashtbl.create 2 in
-  Hashtbl.add init "relay-b" { name = "relay-b"; url = "http://b:9001"; identity_pk = "init_pk2" };
-  let t = Relay.SqliteRelay.create ~persist_dir:dir ~peer_relays:init () in
-  match Relay.SqliteRelay.peer_relay_of t ~name:"relay-b" with
-  | Some pr -> if pr.identity_pk <> "init_pk2" then fail_fmt "init_pk2 mismatch"
-  | None -> fail_fmt "pre-seeded peer_relay should be findable in sqlite"
+  with_sqliteRelay_tempdir "sqlite_peer4" (fun dir ->
+    let init = Hashtbl.create 2 in
+    Hashtbl.add init "relay-b" { name = "relay-b"; url = "http://b:9001"; identity_pk = "init_pk2" };
+    let t = Relay.SqliteRelay.create ~persist_dir:dir ~peer_relays:init () in
+    match Relay.SqliteRelay.peer_relay_of t ~name:"relay-b" with
+    | Some pr -> if pr.identity_pk <> "init_pk2" then fail_fmt "init_pk2 mismatch"
+    | None -> fail_fmt "pre-seeded peer_relay should be findable in sqlite")
 
 let () =
   let tests = [
