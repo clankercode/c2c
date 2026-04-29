@@ -560,6 +560,20 @@ let parse_alias_list raw =
        else a)
   |> List.filter (fun a -> a <> "")
 
+(* #388 deduplication: one shared writer for all structured broker.log
+   audit lines. Each named logger delegates here instead of repeating
+   the try/ts/path/Yojson/append_jsonl pattern. Best-effort: audit
+   failures must never block the broker's primary path. *)
+let log_broker_event ~broker_root event_name fields =
+  try
+    let path = Filename.concat broker_root "broker.log" in
+    let line =
+      `Assoc (("event", `String event_name) :: fields)
+      |> Yojson.Safe.to_string
+    in
+    C2c_io.append_jsonl path line
+  with _ -> ()
+
 module Broker = struct
   type t = { root : string }
 
@@ -4243,20 +4257,6 @@ end
    inbox despite the entry write succeeding) are diagnosable after-
    the-fact. The 2026-04-27 #327 case had no broker-side trace until
    this logging existed. *)
-
-(* #388 deduplication: one shared writer for all structured broker.log
-   audit lines. Each named logger delegates here instead of repeating
-   the try/ts/path/Yojson/append_jsonl pattern. Best-effort: audit
-   failures must never block the broker's primary path. *)
-let log_broker_event ~broker_root event_name fields =
-  try
-    let path = Filename.concat broker_root "broker.log" in
-    let line =
-      `Assoc (("event", `String event_name) :: fields)
-      |> Yojson.Safe.to_string
-    in
-    C2c_io.append_jsonl path line
-  with _ -> ()
 
 let log_handoff_attempt ~broker_root ~from_alias ~to_alias ~name ~ok ~error =
   let ts = Unix.gettimeofday () in
