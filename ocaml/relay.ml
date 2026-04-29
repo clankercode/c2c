@@ -3427,7 +3427,95 @@ generateKeys();
                 | None -> ())
              | None -> ()
            ) delivered;
-           respond_ok (json_of_send_all_result (ts, delivered, skipped))
+            respond_ok (json_of_send_all_result (ts, delivered, skipped))
+
+  (* #330 S4: handle an inbound forward from a peer relay.
+     Verifies the Ed25519 signature using the peer relay's known public key,
+     then delivers the message locally. The Authorization header must contain
+     a valid Ed25519 proof signed by the peer relay's identity. *)
+  let handle_forward relay ~auth_header body_str =
+    match auth_header with
+    | None ->
+      respond_unauthorized (json_error_str err_unauthorized "missing Authorization header")
+    | Some h ->
+      let prefix = "Ed25519 " in
+      let plen = String.length prefix in
+      if String.length h < plen || (String.sub h 0 plen <> prefix) then
+        respond_unauthorized (json_error_str err_unauthorized "expected Ed25519 authorization")
+      else begin
+        let params_str = String.sub h plen (String.length h - plen) |> String.trim in
+        match parse_ed25519_auth_params params_str with
+        | Error e ->
+          respond_unauthorized (json_error_str err_unauthorized ("malformed Ed25519 auth: " ^ e))
+        | Ok (claimed_alias, ts_str, nonce, sig_b64) ->
+          let relay_host_opt =
+            match String.rindex_opt claimed_alias '@' with
+            | None -> None
+            | Some i -> Some (String.sub claimed_alias (i + 1) (String.length claimed_alias - i - 1))
+          in
+          match float_of_string_opt ts_str with
+          | None ->
+            respond_unauthorized (json_error_str err_unauthorized "ts must be unix seconds")
+          | Some ts_client ->
+            let now = Unix.gettimeofday () in
+            let skew = ts_client -. now in
+            if skew > request_ts_future_window || -. skew > request_ts_past_window then
+              respond_unauthorized (json_error_str relay_err_timestamp_out_of_window
+                (Printf.sprintf "request ts skew %.1fs outside window" skew))
+            else begin
+              match R.check_request_nonce relay ~nonce ~ts:ts_client with
+              | Error _ -> respond_unauthorized (json_error_str err_unauthorized "request nonce replay")
+              | Ok () ->
+                begin match relay_host_opt with
+                | None ->
+                  respond_unauthorized (json_error_str err_unauthorized
+                    (Printf.sprintf "alias %S has no identity binding" claimed_alias))
+                | Some relay_host ->
+                  begin match R.peer_relay_of relay ~name:relay_host with
+                  | None ->
+                    respond_unauthorized (json_error_str err_unauthorized
+                      (Printf.sprintf "alias %S has no identity binding" claimed_alias))
+                  | Some peer_relay ->
+                    begin match decode_b64url sig_b64 with
+                    | Error _ ->
+                      respond_unauthorized (json_error_str err_unauthorized "sig not base64url-nopad")
+                    | Ok sig_ when String.length sig_ <> 64 ->
+                      respond_unauthorized (json_error_str relay_err_signature_invalid "sig must be 64 bytes")
+                    | Ok sig_ ->
+                      let body_sha256 = body_sha256_b64 body_str in
+                      let blob =
+                        Relay_signed_ops.canonical_request_blob
+                          ~meth:"POST" ~path:"/forward" ~query:""
+                          ~body_sha256_b64:body_sha256 ~ts:ts_str ~nonce
+                      in
+                      if not (Relay_identity.verify ~pk:peer_relay.identity_pk ~msg:blob ~sig_:sig_) then
+                        respond_unauthorized (json_error_str relay_err_signature_invalid
+                          "Ed25519 request signature does not verify")
+                      else
+                        match Yojson.Safe.from_string body_str with
+                        | exception Yojson.Json_error msg ->
+                          respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
+                        | body ->
+                          let from_alias = get_string body "from_alias" in
+                          let to_alias = get_string body "to_alias" in
+                          let content = get_string body "content" in
+                          if from_alias = "" || to_alias = "" || content = "" then
+                            respond_bad_request (json_error_str err_bad_request
+                              "from_alias, to_alias, and content are required")
+                          else
+                            let message_id = get_opt_string body "message_id" in
+                            match R.send relay ~from_alias ~to_alias ~content ~message_id with
+                            | `Ok ts ->
+                              respond_ok (`Assoc ["ok", `Bool true; "ts", `Float ts])
+                            | `Duplicate ts ->
+                              respond_ok (`Assoc ["ok", `Bool true; "ts", `Float ts; "duplicate", `Bool true])
+                            | `Error (code, msg) ->
+                              respond_bad_request (json_error_str code msg)
+                    end
+                  end
+                end
+            end
+      end
 
   let handle_poll_inbox relay ~verified_alias body =
     let node_id = get_string body "node_id" in
@@ -4545,6 +4633,11 @@ generateKeys();
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j -> handle_room_history relay j)
+
+      (* === #330 S4: inbound forward from peer relay === *)
+      | `POST, "/forward" ->
+        let auth_header = Header.get (Request.headers req) "Authorization" in
+        handle_forward relay ~auth_header body_str
 
       | `GET, path when String.starts_with ~prefix:"/remote_inbox/" path ->
         let session_id = String.sub path 14 (String.length path - 14) in
