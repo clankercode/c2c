@@ -38,3 +38,6 @@ venv/
 *.log
 *.sqlite
 *.sqlite-journal
+
+# Bind-mount volumes (runtime-created, not needed at build time)
+volumes/
