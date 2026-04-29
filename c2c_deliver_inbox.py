@@ -16,6 +16,14 @@ from typing import Any
 import c2c_poll_inbox
 import c2c_poker
 
+# Match or exceed the broker pending permission TTL (default 600s per
+# c2c_mcp.ml:355 default_permission_ttl_s).  Add 60s margin so the
+# waiter does not abandon the poll before the entry expires server-side.
+# [#461] Read from C2C_PERMISSION_TTL env var so the Python side stays
+# in sync when the OCaml side is reconfigured.
+_PERMISSION_TTL_S = float(os.environ.get("C2C_PERMISSION_TTL", "600"))
+_PERMISSION_TIMEOUT_MS = int((_PERMISSION_TTL_S + 60) * 1000)
+
 # c2c_inject is only needed for the PTY-injection path (deprecated); lazy-import
 # to keep bare CLI invocation working when the module has been moved to deprecated/.
 class _C2CInjectStub:
@@ -622,7 +630,7 @@ def run_loop(
                             decision = forward_permission_to_supervisors(
                                 event,
                                 supervisors=supervisors,
-                                timeout_ms=300000,
+                                timeout_ms=_PERMISSION_TIMEOUT_MS,
                                 session_id=session_id,
                                 broker_root=broker_root,
                             )
@@ -637,7 +645,7 @@ def run_loop(
                                     decision = forward_permission_to_supervisors(
                                         event,
                                         supervisors=supervisors,
-                                        timeout_ms=300000,
+                                        timeout_ms=_PERMISSION_TIMEOUT_MS,
                                         session_id=session_id,
                                         broker_root=broker_root,
                                     )
@@ -1038,7 +1046,7 @@ def write_permission_response(
 def forward_permission_to_supervisors(
     event: dict,
     supervisors: list[str],
-    timeout_ms: int = 300000,
+    timeout_ms: int = _PERMISSION_TIMEOUT_MS,  # [#461] was 300000; now synced to C2C_PERMISSION_TTL
     session_id: str | None = None,
     broker_root: Path | None = None,
 ) -> str:
