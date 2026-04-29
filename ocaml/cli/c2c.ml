@@ -6120,16 +6120,17 @@ let relay_mesh_cmd =
            done
          with End_of_file -> ());
         close_in_noerr ic;
-        let total = List.length !all in
-        if total <= n then List.rev !all
-        else
-          let drop = total - n in
-          let rec drop_n k xs = match xs, k with
-            | xs, 0 -> xs
-            | _ :: tl, k -> drop_n (k - 1) tl
-            | [], _ -> []
-          in
-          List.rev (drop_n drop (List.rev (List.rev !all)))
+        (* [!all] is newest-first (each line cons'd onto head). Take the
+           first [n] elements — those are the [n] newest. Then reverse
+           to chronological order for human display. Pre-#330-V2-fix
+           this used a buggy [drop_n drop (List.rev (List.rev !all))]
+           that returned the OLDEST n lines instead — slate's review
+           caught it on a >50-line broker.log repro. *)
+        let rec take k xs = match xs, k with
+          | _, 0 | [], _ -> []
+          | x :: tl, k -> x :: take (k - 1) tl
+        in
+        List.rev (take n !all)
       with _ -> []
   in
   let recent = tail_lines log_path log_lines in
