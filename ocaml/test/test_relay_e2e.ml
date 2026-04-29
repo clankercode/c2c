@@ -389,6 +389,152 @@ let test_v2_from_ed25519_micro_edges () =
         with Not_found -> false)
      | _ -> false)
 
+(* Slice C — C2C_RELAY_E2E_STRICT_V2 strict-flip gate.
+
+   When the env flag is on, [verify_envelope_sig] (and the bool form
+   [verify_envelope_sig]) refuses to even attempt verification on
+   envelopes with [envelope_version < 2]. The signature is NOT
+   consulted — version is the gate. Default-off preserves the v1↔v2
+   transition behavior.
+
+   Tests use [Unix.putenv]/[Unix.unsetenv] in a [Fun.protect] block to
+   restore the env after each case so peers can run in parallel. *)
+
+let with_strict_v2_env (value : string option) (f : unit -> unit) : unit =
+  let prev = Sys.getenv_opt "C2C_RELAY_E2E_STRICT_V2" in
+  let restore () =
+    match prev with
+    | Some v -> Unix.putenv "C2C_RELAY_E2E_STRICT_V2" v
+    | None ->
+      (* OCaml's stdlib has no [Unix.unsetenv] in older versions;
+         shell out via the existing helper if available, otherwise
+         clear via empty string which [is_strict_v2_mode] treats as
+         off. *)
+      try Unix.putenv "C2C_RELAY_E2E_STRICT_V2" "" with _ -> ()
+  in
+  (match value with
+   | Some v -> Unix.putenv "C2C_RELAY_E2E_STRICT_V2" v
+   | None -> (try Unix.putenv "C2C_RELAY_E2E_STRICT_V2" "" with _ -> ()));
+  Fun.protect ~finally:restore f
+
+let test_strict_v2_default_off_v1_verifies () =
+  with_strict_v2_env None (fun () ->
+    let seed, pk_raw = gen_ed25519 () in
+    let e = {
+      from_ = "legacy-sender";
+      from_x25519 = None;
+      from_ed25519 = None;
+      to_ = Some "bob";
+      room = None;
+      ts = 1700000100L;
+      enc = "box-x25519-v1";
+      recipients = [ { alias = "bob"; nonce = Some "n"; ciphertext = "c" } ];
+      sig_b64 = "";
+      envelope_version = 1;
+    } in
+    let signed = set_sig e ~sk_seed:seed in
+    Alcotest.(check bool) "default-off: v1 envelope verifies"
+      true (verify_envelope_sig ~pk:pk_raw signed))
+
+let test_strict_v2_on_rejects_v1 () =
+  with_strict_v2_env (Some "1") (fun () ->
+    let seed, pk_raw = gen_ed25519 () in
+    let e = {
+      from_ = "legacy-sender";
+      from_x25519 = None;
+      from_ed25519 = None;
+      to_ = Some "bob";
+      room = None;
+      ts = 1700000101L;
+      enc = "box-x25519-v1";
+      recipients = [ { alias = "bob"; nonce = Some "n"; ciphertext = "c" } ];
+      sig_b64 = "";
+      envelope_version = 1;
+    } in
+    let signed = set_sig e ~sk_seed:seed in
+    Alcotest.(check bool)
+      "strict-v2: v1 envelope rejected even with valid signature"
+      false (verify_envelope_sig ~pk:pk_raw signed))
+
+let test_strict_v2_on_v2_still_verifies () =
+  with_strict_v2_env (Some "1") (fun () ->
+    let seed, pk_raw = gen_ed25519 () in
+    let e = {
+      from_ = "alice";
+      from_x25519 = Some "AAAA-x25519-pk";
+      from_ed25519 = Some (b64_encode pk_raw);
+      to_ = Some "bob";
+      room = None;
+      ts = 1700000102L;
+      enc = "box-x25519-v1";
+      recipients = [ { alias = "bob"; nonce = Some "n"; ciphertext = "c" } ];
+      sig_b64 = "";
+      envelope_version = 2;
+    } in
+    let signed = set_sig e ~sk_seed:seed in
+    Alcotest.(check bool) "strict-v2: v2 envelope still verifies"
+      true (verify_envelope_sig ~pk:pk_raw signed))
+
+let test_strict_v2_detailed_emits_strict_variant () =
+  with_strict_v2_env (Some "1") (fun () ->
+    let seed, pk_raw = gen_ed25519 () in
+    let e = {
+      from_ = "legacy-sender";
+      from_x25519 = None;
+      from_ed25519 = None;
+      to_ = Some "bob";
+      room = None;
+      ts = 1700000103L;
+      enc = "box-x25519-v1";
+      recipients = [ { alias = "bob"; nonce = Some "n"; ciphertext = "c" } ];
+      sig_b64 = "";
+      envelope_version = 1;
+    } in
+    let signed = set_sig e ~sk_seed:seed in
+    let result = Relay_e2e.verify_envelope_sig_detailed ~pk:pk_raw signed in
+    let is_strict_variant = match result with
+      | Relay_e2e.Verify_err_strict_v2_required { rejected_version = 1 } -> true
+      | _ -> false
+    in
+    Alcotest.(check bool)
+      "strict-v2: detailed result emits Verify_err_strict_v2_required"
+      true is_strict_variant)
+
+let test_strict_v2_env_value_truthiness () =
+  let make_v1 () =
+    let seed, pk_raw = gen_ed25519 () in
+    let e = {
+      from_ = "legacy-sender";
+      from_x25519 = None;
+      from_ed25519 = None;
+      to_ = Some "bob";
+      room = None;
+      ts = 1700000104L;
+      enc = "box-x25519-v1";
+      recipients = [ { alias = "bob"; nonce = Some "n"; ciphertext = "c" } ];
+      sig_b64 = "";
+      envelope_version = 1;
+    } in
+    set_sig e ~sk_seed:seed, pk_raw
+  in
+  (* "1", "true", "yes", "on" (any case) all reject; "0", "false", garbage all accept. *)
+  let truthy = ["1"; "true"; "TRUE"; "yes"; "Yes"; "on"; "ON"] in
+  let falsy = ["0"; "false"; "no"; "off"; ""; "garbage"; " "] in
+  List.iter (fun v ->
+    with_strict_v2_env (Some v) (fun () ->
+      let signed, pk_raw = make_v1 () in
+      Alcotest.(check bool)
+        (Printf.sprintf "truthy %S rejects v1" v)
+        false (verify_envelope_sig ~pk:pk_raw signed))
+  ) truthy;
+  List.iter (fun v ->
+    with_strict_v2_env (Some v) (fun () ->
+      let signed, pk_raw = make_v1 () in
+      Alcotest.(check bool)
+        (Printf.sprintf "falsy %S accepts v1" v)
+        true (verify_envelope_sig ~pk:pk_raw signed))
+  ) falsy
+
 let () =
   Alcotest.run "relay_e2e" [
     "enc_status", [
@@ -434,5 +580,17 @@ let () =
         `Quick test_v2_without_from_ed25519_rejected;
       Alcotest.test_case "§7.1 v2 from_ed25519 null and empty-string rejected"
         `Quick test_v2_from_ed25519_micro_edges;
+    ];
+    "strict_v2_slice_c", [
+      Alcotest.test_case "default-off: v1 envelope verifies"
+        `Quick test_strict_v2_default_off_v1_verifies;
+      Alcotest.test_case "strict-v2: v1 envelope rejected"
+        `Quick test_strict_v2_on_rejects_v1;
+      Alcotest.test_case "strict-v2: v2 envelope still verifies"
+        `Quick test_strict_v2_on_v2_still_verifies;
+      Alcotest.test_case "strict-v2: detailed result emits Verify_err_strict_v2_required"
+        `Quick test_strict_v2_detailed_emits_strict_variant;
+      Alcotest.test_case "strict-v2: env-value truthiness matrix"
+        `Quick test_strict_v2_env_value_truthiness;
     ];
   ]

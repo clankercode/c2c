@@ -176,6 +176,23 @@ slice with a single CLI/env flag (`C2C_RELAY_E2E_STRICT_V2=1`)
 that gates the v1-acceptance branch. Default `0` until ops sign-
 off.
 
+**Status (2026-04-29, post-implementation)**: Slice C impl landed
+on `slice/crit-1-slice-c-strict-v2`. Gate lives at
+`Relay_e2e.is_strict_v2_mode ()` (env-read on every verify; no
+daemon restart needed for ops to flip). When on,
+`verify_envelope_sig` short-circuits before signature check for
+any envelope with `envelope_version < 2`;
+`verify_envelope_sig_detailed` returns the new variant
+`Verify_err_strict_v2_required { rejected_version }` so ops
+triage can distinguish strict-mode rejection from a sig-fail.
+Truthy values: `1`, `true`, `yes`, `on` (case-insensitive).
+GUI-v2-gate is null — the Tauri+Vite GUI shells out to the local
+OCaml `c2c` binary (`Command.create("c2c", ...)`) and has no
+separate envelope verifier; no separate TS soak target exists.
+Slice B-min-version (per-peer downgrade pin) and Slice C (global
+v1 cutover) compose: B handles once-seen-v2-stays-v2; C handles
+the global cutover for first-contact peers.
+
 ---
 
 ## Cross-client coordination

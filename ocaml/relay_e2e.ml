@@ -237,23 +237,52 @@ let sign_envelope ~sk_seed (e : envelope) : string =
   let sig_bytes = sign_ed25519 ~sk_seed canon in
   b64_encode sig_bytes
 
+(** Slice C strict-v2 mode: when [C2C_RELAY_E2E_STRICT_V2] is set to a
+    truthy value, the verifier rejects envelopes with [envelope_version
+    < 2] regardless of signature validity. Default off — v1 envelopes
+    continue to verify normally during the cutover window.
+
+    Truthy: ["1"], ["true"], ["yes"], ["on"] (case-insensitive). Anything
+    else (unset, ["0"], ["false"], etc.) is treated as off.
+
+    Read via [Sys.getenv_opt] on every call so an env-var flip takes
+    effect on the next verify without daemon restart — useful for ops
+    flipping the gate during a soak window. *)
+let is_strict_v2_mode () : bool =
+  match Sys.getenv_opt "C2C_RELAY_E2E_STRICT_V2" with
+  | None -> false
+  | Some v ->
+    (match String.lowercase_ascii (String.trim v) with
+     | "1" | "true" | "yes" | "on" -> true
+     | _ -> false)
+
 let verify_envelope_sig ~pk (e : envelope) : bool =
-  match b64_decode e.sig_b64 with
-  | Error _ -> false
-  | Ok sig_bytes ->
-    let canon = canonical_json e in
-    verify_ed25519 ~pk ~msg:canon ~sig_:sig_bytes
+  (* Slice C: strict-v2 gate refuses to even verify v1 envelopes when
+     enabled. The min-observed-version pin (Slice B) gives a per-alias
+     downgrade defense; this gate gives the global cutover. *)
+  if is_strict_v2_mode () && e.envelope_version < 2 then false
+  else
+    match b64_decode e.sig_b64 with
+    | Error _ -> false
+    | Ok sig_bytes ->
+      let canon = canonical_json e in
+      verify_ed25519 ~pk ~msg:canon ~sig_:sig_bytes
 
 (** Structured verify result for ops-debug. [Err] carries
     [version_attempted] = the [envelope_version] the verifier dispatched
     on. Useful when triaging cross-client interop failures during the
-    v1↔v2 transition window. *)
+    v1↔v2 transition window. [Err_strict_v2_required] is emitted when
+    Slice C strict-v2 mode is enabled and the envelope's version is < 2;
+    the signature is NOT consulted. *)
 type verify_result =
   | Verify_ok
   | Verify_err of { version_attempted : int }
+  | Verify_err_strict_v2_required of { rejected_version : int }
 
 let verify_envelope_sig_detailed ~pk (e : envelope) : verify_result =
-  if verify_envelope_sig ~pk e
+  if is_strict_v2_mode () && e.envelope_version < 2 then
+    Verify_err_strict_v2_required { rejected_version = e.envelope_version }
+  else if verify_envelope_sig ~pk e
   then Verify_ok
   else Verify_err { version_attempted = e.envelope_version }
 
