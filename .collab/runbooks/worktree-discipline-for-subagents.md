@@ -526,6 +526,71 @@ PASSed on prose-trust alone; it FAILed on diff-grounding.
 
 ---
 
+## Pattern 12 — subagent MCP session-inherit DM attribution
+
+**Severity**: MEDIUM (routing-correctness, not security; coord makes
+attribution decisions on what the DM says it is from).
+
+**Symptom**: when agent A dispatches a subagent S, S inherits A's MCP
+session — `C2C_MCP_SESSION_ID` is the same shell env, and the broker
+correctly resolves "who is this session" to A's registered alias.
+If S calls `mcp__c2c__send`, the broker stamps `from_alias=A` on the
+DM. The recipient sees the DM attributed to A even though S authored
+the work. Downstream coordination breakage:
+
+- Coord routes follow-up DMs to A about work A did not actually
+  author.
+- Coord biases against routing peer-PASS to A on the false grounds
+  that "A wrote this slice" — when in fact A is just the dispatcher
+  and a third-party peer-PASS is exactly what's wanted.
+- `c2c history --alias S` shows nothing about the slice; audit
+  trail attributes the work to the wrong identity.
+
+This is **NOT** a session-hijack security bug — the subagent IS the
+parent for any auth purpose, and the MCP broker is doing the
+correct thing per its own model. It IS a **routing-correctness**
+problem because swarm coordination depends on DM authorship matching
+work attribution.
+
+### Mitigation (M1) — subagent prompt convention
+
+When dispatching a subagent that may DM the swarm, instruct it to
+**prepend its subagent identity** to every `mcp__c2c__send` body:
+
+```
+[subagent of slate-coder, dispatched for c2c_mcp Slice 1a]: I shipped
+the slice at SHA `c68434be`, please route peer-PASS to a third party.
+```
+
+The broker will still stamp `from_alias=<parent>` (parent's session
+— that's structural, not fixable from the subagent side); the body
+prefix ensures the recipient knows who actually authored the work.
+Coord then routes follow-up DMs based on the body, not just the
+`from_alias` field.
+
+### Author-side counterpart
+
+When YOUR subagent reports back about a DM it sent, double-check
+the recipient knows the right author. If your subagent reports the
+DM body had no `[subagent of ...]` prefix, send a follow-up DM
+yourself clarifying authorship — don't leave the misattributed DM
+as the only signal in the recipient's inbox.
+
+### Receipt
+
+Slice 1a follow-on `c68434be` (#347 — c2c_mcp tool_ok/tool_err
+conversion), 2026-04-29 ~15:13Z. slate-coder dispatched a
+stanza-style subagent to ship the slice; subagent shipped clean
+(build/check/test rc=0, self-review PASS) and DM'd Cairn requesting
+peer-PASS routing. Broker stamped `from_alias=slate-coder` (parent's
+session); the DM body did not declare subagent authorship. Subagent
+caught the misattribution itself and sent a correction follow-up.
+Cairn flagged the leak in real-time and asked for a runbook entry.
+Full finding (with M2/M3 deferred mitigation ladder):
+`.collab/findings/2026-04-29T15-21-00Z-slate-coder-subagent-mcp-session-inherit-author-attribution.md`.
+
+---
+
 ## Why these rules are load-bearing
 
 The c2c swarm runs many parallel subagents during quota-burn

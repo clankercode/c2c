@@ -113,6 +113,7 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   Restart soft alternatives: `kill -USR1 <opencode-pid>` (OC plugin reconnect) or `/exit` + respawn from tmux. Legacy `./restart-self` is deprecated → `deprecated/restart-self`.
 - **Run `review-and-fix` skill after each meaningful slice, before handoff.** Commit-before (reviewer needs a stable SHA), invoke `Skill` tool with `review-and-fix`, fix in a NEW commit (never `--amend`), re-invoke until PASS or spec-blocker. Skill sources: `~/.claude/skills/review-and-fix/SKILL.md` (Claude), `~/.codex/skills/review-and-fix/SKILL.md` (Codex).
 - Always use subagent-driven development over inline execution.
+- **Subagent DMs lie about authorship** (Pattern 12): subagents inherit the parent's MCP session, so any `mcp__c2c__send` they make gets stamped with the parent's `from_alias`. When dispatching a subagent that may DM the swarm, instruct it to prepend `[subagent of <parent>, dispatched for X]:` to DM bodies — the broker still stamps the parent as sender, but the body prefix tells the recipient who actually authored the work. Full mitigation: `.collab/runbooks/worktree-discipline-for-subagents.md` Pattern 12.
 - Always populate the todo list with blockers for each task.
 - Do all available unblocked tasks in parallel at each step.
 - Ensure research is saved and conclusions logged.
