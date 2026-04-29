@@ -572,16 +572,24 @@ val cmd_start :
 val cmd_stop : string -> int
 (** [cmd_stop name] stops a running instance. Returns 0. *)
 
-val cmd_restart : ?session_id_override:string -> string -> timeout_s:float -> int
-(** [cmd_restart ?session_id_override name ~timeout_s] stops then restarts an instance.
+val cmd_restart :
+  ?session_id_override:string ->
+  ?do_exec:(string array -> unit) ->
+  string -> timeout_s:float -> int
+(** [cmd_restart ?session_id_override ?do_exec name ~timeout_s] stops then restarts an instance.
     [timeout_s] is how long to wait for the outer process to exit before
     spawning the new start (default 5s). When [session_id_override] is provided,
     it becomes the persisted exact resume target for clients that support it.
+    [do_exec] defaults to [Unix.execvp argv.(0) argv]; tests pass a no-op stub
+    to drive the function without replacing the test process.
     Returns exit code. *)
 
-val cmd_reset_thread : string -> string -> int
-(** [cmd_reset_thread name thread_id] stores an explicit thread/session target
-    for a managed Codex-family instance and restarts it onto that thread. *)
+val cmd_reset_thread :
+  ?do_exec:(string array -> unit) ->
+  string -> string -> int
+(** [cmd_reset_thread ?do_exec name thread_id] stores an explicit thread/session
+    target for a managed Codex-family instance and restarts it onto that thread.
+    [do_exec] is forwarded to [cmd_restart]; production callers omit it. *)
 
 val cmd_restart_self : ?name:string -> unit -> int
 (** [cmd_restart_self ?name ()] signals the managed inner client for this

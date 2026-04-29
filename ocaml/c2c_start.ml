@@ -4663,7 +4663,13 @@ let build_start_argv ~(cfg : instance_config) : string array =
   argv := !argv @ cfg.extra_args;
   Array.of_list !argv
 
-let cmd_restart ?(session_id_override : string option) (name : string) ~(timeout_s : float) : int =
+let cmd_restart ?(session_id_override : string option)
+    ?(do_exec : (string array -> unit) option)
+    (name : string) ~(timeout_s : float) : int =
+  let do_exec = match do_exec with
+    | Some f -> f
+    | None -> fun argv -> Unix.execvp argv.(0) argv
+  in
   let cfg = match load_config_opt name with
     | None ->
         Printf.eprintf "error: no config found for instance '%s'\n%!" name;
@@ -4725,9 +4731,13 @@ let cmd_restart ?(session_id_override : string option) (name : string) ~(timeout
       non-looping supervisor contract (this process becomes the new outer). *)
    let argv = build_start_argv ~cfg in
   Printf.printf "[c2c restart] launching: %s\n%!" (String.concat " " (Array.to_list argv));
-  Unix.execvp argv.(0) argv
+  do_exec argv;
+  (* do_exec normally execvp's away and never returns; tests pass a no-op
+     stub so the assertion path can run. Return 0 in that case. *)
+  0
 
-let cmd_reset_thread (name : string) (thread_id : string) : int =
+let cmd_reset_thread ?(do_exec : (string array -> unit) option)
+    (name : string) (thread_id : string) : int =
   if String.trim thread_id = "" then begin
     Printf.eprintf "error: thread id must be non-empty\n%!";
     exit 1
@@ -4747,7 +4757,7 @@ let cmd_reset_thread (name : string) (thread_id : string) : int =
              "error: reset-thread currently supports codex and codex-headless instances only (got %s)\n%!"
              cfg.client;
            exit 1);
-      cmd_restart name ~timeout_s:5.0
+      cmd_restart ?do_exec name ~timeout_s:5.0
 
 let cmd_instances () : int =
   if not (Sys.file_exists instances_dir) then

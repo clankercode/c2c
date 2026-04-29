@@ -1560,7 +1560,9 @@ let test_cmd_reset_thread_persists_codex_resume_target () =
     }
   in
   C2c_start.write_config cfg;
-  let rc = C2c_start.cmd_reset_thread name "thread-reset-123" in
+  let rc =
+    C2c_start.cmd_reset_thread ~do_exec:(fun _ -> ()) name "thread-reset-123"
+  in
   check int "reset-thread rc" 0 rc;
   match C2c_start.load_config_opt name with
   | None -> fail "expected config after reset-thread"
